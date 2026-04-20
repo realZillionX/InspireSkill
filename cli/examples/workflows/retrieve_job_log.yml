@@ -1,0 +1,88 @@
+# Retrieve Job Log from Shared Filesystem
+#
+# This workflow runs on the self-hosted runner. It is triggered
+# manually via the API (workflow_dispatch) by the `inspire job logs` command.
+# It reads a training log file from the shared filesystem and pushes it
+# to a 'logs' branch for retrieval via the raw file API.
+#
+# The logs branch is an orphan branch (no history) with only one file.
+
+name: Retrieve Job Log
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'Inspire job ID'
+        required: true
+        type: string
+      remote_log_path:
+        description: 'Absolute path to training log on shared filesystem'
+        required: true
+        type: string
+      request_id:
+        description: 'Unique request id used to name the log file'
+        required: true
+        type: string
+      start_offset:
+        description: 'Byte offset to start reading from (for incremental fetch)'
+        required: false
+        type: string
+        default: '0'
+
+jobs:
+  retrieve-log:
+    runs-on: ubuntu-latest  # Use your self-hosted Bridge runner
+    timeout-minutes: 10
+
+    steps:
+      - name: Validate log path
+        run: |
+          LOG_PATH="${{ inputs.remote_log_path }}"
+          if [ -z "$LOG_PATH" ] || [ ! -f "$LOG_PATH" ]; then
+            echo "Log file not found: $LOG_PATH" >&2
+            exit 1
+          fi
+
+      - name: Push log to orphan logs branch
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          LOG_PATH: ${{ inputs.remote_log_path }}
+          START_OFFSET: ${{ inputs.start_offset }}
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LOG_FILENAME="job-${JOB_ID}-log-${REQUEST_ID}.log"
+
+          # Create temp dir with cleanup trap
+          TEMP_DIR=$(mktemp -d)
+          trap "rm -rf '$TEMP_DIR'" EXIT
+          cd "$TEMP_DIR"
+
+          # Initialize git
+          git init
+          git config user.name "Inspire Bot"
+          git config user.email "bot@inspire.local"
+
+          # Remote with token auth; GITHUB_SERVER_URL / GITHUB_REPOSITORY are supplied
+          # automatically by GitHub Actions, and secrets.GITHUB_TOKEN is auto-minted.
+          REMOTE_URL="https://${GITHUB_ACTOR}:${GIT_TOKEN}@${GITHUB_SERVER_URL#https://}/${GITHUB_REPOSITORY}.git"
+          git remote add origin "$REMOTE_URL"
+
+          # Copy log file (full or partial based on offset)
+          if [ "$START_OFFSET" -gt 0 ] 2>/dev/null; then
+            # Incremental: skip to offset, read remaining bytes
+            tail -c +"$((START_OFFSET + 1))" "$LOG_PATH" > "$LOG_FILENAME"
+            echo "Retrieved from offset $START_OFFSET"
+          else
+            # Full file copy
+            cp "$LOG_PATH" "$LOG_FILENAME"
+          fi
+
+          # Create orphan branch and force push (no history, single file)
+          git checkout --orphan logs-new
+          git add "$LOG_FILENAME"
+          git commit -m "Log for job ${JOB_ID} (request ${REQUEST_ID}, offset ${START_OFFSET})"
+          git push --force origin logs-new:logs
+
+          echo "Log uploaded: $LOG_FILENAME"

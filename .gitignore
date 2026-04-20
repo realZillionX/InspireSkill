@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Local IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python compiled artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Vendored CLI — local-only build / venv output
+cli/.venv/
+cli/dist/
+cli/build/
+
+# Local agent caches / logs that might accidentally land here
+.inspire/
+.cache/
+*.log
+
+# Secrets — must never land in public history
+.env
+.env.*
+*.pem
+*.key

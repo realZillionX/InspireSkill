@@ -1,0 +1,152 @@
+# Run arbitrary command on Bridge runner with optional denylist and artifact upload
+#
+# Triggered by `inspire bridge exec ...` via workflow_dispatch.
+# Artifacts are uploaded to an orphan 'logs' branch (no history, single file).
+
+name: Run Bridge Action
+
+on:
+  workflow_dispatch:
+    inputs:
+      raw_command:
+        description: 'Raw shell command to execute (bash -lc)'
+        required: true
+        type: string
+      denylist:
+        description: 'Optional comma or newline-separated denylist patterns'
+        required: false
+        type: string
+        default: ''
+      target_dir:
+        description: 'Target directory on the shared filesystem'
+        required: true
+        type: string
+      artifact_paths:
+        description: 'Optional newline-separated paths (relative to target_dir) to upload as artifact'
+        required: false
+        type: string
+        default: ''
+      request_id:
+        description: 'Unique request id used to name the artifact and run'
+        required: true
+        type: string
+
+jobs:
+  bridge-action:
+    runs-on: ubuntu-latest  # Use your self-hosted Bridge runner
+    timeout-minutes: 30
+
+    env:
+      TARGET_DIR: ${{ inputs.target_dir }}
+      RAW_COMMAND: ${{ inputs.raw_command }}
+      DENYLIST: ${{ inputs.denylist }}
+      ARTIFACT_PATHS: ${{ inputs.artifact_paths }}
+      REQUEST_ID: ${{ inputs.request_id }}
+
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+
+          if [ -z "$TARGET_DIR" ] || [ ! -d "$TARGET_DIR" ]; then
+            echo "Target directory does not exist: $TARGET_DIR" >&2
+            exit 1
+          fi
+
+          if [ -z "$RAW_COMMAND" ]; then
+            echo "raw_command input is required" >&2
+            exit 1
+          fi
+
+      - name: Apply denylist
+        run: |
+          set -euo pipefail
+
+          DENY_ENTRIES=$(printf "%s" "$DENYLIST" | tr ',' '\n' | sed '/^$/d') || true
+
+          if [ -n "$DENY_ENTRIES" ]; then
+            echo "Denylist entries (glob patterns):" >&2
+            printf '%s\n' "$DENY_ENTRIES" >&2
+
+            while IFS= read -r pattern; do
+              [ -z "$pattern" ] && continue
+              case "$RAW_COMMAND" in
+                $pattern)
+                  echo "Command blocked by denylist pattern: $pattern" >&2
+                  exit 1
+                  ;;
+              esac
+            done <<< "$DENY_ENTRIES"
+          else
+            echo "No denylist provided; proceeding (warning)" >&2
+          fi
+
+      - name: Run command
+        working-directory: ${{ env.TARGET_DIR }}
+        run: |
+          set -euo pipefail
+          echo "Running command in $PWD"
+          echo "Command: $RAW_COMMAND"
+
+          mkdir -p /tmp/bridge-artifacts
+          bash -lc "$RAW_COMMAND" 2>&1 | tee /tmp/bridge-artifacts/output.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Collect artifact paths
+        if: ${{ env.ARTIFACT_PATHS != '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/bridge-artifacts
+
+          while IFS= read -r relpath; do
+            [ -z "$relpath" ] && continue
+            src="$TARGET_DIR/$relpath"
+            if [ ! -e "$src" ]; then
+              echo "Warning: artifact path not found, skipping: $relpath" >&2
+              continue
+            fi
+            dest_dir="/tmp/bridge-artifacts/$(dirname "$relpath")"
+            mkdir -p "$dest_dir"
+            cp -a "$src" "$dest_dir/"
+          done <<< "$ARTIFACT_PATHS"
+
+      - name: Upload artifact to orphan logs branch
+        if: always()
+        env:
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARTIFACT_NAME="bridge-action-${REQUEST_ID}"
+
+          # Create temp dir with cleanup trap
+          TEMP_DIR=$(mktemp -d)
+          trap "rm -rf '$TEMP_DIR'" EXIT
+          cd "$TEMP_DIR"
+
+          # Initialize git
+          git init
+          git config user.name "Inspire Bot"
+          git config user.email "bot@inspire.local"
+
+          # Remote with token auth; GITHUB_SERVER_URL / GITHUB_REPOSITORY are supplied
+          # automatically by GitHub Actions, and secrets.GITHUB_TOKEN is auto-minted.
+          REMOTE_URL="https://${GITHUB_ACTOR}:${GIT_TOKEN}@${GITHUB_SERVER_URL#https://}/${GITHUB_REPOSITORY}.git"
+          git remote add origin "$REMOTE_URL"
+
+          # Create zip archive of the artifacts
+          cd /tmp/bridge-artifacts
+          zip -r "${TEMP_DIR}/${ARTIFACT_NAME}.zip" .
+          cd "$TEMP_DIR"
+
+          # Create orphan branch and force push (no history, single file)
+          git checkout --orphan logs-new
+          git add "${ARTIFACT_NAME}.zip"
+          git commit -m "Bridge artifact ${REQUEST_ID}"
+          git push --force origin logs-new:logs
+
+          echo "Artifact uploaded: ${ARTIFACT_NAME}.zip"
+
+      - name: Summary
+        run: |
+          echo "Bridge action completed"
+          echo "Request ID: $REQUEST_ID"
+          echo "Target dir: $TARGET_DIR"
