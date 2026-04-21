@@ -10,6 +10,7 @@ from inspire.platform.web.session import DEFAULT_WORKSPACE_ID, WebSession, get_w
 
 __all__ = [
     "HPCJobInfo",
+    "delete_hpc_job",
     "list_hpc_jobs",
     "list_hpc_job_events",
 ]
@@ -150,3 +151,33 @@ def list_hpc_job_events(
         return []
     except Exception:
         return []
+
+
+def delete_hpc_job(
+    job_id: str,
+    session: Optional[WebSession] = None,
+) -> dict:
+    """Permanently delete an HPC job entry from the platform.
+
+    Endpoint: ``DELETE /api/v1/hpc_jobs/{id}`` (REST-style, same shape as
+    notebook / image delete). Confirmed empirically via probe on 2026-04-21;
+    ``POST /hpc_jobs/delete`` returns 404. Browser-API only (no OpenAPI
+    equivalent). Destructive: the entry disappears from the UI — if the
+    job is still running, ``stop`` it first.
+    """
+    if session is None:
+        session = get_web_session()
+
+    data = _request_json(
+        session,
+        "DELETE",
+        _browser_api_path(f"/hpc_jobs/{job_id}"),
+        referer=f"{_get_base_url()}/jobs/highPerformanceComputing",
+        timeout=30,
+    )
+
+    if data.get("code") != 0:
+        raise ValueError(f"API error: {data.get('message')}")
+
+    payload = data.get("data")
+    return payload if isinstance(payload, dict) else {}

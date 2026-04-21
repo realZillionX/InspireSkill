@@ -17,6 +17,7 @@ from .availability import (
 )
 from .jobs import (
     JobInfo,
+    delete_job,
     get_current_user,
     get_train_job_workdir,
     list_job_events,
@@ -26,6 +27,7 @@ from .jobs import (
 )
 from .hpc_jobs import (
     HPCJobInfo,
+    delete_hpc_job,
     list_hpc_jobs,
     list_hpc_job_events,
 )
@@ -33,6 +35,7 @@ from .notebooks import (
     ImageInfo,
     NotebookFailedError,
     create_notebook,
+    delete_notebook,
     get_notebook_detail,
     get_notebook_schedule,
     get_resource_prices,
@@ -86,6 +89,7 @@ from .servings import (
 __all__ = [
     # Jobs / users
     "JobInfo",
+    "delete_job",
     "get_current_user",
     "get_train_job_workdir",
     "list_job_events",
@@ -94,6 +98,7 @@ __all__ = [
     "list_jobs",
     # HPC jobs
     "HPCJobInfo",
+    "delete_hpc_job",
     "list_hpc_jobs",
     "list_hpc_job_events",
     # Availability
@@ -123,6 +128,7 @@ __all__ = [
     "ImageInfo",
     "NotebookFailedError",
     "create_notebook",
+    "delete_notebook",
     "get_notebook_detail",
     "get_notebook_schedule",
     "get_resource_prices",

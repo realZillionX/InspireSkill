@@ -14,6 +14,7 @@ from inspire.platform.web.session import DEFAULT_WORKSPACE_ID, WebSession, get_w
 
 __all__ = [
     "JobInfo",
+    "delete_job",
     "get_current_user",
     "get_train_job_workdir",
     "list_job_events",
@@ -280,3 +281,38 @@ def list_job_instance_events(
         return []
     except Exception:
         return []
+
+
+def delete_job(
+    job_id: str,
+    session: Optional[WebSession] = None,
+) -> dict:
+    """Permanently delete a training job entry from the platform.
+
+    Browser-API only; the OpenAPI surface stops at `stop`. Endpoint:
+    ``POST /api/v1/train_job/delete`` with body ``{"job_id": <id>}``. The
+    exact body key is inferred from the parallel ``/train_job/*`` endpoints
+    (``detail``/``workdir`` both use ``job_id``); confirm via
+    ``inspire --debug`` on a rejected call. Destructive: the job entry
+    disappears from the UI and cannot be recovered — if it is still
+    running, ``stop`` first.
+    """
+    if session is None:
+        session = get_web_session()
+
+    body: dict[str, Any] = {"job_id": job_id}
+
+    data = _request_json(
+        session,
+        "POST",
+        _browser_api_path("/train_job/delete"),
+        referer=f"{_get_base_url()}/jobs/distributedTraining",
+        body=body,
+        timeout=30,
+    )
+
+    if data.get("code") != 0:
+        raise ValueError(f"API error: {data.get('message')}")
+
+    payload = data.get("data")
+    return payload if isinstance(payload, dict) else {}

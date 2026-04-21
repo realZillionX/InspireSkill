@@ -23,6 +23,7 @@ import click
 
 from .notebook_commands import (
     create_notebook_cmd,
+    delete_notebook_cmd,
     list_notebooks,
     notebook_status,
     ssh_notebook_cmd,
@@ -66,6 +67,7 @@ notebook.add_command(notebook_status)           # status
 notebook.add_command(create_notebook_cmd)       # create
 notebook.add_command(stop_notebook_cmd)         # stop
 notebook.add_command(start_notebook_cmd)        # start
+notebook.add_command(delete_notebook_cmd)       # delete (Browser API)
 notebook.add_command(ssh_notebook_cmd)          # ssh  (bootstrap; alias-aware dispatch in the cmd body)
 notebook.add_command(notebook_top)              # top
 notebook.add_command(notebook_events)           # events (K8s scheduling / pod lifecycle)

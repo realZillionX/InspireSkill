@@ -354,4 +354,53 @@ def stop_hpc(ctx: Context, job_id: str) -> None:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
-__all__ = ["list_hpc", "create_hpc", "status_hpc", "stop_hpc"]
+@click.command("delete")
+@click.argument("job_id")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
+@pass_context
+def delete_hpc(ctx: Context, job_id: str, yes: bool) -> None:
+    """Permanently delete an HPC job entry (Browser API).
+
+    \b
+    The entry disappears from the HPC list in the web UI. This cannot be
+    undone; if the job is still running, `stop` it first.
+
+    \b
+    Example:
+        inspire hpc delete hpc-3eabc123-...
+    """
+    if not yes and not ctx.json_output:
+        click.confirm(
+            f"Permanently delete HPC job '{job_id}'? This cannot be undone.",
+            abort=True,
+        )
+
+    try:
+        session = get_web_session()
+        result = browser_api_module.delete_hpc_job(job_id=job_id, session=session)
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {"job_id": job_id, "status": "deleted", "result": result}
+                )
+            )
+            return
+        click.echo(human_formatter.format_success(f"HPC job deleted: {job_id}"))
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except AuthenticationError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except (SessionExpiredError, InspireAPIError) as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+__all__ = ["list_hpc", "create_hpc", "status_hpc", "stop_hpc", "delete_hpc"]

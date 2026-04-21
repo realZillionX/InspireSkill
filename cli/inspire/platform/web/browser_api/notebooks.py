@@ -470,6 +470,33 @@ def start_notebook(
     )
 
 
+def delete_notebook(
+    notebook_id: str,
+    session: Optional[WebSession] = None,
+) -> dict:
+    """Permanently delete a notebook instance.
+
+    Endpoint: ``DELETE /api/v1/notebook/{id}`` (REST-style, same shape as
+    ``DELETE /api/v1/image/{id}``). Confirmed empirically via probe on
+    2026-04-21: ``/notebook/operate`` only accepts ``operation`` enum
+    ``START`` / ``STOP`` (``DELETE`` / ``REMOVE`` / ``DESTROY`` etc all
+    proto-rejected), and ``POST /notebook/delete`` returns 404. This REST
+    path is the correct one.
+
+    Destructive — the entry disappears from the platform UI and cannot be
+    recovered. If the notebook is running, stop it first.
+    """
+    session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
+
+    return _request_notebooks_data(
+        session,
+        "DELETE",
+        f"/notebook/{notebook_id}",
+        timeout=30,
+        default_data={},
+    )
+
+
 def get_notebook_detail(
     notebook_id: str,
     session: Optional[WebSession] = None,

@@ -27,6 +27,8 @@ from inspire.cli.utils.auth import AuthManager, AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.job_cli import resolve_job_id
 from inspire.config import Config, ConfigError
+from inspire.platform.web import browser_api as browser_api_module
+from inspire.platform.web.session import get_web_session
 
 
 _STATUS_ALIAS_MAP = {
@@ -431,6 +433,71 @@ def stop(ctx: Context, job_id: str) -> None:
             click.echo(json_formatter.format_json({"job_id": job_id, "status": "stopped"}))
         else:
             click.echo(human_formatter.format_success(f"Job stopped: {job_id}"))
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except AuthenticationError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        msg = str(e).lower()
+        if "not found" in msg or "invalid job id" in msg:
+            _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
+        else:
+            _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("delete")
+@click.argument("job_id")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
+@pass_context
+def delete(ctx: Context, job_id: str, yes: bool) -> None:
+    """Permanently delete a training job entry from the platform (Browser API).
+
+    \b
+    The entry disappears from the distributed-training list in the web UI.
+    This cannot be undone; if the job is still running, `stop` it first.
+    The local cache entry (if any) is dropped too.
+
+    \b
+    Example:
+        inspire job delete job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf
+    """
+    job_id = resolve_job_id(ctx, job_id)
+
+    if not yes and not ctx.json_output:
+        click.confirm(
+            f"Permanently delete training job '{job_id}'? This cannot be undone.",
+            abort=True,
+        )
+
+    try:
+        session = get_web_session()
+        result = browser_api_module.delete_job(job_id=job_id, session=session)
+
+        # The local job cache has no remove operation; mark the entry as
+        # CANCELLED so it no longer appears as live in list refreshes, and
+        # let the next list call drop it entirely.
+        try:
+            config, _ = Config.from_files_and_env(require_target_dir=False)
+            cache = job_deps.JobCache(config.get_expanded_cache_path())
+            cache.update_status(job_id, "CANCELLED")
+        except Exception:
+            # Cache cleanup is best-effort; never block on it.
+            pass
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {"job_id": job_id, "status": "deleted", "result": result}
+                )
+            )
+        else:
+            click.echo(human_formatter.format_success(f"Job deleted: {job_id}"))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

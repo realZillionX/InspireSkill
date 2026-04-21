@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from .job_commands import list_jobs, show_command, status, stop, update_jobs, wait
+from .job_commands import delete, list_jobs, show_command, status, stop, update_jobs, wait
 from .job_create import create
 from .job_events import events
 from .job_logs import logs
@@ -22,6 +22,7 @@ job.add_command(events)
 job.add_command(list_jobs)
 job.add_command(update_jobs)
 job.add_command(stop)
+job.add_command(delete)
 job.add_command(wait)
 job.add_command(show_command)
 

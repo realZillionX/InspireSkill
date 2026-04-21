@@ -325,6 +325,88 @@ def stop_notebook_cmd(
     click.echo(f"Use 'inspire notebook status {notebook_id}' to check status.")
 
 
+@click.command("delete")
+@click.argument("notebook")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Alias for global --json",
+)
+@pass_context
+def delete_notebook_cmd(
+    ctx: Context,
+    notebook: str,
+    yes: bool,
+    json_output: bool,
+) -> None:
+    """Permanently delete a notebook instance (Browser API).
+
+    \b
+    The instance disappears from the platform UI. This cannot be undone;
+    if the notebook is still running, stop it first. Any saved local alias
+    is NOT removed — run `inspire notebook forget <alias>` to clean up.
+
+    \b
+    Examples:
+        inspire notebook delete abc123-def456
+        inspire notebook delete nb-abc123de --yes
+    """
+    json_output = resolve_json_output(ctx, json_output)
+
+    session = require_web_session(
+        ctx,
+        hint=(
+            "Deleting notebooks requires web authentication. "
+            "Set [auth].username/password in config.toml or "
+            "INSPIRE_USERNAME/INSPIRE_PASSWORD."
+        ),
+    )
+
+    base_url = get_base_url()
+    config = load_config(ctx)
+    notebook_id, _ = _resolve_notebook_id(
+        ctx,
+        session=session,
+        config=config,
+        base_url=base_url,
+        identifier=notebook,
+        json_output=json_output,
+    )
+
+    if not yes and not json_output:
+        click.confirm(
+            f"Permanently delete notebook '{notebook_id}'? This cannot be undone.",
+            abort=True,
+        )
+
+    try:
+        result = browser_api_module.delete_notebook(notebook_id=notebook_id, session=session)
+    except Exception as e:
+        _handle_error(ctx, "APIError", f"Failed to delete notebook: {e}", EXIT_API_ERROR)
+        return
+
+    if json_output:
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "notebook_id": notebook_id,
+                    "status": "deleted",
+                    "result": result,
+                }
+            )
+        )
+        return
+
+    click.echo(f"Notebook '{notebook_id}' deleted.")
+
+
 @click.command("start")
 @click.argument("notebook")
 @click.option(
