@@ -2002,6 +2002,73 @@ def _get_or_create_dict_table(
     return section
 
 
+# Storage tiers exposed under `/inspire/<tier>/project/<proj>/...`. Ordered
+# with the best default first so `ssd` is the suggested tier when the catalog
+# workdir cannot be parsed. See `references/browser-api.md` / SKILL.md for
+# the empirical capacity and throughput data behind these choices.
+_STORAGE_TIERS: tuple[tuple[str, str], ...] = (
+    ("ssd",     "gpfs_flash — fast tier, best for training hot path / active working set"),
+    ("hdd",     "gpfs_hdd — general purpose; project fileset fills up fast, watch quota"),
+    ("qb-ilm",  "qb_prod_ipfs01 — large tier, good read bandwidth"),
+    ("qb-ilm2", "qb_prod_ipfs02 — largest tier, usually the most free capacity"),
+)
+_STORAGE_TIER_NAMES: tuple[str, ...] = tuple(name for name, _ in _STORAGE_TIERS)
+
+
+def _detect_storage_tier(path: str) -> str | None:
+    """Return the tier component of an ``/inspire/<tier>/...`` path, or None."""
+    if not path:
+        return None
+    parts = path.strip().split("/")
+    if len(parts) >= 3 and parts[1] == "inspire" and parts[2] in _STORAGE_TIER_NAMES:
+        return parts[2]
+    return None
+
+
+def _substitute_storage_tier(path: str, new_tier: str) -> str:
+    """Rewrite ``/inspire/<old>/...`` to ``/inspire/<new>/...``; no-op otherwise."""
+    parts = path.split("/")
+    if len(parts) >= 3 and parts[1] == "inspire" and parts[2] in _STORAGE_TIER_NAMES:
+        parts[2] = new_tier
+        return "/".join(parts)
+    return path
+
+
+def _prompt_storage_tier(current_path: str) -> str:
+    """Ask the user to pick an Inspire storage tier.
+
+    The platform API's ``/train_job/workdir`` historically returns an
+    ``/inspire/hdd/...`` path — and HDD filesets are commonly 100% full
+    on busy projects, so that default is frequently wrong. Strategy:
+
+    - If the catalog-suggested path already points to ssd / qb-ilm /
+      qb-ilm2, trust it and use that as the pre-selected default.
+    - Otherwise (catalog points at hdd, or path is unparseable), pre-select
+      ``ssd`` so the user has to deliberately opt into hdd rather than
+      inherit it silently.
+
+    The catalog's original choice is still annotated in the listing so the
+    user knows what the platform proposed.
+    """
+    detected = _detect_storage_tier(current_path)
+    if detected in (None, "hdd"):
+        suggested = "ssd"
+    else:
+        suggested = detected
+    click.echo("")
+    click.echo("Remote workspace storage tier — pick where `target_dir` lives:")
+    for tier, desc in _STORAGE_TIERS:
+        marker = "  (catalog default)" if tier == detected else ""
+        click.echo(f"  {tier:<8} {desc}{marker}")
+    choice = click.prompt(
+        "Storage tier",
+        type=click.Choice(_STORAGE_TIER_NAMES, case_sensitive=False),
+        default=suggested,
+        show_default=True,
+    )
+    return str(choice).lower()
+
+
 def _prompt_target_dir(
     *,
     force: bool,
@@ -2010,7 +2077,17 @@ def _prompt_target_dir(
     selected_project: object,
     project_catalog: dict[str, dict[str, Any]],
 ) -> str | None:
-    """Prompt for target_dir, using the catalog workdir as suggestion."""
+    """Prompt for target_dir, using the catalog workdir as suggestion.
+
+    Interactive path: first ask for a storage tier (ssd / hdd / qb-ilm /
+    qb-ilm2) and rewrite ``/inspire/<tier>/`` in the catalog-suggested
+    workdir accordingly, then prompt for the full path with the tier-
+    substituted default pre-filled. This lets users opt out of the
+    platform's HDD default without having to hand-edit the path.
+
+    The picker is skipped when ``--force`` is set (non-interactive) or
+    when an explicit ``--target-dir`` was passed on the CLI.
+    """
     project_id = str(getattr(selected_project, "project_id", "") or "").strip()
     entry = project_catalog.get(project_id, {})
     catalog_workdir = str(entry.get("workdir") or "").strip()
@@ -2019,7 +2096,15 @@ def _prompt_target_dir(
         existing = str(getattr(config, "target_dir", "") or "").strip() if config else ""
         return cli_target_dir or existing or catalog_workdir or None
 
-    default = cli_target_dir or catalog_workdir or ""
+    if cli_target_dir:
+        default = cli_target_dir
+    else:
+        default = catalog_workdir or ""
+        if default:
+            tier = _prompt_storage_tier(default)
+            if tier != _detect_storage_tier(default):
+                default = _substitute_storage_tier(default, tier)
+
     if default:
         result = click.prompt(
             "Target directory on shared filesystem",
