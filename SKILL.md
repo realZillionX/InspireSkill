@@ -17,6 +17,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | **代理** | 公网与 `*.sii.edu.cn` 需**同时可达**。任意覆盖这两段的代理方案都行；仓库提供可选的 Clash Verge `7897` 分流模板（`references/proxy-setup.md`）。 |
 | **低优抢占** | `priority_level: LOW` 会被 `HIGH` **强制抢占**，必须高频 checkpoint。（优先级 flag 语义见 `job create` / `hpc create` 行。） |
 | **HPC 资源余量** | 平台自身额外占 `0.3` 核 CPU + `384 MB` 内存；应用层并发压到 **`cpus-per-task - 4`** 或更低，不要把 CPU / 内存顶满。 |
+| **项目-实例绑定的挂载可见性** | 一个 notebook / job / hpc 实例只挂**自身所在项目**的 fileset，其它项目的 `/inspire/hdd\|ssd\|qb-ilm\|qb-ilm2/project/<他>/` 路径在该实例里**根本不存在**（`ls` 报 `No such file or directory`，`df` 返回 overlay，`/proc/mounts` 无对应条目）——不是权限问题，是根本没挂。想查 / 访问某个项目 `<X>` 的存储，**必须**在一个 `project=<X>` 的实例里操作：用 `inspire --json notebook list -A` 按 `project.name` 过滤找 running 的；没有就 `inspire notebook create --project <X-alias>` 新起一个。登入时的欢迎横幅里"项目公共目录 / 项目个人目录"列的就是当前实例**唯一**能用的项目级路径。 |
 | **跨项目文件传输** | 不同 project（如 `/inspire/*/project/<A>/...` → `<B>/...`）复制共享盘文件**需要 root 权限**，`notebook scp` / `exec cp` / 单账号 CLI 都做不到。**飞书项目群**里找管理员做 `cp` / `chmod`，不要反复试。 |
 
 ## 1. 通用规则
