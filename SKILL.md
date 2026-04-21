@@ -17,6 +17,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | **代理** | 公网与 `*.sii.edu.cn` 需**同时可达**。任意覆盖这两段的代理方案都行；仓库提供可选的 Clash Verge `7897` 分流模板（`references/proxy-setup.md`）。 |
 | **低优抢占** | `priority_level: LOW` 会被 `HIGH` **强制抢占**，必须高频 checkpoint。（优先级 flag 语义见 `job create` / `hpc create` 行。） |
 | **HPC 资源余量** | 平台自身额外占 `0.3` 核 CPU + `384 MB` 内存；应用层并发压到 **`cpus-per-task - 4`** 或更低，不要把 CPU / 内存顶满。 |
+| **HPC-可上网区资源-2 的 500GB 规格不可用（运维 bug）** | 2026-04 实测：`CPU资源空间 / HPC-可上网区资源-2` 计算组里 `resources specs --usage hpc` 和 Web UI 下拉**都列着 500GB 那档** `predef_quota_id`，但实际提交会**静默排队不被调度**（规格里有，节点侧实际没配）。这是运维组配置没对齐，不是用户能绕开的规格限制。需要 500GB 的 HPC 任务走**同工作区的 `CPU资源-2` 计算组**——那边 500GB 档是能真跑的。短期绕法：默认 `HPC-可上网区资源-2` 上只选 300GB 及以下档次，500GB 任务切到 `CPU资源-2`；长期修复要找运维。 |
 | **项目-实例绑定的挂载可见性** | 一个 notebook / job / hpc 实例只挂**自身所在项目**的 fileset，其它项目的 `/inspire/hdd\|ssd\|qb-ilm\|qb-ilm2/project/<他>/` 路径在该实例里**根本不存在**（`ls` 报 `No such file or directory`，`df` 返回 overlay，`/proc/mounts` 无对应条目）——不是权限问题，是根本没挂。想查 / 访问某个项目 `<X>` 的存储，**必须**在一个 `project=<X>` 的实例里操作：用 `inspire --json notebook list -A` 按 `project.name` 过滤找 running 的；没有就 `inspire notebook create --project <X-alias>` 新起一个。登入时的欢迎横幅里"项目公共目录 / 项目个人目录"列的就是当前实例**唯一**能用的项目级路径。 |
 | **跨项目文件传输** | 不同 project（如 `/inspire/*/project/<A>/...` → `<B>/...`）复制共享盘文件**需要 root 权限**，`notebook scp` / `exec cp` / 单账号 CLI 都做不到。**飞书项目群**里找管理员做 `cp` / `chmod`，不要反复试。 |
 
@@ -28,6 +29,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | 项目叙述上下文 | Inspire 项目的仓库根下用 **`INSPIRE.md`** 写非配置性的上下文。建议五个 `##` 节：`Default Image`（config.toml 未托管的镜像，如 base / HPC 专用）· `Path Conventions`（本地与远端路径派生规则）· `Public Directory Layout`（共享盘结构）· `Existing Notebooks`（项目长期使用的 notebook：角色 → ID 映射）· `Ongoing Jobs`（当前长期在跑的分布式训练 / HPC 任务）。**不**把 config.toml 的内容复制进 INSPIRE.md；那边用 `inspire config show / context` 查。`AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 只放通用工程事项，不再单列 "Inspire Configuration" 节。 |
 | `--json` 位置 | 全局 `--json` **必须放子命令前**：`inspire --json hpc status <id>`。部分子命令另有本地 `--json`。 |
 | Debug | `inspire --debug` 把脱敏日志写进 `~/.cache/inspire-skill/logs/`。 |
+| 废弃资源清理 | **不要让废弃的 notebook / job / hpc 条目在 Web UI 里堆积**——用户要从列表里找当前有用的实例会被淹没。任务走到终态（`SUCCEEDED` / `FAILED` / `STOPPED` / `CANCELLED`）且确认不再需要时，就 `inspire notebook delete` / `job delete` / `hpc delete` 清掉；批量清理用 `inspire --json <res> list -A` 拿全量 → 按 `name` / `status` / `created_at` 筛 → 逐个 `delete --yes`。running 的先 `stop` 再 `delete`。不确定是否还有人用时跳过，不要猜着删。 |
 
 ## 2. 命令速查
 
@@ -43,6 +45,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire notebook events <id>` | 实例生命周期事件流（调度 / 镜像拉取 / `Started container` / `Notebook stopped ...` / 保存为镜像各阶段）；`--tail N` / `--from-cache` 可组合。**不**是 K8s 原生事件（无 `type`/`reason`/`from`），所以 `--type` / `--reason` 形式上存在但一般不命中 |
 | `inspire notebook lifecycle <id>` | 实例多次启停的粗粒度时间线（一次 `start→stop` 一行，重启 / 自动回收都加行）；想看一次运行内部状态用 `events` |
 | `inspire notebook start/stop <id>` | 启停；做 `ssh` 前先核实状态 |
+| `inspire notebook delete <id> [--yes]` | **Browser API**。永久从 Web UI 里删掉一个 notebook（清理废弃 / 过时实例）。已 running 的要先 `stop`；默认要确认，`-y/--yes` 跳过。本地 alias 不会同时清掉——想清 alias 记录用 `inspire notebook forget <alias>`。 |
 | `inspire notebook ssh <id>` | **Bootstrap SSH / rtunnel**（平台默认 `allow_ssh=false`，CLI 会依次尝试 Jupyter Contents API → terminal REST → Playwright 兜底）。自动引导失败转 troubleshooting.md |
 | `inspire notebook ssh <id> --save-as <name>` | 自定义 alias 名（默认 `nb-<id 前 8 位>`） |
 | `inspire notebook ssh <id> --rtunnel-upload-policy {auto,never,always}` | 控制 rtunnel 上传；已有同版本按 `.sha256` sidecar 复用；`exec format error` 是架构不对 |
@@ -70,6 +73,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire job logs <id>` | **优先走 SSH tunnel fast path**；无 tunnel 时回退 GitHub Actions workflow；两条都不通就看 `job status` + Web UI |
 | `inspire job events <id>` | **Job-level** K8s 事件（pytorchjob-controller 视角）；`--instance <pod>` 切到**per-pod** 事件（scheduler / kubelet 视角，含 `FailedScheduling` 的具体节点诊断 + `Scheduled`/`Pulled`/`Started` 生命周期）。两套互补：调度失败先看 `--instance <pod>` 里的 scheduler reason。`--type Warning` / `--reason <substr>` / `--tail N` / `--from-cache` 可组合。缓存 `~/.inspire/events/<id>[__<pod>].events.json`。 |
 | `inspire job stop <id>` | 规格 / 优先级 / 命令提错时立即止损 |
+| `inspire job delete <id> [--yes]` | **Browser API**。永久从分布式训练列表里删条目（清理废弃任务）。running 的要先 `stop`；默认要确认，`-y/--yes` 跳过。本地 cache 会顺手打 `CANCELLED` 让 list 刷新时自然剔除。 |
 
 ### 2.3 HPC（Slurm）
 
@@ -82,6 +86,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire hpc list` | 当前 workspace 内所有创建者的任务 |
 | `inspire hpc events <id>` | 平台 Slurm 控制器事件（`Created/DeletedSlurmCluster` / `Created/DeletedSlurmJobSubmitter` 等），缓存到 `~/.inspire/events/<id>.events.json`。`--reason` / `--tail` / `--from-cache` 可组合。**HPC 平台不暴露 per-pod 事件**（实测 launcher / slurmctld / slurmd 三种 pod 都返回空），只有 job-level。HPC 侧也没有 `type` 字段。 |
 | `inspire hpc stop <id>` | 发现提错立即止损 |
+| `inspire hpc delete <id> [--yes]` | **Browser API**。永久从 HPC 列表里删条目（清理废弃任务）。running 的要先 `stop`；默认要确认，`-y/--yes` 跳过。 |
 
 **平台自动注入的 Slurm 头**（不用自己写）：
 
@@ -127,10 +132,21 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ### 远端路径与数据分层
 
+四条存储池并列（每条路径都是 GPFS fileset 挂载，`df` 能直接看出 fileset-scoped quota），选盘要看内容冷热：
+
+| 池 | 路径前缀 | 定位 |
+| --- | --- | --- |
+| SSD (`gpfs_flash`) | `/inspire/ssd/project/<topic>/…` | 训练 hot path、活跃工作集、checkpoint 热点 |
+| HDD (`gpfs_hdd`) | `/inspire/hdd/project/<topic>/…` | 通用；**项目 fileset 经常 100% 满**，新写前先 `df` 看 Avail |
+| qb-ilm (`qb_prod_ipfs01`) | `/inspire/qb-ilm/project/<topic>/…` | 大容量，顺序读带宽和 SSD 相当 |
+| qb-ilm2 (`qb_prod_ipfs02`) | `/inspire/qb-ilm2/project/<topic>/…` | 最新也最空的那层；新增数据默认往这里落最安全 |
+
+`inspire init --discover` 会在设 `[paths].target_dir` 前**交互式让你选层**（默认从 platform `/train_job/workdir` 返回的路径里提取 tier；若 catalog 建议 `hdd`，CLI 会自动把 prompt 默认项切到 `ssd`，避免继承坏默认）。
+
 | 内容 | 放哪 |
 | --- | --- |
 | Git repo | 远端 workspace / repo 目录；放代码、脚本、小配置、少量调试输出 |
-| 原始数据 / 批量结果 / 模型 checkpoint | 公共目录（`HDD`: `/inspire/hdd/project/<topic>/public`，`SSD`: `/inspire/ssd/project/<topic>/public`）；不要堆进 repo 工作树 |
+| 原始数据 / 批量结果 / 模型 checkpoint | **按冷热分层**：训练工作集 → SSD；大归档 / 冷数据 → qb-ilm2；别默认堆 HDD |
 
 | 场景 | 做法 |
 | --- | --- |
