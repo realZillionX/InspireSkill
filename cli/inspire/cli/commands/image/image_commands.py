@@ -447,8 +447,8 @@ def _parse_visibility_flag(public: Optional[bool]) -> Optional[str]:
     help=(
         "Visibility of the saved image. --public makes it visible to all users; "
         "--private keeps it visible only to you. Omit to accept platform default "
-        "(currently private). Passed to /mirror/save; if that endpoint ignores "
-        "the field, CLI falls back to /image/update to force the requested value."
+        "(currently private). Applied via a follow-up /image/update call; "
+        "/mirror/save itself does not accept this field."
     ),
 )
 @click.option(
@@ -495,7 +495,6 @@ def save_image_cmd(
             name=name,
             version=version,
             description=description,
-            visibility=requested_visibility,
             session=session,
         )
     except Exception as e:
@@ -506,20 +505,30 @@ def save_image_cmd(
 
     if not image_id:
         try:
-            matches = [
-                img
-                for img in browser_api_module.list_images_by_source(
-                    source="private", session=session
-                )
-                if img.name == name and img.version == version
-            ]
+            want_suffix_1 = f"/{name}:{version}"
+            want_name_1 = f"{name}:{version}"
+            matches = []
+            for img in browser_api_module.list_images_by_source(
+                source="private", session=session
+            ):
+                img_name = (img.name or "").strip()
+                img_url = (img.url or "").strip()
+                img_version = (img.version or "").strip()
+                # The API sometimes puts name as "foo" + version "v1", other
+                # times name as "foo:v1"; URL always ends in "/<ns>/foo:v1".
+                if (
+                    (img_name == name and img_version == version)
+                    or img_name == want_name_1
+                    or img_url.endswith(want_suffix_1)
+                ):
+                    matches.append(img)
             if matches:
-                matches.sort(key=lambda img: img.created_at, reverse=True)
+                matches.sort(key=lambda img: img.created_at or "", reverse=True)
                 image_id = matches[0].image_id
         except Exception:
             pass
 
-    visibility_applied = True
+    visibility_applied = requested_visibility is None
     if requested_visibility and image_id:
         try:
             browser_api_module.update_image(
@@ -527,6 +536,7 @@ def save_image_cmd(
                 visibility=requested_visibility,
                 session=session,
             )
+            visibility_applied = True
         except Exception as e:
             visibility_applied = False
             if not json_output:
@@ -534,6 +544,15 @@ def save_image_cmd(
                     f"Warning: could not force visibility={requested_visibility} via /image/update: {e}",
                     err=True,
                 )
+    elif requested_visibility and not image_id:
+        visibility_applied = False
+        if not json_output:
+            click.echo(
+                "Warning: save returned empty image_id and list fallback didn't find the image; "
+                "visibility not applied. Re-run 'inspire image set-visibility <id> --public/--private' "
+                "after confirming the image via 'inspire image list --source private'.",
+                err=True,
+            )
 
     if wait and image_id:
         if not json_output:

@@ -208,23 +208,20 @@ def save_notebook_as_image(
     name: str,
     version: str = "v1",
     description: str = "",
-    visibility: Optional[str] = None,
     session: Optional[WebSession] = None,
 ) -> dict[str, Any]:
     """Save a running notebook's state as a custom Docker image.
 
-    Uses the ``/mirror/save`` endpoint.
+    Uses the ``/mirror/save`` endpoint. The endpoint does **not** accept a
+    ``visibility`` field (confirmed empirically 2026-04-22 — passing it returns
+    ``code=100002, message='proto: unknown field "visibility"'``). To control
+    visibility, call :func:`update_image` after this returns.
 
     Args:
         notebook_id: ID of the running notebook.
         name: Name for the saved image.
         version: Version tag (default ``"v1"``).
         description: Optional description.
-        visibility: ``"VISIBILITY_PRIVATE"`` / ``"VISIBILITY_PUBLIC"``. When
-            ``None``, the field is omitted and the platform picks the default
-            (currently private). Passing it through lets callers request a
-            public image in a single request; if the save endpoint ignores the
-            field, follow up with :func:`update_image` to force visibility.
         session: Existing web session.
 
     Returns:
@@ -238,8 +235,6 @@ def save_notebook_as_image(
         "version": version,
         "description": description,
     }
-    if visibility is not None:
-        body["visibility"] = visibility
 
     return _request_notebooks_data(
         session,
@@ -261,11 +256,16 @@ def update_image(
     """Update a custom image's metadata via ``/image/update``.
 
     Only fields that are not ``None`` are sent. Use this to flip an image's
-    visibility (``VISIBILITY_PRIVATE`` ↔ ``VISIBILITY_PUBLIC``) after the fact
-    when ``/mirror/save`` didn't honor the request, or to edit description.
+    visibility (``VISIBILITY_PRIVATE`` ↔ ``VISIBILITY_PUBLIC``) after a save,
+    or to edit the description.
+
+    The platform's body schema uses ``id`` (not ``image_id``) for the target —
+    confirmed empirically 2026-04-22 with ``{"image_id": ...}`` returning
+    ``code=100002, message='proto: unknown field "image_id"'`` while ``{"id":
+    ...}`` returns ``code=0``.
 
     Args:
-        image_id: The image ID to update.
+        image_id: The image ID to update. (Wired into the body as ``id``.)
         visibility: ``"VISIBILITY_PRIVATE"`` or ``"VISIBILITY_PUBLIC"``.
         description: New description text.
         session: Existing web session.
@@ -275,7 +275,7 @@ def update_image(
     """
     session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
 
-    body: dict[str, Any] = {"image_id": image_id}
+    body: dict[str, Any] = {"id": image_id}
     if visibility is not None:
         body["visibility"] = visibility
     if description is not None:
