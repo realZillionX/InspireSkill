@@ -186,7 +186,7 @@ inspire notebook exec --alias mybox "hostname"
 
 ### 阶段 A：CPU 空间起基底 notebook
 
-**默认公共基底：`docker.sii.shaipower.online/inspire-studio/unified-base:v1`**（Ubuntu 22.04 + slurm-dev + sshd + rtunnel 一体，取代早先的 `slurm-dev:0.0.0` / `base:20250920`——前者没 sshd，后者没 slurm）。已在 2026-04-22 用真 HPC 任务验证过：hpc 提交后平台正常注入 slurm controller，容器内 `srun`/`sbatch`/`sshd`/`rtunnel` 全部可用（注意：slurm 仅在 `inspire hpc create` 路径下生效，普通 notebook 里 slurm 命令会因为无 controller 而报 `Could not establish a configuration source`——这是平台设计，不是镜像问题）。一般不再需要自己烘一份基底；要加一层项目依赖就在这镜像上面 `inspire image save` 再派生。
+**默认公共基底：`docker.sii.shaipower.online/inspire-studio/unified-base:v1`**（Ubuntu 22.04 + slurm 运行环境 + sshd + rtunnel 一体）。hpc 提交时平台正常注入 slurm controller，容器内 `srun`/`sbatch`/`sshd`/`rtunnel` 全部可用（slurm 仅在 `inspire hpc create` 路径下生效，普通 notebook 里 slurm 命令会因为无 controller 而报 `Could not establish a configuration source`——这是平台设计，不是镜像问题）。一般不再需要自己烘一份基底；要加一层项目依赖就在这镜像上面 `inspire image save` 再派生。
 
 资源组必须用 `HPC-可上网区资源-2`（§0 硬约束：其它 CPU 计算组只能建 notebook，但那边没公网没法 apt install）。
 
