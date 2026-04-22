@@ -85,7 +85,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 | 命令 | 用途 |
 | --- | --- |
-| `inspire hpc create` | 五条约束：（1）`-c` **只写 Slurm 正文**，平台自动补 `#SBATCH` 头，正文程序必须**显式 `srun`** 启动；（2）`--spec-id` 填 **`predef_quota_id`**（不是 notebook 的 `quota_id`）；（3）`--cpus-per-task` / `--memory-per-cpu` 超规格**静默排队不报错**，提交前实查 `cpu_count` / `memory_size_gib`；（4）`--image` 必须是**完整 Docker 地址**且带可用 Slurm 环境，通用基底 `docker.sii.shaipower.online/inspire-studio/slurm-dev:0.0.0`；（5）`--image-type` 通常 `SOURCE_PRIVATE` 或 `SOURCE_PUBLIC`。 |
+| `inspire hpc create` | 五条约束：（1）`-c` **只写 Slurm 正文**，平台自动补 `#SBATCH` 头，正文程序必须**显式 `srun`** 启动；（2）`--spec-id` 填 **`predef_quota_id`**（不是 notebook 的 `quota_id`）；（3）`--cpus-per-task` / `--memory-per-cpu` 超规格**静默排队不报错**，提交前实查 `cpu_count` / `memory_size_gib`；（4）`--image` 必须是**完整 Docker 地址**且带可用 Slurm 环境，通用基底 `docker.sii.shaipower.online/inspire-studio/unified-base:v1`；（5）`--image-type` 通常 `SOURCE_PRIVATE` 或 `SOURCE_PUBLIC`。 |
 | `inspire hpc status <id>` | 看 `status` / `priority_level` / `running_time_ms` / `finished_at`。**HPC 常见"假成功"**：`status=SUCCEEDED` 但 payload 实际没跑（entrypoint 早退、srun 命令语法错、shell 变量丢失等）都能返回 SUCCEEDED。不要只信 status——每次新 entrypoint 必须写一个**独一无二的 fingerprint 到共享存储**（例如 `/inspire/<tier>/project/<topic>/<user>/.../probe-<nonce>.log`），再从同项目 notebook `cat` 回验。提交后 `slurm_cluster_spec.nodes` 在 RUNNING 时应非空；SUCCEEDED 后平台会把它清成 `[]`，这不是坏信号。CREATING 卡住或 RUNNING 时 `nodes=[]` 才是坏信号（详见 troubleshooting.md） |
 | `inspire hpc list` | 当前 workspace 内所有创建者的任务 |
 | `inspire hpc events <id>` | 平台 Slurm 控制器事件（`Created/DeletedSlurmCluster` 等）；`--reason` / `--tail` / `--from-cache` 可组合。**HPC 不暴露 per-pod 事件**，只有 job-level |
