@@ -203,7 +203,7 @@ inspire image set-default \
 
 ### 阶段 B：CPU 空间跑 HPC 数据处理
 
-不要把某计算组写死为"永远不能跑 hpc"——提交前用 `resources specs --usage hpc` 实查。**小规模 probe 通过 ≠ 正式规模稳定**：放大量级 / 并发后必须再跑一次接近正式规模的验证。
+`CPU资源空间` 里**只有 `HPC-可上网区资源-2` 计算组能跑 hpc**（加上 §0 提过的 500GB 档实际不可用，需要 500GB 时走同工作区的 `CPU资源-2`）。用 `resources specs --usage hpc --workspace CPU资源空间 --group HPC-可上网区资源-2 --json` 拿 `predef_quota_id` / `cpu_count` / `memory_size_gib`。**小规模 probe 通过 ≠ 正式规模稳定**：放大量级 / 并发后必须再跑一次接近正式规模的验证。
 
 ```bash
 ENTRYPOINT=$(cat <<'EOF'
