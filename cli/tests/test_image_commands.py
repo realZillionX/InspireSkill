@@ -648,7 +648,64 @@ def test_image_save_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert captured["notebook_id"] == "notebook-abc"
 
 
-def test_image_save_human_output_handles_missing_image_id(
+def test_image_save_fallback_resolves_image_id_via_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(
+        browser_api_module,
+        "save_notebook_as_image",
+        lambda notebook_id, name, version="v1", description="", session=None: {"image": {}},
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_images_by_source",
+        lambda source="official", session=None: [
+            CustomImageInfo(
+                image_id="img-older",
+                url="registry/saved-img:v1",
+                name="saved-img",
+                framework="",
+                version="v1",
+                source="SOURCE_PRIVATE",
+                status="READY",
+                description="",
+                created_at="2026-04-20T00:00:00Z",
+            ),
+            CustomImageInfo(
+                image_id="img-newest",
+                url="registry/saved-img:v1",
+                name="saved-img",
+                framework="",
+                version="v1",
+                source="SOURCE_PRIVATE",
+                status="BUILDING",
+                description="",
+                created_at="2026-04-22T00:00:00Z",
+            ),
+            CustomImageInfo(
+                image_id="img-other",
+                url="registry/other:v1",
+                name="other",
+                framework="",
+                version="v1",
+                source="SOURCE_PRIVATE",
+                status="READY",
+                description="",
+                created_at="2026-04-22T01:00:00Z",
+            ),
+        ],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main, ["image", "save", "notebook-abc", "-n", "saved-img"])
+
+    assert result.exit_code == 0
+    assert "Notebook saved as image: img-newest" in result.output
+
+
+def test_image_save_unknown_when_fallback_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _patch_config_and_session(monkeypatch, tmp_path)
@@ -659,12 +716,16 @@ def test_image_save_human_output_handles_missing_image_id(
         lambda notebook_id, name, version="v1", description="", session=None: {"image": {}},
     )
 
+    def _raise(source="official", session=None):
+        raise RuntimeError("list endpoint unreachable")
+
+    monkeypatch.setattr(browser_api_module, "list_images_by_source", _raise)
+
     runner = CliRunner()
     result = runner.invoke(cli_main, ["image", "save", "notebook-abc", "-n", "saved-img"])
 
     assert result.exit_code == 0
     assert "Notebook saved as image: unknown" in result.output
-    assert "image list --source private" in result.output
 
 
 def test_image_delete_with_force(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

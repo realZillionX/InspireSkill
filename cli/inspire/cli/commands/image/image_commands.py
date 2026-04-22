@@ -478,6 +478,21 @@ def save_image_cmd(
 
     image_id = result.get("image", {}).get("image_id", "") or result.get("image_id", "")
 
+    if not image_id:
+        try:
+            matches = [
+                img
+                for img in browser_api_module.list_images_by_source(
+                    source="private", session=session
+                )
+                if img.name == name and img.version == version
+            ]
+            if matches:
+                matches.sort(key=lambda img: img.created_at, reverse=True)
+                image_id = matches[0].image_id
+        except Exception:
+            pass
+
     if wait and image_id:
         if not json_output:
             click.echo(f"Image '{image_id}' is being saved. Waiting for READY status...")
@@ -494,11 +509,6 @@ def save_image_cmd(
         return
 
     click.echo(f"Notebook saved as image: {image_id or 'unknown'}")
-    if not image_id:
-        click.echo(
-            "Platform did not return image_id. Run 'inspire image list --source private' "
-            "to find the saved image."
-        )
     if not wait and image_id:
         click.echo(f"Use 'inspire image detail {image_id}' to check build status.")
 
