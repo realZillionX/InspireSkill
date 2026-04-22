@@ -37,6 +37,11 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 ### 2.1 Notebook（生命周期 + 远程操作 + alias 管理）
 
 > **一个 notebook ↔ 一条本地 alias**。首次 `notebook ssh <id>` 引导 SSH 时把连接存成 alias（默认 `nb-<id 前 8 位>`，`--save-as` 可改名）。`notebook ssh <arg>` 多态——arg 是 id 就 bootstrap，是已保存 alias 就重连（自动重建断开的 tunnel）。
+>
+> **`shell` vs `exec`（远端执行两种模式）**：
+> - `inspire notebook shell <alias>` = 交互式**持久**会话。一次登入后连续敲命令，cwd / env / shell 变量全部保留，直到 `exit`。等价于直接 `ssh <alias>`。
+> - `inspire notebook exec <alias> "<cmd>"` = **一次性 one-shot**。每次调用起一个独立 SSH 子进程跑完就断，**两次 `exec` 之间不共享 cwd / env / shell 变量**。想接续状态就把多条命令塞进**同一次调用**（`exec "cd foo && export X=1 && ./run.sh"`），或在远端写脚本后 `exec "bash setup.sh"`。
+> - **并发**：同一个 notebook 可以同时开任意多个 `shell` / `exec`（各自独立 SSH 进程，无客户端锁），但远端是共享 CPU / 内存的单容器，多路并发会互相抢资源；要真并行算力走 `job` 多节点或 `hpc`。
 
 | 命令 | 用途与约束 |
 | --- | --- |
@@ -50,8 +55,8 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire notebook ssh <id>` | **Bootstrap SSH / rtunnel**（平台默认 `allow_ssh=false`，CLI 自动引导）。失败转 troubleshooting.md |
 | `inspire notebook ssh <id> --save-as <name>` | 自定义 alias 名 |
 | `inspire notebook ssh <id> --rtunnel-upload-policy {auto,never,always}` | 控制 rtunnel 上传；已有同版本按 `.sha256` sidecar 复用；`exec format error` 是架构不对 |
-| `inspire notebook exec <alias> "<cmd>"` | 远端 `INSPIRE_TARGET_DIR` 下执行；对 notebook-backed alias 可自动重建断开的 tunnel |
-| `inspire notebook shell [<alias>]` | 交互式 SSH shell |
+| `inspire notebook exec <alias> "<cmd>"` | 远端 `INSPIRE_TARGET_DIR` 下执行**一次性**命令；详情 / 状态不共享的坑见上方 `shell` vs `exec` 说明。对 notebook-backed alias 可自动重建断开的 tunnel |
+| `inspire notebook shell [<alias>]` | **持久**交互 SSH shell，同一窗口内命令共享 cwd / env（详见上方 `shell` vs `exec` 说明） |
 | `inspire notebook scp <src> <dst>` | 传**非仓库**文件。**不是** repo 同步——源码走本地 `git push` + `notebook exec` 远端 `git pull`。不继承 `INSPIRE_TARGET_DIR`，远端写绝对路径 |
 | `inspire notebook test [<alias>]` | 连通性测试（带耗时）；排障首选 |
 | `inspire notebook refresh <alias>` | 刷新 alias 连接（notebook 换实例 / 重启后） |
