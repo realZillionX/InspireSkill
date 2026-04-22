@@ -56,6 +56,7 @@ from .images import (
     get_image_detail,
     list_images_by_source,
     save_notebook_as_image,
+    update_image,
     wait_for_image_ready,
 )
 from .rtunnel import setup_notebook_rtunnel
@@ -123,6 +124,7 @@ __all__ = [
     "get_image_detail",
     "list_images_by_source",
     "save_notebook_as_image",
+    "update_image",
     "wait_for_image_ready",
     # Notebooks
     "ImageInfo",

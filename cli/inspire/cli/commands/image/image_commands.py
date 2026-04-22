@@ -404,6 +404,16 @@ def register_image_cmd(
 # ---------------------------------------------------------------------------
 
 
+_VISIBILITY_PUBLIC = "VISIBILITY_PUBLIC"
+_VISIBILITY_PRIVATE = "VISIBILITY_PRIVATE"
+
+
+def _parse_visibility_flag(public: Optional[bool]) -> Optional[str]:
+    if public is None:
+        return None
+    return _VISIBILITY_PUBLIC if public else _VISIBILITY_PRIVATE
+
+
 @click.command("save")
 @click.argument("notebook_id")
 @click.option(
@@ -431,6 +441,17 @@ def register_image_cmd(
     help="Wait for image to reach READY status",
 )
 @click.option(
+    "--public/--private",
+    "public",
+    default=None,
+    help=(
+        "Visibility of the saved image. --public makes it visible to all users; "
+        "--private keeps it visible only to you. Omit to accept platform default "
+        "(currently private). Passed to /mirror/save; if that endpoint ignores "
+        "the field, CLI falls back to /image/update to force the requested value."
+    ),
+)
+@click.option(
     "--json",
     "json_output",
     is_flag=True,
@@ -444,6 +465,7 @@ def save_image_cmd(
     version: str,
     description: str,
     wait: bool,
+    public: Optional[bool],
     json_output: bool,
 ) -> None:
     """Save a running notebook as a custom Docker image.
@@ -452,6 +474,7 @@ def save_image_cmd(
     Examples:
         inspire image save <notebook-id> -n my-saved-image
         inspire image save <notebook-id> -n my-img -v v2 --wait
+        inspire image save <notebook-id> -n shared-base -v v1 --public
     """
     json_output = resolve_json_output(ctx, json_output)
 
@@ -464,12 +487,15 @@ def save_image_cmd(
         ),
     )
 
+    requested_visibility = _parse_visibility_flag(public)
+
     try:
         result = browser_api_module.save_notebook_as_image(
             notebook_id=notebook_id,
             name=name,
             version=version,
             description=description,
+            visibility=requested_visibility,
             session=session,
         )
     except Exception as e:
@@ -493,6 +519,22 @@ def save_image_cmd(
         except Exception:
             pass
 
+    visibility_applied = True
+    if requested_visibility and image_id:
+        try:
+            browser_api_module.update_image(
+                image_id=image_id,
+                visibility=requested_visibility,
+                session=session,
+            )
+        except Exception as e:
+            visibility_applied = False
+            if not json_output:
+                click.echo(
+                    f"Warning: could not force visibility={requested_visibility} via /image/update: {e}",
+                    err=True,
+                )
+
     if wait and image_id:
         if not json_output:
             click.echo(f"Image '{image_id}' is being saved. Waiting for READY status...")
@@ -505,12 +547,104 @@ def save_image_cmd(
             return
 
     if json_output:
-        click.echo(json_formatter.format_json({"image_id": image_id, "result": result}))
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "image_id": image_id,
+                    "visibility_requested": requested_visibility,
+                    "visibility_applied": visibility_applied,
+                    "result": result,
+                }
+            )
+        )
         return
 
     click.echo(f"Notebook saved as image: {image_id or 'unknown'}")
+    if requested_visibility and image_id:
+        label = "public" if requested_visibility == _VISIBILITY_PUBLIC else "private"
+        click.echo(f"Visibility: {label}")
     if not wait and image_id:
         click.echo(f"Use 'inspire image detail {image_id}' to check build status.")
+
+
+# ---------------------------------------------------------------------------
+# set-visibility
+# ---------------------------------------------------------------------------
+
+
+@click.command("set-visibility")
+@click.argument("image_id")
+@click.option(
+    "--public/--private",
+    "public",
+    required=True,
+    default=None,
+    help="Target visibility. --public = visible to all users; --private = creator only.",
+)
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Alias for global --json",
+)
+@pass_context
+def set_image_visibility_cmd(
+    ctx: Context,
+    image_id: str,
+    public: Optional[bool],
+    json_output: bool,
+) -> None:
+    """Flip an existing custom image's visibility (public ↔ private).
+
+    \b
+    Examples:
+        inspire image set-visibility <image-id> --public
+        inspire image set-visibility <image-id> --private
+    """
+    json_output = resolve_json_output(ctx, json_output)
+
+    if public is None:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            "One of --public / --private is required.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+
+    session = require_web_session(
+        ctx,
+        hint=(
+            "Updating image visibility requires web authentication. "
+            "Set [auth].username/password in config.toml or "
+            "INSPIRE_USERNAME/INSPIRE_PASSWORD."
+        ),
+    )
+
+    image_id = _resolve_image_id(ctx, image_id, json_output, session)
+    visibility = _parse_visibility_flag(public)
+    assert visibility is not None
+
+    try:
+        result = browser_api_module.update_image(
+            image_id=image_id,
+            visibility=visibility,
+            session=session,
+        )
+    except Exception as e:
+        _handle_error(ctx, "APIError", f"Failed to update image visibility: {e}", EXIT_API_ERROR)
+        return
+
+    label = "public" if visibility == _VISIBILITY_PUBLIC else "private"
+    if json_output:
+        click.echo(
+            json_formatter.format_json(
+                {"image_id": image_id, "visibility": visibility, "result": result}
+            )
+        )
+        return
+
+    click.echo(f"Image '{image_id}' visibility set to {label}.")
 
 
 # ---------------------------------------------------------------------------
@@ -686,4 +820,5 @@ __all__ = [
     "register_image_cmd",
     "save_image_cmd",
     "set_default_image_cmd",
+    "set_image_visibility_cmd",
 ]

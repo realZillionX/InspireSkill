@@ -208,6 +208,7 @@ def save_notebook_as_image(
     name: str,
     version: str = "v1",
     description: str = "",
+    visibility: Optional[str] = None,
     session: Optional[WebSession] = None,
 ) -> dict[str, Any]:
     """Save a running notebook's state as a custom Docker image.
@@ -219,6 +220,11 @@ def save_notebook_as_image(
         name: Name for the saved image.
         version: Version tag (default ``"v1"``).
         description: Optional description.
+        visibility: ``"VISIBILITY_PRIVATE"`` / ``"VISIBILITY_PUBLIC"``. When
+            ``None``, the field is omitted and the platform picks the default
+            (currently private). Passing it through lets callers request a
+            public image in a single request; if the save endpoint ignores the
+            field, follow up with :func:`update_image` to force visibility.
         session: Existing web session.
 
     Returns:
@@ -232,6 +238,8 @@ def save_notebook_as_image(
         "version": version,
         "description": description,
     }
+    if visibility is not None:
+        body["visibility"] = visibility
 
     return _request_notebooks_data(
         session,
@@ -239,6 +247,46 @@ def save_notebook_as_image(
         "/mirror/save",
         body=body,
         timeout=60,
+        default_data={},
+    )
+
+
+def update_image(
+    image_id: str,
+    *,
+    visibility: Optional[str] = None,
+    description: Optional[str] = None,
+    session: Optional[WebSession] = None,
+) -> dict[str, Any]:
+    """Update a custom image's metadata via ``/image/update``.
+
+    Only fields that are not ``None`` are sent. Use this to flip an image's
+    visibility (``VISIBILITY_PRIVATE`` ↔ ``VISIBILITY_PUBLIC``) after the fact
+    when ``/mirror/save`` didn't honor the request, or to edit description.
+
+    Args:
+        image_id: The image ID to update.
+        visibility: ``"VISIBILITY_PRIVATE"`` or ``"VISIBILITY_PUBLIC"``.
+        description: New description text.
+        session: Existing web session.
+
+    Returns:
+        API response data.
+    """
+    session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
+
+    body: dict[str, Any] = {"image_id": image_id}
+    if visibility is not None:
+        body["visibility"] = visibility
+    if description is not None:
+        body["description"] = description
+
+    return _request_notebooks_data(
+        session,
+        "POST",
+        "/image/update",
+        body=body,
+        timeout=30,
         default_data={},
     )
 
@@ -319,5 +367,6 @@ __all__ = [
     "get_image_detail",
     "list_images_by_source",
     "save_notebook_as_image",
+    "update_image",
     "wait_for_image_ready",
 ]

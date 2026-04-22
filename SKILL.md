@@ -111,7 +111,8 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | 命令 | 用途 |
 | --- | --- |
 | `inspire image list --source {public,private,all}` | 浏览；`private` = UI 里"个人可见镜像"；`all` 聚合去重 |
-| `inspire image save <notebook_id>` | 从运行中实例保存为镜像；CLI 总会解析出 `image_id`（平台响应缺字段时自动回查 `--source private`） |
+| `inspire image save <notebook_id>` | 从运行中实例保存为镜像。`--public` / `--private` 指定可见性（缺省走平台默认，通常 private）；CLI 会把请求发给 `/mirror/save` 再用 `/image/update` 兜一次确保生效。image_id 未在响应中返回时自动回查 `--source private` 解析 |
+| `inspire image set-visibility <image_id> --public\|--private` | 翻转已有自定义镜像的可见性（内部走 `/image/update`） |
 | `inspire image register` | 注册外部镜像；优先 `--method address` |
 | `inspire image set-default --job <url> --notebook <url>` | 设默认镜像。没有位置参数，只接受 `--job` / `--notebook`；写回最近的项目级 `.inspire/config.toml` |
 

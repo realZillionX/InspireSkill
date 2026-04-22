@@ -629,9 +629,12 @@ def test_image_save_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 
     captured: dict[str, Any] = {}
 
-    def fake_save(notebook_id, name, version="v1", description="", session=None) -> dict:
+    def fake_save(
+        notebook_id, name, version="v1", description="", visibility=None, session=None
+    ) -> dict:
         captured["notebook_id"] = notebook_id
         captured["name"] = name
+        captured["visibility"] = visibility
         return {"image": {"image_id": "img-saved-001"}}
 
     monkeypatch.setattr(browser_api_module, "save_notebook_as_image", fake_save)
@@ -646,6 +649,101 @@ def test_image_save_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     payload = json.loads(result.output)
     assert payload["data"]["image_id"] == "img-saved-001"
     assert captured["notebook_id"] == "notebook-abc"
+    assert captured["visibility"] is None
+
+
+def test_image_save_public_flag_calls_update_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+
+    save_captured: dict[str, Any] = {}
+    update_captured: dict[str, Any] = {}
+
+    def fake_save(
+        notebook_id, name, version="v1", description="", visibility=None, session=None
+    ) -> dict:
+        save_captured["visibility"] = visibility
+        return {"image": {"image_id": "img-pub-001"}}
+
+    def fake_update(image_id, *, visibility=None, description=None, session=None) -> dict:
+        update_captured["image_id"] = image_id
+        update_captured["visibility"] = visibility
+        return {}
+
+    monkeypatch.setattr(browser_api_module, "save_notebook_as_image", fake_save)
+    monkeypatch.setattr(browser_api_module, "update_image", fake_update)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        ["image", "save", "notebook-abc", "-n", "shared-base", "--public"],
+    )
+    assert result.exit_code == 0
+    assert save_captured["visibility"] == "VISIBILITY_PUBLIC"
+    assert update_captured == {"image_id": "img-pub-001", "visibility": "VISIBILITY_PUBLIC"}
+    assert "Visibility: public" in result.output
+
+
+def test_image_save_private_flag_calls_update_image(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+
+    seen_visibility: dict[str, Any] = {}
+
+    def fake_save(
+        notebook_id, name, version="v1", description="", visibility=None, session=None
+    ) -> dict:
+        return {"image": {"image_id": "img-priv-001"}}
+
+    def fake_update(image_id, *, visibility=None, description=None, session=None) -> dict:
+        seen_visibility["visibility"] = visibility
+        return {}
+
+    monkeypatch.setattr(browser_api_module, "save_notebook_as_image", fake_save)
+    monkeypatch.setattr(browser_api_module, "update_image", fake_update)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        ["image", "save", "notebook-abc", "-n", "my-img", "--private"],
+    )
+    assert result.exit_code == 0
+    assert seen_visibility == {"visibility": "VISIBILITY_PRIVATE"}
+    assert "Visibility: private" in result.output
+
+
+def test_image_set_visibility_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+
+    captured: dict[str, Any] = {}
+
+    def fake_update(image_id, *, visibility=None, description=None, session=None) -> dict:
+        captured["image_id"] = image_id
+        captured["visibility"] = visibility
+        return {"ok": True}
+
+    monkeypatch.setattr(browser_api_module, "update_image", fake_update)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        ["image", "set-visibility", "image-abc-def", "--public"],
+    )
+    assert result.exit_code == 0
+    assert captured == {"image_id": "image-abc-def", "visibility": "VISIBILITY_PUBLIC"}
+    assert "visibility set to public" in result.output
+
+    result2 = runner.invoke(
+        cli_main,
+        ["image", "set-visibility", "image-abc-def", "--private"],
+    )
+    assert result2.exit_code == 0
+    assert captured == {"image_id": "image-abc-def", "visibility": "VISIBILITY_PRIVATE"}
+    assert "visibility set to private" in result2.output
 
 
 def test_image_save_fallback_resolves_image_id_via_list(
@@ -656,7 +754,7 @@ def test_image_save_fallback_resolves_image_id_via_list(
     monkeypatch.setattr(
         browser_api_module,
         "save_notebook_as_image",
-        lambda notebook_id, name, version="v1", description="", session=None: {"image": {}},
+        lambda notebook_id, name, version="v1", description="", visibility=None, session=None: {"image": {}},
     )
     monkeypatch.setattr(
         browser_api_module,
@@ -713,7 +811,7 @@ def test_image_save_unknown_when_fallback_fails(
     monkeypatch.setattr(
         browser_api_module,
         "save_notebook_as_image",
-        lambda notebook_id, name, version="v1", description="", session=None: {"image": {}},
+        lambda notebook_id, name, version="v1", description="", visibility=None, session=None: {"image": {}},
     )
 
     def _raise(source="official", session=None):
