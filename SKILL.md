@@ -17,6 +17,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | **代理** | 公网与 `*.sii.edu.cn` 需**同时可达**。任意覆盖这两段的代理方案都行（仓库提供可选的 Clash Verge `7897` 分流模板，见 `references/proxy-setup.md`）。 |
 | **低优抢占** | `priority_level: LOW` 会被 `HIGH` **强制抢占**，必须高频 checkpoint。（优先级 flag 语义见 `job create` / `hpc create` 行。） |
 | **HPC 资源余量** | 平台自身额外占 `0.3` 核 CPU + `384 MB` 内存；应用层并发压到 **`cpus-per-task - 4`** 或更低。 |
+| **`CPU资源空间` 下能跑 hpc 的计算组** | 常规 hpc 只走 **`HPC-可上网区资源-2`**，其它计算组（如 `CPU资源-1` / `CPU资源-2` / ……）不支持 `inspire hpc create`。唯一例外见下行——500GB 档因 bug 要走 `CPU资源-2`。 |
 | **HPC-可上网区资源-2 的 500GB 规格实际不可用（运维 bug）** | 2026-04 实测：`resources specs --usage hpc` 和 Web UI 都列着 500GB 档，但实际提交**静默排队不被调度**（节点侧没配）。需要 500GB 的 HPC 任务走**同工作区的 `CPU资源-2` 计算组**。 |
 | **项目-实例绑定的挂载可见性** | 一个 notebook / job / hpc 实例只挂**自身所在项目**的 fileset，其它项目的 `/inspire/hdd\|ssd\|qb-ilm\|qb-ilm2/project/<others>/` 路径在该实例里**根本不存在**（`ls` 报 `No such file or directory`）——不是权限问题，是没挂。访问项目 `<X>` 的存储**必须**在 `project=<X>` 的实例里操作：`inspire --json notebook list -A` 按 `project.name` 找 running；没有就 `inspire notebook create --project <X-alias>` 新起。 |
 | **跨项目文件传输** | 不同 project 复制共享盘文件**需要 root 权限**，`notebook scp` / `exec cp` / 单账号 CLI 都做不到。找**飞书项目群**里的管理员做 `cp` / `chmod`，不要反复试。 |
@@ -203,7 +204,7 @@ inspire image set-default \
 
 ### 阶段 B：CPU 空间跑 HPC 数据处理
 
-`CPU资源空间` 里**只有 `HPC-可上网区资源-2` 计算组能跑 hpc**（加上 §0 提过的 500GB 档实际不可用，需要 500GB 时走同工作区的 `CPU资源-2`）。用 `resources specs --usage hpc --workspace CPU资源空间 --group HPC-可上网区资源-2 --json` 拿 `predef_quota_id` / `cpu_count` / `memory_size_gib`。**小规模 probe 通过 ≠ 正式规模稳定**：放大量级 / 并发后必须再跑一次接近正式规模的验证。
+计算组选型见 §0（默认 `HPC-可上网区资源-2`，500GB 档走 `CPU资源-2`）。**小规模 probe 通过 ≠ 正式规模稳定**：放大量级 / 并发后必须再跑一次接近正式规模的验证。
 
 ```bash
 ENTRYPOINT=$(cat <<'EOF'
