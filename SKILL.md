@@ -41,7 +41,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 > **`shell` vs `exec`（远端执行两种模式）**：
 > - `inspire notebook shell <alias>` = 交互式**持久**会话。一次登入后连续敲命令，cwd / env / shell 变量全部保留，直到 `exit`。等价于直接 `ssh <alias>`。
 > - `inspire notebook exec <alias> "<cmd>"` = **一次性 one-shot**。每次调用起一个独立 SSH 子进程跑完就断，**两次 `exec` 之间不共享 cwd / env / shell 变量**。想接续状态就把多条命令塞进**同一次调用**（`exec "cd foo && export X=1 && ./run.sh"`），或在远端写脚本后 `exec "bash setup.sh"`。
-> - **并发**：同一个 notebook 可以同时开任意多个 `shell` / `exec`（各自独立 SSH 进程，无客户端锁），但远端是共享 CPU / 内存的单容器，多路并发会互相抢资源；要真并行算力走 `job` 多节点或 `hpc`。
+> - **并发**：同一个 notebook 可以同时开任意多个 `shell` / `exec`（各自独立 SSH 进程，无客户端锁）。具体例子：在 N 个终端里同时 `inspire notebook shell mybox`，就是 N 个互相独立的交互会话并存，各自的 cwd / env / history 互不影响，和 N 个 `ssh mybox` 等价。但远端是共享 CPU / 内存的单容器，多路并发会互相抢资源；要真并行算力走 `job` 多节点或 `hpc`。
 
 | 命令 | 用途与约束 |
 | --- | --- |
