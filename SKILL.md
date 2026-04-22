@@ -129,14 +129,14 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ### 远端路径：个人目录 vs 项目公共目录
 
-每个项目在每条存储池下都是固定两级结构 `/inspire/<tier>/project/<topic>/`，下一级只有两类子目录：
+每个项目在每条存储池下都是固定三级前缀 `/inspire/<tier>/project/<topic>/`，下一级只有两种根：
 
-| 子目录 | 定位 |
+| 根 | 定位 |
 | --- | --- |
-| `<user>/` | **个人目录**（每用户一份）：代码仓库、脚本、小配置、少量调试输出 |
-| `public/` | **项目公共目录**（项目成员共享）：大体积数据集、权重、批量结果、checkpoint |
+| `<user>/…` | **个人目录根**（每用户一份）：代码仓库、脚本、小配置、少量调试输出。下面可自建任意层级（命名空间、多仓库工作区等），**`<user>/` 不一定直接跟 `<repo>`** |
+| `public/…` | **项目公共目录根**（项目成员共享）：大体积数据集、权重、批量结果、checkpoint。下面按项目约定自组织（常见按 owner / 子项目分层） |
 
-**先决策放 `<user>/` 还是 `public/`（按"个人 vs 共享"），再选存储池（按冷热）。** 这俩正交，两步都要做。
+**先决策放 `<user>/` 还是 `public/`（按"个人 vs 共享"），再选存储池（按冷热）。** 这俩正交，两步都要做。`<user>/` 和 `public/` 下的具体子树结构由项目自定，在仓库根的 `INSPIRE.md` 里 `Path Conventions` / `Public Directory Layout` 两节记下来。
 
 ### 存储池选择
 
@@ -155,15 +155,15 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 | 场景 | 做法 |
 | --- | --- |
-| 多仓库工作区 | `INSPIRE_TARGET_DIR` 设为远端工作区根（一般在 `<user>/` 下） |
+| 多仓库工作区 | `INSPIRE_TARGET_DIR` 设为 `<user>/` 下自建的工作区根（可含命名空间 / 多仓库聚合层），里面并列放多个 repo |
 | 独立 repo 日常 | 本地 `git push` → `notebook exec` → 远端 `git pull` |
 | 目标实例在离线计算组但共享路径可见 | 切到同一路径下的可上网区实例做 git |
 | 非 Git 文件 | `notebook scp`，远端路径写绝对 |
 
-**日常闭环**：
+**日常闭环**（`<workspace-subpath>` 是你在 `<user>/` 下自建的层级，可能含命名空间 / 聚合层）：
 
 ```bash
-export INSPIRE_TARGET_DIR=/inspire/hdd/project/<topic>/<user>/<repo>
+export INSPIRE_TARGET_DIR=/inspire/ssd/project/<topic>/<user>/<workspace-subpath>
 
 cd /local/path/<repo>
 git push origin <branch>
