@@ -184,24 +184,28 @@ inspire notebook ssh <notebook-id> --save-as mybox
 inspire notebook exec --alias mybox "hostname"
 ```
 
-### 阶段 A：CPU 空间准备基础镜像（带 sshd + rtunnel）
+### 阶段 A：CPU 空间起基底 notebook
 
-推荐用 `HPC-可上网区资源-2`，默认镜像 `docker.sii.shaipower.online/inspire-studio/base:20250920`。
+**默认公共基底：`docker.sii.shaipower.online/inspire-studio/unified-base:v1`**（Ubuntu 22.04 + slurm-dev + sshd + rtunnel 一体，取代早先的 `slurm-dev:0.0.0` / `base:20250920`——前者没 sshd，后者没 slurm）。一般不再需要自己烘一份基底；如果确实要加一层项目依赖，就在这镜像上面 `inspire image save` 再派生。
+
+资源组必须用 `HPC-可上网区资源-2`（§0 硬约束：其它 CPU 计算组只能建 notebook，但那边没公网没法 apt install）。
 
 ```bash
-inspire resources specs --workspace CPU资源空间 --group HPC-可上网区资源-2 --json
-
 inspire notebook create \
-  --workspace CPU资源空间 --resource 4CPU \
+  --workspace-id <ws-CPU资源空间-id> --group HPC-可上网区资源-2 -r 20CPU \
   --name <action-goal-name> \
-  --image docker.sii.shaipower.online/inspire-studio/base:20250920 \
+  --image docker.sii.shaipower.online/inspire-studio/unified-base:v1 \
   --project <project-id-or-alias> --wait --json
 
-inspire notebook ssh <notebook_id> --command "echo ssh-ok"   # 自动 bootstrap，失败见 troubleshooting.md
-inspire notebook ssh <notebook_id> --save-as cpu-box         # 保存 alias
+inspire notebook ssh <notebook_id> --command "echo ssh-ok"   # fast：sshd 已在镜像里
+inspire notebook ssh <notebook_id> --save-as cpu-box
+```
 
-# 保存基础镜像并设默认值
-inspire image save <notebook_id> -n <name>-base -v v1 --json
+想在此基础上加项目依赖（DeepSpeed / 训练栈 / ……）并发布：
+
+```bash
+inspire notebook exec --alias cpu-box "apt-get update && apt-get install -y <deps> && pip install ..."
+inspire image save <notebook_id> -n <name>-base -v v1 --public --wait --json
 inspire image set-default \
   --job docker.sii.shaipower.online/inspire-studio/<name>-base:v1 \
   --notebook docker.sii.shaipower.online/inspire-studio/<name>-base:v1
