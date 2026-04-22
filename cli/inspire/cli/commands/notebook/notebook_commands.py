@@ -200,6 +200,15 @@ def run_notebook_ssh(*args, **kwargs):  # noqa: ANN002, ANN003
     default=None,
     help="Task priority (1-10, default from config [job].priority or 10)",
 )
+@click.option(
+    "--group",
+    "group",
+    default=None,
+    help=(
+        "Force a specific compute group by name (e.g. 'HPC-可上网区资源-2'). "
+        "Bypasses the auto-selection heuristic. Partial matches accepted."
+    ),
+)
 @pass_context
 def create_notebook_cmd(
     ctx: Context,
@@ -217,6 +226,7 @@ def create_notebook_cmd(
     post_start_script: Optional[Path],
     json_output: bool,
     priority: Optional[int],
+    group: Optional[str],
 ) -> None:
     """Create a new interactive notebook instance.
 
@@ -258,6 +268,7 @@ def create_notebook_cmd(
         json_output=json_output,
         priority=priority,
         project_explicit=project_explicit,
+        group=group,
     )
 
 

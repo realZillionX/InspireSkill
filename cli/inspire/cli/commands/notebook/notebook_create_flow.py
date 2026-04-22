@@ -327,6 +327,7 @@ def resolve_notebook_compute_group(
     requested_cpu_count: Optional[int],
     auto: bool,
     json_output: bool,
+    group_override: Optional[str] = None,
 ) -> tuple[str, str, str, str] | None:
     auto_selected = _auto_select_compute_group(
         ctx,
@@ -352,6 +353,47 @@ def resolve_notebook_compute_group(
     except Exception as e:
         _handle_error(ctx, "APIError", f"Error fetching compute groups: {e}", EXIT_API_ERROR)
         return None
+
+    if group_override:
+        target = group_override.strip()
+        override_match = None
+        for g in compute_groups:
+            name = (g.get("name") or "").strip()
+            if name == target:
+                override_match = g
+                break
+        if override_match is None:
+            for g in compute_groups:
+                if target in (g.get("name") or ""):
+                    override_match = g
+                    break
+        if override_match is None:
+            hint = _build_compute_group_hint(compute_groups=compute_groups, gpu_count=gpu_count)
+            _handle_error(
+                ctx,
+                "ValidationError",
+                f"Compute group '{target}' not found in workspace {workspace_id}",
+                EXIT_CONFIG_ERROR,
+                hint=hint,
+            )
+            return None
+        logic_compute_group_id = override_match.get("logic_compute_group_id")
+        if not logic_compute_group_id:
+            _handle_error(
+                ctx,
+                "APIError",
+                "Selected compute group is missing logic_compute_group_id",
+                EXIT_API_ERROR,
+            )
+            return None
+        selected_gpu_type = ""
+        if gpu_count > 0:
+            stats = override_match.get("gpu_type_stats", [])
+            if stats:
+                selected_gpu_type = (
+                    stats[0].get("gpu_info", {}).get("gpu_type_display", "") or ""
+                )
+        return logic_compute_group_id, selected_gpu_type, gpu_pattern, resource_display
 
     if gpu_count == 0:
         # For CPU notebooks, always use the dedicated CPU selector.
@@ -1104,6 +1146,7 @@ def run_notebook_create(
     priority: Optional[int] = None,
     project_explicit: bool = False,
     keepalive: bool | None = None,
+    group: Optional[str] = None,
 ) -> None:
     del project_explicit  # Reserved for future behavior; currently inferred from value presence.
     json_output = resolve_json_output(ctx, json_output)
@@ -1170,6 +1213,7 @@ def run_notebook_create(
         requested_cpu_count=requested_cpu_count,
         auto=auto,
         json_output=json_output,
+        group_override=group,
     )
     if not compute_group:
         return
