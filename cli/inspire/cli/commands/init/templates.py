@@ -88,11 +88,11 @@ resource = "1xH200"
 
 def _init_template_mode(global_flag: bool, project_flag: bool, force: bool) -> None:
     """Initialize config using template with placeholders (template mode)."""
-    global_path = Config.resolve_global_config_path()
+    global_path = Config.writable_config_path()
     if global_flag:
         config_dir = global_path.parent
         config_path = global_path
-        location_comment = "~/.config/inspire/config.toml (global)"
+        location_comment = f"{global_path} (account)"
     elif project_flag:
         config_path = Path.cwd() / PROJECT_CONFIG_DIR / CONFIG_FILENAME
         config_dir = config_path.parent

@@ -53,17 +53,13 @@ def _apply_password_and_token_fallbacks(
     *,
     config_dict: dict[str, Any],
     sources: dict[str, str],
-    project_accounts: dict[str, str],
     env_password: str | None,
 ) -> None:
-    resolved_username = str(config_dict.get("username") or "").strip()
-    account_password = config_dict.get("accounts", {}).get(resolved_username)
-    if account_password:
-        config_dict["password"] = account_password
-        sources["password"] = (
-            SOURCE_PROJECT if resolved_username in project_accounts else SOURCE_GLOBAL
-        )
+    """Apply env-var fallbacks for password and github_token.
 
+    The account-layer file is the primary source of ``password``; this
+    stage only handles the env-var overrides that CI / scripts rely on.
+    """
     if not config_dict.get("password") and env_password:
         config_dict["password"] = env_password
         sources["password"] = SOURCE_ENV
@@ -84,19 +80,14 @@ def _validate_required_config(
     if require_credentials:
         if not config_dict["username"]:
             raise ConfigError(
-                "Missing username configuration.\n"
-                "Run 'inspire account add <name>' to create an account, or add to "
-                "~/.inspire/accounts/<active>/config.toml:\n"
-                "  [auth]\n"
-                "  username = 'your_username'"
+                "No active Inspire account. Run 'inspire account add <name>' "
+                "to create one, then 'inspire account use <name>' if needed."
             )
         if not config_dict["password"]:
             raise ConfigError(
-                "Missing password configuration.\n"
-                "Set INSPIRE_PASSWORD env var, or add [auth].password to "
-                "~/.inspire/accounts/<active>/config.toml:\n"
-                "  [auth]\n"
-                "  password = 'your_password'"
+                "Active account has no password set. Add [auth].password to "
+                "~/.inspire/accounts/<active>/config.toml or export "
+                "INSPIRE_PASSWORD."
             )
 
     if require_target_dir and not config_dict["target_dir"]:

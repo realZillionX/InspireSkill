@@ -50,7 +50,6 @@ class TestSshRuntimeConfig:
 sshd_deb_dir = "/project/sshd"
 """,
         )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("INSPIRE_SSHD_DEB_DIR", "/env/sshd")
 
@@ -74,7 +73,6 @@ prefer_source = "toml"
 sshd_deb_dir = "/project/sshd"
 """,
         )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("INSPIRE_SSHD_DEB_DIR", "/env/sshd")
 
@@ -105,7 +103,6 @@ sshd_deb_dir = "/global/sshd"
 prefer_source = "toml"
 """,
         )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", global_config)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("INSPIRE_SSHD_DEB_DIR", "/env/sshd")
 
@@ -129,7 +126,6 @@ prefer_source = "toml"
 sshd_deb_dir = "/project/sshd"
 """,
         )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("INSPIRE_SSHD_DEB_DIR", "/env/sshd")
 
@@ -158,7 +154,6 @@ prefer_source = "toml"
 rtunnel_download_url = "https://project.example/rtunnel.tgz"
 """,
         )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("INSPIRE_RTUNNEL_DOWNLOAD_URL", "https://env.example/rtunnel.tgz")
 
@@ -172,7 +167,6 @@ rtunnel_download_url = "https://project.example/rtunnel.tgz"
         monkeypatch: pytest.MonkeyPatch,
         clean_env: None,
     ) -> None:
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
         monkeypatch.chdir(tmp_path)
 
         runtime = resolve_ssh_runtime_config()
@@ -195,7 +189,6 @@ prefer_source = "toml"
 rtunnel_download_url = "https://project.example/shared.tgz"
 """,
         )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("INSPIRE_RTUNNEL_DOWNLOAD_URL", "https://env.example/shared.tgz")
 

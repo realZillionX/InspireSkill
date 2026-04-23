@@ -95,7 +95,9 @@ class Config:
     # Project alias map for project_id resolution (alias -> project-...)
     projects: dict[str, str] = field(default_factory=dict)
 
-    # Discovered per-account project metadata (loaded from layered [accounts."<user>"] catalog)
+    # Discovered per-account project metadata (loaded from the account layer
+    # [project_catalog] table when present; kept for display helpers like
+    # `inspire config context` that surface per-project shared-path info).
     # project_id -> metadata dict (best-effort, schema may evolve)
     project_catalog: dict[str, dict[str, Any]] = field(default_factory=dict)
     # project_id -> shared-path grouping key (e.g. "/train/global_user/<user>")
@@ -106,9 +108,6 @@ class Config:
     account_shared_path_group: Optional[str] = None
     # Account-level train job workdir (if available)
     account_train_job_workdir: Optional[str] = None
-
-    # Project context account binding (from [context].account)
-    context_account: Optional[str] = None
 
     # Notebook settings
     notebook_resource: str = "1xH200"
@@ -138,50 +137,25 @@ class Config:
     # Remote environment variables (injected into bridge exec, jobs, run commands)
     remote_env: dict[str, str] = field(default_factory=dict)
 
-    # Global per-account secrets map, loaded from global config:
-    # [accounts."<username>"].password
-    accounts: dict[str, str] = field(default_factory=dict)
-
     # Source precedence: "env" (default) = env vars win, "toml" = project TOML wins
     prefer_source: str = "env"
 
-    # Class-level config paths
-    GLOBAL_CONFIG_PATH_ENV_VAR = "INSPIRE_GLOBAL_CONFIG_PATH"
-    GLOBAL_CONFIG_PATH = Path.home() / ".config" / "inspire" / CONFIG_FILENAME
-
     @classmethod
-    def resolve_global_config_path(cls) -> Path:
-        """Return the effective legacy global config path, honoring env override.
+    def writable_config_path(cls) -> Optional[Path]:
+        """Return the active account's ``config.toml`` path, or ``None``.
 
-        This always points at ``~/.config/inspire/config.toml`` (or its env
-        override). It is the *legacy* location consulted only when no
-        InspireSkill account is active. Writes should use
-        :meth:`writable_config_path` instead.
+        ``None`` signals "no global-scope write target" — the caller
+        (typically ``inspire init --global`` or discover writes) should
+        error out at that point with a clear "run 'inspire account add'
+        first" message. Project-scope writes don't consult this and are
+        unaffected.
         """
-        override = str(os.getenv(cls.GLOBAL_CONFIG_PATH_ENV_VAR) or "").strip()
-        if override:
-            return Path(override).expanduser()
-        return cls.GLOBAL_CONFIG_PATH
+        from inspire.accounts import account_config_path, current_account
 
-    @classmethod
-    def writable_config_path(cls) -> Path:
-        """Return the path where config writes should land.
-
-        If an InspireSkill account is active (``~/.inspire/current``), the
-        write target is that account's ``~/.inspire/accounts/<name>/config.toml``
-        — the same file read by the account layer of the loader, so writes
-        take effect on the next load. Without an active account, falls
-        back to :meth:`resolve_global_config_path` for backward compat
-        with users who haven't run ``inspire account add`` yet.
-        """
-        try:
-            from inspire.accounts import account_config_path, current_account
-        except ImportError:
-            return cls.resolve_global_config_path()
         name = current_account()
-        if name:
-            return account_config_path(name)
-        return cls.resolve_global_config_path()
+        if not name:
+            return None
+        return account_config_path(name)
 
     def get_expanded_cache_path(self) -> str:
         """Get the job cache path with ~ expanded."""

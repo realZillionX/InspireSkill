@@ -480,30 +480,30 @@ def test_browser_client_recreates_closed_thread_local_client(monkeypatch: pytest
     ws_browser_client._close_browser_client()
 
 
-def test_get_credentials_prefers_project_toml_when_prefer_source_toml(
+def test_get_credentials_prefers_account_toml_when_prefer_source_toml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    global_dir = tmp_path / ".config" / "inspire"
-    global_dir.mkdir(parents=True)
-    (global_dir / "config.toml").write_text(
-        """
-[accounts."toml-user"]
-password = "global-pass"
-"""
+    """prefer_source='toml' in project config makes account TOML password
+    win over INSPIRE_PASSWORD env var. Account TOML is now the sole
+    identity source."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    account_dir = fake_home / ".inspire" / "accounts" / "alice"
+    account_dir.mkdir(parents=True)
+    (account_dir / "config.toml").write_text(
+        '[auth]\npassword = "account-pass"\n'
     )
+    (fake_home / ".inspire" / "current").write_text("alice\n")
 
     project_dir = tmp_path / ".inspire"
     project_dir.mkdir()
     (project_dir / "config.toml").write_text(
-        """
-[cli]
-prefer_source = "toml"
-
-[auth]
-username = "toml-user"
-"""
+        '[cli]\nprefer_source = "toml"\n\n'
+        '[auth]\nusername = "toml-user"\n'
     )
-    monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", global_dir / "config.toml")
+
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("INSPIRE_USERNAME", "env-user")
     monkeypatch.setenv("INSPIRE_PASSWORD", "env-pass")
@@ -511,7 +511,7 @@ username = "toml-user"
     username, password = ws.get_credentials()
 
     assert username == "toml-user"
-    assert password == "global-pass"
+    assert password == "account-pass"
 
 
 def test_get_web_session_reauths_when_cached_user_mismatch(monkeypatch: pytest.MonkeyPatch):

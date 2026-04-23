@@ -80,7 +80,6 @@ special = "ws-22222222-2222-2222-2222-222222222222"
     )
 
     monkeypatch.chdir(project_root)
-    monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "no-global-config.toml")
     monkeypatch.delenv("INSPIRE_WORKSPACE_ID", raising=False)
     monkeypatch.delenv("INSPIRE_WORKSPACE_CPU_ID", raising=False)
     monkeypatch.delenv("INSPIRE_WORKSPACE_GPU_ID", raising=False)

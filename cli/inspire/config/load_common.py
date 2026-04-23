@@ -9,44 +9,6 @@ from typing import Any
 from inspire.config.models import SOURCE_DEFAULT
 from inspire.config.rtunnel_defaults import default_rtunnel_download_url
 
-_ACCOUNT_OVERRIDE_FIELDS = {
-    "base_url",
-    "timeout",
-    "max_retries",
-    "retry_delay",
-    "skip_ssl_verify",
-    "force_proxy",
-    "openapi_prefix",
-    "browser_api_prefix",
-    "auth_endpoint",
-    "docker_registry",
-    "sshd_deb_dir",
-    "dropbear_deb_dir",
-    "setup_script",
-    "rtunnel_download_url",
-}
-
-_ACCOUNT_SECTION_KEY_MAP = {
-    "api": {
-        "base_url": "base_url",
-        "timeout": "timeout",
-        "max_retries": "max_retries",
-        "retry_delay": "retry_delay",
-        "skip_ssl_verify": "skip_ssl_verify",
-        "force_proxy": "force_proxy",
-        "openapi_prefix": "openapi_prefix",
-        "browser_api_prefix": "browser_api_prefix",
-        "auth_endpoint": "auth_endpoint",
-        "docker_registry": "docker_registry",
-    },
-    "ssh": {
-        "sshd_deb_dir": "sshd_deb_dir",
-        "dropbear_deb_dir": "dropbear_deb_dir",
-        "setup_script": "setup_script",
-        "rtunnel_download_url": "rtunnel_download_url",
-    },
-}
-
 _DEFAULTS_FIELD_MAP = {
     "image": "job_image",
     "notebook_image": "notebook_image",
@@ -73,8 +35,6 @@ class _ProjectLayerState:
     project_projects: dict[str, str]
     project_defaults: dict[str, Any]
     project_context: dict[str, Any]
-    project_account_catalogs: dict[str, dict[str, Any]]
-    project_accounts: dict[str, str]
     prefer_source: str = "env"
 
 
@@ -124,7 +84,6 @@ def _default_config_values() -> dict[str, Any]:
         "project_workdirs": {},
         "account_shared_path_group": None,
         "account_train_job_workdir": None,
-        "context_account": None,
         "notebook_resource": "1xH200",
         "notebook_image": None,
         "notebook_post_start": None,
@@ -139,7 +98,6 @@ def _default_config_values() -> dict[str, Any]:
         "project_order": [],
         "compute_groups": [],
         "remote_env": {},
-        "accounts": {},
     }
 
 
@@ -267,8 +225,6 @@ def _coerce_project_default(field_name: str, raw_value: Any) -> Any:
 
 
 __all__ = [
-    "_ACCOUNT_OVERRIDE_FIELDS",
-    "_ACCOUNT_SECTION_KEY_MAP",
     "_CONTEXT_WORKSPACE_FIELD_MAP",
     "_DEFAULTS_FIELD_MAP",
     "_ProjectLayerState",

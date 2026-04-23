@@ -1,22 +1,18 @@
-"""Per-account config layer — the primary source of identity for the CLI.
+"""Per-account config layer — the sole source of identity for the CLI.
 
-When a user has an active InspireSkill account (via
-``inspire.accounts.current_account()``), their platform login and related
-settings live at::
+Identity and account-wide settings live at::
 
     ~/.inspire/accounts/<current>/config.toml
 
-This file uses the same flat TOML schema as the legacy global config at
-``~/.config/inspire/config.toml`` — ``[auth]``, ``[api]``, ``[proxy]``,
-``[workspaces]``, ``[projects]``, ``[defaults]``, ``[[compute_groups]]`` —
-with one deliberate simplification: **no ``[accounts."<user>"]`` nesting,
-no ``[context].account`` pointer**. One account = one file, no catalog
-merging, no layered precedence chain inside the file.
+Sections: ``[auth]``, ``[api]``, ``[proxy]``, ``[ssh]``, ``[workspaces]``,
+``[projects]``, ``[defaults]``, ``[[compute_groups]]``, ``[remote_env]``.
 
-When an active account is set, this layer replaces the legacy global layer
-entirely (they are mutually exclusive, not merged). Legacy users without an
-account continue to be served by ``_apply_global_layer`` until they run
-``inspire account migrate`` (phase 5).
+**No ``[accounts."<user>"]`` nesting, no ``[context].account`` pointer.**
+One account = one file. Without an active account
+(``~/.inspire/current`` absent or pointing at a missing directory),
+this layer is a no-op and the caller is free to continue — callers that
+require credentials will get a clear "run 'inspire account add'" error
+from :func:`inspire.config.load_runtime._validate_required_config`.
 """
 
 from __future__ import annotations

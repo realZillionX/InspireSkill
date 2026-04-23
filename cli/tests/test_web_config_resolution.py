@@ -25,7 +25,6 @@ prefer_source = "toml"
 base_url = "https://toml.example"
 """
     )
-    monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("INSPIRE_BASE_URL", "https://env.example")
 
@@ -45,7 +44,6 @@ id = "lcg-test-1"
 gpu_type = "H200"
 """
     )
-    monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
     monkeypatch.chdir(tmp_path)
 
     groups = _config_compute_groups_fallback()

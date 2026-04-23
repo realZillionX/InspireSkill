@@ -1588,6 +1588,15 @@ def test_config_check_allows_path_defaults_for_endpoint_fields(
 def test_init_json_global_contract_via_top_level_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    # init needs an active account to resolve its writable path; set one up.
+    fake_home = tmp_path / "__home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    acct = fake_home / ".inspire" / "accounts" / "default"
+    acct.mkdir(parents=True)
+    (acct / "config.toml").write_text("")
+    (fake_home / ".inspire" / "current").write_text("default\n")
+
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()
 

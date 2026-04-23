@@ -42,13 +42,14 @@ def _workspace_role_aliases(cfg: Config) -> dict[str, str]:
 
 
 def _collect_context(cfg: Config) -> dict[str, Any]:
-    accounts = dict(cfg.accounts or {})
-    # Strip passwords — agent doesn't need them, and a CLI dump shouldn't leak them.
-    accounts_stripped = {user: "********" for user in accounts}
+    from inspire.accounts import current_account, list_accounts
+
+    active_account = current_account()
+    accounts_listed = {name: "********" for name in list_accounts()}
 
     return {
         "active_context": {
-            "account": cfg.context_account or cfg.username or None,
+            "account": active_account or cfg.username or None,
             "project_id": cfg.job_project_id,
             "workspace_id": cfg.job_workspace_id,
         },
@@ -56,7 +57,7 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
         "workspace_aliases": dict(cfg.workspaces or {}),
         "workspace_roles": _workspace_role_aliases(cfg),
         "compute_groups": list(cfg.compute_groups or []),
-        "accounts": accounts_stripped,
+        "accounts": accounts_listed,
         "account_metadata": {
             "shared_path_group": cfg.account_shared_path_group,
             "train_job_workdir": cfg.account_train_job_workdir,
