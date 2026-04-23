@@ -85,15 +85,17 @@ def _validate_required_config(
         if not config_dict["username"]:
             raise ConfigError(
                 "Missing username configuration.\n"
-                "Set INSPIRE_USERNAME env var or add to config.toml:\n"
+                "Run 'inspire account add <name>' to create an account, or add to "
+                "~/.inspire/accounts/<active>/config.toml:\n"
                 "  [auth]\n"
                 "  username = 'your_username'"
             )
         if not config_dict["password"]:
             raise ConfigError(
                 "Missing password configuration.\n"
-                "Set INSPIRE_PASSWORD env var or add an account password in config.toml:\n"
-                '  [accounts."your_username"]\n'
+                "Set INSPIRE_PASSWORD env var, or add [auth].password to "
+                "~/.inspire/accounts/<active>/config.toml:\n"
+                "  [auth]\n"
                 "  password = 'your_password'"
             )
 

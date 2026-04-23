@@ -26,7 +26,8 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 | 主题 | 规则 |
 | --- | --- |
-| 配置查询 | **不要直接读** `~/.config/inspire/config.toml` 或 `./.inspire/config.toml`；两层合并由 CLI 负责。扁平字段 `inspire config show [--json] [--compact]`；活动 `[context]` / 项目 / workspace alias / compute_groups / accounts 用 `inspire config context [--json]`。 |
+| 账号管理 | 多账号 = 独立目录。每个账号的 `config.toml` / `bridges.json` / `web_session.json` 都在 `~/.inspire/accounts/<name>/` 里，活动账号写在一行 `~/.inspire/current`。用 `inspire account add/list/use/current/remove` 管理；从旧布局升级用 `inspire account migrate`（一次性，带 backup）。**无账号时**自动回退读老 `~/.config/inspire/config.toml`，迁移后再删。 |
+| 配置查询 | **不要直接读** `~/.inspire/accounts/<active>/config.toml` 或 `./.inspire/config.toml`；合并由 CLI 负责。扁平字段 `inspire config show [--json] [--compact]`；活动账号 / 项目 / workspace alias / compute_groups 用 `inspire config context [--json]`。 |
 | 项目叙述上下文 | 项目仓库根下用 **`INSPIRE.md`** 写非配置性上下文。建议五节：`Default Image`（config.toml 未托管的镜像，如 base / HPC 专用）· `Path Conventions`（本地与远端路径派生规则）· `Public Directory Layout`（`public/` 下的共享结构）· `Existing Notebooks`（角色 → ID）· `Ongoing Jobs`（当前长期在跑的任务）。**不**把 config.toml 内容复制进来。`AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 只放通用工程事项。 |
 | `--json` 位置 | 全局 `--json` **必须放子命令前**：`inspire --json hpc status <id>`。 |
 | Debug | `inspire --debug` 把脱敏日志写进 `~/.cache/inspire-skill/logs/`。 |
@@ -161,8 +162,10 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire project list` | 项目和配额，定高 / 低优策略前必看 |
 | `inspire user whoami` | 当前登录人身份 / 角色 |
 | `inspire user permissions [--workspace X]` | workspace 下授予的权限码（如 `job.trainingJob.create`） |
-| `inspire config show [--compact] [--json]` | 查扁平配置（账号 / 代理 / 默认镜像 / 路径），含来源 |
-| `inspire config context [--json]` | 查 `[context]` + project / workspace alias + compute_groups + accounts |
+| `inspire config show [--compact] [--json]` | 查扁平配置（平台身份 / 代理 / 默认镜像 / 路径），含来源 |
+| `inspire config context [--json]` | 查活动账号 / project / workspace alias / compute_groups |
+| `inspire account add/list/use/current/remove` | 多账号管理，一账号一目录（`~/.inspire/accounts/<name>/`） |
+| `inspire account migrate` | 从老布局（`[accounts."<user>"]` + `bridges-<user>.json` + `web_session-<user>.json`）一次性迁移到新目录结构 |
 
 > 较少使用 / 权限受限的命令（`serving *` / `model *` / `project detail|owners` / `user quota|api-keys`）见 [references/less-used-commands.md](references/less-used-commands.md)。
 

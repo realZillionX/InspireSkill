@@ -54,8 +54,9 @@ def get_credentials() -> tuple[str, str]:
 
     if not username or not password:
         raise ValueError(
-            "Missing web authentication credentials. Set [auth].username in project config and "
-            'configure password via INSPIRE_PASSWORD or [accounts."<username>"].password.'
+            "Missing web authentication credentials. Run 'inspire account add <name>' "
+            "to create an account, or set INSPIRE_PASSWORD when the account's "
+            "config.toml lacks [auth].password."
         )
 
     return username, password
