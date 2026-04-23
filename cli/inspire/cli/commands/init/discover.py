@@ -2202,7 +2202,12 @@ def _prompt_target_dir(
     if cli_target_dir:
         default = cli_target_dir
     else:
-        default = catalog_workdir or ""
+        # Prefer the user's existing target_dir over the catalog-suggested
+        # workdir — they may have appended a project-specific subdirectory
+        # (e.g. `.../chj_code/<repo>`) that the catalog doesn't know about.
+        # Only fall back to the catalog workdir if no previous value exists.
+        existing = str(getattr(config, "target_dir", "") or "").strip() if config else ""
+        default = existing or catalog_workdir or ""
         if default:
             tier = _prompt_storage_tier(default)
             if tier != _detect_storage_tier(default):
