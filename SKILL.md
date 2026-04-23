@@ -63,7 +63,8 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire notebook forget <alias>` | 删本地 alias 记录（不影响平台上的 notebook） |
 | `inspire notebook set-default <alias>` | 设默认 alias |
 | `inspire notebook ssh-config --install` | 把所有 alias 写进 `~/.ssh/config`，之后 `ssh <alias>` / `scp` / `rsync` / `git` 原生用 |
-| `inspire notebook top` | alias 实例的 GPU 利用率；`--watch` 持续刷新 |
+| `inspire notebook top` | alias 实例的 GPU 利用率（SSH `nvidia-smi` 实时快照，需要 tunnel）；`--watch` 持续刷新 |
+| `inspire notebook metrics <id>` | 网页"资源视图"的时间序列：GPU / GPU Memory / CPU / Memory / Disk IO / Network 利用率历史曲线，不需要 SSH（走平台监控管线）。**默认生成 PNG** 到 `~/.inspire/metrics/<id>-<unix>.png` 并把路径打到 stdout + 每 metric 一行 `min/max/avg/last` 统计；多模态 agent 直接 `Read` 这个 PNG 就能识别曲线形状（和人眼看网页一样）。默认 `--window 1h --interval 1m --metric core`（gpu/gpu_mem/cpu/mem），`--metric all` 看全 8 种，`--metric gpu,disk_read` 自选。flag：`--plot <path>` 改落盘位置；`--no-plot` 跳过 PNG 只出 stats；`--sparkline` 加 ASCII 块字符曲线；`--open` 出图后系统查看器打开；`--start/--end` 绝对窗口；`--json` 原始 per-pod 时序（**会自动跳过 PNG**）。**和 `top` 的区别**：`top` 是实时 snapshot 依赖 SSH tunnel，`metrics` 是历史曲线走 Browser API（无需 tunnel），全程不额外开浏览器（SSO session 已缓存）。 |
 
 ### 2.2 GPU 多节点任务 (`job`)
 

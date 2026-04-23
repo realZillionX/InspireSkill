@@ -116,6 +116,42 @@ OpenAPI 这侧只有 `train_job/{create,detail,stop}`。**`list` 和事件都只
 | `POST` | `{prefix}/hpc_jobs/instances/list` | 该 HPC 任务的 pod 实例（launcher / slurmctld / slurmd / worker） | body: `{jobId, page_num, page_size}` |
 | `POST` | `{prefix}/logs/hpc` | HPC 聚合日志（按 podNames + 时间窗）。body 形如 `{page_size, filter:{podNames:[...], start_timestamp_ms, end_timestamp_ms}, sorter:[{field:"@timestamp",sort:"descend"}]}`。注意排序字段是 ElasticSearch 风格的 `@timestamp`（train 那侧是 `time`） | Web 前端 "聚合日志 → 日志" 子 tab |
 
+### 资源视图 / 监控指标 (`cluster_metric`)
+
+网页 `实例详情 / 资源视图` tab 背后的时间序列端点，**OpenAPI 无对应**。覆盖 notebook / 训练任务 / HPC / 部署服务四种 task 的 8 种利用率指标，CLI 侧 `inspire notebook metrics` 直接消费。
+
+| 方法 | 路径 | 用途 | CLI 引用 |
+| --- | --- | --- | --- |
+| `POST` | `{prefix}/cluster_metric/resource_metric_by_time` | 按 task_id + task_type + logic_compute_group_id 查一段时间窗内的指标序列。body 见下；返回 `{time_seris_metric_groups:[{group_name,metric_type,resource_name,time_series:[{timestamp,data}]}]}`（注意响应键是 **`time_seris_metric_groups`** 拼错了的）。 | `browser_api.metrics.get_resource_metrics_by_time`；`inspire notebook metrics` |
+
+请求体模板：
+
+```json
+{
+  "filter": {
+    "logic_compute_group_id": "lcg-...",
+    "task_id": "<raw uuid — 不带 nb-/job-/hpc- 前缀>",
+    "task_type": "interactive_modeling|distributed_training|hpc_job|inference_serving"
+  },
+  "metric_types": ["gpu_usage_rate"],
+  "time_range": {
+    "start_timestamp": 1776926077,
+    "end_timestamp":   1776933500,
+    "interval_second": 60
+  }
+}
+```
+
+**硬约束**（2026-04 实测）：
+
+- **`metric_types` 实测只认第一个**：发 `["gpu_usage_rate","cpu_usage_rate"]` 只返 gpu，cpu 被静默丢弃。CLI wrapper 为每个 metric 拆成一次 POST 再拼结果。
+- **`task_type` 合法值只有 4 个**：`interactive_modeling` / `distributed_training` / `hpc_job` / `inference_serving`。传 `training_job` / `hpc` / `model_deployment` 会收到 `code:100000 422: ... query="...{=\"...\"})"` 错误（空 label 名），因为后端 Prometheus label 映射表里没有这几个别名。
+- **`task_id` 用裸 UUID**：notebook 详情 URL 的 path 段、OpenAPI 返回的 `job_id` 去掉 `job-`/`hpc-` 前缀都行。前缀形态平台也接受，但 Prometheus label 只匹配 UUID 段。
+- **`logic_compute_group_id` 必填**：对 notebook 可以从 `GET /notebook/{id}` 的 `start_config.logic_compute_group_id` 拿到（顶层 `logic_compute_group.*` 字段平台侧留空）。传空或 `cg-` 前缀都会返 422。
+- **`interval_second` 限定 4 档**：`60 / 300 / 1800 / 3600`（对应 UI 的 1分/5分/30分/1小时）。其它值返回几乎空的序列。
+- **指标单位**：`*_usage_rate`（gpu / gpu_memory / cpu / memory）= 0-1 ratio；`disk_io_*` / `network_tcp_ip_io_*` = bytes/second。
+- **按 pod 分组**：一个实例跑多个 pod（分布式训练 / 多副本部署）时返回多个 `group_name`；单实例 notebook 只有 1 个 group。
+
 ### 资源 / 计算组
 
 | 方法 | 路径 | 用途 | CLI 引用 |

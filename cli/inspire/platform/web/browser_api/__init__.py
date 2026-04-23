@@ -31,6 +31,14 @@ from .hpc_jobs import (
     list_hpc_jobs,
     list_hpc_job_events,
 )
+from .metrics import (
+    INTERVAL_CHOICES,
+    METRIC_TYPES,
+    TASK_TYPE_BY_RESOURCE,
+    MetricGroup,
+    MetricSample,
+    get_resource_metrics_by_time,
+)
 from .notebooks import (
     ImageInfo,
     NotebookFailedError,
@@ -102,6 +110,13 @@ __all__ = [
     "delete_hpc_job",
     "list_hpc_jobs",
     "list_hpc_job_events",
+    # Metrics (cluster_metric/resource_metric_by_time — 资源视图 tab)
+    "INTERVAL_CHOICES",
+    "METRIC_TYPES",
+    "TASK_TYPE_BY_RESOURCE",
+    "MetricGroup",
+    "MetricSample",
+    "get_resource_metrics_by_time",
     # Availability
     "FullFreeNodeCount",
     "GPUAvailability",

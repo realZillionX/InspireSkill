@@ -33,6 +33,7 @@ from .notebook_commands import (
 from .top import notebook_top
 from .notebook_events import events as notebook_events
 from .notebook_lifecycle import lifecycle as notebook_lifecycle
+from .notebook_metrics import notebook_metrics
 
 # Remote operations on a saved alias (formerly `inspire bridge *`).
 from .remote_exec import exec_command as _remote_exec
@@ -72,6 +73,7 @@ notebook.add_command(ssh_notebook_cmd)          # ssh  (bootstrap; alias-aware d
 notebook.add_command(notebook_top)              # top
 notebook.add_command(notebook_events)           # events (K8s scheduling / pod lifecycle)
 notebook.add_command(notebook_lifecycle)        # lifecycle (run-cycle timeline; /run_index/list)
+notebook.add_command(notebook_metrics)          # metrics (资源视图 time-series, no SSH needed)
 
 # Remote operations on a saved alias.
 notebook.add_command(_remote_exec,  name="exec")
