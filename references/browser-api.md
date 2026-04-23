@@ -245,7 +245,7 @@ Browser API 还代理 Jupyter Lab 和 WebSocket 终端，用来 bootstrap SSH / 
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `GET` / `POST` / `WS` | `{prefix}/notebook/lab/{notebook_id}/proxy/{port}/...` | 经由平台代理透传到 notebook 内部 Jupyter 服务的任意 HTTP / WebSocket 请求。`inspire notebook ssh` 的三级 bootstrap（Jupyter Contents API / terminal REST / Playwright）全走这条 |
+| `GET` / `POST` / `WS` | `{prefix}/notebook/lab/{notebook_id}/proxy/{port}/...` | 经由平台代理透传到 notebook 内部 Jupyter 服务的任意 HTTP / WebSocket 请求。`inspire notebook ssh` 的 bootstrap（Jupyter terminal REST + WebSocket，失败兜底 Playwright 终端自动化）全走这条 |
 
 ## 如何自己看到这些流量
 

@@ -859,6 +859,25 @@ def run_notebook_ssh(
             headless=not debug_playwright,
             timeout=setup_timeout,
         )
+    except browser_api_module.RtunnelMissingInContainerError:
+        # Structured failure: rtunnel is not baked into the image and the
+        # container can't reach the public internet to curl it. Give the
+        # user a concrete repair path instead of a generic "bootstrap
+        # failed" message.
+        _handle_error(
+            ctx,
+            "SetupError",
+            "SSH bootstrap 失败：rtunnel 在容器内找不到，且容器无公网（curl 取不到）。",
+            EXIT_API_ERROR,
+            hint=(
+                "修复（选一个）：\n"
+                "  1. 把镜像换成 unified-base:v1 或它的派生镜像，自带 rtunnel + sshd。\n"
+                "  2. 在可上网区（CPU资源空间 / HPC-可上网区资源-2）开一个 notebook，\n"
+                "     curl 一次 rtunnel 到 /usr/local/bin/rtunnel，然后\n"
+                "     inspire image save 成自己的镜像；之后所有 notebook 都用这个镜像。"
+            ),
+        )
+        return
     except Exception as e:
         _handle_error(ctx, "APIError", f"Failed to set up notebook tunnel: {e}", EXIT_API_ERROR)
         return

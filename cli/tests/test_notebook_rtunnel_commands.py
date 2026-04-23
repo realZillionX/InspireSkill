@@ -185,77 +185,13 @@ def test_non_dropbear_uses_bootstrap_sentinel_and_start_only_commands() -> None:
 
 
 # ---------------------------------------------------------------------------
-# contents_api_filename parameter
-# ---------------------------------------------------------------------------
-
-
-def test_contents_api_filename_inserts_copy_search_command() -> None:
-    runtime = SshRuntimeConfig()
-    commands = build_rtunnel_setup_commands(
-        port=31337,
-        ssh_port=22222,
-        ssh_public_key=None,
-        ssh_runtime=runtime,
-        contents_api_filename=".inspire_rtunnel_bin",
-    )
-    joined = "\n".join(commands)
-
-    assert ".inspire_rtunnel_bin" in joined
-    assert "CONTENTS_API_RTUNNEL_FILE=" in joined
-    assert '"$PWD/$CONTENTS_API_RTUNNEL_FILE"' in joined
-    assert '"$HOME/$CONTENTS_API_RTUNNEL_FILE"' in joined
-    assert 'cp "$_rtunnel_candidate" /tmp/rtunnel' in joined
-    assert "chmod +x /tmp/rtunnel" in joined
-    assert "[ ! -x /tmp/rtunnel ]" in joined
-
-
-def test_contents_api_filename_none_has_no_move_command() -> None:
-    runtime = SshRuntimeConfig()
-    commands = build_rtunnel_setup_commands(
-        port=31337,
-        ssh_port=22222,
-        ssh_public_key=None,
-        ssh_runtime=runtime,
-        contents_api_filename=None,
-    )
-    joined = "\n".join(commands)
-
-    assert ".inspire_rtunnel_bin" not in joined
-
-
-def test_contents_api_filename_does_not_override_rtunnel_bin_path() -> None:
-    runtime = SshRuntimeConfig(
-        rtunnel_bin="/project/rtunnel",
-    )
-    commands = build_rtunnel_setup_commands(
-        port=31337,
-        ssh_port=22222,
-        ssh_public_key=None,
-        ssh_runtime=runtime,
-        contents_api_filename=".inspire_rtunnel_bin",
-    )
-
-    # Find first indices of the RTUNNEL_BIN_PATH copy and the contents API copy loop
-    bin_path_idx = None
-    contents_api_idx = None
-    for i, line in enumerate(commands):
-        if bin_path_idx is None and 'cp "$RTUNNEL_BIN_PATH" /tmp/rtunnel' in line:
-            bin_path_idx = i
-        if contents_api_idx is None and "CONTENTS_API_RTUNNEL_FILE=" in line:
-            contents_api_idx = i
-
-    assert bin_path_idx is not None, "RTUNNEL_BIN_PATH copy line not found"
-    assert contents_api_idx is not None, "Contents API copy block not found"
-    assert (
-        bin_path_idx < contents_api_idx
-    ), "RTUNNEL_BIN_PATH copy must come before contents API copy block"
-
-
-# ---------------------------------------------------------------------------
-# Container-preinstalled rtunnel probe (unified-base:v1 and similar images
-# bake rtunnel into /usr/local/bin, so bootstrap must prefer it over any
-# Contents API upload — the latter writes to the Jupyter root_dir, which is
-# the user's project-fileset and returns HTTP 500 / Errno 122 when quota-full).
+# Container-preinstalled rtunnel probe
+#
+# The canonical rtunnel source is baking the binary into the notebook image
+# (unified-base:v1 installs it at /usr/local/bin/rtunnel; derived images
+# inherit it, or can add it during their build). The bootstrap script must
+# locate that copy before falling through to the curl download, because curl
+# is unreachable on most offline GPU compute groups.
 # ---------------------------------------------------------------------------
 
 
@@ -274,34 +210,52 @@ def test_preinstalled_rtunnel_probe_always_emitted() -> None:
     assert 'cp "$_inspire_preinstalled_rt" /tmp/rtunnel' in joined
 
 
-def test_preinstalled_probe_sits_between_bin_path_and_contents_api() -> None:
-    runtime = SshRuntimeConfig(rtunnel_bin="/project/rtunnel")
+def test_preinstalled_probe_runs_before_arch_validation() -> None:
+    runtime = SshRuntimeConfig()
     commands = build_rtunnel_setup_commands(
         port=31337,
         ssh_port=22222,
         ssh_public_key=None,
         ssh_runtime=runtime,
-        contents_api_filename=".inspire_rtunnel_bin",
     )
 
-    bin_path_idx = None
     probe_idx = None
-    contents_api_idx = None
+    arch_idx = None
     for i, line in enumerate(commands):
-        if bin_path_idx is None and 'cp "$RTUNNEL_BIN_PATH" /tmp/rtunnel' in line:
-            bin_path_idx = i
         if probe_idx is None and "command -v rtunnel" in line:
             probe_idx = i
-        if contents_api_idx is None and "CONTENTS_API_RTUNNEL_FILE=" in line:
-            contents_api_idx = i
+        if arch_idx is None and "! /tmp/rtunnel --help" in line:
+            arch_idx = i
 
-    assert bin_path_idx is not None
     assert probe_idx is not None
-    assert contents_api_idx is not None
-    assert bin_path_idx < probe_idx < contents_api_idx, (
-        "Order must be: explicit RTUNNEL_BIN_PATH override → PATH probe "
-        "→ Contents API fallback"
+    assert arch_idx is not None
+    assert probe_idx < arch_idx, (
+        "Preinstalled-rtunnel probe must run before the arch validator, so a "
+        "bad preinstalled binary still gets cleaned up before bootstrap continues."
     )
+
+
+# ---------------------------------------------------------------------------
+# RTUNNEL_MISSING marker (bootstrap diagnostic)
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_emits_missing_marker_when_rtunnel_absent() -> None:
+    """After the setup script finishes, if /tmp/rtunnel still isn't there
+    the script must echo the well-known marker so the CLI can surface a
+    structured "bake rtunnel into your image" error instead of letting the
+    user sit through the 120s proxy-verify timeout."""
+    from inspire.platform.web.browser_api.rtunnel import RTUNNEL_MISSING_MARKER
+
+    commands = build_rtunnel_setup_commands(
+        port=31337,
+        ssh_port=22222,
+        ssh_public_key=None,
+        ssh_runtime=SshRuntimeConfig(),
+    )
+    joined = "\n".join(commands)
+    assert RTUNNEL_MISSING_MARKER in joined
+    assert "if [ ! -x /tmp/rtunnel ]" in joined
 
 
 # ---------------------------------------------------------------------------

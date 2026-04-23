@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 import re
 import time
 from pathlib import Path
@@ -52,8 +51,7 @@ _log = logging.getLogger("inspire.platform.web.browser_api.rtunnel")
 
 BOOTSTRAP_SENTINEL = "/tmp/.inspire_rtunnel_bootstrap_v1"
 SETUP_DONE_MARKER = "INSPIRE_RTUNNEL_SETUP_DONE"
-_RT_PREINSTALLED_PROBE_YES = "__INSPIRE_RT_PREINSTALLED_YES__"
-_RT_PREINSTALLED_PROBE_NO = "__INSPIRE_RT_PREINSTALLED_NO__"
+RTUNNEL_MISSING_MARKER = "INSPIRE_RTUNNEL_MISSING_IN_BOOTSTRAP"
 
 
 def _split_rtunnel_bin_paths(value: object) -> list[str]:
@@ -78,7 +76,6 @@ def build_rtunnel_setup_commands(
     ssh_port: int,
     ssh_public_key: Optional[str],
     ssh_runtime: Optional[SshRuntimeConfig] = None,
-    contents_api_filename: Optional[str] = None,
 ) -> list[str]:
     import shlex
 
@@ -148,21 +145,6 @@ def build_rtunnel_setup_commands(
         "fi"
     )
 
-    if contents_api_filename:
-        import shlex as _shlex_inner
-
-        safe_name = _shlex_inner.quote(contents_api_filename)
-        cmd_lines.append(f"CONTENTS_API_RTUNNEL_FILE={safe_name}")
-        cmd_lines.append(
-            "for _rtunnel_candidate in "
-            '"./$CONTENTS_API_RTUNNEL_FILE" '
-            '"$PWD/$CONTENTS_API_RTUNNEL_FILE" '
-            '"$HOME/$CONTENTS_API_RTUNNEL_FILE"; do '
-            'if [ ! -x /tmp/rtunnel ] && [ -f "$_rtunnel_candidate" ]; then '
-            'cp "$_rtunnel_candidate" /tmp/rtunnel && chmod +x /tmp/rtunnel && break; fi; '
-            "done"
-        )
-
     if sshd_deb_dir:
         cmd_lines.append(f"SSHD_DEB_DIR={shlex.quote(sshd_deb_dir)}")
     if dropbear_deb_dir:
@@ -179,9 +161,10 @@ def build_rtunnel_setup_commands(
         'rm -f /tmp/rtunnel /tmp/rtunnel.tgz "$BOOTSTRAP_SENTINEL"; fi'
     )
 
-    # Skip curl fallback when rtunnel was delivered via Contents API or when
-    # the notebook is known to have no internet (dropbear/apt-mirror config).
-    skip_curl = bool(contents_api_filename or dropbear_deb_dir or apt_mirror_url)
+    # Skip curl when the notebook is known to have no internet (dropbear /
+    # apt-mirror config implies an offline deployment; trying to curl github
+    # would waste the full connect timeout).
+    skip_curl = bool(dropbear_deb_dir or apt_mirror_url)
 
     if skip_curl:
         curl_rtunnel_block = (
@@ -333,6 +316,16 @@ def build_rtunnel_setup_commands(
         'if ps -ef | grep -Eq "[r]tunnel .*([[:space:]]|:)$PORT([[:space:]]|$)"; then '
         'echo "INSPIRE_RTUNNEL_STATUS=running"; '
         'else echo "INSPIRE_RTUNNEL_STATUS=not_running"; fi'
+    )
+    # Surface a recognizable marker when bootstrap finishes without a working
+    # rtunnel binary — the client tails the terminal output for this marker and
+    # converts it into a user-facing "bake rtunnel into your image" error,
+    # which is far more actionable than the 120s verify timeout that would
+    # otherwise hide the root cause.
+    cmd_lines.append(
+        'if [ ! -x /tmp/rtunnel ]; then '
+        f'echo {RTUNNEL_MISSING_MARKER}; '
+        "fi"
     )
     cmd_lines.append(f"echo {SETUP_DONE_MARKER}")
 
@@ -958,303 +951,6 @@ def _delete_terminal_via_api(
         return False
 
 
-_CONTENTS_API_RTUNNEL_FILENAME = "inspire_rtunnel_bin"
-
-
-def _upload_rtunnel_via_contents_api(
-    context: Any,
-    lab_url: str,
-    local_binary_path: Path,
-) -> bool:
-    """Upload a local rtunnel binary to the notebook via Jupyter Contents API.
-
-    Reads the binary at *local_binary_path*, base64-encodes it, and PUTs it to
-    ``{server_base}api/contents/{filename}``.  Returns ``True`` on success,
-    ``False`` on any failure (missing file, HTTP error, network error).
-    """
-    import base64 as _b64
-
-    if not local_binary_path.is_file():
-        _log.debug("Upload skipped: local binary not found at %s", local_binary_path)
-        return False
-
-    try:
-        raw = local_binary_path.read_bytes()
-    except OSError as exc:
-        _log.debug("Failed to read local binary %s: %s", local_binary_path, exc)
-        return False
-
-    encoded = _b64.b64encode(raw).decode("ascii")
-    base = _jupyter_server_base(lab_url)
-    api_url = f"{base}api/contents/{_CONTENTS_API_RTUNNEL_FILENAME}"
-    _log.debug("Uploading rtunnel via Contents API: %s (%d bytes)", api_url, len(raw))
-
-    try:
-        headers = _build_jupyter_xsrf_headers(context)
-        resp = context.request.put(
-            api_url,
-            headers=headers,
-            data={
-                "type": "file",
-                "format": "base64",
-                "content": encoded,
-            },
-            timeout=30000,
-        )
-        _log.debug("Contents API upload response: %d", resp.status)
-        if resp.status not in (200, 201):
-            try:
-                body = resp.text()[:500]
-            except Exception:
-                body = "(unable to read body)"
-            _log.debug("Contents API upload error body: %s", body)
-        return resp.status in (200, 201)
-    except (
-        PlaywrightError,
-        ConnectionError,
-        OSError,
-        RuntimeError,
-        TimeoutError,
-        ValueError,
-        TypeError,
-    ) as exc:
-        _log.debug("Contents API upload failed: %s", exc, exc_info=True)
-        return False
-
-
-def _compute_rtunnel_hash(path: Path) -> Optional[str]:
-    """Return the SHA-256 hex digest of the file at *path*, or ``None`` on error."""
-    import hashlib
-
-    try:
-        digest = hashlib.sha256()
-        with open(path, "rb") as handle:
-            for chunk in iter(lambda: handle.read(1 << 16), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-    except OSError as exc:
-        _log.debug("Failed to hash %s: %s", path, exc)
-        return None
-
-
-def _rtunnel_matches_on_notebook(
-    context: Any,
-    lab_url: str,
-    local_hash: str,
-) -> bool:
-    """Check whether the notebook already has an up-to-date rtunnel binary."""
-    import base64 as _b64
-
-    base = _jupyter_server_base(lab_url)
-    binary_url = f"{base}api/contents/{_CONTENTS_API_RTUNNEL_FILENAME}?content=0"
-    sidecar_url = (
-        f"{base}api/contents/{_CONTENTS_API_RTUNNEL_FILENAME}.sha256?format=base64&content=1"
-    )
-
-    try:
-        resp = context.request.get(binary_url, timeout=5000)
-        if resp.status == 404:
-            _log.debug("rtunnel binary not found on notebook (404)")
-            return False
-        if resp.status not in (200, 201):
-            _log.debug("rtunnel binary metadata check returned %d", resp.status)
-            return False
-
-        resp = context.request.get(sidecar_url, timeout=5000)
-        if resp.status == 404:
-            _log.debug("rtunnel hash sidecar not found on notebook (404)")
-            return False
-        if resp.status not in (200, 201):
-            _log.debug("rtunnel hash sidecar check returned %d", resp.status)
-            return False
-
-        body = resp.json()
-        remote_b64 = body.get("content", "")
-        remote_hash = _b64.b64decode(remote_b64).decode("ascii").strip()
-        if remote_hash == local_hash:
-            _log.debug("rtunnel hash matches: %s", local_hash)
-            return True
-        _log.debug("rtunnel hash mismatch: local=%s remote=%s", local_hash, remote_hash)
-        return False
-    except (
-        PlaywrightError,
-        ConnectionError,
-        OSError,
-        RuntimeError,
-        TimeoutError,
-        ValueError,
-        TypeError,
-        KeyError,
-        UnicodeDecodeError,
-    ) as exc:
-        _log.debug("rtunnel hash check failed: %s", exc, exc_info=True)
-        return False
-
-
-def _upload_rtunnel_hash_sidecar(
-    context: Any,
-    lab_url: str,
-    hex_hash: str,
-) -> bool:
-    """Upload a ``.sha256`` sidecar alongside the rtunnel binary."""
-    import base64 as _b64
-
-    base = _jupyter_server_base(lab_url)
-    api_url = f"{base}api/contents/{_CONTENTS_API_RTUNNEL_FILENAME}.sha256"
-    encoded = _b64.b64encode(hex_hash.encode("ascii")).decode("ascii")
-
-    try:
-        headers = _build_jupyter_xsrf_headers(context)
-        resp = context.request.put(
-            api_url,
-            headers=headers,
-            data={
-                "type": "file",
-                "format": "base64",
-                "content": encoded,
-            },
-            timeout=5000,
-        )
-        ok = resp.status in (200, 201)
-        if not ok:
-            _log.debug("Hash sidecar upload returned %d", resp.status)
-        return ok
-    except (
-        PlaywrightError,
-        ConnectionError,
-        OSError,
-        RuntimeError,
-        TimeoutError,
-        ValueError,
-        TypeError,
-    ) as exc:
-        _log.debug("Hash sidecar upload failed: %s", exc, exc_info=True)
-        return False
-
-
-def _resolve_rtunnel_binary(
-    *,
-    context: Any,
-    lab_url: str,
-    ssh_runtime: Optional[SshRuntimeConfig],
-) -> Optional[str]:
-    """Decide whether to upload the rtunnel binary via the Contents API."""
-    import sys as _sys
-
-    configured_local_rtunnel = None
-    configured_paths = (
-        _split_rtunnel_bin_paths(ssh_runtime.rtunnel_bin) if ssh_runtime else []
-    )
-    for candidate_str in configured_paths:
-        candidate = Path(candidate_str).expanduser()
-        if candidate.is_file():
-            configured_local_rtunnel = candidate
-            break
-
-    local_rtunnel = configured_local_rtunnel or (Path.home() / ".local" / "bin" / "rtunnel")
-    local_exists = local_rtunnel.is_file()
-    _log.debug("Local rtunnel path: %s (exists=%s)", local_rtunnel, local_exists)
-
-    rtunnel_bin_configured = bool(ssh_runtime and ssh_runtime.rtunnel_bin)
-    policy = ssh_runtime.rtunnel_upload_policy if ssh_runtime else "auto"
-    explicit_download_url = bool(
-        ssh_runtime
-        and ssh_runtime.rtunnel_download_url
-        and ssh_runtime.rtunnel_download_url != DEFAULT_RTUNNEL_DOWNLOAD_URL
-    )
-    upload_binary_supported = bool(
-        configured_local_rtunnel or explicit_download_url or platform.system().lower() == "linux"
-    )
-
-    if rtunnel_bin_configured:
-        _sys.stderr.write(f"  Using configured rtunnel path: {ssh_runtime.rtunnel_bin}\n")
-
-    if policy == "never":
-        _sys.stderr.write("  Upload policy: never; skipping Contents API upload fallback.\n")
-        return None
-
-    if not upload_binary_supported:
-        _sys.stderr.write(
-            "  Skipping Contents API rtunnel upload fallback on this host; "
-            "no explicit remote-compatible binary was configured.\n"
-        )
-        return None
-
-    if policy == "auto" and rtunnel_bin_configured:
-        if local_exists:
-            local_hash = _compute_rtunnel_hash(local_rtunnel)
-            if local_hash and _rtunnel_matches_on_notebook(context, lab_url, local_hash):
-                return _CONTENTS_API_RTUNNEL_FILENAME
-        return None
-
-    if policy == "always" and rtunnel_bin_configured:
-        _sys.stderr.write("  Upload policy: always; preparing Contents API fallback.\n")
-
-    if not local_exists:
-        download_url = (
-            ssh_runtime.rtunnel_download_url if ssh_runtime else DEFAULT_RTUNNEL_DOWNLOAD_URL
-        )
-        if _download_rtunnel_locally(download_url, local_rtunnel):
-            _sys.stderr.write("  Downloaded rtunnel binary locally.\n")
-        else:
-            _sys.stderr.write("  WARNING: Failed to download rtunnel binary locally.\n")
-
-    if local_rtunnel.is_file():
-        _log.debug("Local rtunnel binary: %d bytes", local_rtunnel.stat().st_size)
-        local_hash = _compute_rtunnel_hash(local_rtunnel)
-        if local_hash and _rtunnel_matches_on_notebook(context, lab_url, local_hash):
-            _sys.stderr.write("  rtunnel binary already on notebook; skipping upload.\n")
-            return _CONTENTS_API_RTUNNEL_FILENAME
-        if _upload_rtunnel_via_contents_api(context, lab_url, local_rtunnel):
-            if local_hash:
-                _upload_rtunnel_hash_sidecar(context, lab_url, local_hash)
-            _sys.stderr.write("  Uploaded rtunnel binary via Jupyter Contents API.\n")
-            return _CONTENTS_API_RTUNNEL_FILENAME
-        _sys.stderr.write("  WARNING: Failed to upload rtunnel binary via Jupyter Contents API.\n")
-    else:
-        _sys.stderr.write(f"  WARNING: rtunnel binary not found at {local_rtunnel}\n")
-
-    return None
-
-
-def _download_rtunnel_locally(
-    download_url: str,
-    dest: Path,
-) -> bool:
-    """Download rtunnel binary from a URL to a local path.
-
-    Downloads the ``.tar.gz`` archive, extracts the rtunnel binary, and places
-    it at *dest*.  Returns ``True`` on success, ``False`` on any failure.
-    """
-    import tarfile
-    import tempfile
-    import urllib.request
-
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        _log.debug("Downloading rtunnel from %s to %s", download_url, dest)
-        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-            tmp_path = Path(tmp.name)
-        try:
-            urllib.request.urlretrieve(download_url, str(tmp_path))
-            _log.debug("Downloaded archive: %s (%d bytes)", tmp_path, tmp_path.stat().st_size)
-            with tarfile.open(str(tmp_path), "r:gz") as tar:
-                for member in tar.getmembers():
-                    if member.isfile() and "rtunnel" in member.name:
-                        extracted = tar.extractfile(member)
-                        if extracted:
-                            data = extracted.read()
-                            dest.write_bytes(data)
-                            dest.chmod(0o755)
-                            _log.debug("Extracted rtunnel binary: %s (%d bytes)", dest, len(data))
-                            return True
-        finally:
-            tmp_path.unlink(missing_ok=True)
-    except Exception as exc:
-        _log.debug("rtunnel local download failed: %s", exc, exc_info=True)
-    return False
-
-
 def _extract_jupyter_token(lab_url: str) -> str | None:
     from urllib.parse import parse_qs, urlsplit
 
@@ -1448,41 +1144,47 @@ def _send_setup_command_via_terminal_ws(
         _delete_terminal_via_api(context, lab_url=lab_frame.url, term_name=term_name)
 
 
-def _probe_preinstalled_rtunnel_via_ws(
+class RtunnelMissingInContainerError(RuntimeError):
+    """Raised when the bootstrap script finishes but ``/tmp/rtunnel`` is
+    still absent in the container — i.e. the image has no rtunnel baked in
+    and the container can't reach the default download URL either. The CLI
+    layer turns this into a structured repair-instruction error."""
+
+
+def _check_rtunnel_present_via_ws(
     *,
     context: Any,
     lab_frame: Any,
-    timeout_ms: int = 8000,
+    timeout_ms: int = 5000,
 ) -> Optional[bool]:
-    """Ask the notebook container whether ``rtunnel`` is already on PATH.
-
-    Returns ``True`` when ``command -v rtunnel`` resolves to an executable
-    (e.g. unified-base:v1 bakes ``/usr/local/bin/rtunnel`` into the image),
-    ``False`` when the shell explicitly reports "not found", and ``None``
-    when the probe is inconclusive (terminal unavailable, WS error, timeout).
-
-    Preinstalled-image detection matters because the Jupyter Contents API
-    writes to the user's root_dir, which is also their project-fileset
-    quota; when that is full the upload fails with HTTP 500 / Errno 122.
-    Skipping the upload when the container already has rtunnel avoids that
-    error entirely, while a ``None`` result preserves the legacy upload
-    behaviour as a safety net.
-    """
+    """Return ``True`` when ``/tmp/rtunnel`` is executable inside the
+    container, ``False`` when confirmed missing, ``None`` when the probe
+    itself was inconclusive (terminal unavailable, WS dropped). Callers
+    should only surface a "rtunnel missing in image + no internet" error
+    when this returns ``False`` explicitly, so a transient WS glitch
+    doesn't get blamed on image prep."""
     term_name = _create_terminal_via_api(context, lab_frame.url)
     if not term_name:
         return None
 
+    present_marker = "__INSPIRE_RTUNNEL_PRESENT__"
+    absent_marker = "__INSPIRE_RTUNNEL_ABSENT__"
+
     try:
         ws_url = _build_terminal_websocket_url(lab_frame.url, term_name)
+        # Use the absent marker as the completion signal because the present
+        # case's echo always runs too — we just need *some* output line to
+        # guarantee the WS handler fires. The returned bool is meaningless
+        # here; we actually care about scanning the terminal's stdout for
+        # which of the two markers landed, which we do via a fresh evaluate.
         probe_cmd = (
-            "(command -v rtunnel >/dev/null 2>&1 "
-            f"&& echo {_RT_PREINSTALLED_PROBE_YES} "
-            f"|| echo {_RT_PREINSTALLED_PROBE_NO})\r"
+            f"([ -x /tmp/rtunnel ] && echo {present_marker} "
+            f"|| echo {absent_marker})\r"
         )
         try:
             result = lab_frame.evaluate(
                 """
-                async ({ wsUrl, stdinData, timeoutMs, promptTimeoutMs, yesMarker, noMarker }) => {
+                async ({ wsUrl, stdinData, timeoutMs, promptTimeoutMs, presentMarker, absentMarker }) => {
                   return await new Promise((resolve) => {
                     let settled = false;
                     let sent = false;
@@ -1497,17 +1199,11 @@ def _probe_preinstalled_rtunnel_via_ws(
                     const doSend = () => {
                       if (sent || settled) return;
                       sent = true;
-                      try {
-                        socket.send(JSON.stringify(["stdin", stdinData]));
-                      } catch (_) {
-                        clearTimeout(timer); finish(null);
-                      }
+                      try { socket.send(JSON.stringify(["stdin", stdinData])); }
+                      catch (_) { clearTimeout(timer); finish(null); }
                     };
-                    try {
-                      socket = new WebSocket(wsUrl);
-                    } catch (_) {
-                      clearTimeout(timer); finish(null); return;
-                    }
+                    try { socket = new WebSocket(wsUrl); }
+                    catch (_) { clearTimeout(timer); finish(null); return; }
                     let buf = "";
                     const promptRe = /[$#]\\s*$/;
                     socket.addEventListener("message", (ev) => {
@@ -1520,10 +1216,10 @@ def _probe_preinstalled_rtunnel_via_ws(
                           if (promptRe.test(buf)) doSend();
                           return;
                         }
-                        if (buf.includes(yesMarker)) {
-                          clearTimeout(timer); finish("YES");
-                        } else if (buf.includes(noMarker)) {
-                          clearTimeout(timer); finish("NO");
+                        if (buf.includes(presentMarker)) {
+                          clearTimeout(timer); finish("present");
+                        } else if (buf.includes(absentMarker)) {
+                          clearTimeout(timer); finish("absent");
                         }
                       } catch (_) {}
                     });
@@ -1543,18 +1239,18 @@ def _probe_preinstalled_rtunnel_via_ws(
                     "wsUrl": ws_url,
                     "stdinData": probe_cmd,
                     "timeoutMs": int(timeout_ms),
-                    "promptTimeoutMs": min(int(timeout_ms) - 500, 3000),
-                    "yesMarker": _RT_PREINSTALLED_PROBE_YES,
-                    "noMarker": _RT_PREINSTALLED_PROBE_NO,
+                    "promptTimeoutMs": min(int(timeout_ms) - 500, 2500),
+                    "presentMarker": present_marker,
+                    "absentMarker": absent_marker,
                 },
             )
         except (PlaywrightError, AttributeError, RuntimeError, TypeError, ValueError) as exc:
-            _log.debug("Preinstalled rtunnel probe failed to evaluate: %s", exc)
+            _log.debug("rtunnel presence probe failed to evaluate: %s", exc)
             return None
 
-        if result == "YES":
+        if result == "present":
             return True
-        if result == "NO":
+        if result == "absent":
             return False
         return None
     finally:
@@ -2452,37 +2148,11 @@ def _setup_notebook_rtunnel_sync(
                 pass
             timer.mark("wait_spinner")
 
-            preinstalled = _probe_preinstalled_rtunnel_via_ws(
-                context=context,
-                lab_frame=lab_frame,
-            )
-            timer.mark("probe_preinstalled_rtunnel")
-            policy = ssh_runtime.rtunnel_upload_policy if ssh_runtime else "auto"
-
-            if preinstalled is True and policy != "always":
-                _sys.stderr.write(
-                    "  Container has rtunnel preinstalled; skipping Contents API upload.\n"
-                )
-                _sys.stderr.flush()
-                contents_api_filename = None
-            else:
-                contents_api_filename = _resolve_rtunnel_binary(
-                    context=context,
-                    lab_url=lab_frame.url,
-                    ssh_runtime=ssh_runtime,
-                )
-
-            _log.debug(
-                "preinstalled_rtunnel=%s contents_api_filename=%s",
-                preinstalled,
-                contents_api_filename,
-            )
             cmd_lines = build_rtunnel_setup_commands(
                 port=port,
                 ssh_port=ssh_port,
                 ssh_public_key=ssh_public_key,
                 ssh_runtime=ssh_runtime,
-                contents_api_filename=contents_api_filename,
             )
             batch_cmd = _build_batch_setup_script(cmd_lines)
             _log.debug("Setup script length: %d chars, %d commands", len(batch_cmd), len(cmd_lines))
@@ -2499,6 +2169,22 @@ def _setup_notebook_rtunnel_sync(
                 setup_sent_via_ws=setup_sent_via_ws,
                 timer=timer,
             )
+            # Detect the "no rtunnel in image + no public network" case up
+            # front so the CLI can surface a structured repair hint instead
+            # of making the user sit through a 120s proxy-verify timeout.
+            # ``None`` (probe inconclusive) falls through to verify so a
+            # transient WS glitch doesn't get blamed on image prep.
+            rtunnel_present = _check_rtunnel_present_via_ws(
+                context=context,
+                lab_frame=lab_frame,
+            )
+            timer.mark("check_rtunnel_present")
+            _log.debug("rtunnel_present=%s", rtunnel_present)
+            if rtunnel_present is False:
+                raise RtunnelMissingInContainerError(
+                    "rtunnel binary missing inside the notebook container, "
+                    "and bootstrap could not fetch one (no public network)."
+                )
             _capture_terminal_debug_artifact(page=page, timer=timer)
             return _verify_and_cache_rtunnel_proxy(
                 notebook_id=notebook_id,
