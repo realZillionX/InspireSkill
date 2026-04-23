@@ -2230,7 +2230,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
     prompted_credentials = request.prompted_credentials
     cli_target_dir = request.cli_target_dir
 
-    global_path = Config.resolve_global_config_path()
+    global_path = Config.writable_config_path()
     project_path = Path.cwd() / PROJECT_CONFIG_DIR / CONFIG_FILENAME
     if not _confirm_discovery_writes(
         force=force, global_path=global_path, project_path=project_path

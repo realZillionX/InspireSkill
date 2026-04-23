@@ -753,6 +753,22 @@ class TestAccountConfigLayer:
         assert cfg.username == "alice-platform"
         assert cfg.context_account is None
 
+    def test_writable_config_path_targets_active_account(
+        self, home: Path, clean_env: None
+    ) -> None:
+        """``inspire init`` writes to the active account's config.toml so the
+        data it saves is the same file the loader then reads."""
+        self._write_account_config(home, "alice", '[auth]\nusername = "a"\n')
+
+        target = Config.writable_config_path()
+        assert target == home / ".inspire" / "accounts" / "alice" / "config.toml"
+
+    def test_writable_config_path_falls_back_without_active_account(
+        self, home: Path, clean_env: None
+    ) -> None:
+        target = Config.writable_config_path()
+        assert target == Config.resolve_global_config_path()
+
 
 # ===========================================================================
 # Init command tests

@@ -243,7 +243,7 @@ def _init_smart_mode(
         click.echo(f"  - {len(project_opts)} project-scope option(s)")
     click.echo()
 
-    global_path = Config.resolve_global_config_path()
+    global_path = Config.writable_config_path()
     project_path = Path.cwd() / PROJECT_CONFIG_DIR / CONFIG_FILENAME
 
     if global_flag:

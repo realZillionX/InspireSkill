@@ -26,7 +26,14 @@ from .templates import _init_smart_mode, _init_template_mode
 
 
 def _get_config_paths() -> tuple[Path, Path]:
-    global_path = Config.resolve_global_config_path()
+    """Writable paths for ``inspire init``.
+
+    The first element lands under the active account's directory
+    (``~/.inspire/accounts/<name>/config.toml``) when one is set, so
+    ``init --discover`` writes to the file the loader actually reads.
+    Falls back to the legacy global path for users without an account.
+    """
+    global_path = Config.writable_config_path()
     project_path = Path.cwd() / PROJECT_CONFIG_DIR / CONFIG_FILENAME
     return global_path, project_path
 

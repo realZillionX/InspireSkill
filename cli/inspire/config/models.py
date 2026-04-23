@@ -151,11 +151,37 @@ class Config:
 
     @classmethod
     def resolve_global_config_path(cls) -> Path:
-        """Return the effective global config path, honoring env override."""
+        """Return the effective legacy global config path, honoring env override.
+
+        This always points at ``~/.config/inspire/config.toml`` (or its env
+        override). It is the *legacy* location consulted only when no
+        InspireSkill account is active. Writes should use
+        :meth:`writable_config_path` instead.
+        """
         override = str(os.getenv(cls.GLOBAL_CONFIG_PATH_ENV_VAR) or "").strip()
         if override:
             return Path(override).expanduser()
         return cls.GLOBAL_CONFIG_PATH
+
+    @classmethod
+    def writable_config_path(cls) -> Path:
+        """Return the path where config writes should land.
+
+        If an InspireSkill account is active (``~/.inspire/current``), the
+        write target is that account's ``~/.inspire/accounts/<name>/config.toml``
+        — the same file read by the account layer of the loader, so writes
+        take effect on the next load. Without an active account, falls
+        back to :meth:`resolve_global_config_path` for backward compat
+        with users who haven't run ``inspire account add`` yet.
+        """
+        try:
+            from inspire.accounts import account_config_path, current_account
+        except ImportError:
+            return cls.resolve_global_config_path()
+        name = current_account()
+        if name:
+            return account_config_path(name)
+        return cls.resolve_global_config_path()
 
     def get_expanded_cache_path(self) -> str:
         """Get the job cache path with ~ expanded."""
