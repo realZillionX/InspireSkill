@@ -542,7 +542,6 @@ def test_run_notebook_ssh_validates_dropbear_setup_script(
             port=31337,
             ssh_port=22222,
             command=None,
-            rtunnel_bin=None,
             debug_playwright=False,
             setup_timeout=60,
         )
@@ -610,7 +609,6 @@ def test_run_notebook_ssh_fails_fast_on_account_mismatch(
             port=31337,
             ssh_port=22222,
             command=None,
-            rtunnel_bin=None,
             debug_playwright=False,
             setup_timeout=60,
         )
@@ -646,7 +644,6 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
             return None
 
     resolved_runtime = SshRuntimeConfig(
-        rtunnel_bin="/project/rtunnel",
         rtunnel_download_url="https://project.example/rtunnel.tgz",
     )
     setup_kwargs: dict[str, object] = {}
@@ -715,7 +712,6 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
         port=31337,
         ssh_port=22222,
         command=None,
-        rtunnel_bin="/cli/rtunnel",
         debug_playwright=False,
         setup_timeout=60,
     )
@@ -821,7 +817,6 @@ def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
         port=31337,
         ssh_port=22222,
         command=None,
-        rtunnel_bin="/cli/rtunnel",
         debug_playwright=False,
         setup_timeout=60,
     )
@@ -933,7 +928,6 @@ def test_run_notebook_ssh_interactive_reconnects_after_drop(
         port=31337,
         ssh_port=22222,
         command=None,
-        rtunnel_bin="/cli/rtunnel",
         debug_playwright=False,
         setup_timeout=60,
     )
@@ -1049,7 +1043,6 @@ def test_run_notebook_ssh_command_uses_non_interactive_executor(
         port=31337,
         ssh_port=22222,
         command="git status",
-        rtunnel_bin=None,
         debug_playwright=False,
         setup_timeout=60,
     )
@@ -1146,7 +1139,6 @@ def test_run_notebook_ssh_name_uses_cached_bridge_metadata(
         port=31337,
         ssh_port=22222,
         command="echo fast-name",
-        rtunnel_bin=None,
         debug_playwright=False,
         setup_timeout=60,
     )
@@ -1274,7 +1266,6 @@ def test_run_notebook_ssh_command_timeout_is_reported(
             ssh_port=22222,
             command="git pull",
             command_timeout=5,
-            rtunnel_bin=None,
             debug_playwright=False,
             setup_timeout=60,
         )
@@ -1399,7 +1390,6 @@ def test_run_notebook_ssh_command_failure_reports_exit_code_and_grep_hint(
             port=31337,
             ssh_port=22222,
             command="grep -c missing tasks/*/data.json",
-            rtunnel_bin=None,
             debug_playwright=False,
             setup_timeout=60,
         )
@@ -1504,7 +1494,6 @@ def test_run_notebook_ssh_reports_when_tunnel_not_ready(
             port=31337,
             ssh_port=22222,
             command=None,
-            rtunnel_bin="/cli/rtunnel",
             debug_playwright=False,
             setup_timeout=60,
         )
@@ -1514,105 +1503,3 @@ def test_run_notebook_ssh_reports_when_tunnel_not_ready(
     assert "SSH preflight failed" in captured["message"]
     assert "Proxy readiness report:" in captured["hint"]
 
-
-def test_run_notebook_ssh_passes_upload_policy_override(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    captured_overrides: dict[str, Any] = {}
-
-    def fake_resolve_ssh_runtime_config(cli_overrides=None):  # type: ignore[no-untyped-def]
-        captured_overrides.update(cli_overrides or {})
-        return SshRuntimeConfig()
-
-    class FakeSession:
-        workspace_id = "ws-test"
-        storage_state = {}
-
-    class FakeTunnelConfig:
-        def __init__(self) -> None:
-            self.bridges: dict[str, object] = {}
-            self.default_bridge = None
-
-        def add_bridge(self, profile: object) -> None:
-            name = str(getattr(profile, "name", "default"))
-            self.bridges[name] = profile
-            if self.default_bridge is None:
-                self.default_bridge = name
-
-        def get_bridge(self, name: Optional[str] = None) -> object | None:
-            if name:
-                return self.bridges.get(name)
-            if self.default_bridge:
-                return self.bridges.get(self.default_bridge)
-            return None
-
-    monkeypatch.setattr(ssh_flow_module, "require_web_session", lambda ctx, hint: FakeSession())
-    monkeypatch.setattr(ssh_flow_module, "load_config", lambda ctx: make_test_config(tmp_path))
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_resolve_notebook_id",
-        lambda *args, **kwargs: ("notebook-12345678", None),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "wait_for_notebook_running",
-        lambda notebook_id, session=None: {
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "CPU"}}
-        },
-    )
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_get_current_user_detail",
-        lambda session, base_url: {"id": "user-1", "username": "user"},
-    )
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_validate_notebook_account_access",
-        lambda current_user, notebook_detail: (True, ""),
-    )
-    monkeypatch.setattr(ssh_flow_module, "load_ssh_public_key", lambda pubkey: "ssh-ed25519 AAA")
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "resolve_ssh_runtime_config",
-        fake_resolve_ssh_runtime_config,
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "setup_notebook_rtunnel",
-        lambda **kwargs: "wss://proxy.example/notebook/",
-    )
-
-    fake_tunnel_config = FakeTunnelConfig()
-    monkeypatch.setattr(
-        tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
-    )
-    monkeypatch.setattr(tunnel_module, "save_tunnel_config", lambda config: None)
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: True)
-    monkeypatch.setattr(
-        tunnel_module,
-        "is_tunnel_available",
-        lambda bridge_name, config, retries=0, retry_pause=0.0, progressive=True: True,
-    )
-    monkeypatch.setattr(
-        tunnel_module,
-        "run_ssh_command_streaming",
-        lambda **kwargs: 0,
-    )
-
-    ssh_flow_module.run_notebook_ssh(
-        Context(),
-        notebook_id="nb-name",
-        wait=True,
-        pubkey=None,
-        save_as=None,
-        port=31337,
-        ssh_port=22222,
-        command="echo test",
-        command_timeout=5,
-        rtunnel_bin=None,
-        rtunnel_upload_policy="never",
-        debug_playwright=False,
-        setup_timeout=60,
-    )
-
-    assert captured_overrides.get("rtunnel_upload_policy") == "never"

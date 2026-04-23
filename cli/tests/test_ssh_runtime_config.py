@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from inspire.bridge.tunnel.rtunnel import _get_rtunnel_download_url
-from inspire.config import Config, ConfigError
+from inspire.config import Config
 from inspire.config.ssh_runtime import DEFAULT_RTUNNEL_DOWNLOAD_URL, resolve_ssh_runtime_config
 
 
@@ -21,15 +21,21 @@ class TestSshRuntimeConfig:
     @pytest.fixture
     def clean_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         env_vars = [
-            "INSPIRE_RTUNNEL_BIN",
             "INSPIRE_SSHD_DEB_DIR",
             "INSPIRE_DROPBEAR_DEB_DIR",
             "INSPIRE_SETUP_SCRIPT",
             "INSPIRE_RTUNNEL_DOWNLOAD_URL",
-            "INSPIRE_RTUNNEL_UPLOAD_POLICY",
+            "INSPIRE_APT_MIRROR_URL",
         ]
         for var in env_vars:
             monkeypatch.delenv(var, raising=False)
+
+    # ------------------------------------------------------------------
+    # Layering: global TOML vs project TOML vs env var vs CLI override.
+    # We test this on ``sshd_deb_dir`` because it's a simple Optional[str]
+    # field with no validation magic, so any observed value change
+    # unambiguously reflects the layering logic.
+    # ------------------------------------------------------------------
 
     def test_prefer_source_env_default_env_wins(
         self,
@@ -41,16 +47,16 @@ class TestSshRuntimeConfig:
             tmp_path,
             """
 [ssh]
-rtunnel_bin = "/project/rtunnel"
+sshd_deb_dir = "/project/sshd"
 """,
         )
         monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("INSPIRE_RTUNNEL_BIN", "/env/rtunnel")
+        monkeypatch.setenv("INSPIRE_SSHD_DEB_DIR", "/env/sshd")
 
         runtime = resolve_ssh_runtime_config()
 
-        assert runtime.rtunnel_bin == "/env/rtunnel"
+        assert runtime.sshd_deb_dir == "/env/sshd"
 
     def test_prefer_source_toml_project_wins_over_env(
         self,
@@ -65,16 +71,16 @@ rtunnel_bin = "/project/rtunnel"
 prefer_source = "toml"
 
 [ssh]
-rtunnel_bin = "/project/rtunnel"
+sshd_deb_dir = "/project/sshd"
 """,
         )
         monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("INSPIRE_RTUNNEL_BIN", "/env/rtunnel")
+        monkeypatch.setenv("INSPIRE_SSHD_DEB_DIR", "/env/sshd")
 
         runtime = resolve_ssh_runtime_config()
 
-        assert runtime.rtunnel_bin == "/project/rtunnel"
+        assert runtime.sshd_deb_dir == "/project/sshd"
 
     def test_prefer_source_toml_env_still_overrides_global(
         self,
@@ -88,7 +94,7 @@ rtunnel_bin = "/project/rtunnel"
         global_config.write_text(
             """
 [ssh]
-rtunnel_bin = "/global/rtunnel"
+sshd_deb_dir = "/global/sshd"
 """
         )
 
@@ -101,11 +107,11 @@ prefer_source = "toml"
         )
         monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", global_config)
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("INSPIRE_RTUNNEL_BIN", "/env/rtunnel")
+        monkeypatch.setenv("INSPIRE_SSHD_DEB_DIR", "/env/sshd")
 
         runtime = resolve_ssh_runtime_config()
 
-        assert runtime.rtunnel_bin == "/env/rtunnel"
+        assert runtime.sshd_deb_dir == "/env/sshd"
 
     def test_cli_override_has_highest_priority(
         self,
@@ -120,16 +126,21 @@ prefer_source = "toml"
 prefer_source = "toml"
 
 [ssh]
-rtunnel_bin = "/project/rtunnel"
+sshd_deb_dir = "/project/sshd"
 """,
         )
         monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("INSPIRE_RTUNNEL_BIN", "/env/rtunnel")
+        monkeypatch.setenv("INSPIRE_SSHD_DEB_DIR", "/env/sshd")
 
-        runtime = resolve_ssh_runtime_config(cli_overrides={"rtunnel_bin": "/cli/rtunnel"})
+        runtime = resolve_ssh_runtime_config(cli_overrides={"sshd_deb_dir": "/cli/sshd"})
 
-        assert runtime.rtunnel_bin == "/cli/rtunnel"
+        assert runtime.sshd_deb_dir == "/cli/sshd"
+
+    # ------------------------------------------------------------------
+    # rtunnel_download_url specifically (consumed by both notebook
+    # bootstrap and the Mac-local bridge tunnel helper).
+    # ------------------------------------------------------------------
 
     def test_rtunnel_download_url_follows_prefer_source_toml(
         self,
@@ -189,191 +200,3 @@ rtunnel_download_url = "https://project.example/shared.tgz"
         monkeypatch.setenv("INSPIRE_RTUNNEL_DOWNLOAD_URL", "https://env.example/shared.tgz")
 
         assert _get_rtunnel_download_url() == "https://project.example/shared.tgz"
-
-    def test_rtunnel_upload_policy_defaults_to_auto(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        clean_env: None,
-    ) -> None:
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
-        monkeypatch.chdir(tmp_path)
-
-        runtime = resolve_ssh_runtime_config()
-
-        assert runtime.rtunnel_upload_policy == "auto"
-
-    def test_rtunnel_upload_policy_follows_project_toml(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        clean_env: None,
-    ) -> None:
-        _write_project_config(
-            tmp_path,
-            """
-[ssh]
-rtunnel_upload_policy = "never"
-""",
-        )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
-        monkeypatch.chdir(tmp_path)
-
-        runtime = resolve_ssh_runtime_config()
-
-        assert runtime.rtunnel_upload_policy == "never"
-
-    def test_rtunnel_upload_policy_env_overrides_by_default(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        clean_env: None,
-    ) -> None:
-        _write_project_config(
-            tmp_path,
-            """
-[ssh]
-rtunnel_upload_policy = "never"
-""",
-        )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("INSPIRE_RTUNNEL_UPLOAD_POLICY", "always")
-
-        runtime = resolve_ssh_runtime_config()
-
-        assert runtime.rtunnel_upload_policy == "always"
-
-    def test_rtunnel_upload_policy_cli_override_has_highest_priority(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        clean_env: None,
-    ) -> None:
-        _write_project_config(
-            tmp_path,
-            """
-[ssh]
-rtunnel_upload_policy = "never"
-""",
-        )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
-        monkeypatch.chdir(tmp_path)
-
-        runtime = resolve_ssh_runtime_config(cli_overrides={"rtunnel_upload_policy": "always"})
-
-        assert runtime.rtunnel_upload_policy == "always"
-
-    def test_rtunnel_upload_policy_invalid_raises_config_error(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        clean_env: None,
-    ) -> None:
-        _write_project_config(
-            tmp_path,
-            """
-[ssh]
-rtunnel_upload_policy = "bogus"
-""",
-        )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
-        monkeypatch.chdir(tmp_path)
-
-        with pytest.raises(ConfigError):
-            resolve_ssh_runtime_config()
-
-    # ------------------------------------------------------------------
-    # rtunnel_bin multi-path support
-    # ------------------------------------------------------------------
-
-    def test_rtunnel_bin_toml_list_normalizes_to_colon_string(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        clean_env: None,
-    ) -> None:
-        _write_project_config(
-            tmp_path,
-            """
-[ssh]
-rtunnel_bin = ["/inspire/hdd/project/x/u/rtunnel", "/inspire/ssd/project/x/u/rtunnel"]
-""",
-        )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
-        monkeypatch.chdir(tmp_path)
-
-        runtime = resolve_ssh_runtime_config()
-
-        assert runtime.rtunnel_bin == (
-            "/inspire/hdd/project/x/u/rtunnel:/inspire/ssd/project/x/u/rtunnel"
-        )
-
-    def test_rtunnel_bin_toml_list_drops_empty_entries(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        clean_env: None,
-    ) -> None:
-        _write_project_config(
-            tmp_path,
-            """
-[ssh]
-rtunnel_bin = ["  /a/rtunnel  ", "", "/b/rtunnel", "   "]
-""",
-        )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
-        monkeypatch.chdir(tmp_path)
-
-        runtime = resolve_ssh_runtime_config()
-
-        assert runtime.rtunnel_bin == "/a/rtunnel:/b/rtunnel"
-
-    def test_rtunnel_bin_env_colon_string_passes_through(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        clean_env: None,
-    ) -> None:
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("INSPIRE_RTUNNEL_BIN", "/env/a/rtunnel:/env/b/rtunnel")
-
-        runtime = resolve_ssh_runtime_config()
-
-        assert runtime.rtunnel_bin == "/env/a/rtunnel:/env/b/rtunnel"
-
-    def test_rtunnel_bin_cli_override_list_is_normalized(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        clean_env: None,
-    ) -> None:
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
-        monkeypatch.chdir(tmp_path)
-
-        runtime = resolve_ssh_runtime_config(
-            cli_overrides={"rtunnel_bin": ["/cli/a/rtunnel", "/cli/b/rtunnel"]},
-        )
-
-        assert runtime.rtunnel_bin == "/cli/a/rtunnel:/cli/b/rtunnel"
-
-    def test_rtunnel_bin_single_path_unchanged(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        clean_env: None,
-    ) -> None:
-        _write_project_config(
-            tmp_path,
-            """
-[ssh]
-rtunnel_bin = "/solo/rtunnel"
-""",
-        )
-        monkeypatch.setattr(Config, "GLOBAL_CONFIG_PATH", tmp_path / "missing" / "config.toml")
-        monkeypatch.chdir(tmp_path)
-
-        runtime = resolve_ssh_runtime_config()
-
-        assert runtime.rtunnel_bin == "/solo/rtunnel"

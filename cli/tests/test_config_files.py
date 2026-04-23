@@ -116,7 +116,7 @@ class TestConfigSchema:
         assert "INSP_GITHUB_TOKEN" in global_env_vars
 
         # SSH paths should be global
-        assert "INSPIRE_RTUNNEL_BIN" in global_env_vars
+        assert "INSPIRE_RTUNNEL_DOWNLOAD_URL" in global_env_vars
 
         # Password should remain global-scope for security defaults
         assert "INSPIRE_PASSWORD" in global_env_vars

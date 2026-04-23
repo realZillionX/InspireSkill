@@ -64,37 +64,6 @@ def _parse_list(value: str) -> list[str]:
     return parts
 
 
-def _parse_upload_policy(value: str) -> str:
-    """Parse rtunnel upload policy."""
-    normalized = str(value).strip().lower()
-    if normalized in {"auto", "never", "always"}:
-        return normalized
-    raise ValueError(f"Invalid rtunnel upload policy: {value}")
-
-
-def _normalize_rtunnel_bin(value: object) -> str | None:
-    """Accept ``None``, a ``str``, or a ``list[str]`` and return a single
-    ``:``-joined string (``$PATH``-style) or ``None``.
-
-    This lets users configure multiple pre-cached rtunnel binaries that
-    live in different storage partitions; the bootstrap script walks the
-    list in order and uses the first candidate that exists. Empty /
-    whitespace-only entries are dropped.
-
-    Examples::
-
-        _normalize_rtunnel_bin(None)                         # None
-        _normalize_rtunnel_bin("/a/rtunnel")                 # "/a/rtunnel"
-        _normalize_rtunnel_bin("/a/rtunnel:/b/rtunnel")      # "/a/rtunnel:/b/rtunnel"
-        _normalize_rtunnel_bin(["/a/rtunnel", "/b/rtunnel"]) # "/a/rtunnel:/b/rtunnel"
-    """
-    if value is None:
-        return None
-    if isinstance(value, (list, tuple)):
-        parts = [str(p).strip() for p in value if str(p).strip()]
-        return ":".join(parts) or None
-    s = str(value).strip()
-    return s or None
 
 
 def parse_value(option: ConfigOption, value: str) -> Any:

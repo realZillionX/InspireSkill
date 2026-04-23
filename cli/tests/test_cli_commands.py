@@ -2037,7 +2037,6 @@ def test_run_notebook_ssh_validates_dropbear_setup_script(
             port=31337,
             ssh_port=22222,
             command=None,
-            rtunnel_bin=None,
             debug_playwright=False,
             setup_timeout=60,
         )
@@ -2108,7 +2107,6 @@ def test_run_notebook_ssh_fails_fast_on_account_mismatch(
             port=31337,
             ssh_port=22222,
             command=None,
-            rtunnel_bin=None,
             debug_playwright=False,
             setup_timeout=60,
         )
@@ -2144,7 +2142,6 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
             return None
 
     resolved_runtime = SshRuntimeConfig(
-        rtunnel_bin="/project/rtunnel",
         rtunnel_download_url="https://project.example/rtunnel.tgz",
     )
     setup_kwargs: dict[str, object] = {}
@@ -2217,7 +2214,6 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
         port=31337,
         ssh_port=22222,
         command=None,
-        rtunnel_bin="/cli/rtunnel",
         debug_playwright=False,
         setup_timeout=60,
     )
@@ -2326,7 +2322,6 @@ def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
         port=31337,
         ssh_port=22222,
         command=None,
-        rtunnel_bin="/cli/rtunnel",
         debug_playwright=False,
         setup_timeout=60,
     )
@@ -2486,7 +2481,6 @@ def test_run_notebook_ssh_interactive_reconnects_after_drop(
         port=31337,
         ssh_port=22222,
         command=None,
-        rtunnel_bin="/cli/rtunnel",
         debug_playwright=False,
         setup_timeout=60,
     )
@@ -2592,7 +2586,6 @@ def test_run_notebook_ssh_reports_when_tunnel_not_ready(
             port=31337,
             ssh_port=22222,
             command=None,
-            rtunnel_bin="/cli/rtunnel",
             debug_playwright=False,
             setup_timeout=60,
         )

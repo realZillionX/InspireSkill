@@ -116,13 +116,11 @@ class Config:
     notebook_post_start: Optional[str] = None
 
     # SSH settings
-    rtunnel_bin: Optional[str] = None
     sshd_deb_dir: Optional[str] = None
     dropbear_deb_dir: Optional[str] = None
     setup_script: Optional[str] = None
     rtunnel_download_url: str = field(default_factory=default_rtunnel_download_url)
     apt_mirror_url: Optional[str] = None
-    rtunnel_upload_policy: str = "auto"
 
     # Tunnel retry settings
     tunnel_retries: int = 3
@@ -146,16 +144,6 @@ class Config:
 
     # Source precedence: "env" (default) = env vars win, "toml" = project TOML wins
     prefer_source: str = "env"
-
-    def __post_init__(self) -> None:
-        # ``rtunnel_bin`` is declared Optional[str] but TOML can supply a list
-        # (``rtunnel_bin = ["/a/rtunnel", "/b/rtunnel"]``). Normalize to a
-        # ``:``-joined string here so every downstream consumer keeps treating
-        # the field as a plain str; the bootstrap script splits it back into a
-        # list and tries each path in order.
-        from inspire.config.schema_models import _normalize_rtunnel_bin
-
-        self.rtunnel_bin = _normalize_rtunnel_bin(self.rtunnel_bin)
 
     # Class-level config paths
     GLOBAL_CONFIG_PATH_ENV_VAR = "INSPIRE_GLOBAL_CONFIG_PATH"

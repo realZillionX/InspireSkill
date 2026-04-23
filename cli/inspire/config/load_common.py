@@ -20,12 +20,10 @@ _ACCOUNT_OVERRIDE_FIELDS = {
     "browser_api_prefix",
     "auth_endpoint",
     "docker_registry",
-    "rtunnel_bin",
     "sshd_deb_dir",
     "dropbear_deb_dir",
     "setup_script",
     "rtunnel_download_url",
-    "rtunnel_upload_policy",
 }
 
 _ACCOUNT_SECTION_KEY_MAP = {
@@ -42,12 +40,10 @@ _ACCOUNT_SECTION_KEY_MAP = {
         "docker_registry": "docker_registry",
     },
     "ssh": {
-        "rtunnel_bin": "rtunnel_bin",
         "sshd_deb_dir": "sshd_deb_dir",
         "dropbear_deb_dir": "dropbear_deb_dir",
         "setup_script": "setup_script",
         "rtunnel_download_url": "rtunnel_download_url",
-        "rtunnel_upload_policy": "rtunnel_upload_policy",
     },
 }
 
@@ -132,13 +128,11 @@ def _default_config_values() -> dict[str, Any]:
         "notebook_resource": "1xH200",
         "notebook_image": None,
         "notebook_post_start": None,
-        "rtunnel_bin": None,
         "sshd_deb_dir": None,
         "dropbear_deb_dir": None,
         "setup_script": None,
         "rtunnel_download_url": default_rtunnel_download_url(),
         "apt_mirror_url": None,
-        "rtunnel_upload_policy": "auto",
         "tunnel_retries": 3,
         "tunnel_retry_pause": 2.0,
         "shm_size": None,

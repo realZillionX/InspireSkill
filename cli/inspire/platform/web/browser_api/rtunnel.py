@@ -54,22 +54,6 @@ SETUP_DONE_MARKER = "INSPIRE_RTUNNEL_SETUP_DONE"
 RTUNNEL_MISSING_MARKER = "INSPIRE_RTUNNEL_MISSING_IN_BOOTSTRAP"
 
 
-def _split_rtunnel_bin_paths(value: object) -> list[str]:
-    """Return the individual paths encoded in a ``rtunnel_bin`` config value.
-
-    Accepts ``None``, a single path string, a ``:``-separated string
-    (``$PATH``-style), or a ``list[str]``; returns a list of stripped
-    non-empty path strings. Used by bootstrap to try each candidate in
-    order so users with binaries cached on multiple storage partitions
-    don't have to pick one at configuration time.
-    """
-    if not value:
-        return []
-    if isinstance(value, (list, tuple)):
-        return [str(p).strip() for p in value if str(p).strip()]
-    return [p.strip() for p in str(value).split(":") if p.strip()]
-
-
 def build_rtunnel_setup_commands(
     *,
     port: int,
@@ -92,7 +76,6 @@ def build_rtunnel_setup_commands(
     else:
         key_line = "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
 
-    rtunnel_bin = ssh_runtime.rtunnel_bin
     sshd_deb_dir = ssh_runtime.sshd_deb_dir
     dropbear_deb_dir = ssh_runtime.dropbear_deb_dir
     user_rtunnel_url = ssh_runtime.rtunnel_download_url or ""
@@ -113,30 +96,11 @@ def build_rtunnel_setup_commands(
         rtunnel_url_setup,
     ]
 
-    # ``rtunnel_bin`` may carry a colon-separated list of pre-cached binaries
-    # (users working across multiple storage partitions store a copy in each).
-    # The first entry stays as RTUNNEL_BIN_PATH for legacy shell snippets;
-    # additional entries get their own guarded `cp` so the first file that
-    # actually exists wins.
-    rtunnel_bin_paths = _split_rtunnel_bin_paths(rtunnel_bin)
-    primary_rtunnel_bin = rtunnel_bin_paths[0] if rtunnel_bin_paths else ""
-    cmd_lines.append(f"RTUNNEL_BIN_PATH={shlex.quote(primary_rtunnel_bin)}")
-    if primary_rtunnel_bin:
-        cmd_lines.append(
-            'if [ -f "$RTUNNEL_BIN_PATH" ]; then cp "$RTUNNEL_BIN_PATH" /tmp/rtunnel '
-            "&& chmod +x /tmp/rtunnel; fi"
-        )
-    for extra_path in rtunnel_bin_paths[1:]:
-        safe = shlex.quote(extra_path)
-        cmd_lines.append(
-            f"if [ ! -x /tmp/rtunnel ] && [ -f {safe} ]; then "
-            f"cp {safe} /tmp/rtunnel && chmod +x /tmp/rtunnel; fi"
-        )
-
-    # Prefer a container-preinstalled rtunnel (e.g. unified-base:v1 bakes one in
-    # at /usr/local/bin/rtunnel). Probing PATH lets us skip the Contents API
-    # upload entirely, which is mandatory when the user's Jupyter root_dir is
-    # quota-exhausted (upload returns HTTP 500 / Errno 122).
+    # Prefer a container-preinstalled rtunnel (e.g. unified-base:v1 bakes one
+    # in at /usr/local/bin/rtunnel; derived images inherit it, or can install
+    # it during image build). This is the canonical source; the curl fallback
+    # below only matters on images without rtunnel AND containers that can
+    # reach the public internet.
     cmd_lines.append(
         'if [ ! -x /tmp/rtunnel ]; then '
         '_inspire_preinstalled_rt=$(command -v rtunnel 2>/dev/null || true); '
@@ -190,17 +154,12 @@ def build_rtunnel_setup_commands(
         "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && "
         "apt-get install -y -qq openssh-server; fi; fi; "
         "RTUNNEL_BIN=/tmp/rtunnel; "
-        'if [ -n "${RTUNNEL_BIN_PATH:-}" ] && [ -x "$RTUNNEL_BIN_PATH" ]; then '
-        'cp "$RTUNNEL_BIN_PATH" /tmp/rtunnel && chmod +x /tmp/rtunnel; fi; '
         f"{curl_rtunnel_block}; "
         'if [ -x /usr/sbin/sshd ] && [ -x "$RTUNNEL_BIN" ]; then '
         'touch "$BOOTSTRAP_SENTINEL"; else rm -f "$BOOTSTRAP_SENTINEL"; fi; fi'
     )
     ensure_rtunnel_cmd = (
         "RTUNNEL_BIN=/tmp/rtunnel; "
-        'if [ ! -x "$RTUNNEL_BIN" ] && [ -n "${RTUNNEL_BIN_PATH:-}" ] '
-        '&& [ -x "$RTUNNEL_BIN_PATH" ]; then '
-        'cp "$RTUNNEL_BIN_PATH" /tmp/rtunnel && chmod +x /tmp/rtunnel; fi; '
         f"{curl_rtunnel_block}"
     )
     start_sshd_cmd = (
@@ -287,7 +246,10 @@ def build_rtunnel_setup_commands(
             cmd_lines.append(
                 'if [ -f "$SETUP_SCRIPT" ]; then '
                 'if [ ! -f "$BOOTSTRAP_SENTINEL" ] || [ ! -x /tmp/rtunnel ]; then '
-                'bash "$SETUP_SCRIPT" "$DROPBEAR_DEB_DIR" "$RTUNNEL_BIN_PATH" '
+                # RTUNNEL_BIN_PATH is no longer a configurable knob; pass an
+                # empty string so setup_script falls back to its own default
+                # (/tmp/rtunnel).
+                'bash "$SETUP_SCRIPT" "$DROPBEAR_DEB_DIR" "" '
                 '"$SSH_PORT" "$PORT" >/tmp/setup_ssh.log 2>&1; '
                 'if [ $? -eq 0 ] && [ -x /tmp/rtunnel ]; then touch "$BOOTSTRAP_SENTINEL"; '
                 'else rm -f "$BOOTSTRAP_SENTINEL"; fi; fi; '
