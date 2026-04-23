@@ -31,7 +31,9 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | 项目叙述上下文 | 项目仓库根下用 **`INSPIRE.md`** 写非配置性上下文。建议五节：`Default Image`（config.toml 未托管的镜像，如 base / HPC 专用）· `Path Conventions`（本地与远端路径派生规则）· `Public Directory Layout`（`public/` 下的共享结构）· `Existing Notebooks`（角色 → ID）· `Ongoing Jobs`（当前长期在跑的任务）。**不**把 config.toml 内容复制进来。`AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 只放通用工程事项。 |
 | `--json` 位置 | 全局 `--json` **必须放子命令前**：`inspire --json hpc status <id>`。 |
 | Debug | `inspire --debug` 把脱敏日志写进 `~/.cache/inspire-skill/logs/`。 |
+| 默认 workspace 范围 | 本 SKILL 默认只把 **`CPU资源空间`**（阶段 A / B：notebook、HPC、数据处理、Ray CPU pipeline）和 **`分布式训练空间`**（阶段 C：单节点 debug / `job` 多节点训练）作为一等公民。这两个是给大多数研究人员共享的通用空间。`inspire account list` / `config context` 下可能还看得到 `整节点任务空间` / `CI-情境智能` / `CI-情境智能-国产卡*` / `可上网GPU资源` / `专属资源开发空间` / `CI-PPU` / `CPU临时测试空间` / `高性能计算` 等——**那些是小组 / 课题专属空间或测试沙箱**，不归默认用户用，别主动往里塞任务。需要在这些空间跑的人会自己把相关命令 / 规格加进仓库级 `INSPIRE.md` 或本地 harness 的 SKILL.md 覆盖层。 |
 | 废弃资源清理 | 别让废弃 notebook / job / hpc 堆积污染 Web UI 列表。终态（`SUCCEEDED` / `FAILED` / `STOPPED` / `CANCELLED`）且确认不再需要时就 `delete`；批量用 `inspire --json <res> list -A` 过滤再逐个 `delete --yes`。running 的先 `stop` 再 `delete`；不确定是否还有人用时跳过，不要猜着删。 |
+| 排队久 / 莫名失败优先查事件 | 任务卡 PENDING / CREATING 超过预期，或者突然 FAILED 没明显原因时，**第一步**永远是去打对应资源的事件端点（`inspire notebook events` / `inspire job events` / `inspire hpc events` / `inspire ray events`），而不是盯 `status` 顶层字段。K8s `FailedScheduling` / kubelet 告警会直接把原因（CPU 不够 / node affinity 不匹配 / image pull 失败 / taint 不容忍）写在 message 里。`job` / `ray` 还可以叠 `--instance <pod>` / `ray instances` 看具体是哪一个 pod 的问题。不要凭猜测重提——原因不明前不浪费配额。 |
 
 ## 2. 命令速查
 
@@ -137,7 +139,9 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | --- | --- |
 | `inspire ray create` | 提交 Ray 任务。wire 契约是从 SPA 自己的提交函数反编译出来的（`/assets/constant.BP_zw-df.js`），而不是猜的；关键坑：`head_node`（单数，不是 `head`）· `mirror_id` 是平台内部 image id（不是 Docker URL，CLI 会自动 `/image/list` 反查） · `quota_id` 走 notebook 风格（**不是** HPC 的 `predef_quota_id`）· 指令字段线上叫 `entrypoint`（表单字段叫 `command`，CLI flag `-c / --command` 在出线时重命名）· worker 组里是 `group_name / min_replicas / max_replicas`。CLI 形态：一个 `--head-*` flag 组 + 若干重复的 `--worker 'name=...,image=...,group=...,spec=...,min=...,max=...[,shm=...][,image_type=...]'`。排查难时先 `--dry-run` 打印组装好的 body，或 `--json-body <file>` 整个替换。 |
 | `inspire ray list [-A] [--created-by user-xxx[,user-yyy]] [--workspace ...] [--page-num N] [--page-size N]` | 列 Ray 任务。**默认只列当前用户的**（对齐 Web UI "我的"页签，共享 workspace 里不会一股脑甩出所有人的任务）。`-A` 列所有人，`--created-by` 指定某个 / 某几个 `user-xxxx` ID。不传 workspace 时用 session 默认 workspace |
-| `inspire ray status <ray_job_id>` | 看单任务状态。纯文本输出只打顶层（`status / sub_status / priority / created_at / finished_at` 等），**必须用 `inspire --json ray status <id>` 才能看到 head / worker 规格 + 每组 worker 的 `min_instances`/`max_instances`/`current_instances`**——调试"worker 有没有扩起来"只能这样看 |
+| `inspire ray status <ray_job_id>` | 看单任务状态。纯文本输出只打顶层（`status / sub_status / priority / created_at / finished_at` 等），**必须用 `inspire --json ray status <id>` 才能看到 head / worker 规格 + 每组 worker 的 `min_replicas`/`max_replicas`/`current_replicas`**——调试"worker 有没有扩起来"只能这样看 |
+| `inspire ray events <ray_job_id> [--tail N] [--reason R] [--type Normal\|Warning]` | Job-level K8s 事件流。**卡 PENDING 时第一时间看这个**：`FailedScheduling` 的 message 会直接告诉你节点哪里不够（CPU / 内存 / node affinity / taint）。Ray events body 和 HPC 不一样——顶层裸放 `ray_job_id` 而**不是** `filter:{object_ids,object_type}`，传 `object_type` 会被拒 `参数错误`。CLI 已经按裸 body 提交。 |
+| `inspire ray instances <ray_job_id>` | pod 级视图：head + 每个 worker 组的实际 pod（`instance_id / instance_type / status=pending\|running / cpu_count`）。`events` 说调度失败时，这里能看是 head 还是哪组 worker 没起来。 |
 | `inspire ray stop <ray_job_id>` | 停掉运行中的集群；worker 全部回收，条目留在 list 里。发现 driver 写错、配额吃紧、或者跑完但 driver 没正常退出时用 |
 | `inspire ray delete <ray_job_id> [--yes]` | 永久删条目，不可恢复。终态（`SUCCEEDED` / `FAILED` / `STOPPED`）的任务清理用这个；running 的先 `stop` 再 `delete`。不加 `--yes` 会弹交互确认 |
 
@@ -306,13 +310,14 @@ inspire hpc create \
 
 ```bash
 # 一次搞定：head + 两组异构 worker（CPU 解码 + GPU 推理）
+# head 镜像必须带 Ray runtime — unified-base:v2 预装 ray[default]；v1 不行，Ray head 容器会 BackOff
 inspire ray create \
   -n <name>-ray-pipeline \
   -c 'python driver.py --mode run_and_exit' \
-  --head-image docker.sii.shaipower.online/inspire-studio/unified-base:v1 \
-  --head-group HPC-可上网区资源-2 --head-spec <head_quota_id> \
-  --worker 'name=decode,image=docker.../cpu-decode:v1,group=HPC-可上网区资源-2,spec=<cpu_quota_id>,min=1,max=8,shm=32' \
-  --worker 'name=infer,image=docker.../gpu-infer:v1,group=分布式训练空间,spec=<gpu_quota_id>,min=1,max=2,image_type=SOURCE_PRIVATE' \
+  --head-image docker.sii.shaipower.online/inspire-studio/unified-base:v2 \
+  --head-group CPU资源-2 --head-spec <head_quota_id> \
+  --worker 'name=decode,image=docker.../cpu-decode-ray:v1,group=CPU资源-2,spec=<cpu_quota_id>,min=1,max=8,shm=32' \
+  --worker 'name=infer,image=docker.../gpu-infer-ray:v1,group=分布式训练空间,spec=<gpu_quota_id>,min=1,max=2,image_type=SOURCE_PRIVATE' \
   -p <project>
 
 # 提交前先打印 body 核对（不发请求）
@@ -332,9 +337,12 @@ inspire ray delete <ray_job_id> --yes         # 终态任务清理
 
 **Ray 特有坑**（§2.4 里的 wire 契约映射要先读过）：
 - `--head-image` / `--worker image=...` 传 Docker URL，CLI 会走 `/image/list` 反查到内部 `mirror_id`。想跳过反查直接传 image_id 也行（CLI 按"不含 `/`"识别 raw id）。
-- `--head-spec` / `--worker spec=...` 填的是 **`quota_id`**（notebook 风格），**不是** HPC 那套 `predef_quota_id`。目前没有和 `resources specs` 完全对齐的查询——最稳是先在 Web UI "新建 Ray 任务"里看一眼 head / worker 下拉选中项的 quota_id，或用 `inspire --json ray status <相似已有任务>` 的 `head_node.quota_id` / `worker_groups[].quota_id` 复用。
+- `--head-spec` / `--worker spec=...` 填的是 **`quota_id`**（Ray 专属一张表，**不是** notebook 的 `quota_id`，也**不是** HPC 的 `predef_quota_id`）。发现：走同一个 `/resource_prices/logic_compute_groups/` 端点，但 `schedule_config_type` 要填 **`SCHEDULE_CONFIG_TYPE_RAY_JOB`**（区别于 notebook 的 `SCHEDULE_CONFIG_TYPE_DSW` 和 HPC 的 `SCHEDULE_CONFIG_TYPE_HPC`）——同一个计算组下三套 quota UUID 不互通，notebook 的 spec_id 填到 Ray body 里会拒 `quota not found`。`inspire resources specs` 目前只列前两者；查 Ray quota 暂时要直打 browser API（参考 [references/browser-api.md § Ray](references/browser-api.md#ray-任务弹性计算)）或从 `inspire --json ray status <已有任务>` 的 `head_node.quota_id` 复用。
+- **能跑 Ray 的计算组很有限**：只有 `support_job_type_list` 含 `ray_job` 的 LCG。用 `inspire --json config context` 看当前 workspace；CPU 侧常见的是 `CPU资源` / `CPU资源-2`（注意：`HPC-可上网区资源-2` **不支持** Ray）。
 - `min/max` 都必须是正整数（SPA 表单最小 1）；想要"闲时缩到 0"目前做不到。
 - driver 要**主动 `sys.exit()`**——否则 Ray 集群一直在，worker 回到 `min` 也在占配额。
+- **卡 PENDING 先 `inspire ray events <id>`**——`FailedScheduling` 的 message 会写明 "N Insufficient cpu / M node(s) didn't match Pod's node affinity"，比盯 `status` 高效。
+- **Ray 专用镜像**：Inspire 的 Ray head pod 被 kuberay 起成三个容器（`wait-gcs-ready` / `ray-head` / `autoscaler`），都用同一个 image，image 里必须有 `ray` binary 且 `ray[default]` 依赖齐全，否则 head 容器循环 BackOff。`unified-base:v1` **不带** Ray runtime，跑 Ray 一定失败；基础镜像用 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（v1 上 `pip install "ray[default]"` 后 image save 得来，2026-04 首发）。自定义 Ray 镜像也要在派生时保证 `ray start --head` 能跑起来——最简单的验证就是 SSH 进 notebook 跑 `ray start --head --num-cpus=1 --disable-usage-stats && ray stop`。
 
 ### 阶段 C：分布式训练空间
 
