@@ -21,7 +21,6 @@ from inspire.platform.web.session.auth import (
 )
 from inspire.platform.web.session.models import (
     DEFAULT_WORKSPACE_ID,
-    SESSION_CACHE_FILE,
     SESSION_TTL,
     SessionExpiredError,
     WebSession,
@@ -38,7 +37,6 @@ from inspire.platform.web.session.workspace import (
 __all__ = [
     "DEFAULT_WORKSPACE_ID",
     "GPUAvailability",
-    "SESSION_CACHE_FILE",
     "SESSION_TTL",
     "SessionExpiredError",
     "WebSession",
@@ -225,30 +223,16 @@ def fetch_gpu_availability(
 
 
 def clear_session_cache() -> None:
-    """Clear cached web sessions across both legacy and new storage layouts.
-
-    Wipes:
-      - legacy ``~/.cache/inspire-skill/web_session*.json`` (unscoped + per-user)
-      - new-path ``~/.inspire/accounts/*/web_session.json``
-    """
-    # Legacy cache location
-    legacy_dir = SESSION_CACHE_FILE.parent
-    if legacy_dir.exists():
-        for cache_file in legacy_dir.glob("web_session*.json"):
+    """Remove every ``~/.inspire/accounts/*/web_session.json``."""
+    accounts_root = Path.home() / ".inspire" / "accounts"
+    if not accounts_root.exists():
+        return
+    for account_dir in accounts_root.iterdir():
+        if not account_dir.is_dir():
+            continue
+        session_file = account_dir / "web_session.json"
+        if session_file.exists():
             try:
-                cache_file.unlink()
+                session_file.unlink()
             except Exception:
                 continue
-
-    # New per-account location
-    accounts_root = Path.home() / ".inspire" / "accounts"
-    if accounts_root.exists():
-        for account_dir in accounts_root.iterdir():
-            if not account_dir.is_dir():
-                continue
-            session_file = account_dir / "web_session.json"
-            if session_file.exists():
-                try:
-                    session_file.unlink()
-                except Exception:
-                    continue

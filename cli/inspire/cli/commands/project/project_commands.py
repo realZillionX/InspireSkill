@@ -22,7 +22,6 @@ from inspire.cli.utils.notebook_cli import (
     resolve_json_output,
 )
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session.models import SESSION_CACHE_DIR, normalize_account_for_cache
 
 _ZERO_WORKSPACE_ID = "ws-00000000-0000-0000-0000-000000000000"
 _PROJECT_LIST_MAX_WORKERS = 16
@@ -171,10 +170,17 @@ def _select_workspace_ids_for_listing(
 
 
 def _project_list_cache_file(session) -> str:  # noqa: ANN001
-    account = normalize_account_for_cache(getattr(session, "login_username", None))
-    if account:
-        return str(SESSION_CACHE_DIR / f"project_list-{account}.json")
-    return str(SESSION_CACHE_DIR / "project_list.json")
+    """Per-account project-list cache, colocated with the account's config."""
+    from pathlib import Path as _Path
+
+    from inspire.accounts import current_account
+
+    active = current_account()
+    if active:
+        return str(_Path.home() / ".inspire" / "accounts" / active / "project_list.json")
+    # No active account — use a throwaway location under the user's cache dir
+    # so the caller can still memoize within a single run.
+    return str(_Path.home() / ".cache" / "inspire-skill" / "project_list.json")
 
 
 def _project_session_fingerprint(session) -> str:  # noqa: ANN001

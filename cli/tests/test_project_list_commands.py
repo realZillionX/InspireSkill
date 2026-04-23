@@ -34,7 +34,11 @@ def _project(project_id: str, name: str, workspace_id: str) -> browser_api_modul
 
 @pytest.fixture(autouse=True)
 def _isolate_project_cache(monkeypatch: pytest.MonkeyPatch, tmp_path):
-    monkeypatch.setattr(project_cmd_module, "SESSION_CACHE_DIR", tmp_path)
+    """Redirect the project-list cache file into tmp_path."""
+    cache_file = tmp_path / "project_list.json"
+    monkeypatch.setattr(
+        project_cmd_module, "_project_list_cache_file", lambda session: str(cache_file)
+    )
 
 
 def test_project_list_uses_config_workspaces_when_session_discovery_missing(monkeypatch):
@@ -225,7 +229,6 @@ def test_project_list_uses_cache_for_all_workspaces(monkeypatch, tmp_path):
         "get_web_session",
         lambda: session_obj,
     )
-    monkeypatch.setattr(project_cmd_module, "SESSION_CACHE_DIR", tmp_path)
     monkeypatch.setattr(project_cmd_module, "_PROJECT_LIST_CACHE_TTL_SECONDS", 600)
     monkeypatch.setattr(project_cmd_module, "_PROJECT_LIST_MAX_WORKERS", 1)
 

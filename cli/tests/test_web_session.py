@@ -689,20 +689,9 @@ def test_asyncio_browser_fallback_uses_disposable_clients(monkeypatch: pytest.Mo
     assert all(c.closed for c in created), "disposable clients must be closed"
 
 
-def test_clear_session_cache_removes_scoped_and_legacy_files(
+def test_clear_session_cache_removes_every_account_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    cache_dir = tmp_path / "cache"
-    cache_dir.mkdir(parents=True)
-    legacy = cache_dir / "web_session.json"
-    scoped = cache_dir / "web_session-project-user.json"
-    other = cache_dir / "not_session.json"
-    legacy.write_text("{}")
-    scoped.write_text("{}")
-    other.write_text("{}")
-
-    # Redirect both legacy cache + ``Path.home()`` so the new-account path
-    # scanner inside ``clear_session_cache`` also points into tmp.
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     accounts_root = fake_home / ".inspire" / "accounts"
@@ -712,13 +701,9 @@ def test_clear_session_cache_removes_scoped_and_legacy_files(
     (accounts_root / "bob" / "web_session.json").write_text("{}")
     (accounts_root / "bob" / "config.toml").write_text("")  # unrelated file kept
 
-    monkeypatch.setattr(ws, "SESSION_CACHE_FILE", legacy)
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     ws.clear_session_cache()
 
-    assert not legacy.exists()
-    assert not scoped.exists()
-    assert other.exists()
     assert not (accounts_root / "alice" / "web_session.json").exists()
     assert not (accounts_root / "bob" / "web_session.json").exists()
     assert (accounts_root / "bob" / "config.toml").exists()
@@ -740,21 +725,6 @@ def test_get_session_cache_file_prefers_account_dir(
     assert path == fake_home / ".inspire" / "accounts" / "alice" / "web_session.json"
 
 
-def test_get_session_cache_file_falls_back_to_legacy_when_no_account(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    from inspire.platform.web.session.models import (
-        SESSION_CACHE_FILE,
-        get_session_cache_file,
-    )
-    import inspire.accounts as accounts_mod
-
-    monkeypatch.setattr(accounts_mod, "current_account", lambda: None)
-
-    path = get_session_cache_file()
-    assert path == SESSION_CACHE_FILE
-
-
 def test_save_writes_to_account_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     fake_home = tmp_path / "home"
     fake_home.mkdir()
@@ -774,41 +744,6 @@ def test_save_writes_to_account_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     target = fake_home / ".inspire" / "accounts" / "alice" / "web_session.json"
     assert target.exists()
-
-
-def test_load_falls_back_to_legacy_per_user_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """New-path missing but old cache file present — load should find it."""
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: fake_home)
-
-    import inspire.accounts as accounts_mod
-
-    monkeypatch.setattr(accounts_mod, "current_account", lambda: "alice")
-
-    # Ensure the models module treats its SESSION_CACHE_DIR/FILE as ours too,
-    # since those were captured at import time from Path.home().
-    from inspire.platform.web.session import models as session_models
-
-    cache_dir = fake_home / ".cache" / "inspire-skill"
-    cache_dir.mkdir(parents=True)
-    monkeypatch.setattr(session_models, "SESSION_CACHE_DIR", cache_dir)
-    monkeypatch.setattr(session_models, "SESSION_CACHE_FILE", cache_dir / "web_session.json")
-
-    legacy = cache_dir / "web_session-alice.json"
-    session = WebSession(
-        storage_state={"cookies": [{"name": "s", "value": "v"}]},
-        cookies={"s": "v"},
-        login_username="alice",
-        created_at=time.time(),
-    )
-    legacy.write_text(json.dumps(session.to_dict()))
-
-    loaded = WebSession.load()
-    assert loaded is not None
-    assert loaded.login_username == "alice"
 
 
 def test_load_env_vars_do_not_influence_account_resolution(
