@@ -178,7 +178,11 @@ def _normalize_project_catalog(raw_value: Any) -> dict[str, dict[str, Any]]:
             continue
 
         entry: dict[str, Any] = {}
-        for key in ("shared_path_group", "workdir"):
+        # ``name`` and ``path`` are the name-only metadata agents consume
+        # via ``inspire config context``. ``workdir`` / ``shared_path_group``
+        # are legacy fields still tolerated here so older-format configs
+        # don't fail to load, but discover no longer writes them.
+        for key in ("name", "path", "shared_path_group", "workdir"):
             value = raw_entry.get(key)
             if isinstance(value, str):
                 value = value.strip()

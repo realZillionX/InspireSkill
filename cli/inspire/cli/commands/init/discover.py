@@ -712,8 +712,13 @@ def _build_project_aliases(
     *,
     existing: dict[str, str] | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
+    """Build the ``[projects]`` table keyed by the platform's real project name.
+
+    Keys are the project names returned by the platform (``"CI-情境智能"`` etc.),
+    not short slugs. Agents that read ``inspire config context --json`` see
+    meaningful identifiers, not random 2-letter aliases.
+    """
     existing_map = existing or {}
-    used_aliases = set(existing_map.keys())
     alias_for_id: dict[str, str] = {}
     for alias, project_id in existing_map.items():
         if isinstance(project_id, str) and project_id and project_id not in alias_for_id:
@@ -731,13 +736,10 @@ def _build_project_aliases(
             discovered_alias_for_id[project_id] = alias_for_id[project_id]
             continue
 
-        alias = _slugify_alias(name)
-        if not alias:
-            suffix = project_id.split("-")[-1]
-            alias = f"project-{suffix[:8]}" if suffix else "project"
-        alias = _make_unique_alias(alias, used_aliases)
-        discovered_map[alias] = project_id
-        discovered_alias_for_id[project_id] = alias
+        # Use the platform name directly — no slugify / no short alias.
+        key = name or f"project-{project_id.split('-')[-1][:8]}"
+        discovered_map[key] = project_id
+        discovered_alias_for_id[project_id] = key
 
     merged = _merge_alias_map(existing=existing_map, discovered=discovered_map)
     discovered_alias_for_id.update(
@@ -1153,6 +1155,21 @@ def _populate_project_catalog(
     account_key: str,
     force: bool,
 ) -> None:
+    """Populate per-project metadata kept at account level.
+
+    Only two fields survive:
+
+    * ``name``  — the platform's display name (for reference; redundant with
+      the ``[projects]`` key but useful if a project gets renamed).
+    * ``path``  — the ``<topic>`` segment of the shared-storage path
+      (``/inspire/<tier>/project/<topic>/<user>/...``). Derived from the
+      platform's reported train_job workdir; agents need it to construct
+      remote paths for new repos under this project.
+
+    Notably *not* stored: full ``workdir`` or ``shared_path_group`` — those
+    are derivable from ``path`` + the storage tier + the user, and caching
+    them made the account config noisy.
+    """
     for project in projects:
         project_id = str(getattr(project, "project_id", "") or "").strip()
         if not project_id:
@@ -1164,26 +1181,33 @@ def _populate_project_catalog(
             entry["name"] = name
 
         project_workspace_id = str(getattr(project, "workspace_id", "") or workspace_id).strip()
-        workdir = str(entry.get("workdir") or "").strip()
-        if not workdir or force:
-            try:
-                workdir = (
-                    browser_api_module.get_train_job_workdir(
-                        project_id=project_id,
-                        workspace_id=project_workspace_id,
-                        session=session,
-                    )
-                    or ""
-                ).strip()
-            except Exception:
-                workdir = ""
+        existing_path = str(entry.get("path") or "").strip()
+        if existing_path and not force:
+            continue
+
+        try:
+            workdir = (
+                browser_api_module.get_train_job_workdir(
+                    project_id=project_id,
+                    workspace_id=project_workspace_id,
+                    session=session,
+                )
+                or ""
+            ).strip()
+        except Exception:
+            workdir = ""
 
         if not workdir:
             continue
-        entry["workdir"] = workdir
-        shared_group = _derive_shared_path_group(workdir, account_key=account_key)
-        if shared_group and not str(entry.get("shared_path_group") or "").strip():
-            entry["shared_path_group"] = shared_group
+
+        # Parse the <topic> segment: /inspire/<tier>/project/<topic>/...
+        parts = [p for p in workdir.split("/") if p]
+        try:
+            idx = parts.index("project")
+            if idx + 1 < len(parts):
+                entry["path"] = parts[idx + 1]
+        except ValueError:
+            pass
 
 
 def _update_account_shared_path_group(
@@ -2521,16 +2545,27 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
 
     # Final step before writing: lift account-wide data the persisters parked
     # on the project side, promote anything still under [accounts."<user>"]
-    # nesting, prune the empty legacy skeleton, and drop derived caches
-    # (project_catalog.shared_path_group / workdir, [account] metadata) —
-    # those are recoverable from the platform on demand and don't belong
-    # in the account's static configuration file.
+    # nesting, and prune the empty legacy skeleton. The per-project catalog
+    # keeps only ``{name, path}`` (see ``_populate_project_catalog``); any
+    # legacy ``shared_path_group`` / ``workdir`` keys left in it are scrubbed
+    # here so the account file stays clean.
     _copy_account_level_from_project(
         project_data=project_data, global_data=global_data
     )
     _promote_account_section_to_toplevel(global_data, account_key)
-    global_data.pop("project_catalog", None)
     global_data.pop("account", None)
+    catalog = global_data.get("project_catalog")
+    if isinstance(catalog, dict):
+        for project_id, entry in list(catalog.items()):
+            if not isinstance(entry, dict):
+                catalog.pop(project_id, None)
+                continue
+            for stale in ("workdir", "shared_path_group"):
+                entry.pop(stale, None)
+            if not entry:
+                catalog.pop(project_id, None)
+        if not catalog:
+            global_data.pop("project_catalog", None)
 
     global_path.parent.mkdir(parents=True, exist_ok=True)
     global_path.write_text(_toml_dumps(global_data))

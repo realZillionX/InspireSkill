@@ -1,14 +1,13 @@
-"""Config context command — surface the structured (non-scalar) parts of config.toml.
+"""``inspire config context`` — agent-facing view of the active account.
 
-`inspire config show` walks the flat env-var-backed options (username, base_url,
-timeout, ...). The structured pieces — the active [context], project / workspace
-alias maps, compute groups, per-account catalogs — aren't reachable through that
-output, so agents had no CLI way to answer questions like "what does the
-workspace alias `gpu` resolve to?" or "what's the active project-id?" without
-reading config.toml directly (which SKILL.md discourages).
-
-This command fills that gap. Same two-format surface as `show`: human-readable
-default + `--json` for programmatic consumers.
+Structured pieces of the loaded config (active account, projects,
+workspaces, compute groups) aren't reachable through ``inspire config
+show``, which is focused on the flat env-var-backed options. This command
+fills that gap with a **name-only** view: every workspace, project, and
+compute group is identified by its platform name (``CI-情境智能``,
+``H200-3号机房``), not by a short alias or a raw ``ws-…`` ID. Agents feed
+those names straight back into ``--workspace`` / ``--project`` /
+``--compute-group`` flags without ever needing to touch config.toml.
 """
 
 from __future__ import annotations
@@ -28,122 +27,162 @@ from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.config import Config, ConfigError
 
 
-def _workspace_role_aliases(cfg: Config) -> dict[str, str]:
-    """The three role-slotted workspaces (cpu/gpu/internet)."""
-    return {
-        role: value
-        for role, value in (
-            ("cpu", cfg.workspace_cpu_id),
-            ("gpu", cfg.workspace_gpu_id),
-        )
-        if value
-    }
+def _project_name_for_id(cfg: Config, project_id: str | None) -> str | None:
+    if not project_id:
+        return None
+    for name, pid in (cfg.projects or {}).items():
+        if pid == project_id:
+            return name
+    catalog_entry = (cfg.project_catalog or {}).get(project_id)
+    if isinstance(catalog_entry, dict):
+        catalog_name = catalog_entry.get("name")
+        if isinstance(catalog_name, str) and catalog_name.strip():
+            return catalog_name.strip()
+    return None
+
+
+def _workspace_name_for_id(cfg: Config, workspace_id: str | None) -> str | None:
+    if not workspace_id:
+        return None
+    for name, ws in (cfg.workspaces or {}).items():
+        if ws == workspace_id:
+            return name
+    return None
 
 
 def _collect_context(cfg: Config) -> dict[str, Any]:
     from inspire.accounts import current_account, list_accounts
 
-    active_account = current_account()
-    accounts_listed = {name: "********" for name in list_accounts()}
+    active_account = current_account() or cfg.username or None
+
+    active_project_name = _project_name_for_id(cfg, cfg.job_project_id)
+    active_workspace_name = _workspace_name_for_id(cfg, cfg.job_workspace_id)
+
+    # Projects: name + optional path segment (e.g. 'embodied-multimodality').
+    projects_by_name: dict[str, dict[str, str]] = {}
+    for name in (cfg.projects or {}):
+        projects_by_name[name] = {"name": name}
+    for project_id, entry in (cfg.project_catalog or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        catalog_name = entry.get("name")
+        path = entry.get("path")
+        if not isinstance(catalog_name, str) or not catalog_name.strip():
+            # Fall back to reverse lookup from the projects map.
+            catalog_name = next(
+                (
+                    name
+                    for name, pid in (cfg.projects or {}).items()
+                    if pid == project_id
+                ),
+                None,
+            )
+        if not catalog_name:
+            continue
+        bucket = projects_by_name.setdefault(catalog_name, {"name": catalog_name})
+        if isinstance(path, str) and path.strip():
+            bucket["path"] = path.strip()
+    projects_view = sorted(projects_by_name.values(), key=lambda e: e["name"])
+
+    # Workspaces: just the name list, sorted.
+    workspaces_view = sorted(
+        name
+        for name in (cfg.workspaces or {})
+        if isinstance(name, str) and name.strip()
+    )
+
+    # Compute groups: name + the workspace name it belongs to (when resolvable).
+    ws_name_for_id: dict[str, str] = {
+        ws_id: name for name, ws_id in (cfg.workspaces or {}).items()
+    }
+    compute_groups_view: list[dict[str, Any]] = []
+    for group in cfg.compute_groups or []:
+        if not isinstance(group, dict):
+            continue
+        name = str(group.get("name") or "").strip()
+        if not name:
+            continue
+        entry: dict[str, Any] = {"name": name}
+        gpu = str(group.get("gpu_type") or "").strip()
+        if gpu:
+            entry["gpu_type"] = gpu
+        workspace_ids = group.get("workspace_ids") or []
+        workspace_names = [
+            ws_name_for_id[ws_id]
+            for ws_id in workspace_ids
+            if ws_id in ws_name_for_id
+        ]
+        if workspace_names:
+            # compute_groups usually live in a single workspace; flatten to a
+            # scalar when that's true.
+            entry["workspace"] = (
+                workspace_names[0] if len(workspace_names) == 1 else workspace_names
+            )
+        compute_groups_view.append(entry)
+    compute_groups_view.sort(key=lambda e: (e.get("gpu_type", ""), e["name"]))
 
     return {
-        "active_context": {
-            "account": active_account or cfg.username or None,
-            "project_id": cfg.job_project_id,
-            "workspace_id": cfg.job_workspace_id,
+        "active": {
+            "account": active_account,
+            "project": active_project_name,
+            "workspace": active_workspace_name,
         },
-        "project_aliases": dict(cfg.projects or {}),
-        "workspace_aliases": dict(cfg.workspaces or {}),
-        "workspace_roles": _workspace_role_aliases(cfg),
-        "compute_groups": list(cfg.compute_groups or []),
-        "accounts": accounts_listed,
-        "account_metadata": {
-            "shared_path_group": cfg.account_shared_path_group,
-            "train_job_workdir": cfg.account_train_job_workdir,
-        },
-        "project_catalog": dict(cfg.project_catalog or {}),
-        "project_shared_path_groups": dict(cfg.project_shared_path_groups or {}),
-        "project_workdirs": dict(cfg.project_workdirs or {}),
+        "projects": projects_view,
+        "workspaces": workspaces_view,
+        "compute_groups": compute_groups_view,
+        "accounts": sorted(list_accounts()),
     }
 
 
 def _render_human(data: dict[str, Any]) -> None:
-    active = data["active_context"]
-    click.echo(click.style("Active context", bold=True))
-    click.echo(f"  account      {active['account'] or '(not set)'}")
-    click.echo(f"  project_id   {active['project_id'] or '(not set)'}")
-    click.echo(f"  workspace_id {active['workspace_id'] or '(not set)'}")
+    active = data["active"]
+    click.echo(click.style("Active", bold=True))
+    click.echo(f"  account    {active['account'] or '(not set)'}")
+    click.echo(f"  project    {active['project'] or '(not set)'}")
+    click.echo(f"  workspace  {active['workspace'] or '(not set)'}")
     click.echo()
 
-    project_aliases: dict[str, str] = data["project_aliases"]
-    if project_aliases:
-        click.echo(click.style(f"Project aliases ({len(project_aliases)})", bold=True))
-        width = max(len(alias) for alias in project_aliases) + 2
-        for alias, project_id in project_aliases.items():
-            click.echo(f"  {alias.ljust(width)}→ {project_id}")
+    projects: list[dict[str, str]] = data["projects"]
+    if projects:
+        click.echo(click.style(f"Projects ({len(projects)})", bold=True))
+        name_width = max(len(p["name"]) for p in projects)
+        for entry in projects:
+            path = entry.get("path")
+            suffix = f"  (path: {path})" if path else ""
+            click.echo(f"  {entry['name'].ljust(name_width)}{suffix}")
         click.echo()
 
-    workspace_aliases: dict[str, str] = data["workspace_aliases"]
-    if workspace_aliases:
-        click.echo(click.style(f"Workspace aliases ({len(workspace_aliases)})", bold=True))
-        width = max(len(alias) for alias in workspace_aliases) + 2
-        for alias, ws_id in workspace_aliases.items():
-            click.echo(f"  {alias.ljust(width)}→ {ws_id}")
-        click.echo()
-
-    workspace_roles: dict[str, str] = data["workspace_roles"]
-    if workspace_roles:
-        click.echo(click.style("Workspace roles", bold=True))
-        for role, ws_id in workspace_roles.items():
-            click.echo(f"  {role.ljust(10)}→ {ws_id}")
+    workspaces: list[str] = data["workspaces"]
+    if workspaces:
+        click.echo(click.style(f"Workspaces ({len(workspaces)})", bold=True))
+        for name in workspaces:
+            click.echo(f"  {name}")
         click.echo()
 
     compute_groups: list[dict[str, Any]] = data["compute_groups"]
     if compute_groups:
         click.echo(click.style(f"Compute groups ({len(compute_groups)})", bold=True))
+        name_width = max(len(g["name"]) for g in compute_groups)
         for group in compute_groups:
-            name = group.get("name") or group.get("id", "(unnamed)")
-            gpu = group.get("gpu_type", "")
-            loc = group.get("location", "")
-            ws_ids = group.get("workspace_ids", [])
             bits: list[str] = []
+            gpu = group.get("gpu_type")
             if gpu:
                 bits.append(f"gpu={gpu}")
-            if loc:
-                bits.append(f"location={loc}")
-            if ws_ids:
-                bits.append(f"workspaces={len(ws_ids)}")
-            suffix = f" ({', '.join(bits)})" if bits else ""
-            click.echo(f"  {name}{suffix}")
-            if group.get("id") and group.get("id") != name:
-                click.echo(f"    id={group['id']}")
+            workspace = group.get("workspace")
+            if workspace:
+                if isinstance(workspace, list):
+                    bits.append(f"workspaces={'+'.join(workspace)}")
+                else:
+                    bits.append(f"workspace={workspace}")
+            suffix = f"  ({', '.join(bits)})" if bits else ""
+            click.echo(f"  {group['name'].ljust(name_width)}{suffix}")
         click.echo()
 
-    accounts: dict[str, str] = data["accounts"]
+    accounts: list[str] = data["accounts"]
     if accounts:
         click.echo(click.style(f"Accounts ({len(accounts)})", bold=True))
-        for username in accounts:
-            click.echo(f"  {username}")
-        click.echo()
-
-    project_catalog: dict[str, dict[str, Any]] = data["project_catalog"]
-    if project_catalog:
-        click.echo(click.style(f"Project catalog ({len(project_catalog)})", bold=True))
-        for project_id, entry in project_catalog.items():
-            shared = entry.get("shared_path_group") or "-"
-            workdir = entry.get("workdir") or "-"
-            click.echo(f"  {project_id}")
-            click.echo(f"    shared_path_group  {shared}")
-            click.echo(f"    workdir            {workdir}")
-        click.echo()
-
-    acct_meta = data["account_metadata"]
-    if any(acct_meta.values()):
-        click.echo(click.style("Account metadata", bold=True))
-        if acct_meta["shared_path_group"]:
-            click.echo(f"  shared_path_group  {acct_meta['shared_path_group']}")
-        if acct_meta["train_job_workdir"]:
-            click.echo(f"  train_job_workdir  {acct_meta['train_job_workdir']}")
+        for name in accounts:
+            click.echo(f"  {name}")
 
 
 @click.command("context")
@@ -155,12 +194,12 @@ def _render_human(data: dict[str, Any]) -> None:
 )
 @pass_context
 def show_context(ctx: Context, json_output_local: bool) -> None:
-    """Display the structured config layers (context, aliases, compute groups, accounts).
+    """Display the active account's projects / workspaces / compute groups.
 
-    Use this instead of reading `~/.config/inspire/config.toml` or
-    `./.inspire/config.toml` directly — the CLI merges both layers and presents
-    the active context, alias maps, compute groups, and per-account catalog in
-    one place, with passwords elided.
+    All identifiers are platform names (e.g. ``CI-情境智能``, ``H200-3号机房``)
+    — never a raw ``ws-…`` / ``project-…`` / ``lcg-…`` ID and never an
+    alias. Feed these names straight into ``--workspace`` / ``--project``
+    / ``--compute-group`` flags on other commands.
 
     \b
     Examples:

@@ -23,7 +23,11 @@ from typing import Any
 from inspire.config.models import SOURCE_GLOBAL, ConfigError
 from inspire.config.toml import _flatten_toml, _load_toml, _toml_key_to_field
 
-from .load_common import _apply_defaults_overrides, _parse_alias_map
+from .load_common import (
+    _apply_defaults_overrides,
+    _normalize_project_catalog,
+    _parse_alias_map,
+)
 
 # Keys whose *value* must differ per repository — a single account is used
 # across many repos, each with its own remote workdir / Inspire project /
@@ -93,6 +97,7 @@ def _apply_account_layer(
 
     compute_groups = raw.pop("compute_groups", [])
     remote_env = {str(k): str(v) for k, v in raw.pop("remote_env", {}).items()}
+    project_catalog = _normalize_project_catalog(raw.pop("project_catalog", {}))
 
     defaults: dict[str, Any] = {}
     raw_defaults = raw.pop("defaults", {})
@@ -125,6 +130,9 @@ def _apply_account_layer(
     if projects:
         config_dict["projects"] = projects
         sources["projects"] = SOURCE_GLOBAL
+    if project_catalog:
+        config_dict["project_catalog"] = project_catalog
+        sources["project_catalog"] = SOURCE_GLOBAL
 
     _apply_defaults_overrides(
         defaults=defaults,

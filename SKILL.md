@@ -170,27 +170,31 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ## 3. 开发主流程
 
-### 远端路径：个人目录 vs 项目公共目录
+### 远端路径：四种根
 
-每个项目在每条存储池下都是固定三级前缀 `/inspire/<tier>/project/<topic>/`，下一级只有两种根：
+GPFS 挂载点按"属于哪个项目"和"个人 vs 共享"交叉出四种根：
 
-| 根 | 定位 |
-| --- | --- |
-| `<user>/…` | **个人目录根**（每用户一份）：代码仓库、脚本、小配置、少量调试输出。下面可自建任意层级（命名空间、多仓库工作区等），**`<user>/` 不一定直接跟 `<repo>`** |
-| `public/…` | **项目公共目录根**（项目成员共享）：大体积数据集、权重、批量结果、checkpoint。下面按项目约定自组织（常见按 owner / 子项目分层） |
+| 根 | 路径样例 | 定位 |
+| --- | --- | --- |
+| 项目-个人 | `/inspire/<tier>/project/<topic>/<user>/…` | 每项目-每用户一份。代码仓库、脚本、小配置、调试输出。`<user>/` 下可自建任意层级（命名空间、多仓库工作区），**不一定直接跟 `<repo>`** |
+| 项目-公共 | `/inspire/<tier>/project/<topic>/public/…` | 项目成员共享。大数据集、权重、批量结果、checkpoint。子树由项目自定（按 owner / 子项目分层） |
+| 全局-公共 | `/inspire/hdd/global_public/…` | **仅 hdd 有**。全平台所有用户共享。实测 ~250 TB fileset。适合放可能被多个项目复用的通用数据集、基础镜像素材；不要放个人中间产物 |
+| 全局-个人 | `/inspire/hdd/global_user/<user>/…` | **仅 hdd 有**。跨所有项目的个人盘。fileset 级容量很大，但**平台侧对单用户有 quota**（比项目盘紧很多），适合放脚本、配置、个人小工具，不适合堆训练数据 / checkpoint |
 
-**先决策放 `<user>/` 还是 `public/`（按"个人 vs 共享"），再选存储池（按冷热）。** 这俩正交，两步都要做。`<user>/` 和 `public/` 下的具体子树结构由项目自定，在仓库根的 `INSPIRE.md` 里 `Path Conventions` / `Public Directory Layout` 两节记下来。
+> **`global_*` 只存在于 hdd**——`/inspire/ssd/`、`/inspire/qb-ilm/`、`/inspire/qb-ilm2/` 都没有 `global_public` / `global_user`，要 SSD 或 qb-ilm 速度就只能走"项目-个人"或"项目-公共"路径。
+
+**先决策放"项目-个人 / 项目-公共 / 全局-个人 / 全局-公共"（按作用域），再选存储池（按冷热）。** 这俩正交。每个项目下 `<user>/` 和 `public/` 的具体子树结构由项目自定，在仓库根的 `INSPIRE.md` 里 `Path Conventions` / `Public Directory Layout` 两节记下来。
 
 ### 存储池选择
 
 四条池并列（都是 GPFS fileset，`df` 能看到 fileset-scoped quota）：
 
-| 池 | 路径前缀 | 定位 |
-| --- | --- | --- |
-| SSD (`gpfs_flash`) | `/inspire/ssd/project/<topic>/` | 训练 hot path、活跃工作集、checkpoint 热点 |
-| HDD (`gpfs_hdd`) | `/inspire/hdd/project/<topic>/` | 通用；项目 fileset 经常 100% 满，新写前先 `df` 看 Avail |
-| qb-ilm (`qb_prod_ipfs01`) | `/inspire/qb-ilm/project/<topic>/` | 大容量，顺序读带宽和 SSD 相当 |
-| qb-ilm2 (`qb_prod_ipfs02`) | `/inspire/qb-ilm2/project/<topic>/` | 最新也最空，新增数据默认往这里落最安全 |
+| 池 | 项目路径前缀 | 全局路径 | 定位 |
+| --- | --- | --- | --- |
+| SSD (`gpfs_flash`) | `/inspire/ssd/project/<topic>/` | 无 | 训练 hot path、活跃工作集、checkpoint 热点 |
+| HDD (`gpfs_hdd`) | `/inspire/hdd/project/<topic>/` | `/inspire/hdd/global_public/` + `/inspire/hdd/global_user/<user>/` | 通用；项目 fileset 经常 100% 满，新写前先 `df` 看 Avail |
+| qb-ilm (`qb_prod_ipfs01`) | `/inspire/qb-ilm/project/<topic>/` | 无 | 大容量，顺序读带宽和 SSD 相当 |
+| qb-ilm2 (`qb_prod_ipfs02`) | `/inspire/qb-ilm2/project/<topic>/` | 无 | 最新也最空，新增数据默认往这里落最安全 |
 
 `inspire init --discover` 设 `[paths].target_dir` 前交互式让你选层（catalog 建议 `hdd` 时默认切到 `ssd`，避免继承坏默认）。
 
