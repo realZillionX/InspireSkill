@@ -100,7 +100,7 @@ def list_serving(
     """List inference servings in the current (or given) workspace."""
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        resolved_workspace = _resolve_workspace_id(config, workspace, workspace_id_override)
+        resolved_workspace = _resolve_workspace_id(config, workspace)
 
         session = get_web_session()
         items, total = browser_api_module.list_servings(
@@ -216,12 +216,11 @@ def stop_serving(ctx: Context, inference_serving_id: str) -> None:
 @click.option("--workspace", default=None, help="Workspace name")
 @pass_context
 def configs_serving(
-    ctx: Context, workspace: Optional[str], workspace_id_override: Optional[str]
-) -> None:
+    ctx: Context, workspace: Optional[str],) -> None:
     """Show available inference-serving configs (images / specs) for a workspace."""
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        resolved_workspace = _resolve_workspace_id(config, workspace, workspace_id_override)
+        resolved_workspace = _resolve_workspace_id(config, workspace)
 
         session = get_web_session()
         data = browser_api_module.get_serving_configs(

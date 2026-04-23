@@ -6,14 +6,12 @@ UI labels "弹性计算"). Because this endpoint family is web-session only —
 there is no OpenAPI equivalent — we hit it the same way the SPA does, with
 stored Playwright cookies and a matching ``Referer``.
 
-Only read-only + lifecycle operations are exposed here (list / detail / stop /
-delete / users). ``ray_job/create`` is intentionally not wrapped: the request
-payload is proto-typed with nested ``head`` / ``worker`` specs, shm size,
-priority levels, and elastic min/max instance counts per worker group, and
-without authoritative schema docs (or a successfully submitted job to copy
-from in this workspace) any wrapper risks hiding submission failures. Users
-who need ``create`` should use the web UI for now and manage existing jobs
-from the CLI.
+Create payload shape was reverse-engineered from the SPA's own submit handler
+(``/assets/constant.BP_zw-df.js``). Wire surprises worth remembering:
+``head_node`` (singular, not ``head``); ``mirror_id`` = internal ``image_id``
+(not the Docker URL — resolve via ``image/list`` first); worker side is
+``worker_groups[]`` with ``group_name`` / ``min_replicas`` / ``max_replicas``
+/ ``quota_id``; command is ``entrypoint`` (form renames it from ``command``).
 """
 
 from __future__ import annotations
@@ -30,8 +28,10 @@ from inspire.platform.web.session import DEFAULT_WORKSPACE_ID, WebSession, get_w
 
 __all__ = [
     "RayJobInfo",
+    "create_ray_job",
     "delete_ray_job",
     "get_ray_job_detail",
+    "list_ray_job_scaling_histories",
     "list_ray_job_users",
     "list_ray_jobs",
     "stop_ray_job",
@@ -273,3 +273,113 @@ def delete_ray_job(
         ),
         context="delete",
     )
+
+
+def create_ray_job(
+    body: dict[str, Any],
+    *,
+    session: Optional[WebSession] = None,
+) -> dict[str, Any]:
+    """Submit a new Ray (弹性计算) job.
+
+    ``body`` is posted verbatim to ``/api/v1/ray_job/create``. Callers are
+    expected to assemble the structure the SPA submits — a flat copy of
+    the wire contract:
+
+    .. code-block:: json
+
+        {
+          "name": "...",
+          "description": "...",
+          "workspace_id": "ws-...",
+          "project_id": "project-...",
+          "task_priority": 4,
+          "entrypoint": "<driver command>",
+          "head_node": {
+            "mirror_id": "<image_id>",
+            "image_type": "SOURCE_PUBLIC|SOURCE_PRIVATE|SOURCE_OFFICIAL",
+            "logic_compute_group_id": "lcg-...",
+            "quota_id": "<quota_id>",
+            "shm_gi": 64
+          },
+          "worker_groups": [
+            {
+              "group_name": "decode",
+              "mirror_id": "<image_id>",
+              "image_type": "SOURCE_PUBLIC",
+              "logic_compute_group_id": "lcg-...",
+              "min_replicas": 1,
+              "max_replicas": 4,
+              "quota_id": "<quota_id>",
+              "shm_gi": 32
+            }
+          ]
+        }
+
+    Returns the ``data`` sub-object from the response, which typically
+    contains ``ray_job_id`` (plus the platform's ``sub_code`` / ``sub_msg``
+    that surface post-validation hints in the web UI).
+    """
+    if not isinstance(body, dict):
+        raise ValueError("body must be a dict")
+
+    if session is None:
+        session = get_web_session()
+
+    data = _assert_ok(
+        _request_json(
+            session,
+            "POST",
+            _browser_api_path("/ray_job/create"),
+            referer=_ray_referer(),
+            body=body,
+            timeout=60,
+        ),
+        context="create",
+    )
+    return data.get("data") or {}
+
+
+def list_ray_job_scaling_histories(
+    ray_job_id: str,
+    *,
+    page_num: int = 1,
+    page_size: int = 50,
+    session: Optional[WebSession] = None,
+) -> tuple[list[dict], int]:
+    """Fetch the elastic-scaling event history for a Ray job.
+
+    The SPA hits ``/ray_job/scaling_histories/list`` to render the
+    "扩缩容历史" tab on a Ray detail page — each entry is a worker-group
+    instance count change driven by platform-side load signals. Useful for
+    post-mortem on whether ``min_replicas`` / ``max_replicas`` ever moved.
+    """
+    ray_job_id = str(ray_job_id or "").strip()
+    if not ray_job_id:
+        raise ValueError("ray_job_id is required")
+
+    if session is None:
+        session = get_web_session()
+
+    data = _assert_ok(
+        _request_json(
+            session,
+            "POST",
+            _browser_api_path("/ray_job/scaling_histories/list"),
+            referer=_ray_referer(),
+            body={
+                "ray_job_id": ray_job_id,
+                "page_num": page_num,
+                "page_size": page_size,
+            },
+            timeout=30,
+        ),
+        context="scaling_histories",
+    )
+    payload = data.get("data") or {}
+    items = payload.get("items") or payload.get("list") or []
+    try:
+        total = int(payload.get("total") or 0)
+    except (TypeError, ValueError):
+        total = 0
+    return list(items), total

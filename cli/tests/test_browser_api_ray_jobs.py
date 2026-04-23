@@ -16,8 +16,10 @@ import pytest
 from inspire.platform.web.browser_api import ray_jobs as ray_jobs_module
 from inspire.platform.web.browser_api.ray_jobs import (
     RayJobInfo,
+    create_ray_job,
     delete_ray_job,
     get_ray_job_detail,
+    list_ray_job_scaling_histories,
     list_ray_job_users,
     list_ray_jobs,
     stop_ray_job,
@@ -266,3 +268,127 @@ def test_ray_job_info_coerces_priority_string_to_int() -> None:
 def test_ray_job_info_priority_none_on_garbage() -> None:
     info = RayJobInfo.from_api_response({"priority": "not-a-number"})
     assert info.priority is None
+
+
+# ---------------------------------------------------------------------------
+# create_ray_job — pins the reverse-engineered wire contract
+# ---------------------------------------------------------------------------
+
+
+def test_create_ray_job_posts_body_verbatim_and_returns_data(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "code": 0,
+            "data": {
+                "ray_job_id": "ray-new-1",
+                "sub_code": "OK",
+                "sub_msg": "created",
+            },
+        },
+        record,
+    )
+
+    body = {
+        "name": "av-pipeline",
+        "description": "streaming decode + infer",
+        "workspace_id": "ws-1",
+        "project_id": "project-1",
+        "task_priority": 9,
+        "entrypoint": "python driver.py",
+        "head_node": {
+            "mirror_id": "img-head-1",
+            "image_type": "SOURCE_PUBLIC",
+            "logic_compute_group_id": "lcg-head-1",
+            "quota_id": "quota-head-1",
+            "shm_gi": 64,
+        },
+        "worker_groups": [
+            {
+                "group_name": "decode",
+                "mirror_id": "img-decode-1",
+                "image_type": "SOURCE_PUBLIC",
+                "logic_compute_group_id": "lcg-decode-1",
+                "min_replicas": 1,
+                "max_replicas": 4,
+                "quota_id": "quota-decode-1",
+                "shm_gi": 32,
+            }
+        ],
+    }
+
+    data = create_ray_job(body, session=_FakeSession())
+    assert data == {
+        "ray_job_id": "ray-new-1",
+        "sub_code": "OK",
+        "sub_msg": "created",
+    }
+
+    # Wire format assertions — create is POST, body is sent unmodified,
+    # and the referer matches the /jobs/ray origin the SPA uses.
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/ray_job/create")
+    assert "/jobs/ray" in record["referer"]
+    assert record["body"] == body
+
+
+def test_create_ray_job_rejects_non_dict_body() -> None:
+    with pytest.raises(ValueError, match="body must be a dict"):
+        create_ray_job("not-a-dict", session=_FakeSession())  # type: ignore[arg-type]
+
+
+def test_create_ray_job_raises_on_non_zero_code(monkeypatch) -> None:
+    _install_fake_request(
+        monkeypatch,
+        {"code": 100002, "message": 'proto: unknown field "image"'},
+        {},
+    )
+    # Any dict body gets us past the type check; the backend rejects it.
+    with pytest.raises(ValueError, match="create failed"):
+        create_ray_job({"anything": "goes"}, session=_FakeSession())
+
+
+# ---------------------------------------------------------------------------
+# list_ray_job_scaling_histories — newly surfaced endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_list_ray_job_scaling_histories_posts_expected_body(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "code": 0,
+            "data": {
+                "items": [
+                    {"ts": "1776000000", "group_name": "decode", "from": 1, "to": 4},
+                    {"ts": "1776000060", "group_name": "decode", "from": 4, "to": 2},
+                ],
+                "total": 2,
+            },
+        },
+        record,
+    )
+
+    items, total = list_ray_job_scaling_histories(
+        "ray-42",
+        page_num=2,
+        page_size=25,
+        session=_FakeSession(),
+    )
+
+    assert total == 2
+    assert len(items) == 2
+    assert items[0]["group_name"] == "decode"
+    assert record["url"].endswith("/ray_job/scaling_histories/list")
+    assert record["body"] == {
+        "ray_job_id": "ray-42",
+        "page_num": 2,
+        "page_size": 25,
+    }
+
+
+def test_list_ray_job_scaling_histories_rejects_empty_id() -> None:
+    with pytest.raises(ValueError, match="ray_job_id is required"):
+        list_ray_job_scaling_histories("", session=_FakeSession())

@@ -68,6 +68,87 @@ def _resolve_compute_group_id(config: Config, requested: str) -> str:
     )
 
 
+def _extract_memory_gib(price: dict) -> int:
+    value = (
+        price.get("memory_size_gib")
+        or price.get("memory_size")
+        or price.get("memory_size_gb")
+        or 0
+    )
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+
+def _resolve_hpc_spec_id(
+    *,
+    session,
+    workspace_id: str,
+    compute_group_id: str,
+    cpus_per_task: int,
+    memory_per_cpu: int,
+) -> str:
+    """Look up the HPC spec_id (predef_quota_id) from (compute_group, cpu, memory).
+
+    The Inspire platform returns one or more HPC specs per compute group
+    keyed by ``(cpu_count, memory_size_gib, gpu_count)``. For HPC specifically
+    gpu_count is always 0, so ``(compute_group, cpus_per_task,
+    cpus_per_task * memory_per_cpu)`` uniquely identifies the quota.
+
+    Raises ``ConfigError`` if no HPC spec in the compute group matches, or
+    if more than one matches (should not happen; guards against platform
+    changes).
+    """
+    try:
+        prices = browser_api_module.get_resource_prices(
+            workspace_id=workspace_id,
+            logic_compute_group_id=compute_group_id,
+            schedule_config_type="SCHEDULE_CONFIG_TYPE_HPC",
+            session=session,
+        )
+    except Exception as err:
+        raise ConfigError(
+            f"Could not query HPC specs for compute group {compute_group_id}: {err}. "
+            "Run 'inspire resources specs --usage hpc --json' to verify the compute group "
+            "exposes HPC quotas."
+        ) from err
+
+    target_memory = int(cpus_per_task) * int(memory_per_cpu)
+    matches = [
+        p
+        for p in prices
+        if int(p.get("cpu_count") or 0) == int(cpus_per_task)
+        and _extract_memory_gib(p) == target_memory
+        and int(p.get("gpu_count") or 0) == 0
+    ]
+    if not matches:
+        available = [
+            f"cpus={p.get('cpu_count')}/mem={_extract_memory_gib(p)}GiB"
+            for p in prices
+            if int(p.get("gpu_count") or 0) == 0
+        ]
+        hint = ", ".join(available) if available else "(this compute group exposes no HPC specs)"
+        raise ConfigError(
+            f"No HPC spec matches --cpus-per-task={cpus_per_task} "
+            f"--memory-per-cpu={memory_per_cpu} (→ {target_memory} GiB total) in this "
+            f"compute group. Available HPC specs: {hint}"
+        )
+    if len(matches) > 1:
+        raise ConfigError(
+            f"Ambiguous HPC spec: {len(matches)} specs share cpus={cpus_per_task} "
+            f"memory={target_memory}GiB. File an issue with the output of "
+            "`inspire resources specs --usage hpc --json`."
+        )
+    spec_id = str(matches[0].get("quota_id") or matches[0].get("spec_id") or "").strip()
+    if not spec_id:
+        raise ConfigError(
+            "Platform returned an HPC spec without a quota_id — cannot submit. "
+            "This is a platform bug; report the compute group name."
+        )
+    return spec_id
+
+
 def _extract_data(result: dict[str, Any]) -> dict[str, Any]:
     data = result.get("data")
     return data if isinstance(data, dict) else result
@@ -125,7 +206,7 @@ def list_hpc(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         resolved_workspace_id = None
-        if workspace is not None or workspace_id_override is not None:
+        if workspace is not None:
             resolved_workspace_id = select_workspace_id(
                 config,
                 explicit_workspace_name=workspace,
@@ -184,8 +265,11 @@ def list_hpc(
 )
 @click.option(
     "--spec-id",
-    required=True,
-    help="HPC predef_quota_id (use inspire resources specs --usage hpc)",
+    default=None,
+    help=(
+        "Platform predef_quota_id escape hatch. Leave empty — the CLI resolves "
+        "it from (--compute-group, --cpus-per-task, --memory-per-cpu)."
+    ),
 )
 @click.option(
     "--project",
@@ -222,7 +306,7 @@ def create_hpc(
     name: str,
     entrypoint: str,
     compute_group: str,
-    spec_id: str,
+    spec_id: Optional[str],
     project: Optional[str],
     workspace: Optional[str],
     image: Optional[str],
@@ -267,6 +351,16 @@ def create_hpc(
             return
 
         resolved_compute_group_id = _resolve_compute_group_id(config, compute_group)
+
+        if not spec_id:
+            session = get_web_session()
+            spec_id = _resolve_hpc_spec_id(
+                session=session,
+                workspace_id=resolved_workspace_id,
+                compute_group_id=resolved_compute_group_id,
+                cpus_per_task=cpus_per_task,
+                memory_per_cpu=memory_per_cpu,
+            )
 
         result = api.create_hpc_job(
             name=name,

@@ -1,17 +1,17 @@
 """Ray (弹性计算) commands for Inspire CLI.
 
 Wraps the ``/api/v1/ray_job/*`` Browser API family surfaced by the web UI
-under the "弹性计算" sidebar. Only read-only + lifecycle actions are wrapped
-today (``list / status / stop / delete``); ``create`` still requires the
-web UI because the elastic head+worker spec payload is proto-typed and the
-schema isn't yet documented well enough to expose safely.
+under the "弹性计算" sidebar. The full lifecycle is covered: ``list / status /
+stop / delete / create``. The create body shape was reverse-engineered from
+the SPA's own submit handler (``constant.BP_zw-df.js`` on the ``/jobs/ray``
+route) — see ``browser_api/ray_jobs.create_ray_job`` for the wire contract.
 """
 
 from __future__ import annotations
 
 import click
 
-from .ray_commands import delete_ray, list_ray, status_ray, stop_ray
+from .ray_commands import create_ray, delete_ray, list_ray, status_ray, stop_ray
 
 
 @click.group()
@@ -23,6 +23,7 @@ ray.add_command(list_ray)
 ray.add_command(status_ray)
 ray.add_command(stop_ray)
 ray.add_command(delete_ray)
+ray.add_command(create_ray)
 
 
 __all__ = ["ray"]

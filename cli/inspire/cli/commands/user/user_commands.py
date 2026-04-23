@@ -141,12 +141,11 @@ def api_keys_user(ctx: Context) -> None:
 @click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
 @pass_context
 def permissions_user(
-    ctx: Context, workspace: Optional[str], workspace_id_override: Optional[str]
-) -> None:
+    ctx: Context, workspace: Optional[str],) -> None:
     """Show per-workspace permission matrix (`/user/permissions/{ws}`)."""
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        resolved_workspace = _resolve_workspace_id(config, workspace, workspace_id_override)
+        resolved_workspace = _resolve_workspace_id(config, workspace)
         session = get_web_session()
         perms = browser_api_module.get_user_permissions(
             workspace_id=resolved_workspace, session=session

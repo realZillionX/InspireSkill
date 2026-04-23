@@ -33,8 +33,10 @@ from .hpc_jobs import (
 )
 from .ray_jobs import (
     RayJobInfo,
+    create_ray_job,
     delete_ray_job,
     get_ray_job_detail,
+    list_ray_job_scaling_histories,
     list_ray_job_users,
     list_ray_jobs,
     stop_ray_job,
@@ -120,8 +122,10 @@ __all__ = [
     "list_hpc_job_events",
     # Ray jobs (弹性计算 — CPU decode + GPU inference streaming pipelines)
     "RayJobInfo",
+    "create_ray_job",
     "delete_ray_job",
     "get_ray_job_detail",
+    "list_ray_job_scaling_histories",
     "list_ray_job_users",
     "list_ray_jobs",
     "stop_ray_job",
