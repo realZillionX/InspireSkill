@@ -31,6 +31,8 @@ __all__ = [
     "create_ray_job",
     "delete_ray_job",
     "get_ray_job_detail",
+    "list_ray_job_events",
+    "list_ray_job_instances",
     "list_ray_job_scaling_histories",
     "list_ray_job_users",
     "list_ray_jobs",
@@ -338,6 +340,98 @@ def create_ray_job(
         context="create",
     )
     return data.get("data") or {}
+
+
+def list_ray_job_events(
+    ray_job_id: str,
+    *,
+    page_num: int = 1,
+    page_size: int = -1,
+    sort_ascending: bool = True,
+    session: Optional[WebSession] = None,
+) -> list[dict]:
+    """Fetch job-level events for a Ray cluster.
+
+    Unlike HPC / train_job events (which take a generic
+    ``{filter:{object_ids, object_type}, sorter:[...]}`` envelope), Ray's
+    events endpoint is bespoke: body is ``{ray_job_id, page_num, page_size,
+    sorter}``. No ``object_type`` — passing one returns ``参数错误``.
+
+    Returned events follow the K8s-event shape: ``reason`` / ``type`` /
+    ``message`` / ``first_timestamp`` / ``last_timestamp`` / ``count``. The
+    critical signals are ``CreatedRayCluster`` (Normal) on submit and
+    ``FailedScheduling`` (Warning) when the scheduler can't bind a pod to a
+    node — the latter is almost always how you diagnose a job stuck in
+    PENDING.
+    """
+    ray_job_id = str(ray_job_id or "").strip()
+    if not ray_job_id:
+        raise ValueError("ray_job_id is required")
+
+    if session is None:
+        session = get_web_session()
+
+    sort = "ascend" if sort_ascending else "descend"
+    data = _assert_ok(
+        _request_json(
+            session,
+            "POST",
+            _browser_api_path("/ray_job/events/list"),
+            referer=_ray_referer(),
+            body={
+                "ray_job_id": ray_job_id,
+                "page_num": page_num,
+                "page_size": page_size,
+                "sorter": [{"field": "last_timestamp", "sort": sort}],
+            },
+            timeout=30,
+        ),
+        context="events",
+    )
+    payload = data.get("data") or {}
+    return payload.get("items") or payload.get("list") or []
+
+
+def list_ray_job_instances(
+    ray_job_id: str,
+    *,
+    page_num: int = 1,
+    page_size: int = -1,
+    session: Optional[WebSession] = None,
+) -> list[dict]:
+    """Fetch the pod-level view of a Ray job (head + worker instances).
+
+    Each entry is a K8s pod-like record: ``instance_id`` / ``instance_type``
+    ("head" or "worker") / ``worker_group_name`` / ``status`` ("pending" /
+    "running" / ...) / ``cpu_count`` / ``memory_size`` / ``gpu_count`` /
+    ``priority`` / ``priority_level`` / ``created_at``. Useful when head is
+    up but one worker group is stuck, or to confirm auto-scaling brought
+    new pods online.
+    """
+    ray_job_id = str(ray_job_id or "").strip()
+    if not ray_job_id:
+        raise ValueError("ray_job_id is required")
+
+    if session is None:
+        session = get_web_session()
+
+    data = _assert_ok(
+        _request_json(
+            session,
+            "POST",
+            _browser_api_path("/ray_job/instances/list"),
+            referer=_ray_referer(),
+            body={
+                "ray_job_id": ray_job_id,
+                "page_num": page_num,
+                "page_size": page_size,
+            },
+            timeout=30,
+        ),
+        context="instances",
+    )
+    payload = data.get("data") or {}
+    return payload.get("items") or payload.get("list") or []
 
 
 def list_ray_job_scaling_histories(

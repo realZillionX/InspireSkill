@@ -59,6 +59,7 @@ TASK_TYPE_BY_RESOURCE: dict[str, str] = {
     "job": "distributed_training",
     "hpc": "hpc_job",
     "serving": "inference_serving",
+    "ray": "ray_job",
 }
 
 

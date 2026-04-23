@@ -19,6 +19,8 @@ from inspire.platform.web.browser_api.ray_jobs import (
     create_ray_job,
     delete_ray_job,
     get_ray_job_detail,
+    list_ray_job_events,
+    list_ray_job_instances,
     list_ray_job_scaling_histories,
     list_ray_job_users,
     list_ray_jobs,
@@ -392,3 +394,118 @@ def test_list_ray_job_scaling_histories_posts_expected_body(monkeypatch) -> None
 def test_list_ray_job_scaling_histories_rejects_empty_id() -> None:
     with pytest.raises(ValueError, match="ray_job_id is required"):
         list_ray_job_scaling_histories("", session=_FakeSession())
+
+
+# ---------------------------------------------------------------------------
+# list_ray_job_events — pins the bespoke body shape (no filter/object_type)
+# ---------------------------------------------------------------------------
+
+
+def test_list_ray_job_events_posts_top_level_ray_job_id(monkeypatch) -> None:
+    """Critical wire contract: Ray events body is flat, unlike HPC / train which
+    require `filter: {object_ids, object_type}`. Passing `object_type` yields
+    `参数错误`. This test pins that we do NOT wrap in filter."""
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "reason": "CreatedRayCluster",
+                        "type": "Normal",
+                        "message": "Created RayCluster ns/rj-abc",
+                        "last_timestamp": "1776975771000",
+                        "count": 1,
+                    },
+                    {
+                        "reason": "FailedScheduling",
+                        "type": "Warning",
+                        "message": "0/203 nodes are unavailable: 75 Insufficient cpu.",
+                        "last_timestamp": "1776975790000",
+                        "count": 3,
+                    },
+                ],
+                "total": 2,
+            },
+        },
+        record,
+    )
+
+    events = list_ray_job_events("rj-abc", session=_FakeSession())
+
+    assert len(events) == 2
+    assert events[1]["reason"] == "FailedScheduling"
+    assert record["url"].endswith("/ray_job/events/list")
+    # Must be flat — NO `filter` / `object_type` wrapper (HPC-style body is
+    # rejected with 参数错误 on this endpoint).
+    assert "filter" not in record["body"]
+    assert record["body"] == {
+        "ray_job_id": "rj-abc",
+        "page_num": 1,
+        "page_size": -1,
+        "sorter": [{"field": "last_timestamp", "sort": "ascend"}],
+    }
+
+
+def test_list_ray_job_events_sort_descending(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(monkeypatch, {"code": 0, "data": {"items": [], "total": 0}}, record)
+    list_ray_job_events("rj-abc", sort_ascending=False, session=_FakeSession())
+    assert record["body"]["sorter"] == [{"field": "last_timestamp", "sort": "descend"}]
+
+
+def test_list_ray_job_events_rejects_empty_id() -> None:
+    with pytest.raises(ValueError, match="ray_job_id is required"):
+        list_ray_job_events("", session=_FakeSession())
+
+
+# ---------------------------------------------------------------------------
+# list_ray_job_instances — pod-level view
+# ---------------------------------------------------------------------------
+
+
+def test_list_ray_job_instances_posts_expected_body(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "instance_id": "rj-abc-vhd4h-head-qlrtm",
+                        "instance_type": "head",
+                        "status": "pending",
+                        "cpu_count": 2,
+                    },
+                    {
+                        "instance_id": "rj-abc-vhd4h-w-worker-ttrv4",
+                        "instance_type": "worker",
+                        "worker_group_name": "w",
+                        "status": "pending",
+                        "cpu_count": 2,
+                    },
+                ]
+            },
+        },
+        record,
+    )
+
+    instances = list_ray_job_instances("rj-abc", session=_FakeSession())
+
+    assert len(instances) == 2
+    assert instances[0]["instance_type"] == "head"
+    assert instances[1]["worker_group_name"] == "w"
+    assert record["url"].endswith("/ray_job/instances/list")
+    assert record["body"] == {
+        "ray_job_id": "rj-abc",
+        "page_num": 1,
+        "page_size": -1,
+    }
+
+
+def test_list_ray_job_instances_rejects_empty_id() -> None:
+    with pytest.raises(ValueError, match="ray_job_id is required"):
+        list_ray_job_instances("", session=_FakeSession())

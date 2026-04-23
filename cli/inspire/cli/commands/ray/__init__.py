@@ -11,7 +11,15 @@ from __future__ import annotations
 
 import click
 
-from .ray_commands import create_ray, delete_ray, list_ray, status_ray, stop_ray
+from .ray_commands import (
+    create_ray,
+    delete_ray,
+    events_ray,
+    instances_ray,
+    list_ray,
+    status_ray,
+    stop_ray,
+)
 
 
 @click.group()
@@ -24,6 +32,8 @@ ray.add_command(status_ray)
 ray.add_command(stop_ray)
 ray.add_command(delete_ray)
 ray.add_command(create_ray)
+ray.add_command(events_ray)
+ray.add_command(instances_ray)
 
 
 __all__ = ["ray"]

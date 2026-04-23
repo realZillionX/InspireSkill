@@ -621,6 +621,151 @@ def _assemble_create_body(
 
 
 # ---------------------------------------------------------------------------
+# events
+# ---------------------------------------------------------------------------
+
+
+def _format_ts(raw) -> str:
+    """Format a millis-since-epoch string/int into a short local time."""
+    import datetime as _dt
+
+    if raw in (None, "", 0, "0"):
+        return "-"
+    try:
+        ms = int(raw)
+    except (TypeError, ValueError):
+        return str(raw)[:20]
+    try:
+        return _dt.datetime.fromtimestamp(ms / 1000).strftime("%m-%d %H:%M:%S")
+    except (OSError, ValueError, OverflowError):
+        return str(raw)[:20]
+
+
+@click.command("events")
+@click.argument("ray_job_id")
+@click.option(
+    "--tail",
+    type=int,
+    default=None,
+    help="Show only the most recent N events (default: all).",
+)
+@click.option(
+    "--reason",
+    default=None,
+    help="Filter by event reason (e.g. FailedScheduling, CreatedRayCluster).",
+)
+@click.option(
+    "--type",
+    "type_filter",
+    default=None,
+    help="Filter by event type (Normal / Warning).",
+)
+@pass_context
+def events_ray(
+    ctx: Context,
+    ray_job_id: str,
+    tail: Optional[int],
+    reason: Optional[str],
+    type_filter: Optional[str],
+) -> None:
+    """Show K8s events for a Ray (弹性计算) job.
+
+    \b
+    Critical for diagnosing stuck PENDING jobs — the `FailedScheduling`
+    events spell out exactly why the scheduler can't place a pod
+    (insufficient CPU / GPU, node affinity mismatch, taint, etc.).
+
+    \b
+    Examples:
+        inspire ray events <ray_job_id>
+        inspire ray events <ray_job_id> --reason FailedScheduling
+        inspire ray events <ray_job_id> --type Warning --tail 10
+        inspire --json ray events <ray_job_id>
+    """
+    try:
+        session = get_web_session()
+        events = browser_api_module.list_ray_job_events(ray_job_id, session=session)
+
+        if reason:
+            events = [e for e in events if (e.get("reason") or "") == reason]
+        if type_filter:
+            events = [e for e in events if (e.get("type") or "") == type_filter]
+        if tail is not None and tail > 0:
+            events = events[-tail:]
+
+        if ctx.json_output:
+            click.echo(json_formatter.format_json({"events": events, "total": len(events)}))
+            return
+
+        if not events:
+            click.echo("No Ray job events found.")
+            return
+
+        for e in events:
+            ts = _format_ts(e.get("last_timestamp") or e.get("first_timestamp"))
+            etype = (e.get("type") or "").ljust(7)
+            reason_str = (e.get("reason") or "").ljust(28)
+            msg = e.get("message") or ""
+            count = e.get("count")
+            tag = f" (×{count})" if count and int(count) > 1 else ""
+            click.echo(f"{ts}  {etype} {reason_str} {msg}{tag}")
+
+    except (SessionExpiredError, ValueError) as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+# ---------------------------------------------------------------------------
+# instances
+# ---------------------------------------------------------------------------
+
+
+@click.command("instances")
+@click.argument("ray_job_id")
+@pass_context
+def instances_ray(ctx: Context, ray_job_id: str) -> None:
+    """List pod-level instances (head + workers) for a Ray job.
+
+    \b
+    Shows each pod's status — "pending" means the scheduler has the pod
+    but hasn't bound it to a node yet; "running" means it's up. If the
+    Ray job as a whole is PENDING but some pods are already running, it's
+    usually a head-vs-worker ordering issue; if all pods are "pending",
+    check `inspire ray events <id>` for the scheduling reason.
+    """
+    try:
+        session = get_web_session()
+        instances = browser_api_module.list_ray_job_instances(ray_job_id, session=session)
+
+        if ctx.json_output:
+            click.echo(json_formatter.format_json({"instances": instances, "total": len(instances)}))
+            return
+
+        if not instances:
+            click.echo("No Ray pod instances found (job may not have been scheduled yet).")
+            return
+
+        id_w = max(len("Instance"), *(len(i.get("instance_id", "")) for i in instances))
+        click.echo(f"{'Type':<8} {'Group':<12} {'Status':<10} {'Instance':<{id_w}}  CPU/GPU/Mem")
+        click.echo("-" * (id_w + 50))
+        for inst in instances:
+            itype = (inst.get("instance_type") or "").ljust(8)
+            group = (inst.get("worker_group_name") or "").ljust(12)
+            status = (inst.get("status") or "").ljust(10)
+            iid = (inst.get("instance_id") or "").ljust(id_w)
+            cpu = inst.get("cpu_count") or 0
+            gpu = inst.get("gpu_count") or 0
+            mem = inst.get("memory_size") or 0
+            click.echo(f"{itype} {group} {status} {iid}  {cpu}C/{gpu}G/{mem}GiB")
+
+    except (SessionExpiredError, ValueError) as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+# ---------------------------------------------------------------------------
 # delete
 # ---------------------------------------------------------------------------
 
