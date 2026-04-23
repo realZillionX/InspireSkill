@@ -116,11 +116,19 @@ def _add(runner: CliRunner, *args: str, input_: str | None = None):
 
 
 class TestAccountAddCommand:
-    def test_add_prompts_for_password_and_activates_first(
+    def test_interactive_walkthrough_accepts_all_defaults(
         self, home: Path, runner: CliRunner
     ) -> None:
-        result = _add(runner, "alice", input_="s3cr3t\n")
+        """Default path: five prompts (username / password x2 / base URL / proxy).
+        Empty lines accept the shown defaults; proxy stays unset."""
+        # username(accept default), password, confirm, base URL(default), proxy(empty)
+        inputs = "\ns3cr3t\ns3cr3t\n\n\n"
+        result = _add(runner, "alice", input_=inputs)
         assert result.exit_code == 0, result.output
+        assert "Platform login username" in result.output
+        assert "Confirm password" in result.output
+        assert "Inspire base URL" in result.output
+        assert "Proxy URL" in result.output
         assert "Created account" in result.output
         assert "Active account: alice" in result.output
 
@@ -129,45 +137,108 @@ class TestAccountAddCommand:
         assert 'password = "s3cr3t"' in config
         assert 'base_url = "https://qz.sii.edu.cn"' in config
         assert "proxy" not in config
-
         assert (home / ".inspire" / "current").read_text().strip() == "alice"
 
-    def test_add_with_password_and_proxy(self, home: Path, runner: CliRunner) -> None:
+    def test_interactive_collects_custom_values(
+        self, home: Path, runner: CliRunner
+    ) -> None:
+        inputs = (
+            "user-xyz\n"            # username override
+            "s3cr3t\ns3cr3t\n"      # password + confirm
+            "https://staging.x\n"   # custom base URL
+            "http://127.0.0.1:7897\n"  # proxy
+        )
+        result = _add(runner, "alice", input_=inputs)
+        assert result.exit_code == 0, result.output
+        config = storage.account_config_path("alice").read_text()
+        assert 'username = "user-xyz"' in config
+        assert 'base_url = "https://staging.x"' in config
+        assert 'proxy = "http://127.0.0.1:7897"' in config
+
+    def test_interactive_password_mismatch_reprompts(
+        self, home: Path, runner: CliRunner
+    ) -> None:
+        # Two mismatched passwords → Click re-asks; third/fourth succeed.
+        inputs = "\nfirst\nsecond\nagain\nagain\n\n\n"
+        result = _add(runner, "alice", input_=inputs)
+        assert result.exit_code == 0, result.output
+        assert "do not match" in result.output.lower() or "try again" in result.output.lower()
+        config = storage.account_config_path("alice").read_text()
+        assert 'password = "again"' in config
+
+    def test_switches_active_when_user_confirms(
+        self, home: Path, runner: CliRunner
+    ) -> None:
+        storage.create_account("alice", "x = 1\n")
+        storage.set_current_account("alice")
+        # Interactive: answer prompts + 'y' to the switch question.
+        inputs = "\npw\npw\n\n\ny\n"
+        result = _add(runner, "bob", input_=inputs)
+        assert result.exit_code == 0, result.output
+        assert "Switch to 'bob'" in result.output
+        assert storage.current_account() == "bob"
+
+    def test_keeps_active_when_user_declines(
+        self, home: Path, runner: CliRunner
+    ) -> None:
+        storage.create_account("alice", "x = 1\n")
+        storage.set_current_account("alice")
+        inputs = "\npw\npw\n\n\nn\n"
+        result = _add(runner, "bob", input_=inputs)
+        assert result.exit_code == 0, result.output
+        assert "Active account unchanged: alice" in result.output
+        assert storage.current_account() == "alice"
+
+    def test_non_interactive_requires_password(
+        self, home: Path, runner: CliRunner
+    ) -> None:
+        result = _add(runner, "alice", "--non-interactive")
+        assert result.exit_code != 0
+        assert "--password is required" in result.output
+
+    def test_non_interactive_with_all_flags(
+        self, home: Path, runner: CliRunner
+    ) -> None:
         result = _add(
             runner,
             "alice",
+            "--non-interactive",
             "--password",
             "pw",
             "--proxy",
             "http://127.0.0.1:7897",
             "--username",
             "user-xyz",
+            "--use",
         )
         assert result.exit_code == 0, result.output
         config = storage.account_config_path("alice").read_text()
         assert 'username = "user-xyz"' in config
         assert 'proxy = "http://127.0.0.1:7897"' in config
-
-    def test_add_no_use_keeps_no_active_account_without_explicit(
-        self, home: Path, runner: CliRunner
-    ) -> None:
-        # First add (no current, no --no-use) should auto-activate
-        _add(runner, "alice", "--password", "pw")
         assert storage.current_account() == "alice"
 
-        # Second add with --no-use should NOT change active
-        result = _add(runner, "bob", "--password", "pw", "--no-use")
+    def test_non_interactive_no_use_keeps_active(
+        self, home: Path, runner: CliRunner
+    ) -> None:
+        # First account auto-activates even in non-interactive mode.
+        _add(runner, "alice", "--non-interactive", "--password", "pw")
+        assert storage.current_account() == "alice"
+
+        # Second account with --no-use must not change active.
+        result = _add(
+            runner, "bob", "--non-interactive", "--password", "pw", "--no-use"
+        )
         assert result.exit_code == 0, result.output
         assert storage.current_account() == "alice"
 
     def test_add_duplicate_fails(self, home: Path, runner: CliRunner) -> None:
-        _add(runner, "alice", "--password", "pw")
-        result = _add(runner, "alice", "--password", "pw")
+        _add(runner, "alice", "--non-interactive", "--password", "pw")
+        result = _add(runner, "alice", "--non-interactive", "--password", "pw")
         assert result.exit_code != 0
         assert "already exists" in result.output
 
     def test_add_invalid_name(self, home: Path, runner: CliRunner) -> None:
-        result = _add(runner, "bad name", "--password", "pw")
+        result = _add(runner, "bad name", "--non-interactive", "--password", "pw")
         assert result.exit_code != 0
         assert "Invalid account name" in result.output
 
@@ -177,6 +248,7 @@ class TestAccountAddCommand:
         result = _add(
             runner,
             "alice",
+            "--non-interactive",
             "--password",
             'p"w\\x',
         )
