@@ -24,7 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from inspire.config.models import SOURCE_GLOBAL
+from inspire.config.models import SOURCE_GLOBAL, ConfigError
 from inspire.config.toml import _flatten_toml, _load_toml, _toml_key_to_field
 
 from .load_common import _apply_defaults_overrides, _parse_alias_map
@@ -72,6 +72,20 @@ def _apply_account_layer(
     # legacy parsers surface confusing behaviour.
     raw.pop("accounts", None)
     raw.pop("context", None)
+
+    # ``[paths]`` (target_dir, log_pattern) is strictly per-repository and
+    # must never live in the account layer — a single account runs work in
+    # many repos with different remote workdirs. Hard-fail rather than
+    # silently shadow the correct project-level value.
+    if isinstance(raw.get("paths"), dict) and raw["paths"]:
+        raise ConfigError(
+            f"Account config at {account_path} contains a [paths] section, "
+            "which is per-repository state and must not live at the account "
+            "level. Move [paths].target_dir (and any other [paths].* keys) "
+            "into your repo's ./.inspire/config.toml — e.g. by running "
+            "'inspire init --discover' from inside the repo — or export "
+            "INSPIRE_TARGET_DIR for ad-hoc use."
+        )
 
     compute_groups = raw.pop("compute_groups", [])
     remote_env = {str(k): str(v) for k, v in raw.pop("remote_env", {}).items()}

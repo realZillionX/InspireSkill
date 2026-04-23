@@ -769,6 +769,33 @@ class TestAccountConfigLayer:
         target = Config.writable_config_path()
         assert target == Config.resolve_global_config_path()
 
+    def test_paths_section_in_account_config_is_rejected(
+        self, home: Path, clean_env: None
+    ) -> None:
+        """[paths] is per-repository state — must not appear in account config."""
+        self._write_account_config(
+            home,
+            "alice",
+            '[auth]\nusername = "alice"\npassword = "pw"\n\n'
+            '[paths]\ntarget_dir = "/inspire/ssd/project/foo/alice/work"\n',
+        )
+
+        with pytest.raises(ConfigError, match=r"\[paths\]"):
+            Config.from_files_and_env(require_credentials=False)
+
+    def test_empty_paths_section_in_account_config_is_tolerated(
+        self, home: Path, clean_env: None
+    ) -> None:
+        """Empty [paths] (e.g. left over from a template) shouldn't blow up."""
+        self._write_account_config(
+            home,
+            "alice",
+            '[auth]\nusername = "alice"\npassword = "pw"\n\n[paths]\n',
+        )
+
+        cfg, _ = Config.from_files_and_env(require_credentials=False)
+        assert cfg.username == "alice"
+
 
 # ===========================================================================
 # Init command tests

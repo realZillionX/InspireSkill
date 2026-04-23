@@ -164,6 +164,45 @@ class TestBuildPlan:
         parsed = tomllib.loads(plan.accounts["ghost"].config_toml)
         assert parsed.get("auth", {}).get("username") == "ghost"
 
+    def test_legacy_paths_section_is_dropped_and_reported(self, home: Path) -> None:
+        """[paths].target_dir is per-repo and cannot survive migration — the
+        plan should strip it and surface the dropped value so the user knows
+        to rebuild it with 'inspire init --discover' inside each repo."""
+        _write_legacy_global(
+            home,
+            '[auth]\nusername = "alice"\n\n'
+            '[accounts."alice"]\npassword = "pw"\n\n'
+            '[paths]\ntarget_dir = "/inspire/ssd/project/foo/alice/work"\n',
+        )
+
+        plan = migration.build_plan()
+        assert plan.dropped_target_dir == "/inspire/ssd/project/foo/alice/work"
+
+        parsed = tomllib.loads(plan.accounts["alice"].config_toml)
+        assert "paths" not in parsed  # scrubbed
+
+        summary = "\n".join(migration.describe_plan(plan))
+        assert "target_dir" in summary
+        assert "init --discover" in summary
+
+    def test_migration_result_loads_cleanly(self, home: Path) -> None:
+        """End-to-end: after migrate runs, Config.from_files_and_env must not
+        blow up reading the new account config (no stray [paths] left over)."""
+        _write_legacy_global(
+            home,
+            '[auth]\nusername = "alice"\n\n'
+            '[accounts."alice"]\npassword = "pw"\n\n'
+            '[paths]\ntarget_dir = "/inspire/ssd/project/foo/alice/work"\n',
+        )
+        plan = migration.build_plan()
+        migration.execute_plan(plan)
+
+        from inspire.config import Config
+        cfg, _ = Config.from_files_and_env(require_credentials=False)
+        assert cfg.username == "alice"
+        # target_dir did not survive, as intended.
+        assert cfg.target_dir is None
+
 
 # ---------- execution -----------------------------------------------------
 

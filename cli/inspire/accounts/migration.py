@@ -91,6 +91,10 @@ class MigrationPlan:
     accounts: dict[str, AccountPlan] = field(default_factory=dict)
     active_account: Optional[str] = None
     backup_files: list[Path] = field(default_factory=list)
+    # Legacy ``[paths].target_dir`` that can't survive migration — target_dir
+    # is per-repo and must be rebuilt with 'inspire init --discover' inside
+    # each repo. Remembered here so describe_plan / the CLI can tell the user.
+    dropped_target_dir: Optional[str] = None
 
     @property
     def is_empty(self) -> bool:
@@ -242,12 +246,14 @@ def _render_account_config(
     """Produce the new per-account ``config.toml`` body.
 
     The base is the legacy global TOML minus structural noise
-    (``[accounts]``, ``[context]``, ``[cli]``). Per-account overrides then
-    get applied on top at the right TOML slots.
+    (``[accounts]``, ``[context]``, ``[cli]``) and minus the per-repository
+    ``[paths]`` section — ``target_dir`` belongs in each repo's
+    ``./.inspire/config.toml``, never at the account level. Users rebuild
+    it by running ``inspire init --discover`` from inside the repo.
     """
     out: dict[str, Any] = {}
     for k, v in legacy_raw.items():
-        if k in {"accounts", "context", "cli"}:
+        if k in {"accounts", "context", "cli", "paths"}:
             continue
         out[k] = copy.deepcopy(v)
 
@@ -343,6 +349,15 @@ def build_plan() -> MigrationPlan:
         plan.backup_files.append(legacy_path)
 
     passwords, catalogs = _parse_global_accounts(legacy_raw.get("accounts", {}))
+
+    # Snapshot the legacy [paths].target_dir so we can warn the user it won't
+    # be carried into account config (per-repo state — rebuild inside each
+    # repo with 'inspire init --discover').
+    raw_paths = legacy_raw.get("paths")
+    if isinstance(raw_paths, dict):
+        legacy_target_dir = str(raw_paths.get("target_dir") or "").strip()
+        if legacy_target_dir:
+            plan.dropped_target_dir = legacy_target_dir
 
     raw_auth = legacy_raw.get("auth")
     top_username = ""
@@ -521,6 +536,15 @@ def describe_plan(plan: MigrationPlan) -> list[str]:
         f"Backup location: {home}/legacy-<timestamp>/ "
         "(created just before the move — safe to delete later)."
     )
+
+    if plan.dropped_target_dir:
+        out.append("")
+        out.append(
+            f"Note: legacy [paths].target_dir = {plan.dropped_target_dir!r} will "
+            "NOT be carried over — target_dir is per-repository, not per-account. "
+            "Rebuild it inside each repo with 'inspire init --discover', or export "
+            "INSPIRE_TARGET_DIR for one-off use."
+        )
     return out
 
 
