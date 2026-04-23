@@ -1016,6 +1016,34 @@ def test_wait_for_image_ready_returns_on_ready(monkeypatch: pytest.MonkeyPatch) 
     assert call_count == 1
 
 
+def test_wait_for_image_ready_accepts_success_from_mirror_save(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Platform returns `SUCCESS` (not `READY`) for images produced by
+    ``inspire image save``. Both must resolve the wait; this test pins that
+    behaviour so future refactors don't drop one state alias."""
+    from inspire.platform.web.browser_api import images as images_module
+
+    def fake_get_image_detail(image_id, session=None):
+        return CustomImageInfo(
+            image_id=image_id,
+            url="docker.x/y:v2",
+            name="y:v2",
+            framework="",
+            version="v2",
+            source="SOURCE_PUBLIC",
+            status="SUCCESS",
+            description="",
+            created_at="",
+        )
+
+    monkeypatch.setattr(images_module, "get_image_detail", fake_get_image_detail)
+    monkeypatch.setattr(images_module, "get_web_session", lambda: FakeWebSession())
+
+    result = images_module.wait_for_image_ready("img-save", session=FakeWebSession())
+    assert result.status == "SUCCESS"
+
+
 def test_wait_for_image_ready_raises_on_failed(monkeypatch: pytest.MonkeyPatch) -> None:
     from inspire.platform.web.browser_api import images as images_module
 
@@ -1065,7 +1093,7 @@ def test_wait_for_image_ready_times_out(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(images_module, "get_image_detail", fake_get_image_detail)
 
-    with pytest.raises(TimeoutError, match="did not reach READY"):
+    with pytest.raises(TimeoutError, match="did not reach a terminal success state"):
         images_module.wait_for_image_ready("img-003", session=FakeWebSession(), timeout=10)
 
 

@@ -315,13 +315,22 @@ def delete_image(
     )
 
 
+_IMAGE_READY_STATES = {"READY", "SUCCESS", "SUCCEED", "SUCCEEDED"}
+_IMAGE_FAILED_STATES = {"FAILED", "FAILURE", "ERROR"}
+
+
 def wait_for_image_ready(
     image_id: str,
     session: Optional[WebSession] = None,
-    timeout: int = 300,
+    timeout: int = 600,
     poll_interval: int = 5,
 ) -> CustomImageInfo:
-    """Wait for a custom image to reach READY status.
+    """Wait for a custom image to reach a terminal success state.
+
+    The platform uses ``SUCCESS`` for ``inspire image save``-produced images
+    (2026-04 observation — not ``READY`` like ``create_image`` does for
+    externally-registered images). Both are accepted here, as are any
+    ``SUCCEEDED`` variants, so the wait works for both flows.
 
     Args:
         image_id: The image ID to poll.
@@ -345,16 +354,16 @@ def wait_for_image_ready(
         if status:
             last_status = status
 
-        if status == "READY":
+        if status in _IMAGE_READY_STATES:
             return image
 
-        if status == "FAILED":
+        if status in _IMAGE_FAILED_STATES:
             raise ValueError(f"Image '{image_id}' build failed (status: {status})")
 
         if time.time() - start >= timeout:
             raise TimeoutError(
-                f"Image '{image_id}' did not reach READY within {timeout}s "
-                f"(last status: {last_status or 'unknown'})"
+                f"Image '{image_id}' did not reach a terminal success state "
+                f"within {timeout}s (last status: {last_status or 'unknown'})"
             )
 
         time.sleep(poll_interval)
