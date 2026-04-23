@@ -27,7 +27,8 @@ from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.config import Config, ConfigError
 
 
-def _project_name_for_id(cfg: Config, project_id: str | None) -> str | None:
+def _project_name_for_id(cfg: Config, project_id: str | None) -> str | None:  # noqa: D401
+    """Reverse-lookup a project id in the ``[projects]`` name→id table."""
     if not project_id:
         return None
     for name, pid in (cfg.projects or {}).items():

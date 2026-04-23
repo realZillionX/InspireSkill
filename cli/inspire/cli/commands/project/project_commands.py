@@ -441,8 +441,6 @@ def list_projects_cmd(
                     require_credentials=False, require_target_dir=False
                 )
                 cfg_candidates = [
-                    getattr(_cfg, "workspace_cpu_id", None),
-                    getattr(_cfg, "workspace_gpu_id", None),
                 ]
                 cfg_workspaces = getattr(_cfg, "workspaces", None)
                 if isinstance(cfg_workspaces, dict):

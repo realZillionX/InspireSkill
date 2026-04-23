@@ -84,10 +84,6 @@ class Config:
     job_project_id: Optional[str] = None
     job_workspace_id: Optional[str] = None
 
-    # Workspace routing (optional)
-    workspace_cpu_id: Optional[str] = None
-    workspace_gpu_id: Optional[str] = None
-
     # Full workspace map loaded from TOML [workspaces]
     workspaces: dict[str, str] = field(default_factory=dict)
 

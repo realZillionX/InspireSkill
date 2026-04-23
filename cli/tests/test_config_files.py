@@ -210,8 +210,6 @@ timeout = 60
         assert Config._toml_key_to_field("proxy.requests_http") == "requests_http_proxy"
         assert Config._toml_key_to_field("proxy.playwright") == "playwright_proxy"
         assert Config._toml_key_to_field("paths.target_dir") == "target_dir"
-        assert Config._toml_key_to_field("workspaces.cpu") == "workspace_cpu_id"
-        assert Config._toml_key_to_field("workspaces.gpu") == "workspace_gpu_id"
         assert Config._toml_key_to_field("nonexistent.key") is None
 
 
@@ -527,8 +525,6 @@ class TestAccountConfigLayer:
         )
 
         cfg, _ = Config.from_files_and_env(require_credentials=False)
-        assert cfg.workspace_cpu_id == "ws-cpu"
-        assert cfg.workspace_gpu_id == "ws-gpu"
         assert cfg.job_priority == 5
         assert cfg.job_image == "myimage:latest"
         assert cfg.notebook_resource == "1xH100"

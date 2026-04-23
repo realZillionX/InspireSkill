@@ -1443,8 +1443,6 @@ def _merge_workspace_aliases(
                 merged_workspaces[alias] = workspace_value
 
     explicit_workspaces = {
-        "cpu": getattr(config, "workspace_cpu_id", None),
-        "gpu": getattr(config, "workspace_gpu_id", None),
     }
     for alias, raw_workspace_id in explicit_workspaces.items():
         workspace_value = str(raw_workspace_id or "").strip()
@@ -1874,8 +1872,7 @@ def _resolve_probe_defaults(
         raise SystemExit(1) from e
 
     probe_workspace_id = str(
-        getattr(config, "workspace_cpu_id", "")
-        or _guess_workspace_id_from_map(workspaces=merged_workspaces, alias="cpu")
+        _guess_workspace_id_from_map(workspaces=merged_workspaces, alias="cpu")
         or workspace_id
     ).strip()
     if not probe_workspace_id:

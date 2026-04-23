@@ -23,8 +23,6 @@ _DEFAULTS_FIELD_MAP = {
 
 _CONTEXT_WORKSPACE_FIELD_MAP = {
     "workspace": "job_workspace_id",
-    "workspace_cpu": "workspace_cpu_id",
-    "workspace_gpu": "workspace_gpu_id",
 }
 
 
@@ -73,8 +71,6 @@ def _default_config_values() -> dict[str, Any]:
         "job_image": None,
         "job_project_id": None,
         "job_workspace_id": None,
-        "workspace_cpu_id": None,
-        "workspace_gpu_id": None,
         "workspaces": {},
         "projects": {},
         "project_catalog": {},

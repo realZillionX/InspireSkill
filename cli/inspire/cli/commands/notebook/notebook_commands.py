@@ -755,8 +755,6 @@ def list_notebooks(
     elif all_workspaces:
         candidates: list[str] = []
         for ws_id in (
-            config.workspace_cpu_id,
-            config.workspace_gpu_id,
             config.job_workspace_id,
         ):
             if ws_id:

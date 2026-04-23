@@ -1,7 +1,17 @@
 """Workspace selection utilities.
 
-The Inspire platform separates resources by workspace. For convenience, the CLI can
-auto-select a workspace based on requested resources.
+The CLI never guesses a workspace by GPU type or "CPU vs GPU" role. The
+only ways to pick a workspace are:
+
+1. ``--workspace <name-or-id>`` on the command itself → ``explicit_*``
+2. ``[context].workspace = "<name-or-id>"`` in the repo's ``./.inspire/config.toml``
+3. ``INSPIRE_WORKSPACE_ID`` env var
+
+If none of those resolve to a real workspace, the call fails loudly.
+``gpu_type`` / ``cpu_only`` / ``prefer_internet`` used to route to
+``workspace_cpu_id`` / ``workspace_gpu_id`` / ``workspace_internet_id``
+role slots — those no longer exist. The kwargs are kept on the signature
+so existing callers don't break; they're silently ignored.
 """
 
 from __future__ import annotations
@@ -32,22 +42,21 @@ def _validate_workspace_id(value: str) -> None:
 def select_workspace_id(
     config: Config,
     *,
-    gpu_type: Optional[str] = None,
-    cpu_only: Optional[bool] = None,
-    prefer_internet: bool = False,  # deprecated, ignored — kept for caller compat
+    gpu_type: Optional[str] = None,  # ignored — see module docstring
+    cpu_only: Optional[bool] = None,  # ignored
+    prefer_internet: bool = False,  # ignored
     explicit_workspace_id: Optional[str] = None,
     explicit_workspace_name: Optional[str] = None,
 ) -> Optional[str]:
-    """Select a workspace_id based on requested resource type.
+    """Resolve a workspace id from an explicit override or ``[context].workspace``.
 
     Precedence:
-      1) explicit_workspace_id
-      2) explicit_workspace_name — 'cpu' / 'gpu' shortcuts or any alias
-         from the account's ``[workspaces]`` map
-      3) Routed workspaces.cpu / workspaces.gpu
-      4) Legacy job_workspace_id (job.workspace_id / INSPIRE_WORKSPACE_ID)
+      1. ``explicit_workspace_id``
+      2. ``explicit_workspace_name`` — looked up against ``[workspaces]``
+      3. ``config.job_workspace_id`` (from ``[context].workspace`` or
+         ``INSPIRE_WORKSPACE_ID``)
     """
-    del prefer_internet  # no longer honored — see module docstring
+    del gpu_type, cpu_only, prefer_internet  # no longer consulted
 
     if explicit_workspace_id:
         _validate_workspace_id(explicit_workspace_id)
@@ -58,26 +67,8 @@ def select_workspace_id(
         if not key:
             raise ConfigError("Workspace name cannot be empty")
 
+        candidate: Optional[str] = None
         normalized = key.lower()
-        if normalized in {"cpu", "default"}:
-            candidate = config.workspace_cpu_id or config.job_workspace_id
-            if not candidate:
-                raise ConfigError(
-                    "No CPU workspace configured. Set [workspaces].cpu or INSPIRE_WORKSPACE_ID."
-                )
-            _validate_workspace_id(candidate)
-            return candidate
-
-        if normalized == "gpu":
-            candidate = config.workspace_gpu_id or config.job_workspace_id
-            if not candidate:
-                raise ConfigError(
-                    "No GPU workspace configured. Set [workspaces].gpu or INSPIRE_WORKSPACE_ID."
-                )
-            _validate_workspace_id(candidate)
-            return candidate
-
-        candidate = None
         for name, workspace_id in (config.workspaces or {}).items():
             if name.lower() == normalized:
                 candidate = workspace_id
@@ -94,20 +85,7 @@ def select_workspace_id(
         _validate_workspace_id(candidate)
         return candidate
 
-    # CPU requests (or commands without resource signal) default to workspaces.cpu.
-    if cpu_only is True:
-        candidate = config.workspace_cpu_id or config.job_workspace_id
-        if candidate:
-            _validate_workspace_id(candidate)
-        return candidate
-
-    if gpu_type is not None:
-        candidate = config.workspace_gpu_id or config.job_workspace_id
-        if candidate:
-            _validate_workspace_id(candidate)
-        return candidate
-
-    candidate = config.workspace_cpu_id or config.job_workspace_id
+    candidate = config.job_workspace_id
     if candidate:
         _validate_workspace_id(candidate)
     return candidate
