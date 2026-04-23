@@ -212,7 +212,6 @@ timeout = 60
         assert Config._toml_key_to_field("paths.target_dir") == "target_dir"
         assert Config._toml_key_to_field("workspaces.cpu") == "workspace_cpu_id"
         assert Config._toml_key_to_field("workspaces.gpu") == "workspace_gpu_id"
-        assert Config._toml_key_to_field("workspaces.internet") == "workspace_internet_id"
         assert Config._toml_key_to_field("nonexistent.key") is None
 
 

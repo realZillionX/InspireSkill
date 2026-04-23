@@ -11,7 +11,6 @@ from inspire.config.workspaces import select_workspace_id
 
 WS_CPU = "ws-6e6ba362-e98e-45b2-9c5a-311998e93d65"
 WS_GPU = "ws-9dcc0e1f-80a4-4af2-bc2f-0e352e7b17e6"
-WS_INET = "ws-6040202d-b785-4b37-98b0-c68d65dd52ce"
 WS_SPECIAL = "ws-22222222-2222-2222-2222-222222222222"
 
 
@@ -20,27 +19,23 @@ def _cfg(**kwargs) -> Config:
 
 
 def test_select_defaults_to_cpu_workspace() -> None:
-    cfg = _cfg(workspace_cpu_id=WS_CPU, workspace_gpu_id=WS_GPU, workspace_internet_id=WS_INET)
+    cfg = _cfg(workspace_cpu_id=WS_CPU, workspace_gpu_id=WS_GPU)
     assert select_workspace_id(cfg) == WS_CPU
 
 
 def test_select_gpu_workspace_for_h200() -> None:
-    cfg = _cfg(workspace_cpu_id=WS_CPU, workspace_gpu_id=WS_GPU, workspace_internet_id=WS_INET)
+    cfg = _cfg(workspace_cpu_id=WS_CPU, workspace_gpu_id=WS_GPU)
     assert select_workspace_id(cfg, gpu_type="H200") == WS_GPU
 
 
-def test_select_internet_workspace_for_4090() -> None:
-    cfg = _cfg(workspace_cpu_id=WS_CPU, workspace_gpu_id=WS_GPU, workspace_internet_id=WS_INET)
-    assert select_workspace_id(cfg, gpu_type="4090") == WS_INET
-
-
-def test_select_internet_falls_back_to_gpu_if_missing() -> None:
-    cfg = _cfg(workspace_cpu_id=WS_CPU, workspace_gpu_id=WS_GPU, workspace_internet_id=None)
-    assert select_workspace_id(cfg, gpu_type="RTX4090") == WS_GPU
+def test_select_gpu_workspace_for_4090() -> None:
+    """'internet' role is gone — 4090 routes to the same GPU workspace."""
+    cfg = _cfg(workspace_cpu_id=WS_CPU, workspace_gpu_id=WS_GPU)
+    assert select_workspace_id(cfg, gpu_type="4090") == WS_GPU
 
 
 def test_select_cpu_for_cpu_only_requests() -> None:
-    cfg = _cfg(workspace_cpu_id=WS_CPU, workspace_gpu_id=WS_GPU, workspace_internet_id=WS_INET)
+    cfg = _cfg(workspace_cpu_id=WS_CPU, workspace_gpu_id=WS_GPU)
     assert select_workspace_id(cfg, cpu_only=True) == WS_CPU
 
 
@@ -73,20 +68,21 @@ def test_config_loads_workspaces_from_project_toml(
 [workspaces]
 cpu = "ws-6e6ba362-e98e-45b2-9c5a-311998e93d65"
 gpu = "ws-9dcc0e1f-80a4-4af2-bc2f-0e352e7b17e6"
-internet = "ws-6040202d-b785-4b37-98b0-c68d65dd52ce"
 special = "ws-22222222-2222-2222-2222-222222222222"
 """.lstrip(),
         encoding="utf-8",
     )
 
+    # Isolate from any real ~/.inspire/current.
+    fake_home = tmp_path / "__home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
     monkeypatch.chdir(project_root)
     monkeypatch.delenv("INSPIRE_WORKSPACE_ID", raising=False)
     monkeypatch.delenv("INSPIRE_WORKSPACE_CPU_ID", raising=False)
     monkeypatch.delenv("INSPIRE_WORKSPACE_GPU_ID", raising=False)
-    monkeypatch.delenv("INSPIRE_WORKSPACE_INTERNET_ID", raising=False)
 
     cfg, _ = Config.from_files_and_env(require_credentials=False)
     assert cfg.workspace_cpu_id == WS_CPU
     assert cfg.workspace_gpu_id == WS_GPU
-    assert cfg.workspace_internet_id == WS_INET
     assert cfg.workspaces.get("special") == WS_SPECIAL

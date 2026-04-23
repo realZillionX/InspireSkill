@@ -54,7 +54,6 @@ def test_project_list_uses_config_workspaces_when_session_discovery_missing(monk
         password="pass",
         workspace_cpu_id=WS_CPU,
         workspace_gpu_id=WS_GPU,
-        workspace_internet_id=WS_INET,
         workspaces={
             "cpu": WS_CPU,
             "gpu": WS_GPU,

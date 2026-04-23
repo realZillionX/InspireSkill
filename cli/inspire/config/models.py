@@ -87,7 +87,6 @@ class Config:
     # Workspace routing (optional)
     workspace_cpu_id: Optional[str] = None
     workspace_gpu_id: Optional[str] = None
-    workspace_internet_id: Optional[str] = None
 
     # Full workspace map loaded from TOML [workspaces]
     workspaces: dict[str, str] = field(default_factory=dict)

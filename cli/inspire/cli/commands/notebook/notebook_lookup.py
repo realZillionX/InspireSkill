@@ -333,7 +333,6 @@ def _collect_workspace_ids_for_lookup(
     for ws_id in (
         getattr(config, "workspace_cpu_id", None),
         getattr(config, "workspace_gpu_id", None),
-        getattr(config, "workspace_internet_id", None),
         getattr(config, "job_workspace_id", None),
     ):
         if ws_id:

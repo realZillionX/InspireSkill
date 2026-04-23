@@ -34,7 +34,7 @@ def select_workspace_id(
     *,
     gpu_type: Optional[str] = None,
     cpu_only: Optional[bool] = None,
-    prefer_internet: bool = False,
+    prefer_internet: bool = False,  # deprecated, ignored — kept for caller compat
     explicit_workspace_id: Optional[str] = None,
     explicit_workspace_name: Optional[str] = None,
 ) -> Optional[str]:
@@ -42,21 +42,13 @@ def select_workspace_id(
 
     Precedence:
       1) explicit_workspace_id
-      2) explicit_workspace_name
-      3) Routed workspaces.* entries (cpu/gpu/internet)
+      2) explicit_workspace_name — 'cpu' / 'gpu' shortcuts or any alias
+         from the account's ``[workspaces]`` map
+      3) Routed workspaces.cpu / workspaces.gpu
       4) Legacy job_workspace_id (job.workspace_id / INSPIRE_WORKSPACE_ID)
-
-    Args:
-        config: Loaded CLI config
-        gpu_type: Requested GPU type (e.g. "H100", "H200", "4090")
-        cpu_only: Whether the request is CPU-only
-        prefer_internet: If True, prefer workspaces.internet when available
-        explicit_workspace_id: Direct override
-        explicit_workspace_name: Workspace alias/name (from TOML [workspaces])
-
-    Returns:
-        The selected workspace id, or None if not configured.
     """
+    del prefer_internet  # no longer honored — see module docstring
+
     if explicit_workspace_id:
         _validate_workspace_id(explicit_workspace_id)
         return explicit_workspace_id
@@ -85,17 +77,6 @@ def select_workspace_id(
             _validate_workspace_id(candidate)
             return candidate
 
-        if normalized in {"internet", "net", "gpu_internet"}:
-            candidate = (
-                config.workspace_internet_id or config.workspace_gpu_id or config.job_workspace_id
-            )
-            if not candidate:
-                raise ConfigError(
-                    "No internet workspace configured. Set [workspaces].internet or INSPIRE_WORKSPACE_ID."
-                )
-            _validate_workspace_id(candidate)
-            return candidate
-
         candidate = None
         for name, workspace_id in (config.workspaces or {}).items():
             if name.lower() == normalized:
@@ -120,17 +101,8 @@ def select_workspace_id(
             _validate_workspace_id(candidate)
         return candidate
 
-    gpu_upper = (gpu_type or "").strip().upper()
-    wants_internet = prefer_internet or ("4090" in gpu_upper)
-
     if gpu_type is not None:
-        if wants_internet:
-            candidate = (
-                config.workspace_internet_id or config.workspace_gpu_id or config.job_workspace_id
-            )
-        else:
-            candidate = config.workspace_gpu_id or config.job_workspace_id
-
+        candidate = config.workspace_gpu_id or config.job_workspace_id
         if candidate:
             _validate_workspace_id(candidate)
         return candidate

@@ -35,7 +35,6 @@ def _workspace_role_aliases(cfg: Config) -> dict[str, str]:
         for role, value in (
             ("cpu", cfg.workspace_cpu_id),
             ("gpu", cfg.workspace_gpu_id),
-            ("internet", cfg.workspace_internet_id),
         )
         if value
     }

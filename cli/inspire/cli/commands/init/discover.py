@@ -1421,7 +1421,6 @@ def _merge_workspace_aliases(
     explicit_workspaces = {
         "cpu": getattr(config, "workspace_cpu_id", None),
         "gpu": getattr(config, "workspace_gpu_id", None),
-        "internet": getattr(config, "workspace_internet_id", None),
     }
     for alias, raw_workspace_id in explicit_workspaces.items():
         workspace_value = str(raw_workspace_id or "").strip()
@@ -2159,33 +2158,18 @@ def _persist_context_defaults(
     context: dict[str, Any],
     project_data: dict[str, Any],
 ) -> None:
-    workspaces = project_data.get("workspaces")
-    if not isinstance(workspaces, dict):
-        workspaces = {}
-    compute_groups = project_data.get("compute_groups")
-    if not isinstance(compute_groups, list):
-        compute_groups = []
+    """No-op — see the block comment below.
 
-    workspace_defaults = {
-        "workspace_cpu": _find_workspace_key_for_context(
-            workspaces=workspaces,
-            alias="cpu",
-            compute_groups=compute_groups,
-        ),
-        "workspace_gpu": _find_workspace_key_for_context(
-            workspaces=workspaces,
-            alias="gpu",
-            compute_groups=compute_groups,
-        ),
-        "workspace_internet": _find_workspace_key_for_context(
-            workspaces=workspaces,
-            alias="internet",
-            compute_groups=compute_groups,
-        ),
-    }
-    for field_name, workspace_name in workspace_defaults.items():
-        if workspace_name:
-            context[field_name] = workspace_name
+    Deliberately do NOT auto-guess ``[context].workspace_cpu`` /
+    ``workspace_gpu`` defaults. The fuzzy matcher that used to live here
+    guessed from workspace names and usually picked the wrong one —
+    per-repo workspace preference is a user decision, not something to
+    infer. Users can set ``[context].workspace`` /
+    ``[context].workspace_cpu`` / ``[context].workspace_gpu`` by hand when
+    they need to pin a default for a given repo.
+    """
+    # Intentionally empty.
+    return
 
 
 _PROJECT_CONFIG_DISALLOWED_SECTIONS = (
@@ -2537,14 +2521,16 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
 
     # Final step before writing: lift account-wide data the persisters parked
     # on the project side, promote anything still under [accounts."<user>"]
-    # nesting, and prune the empty legacy skeleton. End state: the account
-    # file is what the per-account loader expects, and the project file
-    # stripper (see ``_write_discovered_project_config``) will finish the
-    # separation on the project side.
+    # nesting, prune the empty legacy skeleton, and drop derived caches
+    # (project_catalog.shared_path_group / workdir, [account] metadata) —
+    # those are recoverable from the platform on demand and don't belong
+    # in the account's static configuration file.
     _copy_account_level_from_project(
         project_data=project_data, global_data=global_data
     )
     _promote_account_section_to_toplevel(global_data, account_key)
+    global_data.pop("project_catalog", None)
+    global_data.pop("account", None)
 
     global_path.parent.mkdir(parents=True, exist_ok=True)
     global_path.write_text(_toml_dumps(global_data))

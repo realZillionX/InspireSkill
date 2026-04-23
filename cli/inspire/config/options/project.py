@@ -115,13 +115,4 @@ WORKSPACES_OPTIONS: list[ConfigOption] = [
         category="Workspaces",
         scope="project",
     ),
-    ConfigOption(
-        env_var="INSPIRE_WORKSPACE_INTERNET_ID",
-        toml_key="workspaces.internet",
-        field_name="workspace_internet_id",
-        description="Workspace ID for internet-enabled workloads (e.g. RTX 4090)",
-        default=None,
-        category="Workspaces",
-        scope="project",
-    ),
 ]

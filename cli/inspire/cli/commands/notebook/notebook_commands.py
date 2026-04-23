@@ -757,7 +757,6 @@ def list_notebooks(
         for ws_id in (
             config.workspace_cpu_id,
             config.workspace_gpu_id,
-            config.workspace_internet_id,
             config.job_workspace_id,
         ):
             if ws_id:
