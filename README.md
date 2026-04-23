@@ -226,5 +226,6 @@ inspire update --skill-only # 仅刷 SKILL / references
 ## Acknowledgements
 
 - 启智平台团队提供的 OpenAPI / Web 接口。
+- [EmbodiedForge/Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) 提供了 CLI 的初步框架。
 
 <p align="center"><sub>Made for researchers who'd rather think than click.</sub></p>
