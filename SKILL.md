@@ -89,7 +89,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 | 命令 | 用途 |
 | --- | --- |
-| `inspire hpc create` | 四条约束：（1）`-c` **只写 Slurm 正文**，平台自动补 `#SBATCH` 头，正文程序必须**显式 `srun`** 启动；（2）`--compute-group "<name>"` 按 name 传（如 `"HPC-可上网区资源-2"`，从 `inspire config context` 的 `compute_groups[]` 抄）；（3）`--cpus-per-task` / `--memory-per-cpu` 超规格**静默排队不报错**——CLI 会根据这对参数自动从平台查 `spec_id`，提交前实查 `cpu_count` / `memory_size_gib`；（4）`--image` 必须是**完整 Docker 地址**且带可用 Slurm 环境，通用基底 `docker.sii.shaipower.online/inspire-studio/unified-base:v1`；`--image-type` 通常 `SOURCE_PRIVATE` 或 `SOURCE_PUBLIC`。 |
+| `inspire hpc create` | 四条约束：（1）`-c` **只写 Slurm 正文**，平台自动补 `#SBATCH` 头，正文程序必须**显式 `srun`** 启动；（2）`--compute-group "<name>"` 按 name 传（如 `"HPC-可上网区资源-2"`，从 `inspire config context` 的 `compute_groups[]` 抄）；（3）`--cpus-per-task` / `--memory-per-cpu` 超规格**静默排队不报错**——CLI 会根据这对参数自动从平台查 `spec_id`，提交前实查 `cpu_count` / `memory_size_gib`；（4）`--image` 必须是**完整 Docker 地址**且带可用 Slurm 环境，通用基底 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`；`--image-type` 通常 `SOURCE_PRIVATE` 或 `SOURCE_PUBLIC`。 |
 | `inspire hpc status <id>` | 看 `status` / `priority_level` / `running_time_ms` / `finished_at`。**HPC 常见"假成功"**：`status=SUCCEEDED` 但 payload 实际没跑（entrypoint 早退、srun 命令语法错、shell 变量丢失等）都能返回 SUCCEEDED。不要只信 status——每次新 entrypoint 必须写一个**独一无二的 fingerprint 到共享存储**（例如 `/inspire/<tier>/project/<topic>/<user>/.../probe-<nonce>.log`），再从同项目 notebook `cat` 回验。提交后 `slurm_cluster_spec.nodes` 在 RUNNING 时应非空；SUCCEEDED 后平台会把它清成 `[]`，这不是坏信号。CREATING 卡住或 RUNNING 时 `nodes=[]` 才是坏信号（详见 troubleshooting.md） |
 | `inspire hpc list` | 当前 workspace 内所有创建者的任务 |
 | `inspire hpc events <id>` | 平台 Slurm 控制器事件（`Created/DeletedSlurmCluster` 等）；`--reason` / `--tail` / `--from-cache` 可组合。**HPC 不暴露 per-pod 事件**，只有 job-level |
@@ -224,7 +224,7 @@ inspire notebook exec --alias mybox "hostname"
 
 **镜像选型先做一次判断**：
 - **已有项目 / 个人镜像**（装好 uv / nvm / cargo / java / transformer-engine 等环境、环境变量、编译产物）→ **直接复用那个镜像**。缺 `sshd` / `rtunnel` 时 bootstrap 会自动补：`sshd` 走 `apt-get install -y openssh-server`，`rtunnel` 优先用容器里预装的二进制（`command -v rtunnel`），其次在容器有公网时 `curl` 下载。从零重装环境代价很高（transformer-engine 编译、各种 runtime 初始化），**不要**为了统一用 `unified-base` 而丢弃现有镜像；首次建镜像时在可上网区把 rtunnel 下载进镜像后 `inspire image save` 派生，之后所有 notebook 复用这个镜像即可，无论有无公网都能直接 SSH。
-- **完全从零起 / 临时脚手架** → `docker.sii.shaipower.online/inspire-studio/unified-base:v1`（Ubuntu 22.04 + slurm 运行环境 + sshd + rtunnel 一体）是一个省事的起点。hpc 提交时平台正常注入 slurm controller，容器内 `srun`/`sbatch`/`sshd`/`rtunnel` 全部可用（slurm 仅在 `inspire hpc create` 路径下生效，普通 notebook 里 slurm 命令会因为无 controller 而报 `Could not establish a configuration source`——这是平台设计，不是镜像问题）。要加一层项目依赖就在这镜像上面 `inspire image save` 再派生。
+- **完全从零起 / 临时脚手架** → `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（Ubuntu 22.04 + slurm 运行环境 + sshd + rtunnel 一体）是一个省事的起点。hpc 提交时平台正常注入 slurm controller，容器内 `srun`/`sbatch`/`sshd`/`rtunnel` 全部可用（slurm 仅在 `inspire hpc create` 路径下生效，普通 notebook 里 slurm 命令会因为无 controller 而报 `Could not establish a configuration source`——这是平台设计，不是镜像问题）。要加一层项目依赖就在这镜像上面 `inspire image save` 再派生。
 
 资源组必须用 `HPC-可上网区资源-2`（§0 硬约束：其它 CPU 计算组只能建 notebook，但那边没公网没法 apt install）。
 
@@ -232,7 +232,7 @@ inspire notebook exec --alias mybox "hostname"
 inspire notebook create \
   --workspace CPU资源空间 --group HPC-可上网区资源-2 -r 20CPU \
   --name <action-goal-name> \
-  --image docker.sii.shaipower.online/inspire-studio/unified-base:v1 \
+  --image docker.sii.shaipower.online/inspire-studio/unified-base:v2 \
   --project <project-id-or-alias> --wait --json
 
 inspire notebook ssh <notebook_id> --command "echo ssh-ok"   # fast：sshd 已在镜像里
@@ -310,7 +310,7 @@ inspire ray delete <id> --yes     # 终态清理
 ```
 
 **Ray 使用约束**：
-- 镜像必须带 Ray runtime：**用 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`**（v1 不带，head 容器会 BackOff）。自制镜像验证：SSH 进 notebook 跑 `ray start --head --num-cpus=1 --disable-usage-stats && ray stop` 能干净起停就算 OK。
+- 镜像必须带 Ray runtime：**基底用 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`**（就是 v1 再装 `ray[default]` 派生的；旧的 `:v1` 不带 Ray，head 容器会 BackOff）。自制 Ray 镜像上线前先 SSH 进 notebook 跑 `ray start --head --num-cpus=1 --disable-usage-stats && ray stop` 能干净起停就算 OK。
 - `--head-spec` / `--worker spec=` 填的是 **Ray 专属 quota_id**，和 notebook / HPC 的规格是不同表。`inspire resources specs` 目前不列 Ray 专属规格——**最稳的拿法**：从同 workspace 里任意一个已有 Ray 任务 `inspire --json ray status <id>` 读 `head_node.quota_id` / `worker_groups[].quota_id` 复用。
 - `min` / `max` 都必须 ≥ 1，没有"闲时缩到 0"。
 - driver 不 `sys.exit()` 就一直在，占着 `min_replicas` 的配额——长守护任务要接受"手动 `ray stop`"的运维模型。
