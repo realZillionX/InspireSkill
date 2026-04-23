@@ -139,6 +139,15 @@ def _get_config_paths() -> tuple[Path, Path]:
     default=None,
     help="Target directory on shared filesystem (skips prompt). Only used with --discover.",
 )
+@click.option(
+    "--select-project",
+    "select_project_name",
+    default=None,
+    help=(
+        "Pick a project explicitly by name or project-id (skips the interactive "
+        "prompt and the platform-heuristic guess). Only used with --discover."
+    ),
+)
 @pass_context
 def init(
     ctx: Context,
@@ -156,6 +165,7 @@ def init(
     username: str | None,
     base_url: str | None,
     target_dir: str | None,
+    select_project_name: str | None,
 ) -> None:
     """Initialize Inspire CLI configuration.
 
@@ -251,6 +261,7 @@ def init(
                 cli_username=username,
                 cli_base_url=base_url,
                 cli_target_dir=target_dir,
+                cli_select_project=select_project_name,
             )
 
             emit_init_json(

@@ -939,6 +939,7 @@ def _load_projects_for_discovery(
     force: bool,
     probe_shared_path: bool,
     probe_limit: int,
+    requested_project: str | None = None,
 ) -> tuple[list[object], object]:
     projects, workspace_errors = _collect_discovery_projects(
         browser_api_module=browser_api_module,
@@ -978,34 +979,82 @@ def _load_projects_for_discovery(
         click.echo(click.style("Invalid --probe-limit (must be >= 0)", fg="red"))
         raise SystemExit(1)
 
-    selected_project = projects[0]
-    try:
-        selected_project, _ = browser_api_module.select_project(projects)
-    except Exception:
-        selected_project = projects[0]
-
-    if not force:
-        click.echo()
-        click.echo(click.style("Projects:", bold=True))
-        for idx, project in enumerate(projects, start=1):
-            suffix = project.get_quota_status() if hasattr(project, "get_quota_status") else ""
-            click.echo(f"  {idx}. {project.name} ({project.project_id}){suffix}")
-
-        default_index = 1
-        for idx, project in enumerate(projects, start=1):
-            if project.project_id == selected_project.project_id:
-                default_index = idx
+    # Explicit `--select-project <name|id>` takes precedence over every
+    # heuristic and skips the interactive prompt entirely. Matches case-insensitively
+    # on name, exactly on project_id.
+    if requested_project:
+        rq = requested_project.strip()
+        match = None
+        for project in projects:
+            if project.name.lower() == rq.lower() or project.project_id == rq:
+                match = project
                 break
+        if not match:
+            available = ", ".join(
+                f"{p.name} ({p.project_id})" for p in projects if p.name
+            )
+            click.echo(
+                click.style(
+                    f"--select-project {rq!r} not found. Candidates: {available}",
+                    fg="red",
+                )
+            )
+            raise SystemExit(1)
+        return projects, match
+
+    # Best platform-side guess, used only as a hint / single-project shortcut.
+    # NEVER used as silent default when multiple projects exist.
+    try:
+        heuristic_pick, _ = browser_api_module.select_project(projects)
+    except Exception:
+        heuristic_pick = projects[0]
+
+    if force:
+        return projects, heuristic_pick
+
+    click.echo()
+    click.echo(click.style("Projects:", bold=True))
+    for idx, project in enumerate(projects, start=1):
+        suffix = project.get_quota_status() if hasattr(project, "get_quota_status") else ""
+        click.echo(f"  {idx}. {project.name} ({project.project_id}){suffix}")
+
+    if len(projects) == 1:
+        # Single project — unambiguous, keep the zero-friction default.
         choice = click.prompt(
             "Select default project",
             type=int,
-            default=default_index,
+            default=1,
             show_default=True,
         )
-        if 1 <= choice <= len(projects):
-            selected_project = projects[choice - 1]
+    else:
+        # Multi-project case: the platform heuristic (budget / priority /
+        # alphabetical) has nothing to do with the current repo, so never
+        # let Enter accept it. Force the user to pick a number explicitly.
+        click.echo(
+            click.style(
+                "Multiple projects available — there is no repo-aware default. "
+                "Pick the one your current work belongs to.",
+                fg="yellow",
+            )
+        )
+        hint_idx = next(
+            (i for i, p in enumerate(projects, start=1)
+             if p.project_id == heuristic_pick.project_id),
+            1,
+        )
+        click.echo(
+            click.style(
+                f"(Platform heuristic suggests #{hint_idx} {heuristic_pick.name} — "
+                "based on budget / priority only, not on your repo.)",
+                fg="yellow",
+            )
+        )
+        choice = click.prompt(
+            f"Select default project (1-{len(projects)})",
+            type=click.IntRange(1, len(projects)),
+        )
 
-    return projects, selected_project
+    return projects, projects[choice - 1]
 
 
 def _confirm_discovery_writes(*, force: bool, global_path: Path, project_path: Path) -> bool:
@@ -2615,6 +2664,7 @@ def _init_discover_mode(
     cli_username: str | None = None,
     cli_base_url: str | None = None,
     cli_target_dir: str | None = None,
+    cli_select_project: str | None = None,
 ) -> None:
     """Initialize per-account catalogs by discovering projects and compute groups."""
     from inspire.platform.web import browser_api as browser_api_module
@@ -2641,6 +2691,7 @@ def _init_discover_mode(
         force=force,
         probe_shared_path=probe_shared_path,
         probe_limit=probe_limit,
+        requested_project=cli_select_project,
     )
     try:
         _persist_discovery_catalog(
