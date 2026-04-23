@@ -1,13 +1,18 @@
+"""OpenAPI create_training_job_smart payload tests.
+
+The function now requires pre-resolved ``spec_id_override`` +
+``compute_group_id_override`` (populated by the CLI via a live
+``get_resource_prices`` query); the old resource_manager fallback is gone.
+"""
+
+from __future__ import annotations
+
 from types import SimpleNamespace
 
+import pytest
+
+from inspire.platform.openapi.errors import ValidationError
 from inspire.platform.openapi.jobs import create_training_job_smart
-
-
-class _DummyResourceManager:
-    def get_recommended_config(self, resource: str, prefer_location: str | None) -> tuple[str, str]:
-        assert resource == "1xH200"
-        assert prefer_location is None
-        return "spec-1x-h200", "lcg-h200-1"
 
 
 class _DummyAPI:
@@ -20,7 +25,6 @@ class _DummyAPI:
     DEFAULT_IMAGE_TYPE = "SOURCE_PRIVATE"
 
     def __init__(self) -> None:
-        self.resource_manager = _DummyResourceManager()
         self.endpoints = SimpleNamespace(TRAIN_JOB_CREATE="/openapi/v1/train_job/create")
         self.config = SimpleNamespace(docker_registry=None)
         self.last_request: tuple[str, str, dict] | None = None
@@ -49,6 +53,8 @@ def test_create_training_job_smart_builds_framework_config_payload() -> None:
         name="demo",
         command="echo demo",
         resource="1xH200",
+        spec_id_override="spec-1x-h200",
+        compute_group_id_override="lcg-h200-1",
     )
 
     assert api.last_request is not None
@@ -69,11 +75,6 @@ def test_create_training_job_smart_builds_framework_config_payload() -> None:
             "shm_gi": 128,
         }
     ]
-    assert "start_cmd" not in payload
-    assert "spec_id" not in payload
-    assert "image" not in payload
-    assert "instance_count" not in payload
-    assert "shm_gi" not in payload
 
 
 def test_create_training_job_smart_uses_overrides_for_framework_config() -> None:
@@ -87,11 +88,24 @@ def test_create_training_job_smart_uses_overrides_for_framework_config() -> None
         image="custom.registry/pytorch:tag",
         instance_count=2,
         shm_gi=256,
+        spec_id_override="spec-1x-h200",
+        compute_group_id_override="lcg-h200-1",
     )
 
-    assert api.last_request is not None
     payload = api.last_request[2]
     framework_item = payload["framework_config"][0]
     assert framework_item["image"] == "custom.registry/pytorch:tag"
     assert framework_item["instance_count"] == 2
     assert framework_item["shm_gi"] == 256
+
+
+def test_create_training_job_smart_requires_overrides() -> None:
+    """Without pre-resolved spec+compute_group, the call must fail loudly."""
+    api = _DummyAPI()
+    with pytest.raises(ValidationError, match="spec_id_override"):
+        create_training_job_smart(
+            api,
+            name="demo",
+            command="echo demo",
+            resource="1xH200",
+        )

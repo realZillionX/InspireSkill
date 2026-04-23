@@ -165,6 +165,34 @@ def submit_training_job(
             )
         create_kwargs["shm_gi"] = shm_size
 
+    # Live-resolve (spec_id, compute_group_id) from (gpu_type, gpu_count) so
+    # the OpenAPI layer's hardcoded fallback spec list is bypassed. If the
+    # live query fails (e.g. no session), fall through to the hardcoded
+    # path without an override.
+    try:
+        from inspire.platform.web.session import get_web_session
+        from inspire.cli.utils.spec_resolver import resolve_train_spec
+
+        gpu_type, gpu_count = api.resource_manager.parse_resource_request(resource)
+        matching_groups = api.resource_manager.find_compute_groups(gpu_type)
+        if matching_groups:
+            from inspire.platform.openapi.resources import select_compute_group
+
+            selected = select_compute_group(matching_groups, prefer_location=location)
+            session = get_web_session()
+            spec_id, _cpu, _mem = resolve_train_spec(
+                session=session,
+                workspace_id=workspace_id,
+                compute_group_id=selected.compute_group_id,
+                gpu_type=gpu_type.value,
+                gpu_count=gpu_count,
+            )
+            create_kwargs["spec_id_override"] = spec_id
+            create_kwargs["compute_group_id_override"] = selected.compute_group_id
+    except Exception:
+        # Fallback: let create_training_job_smart use the hardcoded spec list.
+        pass
+
     result = api.create_training_job_smart(**create_kwargs)
     data = result.get("data", {}) if isinstance(result, dict) else {}
     job_id = data.get("job_id")

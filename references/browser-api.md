@@ -118,28 +118,67 @@ OpenAPI 这侧只有 `train_job/{create,detail,stop}`。**`list` 和事件都只
 
 ### Ray 任务（弹性计算）
 
-Web UI 左侧"弹性计算"菜单（`/jobs/ray`）背后的就是 Ray 集群：一个 head 节点跑 driver / 调度，加一组或多组 worker；每组 worker 的实例数在 `min_instances` 与 `max_instances` 之间按平台实时负载扩缩。这和训练任务（`train_job`）固定 `instance_count`、HPC（`hpc_jobs`）固定 `number_of_tasks` 的语义完全不同，后端也是单独一套 `ray_job` 域，**OpenAPI 未暴露，只有 Browser API**。CLI 侧封装在 [`browser_api.ray_jobs`](../cli/inspire/platform/web/browser_api/ray_jobs.py)，对应 `inspire ray list/status/stop/delete`（`create` 暂未封装，见本节末）。
+Web UI 左侧"弹性计算"菜单（`/jobs/ray`）背后的就是 Ray 集群：一个 head 节点跑 driver / 调度，加一组或多组 worker；每组 worker 的实例数在 `min_instances` 与 `max_instances` 之间按平台实时负载扩缩。这和训练任务（`train_job`）固定 `instance_count`、HPC（`hpc_jobs`）固定 `number_of_tasks` 的语义完全不同，后端也是单独一套 `ray_job` 域，**OpenAPI 未暴露，只有 Browser API**。CLI 侧封装在 [`browser_api.ray_jobs`](../cli/inspire/platform/web/browser_api/ray_jobs.py)，对应 `inspire ray create/list/status/stop/delete`。
 
 | 方法 | 路径 | 用途 | CLI 引用 |
 | --- | --- | --- | --- |
 | `POST` | `{prefix}/ray_job/list` | 列 Ray 任务。body: `{workspace_id, filter_by:{user_id:[...]}, page_num, page_size}`；返回 `{items:[...], total}`。`filter_by` 为空对象时列所有人；传 `{user_id:[<current_user>]}` 对齐 Web UI "我的"页签 | `browser_api.ray_jobs.list_ray_jobs`；`inspire ray list` |
 | `POST` | `{prefix}/ray_job/users` | 当前 workspace 里用过 Ray 的用户（`filter_by` 下拉用）。body: `{workspace_id}` | `browser_api.ray_jobs.list_ray_job_users` |
 | `POST` | `{prefix}/ray_job/detail` | 任务详情，含 head / worker 规格、各 worker 组的 min/max 实例范围、运行态统计。body: **`{ray_job_id}`**（**不是** `id` 或 `job_id`——这两个名字 proto 会直接拒："unknown field") | `browser_api.ray_jobs.get_ray_job_detail`；`inspire ray status` |
-| `POST` | `{prefix}/ray_job/stop` | 停掉运行中的集群（worker 全部回收）但不删条目。body: `{ray_job_id}`。Ray 集群**不像 train_job / hpc_job 那样命令跑完就自动结束**——除非 driver 主动 `exit`，否则要么手动 stop，要么写 entrypoint 时保证它会结束 | `browser_api.ray_jobs.stop_ray_job`；`inspire ray stop` |
+| `POST` | `{prefix}/ray_job/stop` | 停掉运行中的集群（worker 全部回收）但不删条目。body: `{ray_job_id}`。Ray 集群**不像 train_job / hpc_job 那样命令跑完就自动结束**——除非 driver 主动 `exit`，否则要么手动 stop，要么写 entrypoint 时保证它会结束。**注**：SPA 本身已经切到 `POST /api/v2/ray?Action=StopJob` 这种 v2 Action 风格；CLI 继续打 `{prefix}/ray_job/stop` 仍然 200，先保持现状 | `browser_api.ray_jobs.stop_ray_job`；`inspire ray stop` |
 | `POST` | `{prefix}/ray_job/delete` | 永久删条目（destructive；running 的先 `stop`）。body: `{ray_job_id}` | `browser_api.ray_jobs.delete_ray_job`；`inspire ray delete` |
-| `POST` | `{prefix}/ray_job/create` | 提交新任务（CLI 未封装——见下文） | —— |
+| `POST` | `{prefix}/ray_job/create` | 提交新任务。body 见下表 | `browser_api.ray_jobs.create_ray_job`；`inspire ray create` |
+| `POST` | `{prefix}/ray_job/scaling_histories/list` | 某 Ray 任务的弹性扩缩事件历史（Web UI "扩缩容历史" tab）。body: `{ray_job_id, page_num, page_size}`。用于 post-mortem 判断 worker 组的 `min_replicas` / `max_replicas` 是否真的动过 | `browser_api.ray_jobs.list_ray_job_scaling_histories` |
 
 > **无事件 / 日志端点**：实测 `ray_job/events` / `ray_job/logs` / `ray_job/status` 全部返回 404；平台没把 Ray 的 job-level 事件流单独暴露，状态直接从 `detail` 顶层字段读（`status` / `sub_status` / `finished_at` 等）。Web UI 的"事件 / 日志"tab 走的是通用 `{prefix}/logs/*`（按 podNames 聚合，和 train_job / hpc_jobs 共用）。
 
-**`create` 为什么暂未封装**：`ray_job/create` 的 body 是一个嵌套 proto，顶层同时带 `head` 规格块和一个 `workers[]` 列表块（Web UI "新建 Ray 任务"表单看得到：任务名称 / 所属项目 / 执行命令 / head 的镜像-计算类型组-规格-共享内存 / 每个 worker 组的 名称-镜像-min/max-计算类型组-规格-共享内存 / 任务优先级）。直接传平铺的 `image` 会被 proto 拒（`proto: unknown field "image"`——它必须嵌进 head / worker 结构），但嵌套字段名平台侧目前没有公开合约可以参照，猜字段成本比点一次 UI 高得多。**正确的封装路径**是用 Playwright 抓一次 UI 正常提交的 POST body 作为 ground truth，然后把 body 翻译成 CLI flag。下面记下已知字段的名字，有人要接着封装时从这里起步。
+**`ray_job/create` 完整 body 合约**（从 `/assets/constant.BP_zw-df.js` 的 SPA 提交函数反编译；**不要**换成 HPC / train_job 的字段名）：
 
-**已验证字段**（从错误信息回推）：
+```json
+{
+  "name": "av-pipeline",
+  "description": "streaming decode + infer pipeline",
+  "workspace_id": "ws-...",
+  "project_id": "project-...",
+  "task_priority": 9,
+  "entrypoint": "<driver command>",
+  "head_node": {
+    "mirror_id": "<image_id>",
+    "image_type": "SOURCE_PUBLIC|SOURCE_PRIVATE|SOURCE_OFFICIAL",
+    "logic_compute_group_id": "lcg-...",
+    "quota_id": "<quota_id>",
+    "shm_gi": 64
+  },
+  "worker_groups": [
+    {
+      "group_name": "decode",
+      "mirror_id": "<image_id>",
+      "image_type": "SOURCE_PUBLIC",
+      "logic_compute_group_id": "lcg-...",
+      "min_replicas": 1,
+      "max_replicas": 4,
+      "quota_id": "<quota_id>",
+      "shm_gi": 32
+    }
+  ]
+}
+```
 
-- `name`（必填；空值会先于其他校验报 `Ray Job 名称不能为空`）
-- `project_id` / `workspace_id`（必填；proto 接受）
-- `command`（proto 接受）
-- `logic_compute_group_id` / `spec_id`（proto 接受——但用法是嵌套在 head / worker 块里，不是顶层）
-- 顶层的 `image` / `number_of_tasks` / `instance_count` / `cpus_per_task` / `memory_per_cpu` 都被 proto 判为 "unknown field"——字段都在嵌套块里
+**反直觉字段映射**（提交时最容易踩的四个坑）：
+
+| 表单字段 / 你直觉写的 | 线上字段 | 备注 |
+| --- | --- | --- |
+| `head` / `head_spec` | `head_node` | 单数；复数 `heads` 或简写 `head` 都会 `proto: unknown field` |
+| `image` (Docker URL) | `mirror_id` (内部 image_id) | 要先 `/image/list` 反查到 `image_id` 再提交。CLI 的 `_resolve_image_id()` 走 public→private→official 三层按 URL 精确匹配 |
+| `command` | `entrypoint` | 在表单里叫 `command`，序列化时改名成 `entrypoint`（和 hpc 一致） |
+| `predef_quota_id` / `spec_id` | `quota_id` | Ray 走 notebook 风格（不是 HPC 的 `predef_quota_id`） |
+
+其它观察：
+
+- `worker_groups[].group_name` 用 snake_case；`min_replicas` / `max_replicas` 也是 snake_case（**不是** `min_instances` — 那个名字只在 detail 响应里出现）。
+- `shm_gi` 在 head / 每个 worker 里都可选；为 None 时 SPA 直接不把这个 key 写进 body。
+- `description` 是支持字段但非必填。
+- `task_priority` 平台默认用 0 / 1 这档，CLI 约定 1=LOW / 9=HIGH（和 `job` / `hpc` 同）。
 
 **相关下拉端点**（create 表单预取，已在其他小节封装）：
 

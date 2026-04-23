@@ -234,6 +234,8 @@ class InspireAPI:
         instance_count: Optional[int] = None,
         max_running_time_ms: Optional[str] = None,
         shm_gi: Optional[int] = None,
+        spec_id_override: Optional[str] = None,
+        compute_group_id_override: Optional[str] = None,
     ) -> Dict[str, Any]:
         return _create_training_job_smart(
             self,
@@ -249,6 +251,8 @@ class InspireAPI:
             instance_count=instance_count,
             max_running_time_ms=max_running_time_ms,
             shm_gi=shm_gi,
+            spec_id_override=spec_id_override,
+            compute_group_id_override=compute_group_id_override,
         )
 
     def get_job_detail(self, job_id: str) -> Dict[str, Any]:

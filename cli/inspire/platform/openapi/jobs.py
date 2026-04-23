@@ -34,20 +34,33 @@ def create_training_job_smart(
     instance_count: Optional[int] = None,
     max_running_time_ms: Optional[str] = None,
     shm_gi: Optional[int] = None,
+    spec_id_override: Optional[str] = None,
+    compute_group_id_override: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create training job with smart resource matching."""
+    """Create training job with smart resource matching.
+
+    When ``spec_id_override`` and ``compute_group_id_override`` are both
+    supplied, the resource-manager lookup (which falls back to a stale
+    hardcoded spec list) is skipped entirely. Callers in the CLI resolve
+    these via a live ``get_resource_prices`` query, so the OpenAPI layer
+    never needs to carry around platform-generated quota IDs.
+    """
     api._check_authentication()
 
     # Validate required parameters
     api._validate_required_params(name=name, command=command, resource=resource)
 
-    # Get recommended configuration
-    try:
-        spec_id, compute_group_id = api.resource_manager.get_recommended_config(
-            resource, prefer_location
+    if not (spec_id_override and compute_group_id_override):
+        raise ValidationError(
+            "create_training_job_smart requires spec_id_override + "
+            "compute_group_id_override (resolved live via "
+            "inspire.cli.utils.spec_resolver.resolve_train_spec). The CLI "
+            "layer pre-resolves both before calling this function; any caller "
+            "missing them hit a code path that used to consult a stale "
+            "hardcoded spec table and is now gone."
         )
-    except ValueError as e:
-        raise ValidationError(f"Resource configuration error: {str(e)}") from e
+    spec_id = spec_id_override
+    compute_group_id = compute_group_id_override
 
     # Use defaults for optional parameters
     project_id = project_id or api.DEFAULT_PROJECT_ID
