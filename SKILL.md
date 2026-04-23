@@ -310,7 +310,7 @@ inspire ray delete <id> --yes     # 终态清理
 ```
 
 **Ray 使用约束**：
-- 镜像必须带 Ray runtime：**基底用 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`**（就是 v1 再装 `ray[default]` 派生的；旧的 `:v1` 不带 Ray，head 容器会 BackOff）。自制 Ray 镜像上线前先 SSH 进 notebook 跑 `ray start --head --num-cpus=1 --disable-usage-stats && ray stop` 能干净起停就算 OK。
+- 镜像必须带 Ray runtime：基底用 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`。自制 Ray 镜像上线前先 SSH 进 notebook 跑 `ray start --head --num-cpus=1 --disable-usage-stats && ray stop` 能干净起停就算 OK。
 - `--head-spec` / `--worker spec=` 填的是 **Ray 专属 quota_id**，和 notebook / HPC 的规格是不同表。`inspire resources specs` 目前不列 Ray 专属规格——**最稳的拿法**：从同 workspace 里任意一个已有 Ray 任务 `inspire --json ray status <id>` 读 `head_node.quota_id` / `worker_groups[].quota_id` 复用。
 - `min` / `max` 都必须 ≥ 1，没有"闲时缩到 0"。
 - driver 不 `sys.exit()` 就一直在，占着 `min_replicas` 的配额——长守护任务要接受"手动 `ray stop`"的运维模型。
