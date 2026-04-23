@@ -53,7 +53,8 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire notebook delete <id> [--yes]` | 永久删一个 notebook。running 的要先 `stop`；`-y` 跳过确认。本地 alias 不会同时清掉——用 `notebook forget` |
 | `inspire notebook ssh <id>` | **Bootstrap SSH / rtunnel**（平台默认 `allow_ssh=false`，CLI 自动引导）。失败转 troubleshooting.md |
 | `inspire notebook ssh <id> --save-as <name>` | 自定义 alias 名 |
-| `inspire notebook ssh <id> --rtunnel-upload-policy {auto,never,always}` | 控制 rtunnel 上传；已有同版本按 `.sha256` sidecar 复用；`exec format error` 是架构不对 |
+| `inspire notebook ssh <id> --rtunnel-bin <paths>` | 指向容器里已缓存的 rtunnel。支持 `:` 分隔多路径（`$PATH` 风格）或 `[ssh].rtunnel_bin = ["/a", "/b"]` TOML 列表——按顺序试，first-match-wins，适合自己镜像把 rtunnel 缓存在 hdd/ssd/qb-ilm 不同分区的场景 |
+| `inspire notebook ssh <id> --rtunnel-upload-policy {auto,never,always}` | 控制 rtunnel 上传；已有同版本按 `.sha256` sidecar 复用；`exec format error` 是架构不对。`auto`（默认）会先用 terminal WS 探一下容器里有没有预装 rtunnel（`command -v rtunnel`），命中就跳过 Contents API 上传 |
 | `inspire notebook exec <alias> "<cmd>"` | 远端 `INSPIRE_TARGET_DIR` 下执行**一次性**命令；详情 / 状态不共享的坑见上方 `shell` vs `exec` 说明。对 notebook-backed alias 可自动重建断开的 tunnel |
 | `inspire notebook shell [<alias>]` | **持久**交互 SSH shell，同一窗口内命令共享 cwd / env（详见上方 `shell` vs `exec` 说明） |
 | `inspire notebook scp <src> <dst>` | 传**非仓库**文件。**不是** repo 同步——源码走本地 `git push` + `notebook exec` 远端 `git pull`。不继承 `INSPIRE_TARGET_DIR`，远端写绝对路径 |
@@ -189,7 +190,9 @@ inspire notebook exec --alias mybox "hostname"
 
 ### 阶段 A：CPU 空间起基底 notebook
 
-**默认公共基底：`docker.sii.shaipower.online/inspire-studio/unified-base:v1`**（Ubuntu 22.04 + slurm 运行环境 + sshd + rtunnel 一体）。hpc 提交时平台正常注入 slurm controller，容器内 `srun`/`sbatch`/`sshd`/`rtunnel` 全部可用（slurm 仅在 `inspire hpc create` 路径下生效，普通 notebook 里 slurm 命令会因为无 controller 而报 `Could not establish a configuration source`——这是平台设计，不是镜像问题）。一般不再需要自己烘一份基底；要加一层项目依赖就在这镜像上面 `inspire image save` 再派生。
+**镜像选型先做一次判断**：
+- **已有项目 / 个人镜像**（装好 uv / nvm / cargo / java / transformer-engine 等环境、环境变量、编译产物）→ **直接复用那个镜像**。缺 `sshd` / `rtunnel` 时 bootstrap 会自动补：`sshd` 走 `apt-get install -y openssh-server`，`rtunnel` 优先用容器里预装的二进制（`command -v rtunnel`）、其次看 `[ssh].rtunnel_bin` 指向的缓存路径、再其次 curl 下载。从零重装环境代价很高（transformer-engine 编译、各种 runtime 初始化），**不要**为了统一用 `unified-base` 而丢弃现有镜像。
+- **完全从零起 / 临时脚手架** → `docker.sii.shaipower.online/inspire-studio/unified-base:v1`（Ubuntu 22.04 + slurm 运行环境 + sshd + rtunnel 一体）是一个省事的起点。hpc 提交时平台正常注入 slurm controller，容器内 `srun`/`sbatch`/`sshd`/`rtunnel` 全部可用（slurm 仅在 `inspire hpc create` 路径下生效，普通 notebook 里 slurm 命令会因为无 controller 而报 `Could not establish a configuration source`——这是平台设计，不是镜像问题）。要加一层项目依赖就在这镜像上面 `inspire image save` 再派生。
 
 资源组必须用 `HPC-可上网区资源-2`（§0 硬约束：其它 CPU 计算组只能建 notebook，但那边没公网没法 apt install）。
 
