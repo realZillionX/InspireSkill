@@ -98,7 +98,7 @@ def _try_get_current_user_ids(
         if isinstance(data, dict):
             session.user_detail = data
             try:
-                session.save(account=session.login_username)
+                session.save()
             except Exception:
                 pass
         user_id = data.get("id")
@@ -128,7 +128,7 @@ def _get_current_user_detail(
     if isinstance(data, dict) and data:
         session.user_detail = data
         try:
-            session.save(account=session.login_username)
+            session.save()
         except Exception:
             pass
         return data

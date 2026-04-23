@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+from pathlib import Path
 from typing import Callable, Optional
 
 import requests as requests_lib
@@ -224,12 +225,30 @@ def fetch_gpu_availability(
 
 
 def clear_session_cache() -> None:
-    """Clear the cached web session."""
-    cache_dir = SESSION_CACHE_FILE.parent
-    if not cache_dir.exists():
-        return
-    for cache_file in cache_dir.glob("web_session*.json"):
-        try:
-            cache_file.unlink()
-        except Exception:
-            continue
+    """Clear cached web sessions across both legacy and new storage layouts.
+
+    Wipes:
+      - legacy ``~/.cache/inspire-skill/web_session*.json`` (unscoped + per-user)
+      - new-path ``~/.inspire/accounts/*/web_session.json``
+    """
+    # Legacy cache location
+    legacy_dir = SESSION_CACHE_FILE.parent
+    if legacy_dir.exists():
+        for cache_file in legacy_dir.glob("web_session*.json"):
+            try:
+                cache_file.unlink()
+            except Exception:
+                continue
+
+    # New per-account location
+    accounts_root = Path.home() / ".inspire" / "accounts"
+    if accounts_root.exists():
+        for account_dir in accounts_root.iterdir():
+            if not account_dir.is_dir():
+                continue
+            session_file = account_dir / "web_session.json"
+            if session_file.exists():
+                try:
+                    session_file.unlink()
+                except Exception:
+                    continue

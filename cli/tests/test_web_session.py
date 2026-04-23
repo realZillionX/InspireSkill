@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -559,7 +560,12 @@ def test_get_web_session_reauths_when_cached_user_mismatch(monkeypatch: pytest.M
     assert calls["base_url"] == "https://example.invalid"
 
 
-def test_get_web_session_uses_account_scoped_cache(monkeypatch: pytest.MonkeyPatch):
+def test_get_web_session_reads_cached_session_without_explicit_account(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``get_web_session`` no longer threads the login-username through as a
+    cache key — resolution lives inside ``WebSession.load`` via the active
+    InspireSkill account (``~/.inspire/current``)."""
     cached = WebSession(
         storage_state={"cookies": [{"name": "session", "value": "abc"}]},
         cookies={"session": "abc"},
@@ -580,7 +586,8 @@ def test_get_web_session_uses_account_scoped_cache(monkeypatch: pytest.MonkeyPat
 
     assert session is cached
     assert load_calls
-    assert load_calls[0] == "project-user"
+    # Caller passes no explicit account; internal resolution handles it.
+    assert load_calls[0] is None
 
 
 def test_get_web_session_force_refresh_bypasses_cache(monkeypatch: pytest.MonkeyPatch):
@@ -694,9 +701,132 @@ def test_clear_session_cache_removes_scoped_and_legacy_files(
     scoped.write_text("{}")
     other.write_text("{}")
 
+    # Redirect both legacy cache + ``Path.home()`` so the new-account path
+    # scanner inside ``clear_session_cache`` also points into tmp.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    accounts_root = fake_home / ".inspire" / "accounts"
+    (accounts_root / "alice").mkdir(parents=True)
+    (accounts_root / "alice" / "web_session.json").write_text("{}")
+    (accounts_root / "bob").mkdir()
+    (accounts_root / "bob" / "web_session.json").write_text("{}")
+    (accounts_root / "bob" / "config.toml").write_text("")  # unrelated file kept
+
     monkeypatch.setattr(ws, "SESSION_CACHE_FILE", legacy)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
     ws.clear_session_cache()
 
     assert not legacy.exists()
     assert not scoped.exists()
     assert other.exists()
+    assert not (accounts_root / "alice" / "web_session.json").exists()
+    assert not (accounts_root / "bob" / "web_session.json").exists()
+    assert (accounts_root / "bob" / "config.toml").exists()
+
+
+# --- Phase 3: account-scoped session storage -----------------------------
+
+
+def test_get_session_cache_file_prefers_account_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from inspire.platform.web.session.models import get_session_cache_file
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    path = get_session_cache_file("alice")
+    assert path == fake_home / ".inspire" / "accounts" / "alice" / "web_session.json"
+
+
+def test_get_session_cache_file_falls_back_to_legacy_when_no_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from inspire.platform.web.session.models import (
+        SESSION_CACHE_FILE,
+        get_session_cache_file,
+    )
+    import inspire.accounts as accounts_mod
+
+    monkeypatch.setattr(accounts_mod, "current_account", lambda: None)
+
+    path = get_session_cache_file()
+    assert path == SESSION_CACHE_FILE
+
+
+def test_save_writes_to_account_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    import inspire.accounts as accounts_mod
+
+    monkeypatch.setattr(accounts_mod, "current_account", lambda: "alice")
+
+    session = WebSession(
+        storage_state={"cookies": []},
+        cookies={},
+        login_username="platform-user",
+        created_at=time.time(),
+    )
+    session.save()
+
+    target = fake_home / ".inspire" / "accounts" / "alice" / "web_session.json"
+    assert target.exists()
+
+
+def test_load_falls_back_to_legacy_per_user_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """New-path missing but old cache file present — load should find it."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    import inspire.accounts as accounts_mod
+
+    monkeypatch.setattr(accounts_mod, "current_account", lambda: "alice")
+
+    # Ensure the models module treats its SESSION_CACHE_DIR/FILE as ours too,
+    # since those were captured at import time from Path.home().
+    from inspire.platform.web.session import models as session_models
+
+    cache_dir = fake_home / ".cache" / "inspire-skill"
+    cache_dir.mkdir(parents=True)
+    monkeypatch.setattr(session_models, "SESSION_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(session_models, "SESSION_CACHE_FILE", cache_dir / "web_session.json")
+
+    legacy = cache_dir / "web_session-alice.json"
+    session = WebSession(
+        storage_state={"cookies": [{"name": "s", "value": "v"}]},
+        cookies={"s": "v"},
+        login_username="alice",
+        created_at=time.time(),
+    )
+    legacy.write_text(json.dumps(session.to_dict()))
+
+    loaded = WebSession.load()
+    assert loaded is not None
+    assert loaded.login_username == "alice"
+
+
+def test_load_env_vars_do_not_influence_account_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    import inspire.accounts as accounts_mod
+
+    monkeypatch.setattr(accounts_mod, "current_account", lambda: None)
+    monkeypatch.setenv("INSPIRE_USERNAME", "ghost")
+    monkeypatch.setenv("INSPIRE_ACCOUNT", "ghost")
+    monkeypatch.setenv("INSPIRE_BRIDGE_ACCOUNT", "ghost")
+
+    from inspire.platform.web.session.models import get_session_cache_file
+
+    path = get_session_cache_file()
+    # Must NOT resolve to anything under accounts/ghost/...
+    assert "accounts/ghost" not in str(path)

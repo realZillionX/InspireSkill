@@ -41,7 +41,7 @@ def _maybe_apply_workspace_override(
         return
     cached.workspace_id = env_workspace_id
     try:
-        cached.save(account=cached.login_username)
+        cached.save()
     except Exception:
         pass
 
@@ -293,7 +293,7 @@ def login_with_playwright(
             all_workspace_names=all_workspace_names or None,
             created_at=time.time(),
         )
-        session.save(account=username)
+        session.save()
 
         return session
 
@@ -324,7 +324,7 @@ def get_web_session(force_refresh: bool = False, require_workspace: bool = False
         password = ""
 
     if not force_refresh:
-        cached = WebSession.load(account=username or None)
+        cached = WebSession.load()
         if cached and cached.storage_state.get("cookies"):
             _maybe_apply_workspace_override(cached, env_workspace_id)
             if require_workspace and not _has_real_workspace_id(cached):
@@ -338,7 +338,7 @@ def get_web_session(force_refresh: bool = False, require_workspace: bool = False
 
     # If we can't refresh (missing credentials), try the cached session anyway.
     if credentials_error is not None:
-        cached = WebSession.load(allow_expired=True, account=username or None)
+        cached = WebSession.load(allow_expired=True)
         if cached and cached.storage_state.get("cookies"):
             _maybe_apply_workspace_override(cached, env_workspace_id)
 
@@ -351,7 +351,7 @@ def get_web_session(force_refresh: bool = False, require_workspace: bool = False
     # The session cookies may still be valid server-side; let API calls determine validity.
     # Skip this when force_refresh is set — the caller explicitly wants a fresh login.
     if not force_refresh:
-        cached = WebSession.load(allow_expired=True, account=username or None)
+        cached = WebSession.load(allow_expired=True)
         if cached and cached.storage_state.get("cookies"):
             _maybe_apply_workspace_override(cached, env_workspace_id)
             if (

@@ -1,4 +1,16 @@
-"""Web session models and cache persistence."""
+"""Web session models and cache persistence.
+
+Primary storage: ``~/.inspire/accounts/<active>/web_session.json`` — colocated
+with the account's config.toml and bridges.json, so switching accounts
+switches session cache in lockstep. A legacy unscoped path
+``~/.cache/inspire-skill/web_session.json`` remains usable when no account
+is active (old installs without ``inspire account`` never migrated).
+
+Legacy read fallbacks (to be retired when ``inspire account migrate`` lands):
+previous releases wrote per-user cache at
+``~/.cache/inspire-skill/web_session-<normalized-user>.json``. ``load()``
+still reads those files once so an upgrade doesn't force a fresh login.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-# Session cache files
+# Legacy cache location — still used when no InspireSkill account is active,
+# and as a read-only fallback for data written by older releases.
 SESSION_CACHE_DIR = Path.home() / ".cache" / "inspire-skill"
-SESSION_CACHE_FILE = SESSION_CACHE_DIR / "web_session.json"  # legacy/default path
+SESSION_CACHE_FILE = SESSION_CACHE_DIR / "web_session.json"
 SESSION_TTL = 3600  # 1 hour
 
 
@@ -25,6 +38,11 @@ DEFAULT_WORKSPACE_ID = "ws-00000000-0000-0000-0000-000000000000"
 
 
 def normalize_account_for_cache(account: Optional[str]) -> Optional[str]:
+    """Sanitize an account string for use in legacy cache filenames.
+
+    Kept for legacy fallback only — new storage puts sessions inside
+    ``~/.inspire/accounts/<name>/`` where names are already validated.
+    """
     if not account:
         return None
     value = account.strip()
@@ -34,11 +52,45 @@ def normalize_account_for_cache(account: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
-def get_session_cache_file(account: Optional[str] = None) -> Path:
-    normalized = normalize_account_for_cache(account)
+def _resolve_account_for_storage(explicit: Optional[str]) -> Optional[str]:
+    """Pick the account whose directory holds the session cache.
+
+    Order (mirrors the tunnel config resolver — no env-var chain):
+      1. *explicit* parameter
+      2. ``~/.inspire/current`` via :mod:`inspire.accounts`
+      3. ``None`` — sessions live at the legacy unscoped path
+    """
+    candidate = (explicit or "").strip()
+    if candidate:
+        return candidate
+    try:
+        from inspire.accounts import current_account
+    except ImportError:  # pragma: no cover - accounts ships with the CLI
+        return None
+    return current_account()
+
+
+def _account_session_path(name: str) -> Path:
+    return Path.home() / ".inspire" / "accounts" / name / "web_session.json"
+
+
+def _legacy_scoped_session_path(name: str) -> Path:
+    normalized = normalize_account_for_cache(name)
     if not normalized:
         return SESSION_CACHE_FILE
     return SESSION_CACHE_DIR / f"web_session-{normalized}.json"
+
+
+def get_session_cache_file(account: Optional[str] = None) -> Path:
+    """Resolve the on-disk path for the session cache.
+
+    Writes always target this path. Reads should use
+    :meth:`WebSession.load`, which additionally consults legacy fallbacks.
+    """
+    name = _resolve_account_for_storage(account)
+    if name:
+        return _account_session_path(name)
+    return SESSION_CACHE_FILE
 
 
 @dataclass
@@ -99,8 +151,12 @@ class WebSession:
         )
 
     def save(self, account: Optional[str] = None) -> None:
-        """Save session to cache file."""
-        cache_file = get_session_cache_file(account or self.login_username)
+        """Save session to the account-scoped cache file.
+
+        When *account* is omitted, falls back to ``inspire.accounts.current_account()``
+        and finally to the legacy unscoped location.
+        """
+        cache_file = get_session_cache_file(account)
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         # Restrict permissions: session contains sensitive cookies/tokens.
         tmp_path = cache_file.with_suffix(".tmp")
@@ -118,24 +174,29 @@ class WebSession:
         allow_expired: bool = False,
         account: Optional[str] = None,
     ) -> Optional["WebSession"]:
-        """Load session from cache file if valid.
+        """Load session from cache. Primary path plus one-shot legacy fallbacks.
 
-        Args:
-            allow_expired: If True, return session even if TTL has expired.
-                          The session cookies may still be valid server-side.
+        Resolution order:
+          1. ``~/.inspire/accounts/<account>/web_session.json`` (primary)
+          2. ``~/.cache/inspire-skill/web_session-<account>.json`` (legacy per-user)
+          3. ``~/.cache/inspire-skill/web_session.json`` (legacy unscoped)
+
+        Falls through on parse error or expired session (unless *allow_expired*).
         """
+        name = _resolve_account_for_storage(account)
+
         candidates: list[Path] = []
-        scoped_file = get_session_cache_file(account)
-        if scoped_file.exists():
-            candidates.append(scoped_file)
-        # Backward compatibility: if account-scoped file is missing or invalid,
-        # fall back to the legacy shared cache path.
-        if scoped_file != SESSION_CACHE_FILE and SESSION_CACHE_FILE.exists():
-            candidates.append(SESSION_CACHE_FILE)
-        elif not candidates and SESSION_CACHE_FILE.exists():
+        if name:
+            candidates.append(_account_session_path(name))
+            legacy_per_user = _legacy_scoped_session_path(name)
+            if legacy_per_user != SESSION_CACHE_FILE:
+                candidates.append(legacy_per_user)
+        if SESSION_CACHE_FILE not in candidates:
             candidates.append(SESSION_CACHE_FILE)
 
         for cache_file in candidates:
+            if not cache_file.exists():
+                continue
             try:
                 with open(cache_file) as f:
                     data = json.load(f)
