@@ -130,7 +130,7 @@ def run_notebook_ssh(*args, **kwargs):  # noqa: ANN002, ANN003
     "--project",
     "-p",
     default=None,
-    help="Project name or ID (default from config [context].project or [job].project_id)",
+    help="Project name (default from config [context].project; see 'inspire config context')",
 )
 @click.option(
     "--image",

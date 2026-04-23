@@ -237,29 +237,46 @@ def stop_ray(ctx: Context, ray_job_id: str) -> None:
 
 
 def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
+    """Resolve a project name to the underlying project_id."""
     if requested:
         if requested.startswith("project-"):
-            return requested
+            raise ConfigError(
+                f"--project takes a project name, not a raw ID ({requested!r}). "
+                "See `inspire config context` for available names."
+            )
         if requested in config.projects:
             return config.projects[requested]
         for project_id, metadata in config.project_catalog.items():
             if metadata.get("name") == requested:
                 return project_id
-        return requested
+        available = sorted(
+            a
+            for a in (
+                set(config.projects.keys())
+                | {str(m.get("name") or "").strip() for m in config.project_catalog.values()}
+            )
+            if a
+        )
+        hint = ", ".join(available) if available else "(run 'inspire config context')"
+        raise ConfigError(f"Unknown project: {requested!r}. Available: {hint}")
     if config.job_project_id:
         return config.job_project_id
     raise ConfigError(
-        "Missing project_id. Set --project or configure [context].project in "
-        "./.inspire/config.toml / INSPIRE_PROJECT_ID."
+        "Missing project. Set --project <name> or configure [context].project in "
+        "./.inspire/config.toml."
     )
 
 
 def _resolve_compute_group_id(config: Config, requested: str) -> str:
+    """Resolve a compute-group name to ``logic_compute_group_id``."""
     requested = (requested or "").strip()
     if not requested:
         raise ConfigError("Compute group cannot be empty.")
     if requested.startswith("lcg-"):
-        return requested
+        raise ConfigError(
+            f"compute-group takes a name, not a raw ID ({requested!r}). "
+            "See `inspire config context` for available names."
+        )
     for group in config.compute_groups or []:
         if group.get("name") == requested:
             group_id = str(group.get("id") or "").strip()
@@ -309,7 +326,7 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
     """Parse a ``key=value,key=value`` worker spec into a dict.
 
     Required keys: ``name``, ``image`` (URL or image_id), ``group`` (compute
-    group name or lcg-id), ``spec`` (quota_id), ``min``, ``max``.
+    group name), ``spec`` (quota_id), ``min``, ``max``.
     Optional: ``image_type`` (default SOURCE_PUBLIC), ``shm`` (shm_gi).
     """
     out: dict[str, Any] = {}
@@ -381,7 +398,7 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
 @click.option(
     "--head-group",
     default=None,
-    help="Head compute group name (or raw lcg-id); see 'inspire config context'",
+    help="Head compute group name; see 'inspire config context'",
 )
 @click.option(
     "--head-spec",

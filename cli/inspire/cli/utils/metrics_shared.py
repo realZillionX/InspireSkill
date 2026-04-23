@@ -507,7 +507,11 @@ def build_metrics_command(
                     "ConfigError",
                     f"Unable to resolve logic_compute_group_id for {resource_name} '{task_id}'.",
                     EXIT_CONFIG_ERROR,
-                    hint="Pass it explicitly with --lcg lcg-...",
+                    hint=(
+                        "Auto-resolution reads logic_compute_group_id from the resource's "
+                        "detail endpoint — make sure the resource exists and you have access. "
+                        "The --lcg escape hatch takes a raw id for debugging only."
+                    ),
                 )
                 return
 

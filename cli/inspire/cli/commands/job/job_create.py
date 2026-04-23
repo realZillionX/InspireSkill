@@ -251,7 +251,7 @@ def run_job_create(
     "--project",
     "-p",
     default=None,
-    help="Project name or ID (default from config [context].project or [job].project_id)",
+    help="Project name (default from config [context].project; see 'inspire config context')",
 )
 @click.option(
     "--nodes",

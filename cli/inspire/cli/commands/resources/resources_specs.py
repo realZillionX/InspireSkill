@@ -306,17 +306,20 @@ def list_specs(
         click.echo(f"Workspace: {workspace_id}")
         click.echo(f"Total specs: {len(rows)}")
         if usage == "hpc":
-            click.echo("Use spec_id with: inspire hpc create --spec-id <spec_id>")
+            click.echo(
+                "Pass --compute-group <name>, --cpus-per-task <n>, --memory-per-cpu <n> to "
+                "`inspire hpc create`; the CLI resolves spec_id live — no ID needed."
+            )
         elif usage == "all":
             click.echo(
-                "Use --usage notebook for notebook quotas and --usage hpc for HPC predef quotas."
+                "Use --usage notebook for notebook quotas and --usage hpc for HPC quotas."
             )
         elif usage == "auto":
             click.echo(
-                "Auto mode prefers HPC predef quotas and falls back to notebook quotas when HPC is unavailable."
+                "Auto mode prefers HPC quotas and falls back to notebook quotas when HPC is unavailable."
             )
         else:
-            click.echo("Use --usage hpc to discover HPC predef quotas for inspire hpc create.")
+            click.echo("Use --usage hpc to discover HPC quotas for `inspire hpc create`.")
         click.echo("")
 
     except ConfigError as e:
