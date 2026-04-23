@@ -34,6 +34,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | 默认 workspace 范围 | 本 SKILL 默认只把 **`CPU资源空间`**（阶段 A / B：notebook、HPC、数据处理、Ray CPU pipeline）和 **`分布式训练空间`**（阶段 C：单节点 debug / `job` 多节点训练）作为一等公民。这两个是给大多数研究人员共享的通用空间。`inspire account list` / `config context` 下可能还看得到 `整节点任务空间` / `CI-情境智能` / `CI-情境智能-国产卡*` / `可上网GPU资源` / `专属资源开发空间` / `CI-PPU` / `CPU临时测试空间` / `高性能计算` 等——**那些是小组 / 课题专属空间或测试沙箱**，不归默认用户用，别主动往里塞任务。需要在这些空间跑的人会自己把相关命令 / 规格加进仓库级 `INSPIRE.md` 或本地 harness 的 SKILL.md 覆盖层。 |
 | 废弃资源清理 | 别让废弃 notebook / job / hpc 堆积污染 Web UI 列表。终态（`SUCCEEDED` / `FAILED` / `STOPPED` / `CANCELLED`）且确认不再需要时就 `delete`；批量用 `inspire --json <res> list -A` 过滤再逐个 `delete --yes`。running 的先 `stop` 再 `delete`；不确定是否还有人用时跳过，不要猜着删。 |
 | 排队久 / 莫名失败优先查事件 | 任务卡 PENDING / CREATING 超过预期，或者突然 FAILED 没明显原因时，**第一步**永远是 `inspire <res> events <id>`（`notebook` / `job` / `hpc` / `ray` 都有）。`job` / `ray` 再叠 `--instance <pod>` / `ray instances <id>` 看哪个 pod 的问题。不凭猜重提——原因不明前不烧配额。 |
+| 大规模 `mv` / `cp` / `rm` 要并行 | 启智共享盘上的目录经常是"单仓库百万文件 / 数据集百 GB / 缓存百 TB"量级，串行 `rm -rf <dir>` 经常跑半小时到数小时，远端 SSH 会把人挂在那等。**默认策略**：把顶层子目录拆成独立任务，`xargs -P N` 并发跑，N = 8~32（IO-bound，不受容器 CPU 限制）。模板：<br>`find <root> -mindepth 1 -maxdepth 1 -print0 \| xargs -0 -n 1 -P 16 rm -rf --`<br>同理 `cp -r` / `mv` 大树——把顶层遍历成并行任务。超过 20 分钟的操作用 `nohup ... &` 放远端后台 + sentinel 文件轮询，**别**让本地 `inspire notebook exec` 挂住等。 |
 
 ## 2. 命令速查
 
