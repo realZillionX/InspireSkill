@@ -701,145 +701,117 @@ class TestTunnelConfigPersistence:
         assert bridge.ssh_user == "testuser"
         assert bridge.ssh_port == 12345
 
-    def test_load_tunnel_config_prefers_resolved_username(
+    def test_account_scoped_save_lands_under_accounts_dir(
+        self, tmp_path: Path
+    ) -> None:
+        config = TunnelConfig(config_dir=tmp_path, account="alice")
+        config.add_bridge(
+            BridgeProfile(name="b1", proxy_url="https://p.example.com")
+        )
+        save_tunnel_config(config)
+
+        assert (tmp_path / "accounts" / "alice" / "bridges.json").exists()
+        # No legacy-style sibling file.
+        assert not (tmp_path / "bridges-alice.json").exists()
+
+    def test_explicit_account_param_overrides_current_pointer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        (tmp_path / "bridges-canonical-user.json").write_text(
-            """
-{
-  "default": "canonical",
-  "bridges": [
-    {"name": "canonical", "proxy_url": "https://canonical.example.com"}
-  ]
-}
-""".strip()
+        import inspire.accounts as accounts_mod
+
+        # ``current_account()`` would pick ``bob``; explicit param says ``alice``.
+        monkeypatch.setattr(accounts_mod, "current_account", lambda: "bob")
+
+        (tmp_path / "accounts" / "alice").mkdir(parents=True)
+        (tmp_path / "accounts" / "alice" / "bridges.json").write_text(
+            '{"default": "a", "bridges": [{"name": "a", "proxy_url": "https://a.example.com"}]}'
         )
-        (tmp_path / "bridges-primary.json").write_text(
-            """
-{
-  "default": "legacy",
-  "bridges": [
-    {"name": "legacy", "proxy_url": "https://legacy.example.com"}
-  ]
-}
-""".strip()
+        (tmp_path / "accounts" / "bob").mkdir(parents=True)
+        (tmp_path / "accounts" / "bob" / "bridges.json").write_text(
+            '{"default": "b", "bridges": [{"name": "b", "proxy_url": "https://b.example.com"}]}'
         )
 
-        monkeypatch.setenv("INSPIRE_ACCOUNT", "primary")
-        monkeypatch.setattr(
-            Config,
-            "from_files_and_env",
-            classmethod(
-                lambda cls, require_target_dir=False, require_credentials=True: (
-                    Config(username="canonical-user", password=""),
-                    {},
-                )
-            ),
+        loaded = load_tunnel_config(tmp_path, account="alice")
+        assert loaded.account == "alice"
+        assert "a" in loaded.bridges
+        assert "b" not in loaded.bridges
+
+    def test_current_pointer_used_when_no_explicit_account(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import inspire.accounts as accounts_mod
+
+        monkeypatch.setattr(accounts_mod, "current_account", lambda: "bob")
+
+        (tmp_path / "accounts" / "bob").mkdir(parents=True)
+        (tmp_path / "accounts" / "bob" / "bridges.json").write_text(
+            '{"default": "b", "bridges": [{"name": "b", "proxy_url": "https://b.example.com"}]}'
         )
 
         loaded = load_tunnel_config(tmp_path)
+        assert loaded.account == "bob"
+        assert "b" in loaded.bridges
 
-        assert loaded.account == "canonical-user"
-        assert "canonical" in loaded.bridges
-        assert loaded.default_bridge == "canonical"
-
-    def test_load_tunnel_config_merges_account_alias_and_legacy(
+    def test_no_account_uses_unscoped_bridges_json(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        (tmp_path / "bridges-canonical-user.json").write_text(
-            """
-{
-  "default": "canonical",
-  "bridges": [
-    {"name": "canonical", "proxy_url": "https://canonical.example.com"},
-    {"name": "shared", "proxy_url": "https://primary-wins.example.com"}
-  ]
-}
-""".strip()
-        )
-        (tmp_path / "bridges-primary.json").write_text(
-            """
-{
-  "default": "legacy-alias",
-  "bridges": [
-    {"name": "shared", "proxy_url": "https://alias-should-not-win.example.com"},
-    {"name": "alias-only", "proxy_url": "https://alias-only.example.com"}
-  ]
-}
-""".strip()
-        )
+        import inspire.accounts as accounts_mod
+
+        monkeypatch.setattr(accounts_mod, "current_account", lambda: None)
+
         (tmp_path / "bridges.json").write_text(
-            """
-{
-  "default": "legacy",
-  "bridges": [
-    {"name": "legacy-only", "proxy_url": "https://legacy-only.example.com"}
-  ]
-}
-""".strip()
-        )
-
-        monkeypatch.setenv("INSPIRE_ACCOUNT", "primary")
-        monkeypatch.setattr(
-            Config,
-            "from_files_and_env",
-            classmethod(
-                lambda cls, require_target_dir=False, require_credentials=True: (
-                    Config(username="canonical-user", password=""),
-                    {},
-                )
-            ),
+            '{"default": "u", "bridges": [{"name": "u", "proxy_url": "https://u.example.com"}]}'
         )
 
         loaded = load_tunnel_config(tmp_path)
+        assert loaded.account is None
+        assert "u" in loaded.bridges
 
-        assert loaded.default_bridge == "canonical"
-        assert "canonical" in loaded.bridges
-        assert "alias-only" in loaded.bridges
-        assert "legacy-only" in loaded.bridges
-        assert loaded.bridges["shared"].proxy_url == "https://primary-wins.example.com"
-
-    def test_load_tunnel_config_falls_back_to_env_username_on_config_error(
+    def test_legacy_bridges_account_json_is_read_as_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        (tmp_path / "bridges-env-user.json").write_text(
-            """
-{
-  "default": "env-bridge",
-  "bridges": [
-    {"name": "env-bridge", "proxy_url": "https://env.example.com"}
-  ]
-}
-""".strip()
-        )
-        (tmp_path / "bridges.json").write_text(
-            """
-{
-  "default": "legacy",
-  "bridges": [
-    {"name": "legacy", "proxy_url": "https://legacy.example.com"}
-  ]
-}
-""".strip()
-        )
+        """Until ``inspire account migrate`` lands, load reads the old file
+        once when the new-path file doesn't exist. Saves go to the new path."""
+        import inspire.accounts as accounts_mod
 
-        monkeypatch.setenv("INSPIRE_USERNAME", "env-user")
-        monkeypatch.setattr(
-            Config,
-            "from_files_and_env",
-            classmethod(
-                lambda cls, require_target_dir=False, require_credentials=True: (
-                    _ for _ in ()
-                ).throw(ConfigError("broken config"))
-            ),
+        monkeypatch.setattr(accounts_mod, "current_account", lambda: "alice")
+
+        (tmp_path / "bridges-alice.json").write_text(
+            '{"default": "legacy", "bridges": '
+            '[{"name": "legacy", "proxy_url": "https://legacy.example.com"}]}'
         )
 
         loaded = load_tunnel_config(tmp_path)
-
-        assert loaded.account == "env-user"
-        assert loaded.default_bridge == "env-bridge"
-        assert "env-bridge" in loaded.bridges
         assert "legacy" in loaded.bridges
+        assert loaded.default_bridge == "legacy"
+
+        # Saving now should land at the new path, not overwrite the legacy file.
+        save_tunnel_config(loaded)
+        assert (tmp_path / "accounts" / "alice" / "bridges.json").exists()
+        # Legacy file is untouched by save.
+        assert (tmp_path / "bridges-alice.json").exists()
+
+    def test_env_var_chains_are_not_consulted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """INSPIRE_ACCOUNT / INSPIRE_BRIDGE_ACCOUNT / INSPIRE_USERNAME used
+        to flow into tunnel account resolution. They no longer do."""
+        import inspire.accounts as accounts_mod
+
+        monkeypatch.setattr(accounts_mod, "current_account", lambda: None)
+        monkeypatch.setenv("INSPIRE_ACCOUNT", "ghost")
+        monkeypatch.setenv("INSPIRE_BRIDGE_ACCOUNT", "ghost")
+        monkeypatch.setenv("INSPIRE_USERNAME", "ghost")
+
+        (tmp_path / "bridges-ghost.json").write_text(
+            '{"default": "g", "bridges": [{"name": "g", "proxy_url": "https://g.example.com"}]}'
+        )
+
+        loaded = load_tunnel_config(tmp_path)
+        # No account was resolved from the env vars, and the unscoped
+        # bridges.json does not exist either — nothing should load.
+        assert loaded.account is None
+        assert loaded.bridges == {}
 
 
 class TestProxyCommand:

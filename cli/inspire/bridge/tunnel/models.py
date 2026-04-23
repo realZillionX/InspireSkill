@@ -137,7 +137,7 @@ class TunnelConfig:
     @property
     def config_file(self) -> Path:
         if self.account:
-            return self.config_dir / f"bridges-{self.account}.json"
+            return self.config_dir / "accounts" / self.account / "bridges.json"
         return self.config_dir / "bridges.json"
 
     @property
