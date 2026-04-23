@@ -72,6 +72,99 @@ def load_ssh_public_key(pubkey_path: Optional[str] = None) -> str:
     return load_ssh_public_key_material(pubkey_path)
 
 
+# ---------------------------------------------------------------------------
+# Notebook-name-based default alias helpers
+# ---------------------------------------------------------------------------
+#
+# Users who run ``inspire notebook ssh <id>`` without ``--save-as`` benefit
+# from an alias that matches the notebook's display name rather than the
+# opaque ``nb-<id[:8]>`` prefix: both ``inspire notebook connections`` and
+# ``~/.ssh/config`` become self-documenting. The sanitised name is scoped to
+# alias-safe characters so shells, ssh_config Host entries, and click flag
+# values all stay well-formed.
+
+
+_ALIAS_SAFE_CHAR_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_ALIAS_COLLAPSE_DASH_RE = re.compile(r"-{2,}")
+_ALIAS_MIN_LENGTH = 2
+
+
+def _sanitize_alias_from_name(name: str) -> str:
+    """Turn a free-form notebook display name into an alias-safe token.
+
+    Keeps ``[A-Za-z0-9._-]``; everything else (spaces, CJK, emoji) becomes
+    ``-``.  Consecutive dashes collapse to one, leading/trailing
+    ``.-_`` are trimmed, and the result is lower-cased so aliases are
+    case-insensitive in practice.  Returns ``""`` when nothing survives
+    sanitisation — the caller falls back to ``nb-<id[:8]>`` in that case.
+    """
+    cleaned = _ALIAS_SAFE_CHAR_RE.sub("-", str(name or ""))
+    cleaned = _ALIAS_COLLAPSE_DASH_RE.sub("-", cleaned)
+    cleaned = cleaned.strip(".-_").lower()
+    if len(cleaned) < _ALIAS_MIN_LENGTH:
+        return ""
+    return cleaned
+
+
+def _find_alias_for_notebook_id(cached_config, notebook_id: str) -> Optional[str]:
+    """Return any existing alias bound to *notebook_id*, or ``None``.
+
+    Preserves pre-existing aliases across CLI upgrades: users who already
+    have an ``nb-<id>`` alias cached won't silently get a duplicate
+    name-based alias created alongside it.
+    """
+    target = str(notebook_id or "").strip()
+    if not target:
+        return None
+    for name, bridge in cached_config.bridges.items():
+        bridge_notebook_id = str(getattr(bridge, "notebook_id", "") or "").strip()
+        if bridge_notebook_id == target:
+            return name
+    return None
+
+
+def _unique_alias_for_notebook(
+    cached_config,
+    *,
+    base: str,
+    notebook_id: str,
+) -> str:
+    """Return *base* unless another bridge already uses it for a different
+    notebook; in that case append a short suffix derived from ``notebook_id``
+    so the freshly-bootstrapped alias stays unique.
+    """
+    existing = cached_config.bridges.get(base)
+    if existing is None:
+        return base
+    existing_notebook_id = str(getattr(existing, "notebook_id", "") or "").strip()
+    if existing_notebook_id == notebook_id:
+        return base
+    suffix = str(notebook_id or "").replace("notebook-", "")[:4] or "x"
+    return f"{base}-{suffix}"
+
+
+def _default_alias_for_notebook(
+    cached_config,
+    *,
+    notebook_id: str,
+    notebook_name: Optional[str],
+) -> str:
+    """Compute the default alias for a freshly-bootstrapped notebook.
+
+    Prefers the sanitised display name; falls back to ``nb-<id[:8]>`` when
+    the name is missing or sanitises to something too short to be useful.
+    The final value is guaranteed not to collide with an existing bridge
+    pointing at a different notebook.
+    """
+    derived = _sanitize_alias_from_name(notebook_name or "")
+    base = derived or f"nb-{str(notebook_id or '')[:8]}"
+    return _unique_alias_for_notebook(
+        cached_config,
+        base=base,
+        notebook_id=notebook_id,
+    )
+
+
 def _command_timeout_seconds(command_timeout: Optional[int]) -> Optional[int]:
     if command_timeout is None:
         return 300
@@ -573,12 +666,20 @@ def run_notebook_ssh(
             json_output=False,
         )
 
-    # Default alias uses an `nb-` prefix so it never collides with a real
-    # notebook-id (which is always `notebook-<uuid>` or a bare UUID).
-    profile_name = save_as or f"nb-{notebook_id[:8]}"
+    # Alias resolution:
+    #   1. ``--save-as`` wins if the user asked for a specific label.
+    #   2. Else, reuse any alias already bound to this ``notebook_id`` — this
+    #      keeps legacy ``nb-<id[:8]>`` bridges from users who ran earlier CLI
+    #      versions working without forcing a rename.
+    #   3. Else, defer: after we fetch ``notebook_detail`` below we derive an
+    #      alias from the notebook's display name (and only fall back to
+    #      ``nb-<id[:8]>`` when the name sanitises to something too short).
     cached_config = load_tunnel_config(account=tunnel_account)
+    profile_name: Optional[str] = save_as or _find_alias_for_notebook_id(
+        cached_config, notebook_id
+    )
 
-    if profile_name in cached_config.bridges:
+    if profile_name and profile_name in cached_config.bridges:
         cached_bridge = cached_config.bridges[profile_name]
         bridge_notebook_id = str(getattr(cached_bridge, "notebook_id", "") or "").strip()
         if bridge_notebook_id == notebook_id:
@@ -687,6 +788,17 @@ def run_notebook_ssh(
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
         return
+
+    # Finalise the alias now that we know the notebook's display name.
+    # Only kicks in when neither ``--save-as`` nor an existing bridge supplied
+    # one earlier; see the alias-resolution comment above.
+    if profile_name is None:
+        notebook_display_name = str(notebook_detail.get("name") or "").strip()
+        profile_name = _default_alias_for_notebook(
+            cached_config,
+            notebook_id=notebook_id,
+            notebook_name=notebook_display_name,
+        )
 
     current_user_detail: dict = {}
     try:

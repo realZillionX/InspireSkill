@@ -36,7 +36,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ### 2.1 Notebook（生命周期 + 远程操作 + alias 管理）
 
-> **一个 notebook ↔ 一条本地 alias**。首次 `notebook ssh <id>` 引导 SSH 时把连接存成 alias（默认 `nb-<id 前 8 位>`，`--save-as` 可改名）。`notebook ssh <arg>` 多态——arg 是 id 就 bootstrap，是已保存 alias 就重连（自动重建断开的 tunnel）。
+> **一个 notebook ↔ 一条本地 alias**。首次 `notebook ssh <id>` 引导 SSH 时把连接存成 alias（默认用 notebook 的显示名清洗成 alias-safe 形式，清洗空了才回退 `nb-<id 前 8 位>`；`--save-as` 可强制改名）。同一个 `notebook_id` 已有 alias 时直接复用，不会重复建——老用户的 `nb-<id>` 记录不会被改名。`notebook ssh <arg>` 多态——arg 是 id 就 bootstrap，是已保存 alias 就重连（自动重建断开的 tunnel）。
 >
 > **`shell` vs `exec`（远端执行两种模式）**：
 > - `inspire notebook shell <alias>` = 交互式**持久**会话。一次登入后连续敲命令，cwd / env / shell 变量全部保留，直到 `exit`。等价于直接 `ssh <alias>`，所以在 N 个终端里同时 `inspire notebook shell mybox` 就是 N 个互相独立的会话并存，各自 cwd / env / history 互不影响（远端是共享 CPU / 内存的单容器，多路并发会互相抢资源；要真并行算力走 `job` 多节点或 `hpc`）。
