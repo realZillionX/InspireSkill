@@ -112,8 +112,6 @@ inspire resources list --all --include-cpu
 
 **多账号**：`inspire account add <name2>` 再加一个，`inspire account use <name>` 切换。
 
-**从旧版升级**：`inspire account migrate` 一次性搬 `~/.config/inspire/config.toml` + `~/.inspire/bridges-*.json` + `~/.cache/inspire-skill/web_session-*.json` 到 `~/.inspire/accounts/<name>/`，原件备份到 `~/.inspire/legacy-<timestamp>/`。老的 `[paths].target_dir` **不会**被搬（它是项目级的），迁移命令会显式提醒你在各个仓库里重跑 `inspire init --discover`。
-
 之后把控制权交给 Agent，它会从 `SKILL.md` 读到所有 workflow 规则并自动执行。
 
 ---
