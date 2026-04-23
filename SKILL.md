@@ -113,27 +113,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ### 2.4 Ray（弹性计算）
 
-> `inspire ray` 对应 Web UI 的"弹性计算"菜单。它不是"另一种训练任务"——形态上是**一个 head 节点跑 driver，加一组或多组 worker，每组 worker 的实例数在 `min` 与 `max` 之间按实时负载自动扩缩**。`job` 是固定 N 节点 GPU，`hpc` 是固定任务数的 Slurm 批处理，都会"命令跑完自动停"；Ray 不一样，**集群在 driver 退出前一直活着**，worker 组空闲时缩到 `min`、忙起来再扩到 `max`。
->
-> 适合 Ray 而不适合 `job` / `hpc` 的场景：
->
-> - **CPU 解码 + GPU 推理的流式 pipeline**：帧级数据在 worker 组之间走 Ray 对象存储（内存），不需要把解码结果落到 GPFS 再读回来，避免"中间产物爆存储"。
-> - **异构 worker 组合**：同一个任务里既挂一组 CPU 预处理 worker（比如 `min=2, max=32`），又挂一组 GPU 推理 worker（`min=1, max=8`），两边各自扩缩、按实际实例数计费。
-> - **长时间、压力波动大的常驻服务**：白天高峰时 worker 自动拉到 `max`，夜里缩到 `min`，人工不用插手。
->
-> 固定规模的单次训练或离线批处理**别用** Ray——写一个正确退出的 driver 比 `job create -c ...` / `hpc create -c ...` 复杂得多，driver 写成死循环又忘了 stop 会白白占着 `min_replicas` 的配额。
-
-**生命周期要点**（和 `job` / `hpc` 最大的差异）
-
-| | driver / 命令退出后 | 观测 | 没主动 stop 时 |
-| --- | --- | --- | --- |
-| `inspire job` | 平台自动回收 → SUCCEEDED | `job events` / `job events --instance <pod>` / `job logs --follow` | —— |
-| `inspire hpc` | srun 结束自动回收 | `hpc events`（只有 job-level） | —— |
-| `inspire ray` | **driver 不退出就一直在**，worker 按 `min_replicas` 留存 | `ray events` + `ray instances`（pod 级） | 会一直占 `min_replicas` 直到手动 `ray stop` |
-
-所以跑 Ray 前务必把 driver 写成**会退出**的形态：处理完既定 workload 后显式 `sys.exit()` / 让 `__main__` 走完；或者接受"长期守护 → 手动 stop"的运维模型。
-
-**CLI 能做什么**
+> 一个 head + 若干 worker 组，每组实例数按实时负载在 `min_replicas` / `max_replicas` 之间自动扩缩。**和 `job` / `hpc` 的关键差异**：driver 不主动退出集群就不停，worker 一直按 `min_replicas` 占配额。选型：流式 / 异构 worker / 长守护走 Ray；固定规模批处理走 `job` / `hpc`。
 
 | 命令 | 用途与约束 |
 | --- | --- |
