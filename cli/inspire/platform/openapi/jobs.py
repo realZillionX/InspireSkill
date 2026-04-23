@@ -39,25 +39,18 @@ def create_training_job_smart(
 ) -> Dict[str, Any]:
     """Create training job with smart resource matching.
 
-    When ``spec_id_override`` and ``compute_group_id_override`` are both
-    supplied, the resource-manager lookup (which falls back to a stale
-    hardcoded spec list) is skipped entirely. Callers in the CLI resolve
-    these via a live ``get_resource_prices`` query, so the OpenAPI layer
-    never needs to carry around platform-generated quota IDs.
+    Requires pre-resolved ``spec_id_override`` + ``compute_group_id_override``;
+    the CLI layer resolves these live via
+    :func:`inspire.cli.utils.spec_resolver.resolve_train_spec`.
     """
     api._check_authentication()
-
-    # Validate required parameters
     api._validate_required_params(name=name, command=command, resource=resource)
 
     if not (spec_id_override and compute_group_id_override):
         raise ValidationError(
             "create_training_job_smart requires spec_id_override + "
-            "compute_group_id_override (resolved live via "
-            "inspire.cli.utils.spec_resolver.resolve_train_spec). The CLI "
-            "layer pre-resolves both before calling this function; any caller "
-            "missing them hit a code path that used to consult a stale "
-            "hardcoded spec table and is now gone."
+            "compute_group_id_override (resolve via "
+            "inspire.cli.utils.spec_resolver.resolve_train_spec)."
         )
     spec_id = spec_id_override
     compute_group_id = compute_group_id_override

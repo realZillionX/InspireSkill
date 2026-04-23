@@ -89,7 +89,22 @@ def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> co
 class DummyAPI:
     def __init__(self) -> None:
         self.calls: Dict[str, Any] = {}
-        self.resource_manager = ResourceManager()
+        self.resource_manager = ResourceManager(
+            [
+                {
+                    "name": "H200 Default Test Group",
+                    "id": "lcg-test-h200-0000-0000-0000-00000000H200",
+                    "gpu_type": "H200",
+                    "location": "Test",
+                },
+                {
+                    "name": "H100 Default Test Group",
+                    "id": "lcg-test-h100-0000-0000-0000-00000000H100",
+                    "gpu_type": "H100",
+                    "location": "Test",
+                },
+            ]
+        )
 
     # Job-related methods -------------------------------------------------
     def create_training_job_smart(self, **kwargs: Any) -> Dict[str, Any]:
@@ -197,6 +212,16 @@ def patch_config_and_auth(
 
     monkeypatch.setattr(resources_list_module, "get_web_session", lambda: FakeWebSession())
     monkeypatch.setattr(resources_nodes_module, "get_web_session", lambda: FakeWebSession())
+
+    # Stub the live train-spec resolver so job-submit tests don't hit the real
+    # platform — real resolution lives in resolve_train_spec's own unit tests.
+    from inspire.cli.utils import spec_resolver as spec_resolver_module
+
+    monkeypatch.setattr(
+        spec_resolver_module,
+        "resolve_train_spec",
+        lambda **_: ("spec-test-default", 16, 128),
+    )
 
     test_project = browser_api_module.ProjectInfo(
         project_id="project-test-123",
