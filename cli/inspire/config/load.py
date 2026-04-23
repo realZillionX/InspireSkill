@@ -1,21 +1,27 @@
 """Top-level orchestrator for layered config loading.
 
 All the pieces live in sibling modules:
-    - load_common   — shared helpers (defaults dict, alias maps, dataclass)
-    - load_layers   — global + project TOML layers
-    - load_accounts — [accounts."<user>"] catalog parsing, merging, application
-    - load_runtime  — env layer + password/token fallbacks + required-field validation
+    - load_common         — shared helpers (defaults dict, alias maps, dataclass)
+    - load_account_layer  — per-account ``~/.inspire/accounts/<current>/config.toml``
+    - load_layers         — legacy global + project TOML layers
+    - load_accounts       — legacy ``[accounts."<user>"]`` catalog (inactive for new users)
+    - load_runtime        — env layer + password/token fallbacks + required-field validation
 
-This module just wires them together.
+When an InspireSkill account is active (``inspire.accounts.current_account()``),
+the per-account layer is used and the legacy global layer is skipped entirely.
+Both paths share the same merge contract, so the later layers (project, env,
+fallbacks) do not need to branch.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from inspire.config.models import SOURCE_PROJECT, Config
 from inspire.config.toml import _find_project_config
 
+from .load_account_layer import _apply_account_layer
 from .load_accounts import _apply_account_catalog_layer, _apply_project_context_and_defaults
 from .load_common import _default_config_values, _initialize_sources
 from .load_layers import _apply_global_layer, _apply_project_layer
@@ -35,10 +41,22 @@ def config_from_files_and_env(
     config_dict = _default_config_values()
     sources = _initialize_sources(config_dict)
 
-    global_config_path, global_account_catalogs = _apply_global_layer(
+    # Primary identity layer: the active account's own config.toml, when set.
+    # Falls back to the legacy global path only when no account is active —
+    # the two are mutually exclusive, never merged.
+    account_config_path = _apply_account_layer(
         config_dict=config_dict,
         sources=sources,
     )
+    if account_config_path is not None:
+        global_config_path: Path | None = account_config_path
+        global_account_catalogs: dict[str, dict[str, Any]] = {}
+    else:
+        global_config_path, global_account_catalogs = _apply_global_layer(
+            config_dict=config_dict,
+            sources=sources,
+        )
+
     project_layer_state = _apply_project_layer(config_dict=config_dict, sources=sources)
 
     context_account = str(project_layer_state.project_context.get("account") or "").strip()

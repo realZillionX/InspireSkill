@@ -589,6 +589,171 @@ HF_TOKEN = "hf-token"
         assert cfg.timeout == 77
 
 
+class TestAccountConfigLayer:
+    """Phase 4: per-account config at ``~/.inspire/accounts/<current>/config.toml``.
+
+    All tests redirect ``Path.home()`` into ``tmp_path`` so the real
+    ``~/.inspire/accounts/`` is never touched.
+    """
+
+    @pytest.fixture
+    def clean_env(self, monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+        for var in (
+            "INSPIRE_USERNAME",
+            "INSPIRE_PASSWORD",
+            "INSPIRE_BASE_URL",
+            "INSPIRE_TIMEOUT",
+            "INSPIRE_TARGET_DIR",
+            "INSPIRE_GLOBAL_CONFIG_PATH",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        yield
+
+    @pytest.fixture
+    def home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        # Point the legacy global path into tmp — absent by default, so the
+        # account layer is the only TOML source unless a test writes to it.
+        monkeypatch.setattr(
+            Config, "GLOBAL_CONFIG_PATH", fake_home / ".config" / "inspire" / "config.toml"
+        )
+        monkeypatch.chdir(tmp_path)
+        return fake_home
+
+    def _write_account_config(self, home: Path, name: str, body: str) -> Path:
+        path = home / ".inspire" / "accounts" / name / "config.toml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+        (home / ".inspire" / "current").write_text(name + "\n")
+        return path
+
+    def test_account_config_drives_identity_when_active(
+        self, home: Path, clean_env: None
+    ) -> None:
+        self._write_account_config(
+            home,
+            "alice",
+            '[auth]\nusername = "alice-platform"\npassword = "pw"\n\n'
+            '[api]\nbase_url = "https://alice.example.com"\ntimeout = 55\n',
+        )
+
+        cfg, sources = Config.from_files_and_env(require_credentials=True)
+
+        assert cfg.username == "alice-platform"
+        assert cfg.password == "pw"
+        assert cfg.base_url == "https://alice.example.com"
+        assert cfg.timeout == 55
+        assert sources["username"] == SOURCE_GLOBAL
+        assert sources["base_url"] == SOURCE_GLOBAL
+
+    def test_account_layer_replaces_legacy_global_layer(
+        self, home: Path, clean_env: None
+    ) -> None:
+        # Legacy global says one thing; active account config says another.
+        legacy_global = home / ".config" / "inspire" / "config.toml"
+        legacy_global.parent.mkdir(parents=True, exist_ok=True)
+        legacy_global.write_text('[auth]\nusername = "legacy-user"\n[api]\ntimeout = 10\n')
+
+        self._write_account_config(
+            home,
+            "alice",
+            '[auth]\nusername = "alice-wins"\npassword = "pw"\n[api]\ntimeout = 99\n',
+        )
+
+        cfg, _ = Config.from_files_and_env(require_credentials=False)
+
+        assert cfg.username == "alice-wins"
+        assert cfg.timeout == 99  # account layer, not legacy global
+
+    def test_legacy_global_used_when_no_active_account(
+        self, home: Path, clean_env: None
+    ) -> None:
+        legacy_global = home / ".config" / "inspire" / "config.toml"
+        legacy_global.parent.mkdir(parents=True, exist_ok=True)
+        legacy_global.write_text('[auth]\nusername = "legacy-user"\npassword = "pw"\n')
+        # NOTE: no ~/.inspire/current written => no active account.
+
+        cfg, sources = Config.from_files_and_env(require_credentials=True)
+
+        assert cfg.username == "legacy-user"
+        assert cfg.password == "pw"
+        assert sources["username"] == SOURCE_GLOBAL
+
+    def test_account_config_missing_falls_back_to_legacy_global(
+        self, home: Path, clean_env: None
+    ) -> None:
+        """User set ``inspire account use alice`` but never wrote the config.
+        The loader should not crash — it falls through to legacy global."""
+        (home / ".inspire" / "current").parent.mkdir(parents=True, exist_ok=True)
+        (home / ".inspire" / "current").write_text("alice\n")
+
+        legacy_global = home / ".config" / "inspire" / "config.toml"
+        legacy_global.parent.mkdir(parents=True, exist_ok=True)
+        legacy_global.write_text('[auth]\nusername = "legacy-user"\npassword = "pw"\n')
+
+        cfg, _ = Config.from_files_and_env(require_credentials=False)
+        assert cfg.username == "legacy-user"
+
+    def test_project_config_still_overrides_account_config(
+        self, home: Path, clean_env: None, tmp_path: Path
+    ) -> None:
+        self._write_account_config(
+            home,
+            "alice",
+            '[auth]\nusername = "alice-platform"\npassword = "pw"\n'
+            '[api]\ntimeout = 55\n',
+        )
+        project_dir = tmp_path / ".inspire"
+        project_dir.mkdir()
+        (project_dir / "config.toml").write_text('[api]\ntimeout = 123\n')
+
+        cfg, sources = Config.from_files_and_env(require_credentials=False)
+
+        assert cfg.timeout == 123
+        assert sources["timeout"] == SOURCE_PROJECT
+        # username still from account layer
+        assert cfg.username == "alice-platform"
+
+    def test_accounts_section_in_account_config_is_ignored(
+        self, home: Path, clean_env: None
+    ) -> None:
+        """Stray ``[accounts."<user>"]`` nesting inside a per-account file
+        should NOT trigger the legacy catalog merge — one account = one file."""
+        self._write_account_config(
+            home,
+            "alice",
+            '[auth]\nusername = "alice-platform"\npassword = "pw"\n\n'
+            '[accounts."ghost"]\npassword = "should-not-leak"\n',
+        )
+
+        cfg, _ = Config.from_files_and_env(require_credentials=True)
+
+        # Credentials come from the flat [auth] section, not from [accounts.ghost].
+        assert cfg.username == "alice-platform"
+        assert cfg.password == "pw"
+        # And the ignored section leaves no trace in config.accounts.
+        assert cfg.accounts == {}
+
+    def test_context_account_in_account_config_is_ignored(
+        self, home: Path, clean_env: None
+    ) -> None:
+        """``[context].account`` has no effect inside a per-account file
+        — the active account is already determined by ``~/.inspire/current``."""
+        self._write_account_config(
+            home,
+            "alice",
+            '[auth]\nusername = "alice-platform"\npassword = "pw"\n\n'
+            '[context]\naccount = "bob"\n',
+        )
+
+        cfg, _ = Config.from_files_and_env(require_credentials=False)
+
+        assert cfg.username == "alice-platform"
+        assert cfg.context_account is None
+
+
 # ===========================================================================
 # Init command tests
 # ===========================================================================
