@@ -31,6 +31,14 @@ from .hpc_jobs import (
     list_hpc_jobs,
     list_hpc_job_events,
 )
+from .ray_jobs import (
+    RayJobInfo,
+    delete_ray_job,
+    get_ray_job_detail,
+    list_ray_job_users,
+    list_ray_jobs,
+    stop_ray_job,
+)
 from .metrics import (
     INTERVAL_CHOICES,
     METRIC_TYPES,
@@ -110,6 +118,13 @@ __all__ = [
     "delete_hpc_job",
     "list_hpc_jobs",
     "list_hpc_job_events",
+    # Ray jobs (弹性计算 — CPU decode + GPU inference streaming pipelines)
+    "RayJobInfo",
+    "delete_ray_job",
+    "get_ray_job_detail",
+    "list_ray_job_users",
+    "list_ray_jobs",
+    "stop_ray_job",
     # Metrics (cluster_metric/resource_metric_by_time — 资源视图 tab)
     "INTERVAL_CHOICES",
     "METRIC_TYPES",

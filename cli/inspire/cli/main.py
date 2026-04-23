@@ -30,6 +30,7 @@ from inspire.cli.commands import (
     project,
     hpc,
     model,
+    ray,
     serving,
     update,
     user,
@@ -120,6 +121,7 @@ main.add_command(image)
 main.add_command(project)
 main.add_command(hpc)
 main.add_command(model)
+main.add_command(ray)
 main.add_command(serving)
 main.add_command(update)
 main.add_command(user)

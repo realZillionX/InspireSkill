@@ -110,7 +110,18 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 ## Insert code, and run your programs here (use `srun`).
 ```
 
-### 2.4 镜像
+### 2.4 Ray（弹性计算）
+
+> **定位**：网页端"弹性计算"菜单的后端 = `/api/v1/ray_job/*`。典型场景是 **CPU 解码 + GPU 推理的流式 pipeline**（head 节点调度、worker 组弹性扩缩），避免把中间结果落盘导致存储爆炸。OpenAPI 不暴露，只有 Browser API。CLI 目前只包了只读 + 生命周期：`list / status / stop / delete`；`create` 的 head/worker 嵌套 proto schema 暂未完全摸清，创建仍需走 Web UI。端点、proto 字段名、未解之处见 [references/ray-jobs.md](references/ray-jobs.md)。
+
+| 命令 | 用途 |
+| --- | --- |
+| `inspire ray list` | 列 Ray 任务；默认只显示当前用户的任务（模仿 Web UI 的"我的"页签），`-A` 跨所有用户，`--created-by user-xxx[,user-yyy]` 指定归属 |
+| `inspire ray status <ray_job_id>` | 看单任务状态；`--json` 给出完整 head/worker/弹性伸缩嵌套结构（纯文本只打顶层 status/priority/timestamps） |
+| `inspire ray stop <ray_job_id>` | 停运行中的 Ray 任务，不清条目 |
+| `inspire ray delete <ray_job_id> [--yes]` | 永久删条目；running 的先 `stop` |
+
+### 2.5 镜像
 
 | 命令 | 用途 |
 | --- | --- |
@@ -120,7 +131,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire image register` | 注册外部镜像；优先 `--method address` |
 | `inspire image set-default --job <url> --notebook <url>` | 设默认镜像。没有位置参数，只接受 `--job` / `--notebook`；写回最近的项目级 `.inspire/config.toml` |
 
-### 2.5 资源 / 项目 / 配置查询
+### 2.6 资源 / 项目 / 配置查询
 
 | 命令 | 用途 |
 | --- | --- |
