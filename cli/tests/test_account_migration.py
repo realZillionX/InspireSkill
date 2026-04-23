@@ -164,25 +164,42 @@ class TestBuildPlan:
         parsed = tomllib.loads(plan.accounts["ghost"].config_toml)
         assert parsed.get("auth", {}).get("username") == "ghost"
 
-    def test_legacy_paths_section_is_dropped_and_reported(self, home: Path) -> None:
-        """[paths].target_dir is per-repo and cannot survive migration — the
-        plan should strip it and surface the dropped value so the user knows
-        to rebuild it with 'inspire init --discover' inside each repo."""
+    def test_legacy_per_repo_keys_are_dropped_and_reported(self, home: Path) -> None:
+        """All per-repo keys (paths.target_dir, github.repo, job.project_id, …)
+        must be stripped from the produced account config and surfaced in the
+        plan so the user knows to rebuild them per-repo."""
         _write_legacy_global(
             home,
             '[auth]\nusername = "alice"\n\n'
             '[accounts."alice"]\npassword = "pw"\n\n'
-            '[paths]\ntarget_dir = "/inspire/ssd/project/foo/alice/work"\n',
+            '[paths]\ntarget_dir = "/inspire/ssd/project/foo/alice/work"\n'
+            'log_pattern = "train_*.log"\n\n'
+            '[github]\nrepo = "me/myrepo"\n\n'
+            '[job]\nproject_id = "project-abc"\nworkspace_id = "ws-xyz"\n\n'
+            '[notebook]\npost_start = "bash setup.sh"\n',
         )
 
         plan = migration.build_plan()
-        assert plan.dropped_target_dir == "/inspire/ssd/project/foo/alice/work"
+        assert plan.dropped_per_repo_fields == {
+            "github.repo": "me/myrepo",
+            "job.project_id": "project-abc",
+            "job.workspace_id": "ws-xyz",
+            "notebook.post_start": "bash setup.sh",
+            "paths.log_pattern": "train_*.log",
+            "paths.target_dir": "/inspire/ssd/project/foo/alice/work",
+        }
 
         parsed = tomllib.loads(plan.accounts["alice"].config_toml)
-        assert "paths" not in parsed  # scrubbed
+        # All offending keys / sections scrubbed.
+        assert "paths" not in parsed
+        assert parsed.get("github", {}).get("repo") is None
+        assert parsed.get("job", {}).get("project_id") is None
+        assert parsed.get("job", {}).get("workspace_id") is None
+        assert parsed.get("notebook", {}).get("post_start") is None
 
         summary = "\n".join(migration.describe_plan(plan))
-        assert "target_dir" in summary
+        assert "paths.target_dir" in summary
+        assert "github.repo" in summary
         assert "init --discover" in summary
 
     def test_migration_result_loads_cleanly(self, home: Path) -> None:

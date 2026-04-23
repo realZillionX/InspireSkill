@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Generator
@@ -769,18 +770,28 @@ class TestAccountConfigLayer:
         target = Config.writable_config_path()
         assert target == Config.resolve_global_config_path()
 
-    def test_paths_section_in_account_config_is_rejected(
-        self, home: Path, clean_env: None
+    @pytest.mark.parametrize(
+        "key_line,dotted_key",
+        [
+            ('[paths]\ntarget_dir = "/inspire/ssd/foo"', "paths.target_dir"),
+            ('[paths]\nlog_pattern = "train_*.log"', "paths.log_pattern"),
+            ('[github]\nrepo = "me/foo"', "github.repo"),
+            ('[job]\nproject_id = "project-abc"', "job.project_id"),
+            ('[job]\nworkspace_id = "ws-xyz"', "job.workspace_id"),
+            ('[notebook]\npost_start = "bash setup.sh"', "notebook.post_start"),
+        ],
+    )
+    def test_per_repo_keys_in_account_config_are_rejected(
+        self, home: Path, clean_env: None, key_line: str, dotted_key: str
     ) -> None:
-        """[paths] is per-repository state — must not appear in account config."""
+        """Every per-repo key must be flagged at account layer, not just paths.*."""
         self._write_account_config(
             home,
             "alice",
-            '[auth]\nusername = "alice"\npassword = "pw"\n\n'
-            '[paths]\ntarget_dir = "/inspire/ssd/project/foo/alice/work"\n',
+            '[auth]\nusername = "alice"\npassword = "pw"\n\n' + key_line + "\n",
         )
 
-        with pytest.raises(ConfigError, match=r"\[paths\]"):
+        with pytest.raises(ConfigError, match=re.escape(dotted_key)):
             Config.from_files_and_env(require_credentials=False)
 
     def test_empty_paths_section_in_account_config_is_tolerated(
@@ -795,6 +806,27 @@ class TestAccountConfigLayer:
 
         cfg, _ = Config.from_files_and_env(require_credentials=False)
         assert cfg.username == "alice"
+
+    def test_allowed_account_defaults_still_work(
+        self, home: Path, clean_env: None
+    ) -> None:
+        """Fields that CAN be account-level defaults must keep working
+        (workspace aliases, default image/priority, etc.)."""
+        self._write_account_config(
+            home,
+            "alice",
+            '[auth]\nusername = "alice"\npassword = "pw"\n\n'
+            '[workspaces]\ncpu = "ws-cpu"\ngpu = "ws-gpu"\n\n'
+            '[job]\npriority = 5\nimage = "myimage:latest"\n\n'
+            '[notebook]\nresource = "1xH100"\n',
+        )
+
+        cfg, _ = Config.from_files_and_env(require_credentials=False)
+        assert cfg.workspace_cpu_id == "ws-cpu"
+        assert cfg.workspace_gpu_id == "ws-gpu"
+        assert cfg.job_priority == 5
+        assert cfg.job_image == "myimage:latest"
+        assert cfg.notebook_resource == "1xH100"
 
 
 # ===========================================================================

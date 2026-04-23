@@ -29,6 +29,23 @@ from inspire.config.toml import _flatten_toml, _load_toml, _toml_key_to_field
 
 from .load_common import _apply_defaults_overrides, _parse_alias_map
 
+# Keys whose *value* must differ per repository — a single account is used
+# across many repos, each with its own remote workdir / Inspire project /
+# GitHub repo binding. Putting these at account level silently shadows the
+# correct project-level value, so we reject them outright. Other project-
+# scope fields (workspace aliases, default images/priority, workflow names,
+# etc.) *can* live at the account layer as defaults and are not policed here.
+ACCOUNT_LAYER_DISALLOWED_KEYS = frozenset(
+    {
+        "paths.target_dir",
+        "paths.log_pattern",
+        "github.repo",
+        "job.project_id",
+        "job.workspace_id",
+        "notebook.post_start",
+    }
+)
+
 
 def _resolve_account_config_path() -> Path | None:
     """Return the active account's ``config.toml`` path, or ``None``.
@@ -73,19 +90,10 @@ def _apply_account_layer(
     raw.pop("accounts", None)
     raw.pop("context", None)
 
-    # ``[paths]`` (target_dir, log_pattern) is strictly per-repository and
-    # must never live in the account layer — a single account runs work in
-    # many repos with different remote workdirs. Hard-fail rather than
-    # silently shadow the correct project-level value.
-    if isinstance(raw.get("paths"), dict) and raw["paths"]:
-        raise ConfigError(
-            f"Account config at {account_path} contains a [paths] section, "
-            "which is per-repository state and must not live at the account "
-            "level. Move [paths].target_dir (and any other [paths].* keys) "
-            "into your repo's ./.inspire/config.toml — e.g. by running "
-            "'inspire init --discover' from inside the repo — or export "
-            "INSPIRE_TARGET_DIR for ad-hoc use."
-        )
+    # Reject per-repository keys anywhere in the file. A single account
+    # spans many repos; these values must live in each repo's own
+    # ./.inspire/config.toml or come from env vars.
+    _reject_per_repo_keys(raw, account_path)
 
     compute_groups = raw.pop("compute_groups", [])
     remote_env = {str(k): str(v) for k, v in raw.pop("remote_env", {}).items()}
@@ -131,4 +139,24 @@ def _apply_account_layer(
     return account_path
 
 
-__all__ = ["_apply_account_layer", "_resolve_account_config_path"]
+def _reject_per_repo_keys(raw: dict[str, Any], account_path: Path) -> None:
+    flat = _flatten_toml(raw)
+    offending = sorted(k for k in flat if k in ACCOUNT_LAYER_DISALLOWED_KEYS)
+    if not offending:
+        return
+    raise ConfigError(
+        f"Account config at {account_path} contains per-repository keys: "
+        f"{', '.join(offending)}. These must live in the repo's own "
+        "./.inspire/config.toml (run 'inspire init --discover' from inside "
+        "the repo), not at the account level — a single account usually has "
+        "many repos with different remote workdirs / Inspire projects / "
+        "GitHub bindings, and placing per-repo values here silently shadows "
+        "the correct ones."
+    )
+
+
+__all__ = [
+    "ACCOUNT_LAYER_DISALLOWED_KEYS",
+    "_apply_account_layer",
+    "_resolve_account_config_path",
+]

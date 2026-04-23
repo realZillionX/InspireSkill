@@ -42,9 +42,10 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from inspire.accounts import storage
+from inspire.config.load_account_layer import ACCOUNT_LAYER_DISALLOWED_KEYS
 from inspire.config.load_accounts import _parse_global_accounts
 from inspire.config.schema import CONFIG_OPTIONS
-from inspire.config.toml import _load_toml
+from inspire.config.toml import _flatten_toml, _load_toml
 
 _BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -91,10 +92,11 @@ class MigrationPlan:
     accounts: dict[str, AccountPlan] = field(default_factory=dict)
     active_account: Optional[str] = None
     backup_files: list[Path] = field(default_factory=list)
-    # Legacy ``[paths].target_dir`` that can't survive migration — target_dir
-    # is per-repo and must be rebuilt with 'inspire init --discover' inside
-    # each repo. Remembered here so describe_plan / the CLI can tell the user.
-    dropped_target_dir: Optional[str] = None
+    # Per-repository keys from the legacy global config that can't survive
+    # migration (target_dir, github.repo, job.project_id, etc.). Each key maps
+    # to its legacy value so describe_plan can show the user what to rebuild
+    # in each repo via 'inspire init --discover'.
+    dropped_per_repo_fields: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_empty(self) -> bool:
@@ -246,16 +248,19 @@ def _render_account_config(
     """Produce the new per-account ``config.toml`` body.
 
     The base is the legacy global TOML minus structural noise
-    (``[accounts]``, ``[context]``, ``[cli]``) and minus the per-repository
-    ``[paths]`` section — ``target_dir`` belongs in each repo's
-    ``./.inspire/config.toml``, never at the account level. Users rebuild
-    it by running ``inspire init --discover`` from inside the repo.
+    (``[accounts]``, ``[context]``, ``[cli]``). Every per-repository key
+    listed in :data:`ACCOUNT_LAYER_DISALLOWED_KEYS` — ``paths.target_dir``,
+    ``github.repo``, ``job.project_id``, etc. — is also stripped, because
+    the loader will refuse to read them at account level. Users rebuild
+    those by running ``inspire init --discover`` inside each repo.
     """
     out: dict[str, Any] = {}
     for k, v in legacy_raw.items():
-        if k in {"accounts", "context", "cli", "paths"}:
+        if k in {"accounts", "context", "cli"}:
             continue
         out[k] = copy.deepcopy(v)
+
+    _strip_per_repo_keys(out)
 
     # Inject identity
     auth = out.setdefault("auth", {})
@@ -323,6 +328,38 @@ def _render_account_config(
 # ---------------------------------------------------------------------------
 
 
+def _strip_per_repo_keys(data: dict[str, Any]) -> None:
+    """Remove any ``ACCOUNT_LAYER_DISALLOWED_KEYS`` from ``data`` in place.
+
+    Prunes now-empty parent tables (e.g. drop ``[paths]`` once
+    ``paths.target_dir`` and ``paths.log_pattern`` are gone) so the
+    produced TOML stays tidy.
+    """
+    for dotted in ACCOUNT_LAYER_DISALLOWED_KEYS:
+        parts = dotted.split(".")
+        cursor: Any = data
+        for part in parts[:-1]:
+            if not isinstance(cursor, dict):
+                cursor = None
+                break
+            cursor = cursor.get(part)
+        if isinstance(cursor, dict):
+            cursor.pop(parts[-1], None)
+
+    # Second pass: drop empty intermediate tables that only held disallowed keys.
+    def _prune(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        for key in list(node.keys()):
+            child = node[key]
+            if isinstance(child, dict):
+                _prune(child)
+                if child == {}:
+                    del node[key]
+
+    _prune(data)
+
+
 def _find_bridges_for(legacy_name: str, inspire_dir: Path) -> Optional[Path]:
     p = inspire_dir / f"bridges-{legacy_name}.json"
     return p if p.exists() else None
@@ -350,14 +387,14 @@ def build_plan() -> MigrationPlan:
 
     passwords, catalogs = _parse_global_accounts(legacy_raw.get("accounts", {}))
 
-    # Snapshot the legacy [paths].target_dir so we can warn the user it won't
-    # be carried into account config (per-repo state — rebuild inside each
-    # repo with 'inspire init --discover').
-    raw_paths = legacy_raw.get("paths")
-    if isinstance(raw_paths, dict):
-        legacy_target_dir = str(raw_paths.get("target_dir") or "").strip()
-        if legacy_target_dir:
-            plan.dropped_target_dir = legacy_target_dir
+    # Snapshot every per-repository key present in the legacy global config
+    # so describe_plan can tell the user exactly what to rebuild per repo.
+    flat_legacy = _flatten_toml(legacy_raw)
+    for key in sorted(ACCOUNT_LAYER_DISALLOWED_KEYS):
+        if key in flat_legacy:
+            value = flat_legacy[key]
+            if value not in (None, "", [], {}):
+                plan.dropped_per_repo_fields[key] = value
 
     raw_auth = legacy_raw.get("auth")
     top_username = ""
@@ -537,14 +574,17 @@ def describe_plan(plan: MigrationPlan) -> list[str]:
         "(created just before the move — safe to delete later)."
     )
 
-    if plan.dropped_target_dir:
+    if plan.dropped_per_repo_fields:
         out.append("")
         out.append(
-            f"Note: legacy [paths].target_dir = {plan.dropped_target_dir!r} will "
-            "NOT be carried over — target_dir is per-repository, not per-account. "
-            "Rebuild it inside each repo with 'inspire init --discover', or export "
-            "INSPIRE_TARGET_DIR for one-off use."
+            "Per-repository keys detected in legacy global config — these will "
+            "NOT be carried into account config (they belong in each repo's "
+            "./.inspire/config.toml). Rebuild them inside each repo with "
+            "'inspire init --discover', or export the matching INSPIRE_* env "
+            "var for ad-hoc use:"
         )
+        for key, value in plan.dropped_per_repo_fields.items():
+            out.append(f"  - {key} = {value!r}")
     return out
 
 
