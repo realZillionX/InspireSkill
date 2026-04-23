@@ -34,7 +34,6 @@ def run_job_create(
     max_time: float,
     location: str,
     workspace: str | None,
-    workspace_id_override: str | None,
     auto: bool,
     image: str | None,
     project: str | None,
@@ -66,7 +65,6 @@ def run_job_create(
         selected_workspace_id = select_workspace_id(
             config,
             gpu_type=requested_gpu_type.value,
-            explicit_workspace_id=workspace_id_override,
             explicit_workspace_name=workspace,
         )
         if not selected_workspace_id:
@@ -240,11 +238,6 @@ def run_job_create(
 @click.option("--location", help="Preferred datacenter location")
 @click.option("--workspace", help="Workspace name (from [workspaces])")
 @click.option(
-    "--workspace-id",
-    "workspace_id_override",
-    help="Workspace ID override (highest precedence)",
-)
-@click.option(
     "--auto/--no-auto",
     default=True,
     help="Auto-select best location based on node availability (default: auto)",
@@ -277,7 +270,6 @@ def create(
     max_time: float,
     location: str,
     workspace: Optional[str],
-    workspace_id_override: Optional[str],
     auto: bool,
     image: Optional[str],
     project: Optional[str],
@@ -311,7 +303,6 @@ def create(
         max_time=max_time,
         location=location,
         workspace=workspace,
-        workspace_id_override=workspace_id_override,
         auto=auto,
         image=image,
         project=project,

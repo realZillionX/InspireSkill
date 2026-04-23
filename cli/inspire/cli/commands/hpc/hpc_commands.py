@@ -24,7 +24,7 @@ from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 
 def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
-    """Resolve project alias/name/id to project_id."""
+    """Resolve project name / project_id to the underlying project_id."""
     if requested:
         if requested.startswith("project-"):
             return requested
@@ -38,7 +38,33 @@ def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
     if config.job_project_id:
         return config.job_project_id
     raise ConfigError(
-        "Missing project_id. Set --project or configure [job].project_id / INSPIRE_PROJECT_ID."
+        "Missing project_id. Set --project or configure [context].project in "
+        "./.inspire/config.toml / INSPIRE_PROJECT_ID."
+    )
+
+
+def _resolve_compute_group_id(config: Config, requested: str) -> str:
+    """Resolve a compute-group name (or raw ``lcg-…`` id) to ``logic_compute_group_id``."""
+    requested = (requested or "").strip()
+    if not requested:
+        raise ConfigError("Compute group cannot be empty.")
+    if requested.startswith("lcg-"):
+        # Accept raw id as an escape hatch; loader ensures such strings are
+        # in `config.compute_groups` if the user is looking at a real group.
+        return requested
+    for group in config.compute_groups or []:
+        if group.get("name") == requested:
+            group_id = str(group.get("id") or "").strip()
+            if group_id:
+                return group_id
+    available = sorted(
+        str(g.get("name") or "").strip()
+        for g in (config.compute_groups or [])
+        if str(g.get("name") or "").strip()
+    )
+    hint = ", ".join(available) if available else "(run 'inspire config context')"
+    raise ConfigError(
+        f"Unknown compute group: {requested!r}. Available: {hint}"
     )
 
 
@@ -82,7 +108,6 @@ def _format_hpc_list_rows(rows: list[dict[str, str]]) -> str:
 
 @click.command("list")
 @click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
-@click.option("--workspace-id", "workspace_id_override", default=None, help="Workspace ID override")
 @click.option("--created-by", default=None, help="Filter by creator user ID")
 @click.option("--status", "status_filter", default=None, help="Filter by job status")
 @click.option("--page-num", type=int, default=1, show_default=True, help="Page number")
@@ -91,7 +116,6 @@ def _format_hpc_list_rows(rows: list[dict[str, str]]) -> str:
 def list_hpc(
     ctx: Context,
     workspace: Optional[str],
-    workspace_id_override: Optional[str],
     created_by: Optional[str],
     status_filter: Optional[str],
     page_num: int,
@@ -105,7 +129,6 @@ def list_hpc(
             resolved_workspace_id = select_workspace_id(
                 config,
                 explicit_workspace_name=workspace,
-                explicit_workspace_id=workspace_id_override,
             )
 
         session = get_web_session()
@@ -154,9 +177,10 @@ def list_hpc(
     help="Slurm script body (omit #SBATCH headers; use srun for the payload)",
 )
 @click.option(
-    "--logic-compute-group-id",
+    "--compute-group",
+    "compute_group",
     required=True,
-    help="Compute group ID (logic_compute_group_id)",
+    help="Compute group name (e.g. 'HPC-可上网区资源-2'; see 'inspire config context').",
 )
 @click.option(
     "--spec-id",
@@ -170,7 +194,6 @@ def list_hpc(
     help="Project name/alias/ID (default from [job].project_id)",
 )
 @click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
-@click.option("--workspace-id", "workspace_id_override", default=None, help="Workspace ID override")
 @click.option(
     "--image",
     default=None,
@@ -198,11 +221,10 @@ def create_hpc(
     ctx: Context,
     name: str,
     entrypoint: str,
-    logic_compute_group_id: str,
+    compute_group: str,
     spec_id: str,
     project: Optional[str],
     workspace: Optional[str],
-    workspace_id_override: Optional[str],
     image: Optional[str],
     image_type: str,
     instance_count: int,
@@ -225,11 +247,10 @@ def create_hpc(
         resolved_workspace_id = select_workspace_id(
             config,
             explicit_workspace_name=workspace,
-            explicit_workspace_id=workspace_id_override,
         )
         if resolved_workspace_id is None:
             raise ConfigError(
-                "Missing workspace_id. Set --workspace-id/--workspace or configure [job].workspace_id."
+                "Missing workspace_id. Set --workspace or configure [job].workspace_id."
             )
         final_priority = priority if priority is not None else config.job_priority
         final_image = image if image is not None else config.job_image
@@ -245,9 +266,11 @@ def create_hpc(
             )
             return
 
+        resolved_compute_group_id = _resolve_compute_group_id(config, compute_group)
+
         result = api.create_hpc_job(
             name=name,
-            logic_compute_group_id=logic_compute_group_id,
+            logic_compute_group_id=resolved_compute_group_id,
             project_id=resolved_project_id,
             workspace_id=resolved_workspace_id,
             image=final_image,

@@ -78,7 +78,6 @@ def _should_stop_after_match(usage: str) -> bool:
 
 @click.command("specs")
 @click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
-@click.option("--workspace-id", "workspace_id_override", default=None, help="Workspace ID override")
 @click.option("--group", default=None, help="Filter by compute group name (partial match)")
 @click.option(
     "--usage",
@@ -93,7 +92,6 @@ def _should_stop_after_match(usage: str) -> bool:
 def list_specs(
     ctx: Context,
     workspace: Optional[str],
-    workspace_id_override: Optional[str],
     group: Optional[str],
     usage: str,
     include_empty: bool,
@@ -117,7 +115,6 @@ def list_specs(
         resolved_workspace_id = select_workspace_id(
             config,
             explicit_workspace_name=workspace,
-            explicit_workspace_id=workspace_id_override,
         )
         session = get_web_session()
         workspace_id = resolved_workspace_id or session.workspace_id

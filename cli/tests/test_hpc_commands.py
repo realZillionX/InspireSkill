@@ -42,6 +42,7 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     )
     config.projects = {"alias-project": "project-alias"}
     config.workspaces = {"cpu-room": "ws-00000000-0000-0000-0000-000000000002"}
+    config.compute_groups = [{"id": "lcg-123", "name": "CG-123"}]
 
     def fake_from_files_and_env(
         cls,
@@ -86,8 +87,8 @@ def test_hpc_create_json_uses_alias_resolution(
             "hpc-demo",
             "-c",
             "bash run_hpc.sh",
-            "--logic-compute-group-id",
-            "lcg-123",
+            "--compute-group",
+            "CG-123",
             "--spec-id",
             "spec-123",
             "--project",
@@ -140,8 +141,8 @@ def test_hpc_create_human_output_includes_priority(
             "hpc-demo",
             "-c",
             "srun python train.py",
-            "--logic-compute-group-id",
-            "lcg-123",
+            "--compute-group",
+            "CG-123",
             "--spec-id",
             "spec-123",
             "--cpus-per-task",
@@ -169,8 +170,8 @@ def test_hpc_create_rejects_priority_11() -> None:
             "hpc-demo",
             "-c",
             "srun python train.py",
-            "--logic-compute-group-id",
-            "lcg-123",
+            "--compute-group",
+            "CG-123",
             "--spec-id",
             "spec-123",
             "--cpus-per-task",
@@ -201,8 +202,8 @@ def test_hpc_create_rejects_full_slurm_script(
             "hpc-demo",
             "-c",
             "#!/bin/bash\n#SBATCH --time=1:00:00\nsrun python train.py",
-            "--logic-compute-group-id",
-            "lcg-123",
+            "--compute-group",
+            "CG-123",
             "--spec-id",
             "spec-123",
             "--cpus-per-task",

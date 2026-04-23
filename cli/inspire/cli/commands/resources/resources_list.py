@@ -65,17 +65,15 @@ def _resolve_workspace_scope(
     config: Optional[Config],
     session,
     explicit_workspace_name: Optional[str],
-    explicit_workspace_id: Optional[str],
     show_all: bool,
 ) -> tuple[list[str], dict[str, str], bool]:
     workspace_names = _workspace_name_map(config=config, session=session)
-    if explicit_workspace_name is not None or explicit_workspace_id is not None:
+    if explicit_workspace_name is not None:
         if config is None:
             raise ConfigError("Workspace selection requires a loaded config.")
         resolved_workspace_id = select_workspace_id(
             config,
             explicit_workspace_name=explicit_workspace_name,
-            explicit_workspace_id=explicit_workspace_id,
         )
         return [resolved_workspace_id], workspace_names, True
 
@@ -326,7 +324,6 @@ def _list_accurate_resources(
     show_all: bool,
     *,
     explicit_workspace_name: Optional[str],
-    explicit_workspace_id: Optional[str],
     include_cpu: bool,
 ) -> None:
     """List accurate compute-group availability using browser API."""
@@ -344,7 +341,6 @@ def _list_accurate_resources(
             config=config,
             session=session,
             explicit_workspace_name=explicit_workspace_name,
-            explicit_workspace_id=explicit_workspace_id,
             show_all=show_all,
         )
         target_workspace_id = workspace_ids[0] if len(workspace_ids) == 1 else None
@@ -732,7 +728,6 @@ def run_resources_list(
     workspace: bool,
     use_global: bool,
     explicit_workspace_name: Optional[str],
-    explicit_workspace_id: Optional[str],
     include_cpu: bool,
 ) -> None:
     if include_cpu and (workspace or use_global):
@@ -772,7 +767,6 @@ def run_resources_list(
         ctx,
         show_all,
         explicit_workspace_name=explicit_workspace_name,
-        explicit_workspace_id=explicit_workspace_id,
         include_cpu=include_cpu,
     )
 
@@ -793,12 +787,6 @@ def run_resources_list(
     "--workspace-name",
     default=None,
     help="Workspace name override for accurate mode",
-)
-@click.option(
-    "--workspace-id",
-    "explicit_workspace_id",
-    default=None,
-    help="Workspace ID override for accurate mode",
 )
 @click.option(
     "--include-cpu",
@@ -836,7 +824,6 @@ def list_resources(
     no_cache: bool,
     show_all: bool,
     workspace_name: Optional[str],
-    explicit_workspace_id: Optional[str],
     include_cpu: bool,
     watch: bool,
     interval: int,
@@ -867,6 +854,5 @@ def list_resources(
         workspace=workspace,
         use_global=use_global,
         explicit_workspace_name=workspace_name,
-        explicit_workspace_id=explicit_workspace_id,
         include_cpu=include_cpu,
     )

@@ -39,17 +39,15 @@ def _resolve_workspace_scope(
     config: Optional[Config],
     session,
     explicit_workspace_name: Optional[str],
-    explicit_workspace_id: Optional[str],
     show_all: bool,
 ) -> tuple[Optional[str], bool]:
-    if explicit_workspace_name is not None or explicit_workspace_id is not None:
+    if explicit_workspace_name is not None:
         if config is None:
             raise ConfigError("Workspace selection requires a loaded config.")
         return (
             select_workspace_id(
                 config,
                 explicit_workspace_name=explicit_workspace_name,
-                explicit_workspace_id=explicit_workspace_id,
             ),
             False,
         )
@@ -65,14 +63,12 @@ def _resolve_workspace_scope(
     help="Include all visible workspaces instead of only the current workspace",
 )
 @click.option("--workspace-name", default=None, help="Workspace name override")
-@click.option("--workspace-id", "explicit_workspace_id", default=None, help="Workspace ID override")
 @pass_context
 def list_nodes(
     ctx: Context,
     group: str,
     show_all: bool,
     workspace_name: Optional[str],
-    explicit_workspace_id: Optional[str],
 ) -> None:
     """Show how many FULL 8-GPU nodes are currently free per compute group.
 
@@ -98,7 +94,6 @@ def list_nodes(
             config=config,
             session=session,
             explicit_workspace_name=workspace_name,
-            explicit_workspace_id=explicit_workspace_id,
             show_all=show_all,
         )
         workspace_names = _workspace_name_map(config=config, session=session)

@@ -108,8 +108,7 @@ def resolve_notebook_workspace_id(
             config,
             gpu_type=gpu_pattern if gpu_count > 0 else None,
             cpu_only=(gpu_count == 0),
-            explicit_workspace_id=workspace_id,
-            explicit_workspace_name=workspace,
+                        explicit_workspace_name=workspace,
         )
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -123,9 +122,9 @@ def resolve_notebook_workspace_id(
 
     if not auto_workspace_id:
         hint = (
-            "Use --workspace-id, set [workspaces].cpu in config.toml, or set INSPIRE_WORKSPACE_ID."
+            "Use set [workspaces].cpu in config.toml, or set INSPIRE_WORKSPACE_ID."
             if gpu_count == 0
-            else "Use --workspace-id, set [workspaces].gpu in config.toml, or set INSPIRE_WORKSPACE_ID."
+            else "Use set [workspaces].gpu in config.toml, or set INSPIRE_WORKSPACE_ID."
         )
         _handle_error(
             ctx, "ConfigError", "No workspace_id configured.", EXIT_CONFIG_ERROR, hint=hint

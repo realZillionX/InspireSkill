@@ -59,12 +59,6 @@ def _format_ray_list_rows(rows: list[dict[str, str]]) -> str:
 @click.command("list")
 @click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
 @click.option(
-    "--workspace-id",
-    "workspace_id_override",
-    default=None,
-    help="Workspace ID override (ws-…)",
-)
-@click.option(
     "--all-users",
     "-A",
     is_flag=True,
@@ -82,7 +76,6 @@ def _format_ray_list_rows(rows: list[dict[str, str]]) -> str:
 def list_ray(
     ctx: Context,
     workspace: Optional[str],
-    workspace_id_override: Optional[str],
     all_users: bool,
     created_by: Optional[str],
     page_num: int,
@@ -96,7 +89,6 @@ def list_ray(
             resolved_workspace_id = select_workspace_id(
                 config,
                 explicit_workspace_name=workspace,
-                explicit_workspace_id=workspace_id_override,
             )
 
         session = get_web_session()

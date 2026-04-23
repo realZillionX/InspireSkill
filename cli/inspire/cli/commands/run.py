@@ -160,7 +160,6 @@ def _run_flow(
         selected_workspace_id = select_workspace_id(
             config,
             gpu_type=gpu_type,
-            explicit_workspace_id=workspace_id_override,
             explicit_workspace_name=workspace,
         )
         if not selected_workspace_id:
@@ -331,11 +330,6 @@ def _run_flow(
 )
 @click.option("--location", help="Preferred datacenter location (overrides auto-selection)")
 @click.option("--workspace", help="Workspace name (from [workspaces])")
-@click.option(
-    "--workspace-id",
-    "workspace_id_override",
-    help="Workspace ID override (highest precedence)",
-)
 @click.option("--max-time", type=float, default=100.0, help="Max runtime in hours (default: 100)")
 @click.option(
     "--image",

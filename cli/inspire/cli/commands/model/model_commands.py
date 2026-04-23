@@ -31,8 +31,7 @@ def _resolve_workspace_id(
     return select_workspace_id(
         config,
         explicit_workspace_name=workspace,
-        explicit_workspace_id=workspace_id,
-    )
+            )
 
 
 def _format_model_rows(rows: list[dict[str, str]], total: int) -> str:
@@ -73,14 +72,12 @@ def _format_model_rows(rows: list[dict[str, str]], total: int) -> str:
 
 @click.command("list")
 @click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
-@click.option("--workspace-id", "workspace_id_override", default=None, help="Workspace ID override")
 @click.option("--page", type=int, default=1, show_default=True)
 @click.option("--page-size", type=int, default=-1, show_default=True, help="-1 = fetch all")
 @pass_context
 def list_model(
     ctx: Context,
     workspace: Optional[str],
-    workspace_id_override: Optional[str],
     page: int,
     page_size: int,
 ) -> None:

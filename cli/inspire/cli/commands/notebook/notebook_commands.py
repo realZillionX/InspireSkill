@@ -121,10 +121,6 @@ def run_notebook_ssh(*args, **kwargs):  # noqa: ANN002, ANN003
     help="Workspace name (from [workspaces])",
 )
 @click.option(
-    "--workspace-id",
-    help="Workspace ID (overrides auto-selection)",
-)
-@click.option(
     "--resource",
     "-r",
     default=None,
@@ -214,7 +210,6 @@ def create_notebook_cmd(
     ctx: Context,
     name: Optional[str],
     workspace: Optional[str],
-    workspace_id: Optional[str],
     resource: Optional[str],
     project: Optional[str],
     image: Optional[str],
@@ -254,7 +249,7 @@ def create_notebook_cmd(
         ctx,
         name=name,
         workspace=workspace,
-        workspace_id=workspace_id,
+        workspace_id=None,
         resource=resource,
         project=project,
         image=image,
@@ -661,10 +656,6 @@ def notebook_status(
     help="Workspace name (from [workspaces])",
 )
 @click.option(
-    "--workspace-id",
-    help="Workspace ID (defaults to configured workspace)",
-)
-@click.option(
     "--all",
     "-a",
     "show_all",
@@ -707,7 +698,6 @@ def notebook_status(
 def list_notebooks(
     ctx: Context,
     workspace: Optional[str],
-    workspace_id: Optional[str],
     show_all: bool,
     all_workspaces: bool,
     limit: int,
@@ -742,9 +732,7 @@ def list_notebooks(
     config = load_config(ctx)
 
     workspace_ids: list[str] = []
-    if workspace_id:
-        workspace_ids = [workspace_id]
-    elif workspace:
+    if workspace:
         try:
             resolved = select_workspace_id(config, explicit_workspace_name=workspace)
         except ConfigError as e:
@@ -788,7 +776,7 @@ def list_notebooks(
                 "No workspace_id configured or provided.",
                 EXIT_CONFIG_ERROR,
                 hint=(
-                    "Use --workspace-id, set [workspaces].cpu/[workspaces].gpu in config.toml, "
+                    "Use set [workspaces].cpu/[workspaces].gpu in config.toml, "
                     "or set INSPIRE_WORKSPACE_ID."
                 ),
             )

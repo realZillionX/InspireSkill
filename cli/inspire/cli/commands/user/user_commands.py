@@ -30,8 +30,7 @@ def _resolve_workspace_id(
     return select_workspace_id(
         config,
         explicit_workspace_name=workspace,
-        explicit_workspace_id=workspace_id,
-    )
+            )
 
 
 @click.command("whoami")
@@ -140,7 +139,6 @@ def api_keys_user(ctx: Context) -> None:
 
 @click.command("permissions")
 @click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
-@click.option("--workspace-id", "workspace_id_override", default=None, help="Workspace ID override")
 @pass_context
 def permissions_user(
     ctx: Context, workspace: Optional[str], workspace_id_override: Optional[str]
