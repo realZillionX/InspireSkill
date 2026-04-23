@@ -65,7 +65,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire notebook set-default <alias>` | 设默认 alias |
 | `inspire notebook ssh-config --install` | 把所有 alias 写进 `~/.ssh/config`，之后 `ssh <alias>` / `scp` / `rsync` / `git` 原生用 |
 | `inspire notebook top` | alias 实例的 GPU 利用率（SSH `nvidia-smi` 实时快照，需要 tunnel）；`--watch` 持续刷新 |
-| `inspire notebook metrics <id>` | **资源视图时间序列**（和 `inspire job/hpc/serving metrics` 同 UX、共享 core）：GPU / GPU Memory / CPU / Memory / Disk IO / Network 历史曲线，不需要 SSH。默认 PNG 到 `~/.inspire/metrics/notebook-<id>-<unix>.png` + stdout 打路径和每 metric 一行 stats；多 pod 时自动加 `last-min / last-max / spread` 探 straggler；多模态 agent `Read` PNG 直接识别。默认 `--window 1h --interval 1m --metric core`（gpu / gpu_mem / cpu / mem），`--metric all` 看全 8 种。flag：`--plot <path>` / `--no-plot` / `--sparkline` / `--open` / `--start --end` / `--json`（原始 per-pod 时序，跳过 PNG）。**和 `top` 的区别**：`top` = 实时 `nvidia-smi` snapshot 走 SSH tunnel；`metrics` = 历史曲线走 Browser API，无需 tunnel，全程不额外开浏览器（SSO session 已缓存）。 |
+| `inspire notebook metrics <id>` | 资源视图的历史利用率曲线（GPU / GPU Memory / CPU / Memory / Disk IO / Network 共 8 种，默认 `--metric core` 取 GPU / GPU Memory / CPU / Memory）。默认出 PNG 到 `~/.inspire/metrics/notebook-<id>-<unix>.png`，`--json` 给原始 per-pod 时序。**和 `top` 的区别**：`top` 是 `nvidia-smi` 实时 snapshot 走 SSH tunnel，`metrics` 是历史曲线走 Browser API 无需 tunnel。`inspire job/hpc/serving metrics` 同 UX 同 flag |
 
 ### 2.2 GPU 多节点任务 (`job`)
 
@@ -80,7 +80,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire job events <id>` | **Job-level** K8s 事件；`--instance <pod>` 切 **per-pod**（scheduler / kubelet 视角，含 `FailedScheduling` 具体节点诊断）。`--type` / `--reason` / `--tail` / `--from-cache` 可组合。调度失败先看 `--instance <pod>` 里的 scheduler reason |
 | `inspire job stop <id>` | 规格 / 优先级 / 命令提错时立即止损 |
 | `inspire job delete <id> [--yes]` | 永久删条目（清理废弃任务）。running 的要先 `stop`；`-y` 跳过确认 |
-| `inspire job metrics <id>` | **多节点训练健康监测的核心命令**：按 `worker-0..N-1` 分别画每个 worker 的 GPU / GPU Memory / CPU / Memory / Disk / Network 利用率历史曲线，默认出 PNG 到 `~/.inspire/metrics/job-<id>-<unix>.png`，stdout 同时打 `pods=N` + `last-min (straggler-pod)  last-max (leader-pod)  spread=X%` —— spread 大说明有 worker 掉队 / 通信 hang / 数据加载不均。默认 `--window 1h --interval 1m --metric core`；多模态 agent 直接 `Read` 这个 PNG 就能扫出所有 worker 曲线是否同步。`--json` 拿原始 per-pod 时序（跳过 PNG）；`--window 24h --interval 5m` 看完整训练周期；`--metric all` 看全 8 种指标；task_id 保留 `job-` 前缀，lcg 自动从 `train_job/detail` 解。**主要用途就是这个**——训练正常时所有 worker 曲线贴在一起（spread 通常 < 5%），掉队时立刻能从图里看出来哪根线在下面。 |
+| `inspire job metrics <id>` | 训练任务的历史利用率曲线，按 `worker-0..N-1` 分开画。stdout 的 `spread=X%` 反映 worker 间离散度——spread 大说明有 worker 掉队 / 通信 hang / 数据加载不均，是多节点训练健康监测的核心指标；正常训练 spread 通常 < 5%。flag 和输出语义见 `inspire notebook metrics` |
 
 ### 2.3 HPC（Slurm）
 
@@ -94,7 +94,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire hpc events <id>` | 平台 Slurm 控制器事件（`Created/DeletedSlurmCluster` 等）；`--reason` / `--tail` / `--from-cache` 可组合。**HPC 不暴露 per-pod 事件**，只有 job-level |
 | `inspire hpc stop <id>` | 发现提错立即止损 |
 | `inspire hpc delete <id> [--yes]` | 永久删条目（清理废弃任务）。running 的要先 `stop`；`-y` 跳过确认 |
-| `inspire hpc metrics <id>` | **多 task HPC 任务的健康监测**，和 `job metrics` 同构：每个 slurm worker pod 一条曲线（CPU / Memory / Disk / Network 为主，GPU 通常不用），stdout 的 `spread=X%` 能即时看出有 task 卡住。默认 PNG 到 `~/.inspire/metrics/hpc-<id>-<unix>.png`。`--metric all` 包含 GPU（混布机型才有意义），默认 core 就够。task_id 保留 `hpc-job-` 前缀。lcg 自动从 `hpc_jobs/<id>` 解。`--json` 跳过 PNG 给脚本。结合 `hpc status` 的"假成功"陷阱一起用：`SUCCEEDED` 但 metrics 曲线全 0 = entrypoint 根本没跑。 |
+| `inspire hpc metrics <id>` | HPC 任务的历史利用率曲线，每个 slurm pod 一条（CPU / Memory / Disk / Network 为主）。除了和 `job metrics` 一样看 spread 判卡住，还能反向诊断"假成功"——`SUCCEEDED` 但曲线全 0 = entrypoint 根本没跑。flag 和输出语义见 `inspire notebook metrics` |
 
 **平台自动注入的 Slurm 头**（不用自己写）：
 
