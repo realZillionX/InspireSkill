@@ -112,14 +112,36 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ### 2.4 Ray（弹性计算）
 
-> **定位**：网页端"弹性计算"菜单的后端 = `/api/v1/ray_job/*`。典型场景是 **CPU 解码 + GPU 推理的流式 pipeline**（head 节点调度、worker 组弹性扩缩），避免把中间结果落盘导致存储爆炸。OpenAPI 不暴露，只有 Browser API。CLI 目前只包了只读 + 生命周期：`list / status / stop / delete`；`create` 的 head/worker 嵌套 proto schema 暂未完全摸清，创建仍需走 Web UI。端点、proto 字段名、未解之处见 [references/ray-jobs.md](references/ray-jobs.md)。
+> `inspire ray` 对应 Web UI 的"弹性计算"菜单。它不是"另一种训练任务"——形态上是**一个 head 节点跑 driver，加一组或多组 worker，每组 worker 的实例数在 `min` 与 `max` 之间按实时负载自动扩缩**。`job` 是固定 N 节点 GPU，`hpc` 是固定任务数的 Slurm 批处理，都会"命令跑完自动停"；Ray 不一样，**集群在 driver 退出前一直活着**，worker 组空闲时缩到 `min`、忙起来再扩到 `max`。
+>
+> 适合 Ray 而不适合 `job` / `hpc` 的场景：
+>
+> - **CPU 解码 + GPU 推理的流式 pipeline**：帧级数据在 worker 组之间走 Ray 对象存储（内存），不需要把解码结果落到 GPFS 再读回来，避免"中间产物爆存储"。
+> - **异构 worker 组合**：同一个任务里既挂一组 CPU 预处理 worker（比如 `min=2, max=32`），又挂一组 GPU 推理 worker（`min=1, max=8`），两边各自扩缩、按实际实例数计费。
+> - **长时间、压力波动大的常驻服务**：白天高峰时 worker 自动拉到 `max`，夜里缩到 `min`，人工不用插手。
+>
+> 固定规模的单次训练或离线批处理**别用** Ray——写一个正确退出的 driver 比 `job create -c ...` / `hpc create -c ...` 复杂得多，driver 写成死循环又忘了 stop 会白白占着 `min_instances` 的配额。
 
-| 命令 | 用途 |
+**生命周期要点**（和 `job` / `hpc` 最大的差异）
+
+| | driver / command 退出后 | 无事件端点 | 没主动 stop 时 |
+| --- | --- | --- | --- |
+| `inspire job` | 平台自动回收，status → SUCCEEDED | 有 job-level 和 per-pod 事件 | —— |
+| `inspire hpc` | srun 结束平台自动回收 | 有 job-level 事件，没有 per-pod | —— |
+| `inspire ray` | **driver 不退出就一直在**，worker 组按 `min` 留存占配额 | 没有独立 events / logs 端点，状态从 `status` 字段读 | 会一直占 `min_instances` 直到手动 `ray stop` |
+
+所以跑 Ray 前务必把 driver 写成**会退出**的形态：处理完既定 workload 后显式 `sys.exit()` / 让 `__main__` 走完；或者接受"长期守护 → 手动 stop"的运维模型。
+
+**CLI 能做什么**
+
+| 命令 | 用途与约束 |
 | --- | --- |
-| `inspire ray list` | 列 Ray 任务；默认只显示当前用户的任务（模仿 Web UI 的"我的"页签），`-A` 跨所有用户，`--created-by user-xxx[,user-yyy]` 指定归属 |
-| `inspire ray status <ray_job_id>` | 看单任务状态；`--json` 给出完整 head/worker/弹性伸缩嵌套结构（纯文本只打顶层 status/priority/timestamps） |
-| `inspire ray stop <ray_job_id>` | 停运行中的 Ray 任务，不清条目 |
-| `inspire ray delete <ray_job_id> [--yes]` | 永久删条目；running 的先 `stop` |
+| `inspire ray list [-A] [--created-by user-xxx[,user-yyy]] [--workspace ...] [--page-num N] [--page-size N]` | 列 Ray 任务。**默认只列当前用户的**（对齐 Web UI "我的"页签，共享 workspace 里不会一股脑甩出所有人的任务）。`-A` 列所有人，`--created-by` 指定某个 / 某几个 `user-xxxx` ID。不传 workspace 时用 session 默认 workspace |
+| `inspire ray status <ray_job_id>` | 看单任务状态。纯文本输出只打顶层（`status / sub_status / priority / created_at / finished_at` 等），**必须用 `inspire --json ray status <id>` 才能看到 head / worker 规格 + 每组 worker 的 `min_instances`/`max_instances`/`current_instances`**——调试"worker 有没有扩起来"只能这样看 |
+| `inspire ray stop <ray_job_id>` | 停掉运行中的集群；worker 全部回收，条目留在 list 里。发现 driver 写错、配额吃紧、或者跑完但 driver 没正常退出时用 |
+| `inspire ray delete <ray_job_id> [--yes]` | 永久删条目，不可恢复。终态（`SUCCEEDED` / `FAILED` / `STOPPED`）的任务清理用这个；running 的先 `stop` 再 `delete`。不加 `--yes` 会弹交互确认 |
+
+**CLI 不能做什么（至少现在）**：`inspire ray create` **暂未实现**。`ray_job/create` 的请求体是 head / worker 两层嵌套 proto，且弹性伸缩字段命名 Web UI 以外没有公开合约；首次创建仍请走 Web UI 的"新建 Ray 任务"表单，建完之后再用 CLI 做日常管理。已知字段清单 + 未来补封装的起步点见 [references/browser-api.md § Ray 任务（弹性计算）](references/browser-api.md#ray-任务弹性计算)。
 
 ### 2.5 镜像
 
@@ -228,9 +250,22 @@ inspire image set-default \
   --notebook docker.sii.shaipower.online/inspire-studio/<name>-base:v1
 ```
 
-### 阶段 B：CPU 空间跑 HPC 数据处理
+### 阶段 B：CPU 空间跑数据处理
 
-计算组选型见 §0（只能用 `HPC-可上网区资源-2`）。**小规模 probe 通过 ≠ 正式规模稳定**：放大量级 / 并发后必须再跑一次接近正式规模的验证。
+一份离线 workload 在 CPU 空间怎么跑，两条路径并列选一条。计算组选型都遵守 §0：跑 HPC / 想吃公网的都只能用 `HPC-可上网区资源-2`；纯离线的批处理放其它 `CPU资源-*` 计算组也行。**无论哪条路径，小规模 probe 通过 ≠ 正式规模稳定**——放大量级 / 并发后必须再跑一次接近正式规模的验证。
+
+**什么时候选哪条**
+
+| 形态 | 选 HPC（Slurm） | 选 Ray（弹性计算） |
+| --- | --- | --- |
+| 任务边界 | 有明确的开始 / 结束，一批数据跑完就收 | 长时间流式，数据持续进 / 持续出 |
+| 并发模型 | 固定 `--number-of-tasks × --instance-count`，MPI / srun 管调度 | head + 多组 worker，每组按 `min/max` 自动伸缩 |
+| 数据流 | 通常读 GPFS → 处理 → 写回 GPFS（阶段间落盘） | worker 组之间走内存（Ray 对象存储），不落盘 |
+| CPU / GPU 混用 | 单一节点类型（全 CPU 或全 GPU） | 异构——一个任务同时挂 CPU 预处理组 + GPU 推理组 |
+| 结束条件 | `srun` 退出 → 自动 SUCCEEDED | driver 主动 `exit` → 自动结束；driver 常驻 → 手动 `ray stop` |
+| CLI 提交 | `inspire hpc create ...`（本节下面的例子） | **Web UI 提交**（`inspire ray create` 尚未实现，见 §2.4） |
+
+**路径一：Slurm HPC 批处理**——一次性、固定并发的预处理（数据清洗、特征抽取、format 转换等）首选这条。
 
 ```bash
 ENTRYPOINT=$(cat <<'EOF'
@@ -249,6 +284,17 @@ inspire hpc create \
   --project <project-id-or-alias> \
   --image docker.sii.shaipower.online/inspire-studio/<image>:<ver> \
   --image-type SOURCE_PRIVATE
+```
+
+**路径二：Ray 弹性 pipeline**——音视频 / 大语料 / 长时间的异构流式任务走这条。典型是 CPU worker 组做解码 / 分词 / 特征抽取，GPU worker 组做推理或 embedding，两侧数据走 Ray 内存管道，比"先全量落盘再回读"省两次 GPFS 往返。
+
+首次提交目前仍需通过 Web UI："弹性计算 → 新建 Ray 任务"，填好 head、一个或多个 worker 组（每组 `min_instances` / `max_instances`）、命令、镜像、所属项目后提交。详细语义和 CLI 对接点见 §2.4。提交后日常运维全部走 CLI：
+
+```bash
+inspire ray list -A                           # 看当前 workspace 里所有 Ray 任务
+inspire --json ray status <ray_job_id>        # 看 head / worker 规格 + 实际扩缩情况
+inspire ray stop <ray_job_id>                 # driver 常驻时必须手动停，否则一直占 min_instances
+inspire ray delete <ray_job_id> --yes         # 终态任务清理
 ```
 
 ### 阶段 C：分布式训练空间
