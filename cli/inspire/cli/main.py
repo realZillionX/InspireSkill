@@ -20,6 +20,7 @@ from inspire.cli.context import (
     EXIT_GENERAL_ERROR,
 )
 from inspire.cli.commands import (
+    account,
     job,
     resources,
     config,
@@ -111,6 +112,7 @@ def main(ctx: Context, json_output: bool, debug: bool) -> None:
 
 
 # Register command groups
+main.add_command(account)
 main.add_command(job)
 main.add_command(resources)
 main.add_command(config)
