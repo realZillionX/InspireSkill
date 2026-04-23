@@ -1774,9 +1774,14 @@ def _cleanup_global_discovery_metadata(
     global_data: dict[str, Any],
     account_key: str,
 ) -> None:
-    global_data.pop("workspaces", None)
-    global_data.pop("compute_groups", None)
+    """Prune the empty ``[accounts.<user>]`` nesting after promotion.
 
+    The persister helpers historically fan writes into both the project
+    config and a legacy ``[accounts.<user>]`` subtable; by the time this
+    runs, :func:`_promote_account_section_to_toplevel` has already lifted
+    the useful parts to the top of ``global_data``, so all that's left
+    to do is drop the now-empty skeleton.
+    """
     accounts = global_data.get("accounts")
     if not isinstance(accounts, dict):
         return
@@ -1791,6 +1796,35 @@ def _cleanup_global_discovery_metadata(
         accounts.pop(account_key, None)
     if not accounts:
         global_data.pop("accounts", None)
+
+
+def _copy_account_level_from_project(
+    *, project_data: dict[str, Any], global_data: dict[str, Any]
+) -> None:
+    """Hoist account-level catalogs that the persisters wrote into
+    ``project_data`` up to ``global_data``.
+
+    Older helpers (``_persist_workspace_aliases``, ``_persist_compute_groups``)
+    put the discovered ``[workspaces]`` alias table and ``[[compute_groups]]``
+    list on the project side so a single-repo user could operate from one
+    file. Under the per-account layout those are account-wide state, so
+    copy them here before the project-config stripper removes them.
+    """
+    workspaces = project_data.get("workspaces")
+    if isinstance(workspaces, dict) and workspaces:
+        merged = dict(global_data.get("workspaces") or {})
+        merged.update({str(k): str(v) for k, v in workspaces.items()})
+        global_data["workspaces"] = merged
+
+    compute_groups = project_data.get("compute_groups")
+    if isinstance(compute_groups, list) and compute_groups:
+        global_data["compute_groups"] = compute_groups
+
+    projects = project_data.get("projects")
+    if isinstance(projects, dict) and projects:
+        merged_proj = dict(global_data.get("projects") or {})
+        merged_proj.update({str(k): str(v) for k, v in projects.items()})
+        global_data["projects"] = merged_proj
 
 
 def _resolve_probe_defaults(
@@ -2154,6 +2188,94 @@ def _persist_context_defaults(
             context[field_name] = workspace_name
 
 
+_PROJECT_CONFIG_DISALLOWED_SECTIONS = (
+    "accounts",  # legacy catalog nesting
+    "auth",  # identity — belongs to account layer
+    "api",  # account-wide
+    "proxy",  # account-wide
+    "workspaces",  # account-wide alias map
+    "projects",  # account-wide alias map
+    "project_catalog",  # account-wide per-project metadata
+    "account",  # account-level shared_path_group / workdir
+    "compute_groups",  # account-wide (array of tables)
+)
+
+
+def _strip_account_level_from_project(project_data: dict[str, Any]) -> None:
+    """Enforce the project-config contract: only [context]/[paths]/[job]/[notebook]/[remote_env].
+
+    Removes every section listed in :data:`_PROJECT_CONFIG_DISALLOWED_SECTIONS`
+    and the legacy ``[context].account`` key, which the per-account loader
+    ignores anyway.
+    """
+    for key in _PROJECT_CONFIG_DISALLOWED_SECTIONS:
+        project_data.pop(key, None)
+    context = project_data.get("context")
+    if isinstance(context, dict):
+        context.pop("account", None)
+
+
+def _promote_account_section_to_toplevel(
+    global_data: dict[str, Any], account_key: str
+) -> None:
+    """Move ``[accounts."<user>"]`` contents to top level on account config.
+
+    The discover helpers still populate legacy-style nesting; under the new
+    account-per-directory layout this nesting is explicitly disallowed by
+    the loader. Promoting keeps the rest of the persisters intact while
+    making the resulting file match the loader's contract.
+    """
+    accounts = global_data.get("accounts")
+    if not isinstance(accounts, dict):
+        return
+    section = accounts.get(account_key)
+    if not isinstance(section, dict):
+        return
+
+    # Array-of-tables and dict sections move verbatim to the top level.
+    for key in ("workspaces", "projects", "project_catalog", "compute_groups"):
+        if key in section:
+            global_data[key] = section.pop(key)
+
+    # Passwords live in [auth] at the top level.
+    password = section.pop("password", None)
+    if password:
+        auth_section = global_data.setdefault("auth", {})
+        if isinstance(auth_section, dict):
+            auth_section["password"] = password
+
+    # Account-level shared_path_group / train_job_workdir remain under [account].
+    for key in ("shared_path_group", "train_job_workdir"):
+        value = section.pop(key, None)
+        if value:
+            account_block = global_data.setdefault("account", {})
+            if isinstance(account_block, dict):
+                account_block[key] = value
+
+    # Sub-tables like [accounts."<u>".api] / .ssh → top-level [api] / [ssh]
+    # merge keys (account-specific values win over discovery defaults).
+    for sub_key in ("api", "ssh"):
+        sub = section.pop(sub_key, None)
+        if isinstance(sub, dict) and sub:
+            top = global_data.setdefault(sub_key, {})
+            if isinstance(top, dict):
+                top.update(sub)
+
+    # Drop any remaining scalar overrides (they map to top-level schema keys).
+    for field_name, value in list(section.items()):
+        if isinstance(value, (dict, list)):
+            continue
+        section.pop(field_name, None)
+        if value not in (None, ""):
+            global_data[field_name] = value
+
+    # Remove the now-empty nesting.
+    if not section:
+        accounts.pop(account_key, None)
+    if not accounts:
+        global_data.pop("accounts", None)
+
+
 def _write_discovered_project_config(
     *,
     project_path: Path,
@@ -2163,16 +2285,11 @@ def _write_discovered_project_config(
     selected_alias: str,
     target_dir: str | None = None,
 ) -> None:
-    auth_section = _get_or_create_dict_table(container=project_data, key="auth")
-    auth_section["username"] = account_key
-
+    # Build [context] from the discovered state and copy defaults that the
+    # helpers may have stashed under top-level keys. Identity (username /
+    # account) is NOT written — it belongs to the active account's config.
     context = _get_or_create_dict_table(container=project_data, key="context")
-    context.update(
-        {
-            "account": account_key,
-            "project": selected_alias,
-        }
-    )
+    context["project"] = selected_alias
     _persist_context_defaults(
         context=context,
         project_data=project_data,
@@ -2182,8 +2299,18 @@ def _write_discovered_project_config(
         paths_section = _get_or_create_dict_table(container=project_data, key="paths")
         paths_section["target_dir"] = target_dir
 
-    for obsolete_key in ("defaults", "job", "notebook"):
-        project_data.pop(obsolete_key, None)
+    # Strip everything that isn't per-repo state — a single account may use
+    # many repos, and every one duplicating the workspace/compute_groups
+    # catalog is both noisy and divergent-on-refresh.
+    _strip_account_level_from_project(project_data)
+
+    # "defaults" was a legacy umbrella section; job/notebook survive only
+    # if they hold [job].image / [notebook].image per-repo overrides.
+    project_data.pop("defaults", None)
+    for sub_key in ("job", "notebook"):
+        sub = project_data.get(sub_key)
+        if isinstance(sub, dict) and not sub.get("image"):
+            project_data.pop(sub_key, None)
 
     project_path.parent.mkdir(parents=True, exist_ok=True)
     project_path.write_text(_toml_dumps(project_data))
@@ -2407,6 +2534,17 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         global_data=global_data,
         account_key=account_key,
     )
+
+    # Final step before writing: lift account-wide data the persisters parked
+    # on the project side, promote anything still under [accounts."<user>"]
+    # nesting, and prune the empty legacy skeleton. End state: the account
+    # file is what the per-account loader expects, and the project file
+    # stripper (see ``_write_discovered_project_config``) will finish the
+    # separation on the project side.
+    _copy_account_level_from_project(
+        project_data=project_data, global_data=global_data
+    )
+    _promote_account_section_to_toplevel(global_data, account_key)
 
     global_path.parent.mkdir(parents=True, exist_ok=True)
     global_path.write_text(_toml_dumps(global_data))

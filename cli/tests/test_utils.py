@@ -679,8 +679,15 @@ class TestTunnelConfig:
 class TestTunnelConfigPersistence:
     """Tests for tunnel config save/load."""
 
-    def test_save_and_load(self, tmp_path: Path) -> None:
+    def test_save_and_load(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Test saving and loading tunnel config."""
+        # Isolate from any real ~/.inspire/current on the dev machine.
+        import inspire.accounts as accounts_mod
+
+        monkeypatch.setattr(accounts_mod, "current_account", lambda: None)
+
         config = TunnelConfig(config_dir=tmp_path)
         profile = BridgeProfile(
             name="test-bridge",
