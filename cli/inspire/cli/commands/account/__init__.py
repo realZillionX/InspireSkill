@@ -10,6 +10,7 @@ import click
 from inspire.cli.commands.account.add import add
 from inspire.cli.commands.account.current import current
 from inspire.cli.commands.account.list_cmd import list_cmd
+from inspire.cli.commands.account.migrate import migrate
 from inspire.cli.commands.account.remove import remove
 from inspire.cli.commands.account.use import use
 
@@ -22,6 +23,7 @@ def account() -> None:
     ``~/.inspire/accounts/<name>/`` with its own config.toml, SSH tunnel
     bridges, and SSO session cache. Switch the active account with
     ``inspire account use <name>``; inspect with ``inspire account list``.
+    Upgrading from the old flat-file layout? Run ``inspire account migrate``.
     """
 
 
@@ -30,3 +32,4 @@ account.add_command(list_cmd)
 account.add_command(use)
 account.add_command(remove)
 account.add_command(current)
+account.add_command(migrate)
