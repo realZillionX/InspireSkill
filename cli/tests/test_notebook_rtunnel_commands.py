@@ -302,3 +302,105 @@ def test_preinstalled_probe_sits_between_bin_path_and_contents_api() -> None:
         "Order must be: explicit RTUNNEL_BIN_PATH override → PATH probe "
         "→ Contents API fallback"
     )
+
+
+# ---------------------------------------------------------------------------
+# Multi-path rtunnel_bin (colon-separated list, $PATH-style)
+#
+# Users who work across multiple storage partitions (hdd / ssd / qb-ilm) keep
+# a rtunnel copy in each and configure them all; bootstrap should try each in
+# order and use the first that actually exists on the container.
+# ---------------------------------------------------------------------------
+
+
+def test_rtunnel_bin_colon_string_emits_guarded_copies_per_path() -> None:
+    runtime = SshRuntimeConfig(
+        rtunnel_bin="/inspire/hdd/rtunnel:/inspire/ssd/rtunnel:/inspire/qb-ilm/rtunnel",
+    )
+    commands = build_rtunnel_setup_commands(
+        port=31337,
+        ssh_port=22222,
+        ssh_public_key=None,
+        ssh_runtime=runtime,
+    )
+    joined = "\n".join(commands)
+
+    # First path stays as RTUNNEL_BIN_PATH for legacy `cp "$RTUNNEL_BIN_PATH"` shell.
+    assert "RTUNNEL_BIN_PATH=/inspire/hdd/rtunnel" in joined
+    assert 'cp "$RTUNNEL_BIN_PATH" /tmp/rtunnel' in joined
+
+    # Additional paths become their own guarded copy lines.
+    assert "cp /inspire/ssd/rtunnel /tmp/rtunnel" in joined
+    assert "cp /inspire/qb-ilm/rtunnel /tmp/rtunnel" in joined
+
+    # The extra-path copies must be first-match-wins: only run if /tmp/rtunnel
+    # hasn't been populated by an earlier candidate.
+    for extra in ("/inspire/ssd/rtunnel", "/inspire/qb-ilm/rtunnel"):
+        assert f"[ ! -x /tmp/rtunnel ] && [ -f {extra} ]" in joined
+
+
+def test_rtunnel_bin_list_input_accepted_directly() -> None:
+    runtime = SshRuntimeConfig(
+        rtunnel_bin=["/a/rtunnel", "/b/rtunnel"],  # type: ignore[arg-type]
+    )
+    commands = build_rtunnel_setup_commands(
+        port=31337,
+        ssh_port=22222,
+        ssh_public_key=None,
+        ssh_runtime=runtime,
+    )
+    joined = "\n".join(commands)
+
+    assert "RTUNNEL_BIN_PATH=/a/rtunnel" in joined
+    assert "cp /b/rtunnel /tmp/rtunnel" in joined
+
+
+def test_rtunnel_bin_multi_path_order_preserved() -> None:
+    runtime = SshRuntimeConfig(rtunnel_bin="/first/rtunnel:/second/rtunnel:/third/rtunnel")
+    commands = build_rtunnel_setup_commands(
+        port=31337,
+        ssh_port=22222,
+        ssh_public_key=None,
+        ssh_runtime=runtime,
+    )
+
+    primary_idx = None
+    second_idx = None
+    third_idx = None
+    for i, line in enumerate(commands):
+        if primary_idx is None and 'cp "$RTUNNEL_BIN_PATH" /tmp/rtunnel' in line:
+            primary_idx = i
+        if second_idx is None and "cp /second/rtunnel /tmp/rtunnel" in line:
+            second_idx = i
+        if third_idx is None and "cp /third/rtunnel /tmp/rtunnel" in line:
+            third_idx = i
+
+    assert primary_idx is not None
+    assert second_idx is not None
+    assert third_idx is not None
+    assert primary_idx < second_idx < third_idx
+
+
+def test_rtunnel_bin_empty_emits_empty_placeholder() -> None:
+    runtime = SshRuntimeConfig(rtunnel_bin=None)
+    commands = build_rtunnel_setup_commands(
+        port=31337,
+        ssh_port=22222,
+        ssh_public_key=None,
+        ssh_runtime=runtime,
+    )
+
+    # RTUNNEL_BIN_PATH placeholder must still be set so downstream
+    # openssh_bootstrap_cmd / ensure_rtunnel_cmd can reference it safely.
+    assert any(line == "RTUNNEL_BIN_PATH=''" for line in commands), (
+        "Expected a top-level `RTUNNEL_BIN_PATH=''` line, got: "
+        + repr([c for c in commands if "RTUNNEL_BIN_PATH" in c])
+    )
+    # And no top-level unconditional copy line (the bootstrap block's internal
+    # copy is gated by its own `[ -n "${RTUNNEL_BIN_PATH:-}" ]` guard so an
+    # empty RTUNNEL_BIN_PATH never runs it at shell time).
+    top_level_copy = (
+        'if [ -f "$RTUNNEL_BIN_PATH" ]; then cp "$RTUNNEL_BIN_PATH" /tmp/rtunnel '
+        "&& chmod +x /tmp/rtunnel; fi"
+    )
+    assert top_level_copy not in commands

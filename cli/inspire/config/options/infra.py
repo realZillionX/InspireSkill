@@ -16,7 +16,12 @@ SSH_OPTIONS: list[ConfigOption] = [
         env_var="INSPIRE_RTUNNEL_BIN",
         toml_key="ssh.rtunnel_bin",
         field_name="rtunnel_bin",
-        description="Path to rtunnel binary",
+        description=(
+            "Path(s) to rtunnel binary. TOML list (rtunnel_bin = "
+            "['/a/rtunnel', '/b/rtunnel']) or ':'-separated string "
+            "($PATH-style); candidates are tried in order and the first "
+            "existing file is used."
+        ),
         default=None,
         category="SSH",
         scope="global",

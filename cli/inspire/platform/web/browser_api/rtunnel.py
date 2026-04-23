@@ -56,6 +56,22 @@ _RT_PREINSTALLED_PROBE_YES = "__INSPIRE_RT_PREINSTALLED_YES__"
 _RT_PREINSTALLED_PROBE_NO = "__INSPIRE_RT_PREINSTALLED_NO__"
 
 
+def _split_rtunnel_bin_paths(value: object) -> list[str]:
+    """Return the individual paths encoded in a ``rtunnel_bin`` config value.
+
+    Accepts ``None``, a single path string, a ``:``-separated string
+    (``$PATH``-style), or a ``list[str]``; returns a list of stripped
+    non-empty path strings. Used by bootstrap to try each candidate in
+    order so users with binaries cached on multiple storage partitions
+    don't have to pick one at configuration time.
+    """
+    if not value:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(p).strip() for p in value if str(p).strip()]
+    return [p.strip() for p in str(value).split(":") if p.strip()]
+
+
 def build_rtunnel_setup_commands(
     *,
     port: int,
@@ -100,12 +116,24 @@ def build_rtunnel_setup_commands(
         rtunnel_url_setup,
     ]
 
-    # Always set RTUNNEL_BIN_PATH (empty string if not configured)
-    cmd_lines.append(f"RTUNNEL_BIN_PATH={shlex.quote(rtunnel_bin or '')}")
-    if rtunnel_bin:
+    # ``rtunnel_bin`` may carry a colon-separated list of pre-cached binaries
+    # (users working across multiple storage partitions store a copy in each).
+    # The first entry stays as RTUNNEL_BIN_PATH for legacy shell snippets;
+    # additional entries get their own guarded `cp` so the first file that
+    # actually exists wins.
+    rtunnel_bin_paths = _split_rtunnel_bin_paths(rtunnel_bin)
+    primary_rtunnel_bin = rtunnel_bin_paths[0] if rtunnel_bin_paths else ""
+    cmd_lines.append(f"RTUNNEL_BIN_PATH={shlex.quote(primary_rtunnel_bin)}")
+    if primary_rtunnel_bin:
         cmd_lines.append(
             'if [ -f "$RTUNNEL_BIN_PATH" ]; then cp "$RTUNNEL_BIN_PATH" /tmp/rtunnel '
             "&& chmod +x /tmp/rtunnel; fi"
+        )
+    for extra_path in rtunnel_bin_paths[1:]:
+        safe = shlex.quote(extra_path)
+        cmd_lines.append(
+            f"if [ ! -x /tmp/rtunnel ] && [ -f {safe} ]; then "
+            f"cp {safe} /tmp/rtunnel && chmod +x /tmp/rtunnel; fi"
         )
 
     # Prefer a container-preinstalled rtunnel (e.g. unified-base:v1 bakes one in
@@ -1114,10 +1142,14 @@ def _resolve_rtunnel_binary(
     import sys as _sys
 
     configured_local_rtunnel = None
-    if ssh_runtime and ssh_runtime.rtunnel_bin:
-        candidate = Path(str(ssh_runtime.rtunnel_bin)).expanduser()
+    configured_paths = (
+        _split_rtunnel_bin_paths(ssh_runtime.rtunnel_bin) if ssh_runtime else []
+    )
+    for candidate_str in configured_paths:
+        candidate = Path(candidate_str).expanduser()
         if candidate.is_file():
             configured_local_rtunnel = candidate
+            break
 
     local_rtunnel = configured_local_rtunnel or (Path.home() / ".local" / "bin" / "rtunnel")
     local_exists = local_rtunnel.is_file()

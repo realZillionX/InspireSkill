@@ -898,7 +898,11 @@ def list_notebooks(
 )
 @click.option(
     "--rtunnel-bin",
-    help="Path to pre-cached rtunnel binary (e.g., /inspire/.../rtunnel)",
+    help=(
+        "Path(s) to pre-cached rtunnel binary. Accepts a single path "
+        "(/inspire/.../rtunnel) or ':'-separated list ($PATH-style) to try "
+        "in order, e.g. /inspire/hdd/.../rtunnel:/inspire/ssd/.../rtunnel"
+    ),
 )
 @click.option(
     "--rtunnel-upload-policy",

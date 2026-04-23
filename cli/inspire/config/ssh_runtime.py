@@ -7,7 +7,7 @@ from typing import Mapping, Optional
 
 from inspire.config.models import Config, ConfigError
 from inspire.config.rtunnel_defaults import default_rtunnel_download_url
-from inspire.config.schema_models import _parse_upload_policy
+from inspire.config.schema_models import _normalize_rtunnel_bin, _parse_upload_policy
 
 DEFAULT_RTUNNEL_DOWNLOAD_URL = default_rtunnel_download_url()
 
@@ -52,6 +52,10 @@ def resolve_ssh_runtime_config(
             override = cli_overrides.get(key)
             if override is not None:
                 values[key] = override
+
+    # CLI overrides may have re-introduced a raw value; re-normalize so the
+    # list-aware bootstrap script sees a consistent colon-separated string.
+    values["rtunnel_bin"] = _normalize_rtunnel_bin(values["rtunnel_bin"])
 
     download_url = values["rtunnel_download_url"] or DEFAULT_RTUNNEL_DOWNLOAD_URL
     try:
