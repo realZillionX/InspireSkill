@@ -1,4 +1,9 @@
-"""Tests for the ``inspire notebook metrics`` CLI command."""
+"""Tests for the ``inspire notebook metrics`` CLI command + shared core.
+
+The shared flow lives in :mod:`inspire.cli.utils.metrics_shared`; these tests
+patch it there so the same fakes cover every resource-specific wrapper. See
+``test_resource_metrics_variants.py`` for the job / hpc / serving checks.
+"""
 
 from __future__ import annotations
 
@@ -9,15 +14,15 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-metrics_module = importlib.import_module(
+metrics_shared = importlib.import_module("inspire.cli.utils.metrics_shared")
+metrics_plot = importlib.import_module("inspire.cli.utils.metrics_plot")
+notebook_metrics_module = importlib.import_module(
     "inspire.cli.commands.notebook.notebook_metrics"
 )
+
 from inspire.cli.context import EXIT_CONFIG_ERROR, EXIT_VALIDATION_ERROR
 from inspire.cli.main import main as cli_main
-from inspire.platform.web.browser_api.metrics import (
-    MetricGroup,
-    MetricSample,
-)
+from inspire.platform.web.browser_api.metrics import MetricGroup, MetricSample
 
 
 class _FakeSession:
@@ -28,43 +33,43 @@ class _FakeSession:
 def _install_common_fakes(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    detail: dict,
+    notebook_detail: dict,
     groups: list[MetricGroup],
     now: int = 1_000_000,
     capture: dict | None = None,
     render_captures: list[dict] | None = None,
     tmp_metrics_dir: str | None = None,
 ) -> None:
-    """Stub get_web_session, notebook detail, metrics wrapper, and PNG renderer.
+    """Stub the shared core + notebook-specific detail resolver.
 
-    The renderer is always stubbed — no matplotlib writes to disk in tests;
-    ``render_captures`` (if provided) receives the kwargs the command passed
-    to ``render_metrics_png``.
+    The renderer is always stubbed — no matplotlib writes to disk.
+    ``render_captures`` (if provided) receives the kwargs the command
+    passed to ``render_metrics_png``.
     """
     session = _FakeSession()
-    monkeypatch.setattr(metrics_module, "get_web_session", lambda: session)
+    monkeypatch.setattr(metrics_shared, "get_web_session", lambda: session)
 
     class _FakeBrowserApi:
         @staticmethod
         def get_notebook_detail(*, notebook_id: str, session):  # noqa: ANN001
-            return detail
+            return notebook_detail
 
-    monkeypatch.setattr(metrics_module, "browser_api_module", _FakeBrowserApi)
+    monkeypatch.setattr(notebook_metrics_module, "browser_api_module", _FakeBrowserApi)
 
     def _fake_metrics_call(**kwargs: Any) -> list[MetricGroup]:
         if capture is not None:
             capture.update(kwargs)
         return groups
 
-    monkeypatch.setattr(metrics_module, "get_resource_metrics_by_time", _fake_metrics_call)
-    monkeypatch.setattr(metrics_module.time, "time", lambda: now)
+    monkeypatch.setattr(metrics_shared, "get_resource_metrics_by_time", _fake_metrics_call)
+    monkeypatch.setattr(metrics_shared.time, "time", lambda: now)
 
     def _fake_render(**kwargs: Any):
         if render_captures is not None:
             render_captures.append(kwargs)
         return kwargs["out_path"]
 
-    monkeypatch.setattr(metrics_module, "render_metrics_png", _fake_render)
+    monkeypatch.setattr(metrics_shared, "render_metrics_png", _fake_render)
 
     if tmp_metrics_dir is not None:
         monkeypatch.setenv("INSPIRE_METRICS_DIR", tmp_metrics_dir)
@@ -76,7 +81,9 @@ def _sample_groups() -> list[MetricGroup]:
             group_name="pod-1",
             metric_type="gpu_usage_rate",
             resource_name="GPU",
-            samples=[MetricSample(timestamp=t, value=v) for t, v in [(100, 0.1), (160, 0.8), (220, 0.5)]],
+            samples=[
+                MetricSample(timestamp=t, value=v) for t, v in [(100, 0.1), (160, 0.8), (220, 0.5)]
+            ],
         ),
         MetricGroup(
             group_name="pod-1",
@@ -94,7 +101,7 @@ def test_metrics_json_output_is_raw_time_series_and_skips_plot(
     render_captures: list[dict] = []
     _install_common_fakes(
         monkeypatch,
-        detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
+        notebook_detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
         groups=_sample_groups(),
         now=1_000_000,
         capture=capture,
@@ -112,8 +119,10 @@ def test_metrics_json_output_is_raw_time_series_and_skips_plot(
     envelope = json.loads(result.output)
     assert envelope["success"] is True
     payload = envelope["data"]
+    assert payload["resource"] == "notebook"
     assert payload["notebook_id"] == "nb-xyz"
     assert payload["logic_compute_group_id"] == "lcg-abc"
+    assert payload["task_type"] == "interactive_modeling"
     assert payload["metric_types"] == ["gpu_usage_rate", "cpu_usage_rate"]
     assert payload["time_range"]["interval_second"] == 60
     assert payload["time_range"]["end_timestamp"] == 1_000_000
@@ -121,13 +130,11 @@ def test_metrics_json_output_is_raw_time_series_and_skips_plot(
     assert len(payload["groups"]) == 2
     assert payload["groups"][0]["time_series"][1] == {"timestamp": 160, "value": 0.8}
 
-    # The wrapper got called with the right arguments.
     assert capture["task_type"] == "interactive_modeling"
     assert capture["logic_compute_group_id"] == "lcg-abc"
     assert capture["metric_types"] == ["gpu_usage_rate", "cpu_usage_rate"]
     assert capture["interval_second"] == 60
 
-    # --json must skip PNG rendering entirely.
     assert render_captures == []
 
 
@@ -137,7 +144,7 @@ def test_metrics_default_output_writes_png_and_prints_path(
     render_captures: list[dict] = []
     _install_common_fakes(
         monkeypatch,
-        detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
+        notebook_detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
         groups=_sample_groups(),
         now=1_000_000,
         render_captures=render_captures,
@@ -148,18 +155,19 @@ def test_metrics_default_output_writes_png_and_prints_path(
 
     assert result.exit_code == 0, result.output
 
-    # Default behavior: PNG path + text stats, no sparkline block chars.
     assert len(render_captures) == 1
     out_path = render_captures[0]["out_path"]
-    expected = tmp_path / "nb-xyz-1000000.png"
+    # Default path now includes the resource name to disambiguate the four CLI
+    # entry points that share the same base dir.
+    expected = tmp_path / "notebook-nb-xyz-1000000.png"
     assert out_path == expected
     assert f"Chart: {expected}" in result.output
+    assert render_captures[0]["task_label"] == "Notebook"
+    assert render_captures[0]["task_id"] == "nb-xyz"
 
-    # Text summary stays (percent scaling from ratio works).
     assert "gpu_usage_rate" in result.output
     assert "min=10.0%" in result.output
     assert "max=80.0%" in result.output
-    # No sparkline unless explicitly requested.
     assert not any(ch in result.output for ch in "▁▂▃▄▅▆▇█")
 
 
@@ -169,7 +177,7 @@ def test_metrics_no_plot_suppresses_render(
     render_captures: list[dict] = []
     _install_common_fakes(
         monkeypatch,
-        detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
+        notebook_detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
         groups=_sample_groups(),
         render_captures=render_captures,
         tmp_metrics_dir=str(tmp_path),
@@ -189,7 +197,7 @@ def test_metrics_sparkline_flag_includes_block_chars(
 ) -> None:
     _install_common_fakes(
         monkeypatch,
-        detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
+        notebook_detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
         groups=_sample_groups(),
         tmp_metrics_dir=str(tmp_path),
     )
@@ -207,7 +215,7 @@ def test_metrics_custom_plot_path_is_honored(
     render_captures: list[dict] = []
     _install_common_fakes(
         monkeypatch,
-        detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
+        notebook_detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
         groups=_sample_groups(),
         render_captures=render_captures,
         tmp_metrics_dir=str(tmp_path),
@@ -234,7 +242,7 @@ def test_metrics_custom_plot_path_is_honored(
 def test_metrics_rejects_unknown_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_common_fakes(
         monkeypatch,
-        detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
+        notebook_detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
         groups=[],
     )
     runner = CliRunner()
@@ -248,7 +256,7 @@ def test_metrics_rejects_unknown_alias(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_metrics_errors_when_lcg_unresolvable(monkeypatch: pytest.MonkeyPatch) -> None:
     _install_common_fakes(
         monkeypatch,
-        detail={"start_config": {"logic_compute_group_id": ""}, "logic_compute_group": {}},
+        notebook_detail={"start_config": {"logic_compute_group_id": ""}, "logic_compute_group": {}},
         groups=[],
     )
     runner = CliRunner()
@@ -261,7 +269,7 @@ def test_metrics_cli_honors_explicit_lcg(monkeypatch: pytest.MonkeyPatch) -> Non
     capture: dict = {}
     _install_common_fakes(
         monkeypatch,
-        detail={"start_config": {"logic_compute_group_id": "lcg-ignored"}},
+        notebook_detail={"start_config": {"logic_compute_group_id": "lcg-ignored"}},
         groups=[],
         capture=capture,
     )
@@ -287,7 +295,7 @@ def test_metrics_absolute_window(monkeypatch: pytest.MonkeyPatch) -> None:
     capture: dict = {}
     _install_common_fakes(
         monkeypatch,
-        detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
+        notebook_detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
         groups=[],
         capture=capture,
     )
@@ -310,7 +318,6 @@ def test_metrics_absolute_window(monkeypatch: pytest.MonkeyPatch) -> None:
         ],
     )
     assert result.exit_code == 0, result.output
-    # 2026-04-22T23:34:37Z → 1 745 105 677 is not right... compute via datetime:
     from datetime import datetime, timezone
 
     expected_start = int(
@@ -322,3 +329,63 @@ def test_metrics_absolute_window(monkeypatch: pytest.MonkeyPatch) -> None:
     assert capture["start_timestamp"] == expected_start
     assert capture["end_timestamp"] == expected_end
     assert capture["interval_second"] == 300
+
+
+# ---------------------------------------------------------------------------
+# Multi-pod rendering / text summary
+# ---------------------------------------------------------------------------
+
+
+def _multi_worker_groups() -> list[MetricGroup]:
+    """Mirror the 8-worker distributed-training shape (stragglers surfaced)."""
+    values = [
+        ("worker-0", 0.95),
+        ("worker-1", 0.93),
+        ("worker-2", 0.96),
+        ("worker-3", 0.05),  # straggler — spread should pop
+        ("worker-4", 0.94),
+        ("worker-5", 0.92),
+        ("worker-6", 0.95),
+        ("worker-7", 0.97),
+    ]
+    groups = []
+    for name, last in values:
+        groups.append(
+            MetricGroup(
+                group_name=f"job-abc-{name}",
+                metric_type="gpu_usage_rate",
+                resource_name="GPU",
+                samples=[
+                    MetricSample(timestamp=100, value=last * 0.9),
+                    MetricSample(timestamp=160, value=last),
+                ],
+            )
+        )
+    return groups
+
+
+def test_multi_pod_text_summary_surfaces_stragglers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    render_captures: list[dict] = []
+    _install_common_fakes(
+        monkeypatch,
+        notebook_detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
+        groups=_multi_worker_groups(),
+        render_captures=render_captures,
+        tmp_metrics_dir=str(tmp_path),
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main, ["notebook", "metrics", "nb-xyz", "--metric", "gpu"]
+    )
+    assert result.exit_code == 0, result.output
+    # Pod count reflected.
+    assert "pods=8" in result.output
+    # Spread / stragglers block shows up, pointing at the slow worker.
+    assert "last-min=5.0% (worker-3)" in result.output
+    assert "last-max=97.0% (worker-7)" in result.output
+    assert "spread=92.0%" in result.output
+    # Renderer received all 8 groups to draw.
+    assert render_captures
+    assert len(render_captures[0]["groups"]) == 8

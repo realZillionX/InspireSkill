@@ -8,6 +8,7 @@ from .job_commands import delete, list_jobs, show_command, status, stop, update_
 from .job_create import create
 from .job_events import events
 from .job_logs import logs
+from .job_metrics import job_metrics
 
 
 @click.group()
@@ -25,6 +26,7 @@ job.add_command(stop)
 job.add_command(delete)
 job.add_command(wait)
 job.add_command(show_command)
+job.add_command(job_metrics)  # metrics (资源视图 time-series; per-pod for distributed training)
 
 
 __all__ = ["job"]

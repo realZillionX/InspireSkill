@@ -3,7 +3,15 @@
 Multimodal agents (Claude Code, Codex, Gemini CLI, …) can read the emitted
 PNG directly via their image-capable Read tool, so keeping the visual output
 compact and chart-style is the cheapest way to give them the same signal a
-human reads off the web chart. See notebook_metrics.py for the CLI wiring.
+human reads off the web chart. See `notebook_metrics.py` (and the parallel
+thin wrappers under job/ hpc/ serving/) for the CLI wiring.
+
+Multi-pod workloads (distributed training with N workers, multi-replica
+servings) render one line per pod with distinct colors so divergence —
+the core signal when monitoring "is every worker pulling its weight?" —
+is visible at a glance. Palette is large enough for the common training
+shapes (≤16 pods); beyond that colors cycle and the in-plot note still
+shows the pod count.
 """
 
 from __future__ import annotations
@@ -35,14 +43,42 @@ _METRIC_TITLES: dict[str, str] = {
     "network_tcp_ip_io_write": "Network TCP Write",
 }
 
+# 12-color palette tuned for line distinguishability on white background.
+# Cycled when pod count exceeds length (rare beyond 16-worker jobs).
 _POD_COLORS = (
-    "#4e8ef5",  # primary blue (matches web UI)
+    "#4e8ef5",  # blue (matches web UI primary)
     "#f5a623",  # orange
     "#23b889",  # green
     "#d94a5c",  # red
     "#8e5ee8",  # purple
     "#2cb5c0",  # teal
+    "#e2778d",  # pink
+    "#6a98ff",  # light blue
+    "#f5c523",  # yellow
+    "#1f6e4f",  # dark green
+    "#b3541e",  # brown
+    "#6c757d",  # gray
 )
+
+
+def _short_pod_label(name: str) -> str:
+    """Collapse long pod names into a legend-friendly worker / replica tag.
+
+    Examples (upstream format verified 2026-04):
+    - `job-<uuid>-worker-3`                      → `worker-3`
+    - `alphazero-sglang--d27d6303266e-odwuujlhhz` → `alphazero-sglang-…`
+    - `<svc>-replica-2`                           → `replica-2`
+    - anything else                               → last 24 chars
+    """
+    if not name:
+        return "?"
+    for marker in ("-worker-", "-replica-", "-master-", "-launcher-"):
+        idx = name.rfind(marker)
+        if idx >= 0:
+            return name[idx + 1 :]
+    if len(name) <= 28:
+        return name
+    return name[:25] + "…"
 
 
 def _is_rate(metric: str) -> bool:
@@ -63,15 +99,34 @@ def _format_percent(val: float, _pos: int | None = None) -> str:
     return f"{val * 100:.0f}%"
 
 
-def _short_id(notebook_id: str) -> str:
-    # ``91fbc44e-9c40-4c99-99f4-d27d6303266e`` → ``91fbc44e``
-    cleaned = notebook_id.strip()
-    return cleaned.split("-", 1)[0] if "-" in cleaned else cleaned[:8]
+# Known resource-type prefixes on task IDs. Longer prefixes must come first
+# so ``hpc-job-...`` is not shortened to ``job-...`` by the ``hpc-`` rule.
+_ID_PREFIXES = ("hpc-job-", "job-", "sv-", "hpc-", "nb-")
+
+
+def _short_id(task_id: str) -> str:
+    """Shorten a task id to a hash-length tag, stripping known type prefixes.
+
+    - ``job-a211cbef-c30f-4602-...`` → ``a211cbef`` (strip ``job-`` first;
+      a naive ``split('-',1)`` would return literal ``"job"``, producing
+      titles like "Train Job job" in the subplot header)
+    - ``hpc-job-xxxx-...``           → ``xxxx``
+    - ``91fbc44e-9c40-...``          → ``91fbc44e`` (bare UUID path)
+    """
+    cleaned = task_id.strip()
+    for prefix in _ID_PREFIXES:
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix) :]
+            break
+    if "-" in cleaned:
+        return cleaned.split("-", 1)[0]
+    return cleaned[:8] if len(cleaned) > 8 else cleaned
 
 
 def render_metrics_png(
     *,
-    notebook_id: str,
+    task_id: str,
+    task_label: str,
     start_ts: int,
     end_ts: int,
     metrics: list[str],
@@ -86,7 +141,10 @@ def render_metrics_png(
     as local-time `MM/DD HH:MM` matching the web display.
 
     Multi-pod groups (distributed training / multi-replica serving) draw
-    one line per pod with a compact legend.
+    one line per pod with distinct colors. The legend is placed below
+    the subplot (as a horizontal strip) once there are >3 pods so the
+    data area stays unobstructed — critical when you're eyeballing 8
+    workers for divergence.
     """
     by_metric: dict[str, list[MetricGroup]] = {m: [] for m in metrics}
     for g in groups:
@@ -96,10 +154,14 @@ def render_metrics_png(
     cols = 2 if n >= 2 else 1
     rows = math.ceil(n / cols)
 
+    # Give rows more vertical space when most subplots need a bottom legend.
+    max_pods = max((len(by_metric.get(m, [])) for m in metrics), default=1)
+    extra = 0.6 if max_pods > 3 else 0.0
+
     fig, axes_grid = plt.subplots(
         rows,
         cols,
-        figsize=(7 * cols, 3 * rows),
+        figsize=(7 * cols, (3 + extra) * rows),
         squeeze=False,
     )
     axes = [ax for row in axes_grid for ax in row]
@@ -107,8 +169,10 @@ def render_metrics_png(
     start_dt = datetime.fromtimestamp(start_ts)  # local tz for axis labels
     end_dt = datetime.fromtimestamp(end_ts)
 
+    pod_count_for_title = max_pods
+    pod_hint = f"  ·  {pod_count_for_title} pods" if pod_count_for_title > 1 else ""
     fig.suptitle(
-        f"Notebook {_short_id(notebook_id)}  ·  "
+        f"{task_label} {_short_id(task_id)}{pod_hint}  ·  "
         f"{start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')}",
         fontsize=12,
         y=0.995,
@@ -143,6 +207,9 @@ def render_metrics_png(
             ax.set_yticks([])
             continue
 
+        # Stable ordering so the same pod keeps the same color across subplots.
+        metric_groups = sorted(metric_groups, key=lambda g: g.group_name)
+
         has_samples = False
         for pod_idx, g in enumerate(metric_groups):
             if not g.samples:
@@ -155,8 +222,9 @@ def render_metrics_png(
                 xs,
                 ys,
                 color=color,
-                linewidth=1.8,
-                label=g.group_name if len(metric_groups) > 1 else None,
+                linewidth=1.6 if len(metric_groups) > 1 else 1.9,
+                alpha=0.9,
+                label=_short_pod_label(g.group_name) if len(metric_groups) > 1 else None,
             )
 
         if not has_samples:
@@ -188,7 +256,20 @@ def render_metrics_png(
             tick.set_fontsize(9)
 
         if len(metric_groups) > 1:
-            ax.legend(fontsize=8, loc="upper left", frameon=False)
+            # Horizontal legend below the axes keeps the data region clean for
+            # multi-worker jobs. Column count adapts to pod count so labels
+            # fit without overlap.
+            ncol = min(max(2, (len(metric_groups) + 1) // 2), 4)
+            ax.legend(
+                fontsize=8,
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.2),
+                ncol=ncol,
+                frameon=False,
+                handlelength=1.5,
+                columnspacing=1.2,
+                borderaxespad=0.0,
+            )
 
     # Hide leftover axes if metrics count is odd.
     for j in range(n, len(axes)):

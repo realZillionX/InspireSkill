@@ -146,11 +146,20 @@ OpenAPI 这侧只有 `train_job/{create,detail,stop}`。**`list` 和事件都只
 
 - **`metric_types` 实测只认第一个**：发 `["gpu_usage_rate","cpu_usage_rate"]` 只返 gpu，cpu 被静默丢弃。CLI wrapper 为每个 metric 拆成一次 POST 再拼结果。
 - **`task_type` 合法值只有 4 个**：`interactive_modeling` / `distributed_training` / `hpc_job` / `inference_serving`。传 `training_job` / `hpc` / `model_deployment` 会收到 `code:100000 422: ... query="...{=\"...\"})"` 错误（空 label 名），因为后端 Prometheus label 映射表里没有这几个别名。
-- **`task_id` 用裸 UUID**：notebook 详情 URL 的 path 段、OpenAPI 返回的 `job_id` 去掉 `job-`/`hpc-` 前缀都行。前缀形态平台也接受，但 Prometheus label 只匹配 UUID 段。
-- **`logic_compute_group_id` 必填**：对 notebook 可以从 `GET /notebook/{id}` 的 `start_config.logic_compute_group_id` 拿到（顶层 `logic_compute_group.*` 字段平台侧留空）。传空或 `cg-` 前缀都会返 422。
+- **`task_id` 按资源形状不同**（2026-04 每种都实测过）：
+  - `interactive_modeling` → **裸 UUID**（没 `nb-` 前缀），例 `91fbc44e-9c40-4c99-99f4-d27d6303266e`
+  - `distributed_training` → **带 `job-` 前缀**，例 `job-a211cbef-c30f-4602-aa46-3e61b4ba2f0a`（去掉前缀也能跑但每个 pod 的 group_name 就对不上了）
+  - `hpc_job` → **带 `hpc-job-` 前缀**
+  - `inference_serving` → **带 `sv-` 前缀**
+- **`logic_compute_group_id` 必填**，来源按资源：
+  - notebook → `GET /notebook/{id}` 的 `start_config.logic_compute_group_id`（顶层 `logic_compute_group.*` 字段平台侧留空）
+  - train_job → `POST /train_job/detail` 的顶层 `data.logic_compute_group_id`
+  - hpc → `GET /hpc_jobs/{id}` 的顶层 `data.logic_compute_group_id`
+  - serving → `GET /inference_servings/detail?inference_serving_id=<id>` 顶层
+  传空或 `cg-` 前缀（而非 `lcg-`）都会返 422。
 - **`interval_second` 限定 4 档**：`60 / 300 / 1800 / 3600`（对应 UI 的 1分/5分/30分/1小时）。其它值返回几乎空的序列。
 - **指标单位**：`*_usage_rate`（gpu / gpu_memory / cpu / memory）= 0-1 ratio；`disk_io_*` / `network_tcp_ip_io_*` = bytes/second。
-- **按 pod 分组**：一个实例跑多个 pod（分布式训练 / 多副本部署）时返回多个 `group_name`；单实例 notebook 只有 1 个 group。
+- **按 pod 分组**：多 worker 训练每个 worker 一个 `group_name`（`job-<id>-worker-0..N-1`）；多副本 serving 类似；单实例 notebook 只有 1 个 group。**用这个来做多节点训练健康监测**——一个 worker 掉队/hang 马上在 group 之间的 spread 里出现。
 
 ### 资源 / 计算组
 
