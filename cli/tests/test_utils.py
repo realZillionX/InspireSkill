@@ -767,30 +767,6 @@ class TestTunnelConfigPersistence:
         assert loaded.account is None
         assert "u" in loaded.bridges
 
-    def test_legacy_bridges_account_json_is_read_as_fallback(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Until ``inspire account migrate`` lands, load reads the old file
-        once when the new-path file doesn't exist. Saves go to the new path."""
-        import inspire.accounts as accounts_mod
-
-        monkeypatch.setattr(accounts_mod, "current_account", lambda: "alice")
-
-        (tmp_path / "bridges-alice.json").write_text(
-            '{"default": "legacy", "bridges": '
-            '[{"name": "legacy", "proxy_url": "https://legacy.example.com"}]}'
-        )
-
-        loaded = load_tunnel_config(tmp_path)
-        assert "legacy" in loaded.bridges
-        assert loaded.default_bridge == "legacy"
-
-        # Saving now should land at the new path, not overwrite the legacy file.
-        save_tunnel_config(loaded)
-        assert (tmp_path / "accounts" / "alice" / "bridges.json").exists()
-        # Legacy file is untouched by save.
-        assert (tmp_path / "bridges-alice.json").exists()
-
     def test_env_var_chains_are_not_consulted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

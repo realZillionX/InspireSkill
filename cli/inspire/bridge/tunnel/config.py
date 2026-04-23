@@ -1,20 +1,13 @@
 """Tunnel configuration file management.
 
-Storage layout — one account = one isolated file, no shared per-user
-lookup chain:
+Storage layout — one account = one isolated file:
 
     ~/.inspire/accounts/<account>/bridges.json   # when an account is active
     ~/.inspire/bridges.json                      # when no account is set
 
 Active account is resolved from ``inspire.accounts.current_account()``
 (which reads the single-line ``~/.inspire/current`` pointer). An explicit
-``account=`` kwarg overrides that, and nothing else. The 5-layer
-env-var / config-username precedence chain from earlier revisions is gone.
-
-A one-shot read fallback exists for the phase-5 migration window: if the
-new-path file does not exist but the legacy ``bridges-<account>.json``
-does, it is read once. Saves always target the new path, so the first
-``save_tunnel_config`` after loading effectively migrates the data.
+``account=`` kwarg overrides that, and nothing else.
 """
 
 from __future__ import annotations
@@ -87,10 +80,6 @@ def load_tunnel_config(
     primary_path = config.config_file
     if primary_path.exists():
         preferred_default = _read_json_into_config(primary_path, config)
-    elif resolved_account:
-        legacy_path = config.config_dir / f"bridges-{resolved_account}.json"
-        if legacy_path.exists():
-            preferred_default = _read_json_into_config(legacy_path, config)
 
     if preferred_default and preferred_default in config.bridges:
         config.default_bridge = preferred_default
