@@ -153,7 +153,7 @@ class TestAccountAddCommand:
         config = storage.account_config_path("alice").read_text()
         assert 'username = "user-xyz"' in config
         assert 'base_url = "https://staging.x"' in config
-        assert 'proxy = "http://127.0.0.1:7897"' in config
+        assert 'playwright = "http://127.0.0.1:7897"' in config
 
     def test_interactive_password_mismatch_reprompts(
         self, home: Path, runner: CliRunner
@@ -214,7 +214,7 @@ class TestAccountAddCommand:
         assert result.exit_code == 0, result.output
         config = storage.account_config_path("alice").read_text()
         assert 'username = "user-xyz"' in config
-        assert 'proxy = "http://127.0.0.1:7897"' in config
+        assert 'playwright = "http://127.0.0.1:7897"' in config
         assert storage.current_account() == "alice"
 
     def test_non_interactive_no_use_keeps_active(
@@ -260,7 +260,7 @@ class TestAccountAddCommand:
         except ModuleNotFoundError:  # pragma: no cover - py3.10
             import tomli as tomllib  # type: ignore[no-redef]
         parsed = tomllib.loads(config)
-        assert parsed["password"] == 'p"w\\x'
+        assert parsed["auth"]["password"] == 'p"w\\x'
 
 
 class TestAccountListCommand:

@@ -177,11 +177,30 @@ def _toml_basic(s: str) -> str:
 
 
 def _render_config(*, username: str, password: str, base_url: str, proxy: str) -> str:
+    """Write a minimal account config.toml using the real schema section names.
+
+    Keys must live under [auth]/[api]/[proxy] — the loader resolves
+    ``auth.username`` / ``api.base_url`` etc. via the flattened TOML path,
+    and a bare top-level ``username = "..."`` silently fails to bind.
+    """
     lines = [
+        "[auth]",
         f'username = "{_toml_basic(username)}"',
         f'password = "{_toml_basic(password)}"',
+        "",
+        "[api]",
         f'base_url = "{_toml_basic(base_url)}"',
     ]
     if proxy:
-        lines.append(f'proxy = "{_toml_basic(proxy)}"')
+        escaped = _toml_basic(proxy)
+        lines.extend(
+            [
+                "",
+                "[proxy]",
+                f'requests_http = "{escaped}"',
+                f'requests_https = "{escaped}"',
+                f'playwright = "{escaped}"',
+                f'rtunnel = "{escaped}"',
+            ]
+        )
     return "\n".join(lines) + "\n"
