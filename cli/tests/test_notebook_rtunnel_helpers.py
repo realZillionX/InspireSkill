@@ -10,6 +10,8 @@ import pytest
 from inspire.platform.web.browser_api import rtunnel as rtunnel_module
 from inspire.platform.web.browser_api.rtunnel import (
     _CONTENTS_API_RTUNNEL_FILENAME,
+    _RT_PREINSTALLED_PROBE_NO,
+    _RT_PREINSTALLED_PROBE_YES,
     SETUP_DONE_MARKER,
     _StepTimer,
     _build_batch_setup_script,
@@ -22,6 +24,7 @@ from inspire.platform.web.browser_api.rtunnel import (
     _focus_terminal_input,
     _jupyter_server_base,
     _open_or_create_terminal,
+    _probe_preinstalled_rtunnel_via_ws,
     _resolve_rtunnel_binary,
     _rtunnel_matches_on_notebook,
     _send_setup_command_via_terminal_ws,
@@ -1454,3 +1457,102 @@ def test_download_rtunnel_locally_no_rtunnel_in_archive(tmp_path: Path) -> None:
 
     assert result is False
     assert not dest.exists()
+
+
+# ---------------------------------------------------------------------------
+# _probe_preinstalled_rtunnel_via_ws
+# ---------------------------------------------------------------------------
+
+
+class _DummyLabFrame:
+    """Minimal stand-in for a Playwright frame supporting .url and .evaluate."""
+
+    def __init__(self, url: str, evaluate_result: object | Exception) -> None:
+        self.url = url
+        self._evaluate_result = evaluate_result
+        self.evaluate_calls: list[dict] = []
+
+    def evaluate(self, _script: str, args: dict) -> object:
+        self.evaluate_calls.append(args)
+        if isinstance(self._evaluate_result, Exception):
+            raise self._evaluate_result
+        return self._evaluate_result
+
+
+def test_preinstalled_probe_terminal_creation_fails_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(rtunnel_module, "_create_terminal_via_api", lambda *a, **k: None)
+    deletes: list[str] = []
+    monkeypatch.setattr(
+        rtunnel_module,
+        "_delete_terminal_via_api",
+        lambda *a, **k: deletes.append(k.get("term_name") or "?"),
+    )
+    frame = _DummyLabFrame("https://nb.example.com/lab", evaluate_result="YES")
+
+    result = _probe_preinstalled_rtunnel_via_ws(context=object(), lab_frame=frame)
+
+    assert result is None
+    assert frame.evaluate_calls == []  # Never evaluated JS
+    assert deletes == []  # Nothing to delete
+
+
+def test_preinstalled_probe_yes_result_maps_to_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rtunnel_module, "_create_terminal_via_api", lambda *a, **k: "42")
+    monkeypatch.setattr(rtunnel_module, "_delete_terminal_via_api", lambda *a, **k: None)
+    frame = _DummyLabFrame("https://nb.example.com/lab", evaluate_result="YES")
+
+    result = _probe_preinstalled_rtunnel_via_ws(context=object(), lab_frame=frame)
+
+    assert result is True
+    assert len(frame.evaluate_calls) == 1
+    args = frame.evaluate_calls[0]
+    # Probe command must reference `command -v rtunnel` and both marker strings
+    assert "command -v rtunnel" in args["stdinData"]
+    assert _RT_PREINSTALLED_PROBE_YES in args["stdinData"]
+    assert _RT_PREINSTALLED_PROBE_NO in args["stdinData"]
+    assert args["yesMarker"] == _RT_PREINSTALLED_PROBE_YES
+    assert args["noMarker"] == _RT_PREINSTALLED_PROBE_NO
+
+
+def test_preinstalled_probe_no_result_maps_to_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rtunnel_module, "_create_terminal_via_api", lambda *a, **k: "7")
+    monkeypatch.setattr(rtunnel_module, "_delete_terminal_via_api", lambda *a, **k: None)
+    frame = _DummyLabFrame("https://nb.example.com/lab", evaluate_result="NO")
+
+    result = _probe_preinstalled_rtunnel_via_ws(context=object(), lab_frame=frame)
+
+    assert result is False
+
+
+def test_preinstalled_probe_null_result_maps_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(rtunnel_module, "_create_terminal_via_api", lambda *a, **k: "7")
+    monkeypatch.setattr(rtunnel_module, "_delete_terminal_via_api", lambda *a, **k: None)
+    frame = _DummyLabFrame("https://nb.example.com/lab", evaluate_result=None)
+
+    result = _probe_preinstalled_rtunnel_via_ws(context=object(), lab_frame=frame)
+
+    assert result is None
+
+
+def test_preinstalled_probe_evaluate_exception_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(rtunnel_module, "_create_terminal_via_api", lambda *a, **k: "7")
+    deletes: list[str] = []
+    monkeypatch.setattr(
+        rtunnel_module,
+        "_delete_terminal_via_api",
+        lambda *a, **k: deletes.append(k.get("term_name") or "?"),
+    )
+    frame = _DummyLabFrame(
+        "https://nb.example.com/lab",
+        evaluate_result=rtunnel_module.PlaywrightError("ws dead"),
+    )
+
+    result = _probe_preinstalled_rtunnel_via_ws(context=object(), lab_frame=frame)
+
+    assert result is None
+    # Probe must still clean up the terminal it created
+    assert deletes == ["7"]

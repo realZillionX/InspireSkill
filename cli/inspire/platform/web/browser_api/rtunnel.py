@@ -52,6 +52,8 @@ _log = logging.getLogger("inspire.platform.web.browser_api.rtunnel")
 
 BOOTSTRAP_SENTINEL = "/tmp/.inspire_rtunnel_bootstrap_v1"
 SETUP_DONE_MARKER = "INSPIRE_RTUNNEL_SETUP_DONE"
+_RT_PREINSTALLED_PROBE_YES = "__INSPIRE_RT_PREINSTALLED_YES__"
+_RT_PREINSTALLED_PROBE_NO = "__INSPIRE_RT_PREINSTALLED_NO__"
 
 
 def build_rtunnel_setup_commands(
@@ -105,6 +107,18 @@ def build_rtunnel_setup_commands(
             'if [ -f "$RTUNNEL_BIN_PATH" ]; then cp "$RTUNNEL_BIN_PATH" /tmp/rtunnel '
             "&& chmod +x /tmp/rtunnel; fi"
         )
+
+    # Prefer a container-preinstalled rtunnel (e.g. unified-base:v1 bakes one in
+    # at /usr/local/bin/rtunnel). Probing PATH lets us skip the Contents API
+    # upload entirely, which is mandatory when the user's Jupyter root_dir is
+    # quota-exhausted (upload returns HTTP 500 / Errno 122).
+    cmd_lines.append(
+        'if [ ! -x /tmp/rtunnel ]; then '
+        '_inspire_preinstalled_rt=$(command -v rtunnel 2>/dev/null || true); '
+        'if [ -n "$_inspire_preinstalled_rt" ] && [ -x "$_inspire_preinstalled_rt" ]; then '
+        'cp "$_inspire_preinstalled_rt" /tmp/rtunnel && chmod +x /tmp/rtunnel; fi; '
+        "fi"
+    )
 
     if contents_api_filename:
         import shlex as _shlex_inner
@@ -1402,6 +1416,122 @@ def _send_setup_command_via_terminal_ws(
         _delete_terminal_via_api(context, lab_url=lab_frame.url, term_name=term_name)
 
 
+def _probe_preinstalled_rtunnel_via_ws(
+    *,
+    context: Any,
+    lab_frame: Any,
+    timeout_ms: int = 8000,
+) -> Optional[bool]:
+    """Ask the notebook container whether ``rtunnel`` is already on PATH.
+
+    Returns ``True`` when ``command -v rtunnel`` resolves to an executable
+    (e.g. unified-base:v1 bakes ``/usr/local/bin/rtunnel`` into the image),
+    ``False`` when the shell explicitly reports "not found", and ``None``
+    when the probe is inconclusive (terminal unavailable, WS error, timeout).
+
+    Preinstalled-image detection matters because the Jupyter Contents API
+    writes to the user's root_dir, which is also their project-fileset
+    quota; when that is full the upload fails with HTTP 500 / Errno 122.
+    Skipping the upload when the container already has rtunnel avoids that
+    error entirely, while a ``None`` result preserves the legacy upload
+    behaviour as a safety net.
+    """
+    term_name = _create_terminal_via_api(context, lab_frame.url)
+    if not term_name:
+        return None
+
+    try:
+        ws_url = _build_terminal_websocket_url(lab_frame.url, term_name)
+        probe_cmd = (
+            "(command -v rtunnel >/dev/null 2>&1 "
+            f"&& echo {_RT_PREINSTALLED_PROBE_YES} "
+            f"|| echo {_RT_PREINSTALLED_PROBE_NO})\r"
+        )
+        try:
+            result = lab_frame.evaluate(
+                """
+                async ({ wsUrl, stdinData, timeoutMs, promptTimeoutMs, yesMarker, noMarker }) => {
+                  return await new Promise((resolve) => {
+                    let settled = false;
+                    let sent = false;
+                    let socket = null;
+                    const finish = (value) => {
+                      if (settled) return;
+                      settled = true;
+                      try { if (socket) socket.close(); } catch (_) {}
+                      resolve(value);
+                    };
+                    const timer = setTimeout(() => finish(null), timeoutMs);
+                    const doSend = () => {
+                      if (sent || settled) return;
+                      sent = true;
+                      try {
+                        socket.send(JSON.stringify(["stdin", stdinData]));
+                      } catch (_) {
+                        clearTimeout(timer); finish(null);
+                      }
+                    };
+                    try {
+                      socket = new WebSocket(wsUrl);
+                    } catch (_) {
+                      clearTimeout(timer); finish(null); return;
+                    }
+                    let buf = "";
+                    const promptRe = /[$#]\\s*$/;
+                    socket.addEventListener("message", (ev) => {
+                      try {
+                        const msg = JSON.parse(ev.data);
+                        if (!Array.isArray(msg) || msg[0] !== "stdout") return;
+                        const text = String(msg[1]);
+                        buf += text;
+                        if (!sent) {
+                          if (promptRe.test(buf)) doSend();
+                          return;
+                        }
+                        if (buf.includes(yesMarker)) {
+                          clearTimeout(timer); finish("YES");
+                        } else if (buf.includes(noMarker)) {
+                          clearTimeout(timer); finish("NO");
+                        }
+                      } catch (_) {}
+                    });
+                    socket.addEventListener("open", () => {
+                      setTimeout(() => doSend(), promptTimeoutMs);
+                    });
+                    socket.addEventListener("error", () => {
+                      clearTimeout(timer); finish(null);
+                    });
+                    socket.addEventListener("close", () => {
+                      if (!settled) { clearTimeout(timer); finish(null); }
+                    });
+                  });
+                }
+                """,
+                {
+                    "wsUrl": ws_url,
+                    "stdinData": probe_cmd,
+                    "timeoutMs": int(timeout_ms),
+                    "promptTimeoutMs": min(int(timeout_ms) - 500, 3000),
+                    "yesMarker": _RT_PREINSTALLED_PROBE_YES,
+                    "noMarker": _RT_PREINSTALLED_PROBE_NO,
+                },
+            )
+        except (PlaywrightError, AttributeError, RuntimeError, TypeError, ValueError) as exc:
+            _log.debug("Preinstalled rtunnel probe failed to evaluate: %s", exc)
+            return None
+
+        if result == "YES":
+            return True
+        if result == "NO":
+            return False
+        return None
+    finally:
+        try:
+            _delete_terminal_via_api(context, lab_url=lab_frame.url, term_name=term_name)
+        except Exception:
+            pass
+
+
 def _build_batch_setup_script(cmd_lines: list[str]) -> str:
     """Encode setup commands as a single base64-wrapped bash line.
 
@@ -2290,13 +2420,31 @@ def _setup_notebook_rtunnel_sync(
                 pass
             timer.mark("wait_spinner")
 
-            contents_api_filename = _resolve_rtunnel_binary(
+            preinstalled = _probe_preinstalled_rtunnel_via_ws(
                 context=context,
-                lab_url=lab_frame.url,
-                ssh_runtime=ssh_runtime,
+                lab_frame=lab_frame,
             )
+            timer.mark("probe_preinstalled_rtunnel")
+            policy = ssh_runtime.rtunnel_upload_policy if ssh_runtime else "auto"
 
-            _log.debug("contents_api_filename=%s", contents_api_filename)
+            if preinstalled is True and policy != "always":
+                _sys.stderr.write(
+                    "  Container has rtunnel preinstalled; skipping Contents API upload.\n"
+                )
+                _sys.stderr.flush()
+                contents_api_filename = None
+            else:
+                contents_api_filename = _resolve_rtunnel_binary(
+                    context=context,
+                    lab_url=lab_frame.url,
+                    ssh_runtime=ssh_runtime,
+                )
+
+            _log.debug(
+                "preinstalled_rtunnel=%s contents_api_filename=%s",
+                preinstalled,
+                contents_api_filename,
+            )
             cmd_lines = build_rtunnel_setup_commands(
                 port=port,
                 ssh_port=ssh_port,

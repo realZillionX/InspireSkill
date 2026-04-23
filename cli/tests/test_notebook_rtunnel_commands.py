@@ -249,3 +249,56 @@ def test_contents_api_filename_does_not_override_rtunnel_bin_path() -> None:
     assert (
         bin_path_idx < contents_api_idx
     ), "RTUNNEL_BIN_PATH copy must come before contents API copy block"
+
+
+# ---------------------------------------------------------------------------
+# Container-preinstalled rtunnel probe (unified-base:v1 and similar images
+# bake rtunnel into /usr/local/bin, so bootstrap must prefer it over any
+# Contents API upload — the latter writes to the Jupyter root_dir, which is
+# the user's project-fileset and returns HTTP 500 / Errno 122 when quota-full).
+# ---------------------------------------------------------------------------
+
+
+def test_preinstalled_rtunnel_probe_always_emitted() -> None:
+    runtime = SshRuntimeConfig()
+    commands = build_rtunnel_setup_commands(
+        port=31337,
+        ssh_port=22222,
+        ssh_public_key=None,
+        ssh_runtime=runtime,
+    )
+    joined = "\n".join(commands)
+
+    assert "command -v rtunnel" in joined
+    assert '_inspire_preinstalled_rt=' in joined
+    assert 'cp "$_inspire_preinstalled_rt" /tmp/rtunnel' in joined
+
+
+def test_preinstalled_probe_sits_between_bin_path_and_contents_api() -> None:
+    runtime = SshRuntimeConfig(rtunnel_bin="/project/rtunnel")
+    commands = build_rtunnel_setup_commands(
+        port=31337,
+        ssh_port=22222,
+        ssh_public_key=None,
+        ssh_runtime=runtime,
+        contents_api_filename=".inspire_rtunnel_bin",
+    )
+
+    bin_path_idx = None
+    probe_idx = None
+    contents_api_idx = None
+    for i, line in enumerate(commands):
+        if bin_path_idx is None and 'cp "$RTUNNEL_BIN_PATH" /tmp/rtunnel' in line:
+            bin_path_idx = i
+        if probe_idx is None and "command -v rtunnel" in line:
+            probe_idx = i
+        if contents_api_idx is None and "CONTENTS_API_RTUNNEL_FILE=" in line:
+            contents_api_idx = i
+
+    assert bin_path_idx is not None
+    assert probe_idx is not None
+    assert contents_api_idx is not None
+    assert bin_path_idx < probe_idx < contents_api_idx, (
+        "Order must be: explicit RTUNNEL_BIN_PATH override → PATH probe "
+        "→ Contents API fallback"
+    )
