@@ -26,8 +26,14 @@ from inspire import __version__
 
 REPO_SLUG = "realZillionX/InspireSkill"
 PACKAGE_NAME = "inspire-skill"
-RAW_PYPROJECT_URL = f"https://raw.githubusercontent.com/{REPO_SLUG}/main/cli/pyproject.toml"
-TARBALL_URL = f"https://codeload.github.com/{REPO_SLUG}/tar.gz/refs/heads/main"
+# Keep this ref in sync with ``DEFAULT_REF`` in ``scripts/install.sh`` — users
+# install from ``main`` and expect ``inspire update`` to pull from the same
+# branch. The package is not on PyPI; ``uv tool upgrade`` / ``pipx upgrade``
+# would 404 there, so we always reinstall via the git spec below.
+GIT_REF = "main"
+GIT_INSTALL_SPEC = f"git+https://github.com/{REPO_SLUG}.git@{GIT_REF}#subdirectory=cli"
+RAW_PYPROJECT_URL = f"https://raw.githubusercontent.com/{REPO_SLUG}/{GIT_REF}/cli/pyproject.toml"
+TARBALL_URL = f"https://codeload.github.com/{REPO_SLUG}/tar.gz/refs/heads/{GIT_REF}"
 
 CACHE_DIR = Path.home() / ".inspire"
 CACHE_FILE = CACHE_DIR / "update-status.json"
