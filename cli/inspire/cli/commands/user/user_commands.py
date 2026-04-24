@@ -22,15 +22,10 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import get_web_session
 
 
-def _resolve_workspace_id(
-    config: Config, workspace: Optional[str], workspace_id: Optional[str]
-) -> Optional[str]:
-    if workspace is None and workspace_id is None:
+def _resolve_workspace_id(config: Config, workspace: Optional[str]) -> Optional[str]:
+    if workspace is None:
         return None
-    return select_workspace_id(
-        config,
-        explicit_workspace_name=workspace,
-            )
+    return select_workspace_id(config, explicit_workspace_name=workspace)
 
 
 @click.command("whoami")
