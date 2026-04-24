@@ -65,7 +65,7 @@ def _select_target_bridges(
                     "(missing notebook_id metadata)."
                 ),
                 EXIT_CONFIG_ERROR,
-                hint="Recreate it with 'inspire notebook ssh <notebook-id> --save-as <name>'.",
+                hint="Recreate it with 'inspire notebook ssh <notebook-name> --save-as <name>'.",
             )
         return [bridge]
 
@@ -76,7 +76,7 @@ def _select_target_bridges(
             "ConfigError",
             "No notebook-backed tunnel profiles found.",
             EXIT_CONFIG_ERROR,
-            hint=("Create one first: " "'inspire notebook ssh <notebook-id> --save-as <name>'."),
+            hint=("Create one first: " "'inspire notebook ssh <notebook-name> --save-as <name>'."),
         )
 
     return sorted(bridges, key=lambda b: b.name)

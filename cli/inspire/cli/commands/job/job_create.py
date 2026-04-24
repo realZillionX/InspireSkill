@@ -289,7 +289,7 @@ def create(
     \b
     Priority:
         Requested priority is capped by the selected project quota. Use
-        `inspire job status <job-id>` to inspect the platform-assigned
+        `inspire job status <name>` to inspect the platform-assigned
         priority_level.
     """
     run_job_create(

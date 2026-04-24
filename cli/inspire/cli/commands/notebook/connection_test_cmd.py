@@ -35,14 +35,14 @@ def tunnel_test(ctx: Context, bridge: str) -> None:
                     "ConfigError",
                     "No bridge configured",
                     EXIT_CONFIG_ERROR,
-                    hint="Run 'inspire notebook ssh <id> --save-as <name> <URL>' first.",
+                    hint="Run 'inspire notebook ssh <notebook-name> --save-as <alias>' first.",
                 ),
                 err=True,
             )
         else:
             click.echo(
                 human_formatter.format_error(
-                    "No bridge configured. Run 'inspire notebook ssh <id> --save-as <name> <URL>' first."
+                    "No bridge configured. Run 'inspire notebook ssh <notebook-name> --save-as <alias>' first."
                 ),
                 err=True,
             )

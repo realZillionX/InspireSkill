@@ -538,7 +538,7 @@ def _try_get_ssh_exit_code(
                     hint=(
                         "Run 'inspire notebook test' to troubleshoot. "
                         "If needed, re-create the bridge via "
-                        "'inspire notebook ssh <notebook-id> --save-as <name>'."
+                        "'inspire notebook ssh <notebook-name> --save-as <name>'."
                     ),
                 )
             _emit_tunnel_fallback_hint(ctx, bridge_name=bridge_name)

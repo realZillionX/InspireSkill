@@ -76,7 +76,7 @@ def load_ssh_public_key(pubkey_path: Optional[str] = None) -> str:
 # Notebook-name-based default alias helpers
 # ---------------------------------------------------------------------------
 #
-# Users who run ``inspire notebook ssh <id>`` without ``--save-as`` benefit
+# Users who run ``inspire notebook ssh <name>`` without ``--save-as`` benefit
 # from an alias that matches the notebook's display name rather than the
 # opaque ``nb-<id[:8]>`` prefix: both ``inspire notebook connections`` and
 # ``~/.ssh/config`` become self-documenting. The sanitised name is scoped to
@@ -147,10 +147,14 @@ def _unique_alias_for_notebook(
         existing_notebook_id = str(getattr(existing, "notebook_id", "") or "").strip()
         if existing_notebook_id == notebook_id:
             return candidate
-    # Fallback — should never happen; keep the CLI alive rather than loop
-    # forever on an obviously degenerate alias table.
-    suffix = str(notebook_id or "").replace("notebook-", "")[:4] or "x"
-    return f"{base}-sh{suffix}"
+    # 1000 distinct aliases already in the bridges table is a configuration
+    # problem, not something to silently paper over with a clobbering fallback
+    # — fail hard so the user can ``inspire notebook forget`` stale aliases
+    # before inventing a duplicate.
+    raise RuntimeError(
+        f"Exhausted 1000 alias slots under base {base!r}; prune stale aliases "
+        "with `inspire notebook forget <alias>` before recreating."
+    )
 
 
 def _default_alias_for_notebook(
@@ -327,7 +331,7 @@ def _run_notebook_command_with_reconnect(
                 "ConfigError",
                 f"Notebook alias '{profile_name}' is missing notebook metadata.",
                 EXIT_CONFIG_ERROR,
-                hint="Re-run 'inspire notebook ssh <notebook-id> --save-as <name>'.",
+                hint="Re-run 'inspire notebook ssh <notebook-name> --save-as <name>'.",
             )
             return False
 
@@ -349,7 +353,7 @@ def _run_notebook_command_with_reconnect(
                 else "SSH connection dropped and auto-reconnect retries were exhausted."
             ),
             EXIT_API_ERROR,
-            hint="Re-run 'inspire notebook ssh <notebook-id>' to refresh the tunnel.",
+            hint="Re-run 'inspire notebook ssh <notebook-name>' to refresh the tunnel.",
         )
         return False
 
@@ -505,7 +509,7 @@ def _run_interactive_notebook_ssh_with_reconnect(
                 "APIError",
                 "SSH connection dropped and auto-reconnect retries were exhausted.",
                 EXIT_API_ERROR,
-                hint="Re-run 'inspire notebook ssh <notebook-id>' to refresh the tunnel.",
+                hint="Re-run 'inspire notebook ssh <notebook-name>' to refresh the tunnel.",
             )
             return
 
@@ -560,7 +564,7 @@ def _run_interactive_notebook_ssh_with_reconnect(
                 "ConfigError",
                 f"Notebook alias '{profile_name}' is missing notebook metadata.",
                 EXIT_CONFIG_ERROR,
-                hint="Re-run 'inspire notebook ssh <notebook-id> --save-as <name>'.",
+                hint="Re-run 'inspire notebook ssh <notebook-name> --save-as <name>'.",
             )
             return
 
@@ -578,7 +582,7 @@ def _run_interactive_notebook_ssh_with_reconnect(
                 "APIError",
                 "SSH connection dropped and auto-reconnect retries were exhausted.",
                 EXIT_API_ERROR,
-                hint="Re-run 'inspire notebook ssh <notebook-id>' to refresh the tunnel.",
+                hint="Re-run 'inspire notebook ssh <notebook-name>' to refresh the tunnel.",
             )
             return
 
@@ -910,7 +914,7 @@ def run_notebook_ssh(
             "Tunnel setup completed, but SSH preflight failed.",
             EXIT_API_ERROR,
             hint=(
-                "Retry 'inspire notebook ssh <notebook-id>' in a few seconds, "
+                "Retry 'inspire notebook ssh <notebook-name>' in a few seconds, "
                 f"or run 'inspire notebook test -a {profile_name}' to inspect connectivity. "
                 f"Proxy readiness report: {proxy_status} ({redact_proxy_url(proxy_url)})."
                 f"{ssh_capability_hint}"

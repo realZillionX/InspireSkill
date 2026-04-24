@@ -71,7 +71,7 @@ def tunnel_list(ctx: Context, no_check: bool) -> None:
         else:
             click.echo("No bridges configured.")
             click.echo("")
-            click.echo("Add one with: inspire notebook ssh <id> --save-as <name> <URL>")
+            click.echo("Add one with: inspire notebook ssh <notebook-name> --save-as <alias>")
         return
 
     # Check SSH connectivity unless --no-check

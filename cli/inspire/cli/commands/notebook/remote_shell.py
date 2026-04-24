@@ -40,11 +40,11 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
     """Open an interactive SSH shell to Bridge.
 
     Requires a saved notebook alias with a reachable SSH tunnel. Create one
-    with ``inspire notebook ssh <id> --save-as <name>``.
+    with ``inspire notebook ssh <notebook-name> --save-as <alias>``.
 
     \b
     Example:
-        inspire notebook ssh <notebook-id> --save-as mybridge
+        inspire notebook ssh <notebook-name> --save-as mybridge
         inspire notebook shell --bridge mybridge
     """
     try:
@@ -71,7 +71,7 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
             ctx,
             "TunnelError",
             "No bridge configured.",
-            hint="Run 'inspire notebook ssh <notebook-id> --save-as <name>' first.",
+            hint="Run 'inspire notebook ssh <notebook-name> --save-as <name>' first.",
         )
 
     bridge_name = selected_bridge.name
@@ -114,7 +114,7 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
                     "SSH tunnel not available",
                     hint=(
                         "Auto-rebuild retries exhausted. Run 'inspire notebook test' and "
-                        "retry 'inspire notebook ssh <notebook-id> --save-as <name>'."
+                        "retry 'inspire notebook ssh <notebook-name> --save-as <name>'."
                     ),
                 )
 
@@ -127,7 +127,7 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
                     hint=(
                         "This bridge has no notebook_id metadata, so it cannot be rebuilt "
                         "automatically. Re-create it via "
-                        "'inspire notebook ssh <notebook-id> --save-as <name>'."
+                        "'inspire notebook ssh <notebook-name> --save-as <name>'."
                     ),
                 )
 

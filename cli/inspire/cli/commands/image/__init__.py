@@ -2,11 +2,11 @@
 
 Usage:
     inspire image list [--source official|public|private|all]
-    inspire image detail <image-id>
+    inspire image detail <name>
     inspire image register -n "name" -v v1.0
-    inspire image save <notebook-id> -n "name" [--public|--private]
-    inspire image set-visibility <image-id> --public|--private
-    inspire image delete <image-id>
+    inspire image save <notebook-name> -n "name" [--public|--private]
+    inspire image set-visibility <name> --public|--private
+    inspire image delete <name>
     inspire image set-default --job <name> --notebook <name>
 """
 
@@ -31,13 +31,13 @@ def image():
 
     \b
     Examples:
-        inspire image list                           # List official images
-        inspire image list --source private          # List personal-visible images
-        inspire image save <notebook-id> -n my-img   # Save notebook as image
-        inspire image save <id> -n shared --public   # Save + mark public
-        inspire image set-visibility <id> --public   # Flip visibility
-        inspire image register -n my-img -v v1.0     # Register external image
-        inspire image set-default --job my-pytorch   # Set default image
+        inspire image list                              # List official images
+        inspire image list --source private             # List personal-visible images
+        inspire image save <notebook-name> -n my-img    # Save notebook as image
+        inspire image save <notebook-name> -n shared --public
+        inspire image set-visibility <name> --public    # Flip visibility
+        inspire image register -n my-img -v v1.0        # Register external image
+        inspire image set-default --job my-pytorch      # Set default image
     """
     pass
 

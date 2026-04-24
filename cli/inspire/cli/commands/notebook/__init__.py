@@ -4,11 +4,11 @@ is now reachable here under the same notebook group).
 
 Usage:
     inspire notebook list
-    inspire notebook status <instance-id>
+    inspire notebook status <name>
     inspire notebook top
     inspire notebook create --resource 1xH200
-    inspire notebook stop <instance-id>
-    inspire notebook ssh <instance-id>          # first-time bootstrap
+    inspire notebook stop <name>
+    inspire notebook ssh <name>                 # first-time bootstrap
     inspire notebook ssh <alias>                # reconnect to a saved alias
     inspire notebook exec <alias> "<cmd>"
     inspire notebook scp <src> <dst>
@@ -55,7 +55,7 @@ def notebook():
     \b
     Examples:
         inspire notebook list                       # List all instances
-        inspire notebook ssh <id>                   # Bootstrap SSH (saves an alias)
+        inspire notebook ssh <name>                 # Bootstrap SSH (saves an alias)
         inspire notebook exec <alias> "nvidia-smi"  # Run a command on a saved alias
     """
     pass

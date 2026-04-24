@@ -156,7 +156,7 @@ def try_exec_via_ssh_tunnel(
             hint = (
                 "Run 'inspire notebook test' to troubleshoot. "
                 "If needed, re-create the bridge via "
-                "'inspire notebook ssh <notebook-id> --save-as <name>'."
+                "'inspire notebook ssh <notebook-name> --save-as <name>'."
             )
             return _emit_error(
                 ctx,
@@ -174,7 +174,7 @@ def try_exec_via_ssh_tunnel(
                 "SSH tunnel not available",
                 hint=(
                     "Auto-rebuild retries exhausted. Run 'inspire notebook test' and "
-                    "retry 'inspire notebook ssh <notebook-id> --save-as <name>'."
+                    "retry 'inspire notebook ssh <notebook-name> --save-as <name>'."
                 ),
             )
 
@@ -324,7 +324,7 @@ def try_exec_via_ssh_tunnel(
                     ctx,
                     "TunnelError",
                     "No bridge configured for SSH execution.",
-                    hint="Use 'inspire notebook ssh <notebook-id>' or 'inspire notebook ssh <id> --save-as' first.",
+                    hint="Use 'inspire notebook ssh <notebook-name>' or 'inspire notebook ssh <notebook-name> --save-as <alias>' first.",
                 )
 
             resolved_bridge_name = bridge.name

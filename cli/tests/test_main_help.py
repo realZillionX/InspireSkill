@@ -10,7 +10,7 @@ def test_root_help_explains_global_json_position() -> None:
 
     assert result.exit_code == 0
     assert "before the subcommand" in result.output
-    assert "inspire --json hpc status <job-id>" in result.output
+    assert "inspire --json hpc status <name>" in result.output
 
 
 def test_job_status_formatter_shows_platform_priority_fields() -> None:

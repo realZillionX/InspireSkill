@@ -105,7 +105,7 @@ def bridge_scp(
         hint = (
             "Run 'inspire notebook test' to troubleshoot. "
             "If needed, re-create the bridge via "
-            "'inspire notebook ssh <notebook-id> --save-as <name>'."
+            "'inspire notebook ssh <notebook-name> --save-as <name>'."
         )
         _handle_error(ctx, "TunnelError", "SSH tunnel not available", EXIT_GENERAL_ERROR, hint=hint)
 

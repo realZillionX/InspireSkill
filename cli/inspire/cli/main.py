@@ -2,8 +2,8 @@
 
 Usage:
     inspire job create --name "pr-123" --resource "4xH200" --command "bash train.sh"
-    inspire job status <job-id>
-    inspire job logs <job-id> --tail 100
+    inspire job status <name>
+    inspire job logs <name> --tail 100
     inspire resources list
 """
 
@@ -80,14 +80,14 @@ def main(ctx: Context, json_output: bool, debug: bool) -> None:
     \b
     JSON output:
         Global --json must appear before the subcommand, e.g.:
-            inspire --json hpc status <job-id>
+            inspire --json hpc status <name>
         Some subcommands also provide a local --json alias.
 
     \b
     Examples:
         inspire job create --name "pr-123" --resource "4xH200" --command "bash train.sh"
-        inspire job status job-abc-123
-        inspire job logs job-abc-123 --tail 100
+        inspire job status pr-123
+        inspire job logs pr-123 --tail 100
         inspire resources list
     """
     ctx.json_output = json_output
