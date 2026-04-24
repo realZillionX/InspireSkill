@@ -52,7 +52,7 @@
 
 ## 快速上手
 
-**Requirements**: `bash` · `curl` · `tar` · Python 3.10+ · `uv` 或 `pipx`
+**Requirements**：`bash` · `curl` · `tar` · Python 3.10+ · `uv` 或 `pipx`
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scripts/install.sh | bash
@@ -145,13 +145,13 @@ inspire resources list --all --include-cpu
     <code>image save / register / list / set-default</code>，默认镜像自动写回项目 <code>.inspire/config.toml</code>；<code>hpc create --image-type</code> 明确可见性。
   </td>
   <td>
-    <h4>🛰 模型部署 (Serving)</h4>
+    <h4>🛰 模型部署 （Serving）</h4>
     <code>inspire serving list / status / stop / configs</code> —— 观测 + 止损分层：<code>list</code> / <code>configs</code> 走 Browser API，<code>status</code> / <code>stop</code> 走 OpenAPI，和 <code>job</code> / <code>hpc</code> 同构。
   </td>
 </tr>
 <tr>
   <td>
-    <h4>📦 模型注册表 (Model)</h4>
+    <h4>📦 模型注册表 （Model）</h4>
     <code>inspire model list / status / versions</code> —— 浏览 workspace 下所有模型 + 每个模型的历史版本，带 vLLM 兼容标记 / 创建时间；之前只能在 Web UI 翻。
   </td>
   <td>
@@ -182,7 +182,7 @@ inspire resources list --all --include-cpu
 | [Claude Code](https://claude.com/claude-code) | `~/.claude/skills/inspire/` | **默认推荐** —— Agent 可被**后台命令完成事件**自动唤醒 |
 | [Codex CLI](https://github.com/openai/codex) | `~/.codex/skills/inspire/` | 额外生成 `agents/openai.yaml` |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `~/.gemini/skills/inspire/` | |
-| [OpenClaw](https://github.com/openclaw/openclaw) | `~/.openclaw/skills/inspire/` | 全局 "managed skills" 层；workspace 层 (`~/.openclaw/workspace/skills/`) 可覆盖 |
+| [OpenClaw](https://github.com/openclaw/openclaw) | `~/.openclaw/skills/inspire/` | 全局 "managed skills" 层；workspace 层 （`~/.openclaw/workspace/skills/`） 可覆盖 |
 | [OpenCode](https://github.com/anomalyco/opencode) | `~/.config/opencode/skills/inspire/` | 遵循 XDG；`$OPENCODE_CONFIG_DIR` 可改根 |
 
 **为什么默认推 Claude Code**：它的 scheduler 支持在**后台 Bash 命令结束时自动唤醒 Agent**。把 `inspire job logs --follow <name>` / 长轮询 checkpoint / `inspire hpc status <name>` 监视之类长 watch 挂到后台，训练或 HPC 任务跑完 Agent 自己醒过来接下一步 —— 不用你守在终端。Codex / Gemini CLI / OpenClaw / OpenCode 目前没有这个能力，做长流水的自动化会弱一档。
