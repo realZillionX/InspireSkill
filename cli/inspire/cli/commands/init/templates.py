@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import click
@@ -14,6 +15,22 @@ from inspire.config import (
 )
 
 from .env_detect import _format_preview_by_scope, _generate_toml_content
+
+
+def _atomic_write_text(target: Path, content: str) -> None:
+    """Write *content* to *target* atomically (same-dir temp + ``os.replace``).
+
+    ``inspire init`` writes config.toml files users will later edit by hand.
+    A half-written config would be worse than a missed write, so fsync to
+    disk before renaming over the target.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, target)
 
 CONFIG_TEMPLATE = """# Inspire CLI Configuration
 # Location: {location_comment}
@@ -120,10 +137,8 @@ def _init_template_mode(global_flag: bool, project_flag: bool, force: bool) -> N
             click.echo("Aborted.")
             return
 
-    config_dir.mkdir(parents=True, exist_ok=True)
-
     content = CONFIG_TEMPLATE.format(location_comment=location_comment)
-    config_path.write_text(content)
+    _atomic_write_text(config_path, content)
 
     click.echo(click.style(f"Created {config_path}", fg="green"))
 
@@ -161,9 +176,7 @@ def _write_single_file(
 
     toml_content = _generate_toml_content(detected)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    output_path.write_text(toml_content)
+    _atomic_write_text(output_path, toml_content)
     click.echo(click.style(f"Created {output_path}", fg="green"))
     click.echo()
 
@@ -211,8 +224,7 @@ def _write_auto_split(
 
     for scope, path in files_to_write:
         content = _generate_toml_content(detected, scope_filter=scope)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        _atomic_write_text(path, content)
         color = "cyan" if scope == "global" else "green"
         click.echo(click.style(f"Created {path}", fg=color))
 

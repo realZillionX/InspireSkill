@@ -13,11 +13,29 @@ place to change when the on-disk layout evolves.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from pathlib import Path
 
 CONFIG_FILENAME = "config.toml"
+
+
+def _atomic_write_text(target: Path, content: str) -> None:
+    """Write *content* to *target* atomically (temp file + ``os.replace``).
+
+    Matches the pattern already used by
+    ``inspire.platform.web.session.models.WebSession.save`` — keep partial
+    writes out of the target path so concurrent ``account use`` or a crash
+    mid-write never leaves a half-written ``current`` / ``config.toml``.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, target)
 
 _NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -92,7 +110,7 @@ def set_current_account(name: str) -> None:
     if not account_exists(validated):
         raise AccountError(f"Account not found: {validated}")
     ensure_inspire_home()
-    current_file().write_text(validated + "\n", encoding="utf-8")
+    _atomic_write_text(current_file(), validated + "\n")
 
 
 def clear_current_account() -> None:
@@ -109,7 +127,7 @@ def create_account(name: str, config_content: str, *, overwrite: bool = False) -
         raise AccountError(f"Account already exists: {validated}")
     ensure_inspire_home()
     target.mkdir(parents=True, exist_ok=overwrite)
-    (target / CONFIG_FILENAME).write_text(config_content, encoding="utf-8")
+    _atomic_write_text(target / CONFIG_FILENAME, config_content)
     return target
 
 
