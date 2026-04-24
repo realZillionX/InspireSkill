@@ -40,17 +40,21 @@ def resolve_job_id(ctx: Context, name: str) -> str:
             hint="Use `inspire job list -A` to find the name and pass that instead.",
         )
 
-    matches = _search_job_api_by_name(name)
+    # Check local cache first so `inspire job list` (cache-backed) and
+    # `inspire job status <name>` agree on which jobs exist — otherwise
+    # agents see a name in list and 404 when they try to use it.
+    matches = _search_job_cache_by_name(name)
+    if not matches:
+        matches = _search_job_api_by_name(name)
     if not matches:
         exit_with_error(
             ctx,
             "JobNotFound",
             f"No job with name {name!r} found.",
             EXIT_JOB_NOT_FOUND,
-            hint="Use `inspire job list -A` to see available jobs.",
+            hint="Use `inspire job list` (local cache) or `inspire job list -A` (web) to find names.",
         )
     if len(matches) > 1:
-        # Defer to the shared disambiguator so the UI matches other resources.
         return resolve_partial_id(ctx, name, "job", matches, ctx.json_output)
     return matches[0][0]
 
@@ -107,6 +111,39 @@ def _search_job_api(partial: str) -> list[tuple[str, str]]:
     except Exception as error:  # noqa: BLE001 - graceful fallback by design for resolver UX
         logger.debug("Web job lookup fallback for partial %s failed: %s", partial, error)
         return []
+
+
+def _search_job_cache_by_name(name: str) -> list[tuple[str, str]]:
+    """Exact-name match against the local job cache.
+
+    Mirrors the data source `inspire job list` uses so a name shown there
+    is always resolvable by `inspire job <cmd> <name>` without a web
+    round-trip. The cache path comes from env/default — we don't go
+    through ``Config.from_env`` here because that requires credentials,
+    and resolver helpers must work in the same contexts as the commands
+    they serve.
+    """
+    from inspire.cli.utils.job_cache_api import JobCache
+
+    cache_path = os.path.expanduser(
+        os.getenv("INSPIRE_JOB_CACHE") or "~/.inspire/jobs.json"
+    )
+
+    try:
+        cache = JobCache(cache_path)
+        jobs = cache.list_jobs(limit=0)
+    except (OSError, ValueError, TypeError) as error:
+        logger.debug("Cache-by-name read failed: %s", error)
+        return []
+
+    matches: list[tuple[str, str]] = []
+    for job in jobs:
+        if (job.get("name") or "") == name:
+            jid = job.get("job_id", "")
+            label = job.get("status") or ""
+            if jid:
+                matches.append((jid, label))
+    return matches
 
 
 def _search_job_api_by_name(name: str) -> list[tuple[str, str]]:
