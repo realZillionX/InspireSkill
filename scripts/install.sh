@@ -93,14 +93,24 @@ need tar
 need mktemp
 
 # ---- install CLI via uv tool / pipx ----------------------------------------
-SPEC="git+https://github.com/${REPO_SLUG}.git@${REF}#subdirectory=cli"
+# Default: install from PyPI (fast, cacheable, works behind Tsinghua / Aliyun
+# mirrors that a lot of users here rely on). If the caller passed --ref to
+# pin to a branch / tag / SHA, fall back to the git spec — that path exists
+# for bisecting or trying un-released changes.
+if [[ "$REF" == "$DEFAULT_REF" ]]; then
+  SPEC="$PACKAGE"
+  SPEC_LABEL="$(bold "$PACKAGE") (PyPI)"
+else
+  SPEC="git+https://github.com/${REPO_SLUG}.git@${REF}#subdirectory=cli"
+  SPEC_LABEL="$(dim "$SPEC")"
+fi
 
 if (( INSTALL_CLI )); then
   if command -v uv >/dev/null 2>&1; then
-    log "installing $(bold "$PACKAGE") via $(bold 'uv tool') from $(dim "$SPEC")"
+    log "installing $SPEC_LABEL via $(bold 'uv tool')"
     uv tool install --force "$SPEC"
   elif command -v pipx >/dev/null 2>&1; then
-    log "installing $(bold "$PACKAGE") via $(bold pipx) from $(dim "$SPEC")"
+    log "installing $SPEC_LABEL via $(bold pipx)"
     pipx install --force "$SPEC"
   else
     die "need uv or pipx. Install uv:  curl -LsSf https://astral.sh/uv/install.sh | sh"

@@ -26,12 +26,11 @@ from inspire import __version__
 
 REPO_SLUG = "realZillionX/InspireSkill"
 PACKAGE_NAME = "inspire-skill"
-# Keep this ref in sync with ``DEFAULT_REF`` in ``scripts/install.sh`` — users
-# install from ``main`` and expect ``inspire update`` to pull from the same
-# branch. The package is not on PyPI; ``uv tool upgrade`` / ``pipx upgrade``
-# would 404 there, so we always reinstall via the git spec below.
+# Published to PyPI, so the CLI upgrades via the native ``uv tool upgrade`` /
+# ``pipx upgrade`` path below. The version-check and SKILL-tarball paths stay
+# on GitHub (main is the source of truth for SKILL.md / references/, and
+# releases typically lag commits on main by a few minutes).
 GIT_REF = "main"
-GIT_INSTALL_SPEC = f"git+https://github.com/{REPO_SLUG}.git@{GIT_REF}#subdirectory=cli"
 RAW_PYPROJECT_URL = f"https://raw.githubusercontent.com/{REPO_SLUG}/{GIT_REF}/cli/pyproject.toml"
 TARBALL_URL = f"https://codeload.github.com/{REPO_SLUG}/tar.gz/refs/heads/{GIT_REF}"
 

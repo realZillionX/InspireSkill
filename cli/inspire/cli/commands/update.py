@@ -12,10 +12,10 @@ Design notes:
 - Upstream version comes from cli/pyproject.toml on main (parsed via raw.githubusercontent.com).
 - SKILL/references are copied (not symlinked) into every detected harness skills dir.
 - The Python package is upgraded via whatever installer currently owns it
-  (`uv tool install --force` / `pipx install --force`), detected from
-  ``sys.executable``'s path. The package is NOT on PyPI — we reinstall from
-  the same ``git+https://…#subdirectory=cli`` spec that ``scripts/install.sh``
-  uses, so `update` and first-time install pull from the same source.
+  (`uv tool upgrade` / `pipx upgrade`), detected from ``sys.executable``'s
+  path. ``inspire-skill`` is published to PyPI, so the standard upgrade path
+  works — the `install.sh` default SPEC is also the PyPI package name, so
+  first-time install and `inspire update` pull from the same source.
 """
 from __future__ import annotations
 
@@ -42,7 +42,6 @@ import click
 
 from inspire import __version__
 from inspire.cli.utils.update_notice import (
-    GIT_INSTALL_SPEC,
     PACKAGE_NAME,
     TARBALL_URL,
     fetch_latest_version,
@@ -88,16 +87,11 @@ def _detect_installer() -> str | None:
 
 
 def _upgrade_cli(silent: bool) -> bool:
-    # We reinstall from the git spec (same one ``scripts/install.sh`` uses)
-    # rather than ``uv tool upgrade`` / ``pipx upgrade``, because the package
-    # is not published to PyPI — those upgrade subcommands would try the PyPI
-    # index and fail. ``install --force`` against a git URL does the right
-    # thing: fetch the latest commit on the configured ref and swap it in.
     installer = _detect_installer()
     if installer == "uv":
-        cmd = ["uv", "tool", "install", "--force", GIT_INSTALL_SPEC]
+        cmd = ["uv", "tool", "upgrade", PACKAGE_NAME]
     elif installer == "pipx":
-        cmd = ["pipx", "install", "--force", GIT_INSTALL_SPEC]
+        cmd = ["pipx", "upgrade", PACKAGE_NAME]
     else:
         if not silent:
             click.secho(
