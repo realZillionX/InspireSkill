@@ -2359,49 +2359,9 @@ def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
     assert getattr(saved_profile, "notebook_id", None) == "notebook-12345678"
 
 
-def test_resolve_notebook_id_accepts_numeric_id(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeSession:
-        workspace_id = "ws-test"
-        storage_state = {}
-
-    cfg = make_test_config(tmp_path)
-    notebook_item = {
-        "id": 189181,
-        "notebook_id": "notebook-12345678-90ab-cdef-1234-567890abcdef",
-        "name": "alpha-notebook",
-        "status": "RUNNING",
-        "created_at": "2026-03-02T12:00:00Z",
-    }
-
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_collect_workspace_ids_for_lookup",
-        lambda session, config: ["ws-test"],
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_try_get_current_user_ids",
-        lambda session, base_url: ["user-1"],
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_list_notebooks_for_workspace",
-        lambda *args, **kwargs: [notebook_item],
-    )
-
-    notebook_id, workspace_id = notebook_cmd_module._resolve_notebook_id(
-        Context(),
-        session=FakeSession(),
-        config=cfg,
-        base_url="https://qz.sii.edu.cn",
-        identifier="189181",
-        json_output=True,
-    )
-
-    assert notebook_id == "notebook-12345678-90ab-cdef-1234-567890abcdef"
-    assert workspace_id == "ws-test"
+# Removed in v2.0.0: the old "numeric id / partial hex → full id" resolution
+# path no longer exists. Notebook commands take a name (exact match on
+# item.name); anything that looks like an id is rejected upfront.
 
 
 def test_run_notebook_ssh_interactive_reconnects_after_drop(

@@ -15,7 +15,7 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import is_partial_id, normalize_partial, resolve_partial_id
+from inspire.cli.utils.id_resolver import is_partial_id
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web import session as web_session_module
 
@@ -358,48 +358,6 @@ def _collect_workspace_ids_for_lookup(
     return []
 
 
-def _resolve_partial_notebook_id(
-    ctx: Context,
-    *,
-    session: web_session_module.WebSession,
-    config: Any,
-    base_url: str,
-    partial: str,
-    json_output: bool,
-) -> str | None:
-    workspace_ids = _collect_workspace_ids_for_lookup(session, config)
-    if not workspace_ids:
-        return None
-
-    user_ids = _try_get_current_user_ids(session, base_url=base_url)
-    nb_matches: list[tuple[str, str]] = []
-    seen_ids: set[str] = set()
-    try:
-        workspace_items = _list_notebooks_for_workspaces(
-            session,
-            base_url=base_url,
-            workspace_ids=workspace_ids,
-            user_ids=user_ids,
-        )
-    except Exception:
-        workspace_items = {}
-    for ws_id in workspace_ids:
-        items = workspace_items.get(ws_id, [])
-        for item in items:
-            nid = _notebook_id_from_item(item)
-            if not nid or nid in seen_ids:
-                continue
-            seen_ids.add(nid)
-            uuid_part = nid[9:] if nid.lower().startswith("notebook-") else nid
-            if uuid_part.lower().startswith(partial):
-                label = item.get("name") or item.get("status") or ""
-                nb_matches.append((nid, label))
-
-    if not nb_matches:
-        return None
-    return resolve_partial_id(ctx, partial, "notebook", nb_matches, json_output)
-
-
 def _resolve_notebook_id(
     ctx: Context,
     *,
@@ -414,25 +372,23 @@ def _resolve_notebook_id(
         _handle_error(
             ctx,
             "ValidationError",
-            "Notebook identifier cannot be empty",
+            "Notebook name cannot be empty",
             EXIT_VALIDATION_ERROR,
         )
 
-    if _looks_like_notebook_id(identifier):
-        return identifier, None
-
-    if is_partial_id(identifier, prefix="notebook-"):
-        partial = normalize_partial(identifier, prefix="notebook-")
-        resolved_partial = _resolve_partial_notebook_id(
+    # v2.0.0: names only — reject id-shaped inputs so agents never see or
+    # repeat platform ids. Matches the rest of the CLI surface (job / hpc /
+    # ray / serving / image all do the same).
+    if _looks_like_notebook_id(identifier) or is_partial_id(
+        identifier, prefix="notebook-"
+    ):
+        _handle_error(
             ctx,
-            session=session,
-            config=config,
-            base_url=base_url,
-            partial=partial,
-            json_output=json_output,
+            "ValidationError",
+            f"v2 CLI takes a notebook name, not an id / partial-id ({identifier!r}).",
+            EXIT_VALIDATION_ERROR,
+            hint="Use `inspire notebook list` to find the name and pass that instead.",
         )
-        if resolved_partial:
-            return resolved_partial, None
 
     workspace_ids = _collect_workspace_ids_for_lookup(session, config)
 
@@ -443,8 +399,8 @@ def _resolve_notebook_id(
             "No workspace_id configured or available for notebook lookup.",
             EXIT_CONFIG_ERROR,
             hint=(
-                "Set [workspaces].cpu/[workspaces].gpu in config.toml, set INSPIRE_WORKSPACE_ID, "
-                "or pass a notebook ID directly."
+                "Configure [workspaces] in your account config.toml or set "
+                "INSPIRE_WORKSPACE_ID."
             ),
         )
 
@@ -465,10 +421,6 @@ def _resolve_notebook_id(
         items = workspace_items.get(ws_id, [])
 
         for item in items:
-            raw_item_id = str(item.get("id") or "").strip()
-            if raw_item_id and raw_item_id == identifier:
-                matches.append((ws_id, item))
-                continue
             if str(item.get("name") or "") == identifier:
                 matches.append((ws_id, item))
 
@@ -540,7 +492,6 @@ __all__ = [
     "_looks_like_notebook_id",
     "_notebook_id_from_item",
     "_resolve_notebook_id",
-    "_resolve_partial_notebook_id",
     "_sort_notebook_items",
     "_try_get_current_user_ids",
     "_unique_workspace_ids",

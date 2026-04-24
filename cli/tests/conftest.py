@@ -38,6 +38,17 @@ def _short_circuit_platform_resolvers(monkeypatch):  # noqa: ANN001
         ("inspire.cli.commands.serving.serving_commands", "_resolve_serving_name"),
         ("inspire.cli.commands.image.image_commands", "_resolve_image_name"),
     ]
+
+    # Notebook resolver returns (id, workspace_id) — wrap differently.
+    def _nb_passthrough(ctx, *, identifier, **_kwargs):  # noqa: ANN001,ANN003
+        return identifier, None
+
+    try:
+        import importlib as _il
+        _nb_lookup = _il.import_module("inspire.cli.commands.notebook.notebook_lookup")
+        monkeypatch.setattr(_nb_lookup, "_resolve_notebook_id", _nb_passthrough)
+    except (ImportError, AttributeError):  # pragma: no cover
+        pass
     for mod_name, attr in patches:
         try:
             mod = importlib.import_module(mod_name)

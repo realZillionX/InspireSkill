@@ -910,42 +910,36 @@ def ssh_notebook_cmd(
 ) -> None:
     """SSH into a notebook instance via rtunnel ProxyCommand.
 
-    Polymorphic:
-      - ``inspire notebook ssh <notebook-id>``  bootstraps the rtunnel/SSH
-        toolchain and automatically saves the connection as an alias
-        (default ``notebook-<first-8-chars-of-id>``; override with ``--save-as``).
-      - ``inspire notebook ssh <alias>``  reconnects to a previously bootstrapped
-        notebook via the saved alias (no bootstrap cost, auto-rebuilds tunnel
-        if it dropped).
+    Polymorphic — the positional argument is either a notebook NAME
+    (bootstraps the rtunnel / SSH toolchain and saves a local alias) or
+    a previously-saved local ALIAS (reconnects to a previously bootstrapped
+    notebook, auto-rebuilding the tunnel if it dropped). Alias lookup wins
+    if both match; pass a distinct ``--save-as`` on first bootstrap to
+    keep them separable.
 
     \b
     Examples:
-        inspire notebook ssh <id>                 # bootstrap + save alias
-        inspire notebook ssh <id> --save-as box1  # bootstrap with custom alias
-        inspire notebook ssh box1                 # reconnect via alias
-        inspire notebook ssh <id> --command "hostname"
+        inspire notebook ssh <notebook-name>          # bootstrap + save alias
+        inspire notebook ssh <notebook-name> --save-as box1
+        inspire notebook ssh box1                     # reconnect via alias
+        inspire notebook ssh <notebook-name> --command "hostname"
     """
-    # Polymorphic fast path: if the arg unambiguously matches a saved alias
-    # (and does NOT look like a notebook-id), jump to the reconnect flow
-    # (same as legacy `notebook shell --alias <alias>`). Any id-shaped input
-    # stays on the bootstrap path so a saved alias cannot accidentally shadow
-    # a real notebook-id.
+    # Polymorphic fast path: if the arg matches a saved local alias, jump
+    # to the reconnect flow (cheap, no bootstrap). Otherwise fall through
+    # and treat the arg as a platform notebook name for bootstrap.
     if not save_as and not command and not pubkey:
-        from .notebook_lookup import _looks_like_notebook_id
+        try:
+            from inspire.bridge.tunnel import TunnelError, load_tunnel_config
 
-        if not _looks_like_notebook_id(notebook):
-            try:
-                from inspire.bridge.tunnel import TunnelError, load_tunnel_config
+            from .remote_shell import bridge_ssh as _reconnect
 
-                from .remote_shell import bridge_ssh as _reconnect
+            _cfg = load_tunnel_config()
+        except (FileNotFoundError, TunnelError, ImportError):
+            _cfg = None
 
-                _cfg = load_tunnel_config()
-            except (FileNotFoundError, TunnelError, ImportError):
-                _cfg = None
-
-            if _cfg and notebook in _cfg.bridges:
-                click.get_current_context().invoke(_reconnect, bridge=notebook)
-                return
+        if _cfg and notebook in _cfg.bridges:
+            click.get_current_context().invoke(_reconnect, bridge=notebook)
+            return
 
     run_notebook_ssh(
         ctx,
