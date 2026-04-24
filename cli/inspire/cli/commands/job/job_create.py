@@ -183,8 +183,7 @@ def run_job_create(
             return
 
         if job_id:
-            click.echo(human_formatter.format_success(f"Job created: {job_id}"))
-            click.echo(f"\nName:     {name}")
+            click.echo(human_formatter.format_success(f"Job created: {name}"))
             click.echo(f"Resource: {resource}")
             if priority is not None:
                 click.echo(f"Priority: {priority}")
@@ -200,16 +199,16 @@ def run_job_create(
             click.echo(f"Command:  {display_cmd}{suffix}")
             if log_path:
                 click.echo(f"Log file:  {log_path}")
-            click.echo(f"\nCheck status with: inspire job status {job_id}")
+            click.echo(f"\nCheck status with: inspire job status {name}")
             return
 
         if isinstance(result, dict):
-            message = result.get("message") or "Job created (no job ID returned)"
+            message = result.get("message") or f"Job created: {name}"
             click.echo(human_formatter.format_success(message))
             if result.get("data"):
                 click.echo(str(result["data"]))
         else:
-            click.echo(human_formatter.format_success("Job created (no job ID returned)"))
+            click.echo(human_formatter.format_success(f"Job created: {name}"))
             click.echo(str(result))
 
     except ConfigError as e:

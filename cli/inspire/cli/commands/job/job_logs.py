@@ -329,7 +329,7 @@ def _follow_logs_via_ssh(
 
     if not file_exists:
         click.echo(f"\n\nTimeout: Log file not created after {wait_timeout}s")
-        click.echo("Job may still be queuing. Check status with: inspire job status <job_id>")
+        click.echo("Job may still be queuing. Check status with: inspire job status <job-name>")
         return None
 
     click.echo("\nJob started! Following logs...")
@@ -1064,7 +1064,7 @@ def _run_job_logs_single_job(
 
 
 @click.command("logs")
-@click.argument("job_id", required=False)
+@click.argument("job", required=False)
 @click.option("--tail", "-n", type=int, help="Show last N lines only")
 @click.option("--head", type=int, help="Show first N lines only")
 @click.option("--path", is_flag=True, help="Just print log path, don't read content")
@@ -1101,7 +1101,7 @@ def _run_job_logs_single_job(
 @pass_context
 def logs(
     ctx: Context,
-    job_id: Optional[str],
+    job: Optional[str],
     tail: int | None,
     head: int | None,
     path: bool,
@@ -1121,39 +1121,39 @@ def logs(
     the beginning.
 
     \b
-    Single job mode (with JOB_ID):
+    Single job mode (with JOB name):
         Fetches and displays the log for a specific job.
 
-    Bulk mode (without JOB_ID):
+    Bulk mode (without JOB):
         Fetches and caches logs for multiple jobs from local cache.
         Use --status to filter by job status.
 
     \b
     Examples:
-        inspire job logs job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf
-        inspire job logs job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf --tail 100
-        inspire job logs job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf --head 50
-        inspire job logs job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf --follow
-        inspire job logs job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf --follow --interval 10
-        inspire job logs job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf --path
-        inspire job logs job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf --refresh
-        inspire job logs job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf --bridge my-profile
+        inspire job logs my-training-run
+        inspire job logs my-training-run --tail 100
+        inspire job logs my-training-run --head 50
+        inspire job logs my-training-run --follow
+        inspire job logs my-training-run --follow --interval 10
+        inspire job logs my-training-run --path
+        inspire job logs my-training-run --refresh
+        inspire job logs my-training-run --bridge my-profile
         inspire job logs --status RUNNING --status SUCCEEDED
         inspire job logs --refresh --status RUNNING
     """
-    if not job_id:
+    if not job:
         if tail or head or path or follow or bridge:
             _handle_error(
                 ctx,
                 "InvalidUsage",
-                "--tail, --head, --path, --follow and --bridge require a JOB_ID",
+                "--tail, --head, --path, --follow and --bridge require a JOB name",
                 EXIT_VALIDATION_ERROR,
             )
             return
         _bulk_update_logs(ctx, status=status, limit=limit, refresh=refresh)
         return
 
-    job_id = resolve_job_id(ctx, job_id)
+    job_id = resolve_job_id(ctx, job)
 
     _run_job_logs_single_job(
         ctx,

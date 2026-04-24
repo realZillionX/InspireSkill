@@ -369,16 +369,18 @@ def list_jobs(
 
 
 @click.command("status")
-@click.argument("job_id")
+@click.argument("job")
 @pass_context
-def status(ctx: Context, job_id: str) -> None:
+def status(ctx: Context, job: str) -> None:
     """Check the status of a training job.
+
+    JOB is the name shown in `inspire job list`. v2 does not accept ids.
 
     \b
     Example:
-        inspire job status job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf
+        inspire job status my-training-run
     """
-    job_id = resolve_job_id(ctx, job_id)
+    job_id = resolve_job_id(ctx, job)
 
     try:
         config, _ = Config.from_files_and_env()
@@ -409,16 +411,16 @@ def status(ctx: Context, job_id: str) -> None:
 
 
 @click.command("stop")
-@click.argument("job_id")
+@click.argument("job")
 @pass_context
-def stop(ctx: Context, job_id: str) -> None:
+def stop(ctx: Context, job: str) -> None:
     """Stop a running training job.
 
     \b
     Example:
-        inspire job stop job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf
+        inspire job stop my-training-run
     """
-    job_id = resolve_job_id(ctx, job_id)
+    job_id = resolve_job_id(ctx, job)
 
     try:
         config, _ = Config.from_files_and_env()
@@ -447,7 +449,7 @@ def stop(ctx: Context, job_id: str) -> None:
 
 
 @click.command("delete")
-@click.argument("job_id")
+@click.argument("job")
 @click.option(
     "--yes",
     "-y",
@@ -455,7 +457,7 @@ def stop(ctx: Context, job_id: str) -> None:
     help="Skip the interactive confirmation prompt.",
 )
 @pass_context
-def delete(ctx: Context, job_id: str, yes: bool) -> None:
+def delete(ctx: Context, job: str, yes: bool) -> None:
     """Permanently delete a training job entry from the platform (Browser API).
 
     \b
@@ -465,9 +467,9 @@ def delete(ctx: Context, job_id: str, yes: bool) -> None:
 
     \b
     Example:
-        inspire job delete job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf
+        inspire job delete my-training-run
     """
-    job_id = resolve_job_id(ctx, job_id)
+    job_id = resolve_job_id(ctx, job)
 
     if not yes and not ctx.json_output:
         click.confirm(
@@ -512,11 +514,11 @@ def delete(ctx: Context, job_id: str, yes: bool) -> None:
 
 
 @click.command("wait")
-@click.argument("job_id")
+@click.argument("job")
 @click.option("--timeout", type=int, default=14400, help="Timeout in seconds (default: 4 hours)")
 @click.option("--interval", type=int, default=30, help="Poll interval in seconds (default: 30)")
 @pass_context
-def wait(ctx: Context, job_id: str, timeout: int, interval: int) -> None:
+def wait(ctx: Context, job: str, timeout: int, interval: int) -> None:
     """Wait for a job to complete.
 
     Polls the job status until it reaches a terminal state
@@ -524,9 +526,9 @@ def wait(ctx: Context, job_id: str, timeout: int, interval: int) -> None:
 
     \b
     Example:
-        inspire job wait job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf --timeout 7200
+        inspire job wait my-training-run --timeout 7200
     """
-    job_id = resolve_job_id(ctx, job_id)
+    job_id = resolve_job_id(ctx, job)
 
     try:
         config, _ = Config.from_files_and_env()
@@ -718,11 +720,11 @@ def update_jobs(ctx: Context, status: tuple, limit: int, delay: float) -> None:
 
 
 @click.command("command")
-@click.argument("job_id")
+@click.argument("job")
 @pass_context
-def show_command(ctx: Context, job_id: str) -> None:
+def show_command(ctx: Context, job: str) -> None:
     """Show the training command used for a job."""
-    job_id = resolve_job_id(ctx, job_id)
+    job_id = resolve_job_id(ctx, job)
 
     cached_command = None
     cache = job_deps.JobCache(os.getenv("INSPIRE_JOB_CACHE"))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any, Callable, Iterable, Optional
 
 import click
 
@@ -95,3 +96,127 @@ def resolve_partial_id(
         show_default=True,
     )
     return matches[choice - 1][0]
+
+
+# ---------------------------------------------------------------------------
+# name → id resolver (for job / hpc / ray / serving / image, etc.)
+# ---------------------------------------------------------------------------
+
+
+def resolve_by_name(
+    ctx: Context,
+    *,
+    name: str,
+    resource_type: str,
+    list_candidates: Callable[[], Iterable[dict[str, Any]]],
+    json_output: bool = False,
+    name_key: str = "name",
+    id_key: str = "id",
+    label_fn: Optional[Callable[[dict[str, Any]], str]] = None,
+) -> str:
+    """Resolve a platform name to its internal id.
+
+    The v2 CLI contract: **only names** cross the user / agent boundary.
+    Platform-internal ids (``job-…`` / ``hpc-job-…`` / ``rj-…`` / ``sv-…``
+    / ``image-…`` / raw UUIDs) are rejected to keep downstream prompts
+    unambiguous.
+
+    ``list_candidates()`` returns dicts with at least ``name_key`` and
+    ``id_key``. Exact string match on ``name_key``; multiple matches abort
+    with the full candidate list (we never silently send an action to the
+    wrong target — two jobs with the same name would otherwise have you
+    stop the wrong one).
+    """
+    name = (name or "").strip()
+    if not name:
+        exit_with_error(
+            ctx,
+            "ValidationError",
+            f"{resource_type} name cannot be empty",
+            EXIT_VALIDATION_ERROR,
+        )
+
+    # Reject id-looking inputs — v2.0.0 removed id compatibility.
+    if _looks_like_platform_id(name):
+        exit_with_error(
+            ctx,
+            "ValidationError",
+            f"v2 CLI takes a {resource_type} name, not an id ({name!r}).",
+            EXIT_VALIDATION_ERROR,
+            hint=(
+                f"Find the name with `inspire {resource_type} list` and pass that. "
+                "Ids are intentionally not accepted on the v2 CLI — stop surfacing "
+                "them to agents."
+            ),
+        )
+        return ""  # unreachable
+
+    try:
+        candidates = list(list_candidates())
+    except Exception as e:  # noqa: BLE001
+        exit_with_error(
+            ctx,
+            "APIError",
+            f"Failed to resolve {resource_type} name {name!r}: {e}",
+            EXIT_VALIDATION_ERROR,
+        )
+        return ""  # unreachable
+
+    matches = [c for c in candidates if str(c.get(name_key) or "") == name]
+
+    if not matches:
+        exit_with_error(
+            ctx,
+            "NotFound",
+            f"No {resource_type} with name {name!r} found.",
+            EXIT_VALIDATION_ERROR,
+            hint=f"List candidates with `inspire {resource_type} list` (or `-A`).",
+        )
+        return ""  # unreachable
+
+    if len(matches) == 1:
+        return str(matches[0].get(id_key) or "")
+
+    def _label(c: dict[str, Any]) -> str:
+        if label_fn is not None:
+            return label_fn(c)
+        bits = []
+        status = c.get("status")
+        if status:
+            bits.append(str(status))
+        created = c.get("created_at")
+        if created:
+            bits.append(f"created_at={created}")
+        ws = c.get("workspace_id")
+        if ws:
+            bits.append(f"ws={ws}")
+        return "  ".join(bits) if bits else ""
+
+    lines = [f"  [{i}] {_label(c)}" for i, c in enumerate(matches, start=1)]
+    exit_with_error(
+        ctx,
+        "AmbiguousName",
+        f"{len(matches)} {resource_type}s share the name {name!r}:\n" + "\n".join(lines),
+        EXIT_VALIDATION_ERROR,
+        hint=(
+            "Narrow the candidate set by workspace or status on your `list` call, "
+            "or rename one of the duplicates."
+        ),
+    )
+    return ""  # unreachable
+
+
+def _looks_like_platform_id(value: str) -> bool:
+    """Heuristic for id-shaped inputs we reject in the v2 CLI.
+
+    Catches the common prefixes (``job-`` / ``hpc-job-`` / ``rj-`` / ``sv-``
+    / ``image-`` / ``notebook-`` / ``nb-``) and bare full UUIDs.
+    """
+    v = value.strip().lower()
+    if not v:
+        return False
+    id_prefixes = ("job-", "hpc-job-", "rj-", "sv-", "image-", "notebook-", "nb-")
+    if any(v.startswith(p) for p in id_prefixes):
+        return True
+    # Bare UUID — stripping only colons/underscores would be wrong, just match exactly.
+    return bool(_FULL_UUID_RE.match(v))

@@ -334,7 +334,8 @@ def test_job_create_human_output_updates_cache(monkeypatch: pytest.MonkeyPatch, 
     )
 
     assert result.exit_code == 0
-    assert "Job created: job-123" in result.output
+    # v2: plain-text output reports the name, not the platform id.
+    assert "Job created: test-job" in result.output
 
     # Verify job cache file was created
     cache_path = Path(make_test_config(tmp_path).job_cache_path)

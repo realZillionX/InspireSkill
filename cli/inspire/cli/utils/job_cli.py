@@ -18,52 +18,41 @@ from inspire.cli.utils.id_resolver import (
 logger = logging.getLogger(__name__)
 
 
-def resolve_job_id(ctx: Context, job_id: str) -> str:
-    """Resolve a full or partial job ID to a complete ``job-<uuid>`` string.
+def resolve_job_id(ctx: Context, name: str) -> str:
+    """Resolve a training-job name to its internal ``job-<uuid>`` string.
 
-    Resolution order:
-    1. Full UUID (with or without ``job-`` prefix) -> return directly.
-    2. Partial hex -> search local cache, then web API.
-    3. Not hex -> error with format hint.
+    v2.0.0: names only. Ids (``job-…`` / raw UUID / partial hex) are
+    rejected — the v2 CLI surface never accepts them, so agents that
+    only ever see names don't start guessing with ``rj-`` / ``job-``
+    prefixes they saw elsewhere.
     """
-    job_id = job_id.strip()
-    if not job_id:
-        exit_with_error(ctx, "InvalidJobID", "Job ID cannot be empty", EXIT_JOB_NOT_FOUND)
+    name = (name or "").strip()
+    if not name:
+        exit_with_error(ctx, "InvalidJobName", "Job name cannot be empty", EXIT_JOB_NOT_FOUND)
 
-    # Full UUID with prefix
-    if is_full_uuid(job_id, prefix="job-"):
-        # Ensure the job- prefix is present
-        if not job_id.lower().startswith("job-"):
-            job_id = f"job-{job_id}"
-        return job_id
-
-    # Partial hex
-    if is_partial_id(job_id, prefix="job-"):
-        partial = normalize_partial(job_id, prefix="job-")
-        matches = _search_job_cache(partial)
-
-        if not matches:
-            matches = _search_job_api(partial)
-
-        return resolve_partial_id(
+    # Reject id-shaped input.
+    if is_full_uuid(name, prefix="job-") or is_partial_id(name, prefix="job-"):
+        exit_with_error(
             ctx,
-            partial,
-            "job",
-            matches,
-            ctx.json_output,
+            "ValidationError",
+            f"v2 CLI takes a job name, not an id / partial-id ({name!r}).",
+            EXIT_JOB_NOT_FOUND,
+            hint="Use `inspire job list -A` to find the name and pass that instead.",
         )
 
-    # Not a hex string at all — give the original validation error
-    format_error = _validate_job_id_format(job_id)
-    msg = format_error or f"Invalid job ID format: {job_id}"
-    exit_with_error(
-        ctx,
-        "InvalidJobID",
-        msg,
-        EXIT_JOB_NOT_FOUND,
-        hint="Expected a full job ID (job-xxxxxxxx-...) or a partial hex prefix (4+ chars).",
-    )
-    return ""  # unreachable, exit_with_error calls sys.exit
+    matches = _search_job_api_by_name(name)
+    if not matches:
+        exit_with_error(
+            ctx,
+            "JobNotFound",
+            f"No job with name {name!r} found.",
+            EXIT_JOB_NOT_FOUND,
+            hint="Use `inspire job list -A` to see available jobs.",
+        )
+    if len(matches) > 1:
+        # Defer to the shared disambiguator so the UI matches other resources.
+        return resolve_partial_id(ctx, name, "job", matches, ctx.json_output)
+    return matches[0][0]
 
 
 def _search_job_cache(partial: str) -> list[tuple[str, str]]:
@@ -117,4 +106,26 @@ def _search_job_api(partial: str) -> list[tuple[str, str]]:
         return matches
     except Exception as error:  # noqa: BLE001 - graceful fallback by design for resolver UX
         logger.debug("Web job lookup fallback for partial %s failed: %s", partial, error)
+        return []
+
+
+def _search_job_api_by_name(name: str) -> list[tuple[str, str]]:
+    """Exact-name match against the web API's job list.
+
+    Used as the last-resort branch in :func:`resolve_job_id` so the CLI
+    accepts ``inspire job status my-training-run`` just like it accepts
+    ``inspire job status job-<uuid>`` or ``inspire job status <partial-hex>``.
+    """
+    try:
+        from inspire.platform.web.browser_api.jobs import list_jobs as web_list_jobs
+
+        items, _ = web_list_jobs(page_size=200)
+        matches: list[tuple[str, str]] = []
+        for job in items:
+            if (job.name or "") == name:
+                label = job.status or ""
+                matches.append((job.job_id, label))
+        return matches
+    except Exception as error:  # noqa: BLE001
+        logger.debug("Web job name lookup failed for %s: %s", name, error)
         return []

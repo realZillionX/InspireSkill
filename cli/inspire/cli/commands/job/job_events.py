@@ -30,7 +30,7 @@ from inspire.platform.web.browser_api.jobs import (
 
 
 @click.command("events")
-@click.argument("job_id")
+@click.argument("job")
 @click.option(
     "--json",
     "json_output_local",
@@ -71,7 +71,7 @@ from inspire.platform.web.browser_api.jobs import (
 @pass_context
 def events(
     ctx: Context,
-    job_id: str,
+    job: str,
     json_output_local: bool,
     from_cache: bool,
     type_filter: Optional[str],
@@ -79,18 +79,18 @@ def events(
     instance_ids: tuple[str, ...],
     tail: Optional[int],
 ) -> None:
-    """Show K8s events for a training job.
+    """Show events for a training job.
 
     \b
     Examples:
-      inspire job events <id>
-      inspire --json job events <id>
-      inspire job events <id> --type Warning
-      inspire job events <id> --reason Unschedulable
-      inspire job events <id> --instance <job-id>-worker-0
-      inspire job events <id> --from-cache
+      inspire job events <job-name>
+      inspire --json job events <job-name>
+      inspire job events <job-name> --type Warning
+      inspire job events <job-name> --reason Unschedulable
+      inspire job events <job-name> --instance <pod-name>
+      inspire job events <job-name> --from-cache
     """
-    resolved_id = resolve_job_id(ctx, job_id)
+    resolved_id = resolve_job_id(ctx, job)
     pods = list(instance_ids) if instance_ids else None
     if pods:
         # per-instance cache key includes pod names (hash on the fly to keep path short)
