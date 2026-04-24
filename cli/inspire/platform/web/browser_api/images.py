@@ -316,7 +316,18 @@ def delete_image(
 
 
 _IMAGE_READY_STATES = {"READY", "SUCCESS", "SUCCEED", "SUCCEEDED"}
-_IMAGE_FAILED_STATES = {"FAILED", "FAILURE", "ERROR"}
+# Platform-observed terminal-failure states. Missing any of these makes
+# ``wait_for_image_ready`` hang to the timeout instead of failing fast.
+_IMAGE_FAILED_STATES = {
+    "FAILED",
+    "FAILURE",
+    "ERROR",
+    "CANCELLED",
+    "CANCELED",
+    "TIMEOUT",
+    "ABORTED",
+    "INTERRUPTED",
+}
 
 
 def wait_for_image_ready(
