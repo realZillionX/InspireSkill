@@ -1,0 +1,57 @@
+# Publish `inspire-skill` to PyPI on every `v*` tag push.
+#
+# Auth is PyPI trusted publisher (OIDC) — no API token stored in the repo.
+# The token lives only for the duration of this workflow run, scoped to
+# this specific workflow file + environment. Configure once at
+# https://pypi.org/manage/project/inspire-skill/settings/publishing/ :
+#   - owner: realZillionX
+#   - repository: InspireSkill
+#   - workflow: publish.yml
+#   - environment: pypi
+
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Build sdist + wheel
+        working-directory: cli
+        run: uv build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: cli/dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/inspire-skill/
+    permissions:
+      # Required for trusted publisher OIDC token exchange.
+      id-token: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
