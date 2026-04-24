@@ -27,11 +27,25 @@ from inspire.platform.web.session import SessionExpiredError, get_web_session
 def _resolve_ray_name(ctx: Context, name: str) -> str:
     """Resolve a Ray job name to its platform id (``rj-<uuid>``).
 
-    v2.0.0: names only. Ids are rejected by ``resolve_by_name``.
+    v2.0.0: names only. Candidate set is restricted to the current user's
+    Ray jobs in the session's workspace — avoids cross-user same-name
+    ambiguity (you wouldn't have permission to operate on a teammate's
+    job anyway). Full-page fetch (`page_size=10000`) so large workspaces
+    don't drop the target off the end of page 1.
     """
     def _lister():
         session = get_web_session()
-        jobs, _ = browser_api_module.list_ray_jobs(session=session)
+        user_ids = None
+        try:
+            me = browser_api_module.get_current_user(session=session)
+            uid = str(me.get("id") or me.get("user_id") or "").strip()
+            if uid:
+                user_ids = [uid]
+        except Exception:
+            pass
+        jobs, _ = browser_api_module.list_ray_jobs(
+            session=session, user_ids=user_ids, page_size=10000
+        )
         return [
             {
                 "name": j.name,

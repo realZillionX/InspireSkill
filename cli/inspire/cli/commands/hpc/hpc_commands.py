@@ -25,10 +25,21 @@ from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 
 def _resolve_hpc_name(ctx: Context, name: str) -> str:
-    """Resolve an HPC job name to its platform id (``hpc-job-<uuid>``)."""
+    """Resolve an HPC job name to its platform id (``hpc-job-<uuid>``).
+
+    Scope: current user × session workspace, full page.
+    """
     def _lister():
         session = get_web_session()
-        jobs, _ = browser_api_module.list_hpc_jobs(session=session)
+        created_by = None
+        try:
+            me = browser_api_module.get_current_user(session=session)
+            created_by = str(me.get("id") or me.get("user_id") or "").strip() or None
+        except Exception:
+            pass
+        jobs, _ = browser_api_module.list_hpc_jobs(
+            session=session, created_by=created_by, page_size=10000
+        )
         return [
             {
                 "name": j.name,

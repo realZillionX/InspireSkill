@@ -112,14 +112,25 @@ def _search_job_api(partial: str) -> list[tuple[str, str]]:
 def _search_job_api_by_name(name: str) -> list[tuple[str, str]]:
     """Exact-name match against the web API's job list.
 
-    Used as the last-resort branch in :func:`resolve_job_id` so the CLI
-    accepts ``inspire job status my-training-run`` just like it accepts
-    ``inspire job status job-<uuid>`` or ``inspire job status <partial-hex>``.
+    Scope: current user × session workspace, full page. This keeps
+    `inspire job status <name>` from picking up a teammate's same-named
+    training run (which you wouldn't have permission to operate anyway)
+    or getting cut off at the default page of 50.
     """
     try:
-        from inspire.platform.web.browser_api.jobs import list_jobs as web_list_jobs
+        from inspire.platform.web.browser_api.jobs import (
+            get_current_user,
+            list_jobs as web_list_jobs,
+        )
 
-        items, _ = web_list_jobs(page_size=200)
+        created_by: str | None = None
+        try:
+            me = get_current_user()
+            created_by = str(me.get("id") or me.get("user_id") or "").strip() or None
+        except Exception:
+            pass
+
+        items, _ = web_list_jobs(created_by=created_by, page_size=10000)
         matches: list[tuple[str, str]] = []
         for job in items:
             if (job.name or "") == name:

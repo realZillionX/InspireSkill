@@ -26,10 +26,15 @@ from inspire.platform.web.session import get_web_session
 
 
 def _resolve_serving_name(ctx: Context, name: str) -> str:
-    """Resolve a serving name to its platform id (``sv-<uuid>``)."""
+    """Resolve a serving name to its platform id (``sv-<uuid>``).
+
+    Scope: ``my_serving=True`` (default) × session workspace, full page.
+    """
     def _lister():
         session = get_web_session()
-        items, _ = browser_api_module.list_servings(session=session)
+        items, _ = browser_api_module.list_servings(
+            session=session, my_serving=True, page_size=10000
+        )
         return [
             {
                 "name": s.name,
