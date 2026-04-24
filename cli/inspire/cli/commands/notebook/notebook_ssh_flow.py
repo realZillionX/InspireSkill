@@ -129,18 +129,28 @@ def _unique_alias_for_notebook(
     base: str,
     notebook_id: str,
 ) -> str:
-    """Return *base* unless another bridge already uses it for a different
-    notebook; in that case append a short suffix derived from ``notebook_id``
-    so the freshly-bootstrapped alias stays unique.
+    """Return ``<base>-sh<N>`` — the first N ≥ 0 not already taken by another
+    notebook.
+
+    If the exact ``<base>-sh<N>`` is currently bound to *this* notebook, we
+    return it as-is (idempotent reconnect). Otherwise we pick the smallest
+    N whose ``<base>-sh<N>`` either is free or already belongs to this
+    notebook — which also means ``<base>-sh0`` is the default for a
+    fresh alias, and re-bootstrapping a notebook on a host that already
+    owns ``-sh0`` keeps the same name.
     """
-    existing = cached_config.bridges.get(base)
-    if existing is None:
-        return base
-    existing_notebook_id = str(getattr(existing, "notebook_id", "") or "").strip()
-    if existing_notebook_id == notebook_id:
-        return base
+    for i in range(1_000):  # effectively unbounded; sanity cap
+        candidate = f"{base}-sh{i}"
+        existing = cached_config.bridges.get(candidate)
+        if existing is None:
+            return candidate
+        existing_notebook_id = str(getattr(existing, "notebook_id", "") or "").strip()
+        if existing_notebook_id == notebook_id:
+            return candidate
+    # Fallback — should never happen; keep the CLI alive rather than loop
+    # forever on an obviously degenerate alias table.
     suffix = str(notebook_id or "").replace("notebook-", "")[:4] or "x"
-    return f"{base}-{suffix}"
+    return f"{base}-sh{suffix}"
 
 
 def _default_alias_for_notebook(
@@ -151,10 +161,14 @@ def _default_alias_for_notebook(
 ) -> str:
     """Compute the default alias for a freshly-bootstrapped notebook.
 
-    Prefers the sanitised display name; falls back to ``nb-<id[:8]>`` when
-    the name is missing or sanitises to something too short to be useful.
-    The final value is guaranteed not to collide with an existing bridge
-    pointing at a different notebook.
+    v2.0.0: always ``<cleaned-name>-sh<N>`` where N is the lowest free
+    index (``-sh0`` for the first bootstrap of a given name). Prior versions
+    used the bare cleaned name which made the second bootstrap of a same-named
+    notebook pick up an id-based suffix; the -sh<N> scheme is stable across
+    reconnects and survives display-name collisions cleanly.
+
+    Falls back to ``nb-<id[:8]>`` when the display name sanitises away
+    (still suffixed with ``-sh<N>``).
     """
     derived = _sanitize_alias_from_name(notebook_name or "")
     base = derived or f"nb-{str(notebook_id or '')[:8]}"

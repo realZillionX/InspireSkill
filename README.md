@@ -185,7 +185,7 @@ inspire resources list --all --include-cpu
 | [OpenClaw](https://github.com/openclaw/openclaw) | `~/.openclaw/skills/inspire/` | 全局 "managed skills" 层；workspace 层 (`~/.openclaw/workspace/skills/`) 可覆盖 |
 | [OpenCode](https://github.com/anomalyco/opencode) | `~/.config/opencode/skills/inspire/` | 遵循 XDG；`$OPENCODE_CONFIG_DIR` 可改根 |
 
-**为什么默认推 Claude Code**：它的 scheduler 支持在**后台 Bash 命令结束时自动唤醒 Agent**。把 `inspire job logs --follow <id>` / 长轮询 checkpoint / `inspire hpc status <id>` 监视之类长 watch 挂到后台，训练或 HPC 任务跑完 Agent 自己醒过来接下一步 —— 不用你守在终端。Codex / Gemini CLI / OpenClaw / OpenCode 目前没有这个能力，做长流水的自动化会弱一档。
+**为什么默认推 Claude Code**：它的 scheduler 支持在**后台 Bash 命令结束时自动唤醒 Agent**。把 `inspire job logs --follow <name>` / 长轮询 checkpoint / `inspire hpc status <name>` 监视之类长 watch 挂到后台，训练或 HPC 任务跑完 Agent 自己醒过来接下一步 —— 不用你守在终端。Codex / Gemini CLI / OpenClaw / OpenCode 目前没有这个能力，做长流水的自动化会弱一档。
 
 ---
 

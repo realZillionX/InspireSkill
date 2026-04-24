@@ -99,46 +99,60 @@ def test_find_alias_for_notebook_id_handles_empty_input() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_unique_alias_returns_base_when_not_cached() -> None:
+def test_unique_alias_uses_sh0_when_no_collision() -> None:
     cfg = _FakeTunnelConfig(bridges={})
     assert (
         _unique_alias_for_notebook(
             cfg, base="train-v1", notebook_id="notebook-aaaa1111"
         )
-        == "train-v1"
+        == "train-v1-sh0"
     )
 
 
-def test_unique_alias_returns_base_when_existing_bridge_is_same_notebook() -> None:
-    # Re-running `inspire notebook ssh <id>` after an alias was already cached
-    # must not spuriously rename it.
+def test_unique_alias_is_idempotent_for_same_notebook() -> None:
+    # Reconnect scenario: `train-v1-sh0` already owns this notebook.
     cfg = _FakeTunnelConfig(
         bridges={
-            "train-v1": _FakeBridge(notebook_id="notebook-aaaa1111"),
+            "train-v1-sh0": _FakeBridge(notebook_id="notebook-aaaa1111"),
         }
     )
     assert (
         _unique_alias_for_notebook(
             cfg, base="train-v1", notebook_id="notebook-aaaa1111"
         )
-        == "train-v1"
+        == "train-v1-sh0"
     )
 
 
-def test_unique_alias_adds_suffix_on_cross_notebook_collision() -> None:
-    # Two notebooks sharing the same display name must not clobber each other.
+def test_unique_alias_increments_sh_index_on_cross_notebook_collision() -> None:
+    # Two notebooks sharing a display name — second gets `-sh1`, not a hash.
     cfg = _FakeTunnelConfig(
         bridges={
-            "train-v1": _FakeBridge(notebook_id="notebook-aaaa1111"),
+            "train-v1-sh0": _FakeBridge(notebook_id="notebook-aaaa1111"),
         }
     )
-    result = _unique_alias_for_notebook(
-        cfg, base="train-v1", notebook_id="notebook-bbbb2222"
+    assert (
+        _unique_alias_for_notebook(
+            cfg, base="train-v1", notebook_id="notebook-bbbb2222"
+        )
+        == "train-v1-sh1"
     )
-    assert result.startswith("train-v1-")
-    assert result != "train-v1"
-    # Suffix comes from the notebook id and is compact enough to be readable.
-    assert len(result) <= len("train-v1-") + 4
+
+
+def test_unique_alias_walks_sh_index_forward() -> None:
+    # Three notebooks with the same display name — third gets `-sh2`.
+    cfg = _FakeTunnelConfig(
+        bridges={
+            "train-v1-sh0": _FakeBridge(notebook_id="notebook-aaaa1111"),
+            "train-v1-sh1": _FakeBridge(notebook_id="notebook-bbbb2222"),
+        }
+    )
+    assert (
+        _unique_alias_for_notebook(
+            cfg, base="train-v1", notebook_id="notebook-cccc3333"
+        )
+        == "train-v1-sh2"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -146,13 +160,13 @@ def test_unique_alias_adds_suffix_on_cross_notebook_collision() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_default_alias_prefers_sanitised_display_name() -> None:
+def test_default_alias_prefers_sanitised_display_name_plus_sh0() -> None:
     cfg = _FakeTunnelConfig(bridges={})
     assert (
         _default_alias_for_notebook(
             cfg, notebook_id="notebook-aaaa1111", notebook_name="Train V1 run"
         )
-        == "train-v1-run"
+        == "train-v1-run-sh0"
     )
 
 
@@ -162,7 +176,7 @@ def test_default_alias_falls_back_to_nb_prefix_when_name_unusable() -> None:
         _default_alias_for_notebook(
             cfg, notebook_id="notebook-aaaa1111ffff", notebook_name="🚀"
         )
-        == "nb-notebook"
+        == "nb-notebook-sh0"
     )
 
 
@@ -172,34 +186,35 @@ def test_default_alias_falls_back_to_nb_prefix_when_name_missing() -> None:
         _default_alias_for_notebook(
             cfg, notebook_id="notebook-aaaa1111ffff", notebook_name=""
         )
-        == "nb-notebook"
+        == "nb-notebook-sh0"
     )
     assert (
         _default_alias_for_notebook(
             cfg, notebook_id="abcd1234", notebook_name=None
         )
-        == "nb-abcd1234"
+        == "nb-abcd1234-sh0"
     )
 
 
 def test_default_alias_preserves_when_cached_for_same_notebook() -> None:
     cfg = _FakeTunnelConfig(
-        bridges={"train-v1": _FakeBridge(notebook_id="notebook-aaaa1111")}
+        bridges={"train-v1-sh0": _FakeBridge(notebook_id="notebook-aaaa1111")}
     )
     assert (
         _default_alias_for_notebook(
             cfg, notebook_id="notebook-aaaa1111", notebook_name="train v1"
         )
-        == "train-v1"
+        == "train-v1-sh0"
     )
 
 
 def test_default_alias_deconflicts_against_unrelated_bridge() -> None:
     cfg = _FakeTunnelConfig(
-        bridges={"train-v1": _FakeBridge(notebook_id="notebook-aaaa1111")}
+        bridges={"train-v1-sh0": _FakeBridge(notebook_id="notebook-aaaa1111")}
     )
-    result = _default_alias_for_notebook(
-        cfg, notebook_id="notebook-bbbb2222", notebook_name="Train V1"
+    assert (
+        _default_alias_for_notebook(
+            cfg, notebook_id="notebook-bbbb2222", notebook_name="Train V1"
+        )
+        == "train-v1-sh1"
     )
-    assert result != "train-v1"
-    assert result.startswith("train-v1-")

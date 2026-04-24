@@ -29,18 +29,18 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | 账号管理 | 多账号 = 独立目录。每个账号的 `config.toml` / `bridges.json` / `web_session.json` 都在 `~/.inspire/accounts/<name>/` 里，活动账号写在一行 `~/.inspire/current`。用 `inspire account add/list/use/current/remove` 管理。**没有活动账号时 CLI 直接报错**指向 `inspire account add`——不存在全局 fallback 路径。 |
 | 配置查询 | **不要直接读** `~/.inspire/accounts/<active>/config.toml` 或 `./.inspire/config.toml`；合并由 CLI 负责。扁平字段 `inspire config show [--json] [--compact]`；活动账号 / 项目 / workspace alias / compute_groups 用 `inspire config context [--json]`。 |
 | 项目叙述上下文 | 项目仓库根下用 **`INSPIRE.md`** 写非配置性上下文。建议五节：`Default Image`（config.toml 未托管的镜像，如 base / HPC 专用）· `Path Conventions`（本地与远端路径派生规则）· `Public Directory Layout`（`public/` 下的共享结构）· `Existing Notebooks`（角色 → ID）· `Ongoing Jobs`（当前长期在跑的任务）。**不**把 config.toml 内容复制进来。`AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 只放通用工程事项。 |
-| `--json` 位置 | 全局 `--json` **必须放子命令前**：`inspire --json hpc status <id>`。 |
+| `--json` 位置 | 全局 `--json` **必须放子命令前**：`inspire --json hpc status <name>`。 |
 | Debug | `inspire --debug` 把脱敏日志写进 `~/.cache/inspire-skill/logs/`。 |
 | 默认 workspace 范围 | 本 SKILL 默认只把 **`CPU资源空间`**（阶段 A / B：notebook、HPC、数据处理、Ray CPU pipeline）和 **`分布式训练空间`**（阶段 C：单节点 debug / `job` 多节点训练）作为一等公民。这两个是给大多数研究人员共享的通用空间。`inspire account list` / `config context` 下可能还看得到 `整节点任务空间` / `CI-情境智能` / `CI-情境智能-国产卡*` / `可上网GPU资源` / `专属资源开发空间` / `CI-PPU` / `CPU临时测试空间` / `高性能计算` 等——**那些是小组 / 课题专属空间或测试沙箱**，不归默认用户用，别主动往里塞任务。需要在这些空间跑的人会自己把相关命令 / 规格加进仓库级 `INSPIRE.md` 或本地 harness 的 SKILL.md 覆盖层。 |
 | 废弃资源清理 | 别让废弃 notebook / job / hpc 堆积污染 Web UI 列表。终态（`SUCCEEDED` / `FAILED` / `STOPPED` / `CANCELLED`）且确认不再需要时就 `delete`；批量用 `inspire --json <res> list -A` 过滤再逐个 `delete --yes`。running 的先 `stop` 再 `delete`；不确定是否还有人用时跳过，不要猜着删。 |
-| 排队久 / 莫名失败优先查事件 | 任务卡 PENDING / CREATING 超过预期，或者突然 FAILED 没明显原因时，**第一步**永远是 `inspire <res> events <id>`（`notebook` / `job` / `hpc` / `ray` 都有）。`job` / `ray` 再叠 `--instance <pod>` / `ray instances <id>` 看哪个 pod 的问题。不凭猜重提——原因不明前不烧配额。 |
+| 排队久 / 莫名失败优先查事件 | 任务卡 PENDING / CREATING 超过预期，或者突然 FAILED 没明显原因时，**第一步**永远是 `inspire <res> events <name>`（`notebook` / `job` / `hpc` / `ray` 都有）。`job` / `ray` 再叠 `--instance <pod>` / `ray instances <name>` 看哪个 pod 的问题。不凭猜重提——原因不明前不烧配额。 |
 | 大规模 `mv` / `cp` / `rm` 先看形状 | 启智共享盘上的目录经常是"单仓库百万文件 / 数据集百 GB / 缓存百 TB"量级，串行 `rm -rf <dir>` 能跑半小时到数小时，本地 `inspire notebook exec` 会被卡住。**动手前先 `ls -A \| wc -l` + `du -sh --max-depth=1 <dir>` 看顶层 fan-out 和大小分布**，按形状选：① 顶层 fan-out 足够大 + 大小接近均匀（如按 batch 切的数据集）→ `find <root> -mindepth 1 -maxdepth 1 -print0 \| xargs -0 -n 1 -P 16 rm -rf --`；② 就一两个巨型子树 → 下钻一两层再 fan-out（用 `find <root> -mindepth 2 -maxdepth 2`），不然 `-P 16` 实际只有 1 路；③ 百万级小文件（inductor / pip / HF cache 那种）→ 瓶颈在 metadata IO，GNU `find -delete`（单进程 syscall、不 fork）或 `rsync --delete-after empty/ target/` 往往比 fork 进程的 `rm -rf` 还快。无论哪条，超过 20 分钟的操作都走 `nohup ... &` + sentinel 文件，本地轮询远端 sentinel，**别**让 `inspire notebook exec` 吊着等。并行度 `-P` 别无脑拉到 64+：GPFS metadata server 是共享的，容易影响同组其他人。 |
 
 ## 2. 命令速查
 
 ### 2.1 Notebook（生命周期 + 远程操作 + alias 管理）
 
-> **一个 notebook ↔ 一条本地 alias**。首次 `notebook ssh <id>` 引导 SSH 时把连接存成 alias（默认用 notebook 的显示名清洗成 alias-safe 形式，清洗空了才回退 `nb-<id 前 8 位>`；`--save-as` 可强制改名）。同一个 `notebook_id` 已有 alias 时直接复用，不会重复建——老用户的 `nb-<id>` 记录不会被改名。`notebook ssh <arg>` 多态——arg 是 id 就 bootstrap，是已保存 alias 就重连（自动重建断开的 tunnel）。
+> **一个 notebook ↔ 一条本地 alias**。首次 `notebook ssh <name>` 引导 SSH 时把连接存成 alias `<clean-name>-sh0`（递增 `-sh1 / -sh2 / ...` 消解重名冲突；`--save-as` 可强制改名）。同一个 notebook 已有 alias 时直接复用，不会重复建。`notebook ssh <arg>` 多态——arg 是已保存 alias 就重连（自动重建断开的 tunnel），否则按 notebook name 做 bootstrap。
 >
 > **`shell` vs `exec`（远端执行两种模式）**：
 > - `inspire notebook shell <alias>` = 交互式**持久**会话。一次登入后连续敲命令，cwd / env / shell 变量全部保留，直到 `exit`。等价于直接 `ssh <alias>`，所以在 N 个终端里同时 `inspire notebook shell mybox` 就是 N 个互相独立的会话并存，各自 cwd / env / history 互不影响（远端是共享 CPU / 内存的单容器，多路并发会互相抢资源；要真并行算力走 `job` 多节点或 `hpc`）。
@@ -50,13 +50,13 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | --- | --- |
 | `inspire notebook list` | 列实例；`-A` 跨 workspace，`-s RUNNING` 过滤，`--name` 搜索 |
 | `inspire notebook create` | 建实例；常用 `--workspace` / `--resource` / `--image` / `--wait` |
-| `inspire notebook status <id>` | 看详情，镜像名在 `image.name` |
-| `inspire notebook events <id>` | 实例生命周期事件流（调度 / 镜像拉取 / 保存镜像各阶段）；`--tail N` / `--from-cache` 可组合 |
-| `inspire notebook lifecycle <id>` | 多次启停的粗粒度时间线（一次 `start→stop` 一行）；想看一次运行内部状态用 `events` |
-| `inspire notebook start/stop <id>` | 启停；做 `ssh` 前先核实状态 |
-| `inspire notebook delete <id> [--yes]` | 永久删一个 notebook。running 的要先 `stop`；`-y` 跳过确认。本地 alias 不会同时清掉——用 `notebook forget` |
-| `inspire notebook ssh <id>` | **Bootstrap SSH / rtunnel**（平台默认 `allow_ssh=false`，CLI 自动引导）。失败转 troubleshooting.md |
-| `inspire notebook ssh <id> --save-as <name>` | 自定义 alias 名 |
+| `inspire notebook status <name>` | 看详情，镜像名在 `image.name` |
+| `inspire notebook events <name>` | 实例生命周期事件流（调度 / 镜像拉取 / 保存镜像各阶段）；`--tail N` / `--from-cache` 可组合 |
+| `inspire notebook lifecycle <name>` | 多次启停的粗粒度时间线（一次 `start→stop` 一行）；想看一次运行内部状态用 `events` |
+| `inspire notebook start/stop <name>` | 启停；做 `ssh` 前先核实状态 |
+| `inspire notebook delete <name> [--yes]` | 永久删一个 notebook。running 的要先 `stop`；`-y` 跳过确认。本地 alias 不会同时清掉——用 `notebook forget` |
+| `inspire notebook ssh <name>` | **Bootstrap SSH / rtunnel**（平台默认 `allow_ssh=false`，CLI 自动引导）。失败转 troubleshooting.md |
+| `inspire notebook ssh <name> --save-as <name>` | 自定义 alias 名 |
 | `inspire notebook exec <alias> "<cmd>"` | 远端 `INSPIRE_TARGET_DIR` 下执行**一次性**命令；详情 / 状态不共享的坑见上方 `shell` vs `exec` 说明。对 notebook-backed alias 可自动重建断开的 tunnel |
 | `inspire notebook shell [<alias>]` | **持久**交互 SSH shell，同一窗口内命令共享 cwd / env（详见上方 `shell` vs `exec` 说明） |
 | `inspire notebook scp <src> <dst>` | 传**非仓库**文件。**不是** repo 同步——源码走本地 `git push` + `notebook exec` 远端 `git pull`。不继承 `INSPIRE_TARGET_DIR`，远端写绝对路径 |
@@ -66,7 +66,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire notebook forget <alias>` | 删本地 alias 记录（不影响平台上的 notebook） |
 | `inspire notebook set-default <alias>` | 设默认 alias |
 | `inspire notebook top` | alias 实例的 GPU 利用率（SSH `nvidia-smi` 实时快照，需要 tunnel）；`--watch` 持续刷新 |
-| `inspire notebook metrics <id>` | 资源视图的历史利用率曲线（GPU / GPU Memory / CPU / Memory / Disk IO / Network 共 8 种，默认 `--metric core` 取前 4 个）。默认出 PNG 到 `~/.inspire/metrics/notebook-<id>-<unix>.png`，`--json` 给原始 per-pod 时序。**和 `top` 的区别**：`top` 是实时 `nvidia-smi`（要 tunnel 活着），`metrics` 是历史曲线（不需要 tunnel）。`inspire job/hpc/serving metrics` 同 UX 同 flag |
+| `inspire notebook metrics <name>` | 资源视图的历史利用率曲线（GPU / GPU Memory / CPU / Memory / Disk IO / Network 共 8 种，默认 `--metric core` 取前 4 个）。默认出 PNG 到 `~/.inspire/metrics/notebook-<name>-<unix>.png`，`--json` 给原始 per-pod 时序。**和 `top` 的区别**：`top` 是实时 `nvidia-smi`（要 tunnel 活着），`metrics` 是历史曲线（不需要 tunnel）。`inspire job/hpc/serving metrics` 同 UX 同 flag |
 
 ### 2.2 GPU 多节点任务 (`job`)
 
@@ -74,14 +74,14 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 | 命令 | 用途 |
 | --- | --- |
-| `inspire job create` | 精细提交。`--priority` 与直觉相反：**`1` = LOW，`9` = HIGH**。提交后**立即** `inspire --json job status <id>` 核对返回的 `priority_level`；若仍是 `LOW` 就 `job stop`，用更高值重提。 |
+| `inspire job create` | 精细提交。`--priority` 与直觉相反：**`1` = LOW，`9` = HIGH**。提交后**立即** `inspire --json job status <name>` 核对返回的 `priority_level`；若仍是 `LOW` 就 `job stop`，用更高值重提。 |
 | `inspire run "<cmd>" [--watch]` | 快速提交：自动选资源组 + 提交；`--watch` 自动跟 `job logs --follow` |
-| `inspire job status <id>` | 权威状态（高优 / 低优 / 调度结果） |
-| `inspire job logs <id>` | **优先走 SSH tunnel fast path**；无 tunnel 回退其它通道 |
-| `inspire job events <id>` | Job-level 事件；`--instance <pod>` 切 per-pod（能看到调度失败的具体节点原因）。`--type` / `--reason` / `--tail` / `--from-cache` 可组合。调度失败优先看 `--instance <pod>` |
-| `inspire job stop <id>` | 规格 / 优先级 / 命令提错时立即止损 |
-| `inspire job delete <id> [--yes]` | 永久删条目（清理废弃任务）。running 的要先 `stop`；`-y` 跳过确认 |
-| `inspire job metrics <id>` | 训练任务的历史利用率曲线，按 `worker-0..N-1` 分开画。stdout 的 `spread=X%` 反映 worker 间离散度——spread 大说明有 worker 掉队 / 通信 hang / 数据加载不均，是多节点训练健康监测的核心指标；正常训练 spread 通常 < 5%。flag 和输出语义见 `inspire notebook metrics` |
+| `inspire job status <name>` | 权威状态（高优 / 低优 / 调度结果） |
+| `inspire job logs <name>` | **优先走 SSH tunnel fast path**；无 tunnel 回退其它通道 |
+| `inspire job events <name>` | Job-level 事件；`--instance <pod>` 切 per-pod（能看到调度失败的具体节点原因）。`--type` / `--reason` / `--tail` / `--from-cache` 可组合。调度失败优先看 `--instance <pod>` |
+| `inspire job stop <name>` | 规格 / 优先级 / 命令提错时立即止损 |
+| `inspire job delete <name> [--yes]` | 永久删条目（清理废弃任务）。running 的要先 `stop`；`-y` 跳过确认 |
+| `inspire job metrics <name>` | 训练任务的历史利用率曲线，按 `worker-0..N-1` 分开画。stdout 的 `spread=X%` 反映 worker 间离散度——spread 大说明有 worker 掉队 / 通信 hang / 数据加载不均，是多节点训练健康监测的核心指标；正常训练 spread 通常 < 5%。flag 和输出语义见 `inspire notebook metrics` |
 
 ### 2.3 HPC（Slurm）
 
@@ -90,12 +90,12 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | 命令 | 用途 |
 | --- | --- |
 | `inspire hpc create` | 四条约束：（1）`-c` **只写 Slurm 正文**，平台自动补 `#SBATCH` 头，正文程序必须**显式 `srun`** 启动；（2）`--compute-group "<name>"` 按 name 传（如 `"HPC-可上网区资源-2"`，从 `inspire config context` 的 `compute_groups[]` 抄）；（3）`--cpus-per-task` / `--memory-per-cpu` 超规格**静默排队不报错**——CLI 会根据这对参数自动从平台查 `spec_id`，提交前实查 `cpu_count` / `memory_size_gib`；（4）`--image` 必须是**完整 Docker 地址**且带可用 Slurm 环境，通用基底 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`；`--image-type` 通常 `SOURCE_PRIVATE` 或 `SOURCE_PUBLIC`。 |
-| `inspire hpc status <id>` | 看 `status` / `priority_level` / `running_time_ms` / `finished_at`。**HPC 常见"假成功"**：`status=SUCCEEDED` 但 payload 实际没跑（entrypoint 早退、srun 命令语法错、shell 变量丢失等）都能返回 SUCCEEDED。不要只信 status——每次新 entrypoint 必须写一个**独一无二的 fingerprint 到共享存储**（例如 `/inspire/<tier>/project/<topic>/<user>/.../probe-<nonce>.log`），再从同项目 notebook `cat` 回验。提交后 `slurm_cluster_spec.nodes` 在 RUNNING 时应非空；SUCCEEDED 后平台会把它清成 `[]`，这不是坏信号。CREATING 卡住或 RUNNING 时 `nodes=[]` 才是坏信号（详见 troubleshooting.md） |
+| `inspire hpc status <name>` | 看 `status` / `priority_level` / `running_time_ms` / `finished_at`。**HPC 常见"假成功"**：`status=SUCCEEDED` 但 payload 实际没跑（entrypoint 早退、srun 命令语法错、shell 变量丢失等）都能返回 SUCCEEDED。不要只信 status——每次新 entrypoint 必须写一个**独一无二的 fingerprint 到共享存储**（例如 `/inspire/<tier>/project/<topic>/<user>/.../probe-<nonce>.log`），再从同项目 notebook `cat` 回验。提交后 `slurm_cluster_spec.nodes` 在 RUNNING 时应非空；SUCCEEDED 后平台会把它清成 `[]`，这不是坏信号。CREATING 卡住或 RUNNING 时 `nodes=[]` 才是坏信号（详见 troubleshooting.md） |
 | `inspire hpc list` | 当前 workspace 内所有创建者的任务 |
-| `inspire hpc events <id>` | 平台 Slurm 控制器事件（`Created/DeletedSlurmCluster` 等）；`--reason` / `--tail` / `--from-cache` 可组合。**HPC 不暴露 per-pod 事件**，只有 job-level |
-| `inspire hpc stop <id>` | 发现提错立即止损 |
-| `inspire hpc delete <id> [--yes]` | 永久删条目（清理废弃任务）。running 的要先 `stop`；`-y` 跳过确认 |
-| `inspire hpc metrics <id>` | HPC 任务的历史利用率曲线，每个 slurm pod 一条（CPU / Memory / Disk / Network 为主）。除了和 `job metrics` 一样看 spread 判卡住，还能反向诊断"假成功"——`SUCCEEDED` 但曲线全 0 = entrypoint 根本没跑。flag 和输出语义见 `inspire notebook metrics` |
+| `inspire hpc events <name>` | 平台 Slurm 控制器事件（`Created/DeletedSlurmCluster` 等）；`--reason` / `--tail` / `--from-cache` 可组合。**HPC 不暴露 per-pod 事件**，只有 job-level |
+| `inspire hpc stop <name>` | 发现提错立即止损 |
+| `inspire hpc delete <name> [--yes]` | 永久删条目（清理废弃任务）。running 的要先 `stop`；`-y` 跳过确认 |
+| `inspire hpc metrics <name>` | HPC 任务的历史利用率曲线，每个 slurm pod 一条（CPU / Memory / Disk / Network 为主）。除了和 `job metrics` 一样看 spread 判卡住，还能反向诊断"假成功"——`SUCCEEDED` 但曲线全 0 = entrypoint 根本没跑。flag 和输出语义见 `inspire notebook metrics` |
 
 **平台自动注入的 Slurm 头**（不用自己写）：
 
@@ -119,11 +119,11 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | --- | --- |
 | `inspire ray create` | 提交 Ray 任务。`-c <cmd>` 是 driver 命令；`--head-image/-group/-spec[/-shm]` 定义 head；重复 `--worker 'name=<g>,image=<URL>,group=<compute_group>,spec=<quota>,min=<n>,max=<n>[,shm=<gib>][,image_type=SOURCE_PUBLIC\|SOURCE_PRIVATE\|SOURCE_OFFICIAL]'` 定义每个 worker 组。`-p` 项目，`--workspace` workspace。`--dry-run` 打印将要提交的 body；`--json-body <file>` 用准备好的 body 整体提交 |
 | `inspire ray list [-A] [--created-by user-xxx,...] [--workspace ...]` | 列 Ray 任务。默认只列当前用户的（对齐 Web UI "我的"），`-A` 列所有人 |
-| `inspire ray status <id>` | 单任务状态。纯文本只打顶层字段；`inspire --json ray status <id>` 才看得到 head / worker 规格 + 每组的 `min_replicas`/`max_replicas`/`current_replicas` |
-| `inspire ray events <id> [--tail N] [--reason R] [--type Normal\|Warning]` | Job-level 事件流。**卡 PENDING 时第一时间看这个**，message 会直接写明调度失败原因（CPU 不够 / node affinity 不匹配 / 镜像拉不下 / taint 等） |
-| `inspire ray instances <id>` | pod 级视图：head + 每个 worker 组的实际 pod 状态（`pending / running / ...`）。`events` 说调度失败时看这里定位是哪一个 pod |
-| `inspire ray stop <id>` | 停掉运行中的集群；worker 全部回收，条目留在 list 里 |
-| `inspire ray delete <id> [--yes]` | 永久删条目。终态清理用；running 的先 `stop` 再 `delete` |
+| `inspire ray status <name>` | 单任务状态。纯文本只打顶层字段；`inspire --json ray status <name>` 才看得到 head / worker 规格 + 每组的 `min_replicas`/`max_replicas`/`current_replicas` |
+| `inspire ray events <name> [--tail N] [--reason R] [--type Normal\|Warning]` | Job-level 事件流。**卡 PENDING 时第一时间看这个**，message 会直接写明调度失败原因（CPU 不够 / node affinity 不匹配 / 镜像拉不下 / taint 等） |
+| `inspire ray instances <name>` | pod 级视图：head + 每个 worker 组的实际 pod 状态（`pending / running / ...`）。`events` 说调度失败时看这里定位是哪一个 pod |
+| `inspire ray stop <name>` | 停掉运行中的集群；worker 全部回收，条目留在 list 里 |
+| `inspire ray delete <name> [--yes]` | 永久删条目。终态清理用；running 的先 `stop` 再 `delete` |
 
 **提交示例**（纯 CPU pipeline，默认 workspace 下就能跑；要 GPU 混合 worker 见"Ray 特有坑"）：
 
@@ -132,8 +132,8 @@ inspire ray create \
   -n av-pipeline \
   -c 'python driver.py --mode run_and_exit' \
   --head-image docker.sii.shaipower.online/inspire-studio/unified-base:v2 \
-  --head-group CPU资源-2 --head-spec <head_ray_quota_id> \
-  --worker 'name=decode,image=docker.sii.shaipower.online/inspire-studio/unified-base:v2,group=CPU资源-2,spec=<worker_ray_quota_id>,min=1,max=8,shm=32' \
+  --head-group CPU资源-2 --head-spec <head-quota> \
+  --worker 'name=decode,image=docker.sii.shaipower.online/inspire-studio/unified-base:v2,group=CPU资源-2,spec=<worker-quota>,min=1,max=8,shm=32' \
   -p <project> --workspace CPU资源空间
 ```
 
@@ -142,8 +142,8 @@ inspire ray create \
 | 命令 | 用途 |
 | --- | --- |
 | `inspire image list --source {public,private,all}` | 浏览；`private` = UI 里"个人可见镜像"；`all` 聚合去重 |
-| `inspire image save <notebook_id>` | 从运行中实例保存为镜像。`--public` / `--private` 指定可见性（缺省走平台默认，通常 private）；CLI 会把请求发给 `/mirror/save` 再用 `/image/update` 兜一次确保生效。image_id 未在响应中返回时自动回查 `--source private` 解析 |
-| `inspire image set-visibility <image_id> --public\|--private` | 翻转已有自定义镜像的可见性（内部走 `/image/update`） |
+| `inspire image save <notebook-name>` | 从运行中实例保存为镜像。`--public` / `--private` 指定可见性（缺省走平台默认，通常 private） |
+| `inspire image set-visibility <image-name>:<version> --public\|--private` | 翻转已有自定义镜像的可见性 |
 | `inspire image register` | 注册外部镜像；优先 `--method address` |
 | `inspire image set-default --job <url> --notebook <url>` | 设默认镜像。没有位置参数，只接受 `--job` / `--notebook`；写回最近的项目级 `.inspire/config.toml` |
 
@@ -235,15 +235,15 @@ inspire notebook create \
   --image docker.sii.shaipower.online/inspire-studio/unified-base:v2 \
   --project <project-id-or-alias> --wait --json
 
-inspire notebook ssh <notebook_id> --command "echo ssh-ok"   # fast：sshd 已在镜像里
-inspire notebook ssh <notebook_id> --save-as cpu-box
+inspire notebook ssh <notebook-name> --command "echo ssh-ok"   # fast：sshd 已在镜像里
+inspire notebook ssh <notebook-name> --save-as cpu-box
 ```
 
 想在此基础上加项目依赖（DeepSpeed / 训练栈 / ……）并发布：
 
 ```bash
 inspire notebook exec --alias cpu-box "apt-get update && apt-get install -y <deps> && pip install ..."
-inspire image save <notebook_id> -n <name>-base -v v1 --public --wait --json
+inspire image save <notebook-name> -n <name>-base -v v1 --public --wait --json
 inspire image set-default \
   --job docker.sii.shaipower.online/inspire-studio/<name>-base:v1 \
   --notebook docker.sii.shaipower.online/inspire-studio/<name>-base:v1
@@ -293,8 +293,8 @@ inspire ray create \
   -n <name>-ray-pipeline \
   -c 'python driver.py --mode run_and_exit' \
   --head-image docker.sii.shaipower.online/inspire-studio/unified-base:v2 \
-  --head-group CPU资源-2 --head-spec <head_quota_id> \
-  --worker 'name=w1,image=docker.sii.shaipower.online/inspire-studio/unified-base:v2,group=CPU资源-2,spec=<worker_quota_id>,min=1,max=8,shm=32' \
+  --head-group CPU资源-2 --head-spec <head-quota> \
+  --worker 'name=w1,image=docker.sii.shaipower.online/inspire-studio/unified-base:v2,group=CPU资源-2,spec=<worker-quota>,min=1,max=8,shm=32' \
   -p <project> --workspace CPU资源空间
 
 # 改之前先打印 body 核对；或者拿一份已知 good body 直接提交
@@ -302,16 +302,16 @@ inspire ray create ... --dry-run > body.json
 inspire ray create --json-body body.json
 
 # 日常运维
-inspire --json ray status <id>    # 看 head/worker 规格 + 实际扩缩
-inspire ray events <id>           # 卡 PENDING / 诊断调度失败的第一手
-inspire ray instances <id>        # pod 级状态
-inspire ray stop <id>             # driver 常驻必须手动停
-inspire ray delete <id> --yes     # 终态清理
+inspire --json ray status <name>    # 看 head/worker 规格 + 实际扩缩
+inspire ray events <name>           # 卡 PENDING / 诊断调度失败的第一手
+inspire ray instances <name>        # pod 级状态
+inspire ray stop <name>             # driver 常驻必须手动停
+inspire ray delete <name> --yes     # 终态清理
 ```
 
 **Ray 使用约束**：
 - 镜像必须带 Ray runtime：基底用 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`。自制 Ray 镜像上线前先 SSH 进 notebook 跑 `ray start --head --num-cpus=1 --disable-usage-stats && ray stop` 能干净起停就算 OK。
-- `--head-spec` / `--worker spec=` 填的是 **Ray 专属 quota_id**，和 notebook / HPC 的规格是不同表。`inspire resources specs` 目前不列 Ray 专属规格——**最稳的拿法**：从同 workspace 里任意一个已有 Ray 任务 `inspire --json ray status <id>` 读 `head_node.quota_id` / `worker_groups[].quota_id` 复用。
+- `--head-spec` / `--worker spec=` 填的是 **Ray 专属 quota_id**，和 notebook / HPC 的规格是不同表。`inspire resources specs` 目前不列 Ray 专属规格——**最稳的拿法**：从同 workspace 里任意一个已有 Ray 任务 `inspire --json ray status <name>` 读 `head_node.quota_id` / `worker_groups[].quota_id` 复用。
 - `min` / `max` 都必须 ≥ 1，没有"闲时缩到 0"。
 - driver 不 `sys.exit()` 就一直在，占着 `min_replicas` 的配额——长守护任务要接受"手动 `ray stop`"的运维模型。
 
@@ -328,7 +328,7 @@ inspire ray delete <id> --yes     # 终态清理
 # 单节点调试
 inspire notebook create --workspace 分布式训练空间 --resource 1xH100 \
   --name <name>-gpu-debug --image <base-image> --project <project-id-or-alias> --wait --json
-inspire notebook ssh <id> --command "nvidia-smi"
+inspire notebook ssh <name> --command "nvidia-smi"
 
 # 多节点训练：精细控制
 inspire job create -n <name>-train -r 8xH100 --nodes 2 \
