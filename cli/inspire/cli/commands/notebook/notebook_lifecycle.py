@@ -1,4 +1,4 @@
-"""`inspire notebook lifecycle <id>` — coarse run-cycle timeline.
+"""`inspire notebook lifecycle <name>` — coarse run-cycle timeline.
 
 Payload comes from Browser API `POST /api/v1/run_index/list` via
 `browser_api.notebooks.list_notebook_runs`. Each entry is one
@@ -6,7 +6,7 @@ start → stop cycle: notebooks can be re-started after being auto-recycled
 or manually stopped, so a long-lived instance typically accumulates 3-10
 run records.
 
-This complements `inspire notebook events <id>`, which returns the
+This complements `inspire notebook events <name>`, which returns the
 *fine-grained* K8s-ish timeline (scheduling, image pulls, preemption,
 container start, save-as-image phases). The events tab and the run-index
 tab are rendered by different components on the web portal — the web
@@ -55,7 +55,7 @@ def _format_duration(start: str, end: str) -> str:
 
 
 @click.command("lifecycle")
-@click.argument("notebook_id")
+@click.argument("name")
 @click.option(
     "--json",
     "json_output_local",
@@ -63,7 +63,7 @@ def _format_duration(start: str, end: str) -> str:
     help="Output as JSON. Equivalent to top-level `--json`.",
 )
 @pass_context
-def lifecycle(ctx: Context, notebook_id: str, json_output_local: bool) -> None:
+def lifecycle(ctx: Context, name: str, json_output_local: bool) -> None:
     """Show the run-cycle timeline for a notebook instance.
 
     Each row is one start → stop cycle (restarts after auto-recycle or
@@ -71,9 +71,12 @@ def lifecycle(ctx: Context, notebook_id: str, json_output_local: bool) -> None:
 
     \b
     Examples:
-      inspire notebook lifecycle <id>
-      inspire --json notebook lifecycle <id>
+      inspire notebook lifecycle <name>
+      inspire --json notebook lifecycle <name>
     """
+    from inspire.cli.commands.notebook.notebook_metrics import _notebook_name_to_id
+
+    notebook_id = _notebook_name_to_id(ctx, name)
     try:
         runs = list_notebook_runs(notebook_id)
     except AuthenticationError as e:

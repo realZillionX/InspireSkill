@@ -1,4 +1,4 @@
-"""`inspire notebook metrics <id>` — thin wrapper around the shared metrics core.
+"""`inspire notebook metrics <name>` — thin wrapper around the shared metrics core.
 
 Provides the notebook-specific ``logic_compute_group_id`` resolver (Browser-API
 notebook detail → ``start_config.logic_compute_group_id``) and delegates
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from inspire.cli.context import Context
 from inspire.cli.utils.metrics_shared import build_metrics_command
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import WebSession
@@ -39,11 +40,35 @@ def _resolve_notebook_lcg(task_id: str, session: WebSession) -> Optional[str]:
     return None
 
 
+def _notebook_name_to_id(ctx: Context, name: str) -> str:
+    from inspire.cli.commands.notebook import notebook_lookup as _nb
+    from inspire.cli.utils.notebook_cli import get_base_url, load_config, require_web_session
+
+    session = require_web_session(
+        ctx,
+        hint=(
+            "Resolving notebook name for metrics requires web authentication. "
+            "Set [auth].username/password in config.toml or "
+            "INSPIRE_USERNAME/INSPIRE_PASSWORD."
+        ),
+    )
+    config = load_config(ctx)
+    base_url = get_base_url()
+    nb_id, _ = _nb._resolve_notebook_id(
+        ctx,
+        session=session,
+        config=config,
+        base_url=base_url,
+        identifier=name,
+        json_output=getattr(ctx, "json_output", False),
+    )
+    return nb_id
+
+
 notebook_metrics = build_metrics_command(
     resource_name="notebook",
     resource_label="Notebook",
-    id_arg="notebook_id",
-    id_help="Notebook ID (e.g. 91fbc44e-9c40-4c99-99f4-d27d6303266e).",
+    name_resolver=_notebook_name_to_id,
     lcg_resolver=_resolve_notebook_lcg,
 )
 

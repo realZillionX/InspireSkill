@@ -1,4 +1,4 @@
-"""Shared core for `inspire <notebook|job|hpc|serving> metrics <id>` commands.
+"""Shared core for `inspire <notebook|job|hpc|serving> metrics <name>` commands.
 
 All four resource types hit the same Browser-API endpoint
 (``cluster_metric/resource_metric_by_time``) with a different ``task_type``
@@ -319,12 +319,12 @@ def _short_pod(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _default_plot_path(resource_name: str, task_id: str, end_ts: int) -> Path:
+def _default_plot_path(resource_name: str, task_name: str, end_ts: int) -> Path:
     base = Path(os.environ.get("INSPIRE_METRICS_DIR", "")).expanduser()
     if not base or str(base) == ".":
         base = Path.home() / ".inspire" / "metrics"
-    safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", task_id)
-    return base / f"{resource_name}-{safe_id}-{end_ts}.png"
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", task_name)
+    return base / f"{resource_name}-{safe_name}-{end_ts}.png"
 
 
 def _open_file(path: Path) -> None:
@@ -357,21 +357,21 @@ def build_metrics_command(
     *,
     resource_name: str,
     resource_label: str,
-    id_arg: str,
-    id_help: str,
+    name_resolver: Callable[[Any, str], str],
     lcg_resolver: LcgResolver,
 ) -> click.Command:
     """Return a Click command that queries metrics for one task type.
 
     Each resource module (notebook / job / hpc / serving) calls this with
-    its own ``lcg_resolver`` and registers the returned command under its
-    own group as `metrics`.
+    its own ``name_resolver`` (name → platform id, v2 contract) and
+    ``lcg_resolver`` (id → logic_compute_group_id), and registers the
+    returned command under its own group as `metrics`.
     """
 
     task_type = TASK_TYPE_BY_RESOURCE[resource_name]
 
     @click.command("metrics")
-    @click.argument(id_arg)
+    @click.argument("name")
     @click.option(
         "--metric",
         "metric_selector",
@@ -417,7 +417,7 @@ def build_metrics_command(
         default=None,
         help=(
             "Write the PNG chart to this path instead of the default "
-            "~/.inspire/metrics/<resource>-<id>-<unix>.png "
+            "~/.inspire/metrics/<resource>-<name>-<unix>.png "
             "(set INSPIRE_METRICS_DIR to move the default base)."
         ),
     )
@@ -442,6 +442,7 @@ def build_metrics_command(
     @pass_context
     def metrics_cmd(
         ctx: Context,
+        name: str,
         metric_selector: Optional[str],
         window: str,
         start: Optional[str],
@@ -453,7 +454,6 @@ def build_metrics_command(
         sparkline: bool,
         open_after: bool,
         json_output: bool,
-        **kwargs: Any,
     ) -> None:
         """Query historical GPU / CPU / memory / disk / network utilization.
 
@@ -462,7 +462,7 @@ def build_metrics_command(
         as its own line — divergence between workers is the signal you're
         watching for when monitoring "is training still healthy?".
         """
-        task_id = kwargs[id_arg]
+        task_id = name_resolver(ctx, name)
 
         json_output = resolve_json_output(ctx, json_output)
 
@@ -567,7 +567,7 @@ def build_metrics_command(
             target = (
                 Path(plot_path).expanduser()
                 if plot_path
-                else _default_plot_path(resource_name, task_id, end_ts)
+                else _default_plot_path(resource_name, name, end_ts)
             )
             try:
                 chart_path = render_metrics_png(
@@ -607,7 +607,7 @@ def build_metrics_command(
         if chart_path is not None and open_after:
             _open_file(chart_path)
 
-    metrics_cmd.params[0].help = id_help  # attach arg help once positional is built
+    metrics_cmd.params[0].help = f"{resource_label} name (from `inspire {resource_name} list`)."
     return metrics_cmd
 
 

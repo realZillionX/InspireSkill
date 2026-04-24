@@ -1,4 +1,4 @@
-"""`inspire notebook events <id>` — lifecycle timeline for a notebook instance.
+"""`inspire notebook events <name>` — lifecycle timeline for a notebook instance.
 
 Payload comes from Browser API `POST /api/v1/notebook/events` via
 `browser_api.notebooks.list_notebook_events`. Output is cached to
@@ -21,7 +21,7 @@ error.
 
 Notebooks run as a single pod; there is no per-instance events endpoint and
 thus no `--instance` flag. If you need deeper pod-level diagnostics, fall
-back to `inspire notebook status <id>`.
+back to `inspire notebook status <name>`.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from inspire.platform.web.browser_api.notebooks import list_notebook_events
 
 
 @click.command("events")
-@click.argument("notebook_id")
+@click.argument("name")
 @click.option(
     "--json",
     "json_output_local",
@@ -46,7 +46,7 @@ from inspire.platform.web.browser_api.notebooks import list_notebook_events
 @click.option(
     "--from-cache",
     is_flag=True,
-    help="Read from `~/.inspire/events/<id>.events.json` and skip the live fetch.",
+    help="Read the cached payload (written by the last live fetch) and skip the network.",
 )
 @click.option(
     "--type",
@@ -66,7 +66,7 @@ from inspire.platform.web.browser_api.notebooks import list_notebook_events
 @pass_context
 def events(
     ctx: Context,
-    notebook_id: str,
+    name: str,
     json_output_local: bool,
     from_cache: bool,
     type_filter: Optional[str],
@@ -77,12 +77,15 @@ def events(
 
     \b
     Examples:
-      inspire notebook events <id>
-      inspire --json notebook events <id>
-      inspire notebook events <id> --type Warning
-      inspire notebook events <id> --reason FailedScheduling
-      inspire notebook events <id> --from-cache
+      inspire notebook events <name>
+      inspire --json notebook events <name>
+      inspire notebook events <name> --type Warning
+      inspire notebook events <name> --reason FailedScheduling
+      inspire notebook events <name> --from-cache
     """
+    from inspire.cli.commands.notebook.notebook_metrics import _notebook_name_to_id
+
+    notebook_id = _notebook_name_to_id(ctx, name)
     run_events_command(
         ctx,
         job_id=notebook_id,

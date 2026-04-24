@@ -1,4 +1,4 @@
-"""`inspire job metrics <job-id>` — resource-utilization time series for train_job.
+"""`inspire job metrics <name>` — resource-utilization time series for train_job.
 
 Primary use case: monitoring multi-node distributed training. Every worker
 pod renders as its own line in the PNG chart and gets per-pod stats in the
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from inspire.cli.context import Context
 from inspire.cli.utils.metrics_shared import build_metrics_command
 from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url, _request_json
 from inspire.platform.web.session import WebSession
@@ -38,11 +39,16 @@ def _resolve_job_lcg(task_id: str, session: WebSession) -> Optional[str]:
     return None
 
 
+def _job_name_to_id(ctx: Context, name: str) -> str:
+    from inspire.cli.utils import job_cli as _jc
+
+    return _jc.resolve_job_id(ctx, name)
+
+
 job_metrics = build_metrics_command(
     resource_name="job",
     resource_label="Train Job",
-    id_arg="job_id",
-    id_help="Training job ID (e.g. job-abc-1234...). Keep the 'job-' prefix — the metric backend matches the full ID.",
+    name_resolver=_job_name_to_id,
     lcg_resolver=_resolve_job_lcg,
 )
 

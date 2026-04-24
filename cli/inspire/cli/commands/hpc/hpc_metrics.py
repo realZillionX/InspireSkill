@@ -1,4 +1,4 @@
-"""`inspire hpc metrics <job-id>` — resource-utilization time series for HPC jobs.
+"""`inspire hpc metrics <name>` — resource-utilization time series for HPC jobs.
 
 Primary use case: monitoring multi-task Slurm HPC runs. Each task/pod is
 drawn as its own line; divergence exposes bad node placements, hung tasks,
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from inspire.cli.context import Context
 from inspire.cli.utils.metrics_shared import build_metrics_command
 from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url, _request_json
 from inspire.platform.web.session import WebSession
@@ -37,11 +38,18 @@ def _resolve_hpc_lcg(task_id: str, session: WebSession) -> Optional[str]:
     return None
 
 
+def _hpc_name_to_id(ctx: Context, name: str) -> str:
+    # Module-attribute lookup so pytest monkeypatches on `_resolve_hpc_name`
+    # in ``hpc_commands`` intercept at call time (see cli/tests/conftest.py).
+    from inspire.cli.commands.hpc import hpc_commands as _hpc
+
+    return _hpc._resolve_hpc_name(ctx, name)
+
+
 hpc_metrics = build_metrics_command(
     resource_name="hpc",
     resource_label="HPC Job",
-    id_arg="job_id",
-    id_help="HPC job ID (e.g. hpc-job-abc-1234...). Keep the 'hpc-job-' prefix.",
+    name_resolver=_hpc_name_to_id,
     lcg_resolver=_resolve_hpc_lcg,
 )
 
