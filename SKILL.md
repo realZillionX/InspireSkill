@@ -38,6 +38,13 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ## 2. 命令速查
 
+> **`--resource` / `-r` 通用格式**（`notebook create` / `job create` 共用）：
+> - GPU：`<N>x<TYPE>`，如 `1xH200` / `8xH100` / `4x4090`（`job create` 目前只认 `H100` / `H200`，其它型号走 `notebook`）。
+> - GPU 只指数量：`<N>x`，平台自动选可用型号（如 `8x` = 8 卡任意可用型号）。
+> - CPU notebook：`<N>CPU`，如 `20CPU`（CPU-only 不支持 `job`，CPU 批处理走 `hpc`）。
+>
+> 具体 GPU 型号 / 实时空余见 `inspire resources list --all --include-cpu`；机房 / 架构倾向用 `--location`（如 `'cuda12.8版本H100'`）。
+
 ### 2.1 资源 / 项目 / 用户 / 配置 / 账号
 
 资源和身份的查询入口，任何后续操作前都可能要这里先看一眼。
