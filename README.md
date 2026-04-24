@@ -122,7 +122,7 @@ inspire resources list --all --include-cpu
 <tr>
   <td width="50%">
     <h4>📝 Notebook 统一入口</h4>
-    全链路命令化：<code>create / list / status / start · stop / ssh / exec / shell / scp / refresh / forget / test / connections / ssh-config</code>。一次 <code>notebook ssh &lt;id&gt;</code> 就把 SSH 通路和本地 alias 一起记下来。
+    全链路命令化：<code>create / list / status / start · stop / ssh / exec / shell / scp / refresh / forget / test / connections</code>。一次 <code>notebook ssh &lt;id&gt;</code> 就把 SSH 通路和本地 alias 一起记下来。
   </td>
   <td width="50%">
     <h4>🚀 HPC 任务分派</h4>
@@ -145,28 +145,24 @@ inspire resources list --all --include-cpu
     <code>image save / register / list / set-default</code>，默认镜像自动写回项目 <code>.inspire/config.toml</code>；<code>hpc create --image-type</code> 明确可见性。
   </td>
   <td>
-    <h4>🔌 原生 SSH 直通</h4>
-    <code>inspire notebook ssh-config --install</code> 一键把所有 alias 写进 <code>~/.ssh/config</code>，之后用 <code>ssh &lt;alias&gt;</code> / <code>scp</code> / <code>rsync</code> / <code>git</code> 像本地 host 一样用。
-  </td>
-</tr>
-<tr>
-  <td>
     <h4>🛰 模型部署 (Serving)</h4>
     <code>inspire serving list / status / stop / configs</code> —— 观测 + 止损分层：<code>list</code> / <code>configs</code> 走 Browser API，<code>status</code> / <code>stop</code> 走 OpenAPI，和 <code>job</code> / <code>hpc</code> 同构。
   </td>
+</tr>
+<tr>
   <td>
     <h4>📦 模型注册表 (Model)</h4>
     <code>inspire model list / status / versions</code> —— 浏览 workspace 下所有模型 + 每个模型的历史版本，带 vLLM 兼容标记 / 创建时间；之前只能在 Web UI 翻。
   </td>
-</tr>
-<tr>
   <td>
     <h4>👤 身份 / 配额 / 权限</h4>
     <code>inspire user whoami / permissions / api-keys</code> —— 一眼看清当前账号、在某 workspace 下实际授予的权限码（<code>job.trainingJob.create</code> 等），以及已申请的 API Key 元数据。
   </td>
-  <td>
+</tr>
+<tr>
+  <td colspan="2">
     <h4>📅 事件 & 生命周期</h4>
-    <code>inspire job events</code> / <code>hpc events</code> / <code>notebook events</code> 拉 K8s / 平台事件流；<code>notebook lifecycle &lt;id&gt;</code> 看一个实例的多次启停记录 —— 原本要翻 Web UI "详情 → 事件/生命周期"两个 tab 才看得全。
+    <code>inspire job events</code> / <code>hpc events</code> / <code>notebook events</code> / <code>ray events</code> 拉平台事件流；<code>notebook lifecycle &lt;id&gt;</code> 看一个实例的多次启停记录 —— 原本要翻 Web UI "详情 → 事件/生命周期"两个 tab 才看得全。
   </td>
 </tr>
 <tr>

@@ -65,7 +65,6 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire notebook connections` | 列本地已保存 alias |
 | `inspire notebook forget <alias>` | 删本地 alias 记录（不影响平台上的 notebook） |
 | `inspire notebook set-default <alias>` | 设默认 alias |
-| `inspire notebook ssh-config --install` | 把所有 alias 写进 `~/.ssh/config`，之后 `ssh <alias>` / `scp` / `rsync` / `git` 原生用 |
 | `inspire notebook top` | alias 实例的 GPU 利用率（SSH `nvidia-smi` 实时快照，需要 tunnel）；`--watch` 持续刷新 |
 | `inspire notebook metrics <id>` | 资源视图的历史利用率曲线（GPU / GPU Memory / CPU / Memory / Disk IO / Network 共 8 种，默认 `--metric core` 取前 4 个）。默认出 PNG 到 `~/.inspire/metrics/notebook-<id>-<unix>.png`，`--json` 给原始 per-pod 时序。**和 `top` 的区别**：`top` 是实时 `nvidia-smi`（要 tunnel 活着），`metrics` 是历史曲线（不需要 tunnel）。`inspire job/hpc/serving metrics` 同 UX 同 flag |
 

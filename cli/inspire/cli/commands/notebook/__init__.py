@@ -45,7 +45,6 @@ from .connections_cmd import tunnel_list as _connections
 from .forget_cmd import tunnel_remove as _forget
 from .refresh_cmd import tunnel_update as _refresh
 from .set_default_cmd import tunnel_set_default as _set_default
-from .ssh_config_cmd import tunnel_ssh_config as _ssh_config
 from .connection_test_cmd import tunnel_test as _connection_test
 
 
@@ -86,4 +85,3 @@ notebook.add_command(_refresh,         name="refresh")
 notebook.add_command(_forget,          name="forget")
 notebook.add_command(_set_default,     name="set-default")
 notebook.add_command(_connection_test, name="test")
-notebook.add_command(_ssh_config,      name="ssh-config")

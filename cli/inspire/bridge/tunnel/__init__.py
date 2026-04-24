@@ -1,7 +1,7 @@
 """SSH tunnel utilities (ProxyCommand + rtunnel).
 
-This package contains the tunnel domain logic used by the CLI (tunnel management, ssh execution,
-and optional ssh-config generation).
+This package contains the tunnel domain logic used by the CLI (tunnel management
+and ssh execution over the rtunnel-backed ProxyCommand).
 """
 
 from __future__ import annotations
@@ -26,10 +26,7 @@ from .rtunnel import (
 from .ssh import (
     _get_proxy_command,
     _test_ssh_connection,
-    generate_all_ssh_configs,
-    generate_ssh_config,
     get_tunnel_status,
-    install_ssh_config,
     is_tunnel_available,
 )
 from .scp import run_scp_transfer
@@ -66,8 +63,4 @@ __all__ = [
     "run_scp_transfer",
     "run_ssh_command",
     "run_ssh_command_streaming",
-    # ssh-config
-    "generate_all_ssh_configs",
-    "generate_ssh_config",
-    "install_ssh_config",
 ]

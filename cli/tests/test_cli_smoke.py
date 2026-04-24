@@ -31,7 +31,7 @@ def test_notebook_help_includes_key_subcommands() -> None:
     assert result.exit_code == 0
     for sub in (
         "list", "status", "ssh", "exec", "scp", "shell",
-        "connections", "refresh", "forget", "test", "ssh-config", "set-default",
+        "connections", "refresh", "forget", "test", "set-default",
     ):
         assert sub in result.output, f"missing: {sub}\n{result.output}"
 

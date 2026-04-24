@@ -855,8 +855,7 @@ def list_notebooks(
         "Custom alias name for this notebook's saved connection. Defaults to "
         "a sanitised form of the notebook's display name (falls back to "
         "nb-<id[:8]> if the name is empty or unusable). Used by subsequent "
-        "'notebook exec/shell/scp' and by 'ssh <alias>' after 'inspire "
-        "notebook ssh-config --install'."
+        "'notebook exec/shell/scp'."
     ),
 )
 @click.option(

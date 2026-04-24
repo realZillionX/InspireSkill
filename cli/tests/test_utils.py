@@ -15,7 +15,6 @@ from inspire.config import (
 from inspire.bridge.tunnel import (
     BridgeProfile,
     TunnelConfig,
-    generate_ssh_config,
     load_tunnel_config,
     save_tunnel_config,
     _get_proxy_command,
@@ -826,20 +825,6 @@ class TestProxyCommand:
 
         # Should include stderr redirect
         assert "2>/dev/null" in cmd
-
-    def test_generate_ssh_config_reuses_shell_quoted_proxy_command(self, tmp_path: Path) -> None:
-        """Generated ssh-config should preserve safe shell quoting for ProxyCommand."""
-        bridge = BridgeProfile(
-            name="test",
-            proxy_url="https://proxy.example.com/tunnel?token=a*b",
-        )
-        rtunnel_bin = tmp_path / "rtunnel with space"
-
-        ssh_config = generate_ssh_config(bridge, rtunnel_bin, host_alias="mybridge")
-        expected_proxy = _get_proxy_command(bridge, rtunnel_bin, quiet=False)
-
-        assert "Host mybridge" in ssh_config
-        assert f"ProxyCommand {expected_proxy}" in ssh_config
 
     def test_get_proxy_command_injects_rtunnel_proxy_override(
         self,
