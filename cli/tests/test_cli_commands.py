@@ -26,7 +26,6 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.config import ConfigError
-from inspire.config.ssh_runtime import SshRuntimeConfig
 from inspire.cli.utils.job_cache import JobCache
 from inspire.platform.openapi import ResourceManager
 
@@ -2036,14 +2035,6 @@ def test_run_notebook_ssh_validates_dropbear_setup_script(
         notebook_cmd_module, "load_ssh_public_key", lambda pubkey: "ssh-ed25519 AAA"
     )
     monkeypatch.setattr(
-        notebook_cmd_module,
-        "resolve_ssh_runtime_config",
-        lambda cli_overrides=None: SshRuntimeConfig(
-            dropbear_deb_dir="/project/dropbear",
-            setup_script=None,
-        ),
-    )
-    monkeypatch.setattr(
         browser_api_module,
         "setup_notebook_rtunnel",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
@@ -2169,9 +2160,6 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
                 return self.bridges.get(self.default_bridge)
             return None
 
-    resolved_runtime = SshRuntimeConfig(
-        rtunnel_download_url="https://project.example/rtunnel.tgz",
-    )
     setup_kwargs: dict[str, object] = {}
     fake_tunnel_config = FakeTunnelConfig()
 
@@ -2202,11 +2190,6 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
     )
     monkeypatch.setattr(
         notebook_cmd_module, "load_ssh_public_key", lambda pubkey: "ssh-ed25519 AAA"
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "resolve_ssh_runtime_config",
-        lambda cli_overrides=None: resolved_runtime,
     )
 
     def fake_setup_notebook_rtunnel(**kwargs):  # type: ignore[no-untyped-def]
@@ -2245,8 +2228,6 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
         debug_playwright=False,
         setup_timeout=60,
     )
-
-    assert setup_kwargs["ssh_runtime"] is resolved_runtime
 
 
 def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
@@ -2311,11 +2292,6 @@ def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
     )
     monkeypatch.setattr(
         notebook_cmd_module, "load_ssh_public_key", lambda pubkey: "ssh-ed25519 AAA"
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "resolve_ssh_runtime_config",
-        lambda cli_overrides=None: SshRuntimeConfig(),
     )
 
     def fake_setup_notebook_rtunnel(**kwargs):  # type: ignore[no-untyped-def]
@@ -2425,11 +2401,6 @@ def test_run_notebook_ssh_interactive_reconnects_after_drop(
         notebook_cmd_module, "load_ssh_public_key", lambda pubkey: "ssh-ed25519 AAA"
     )
     monkeypatch.setattr(
-        notebook_cmd_module,
-        "resolve_ssh_runtime_config",
-        lambda cli_overrides=None: SshRuntimeConfig(),
-    )
-    monkeypatch.setattr(
         browser_api_module,
         "setup_notebook_rtunnel",
         lambda **kwargs: "wss://proxy.example/notebook/",
@@ -2535,11 +2506,6 @@ def test_run_notebook_ssh_reports_when_tunnel_not_ready(
     )
     monkeypatch.setattr(
         notebook_cmd_module, "load_ssh_public_key", lambda pubkey: "ssh-ed25519 AAA"
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "resolve_ssh_runtime_config",
-        lambda cli_overrides=None: SshRuntimeConfig(),
     )
     monkeypatch.setattr(
         browser_api_module,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from inspire.config.rtunnel_defaults import default_rtunnel_download_url
 from inspire.config.schema_models import (
     ConfigOption,
     _parse_float,
@@ -10,54 +9,11 @@ from inspire.config.schema_models import (
     _parse_list,
 )
 
-SSH_OPTIONS: list[ConfigOption] = [
-    ConfigOption(
-        env_var="INSPIRE_SSHD_DEB_DIR",
-        toml_key="ssh.sshd_deb_dir",
-        field_name="sshd_deb_dir",
-        description="Directory containing sshd deb package",
-        default=None,
-        category="SSH",
-        scope="global",
-    ),
-    ConfigOption(
-        env_var="INSPIRE_DROPBEAR_DEB_DIR",
-        toml_key="ssh.dropbear_deb_dir",
-        field_name="dropbear_deb_dir",
-        description="Directory containing dropbear deb package",
-        default=None,
-        category="SSH",
-        scope="global",
-    ),
-    ConfigOption(
-        env_var="INSPIRE_SETUP_SCRIPT",
-        toml_key="ssh.setup_script",
-        field_name="setup_script",
-        description="Path to SSH setup script on the cluster",
-        default=None,
-        category="SSH",
-        scope="global",
-        secret=True,
-    ),
-    ConfigOption(
-        env_var="INSPIRE_RTUNNEL_DOWNLOAD_URL",
-        toml_key="ssh.rtunnel_download_url",
-        field_name="rtunnel_download_url",
-        description="Download URL for rtunnel binary",
-        default=default_rtunnel_download_url(),
-        category="SSH",
-        scope="global",
-    ),
-    ConfigOption(
-        env_var="INSPIRE_APT_MIRROR_URL",
-        toml_key="ssh.apt_mirror_url",
-        field_name="apt_mirror_url",
-        description="APT mirror URL for offline dropbear installation (e.g. http://nexus.example/repository/ubuntu/)",
-        default=None,
-        category="SSH",
-        scope="global",
-    ),
-]
+# SSH bootstrap has no user-configurable knobs: the container-side SSH stack
+# (rtunnel + sshd) is installed exclusively from the global_public offline kit
+# at /inspire/hdd/global_public/inspire-skill-bootstrap/v1/ (see
+# inspire.platform.web.browser_api.rtunnel.INSPIRE_BOOTSTRAP_ROOT).
+SSH_OPTIONS: list[ConfigOption] = []
 
 TUNNEL_OPTIONS: list[ConfigOption] = [
     ConfigOption(

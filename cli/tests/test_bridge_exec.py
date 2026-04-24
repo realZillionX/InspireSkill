@@ -1038,7 +1038,6 @@ def test_bridge_exec_rebuilds_notebook_tunnel_before_command(
     )
     monkeypatch.setattr(exec_cmd_module, "require_web_session", lambda ctx, hint: object())
     monkeypatch.setattr(exec_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
-    monkeypatch.setattr(exec_cmd_module, "resolve_ssh_runtime_config", lambda: object())
     monkeypatch.setattr(exec_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
@@ -1099,7 +1098,6 @@ def test_bridge_exec_reconnects_after_disconnect(
     )
     monkeypatch.setattr(exec_cmd_module, "require_web_session", lambda ctx, hint: object())
     monkeypatch.setattr(exec_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
-    monkeypatch.setattr(exec_cmd_module, "resolve_ssh_runtime_config", lambda: object())
     monkeypatch.setattr(exec_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
@@ -1242,7 +1240,6 @@ def test_bridge_exec_exit_255_probe_exception_is_not_retried(
     monkeypatch.setattr(exec_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
     monkeypatch.setattr(exec_cmd_module, "require_web_session", lambda ctx, hint: object())
     monkeypatch.setattr(exec_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
-    monkeypatch.setattr(exec_cmd_module, "resolve_ssh_runtime_config", lambda: object())
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--bridge", "gpu-main"])
@@ -1277,7 +1274,6 @@ def test_bridge_exec_rebuild_failure_errors_after_retry_exhausted(
     monkeypatch.setattr(exec_cmd_module, "is_tunnel_available", lambda *args, **kwargs: False)
     monkeypatch.setattr(exec_cmd_module, "require_web_session", lambda ctx, hint: object())
     monkeypatch.setattr(exec_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
-    monkeypatch.setattr(exec_cmd_module, "resolve_ssh_runtime_config", lambda: object())
     monkeypatch.setattr(
         exec_cmd_module,
         "rebuild_notebook_bridge_profile",
@@ -1414,7 +1410,6 @@ def test_bridge_ssh_rebuilds_notebook_tunnel_before_connect(
     monkeypatch.setattr(ssh_cmd_module.subprocess, "call", fake_call)
     monkeypatch.setattr(ssh_cmd_module, "require_web_session", lambda ctx, hint: object())
     monkeypatch.setattr(ssh_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
-    monkeypatch.setattr(ssh_cmd_module, "resolve_ssh_runtime_config", lambda: object())
     monkeypatch.setattr(ssh_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
@@ -1554,7 +1549,6 @@ def test_bridge_ssh_reconnects_after_disconnect(
     monkeypatch.setattr(ssh_cmd_module.subprocess, "call", lambda args: next(ssh_return_codes))
     monkeypatch.setattr(ssh_cmd_module, "require_web_session", lambda ctx, hint: object())
     monkeypatch.setattr(ssh_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
-    monkeypatch.setattr(ssh_cmd_module, "resolve_ssh_runtime_config", lambda: object())
 
     def fake_rebuild(*args: Any, **kwargs: Any) -> BridgeProfile:
         calls["rebuild"] += 1

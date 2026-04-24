@@ -25,7 +25,6 @@ from inspire.cli.utils.tunnel_reconnect import (
     should_attempt_ssh_reconnect,
 )
 from inspire.config import Config, ConfigError, build_env_exports
-from inspire.config.ssh_runtime import resolve_ssh_runtime_config
 from inspire.platform.web import browser_api as browser_api_module
 
 logger = logging.getLogger(__name__)
@@ -86,7 +85,6 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
     opened_once = False
     web_session = None
     ssh_public_key = ""
-    ssh_runtime = None
 
     while True:
         tunnel_config = load_tunnel_config()
@@ -188,15 +186,12 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
                     )
                 if not ssh_public_key:
                     ssh_public_key = load_ssh_public_key_material()
-                if ssh_runtime is None:
-                    ssh_runtime = resolve_ssh_runtime_config()
                 rebuild_notebook_bridge_profile(
                     bridge_name=bridge_name,
                     bridge=bridge_profile,
                     tunnel_config=tunnel_config,
                     session=web_session,
                     ssh_public_key=ssh_public_key,
-                    ssh_runtime=ssh_runtime,
                 )
                 should_rebuild = False
             except (ValueError, ConfigError) as e:

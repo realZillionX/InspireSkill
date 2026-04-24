@@ -21,14 +21,6 @@ except ImportError:  # pragma: no cover - Playwright may be unavailable in some 
         pass
 
 
-from inspire.config.rtunnel_defaults import (
-    rtunnel_download_url_shell_snippet,
-)
-from inspire.config.ssh_runtime import (
-    DEFAULT_RTUNNEL_DOWNLOAD_URL,
-    SshRuntimeConfig,
-    resolve_ssh_runtime_config,
-)
 from inspire.platform.web.browser_api.core import (
     _browser_api_path,
     _get_base_url,
@@ -53,19 +45,31 @@ BOOTSTRAP_SENTINEL = "/tmp/.inspire_rtunnel_bootstrap_v1"
 SETUP_DONE_MARKER = "INSPIRE_RTUNNEL_SETUP_DONE"
 RTUNNEL_MISSING_MARKER = "INSPIRE_RTUNNEL_MISSING_IN_BOOTSTRAP"
 
+# Canonical path of the InspireSkill offline SSH-bootstrap kit on the Inspire
+# platform's global_public fileset — mounted read-only in every notebook
+# container. Layout (see the kit's MANIFEST.txt):
+#   <root>/rtunnel/linux-{amd64,arm64}/rtunnel   (static Go binary)
+#   <root>/sshd-debs/*.deb                        (openssh-server + full dep closure, Ubuntu 24.04)
+#
+# This is the single source of truth for SSH bootstrap. The container must
+# have this path mounted (the platform does so by default for every notebook);
+# there is no network-download fallback.
+INSPIRE_BOOTSTRAP_ROOT = "/inspire/hdd/global_public/inspire-skill-bootstrap/v1"
+
 
 def build_rtunnel_setup_commands(
     *,
     port: int,
     ssh_port: int,
     ssh_public_key: Optional[str],
-    ssh_runtime: Optional[SshRuntimeConfig] = None,
 ) -> list[str]:
-    import shlex
+    """Build the shell emitted into a notebook container to bring up sshd +
+    rtunnel from the global_public offline kit.
 
-    if ssh_runtime is None:
-        ssh_runtime = resolve_ssh_runtime_config()
-
+    No network involvement — rtunnel and sshd are cp/dpkg-installed from the
+    kit. Containers without the kit mounted cannot bootstrap SSH; that is by
+    design (the kit is the platform's canonical offline install point).
+    """
     if ssh_public_key:
         ssh_public_key_escaped = ssh_public_key.replace("'", "'\"'\"'")
         key_line = (
@@ -76,93 +80,49 @@ def build_rtunnel_setup_commands(
     else:
         key_line = "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
 
-    sshd_deb_dir = ssh_runtime.sshd_deb_dir
-    dropbear_deb_dir = ssh_runtime.dropbear_deb_dir
-    user_rtunnel_url = ssh_runtime.rtunnel_download_url or ""
-    # If the user explicitly configured a download URL that differs from the
-    # local-platform default, honour it verbatim.  Otherwise inject a shell
-    # snippet that detects the *container* OS/arch at runtime via uname.
-    if user_rtunnel_url and user_rtunnel_url != DEFAULT_RTUNNEL_DOWNLOAD_URL:
-        rtunnel_url_setup = f"RTUNNEL_DOWNLOAD_URL={shlex.quote(user_rtunnel_url)}"
-    else:
-        rtunnel_url_setup = rtunnel_download_url_shell_snippet()
-
-    cmd_lines = [
+    cmd_lines: list[str] = [
         f"PORT={port}",
         f"SSH_PORT={ssh_port}",
         key_line,
         f"BOOTSTRAP_SENTINEL={BOOTSTRAP_SENTINEL}",
-        # Detect rtunnel download URL for the *container* platform.
-        rtunnel_url_setup,
+        f"KIT={INSPIRE_BOOTSTRAP_ROOT}",
+        # Detect container arch once — rtunnel ships one binary per Linux arch.
+        '_RT_ARCH=$(uname -m 2>/dev/null); '
+        'case "$_RT_ARCH" in arm64|aarch64) _RT_ARCH=arm64;; *) _RT_ARCH=amd64;; esac',
     ]
 
-    # Prefer a container-preinstalled rtunnel (e.g. unified-base:v1 bakes one
-    # in at /usr/local/bin/rtunnel; derived images inherit it, or can install
-    # it during image build). This is the canonical source; the curl fallback
-    # below only matters on images without rtunnel AND containers that can
-    # reach the public internet.
+    # rtunnel: cp from kit if not already in /tmp (idempotent across reconnects).
     cmd_lines.append(
         'if [ ! -x /tmp/rtunnel ]; then '
-        '_inspire_preinstalled_rt=$(command -v rtunnel 2>/dev/null || true); '
-        'if [ -n "$_inspire_preinstalled_rt" ] && [ -x "$_inspire_preinstalled_rt" ]; then '
-        'cp "$_inspire_preinstalled_rt" /tmp/rtunnel && chmod +x /tmp/rtunnel; fi; '
+        '_kit_rt="$KIT/rtunnel/linux-${_RT_ARCH}/rtunnel"; '
+        'if [ -x "$_kit_rt" ]; then '
+        'cp "$_kit_rt" /tmp/rtunnel && chmod +x /tmp/rtunnel; fi; '
+        "fi"
+    )
+    # Wrong-arch / truncated binary: +x but `--help` fails. Wipe and let the
+    # next bootstrap round re-cp.
+    cmd_lines.append(
+        "if [ -x /tmp/rtunnel ] && ! /tmp/rtunnel --help >/dev/null 2>&1; then "
+        'rm -f /tmp/rtunnel "$BOOTSTRAP_SENTINEL"; fi'
+    )
+
+    # sshd: dpkg-install from kit debs if system sshd is missing.
+    cmd_lines.append(
+        'if [ ! -x /usr/sbin/sshd ]; then '
+        'if [ -d "$KIT/sshd-debs" ] && ls "$KIT/sshd-debs"/*.deb >/dev/null 2>&1; then '
+        'dpkg -i "$KIT/sshd-debs"/*.deb >/dev/null 2>&1 || true; fi; '
         "fi"
     )
 
-    if sshd_deb_dir:
-        cmd_lines.append(f"SSHD_DEB_DIR={shlex.quote(sshd_deb_dir)}")
-    if dropbear_deb_dir:
-        cmd_lines.append(f"DROPBEAR_DEB_DIR={shlex.quote(dropbear_deb_dir)}")
-    apt_mirror_url = ssh_runtime.apt_mirror_url
-    if apt_mirror_url:
-        cmd_lines.append(f"APT_MIRROR_URL={shlex.quote(apt_mirror_url)}")
-
-    # Validate existing rtunnel binary is actually runnable (correct arch).
-    # A stale binary from a different platform (e.g. darwin-arm64 on linux-amd64)
-    # will have +x bit set but fail with "exec format error".
+    # Sentinel bookkeeping (both pieces in place → sentinel set; else clear).
     cmd_lines.append(
-        "if [ -x /tmp/rtunnel ] && ! /tmp/rtunnel --help >/dev/null 2>&1; then "
-        'rm -f /tmp/rtunnel /tmp/rtunnel.tgz "$BOOTSTRAP_SENTINEL"; fi'
+        'if [ -x /tmp/rtunnel ] && [ -x /usr/sbin/sshd ]; then '
+        'touch "$BOOTSTRAP_SENTINEL"; '
+        'else rm -f "$BOOTSTRAP_SENTINEL"; fi'
     )
 
-    # Skip curl when the notebook is known to have no internet (dropbear /
-    # apt-mirror config implies an offline deployment; trying to curl github
-    # would waste the full connect timeout).
-    skip_curl = bool(dropbear_deb_dir or apt_mirror_url)
-
-    if skip_curl:
-        curl_rtunnel_block = (
-            'if [ ! -x "$RTUNNEL_BIN" ]; then '
-            'echo "ERROR: rtunnel binary not found at /tmp/rtunnel '
-            '(no curl fallback for offline notebooks)" >&2; fi'
-        )
-    else:
-        curl_rtunnel_block = (
-            'if [ ! -x "$RTUNNEL_BIN" ]; then curl -fsSL '
-            '"$RTUNNEL_DOWNLOAD_URL" -o /tmp/rtunnel.tgz && '
-            "tar -xzf /tmp/rtunnel.tgz -C /tmp && chmod +x /tmp/rtunnel "
-            "2>/dev/null; fi"
-        )
-
-    openssh_bootstrap_cmd = (
-        'if [ ! -f "$BOOTSTRAP_SENTINEL" ] || [ ! -x /tmp/rtunnel ] '
-        "|| [ ! -x /usr/sbin/sshd ]; then "
-        "if [ ! -x /usr/sbin/sshd ]; then "
-        'if [ -n "${SSHD_DEB_DIR:-}" ] && ls "$SSHD_DEB_DIR"/*.deb >/dev/null 2>&1; then '
-        'dpkg -i "$SSHD_DEB_DIR"/*.deb >/dev/null 2>&1 || true; '
-        'elif [ -z "${SSHD_DEB_DIR:-}" ]; then '
-        "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && "
-        "apt-get install -y -qq openssh-server; fi; fi; "
-        "RTUNNEL_BIN=/tmp/rtunnel; "
-        f"{curl_rtunnel_block}; "
-        'if [ -x /usr/sbin/sshd ] && [ -x "$RTUNNEL_BIN" ]; then '
-        'touch "$BOOTSTRAP_SENTINEL"; else rm -f "$BOOTSTRAP_SENTINEL"; fi; fi'
-    )
-    ensure_rtunnel_cmd = (
-        "RTUNNEL_BIN=/tmp/rtunnel; "
-        f"{curl_rtunnel_block}"
-    )
-    start_sshd_cmd = (
+    # Start sshd on SSH_PORT if not already running.
+    cmd_lines.append(
         'if [ -x /usr/sbin/sshd ] && ! ps -ef | grep -q "[s]shd -p $SSH_PORT"; then '
         "mkdir -p /run/sshd && chmod 0755 /run/sshd; "
         "ssh-keygen -A >/dev/null 2>&1 || true; "
@@ -170,120 +130,22 @@ def build_rtunnel_setup_commands(
         "-o PasswordAuthentication=no -o PubkeyAuthentication=yes "
         ">/dev/null 2>&1 & fi"
     )
-    # Dropbear may die between sessions (container restart, OOM, etc.).
-    # Ensure it is running when dropbear_deb_dir or apt_mirror_url is configured.
-    # Supports three installation paths (tried in order):
-    #  1. Extracted deb tree: $DROPBEAR_DEB_DIR/usr/sbin/dropbear exists
-    #  2. Raw .deb packages: $DROPBEAR_DEB_DIR/*.deb  (installed via dpkg -i)
-    #  3. APT mirror: $APT_MIRROR_URL (for no-internet GPU notebooks with missing deps)
-    start_dropbear_cmd = (
-        'if [ -n "${DROPBEAR_DEB_DIR:-}" ] || [ -n "${APT_MIRROR_URL:-}" ]; then '
-        'DB_BIN=""; '
-        # Path 1: Extracted deb tree with runtime verification
-        'if [ -n "${DROPBEAR_DEB_DIR:-}" ] && [ -x "$DROPBEAR_DEB_DIR/usr/sbin/dropbear" ]; then '
-        'DB_BIN="$DROPBEAR_DEB_DIR/usr/sbin/dropbear"; '
-        "export LD_LIBRARY_PATH="
-        '"$DROPBEAR_DEB_DIR/lib/x86_64-linux-gnu:'
-        "$DROPBEAR_DEB_DIR/usr/lib/x86_64-linux-gnu:"
-        '${LD_LIBRARY_PATH:-}"; '
-        '"$DB_BIN" -V >/dev/null 2>&1 || DB_BIN=""; fi; '
-        # Path 2: Raw .deb packages via dpkg
-        'if [ -z "$DB_BIN" ] && [ -n "${DROPBEAR_DEB_DIR:-}" ] && '
-        'ls "$DROPBEAR_DEB_DIR"/*.deb >/dev/null 2>&1; then '
-        'dpkg -i "$DROPBEAR_DEB_DIR"/*.deb >/dev/null 2>&1 || true; '
-        "[ -x /usr/sbin/dropbear ] && DB_BIN=/usr/sbin/dropbear; fi; "
-        # Also check system-installed dropbear as fallback
-        'if [ -z "$DB_BIN" ] || [ ! -x "$DB_BIN" ]; then '
-        "[ -x /usr/sbin/dropbear ] && DB_BIN=/usr/sbin/dropbear; fi; "
-        # Path 3: APT mirror fallback — install dropbear + deps (libtomcrypt1 etc.)
-        # Uses /etc/os-release for codename (more reliable than lsb_release which
-        # may not exist in containers).  Temporarily disables default sources to
-        # avoid slow timeouts on unreachable mirrors (archive.ubuntu.com) in
-        # no-internet GPUs.
-        'if { [ -z "$DB_BIN" ] || [ ! -x "$DB_BIN" ]; } && [ -n "${APT_MIRROR_URL:-}" ]; then '
-        'CODENAME=$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-}"); '
-        '[ -z "$CODENAME" ] && CODENAME=$(lsb_release -cs 2>/dev/null || true); '
-        '[ -z "$CODENAME" ] && CODENAME=jammy; '
-        "for _f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do "
-        '[ -f "$_f" ] && mv "$_f" "$_f.bak" 2>/dev/null; done; '
-        'echo "deb $APT_MIRROR_URL $CODENAME main restricted universe multiverse" '
-        "> /etc/apt/sources.list.d/inspire-mirror.list; "
-        "export DEBIAN_FRONTEND=noninteractive; "
-        "apt-get update -qq >/dev/null 2>&1 && "
-        "apt-get install -y -qq dropbear-bin >/dev/null 2>&1 || true; "
-        "for _f in /etc/apt/sources.list.bak /etc/apt/sources.list.d/*.list.bak; do "
-        '[ -f "$_f" ] && mv "$_f" "${_f%.bak}" 2>/dev/null; done; '
-        "[ -x /usr/sbin/dropbear ] && DB_BIN=/usr/sbin/dropbear; fi; "
-        # Start dropbear if found and not already running
-        'if [ -n "$DB_BIN" ] && [ -x "$DB_BIN" ] && ! ps -ef | grep -q "[d]ropbear.*-p.*$SSH_PORT"; then '
-        'DB_KEY=""; '
-        '[ -n "${DROPBEAR_DEB_DIR:-}" ] && [ -x "$DROPBEAR_DEB_DIR/usr/bin/dropbearkey" ] '
-        '&& DB_KEY="$DROPBEAR_DEB_DIR/usr/bin/dropbearkey"; '
-        '[ -z "$DB_KEY" ] && DB_KEY=$(which dropbearkey 2>/dev/null || true); '
-        'if [ ! -f /tmp/dropbear_ed25519_host_key ] && [ -n "$DB_KEY" ] && [ -x "$DB_KEY" ]; then '
-        '"$DB_KEY" -t ed25519 -f /tmp/dropbear_ed25519_host_key >/dev/null 2>&1; fi; '
-        "if [ -f /tmp/dropbear_ed25519_host_key ]; then "
-        '"$DB_BIN" -E -s -g -p "127.0.0.1:$SSH_PORT" '
-        "-r /tmp/dropbear_ed25519_host_key -P /tmp/dropbear.pid "
-        "2>>/tmp/dropbear.log; fi; fi; fi"
-    )
-    start_rtunnel_cmd = (
+
+    # Start rtunnel server: listen on PORT (WSS-reachable from the platform
+    # Bridge), forward to 127.0.0.1:SSH_PORT.
+    cmd_lines.append(
         "if [ -x /tmp/rtunnel ] && ! ps -ef | "
         'grep -Eq "[r]tunnel .*([[:space:]]|:)$PORT([[:space:]]|$)"; then '
         'nohup /tmp/rtunnel "$SSH_PORT" "$PORT" '
         ">/tmp/rtunnel-server.log 2>&1 & fi"
     )
 
-    if dropbear_deb_dir or apt_mirror_url:
-        setup_script = ssh_runtime.setup_script
-        if setup_script:
-            cmd_lines.append(f"SETUP_SCRIPT={shlex.quote(setup_script)}")
-            cmd_lines.append('RTUNNEL_URL="$RTUNNEL_DOWNLOAD_URL"')
-            cmd_lines.append(
-                '[ -f "$SETUP_SCRIPT" ] || echo "WARN: setup script not found: $SETUP_SCRIPT '
-                '(falling back to openssh bootstrap)"'
-            )
-            cmd_lines.append(
-                'if [ -f "$SETUP_SCRIPT" ]; then '
-                'if [ ! -f "$BOOTSTRAP_SENTINEL" ] || [ ! -x /tmp/rtunnel ]; then '
-                # RTUNNEL_BIN_PATH is no longer a configurable knob; pass an
-                # empty string so setup_script falls back to its own default
-                # (/tmp/rtunnel).
-                'bash "$SETUP_SCRIPT" "$DROPBEAR_DEB_DIR" "" '
-                '"$SSH_PORT" "$PORT" >/tmp/setup_ssh.log 2>&1; '
-                'if [ $? -eq 0 ] && [ -x /tmp/rtunnel ]; then touch "$BOOTSTRAP_SENTINEL"; '
-                'else rm -f "$BOOTSTRAP_SENTINEL"; fi; fi; '
-                f"else {openssh_bootstrap_cmd}; fi"
-            )
-            cmd_lines.append("tail -40 /tmp/setup_ssh.log 2>/dev/null || true")
-        else:
-            # No external setup_script: use internal dpkg-based bootstrap.
-            # The start_dropbear_cmd handles dpkg -i when .deb files are found.
-            cmd_lines.append('RTUNNEL_URL="$RTUNNEL_DOWNLOAD_URL"')
-            cmd_lines.append(ensure_rtunnel_cmd)
-        cmd_lines.append(start_dropbear_cmd)
-        cmd_lines.append(start_sshd_cmd)
-        cmd_lines.append(start_rtunnel_cmd)
-    else:
-        cmd_lines.extend(
-            [
-                'RTUNNEL_URL="$RTUNNEL_DOWNLOAD_URL"',
-                openssh_bootstrap_cmd,
-                start_sshd_cmd,
-                start_rtunnel_cmd,
-            ]
-        )
-
+    # Status markers for the client-side terminal tailer.
     cmd_lines.append(
         'if ps -ef | grep -Eq "[r]tunnel .*([[:space:]]|:)$PORT([[:space:]]|$)"; then '
         'echo "INSPIRE_RTUNNEL_STATUS=running"; '
         'else echo "INSPIRE_RTUNNEL_STATUS=not_running"; fi'
     )
-    # Surface a recognizable marker when bootstrap finishes without a working
-    # rtunnel binary — the client tails the terminal output for this marker and
-    # converts it into a user-facing "bake rtunnel into your image" error,
-    # which is far more actionable than the 120s verify timeout that would
-    # otherwise hide the root cause.
     cmd_lines.append(
         'if [ ! -x /tmp/rtunnel ]; then '
         f'echo {RTUNNEL_MISSING_MARKER}; '
@@ -2051,7 +1913,6 @@ def _setup_notebook_rtunnel_sync(
     port: int = 31337,
     ssh_port: int = 22222,
     ssh_public_key: Optional[str] = None,
-    ssh_runtime: Optional[SshRuntimeConfig] = None,
     session: Optional[WebSession] = None,
     headless: bool = True,
     timeout: int = 120,
@@ -2114,7 +1975,6 @@ def _setup_notebook_rtunnel_sync(
                 port=port,
                 ssh_port=ssh_port,
                 ssh_public_key=ssh_public_key,
-                ssh_runtime=ssh_runtime,
             )
             batch_cmd = _build_batch_setup_script(cmd_lines)
             _log.debug("Setup script length: %d chars, %d commands", len(batch_cmd), len(cmd_lines))
@@ -2176,7 +2036,6 @@ def setup_notebook_rtunnel(
     port: int = 31337,
     ssh_port: int = 22222,
     ssh_public_key: Optional[str] = None,
-    ssh_runtime: Optional[SshRuntimeConfig] = None,
     session: Optional[WebSession] = None,
     headless: bool = True,
     timeout: int = 120,
@@ -2189,7 +2048,6 @@ def setup_notebook_rtunnel(
             port=port,
             ssh_port=ssh_port,
             ssh_public_key=ssh_public_key,
-            ssh_runtime=ssh_runtime,
             session=session,
             headless=headless,
             timeout=timeout,
@@ -2199,7 +2057,6 @@ def setup_notebook_rtunnel(
         port=port,
         ssh_port=ssh_port,
         ssh_public_key=ssh_public_key,
-        ssh_runtime=ssh_runtime,
         session=session,
         headless=headless,
         timeout=timeout,

@@ -27,7 +27,6 @@ from inspire.cli.utils.tunnel_reconnect import (
     should_attempt_ssh_reconnect,
 )
 from inspire.config import ConfigError
-from inspire.config.ssh_runtime import resolve_ssh_runtime_config
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NotebookFailedError
 from inspire.platform.web.browser_api.rtunnel import redact_proxy_url
@@ -278,9 +277,6 @@ def _run_notebook_command_with_reconnect(
     timeout_s = _command_timeout_seconds(command_timeout)
     announced_command_start = False
 
-    def _runtime_loader() -> object:
-        return resolve_ssh_runtime_config()
-
     def _attempt_rebuild() -> bool:
         tunnel_config = load_tunnel_config(account=tunnel_account)
         bridge = tunnel_config.get_bridge(profile_name)
@@ -309,7 +305,6 @@ def _run_notebook_command_with_reconnect(
             bridge=bridge,
             tunnel_config=tunnel_config,
             session_loader=lambda: session,
-            runtime_loader=_runtime_loader,
             rebuild_fn=rebuild_notebook_bridge_profile,
             key_loader=lambda path: load_ssh_public_key(path),
             pubkey_path=pubkey,
@@ -473,13 +468,6 @@ def _run_interactive_notebook_ssh_with_reconnect(
         reconnect_pause=tunnel_retry_pause,
     )
 
-    def _runtime_loader() -> object:
-        return resolve_ssh_runtime_config()
-
-    def _runtime_validator(runtime: object) -> None:
-        del runtime
-        pass
-
     while True:
         tunnel_config = load_tunnel_config(account=tunnel_account)
         bridge = tunnel_config.get_bridge(profile_name)
@@ -528,28 +516,19 @@ def _run_interactive_notebook_ssh_with_reconnect(
             bridge=bridge,
             tunnel_config=tunnel_config,
             session_loader=lambda: session,
-            runtime_loader=_runtime_loader,
             rebuild_fn=rebuild_notebook_bridge_profile,
             key_loader=lambda path: load_ssh_public_key(path),
-            runtime_validator=_runtime_validator,
             pubkey_path=pubkey,
             timeout=setup_timeout,
             headless=not debug_playwright,
         )
 
         if isinstance(reconnect_result.error, (ValueError, ConfigError)):
-            hint = None
-            if "setup_script" in str(reconnect_result.error):
-                hint = (
-                    "Set [ssh].setup_script in config.toml or export INSPIRE_SETUP_SCRIPT "
-                    "to the setup script path on the cluster."
-                )
             _handle_error(
                 ctx,
                 "ConfigError",
                 str(reconnect_result.error),
                 EXIT_CONFIG_ERROR,
-                hint=hint,
             )
             return
 
@@ -836,38 +815,34 @@ def run_notebook_ssh(
         return
 
     try:
-        ssh_runtime = resolve_ssh_runtime_config()
-    except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-        return
-
-    try:
         proxy_url = browser_api_module.setup_notebook_rtunnel(
             notebook_id=notebook_id,
             port=port,
             ssh_port=ssh_port,
             ssh_public_key=ssh_public_key,
-            ssh_runtime=ssh_runtime,
             session=session,
             headless=not debug_playwright,
             timeout=setup_timeout,
         )
     except browser_api_module.RtunnelMissingInContainerError:
-        # Structured failure: rtunnel is not baked into the image and the
-        # container can't reach the public internet to curl it. Give the
-        # user a concrete repair path instead of a generic "bootstrap
-        # failed" message.
+        # Structured failure: the offline SSH-bootstrap kit isn't reachable
+        # from this container (neither /tmp/rtunnel was produced from the kit
+        # cp step nor did a runnable rtunnel appear). The kit lives at a
+        # fixed global_public path and is expected to be mounted in every
+        # notebook; if you see this, the platform mount is missing.
         _handle_error(
             ctx,
             "SetupError",
-            "SSH bootstrap 失败：rtunnel 在容器内找不到，且容器无公网（curl 取不到）。",
+            "SSH bootstrap 失败：在容器里没能从 global_public kit 拿到 rtunnel。",
             EXIT_API_ERROR,
             hint=(
-                "修复（选一个）：\n"
-                "  1. 把镜像换成 unified-base:v1 或它的派生镜像，自带 rtunnel + sshd。\n"
-                "  2. 在可上网区（CPU资源空间 / HPC-可上网区资源-2）开一个 notebook，\n"
-                "     curl 一次 rtunnel 到 /usr/local/bin/rtunnel，然后\n"
-                "     inspire image save 成自己的镜像；之后所有 notebook 都用这个镜像。"
+                "检查：\n"
+                "  1. `ls /inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-amd64/rtunnel`\n"
+                "     在容器里应当存在且可执行。\n"
+                "  2. 如果这条路径不存在 / 不可读，说明平台侧的 global_public 挂载\n"
+                "     没覆盖到这台实例——这不是 InspireSkill 的问题，找 SII 运维。\n"
+                "  3. 如果 kit 存在但 bootstrap 仍失败，跑 `inspire --debug notebook ssh ...`\n"
+                "     看 trace 再开 issue。"
             ),
         )
         return

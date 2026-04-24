@@ -1,22 +1,45 @@
-"""rtunnel binary helpers for SSH ProxyCommand access."""
+"""rtunnel binary helpers for SSH ProxyCommand access (LOCAL machine).
+
+The *container-side* rtunnel bootstrap is handled by the global_public offline
+kit (see :mod:`inspire.platform.web.browser_api.rtunnel`). This module runs on
+the user's laptop to provide rtunnel for the SSH ProxyCommand — on laptops we
+can't mount GPFS, so the binary is downloaded once from the upstream nightly
+release on first use and cached under ``~/.cache/inspire-skill/``.
+"""
 
 from __future__ import annotations
 
 import os
+import platform
 import subprocess
 from pathlib import Path
 from typing import Optional
 
-from inspire.config.ssh_runtime import (
-    DEFAULT_RTUNNEL_DOWNLOAD_URL as CONFIG_DEFAULT_RTUNNEL_DOWNLOAD_URL,
-    resolve_ssh_runtime_config,
-)
-
 from .config import load_tunnel_config
 from .models import TunnelConfig, TunnelError
 
-# nightly release includes stdio:// mode for SSH ProxyCommand support
-DEFAULT_RTUNNEL_DOWNLOAD_URL = CONFIG_DEFAULT_RTUNNEL_DOWNLOAD_URL
+# Upstream nightly release — includes stdio:// mode for SSH ProxyCommand support.
+# Local-only: container-side rtunnel comes from the global_public kit and never
+# from this URL.
+_RTUNNEL_RELEASE_BASE_URL = "https://github.com/Sarfflow/rtunnel/releases/download/nightly"
+
+
+def _local_rtunnel_url() -> str:
+    """Return the rtunnel archive URL for the LOCAL platform (user's laptop)."""
+    machine = (platform.machine() or "").lower()
+    arch = "arm64" if machine in {"arm64", "aarch64"} else "amd64"
+    system = (platform.system() or "").lower()
+    if system.startswith("darwin"):
+        os_part = "darwin"
+    elif system.startswith(("windows", "mingw", "msys", "cygwin")):
+        os_part = "windows"
+    else:
+        os_part = "linux"
+    ext = "zip" if os_part == "windows" else "tar.gz"
+    return f"{_RTUNNEL_RELEASE_BASE_URL}/rtunnel-{os_part}-{arch}.{ext}"
+
+
+DEFAULT_RTUNNEL_DOWNLOAD_URL = _local_rtunnel_url()
 
 
 def _is_rtunnel_binary_usable(path: Path) -> bool:
@@ -41,17 +64,7 @@ def _is_rtunnel_binary_usable(path: Path) -> bool:
 
 
 def _get_rtunnel_download_url() -> str:
-    """Get the rtunnel download URL from resolved SSH runtime config.
-
-    Returns:
-        Download URL for rtunnel binary
-    """
-    try:
-        return resolve_ssh_runtime_config().rtunnel_download_url
-    except Exception:
-        pass
-
-    # Use default
+    """Return the rtunnel archive URL for the local platform."""
     return DEFAULT_RTUNNEL_DOWNLOAD_URL
 
 

@@ -44,7 +44,6 @@ from inspire.cli.utils.notebook_post_start import (
 )
 from inspire.cli.utils.tunnel_reconnect import rebuild_notebook_bridge_profile
 from inspire.config import ConfigError
-from inspire.config.ssh_runtime import resolve_ssh_runtime_config
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
@@ -84,7 +83,6 @@ def _notebook_ssh_overrides() -> dict[str, object]:
         "_get_current_user_detail": _get_current_user_detail,
         "_validate_notebook_account_access": _validate_notebook_account_access,
         "load_ssh_public_key": load_ssh_public_key,
-        "resolve_ssh_runtime_config": resolve_ssh_runtime_config,
         "rebuild_notebook_bridge_profile": rebuild_notebook_bridge_profile,
         "subprocess": subprocess,
     }

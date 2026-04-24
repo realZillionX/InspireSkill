@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig, save_tunnel_config
-from inspire.config.ssh_runtime import SshRuntimeConfig
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import WebSession
 
@@ -36,7 +35,6 @@ class NotebookBridgeReconnectState:
     reconnect_attempt: int = 0
     web_session: Optional[WebSession] = None
     ssh_public_key: str = ""
-    ssh_runtime: Optional[SshRuntimeConfig] = None
 
 
 @dataclass
@@ -111,7 +109,6 @@ def rebuild_notebook_bridge_profile(
     tunnel_config: TunnelConfig,
     session: WebSession,
     ssh_public_key: str,
-    ssh_runtime: SshRuntimeConfig,
     timeout: int = 300,
     headless: bool = True,
 ) -> BridgeProfile:
@@ -126,7 +123,6 @@ def rebuild_notebook_bridge_profile(
         port=tunnel_port,
         ssh_port=bridge.ssh_port,
         ssh_public_key=ssh_public_key,
-        ssh_runtime=ssh_runtime,
         session=session,
         headless=headless,
         timeout=timeout,
@@ -154,10 +150,8 @@ def attempt_notebook_bridge_rebuild(
     bridge: BridgeProfile,
     tunnel_config: TunnelConfig,
     session_loader: Callable[[], WebSession],
-    runtime_loader: Callable[[], SshRuntimeConfig],
     rebuild_fn: Callable[..., BridgeProfile] = rebuild_notebook_bridge_profile,
     key_loader: Callable[[Optional[str]], str] = load_ssh_public_key_material,
-    runtime_validator: Callable[[SshRuntimeConfig], None] | None = None,
     pubkey_path: Optional[str] = None,
     timeout: int = 300,
     headless: bool = True,
@@ -184,10 +178,6 @@ def attempt_notebook_bridge_rebuild(
             state.web_session = session_loader()
         if not state.ssh_public_key:
             state.ssh_public_key = key_loader(pubkey_path)
-        if state.ssh_runtime is None:
-            state.ssh_runtime = runtime_loader()
-        if runtime_validator is not None:
-            runtime_validator(state.ssh_runtime)
 
         rebuild_fn(
             bridge_name=bridge_name,
@@ -195,7 +185,6 @@ def attempt_notebook_bridge_rebuild(
             tunnel_config=tunnel_config,
             session=state.web_session,
             ssh_public_key=state.ssh_public_key,
-            ssh_runtime=state.ssh_runtime,
             timeout=timeout,
             headless=headless,
         )

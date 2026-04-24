@@ -52,7 +52,6 @@ from inspire.cli.utils.tunnel_reconnect import (
     rebuild_notebook_bridge_profile,
     should_attempt_ssh_reconnect,
 )
-from inspire.config.ssh_runtime import resolve_ssh_runtime_config
 from inspire.platform.web import browser_api as browser_api_module
 
 logger = logging.getLogger(__name__)
@@ -241,7 +240,6 @@ def try_exec_via_ssh_tunnel(
                     'or [accounts."<username>"].password.'
                 ),
             ),
-            runtime_loader=resolve_ssh_runtime_config,
             rebuild_fn=rebuild_notebook_bridge_profile,
             key_loader=lambda _path=None: load_ssh_public_key_material(),
         )

@@ -42,7 +42,6 @@ _LEGACY_WORKSPACE_ALIASES = frozenset({"cpu", "gpu", "internet", "hpc", "whole_n
 
 
 class _ProbeDefaults(NamedTuple):
-    ssh_runtime: object
     ssh_public_key: str
     probe_workspace_id: str
     logic_compute_group_id: str
@@ -389,7 +388,6 @@ def _probe_project_shared_path_group(
     project_name: str,
     project_alias: str,
     ssh_public_key: str,
-    ssh_runtime,  # noqa: ANN001
     logic_compute_group_id: str,
     quota_id: str,
     cpu_count: int,
@@ -460,7 +458,6 @@ def _probe_project_shared_path_group(
         proxy_url = browser_api_module.setup_notebook_rtunnel(
             notebook_id=notebook_id,
             ssh_public_key=ssh_public_key,
-            ssh_runtime=ssh_runtime,
             session=session,
             headless=True,
             timeout=min(timeout, 600),
@@ -1912,14 +1909,6 @@ def _resolve_probe_defaults(
         click.echo(click.style(str(e), fg="red"))
         raise SystemExit(1) from e
 
-    try:
-        from inspire.config.ssh_runtime import resolve_ssh_runtime_config
-
-        ssh_runtime = resolve_ssh_runtime_config()
-    except Exception as e:
-        click.echo(click.style(f"Failed to resolve SSH runtime config: {e}", fg="red"))
-        raise SystemExit(1) from e
-
     probe_workspace_id = str(
         _guess_workspace_id_from_map(workspaces=merged_workspaces, alias="cpu")
         or workspace_id
@@ -1958,7 +1947,6 @@ def _resolve_probe_defaults(
     task_priority = max(1, min(9, task_priority))
 
     return _ProbeDefaults(
-        ssh_runtime=ssh_runtime,
         ssh_public_key=ssh_public_key,
         probe_workspace_id=probe_workspace_id,
         logic_compute_group_id=logic_compute_group_id,
@@ -2052,7 +2040,6 @@ def _run_shared_path_probe(
             project_name=project_name,
             project_alias=project_alias,
             ssh_public_key=probe_defaults.ssh_public_key,
-            ssh_runtime=probe_defaults.ssh_runtime,
             logic_compute_group_id=probe_defaults.logic_compute_group_id,
             quota_id=probe_defaults.quota_id,
             cpu_count=probe_defaults.cpu_count,

@@ -39,7 +39,7 @@ def test_attempt_notebook_bridge_rebuild_returns_not_rebuildable_for_non_noteboo
     state = NotebookBridgeReconnectState(reconnect_limit=2, reconnect_pause=0.0)
     bridge = BridgeProfile(name="bridge", proxy_url="https://proxy.example")
     tunnel_config = TunnelConfig(bridges={"bridge": bridge}, default_bridge="bridge")
-    calls = {"session": 0, "runtime": 0, "key": 0, "rebuild": 0}
+    calls = {"session": 0, "key": 0, "rebuild": 0}
 
     result = attempt_notebook_bridge_rebuild(
         state=state,
@@ -47,14 +47,12 @@ def test_attempt_notebook_bridge_rebuild_returns_not_rebuildable_for_non_noteboo
         bridge=bridge,
         tunnel_config=tunnel_config,
         session_loader=lambda: calls.__setitem__("session", calls["session"] + 1) or object(),
-        runtime_loader=lambda: calls.__setitem__("runtime", calls["runtime"] + 1) or object(),
         key_loader=lambda path=None: calls.__setitem__("key", calls["key"] + 1) or "ssh-key",
         rebuild_fn=lambda **kwargs: calls.__setitem__("rebuild", calls["rebuild"] + 1) or bridge,
     )
 
     assert result.status is NotebookBridgeReconnectStatus.NOT_REBUILDABLE
     assert state.reconnect_attempt == 0
-    assert calls == {"session": 0, "runtime": 0, "key": 0, "rebuild": 0}
 
 
 def test_attempt_notebook_bridge_rebuild_reuses_cached_material_after_retry() -> None:
@@ -65,7 +63,7 @@ def test_attempt_notebook_bridge_rebuild_reuses_cached_material_after_retry() ->
         notebook_id="notebook-1",
     )
     tunnel_config = TunnelConfig(bridges={"bridge": bridge}, default_bridge="bridge")
-    calls = {"session": 0, "runtime": 0, "key": 0, "rebuild": 0}
+    calls = {"session": 0, "key": 0, "rebuild": 0}
 
     def rebuild_fn(**kwargs: Any) -> BridgeProfile:
         calls["rebuild"] += 1
@@ -79,7 +77,6 @@ def test_attempt_notebook_bridge_rebuild_reuses_cached_material_after_retry() ->
         bridge=bridge,
         tunnel_config=tunnel_config,
         session_loader=lambda: calls.__setitem__("session", calls["session"] + 1) or object(),
-        runtime_loader=lambda: calls.__setitem__("runtime", calls["runtime"] + 1) or object(),
         key_loader=lambda path=None: calls.__setitem__("key", calls["key"] + 1) or "ssh-key",
         rebuild_fn=rebuild_fn,
     )
@@ -89,7 +86,6 @@ def test_attempt_notebook_bridge_rebuild_reuses_cached_material_after_retry() ->
         bridge=bridge,
         tunnel_config=tunnel_config,
         session_loader=lambda: calls.__setitem__("session", calls["session"] + 1) or object(),
-        runtime_loader=lambda: calls.__setitem__("runtime", calls["runtime"] + 1) or object(),
         key_loader=lambda path=None: calls.__setitem__("key", calls["key"] + 1) or "ssh-key",
         rebuild_fn=rebuild_fn,
     )
@@ -100,7 +96,6 @@ def test_attempt_notebook_bridge_rebuild_reuses_cached_material_after_retry() ->
     assert second.status is NotebookBridgeReconnectStatus.REBUILT
     assert second.attempt == 2
     assert calls["session"] == 1
-    assert calls["runtime"] == 1
     assert calls["key"] == 1
     assert calls["rebuild"] == 2
 
@@ -120,7 +115,6 @@ def test_attempt_notebook_bridge_rebuild_returns_exhausted_on_last_failure() -> 
         bridge=bridge,
         tunnel_config=tunnel_config,
         session_loader=lambda: object(),
-        runtime_loader=lambda: object(),
         key_loader=lambda path=None: "ssh-key",
         rebuild_fn=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
     )

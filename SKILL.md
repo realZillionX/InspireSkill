@@ -21,6 +21,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | **HPC-可上网区资源-2 的 500GB 规格实际不可用（运维 bug）** | 2026-04 实测：`resources specs --usage hpc` 和 Web UI 都列着 500GB 档，但实际提交**静默排队不被调度**（节点侧没配）。且由于上一行约束，**目前 CPU 空间没有任何计算组能跑 500GB 的 HPC 任务**——真需要 500GB 时只能退化成在 `CPU资源-2` 上起 500GB notebook 跑交互式 / 脚本处理。 |
 | **项目-实例绑定的挂载可见性** | 一个 notebook / job / hpc 实例只挂**自身所在项目**的 fileset，其它项目的 `/inspire/hdd\|ssd\|qb-ilm\|qb-ilm2/project/<others>/` 路径在该实例里**根本不存在**（`ls` 报 `No such file or directory`）——不是权限问题，是没挂。访问项目 `<X>` 的存储**必须**在 `project=<X>` 的实例里操作：`inspire --json notebook list -A` 按 `project.name` 找 running；没有就 `inspire notebook create --project <X-alias>` 新起。 |
 | **跨项目文件传输** | 不同 project 复制共享盘文件**需要 root 权限**，`notebook scp` / `exec cp` / 单账号 CLI 都做不到。找**飞书项目群**里的管理员做 `cp` / `chmod`，不要反复试。 |
+| **SSH bootstrap = global_public kit** | `inspire notebook ssh <name>` 在容器里**不依赖公网**——rtunnel 二进制 + openssh-server deb 全部从 `/inspire/hdd/global_public/inspire-skill-bootstrap/v1/`（平台默认挂载到每个容器，只读）直接 cp / dpkg 起来。因此**任何镜像、任何工作区、任何计算组（可上网 / 不可上网）都能直接 SSH**，镜像里**不需要**预装 rtunnel 或 sshd。想把 SSH 固化进镜像以省启动时间的话，从一个已经 bootstrap 好的 notebook 跑 `inspire image save` 就行；不想固化就用完丢，容器 stop 之后安装痕迹随 `/tmp` + 容器根文件系统一起没。 |
 
 ## 1. 通用规则
 
@@ -222,24 +223,25 @@ inspire notebook exec --alias mybox "hostname"
 
 ### 阶段 A：CPU 空间起基底 notebook
 
-**镜像选型先做一次判断**：
-- **已有项目 / 个人镜像**（装好 uv / nvm / cargo / java / transformer-engine 等环境、环境变量、编译产物）→ **直接复用那个镜像**。缺 `sshd` / `rtunnel` 时 bootstrap 会自动补：`sshd` 走 `apt-get install -y openssh-server`，`rtunnel` 优先用容器里预装的二进制（`command -v rtunnel`），其次在容器有公网时 `curl` 下载。从零重装环境代价很高（transformer-engine 编译、各种 runtime 初始化），**不要**为了统一用 `unified-base` 而丢弃现有镜像；首次建镜像时在可上网区把 rtunnel 下载进镜像后 `inspire image save` 派生，之后所有 notebook 复用这个镜像即可，无论有无公网都能直接 SSH。
-- **完全从零起 / 临时脚手架** → `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（Ubuntu 22.04 + slurm 运行环境 + sshd + rtunnel 一体）是一个省事的起点。hpc 提交时平台正常注入 slurm controller，容器内 `srun`/`sbatch`/`sshd`/`rtunnel` 全部可用（slurm 仅在 `inspire hpc create` 路径下生效，普通 notebook 里 slurm 命令会因为无 controller 而报 `Could not establish a configuration source`——这是平台设计，不是镜像问题）。要加一层项目依赖就在这镜像上面 `inspire image save` 再派生。
+**镜像随便挑**——`inspire notebook ssh` bootstrap 依赖的 rtunnel + sshd 都从 global_public kit（§0 硬约束）自动 cp / dpkg 起来,**镜像里有没有 sshd / rtunnel 完全不重要,也不挑计算组是否可上网**。两条常见选项:
 
-资源组必须用 `HPC-可上网区资源-2`（§0 硬约束：其它 CPU 计算组只能建 notebook，但那边没公网没法 apt install）。
+- **已有项目 / 个人镜像**(装好 uv / nvm / cargo / java / transformer-engine 等环境、环境变量、编译产物)→ **直接复用**。首次 `inspire notebook ssh` 时 CLI 会在 `/tmp` 放 rtunnel,没 sshd 就 `dpkg -i` 从 kit 装一份——**不会动镜像本身的其它东西**。想把这一步固化进镜像省下次启动的几秒就 `inspire image save`,不想固化就不 save(容器停之后 `/tmp` + 容器根都没了,完全干净)。
+- **完全从零起 / 临时脚手架** → `docker.sii.shaipower.online/inspire-studio/unified-base:v2`(Ubuntu 22.04 + slurm 运行环境) 是一个省事的起点。hpc 提交时平台正常注入 slurm controller,容器内 `srun` / `sbatch` 全部可用(slurm 仅在 `inspire hpc create` 路径下生效,普通 notebook 里 slurm 命令会因为无 controller 而报 `Could not establish a configuration source`——这是平台设计,不是镜像问题)。
+
+资源组按实际需求选——需要公网跑 `pip install` / `apt install` 才挑 `HPC-可上网区资源-2`,纯 offline 的就 `CPU资源-1` / `CPU资源-2` 都行。SSH 不再是计算组选型的约束。
 
 ```bash
 inspire notebook create \
-  --workspace CPU资源空间 --group HPC-可上网区资源-2 -r 20CPU \
+  --workspace CPU资源空间 --group CPU资源-2 -r 20CPU \
   --name <action-goal-name> \
-  --image docker.sii.shaipower.online/inspire-studio/unified-base:v2 \
+  --image <任意镜像,不需要带 sshd / rtunnel> \
   --project <project-id-or-alias> --wait --json
 
-inspire notebook ssh <notebook-name> --command "echo ssh-ok"   # fast：sshd 已在镜像里
+inspire notebook ssh <notebook-name> --command "echo ssh-ok"   # 首次调用 bootstrap,5~10s
 inspire notebook ssh <notebook-name> --save-as cpu-box
 ```
 
-想在此基础上加项目依赖（DeepSpeed / 训练栈 / ……）并发布：
+想固化一层项目依赖(DeepSpeed / 训练栈 / ……)并发布成可复用镜像:
 
 ```bash
 inspire notebook exec --alias cpu-box "apt-get update && apt-get install -y <deps> && pip install ..."
@@ -248,6 +250,8 @@ inspire image set-default \
   --job docker.sii.shaipower.online/inspire-studio/<name>-base:v1 \
   --notebook docker.sii.shaipower.online/inspire-studio/<name>-base:v1
 ```
+
+> 一次性用完就扔的场景直接跳过 `image save` 这步,notebook 停掉之后容器整个被回收,bootstrap 装的 rtunnel / sshd 都不会留。
 
 ### 阶段 B：CPU 空间跑数据处理
 
