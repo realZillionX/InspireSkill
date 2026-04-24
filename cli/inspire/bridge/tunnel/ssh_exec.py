@@ -145,6 +145,8 @@ def run_ssh_command(
         input=input_payload,
         capture_output=capture_output,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         check=check,
         env=_build_ssh_process_env(),
@@ -236,7 +238,9 @@ def run_ssh_command_streaming(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=1,
-        universal_newlines=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
         env=_build_ssh_process_env(),
     )
 
