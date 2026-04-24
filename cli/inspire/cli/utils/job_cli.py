@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 
-from inspire.cli.context import Context, EXIT_JOB_NOT_FOUND
+from inspire.cli.context import Context, EXIT_JOB_NOT_FOUND, EXIT_VALIDATION_ERROR
 from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.id_resolver import (
     is_full_uuid,
@@ -31,13 +31,16 @@ def resolve_job_id(ctx: Context, name: str, *, pick: int | None = None) -> str:
     if not name:
         exit_with_error(ctx, "InvalidJobName", "Job name cannot be empty", EXIT_JOB_NOT_FOUND)
 
-    # Reject id-shaped input.
-    if is_full_uuid(name, prefix="job-") or is_partial_id(name, prefix="job-"):
+    # Reject id-shaped input. Broad-match ``job-`` prefix (not just hex-after-prefix)
+    # for parity with ``_looks_like_platform_id`` in ``id_resolver`` — the user
+    # boundary never accepts ids, so any ``job-...`` string is meant to be a
+    # platform id the agent should have replaced with a name.
+    if name.lower().startswith("job-") or is_full_uuid(name, prefix="job-") or is_partial_id(name, prefix="job-"):
         exit_with_error(
             ctx,
             "ValidationError",
             f"v2 CLI takes a job name, not an id / partial-id ({name!r}).",
-            EXIT_JOB_NOT_FOUND,
+            EXIT_VALIDATION_ERROR,
             hint="Use `inspire job list -A` to find the name and pass that instead.",
         )
 
@@ -116,22 +119,32 @@ def _search_job_api_by_name(name: str) -> list[tuple[str, str]]:
     `inspire job status <name>` from picking up a teammate's same-named
     training run (which you wouldn't have permission to operate anyway)
     or getting cut off at the default page of 50.
-    """
-    try:
-        from inspire.platform.web.browser_api.jobs import (
-            get_current_user,
-            list_jobs as web_list_jobs,
-        )
 
+    Lets ``SessionExpiredError`` / ``AuthenticationError`` propagate — an
+    auth failure masquerading as "job not found" would send the user in
+    the wrong direction, so we surface the real reason instead.
+    """
+    from inspire.platform.web.browser_api.jobs import (
+        get_current_user,
+        list_jobs as web_list_jobs,
+    )
+
+    try:
         me = get_current_user()
         created_by = str(me.get("id") or me.get("user_id") or "").strip() or None
         items, _ = web_list_jobs(created_by=created_by, page_size=10000)
-        matches: list[tuple[str, str]] = []
-        for job in items:
-            if (job.name or "") == name:
-                label = job.status or ""
-                matches.append((job.job_id, label))
-        return matches
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception as error:  # noqa: BLE001
+        cls_name = type(error).__name__
+        if cls_name in {"SessionExpiredError", "AuthenticationError"}:
+            raise
         logger.debug("Web job name lookup failed for %s: %s", name, error)
         return []
+
+    matches: list[tuple[str, str]] = []
+    for job in items:
+        if (job.name or "") == name:
+            label = job.status or ""
+            matches.append((job.job_id, label))
+    return matches

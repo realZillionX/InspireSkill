@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import re
 from typing import Any
 
 import click
+
+logger = logging.getLogger(__name__)
 
 from inspire.cli.context import (
     Context,
@@ -46,10 +49,13 @@ def _sort_notebook_items(items: list[dict]) -> list[dict]:
 
 
 def _looks_like_notebook_id(value: str) -> bool:
-    value = value.strip()
+    value = value.strip().lower()
     if not value:
         return False
-    if value.startswith("notebook-"):
+    # Keep this list in sync with ``_looks_like_platform_id`` in
+    # ``inspire.cli.utils.id_resolver`` — both abbreviations (``nb-``) and
+    # full prefixes (``notebook-``) round-trip through the platform.
+    if value.startswith("notebook-") or value.startswith("nb-"):
         return True
     return bool(_NOTEBOOK_UUID_RE.match(value))
 
@@ -407,6 +413,9 @@ def _resolve_notebook_id(
     user_ids: list[str] = []
 
     matches: list[tuple[str, dict]] = []
+    # Let auth / session failures propagate — swallowing them here would
+    # surface an auth problem as "Notebook not found" and send the user
+    # chasing a typo in a name that's actually fine.
     try:
         workspace_items = _list_notebooks_for_workspaces(
             session,
@@ -415,7 +424,13 @@ def _resolve_notebook_id(
             user_ids=user_ids,
             keyword=identifier,
         )
-    except Exception:
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as error:  # noqa: BLE001 — CLI boundary
+        cls_name = type(error).__name__
+        if cls_name in {"SessionExpiredError", "AuthenticationError"}:
+            raise
+        logger.debug("Notebook workspace listing failed for %s: %s", identifier, error)
         workspace_items = {}
     for ws_id in workspace_ids:
         items = workspace_items.get(ws_id, [])
@@ -432,7 +447,7 @@ def _resolve_notebook_id(
             "APIError",
             f"Notebook not found: {identifier}",
             EXIT_API_ERROR,
-            hint="Run 'inspire notebook list --all-workspaces' to find the notebook ID.",
+            hint="Run 'inspire notebook list --all-workspaces' to find the notebook name.",
         )
 
     if len(matches) == 1:
@@ -447,23 +462,29 @@ def _resolve_notebook_id(
             )
         return notebook_id, ws_id
 
+    def _label_for(item: dict, ws_id: str) -> str:
+        status = str(item.get("status") or "Unknown")
+        resource = _format_notebook_resource(item)
+        created_at = str(item.get("created_at") or "")
+        return f"{status:<12} {resource:<12} created_at={created_at}  ws={ws_id}"
+
     if json_output:
-        ids = [(_notebook_id_from_item(item) or "?") for _, item in matches]
+        labels = [_label_for(item, ws_id) for ws_id, item in matches]
         _handle_error(
             ctx,
-            "ValidationError",
-            f"Multiple notebooks match name '{identifier}': {', '.join(ids)}",
+            "AmbiguousName",
+            f"Multiple notebooks match name '{identifier}':\n"
+            + "\n".join(f"  [{i}] {lbl}" for i, lbl in enumerate(labels, start=1)),
             EXIT_VALIDATION_ERROR,
-            hint="Use a notebook ID instead of a name.",
+            hint=(
+                "Rename one of the duplicates so each notebook has a unique name — "
+                "v2 does not accept ids at the user boundary."
+            ),
         )
 
     click.echo(f"Multiple notebooks named '{identifier}' found:")
     for idx, (ws_id, item) in enumerate(matches, start=1):
-        notebook_id = _notebook_id_from_item(item) or "N/A"
-        status = str(item.get("status") or "Unknown")
-        resource = _format_notebook_resource(item)
-        created_at = str(item.get("created_at") or "")
-        click.echo(f"  [{idx}] {status:<12} {resource:<12} {notebook_id}  {created_at}  ws={ws_id}")
+        click.echo(f"  [{idx}] {_label_for(item, ws_id)}")
 
     choice = click.prompt(
         "Select notebook",
