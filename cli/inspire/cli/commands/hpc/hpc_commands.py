@@ -17,10 +17,36 @@ from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils.auth import AuthManager, AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.config import Config, ConfigError
+from inspire.cli.utils.id_resolver import resolve_by_name
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.openapi import InspireAPIError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+
+
+def _resolve_hpc_name(ctx: Context, name: str) -> str:
+    """Resolve an HPC job name to its platform id (``hpc-job-<uuid>``)."""
+    def _lister():
+        session = get_web_session()
+        jobs, _ = browser_api_module.list_hpc_jobs(session=session)
+        return [
+            {
+                "name": j.name,
+                "id": j.job_id,
+                "status": j.status,
+                "workspace_id": j.workspace_id,
+                "created_at": j.created_at,
+            }
+            for j in jobs
+        ]
+
+    return resolve_by_name(
+        ctx,
+        name=name,
+        resource_type="hpc",
+        list_candidates=_lister,
+        json_output=ctx.json_output,
+    )
 
 
 def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
@@ -395,9 +421,7 @@ def create_hpc(
             click.echo(json_formatter.format_json(data))
             return
 
-        job_id = data.get("job_id", "(not returned)")
-        click.echo(human_formatter.format_success(f"HPC job created: {job_id}"))
-        click.echo(f"Name:      {name}")
+        click.echo(human_formatter.format_success(f"HPC job created: {name}"))
         click.echo(f"Project:   {resolved_project_id}")
         click.echo(f"Workspace: {resolved_workspace_id}")
         click.echo(f"Spec:      {spec_id}")
@@ -416,13 +440,14 @@ def create_hpc(
 
 
 @click.command("status")
-@click.argument("job_id")
+@click.argument("name")
 @pass_context
-def status_hpc(ctx: Context, job_id: str) -> None:
-    """Get status/details of an HPC job."""
+def status_hpc(ctx: Context, name: str) -> None:
+    """Get status/details of an HPC job (pass the job name)."""
     try:
         config, _ = Config.from_files_and_env(require_target_dir=False)
         api = AuthManager.get_api(config)
+        job_id = _resolve_hpc_name(ctx, name)
         result = api.get_hpc_job_detail(job_id)
         data = _extract_data(result)
 
@@ -431,7 +456,6 @@ def status_hpc(ctx: Context, job_id: str) -> None:
             return
 
         click.echo("HPC Job Status")
-        click.echo(f"Job ID: {data.get('job_id', job_id)}")
         click.echo(f"Name:   {data.get('name', 'N/A')}")
         click.echo(f"Status: {data.get('status', 'N/A')}")
         if data.get("priority") is not None:
@@ -458,19 +482,20 @@ def status_hpc(ctx: Context, job_id: str) -> None:
 
 
 @click.command("stop")
-@click.argument("job_id")
+@click.argument("name")
 @pass_context
-def stop_hpc(ctx: Context, job_id: str) -> None:
-    """Stop an HPC job."""
+def stop_hpc(ctx: Context, name: str) -> None:
+    """Stop an HPC job (pass the job name)."""
     try:
         config, _ = Config.from_files_and_env(require_target_dir=False)
         api = AuthManager.get_api(config)
+        job_id = _resolve_hpc_name(ctx, name)
         api.stop_hpc_job(job_id)
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"job_id": job_id, "stopped": True}))
+            click.echo(json_formatter.format_json({"name": name, "stopped": True}))
             return
-        click.echo(human_formatter.format_success(f"HPC job stopped: {job_id}"))
+        click.echo(human_formatter.format_success(f"HPC job stopped: {name}"))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -483,7 +508,7 @@ def stop_hpc(ctx: Context, job_id: str) -> None:
 
 
 @click.command("delete")
-@click.argument("job_id")
+@click.argument("name")
 @click.option(
     "--yes",
     "-y",
@@ -491,8 +516,8 @@ def stop_hpc(ctx: Context, job_id: str) -> None:
     help="Skip the interactive confirmation prompt.",
 )
 @pass_context
-def delete_hpc(ctx: Context, job_id: str, yes: bool) -> None:
-    """Permanently delete an HPC job entry (Browser API).
+def delete_hpc(ctx: Context, name: str, yes: bool) -> None:
+    """Permanently delete an HPC job entry (pass the job name).
 
     \b
     The entry disappears from the HPC list in the web UI. This cannot be
@@ -500,26 +525,27 @@ def delete_hpc(ctx: Context, job_id: str, yes: bool) -> None:
 
     \b
     Example:
-        inspire hpc delete hpc-3eabc123-...
+        inspire hpc delete my-hpc-run
     """
     if not yes and not ctx.json_output:
         click.confirm(
-            f"Permanently delete HPC job '{job_id}'? This cannot be undone.",
+            f"Permanently delete HPC job '{name}'? This cannot be undone.",
             abort=True,
         )
 
     try:
+        job_id = _resolve_hpc_name(ctx, name)
         session = get_web_session()
         result = browser_api_module.delete_hpc_job(job_id=job_id, session=session)
 
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"job_id": job_id, "status": "deleted", "result": result}
+                    {"name": name, "status": "deleted", "result": result}
                 )
             )
             return
-        click.echo(human_formatter.format_success(f"HPC job deleted: {job_id}"))
+        click.echo(human_formatter.format_success(f"HPC job deleted: {name}"))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

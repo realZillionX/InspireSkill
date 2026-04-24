@@ -24,12 +24,13 @@ from typing import Optional
 import click
 
 from inspire.cli.context import Context, pass_context
+from inspire.cli.commands.hpc.hpc_commands import _resolve_hpc_name
 from inspire.cli.utils.events import run_events_command
 from inspire.platform.web.browser_api.hpc_jobs import list_hpc_job_events
 
 
 @click.command("events")
-@click.argument("job_id")
+@click.argument("name")
 @click.option(
     "--json",
     "json_output_local",
@@ -54,7 +55,7 @@ from inspire.platform.web.browser_api.hpc_jobs import list_hpc_job_events
 @pass_context
 def events(
     ctx: Context,
-    job_id: str,
+    name: str,
     json_output_local: bool,
     from_cache: bool,
     reason_filter: Optional[str],
@@ -64,11 +65,12 @@ def events(
 
     \b
     Examples:
-      inspire hpc events <id>
-      inspire --json hpc events <id>
-      inspire hpc events <id> --reason Deleted
-      inspire hpc events <id> --from-cache
+      inspire hpc events <name>
+      inspire --json hpc events <name>
+      inspire hpc events <name> --reason Deleted
+      inspire hpc events <name> --from-cache
     """
+    job_id = _resolve_hpc_name(ctx, name)
     run_events_command(
         ctx,
         job_id=job_id,

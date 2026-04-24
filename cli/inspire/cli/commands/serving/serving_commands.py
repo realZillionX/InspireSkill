@@ -17,11 +17,37 @@ from inspire.cli.context import (
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils.auth import AuthManager, AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import resolve_by_name
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.openapi import InspireAPIError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import get_web_session
+
+
+def _resolve_serving_name(ctx: Context, name: str) -> str:
+    """Resolve a serving name to its platform id (``sv-<uuid>``)."""
+    def _lister():
+        session = get_web_session()
+        items, _ = browser_api_module.list_servings(session=session)
+        return [
+            {
+                "name": s.name,
+                "id": s.inference_serving_id,
+                "status": s.status,
+                "workspace_id": s.workspace_id,
+                "created_at": s.created_at,
+            }
+            for s in items
+        ]
+
+    return resolve_by_name(
+        ctx,
+        name=name,
+        resource_type="serving",
+        list_candidates=_lister,
+        json_output=ctx.json_output,
+    )
 
 
 def _extract_data(result: dict[str, Any]) -> dict[str, Any]:
@@ -143,13 +169,14 @@ def list_serving(
 
 
 @click.command("status")
-@click.argument("inference_serving_id")
+@click.argument("name")
 @pass_context
-def status_serving(ctx: Context, inference_serving_id: str) -> None:
-    """Get detail of an inference serving (OpenAPI path)."""
+def status_serving(ctx: Context, name: str) -> None:
+    """Get detail of an inference serving (pass the serving name)."""
     try:
         config, _ = Config.from_files_and_env(require_target_dir=False)
         api = AuthManager.get_api(config)
+        inference_serving_id = _resolve_serving_name(ctx, name)
         result = api.get_inference_serving_detail(inference_serving_id)
         data = _extract_data(result)
 
@@ -158,7 +185,6 @@ def status_serving(ctx: Context, inference_serving_id: str) -> None:
             return
 
         click.echo("Inference Serving Status")
-        click.echo(f"ID:       {data.get('inference_serving_id', inference_serving_id)}")
         click.echo(f"Name:     {data.get('name', 'N/A')}")
         click.echo(f"Status:   {data.get('status', 'N/A')}")
         if data.get("replicas") is not None:
@@ -183,24 +209,23 @@ def status_serving(ctx: Context, inference_serving_id: str) -> None:
 
 
 @click.command("stop")
-@click.argument("inference_serving_id")
+@click.argument("name")
 @pass_context
-def stop_serving(ctx: Context, inference_serving_id: str) -> None:
-    """Stop an inference serving (OpenAPI path)."""
+def stop_serving(ctx: Context, name: str) -> None:
+    """Stop an inference serving (pass the serving name)."""
     try:
         config, _ = Config.from_files_and_env(require_target_dir=False)
         api = AuthManager.get_api(config)
+        inference_serving_id = _resolve_serving_name(ctx, name)
         api.stop_inference_serving(inference_serving_id)
 
         if ctx.json_output:
             click.echo(
-                json_formatter.format_json(
-                    {"inference_serving_id": inference_serving_id, "stopped": True}
-                )
+                json_formatter.format_json({"name": name, "stopped": True})
             )
             return
 
-        click.echo(human_formatter.format_success(f"Inference serving stopped: {inference_serving_id}"))
+        click.echo(human_formatter.format_success(f"Inference serving stopped: {name}"))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

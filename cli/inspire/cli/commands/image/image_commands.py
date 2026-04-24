@@ -20,6 +20,7 @@ from inspire.cli.utils.id_resolver import (
     is_full_uuid,
     is_partial_id,
     normalize_partial,
+    resolve_by_name,
     resolve_partial_id,
 )
 from inspire.cli.utils.notebook_cli import (
@@ -27,6 +28,42 @@ from inspire.cli.utils.notebook_cli import (
     resolve_json_output,
 )
 from inspire.platform.web import browser_api as browser_api_module
+
+
+def _resolve_image_name(ctx: Context, name: str) -> str:
+    """Resolve a custom-image name (``<name>:<version>`` or bare ``<name>``) to image_id.
+
+    Custom images are identified by ``name:version`` on the platform; a plain
+    name without ``:`` matches any version but can be ambiguous and will
+    fall through to the shared ambiguity UI.
+    """
+    def _lister():
+        session = require_web_session(ctx)
+        bucket = []
+        for source in ("private", "public", "official"):
+            try:
+                imgs = browser_api_module.list_images_by_source(source=source, session=session)
+            except Exception:
+                continue
+            for i in imgs:
+                full = f"{i.name}" if ":" in (i.name or "") else f"{i.name}:{i.version}" if i.version else i.name
+                bucket.append(
+                    {
+                        "name": full,
+                        "id": i.image_id,
+                        "status": i.status,
+                        "source": i.source,
+                    }
+                )
+        return bucket
+
+    return resolve_by_name(
+        ctx,
+        name=name,
+        resource_type="image",
+        list_candidates=_lister,
+        json_output=ctx.json_output,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +249,7 @@ def list_images_cmd(
 
 
 @click.command("detail")
-@click.argument("image_id")
+@click.argument("name")
 @click.option(
     "--json",
     "json_output",
@@ -222,15 +259,17 @@ def list_images_cmd(
 @pass_context
 def image_detail(
     ctx: Context,
-    image_id: str,
+    name: str,
     json_output: bool,
 ) -> None:
     """Show detailed information about an image.
 
+    NAME is the image's ``<name>:<version>`` (or just ``<name>`` if unambiguous).
+
     \b
     Examples:
-        inspire image detail <image-id>
-        inspire image detail <image-id> --json
+        inspire image detail my-image:v1
+        inspire image detail unified-base:v2 --json
     """
     json_output = resolve_json_output(ctx, json_output)
 
@@ -243,7 +282,7 @@ def image_detail(
         ),
     )
 
-    image_id = _resolve_image_id(ctx, image_id, json_output, session)
+    image_id = _resolve_image_name(ctx, name)
 
     try:
         image = browser_api_module.get_image_detail(image_id=image_id, session=session)
@@ -415,7 +454,7 @@ def _parse_visibility_flag(public: Optional[bool]) -> Optional[str]:
 
 
 @click.command("save")
-@click.argument("notebook_id")
+@click.argument("notebook")
 @click.option(
     "--name",
     "-n",
@@ -460,7 +499,7 @@ def _parse_visibility_flag(public: Optional[bool]) -> Optional[str]:
 @pass_context
 def save_image_cmd(
     ctx: Context,
-    notebook_id: str,
+    notebook: str,
     name: str,
     version: str,
     description: str,
@@ -470,11 +509,13 @@ def save_image_cmd(
 ) -> None:
     """Save a running notebook as a custom Docker image.
 
+    NOTEBOOK is the notebook name (from `inspire notebook list`).
+
     \b
     Examples:
-        inspire image save <notebook-id> -n my-saved-image
-        inspire image save <notebook-id> -n my-img -v v2 --wait
-        inspire image save <notebook-id> -n shared-base -v v1 --public
+        inspire image save my-notebook -n my-saved-image
+        inspire image save my-notebook -n my-img -v v2 --wait
+        inspire image save my-notebook -n shared-base -v v1 --public
     """
     json_output = resolve_json_output(ctx, json_output)
 
@@ -485,6 +526,22 @@ def save_image_cmd(
             "Set [auth].username/password in config.toml or "
             "INSPIRE_USERNAME/INSPIRE_PASSWORD."
         ),
+    )
+
+    # Resolve the notebook name to an id via the notebook resolver
+    # (already name-aware; rejects id-shaped inputs under the v2 contract).
+    from inspire.cli.commands.notebook.notebook_lookup import _resolve_notebook_id
+    from inspire.cli.utils.notebook_cli import get_base_url, load_config
+
+    config = load_config(ctx)
+    base_url = get_base_url()
+    notebook_id, _ = _resolve_notebook_id(
+        ctx,
+        session=session,
+        config=config,
+        base_url=base_url,
+        identifier=notebook,
+        json_output=json_output,
     )
 
     requested_visibility = _parse_visibility_flag(public)
@@ -592,7 +649,7 @@ def save_image_cmd(
 
 
 @click.command("set-visibility")
-@click.argument("image_id")
+@click.argument("name")
 @click.option(
     "--public/--private",
     "public",
@@ -609,7 +666,7 @@ def save_image_cmd(
 @pass_context
 def set_image_visibility_cmd(
     ctx: Context,
-    image_id: str,
+    name: str,
     public: Optional[bool],
     json_output: bool,
 ) -> None:
@@ -617,8 +674,8 @@ def set_image_visibility_cmd(
 
     \b
     Examples:
-        inspire image set-visibility <image-id> --public
-        inspire image set-visibility <image-id> --private
+        inspire image set-visibility my-image:v1 --public
+        inspire image set-visibility my-image:v1 --private
     """
     json_output = resolve_json_output(ctx, json_output)
 
@@ -640,7 +697,7 @@ def set_image_visibility_cmd(
         ),
     )
 
-    image_id = _resolve_image_id(ctx, image_id, json_output, session)
+    image_id = _resolve_image_name(ctx, name)
     visibility = _parse_visibility_flag(public)
     assert visibility is not None
 
@@ -658,12 +715,12 @@ def set_image_visibility_cmd(
     if json_output:
         click.echo(
             json_formatter.format_json(
-                {"image_id": image_id, "visibility": visibility, "result": result}
+                {"name": name, "visibility": visibility, "result": result}
             )
         )
         return
 
-    click.echo(f"Image '{image_id}' visibility set to {label}.")
+    click.echo(f"Image '{name}' visibility set to {label}.")
 
 
 # ---------------------------------------------------------------------------
@@ -672,7 +729,7 @@ def set_image_visibility_cmd(
 
 
 @click.command("delete")
-@click.argument("image_id")
+@click.argument("name")
 @click.option(
     "--force",
     is_flag=True,
@@ -687,16 +744,16 @@ def set_image_visibility_cmd(
 @pass_context
 def delete_image_cmd(
     ctx: Context,
-    image_id: str,
+    name: str,
     force: bool,
     json_output: bool,
 ) -> None:
-    """Delete a custom Docker image.
+    """Delete a custom Docker image (pass ``<name>:<version>``).
 
     \b
     Examples:
-        inspire image delete <image-id>
-        inspire image delete <image-id> --force
+        inspire image delete my-image:v1
+        inspire image delete my-image:v1 --force
     """
     json_output = resolve_json_output(ctx, json_output)
 
@@ -709,10 +766,10 @@ def delete_image_cmd(
         ),
     )
 
-    image_id = _resolve_image_id(ctx, image_id, json_output, session)
+    image_id = _resolve_image_name(ctx, name)
 
     if not force and not json_output:
-        if not click.confirm(f"Delete image '{image_id}'?"):
+        if not click.confirm(f"Delete image '{name}'?"):
             click.echo("Cancelled.")
             return
 
@@ -725,12 +782,12 @@ def delete_image_cmd(
     if json_output:
         click.echo(
             json_formatter.format_json(
-                {"image_id": image_id, "status": "deleted", "result": result}
+                {"name": name, "status": "deleted", "result": result}
             )
         )
         return
 
-    click.echo(f"Image '{image_id}' has been deleted.")
+    click.echo(f"Image '{name}' has been deleted.")
 
 
 # ---------------------------------------------------------------------------

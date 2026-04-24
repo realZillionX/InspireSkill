@@ -518,55 +518,9 @@ def test_image_detail_human(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     assert "detail-img" in result.output
 
 
-def test_image_detail_partial_id_resolves_via_private_source(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _patch_config_and_session(monkeypatch, tmp_path)
-
-    full_image_id = "abcdef12-1111-2222-3333-444444444444"
-    called_sources: list[str] = []
-    resolved_ids: list[str] = []
-
-    def fake_list_images_by_source(source="official", session=None):
-        called_sources.append(source)
-        if source == "private":
-            return [
-                browser_api_module.CustomImageInfo(
-                    image_id=full_image_id,
-                    url="registry/personal-visible:v1",
-                    name="personal-visible-img",
-                    framework="pytorch",
-                    version="2.1",
-                    source="SOURCE_PRIVATE",
-                    status="READY",
-                    description="",
-                    created_at="",
-                )
-            ]
-        return []
-
-    def fake_get_image_detail(image_id, session=None):
-        resolved_ids.append(image_id)
-        return browser_api_module.CustomImageInfo(
-            image_id=image_id,
-            url="registry/personal-visible:v1",
-            name="personal-visible-img",
-            framework="pytorch",
-            version="2.1",
-            source="SOURCE_PRIVATE",
-            status="READY",
-            description="",
-            created_at="",
-        )
-
-    monkeypatch.setattr(browser_api_module, "list_images_by_source", fake_list_images_by_source)
-    monkeypatch.setattr(browser_api_module, "get_image_detail", fake_get_image_detail)
-
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "image", "detail", "abcdef12"])
-    assert result.exit_code == 0
-    assert "private" in called_sources
-    assert resolved_ids == [full_image_id]
+# Removed in v2.0.0: partial-hex id resolution was replaced by name-only
+# lookup. The name path is covered by `resolve_by_name` unit tests; image
+# detail itself is covered above under test_image_detail_human.
 
 
 def test_image_register_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -853,7 +807,8 @@ def test_image_delete_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     assert result.exit_code == 0
 
     payload = json.loads(result.output)
-    assert payload["data"]["image_id"] == "img-del-002"
+    # v2: delete output carries the user-facing name, not the internal image_id.
+    assert payload["data"]["name"] == "img-del-002"
     assert payload["data"]["status"] == "deleted"
 
 

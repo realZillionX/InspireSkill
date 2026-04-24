@@ -17,10 +17,39 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import resolve_by_name
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+
+
+def _resolve_ray_name(ctx: Context, name: str) -> str:
+    """Resolve a Ray job name to its platform id (``rj-<uuid>``).
+
+    v2.0.0: names only. Ids are rejected by ``resolve_by_name``.
+    """
+    def _lister():
+        session = get_web_session()
+        jobs, _ = browser_api_module.list_ray_jobs(session=session)
+        return [
+            {
+                "name": j.name,
+                "id": j.ray_job_id,
+                "status": j.status,
+                "workspace_id": j.workspace_id,
+                "created_at": j.created_at,
+            }
+            for j in jobs
+        ]
+
+    return resolve_by_name(
+        ctx,
+        name=name,
+        resource_type="ray",
+        list_candidates=_lister,
+        json_output=ctx.json_output,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -155,16 +184,18 @@ def list_ray(
 
 
 @click.command("status")
-@click.argument("ray_job_id")
+@click.argument("name")
 @pass_context
-def status_ray(ctx: Context, ray_job_id: str) -> None:
+def status_ray(ctx: Context, name: str) -> None:
     """Show details for a Ray (弹性计算) job.
 
-    The Ray detail payload nests head + worker specs and elastic instance
-    ranges; ``--json`` surfaces the full structure, plain output shows the
+    NAME is the Ray job name shown in `inspire ray list`. The Ray detail
+    payload nests head + worker specs and elastic instance ranges;
+    ``--json`` surfaces the full structure, plain output shows the
     top-level status fields.
     """
     try:
+        ray_job_id = _resolve_ray_name(ctx, name)
         session = get_web_session()
         data = browser_api_module.get_ray_job_detail(ray_job_id, session=session)
 
@@ -173,7 +204,6 @@ def status_ray(ctx: Context, ray_job_id: str) -> None:
             return
 
         click.echo("Ray Job Status")
-        click.echo(f"Ray Job ID: {data.get('ray_job_id') or ray_job_id}")
         click.echo(f"Name:       {data.get('name', 'N/A')}")
         click.echo(f"Status:     {data.get('status', 'N/A')}")
         if data.get("sub_status"):
@@ -192,7 +222,7 @@ def status_ray(ctx: Context, ray_job_id: str) -> None:
         if data.get("finished_at"):
             click.echo(f"Finished:   {data.get('finished_at')}")
         click.echo(
-            "\nUse `inspire --json ray status <id>` to see full head / worker "
+            "\nUse `inspire --json ray status <name>` to see full head / worker "
             "spec and elastic instance ranges."
         )
 
@@ -208,22 +238,21 @@ def status_ray(ctx: Context, ray_job_id: str) -> None:
 
 
 @click.command("stop")
-@click.argument("ray_job_id")
+@click.argument("name")
 @pass_context
-def stop_ray(ctx: Context, ray_job_id: str) -> None:
+def stop_ray(ctx: Context, name: str) -> None:
     """Stop a running Ray (弹性计算) job."""
     try:
+        ray_job_id = _resolve_ray_name(ctx, name)
         session = get_web_session()
         browser_api_module.stop_ray_job(ray_job_id, session=session)
 
         if ctx.json_output:
             click.echo(
-                json_formatter.format_json(
-                    {"ray_job_id": ray_job_id, "stopped": True},
-                )
+                json_formatter.format_json({"name": name, "stopped": True}),
             )
             return
-        click.echo(human_formatter.format_success(f"Ray job stopped: {ray_job_id}"))
+        click.echo(human_formatter.format_success(f"Ray job stopped: {name}"))
 
     except (SessionExpiredError, ValueError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
@@ -516,9 +545,9 @@ def create_ray(
             click.echo(json_formatter.format_json(data))
             return
 
-        ray_job_id = data.get("ray_job_id") or "(not returned)"
-        click.echo(human_formatter.format_success(f"Ray job created: {ray_job_id}"))
-        click.echo(f"Name:      {body.get('name')}")
+        click.echo(
+            human_formatter.format_success(f"Ray job created: {body.get('name')}")
+        )
         click.echo(f"Project:   {body.get('project_id')}")
         click.echo(f"Workspace: {body.get('workspace_id')}")
         click.echo(f"Workers:   {len(body.get('worker_groups') or [])} group(s)")
@@ -642,7 +671,7 @@ def _format_ts(raw) -> str:
 
 
 @click.command("events")
-@click.argument("ray_job_id")
+@click.argument("name")
 @click.option(
     "--tail",
     type=int,
@@ -663,12 +692,12 @@ def _format_ts(raw) -> str:
 @pass_context
 def events_ray(
     ctx: Context,
-    ray_job_id: str,
+    name: str,
     tail: Optional[int],
     reason: Optional[str],
     type_filter: Optional[str],
 ) -> None:
-    """Show K8s events for a Ray (弹性计算) job.
+    """Show events for a Ray (弹性计算) job.
 
     \b
     Critical for diagnosing stuck PENDING jobs — the `FailedScheduling`
@@ -677,12 +706,13 @@ def events_ray(
 
     \b
     Examples:
-        inspire ray events <ray_job_id>
-        inspire ray events <ray_job_id> --reason FailedScheduling
-        inspire ray events <ray_job_id> --type Warning --tail 10
-        inspire --json ray events <ray_job_id>
+        inspire ray events <ray-name>
+        inspire ray events <ray-name> --reason FailedScheduling
+        inspire ray events <ray-name> --type Warning --tail 10
+        inspire --json ray events <ray-name>
     """
     try:
+        ray_job_id = _resolve_ray_name(ctx, name)
         session = get_web_session()
         events = browser_api_module.list_ray_job_events(ray_job_id, session=session)
 
@@ -722,9 +752,9 @@ def events_ray(
 
 
 @click.command("instances")
-@click.argument("ray_job_id")
+@click.argument("name")
 @pass_context
-def instances_ray(ctx: Context, ray_job_id: str) -> None:
+def instances_ray(ctx: Context, name: str) -> None:
     """List pod-level instances (head + workers) for a Ray job.
 
     \b
@@ -732,9 +762,10 @@ def instances_ray(ctx: Context, ray_job_id: str) -> None:
     but hasn't bound it to a node yet; "running" means it's up. If the
     Ray job as a whole is PENDING but some pods are already running, it's
     usually a head-vs-worker ordering issue; if all pods are "pending",
-    check `inspire ray events <id>` for the scheduling reason.
+    check `inspire ray events <name>` for the scheduling reason.
     """
     try:
+        ray_job_id = _resolve_ray_name(ctx, name)
         session = get_web_session()
         instances = browser_api_module.list_ray_job_instances(ray_job_id, session=session)
 
@@ -771,7 +802,7 @@ def instances_ray(ctx: Context, ray_job_id: str) -> None:
 
 
 @click.command("delete")
-@click.argument("ray_job_id")
+@click.argument("name")
 @click.option(
     "--yes",
     "-y",
@@ -779,7 +810,7 @@ def instances_ray(ctx: Context, ray_job_id: str) -> None:
     help="Skip the interactive confirmation prompt.",
 )
 @pass_context
-def delete_ray(ctx: Context, ray_job_id: str, yes: bool) -> None:
+def delete_ray(ctx: Context, name: str, yes: bool) -> None:
     """Permanently delete a Ray (弹性计算) job record.
 
     \b
@@ -789,22 +820,21 @@ def delete_ray(ctx: Context, ray_job_id: str, yes: bool) -> None:
     """
     if not yes and not ctx.json_output:
         click.confirm(
-            f"Permanently delete Ray job '{ray_job_id}'? This cannot be undone.",
+            f"Permanently delete Ray job '{name}'? This cannot be undone.",
             abort=True,
         )
 
     try:
+        ray_job_id = _resolve_ray_name(ctx, name)
         session = get_web_session()
         browser_api_module.delete_ray_job(ray_job_id, session=session)
 
         if ctx.json_output:
             click.echo(
-                json_formatter.format_json(
-                    {"ray_job_id": ray_job_id, "status": "deleted"},
-                )
+                json_formatter.format_json({"name": name, "status": "deleted"}),
             )
             return
-        click.echo(human_formatter.format_success(f"Ray job deleted: {ray_job_id}"))
+        click.echo(human_formatter.format_success(f"Ray job deleted: {name}"))
 
     except (SessionExpiredError, ValueError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)

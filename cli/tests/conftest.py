@@ -26,15 +26,22 @@ def _short_circuit_platform_resolvers(monkeypatch):  # noqa: ANN001
 
     import importlib
 
-    for mod_name in (
-        "inspire.cli.utils.job_cli",
-        "inspire.cli.commands.job.job_commands",
-        "inspire.cli.commands.job.job_events",
-        "inspire.cli.commands.job.job_logs",
-    ):
+    # Per-resource resolvers: module + attribute name.
+    patches = [
+        ("inspire.cli.utils.job_cli", "resolve_job_id"),
+        ("inspire.cli.commands.job.job_commands", "resolve_job_id"),
+        ("inspire.cli.commands.job.job_events", "resolve_job_id"),
+        ("inspire.cli.commands.job.job_logs", "resolve_job_id"),
+        ("inspire.cli.commands.hpc.hpc_commands", "_resolve_hpc_name"),
+        ("inspire.cli.commands.hpc.hpc_events", "_resolve_hpc_name"),
+        ("inspire.cli.commands.ray.ray_commands", "_resolve_ray_name"),
+        ("inspire.cli.commands.serving.serving_commands", "_resolve_serving_name"),
+        ("inspire.cli.commands.image.image_commands", "_resolve_image_name"),
+    ]
+    for mod_name, attr in patches:
         try:
             mod = importlib.import_module(mod_name)
         except ImportError:  # pragma: no cover
             continue
-        if hasattr(mod, "resolve_job_id"):
-            monkeypatch.setattr(mod, "resolve_job_id", _passthrough)
+        if hasattr(mod, attr):
+            monkeypatch.setattr(mod, attr, _passthrough)
