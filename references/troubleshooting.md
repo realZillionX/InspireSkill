@@ -23,7 +23,7 @@ mkdir -p /run/sshd && ssh-keygen -A >/dev/null 2>&1
 nohup /tmp/rtunnel 22222 31337 >/tmp/rtunnel-server.log 2>&1 &
 ```
 
-之后回本机重跑 `inspire notebook ssh <id> --save-as <name>`，应能成功。**保存基础镜像时，从已装好 SSH 工具链的实例 `image save` 出来的镜像会保留 `sshd`**——这是阶段 A 的目的之一。
+之后回本机重跑 `inspire notebook ssh <notebook-name> --save-as <alias>`，应能成功。**保存基础镜像时，从已装好 SSH 工具链的实例 `image save` 出来的镜像会保留 `sshd`**——这是阶段 A 的目的之一。
 
 ## 2. `rtunnel` 相关错误
 

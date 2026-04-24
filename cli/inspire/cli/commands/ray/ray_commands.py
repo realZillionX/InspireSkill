@@ -24,7 +24,7 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 
-def _resolve_ray_name(ctx: Context, name: str) -> str:
+def _resolve_ray_name(ctx: Context, name: str, *, pick: Optional[int] = None) -> str:
     """Resolve a Ray job name to its platform id (``rj-<uuid>``).
 
     v2.0.0: names only. Candidate set is restricted to the current user's
@@ -35,14 +35,9 @@ def _resolve_ray_name(ctx: Context, name: str) -> str:
     """
     def _lister():
         session = get_web_session()
-        user_ids = None
-        try:
-            me = browser_api_module.get_current_user(session=session)
-            uid = str(me.get("id") or me.get("user_id") or "").strip()
-            if uid:
-                user_ids = [uid]
-        except Exception:
-            pass
+        me = browser_api_module.get_current_user(session=session)
+        uid = str(me.get("id") or me.get("user_id") or "").strip()
+        user_ids = [uid] if uid else None  # keep widen-behaviour as a last resort
         jobs, _ = browser_api_module.list_ray_jobs(
             session=session, user_ids=user_ids, page_size=10000
         )
@@ -63,6 +58,7 @@ def _resolve_ray_name(ctx: Context, name: str) -> str:
         resource_type="ray",
         list_candidates=_lister,
         json_output=ctx.json_output,
+        pick_index=pick,
     )
 
 
@@ -253,11 +249,18 @@ def status_ray(ctx: Context, name: str) -> None:
 
 @click.command("stop")
 @click.argument("name")
+@click.option(
+    "--pick",
+    type=int,
+    default=None,
+    help="Pick the Nth candidate (1-indexed) when the name is ambiguous — "
+         "matches the list order in the AmbiguousName error.",
+)
 @pass_context
-def stop_ray(ctx: Context, name: str) -> None:
+def stop_ray(ctx: Context, name: str, pick: Optional[int]) -> None:
     """Stop a running Ray (弹性计算) job."""
     try:
-        ray_job_id = _resolve_ray_name(ctx, name)
+        ray_job_id = _resolve_ray_name(ctx, name, pick=pick)
         session = get_web_session()
         browser_api_module.stop_ray_job(ray_job_id, session=session)
 
@@ -823,8 +826,14 @@ def instances_ray(ctx: Context, name: str) -> None:
     is_flag=True,
     help="Skip the interactive confirmation prompt.",
 )
+@click.option(
+    "--pick",
+    type=int,
+    default=None,
+    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+)
 @pass_context
-def delete_ray(ctx: Context, name: str, yes: bool) -> None:
+def delete_ray(ctx: Context, name: str, yes: bool, pick: Optional[int]) -> None:
     """Permanently delete a Ray (弹性计算) job record.
 
     \b
@@ -839,7 +848,7 @@ def delete_ray(ctx: Context, name: str, yes: bool) -> None:
         )
 
     try:
-        ray_job_id = _resolve_ray_name(ctx, name)
+        ray_job_id = _resolve_ray_name(ctx, name, pick=pick)
         session = get_web_session()
         browser_api_module.delete_ray_job(ray_job_id, session=session)
 

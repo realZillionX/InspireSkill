@@ -25,7 +25,7 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import get_web_session
 
 
-def _resolve_serving_name(ctx: Context, name: str) -> str:
+def _resolve_serving_name(ctx: Context, name: str, *, pick: Optional[int] = None) -> str:
     """Resolve a serving name to its platform id (``sv-<uuid>``).
 
     Scope: ``my_serving=True`` (default) × session workspace, full page.
@@ -52,6 +52,7 @@ def _resolve_serving_name(ctx: Context, name: str) -> str:
         resource_type="serving",
         list_candidates=_lister,
         json_output=ctx.json_output,
+        pick_index=pick,
     )
 
 
@@ -60,15 +61,10 @@ def _extract_data(result: dict[str, Any]) -> dict[str, Any]:
     return data if isinstance(data, dict) else result
 
 
-def _resolve_workspace_id(
-    config: Config, workspace: Optional[str], workspace_id: Optional[str]
-) -> Optional[str]:
-    if workspace is None and workspace_id is None:
+def _resolve_workspace_id(config: Config, workspace: Optional[str]) -> Optional[str]:
+    if workspace is None:
         return None
-    return select_workspace_id(
-        config,
-        explicit_workspace_name=workspace,
-            )
+    return select_workspace_id(config, explicit_workspace_name=workspace)
 
 
 def _format_list_rows(rows: list[dict[str, str]], total: int) -> str:
@@ -215,13 +211,19 @@ def status_serving(ctx: Context, name: str) -> None:
 
 @click.command("stop")
 @click.argument("name")
+@click.option(
+    "--pick",
+    type=int,
+    default=None,
+    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+)
 @pass_context
-def stop_serving(ctx: Context, name: str) -> None:
+def stop_serving(ctx: Context, name: str, pick: Optional[int]) -> None:
     """Stop an inference serving (pass the serving name)."""
     try:
         config, _ = Config.from_files_and_env(require_target_dir=False)
         api = AuthManager.get_api(config)
-        inference_serving_id = _resolve_serving_name(ctx, name)
+        inference_serving_id = _resolve_serving_name(ctx, name, pick=pick)
         api.stop_inference_serving(inference_serving_id)
 
         if ctx.json_output:

@@ -113,6 +113,7 @@ def resolve_by_name(
     name_key: str = "name",
     id_key: str = "id",
     label_fn: Optional[Callable[[dict[str, Any]], str]] = None,
+    pick_index: Optional[int] = None,
 ) -> str:
     """Resolve a platform name to its internal id.
 
@@ -153,7 +154,15 @@ def resolve_by_name(
 
     try:
         candidates = list(list_candidates())
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception as e:  # noqa: BLE001
+        # Session / auth errors have their own code paths in the callers
+        # — let them through so the CLI returns the right exit code. Only
+        # wrap generic API failures with a friendly resolver context.
+        cls_name = type(e).__name__
+        if cls_name in {"SessionExpiredError", "AuthenticationError"}:
+            raise
         exit_with_error(
             ctx,
             "APIError",
@@ -163,6 +172,20 @@ def resolve_by_name(
         return ""  # unreachable
 
     matches = [c for c in candidates if str(c.get(name_key) or "") == name]
+
+    # Dedupe by id_key — image resolver in particular iterates multiple
+    # source buckets (private / public / official) and the same image can
+    # show up in two of them; without dedupe we'd raise a false-ambiguous
+    # for a single unique target.
+    _seen_ids: set[str] = set()
+    _deduped: list[dict[str, Any]] = []
+    for c in matches:
+        cid = str(c.get(id_key) or "")
+        if not cid or cid in _seen_ids:
+            continue
+        _seen_ids.add(cid)
+        _deduped.append(c)
+    matches = _deduped
 
     if not matches:
         exit_with_error(
@@ -176,6 +199,19 @@ def resolve_by_name(
 
     if len(matches) == 1:
         return str(matches[0].get(id_key) or "")
+
+    # Ambiguity escape hatch for destructive cleanup: --pick <N> picks the
+    # Nth candidate (1-indexed, matching the ambiguity-error list order).
+    if pick_index is not None:
+        if pick_index < 1 or pick_index > len(matches):
+            exit_with_error(
+                ctx,
+                "ValidationError",
+                f"--pick {pick_index} out of range; {len(matches)} {resource_type}s "
+                f"share the name {name!r}.",
+                EXIT_VALIDATION_ERROR,
+            )
+        return str(matches[pick_index - 1].get(id_key) or "")
 
     def _label(c: dict[str, Any]) -> str:
         if label_fn is not None:
@@ -199,8 +235,9 @@ def resolve_by_name(
         f"{len(matches)} {resource_type}s share the name {name!r}:\n" + "\n".join(lines),
         EXIT_VALIDATION_ERROR,
         hint=(
-            "Narrow the candidate set by workspace or status on your `list` call, "
-            "or rename one of the duplicates."
+            "For destructive cleanup (stop / delete) you can pass `--pick <N>` "
+            "to select one of the candidates above (1-indexed). For read-only "
+            "queries (status / events / instances) rename one of the duplicates."
         ),
     )
     return ""  # unreachable

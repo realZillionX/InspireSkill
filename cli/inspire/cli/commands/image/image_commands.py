@@ -16,13 +16,7 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import (
-    is_full_uuid,
-    is_partial_id,
-    normalize_partial,
-    resolve_by_name,
-    resolve_partial_id,
-)
+from inspire.cli.utils.id_resolver import resolve_by_name
 from inspire.cli.utils.notebook_cli import (
     require_web_session,
     resolve_json_output,
@@ -30,7 +24,7 @@ from inspire.cli.utils.notebook_cli import (
 from inspire.platform.web import browser_api as browser_api_module
 
 
-def _resolve_image_name(ctx: Context, name: str) -> str:
+def _resolve_image_name(ctx: Context, name: str, *, pick: Optional[int] = None) -> str:
     """Resolve a custom-image name (``<name>:<version>`` or bare ``<name>``) to image_id.
 
     Custom images are identified by ``name:version`` on the platform; a plain
@@ -63,6 +57,7 @@ def _resolve_image_name(ctx: Context, name: str) -> str:
         resource_type="image",
         list_candidates=_lister,
         json_output=ctx.json_output,
+        pick_index=pick,
     )
 
 
@@ -109,51 +104,6 @@ def _dedupe_images_by_id(images: list[dict]) -> list[dict]:
             seen_ids.add(image_id)
         deduped.append(image)
     return deduped
-
-
-def _resolve_image_id(
-    ctx: Context,
-    image_id: str,
-    json_output: bool,
-    session,
-) -> str:
-    """Resolve a full or partial image ID.
-
-    Full UUIDs pass through; partial hex triggers a list + prefix match.
-    """
-    image_id = image_id.strip()
-
-    if is_full_uuid(image_id):
-        return image_id
-
-    if not is_partial_id(image_id):
-        return image_id  # not hex — let the API handle the error
-
-    partial = normalize_partial(image_id)
-
-    try:
-        all_images: list[browser_api_module.CustomImageInfo] = []
-        for src_key in _ALL_SOURCE_KEYS:
-            items = browser_api_module.list_images_by_source(source=src_key, session=session)
-            all_images.extend(items)
-    except Exception:
-        return image_id  # can't list — pass through and let the API error
-
-    matches: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for img in all_images:
-        iid = img.image_id
-        if iid in seen:
-            continue
-        seen.add(iid)
-        if iid.lower().startswith(partial):
-            label = img.name or img.status or ""
-            matches.append((iid, label))
-
-    if not matches:
-        return image_id  # no match — pass through for API error
-
-    return resolve_partial_id(ctx, partial, "image", matches, json_output)
 
 
 # ---------------------------------------------------------------------------
@@ -736,6 +686,12 @@ def set_image_visibility_cmd(
     help="Skip confirmation prompt",
 )
 @click.option(
+    "--pick",
+    type=int,
+    default=None,
+    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+)
+@click.option(
     "--json",
     "json_output",
     is_flag=True,
@@ -746,6 +702,7 @@ def delete_image_cmd(
     ctx: Context,
     name: str,
     force: bool,
+    pick: Optional[int],
     json_output: bool,
 ) -> None:
     """Delete a custom Docker image (pass ``<name>:<version>``).
@@ -766,7 +723,7 @@ def delete_image_cmd(
         ),
     )
 
-    image_id = _resolve_image_name(ctx, name)
+    image_id = _resolve_image_name(ctx, name, pick=pick)
 
     if not force and not json_output:
         if not click.confirm(f"Delete image '{name}'?"):

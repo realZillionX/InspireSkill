@@ -24,19 +24,15 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 
-def _resolve_hpc_name(ctx: Context, name: str) -> str:
+def _resolve_hpc_name(ctx: Context, name: str, *, pick: Optional[int] = None) -> str:
     """Resolve an HPC job name to its platform id (``hpc-job-<uuid>``).
 
     Scope: current user × session workspace, full page.
     """
     def _lister():
         session = get_web_session()
-        created_by = None
-        try:
-            me = browser_api_module.get_current_user(session=session)
-            created_by = str(me.get("id") or me.get("user_id") or "").strip() or None
-        except Exception:
-            pass
+        me = browser_api_module.get_current_user(session=session)
+        created_by = str(me.get("id") or me.get("user_id") or "").strip() or None
         jobs, _ = browser_api_module.list_hpc_jobs(
             session=session, created_by=created_by, page_size=10000
         )
@@ -57,6 +53,7 @@ def _resolve_hpc_name(ctx: Context, name: str) -> str:
         resource_type="hpc",
         list_candidates=_lister,
         json_output=ctx.json_output,
+        pick_index=pick,
     )
 
 
@@ -494,13 +491,19 @@ def status_hpc(ctx: Context, name: str) -> None:
 
 @click.command("stop")
 @click.argument("name")
+@click.option(
+    "--pick",
+    type=int,
+    default=None,
+    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+)
 @pass_context
-def stop_hpc(ctx: Context, name: str) -> None:
+def stop_hpc(ctx: Context, name: str, pick: Optional[int]) -> None:
     """Stop an HPC job (pass the job name)."""
     try:
         config, _ = Config.from_files_and_env(require_target_dir=False)
         api = AuthManager.get_api(config)
-        job_id = _resolve_hpc_name(ctx, name)
+        job_id = _resolve_hpc_name(ctx, name, pick=pick)
         api.stop_hpc_job(job_id)
 
         if ctx.json_output:
@@ -526,8 +529,14 @@ def stop_hpc(ctx: Context, name: str) -> None:
     is_flag=True,
     help="Skip the interactive confirmation prompt.",
 )
+@click.option(
+    "--pick",
+    type=int,
+    default=None,
+    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+)
 @pass_context
-def delete_hpc(ctx: Context, name: str, yes: bool) -> None:
+def delete_hpc(ctx: Context, name: str, yes: bool, pick: Optional[int]) -> None:
     """Permanently delete an HPC job entry (pass the job name).
 
     \b
@@ -545,7 +554,7 @@ def delete_hpc(ctx: Context, name: str, yes: bool) -> None:
         )
 
     try:
-        job_id = _resolve_hpc_name(ctx, name)
+        job_id = _resolve_hpc_name(ctx, name, pick=pick)
         session = get_web_session()
         result = browser_api_module.delete_hpc_job(job_id=job_id, session=session)
 

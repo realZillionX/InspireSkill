@@ -412,15 +412,21 @@ def status(ctx: Context, job: str) -> None:
 
 @click.command("stop")
 @click.argument("job")
+@click.option(
+    "--pick",
+    type=int,
+    default=None,
+    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+)
 @pass_context
-def stop(ctx: Context, job: str) -> None:
+def stop(ctx: Context, job: str, pick: Optional[int]) -> None:
     """Stop a running training job.
 
     \b
     Example:
         inspire job stop my-training-run
     """
-    job_id = resolve_job_id(ctx, job)
+    job_id = resolve_job_id(ctx, job, pick=pick)
 
     try:
         config, _ = Config.from_files_and_env()
@@ -432,9 +438,13 @@ def stop(ctx: Context, job: str) -> None:
         cache.update_status(job_id, "CANCELLED")
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"job_id": job_id, "status": "stopped"}))
+            click.echo(
+                json_formatter.format_json(
+                    {"name": job, "job_id": job_id, "status": "stopped"}
+                )
+            )
         else:
-            click.echo(human_formatter.format_success(f"Job stopped: {job_id}"))
+            click.echo(human_formatter.format_success(f"Job stopped: {job}"))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -456,8 +466,14 @@ def stop(ctx: Context, job: str) -> None:
     is_flag=True,
     help="Skip the interactive confirmation prompt.",
 )
+@click.option(
+    "--pick",
+    type=int,
+    default=None,
+    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+)
 @pass_context
-def delete(ctx: Context, job: str, yes: bool) -> None:
+def delete(ctx: Context, job: str, yes: bool, pick: Optional[int]) -> None:
     """Permanently delete a training job entry from the platform (Browser API).
 
     \b
@@ -469,7 +485,7 @@ def delete(ctx: Context, job: str, yes: bool) -> None:
     Example:
         inspire job delete my-training-run
     """
-    job_id = resolve_job_id(ctx, job)
+    job_id = resolve_job_id(ctx, job, pick=pick)
 
     if not yes and not ctx.json_output:
         click.confirm(
@@ -495,11 +511,11 @@ def delete(ctx: Context, job: str, yes: bool) -> None:
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"job_id": job_id, "status": "deleted", "result": result}
+                    {"name": job, "job_id": job_id, "status": "deleted", "result": result}
                 )
             )
         else:
-            click.echo(human_formatter.format_success(f"Job deleted: {job_id}"))
+            click.echo(human_formatter.format_success(f"Job deleted: {job}"))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

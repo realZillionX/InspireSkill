@@ -5,26 +5,27 @@ from __future__ import annotations
 import logging
 import os
 
-from inspire.platform.openapi import _validate_job_id_format
 from inspire.cli.context import Context, EXIT_JOB_NOT_FOUND
 from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.id_resolver import (
     is_full_uuid,
     is_partial_id,
-    normalize_partial,
     resolve_partial_id,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def resolve_job_id(ctx: Context, name: str) -> str:
+def resolve_job_id(ctx: Context, name: str, *, pick: int | None = None) -> str:
     """Resolve a training-job name to its internal ``job-<uuid>`` string.
 
     v2.0.0: names only. Ids (``job-…`` / raw UUID / partial hex) are
     rejected — the v2 CLI surface never accepts them, so agents that
     only ever see names don't start guessing with ``rj-`` / ``job-``
     prefixes they saw elsewhere.
+
+    ``pick`` is the 1-indexed ambiguity escape hatch used by destructive
+    cleanup commands (``stop`` / ``delete``).
     """
     name = (name or "").strip()
     if not name:
@@ -46,6 +47,13 @@ def resolve_job_id(ctx: Context, name: str) -> str:
     matches = _search_job_cache_by_name(name)
     if not matches:
         matches = _search_job_api_by_name(name)
+    # Dedupe by id — cache + API fallback can conceivably surface the same
+    # job_id twice.
+    seen: set[str] = set()
+    matches = [
+        m for m in matches
+        if m[0] and m[0] not in seen and not seen.add(m[0])
+    ]
     if not matches:
         exit_with_error(
             ctx,
@@ -54,63 +62,18 @@ def resolve_job_id(ctx: Context, name: str) -> str:
             EXIT_JOB_NOT_FOUND,
             hint="Use `inspire job list` (local cache) or `inspire job list -A` (web) to find names.",
         )
-    if len(matches) > 1:
-        return resolve_partial_id(ctx, name, "job", matches, ctx.json_output)
-    return matches[0][0]
-
-
-def _search_job_cache(partial: str) -> list[tuple[str, str]]:
-    """Search local job cache for IDs starting with *partial*."""
-    from inspire.cli.utils.job_cache_api import JobCache
-    from inspire.config import Config, ConfigError
-
-    try:
-        config = Config.from_env(require_target_dir=False)
-        cache_path = config.get_expanded_cache_path()
-    except (ConfigError, OSError, ValueError, TypeError) as error:
-        logger.debug(
-            "Falling back to INSPIRE_JOB_CACHE for partial lookup (%s): %s", partial, error
-        )
-        cache_path = os.getenv("INSPIRE_JOB_CACHE")
-
-    if not cache_path:
-        return []
-
-    try:
-        cache = JobCache(cache_path)
-        jobs = cache.list_jobs(limit=0)
-    except (OSError, ValueError, TypeError) as error:
-        logger.debug("Unable to read local job cache %s: %s", cache_path, error)
-        return []
-
-    matches: list[tuple[str, str]] = []
-    for job in jobs:
-        jid = job.get("job_id", "")
-        # Strip prefix for comparison
-        uuid_part = jid[4:] if jid.lower().startswith("job-") else jid
-        if uuid_part.lower().startswith(partial):
-            label = job.get("name") or job.get("status") or ""
-            matches.append((jid, label))
-    return matches
-
-
-def _search_job_api(partial: str) -> list[tuple[str, str]]:
-    """Try the web API for job listing, silently return [] on failure."""
-    try:
-        from inspire.platform.web.browser_api.jobs import list_jobs as web_list_jobs
-
-        items, _ = web_list_jobs(page_size=100)
-        matches: list[tuple[str, str]] = []
-        for job in items:
-            jid = job.job_id
-            uuid_part = jid[4:] if jid.lower().startswith("job-") else jid
-            if uuid_part.lower().startswith(partial):
-                label = job.name or job.status or ""
-                matches.append((jid, label))
-        return matches
-    except Exception as error:  # noqa: BLE001 - graceful fallback by design for resolver UX
-        logger.debug("Web job lookup fallback for partial %s failed: %s", partial, error)
-        return []
+    if len(matches) == 1:
+        return matches[0][0]
+    if pick is not None:
+        if pick < 1 or pick > len(matches):
+            exit_with_error(
+                ctx,
+                "ValidationError",
+                f"--pick {pick} out of range; {len(matches)} jobs share name {name!r}.",
+                EXIT_JOB_NOT_FOUND,
+            )
+        return matches[pick - 1][0]
+    return resolve_partial_id(ctx, name, "job", matches, ctx.json_output)
 
 
 def _search_job_cache_by_name(name: str) -> list[tuple[str, str]]:
@@ -160,13 +123,8 @@ def _search_job_api_by_name(name: str) -> list[tuple[str, str]]:
             list_jobs as web_list_jobs,
         )
 
-        created_by: str | None = None
-        try:
-            me = get_current_user()
-            created_by = str(me.get("id") or me.get("user_id") or "").strip() or None
-        except Exception:
-            pass
-
+        me = get_current_user()
+        created_by = str(me.get("id") or me.get("user_id") or "").strip() or None
         items, _ = web_list_jobs(created_by=created_by, page_size=10000)
         matches: list[tuple[str, str]] = []
         for job in items:

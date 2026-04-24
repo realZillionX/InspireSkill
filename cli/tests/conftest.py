@@ -21,7 +21,7 @@ def _short_circuit_platform_resolvers(monkeypatch):  # noqa: ANN001
     keep working. Real name→id resolution is covered by unit tests of
     `resolve_by_name` / `resolve_job_id` that mock the list API directly.
     """
-    def _passthrough(ctx, arg):  # noqa: ANN001
+    def _passthrough(ctx, arg, **_kwargs):  # noqa: ANN001,ANN003
         return arg
 
     import importlib
