@@ -121,6 +121,28 @@ def build_rtunnel_setup_commands(
         'else rm -f "$BOOTSTRAP_SENTINEL"; fi'
     )
 
+    # The dpkg-i in our cp/dpkg path skips postinst. Two follow-ups must run
+    # before sshd can start, even on a totally bare image:
+    #   (a) the privilege-separation user `sshd` must exist (postinst would
+    #       have run `useradd sshd`); without it sshd dies with
+    #       "Privilege separation user sshd does not exist".
+    #   (b) sshd insists on opening /etc/ssh/sshd_config; if the postinst
+    #       didn't run, the file is missing and sshd refuses to start.
+    #       We write a *minimal* config (no Port/ListenAddress, those are
+    #       set via -o); writing them in the file would conflict because
+    #       sshd ADDs -o ListenAddress on top of config ListenAddress and
+    #       the second bind() fails with "Address already in use".
+    cmd_lines.append(
+        "getent passwd sshd >/dev/null 2>&1 || "
+        "useradd -r -M -d /run/sshd -s /usr/sbin/nologin sshd >/dev/null 2>&1 || true"
+    )
+    cmd_lines.append(
+        'if [ -x /usr/sbin/sshd ] && [ ! -f /etc/ssh/sshd_config ]; then '
+        "mkdir -p /etc/ssh; "
+        "printf 'UsePAM no\\nStrictModes no\\nSubsystem sftp /usr/lib/openssh/sftp-server\\n' "
+        "> /etc/ssh/sshd_config; fi"
+    )
+
     # Start sshd on SSH_PORT if not already running.
     cmd_lines.append(
         'if [ -x /usr/sbin/sshd ] && ! ps -ef | grep -q "[s]shd -p $SSH_PORT"; then '
@@ -128,7 +150,7 @@ def build_rtunnel_setup_commands(
         "ssh-keygen -A >/dev/null 2>&1 || true; "
         '/usr/sbin/sshd -p "$SSH_PORT" -o ListenAddress=127.0.0.1 -o PermitRootLogin=yes '
         "-o PasswordAuthentication=no -o PubkeyAuthentication=yes "
-        ">/dev/null 2>&1 & fi"
+        ">/tmp/sshd-bootstrap.log 2>&1 & fi"
     )
 
     # Start rtunnel server: listen on PORT (WSS-reachable from the platform

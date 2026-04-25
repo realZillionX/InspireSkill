@@ -19,7 +19,8 @@ CLI 在容器内跑 bootstrap shell 做两件事：
 | `SSH bootstrap 失败:在容器里没能从 global_public kit 拿到 rtunnel` | kit 路径不可达。容器里 `ls /inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-amd64/rtunnel` 应当存在且可执行。不存在 → 平台侧 global_public 挂载没覆盖到这台实例，找 SII 运维。 |
 | `exec format error` / `/tmp/rtunnel --help` 崩 | kit 里落了一份**非当前容器架构**的 rtunnel，或者文件被截断。CLI 下次 bootstrap 会自动 wipe `/tmp/rtunnel` 重试；手动清也行。持续失败的话提 issue 附 `uname -m` + `file /inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-*/rtunnel` 输出。 |
 | `dpkg: error processing archive ...` | 容器已有部分 openssh 组件且版本冲突。手动 `dpkg -i --force-overwrite /inspire/hdd/global_public/inspire-skill-bootstrap/v1/sshd-debs/*.deb` 一次。 |
-| `Tunnel setup completed, but SSH preflight failed` + `404 page not found` on `proxy/31337/` | kit cp + dpkg 都已成功（容器里 `ps -ef \| grep -E 'sshd\|rtunnel'` 能看到进程），但 Jupyter 的 `proxy/<port>/` 路径整段 `404` 说明该镜像的 jupyter 没装 `jupyter-server-proxy` 扩展，外部根本接不到 31337。**bootstrap kit 解决不了这一档**，得换镜像（`pytorch-inspire-base` / `ubuntu-inspire-base` 系列已知带）。已知现象不会出现 `start_config.allow_ssh=false` 提示——那条 hint 自 v2 起被 `notebook create` 主动设 `allow_ssh=true` 消掉。 |
+| `Privilege separation user sshd does not exist` | `dpkg -i` 装 openssh-server 时跳过了 postinst（cp/dpkg 路径不会跑 `useradd sshd`）。bootstrap script 自身已修复——`useradd -r -M -d /run/sshd -s /usr/sbin/nologin sshd`。手工复现见下面那段。 |
+| `/etc/ssh/sshd_config: No such file or directory` | 同上，postinst 没 deploy 默认 config。bootstrap 已自动写入最小 config（只 `UsePAM no` + `StrictModes no` + sftp Subsystem，**不要**写 `Port`/`ListenAddress`，否则会和 `-o ListenAddress=127.0.0.1` 叠加导致第二次 bind 报 `Address already in use`）。 |
 
 ### 手工复现 bootstrap
 
@@ -32,8 +33,10 @@ ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 # rtunnel
 cp "$KIT/rtunnel/linux-$ARCH/rtunnel" /tmp/rtunnel && chmod +x /tmp/rtunnel
 
-# sshd
+# sshd（postinst 没跑，需要补 user + 最小 config）
 [ -x /usr/sbin/sshd ] || dpkg -i "$KIT/sshd-debs"/*.deb
+getent passwd sshd >/dev/null || useradd -r -M -d /run/sshd -s /usr/sbin/nologin sshd
+[ -f /etc/ssh/sshd_config ] || printf 'UsePAM no\nStrictModes no\nSubsystem sftp /usr/lib/openssh/sftp-server\n' > /etc/ssh/sshd_config
 
 # 启动
 mkdir -p /run/sshd && ssh-keygen -A >/dev/null 2>&1
