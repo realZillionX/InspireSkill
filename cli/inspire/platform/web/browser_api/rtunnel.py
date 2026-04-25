@@ -89,24 +89,15 @@ def build_rtunnel_setup_commands(
         # Detect container arch once — rtunnel ships one binary per Linux arch.
         '_RT_ARCH=$(uname -m 2>/dev/null); '
         'case "$_RT_ARCH" in arm64|aarch64) _RT_ARCH=arm64;; *) _RT_ARCH=amd64;; esac',
+        # rtunnel is statically-linked (Go) and lives read-only on GPFS at
+        # /inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-<arch>/rtunnel
+        # We exec it straight from there — no copy / chmod into the container.
+        '_RT_BIN="$KIT/rtunnel/linux-${_RT_ARCH}/rtunnel"',
     ]
 
-    # rtunnel: cp from kit if not already in /tmp (idempotent across reconnects).
-    cmd_lines.append(
-        'if [ ! -x /tmp/rtunnel ]; then '
-        '_kit_rt="$KIT/rtunnel/linux-${_RT_ARCH}/rtunnel"; '
-        'if [ -x "$_kit_rt" ]; then '
-        'cp "$_kit_rt" /tmp/rtunnel && chmod +x /tmp/rtunnel; fi; '
-        "fi"
-    )
-    # Wrong-arch / truncated binary: +x but `--help` fails. Wipe and let the
-    # next bootstrap round re-cp.
-    cmd_lines.append(
-        "if [ -x /tmp/rtunnel ] && ! /tmp/rtunnel --help >/dev/null 2>&1; then "
-        'rm -f /tmp/rtunnel "$BOOTSTRAP_SENTINEL"; fi'
-    )
-
     # sshd: dpkg-install from kit debs if system sshd is missing.
+    # (sshd ships as .deb packages and needs to be installed; only rtunnel
+    # is binary-portable enough to run zero-copy from GPFS.)
     cmd_lines.append(
         'if [ ! -x /usr/sbin/sshd ]; then '
         'if [ -d "$KIT/sshd-debs" ] && ls "$KIT/sshd-debs"/*.deb >/dev/null 2>&1; then '
@@ -116,7 +107,7 @@ def build_rtunnel_setup_commands(
 
     # Sentinel bookkeeping (both pieces in place → sentinel set; else clear).
     cmd_lines.append(
-        'if [ -x /tmp/rtunnel ] && [ -x /usr/sbin/sshd ]; then '
+        'if [ -x "$_RT_BIN" ] && [ -x /usr/sbin/sshd ]; then '
         'touch "$BOOTSTRAP_SENTINEL"; '
         'else rm -f "$BOOTSTRAP_SENTINEL"; fi'
     )
@@ -154,11 +145,11 @@ def build_rtunnel_setup_commands(
     )
 
     # Start rtunnel server: listen on PORT (WSS-reachable from the platform
-    # Bridge), forward to 127.0.0.1:SSH_PORT.
+    # Bridge), forward to 127.0.0.1:SSH_PORT. Exec'd directly from GPFS.
     cmd_lines.append(
-        "if [ -x /tmp/rtunnel ] && ! ps -ef | "
+        'if [ -x "$_RT_BIN" ] && ! ps -ef | '
         'grep -Eq "[r]tunnel .*([[:space:]]|:)$PORT([[:space:]]|$)"; then '
-        'nohup /tmp/rtunnel "$SSH_PORT" "$PORT" '
+        'nohup "$_RT_BIN" "$SSH_PORT" "$PORT" '
         ">/tmp/rtunnel-server.log 2>&1 & fi"
     )
 
@@ -169,7 +160,7 @@ def build_rtunnel_setup_commands(
         'else echo "INSPIRE_RTUNNEL_STATUS=not_running"; fi'
     )
     cmd_lines.append(
-        'if [ ! -x /tmp/rtunnel ]; then '
+        'if [ ! -x "$_RT_BIN" ]; then '
         f'echo {RTUNNEL_MISSING_MARKER}; '
         "fi"
     )

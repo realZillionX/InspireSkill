@@ -92,10 +92,16 @@ du -sh --max-depth=1 <dir>           # 大小分布
 
 ## 5. 调度优先级误判
 
-`--priority 1` 在平台语义里是 `priority_level: LOW`（**不是** "高优"）。要高优就用高值（如 9），提交后**立刻**：
+`--priority` 接受 1～10，平台分三档（跟 web UI 上"低/普通/高"radio 一致）：
+
+- **1-3 = 低优先级**（`priority_level: LOW`，可被 HIGH 抢占）
+- **4 = 普通优先级**
+- **5-10 = 高优先级**（`HIGH`，稳定运行）
+
+直觉常错传 `--priority 1` 以为是"高优"——其实是最低档。要高优传 ≥5 任意值。提交后**立刻**：
 
 ```bash
 inspire --json job status <job-id>
 ```
 
-核对 `priority_level`。若仍为 `LOW`，先 `job stop`，再用更高的值重提。
+核对 `priority_level`。若仍为 `LOW`，先 `job stop`，再用 ≥5 的值重提。

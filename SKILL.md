@@ -15,7 +15,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | --- | --- |
 | 资源申请 | **切勿保守**。先 `resources list --all --include-cpu` / `resources nodes` / `resources specs` 查实时空余，按真实需求申请（20 张还是 500 张 GPU 都行），只有调度语义 / 项目配额 / 实时空余明确不足时才降档。 |
 | 代理 | 公网与 `*.sii.edu.cn` 需**同时可达**。任意覆盖这两段的代理方案都行（仓库提供可选的 Clash Verge `7897` 分流模板，见 `references/proxy-setup.md`）。 |
-| 优先级反直觉 | `--priority` **`1` = LOW，`9` = HIGH**。LOW 会被 HIGH 强制抢占，必须高频 checkpoint。提交后**立即** `inspire --json <res> status <name>` 核对 `priority_level`；仍是 LOW 就 `stop` + 更高值重提。 |
+| 优先级反直觉 | `--priority` 接受 **1～10**，平台按值分三档（web UI 上同款选项）：**1-3 = 低优先级**（会被 HIGH 抢占，必须高频 checkpoint），**4 = 普通优先级**，**5-10 = 高优先级**（稳定运行，抢占 LOW）。提交后**立即** `inspire --json <res> status <name>` 核对 `priority_level`；想要稳定运行就传 ≥5 的值。 |
 | HPC 规格余量 | 平台自身吃 `0.3` 核 CPU + `384 MB` 内存，应用层并发压到 **`cpus-per-task - 4`** 或更低。 |
 | CPU 空间唯一 hpc 组 | `CPU 资源空间` 下**只有 `HPC-可上网区资源-2`** 支持 `inspire hpc create`；其它组只能建 notebook。另外该组的 `500GB` 规格运维未配好，提交**静默排队**——真需要 500GB 内存就退化成在 `CPU资源-2` 开 notebook 交互跑。 |
 | 项目-实例挂载隔离 | 实例只挂**自身所在项目**的 fileset；其它项目的 `/inspire/{hdd,ssd,qb-ilm,qb-ilm2}/project/<others>/` 路径在该实例里**根本不存在**（`ls` 报 `No such file`）——不是权限问题。访问项目 `<X>` 的存储必须在 `project=<X>` 的实例里。 |
@@ -97,7 +97,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 | 命令 | 用途 |
 | --- | --- |
-| `inspire job create -n <name> -q <gpu,cpu,mem> --nodes N -c <cmd> --workspace X --image Y [--priority 9]` | 精细提交 |
+| `inspire job create -n <name> -q <gpu,cpu,mem> --nodes N -c <cmd> --workspace X --image Y [--priority 5]` | 精细提交（priority 见 §1.1） |
 | `inspire run "<cmd>" -q <gpu,cpu,mem> [--group <name> --nodes N --watch]` | 快速提交；`--watch` 自动跟 logs |
 | `inspire job status <name>` | 权威状态（高 / 低优 + 调度结果） |
 | `inspire job logs <name> [--follow]` | 优先走 SSH tunnel fast path，回退其它通道 |
@@ -183,7 +183,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | 项目-个人 | `/inspire/<tier>/project/<topic>/<user>/…` | 每项目-每用户一份。代码、脚本、配置、调试输出。`<user>/` 下可自建任意层级 |
 | 项目-公共 | `/inspire/<tier>/project/<topic>/public/…` | 项目成员共享。数据集、权重、批量结果、checkpoint |
 | 全局-个人 | `/inspire/hdd/global_user/<user>/…` | **仅 hdd**。跨项目个人盘，单用户 quota 比项目盘紧，适合脚本 / 配置 / 小工具 |
-| 全局-公共 | `/inspire/hdd/global_public/…` | **仅 hdd**，~250 TB。全平台共享，适合可能被多项目复用的通用数据；不放个人中间产物 |
+| 全局-公共 | `/inspire/hdd/global_public/…` | **仅 hdd**，~250 TB。全平台共享，**普通用户只读**，只有平台管理员能写。放重要 / 稳定 / 正式的共享文件——例如 `inspire-skill-bootstrap/v1/` 下的 SSH 依赖（rtunnel binary + sshd-debs），由 InspireSkill 维护者统一推送，notebook bootstrap 时直接读用 |
 
 > `global_*` **只在 hdd**。要 SSD / qb-ilm 速度只能走"项目-个人"或"项目-公共"。
 
