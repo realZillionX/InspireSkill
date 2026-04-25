@@ -67,8 +67,9 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 第一次 `notebook ssh <name>` 完成 bootstrap，后续 `notebook {shell,exec,scp,test,refresh,install-deps,top,forget} <name>` 直接复用。
 
 **`shell` vs `exec`**:
-- `inspire notebook shell <name>` = **持久** SSH 会话，cwd / env / history 保留直到 `exit`。多个终端并开就是多个独立会话（都挂在同一容器，互相抢 CPU / RAM）。**想挂着就走、回来再 attach 长时间任务，shell 里跑 `tmux` / `screen`**——下面 §2.2 末尾有模板。
+- `inspire notebook shell <name>` = **持久** SSH 会话，cwd / env / history 保留直到 `exit`。多个终端并开就是多个独立会话（都挂在同一容器，互相抢 CPU / RAM）。
 - `inspire notebook exec <name> "<cmd>"` = **一次性**独立子进程，两次调用间**不共享 cwd / env**。接续状态塞同一调用：`exec <name> "cd foo && export X=1 && ./run.sh"`，或远端写脚本后 `exec <name> "bash setup.sh"`。
+- 长时间任务（>20 分钟）走 §1.2 末尾那条规则——远端 `nohup ... &` + sentinel 文件，本机 background 起 polling，**别**让 `exec` 同步吊住。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -89,20 +90,6 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire notebook forget <name>` | 清本地 SSH 缓存 |
 | `inspire notebook top [--watch]` | GPU 利用率实时 `nvidia-smi`（要 tunnel 活着） |
 | `inspire notebook metrics <name> [--metric core --json]` | 历史利用率曲线 PNG（8 种指标默认取前 4）；`job / hpc / serving metrics` 同 UX 同 flag |
-
-**长时间任务 = `shell` + `tmux`**。`inspire notebook shell` 自身只是一条 SSH 通道，`exit` 即销毁，不能 detach 后回来 reattach。要"挂着就走、回来 attach"用 `tmux`（或 `screen`）：
-
-```bash
-inspire notebook shell my-nb           # SSH 进容器
-$ tmux new -s mywork                    # 容器里起一个有名 tmux 会话
-... 跑长时间训练 / 数据处理 ...
-$ tmux detach                           # detach（等价交互键 Ctrl-b 然后 d）；tmux 进程留在容器里
-$ exit                                  # 离开 SSH（tmux 还在跑）
-
-# 几小时后回来：
-inspire notebook shell my-nb           # 重新 SSH
-$ tmux attach -t mywork                 # 接回原来那个会话
-```
 
 ### 2.3 GPU 多节点任务（`job`）
 
