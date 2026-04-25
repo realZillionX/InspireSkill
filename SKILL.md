@@ -216,9 +216,9 @@ inspire notebook exec --alias mybox "hostname"
 
 #### 阶段 A：CPU 空间起基底 notebook
 
-**项目还没有通用镜像** → 这一步是**必做**：在可上网区 CPU 空间用 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（自带 ssh + slurm + ray 依赖）起一个基底 notebook，把项目自身的 `pip install` / `apt install` 装上，然后 `image save` 派生为项目的通用镜像，后续 notebook / job / hpc / ray 都用它。
+**强烈推荐的一次性做法**：项目刚开张时在可上网区 CPU 空间用 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（自带 ssh + slurm + ray 依赖）起一个基底 notebook，把后续要用到的所有依赖**一次性配齐**——`hpc create` 要的 slurm-client、`ray create` 要的 ray runtime、多节点 `job create` 要的 deepspeed 等等——然后 `image save` 派生为项目通用镜像，后续 notebook / job / hpc / ray 全用它。一次费力，永久省事。
 
-**项目已经有通用镜像** → 这一步**可选**。`notebook ssh` 自带 bootstrap（§1.1），镜像里没 sshd 也照样接得通，所以日常 SSH 不需要预装；但 **slurm / ray 依赖必须真实装在镜像里**，要跑 `inspire hpc create` / `inspire ray create` 就还得老老实实把这两套装好。
+**例外：镜像变体太多、不愿固化的**（infra 组的常见模式）→ 镜像不带 sshd 没问题，`notebook ssh` 自带 bootstrap（§1.1），每次连接现装现用；但 **slurm / ray / 分布式训练 lib 必须真实装在镜像里**，bootstrap 不会帮你装，要跑 `hpc create` / `ray create` / 多节点 `job create` 就老老实实在那个镜像里把对应依赖装好。
 
 > 普通 notebook 里 slurm 命令因无 controller 会报 `Could not establish a configuration source`——平台设计如此，不是镜像问题，`inspire hpc create` 路径下才会注入 controller。
 
