@@ -216,10 +216,11 @@ inspire notebook exec --alias mybox "hostname"
 
 #### 阶段 A：CPU 空间起基底 notebook
 
-**镜像随便挑**——`notebook ssh` 自带 bootstrap（§1.1），镜像里有没有 sshd 都不重要，也不挑计算组是否可上网。两条典型：
+**项目还没有通用镜像** → 这一步是**必做**：在可上网区 CPU 空间用 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（自带 ssh + slurm + ray 依赖）起一个基底 notebook，把项目自身的 `pip install` / `apt install` 装上，然后 `image save` 派生为项目的通用镜像，后续 notebook / job / hpc / ray 都用它。
 
-- **复用已有项目 / 个人镜像**（装好依赖 / 编译产物） → **直接用**，`notebook ssh` 不动镜像其它东西。
-- **从零起 / 临时脚手架** → `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（Ubuntu 22.04 + slurm 运行环境 + sshd 已预装）是省事基底。普通 notebook 里 slurm 命令因无 controller 会报 `Could not establish a configuration source`——平台设计如此，不是镜像问题，`inspire hpc create` 路径下才会注入 controller。
+**项目已经有通用镜像** → 这一步**可选**。`notebook ssh` 自带 bootstrap（§1.1），镜像里没 sshd 也照样接得通，所以日常 SSH 不需要预装；但 **slurm / ray 依赖必须真实装在镜像里**，要跑 `inspire hpc create` / `inspire ray create` 就还得老老实实把这两套装好。
+
+> 普通 notebook 里 slurm 命令因无 controller 会报 `Could not establish a configuration source`——平台设计如此，不是镜像问题，`inspire hpc create` 路径下才会注入 controller。
 
 计算组按实际需求选（需要 `pip install` / `apt install` 就挑有公网的 `HPC-可上网区资源-2`，否则 `CPU资源-1/2` 都行）：
 
@@ -238,7 +239,7 @@ inspire image save <notebook-name> -n <img> -v v1 --public --wait --json
 inspire image set-default --job <URL> --notebook <URL>
 ```
 
-> 一次性用完就扔的场景跳过 `image save`，notebook 停掉后容器整个回收，bootstrap 痕迹（`/tmp` + 容器根）全没。
+> 一次性用完就扔的场景跳过 `image save`，notebook 停掉后容器整个回收，痕迹全没。
 
 #### 阶段 B：CPU 空间跑数据处理
 
