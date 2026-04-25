@@ -1,4 +1,4 @@
-"""Bridge exec command -- execute a shell command on the Bridge runner."""
+"""`notebook exec` command -- execute a shell command on a cached notebook."""
 
 from __future__ import annotations
 
@@ -154,14 +154,14 @@ def try_exec_via_ssh_tunnel(
         if not str(bridge.notebook_id or "").strip():
             hint = (
                 "Run 'inspire notebook test' to troubleshoot. "
-                "If needed, re-create the bridge via "
-                "'inspire notebook ssh <notebook-name> --save-as <name>'."
+                "If needed, re-create the cached connection via "
+                "'inspire notebook ssh <notebook>'."
             )
             return _emit_error(
                 ctx,
                 "TunnelError",
                 "SSH tunnel not available. "
-                f"Bridge '{bridge.name}' is not responding "
+                f"Notebook '{bridge.name}' is not responding "
                 "(notebook may be stopped).",
                 hint=hint,
             )
@@ -173,7 +173,7 @@ def try_exec_via_ssh_tunnel(
                 "SSH tunnel not available",
                 hint=(
                     "Auto-rebuild retries exhausted. Run 'inspire notebook test' and "
-                    "retry 'inspire notebook ssh <notebook-name> --save-as <name>'."
+                    "retry 'inspire notebook ssh <notebook>'."
                 ),
             )
 
@@ -205,7 +205,7 @@ def try_exec_via_ssh_tunnel(
                         "TunnelError",
                         (
                             "SSH tunnel not available. "
-                            f"Bridge '{bridge.name}' notebook '{notebook_id}' "
+                            f"Notebook '{bridge.name}' (id '{notebook_id}') "
                             f"is {notebook_status}."
                         ),
                         hint=hint,
@@ -314,15 +314,15 @@ def try_exec_via_ssh_tunnel(
                 return _emit_error(
                     ctx,
                     "ConfigError",
-                    f"Bridge '{bridge_name}' not found.",
-                    hint="Run 'inspire notebook connections' to see saved notebook aliases.",
+                    f"No cached notebook connection for '{bridge_name}'.",
+                    hint="Run 'inspire notebook connections' to see cached notebook names.",
                 )
             if bridge is None:
                 return _emit_error(
                     ctx,
                     "TunnelError",
-                    "No bridge configured for SSH execution.",
-                    hint="Use 'inspire notebook ssh <notebook-name>' or 'inspire notebook ssh <notebook-name> --save-as <alias>' first.",
+                    "No cached notebook connection for SSH execution.",
+                    hint="Bootstrap one with: inspire notebook ssh <notebook>",
                 )
 
             resolved_bridge_name = bridge.name
@@ -390,7 +390,7 @@ def try_exec_via_ssh_tunnel(
 
             if _verbose_output(ctx) and not opened_once:
                 click.echo("Using SSH tunnel (fast path)")
-                click.echo(f"Bridge: {resolved_bridge_name}")
+                click.echo(f"Notebook: {resolved_bridge_name}")
                 click.echo(f"Command: {command}")
                 click.echo(f"Working dir: {config.target_dir}")
                 if stdin_mode:
@@ -629,6 +629,7 @@ def exec_via_workflow(
 
 
 @click.command("exec")
+@click.argument("notebook")
 @click.argument("command_parts", nargs=-1, type=click.UNPROCESSED, required=True)
 @click.option(
     "denylist",
@@ -657,19 +658,6 @@ def exec_via_workflow(
     help="Timeout in seconds (default: config value)",
 )
 @click.option(
-    "bridge",
-    "--alias",
-    "-a",
-    help="Saved notebook alias to execute against",
-)
-@click.option(
-    "bridge",
-    "--bridge",
-    "-b",
-    hidden=True,
-    help="(Deprecated) same as --alias",
-)
-@click.option(
     "stdin_mode",
     "--stdin",
     "--bash-stdin",
@@ -679,33 +667,35 @@ def exec_via_workflow(
 @pass_context
 def exec_command(
     ctx: Context,
+    notebook: str,
     command_parts: tuple[str, ...],
     denylist: tuple[str, ...],
     artifact_path: tuple[str, ...],
     download: Optional[str],
     wait: bool,
     timeout: Optional[int],
-    bridge: Optional[str],
     stdin_mode: bool,
 ) -> None:
-    """Execute a command on a saved notebook alias.
+    """Execute a command on a cached notebook.
 
     Uses SSH tunnel for command execution. Workflow transport is only used when
     artifact options are requested.
 
+    NOTEBOOK is the cached notebook name (omit to use the default).
     COMMAND is the shell command to run remotely (in INSPIRE_TARGET_DIR).
     Command output (stdout/stderr) is automatically displayed after completion.
 
     \b
     Examples:
-        inspire notebook exec "uv venv .venv"
-        inspire notebook exec "pip install torch" --timeout 600
-        inspire notebook exec --stdin -- bash -s < scripts/bootstrap.sh
-        inspire notebook exec "uv venv .venv" \\
+        inspire notebook exec my-notebook "uv venv .venv"
+        inspire notebook exec my-notebook "pip install torch" --timeout 600
+        inspire notebook exec my-notebook --stdin -- bash -s < scripts/bootstrap.sh
+        inspire notebook exec my-notebook "uv venv .venv" \\
             --artifact-path .venv --download ./local
-        inspire notebook exec "python train.py" --no-wait
-        inspire notebook exec "hostname" --bridge <alias>
+        inspire notebook exec my-notebook "python train.py" --no-wait
+        inspire notebook exec my-notebook "hostname"
     """
+    bridge = notebook
     command = _normalize_exec_command(command_parts)
 
     try:

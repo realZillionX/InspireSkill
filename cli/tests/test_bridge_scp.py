@@ -80,7 +80,7 @@ def test_bridge_scp_upload_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "scp", str(local_file), "/tmp/test.txt"])
+    result = runner.invoke(cli_main, ["notebook", "scp", "default", str(local_file), "/tmp/test.txt"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert result.output.strip() == "OK"
@@ -110,7 +110,7 @@ def test_bridge_scp_warns_when_remote_path_is_relative(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["notebook", "scp", str(local_file), "artifacts/test.txt"],
+        ["notebook", "scp", "default", str(local_file), "artifacts/test.txt"],
     )
 
     assert result.exit_code == EXIT_SUCCESS
@@ -139,7 +139,7 @@ def test_bridge_scp_warns_when_remote_source_is_relative_on_download(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["notebook", "scp", "-d", "artifacts/test.txt", str(tmp_path / "local.txt")],
+        ["notebook", "scp", "default", "-d", "artifacts/test.txt", str(tmp_path / "local.txt")],
     )
 
     assert result.exit_code == EXIT_SUCCESS
@@ -165,7 +165,7 @@ def test_bridge_scp_download_success(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     runner = CliRunner()
     result = runner.invoke(
-        cli_main, ["notebook", "scp", "--download", "/tmp/remote.txt", str(tmp_path / "local.txt")]
+        cli_main, ["notebook", "scp", "default", "--download", "/tmp/remote.txt", str(tmp_path / "local.txt")]
     )
 
     assert result.exit_code == EXIT_SUCCESS
@@ -195,7 +195,7 @@ def test_bridge_scp_recursive_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     src_dir.mkdir()
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "scp", "-r", str(src_dir), "/tmp/mydir"])
+    result = runner.invoke(cli_main, ["notebook", "scp", "default", "-r", str(src_dir), "/tmp/mydir"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert captured["recursive"] is True
@@ -226,7 +226,7 @@ def test_bridge_scp_auto_recursive_for_directory(
 
     runner = CliRunner()
     # No -r flag, but source is a directory
-    result = runner.invoke(cli_main, ["notebook", "scp", str(src_dir), "/tmp/autodir"])
+    result = runner.invoke(cli_main, ["notebook", "scp", "default", str(src_dir), "/tmp/autodir"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert captured["recursive"] is True
@@ -237,12 +237,13 @@ def test_bridge_scp_tunnel_not_available(monkeypatch: pytest.MonkeyPatch, tmp_pa
     local_file.write_text("hello")
 
     tunnel_config = TunnelConfig()
+    tunnel_config.add_bridge(BridgeProfile(name="default", proxy_url="https://proxy.example.com"))
 
     monkeypatch.setattr(scp_cmd_module, "load_tunnel_config", lambda: tunnel_config)
     monkeypatch.setattr(scp_cmd_module, "is_tunnel_available", lambda **kw: False)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "scp", str(local_file), "/tmp/test.txt"])
+    result = runner.invoke(cli_main, ["notebook", "scp", "default", str(local_file), "/tmp/test.txt"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "SSH tunnel not available" in result.output
@@ -250,7 +251,7 @@ def test_bridge_scp_tunnel_not_available(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 def test_bridge_scp_local_path_not_found(tmp_path: Path) -> None:
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "scp", "/nonexistent/file.txt", "/tmp/test.txt"])
+    result = runner.invoke(cli_main, ["notebook", "scp", "default", "/nonexistent/file.txt", "/tmp/test.txt"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "Local path not found" in result.output
@@ -272,7 +273,7 @@ def test_bridge_scp_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     monkeypatch.setattr(scp_cmd_module, "run_scp_transfer", lambda **kw: FakeResult())
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "notebook", "scp", str(local_file), "/tmp/test.txt"])
+    result = runner.invoke(cli_main, ["--json", "notebook", "scp", "default", str(local_file), "/tmp/test.txt"])
 
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
@@ -298,7 +299,7 @@ def test_bridge_scp_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
 
     runner = CliRunner()
     result = runner.invoke(
-        cli_main, ["notebook", "scp", str(local_file), "/tmp/test.txt", "--timeout", "5"]
+        cli_main, ["notebook", "scp", "default", str(local_file), "/tmp/test.txt", "--timeout", "5"]
     )
 
     assert result.exit_code == EXIT_TIMEOUT
@@ -322,7 +323,7 @@ def test_bridge_scp_scp_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     monkeypatch.setattr(scp_cmd_module, "run_scp_transfer", lambda **kw: FakeResult())
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "scp", str(local_file), "/tmp/test.txt"])
+    result = runner.invoke(cli_main, ["notebook", "scp", "default", str(local_file), "/tmp/test.txt"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "SCP upload failed" in result.output
@@ -352,7 +353,7 @@ def test_bridge_scp_bridge_option(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
 
     runner = CliRunner()
     result = runner.invoke(
-        cli_main, ["notebook", "scp", str(local_file), "/tmp/test.txt", "--bridge", "gpu-main"]
+        cli_main, ["notebook", "scp", "gpu-main", str(local_file), "/tmp/test.txt"]
     )
 
     assert result.exit_code == EXIT_SUCCESS
@@ -382,8 +383,8 @@ def test_bridge_scp_missing_bridge_reports_bridge_not_found(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["notebook", "scp", str(local_file), "/tmp/test.txt", "--bridge", "missing"],
+        ["notebook", "scp", "missing", str(local_file), "/tmp/test.txt"],
     )
 
     assert result.exit_code == EXIT_GENERAL_ERROR
-    assert "Bridge 'missing' not found" in result.output
+    assert "No cached notebook connection for 'missing'" in result.output

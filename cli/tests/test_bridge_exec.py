@@ -61,7 +61,7 @@ def test_bridge_exec_invalid_remote_env_human_returns_config_error(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     assert "Invalid remote_env key" in result.output
@@ -85,7 +85,7 @@ def test_bridge_exec_invalid_remote_env_json_returns_config_error(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "notebook", "exec", "echo hi"])
+    result = runner.invoke(cli_main, ["--json", "notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     payload = json.loads(result.output)
@@ -115,7 +115,7 @@ def test_bridge_exec_invalid_remote_env_workflow_branch_returns_config_error(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["notebook", "exec", "echo hi", "--artifact-path", ".cache"],
+        ["notebook", "exec", "gpu-main", "echo hi", "--artifact-path", ".cache"],
     )
 
     assert result.exit_code == EXIT_CONFIG_ERROR
@@ -143,7 +143,7 @@ def test_bridge_ssh_invalid_remote_env_human_returns_config_error(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "shell", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     assert "Invalid remote_env key" in result.output
@@ -169,7 +169,7 @@ def test_bridge_ssh_invalid_remote_env_json_returns_config_error(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "notebook", "shell", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["--json", "notebook", "shell", "gpu-main"])
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     payload = json.loads(result.output)
@@ -208,7 +208,7 @@ def test_bridge_exec_triggers_and_no_wait(monkeypatch: pytest.MonkeyPatch, tmp_p
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["notebook", "exec", "echo hi", "--no-wait", "--artifact-path", ".cache"],
+        ["notebook", "exec", "gpu-main", "echo hi", "--no-wait", "--artifact-path", ".cache"],
     )
 
     assert result.exit_code == EXIT_SUCCESS
@@ -242,7 +242,7 @@ def test_bridge_exec_uses_env_denylist(monkeypatch: pytest.MonkeyPatch, tmp_path
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["notebook", "exec", "echo hi", "--no-wait", "--artifact-path", ".cache"],
+        ["notebook", "exec", "gpu-main", "echo hi", "--no-wait", "--artifact-path", ".cache"],
     )
 
     assert result.exit_code == EXIT_SUCCESS
@@ -272,7 +272,7 @@ def test_bridge_exec_reports_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     monkeypatch.setattr(exec_cmd_module, "fetch_bridge_output_log", fake_fetch_log)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--artifact-path", ".cache"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi", "--artifact-path", ".cache"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
 
@@ -301,7 +301,7 @@ def test_bridge_exec_displays_output_log(monkeypatch: pytest.MonkeyPatch, tmp_pa
     monkeypatch.setattr(exec_cmd_module, "fetch_bridge_output_log", fake_fetch_log)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--artifact-path", ".cache"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi", "--artifact-path", ".cache"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert "Hello from Bridge!" in result.output
@@ -335,7 +335,7 @@ def test_bridge_exec_json_includes_output(monkeypatch: pytest.MonkeyPatch, tmp_p
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["--json", "notebook", "exec", "echo hi", "--artifact-path", ".cache"],
+        ["--json", "notebook", "exec", "gpu-main", "echo hi", "--artifact-path", ".cache"],
     )
 
     assert result.exit_code == EXIT_SUCCESS
@@ -384,7 +384,7 @@ def test_bridge_exec_ssh_streaming_success(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.setattr(exec_cmd_module, "load_tunnel_config", make_tunnel_config)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo test"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo test"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert result.output.strip().endswith("OK")
@@ -415,7 +415,7 @@ def test_bridge_exec_supports_command_after_double_dash(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "--", "bash", "-s"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "--", "bash", "-s"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert 'cd "' in captured["command"]
@@ -446,7 +446,7 @@ def test_bridge_exec_stdin_streaming_passes_stdin_mode_to_ssh(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "--stdin", "--", "bash", "-s"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "--stdin", "--", "bash", "-s"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert captured["pass_stdin"] is True
@@ -477,7 +477,7 @@ def test_bridge_exec_auto_stdin_streaming_passes_stdin_mode_to_ssh(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert captured["pass_stdin"] is True
@@ -521,7 +521,7 @@ def test_bridge_exec_ssh_json_uses_buffered(
     monkeypatch.setattr(exec_cmd_module, "load_tunnel_config", make_tunnel_config)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "notebook", "exec", "echo test"])
+    result = runner.invoke(cli_main, ["--json", "notebook", "exec", "gpu-main", "echo test"])
 
     assert result.exit_code == EXIT_SUCCESS
     # Buffered should be used, not streaming
@@ -563,7 +563,7 @@ def test_bridge_exec_ssh_json_stdin_uses_buffered_with_pass_stdin(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["--json", "notebook", "exec", "--stdin", "--", "bash", "-s"],
+        ["--json", "notebook", "exec", "gpu-main", "--stdin", "--", "bash", "-s"],
     )
 
     assert result.exit_code == EXIT_SUCCESS
@@ -595,7 +595,7 @@ def test_bridge_exec_stdin_rejects_artifact_workflow_mode(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["notebook", "exec", "--stdin", "echo hi", "--artifact-path", ".cache"],
+        ["notebook", "exec", "gpu-main", "--stdin", "echo hi", "--artifact-path", ".cache"],
     )
 
     assert result.exit_code == EXIT_GENERAL_ERROR
@@ -626,7 +626,7 @@ def test_bridge_exec_ssh_streaming_timeout(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.setattr(exec_cmd_module, "load_tunnel_config", make_tunnel_config)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "sleep 100", "--timeout", "5"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "sleep 100", "--timeout", "5"])
 
     assert result.exit_code == EXIT_TIMEOUT
     assert "timed out" in result.output.lower()
@@ -655,7 +655,7 @@ def test_bridge_exec_ssh_streaming_failure(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.setattr(exec_cmd_module, "load_tunnel_config", make_tunnel_config)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "false"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "false"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "Command failed with exit code 1" in result.output
@@ -690,7 +690,7 @@ def test_bridge_exec_does_not_fallback_after_ssh_execution_starts(
     monkeypatch.setattr(exec_cmd_module, "trigger_bridge_action_workflow", fake_trigger)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "SSH execution failed: stream broke" in result.output
@@ -717,7 +717,7 @@ def test_bridge_exec_errors_when_bridge_configured_but_not_responding(
     monkeypatch.setattr(exec_cmd_module, "load_tunnel_config", lambda: tunnel_config)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo test"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "ring8h100", "echo test"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "SSH tunnel not available" in result.output
@@ -744,7 +744,7 @@ def test_bridge_exec_json_errors_when_bridge_configured_but_not_responding(
     monkeypatch.setattr(exec_cmd_module, "load_tunnel_config", lambda: tunnel_config)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "notebook", "exec", "echo test"])
+    result = runner.invoke(cli_main, ["--json", "notebook", "exec", "ring8h100", "echo test"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     payload = json.loads(result.output)
@@ -791,10 +791,10 @@ def test_bridge_exec_fails_fast_when_notebook_is_stopped(
     monkeypatch.setattr(exec_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
-    assert "notebook 'notebook-1' is STOPPED" in result.output
+    assert "(id 'notebook-1') is STOPPED" in result.output
     assert "inspire notebook start notebook-1" in result.output
     assert "inspire notebook status notebook-1" in result.output
     assert calls["rebuild"] == 0
@@ -839,10 +839,10 @@ def test_bridge_exec_fails_fast_when_notebook_is_pending(
     monkeypatch.setattr(exec_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
-    assert "notebook 'notebook-1' is PENDING" in result.output
+    assert "(id 'notebook-1') is PENDING" in result.output
     assert "inspire notebook start notebook-1" in result.output
     assert "inspire notebook status notebook-1" in result.output
     assert calls["rebuild"] == 0
@@ -889,14 +889,14 @@ def test_bridge_exec_json_fails_fast_when_notebook_is_stopped(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["--json", "notebook", "exec", "echo hi", "--bridge", "gpu-main"],
+        ["--json", "notebook", "exec", "gpu-main", "echo hi"],
     )
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     payload = json.loads(result.output)
     assert payload["success"] is False
     assert payload["error"]["type"] == "TunnelError"
-    assert "notebook 'notebook-1' is STOPPED" in payload["error"]["message"]
+    assert "(id 'notebook-1') is STOPPED" in payload["error"]["message"]
     assert "inspire notebook status notebook-1" in payload["error"]["hint"]
     assert calls["rebuild"] == 0
 
@@ -918,10 +918,10 @@ def test_bridge_exec_errors_when_no_bridge_configured(
     monkeypatch.setattr(exec_cmd_module, "load_tunnel_config", fake_load_tunnel_config)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--no-wait"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "anything", "echo hi", "--no-wait"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
-    assert "No bridge configured for SSH execution" in result.output
+    assert "No cached notebook connection for 'anything'" in result.output
 
 
 def test_bridge_exec_passes_requested_bridge_to_ssh(
@@ -953,7 +953,7 @@ def test_bridge_exec_passes_requested_bridge_to_ssh(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert captured["available_bridge"] == "gpu-main"
@@ -988,10 +988,10 @@ def test_bridge_exec_errors_when_requested_bridge_missing(
     monkeypatch.setattr(exec_cmd_module, "trigger_bridge_action_workflow", fake_trigger)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--bridge", "missing"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "missing", "echo hi"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
-    assert "Bridge 'missing' not found" in result.output
+    assert "No cached notebook connection for 'missing'" in result.output
     assert workflow_called["value"] is False
 
 
@@ -1041,7 +1041,7 @@ def test_bridge_exec_rebuilds_notebook_tunnel_before_command(
     monkeypatch.setattr(exec_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert calls["rebuild"] == 1
@@ -1101,7 +1101,7 @@ def test_bridge_exec_reconnects_after_disconnect(
     monkeypatch.setattr(exec_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert calls["rebuild"] == 1
@@ -1140,7 +1140,7 @@ def test_bridge_exec_non_notebook_bridge_exit_255_is_not_retried(
     monkeypatch.setattr(exec_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "Command failed with exit code 255" in result.output
@@ -1190,7 +1190,7 @@ def test_bridge_exec_json_exit_255_is_not_retried_when_tunnel_is_healthy(
 
     runner = CliRunner()
     result = runner.invoke(
-        cli_main, ["--json", "notebook", "exec", "echo hi", "--bridge", "gpu-main"]
+        cli_main, ["--json", "notebook", "exec", "gpu-main", "echo hi"]
     )
 
     assert result.exit_code == EXIT_GENERAL_ERROR
@@ -1242,7 +1242,7 @@ def test_bridge_exec_exit_255_probe_exception_is_not_retried(
     monkeypatch.setattr(exec_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "Command failed with exit code 255" in result.output
@@ -1281,7 +1281,7 @@ def test_bridge_exec_rebuild_failure_errors_after_retry_exhausted(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "echo hi", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "Automatic tunnel rebuild failed" in result.output
@@ -1314,7 +1314,7 @@ def test_bridge_exec_json_errors_after_reconnect_exhausted(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["--json", "notebook", "exec", "echo hi", "--bridge", "gpu-main"],
+        ["--json", "notebook", "exec", "gpu-main", "echo hi"],
     )
 
     assert result.exit_code == EXIT_GENERAL_ERROR
@@ -1357,7 +1357,7 @@ def test_bridge_ssh_uses_requested_bridge(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setattr(ssh_cmd_module.subprocess, "call", fake_call)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "shell", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
 
     assert result.exit_code == 0
     assert captured["available_bridge"] == "gpu-main"
@@ -1413,7 +1413,7 @@ def test_bridge_ssh_rebuilds_notebook_tunnel_before_connect(
     monkeypatch.setattr(ssh_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "shell", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
 
     assert result.exit_code == 0
     assert calls["rebuild"] == 1
@@ -1459,10 +1459,10 @@ def test_bridge_ssh_fails_fast_when_notebook_is_stopped(
     monkeypatch.setattr(ssh_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "shell", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
-    assert "notebook 'notebook-1' is STOPPED" in result.output
+    assert "(id 'notebook-1') is STOPPED" in result.output
     assert "inspire notebook start notebook-1" in result.output
     assert "inspire notebook status notebook-1" in result.output
     assert calls["rebuild"] == 0
@@ -1507,10 +1507,10 @@ def test_bridge_ssh_fails_fast_when_notebook_is_pending(
     monkeypatch.setattr(ssh_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "shell", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
-    assert "notebook 'notebook-1' is PENDING" in result.output
+    assert "(id 'notebook-1') is PENDING" in result.output
     assert "inspire notebook start notebook-1" in result.output
     assert "inspire notebook status notebook-1" in result.output
     assert calls["rebuild"] == 0
@@ -1557,7 +1557,7 @@ def test_bridge_ssh_reconnects_after_disconnect(
     monkeypatch.setattr(ssh_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "shell", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
 
     assert result.exit_code == 0
     assert calls["rebuild"] == 1
@@ -1587,7 +1587,7 @@ def test_bridge_ssh_unavailable_non_notebook_bridge_errors(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "shell", "--bridge", "gpu-main"])
+    result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "cannot be rebuilt automatically" in result.output
@@ -1622,7 +1622,7 @@ def test_bridge_ssh_missing_bridge_reports_bridge_not_found(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "shell", "--bridge", "missing"])
+    result = runner.invoke(cli_main, ["notebook", "shell", "missing"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
-    assert "Bridge 'missing' not found" in result.output
+    assert "No cached notebook connection for 'missing'" in result.output

@@ -95,7 +95,9 @@ def test_debug_error_prints_report_path_in_human_mode(monkeypatch, tmp_path: Pat
 
     missing = tmp_path / "missing-file.txt"
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--debug", "notebook", "scp", str(missing), "/tmp/dst"])
+    result = runner.invoke(
+        cli_main, ["--debug", "notebook", "scp", "any", str(missing), "/tmp/dst"]
+    )
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "Local path not found" in result.output
@@ -111,7 +113,7 @@ def test_debug_error_keeps_json_output_clean(monkeypatch, tmp_path: Path) -> Non
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["--debug", "--json", "notebook", "scp", str(missing), "/tmp/dst"],
+        ["--debug", "--json", "notebook", "scp", "any", str(missing), "/tmp/dst"],
     )
 
     assert result.exit_code == EXIT_GENERAL_ERROR

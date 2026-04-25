@@ -1,4 +1,4 @@
-"""Bridge ssh command -- open an interactive SSH shell to Bridge."""
+"""`notebook shell` command -- open an interactive SSH shell to a cached notebook."""
 
 from __future__ import annotations
 
@@ -32,20 +32,20 @@ _RUNNING_NOTEBOOK_STATUS = "RUNNING"
 
 
 @click.command("ssh")
-@click.option("--alias", "-a", "bridge", help="Saved notebook alias to connect to")
-@click.option("--bridge", "-b", "bridge", hidden=True, help="(Deprecated) same as --alias")
+@click.argument("notebook", required=False)
 @pass_context
-def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
-    """Open an interactive SSH shell to Bridge.
+def bridge_ssh(ctx: Context, notebook: Optional[str]) -> None:
+    """Open an interactive SSH shell to a cached notebook.
 
-    Requires a saved notebook alias with a reachable SSH tunnel. Create one
-    with ``inspire notebook ssh <notebook-name> --save-as <alias>``.
+    Requires a cached notebook connection with a reachable SSH tunnel.
+    Bootstrap one with ``inspire notebook ssh <notebook>``.
 
     \b
     Example:
-        inspire notebook ssh <notebook-name> --save-as mybridge
-        inspire notebook shell --bridge mybridge
+        inspire notebook ssh my-notebook
+        inspire notebook shell my-notebook
     """
+    bridge = notebook
     try:
         config, _ = Config.from_files_and_env(require_target_dir=True, require_credentials=False)
     except ConfigError as e:
@@ -62,15 +62,15 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
         _handle_error(
             ctx,
             "BridgeNotFound",
-            f"Bridge '{bridge}' not found.",
-            hint="Run 'inspire notebook connections' to see saved notebook aliases.",
+            f"No cached notebook connection for '{bridge}'.",
+            hint="Run 'inspire notebook connections' to see cached notebook names.",
         )
     if selected_bridge is None:
         _handle_error(
             ctx,
             "TunnelError",
-            "No bridge configured.",
-            hint="Run 'inspire notebook ssh <notebook-name> --save-as <name>' first.",
+            "No cached notebook connection.",
+            hint="Bootstrap one with: inspire notebook ssh <notebook>",
         )
 
     bridge_name = selected_bridge.name
@@ -93,8 +93,8 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
             _handle_error(
                 ctx,
                 "BridgeNotFound",
-                f"Bridge '{bridge_name}' not found.",
-                hint="Run 'inspire notebook connections' to see saved notebook aliases.",
+                f"No cached notebook connection for '{bridge_name}'.",
+                hint="Run 'inspire notebook connections' to see cached notebook names.",
             )
 
         tunnel_ready = is_tunnel_available(
@@ -112,7 +112,7 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
                     "SSH tunnel not available",
                     hint=(
                         "Auto-rebuild retries exhausted. Run 'inspire notebook test' and "
-                        "retry 'inspire notebook ssh <notebook-name> --save-as <name>'."
+                        "retry 'inspire notebook ssh <notebook>'."
                     ),
                 )
 
@@ -123,9 +123,9 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
                     "TunnelError",
                     "SSH tunnel not available",
                     hint=(
-                        "This bridge has no notebook_id metadata, so it cannot be rebuilt "
-                        "automatically. Re-create it via "
-                        "'inspire notebook ssh <notebook-name> --save-as <name>'."
+                        "This cached connection has no notebook_id metadata, so it cannot be "
+                        "rebuilt automatically. Re-create it via "
+                        "'inspire notebook ssh <notebook>'."
                     ),
                 )
 
@@ -150,7 +150,7 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
                         "TunnelError",
                         (
                             "SSH tunnel not available. "
-                            f"Bridge '{bridge_name}' notebook '{notebook_id}' "
+                            f"Notebook '{bridge_name}' (id '{notebook_id}') "
                             f"is {notebook_status}."
                         ),
                         hint=(
@@ -232,8 +232,8 @@ def bridge_ssh(ctx: Context, bridge: Optional[str]) -> None:
             remote_command=remote_command,
         )
         if not opened_once and not ctx.json_output:
-            click.echo("Opening SSH connection to Bridge...")
-            click.echo(f"Bridge: {bridge_name}")
+            click.echo("Opening SSH connection...")
+            click.echo(f"Notebook: {bridge_name}")
             click.echo(f"Working directory: {config.target_dir}")
             click.echo("Press Ctrl+D or type 'exit' to disconnect")
             click.echo("")

@@ -71,46 +71,12 @@ def load_ssh_public_key(pubkey_path: Optional[str] = None) -> str:
     return load_ssh_public_key_material(pubkey_path)
 
 
-# ---------------------------------------------------------------------------
-# Notebook-name-based default alias helpers
-# ---------------------------------------------------------------------------
-#
-# Users who run ``inspire notebook ssh <name>`` without ``--save-as`` benefit
-# from an alias that matches the notebook's display name rather than the
-# opaque ``nb-<id[:8]>`` prefix: both ``inspire notebook connections`` and
-# ``~/.ssh/config`` become self-documenting. The sanitised name is scoped to
-# alias-safe characters so shells, ssh_config Host entries, and click flag
-# values all stay well-formed.
+def _find_cached_entry_for_notebook_id(cached_config, notebook_id: str) -> Optional[str]:
+    """Return the cache key of any entry bound to *notebook_id*, or ``None``.
 
-
-_ALIAS_SAFE_CHAR_RE = re.compile(r"[^A-Za-z0-9._-]+")
-_ALIAS_COLLAPSE_DASH_RE = re.compile(r"-{2,}")
-_ALIAS_MIN_LENGTH = 2
-
-
-def _sanitize_alias_from_name(name: str) -> str:
-    """Turn a free-form notebook display name into an alias-safe token.
-
-    Keeps ``[A-Za-z0-9._-]``; everything else (spaces, CJK, emoji) becomes
-    ``-``.  Consecutive dashes collapse to one, leading/trailing
-    ``.-_`` are trimmed, and the result is lower-cased so aliases are
-    case-insensitive in practice.  Returns ``""`` when nothing survives
-    sanitisation — the caller falls back to ``nb-<id[:8]>`` in that case.
-    """
-    cleaned = _ALIAS_SAFE_CHAR_RE.sub("-", str(name or ""))
-    cleaned = _ALIAS_COLLAPSE_DASH_RE.sub("-", cleaned)
-    cleaned = cleaned.strip(".-_").lower()
-    if len(cleaned) < _ALIAS_MIN_LENGTH:
-        return ""
-    return cleaned
-
-
-def _find_alias_for_notebook_id(cached_config, notebook_id: str) -> Optional[str]:
-    """Return any existing alias bound to *notebook_id*, or ``None``.
-
-    Preserves pre-existing aliases across CLI upgrades: users who already
-    have an ``nb-<id>`` alias cached won't silently get a duplicate
-    name-based alias created alongside it.
+    Used to detect legacy custom-named entries from pre-rename CLI versions
+    so the bootstrap path can migrate them to the canonical (notebook-name)
+    cache key on first reconnect.
     """
     target = str(notebook_id or "").strip()
     if not target:
@@ -120,66 +86,6 @@ def _find_alias_for_notebook_id(cached_config, notebook_id: str) -> Optional[str
         if bridge_notebook_id == target:
             return name
     return None
-
-
-def _unique_alias_for_notebook(
-    cached_config,
-    *,
-    base: str,
-    notebook_id: str,
-) -> str:
-    """Return ``<base>-sh<N>`` — the first N ≥ 0 not already taken by another
-    notebook.
-
-    If the exact ``<base>-sh<N>`` is currently bound to *this* notebook, we
-    return it as-is (idempotent reconnect). Otherwise we pick the smallest
-    N whose ``<base>-sh<N>`` either is free or already belongs to this
-    notebook — which also means ``<base>-sh0`` is the default for a
-    fresh alias, and re-bootstrapping a notebook on a host that already
-    owns ``-sh0`` keeps the same name.
-    """
-    for i in range(1_000):  # effectively unbounded; sanity cap
-        candidate = f"{base}-sh{i}"
-        existing = cached_config.bridges.get(candidate)
-        if existing is None:
-            return candidate
-        existing_notebook_id = str(getattr(existing, "notebook_id", "") or "").strip()
-        if existing_notebook_id == notebook_id:
-            return candidate
-    # 1000 distinct aliases already in the bridges table is a configuration
-    # problem, not something to silently paper over with a clobbering fallback
-    # — fail hard so the user can ``inspire notebook forget`` stale aliases
-    # before inventing a duplicate.
-    raise RuntimeError(
-        f"Exhausted 1000 alias slots under base {base!r}; prune stale aliases "
-        "with `inspire notebook forget <alias>` before recreating."
-    )
-
-
-def _default_alias_for_notebook(
-    cached_config,
-    *,
-    notebook_id: str,
-    notebook_name: Optional[str],
-) -> str:
-    """Compute the default alias for a freshly-bootstrapped notebook.
-
-    v2.0.0: always ``<cleaned-name>-sh<N>`` where N is the lowest free
-    index (``-sh0`` for the first bootstrap of a given name). Prior versions
-    used the bare cleaned name which made the second bootstrap of a same-named
-    notebook pick up an id-based suffix; the -sh<N> scheme is stable across
-    reconnects and survives display-name collisions cleanly.
-
-    Falls back to ``nb-<id[:8]>`` when the display name sanitises away
-    (still suffixed with ``-sh<N>``).
-    """
-    derived = _sanitize_alias_from_name(notebook_name or "")
-    base = derived or f"nb-{str(notebook_id or '')[:8]}"
-    return _unique_alias_for_notebook(
-        cached_config,
-        base=base,
-        notebook_id=notebook_id,
-    )
 
 
 def _command_timeout_seconds(command_timeout: Optional[int]) -> Optional[int]:
@@ -284,9 +190,9 @@ def _run_notebook_command_with_reconnect(
             _handle_error(
                 ctx,
                 "ConfigError",
-                f"Notebook alias '{profile_name}' not found.",
+                f"No cached notebook connection for '{profile_name}'.",
                 EXIT_CONFIG_ERROR,
-                hint="Run 'inspire notebook connections' to check saved notebook aliases.",
+                hint="Run 'inspire notebook connections' to see cached notebook names.",
             )
             return False
 
@@ -324,9 +230,9 @@ def _run_notebook_command_with_reconnect(
             _handle_error(
                 ctx,
                 "ConfigError",
-                f"Notebook alias '{profile_name}' is missing notebook metadata.",
+                f"Cached notebook '{profile_name}' is missing notebook metadata.",
                 EXIT_CONFIG_ERROR,
-                hint="Re-run 'inspire notebook ssh <notebook-name> --save-as <name>'.",
+                hint="Re-run 'inspire notebook ssh <notebook>' to re-bootstrap.",
             )
             return False
 
@@ -348,7 +254,7 @@ def _run_notebook_command_with_reconnect(
                 else "SSH connection dropped and auto-reconnect retries were exhausted."
             ),
             EXIT_API_ERROR,
-            hint="Re-run 'inspire notebook ssh <notebook-name>' to refresh the tunnel.",
+            hint="Re-run 'inspire notebook ssh <notebook>' to refresh the tunnel.",
         )
         return False
 
@@ -475,9 +381,9 @@ def _run_interactive_notebook_ssh_with_reconnect(
             _handle_error(
                 ctx,
                 "ConfigError",
-                f"Notebook alias '{profile_name}' not found.",
+                f"No cached notebook connection for '{profile_name}'.",
                 EXIT_CONFIG_ERROR,
-                hint="Run 'inspire notebook connections' to check saved notebook aliases.",
+                hint="Run 'inspire notebook connections' to see cached notebook names.",
             )
             return
 
@@ -497,7 +403,7 @@ def _run_interactive_notebook_ssh_with_reconnect(
                 "APIError",
                 "SSH connection dropped and auto-reconnect retries were exhausted.",
                 EXIT_API_ERROR,
-                hint="Re-run 'inspire notebook ssh <notebook-name>' to refresh the tunnel.",
+                hint="Re-run 'inspire notebook ssh <notebook>' to refresh the tunnel.",
             )
             return
 
@@ -541,9 +447,9 @@ def _run_interactive_notebook_ssh_with_reconnect(
             _handle_error(
                 ctx,
                 "ConfigError",
-                f"Notebook alias '{profile_name}' is missing notebook metadata.",
+                f"Cached notebook '{profile_name}' is missing notebook metadata.",
                 EXIT_CONFIG_ERROR,
-                hint="Re-run 'inspire notebook ssh <notebook-name> --save-as <name>'.",
+                hint="Re-run 'inspire notebook ssh <notebook>' to re-bootstrap.",
             )
             return
 
@@ -561,7 +467,7 @@ def _run_interactive_notebook_ssh_with_reconnect(
                 "APIError",
                 "SSH connection dropped and auto-reconnect retries were exhausted.",
                 EXIT_API_ERROR,
-                hint="Re-run 'inspire notebook ssh <notebook-name>' to refresh the tunnel.",
+                hint="Re-run 'inspire notebook ssh <notebook>' to refresh the tunnel.",
             )
             return
 
@@ -579,7 +485,7 @@ def _run_interactive_notebook_ssh_with_reconnect(
                 "APIError",
                 "Tunnel rebuild completed, but SSH preflight still failed.",
                 EXIT_API_ERROR,
-                hint=f"Run 'inspire notebook test -a {profile_name}' for diagnostics.",
+                hint=f"Run 'inspire notebook test {profile_name}' for diagnostics.",
             )
             return
 
@@ -598,7 +504,6 @@ def run_notebook_ssh(
     notebook_id: str,
     wait: bool,
     pubkey: Optional[str],
-    save_as: Optional[str],
     port: int,
     ssh_port: int,
     command: Optional[str],
@@ -647,26 +552,13 @@ def run_notebook_ssh(
             json_output=False,
         )
 
-    # Alias resolution: enforce **one notebook ↔ one alias**.
-    #   1. ``--save-as <new>`` wins. If this notebook already had a different
-    #      alias, drop the old one — same machine, two short names is just
-    #      noise (and lets `notebook connections` accumulate dead duplicates).
-    #   2. Else, reuse the existing alias for this notebook (keeps legacy
-    #      ``nb-<id[:8]>`` bridges from earlier CLI versions working).
-    #   3. Else, defer: after we fetch ``notebook_detail`` below we derive an
-    #      alias from the notebook's display name (and only fall back to
-    #      ``nb-<id[:8]>`` when the name sanitises to something too short).
+    # Cache key = notebook name. If a legacy custom-named entry exists for
+    # this notebook_id (from older CLI versions that supported custom names),
+    # use it as the fast-path probe target; we'll rewrite the entry under
+    # the canonical name below.
     cached_config = load_tunnel_config(account=tunnel_account)
-    existing_alias = _find_alias_for_notebook_id(cached_config, notebook_id)
-    if save_as and existing_alias and existing_alias != save_as:
-        cached_config.remove_bridge(existing_alias)
-        save_tunnel_config(cached_config)
-        click.echo(
-            f"Renamed alias '{existing_alias}' → '{save_as}' "
-            f"(one notebook keeps one alias).",
-            err=True,
-        )
-    profile_name: Optional[str] = save_as or existing_alias
+    legacy_entry = _find_cached_entry_for_notebook_id(cached_config, notebook_id)
+    profile_name: Optional[str] = legacy_entry
 
     if profile_name and profile_name in cached_config.bridges:
         cached_bridge = cached_config.bridges[profile_name]
@@ -728,7 +620,7 @@ def run_notebook_ssh(
             if bridge_notebook_id:
                 click.echo(
                     (
-                        f"Notebook alias '{profile_name}' targets notebook '{bridge_notebook_id}'; "
+                        f"Cached notebook '{profile_name}' targets notebook '{bridge_notebook_id}'; "
                         f"refreshing tunnel for '{notebook_id}'."
                     ),
                     err=True,
@@ -736,7 +628,7 @@ def run_notebook_ssh(
             else:
                 click.echo(
                     (
-                        f"Notebook alias '{profile_name}' has no notebook binding metadata; "
+                        f"Cached notebook '{profile_name}' has no notebook binding metadata; "
                         f"refreshing tunnel for '{notebook_id}'."
                     ),
                     err=True,
@@ -774,16 +666,23 @@ def run_notebook_ssh(
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
         return
 
-    # Finalise the alias now that we know the notebook's display name.
-    # Only kicks in when neither ``--save-as`` nor an existing bridge supplied
-    # one earlier; see the alias-resolution comment above.
-    if profile_name is None:
-        notebook_display_name = str(notebook_detail.get("name") or "").strip()
-        profile_name = _default_alias_for_notebook(
-            cached_config,
-            notebook_id=notebook_id,
-            notebook_name=notebook_display_name,
+    # Cache key is always the notebook's display name. If a pre-rename
+    # legacy entry exists under a different key, drop it so each notebook
+    # has exactly one canonical entry going forward.
+    notebook_display_name = str(notebook_detail.get("name") or "").strip()
+    if not notebook_display_name:
+        # Edge case: notebook has no display name; fall back to nb-<id[:8]>
+        # so the bridges file always has *some* key for this connection.
+        notebook_display_name = f"nb-{notebook_id[:8]}"
+    if legacy_entry and legacy_entry != notebook_display_name:
+        cached_config.remove_bridge(legacy_entry)
+        save_tunnel_config(cached_config)
+        click.echo(
+            f"Migrated cached bridge '{legacy_entry}' → '{notebook_display_name}' "
+            f"(one notebook keeps one cache entry, keyed by name).",
+            err=True,
         )
+    profile_name = notebook_display_name
 
     current_user_detail: dict = {}
     try:
@@ -897,8 +796,8 @@ def run_notebook_ssh(
             "Tunnel setup completed, but SSH preflight failed.",
             EXIT_API_ERROR,
             hint=(
-                "Retry 'inspire notebook ssh <notebook-name>' in a few seconds, "
-                f"or run 'inspire notebook test -a {profile_name}' to inspect connectivity. "
+                f"Retry 'inspire notebook ssh {profile_name}' in a few seconds, "
+                f"or run 'inspire notebook test {profile_name}' to inspect connectivity. "
                 f"Proxy readiness report: {proxy_status} ({redact_proxy_url(proxy_url)})."
                 f"{ssh_capability_hint}"
             ),

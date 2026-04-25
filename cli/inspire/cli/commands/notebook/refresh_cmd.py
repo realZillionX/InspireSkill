@@ -12,7 +12,7 @@ from inspire.cli.formatters import human_formatter, json_formatter
 
 
 @click.command("update")
-@click.argument("name")
+@click.argument("notebook", metavar="NOTEBOOK")
 @click.option("--url", help="Update the proxy URL")
 @click.option("--ssh-user", help="Update the SSH user")
 @click.option("--ssh-port", type=int, help="Update the SSH port")
@@ -21,34 +21,37 @@ from inspire.cli.formatters import human_formatter, json_formatter
     is_flag=True,
     flag_value=True,
     default=None,
-    help="Mark bridge as having internet access",
+    help="Mark cached notebook as having internet access",
 )
 @click.option(
     "--no-internet",
     is_flag=True,
     flag_value=True,
     default=None,
-    help="Mark bridge as having no internet access",
+    help="Mark cached notebook as having no internet access",
 )
 @pass_context
 def tunnel_update(
     ctx: Context,
-    name: str,
+    notebook: str,
     url: str,
     ssh_user: str,
     ssh_port: int,
     has_internet: bool,
     no_internet: bool,
 ) -> None:
-    """Update an existing saved notebook alias.
+    """Update an existing cached notebook connection.
+
+    NOTEBOOK is the cached notebook name.
 
     \b
     Examples:
-        inspire notebook refresh mybridge --has-internet
-        inspire notebook refresh mybridge --no-internet
-        inspire notebook refresh mybridge --url "https://new-url.../proxy/31337/"
-        inspire notebook refresh mybridge --ssh-port 22223
+        inspire notebook refresh my-notebook --has-internet
+        inspire notebook refresh my-notebook --no-internet
+        inspire notebook refresh my-notebook --url "https://new-url.../proxy/31337/"
+        inspire notebook refresh my-notebook --ssh-port 22223
     """
+    name = notebook
     config = load_tunnel_config()
 
     if name not in config.bridges:
@@ -56,13 +59,18 @@ def tunnel_update(
             click.echo(
                 json_formatter.format_json_error(
                     "NotFound",
-                    f"Bridge '{name}' not found",
+                    f"No cached notebook connection for '{name}'",
                     EXIT_CONFIG_ERROR,
                 ),
                 err=True,
             )
         else:
-            click.echo(human_formatter.format_error(f"Bridge '{name}' not found"), err=True)
+            click.echo(
+                human_formatter.format_error(
+                    f"No cached notebook connection for '{name}'"
+                ),
+                err=True,
+            )
         sys.exit(EXIT_CONFIG_ERROR)
 
     if has_internet and no_internet:
@@ -124,7 +132,7 @@ def tunnel_update(
             json_formatter.format_json(
                 {
                     "status": "updated",
-                    "name": name,
+                    "notebook": name,
                     "updated_fields": updated_fields,
                     "bridge": bridge.to_dict(),
                 }
@@ -132,7 +140,7 @@ def tunnel_update(
         )
         return
 
-    click.echo(f"Updated bridge: {name}")
+    click.echo(f"Updated cached notebook: {name}")
     for field in updated_fields:
         if field == "url":
             click.echo(f"  URL: {bridge.proxy_url}")

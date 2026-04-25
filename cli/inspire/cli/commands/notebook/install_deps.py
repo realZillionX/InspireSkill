@@ -10,8 +10,8 @@ so:
     (jammy / noble), we bail with a clear message instead of letting apt fall
     over half-way through.
 
-Run inside a notebook you already have an SSH alias to, then ``image save`` to
-derive a project base image with all the runtimes you need.
+Run inside a notebook you already have a cached SSH connection to, then
+``image save`` to derive a project base image with all the runtimes you need.
 
 Scope:
 
@@ -190,27 +190,27 @@ def _build_ray_step(version: str, *, pip_index_url: str) -> str:
     )
 
 
-def _resolve_alias(alias: str, tunnel_config: TunnelConfig):
-    bridge = tunnel_config.get_bridge(alias)
+def _resolve_notebook(notebook: str, tunnel_config: TunnelConfig):
+    bridge = tunnel_config.get_bridge(notebook)
     if bridge is None:
         raise click.UsageError(
-            f"No saved bridge for alias {alias!r}. "
-            "Run 'inspire notebook ssh <name> --save-as <alias>' first."
+            f"No cached notebook connection for {notebook!r}. "
+            "Bootstrap one with: inspire notebook ssh <notebook>"
         )
     return bridge
 
 
-def _run_step(label: str, command: str, *, alias: str, timeout: int) -> int:
+def _run_step(label: str, command: str, *, notebook: str, timeout: int) -> int:
     click.echo(f"=== install-deps: {label} ===")
     return run_ssh_command_streaming(
         command=command,
-        bridge_name=alias,
+        bridge_name=notebook,
         timeout=timeout,
     )
 
 
 @click.command("install-deps")
-@click.argument("alias")
+@click.argument("notebook", metavar="NOTEBOOK")
 @click.option(
     "--slurm/--no-slurm",
     default=False,
@@ -258,14 +258,16 @@ def _run_step(label: str, command: str, *, alias: str, timeout: int) -> int:
 @pass_context
 def install_deps_cmd(
     ctx: Context,
-    alias: str,
+    notebook: str,
     slurm: bool,
     ray: bool,
     ray_version: str,
     pip_index_url: str,
     timeout: int,
 ) -> None:
-    """One-shot install of hpc/ray runtime deps via an existing SSH alias.
+    """One-shot install of hpc/ray runtime deps on a cached notebook.
+
+    NOTEBOOK is the cached notebook name.
 
     \b
     Examples:
@@ -284,7 +286,7 @@ def install_deps_cmd(
 
     try:
         tunnel_config = load_tunnel_config()
-        _resolve_alias(alias, tunnel_config)
+        _resolve_notebook(notebook, tunnel_config)
     except click.UsageError:
         raise
     except Exception as e:
@@ -303,7 +305,7 @@ def install_deps_cmd(
         )
 
     for label, command in steps:
-        exit_code = _run_step(label, command, alias=alias, timeout=timeout)
+        exit_code = _run_step(label, command, notebook=notebook, timeout=timeout)
         if exit_code != 0:
             _handle_error(
                 ctx,
@@ -312,8 +314,9 @@ def install_deps_cmd(
                 EXIT_GENERAL_ERROR,
                 hint=(
                     "Re-run with `--debug` to see the full SSH transcript. "
-                    "If the alias dropped, run `inspire notebook test "
-                    f"-a {alias}` or `inspire notebook refresh {alias}` first."
+                    "If the cached connection dropped, run "
+                    f"`inspire notebook test {notebook}` or "
+                    f"`inspire notebook refresh {notebook}` first."
                 ),
             )
             return

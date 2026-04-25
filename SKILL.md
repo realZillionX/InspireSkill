@@ -64,11 +64,11 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ### 2.2 Notebook
 
-**一个 notebook ↔ 一条本地 alias**。首次 `notebook ssh <name>` 把连接存成 `<clean-name>-sh0`（重名递增 `-sh1/-sh2/...`；`--save-as` 强改名）。同 notebook 已有 alias 则复用，不重复建。`notebook ssh <arg>` 多态——arg 是 alias 就重连（自动重建断开的 tunnel），否则按 notebook name bootstrap。
+**所有 notebook 子命令都用 notebook name 当唯一 identifier**——没有"alias"中间层。第一次 `notebook ssh <name>` bootstrap 时把 SSH 连接信息缓存在本地（key 就是 notebook name），后续命令直接复用。
 
 **`shell` vs `exec`**:
-- `inspire notebook shell <alias>` = **持久** SSH 会话，cwd / env / history 保留直到 `exit`。多个终端并开就是多个独立会话（都挂在同一容器，互相抢 CPU / RAM）。
-- `inspire notebook exec <alias> "<cmd>"` = **一次性**独立子进程，两次调用间**不共享 cwd / env**。接续状态塞同一调用：`exec "cd foo && export X=1 && ./run.sh"`，或远端写脚本后 `exec "bash setup.sh"`。
+- `inspire notebook shell <name>` = **持久** SSH 会话，cwd / env / history 保留直到 `exit`。多个终端并开就是多个独立会话（都挂在同一容器，互相抢 CPU / RAM）。**想挂着就走、回来再 attach 长时间任务，shell 里跑 `tmux` / `screen`**——下面 §2.2 末尾有模板。
+- `inspire notebook exec <name> "<cmd>"` = **一次性**独立子进程，两次调用间**不共享 cwd / env**。接续状态塞同一调用：`exec "cd foo && export X=1 && ./run.sh"`，或远端写脚本后 `exec "bash setup.sh"`。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -77,17 +77,31 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire notebook status <name>` | 详情，镜像名在 `image.name` |
 | `inspire notebook events <name> [--tail N --from-cache]` | 实例生命周期事件（调度 / 镜像拉取 / 保存镜像） |
 | `inspire notebook lifecycle <name>` | 多次启停的粗粒度时间线（一次 `start→stop` 一行） |
-| `inspire notebook {start,stop,delete} <name> [--yes]` | 生命周期；`delete` 不清本地 alias，要 `forget` |
-| `inspire notebook ssh <name> [--save-as <alias>]` | Bootstrap SSH + alias 保存。失败见 troubleshooting.md |
-| `inspire notebook exec <alias> "<cmd>"` | 一次性远端命令（在 `INSPIRE_TARGET_DIR` 下） |
-| `inspire notebook shell [<alias>]` | 持久交互 SSH |
-| `inspire notebook scp <src> <dst>` | 传**非仓库**文件（源码走 `git push` + `exec "cd <repo> && git pull"`）。不继承 `INSPIRE_TARGET_DIR`，远端写绝对路径 |
-| `inspire notebook install-deps <alias> [--slurm --ray]` | 给已运行的 notebook 补齐 hpc/ray 依赖（对齐 unified-base:v2：slurm 客户端 + ray=2.55.1）；幂等，已装的自动 skip。准备好后 `image save` 派生项目镜像。仅可上网区计算组可用 |
-| `inspire notebook test [<alias>]` | 连通性测试（带耗时），排障首选 |
-| `inspire notebook refresh <alias>` | notebook 重启后刷 alias 连接 |
-| `inspire notebook {connections,forget,set-default}` | 本地 alias 管理 |
-| `inspire notebook top [--watch]` | alias 的 GPU 利用率实时 `nvidia-smi`（要 tunnel 活着） |
+| `inspire notebook {start,stop,delete} <name> [--yes]` | 生命周期；`delete` 不清本地 SSH 缓存，要 `forget <name>` |
+| `inspire notebook ssh <name>` | Bootstrap SSH（cache 以 notebook name 当 key）；后续直接 `inspire notebook shell/exec/scp/...` 就行。失败见 troubleshooting.md |
+| `inspire notebook exec <name> "<cmd>"` | 一次性远端命令（在 `INSPIRE_TARGET_DIR` 下） |
+| `inspire notebook shell <name>` | 持久交互 SSH |
+| `inspire notebook scp <name> <src> <dst>` | 传**非仓库**文件（源码走 `git push` + `exec "cd <repo> && git pull"`）。不继承 `INSPIRE_TARGET_DIR`，远端写绝对路径 |
+| `inspire notebook install-deps <name> [--slurm --ray]` | 给已运行的 notebook 补齐 hpc/ray 依赖（对齐 unified-base:v2：slurm 客户端 + ray=2.55.1）；幂等，已装的自动 skip。准备好后 `image save` 派生项目镜像。仅可上网区计算组可用 |
+| `inspire notebook test [<name>]` | 连通性测试（带耗时），排障首选 |
+| `inspire notebook refresh <name>` | notebook 重启后刷 SSH 缓存 |
+| `inspire notebook {connections,forget}` | `connections` 列已 bootstrap 的 notebook；`forget <name>` 清本地 SSH 缓存 |
+| `inspire notebook top [--watch]` | GPU 利用率实时 `nvidia-smi`（要 tunnel 活着） |
 | `inspire notebook metrics <name> [--metric core --json]` | 历史利用率曲线 PNG（8 种指标默认取前 4）；`job / hpc / serving metrics` 同 UX 同 flag |
+
+**长时间任务 = `shell` + `tmux`**。`inspire notebook shell` 自身只是一条 SSH 通道，`exit` 即销毁，不能 detach 后回来 reattach。要"挂着就走、回来 attach"用 `tmux`（或 `screen`）：
+
+```bash
+inspire notebook shell my-nb           # SSH 进容器
+$ tmux new -s mywork                    # 容器里起一个有名 tmux 会话
+... 跑长时间训练 / 数据处理 ...
+$ <Ctrl-b d>                            # detach，tmux 进程留在容器里
+$ exit                                  # 离开 SSH（tmux 还在跑）
+
+# 几小时后回来：
+inspire notebook shell my-nb           # 重新 SSH
+$ tmux attach -t mywork                 # 接回原来那个会话
+```
 
 ### 2.3 GPU 多节点任务（`job`）
 
@@ -209,8 +223,8 @@ cd /local/path/<repo>
 git push origin <branch>
 inspire notebook exec "cd <repo> && git pull && git log -1 --oneline"
 
-inspire notebook ssh <notebook-name> --save-as mybox
-inspire notebook exec --alias mybox "hostname"
+inspire notebook ssh <notebook-name>
+inspire notebook exec <notebook-name> "hostname"
 ```
 
 ### 3.3 三阶段工作流
@@ -221,10 +235,10 @@ inspire notebook exec --alias mybox "hostname"
 
 **强烈推荐的一次性做法**：项目刚开张时在可上网区 CPU 空间用 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（自带 ssh + slurm + ray 依赖）起一个基底 notebook，把后续要用到的所有依赖**一次性配齐**——`hpc create` 要的 slurm-client、`ray create` 要的 ray runtime、多节点 `job create` 要的 deepspeed 等等——然后 `image save` 派生为项目通用镜像，后续 notebook / job / hpc / ray 全用它。一次费力，永久省事。
 
-**给现有镜像补 hpc/ray 的快捷做法**：在 ubuntu 22.04 / 24.04 镜像（项目业务镜像如 `vtb-training:v1`、平台基底 `unified-base:v2` 等）上 `notebook ssh` 拿到 alias 后跑：
+**给现有镜像补 hpc/ray 的快捷做法**：在 ubuntu 22.04 / 24.04 镜像（项目业务镜像如 `vtb-training:v1`、平台基底 `unified-base:v2` 等）上 `notebook ssh <name>` 跑过一次 bootstrap 之后跑：
 
 ```bash
-inspire notebook install-deps <alias> --slurm --ray
+inspire notebook install-deps <name> --slurm --ray
 ```
 
 每步先 probe 后下手：`srun` / `sbatch` 已存在就 skip apt，目标 ray 版本已装就 skip pip。**幂等**——同一镜像反复跑安全。`--ray` 默认清华源，**清华不通自动 fallback 到 pypi.org**（无网区两个都不通时清晰报错，不会卡 retry）。`slurm.conf` 由平台在 `hpc create` 时注入，install-deps 不动；分布式训练 lib（deepspeed / accelerate / transformers）项目自决，用 `inspire notebook exec` 自己装。
@@ -239,16 +253,16 @@ inspire notebook install-deps <alias> --slurm --ray
 
 ```bash
 inspire notebook create --workspace CPU资源空间 --group CPU资源-2 -q 0,20,256 \
-  --name <action-goal> --image <任意镜像> --project <P> --wait --json
+  --name cpu-box --image <任意镜像> --project <P> --wait --json
 
-inspire notebook ssh <notebook-name> --save-as cpu-box
+inspire notebook ssh cpu-box
 ```
 
 想固化依赖并发布成可复用镜像：
 
 ```bash
-inspire notebook exec --alias cpu-box "apt-get update && apt-get install -y <deps> && pip install ..."
-inspire image save <notebook-name> -n <img> -v v1 --public --wait --json
+inspire notebook exec cpu-box "apt-get update && apt-get install -y <deps> && pip install ..."
+inspire image save cpu-box -n <img> -v v1 --public --wait --json
 inspire image set-default --job <URL> --notebook <URL>
 ```
 

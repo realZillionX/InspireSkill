@@ -53,7 +53,7 @@ def _select_target_bridges(
                 "ConfigError",
                 f"Bridge '{bridge_name}' not found.",
                 EXIT_CONFIG_ERROR,
-                hint="Run 'inspire notebook connections' to see saved notebook aliases.",
+                hint="Run 'inspire notebook connections' to see cached notebook names.",
             )
         notebook_id = _bridge_notebook_id(bridge)
         if not notebook_id:
@@ -65,7 +65,7 @@ def _select_target_bridges(
                     "(missing notebook_id metadata)."
                 ),
                 EXIT_CONFIG_ERROR,
-                hint="Recreate it with 'inspire notebook ssh <notebook-name> --save-as <name>'.",
+                hint="Recreate it with 'inspire notebook ssh <notebook>'.",
             )
         return [bridge]
 
@@ -76,7 +76,7 @@ def _select_target_bridges(
             "ConfigError",
             "No notebook-backed tunnel profiles found.",
             EXIT_CONFIG_ERROR,
-            hint=("Create one first: " "'inspire notebook ssh <notebook-name> --save-as <name>'."),
+            hint=("Create one first: " "'inspire notebook ssh <notebook>'."),
         )
 
     return sorted(bridges, key=lambda b: b.name)
@@ -392,7 +392,7 @@ def notebook_top(
                 "APIError",
                 "Failed to collect GPU metrics from selected bridges.",
                 EXIT_API_ERROR,
-                hint="Run 'inspire notebook test -a <alias>' for diagnostics.",
+                hint="Run 'inspire notebook test <notebook>' for diagnostics.",
             )
 
         if not watch:

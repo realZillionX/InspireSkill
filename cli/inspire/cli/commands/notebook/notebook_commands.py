@@ -351,8 +351,9 @@ def delete_notebook_cmd(
 
     \b
     The instance disappears from the platform UI. This cannot be undone;
-    if the notebook is still running, stop it first. Any saved local alias
-    is NOT removed — run `inspire notebook forget <alias>` to clean up.
+    if the notebook is still running, stop it first. The local cached SSH
+    connection is NOT removed — run `inspire notebook forget <notebook>`
+    to clean up.
 
     \b
     Examples:
@@ -845,15 +846,6 @@ def list_notebooks(
     ),
 )
 @click.option(
-    "--save-as",
-    help=(
-        "Custom alias name for this notebook's saved connection. Defaults to "
-        "a sanitised form of the notebook's display name (falls back to "
-        "nb-<id[:8]> if the name is empty or unusable). Used by subsequent "
-        "'notebook exec/shell/scp'."
-    ),
-)
-@click.option(
     "--port",
     default=31337,
     show_default=True,
@@ -895,7 +887,6 @@ def ssh_notebook_cmd(
     notebook: str,
     wait: bool,
     pubkey: Optional[str],
-    save_as: Optional[str],
     port: int,
     ssh_port: int,
     command: Optional[str],
@@ -905,24 +896,20 @@ def ssh_notebook_cmd(
 ) -> None:
     """SSH into a notebook instance via rtunnel ProxyCommand.
 
-    Polymorphic — the positional argument is either a notebook NAME
-    (bootstraps the rtunnel / SSH toolchain and saves a local alias) or
-    a previously-saved local ALIAS (reconnects to a previously bootstrapped
-    notebook, auto-rebuilding the tunnel if it dropped). Alias lookup wins
-    if both match; pass a distinct ``--save-as`` on first bootstrap to
-    keep them separable.
+    The positional argument is the notebook name. First call bootstraps
+    the rtunnel / SSH toolchain and caches the connection under that
+    same name; later calls reconnect (auto-rebuilding the tunnel if it
+    dropped). One notebook keeps one cached SSH connection — there is
+    no separate alias concept.
 
     \b
     Examples:
-        inspire notebook ssh <notebook-name>          # bootstrap + save alias
-        inspire notebook ssh <notebook-name> --save-as box1
-        inspire notebook ssh box1                     # reconnect via alias
+        inspire notebook ssh <notebook-name>                  # bootstrap (or reconnect)
         inspire notebook ssh <notebook-name> --command "hostname"
     """
-    # Polymorphic fast path: if the arg matches a saved local alias, jump
-    # to the reconnect flow (cheap, no bootstrap). Otherwise fall through
-    # and treat the arg as a platform notebook name for bootstrap.
-    if not save_as and not command and not pubkey:
+    # Fast path: if a cached bridge already exists for this notebook
+    # name, hand off to the reconnect flow (no bootstrap needed).
+    if not command and not pubkey:
         try:
             from inspire.bridge.tunnel import TunnelError, load_tunnel_config
 
@@ -941,7 +928,6 @@ def ssh_notebook_cmd(
         notebook_id=notebook,
         wait=wait,
         pubkey=pubkey,
-        save_as=save_as,
         port=port,
         ssh_port=ssh_port,
         command=command,

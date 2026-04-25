@@ -12,19 +12,21 @@ from inspire.cli.formatters import human_formatter, json_formatter
 
 
 @click.command("test")
-@click.option("--alias", "-a", "bridge", help="Alias to test (uses default if not specified)")
-@click.option("--bridge", "-b", "bridge", hidden=True, help="(Deprecated) same as --alias")
+@click.argument("notebook", required=False)
 @pass_context
-def tunnel_test(ctx: Context, bridge: str) -> None:
-    """Test SSH connection and show timing.
+def tunnel_test(ctx: Context, notebook: str) -> None:
+    """Test SSH connection to a cached notebook and show timing.
+
+    NOTEBOOK is the cached notebook name (omit to use the default).
 
     \b
     Examples:
         inspire notebook test
-        inspire notebook test -b mybridge
+        inspire notebook test my-notebook
     """
     import time
 
+    bridge = notebook
     config = load_tunnel_config()
     bridge_profile = config.get_bridge(bridge)
 
@@ -33,16 +35,17 @@ def tunnel_test(ctx: Context, bridge: str) -> None:
             click.echo(
                 json_formatter.format_json_error(
                     "ConfigError",
-                    "No bridge configured",
+                    "No cached notebook connection",
                     EXIT_CONFIG_ERROR,
-                    hint="Run 'inspire notebook ssh <notebook-name> --save-as <alias>' first.",
+                    hint="Bootstrap one with: inspire notebook ssh <notebook>",
                 ),
                 err=True,
             )
         else:
             click.echo(
                 human_formatter.format_error(
-                    "No bridge configured. Run 'inspire notebook ssh <notebook-name> --save-as <alias>' first."
+                    "No cached notebook connection. Bootstrap one with: "
+                    "inspire notebook ssh <notebook>"
                 ),
                 err=True,
             )
@@ -62,7 +65,7 @@ def tunnel_test(ctx: Context, bridge: str) -> None:
                 click.echo(
                     json_formatter.format_json(
                         {
-                            "bridge": bridge_profile.name,
+                            "notebook": bridge_profile.name,
                             "hostname": hostname,
                             "elapsed_ms": int(elapsed * 1000),
                         }
@@ -82,7 +85,7 @@ def tunnel_test(ctx: Context, bridge: str) -> None:
             if result.returncode == 0:
                 click.echo(
                     human_formatter.format_success(
-                        f"Bridge '{bridge_profile.name}': Connected to {hostname}"
+                        f"Notebook '{bridge_profile.name}': Connected to {hostname}"
                     )
                 )
                 click.echo(f"Response time: {elapsed:.2f}s")

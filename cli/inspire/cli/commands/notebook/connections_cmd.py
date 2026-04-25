@@ -1,4 +1,4 @@
-"""Tunnel list command."""
+"""`notebook connections` -- list cached SSH connections by notebook name."""
 
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ from inspire.cli.formatters import human_formatter, json_formatter
 
 
 def _check_bridges(bridges, config, timeout=5):
-    """Test SSH connectivity for all bridges in parallel.
+    """Test SSH connectivity for all cached notebooks in parallel.
 
-    Returns a dict mapping bridge name to bool (True = connected).
+    Returns a dict mapping notebook name to bool (True = connected).
     """
     results: dict[str, bool] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(bridges)) as pool:
@@ -30,10 +30,10 @@ def _check_bridges(bridges, config, timeout=5):
 
 
 def _sort_bridges_for_display(bridges, *, ssh_status: dict[str, bool], no_check: bool):
-    """Sort bridges for output.
+    """Sort cached notebooks for output.
 
-    When live checks are enabled, connected bridges are listed first, then the
-    remaining bridges alphabetically.
+    When live checks are enabled, connected entries are listed first, then the
+    remaining entries alphabetically by notebook name.
     """
     if no_check:
         return sorted(bridges, key=lambda b: b.name)
@@ -54,7 +54,7 @@ def _sort_bridges_for_display(bridges, *, ssh_status: dict[str, bool], no_check:
 )
 @pass_context
 def tunnel_list(ctx: Context, no_check: bool) -> None:
-    """List all configured bridges.
+    """List cached SSH connections by notebook name.
 
     \b
     Example:
@@ -69,9 +69,9 @@ def tunnel_list(ctx: Context, no_check: bool) -> None:
         if ctx.json_output:
             click.echo(json_formatter.format_json({"bridges": [], "default": None}))
         else:
-            click.echo("No bridges configured.")
+            click.echo("No cached notebook connections.")
             click.echo("")
-            click.echo("Add one with: inspire notebook ssh <notebook-name> --save-as <alias>")
+            click.echo("Bootstrap one with: inspire notebook ssh <notebook>")
         return
 
     # Check SSH connectivity unless --no-check
@@ -98,7 +98,7 @@ def tunnel_list(ctx: Context, no_check: bool) -> None:
         )
         return
 
-    click.echo("Configured bridges:")
+    click.echo("Cached notebook connections:")
     click.echo("=" * 50)
     for bridge in ordered_bridges:
         is_default = bridge.name == config.default_bridge
@@ -119,4 +119,4 @@ def tunnel_list(ctx: Context, no_check: bool) -> None:
         if is_default:
             click.echo(human_formatter.format_success("    (default)"))
     click.echo("")
-    click.echo("* = default bridge")
+    click.echo("* = default cached notebook")

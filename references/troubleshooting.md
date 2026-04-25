@@ -45,7 +45,7 @@ mkdir -p /run/sshd && ssh-keygen -A >/dev/null 2>&1
 nohup /tmp/rtunnel 22222 31337 >/tmp/rtunnel-server.log 2>&1 &
 ```
 
-之后回本机重跑 `inspire notebook ssh <notebook-name> --save-as <alias>`。
+之后回本机重跑 `inspire notebook ssh <notebook-name>`。
 
 > **镜像固化不是必须的**。bootstrap 装的 rtunnel / sshd 跟着容器走，notebook 停了就没。想保留下次启动不重做 bootstrap 的话 `inspire image save` 派生一份；没必要的话跳过，一次性使用完全 OK。
 
@@ -86,7 +86,7 @@ du -sh --max-depth=1 <dir>           # 大小分布
 
 | 现象 | 处理 |
 | --- | --- |
-| `notebook exec` 报 alias 找不到 | `notebook connections` 看本地 alias；`notebook test [<alias>]` 看连通性；必要时 `notebook refresh <alias>` 重建 |
+| `notebook exec <name>` 报"No cached notebook connection" | 先跑 `inspire notebook ssh <name>` bootstrap；`notebook connections` 看已 bootstrap 的列表；`notebook test [<name>]` 看连通性；必要时 `notebook refresh <name>` 重建 |
 | `notebook scp` 把仓库文件传慢 / 不一致 | 它**不是**源码同步工具。源码走 `git push` + `notebook exec` 远端 `git pull` |
 | 跨计算组无法 `git push` | 切到同一共享路径下的可上网区实例做 git；离线计算组本身不联网 |
 

@@ -523,7 +523,6 @@ def test_run_notebook_ssh_validates_dropbear_setup_script(
             notebook_id="nb-name",
             wait=True,
             pubkey=None,
-            save_as=None,
             port=31337,
             ssh_port=22222,
             command=None,
@@ -590,7 +589,6 @@ def test_run_notebook_ssh_fails_fast_on_account_mismatch(
             notebook_id="nb-name",
             wait=True,
             pubkey=None,
-            save_as=None,
             port=31337,
             ssh_port=22222,
             command=None,
@@ -685,7 +683,6 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
         notebook_id="nb-name",
         wait=True,
         pubkey=None,
-        save_as=None,
         port=31337,
         ssh_port=22222,
         command=None,
@@ -783,7 +780,6 @@ def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
         notebook_id="nb-name",
         wait=True,
         pubkey=None,
-        save_as="shared-profile",
         port=31337,
         ssh_port=22222,
         command=None,
@@ -792,7 +788,13 @@ def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
     )
 
     assert setup_called["value"] is True
-    saved_profile = fake_tunnel_config.bridges["shared-profile"]
+    # Cache key is now always the notebook's canonical name (display name → fallback nb-<id[:8]>).
+    # The pre-existing 'shared-profile' entry binds to a *different* notebook_id, so it is
+    # left untouched; the new connection is saved under its own canonical key.
+    untouched = fake_tunnel_config.bridges["shared-profile"]
+    assert getattr(untouched, "notebook_id", None) == "notebook-old"
+    canonical_key = "nb-notebook"  # display_name absent → fallback "nb-" + id[:8]
+    saved_profile = fake_tunnel_config.bridges[canonical_key]
     assert getattr(saved_profile, "notebook_id", None) == "notebook-12345678"
 
 
@@ -889,7 +891,6 @@ def test_run_notebook_ssh_interactive_reconnects_after_drop(
         notebook_id="nb-name",
         wait=True,
         pubkey=None,
-        save_as=None,
         port=31337,
         ssh_port=22222,
         command=None,
@@ -1004,7 +1005,6 @@ def test_run_notebook_ssh_command_uses_non_interactive_executor(
         notebook_id="nb-name",
         wait=True,
         pubkey=None,
-        save_as=None,
         port=31337,
         ssh_port=22222,
         command="git status",
@@ -1100,7 +1100,6 @@ def test_run_notebook_ssh_name_uses_cached_bridge_metadata(
         notebook_id="container-config",
         wait=True,
         pubkey=None,
-        save_as=None,
         port=31337,
         ssh_port=22222,
         command="echo fast-name",
@@ -1226,7 +1225,6 @@ def test_run_notebook_ssh_command_timeout_is_reported(
             notebook_id="nb-name",
             wait=True,
             pubkey=None,
-            save_as=None,
             port=31337,
             ssh_port=22222,
             command="git pull",
@@ -1351,7 +1349,6 @@ def test_run_notebook_ssh_command_failure_reports_exit_code_and_grep_hint(
             notebook_id="nb-name",
             wait=True,
             pubkey=None,
-            save_as=None,
             port=31337,
             ssh_port=22222,
             command="grep -c missing tasks/*/data.json",
@@ -1450,7 +1447,6 @@ def test_run_notebook_ssh_reports_when_tunnel_not_ready(
             notebook_id="nb-name",
             wait=True,
             pubkey=None,
-            save_as=None,
             port=31337,
             ssh_port=22222,
             command=None,

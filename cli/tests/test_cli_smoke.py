@@ -31,18 +31,20 @@ def test_notebook_help_includes_key_subcommands() -> None:
     assert result.exit_code == 0
     for sub in (
         "list", "status", "ssh", "exec", "scp", "shell",
-        "connections", "refresh", "forget", "test", "set-default",
+        "connections", "refresh", "forget", "test",
     ):
         assert sub in result.output, f"missing: {sub}\n{result.output}"
+    # set-default and the --save-as alias concept are gone
+    assert "set-default" not in result.output
 
 
-def test_notebook_ssh_help_mentions_bootstrap_and_save_as() -> None:
+def test_notebook_ssh_help_mentions_bootstrap_no_save_as() -> None:
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "ssh", "--help"])
     assert result.exit_code == 0
     assert "bootstrap" in result.output.lower()
-    assert "--save-as" in result.output
-    assert "reconnects to a previously bootstrapped" in result.output
+    assert "--save-as" not in result.output
+    assert "--alias" not in result.output
 
 
 def test_hpc_help_includes_key_subcommands() -> None:

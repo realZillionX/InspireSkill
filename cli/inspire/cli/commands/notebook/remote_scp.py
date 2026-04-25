@@ -1,4 +1,4 @@
-"""Bridge scp command -- transfer files to/from Bridge via SCP."""
+"""`notebook scp` command -- transfer files to/from a cached notebook via SCP."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def _warn_if_remote_path_is_relative(remote_path: str, *, download: bool) -> Non
     role = "source" if download else "destination"
     click.echo(
         (
-            f"Warning: remote {role} '{remote_path}' is relative on the Bridge; "
+            f"Warning: remote {role} '{remote_path}' is relative on the notebook; "
             "it does not use INSPIRE_TARGET_DIR. Prefer an absolute path."
         ),
         err=True,
@@ -52,25 +52,25 @@ def _warn_if_remote_path_is_relative(remote_path: str, *, download: bool) -> Non
 
 
 @click.command("scp")
+@click.argument("notebook")
 @click.argument("source")
 @click.argument("destination")
 @click.option("--download", "-d", is_flag=True, help="Download from remote (default is upload)")
 @click.option("--recursive", "-r", is_flag=True, help="Copy directories recursively")
-@click.option("--alias", "-a", "bridge", help="Saved notebook alias to transfer with")
-@click.option("--bridge", "-b", "bridge", hidden=True, help="(Deprecated) same as --alias")
 @click.option("--timeout", "-t", type=int, default=None, help="Timeout in seconds")
 @pass_context
 def bridge_scp(
     ctx: Context,
+    notebook: str,
     source: str,
     destination: str,
     download: bool,
     recursive: bool,
-    bridge: Optional[str],
     timeout: Optional[int],
 ) -> None:
-    """Transfer files to/from Bridge via SCP.
+    """Transfer files to/from a cached notebook via SCP.
 
+    NOTEBOOK is the cached notebook name (omit to use the default).
     By default, uploads SOURCE (local) to DESTINATION (remote).
     Use --download to download SOURCE (remote) to DESTINATION (local).
     Remote paths are literal and do not inherit INSPIRE_TARGET_DIR; relative
@@ -78,12 +78,13 @@ def bridge_scp(
 
     \b
     Examples:
-        inspire notebook scp ./model.py /tmp/model.py
-        inspire notebook scp ./data/ /tmp/data/ -r
-        inspire notebook scp -d /tmp/results.tar.gz ./results.tar.gz
-        inspire notebook scp -d /tmp/checkpoints/ ./checkpoints/ -r
-        inspire notebook scp ./bundle.tar /tmp/ --bridge gpu-main
+        inspire notebook scp my-notebook ./model.py /tmp/model.py
+        inspire notebook scp my-notebook ./data/ /tmp/data/ -r
+        inspire notebook scp my-notebook -d /tmp/results.tar.gz ./results.tar.gz
+        inspire notebook scp my-notebook -d /tmp/checkpoints/ ./checkpoints/ -r
+        inspire notebook scp my-notebook ./bundle.tar /tmp/
     """
+    bridge = notebook
     # Validate local path exists for uploads
     if not download:
         local = Path(source)
@@ -97,15 +98,15 @@ def bridge_scp(
 
     tunnel_config = load_tunnel_config()
     if bridge and tunnel_config.get_bridge(bridge) is None:
-        message = f"Bridge '{bridge}' not found."
-        hint = "Run 'inspire notebook connections' to see saved notebook aliases."
+        message = f"No cached notebook connection for '{bridge}'."
+        hint = "Run 'inspire notebook connections' to see cached notebook names."
         _handle_error(ctx, "BridgeNotFound", message, EXIT_GENERAL_ERROR, hint=hint)
 
     if not is_tunnel_available(bridge_name=bridge, config=tunnel_config):
         hint = (
             "Run 'inspire notebook test' to troubleshoot. "
-            "If needed, re-create the bridge via "
-            "'inspire notebook ssh <notebook-name> --save-as <name>'."
+            "If needed, re-create the cached connection via "
+            "'inspire notebook ssh <notebook>'."
         )
         _handle_error(ctx, "TunnelError", "SSH tunnel not available", EXIT_GENERAL_ERROR, hint=hint)
 
@@ -121,7 +122,7 @@ def bridge_scp(
     if not ctx.json_output and ctx.debug:
         click.echo(f"SCP {direction}: {source} -> {destination}")
         if bridge:
-            click.echo(f"Bridge: {bridge}")
+            click.echo(f"Notebook: {bridge}")
         if recursive:
             click.echo("Mode: recursive")
 

@@ -12,15 +12,18 @@ from inspire.cli.formatters import human_formatter, json_formatter
 
 
 @click.command("remove")
-@click.argument("name")
+@click.argument("notebook", metavar="NOTEBOOK")
 @pass_context
-def tunnel_remove(ctx: Context, name: str) -> None:
-    """Remove a saved notebook alias.
+def tunnel_remove(ctx: Context, notebook: str) -> None:
+    """Drop a cached notebook connection.
+
+    NOTEBOOK is the cached notebook name.
 
     \b
     Example:
-        inspire notebook forget mybridge
+        inspire notebook forget my-notebook
     """
+    name = notebook
     config = load_tunnel_config()
 
     if name not in config.bridges:
@@ -28,13 +31,18 @@ def tunnel_remove(ctx: Context, name: str) -> None:
             click.echo(
                 json_formatter.format_json_error(
                     "NotFound",
-                    f"Bridge '{name}' not found",
+                    f"No cached notebook connection for '{name}'",
                     EXIT_CONFIG_ERROR,
                 ),
                 err=True,
             )
         else:
-            click.echo(human_formatter.format_error(f"Bridge '{name}' not found"), err=True)
+            click.echo(
+                human_formatter.format_error(
+                    f"No cached notebook connection for '{name}'"
+                ),
+                err=True,
+            )
         sys.exit(EXIT_CONFIG_ERROR)
 
     was_default = name == config.default_bridge
@@ -46,15 +54,13 @@ def tunnel_remove(ctx: Context, name: str) -> None:
             json_formatter.format_json(
                 {
                     "status": "removed",
-                    "name": name,
+                    "notebook": name,
                     "new_default": config.default_bridge,
                 }
             )
         )
         return
 
-    click.echo(f"Removed bridge: {name}")
+    click.echo(f"Removed cached notebook: {name}")
     if was_default and config.default_bridge:
         click.echo(f"New default: {config.default_bridge}")
-    elif was_default:
-        click.echo("No default bridge set. Use: inspire notebook set-default <name>")

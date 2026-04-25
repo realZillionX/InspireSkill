@@ -42,7 +42,7 @@ def test_install_deps_requires_at_least_one_flag(monkeypatch: pytest.MonkeyPatch
     assert "at least one of --slurm / --ray" in result.output
 
 
-def test_install_deps_unknown_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_install_deps_unknown_notebook(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         install_deps_module,
         "load_tunnel_config",
@@ -50,7 +50,7 @@ def test_install_deps_unknown_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     result = CliRunner().invoke(install_deps_cmd, ["missing", "--slurm"])
     assert result.exit_code != 0
-    assert "No saved bridge for alias 'missing'" in result.output
+    assert "No cached notebook connection for 'missing'" in result.output
 
 
 def test_slurm_step_includes_distro_preflight(monkeypatch: pytest.MonkeyPatch) -> None:

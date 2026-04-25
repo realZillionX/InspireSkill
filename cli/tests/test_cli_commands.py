@@ -2056,7 +2056,6 @@ def test_run_notebook_ssh_validates_dropbear_setup_script(
             notebook_id="nb-name",
             wait=True,
             pubkey=None,
-            save_as=None,
             port=31337,
             ssh_port=22222,
             command=None,
@@ -2126,7 +2125,6 @@ def test_run_notebook_ssh_fails_fast_on_account_mismatch(
             notebook_id="nb-name",
             wait=True,
             pubkey=None,
-            save_as=None,
             port=31337,
             ssh_port=22222,
             command=None,
@@ -2225,7 +2223,6 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
         notebook_id="nb-name",
         wait=True,
         pubkey=None,
-        save_as=None,
         port=31337,
         ssh_port=22222,
         command=None,
@@ -2326,7 +2323,6 @@ def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
         notebook_id="nb-name",
         wait=True,
         pubkey=None,
-        save_as="shared-profile",
         port=31337,
         ssh_port=22222,
         command=None,
@@ -2335,7 +2331,13 @@ def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
     )
 
     assert setup_called["value"] is True
-    saved_profile = fake_tunnel_config.bridges["shared-profile"]
+    # Cache key is now always the notebook's canonical name. The pre-existing
+    # 'shared-profile' entry binds to a *different* notebook_id, so it stays
+    # untouched; the new connection lands under its own canonical key.
+    untouched = fake_tunnel_config.bridges["shared-profile"]
+    assert getattr(untouched, "notebook_id", None) == "notebook-old"
+    canonical_key = "nb-notebook"  # display_name absent → fallback "nb-" + id[:8]
+    saved_profile = fake_tunnel_config.bridges[canonical_key]
     assert getattr(saved_profile, "notebook_id", None) == "notebook-12345678"
 
 
@@ -2440,7 +2442,6 @@ def test_run_notebook_ssh_interactive_reconnects_after_drop(
         notebook_id="nb-name",
         wait=True,
         pubkey=None,
-        save_as=None,
         port=31337,
         ssh_port=22222,
         command=None,
@@ -2540,7 +2541,6 @@ def test_run_notebook_ssh_reports_when_tunnel_not_ready(
             notebook_id="nb-name",
             wait=True,
             pubkey=None,
-            save_as=None,
             port=31337,
             ssh_port=22222,
             command=None,
