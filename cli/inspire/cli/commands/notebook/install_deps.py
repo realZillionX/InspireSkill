@@ -39,6 +39,7 @@ from inspire.cli.utils.errors import exit_with_error as _handle_error
 
 DEFAULT_RAY_VERSION = "2.55.1"
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+PYPI_FALLBACK_INDEX_URL = "https://pypi.org/simple"
 SUPPORTED_DISTROS = ("noble", "jammy")
 
 _SLURM_APT_PACKAGES = (
@@ -63,13 +64,15 @@ def _distro_preflight() -> str:
 
 
 def _build_slurm_step() -> str:
-    """Detect-then-install slurm. Skips entirely if ``srun`` already exists.
+    """Detect-then-install slurm with an apt-graph preflight.
 
-    Many real images (vtb-training, unified-base, etc.) ship some of these
-    packages already; ``apt-get install`` of an already-present package is a
-    no-op so we still call it for partial coverage, but we short-circuit the
-    whole step when the binaries are already in PATH to avoid the
-    ``apt-get update`` round-trip.
+    ``apt-get install --simulate`` is run first; if it reports unmet
+    dependencies (typical on inspire-base / NGC-style images that have
+    been built with cross-distro libs pinned), we abort with a clear
+    error instead of letting the real install crash mid-way and leave
+    apt in a broken state. ``srun`` already on PATH short-circuits the
+    whole step so unified-base:v2 / vtb-* / videothinkbench-hpc-slurm-*
+    are all no-ops.
     """
     pkgs = " ".join(_SLURM_APT_PACKAGES)
     return (
@@ -80,25 +83,100 @@ def _build_slurm_step() -> str:
         '  exit 0; '
         "fi; "
         "export DEBIAN_FRONTEND=noninteractive; "
-        "apt-get update; "
+        'echo "[install-deps] apt-get update"; '
+        "apt-get update -qq; "
+        # Simulate first — apt prints "Unmet dependencies" on stderr but
+        # still exits 0 sometimes; we grep both streams + exit codes.
+        'echo "[install-deps] apt-get install --simulate (preflight)"; '
+        f"if ! _sim_out=$(apt-get install -y --no-install-recommends -s {pkgs} 2>&1); "
+        'then _sim_failed=1; else _sim_failed=0; fi; '
+        'if [ "$_sim_failed" != 0 ] || echo "$_sim_out" | grep -q "Unmet dependencies"; '
+        "then "
+        '  echo "[install-deps] ERROR: apt graph inconsistent; cannot install slurm cleanly." >&2; '
+        '  echo "[install-deps] last 12 lines of dry-run output:" >&2; '
+        '  echo "$_sim_out" | tail -12 >&2; '
+        '  echo "" >&2; '
+        '  echo "[install-deps] This image has been built with mixed-distro libs and apt cannot reconcile slurm-wlm without downgrades." >&2; '
+        '  echo "[install-deps] Recommended workarounds:" >&2; '
+        "  echo \"  - derive your project image from 'docker.sii.shaipower.online/inspire-studio/unified-base:v2' (slurm preinstalled, no apt step needed)\" >&2; "
+        '  echo "  - or check if your image vendor (e.g. inspire-base / ngc-*) ships a slurm variant already" >&2; '
+        "  exit 3; "
+        "fi; "
+        # Real install only after a clean simulate.
+        'echo "[install-deps] apt-get install (real)"; '
         f"apt-get install -y --no-install-recommends {pkgs}"
     )
 
 
 def _build_ray_step(version: str, *, pip_index_url: str) -> str:
-    """Detect-then-install ray. Skips when the requested version is already there."""
+    """Detect-then-install ray with python3/pip availability + DNS probes.
+
+    pre-checks:
+      - ``command -v python3 && command -v pip`` — pytorch-inspire-base
+        ships only conda Python (no system python3 on PATH) and pip-install
+        without that exits cryptically.
+      - ``getent hosts <pip-index-host>`` — some images (videothinkbench-*
+        observed) silently fail DNS to pypi.tuna.tsinghua.edu.cn even on
+        an internet-bearing compute group; report that up-front instead
+        of hanging in pip's connect-timeout retry loop.
+    """
     spec = f"ray=={version}" if version else "ray"
-    # ``--break-system-packages`` is required on Ubuntu 24.04+ (PEP 668), which
-    # marks the system Python as externally-managed. Our intent is exactly to
-    # populate the system site-packages so `image save` bakes ray into a
-    # project base image — there's no venv in play. The flag is harmless on
-    # 22.04 jammy where PEP 668 isn't enforced.
-    index_arg = f' --index-url "{pip_index_url}"' if pip_index_url else ""
     target = version or "(any)"
+
+    # Reachability + fallback. Some images (videothinkbench-* observed)
+    # are reachable to pypi.org but not to the tsinghua mirror — auto-fallback
+    # so the user gets ray installed instead of a network error.
+    from urllib.parse import urlparse
+
+    candidate_indexes: list[str] = []
+    if pip_index_url:
+        candidate_indexes.append(pip_index_url)
+    if PYPI_FALLBACK_INDEX_URL not in candidate_indexes:
+        candidate_indexes.append(PYPI_FALLBACK_INDEX_URL)
+
+    reach_lines: list[str] = ['_chosen_index=""']
+    for url in candidate_indexes:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        reach_lines.append(
+            f'if [ -z "$_chosen_index" ]; then '
+            f'  echo "[install-deps] reachability check: {host}:{port}"; '
+            f"  if timeout 5 bash -c '</dev/tcp/{host}/{port}' >/dev/null 2>&1; then "
+            f'    _chosen_index="{url}"; '
+            f'    echo "[install-deps] picked index: $_chosen_index"; '
+            "  else "
+            f'    echo "[install-deps] WARN: {host}:{port} unreachable; trying next candidate"; '
+            "  fi; "
+            "fi"
+        )
+    reach_lines.append(
+        'if [ -z "$_chosen_index" ]; then '
+        '  echo "[install-deps] ERROR: no reachable PyPI index from this notebook." >&2; '
+        f'  echo "[install-deps] tried: {", ".join(candidate_indexes)}" >&2; '
+        '  echo "[install-deps] hint: this compute group probably has no internet egress; run on HPC-可上网区资源-2 / CPU资源-2 etc." >&2; '
+        "  exit 4; "
+        "fi"
+    )
+    reachability_block = "; ".join(reach_lines) + "; "
+
     return (
         "set -e; "
         f"{_distro_preflight()}; "
-        f'_have=$(pip show ray 2>/dev/null | awk \'/^Version:/ {{print $2}}\'); '
+        # python3 + pip in PATH?
+        'if ! command -v python3 >/dev/null 2>&1; then '
+        '  echo "[install-deps] ERROR: python3 not on PATH; this image likely uses conda/venv only." >&2; '
+        "  echo \"[install-deps] hint: activate the project's env first, then run \"\"pip install --break-system-packages "
+        f'ray=={version}\\"\\" by hand; or derive from a system-python image." >&2; '
+        "  exit 5; "
+        "fi; "
+        'if ! command -v pip >/dev/null 2>&1 && ! command -v pip3 >/dev/null 2>&1; then '
+        '  echo "[install-deps] ERROR: pip not on PATH." >&2; '
+        "  exit 5; "
+        "fi; "
+        '_pip=$(command -v pip || command -v pip3); '
+        # already-installed?
+        f'_have=$($_pip show ray 2>/dev/null | awk \'/^Version:/ {{print $2}}\'); '
         f'if [ -n "$_have" ] && [ "$_have" = "{version}" ]; then '
         f'  echo "[install-deps] ray=={version} already installed; skipping"; '
         "  exit 0; "
@@ -106,7 +184,13 @@ def _build_ray_step(version: str, *, pip_index_url: str) -> str:
         f'if [ -n "$_have" ]; then '
         f'  echo "[install-deps] upgrading ray $_have -> {target}"; '
         "fi; "
-        f"pip install --upgrade --no-input --break-system-packages{index_arg} "
+        # network preflight + auto-fallback to next candidate if the configured
+        # mirror is unreachable. Sets $_chosen_index for the install line below.
+        f"{reachability_block}"
+        # actual install
+        f'echo "[install-deps] pip install ray=={version}"; '
+        '$_pip install --upgrade --no-input --break-system-packages '
+        '--index-url "$_chosen_index" '
         f'"{spec}"'
     )
 
@@ -160,8 +244,10 @@ def _run_step(label: str, command: str, *, alias: str, timeout: int) -> int:
     default=DEFAULT_PIP_INDEX_URL,
     show_default=True,
     help=(
-        "PyPI index for pip steps. Default mirrors what unified-base:v2 ships "
-        "with; pass '' to fall back to upstream pypi.org."
+        "PyPI index for pip steps. Default mirrors unified-base:v2. "
+        "Pass an empty string to skip the explicit --index-url flag and "
+        "let pip pick up whatever the image already configures (/etc/pip.conf etc); "
+        "pass 'https://pypi.org/simple' to force upstream PyPI."
     ),
 )
 @click.option(

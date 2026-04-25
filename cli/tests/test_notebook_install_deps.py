@@ -81,6 +81,69 @@ def test_slurm_step_skips_when_srun_present(monkeypatch: pytest.MonkeyPatch) -> 
         assert pkg in cmd
 
 
+def test_slurm_step_runs_apt_simulate_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _patch_tunnel(monkeypatch)
+    result = CliRunner().invoke(install_deps_cmd, ["cpu-box", "--slurm"])
+    assert result.exit_code == 0, result.output
+    cmd = calls[0]["command"]
+    # The dry-run guard must run before the real install + grep for "Unmet
+    # dependencies" so we abort early on lib-pinned images.
+    assert "apt-get install -y --no-install-recommends -s" in cmd
+    assert 'grep -q "Unmet dependencies"' in cmd
+    assert "apt graph inconsistent" in cmd
+    # And it must point users to a workaround instead of dying silently.
+    assert "unified-base:v2" in cmd
+    assert "exit 3" in cmd
+
+
+def test_ray_step_probes_both_tsinghua_and_pypi_with_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _patch_tunnel(monkeypatch)
+    result = CliRunner().invoke(install_deps_cmd, ["cpu-box", "--ray"])
+    assert result.exit_code == 0, result.output
+    cmd = calls[0]["command"]
+    # python/pip preflight
+    assert "command -v python3" in cmd
+    assert "command -v pip" in cmd
+    # TCP-connect probes for BOTH mirrors so a videothinkbench-style image
+    # (tsinghua unreachable, pypi.org reachable) auto-falls-back.
+    assert "/dev/tcp/pypi.tuna.tsinghua.edu.cn/443" in cmd
+    assert "/dev/tcp/pypi.org/443" in cmd
+    # Final install uses the picked index, not the static default.
+    assert '--index-url "$_chosen_index"' in cmd
+    assert "exit 4" in cmd
+    assert "exit 5" in cmd  # python/pip missing
+
+
+def test_ray_step_with_only_pypi_org_when_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _patch_tunnel(monkeypatch)
+    result = CliRunner().invoke(
+        install_deps_cmd, ["cpu-box", "--ray", "--pip-index-url", "https://pypi.org/simple"]
+    )
+    assert result.exit_code == 0, result.output
+    cmd = calls[0]["command"]
+    # User-supplied URL is the only probe; no fallback (already pypi.org).
+    assert "/dev/tcp/pypi.org/443" in cmd
+    assert "/dev/tcp/pypi.tuna.tsinghua.edu.cn/443" not in cmd
+
+
+def test_ray_step_with_empty_index_falls_back_to_pypi_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _patch_tunnel(monkeypatch)
+    result = CliRunner().invoke(
+        install_deps_cmd, ["cpu-box", "--ray", "--pip-index-url", ""]
+    )
+    assert result.exit_code == 0, result.output
+    cmd = calls[0]["command"]
+    # Empty user input → only pypi.org candidate
+    assert "/dev/tcp/pypi.org/443" in cmd
+    assert "tsinghua" not in cmd
+
+
 def test_ray_step_skips_when_version_matches(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _patch_tunnel(monkeypatch)
     result = CliRunner().invoke(install_deps_cmd, ["cpu-box", "--ray"])
@@ -115,16 +178,6 @@ def test_ray_step_uses_tsinghua_mirror_by_default(
     assert result.exit_code == 0, result.output
     cmd = calls[0]["command"]
     assert "pypi.tuna.tsinghua.edu.cn" in cmd
-
-
-def test_ray_step_can_disable_index(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _patch_tunnel(monkeypatch)
-    result = CliRunner().invoke(
-        install_deps_cmd, ["cpu-box", "--ray", "--pip-index-url", ""]
-    )
-    assert result.exit_code == 0, result.output
-    cmd = calls[0]["command"]
-    assert "--index-url" not in cmd
 
 
 def test_install_deps_runs_slurm_then_ray_in_order(
