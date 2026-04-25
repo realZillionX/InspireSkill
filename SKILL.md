@@ -219,7 +219,7 @@ inspire notebook exec --alias mybox "hostname"
 **镜像随便挑**——`notebook ssh` 自带 bootstrap（§1.1），镜像里有没有 sshd 都不重要，也不挑计算组是否可上网。两条典型：
 
 - **复用已有项目 / 个人镜像**（装好依赖 / 编译产物） → **直接用**，`notebook ssh` 不动镜像其它东西。
-- **从零起 / 临时脚手架** → `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（Ubuntu 22.04 + slurm 运行环境）是省事基底。普通 notebook 里 slurm 命令因无 controller 会报 `Could not establish a configuration source`——平台设计如此，不是镜像问题，`inspire hpc create` 路径下才会注入 controller。
+- **从零起 / 临时脚手架** → `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（Ubuntu 22.04 + slurm 运行环境 + sshd 已预装）是省事基底。普通 notebook 里 slurm 命令因无 controller 会报 `Could not establish a configuration source`——平台设计如此，不是镜像问题，`inspire hpc create` 路径下才会注入 controller。
 
 计算组按实际需求选（需要 `pip install` / `apt install` 就挑有公网的 `HPC-可上网区资源-2`，否则 `CPU资源-1/2` 都行）：
 
