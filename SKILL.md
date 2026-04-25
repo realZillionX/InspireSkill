@@ -96,7 +96,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 inspire notebook shell my-nb           # SSH 进容器
 $ tmux new -s mywork                    # 容器里起一个有名 tmux 会话
 ... 跑长时间训练 / 数据处理 ...
-$ <Ctrl-b d>                            # detach，tmux 进程留在容器里
+$ tmux detach                           # detach（等价交互键 Ctrl-b 然后 d）；tmux 进程留在容器里
 $ exit                                  # 离开 SSH（tmux 还在跑）
 
 # 几小时后回来：
