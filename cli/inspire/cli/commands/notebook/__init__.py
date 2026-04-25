@@ -36,6 +36,7 @@ from .notebook_lifecycle import lifecycle as notebook_lifecycle
 from .notebook_metrics import notebook_metrics
 
 # Remote operations on a saved alias (formerly `inspire bridge *`).
+from .install_deps import install_deps_cmd
 from .remote_exec import exec_command as _remote_exec
 from .remote_scp import bridge_scp as _remote_scp
 from .remote_shell import bridge_ssh as _remote_shell
@@ -78,6 +79,7 @@ notebook.add_command(notebook_metrics)          # metrics (资源视图 time-ser
 notebook.add_command(_remote_exec,  name="exec")
 notebook.add_command(_remote_scp,   name="scp")
 notebook.add_command(_remote_shell, name="shell")
+notebook.add_command(install_deps_cmd, name="install-deps")
 
 # Local alias management.
 notebook.add_command(_connections,     name="connections")
