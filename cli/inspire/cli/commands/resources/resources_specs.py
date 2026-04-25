@@ -227,40 +227,34 @@ def _resolve_query_workspaces(
     session,  # noqa: ANN001
     explicit_workspace: Optional[str],
     config: Config,
-    usage: str,
-    cross_search_requested: bool,
 ) -> list[tuple[str, str]]:
-    """Pick which workspaces to query, returning a list of (id, display_name)."""
+    """Pick which workspaces to query.
+
+    Default is to sweep every workspace the account can see — quotas are
+    cheap to fetch, and Ray / niche-hpc specs only live in a handful of
+    workspaces, so a default-workspace-only behaviour kept hiding them.
+    Pin to a single workspace by passing ``--workspace <name>``.
+    """
     if explicit_workspace:
         resolved = select_workspace_id(config, explicit_workspace_name=explicit_workspace)
         ws_id = resolved or session.workspace_id
         name = (getattr(session, "all_workspace_names", None) or {}).get(ws_id) or explicit_workspace
         return [(ws_id, name)]
 
-    cross = cross_search_requested or usage == "ray"
-    if cross:
-        ws_ids = list(getattr(session, "all_workspace_ids", None) or [])
-        names = getattr(session, "all_workspace_names", None) or {}
-        if not ws_ids:
-            ws_ids = [session.workspace_id]
-        return [(wid, names.get(wid) or wid) for wid in ws_ids]
-
-    ws_id = session.workspace_id
-    name = (getattr(session, "all_workspace_names", None) or {}).get(ws_id) or ws_id
-    return [(ws_id, name)]
+    ws_ids = list(getattr(session, "all_workspace_ids", None) or [])
+    names = getattr(session, "all_workspace_names", None) or {}
+    if not ws_ids:
+        ws_ids = [session.workspace_id]
+    return [(wid, names.get(wid) or wid) for wid in ws_ids]
 
 
 @click.command("specs")
-@click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
 @click.option(
-    "--all-workspaces",
-    "-A",
-    "all_workspaces",
-    is_flag=True,
-    default=False,
+    "--workspace",
+    default=None,
     help=(
-        "Search every workspace the account can see (auto-enabled for "
-        "--usage ray since Ray quotas only exist in a few workspaces)."
+        "Workspace name (from [workspaces]). Omit to sweep every workspace "
+        "the account can see."
     ),
 )
 @click.option("--group", default=None, help="Filter by compute group name (partial match)")
@@ -280,7 +274,6 @@ def _resolve_query_workspaces(
 def list_specs(
     ctx: Context,
     workspace: Optional[str],
-    all_workspaces: bool,
     group: Optional[str],
     usage: str,
     include_empty: bool,
@@ -290,9 +283,10 @@ def list_specs(
 
     ``auto`` checks HPC quotas first and falls back to notebook/DSW quotas.
     Use ``--usage ray`` for Ray head/worker quotas (consumed by
-    ``inspire ray create --head-spec`` / ``--worker spec=``); when
-    ``--workspace`` is omitted, ``--usage ray`` searches every workspace
-    automatically because Ray quotas live in only a handful of them.
+    ``inspire ray create --head-spec`` / ``--worker spec=``).
+
+    Default sweeps every workspace the account can see; pass
+    ``--workspace <name>`` to pin to one.
 
     Returns per-spec entries including:
     - workspace_id / workspace_name
@@ -311,8 +305,6 @@ def list_specs(
             session=session,
             explicit_workspace=workspace,
             config=config,
-            usage=usage,
-            cross_search_requested=all_workspaces,
         )
 
         group_filter = (group or "").strip().lower()
@@ -363,11 +355,6 @@ def list_specs(
 
         if not rows:
             click.echo("No resource specs found.")
-            if usage == "ray" and len(target_workspaces) == 1:
-                click.echo(
-                    "Hint: Ray quotas are scoped to specific workspaces; "
-                    "rerun with -A / --all-workspaces or --workspace <name>."
-                )
             return
 
         # Show workspace column when more than one workspace was queried.

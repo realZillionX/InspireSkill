@@ -53,7 +53,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | --- | --- |
 | `inspire resources list [--all --include-cpu]` | 实时可用量（默认只 GPU） |
 | `inspire resources nodes [-A]` | 整节点空余，多节点任务前必查 |
-| `inspire resources specs --usage {hpc,notebook,ray,auto,all} [--workspace X --group Y -A --json]` | 规格表；`hpc create --spec-id` / `ray create --head-spec` 取这里的 `Spec ID`（CLI 通常自动匹配）。`--usage ray` 不填 `--workspace` 时自动跨所有 workspace 搜（ray 配额极少）；其他 usage 默认只查 default workspace，加 `-A` 显式跨搜 |
+| `inspire resources specs --usage {hpc,notebook,ray,auto,all} [--workspace X --group Y --json]` | 规格表；`hpc create --spec-id` / `ray create --head-spec` 取这里的 `Spec ID`（CLI 通常自动匹配）。**默认跨所有 workspace 搜**，加 `--workspace X` 锁定单个 |
 | `inspire project list` | 项目 + 配额，定高/低优前必看 |
 | `inspire user whoami` | 当前登录身份 / 角色 |
 | `inspire user permissions [--workspace X]` | workspace 下授予的权限码（如 `job.trainingJob.create`） |
