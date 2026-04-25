@@ -157,9 +157,10 @@ def test_default_usage_all_queries_all_three_schedule_types(
     payload = json.loads(result.output)
     rows_by_usage = {row["usage"]: row for row in payload["data"]["specs"]}
     assert set(rows_by_usage) == {"notebook", "hpc", "ray"}
-    assert {row["spec_id"] for row in payload["data"]["specs"]} == {
-        "q-dsw", "q-hpc", "q-ray"
-    }
+    # Each row carries the (gpu, cpu, mem) triple — no spec_id surfaced.
+    assert (rows_by_usage["notebook"]["cpu_count"], rows_by_usage["notebook"]["memory_size_gib"]) == (4, 16)
+    assert (rows_by_usage["hpc"]["cpu_count"], rows_by_usage["hpc"]["memory_size_gib"]) == (8, 32)
+    assert (rows_by_usage["ray"]["cpu_count"], rows_by_usage["ray"]["memory_size_gib"]) == (2, 8)
     assert sorted(set(seen_types)) == sorted(
         [
             "SCHEDULE_CONFIG_TYPE_DSW",
@@ -188,13 +189,12 @@ def test_json_rows_carry_only_names_no_uuids(
     assert "workspace_id" not in payload["data"]
     assert "workspace_ids" not in payload["data"]
     assert "workspace_names" in payload["data"]
-    # Per row: spec_id is the only ID we forward (callers feed it to ray create).
+    # Per row: only names + the (gpu, cpu, mem) triple, no IDs at all.
     row = payload["data"]["specs"][0]
     assert row.keys() == {
         "workspace_name",
         "usage",
         "compute_group_name",
-        "spec_id",
         "cpu_count",
         "memory_size_gib",
         "gpu_count",
@@ -203,8 +203,11 @@ def test_json_rows_carry_only_names_no_uuids(
     assert "workspace_id" not in row
     assert "logic_compute_group_id" not in row
     assert "schedule_config_type" not in row
-    # And the leaked-looking lcg id must not appear anywhere in the JSON.
+    assert "spec_id" not in row
+    assert "quota_id" not in row
+    # Leaked-looking IDs must not appear anywhere in the JSON.
     assert "lcg-secret" not in result.output
+    assert "q-1" not in result.output
 
 
 def test_usage_ray_only_queries_ray(

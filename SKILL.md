@@ -53,7 +53,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | --- | --- |
 | `inspire resources list [--all --include-cpu]` | 实时可用量（默认只 GPU） |
 | `inspire resources nodes [-A]` | 整节点空余，多节点任务前必查 |
-| `inspire resources specs --usage {all,notebook,hpc,ray} [--workspace X --group Y --json]` | 规格表；默认 `all` 同时列 notebook / hpc / ray。**默认跨所有 workspace 搜**，加 `--workspace X` 锁定。`ray create --head-spec` 取这里的 `Spec ID`；`hpc create` / `notebook create` / `job create` 用 `--quota gpu,cpu,mem` 三元组，CLI 自己解析 |
+| `inspire resources specs --usage {all,notebook,hpc,ray} [--workspace X --group Y --json]` | 规格表；默认 `all` 同时列 notebook / hpc / ray。**默认跨所有 workspace 搜**，加 `--workspace X` 锁定。挑一行的 `(GPU, CPU, MemGiB)` 三元组喂给 `--quota gpu,cpu,mem`（`notebook create` / `job create` / `run` / `ray create --head-quota` / `--worker quota=`），CLI 自己解析 |
 | `inspire project list` | 项目 + 配额，定高/低优前必看 |
 | `inspire user whoami` | 当前登录身份 / 角色 |
 | `inspire user permissions [--workspace X]` | workspace 下授予的权限码（如 `job.trainingJob.create`） |
@@ -140,7 +140,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 | 命令 | 用途 |
 | --- | --- |
-| `inspire ray create -n X -c <driver-cmd> --head-image URL --head-group <name> --head-spec <quota> --worker 'name=w1,image=URL,group=...,spec=...,min=1,max=8[,shm=32][,image_type=...]' -p P --workspace W` | 提交。重复 `--worker` 定义多个 worker 组。`--dry-run` 打印 body，`--json-body <file>` 整体提交 |
+| `inspire ray create -n X -c <driver-cmd> --head-image URL --head-group <name> --head-quota gpu,cpu,mem --worker 'name=w1;image=URL;group=...;quota=gpu,cpu,mem;min=1;max=8[;shm=32][;image_type=...]' -p P --workspace W` | 提交。资源用三元组（跟 `notebook create` / `job create` / `run` 一致）。worker 字段用 `;` 分隔，避免 `quota=` 内部的 `,` 撞外层。重复 `--worker` 定义多个 worker 组。`--dry-run` 打印 body，`--json-body <file>` 整体提交 |
 | `inspire ray list [-A --created-by user-X --workspace Y]` | 默认只列当前用户（对齐 Web UI"我的"） |
 | `inspire ray status <name>` | 纯文本只打顶层；`--json` 才看 head / worker 规格 + 每组 `min/max/current_replicas` |
 | `inspire ray events <name> [--tail N --reason R --type Normal\|Warning]` | **卡 PENDING 第一手**——调度失败原因直接写在 message |
@@ -149,7 +149,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 **Ray 特有坑**：
 - 镜像必须带 Ray runtime。基底 `unified-base:v2`；自制镜像先 SSH 进 notebook `ray start --head --num-cpus=1 --disable-usage-stats && ray stop` 能干净起停才算 OK。
-- `--head-spec` / `--worker spec=` 是 **Ray 专属 `quota_id`**，和 notebook / HPC 不同表。查当前 workspace 的可用 Ray quota：`inspire resources specs --usage ray [--group <name>]`，`Spec ID` 列就是 `quota_id`。
+- `--head-quota` 和 worker `quota=` 是 **Ray 专属配额表**，跟 notebook / HPC 配额不同表。查当前 workspace 的可用 Ray 三元组：`inspire resources specs --usage ray [--group <name>]`，挑一行 `(GPU, CPU, MemGiB)` 喂回去。
 - `min` / `max` 都必须 ≥ 1，没有"闲时缩到 0"。
 - driver 不 `sys.exit()` 就一直在，长守护任务要接受"手动 `ray stop`"的运维模型。
 
@@ -285,8 +285,8 @@ Ray pipeline（默认范围内**仅 CPU Ray**，GPU Ray 需 workspace 级 SKILL 
 inspire ray create -n <name>-pipeline \
   -c 'python driver.py --mode run_and_exit' \
   --head-image docker.sii.shaipower.online/inspire-studio/unified-base:v2 \
-  --head-group CPU资源-2 --head-spec <head-quota> \
-  --worker 'name=w1,image=...,group=CPU资源-2,spec=<quota>,min=1,max=8,shm=32' \
+  --head-group CPU资源-2 --head-quota 0,2,8 \
+  --worker 'name=w1;image=...;group=CPU资源-2;quota=0,4,16;min=1;max=8;shm=32' \
   -p <P> --workspace CPU资源空间
 ```
 

@@ -88,15 +88,16 @@ def _query_workspace_specs(
 ) -> list[dict]:
     """Query all (group × schedule_type) specs for one workspace.
 
-    Each emitted row carries names only (workspace, compute group, gpu type,
-    usage family) plus the spec_id consumed by `inspire ray create
-    --head-spec` etc. UUIDs (workspace_id, logic_compute_group_id) stay
-    inside this function as request inputs and are intentionally not
-    forwarded into the rows the CLI prints to the user.
+    Each emitted row carries names only (workspace, compute group, gpu
+    type, usage family) and the (gpu_count, cpu_count, memory_size_gib)
+    triple. Internal UUIDs (workspace_id, logic_compute_group_id, raw
+    quota IDs) stay inside this function as request inputs and never
+    surface — callers describe quotas by the triple plus group name and
+    let the CLI resolve them.
     """
     schedule_types = _USAGE_SCHEDULE_TYPES[usage]
     rows: list[dict] = []
-    seen_rows: set[tuple[str, str, str, int, int, int, str]] = set()
+    seen_rows: set[tuple[str, str, int, int, int, str]] = set()
 
     groups = browser_api_module.list_notebook_compute_groups(
         workspace_id=workspace_id,
@@ -122,7 +123,7 @@ def _query_workspace_specs(
 
             if not prices:
                 if include_empty:
-                    empty_key = (compute_group_name, usage_label, "", 0, 0, 0, "")
+                    empty_key = (compute_group_name, usage_label, 0, 0, 0, "")
                     if empty_key not in seen_rows:
                         seen_rows.add(empty_key)
                         rows.append(
@@ -130,7 +131,6 @@ def _query_workspace_specs(
                                 "workspace_name": workspace_name,
                                 "usage": usage_label,
                                 "compute_group_name": compute_group_name,
-                                "spec_id": "",
                                 "cpu_count": 0,
                                 "memory_size_gib": 0,
                                 "gpu_count": 0,
@@ -140,7 +140,6 @@ def _query_workspace_specs(
                 continue
 
             for price in prices:
-                spec_id = str(price.get("quota_id") or price.get("spec_id") or "").strip()
                 cpu_count = int(price.get("cpu_count") or 0)
                 memory_size_gib = _extract_memory_gib(price)
                 gpu_count = int(price.get("gpu_count") or 0)
@@ -148,7 +147,6 @@ def _query_workspace_specs(
                 row_key = (
                     compute_group_name,
                     usage_label,
-                    spec_id,
                     cpu_count,
                     memory_size_gib,
                     gpu_count,
@@ -162,7 +160,6 @@ def _query_workspace_specs(
                         "workspace_name": workspace_name,
                         "usage": usage_label,
                         "compute_group_name": compute_group_name,
-                        "spec_id": spec_id,
                         "cpu_count": cpu_count,
                         "memory_size_gib": memory_size_gib,
                         "gpu_count": gpu_count,
@@ -252,9 +249,11 @@ def list_specs(
     only care about one family.
 
     Each row carries human-readable names (workspace, compute group,
-    GPU type) plus the ``spec_id`` you feed to ``inspire ray create
-    --head-spec`` / ``--worker spec=``. For hpc / notebook creation,
-    pass the (gpu, cpu, memory) triple as ``--quota gpu,cpu,mem``.
+    GPU type) plus the (gpu, cpu, memory) triple. Feed the triple back
+    via ``--quota gpu,cpu,mem`` to ``inspire notebook create`` /
+    ``job create`` / ``run`` / ``ray create --head-quota`` /
+    ``--worker quota=...``; the CLI resolves it to the underlying
+    platform handle.
     """
 
     ctx.json_output = bool(ctx.json_output or json_output_local)
@@ -292,7 +291,6 @@ def list_specs(
                 -int(r.get("gpu_count", 0)),
                 -int(r.get("cpu_count", 0)),
                 -int(r.get("memory_size_gib", 0)),
-                str(r.get("spec_id", "")),
             )
         )
 
@@ -316,14 +314,14 @@ def list_specs(
         # Show workspace column when more than one workspace was queried.
         multi_ws = len({r.get("workspace_name") for r in rows}) > 1
         if multi_ws:
-            headers = ("Workspace", "Usage", "Compute Group", "Spec ID", "GPU", "CPU", "MemGiB")
-            widths = [16, 9, 24, 36, 10, 6, 8]
+            headers = ("Workspace", "Usage", "Compute Group", "GPU", "CPU", "MemGiB")
+            widths = [18, 9, 26, 10, 6, 8]
         else:
-            headers = ("Usage", "Compute Group", "Spec ID", "GPU", "CPU", "MemGiB")
-            widths = [9, 24, 36, 10, 6, 8]
+            headers = ("Usage", "Compute Group", "GPU", "CPU", "MemGiB")
+            widths = [9, 26, 10, 6, 8]
 
         click.echo("")
-        click.echo("Resource Specs (for notebook / hpc / ray create)")
+        click.echo("Resource Specs (for notebook / hpc / ray / job / run create)")
         click.echo("-" * (sum(widths) + len(widths) - 1))
         click.echo(" ".join(f"{h:<{w}}" for h, w in zip(headers, widths)))
         click.echo("-" * (sum(widths) + len(widths) - 1))
@@ -334,8 +332,7 @@ def list_specs(
                     str(row.get("workspace_name", ""))[: widths[0] - 1],
                     str(row["usage"])[: widths[1] - 1],
                     str(row["compute_group_name"])[: widths[2] - 1],
-                    str(row["spec_id"])[: widths[3] - 1],
-                    gpu_desc[: widths[4] - 1],
+                    gpu_desc[: widths[3] - 1],
                     str(row["cpu_count"]),
                     str(row["memory_size_gib"]),
                 ]
@@ -343,8 +340,7 @@ def list_specs(
                 cells = [
                     str(row["usage"])[: widths[0] - 1],
                     str(row["compute_group_name"])[: widths[1] - 1],
-                    str(row["spec_id"])[: widths[2] - 1],
-                    gpu_desc[: widths[3] - 1],
+                    gpu_desc[: widths[2] - 1],
                     str(row["cpu_count"]),
                     str(row["memory_size_gib"]),
                 ]
@@ -358,18 +354,19 @@ def list_specs(
         click.echo(f"Total specs: {len(rows)}")
         if usage == "hpc":
             click.echo(
-                "Pass --compute-group <name>, --cpus-per-task <n>, --memory-per-cpu <n> to "
-                "`inspire hpc create`; the CLI resolves spec_id live — no ID needed."
+                "Pass --compute-group <name>, --cpus-per-task <n>, --memory-per-cpu <n> "
+                "to `inspire hpc create`."
             )
         elif usage == "ray":
             click.echo(
-                "Feed Spec ID to `inspire ray create --head-spec <id>` or "
-                "`--worker 'spec=<id>,...'`."
+                "Pick a row and pass its (gpu, cpu, memory_size_gib) triple to "
+                "`inspire ray create --head-quota gpu,cpu,mem` and "
+                "`--worker 'quota=gpu,cpu,mem;...'`."
             )
         elif usage == "notebook":
             click.echo(
-                "Pick a triple (gpu_count, cpu_count, memory_size_gib) from the table and "
-                "pass it as --quota gpu,cpu,mem to `inspire notebook create` (or `job create` / `run`)."
+                "Pick a row and pass its (gpu, cpu, memory_size_gib) triple as "
+                "--quota gpu,cpu,mem to `inspire notebook create` (or `job create` / `run`)."
             )
         click.echo("")
 

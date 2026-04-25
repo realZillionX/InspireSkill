@@ -313,30 +313,6 @@ def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
     )
 
 
-def _resolve_compute_group_id(config: Config, requested: str) -> str:
-    """Resolve a compute-group name to ``logic_compute_group_id``."""
-    requested = (requested or "").strip()
-    if not requested:
-        raise ConfigError("Compute group cannot be empty.")
-    if requested.startswith("lcg-"):
-        raise ConfigError(
-            f"compute-group takes a name, not a raw ID ({requested!r}). "
-            "See `inspire config context` for available names."
-        )
-    for group in config.compute_groups or []:
-        if group.get("name") == requested:
-            group_id = str(group.get("id") or "").strip()
-            if group_id:
-                return group_id
-    available = sorted(
-        str(g.get("name") or "").strip()
-        for g in (config.compute_groups or [])
-        if str(g.get("name") or "").strip()
-    )
-    hint = ", ".join(available) if available else "(run 'inspire config context')"
-    raise ConfigError(f"Unknown compute group: {requested!r}. Available: {hint}")
-
-
 def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
     """Turn a Docker image URL (or already-internal image_id) into a mirror_id.
 
@@ -369,14 +345,19 @@ def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
 
 
 def _parse_worker_spec(raw: str) -> dict[str, Any]:
-    """Parse a ``key=value,key=value`` worker spec into a dict.
+    """Parse a ``key=value;key=value`` worker spec into a dict.
 
     Required keys: ``name``, ``image`` (URL or image_id), ``group`` (compute
-    group name), ``spec`` (quota_id), ``min``, ``max``.
+    group name), ``quota`` (``gpu,cpu,mem`` triple), ``min``, ``max``.
     Optional: ``image_type`` (default SOURCE_PUBLIC), ``shm`` (shm_gi).
+
+    Tokens are separated by ``;`` so the ``,`` inside ``quota=4,80,800``
+    doesn't collide with the outer separator.
     """
+    from inspire.cli.utils.quota_resolver import QuotaParseError, parse_quota
+
     out: dict[str, Any] = {}
-    for chunk in raw.split(","):
+    for chunk in raw.split(";"):
         chunk = chunk.strip()
         if not chunk:
             continue
@@ -387,12 +368,17 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
         k, _, v = chunk.partition("=")
         out[k.strip()] = v.strip()
 
-    missing = {"name", "image", "group", "spec", "min", "max"} - out.keys()
+    missing = {"name", "image", "group", "quota", "min", "max"} - out.keys()
     if missing:
         raise click.BadParameter(
             f"worker spec missing keys: {sorted(missing)}. "
-            "Required: name, image, group, spec, min, max. Optional: image_type, shm."
+            "Required: name, image, group, quota, min, max. Optional: image_type, shm. "
+            "Format: 'name=...;image=...;group=...;quota=gpu,cpu,mem;min=N;max=N'."
         )
+    try:
+        out["quota_spec"] = parse_quota(out["quota"])
+    except QuotaParseError as e:
+        raise click.BadParameter(f"worker quota: {e}")
     try:
         out["min"] = int(out["min"])
         out["max"] = int(out["max"])
@@ -447,9 +433,12 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
     help="Head compute group name; see 'inspire config context'",
 )
 @click.option(
-    "--head-spec",
+    "--head-quota",
     default=None,
-    help="Head quota_id (use 'inspire resources specs' to discover)",
+    help=(
+        "Head resource quota as 'gpu,cpu,mem' (mem in GiB). "
+        "CLI resolves the triple against 'inspire resources specs --usage ray'."
+    ),
 )
 @click.option(
     "--head-shm",
@@ -462,9 +451,9 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
     "workers",
     multiple=True,
     help=(
-        "Worker group spec (repeatable). Format: "
-        "'name=<grp>,image=<url|id>,group=<group-or-lcg>,spec=<quota_id>,"
-        "min=<n>,max=<n>[,image_type=SOURCE_PUBLIC][,shm=<gib>]'"
+        "Worker group spec (repeatable). Format (note ';' separator): "
+        "'name=<grp>;image=<url|id>;group=<group-name>;quota=<gpu,cpu,mem>;"
+        "min=<n>;max=<n>[;image_type=SOURCE_PUBLIC][;shm=<gib>]'"
     ),
 )
 @click.option(
@@ -494,7 +483,7 @@ def create_ray(
     head_image: Optional[str],
     head_image_type: str,
     head_group: Optional[str],
-    head_spec: Optional[str],
+    head_quota: Optional[str],
     head_shm: Optional[int],
     workers: tuple[str, ...],
     json_body_path: Optional[Path],
@@ -502,22 +491,21 @@ def create_ray(
 ) -> None:
     """Create a Ray (弹性计算) job with one head + one or more worker groups.
 
-    \b
-    Wire contract (reverse-engineered from the SPA's submit handler):
-      POST /api/v1/ray_job/create  — head_node{...} + worker_groups[{...}]
-      Image fields are `mirror_id` (internal id), not Docker URLs.
-      Spec field is `quota_id` (notebook style), not `predef_quota_id`.
-      Command is serialised as `entrypoint`.
+    Resource sizing uses the same ``--quota gpu,cpu,mem`` triple as
+    notebook / job / run. For each (head + worker) entry the CLI looks
+    up the matching Ray quota under the chosen workspace and compute
+    group; pass ``--workspace`` and head/worker ``group=`` names if
+    auto-resolution would be ambiguous.
 
     \b
     Example:
         inspire ray create \\
           -n av-pipeline \\
           -c 'python driver.py --mode run_and_exit' \\
-          --head-image docker.sii.shaipower.online/inspire-studio/unified-base:v1 \\
-          --head-group HPC-可上网区资源-2 --head-spec quota-head-abc \\
-          --worker 'name=decode,image=docker.../cpu-decode:v1,group=HPC-可上网区资源-2,spec=quota-cpu-def,min=1,max=8,shm=32' \\
-          --worker 'name=infer,image=docker.../gpu-infer:v1,group=分布式训练空间,spec=quota-gpu-xyz,min=1,max=2,image_type=SOURCE_PRIVATE' \\
+          --head-image docker.sii.shaipower.online/inspire-studio/unified-base:v2 \\
+          --head-group HPC-可上网区资源-2 --head-quota 0,4,16 \\
+          --worker 'name=decode;image=docker.../cpu-decode:v1;group=HPC-可上网区资源-2;quota=0,20,80;min=1;max=8;shm=32' \\
+          --worker 'name=infer;image=docker.../gpu-infer:v1;group=分布式训练空间;quota=1,20,200;min=1;max=2;image_type=SOURCE_PRIVATE' \\
           -p my-project
 
     \b
@@ -546,7 +534,7 @@ def create_ray(
                 head_image=head_image,
                 head_image_type=head_image_type,
                 head_group=head_group,
-                head_spec=head_spec,
+                head_quota=head_quota,
                 head_shm=head_shm,
                 workers=workers,
             )
@@ -596,24 +584,32 @@ def _assemble_create_body(
     head_image: Optional[str],
     head_image_type: str,
     head_group: Optional[str],
-    head_spec: Optional[str],
+    head_quota: Optional[str],
     head_shm: Optional[int],
     workers: tuple[str, ...],
 ) -> dict[str, Any]:
+    from inspire.cli.utils.quota_resolver import (
+        QuotaMatchError,
+        QuotaParseError,
+        SCHEDULE_TYPE_RAY,
+        parse_quota,
+        resolve_quota,
+    )
+
     if not name:
         raise click.UsageError("--name is required (or use --json-body).")
     if not command:
         raise click.UsageError(
             "--command is required (the Ray driver entrypoint; wire field `entrypoint`)."
         )
-    if not head_image or not head_group or not head_spec:
+    if not head_image or not head_group or not head_quota:
         raise click.UsageError(
-            "Head node needs --head-image, --head-group, and --head-spec."
+            "Head node needs --head-image, --head-group, and --head-quota gpu,cpu,mem."
         )
     if not workers:
         raise click.UsageError(
             "At least one --worker is required. Format: "
-            "'name=<g>,image=<u>,group=<g>,spec=<q>,min=<n>,max=<n>'"
+            "'name=<g>;image=<u>;group=<g>;quota=<gpu,cpu,mem>;min=<n>;max=<n>'"
         )
 
     resolved_project_id = _resolve_project_id(config, project)
@@ -626,11 +622,28 @@ def _assemble_create_body(
             "Missing workspace_id. Set --workspace or configure [workspaces]."
         )
 
+    def _resolve_ray(triple: str, group_name: str) -> Any:
+        try:
+            spec_triple = parse_quota(triple)
+        except QuotaParseError as exc:
+            raise click.UsageError(str(exc)) from exc
+        try:
+            return resolve_quota(
+                spec=spec_triple,
+                workspace_id=resolved_workspace_id,
+                session=session,
+                schedule_config_type=SCHEDULE_TYPE_RAY,
+                group_override=group_name,
+            )
+        except QuotaMatchError as exc:
+            raise click.UsageError(str(exc)) from exc
+
+    head_resolved = _resolve_ray(head_quota, head_group)
     head_node: dict[str, Any] = {
         "mirror_id": _resolve_image_id(head_image, session=session, ctx=ctx),
         "image_type": head_image_type,
-        "logic_compute_group_id": _resolve_compute_group_id(config, head_group),
-        "quota_id": head_spec,
+        "logic_compute_group_id": head_resolved.logic_compute_group_id,
+        "quota_id": head_resolved.quota_id,
     }
     if head_shm is not None:
         head_node["shm_gi"] = head_shm
@@ -638,14 +651,15 @@ def _assemble_create_body(
     worker_groups: list[dict[str, Any]] = []
     for raw in workers:
         spec = _parse_worker_spec(raw)
+        worker_resolved = _resolve_ray(spec["quota"], spec["group"])
         group_block: dict[str, Any] = {
             "group_name": spec["name"],
             "mirror_id": _resolve_image_id(spec["image"], session=session, ctx=ctx),
             "image_type": spec["image_type"],
-            "logic_compute_group_id": _resolve_compute_group_id(config, spec["group"]),
+            "logic_compute_group_id": worker_resolved.logic_compute_group_id,
             "min_replicas": spec["min"],
             "max_replicas": spec["max"],
-            "quota_id": spec["spec"],
+            "quota_id": worker_resolved.quota_id,
         }
         if "shm" in spec:
             group_block["shm_gi"] = spec["shm"]
