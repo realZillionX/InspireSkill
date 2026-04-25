@@ -20,7 +20,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | CPU 空间唯一 hpc 组 | `CPU 资源空间` 下**只有 `HPC-可上网区资源-2`** 支持 `inspire hpc create`；其它组只能建 notebook。另外该组的 `500GB` 规格运维未配好，提交**静默排队**——真需要 500GB 内存就退化成在 `CPU资源-2` 开 notebook 交互跑。 |
 | 项目-实例挂载隔离 | 实例只挂**自身所在项目**的 fileset；其它项目的 `/inspire/{hdd,ssd,qb-ilm,qb-ilm2}/project/<others>/` 路径在该实例里**根本不存在**（`ls` 报 `No such file`）——不是权限问题。访问项目 `<X>` 的存储必须在 `project=<X>` 的实例里。 |
 | 跨项目 cp 要 root | `notebook scp` / `exec cp` / 单账号 CLI 都做不到，去**飞书项目群**找管理员。 |
-| SSH bootstrap | `inspire notebook ssh` 从 `/inspire/hdd/global_public/inspire-skill-bootstrap/v1/` 自动 cp rtunnel + dpkg 装 sshd（**不联网**，靠 GPFS）+ 修补 `sshd` 系统用户和最小 `sshd_config`（dpkg postinst 不跑，CLI 自己补）+ 启 sshd 和 rtunnel server。**任何镜像 / 计算组 / 有无公网都能直接 ssh**，已在 `ubuntu-original:22.04` / `sandbox-base:ubuntu24.04` 这种全裸镜像上 cold-start 验证。镜像里不需要预装。想固化以省冷启时间就 `image save`，否则用完即弃（容器停掉痕迹全没）。 |
+| SSH bootstrap | `inspire notebook ssh <name>` 对**任何镜像 / 计算组 / 有无公网都能直接 ssh**，无需在镜像里预装。冷启时间贵就 `image save` 派生一份固化，否则用完即弃（notebook 停掉痕迹全没）。 |
 
 ### 1.2 通用规则
 
@@ -216,9 +216,9 @@ inspire notebook exec --alias mybox "hostname"
 
 #### 阶段 A：CPU 空间起基底 notebook
 
-**镜像随便挑**——SSH bootstrap 走 global_public kit（§1.1），镜像里有没有 sshd / rtunnel 都不重要，也不挑计算组是否可上网。两条典型：
+**镜像随便挑**——`notebook ssh` 自带 bootstrap（§1.1），镜像里有没有 sshd 都不重要，也不挑计算组是否可上网。两条典型：
 
-- **复用已有项目 / 个人镜像**（装好依赖 / 编译产物） → **直接用**。首次 `notebook ssh` 把 rtunnel 放 `/tmp`、没 sshd 就从 kit dpkg 装一份，**不动镜像其它东西**。
+- **复用已有项目 / 个人镜像**（装好依赖 / 编译产物） → **直接用**，`notebook ssh` 不动镜像其它东西。
 - **从零起 / 临时脚手架** → `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（Ubuntu 22.04 + slurm 运行环境）是省事基底。普通 notebook 里 slurm 命令因无 controller 会报 `Could not establish a configuration source`——平台设计如此，不是镜像问题，`inspire hpc create` 路径下才会注入 controller。
 
 计算组按实际需求选（需要 `pip install` / `apt install` 就挑有公网的 `HPC-可上网区资源-2`，否则 `CPU资源-1/2` 都行）：
