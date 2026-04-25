@@ -122,11 +122,11 @@ inspire resources list --all --include-cpu
 <tr>
   <td width="50%">
     <h4>📝 Notebook 统一入口</h4>
-    全链路命令化：<code>create / list / status / start · stop / ssh / exec / shell / scp / refresh / forget / test / connections</code>。一次 <code>notebook ssh &lt;id&gt;</code> 就把 SSH 通路和本地 alias 一起记下来。<b>任何镜像、任何计算组、有无公网</b>都能直接 <code>ssh</code> —— rtunnel + sshd 从平台预置的 <code>global_public</code> 离线 kit 本地 cp / dpkg 起来，镜像里不需要预装。
+    全链路命令化：<code>create / list / status / start · stop / ssh / exec / shell / scp / refresh / forget / test / connections</code>。一次 <code>notebook ssh &lt;name&gt;</code> 就把 SSH 通路在本地缓存好，后续 <code>exec / shell / scp / ...</code> 都直接用 notebook name。<b>任何镜像、任何计算组、有无公网</b>都能直接 <code>ssh</code> —— rtunnel + sshd 从平台预置的 <code>global_public</code> 离线 kit 本地 cp / dpkg 起来，镜像里不需要预装。
   </td>
   <td width="50%">
     <h4>🚀 HPC 任务分派</h4>
-    <code>inspire hpc create -c &lt;slurm-body&gt;</code> 只写 Slurm 正文 + 显式 <code>srun</code>，平台自动补 <code>#SBATCH</code> 头；<code>resources specs --usage hpc</code> 实时查 <code>predef_quota_id</code>。
+    <code>inspire hpc create -c &lt;slurm-body&gt;</code> 只写 Slurm 正文 + 显式 <code>srun</code>，平台自动补 <code>#SBATCH</code> 头；规格用 <code>--cpus-per-task</code> / <code>--memory-per-cpu</code>，CLI 自动匹配。
   </td>
 </tr>
 <tr>
@@ -160,13 +160,11 @@ inspire resources list --all --include-cpu
   </td>
 </tr>
 <tr>
-  <td colspan="2">
+  <td width="50%">
     <h4>📅 事件 & 生命周期</h4>
-    <code>inspire job events</code> / <code>hpc events</code> / <code>notebook events</code> / <code>ray events</code> 拉平台事件流；<code>notebook lifecycle &lt;id&gt;</code> 看一个实例的多次启停记录 —— 原本要翻 Web UI "详情 → 事件/生命周期"两个 tab 才看得全。
+    <code>inspire job events</code> / <code>hpc events</code> / <code>notebook events</code> / <code>ray events</code> 拉平台事件流；<code>notebook lifecycle &lt;name&gt;</code> 看一个实例的多次启停记录 —— 原本要翻 Web UI "详情 → 事件/生命周期"两个 tab 才看得全。
   </td>
-</tr>
-<tr>
-  <td colspan="2">
+  <td width="50%">
     <h4>🗝 多账号（一账号一目录）</h4>
     <code>inspire account add / list / use / current / remove / migrate</code> —— 每个账号的 <code>config.toml</code>、SSH tunnel bridges、SSO session cache 都在独立目录 <code>~/.inspire/accounts/&lt;name&gt;/</code>，活动账号由 <code>~/.inspire/current</code> 一行决定。不再有 <code>[accounts."&lt;user&gt;"]</code> 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。
   </td>

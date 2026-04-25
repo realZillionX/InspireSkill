@@ -111,7 +111,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 1. `-c` **只写 Slurm 正文**，平台自动补 `#SBATCH` 头；程序必须**显式 `srun`** 启动。
 2. `--compute-group "<name>"` 按 name 传（从 `inspire config context` 的 `compute_groups[]` 抄）。
-3. `--cpus-per-task` / `--memory-per-cpu` 超规格**静默排队不报错**。CLI 按 `(group, cpus, mem)` 自动匹配 `spec_id`。
+3. `--cpus-per-task` / `--memory-per-cpu` 超规格**静默排队不报错**。CLI 按 `(group, cpus, mem)` 自动匹配规格。
 4. `--image` 必须是**完整 Docker 地址** + 带可用 Slurm 环境。通用基底 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`；`--image-type` 通常 `SOURCE_PRIVATE` / `SOURCE_PUBLIC`。
 
 | 命令 | 用途 |
