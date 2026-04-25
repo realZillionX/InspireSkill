@@ -38,12 +38,12 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ## 2. 命令速查
 
-> **`--resource` / `-r` 通用格式**（`notebook create` / `job create` 共用）：
-> - GPU：`<N>x<TYPE>`，如 `1xH200` / `8xH100` / `4x4090`（`job create` 目前只认 `H100` / `H200`，其它型号走 `notebook`）。
-> - GPU 只指数量：`<N>x`，平台自动选可用型号（如 `8x` = 8 卡任意可用型号）。
-> - CPU notebook：`<N>CPU`，如 `20CPU`（CPU-only 不支持 `job`，CPU 批处理走 `hpc`）。
+> **`--quota` / `-q` 通用格式**（`notebook create` / `job create` / `run` 共用）：
+> - 三元组：`<gpu>,<cpu>,<mem>`（都是整数，`mem` 以 GiB 计）。例：`1,20,200` = 1 GPU + 20 CPU + 200 GiB。
+> - CPU-only：`0,<cpu>,<mem>`，如 `0,4,32`（CPU 批处理另走 `hpc`）。
+> - 三元组必须在 workspace 已注册的 `quota_id` 里唯一匹配。零匹配报错并列出可用规格；多个 compute_group 同时匹配同一三元组（比如 H100 组和 H200 组都有 `1,20,200`）需要加 `--group <名字>` 消歧。
 >
-> 具体 GPU 型号 / 实时空余见 `inspire resources list --all --include-cpu`；机房 / 架构倾向用 `--location`（如 `'cuda12.8版本H100'`）。
+> GPU 型号由 workspace × compute_group 反推，不在 `--quota` 里指定。列当前 workspace 的合法三元组：`inspire resources specs --usage notebook`（notebook 规格）/ `--usage hpc`（HPC 规格）；train-job 规格目前查 `--usage all`。
 
 ### 2.1 资源 / 项目 / 用户 / 配置 / 账号
 
@@ -73,7 +73,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | 命令 | 用途 |
 | --- | --- |
 | `inspire notebook list [-A -s RUNNING --name X]` | 列实例 |
-| `inspire notebook create --workspace X --group Y --resource Z --image URL --project P [--wait --json]` | 建实例 |
+| `inspire notebook create --workspace X --group Y -q <gpu,cpu,mem> --image URL --project P [--wait --json]` | 建实例 |
 | `inspire notebook status <name>` | 详情，镜像名在 `image.name` |
 | `inspire notebook events <name> [--tail N --from-cache]` | 实例生命周期事件（调度 / 镜像拉取 / 保存镜像） |
 | `inspire notebook lifecycle <name>` | 多次启停的粗粒度时间线（一次 `start→stop` 一行） |
@@ -94,8 +94,8 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 | 命令 | 用途 |
 | --- | --- |
-| `inspire job create -n <name> -r <spec> --nodes N -c <cmd> --workspace X --image Y [--priority 9]` | 精细提交 |
-| `inspire run "<cmd>" --gpus N --type <gpu-type> [--nodes N --watch]` | 快速提交：自动选资源组 + 提交；`--watch` 自动跟 logs |
+| `inspire job create -n <name> -q <gpu,cpu,mem> --nodes N -c <cmd> --workspace X --image Y [--priority 9]` | 精细提交 |
+| `inspire run "<cmd>" -q <gpu,cpu,mem> [--group <name> --nodes N --watch]` | 快速提交；`--watch` 自动跟 logs |
 | `inspire job status <name>` | 权威状态（高 / 低优 + 调度结果） |
 | `inspire job logs <name> [--follow]` | 优先走 SSH tunnel fast path，回退其它通道 |
 | `inspire job events <name> [--instance <pod> --type --reason --tail --from-cache]` | 调度失败优先看 `--instance` 定位哪个 pod |
@@ -146,7 +146,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 **Ray 特有坑**：
 - 镜像必须带 Ray runtime。基底 `unified-base:v2`；自制镜像先 SSH 进 notebook `ray start --head --num-cpus=1 --disable-usage-stats && ray stop` 能干净起停才算 OK。
-- `--head-spec` / `--worker spec=` 是 **Ray 专属 `quota_id`**，和 notebook / HPC 不同表，`resources specs` 目前不列。**最稳的拿法**：从同 workspace 已有 Ray 任务 `inspire --json ray status <name>` 读 `head_node.quota_id` / `worker_groups[].quota_id` 复用。
+- `--head-spec` / `--worker spec=` 是 **Ray 专属 `quota_id`**，和 notebook / HPC 不同表。查当前 workspace 的可用 Ray quota：`inspire resources specs --usage ray [--group <name>]`，`Spec ID` 列就是 `quota_id`。
 - `min` / `max` 都必须 ≥ 1，没有"闲时缩到 0"。
 - driver 不 `sys.exit()` 就一直在，长守护任务要接受"手动 `ray stop`"的运维模型。
 
@@ -224,7 +224,7 @@ inspire notebook exec --alias mybox "hostname"
 计算组按实际需求选（需要 `pip install` / `apt install` 就挑有公网的 `HPC-可上网区资源-2`，否则 `CPU资源-1/2` 都行）：
 
 ```bash
-inspire notebook create --workspace CPU资源空间 --group CPU资源-2 -r 20CPU \
+inspire notebook create --workspace CPU资源空间 --group CPU资源-2 -q 0,20,256 \
   --name <action-goal> --image <任意镜像> --project <P> --wait --json
 
 inspire notebook ssh <notebook-name> --save-as cpu-box
@@ -282,16 +282,15 @@ inspire ray create -n <name>-pipeline \
 
 ```bash
 # 单节点调试
-inspire notebook create --workspace 分布式训练空间 --resource 1xH100 \
+inspire notebook create --workspace 分布式训练空间 -q 1,20,200 --group H100 \
   --name <name>-debug --image <ref> --project <P> --wait --json
 inspire notebook ssh <name>-debug --command "nvidia-smi"
 
 # 多节点训练(精细)
-inspire job create -n <name>-train -r 8xH100 --nodes 2 \
-  -c 'bash train.sh' --workspace 分布式训练空间 \
-  --location 'cuda12.8版本H100' --image <ref>
+inspire job create -n <name>-train -q 8,160,1800 --nodes 2 \
+  -c 'bash train.sh' --workspace 分布式训练空间 --group H100 --image <ref>
 
 # 多节点训练(快速 + 跟日志)
-inspire run 'bash train.sh' --gpus 8 --type h100 --nodes 2 \
-  --workspace 分布式训练空间 --location 'cuda12.8版本H100' --image <ref> --watch
+inspire run 'bash train.sh' -q 8,160,1800 --nodes 2 \
+  --workspace 分布式训练空间 --group H100 --image <ref> --watch
 ```

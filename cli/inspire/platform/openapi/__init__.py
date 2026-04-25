@@ -17,23 +17,18 @@ from inspire.platform.openapi.errors import (
     _translate_api_error,
     _validate_job_id_format,
 )
-from inspire.platform.openapi.models import ComputeGroup, GPUType, InspireConfig, ResourceSpec
-from inspire.platform.openapi.resources import ResourceManager
+from inspire.platform.openapi.models import InspireConfig
 
 __all__ = [
     "APIEndpoints",
     "API_ERROR_CODES",
     "AuthenticationError",
-    "ComputeGroup",
     "DEFAULT_SHM_ENV_VAR",
-    "GPUType",
     "InspireAPI",
     "InspireAPIError",
     "InspireConfig",
     "JobCreationError",
     "JobNotFoundError",
-    "ResourceManager",
-    "ResourceSpec",
     "ValidationError",
     "_translate_api_error",
     "_validate_job_id_format",

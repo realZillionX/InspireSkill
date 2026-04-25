@@ -24,9 +24,7 @@ def create_training_job_smart(
     *,
     name: str,
     command: str,
-    resource: str,
     framework: str = "pytorch",
-    prefer_location: Optional[str] = None,
     project_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
     image: Optional[str] = None,
@@ -37,36 +35,33 @@ def create_training_job_smart(
     spec_id_override: Optional[str] = None,
     compute_group_id_override: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create training job with smart resource matching.
+    """Create a training job from a pre-resolved quota.
 
-    Requires pre-resolved ``spec_id_override`` + ``compute_group_id_override``;
-    the CLI layer resolves these live via
-    :func:`inspire.cli.utils.spec_resolver.resolve_train_spec`.
+    Callers must resolve ``spec_id_override`` (the quota ID) and
+    ``compute_group_id_override`` via
+    :func:`inspire.cli.utils.quota_resolver.resolve_quota` before calling.
     """
     api._check_authentication()
-    api._validate_required_params(name=name, command=command, resource=resource)
+    api._validate_required_params(name=name, command=command)
 
     if not (spec_id_override and compute_group_id_override):
         raise ValidationError(
             "create_training_job_smart requires spec_id_override + "
             "compute_group_id_override (resolve via "
-            "inspire.cli.utils.spec_resolver.resolve_train_spec)."
+            "inspire.cli.utils.quota_resolver.resolve_quota)."
         )
     spec_id = spec_id_override
     compute_group_id = compute_group_id_override
 
-    # Use defaults for optional parameters
     project_id = project_id or api.DEFAULT_PROJECT_ID
     workspace_id = workspace_id or api.DEFAULT_WORKSPACE_ID
     task_priority = task_priority or api.DEFAULT_TASK_PRIORITY
     instance_count = instance_count or api.DEFAULT_INSTANCE_COUNT
     max_running_time_ms = max_running_time_ms or api.DEFAULT_MAX_RUNNING_TIME
 
-    # Set default shared memory size
     if shm_gi is None:
         shm_gi = api.DEFAULT_SHM_SIZE
 
-    # Image configuration
     final_image = image or api._get_default_image()
 
     framework_item = {
@@ -112,7 +107,6 @@ def get_job_detail(api, job_id: str) -> Dict[str, Any]:  # noqa: ANN001
     api._check_authentication()
     api._validate_required_params(job_id=job_id)
 
-    # Validate job ID format before making API call
     format_error = _validate_job_id_format(job_id)
     if format_error:
         raise JobNotFoundError(f"Invalid job ID '{job_id}': {format_error}")
@@ -127,7 +121,6 @@ def get_job_detail(api, job_id: str) -> Dict[str, Any]:  # noqa: ANN001
     error_code = result.get("code")
     error_msg = result.get("message", "Unknown error")
     friendly_msg = _translate_api_error(error_code, error_msg)
-    # Use specific exception for parameter errors (likely invalid job ID)
     if error_code == 100002:
         raise JobNotFoundError(f"Failed to get job details for '{job_id}': {friendly_msg}")
     raise InspireAPIError(f"Failed to get job details: {friendly_msg}")
@@ -138,7 +131,6 @@ def stop_training_job(api, job_id: str) -> bool:  # noqa: ANN001
     api._check_authentication()
     api._validate_required_params(job_id=job_id)
 
-    # Validate job ID format before making API call
     format_error = _validate_job_id_format(job_id)
     if format_error:
         raise JobNotFoundError(f"Invalid job ID '{job_id}': {format_error}")

@@ -12,6 +12,7 @@ from inspire.platform.web import session as web_session_module
 from inspire.platform.web.browser_api import ProjectInfo
 from inspire.config import Config, ConfigError, build_env_exports
 from inspire.cli.utils.job_cache import JobCache
+from inspire.cli.utils.quota_resolver import ResolvedQuota
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,12 @@ def select_project_for_workspace(
     )
 
 
+def _quota_display(quota: ResolvedQuota) -> str:
+    if quota.gpu_count > 0:
+        return f"{quota.gpu_count}x{quota.gpu_type or 'GPU'}"
+    return f"{quota.cpu_count}xCPU"
+
+
 def cache_created_job(
     config: Config,
     *,
@@ -127,9 +134,8 @@ def submit_training_job(
     config: Config,
     name: str,
     command: str,
-    resource: str,
+    quota: ResolvedQuota,
     framework: str,
-    location: Optional[str],
     project_id: str,
     workspace_id: str,
     image: Optional[str],
@@ -143,18 +149,18 @@ def submit_training_job(
 
     max_time_ms = str(int(max_time_hours * 3600 * 1000))
 
-    create_kwargs = dict(
+    create_kwargs: dict[str, Any] = dict(
         name=name,
         command=final_command,
-        resource=resource,
         framework=framework,
-        prefer_location=location,
         project_id=project_id,
         workspace_id=workspace_id,
         image=image,
         task_priority=priority,
         instance_count=nodes,
         max_running_time_ms=max_time_ms,
+        spec_id_override=quota.quota_id,
+        compute_group_id_override=quota.logic_compute_group_id,
     )
 
     if config.shm_size is not None:
@@ -165,30 +171,6 @@ def submit_training_job(
             )
         create_kwargs["shm_gi"] = shm_size
 
-    from inspire.platform.web.session import get_web_session
-    from inspire.cli.utils.spec_resolver import resolve_train_spec
-    from inspire.platform.openapi.resources import select_compute_group
-
-    gpu_type, gpu_count = api.resource_manager.parse_resource_request(resource)
-    matching_groups = api.resource_manager.find_compute_groups(gpu_type)
-    if not matching_groups:
-        raise ValueError(
-            f"No compute group registered for {gpu_type.value} in the current "
-            f"account — run `inspire config refresh` to pull the latest list."
-        )
-
-    selected = select_compute_group(matching_groups, prefer_location=location)
-    session = get_web_session()
-    spec_id, _cpu, _mem = resolve_train_spec(
-        session=session,
-        workspace_id=workspace_id,
-        compute_group_id=selected.compute_group_id,
-        gpu_type=gpu_type.value,
-        gpu_count=gpu_count,
-    )
-    create_kwargs["spec_id_override"] = spec_id
-    create_kwargs["compute_group_id_override"] = selected.compute_group_id
-
     result = api.create_training_job_smart(**create_kwargs)
     data = result.get("data", {}) if isinstance(result, dict) else {}
     job_id = data.get("job_id")
@@ -198,7 +180,7 @@ def submit_training_job(
             config,
             job_id=job_id,
             name=name,
-            resource=resource,
+            resource=_quota_display(quota),
             command=wrapped_command,
             log_path=log_path,
             project=project_name,

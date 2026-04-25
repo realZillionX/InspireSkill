@@ -6,7 +6,7 @@ Usage:
     inspire notebook list
     inspire notebook status <name>
     inspire notebook top
-    inspire notebook create --resource 1xH200
+    inspire notebook create --quota 1,20,200
     inspire notebook stop <name>
     inspire notebook ssh <name>                 # first-time bootstrap
     inspire notebook ssh <alias>                # reconnect to a saved alias

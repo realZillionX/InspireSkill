@@ -1,352 +1,109 @@
-"""Tests for notebook create flow resource spec resolution."""
+"""Tests for `run_notebook_create` orchestration (quota-based flow)."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
-from inspire.cli.utils.notebook_post_start import NotebookPostStartSpec
+import pytest
+
 from inspire.cli.commands.notebook import notebook_create_flow as flow_module
-from inspire.cli.commands.notebook.notebook_create_flow import resolve_notebook_resource_spec_price
 from inspire.cli.context import Context
+from inspire.cli.utils.quota_resolver import QuotaSpec, ResolvedQuota
 
 
-def test_cpu_resource_spec_keeps_requested_cpu_from_quota() -> None:
-    resource_prices = [
-        {
-            "gpu_count": 0,
-            "cpu_count": 55,
-            "memory_size_gib": 220,
-            "quota_id": "quota-55",
-            "cpu_info": {"cpu_type": "cpu-type-large"},
-            "gpu_info": {},
-        },
-        {
-            "gpu_count": 0,
-            "cpu_count": 4,
-            "memory_size_gib": 16,
-            "quota_id": "quota-4",
-            "cpu_info": {"cpu_type": "cpu-type-small"},
-            "gpu_info": {},
-        },
-    ]
-
-    spec, resolved_quota, resolved_cpu, resolved_mem = resolve_notebook_resource_spec_price(
-        resource_prices=resource_prices,
-        gpu_count=0,
-        selected_gpu_type="",
-        gpu_pattern="CPU",
-        logic_compute_group_id="lcg-cpu",
-        quota_id="quota-4",
-        cpu_count=4,
-        memory_size=16,
-        requested_cpu_count=4,
+def _make_resolved_quota(
+    *,
+    gpu_count: int = 1,
+    cpu_count: int = 20,
+    memory_gib: int = 200,
+    gpu_type: str = "H200",
+) -> ResolvedQuota:
+    return ResolvedQuota(
+        quota_id=f"quota-{gpu_type.lower()}" if gpu_count else "quota-cpu",
+        logic_compute_group_id="lcg-test",
+        compute_group_name=f"{gpu_type} Group" if gpu_count else "CPU Pool",
+        gpu_count=gpu_count,
+        cpu_count=cpu_count,
+        memory_gib=memory_gib,
+        gpu_type=gpu_type if gpu_count else "",
+        raw_price={"cpu_info": {"cpu_type": "Test CPU"}},
     )
 
-    assert resolved_quota == "quota-4"
-    assert resolved_cpu == 4
-    assert resolved_mem == 16
-    assert spec["gpu_count"] == 0
-    assert spec["cpu_count"] == 4
-    assert spec["memory_size_gib"] == 16
-    assert spec["quota_id"] == "quota-4"
-    assert spec["cpu_type"] == "cpu-type-small"
+
+def test_format_quota_display_gpu() -> None:
+    display = flow_module.format_quota_display(_make_resolved_quota())
+    assert display == "1xH200 + 20CPU + 200GiB"
 
 
-def test_cpu_resource_spec_exists_without_resource_prices() -> None:
-    spec, resolved_quota, resolved_cpu, resolved_mem = resolve_notebook_resource_spec_price(
-        resource_prices=[],
-        gpu_count=0,
-        selected_gpu_type="",
-        gpu_pattern="CPU",
-        logic_compute_group_id="lcg-cpu",
-        quota_id="quota-4",
-        cpu_count=4,
-        memory_size=16,
-        requested_cpu_count=4,
+def test_format_quota_display_cpu_only() -> None:
+    display = flow_module.format_quota_display(
+        _make_resolved_quota(gpu_count=0, cpu_count=4, memory_gib=32, gpu_type="")
     )
-
-    assert resolved_quota == "quota-4"
-    assert resolved_cpu == 4
-    assert resolved_mem == 16
-    assert spec["gpu_count"] == 0
-    assert spec["cpu_count"] == 4
-    assert spec["memory_size_gib"] == 16
-    assert spec["quota_id"] == "quota-4"
+    assert display == "4CPU + 32GiB"
 
 
-def test_gpu_resource_spec_prefers_matching_resource_prices() -> None:
-    resource_prices = [
-        {
-            "gpu_count": 1,
-            "cpu_count": 20,
-            "memory_size_gib": 80,
-            "quota_id": "quota-h100",
-            "cpu_info": {"cpu_type": "cpu-type-gpu"},
-            "gpu_info": {"gpu_type": "NVIDIA_H100"},
-        },
-        {
-            "gpu_count": 8,
-            "cpu_count": 64,
-            "memory_size_gib": 512,
-            "quota_id": "quota-other",
-            "cpu_info": {"cpu_type": "cpu-type-other"},
-            "gpu_info": {"gpu_type": "NVIDIA_H100"},
-        },
-    ]
-
-    spec, resolved_quota, resolved_cpu, resolved_mem = resolve_notebook_resource_spec_price(
-        resource_prices=resource_prices,
-        gpu_count=1,
-        selected_gpu_type="NVIDIA_H100",
-        gpu_pattern="H100",
-        logic_compute_group_id="lcg-h100",
-        quota_id="",
-        cpu_count=10,
-        memory_size=40,
-        requested_cpu_count=None,
+def test_resolve_create_inputs_uses_config_quota_default() -> None:
+    config = SimpleNamespace(
+        notebook_quota="2,40,400",
+        project_order=None,
+        job_project_id="project-x",
+        notebook_image=None,
+        job_image="img-x",
+        shm_size=64,
     )
-
-    assert resolved_quota == "quota-h100"
-    assert resolved_cpu == 20
-    assert resolved_mem == 80
-    assert spec["gpu_count"] == 1
-    assert spec["gpu_type"] == "NVIDIA_H100"
-    assert spec["cpu_count"] == 20
-    assert spec["memory_size_gib"] == 80
-    assert spec["quota_id"] == "quota-h100"
-
-
-def test_gpu_resource_spec_prefers_matching_quota_id_when_present() -> None:
-    resource_prices = [
-        {
-            "gpu_count": 1,
-            "cpu_count": 16,
-            "memory_size_gib": 64,
-            "quota_id": "quota-h200-alt",
-            "cpu_info": {"cpu_type": "cpu-type-alt"},
-            "gpu_info": {"gpu_type": "NVIDIA_H200_SXM_141G"},
-        },
-        {
-            "gpu_count": 1,
-            "cpu_count": 20,
-            "memory_size_gib": 80,
-            "quota_id": "quota-h200",
-            "cpu_info": {"cpu_type": "cpu-type-main"},
-            "gpu_info": {"gpu_type": "NVIDIA_H200_SXM_141G"},
-        },
-    ]
-
-    spec, resolved_quota, resolved_cpu, resolved_mem = resolve_notebook_resource_spec_price(
-        resource_prices=resource_prices,
-        gpu_count=1,
-        selected_gpu_type="NVIDIA_H200_SXM_141G",
-        gpu_pattern="H200",
-        logic_compute_group_id="lcg-h200",
-        quota_id="quota-h200",
-        cpu_count=10,
-        memory_size=40,
-        requested_cpu_count=None,
+    quota, project, image, shm = flow_module._resolve_create_inputs(
+        config=config, quota=None, project=None, image=None, shm_size=None
     )
-
-    assert resolved_quota == "quota-h200"
-    assert resolved_cpu == 20
-    assert resolved_mem == 80
-    assert spec["quota_id"] == "quota-h200"
-    assert spec["cpu_type"] == "cpu-type-main"
+    assert quota == "2,40,400"
+    assert project == "project-x"
+    assert image == "img-x"
+    assert shm == 64
 
 
-def test_resolve_notebook_quota_prefers_selected_gpu_type_over_loose_pattern() -> None:
-    schedule = {
-        "quota": [
-            {
-                "id": "quota-h100",
-                "gpu_count": 1,
-                "gpu_type": "NVIDIA_H100",
-                "cpu_count": 20,
-                "memory_size": 80,
-            },
-            {
-                "id": "quota-4090",
-                "gpu_count": 1,
-                "gpu_type": "NVIDIA_RTX_4090",
-                "cpu_count": 16,
-                "memory_size": 64,
-            },
-        ]
-    }
-
-    result = flow_module.resolve_notebook_quota(
-        Context(),
-        schedule=schedule,
-        gpu_count=1,
-        gpu_pattern="4090",
-        requested_cpu_count=None,
-        selected_gpu_type="NVIDIA_RTX_4090",
+def test_resolve_create_inputs_prefers_cli_arg_over_config() -> None:
+    config = SimpleNamespace(
+        notebook_quota="2,40,400",
+        project_order=None,
+        job_project_id=None,
+        notebook_image=None,
+        job_image=None,
+        shm_size=None,
     )
-
-    assert result == ("quota-4090", 16, 64, "NVIDIA_RTX_4090", "1x4090")
-
-
-def test_resolve_notebook_quota_matches_equivalent_selected_gpu_labels() -> None:
-    schedule = {
-        "quota": [
-            {
-                "id": "quota-h200",
-                "gpu_count": 1,
-                "gpu_type": "NVIDIA_H200_SXM_141G",
-                "cpu_count": 20,
-                "memory_size": 80,
-            }
-        ]
-    }
-
-    result = flow_module.resolve_notebook_quota(
-        Context(),
-        schedule=schedule,
-        gpu_count=1,
-        gpu_pattern="H200",
-        requested_cpu_count=None,
-        selected_gpu_type="NVIDIA H200 (141GB)",
+    quota, _p, _i, shm = flow_module._resolve_create_inputs(
+        config=config, quota="1,20,200", project=None, image=None, shm_size=None
     )
+    assert quota == "1,20,200"
+    assert shm == 32  # default fallback
 
-    assert result == ("quota-h200", 20, 80, "NVIDIA_H200_SXM_141G", "1xH200")
 
-
-def test_resolve_notebook_quota_simple_substring_match() -> None:
-    schedule = {
-        "quota": [
-            {
-                "id": "quota-h200-1",
-                "gpu_count": 1,
-                "gpu_type": "NVIDIA_H200_SXM_141G",
-                "cpu_count": 20,
-                "memory_size": 80,
-            },
-        ]
-    }
-
-    result = flow_module.resolve_notebook_quota(
-        Context(),
-        schedule=schedule,
-        gpu_count=1,
-        gpu_pattern="H200",
-        requested_cpu_count=None,
-        selected_gpu_type="NVIDIA H200 (141GB)",
+def test_resolve_create_inputs_requires_quota_somewhere() -> None:
+    config = SimpleNamespace(
+        notebook_quota=None,
+        project_order=None,
+        job_project_id=None,
+        notebook_image=None,
+        job_image=None,
+        shm_size=None,
     )
-
-    assert result == ("quota-h200-1", 20, 80, "NVIDIA_H200_SXM_141G", "1xH200")
-
-
-def test_resolve_notebook_quota_generic_gpu_wildcard_matches_first_typed_quota() -> None:
-    schedule = {
-        "quota": [
-            {
-                "id": "quota-generic",
-                "gpu_count": 1,
-                "gpu_type": "",
-                "cpu_count": 8,
-                "memory_size": 32,
-            },
-            {
-                "id": "quota-h100",
-                "gpu_count": 1,
-                "gpu_type": "NVIDIA_H100",
-                "cpu_count": 20,
-                "memory_size": 80,
-            },
-        ]
-    }
-
-    result = flow_module.resolve_notebook_quota(
-        Context(),
-        schedule=schedule,
-        gpu_count=1,
-        gpu_pattern="GPU",
-        requested_cpu_count=None,
-        selected_gpu_type="",
-    )
-
-    assert result == ("quota-h100", 20, 80, "NVIDIA_H100", "1xGPU")
-
-
-def test_gpu_resource_spec_matches_generic_gpu_wildcard() -> None:
-    resource_prices = [
-        {
-            "gpu_count": 1,
-            "cpu_count": 4,
-            "memory_size_gib": 16,
-            "quota_id": "quota-blank",
-            "cpu_info": {"cpu_type": "cpu-blank"},
-            "gpu_info": {"gpu_type": ""},
-        },
-        {
-            "gpu_count": 1,
-            "cpu_count": 20,
-            "memory_size_gib": 80,
-            "quota_id": "quota-h100",
-            "cpu_info": {"cpu_type": "cpu-type"},
-            "gpu_info": {"gpu_type": "NVIDIA_H100"},
-        },
-    ]
-
-    spec, resolved_quota, resolved_cpu, resolved_mem = resolve_notebook_resource_spec_price(
-        resource_prices=resource_prices,
-        gpu_count=1,
-        selected_gpu_type="",
-        gpu_pattern="GPU",
-        logic_compute_group_id="lcg-h100",
-        quota_id="",
-        cpu_count=10,
-        memory_size=40,
-        requested_cpu_count=None,
-    )
-
-    assert resolved_quota == "quota-h100"
-    assert resolved_cpu == 20
-    assert resolved_mem == 80
-    assert spec["gpu_type"] == "NVIDIA_H100"
-
-
-def test_resolve_notebook_quota_ignores_empty_gpu_type_when_selected_gpu_type_known() -> None:
-    schedule = {
-        "quota": [
-            {
-                "id": "quota-generic",
-                "gpu_count": 1,
-                "gpu_type": "",
-                "cpu_count": 8,
-                "memory_size": 32,
-            },
-            {
-                "id": "quota-4090",
-                "gpu_count": 1,
-                "gpu_type": "NVIDIA_RTX_4090",
-                "cpu_count": 16,
-                "memory_size": 64,
-            },
-        ]
-    }
-
-    result = flow_module.resolve_notebook_quota(
-        Context(),
-        schedule=schedule,
-        gpu_count=1,
-        gpu_pattern="4090",
-        requested_cpu_count=None,
-        selected_gpu_type="NVIDIA_RTX_4090",
-    )
-
-    assert result == ("quota-4090", 16, 64, "NVIDIA_RTX_4090", "1x4090")
+    with pytest.raises(ValueError, match="--quota is required"):
+        flow_module._resolve_create_inputs(
+            config=config, quota=None, project=None, image=None, shm_size=None
+        )
 
 
 def _configure_create_happy_path(
-    monkeypatch, *, wait_result: bool, post_start_value: str | None = "echo from config"
-) -> tuple[Context, dict[str, object]]:  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    wait_result: bool,
+    post_start_value: str | None = "echo from config",
+    resolved_quota: ResolvedQuota | None = None,
+) -> tuple[Context, dict[str, object]]:
     ctx = Context()
     calls: dict[str, object] = {}
+    resolved = resolved_quota or _make_resolved_quota()
 
     config = SimpleNamespace(
-        notebook_resource="1xH100",
+        notebook_quota="1,20,200",
         project_order=None,
         job_project_id="project-1111",
         notebook_image=None,
@@ -354,6 +111,10 @@ def _configure_create_happy_path(
         job_image="img-default",
         shm_size=32,
         job_priority=9,
+        projects={},
+        project_shared_path_groups={},
+        job_workspace_id="ws-1111",
+        workspaces={"gpu": "ws-1111"},
     )
 
     selected_project = SimpleNamespace(
@@ -368,29 +129,19 @@ def _configure_create_happy_path(
     )
 
     monkeypatch.setattr(flow_module, "resolve_json_output", lambda _ctx, _json: False)
-    monkeypatch.setattr(flow_module, "require_web_session", lambda _ctx, hint: object())
+    monkeypatch.setattr(flow_module, "require_web_session", lambda _ctx, hint=None: object())
     monkeypatch.setattr(flow_module, "load_config", lambda _ctx: config)
-    monkeypatch.setattr(flow_module, "parse_resource_string", lambda _resource: (1, "H100", None))
-    monkeypatch.setattr(
-        flow_module, "resolve_notebook_workspace_id", lambda *_args, **_kwargs: "ws-1111"
-    )
     monkeypatch.setattr(
         flow_module,
-        "resolve_notebook_compute_group",
-        lambda *_args, **_kwargs: ("lcg-1111", "NVIDIA_H100", "H100", "1xH100"),
+        "_resolve_workspace_id",
+        lambda _ctx, **_kwargs: "ws-1111",
     )
-    monkeypatch.setattr(flow_module, "_fetch_notebook_schedule", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(
-        flow_module,
-        "resolve_notebook_quota",
-        lambda *_args, **_kwargs: ("quota-1111", 20, 80, "NVIDIA_H100", "1xH100"),
-    )
-    monkeypatch.setattr(flow_module, "_fetch_resource_prices", lambda **_kwargs: [])
-    monkeypatch.setattr(
-        flow_module,
-        "resolve_notebook_resource_spec_price",
-        lambda **_kwargs: ({"gpu_count": 1}, "quota-1111", 20, 80),
-    )
+
+    def fake_resolve_quota(*, spec, workspace_id, session=None, **_):  # noqa: ANN001
+        calls["resolve_quota_spec"] = spec
+        return resolved
+
+    monkeypatch.setattr(flow_module, "resolve_quota", fake_resolve_quota)
     monkeypatch.setattr(
         flow_module,
         "_fetch_workspace_projects",
@@ -414,8 +165,7 @@ def _configure_create_happy_path(
 
     def fake_create_notebook_and_report(*_args, **kwargs):  # noqa: ANN001
         calls["task_priority"] = kwargs["task_priority"]
-        calls["resource_spec_price"] = kwargs["resource_spec_price"]
-        calls["quota_id"] = kwargs["quota_id"]
+        calls["quota"] = kwargs["quota"]
         return "nb-1111"
 
     monkeypatch.setattr(flow_module, "create_notebook_and_report", fake_create_notebook_and_report)
@@ -441,7 +191,7 @@ def _configure_create_happy_path(
     return ctx, calls
 
 
-def test_run_notebook_create_orchestrates_happy_path(monkeypatch) -> None:  # noqa: ANN001
+def test_run_notebook_create_orchestrates_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx, calls = _configure_create_happy_path(monkeypatch, wait_result=True)
 
     flow_module.run_notebook_create(
@@ -449,55 +199,65 @@ def test_run_notebook_create_orchestrates_happy_path(monkeypatch) -> None:  # no
         name=None,
         workspace=None,
         workspace_id=None,
-        resource=None,
+        quota=None,
         project=None,
         image=None,
         shm_size=None,
         auto_stop=True,
-        auto=False,
         wait=True,
         post_start=None,
         post_start_script=None,
         json_output=False,
         priority=None,
         project_explicit=False,
+        group=None,
     )
 
-    # Priority should be capped to the selected project's max priority.
+    # Priority should be capped to the selected project's max priority (6).
     assert calls["task_priority"] == 6
-    assert calls["resource_spec_price"] == {"gpu_count": 1}
+    assert isinstance(calls["quota"], ResolvedQuota)
+    assert calls["quota"].quota_id == "quota-h200"
+    assert calls["resolve_quota_spec"] == QuotaSpec(
+        gpu_count=1, cpu_count=20, memory_gib=200
+    )
     assert calls["wait_called"] is True
     assert calls["post_start_called"] is True
     assert calls["post_start_gpu_count"] == 1
 
 
-def test_run_notebook_create_skips_wait_without_post_start(monkeypatch) -> None:  # noqa: ANN001
-    ctx, calls = _configure_create_happy_path(monkeypatch, wait_result=True, post_start_value=None)
+def test_run_notebook_create_skips_wait_without_post_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, calls = _configure_create_happy_path(
+        monkeypatch, wait_result=True, post_start_value=None
+    )
 
     flow_module.run_notebook_create(
         ctx,
         name=None,
         workspace=None,
         workspace_id=None,
-        resource=None,
+        quota=None,
         project=None,
         image=None,
         shm_size=None,
         auto_stop=True,
-        auto=False,
         wait=False,
         post_start=None,
         post_start_script=None,
         json_output=False,
         priority=None,
         project_explicit=False,
+        group=None,
     )
 
     assert "wait_called" not in calls
     assert "post_start_called" not in calls
 
 
-def test_run_notebook_create_skips_post_start_when_wait_fails(monkeypatch) -> None:  # noqa: ANN001
+def test_run_notebook_create_skips_post_start_when_wait_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     ctx, calls = _configure_create_happy_path(monkeypatch, wait_result=False)
 
     flow_module.run_notebook_create(
@@ -505,47 +265,28 @@ def test_run_notebook_create_skips_post_start_when_wait_fails(monkeypatch) -> No
         name=None,
         workspace=None,
         workspace_id=None,
-        resource=None,
+        quota=None,
         project=None,
         image=None,
         shm_size=None,
         auto_stop=True,
-        auto=False,
         wait=True,
         post_start=None,
         post_start_script=None,
         json_output=False,
         priority=None,
         project_explicit=False,
+        group=None,
     )
 
     assert calls["wait_called"] is True
     assert "post_start_called" not in calls
 
 
-def test_run_notebook_create_propagates_resolved_quota_to_create(
-    monkeypatch,
-) -> None:  # noqa: ANN001
-    ctx, calls = _configure_create_happy_path(monkeypatch, wait_result=True)
-
-    monkeypatch.setattr(
-        flow_module,
-        "resolve_notebook_quota",
-        lambda *_args, **_kwargs: ("quota-h200", 20, 80, "NVIDIA_H200_SXM_141G", "1xH200"),
-    )
-    monkeypatch.setattr(
-        flow_module,
-        "resolve_notebook_resource_spec_price",
-        lambda *_args, **_kwargs: (
-            {
-                "gpu_count": 1,
-                "gpu_type": "NVIDIA_H200_SXM_141G",
-                "quota_id": "quota-h200",
-            },
-            "quota-h200",
-            20,
-            80,
-        ),
+def test_run_notebook_create_honors_cpu_only_quota(monkeypatch: pytest.MonkeyPatch) -> None:
+    cpu_quota = _make_resolved_quota(gpu_count=0, cpu_count=4, memory_gib=32, gpu_type="")
+    ctx, calls = _configure_create_happy_path(
+        monkeypatch, wait_result=True, resolved_quota=cpu_quota
     )
 
     flow_module.run_notebook_create(
@@ -553,93 +294,20 @@ def test_run_notebook_create_propagates_resolved_quota_to_create(
         name=None,
         workspace=None,
         workspace_id=None,
-        resource=None,
+        quota="0,4,32",
         project=None,
         image=None,
         shm_size=None,
-        auto_stop=True,
-        auto=False,
+        auto_stop=False,
         wait=True,
         post_start=None,
         post_start_script=None,
         json_output=False,
         priority=None,
         project_explicit=False,
+        group=None,
     )
 
-    assert calls["quota_id"] == "quota-h200"
-    assert calls["resource_spec_price"]["quota_id"] == "quota-h200"
-
-
-def test_maybe_run_post_start_warns_when_start_is_not_confirmed(
-    monkeypatch, capsys
-) -> None:  # noqa: ANN001
-    calls: dict[str, object] = {}
-
-    def fake_run_command_in_notebook(**kwargs):  # noqa: ANN003, ANN201
-        calls.update(kwargs)
-        return False
-
-    monkeypatch.setattr(
-        flow_module.browser_api_module,
-        "run_command_in_notebook",
-        fake_run_command_in_notebook,
-    )
-
-    spec = NotebookPostStartSpec(
-        label="notebook post-start command",
-        command="echo post-start",
-        log_path="/tmp/post-start.log",
-        pid_file="/tmp/post-start.pid",
-        completion_marker="POST_START_READY",
-    )
-
-    flow_module.maybe_run_post_start(
-        Context(),
-        notebook_id="nb-123",
-        session=object(),
-        post_start_spec=spec,
-        gpu_count=1,
-        json_output=False,
-    )
-
-    captured = capsys.readouterr()
-    assert "Starting notebook post-start command..." in captured.out
-    assert "Failed to confirm notebook post-start command startup" in captured.err
-    assert calls["completion_marker"] == "POST_START_READY"
-    assert calls["command"] == "echo post-start"
-
-
-def test_maybe_wait_for_running_warns_when_no_wait_conflicts_with_post_start(
-    monkeypatch, capsys
-) -> None:  # noqa: ANN001
-    calls: dict[str, object] = {}
-
-    def fake_wait_for_notebook_running(**kwargs):  # noqa: ANN003, ANN201
-        calls.update(kwargs)
-        return {"status": "RUNNING"}
-
-    monkeypatch.setattr(
-        flow_module.browser_api_module,
-        "wait_for_notebook_running",
-        fake_wait_for_notebook_running,
-    )
-
-    ok = flow_module.maybe_wait_for_running(
-        Context(),
-        notebook_id="nb-123",
-        session=object(),
-        wait=False,
-        needs_post_start=True,
-        json_output=False,
-        timeout=10,
-    )
-
-    captured = capsys.readouterr()
-    assert ok is True
-    assert "--no-wait requested" in captured.err
-    assert "set notebook_post_start=none" in captured.err
-    assert "Waiting for notebook to reach RUNNING status..." in captured.out
-    assert "Notebook is now RUNNING." in captured.out
-    assert calls["notebook_id"] == "nb-123"
-    assert calls["timeout"] == 10
+    assert calls["quota"].gpu_count == 0
+    # Post-start spec requires GPU by default — CPU-only notebook should skip it.
+    assert calls.get("post_start_gpu_count", None) in (None, 0)

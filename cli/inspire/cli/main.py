@@ -1,7 +1,7 @@
 """Inspire CLI - Main entry point.
 
 Usage:
-    inspire job create --name "pr-123" --resource "4xH200" --command "bash train.sh"
+    inspire job create --name "pr-123" --quota "4,80,800" --command "bash train.sh"
     inspire job status <name>
     inspire job logs <name> --tail 100
     inspire resources list
@@ -85,7 +85,7 @@ def main(ctx: Context, json_output: bool, debug: bool) -> None:
 
     \b
     Examples:
-        inspire job create --name "pr-123" --resource "4xH200" --command "bash train.sh"
+        inspire job create --name "pr-123" --quota "4,80,800" --command "bash train.sh"
         inspire job status pr-123
         inspire job logs pr-123 --tail 100
         inspire resources list

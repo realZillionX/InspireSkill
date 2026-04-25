@@ -224,8 +224,10 @@ def test_resources_specs_help_explains_auto_mode() -> None:
     result = runner.invoke(cli_main, ["resources", "specs", "--help"])
 
     assert result.exit_code == 0
-    assert "auto = HPC first, then" in result.output
+    assert "auto = HPC first" in result.output
     assert "notebook/DSW" in result.output
+    # ray family must be discoverable from --help.
+    assert "ray" in result.output
 
 
 def test_resources_specs_hpc_json(
@@ -289,6 +291,131 @@ def test_resources_specs_hpc_json(
     assert row["schedule_config_type"] == "SCHEDULE_CONFIG_TYPE_HPC"
     assert row["spec_id"] == "quota-hpc-40-200"
     assert calls == ["SCHEDULE_CONFIG_TYPE_HPC"]
+
+
+def test_resources_specs_ray_json(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_config(monkeypatch, tmp_path)
+
+    from inspire.cli.commands.resources import resources_specs as specs_module
+
+    class _DummySession:
+        workspace_id = "ws-session-default"
+
+    monkeypatch.setattr(specs_module, "get_web_session", lambda: _DummySession())
+    monkeypatch.setattr(
+        specs_module.browser_api_module,
+        "list_notebook_compute_groups",
+        lambda **kwargs: [
+            {"logic_compute_group_id": "lcg-cpu-2", "name": "CPU资源-2"},
+        ],
+    )
+
+    calls: list[str] = []
+
+    def _fake_prices(**kwargs):
+        calls.append(kwargs["schedule_config_type"])
+        assert kwargs["schedule_config_type"] == "SCHEDULE_CONFIG_TYPE_RAY"
+        return [
+            {
+                "quota_id": "quota-ray-head-32-256",
+                "cpu_count": 32,
+                "memory_size_gib": 256,
+                "gpu_count": 0,
+                "gpu_info": {"gpu_type_display": "CPU"},
+            },
+            {
+                "quota_id": "quota-ray-worker-8-64",
+                "cpu_count": 8,
+                "memory_size_gib": 64,
+                "gpu_count": 0,
+                "gpu_info": {"gpu_type_display": "CPU"},
+            },
+        ]
+
+    monkeypatch.setattr(specs_module.browser_api_module, "get_resource_prices", _fake_prices)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        [
+            "--json",
+            "resources",
+            "specs",
+            "--workspace",
+            "分布式训练空间",
+            "--usage",
+            "ray",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["data"]["usage_filter"] == "ray"
+    assert payload["data"]["total"] == 2
+    rows = payload["data"]["specs"]
+    assert {row["usage"] for row in rows} == {"ray"}
+    assert {row["schedule_config_type"] for row in rows} == {"SCHEDULE_CONFIG_TYPE_RAY"}
+    assert {row["spec_id"] for row in rows} == {
+        "quota-ray-head-32-256",
+        "quota-ray-worker-8-64",
+    }
+    assert calls == ["SCHEDULE_CONFIG_TYPE_RAY"]
+
+
+def test_resources_specs_all_includes_ray(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_config(monkeypatch, tmp_path)
+
+    from inspire.cli.commands.resources import resources_specs as specs_module
+
+    class _DummySession:
+        workspace_id = "ws-session-default"
+
+    monkeypatch.setattr(specs_module, "get_web_session", lambda: _DummySession())
+    monkeypatch.setattr(
+        specs_module.browser_api_module,
+        "list_notebook_compute_groups",
+        lambda **kwargs: [
+            {"logic_compute_group_id": "lcg-cpu-2", "name": "CPU资源-2"},
+        ],
+    )
+
+    queried: list[str] = []
+
+    def _fake_prices(**kwargs):
+        queried.append(kwargs["schedule_config_type"])
+        return []
+
+    monkeypatch.setattr(specs_module.browser_api_module, "get_resource_prices", _fake_prices)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        [
+            "--json",
+            "resources",
+            "specs",
+            "--workspace",
+            "分布式训练空间",
+            "--usage",
+            "all",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert sorted(queried) == sorted(
+        [
+            "SCHEDULE_CONFIG_TYPE_DSW",
+            "SCHEDULE_CONFIG_TYPE_HPC",
+            "SCHEDULE_CONFIG_TYPE_RAY",
+        ]
+    )
 
 
 def test_resources_specs_auto_falls_back_to_notebook(

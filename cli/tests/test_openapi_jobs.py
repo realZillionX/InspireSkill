@@ -1,8 +1,8 @@
 """OpenAPI create_training_job_smart payload tests.
 
-The function now requires pre-resolved ``spec_id_override`` +
-``compute_group_id_override`` (populated by the CLI via a live
-``get_resource_prices`` query); the old resource_manager fallback is gone.
+The function requires pre-resolved ``spec_id_override`` +
+``compute_group_id_override`` (the CLI resolves them via
+``inspire.cli.utils.quota_resolver.resolve_quota``).
 """
 
 from __future__ import annotations
@@ -29,13 +29,12 @@ class _DummyAPI:
         self.config = SimpleNamespace(docker_registry=None)
         self.last_request: tuple[str, str, dict] | None = None
 
-    def _check_authentication(self) -> None:  # noqa: D401
+    def _check_authentication(self) -> None:
         return None
 
     def _validate_required_params(self, **kwargs) -> None:  # noqa: ANN003
         assert kwargs["name"]
         assert kwargs["command"]
-        assert kwargs["resource"]
 
     def _get_default_image(self) -> str:
         return "registry.local/default:latest"
@@ -52,7 +51,6 @@ def test_create_training_job_smart_builds_framework_config_payload() -> None:
         api,
         name="demo",
         command="echo demo",
-        resource="1xH200",
         spec_id_override="spec-1x-h200",
         compute_group_id_override="lcg-h200-1",
     )
@@ -84,7 +82,6 @@ def test_create_training_job_smart_uses_overrides_for_framework_config() -> None
         api,
         name="demo",
         command="echo demo",
-        resource="1xH200",
         image="custom.registry/pytorch:tag",
         instance_count=2,
         shm_gi=256,
@@ -107,5 +104,4 @@ def test_create_training_job_smart_requires_overrides() -> None:
             api,
             name="demo",
             command="echo demo",
-            resource="1xH200",
         )

@@ -91,7 +91,7 @@ denylist = ["*.tmp", ".git/*"]
 # shm_size = 32  # Default shared memory (GiB) for notebooks; jobs use it when set
 
 [notebook]
-resource = "1xH200"
+# quota = "1,20,200"  # gpu,cpu,mem (GiB); must match a quota_id in the workspace
 # image = "pytorch:latest"
 # post_start = "bash /workspace/bootstrap.sh"  # none | shell command
 

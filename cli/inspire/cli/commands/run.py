@@ -1,9 +1,9 @@
-"""Run command - Quick job submission with smart resource allocation.
+"""Run command - Quick job submission via quota triple.
 
 Usage:
-    inspire run "python train.py"
-    inspire run "bash train.sh" --gpus 4 --type H100
-    inspire run "python train.py" --watch
+    inspire run "python train.py" -q 8,160,1800
+    inspire run "bash train.sh" --quota 4,80,800 --group H100
+    inspire run "python train.py" -q 1,20,200 --watch
 """
 
 from __future__ import annotations
@@ -29,10 +29,17 @@ from inspire.cli.context import (
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils import job_submit
 from inspire.cli.utils.auth import AuthManager, AuthenticationError
-from inspire.cli.utils.compute_group_autoselect import find_best_compute_group_location
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.quota_resolver import (
+    QuotaMatchError,
+    QuotaParseError,
+    SCHEDULE_TYPE_TRAIN,
+    parse_quota,
+    resolve_quota,
+)
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id
+from inspire.platform.web.session import get_web_session
 
 
 def _get_current_branch() -> str | None:
@@ -48,9 +55,6 @@ def _get_current_branch() -> str | None:
         return None
 
 
-
-
-
 def _get_inspire_executable() -> str | None:
     return shutil.which("inspire")
 
@@ -62,86 +66,16 @@ def _exec_inspire_subcommand(args: list[str]) -> None:
     os.execv(exe, [exe, *args])
 
 
-def _resolve_run_resource_and_location(
-    ctx: Context,
-    *,
-    api,  # noqa: ANN001
-    gpus: int,
-    gpu_type: str,
-    location: str | None,
-    nodes: int,
-) -> tuple[str, str | None]:
-    if location:
-        return f"{gpus}x{gpu_type}", location
-
-    if ctx.debug and not ctx.json_output:
-        click.echo("Checking GPU availability...")
-
-    best, selected_location, selected_group_name = find_best_compute_group_location(
-        api,
-        gpu_type=gpu_type,
-        min_gpus=gpus,
-        include_preemptible=True,
-        instance_count=nodes,
-    )
-
-    if not best:
-        if ctx.json_output:
-            click.echo(
-                json_formatter.format_json_error(
-                    "InsufficientResources",
-                    f"No compute groups with at least {gpus} {gpu_type} GPUs available",
-                    EXIT_VALIDATION_ERROR,
-                )
-            )
-        else:
-            click.echo(
-                human_formatter.format_error(
-                    f"No compute groups with at least {gpus} {gpu_type} GPUs available",
-                    hint=(
-                        "Try different GPU type or fewer GPUs. Run 'inspire resources list' "
-                        "to see availability."
-                    ),
-                ),
-                err=True,
-            )
-        sys.exit(EXIT_VALIDATION_ERROR)
-
-    resource_str = f"{gpus}x{gpu_type}"
-    location = selected_location or selected_group_name or None
-
-    if ctx.debug and not ctx.json_output:
-        if getattr(best, "selection_source", "") == "nodes" and getattr(best, "free_nodes", 0):
-            click.echo(
-                "Auto-selected: "
-                f"{selected_group_name}, {best.free_nodes} full nodes free "
-                f"({best.available_gpus} GPUs)"
-            )
-        else:
-            preempt_note = (
-                f" (+{best.low_priority_gpus} preemptible)"
-                if getattr(best, "low_priority_gpus", 0) > 0
-                else ""
-            )
-            click.echo(
-                f"Auto-selected: {selected_group_name}, "
-                f"{best.available_gpus} GPUs available{preempt_note}"
-            )
-
-    return resource_str, location
-
-
 def _run_flow(
     ctx: Context,
     *,
     command: str,
-    gpus: int,
-    gpu_type: str,
+    quota: str,
     name: str | None,
     watch: bool,
     priority: int | None,
-    location: str | None,
     workspace: str | None,
+    group: str | None,
     max_time: float,
     image: str | None,
     nodes: int,
@@ -156,29 +90,38 @@ def _run_flow(
         if image is None:
             image = config.job_image
 
+        try:
+            quota_spec = parse_quota(quota)
+        except QuotaParseError as e:
+            _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+            return
+
         selected_workspace_id = select_workspace_id(
             config,
-            gpu_type=gpu_type,
             explicit_workspace_name=workspace,
         )
         if not selected_workspace_id:
             _handle_error(
                 ctx,
                 "ConfigError",
-                "No workspace_id configured for GPU workloads. "
-                "Set [workspaces].gpu or INSPIRE_WORKSPACE_ID.",
+                "No workspace_id configured. Set [context].workspace in config.toml, "
+                "or pass --workspace <name>.",
                 EXIT_CONFIG_ERROR,
             )
             return
 
-        resource_str, location = _resolve_run_resource_and_location(
-            ctx,
-            api=api,
-            gpus=gpus,
-            gpu_type=gpu_type,
-            location=location,
-            nodes=nodes,
-        )
+        session = get_web_session()
+        try:
+            resolved_quota = resolve_quota(
+                spec=quota_spec,
+                workspace_id=selected_workspace_id,
+                session=session,
+                schedule_config_type=SCHEDULE_TYPE_TRAIN,
+                group_override=group,
+            )
+        except QuotaMatchError as err:
+            _handle_error(ctx, "ValidationError", str(err), EXIT_VALIDATION_ERROR)
+            return
 
         if not name:
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -188,6 +131,10 @@ def _run_flow(
 
         if ctx.debug and not ctx.json_output:
             click.echo(f"Creating job '{name}'...")
+            click.echo(
+                f"Using compute group: {resolved_quota.compute_group_name} "
+                f"({resolved_quota.gpu_count}x{resolved_quota.gpu_type or 'CPU'})"
+            )
 
         time.sleep(0.5)
 
@@ -216,9 +163,8 @@ def _run_flow(
                 config=config,
                 name=name,
                 command=command,
-                resource=resource_str,
+                quota=resolved_quota,
                 framework="pytorch",
-                location=location,
                 project_id=project_id,
                 workspace_id=selected_workspace_id,
                 image=image,
@@ -258,7 +204,7 @@ def _run_flow(
             click.echo(f"Job created: {job_id}")
             if ctx.debug:
                 click.echo(f"Name: {name}")
-                click.echo(f"Resource: {resource_str}")
+                click.echo(f"Quota: {quota_spec.display()}")
                 if nodes > 1:
                     click.echo(f"Nodes: {nodes}")
                 if priority is not None:
@@ -297,13 +243,15 @@ def _run_flow(
 
 @click.command()
 @click.argument("command")
-@click.option("--gpus", "-g", type=int, default=8, help="Number of GPUs (default: 8)")
 @click.option(
-    "--type",
-    "gpu_type",
-    type=click.Choice(["H100", "H200"], case_sensitive=False),
-    default="H200",
-    help="GPU type (default: H200)",
+    "--quota",
+    "-q",
+    required=True,
+    help=(
+        "Resource quota as 'gpu,cpu,mem' (mem in GiB). "
+        "Example: '8,160,1800' for 8 GPUs + 160 CPU + 1800 GiB. "
+        "See 'inspire resources specs' for valid triples; pass --group to disambiguate."
+    ),
 )
 @click.option("--name", "-n", help="Job name (auto-generated if not specified)")
 @click.option(
@@ -327,8 +275,15 @@ def _run_flow(
     default=None,
     help="Project name (default from config [context].project; see 'inspire config context')",
 )
-@click.option("--location", help="Preferred datacenter location (overrides auto-selection)")
 @click.option("--workspace", help="Workspace name (from [workspaces])")
+@click.option(
+    "--group",
+    default=None,
+    help=(
+        "Disambiguate to a specific compute group by name when --quota matches "
+        "multiple groups. Partial matches accepted."
+    ),
+)
 @click.option("--max-time", type=float, default=100.0, help="Max runtime in hours (default: 100)")
 @click.option(
     "--image",
@@ -342,28 +297,24 @@ def _run_flow(
 def run(
     ctx: Context,
     command: str,
-    gpus: int,
-    gpu_type: str,
+    quota: str,
     name: str | None,
     watch: bool,
     priority: int | None,
     project: str | None,
-    location: str | None,
     workspace: str | None,
+    group: str | None,
     max_time: float,
     image: str | None,
     nodes: int,
 ) -> None:
-    """Quick job submission with smart resource allocation.
-
-    Automatically selects the compute group with most available capacity.
-    If --location is specified, uses that location instead of auto-selecting.
+    """Quick job submission via quota triple.
 
     \b
     Examples:
-        inspire run "python train.py"
-        inspire run "bash train.sh" --gpus 4 --type H100
-        inspire run "python train.py" --watch
+        inspire run "python train.py" -q 8,160,1800
+        inspire run "bash train.sh" -q 4,80,800 --group H100
+        inspire run "python train.py" -q 1,20,200 --watch
 
     \b
     Priority:
@@ -374,14 +325,13 @@ def run(
     _run_flow(
         ctx,
         command=command,
-        gpus=gpus,
-        gpu_type=gpu_type,
+        quota=quota,
         name=name,
         watch=watch,
         priority=priority,
         project=project,
-        location=location,
         workspace=workspace,
+        group=group,
         max_time=max_time,
         image=image,
         nodes=nodes,

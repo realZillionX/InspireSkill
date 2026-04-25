@@ -137,7 +137,7 @@ class TestConfigSchema:
 
         # Job/Notebook settings should be project
         assert "INSP_PRIORITY" in project_env_vars
-        assert "INSPIRE_NOTEBOOK_RESOURCE" in project_env_vars
+        assert "INSPIRE_NOTEBOOK_QUOTA" in project_env_vars
 
         # Bridge/Sync settings should be project
         assert "INSPIRE_BRIDGE_DENYLIST" in project_env_vars
@@ -518,13 +518,13 @@ class TestAccountConfigLayer:
             '[auth]\nusername = "alice"\npassword = "pw"\n\n'
             '[workspaces]\ncpu = "ws-cpu"\ngpu = "ws-gpu"\n\n'
             '[job]\npriority = 5\nimage = "myimage:latest"\n\n'
-            '[notebook]\nresource = "1xH100"\n',
+            '[notebook]\nquota = "1,20,200"\n',
         )
 
         cfg, _ = Config.from_files_and_env(require_credentials=False)
         assert cfg.job_priority == 5
         assert cfg.job_image == "myimage:latest"
-        assert cfg.notebook_resource == "1xH100"
+        assert cfg.notebook_quota == "1,20,200"
 
     def test_account_config_proxy_merges_with_env_override(
         self, home: Path, clean_env: None, monkeypatch: pytest.MonkeyPatch

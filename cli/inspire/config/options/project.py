@@ -56,11 +56,11 @@ JOB_OPTIONS: list[ConfigOption] = [
 
 NOTEBOOK_OPTIONS: list[ConfigOption] = [
     ConfigOption(
-        env_var="INSPIRE_NOTEBOOK_RESOURCE",
-        toml_key="notebook.resource",
-        field_name="notebook_resource",
-        description="Default resource for notebooks",
-        default="1xH200",
+        env_var="INSPIRE_NOTEBOOK_QUOTA",
+        toml_key="notebook.quota",
+        field_name="notebook_quota",
+        description="Default quota for notebooks as 'gpu,cpu,mem' (mem in GiB)",
+        default=None,
         category="Notebook",
         scope="project",
     ),

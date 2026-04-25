@@ -25,12 +25,18 @@ _USAGE_SCHEDULE_TYPES = {
     "auto": ("SCHEDULE_CONFIG_TYPE_HPC", "SCHEDULE_CONFIG_TYPE_DSW"),
     "notebook": ("SCHEDULE_CONFIG_TYPE_DSW",),
     "hpc": ("SCHEDULE_CONFIG_TYPE_HPC",),
-    "all": ("SCHEDULE_CONFIG_TYPE_DSW", "SCHEDULE_CONFIG_TYPE_HPC"),
+    "ray": ("SCHEDULE_CONFIG_TYPE_RAY",),
+    "all": (
+        "SCHEDULE_CONFIG_TYPE_DSW",
+        "SCHEDULE_CONFIG_TYPE_HPC",
+        "SCHEDULE_CONFIG_TYPE_RAY",
+    ),
 }
 
 _SCHEDULE_TYPE_USAGE = {
     "SCHEDULE_CONFIG_TYPE_DSW": "notebook",
     "SCHEDULE_CONFIG_TYPE_HPC": "hpc",
+    "SCHEDULE_CONFIG_TYPE_RAY": "ray",
 }
 
 
@@ -68,7 +74,7 @@ def _usage_from_schedule_type(schedule_config_type: str) -> str:
 
 
 def _usage_sort_key(usage: str) -> int:
-    order = {"auto": 0, "hpc": 1, "notebook": 2}
+    order = {"auto": 0, "hpc": 1, "notebook": 2, "ray": 3}
     return order.get(usage, 99)
 
 
@@ -81,10 +87,13 @@ def _should_stop_after_match(usage: str) -> bool:
 @click.option("--group", default=None, help="Filter by compute group name (partial match)")
 @click.option(
     "--usage",
-    type=click.Choice(["auto", "notebook", "hpc", "all"], case_sensitive=False),
+    type=click.Choice(["auto", "notebook", "hpc", "ray", "all"], case_sensitive=False),
     default="auto",
     show_default=True,
-    help="Spec family to query (auto = HPC first, then notebook/DSW)",
+    help=(
+        "Spec family to query. auto = HPC first, fall back to notebook/DSW. "
+        "Use 'ray' for Ray head/worker quotas (ray create --head-spec / --worker spec=)."
+    ),
 )
 @click.option("--include-empty", is_flag=True, help="Include compute groups that return no specs")
 @click.option("--json", "json_output_local", is_flag=True, help="Alias for global --json")
@@ -97,9 +106,11 @@ def list_specs(
     include_empty: bool,
     json_output_local: bool,
 ) -> None:
-    """Discover resource specs for notebook/HPC creation.
+    """Discover resource specs for notebook / HPC / Ray creation.
 
     ``auto`` checks HPC quotas first and falls back to notebook/DSW quotas.
+    Use ``--usage ray`` for Ray head/worker quotas (consumed by
+    ``inspire ray create --head-spec`` / ``--worker spec=``).
 
     Returns per-spec entries including:
     - logic_compute_group_id
@@ -310,16 +321,24 @@ def list_specs(
                 "Pass --compute-group <name>, --cpus-per-task <n>, --memory-per-cpu <n> to "
                 "`inspire hpc create`; the CLI resolves spec_id live — no ID needed."
             )
+        elif usage == "ray":
+            click.echo(
+                "Feed Spec ID to `inspire ray create --head-spec <id>` or "
+                "`--worker 'spec=<id>,...'`."
+            )
         elif usage == "all":
             click.echo(
-                "Use --usage notebook for notebook quotas and --usage hpc for HPC quotas."
+                "Filter with --usage {notebook|hpc|ray} to focus on one family."
             )
         elif usage == "auto":
             click.echo(
                 "Auto mode prefers HPC quotas and falls back to notebook quotas when HPC is unavailable."
             )
-        else:
-            click.echo("Use --usage hpc to discover HPC quotas for `inspire hpc create`.")
+        elif usage == "notebook":
+            click.echo(
+                "Pick a triple (gpu_count, cpu_count, memory_size_gib) from the table and "
+                "pass it as --quota gpu,cpu,mem to `inspire notebook create` (or `job create` / `run`)."
+            )
         click.echo("")
 
     except ConfigError as e:

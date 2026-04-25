@@ -11,7 +11,7 @@ from inspire.config.models import SOURCE_DEFAULT
 _DEFAULTS_FIELD_MAP = {
     "image": "job_image",
     "notebook_image": "notebook_image",
-    "notebook_resource": "notebook_resource",
+    "notebook_quota": "notebook_quota",
     "notebook_post_start": "notebook_post_start",
     "priority": "job_priority",
     "shm_size": "shm_size",
@@ -77,7 +77,7 @@ def _default_config_values() -> dict[str, Any]:
         "project_workdirs": {},
         "account_shared_path_group": None,
         "account_train_job_workdir": None,
-        "notebook_resource": "1xH200",
+        "notebook_quota": None,
         "notebook_image": None,
         "notebook_post_start": None,
         "tunnel_retries": 3,
@@ -204,7 +204,7 @@ def _coerce_project_default(field_name: str, raw_value: Any) -> Any:
         "target_dir",
         "job_image",
         "notebook_image",
-        "notebook_resource",
+        "notebook_quota",
         "notebook_post_start",
         "log_pattern",
     }:

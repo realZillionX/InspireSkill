@@ -27,7 +27,7 @@ from inspire.platform.web import session as web_session_module
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.config import ConfigError
 from inspire.cli.utils.job_cache import JobCache
-from inspire.platform.openapi import ResourceManager
+from inspire.cli.utils.quota_resolver import ResolvedQuota
 
 # Valid test job IDs (must match the format: job-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
 TEST_JOB_ID = "job-12345678-1234-1234-1234-123456789abc"
@@ -88,22 +88,6 @@ def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> co
 class DummyAPI:
     def __init__(self) -> None:
         self.calls: Dict[str, Any] = {}
-        self.resource_manager = ResourceManager(
-            [
-                {
-                    "name": "H200 Default Test Group",
-                    "id": "lcg-test-h200-0000-0000-0000-00000000H200",
-                    "gpu_type": "H200",
-                    "location": "Test",
-                },
-                {
-                    "name": "H100 Default Test Group",
-                    "id": "lcg-test-h100-0000-0000-0000-00000000H100",
-                    "gpu_type": "H100",
-                    "location": "Test",
-                },
-            ]
-        )
 
     # Job-related methods -------------------------------------------------
     def create_training_job_smart(self, **kwargs: Any) -> Dict[str, Any]:
@@ -212,15 +196,37 @@ def patch_config_and_auth(
     monkeypatch.setattr(resources_list_module, "get_web_session", lambda: FakeWebSession())
     monkeypatch.setattr(resources_nodes_module, "get_web_session", lambda: FakeWebSession())
 
-    # Stub the live train-spec resolver so job-submit tests don't hit the real
-    # platform — real resolution lives in resolve_train_spec's own unit tests.
-    from inspire.cli.utils import spec_resolver as spec_resolver_module
+    # Stub quota resolution so job-submit tests don't hit the real platform —
+    # real resolution lives in test_quota_resolver.
+    import importlib
 
-    monkeypatch.setattr(
-        spec_resolver_module,
-        "resolve_train_spec",
-        lambda **_: ("spec-test-default", 16, 128),
+    quota_resolver_module = importlib.import_module("inspire.cli.utils.quota_resolver")
+    job_create_module = importlib.import_module("inspire.cli.commands.job.job_create")
+    run_module = importlib.import_module("inspire.cli.commands.run")
+    notebook_flow_module = importlib.import_module(
+        "inspire.cli.commands.notebook.notebook_create_flow"
     )
+
+    def _fake_resolve_quota(*, spec, workspace_id, session=None, **_):  # noqa: ANN001
+        return ResolvedQuota(
+            quota_id="quota-test-default",
+            logic_compute_group_id="lcg-test-default",
+            compute_group_name="Test Group",
+            gpu_count=spec.gpu_count,
+            cpu_count=spec.cpu_count,
+            memory_gib=spec.memory_gib,
+            gpu_type="H200" if spec.gpu_count > 0 else "",
+            raw_price={"cpu_info": {"cpu_type": "Test"}},
+        )
+
+    monkeypatch.setattr(quota_resolver_module, "resolve_quota", _fake_resolve_quota)
+    monkeypatch.setattr(job_create_module, "resolve_quota", _fake_resolve_quota)
+    monkeypatch.setattr(run_module, "resolve_quota", _fake_resolve_quota)
+    monkeypatch.setattr(notebook_flow_module, "resolve_quota", _fake_resolve_quota)
+
+    # job create / run import `get_web_session` by name, so patch each namespace.
+    monkeypatch.setattr(job_create_module, "get_web_session", lambda: FakeWebSession())
+    monkeypatch.setattr(run_module, "get_web_session", lambda: FakeWebSession())
 
     test_project = browser_api_module.ProjectInfo(
         project_id="project-test-123",
@@ -324,15 +330,14 @@ def test_job_create_human_output_updates_cache(monkeypatch: pytest.MonkeyPatch, 
             "create",
             "--name",
             "test-job",
-            "--resource",
-            "H200",
+            "--quota",
+            "1,20,200",
             "--command",
             "echo hi",
-            "--no-auto",
         ],
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     # v2: plain-text output reports the name, not the platform id.
     assert "Job created: test-job" in result.output
 
@@ -353,11 +358,10 @@ def test_job_create_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             "create",
             "--name",
             "test-job",
-            "--resource",
-            "H200",
+            "--quota",
+            "1,20,200",
             "--command",
             "echo hi",
-            "--no-auto",
         ],
     )
 
@@ -386,8 +390,8 @@ def test_job_create_requires_target_dir(monkeypatch: pytest.MonkeyPatch):
             "create",
             "--name",
             "test-job",
-            "--resource",
-            "H200",
+            "--quota",
+            "1,20,200",
             "--command",
             "echo hi",
         ],

@@ -103,7 +103,7 @@ class Config:
     account_train_job_workdir: Optional[str] = None
 
     # Notebook settings
-    notebook_resource: str = "1xH200"
+    notebook_quota: Optional[str] = None
     notebook_image: Optional[str] = None
     notebook_post_start: Optional[str] = None
 

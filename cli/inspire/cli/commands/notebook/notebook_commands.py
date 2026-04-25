@@ -119,10 +119,17 @@ def run_notebook_ssh(*args, **kwargs):  # noqa: ANN002, ANN003
     help="Workspace name (from [workspaces])",
 )
 @click.option(
-    "--resource",
-    "-r",
+    "--quota",
+    "-q",
     default=None,
-    help="Resource spec (e.g., 1xH200, 4xH100, 4CPU) (default from config [notebook].resource)",
+    help=(
+        "Resource quota as 'gpu,cpu,mem' (mem in GiB). "
+        "Example: '1,20,200' for 1 GPU + 20 CPU + 200 GiB. "
+        "Use '0,4,32' for CPU-only. "
+        "The triple must match a quota_id in the workspace (see 'inspire resources specs'); "
+        "pass --group to disambiguate when multiple compute groups offer the same triple. "
+        "Default from config [notebook].quota."
+    ),
 )
 @click.option(
     "--project",
@@ -149,11 +156,6 @@ def run_notebook_ssh(*args, **kwargs):  # noqa: ANN002, ANN003
     "--auto-stop/--no-auto-stop",
     default=False,
     help="Auto-stop when idle",
-)
-@click.option(
-    "--auto/--no-auto",
-    default=True,
-    help="Auto-select best available compute group based on availability (default: auto)",
 )
 @click.option(
     "--wait/--no-wait",
@@ -199,8 +201,8 @@ def run_notebook_ssh(*args, **kwargs):  # noqa: ANN002, ANN003
     "group",
     default=None,
     help=(
-        "Force a specific compute group by name (e.g. 'HPC-可上网区资源-2'). "
-        "Bypasses the auto-selection heuristic. Partial matches accepted."
+        "Disambiguate to a specific compute group by name when the --quota triple "
+        "matches multiple groups (e.g. 'HPC-可上网区资源-2'). Partial matches accepted."
     ),
 )
 @pass_context
@@ -208,12 +210,11 @@ def create_notebook_cmd(
     ctx: Context,
     name: Optional[str],
     workspace: Optional[str],
-    resource: Optional[str],
+    quota: Optional[str],
     project: Optional[str],
     image: Optional[str],
     shm_size: Optional[int],
     auto_stop: bool,
-    auto: bool,
     wait: bool,
     post_start: Optional[str],
     post_start_script: Optional[Path],
@@ -225,18 +226,15 @@ def create_notebook_cmd(
 
     \b
     Examples:
-        inspire notebook create                     # Interactive mode, auto-select GPU
-        inspire notebook create -r 1xH200           # 1 GPU H200
-        inspire notebook create -r 4xH100 -n mytest # 4 GPUs H100
-        inspire notebook create -r 4x               # 4 GPUs, auto-select type
-        inspire notebook create -r 8x               # 8 GPUs (full node), auto-select type
-        inspire notebook create -r 4CPU             # 4 CPUs
-        inspire notebook create -r 1xH100 --shm-size 64  # With 64GB shared memory
-        inspire notebook create --no-auto -r 1xH200 # Disable auto-select
+        inspire notebook create -q 1,20,200                 # 1 GPU + 20 CPU + 200 GiB
+        inspire notebook create --quota 4,80,800 -n mytest  # 4 GPUs + 80 CPU + 800 GiB
+        inspire notebook create -q 0,4,32                   # CPU-only: 4 CPU + 32 GiB
+        inspire notebook create -q 1,20,200 --group H200
+        inspire notebook create -q 1,20,200 --shm-size 64
         inspire notebook create --post-start 'bash /workspace/bootstrap.sh'
         inspire notebook create --post-start-script scripts/notebook_bootstrap.sh
         inspire notebook create --post-start none --no-wait
-        inspire notebook create --priority 5        # Set task priority to 5
+        inspire notebook create --priority 5
     """
     if post_start and post_start_script:
         raise click.UsageError("Use either --post-start or --post-start-script, not both.")
@@ -248,12 +246,11 @@ def create_notebook_cmd(
         name=name,
         workspace=workspace,
         workspace_id=None,
-        resource=resource,
+        quota=quota,
         project=project,
         image=image,
         shm_size=shm_size,
         auto_stop=auto_stop,
-        auto=auto,
         wait=wait,
         keepalive=None,
         post_start=post_start,

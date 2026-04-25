@@ -1,17 +1,8 @@
-"""Inspire OpenAPI client (extracted from legacy script).
+"""Inspire OpenAPI client.
 
-Provides functionality to:
-- Authenticate with the Inspire API
-- Create distributed training jobs with smart resource matching
-- Query training job details
-- Stop training jobs
-- List cluster nodes
-
-New Features:
-- Natural language resource specification (e.g., "H200", "H100", "4xH200")
-- Automatic spec-id and compute-group-id matching
-- Interactive resource selection
-- Enhanced user experience
+Token-based HTTP client over ``/openapi/v1``. Job submission takes a
+pre-resolved ``(quota_id, logic_compute_group_id)`` pair — the CLI layer
+resolves quotas live via ``inspire.cli.utils.quota_resolver.resolve_quota``.
 
 API Documentation: https://api.example.com/openapi/
 """
@@ -42,7 +33,6 @@ from inspire.platform.openapi.errors import (
     ValidationError,
 )
 from inspire.platform.openapi.models import InspireConfig
-from inspire.platform.openapi.resources import ResourceManager
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -175,9 +165,6 @@ class InspireAPI:
             openapi_prefix=self.config.openapi_prefix,
         )
 
-        # Initialize resource manager
-        self.resource_manager = ResourceManager(self.config.compute_groups)
-
         # Use simple requests session
         self.session = requests.Session()
         # Keep system env/no_proxy behavior unless force proxy is explicitly enabled.
@@ -222,11 +209,10 @@ class InspireAPI:
 
     def create_training_job_smart(
         self,
+        *,
         name: str,
         command: str,
-        resource: str,
         framework: str = "pytorch",
-        prefer_location: Optional[str] = None,
         project_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
         image: Optional[str] = None,
@@ -241,9 +227,7 @@ class InspireAPI:
             self,
             name=name,
             command=command,
-            resource=resource,
             framework=framework,
-            prefer_location=prefer_location,
             project_id=project_id,
             workspace_id=workspace_id,
             image=image,

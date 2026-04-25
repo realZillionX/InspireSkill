@@ -244,9 +244,10 @@ def format_resources(specs: List[Dict[str, Any]], groups: List[Dict[str, Any]]) 
         [
             "",
             "Usage:",
-            "- --resource 'H200' -> 1x H200 GPU",
-            "- --resource '4xH200' -> 4x H200 GPU",
-            "- --resource '8 H200' -> 8x H200 GPU",
+            "- --quota '1,20,200' -> 1 GPU + 20 CPU + 200 GiB",
+            "- --quota '4,80,800' -> 4 GPUs + 80 CPU + 800 GiB",
+            "- --quota '0,4,32'   -> CPU-only (4 CPU + 32 GiB)",
+            "  See 'inspire resources specs' for valid triples; add --group to disambiguate.",
         ]
     )
 

@@ -17,27 +17,33 @@ from inspire.cli.context import (
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils import job_submit
 from inspire.cli.utils.auth import AuthManager, AuthenticationError
-from inspire.cli.utils.compute_group_autoselect import find_best_compute_group_location
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.quota_resolver import (
+    QuotaMatchError,
+    QuotaParseError,
+    SCHEDULE_TYPE_TRAIN,
+    parse_quota,
+    resolve_quota,
+)
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id
+from inspire.platform.web.session import get_web_session
 
 
 def run_job_create(
     ctx: Context,
     *,
     name: str,
-    resource: str,
+    quota: str,
     command: str,
     framework: str,
     priority: int | None,
     max_time: float,
-    location: str,
     workspace: str | None,
-    auto: bool,
     image: str | None,
     project: str | None,
     nodes: int,
+    group: str | None,
 ) -> None:
     """Run the job creation flow."""
     try:
@@ -50,72 +56,37 @@ def run_job_create(
             image = config.job_image
 
         try:
-            requested_gpu_type, requested_gpu_count = api.resource_manager.parse_resource_request(
-                resource
-            )
-        except Exception as e:
-            _handle_error(
-                ctx,
-                "ValidationError",
-                f"Invalid resource spec: {e}",
-                EXIT_VALIDATION_ERROR,
-            )
+            quota_spec = parse_quota(quota)
+        except QuotaParseError as e:
+            _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
             return
 
         selected_workspace_id = select_workspace_id(
             config,
-            gpu_type=requested_gpu_type.value,
             explicit_workspace_name=workspace,
         )
         if not selected_workspace_id:
             _handle_error(
                 ctx,
                 "ConfigError",
-                "No workspace_id configured for GPU workloads. "
-                "Set [workspaces].gpu or INSPIRE_WORKSPACE_ID.",
+                "No workspace_id configured. Set [context].workspace in config.toml, "
+                "or pass --workspace <name>.",
                 EXIT_CONFIG_ERROR,
             )
             return
 
-        if auto and not location:
-            best, selected_location, selected_group_name = find_best_compute_group_location(
-                api,
-                gpu_type=requested_gpu_type.value,
-                min_gpus=requested_gpu_count,
-                include_preemptible=True,
-                instance_count=nodes,
+        session = get_web_session()
+        try:
+            resolved_quota = resolve_quota(
+                spec=quota_spec,
+                workspace_id=selected_workspace_id,
+                session=session,
+                schedule_config_type=SCHEDULE_TYPE_TRAIN,
+                group_override=group,
             )
-
-            if not best:
-                _handle_error(
-                    ctx,
-                    "InsufficientResources",
-                    f"No {requested_gpu_type.value} compute group has at least {requested_gpu_count} available GPUs",
-                    EXIT_VALIDATION_ERROR,
-                )
-                return
-
-            location = selected_location or selected_group_name
-
-            if not ctx.json_output:
-                if getattr(best, "selection_source", "") == "nodes" and getattr(
-                    best, "free_nodes", 0
-                ):
-                    click.echo(
-                        "Auto-selected: "
-                        f"{selected_group_name}, {best.free_nodes} full nodes free "
-                        f"({best.available_gpus} GPUs)"
-                    )
-                else:
-                    preempt_note = (
-                        f" (+{best.low_priority_gpus} preemptible)"
-                        if getattr(best, "low_priority_gpus", 0) > 0
-                        else ""
-                    )
-                    click.echo(
-                        f"Auto-selected: {selected_group_name}, "
-                        f"{best.available_gpus} GPUs available{preempt_note}"
-                    )
+        except QuotaMatchError as err:
+            _handle_error(ctx, "ValidationError", str(err), EXIT_VALIDATION_ERROR)
+            return
 
         try:
             selected, fallback_msg = job_submit.select_project_for_workspace(
@@ -130,7 +101,6 @@ def run_job_create(
 
         selected_project_id = selected.project_id
 
-        # Cap priority to the selected project's max priority.
         if selected.priority_name:
             try:
                 max_priority = int(selected.priority_name)
@@ -148,6 +118,11 @@ def run_job_create(
             if fallback_msg:
                 click.echo(fallback_msg)
             click.echo(f"Using project: {selected.name}{selected.get_quota_status()}")
+            click.echo(
+                f"Using compute group: {resolved_quota.compute_group_name} "
+                f"({resolved_quota.gpu_count}x{resolved_quota.gpu_type or 'CPU'}, "
+                f"{resolved_quota.cpu_count} CPU, {resolved_quota.memory_gib} GiB)"
+            )
 
         try:
             submission = job_submit.submit_training_job(
@@ -155,9 +130,8 @@ def run_job_create(
                 config=config,
                 name=name,
                 command=command,
-                resource=resource,
+                quota=resolved_quota,
                 framework=framework,
-                location=location,
                 project_id=selected_project_id,
                 workspace_id=selected_workspace_id,
                 image=image,
@@ -184,7 +158,7 @@ def run_job_create(
 
         if job_id:
             click.echo(human_formatter.format_success(f"Job created: {name}"))
-            click.echo(f"Resource: {resource}")
+            click.echo(f"Quota: {quota_spec.display()}")
             if priority is not None:
                 click.echo(f"Priority: {priority}")
             if nodes > 1:
@@ -221,7 +195,17 @@ def run_job_create(
 
 @click.command("create")
 @click.option("--name", "-n", required=True, help="Job name")
-@click.option("--resource", "-r", required=True, help="Resource spec (e.g., '4xH200')")
+@click.option(
+    "--quota",
+    "-q",
+    required=True,
+    help=(
+        "Resource quota as 'gpu,cpu,mem' (mem in GiB). "
+        "Example: '4,80,800' for 4 GPU + 80 CPU + 800 GiB. "
+        "The triple must match a quota_id in the workspace (see 'inspire resources specs'); "
+        "pass --group to disambiguate when multiple compute groups offer the same triple."
+    ),
+)
 @click.option("--command", "-c", required=True, help="Start command")
 @click.option("--framework", default="pytorch", help="Training framework (default: pytorch)")
 @click.option(
@@ -234,12 +218,14 @@ def run_job_create(
     ),
 )
 @click.option("--max-time", type=float, default=100.0, help="Max runtime in hours (default: 100)")
-@click.option("--location", help="Preferred datacenter location")
 @click.option("--workspace", help="Workspace name (from [workspaces])")
 @click.option(
-    "--auto/--no-auto",
-    default=True,
-    help="Auto-select best location based on node availability (default: auto)",
+    "--group",
+    default=None,
+    help=(
+        "Disambiguate to a specific compute group by name when the --quota triple "
+        "matches multiple groups. Partial matches accepted."
+    ),
 )
 @click.option(
     "--image",
@@ -262,14 +248,13 @@ def run_job_create(
 def create(
     ctx: Context,
     name: str,
-    resource: str,
+    quota: str,
     command: str,
     framework: str,
     priority: Optional[int],
     max_time: float,
-    location: str,
     workspace: Optional[str],
-    auto: bool,
+    group: Optional[str],
     image: Optional[str],
     project: Optional[str],
     nodes: int,
@@ -282,9 +267,9 @@ def create(
     \b
     Examples:
         export INSPIRE_TARGET_DIR="/train/logs"
-        inspire job create --name "pr-123" --resource "4xH200" --command "cd /path/to/code && bash train.sh"
-        inspire job create -n test -r H200 -c "python train.py" --priority 9
-        inspire job create -n test -r 4xH200 -c "python train.py" --no-auto
+        inspire job create -n pr-123 -q 4,80,800 -c "cd /path && bash train.sh"
+        inspire job create -n test -q 1,20,200 -c "python train.py" --priority 9
+        inspire job create -n test -q 4,80,800 -c "python train.py" --group H200
 
     \b
     Priority:
@@ -295,15 +280,14 @@ def create(
     run_job_create(
         ctx,
         name=name,
-        resource=resource,
+        quota=quota,
         command=command,
         framework=framework,
         priority=priority,
         max_time=max_time,
-        location=location,
         workspace=workspace,
-        auto=auto,
         image=image,
         project=project,
         nodes=nodes,
+        group=group,
     )
