@@ -418,6 +418,113 @@ def test_resources_specs_all_includes_ray(
     )
 
 
+def test_resources_specs_ray_auto_cross_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Without --workspace, --usage ray must search every workspace."""
+    _patch_config(monkeypatch, tmp_path)
+
+    from inspire.cli.commands.resources import resources_specs as specs_module
+
+    class _DummySession:
+        workspace_id = "ws-default"
+        all_workspace_ids = ["ws-default", "ws-cpu", "ws-train"]
+        all_workspace_names = {
+            "ws-default": "Default WS",
+            "ws-cpu": "CPU资源空间",
+            "ws-train": "分布式训练空间",
+        }
+
+    monkeypatch.setattr(specs_module, "get_web_session", lambda: _DummySession())
+
+    queried_workspaces: list[str] = []
+
+    def _fake_groups(**kwargs):
+        queried_workspaces.append(kwargs["workspace_id"])
+        if kwargs["workspace_id"] == "ws-cpu":
+            return [{"logic_compute_group_id": "lcg-cpu-2", "name": "CPU资源-2"}]
+        return []
+
+    def _fake_prices(**kwargs):
+        if (
+            kwargs["workspace_id"] == "ws-cpu"
+            and kwargs["schedule_config_type"] == "SCHEDULE_CONFIG_TYPE_RAY_JOB"
+        ):
+            return [
+                {
+                    "quota_id": "quota-ray-1",
+                    "cpu_count": 4,
+                    "memory_size_gib": 16,
+                    "gpu_count": 0,
+                    "gpu_info": {"gpu_type_display": "CPU"},
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(
+        specs_module.browser_api_module, "list_notebook_compute_groups", _fake_groups
+    )
+    monkeypatch.setattr(specs_module.browser_api_module, "get_resource_prices", _fake_prices)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main, ["--json", "resources", "specs", "--usage", "ray"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    # Must have searched every workspace, not just the default.
+    assert sorted(queried_workspaces) == sorted(["ws-default", "ws-cpu", "ws-train"])
+    # Must have surfaced the ray quota that lives in ws-cpu.
+    assert payload["data"]["total"] == 1
+    row = payload["data"]["specs"][0]
+    assert row["workspace_id"] == "ws-cpu"
+    assert row["workspace_name"] == "CPU资源空间"
+    assert row["spec_id"] == "quota-ray-1"
+    # And the response carries the list form.
+    assert sorted(payload["data"]["workspace_ids"]) == sorted(
+        ["ws-default", "ws-cpu", "ws-train"]
+    )
+
+
+def test_resources_specs_explicit_workspace_skips_cross_search(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """--workspace pins to one workspace even when --usage ray would auto-cross."""
+    _patch_config(monkeypatch, tmp_path)
+
+    from inspire.cli.commands.resources import resources_specs as specs_module
+
+    class _DummySession:
+        workspace_id = "ws-default"
+        all_workspace_ids = ["ws-default", "ws-other"]
+        all_workspace_names = {"ws-default": "Default WS", "ws-other": "Other WS"}
+
+    monkeypatch.setattr(specs_module, "get_web_session", lambda: _DummySession())
+
+    queried_workspaces: list[str] = []
+
+    def _fake_groups(**kwargs):
+        queried_workspaces.append(kwargs["workspace_id"])
+        return []
+
+    monkeypatch.setattr(
+        specs_module.browser_api_module, "list_notebook_compute_groups", _fake_groups
+    )
+    monkeypatch.setattr(
+        specs_module.browser_api_module, "get_resource_prices", lambda **_: []
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        ["--json", "resources", "specs", "--workspace", "分布式训练空间", "--usage", "ray"],
+    )
+    assert result.exit_code == 0
+    # Should hit only the explicit workspace (resolved to a real ws-id by select_workspace_id).
+    assert len(queried_workspaces) == 1
+
+
 def test_resources_specs_auto_falls_back_to_notebook(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

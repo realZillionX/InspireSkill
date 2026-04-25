@@ -82,8 +82,187 @@ def _should_stop_after_match(usage: str) -> bool:
     return usage == "auto"
 
 
+def _query_workspace_specs(
+    *,
+    session,  # noqa: ANN001
+    workspace_id: str,
+    workspace_name: str,
+    usage: str,
+    group_filter: str,
+    include_empty: bool,
+) -> list[dict]:
+    """Query all (group × schedule_type) specs for one workspace."""
+    schedule_types = _USAGE_SCHEDULE_TYPES[usage]
+    rows: list[dict] = []
+    seen_rows: set[tuple[str, str, str, int, int, int, str]] = set()
+
+    groups = browser_api_module.list_notebook_compute_groups(
+        workspace_id=workspace_id,
+        session=session,
+    )
+
+    for item in groups:
+        logic_compute_group_id = _group_id(item)
+        if not logic_compute_group_id:
+            continue
+        compute_group_name = _group_name(item, fallback=logic_compute_group_id)
+        if group_filter and group_filter not in compute_group_name.lower():
+            continue
+
+        matched_any = False
+        for schedule_config_type in schedule_types:
+            prices = browser_api_module.get_resource_prices(
+                workspace_id=workspace_id,
+                logic_compute_group_id=logic_compute_group_id,
+                schedule_config_type=schedule_config_type,
+                session=session,
+            )
+            usage_label = _usage_from_schedule_type(schedule_config_type)
+
+            if not prices:
+                if include_empty and usage != "auto":
+                    empty_key = (
+                        logic_compute_group_id,
+                        usage_label,
+                        "",
+                        0,
+                        0,
+                        0,
+                        "",
+                    )
+                    if empty_key not in seen_rows:
+                        seen_rows.add(empty_key)
+                        rows.append(
+                            {
+                                "workspace_id": workspace_id,
+                                "workspace_name": workspace_name,
+                                "usage": usage_label,
+                                "schedule_config_type": schedule_config_type,
+                                "compute_group_name": compute_group_name,
+                                "logic_compute_group_id": logic_compute_group_id,
+                                "spec_id": "",
+                                "cpu_count": 0,
+                                "memory_size_gib": 0,
+                                "gpu_count": 0,
+                                "gpu_type": "",
+                                "total_price_per_hour": 0,
+                            }
+                        )
+                continue
+
+            for price in prices:
+                spec_id = str(price.get("quota_id") or price.get("spec_id") or "").strip()
+                cpu_count = int(price.get("cpu_count") or 0)
+                memory_size_gib = _extract_memory_gib(price)
+                gpu_count = int(price.get("gpu_count") or 0)
+                gpu_type = _extract_gpu_type(price)
+                row_key = (
+                    logic_compute_group_id,
+                    usage_label,
+                    spec_id,
+                    cpu_count,
+                    memory_size_gib,
+                    gpu_count,
+                    gpu_type,
+                )
+                if row_key in seen_rows:
+                    continue
+                seen_rows.add(row_key)
+                rows.append(
+                    {
+                        "workspace_id": workspace_id,
+                        "workspace_name": workspace_name,
+                        "usage": usage_label,
+                        "schedule_config_type": schedule_config_type,
+                        "compute_group_name": compute_group_name,
+                        "logic_compute_group_id": logic_compute_group_id,
+                        "spec_id": spec_id,
+                        "cpu_count": cpu_count,
+                        "memory_size_gib": memory_size_gib,
+                        "gpu_count": gpu_count,
+                        "gpu_type": gpu_type,
+                        "total_price_per_hour": price.get("total_price_per_hour", 0),
+                    }
+                )
+            matched_any = True
+            if _should_stop_after_match(usage):
+                break
+
+        if matched_any:
+            continue
+        if include_empty and usage == "auto":
+            empty_key = (
+                logic_compute_group_id,
+                "auto",
+                "",
+                0,
+                0,
+                0,
+                "",
+            )
+            if empty_key not in seen_rows:
+                seen_rows.add(empty_key)
+                rows.append(
+                    {
+                        "workspace_id": workspace_id,
+                        "workspace_name": workspace_name,
+                        "usage": "auto",
+                        "schedule_config_type": "",
+                        "compute_group_name": compute_group_name,
+                        "logic_compute_group_id": logic_compute_group_id,
+                        "spec_id": "",
+                        "cpu_count": 0,
+                        "memory_size_gib": 0,
+                        "gpu_count": 0,
+                        "gpu_type": "",
+                        "total_price_per_hour": 0,
+                    }
+                )
+
+    return rows
+
+
+def _resolve_query_workspaces(
+    *,
+    session,  # noqa: ANN001
+    explicit_workspace: Optional[str],
+    config: Config,
+    usage: str,
+    cross_search_requested: bool,
+) -> list[tuple[str, str]]:
+    """Pick which workspaces to query, returning a list of (id, display_name)."""
+    if explicit_workspace:
+        resolved = select_workspace_id(config, explicit_workspace_name=explicit_workspace)
+        ws_id = resolved or session.workspace_id
+        name = (getattr(session, "all_workspace_names", None) or {}).get(ws_id) or explicit_workspace
+        return [(ws_id, name)]
+
+    cross = cross_search_requested or usage == "ray"
+    if cross:
+        ws_ids = list(getattr(session, "all_workspace_ids", None) or [])
+        names = getattr(session, "all_workspace_names", None) or {}
+        if not ws_ids:
+            ws_ids = [session.workspace_id]
+        return [(wid, names.get(wid) or wid) for wid in ws_ids]
+
+    ws_id = session.workspace_id
+    name = (getattr(session, "all_workspace_names", None) or {}).get(ws_id) or ws_id
+    return [(ws_id, name)]
+
+
 @click.command("specs")
 @click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
+@click.option(
+    "--all-workspaces",
+    "-A",
+    "all_workspaces",
+    is_flag=True,
+    default=False,
+    help=(
+        "Search every workspace the account can see (auto-enabled for "
+        "--usage ray since Ray quotas only exist in a few workspaces)."
+    ),
+)
 @click.option("--group", default=None, help="Filter by compute group name (partial match)")
 @click.option(
     "--usage",
@@ -101,6 +280,7 @@ def _should_stop_after_match(usage: str) -> bool:
 def list_specs(
     ctx: Context,
     workspace: Optional[str],
+    all_workspaces: bool,
     group: Optional[str],
     usage: str,
     include_empty: bool,
@@ -110,152 +290,48 @@ def list_specs(
 
     ``auto`` checks HPC quotas first and falls back to notebook/DSW quotas.
     Use ``--usage ray`` for Ray head/worker quotas (consumed by
-    ``inspire ray create --head-spec`` / ``--worker spec=``).
+    ``inspire ray create --head-spec`` / ``--worker spec=``); when
+    ``--workspace`` is omitted, ``--usage ray`` searches every workspace
+    automatically because Ray quotas live in only a handful of them.
 
     Returns per-spec entries including:
+    - workspace_id / workspace_name
     - logic_compute_group_id
     - spec_id (quota_id)
     - cpu_count / memory_size_gib / gpu_count / gpu_type
-    - workspace_id
     """
 
     ctx.json_output = bool(ctx.json_output or json_output_local)
     usage = usage.lower()
     try:
         config, _ = Config.from_files_and_env(require_credentials=False, require_target_dir=False)
-        resolved_workspace_id = select_workspace_id(
-            config,
-            explicit_workspace_name=workspace,
-        )
         session = get_web_session()
-        workspace_id = resolved_workspace_id or session.workspace_id
 
-        groups = browser_api_module.list_notebook_compute_groups(
-            workspace_id=workspace_id,
+        target_workspaces = _resolve_query_workspaces(
             session=session,
+            explicit_workspace=workspace,
+            config=config,
+            usage=usage,
+            cross_search_requested=all_workspaces,
         )
 
         group_filter = (group or "").strip().lower()
         rows: list[dict] = []
-        seen_rows: set[tuple[str, str, str, int, int, int, str]] = set()
-        schedule_types = _USAGE_SCHEDULE_TYPES[usage]
-        for item in groups:
-            logic_compute_group_id = _group_id(item)
-            if not logic_compute_group_id:
-                continue
-            compute_group_name = _group_name(item, fallback=logic_compute_group_id)
-            if group_filter and group_filter not in compute_group_name.lower():
-                continue
-
-            matched_any = False
-            for schedule_config_type in schedule_types:
-                prices = browser_api_module.get_resource_prices(
-                    workspace_id=workspace_id,
-                    logic_compute_group_id=logic_compute_group_id,
-                    schedule_config_type=schedule_config_type,
+        for ws_id, ws_name in target_workspaces:
+            rows.extend(
+                _query_workspace_specs(
                     session=session,
+                    workspace_id=ws_id,
+                    workspace_name=ws_name,
+                    usage=usage,
+                    group_filter=group_filter,
+                    include_empty=include_empty,
                 )
-                usage_label = _usage_from_schedule_type(schedule_config_type)
-
-                if not prices:
-                    if include_empty and usage != "auto":
-                        empty_key = (
-                            logic_compute_group_id,
-                            usage_label,
-                            "",
-                            0,
-                            0,
-                            0,
-                            "",
-                        )
-                        if empty_key not in seen_rows:
-                            seen_rows.add(empty_key)
-                            rows.append(
-                                {
-                                    "workspace_id": workspace_id,
-                                    "usage": usage_label,
-                                    "schedule_config_type": schedule_config_type,
-                                    "compute_group_name": compute_group_name,
-                                    "logic_compute_group_id": logic_compute_group_id,
-                                    "spec_id": "",
-                                    "cpu_count": 0,
-                                    "memory_size_gib": 0,
-                                    "gpu_count": 0,
-                                    "gpu_type": "",
-                                    "total_price_per_hour": 0,
-                                }
-                            )
-                    continue
-
-                for price in prices:
-                    spec_id = str(price.get("quota_id") or price.get("spec_id") or "").strip()
-                    cpu_count = int(price.get("cpu_count") or 0)
-                    memory_size_gib = _extract_memory_gib(price)
-                    gpu_count = int(price.get("gpu_count") or 0)
-                    gpu_type = _extract_gpu_type(price)
-                    row_key = (
-                        logic_compute_group_id,
-                        usage_label,
-                        spec_id,
-                        cpu_count,
-                        memory_size_gib,
-                        gpu_count,
-                        gpu_type,
-                    )
-                    if row_key in seen_rows:
-                        continue
-                    seen_rows.add(row_key)
-                    rows.append(
-                        {
-                            "workspace_id": workspace_id,
-                            "usage": usage_label,
-                            "schedule_config_type": schedule_config_type,
-                            "compute_group_name": compute_group_name,
-                            "logic_compute_group_id": logic_compute_group_id,
-                            "spec_id": spec_id,
-                            "cpu_count": cpu_count,
-                            "memory_size_gib": memory_size_gib,
-                            "gpu_count": gpu_count,
-                            "gpu_type": gpu_type,
-                            "total_price_per_hour": price.get("total_price_per_hour", 0),
-                        }
-                    )
-                matched_any = True
-                if _should_stop_after_match(usage):
-                    break
-
-            if matched_any:
-                continue
-            if include_empty and usage == "auto":
-                empty_key = (
-                    logic_compute_group_id,
-                    "auto",
-                    "",
-                    0,
-                    0,
-                    0,
-                    "",
-                )
-                if empty_key not in seen_rows:
-                    seen_rows.add(empty_key)
-                    rows.append(
-                        {
-                            "workspace_id": workspace_id,
-                            "usage": "auto",
-                            "schedule_config_type": "",
-                            "compute_group_name": compute_group_name,
-                            "logic_compute_group_id": logic_compute_group_id,
-                            "spec_id": "",
-                            "cpu_count": 0,
-                            "memory_size_gib": 0,
-                            "gpu_count": 0,
-                            "gpu_type": "",
-                            "total_price_per_hour": 0,
-                        }
-                    )
+            )
 
         rows.sort(
             key=lambda r: (
+                str(r.get("workspace_name", "")),
                 _usage_sort_key(str(r.get("usage", ""))),
                 str(r.get("compute_group_name", "")),
                 -int(r.get("gpu_count", 0)),
@@ -266,10 +342,17 @@ def list_specs(
         )
 
         if ctx.json_output:
+            ws_ids = [w for w, _ in target_workspaces]
+            ws_names = [n for _, n in target_workspaces]
             click.echo(
                 json_formatter.format_json(
                     {
-                        "workspace_id": workspace_id,
+                        # First workspace kept for backwards compatibility with
+                        # any tooling that read this field; the list form below
+                        # is authoritative when multiple workspaces are searched.
+                        "workspace_id": ws_ids[0] if ws_ids else "",
+                        "workspace_ids": ws_ids,
+                        "workspace_names": ws_names,
                         "usage_filter": usage,
                         "specs": rows,
                         "total": len(rows),
@@ -280,41 +363,74 @@ def list_specs(
 
         if not rows:
             click.echo("No resource specs found.")
+            if usage == "ray" and len(target_workspaces) == 1:
+                click.echo(
+                    "Hint: Ray quotas are scoped to specific workspaces; "
+                    "rerun with -A / --all-workspaces or --workspace <name>."
+                )
             return
 
-        headers = (
-            "Usage",
-            "Compute Group",
-            "Spec ID",
-            "GPU",
-            "CPU",
-            "MemGiB",
-            "Logic Group ID",
-        )
-        widths = [10, 24, 36, 8, 6, 8, 36]
+        # Show workspace column when more than one workspace was queried.
+        multi_ws = len({r.get("workspace_id") for r in rows}) > 1
+        if multi_ws:
+            headers = (
+                "Workspace",
+                "Usage",
+                "Compute Group",
+                "Spec ID",
+                "GPU",
+                "CPU",
+                "MemGiB",
+                "Logic Group ID",
+            )
+            widths = [16, 8, 24, 36, 8, 6, 8, 36]
+        else:
+            headers = (
+                "Usage",
+                "Compute Group",
+                "Spec ID",
+                "GPU",
+                "CPU",
+                "MemGiB",
+                "Logic Group ID",
+            )
+            widths = [10, 24, 36, 8, 6, 8, 36]
+
         click.echo("")
-        click.echo("Resource Specs (for notebook create / hpc create)")
+        click.echo("Resource Specs (for notebook create / hpc create / ray create)")
         click.echo("-" * (sum(widths) + len(widths) - 1))
-        click.echo(
-            f"{headers[0]:<{widths[0]}} {headers[1]:<{widths[1]}} "
-            f"{headers[2]:<{widths[2]}} {headers[3]:<{widths[3]}} "
-            f"{headers[4]:<{widths[4]}} {headers[5]:<{widths[5]}} "
-            f"{headers[6]:<{widths[6]}}"
-        )
+        click.echo(" ".join(f"{h:<{w}}" for h, w in zip(headers, widths)))
         click.echo("-" * (sum(widths) + len(widths) - 1))
         for row in rows:
             gpu_desc = f"{row['gpu_count']}x{row['gpu_type'] or 'CPU'}"
-            click.echo(
-                f"{row['usage'][:widths[0]-1]:<{widths[0]}} "
-                f"{row['compute_group_name'][:widths[1]-1]:<{widths[1]}} "
-                f"{row['spec_id'][:widths[2]-1]:<{widths[2]}} "
-                f"{gpu_desc[:widths[3]-1]:<{widths[3]}} "
-                f"{row['cpu_count']:<{widths[4]}} "
-                f"{row['memory_size_gib']:<{widths[5]}} "
-                f"{row['logic_compute_group_id'][:widths[6]-1]:<{widths[6]}}"
-            )
+            if multi_ws:
+                cells = [
+                    str(row.get("workspace_name", ""))[: widths[0] - 1],
+                    str(row["usage"])[: widths[1] - 1],
+                    str(row["compute_group_name"])[: widths[2] - 1],
+                    str(row["spec_id"])[: widths[3] - 1],
+                    gpu_desc[: widths[4] - 1],
+                    str(row["cpu_count"]),
+                    str(row["memory_size_gib"]),
+                    str(row["logic_compute_group_id"])[: widths[7] - 1],
+                ]
+            else:
+                cells = [
+                    str(row["usage"])[: widths[0] - 1],
+                    str(row["compute_group_name"])[: widths[1] - 1],
+                    str(row["spec_id"])[: widths[2] - 1],
+                    gpu_desc[: widths[3] - 1],
+                    str(row["cpu_count"]),
+                    str(row["memory_size_gib"]),
+                    str(row["logic_compute_group_id"])[: widths[6] - 1],
+                ]
+            click.echo(" ".join(f"{c:<{w}}" for c, w in zip(cells, widths)))
         click.echo("-" * (sum(widths) + len(widths) - 1))
-        click.echo(f"Workspace: {workspace_id}")
+        if multi_ws:
+            ws_summary = ", ".join(sorted({r.get("workspace_name", "") for r in rows}))
+            click.echo(f"Workspaces searched: {ws_summary}")
+        else:
+            click.echo(f"Workspace: {target_workspaces[0][1]}")
         click.echo(f"Total specs: {len(rows)}")
         if usage == "hpc":
             click.echo(
