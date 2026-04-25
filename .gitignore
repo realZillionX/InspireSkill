@@ -30,3 +30,4 @@ cli/build/
 .env.*
 *.pem
 *.key
+.claude/
