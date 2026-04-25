@@ -393,12 +393,19 @@ def create_notebook(
     # Match the exact field set the platform UI sends (captured via Playwright).
     # Proto-compatible names: mirror_id/mirror_url (not image_id/image_url).
     # The UI does NOT send: gpu_type (top-level).
+    # ``allow_ssh: true`` is required so the platform exposes the in-container
+    # rtunnel server (port 31337) on the proxy URL the CLI tunnels through;
+    # without it the proxy returns 404 and `inspire notebook ssh` cannot
+    # complete its preflight. Empirically the field defaults to false when
+    # omitted, regardless of image SSH tooling — verified 2026-04-25 against
+    # pytorch-inspire-base on CPU资源-2.
     body: dict[str, Any] = {
         "workspace_id": workspace_id,
         "name": name,
         "project_id": project_id,
         "project_name": project_name,
         "auto_stop": auto_stop,
+        "allow_ssh": True,
         "mirror_id": image_id,
         "mirror_url": image_url,
         "logic_compute_group_id": logic_compute_group_id,

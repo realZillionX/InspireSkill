@@ -20,7 +20,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | CPU 空间唯一 hpc 组 | `CPU 资源空间` 下**只有 `HPC-可上网区资源-2`** 支持 `inspire hpc create`；其它组只能建 notebook。另外该组的 `500GB` 规格运维未配好，提交**静默排队**——真需要 500GB 内存就退化成在 `CPU资源-2` 开 notebook 交互跑。 |
 | 项目-实例挂载隔离 | 实例只挂**自身所在项目**的 fileset；其它项目的 `/inspire/{hdd,ssd,qb-ilm,qb-ilm2}/project/<others>/` 路径在该实例里**根本不存在**（`ls` 报 `No such file`）——不是权限问题。访问项目 `<X>` 的存储必须在 `project=<X>` 的实例里。 |
 | 跨项目 cp 要 root | `notebook scp` / `exec cp` / 单账号 CLI 都做不到，去**飞书项目群**找管理员。 |
-| SSH bootstrap | `inspire notebook ssh` 从 `/inspire/hdd/global_public/inspire-skill-bootstrap/v1/` 自动 cp rtunnel + dpkg 装 sshd。**任何镜像 / 计算组 / 有无公网都能直接 ssh**，镜像里不需要预装。想固化以省冷启时间就 `image save`，否则用完即弃（容器停掉痕迹全没）。 |
+| SSH bootstrap | `inspire notebook ssh` 从 `/inspire/hdd/global_public/inspire-skill-bootstrap/v1/` 自动 cp rtunnel + dpkg 装 sshd（**不联网**，靠 GPFS）。这一步是兼容**任何计算组（含无公网区）**的真正前提，已替换 v1 的 curl/apt-get 逻辑。**镜像兼容性约束**：bootstrap 起的 rtunnel 监听 `31337`，平台通过 Jupyter 的 `proxy/31337/` 路径暴露给 CLI；如果镜像里 jupyter 不带 `jupyter-server-proxy` 扩展（部分新版基础镜像砍掉了），proxy 路径会 `404`，整条 SSH 通道接不通——这跟 kit cp / dpkg 都没关系，是镜像层依赖。`pytorch-inspire-base` / `ubuntu-inspire-base` 系列已知带这个扩展，cold-start 之前先确认或 `notebook test`。 |
 
 ### 1.2 通用规则
 

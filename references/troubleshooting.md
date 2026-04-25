@@ -19,6 +19,7 @@ CLI 在容器内跑 bootstrap shell 做两件事：
 | `SSH bootstrap 失败:在容器里没能从 global_public kit 拿到 rtunnel` | kit 路径不可达。容器里 `ls /inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-amd64/rtunnel` 应当存在且可执行。不存在 → 平台侧 global_public 挂载没覆盖到这台实例，找 SII 运维。 |
 | `exec format error` / `/tmp/rtunnel --help` 崩 | kit 里落了一份**非当前容器架构**的 rtunnel，或者文件被截断。CLI 下次 bootstrap 会自动 wipe `/tmp/rtunnel` 重试；手动清也行。持续失败的话提 issue 附 `uname -m` + `file /inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-*/rtunnel` 输出。 |
 | `dpkg: error processing archive ...` | 容器已有部分 openssh 组件且版本冲突。手动 `dpkg -i --force-overwrite /inspire/hdd/global_public/inspire-skill-bootstrap/v1/sshd-debs/*.deb` 一次。 |
+| `Tunnel setup completed, but SSH preflight failed` + `404 page not found` on `proxy/31337/` | kit cp + dpkg 都已成功（容器里 `ps -ef \| grep -E 'sshd\|rtunnel'` 能看到进程），但 Jupyter 的 `proxy/<port>/` 路径整段 `404` 说明该镜像的 jupyter 没装 `jupyter-server-proxy` 扩展，外部根本接不到 31337。**bootstrap kit 解决不了这一档**，得换镜像（`pytorch-inspire-base` / `ubuntu-inspire-base` 系列已知带）。已知现象不会出现 `start_config.allow_ssh=false` 提示——那条 hint 自 v2 起被 `notebook create` 主动设 `allow_ssh=true` 消掉。 |
 
 ### 手工复现 bootstrap
 
