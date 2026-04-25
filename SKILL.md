@@ -64,11 +64,11 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ### 2.2 Notebook
 
-**所有 notebook 子命令都用 notebook name 当唯一 identifier**——没有"alias"中间层。第一次 `notebook ssh <name>` bootstrap 时把 SSH 连接信息缓存在本地（key 就是 notebook name），后续命令直接复用。
+第一次 `notebook ssh <name>` 完成 bootstrap，后续 `notebook {shell,exec,scp,test,refresh,install-deps,top,forget} <name>` 直接复用。
 
 **`shell` vs `exec`**:
 - `inspire notebook shell <name>` = **持久** SSH 会话，cwd / env / history 保留直到 `exit`。多个终端并开就是多个独立会话（都挂在同一容器，互相抢 CPU / RAM）。**想挂着就走、回来再 attach 长时间任务，shell 里跑 `tmux` / `screen`**——下面 §2.2 末尾有模板。
-- `inspire notebook exec <name> "<cmd>"` = **一次性**独立子进程，两次调用间**不共享 cwd / env**。接续状态塞同一调用：`exec "cd foo && export X=1 && ./run.sh"`，或远端写脚本后 `exec "bash setup.sh"`。
+- `inspire notebook exec <name> "<cmd>"` = **一次性**独立子进程，两次调用间**不共享 cwd / env**。接续状态塞同一调用：`exec <name> "cd foo && export X=1 && ./run.sh"`，或远端写脚本后 `exec <name> "bash setup.sh"`。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -78,14 +78,15 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire notebook events <name> [--tail N --from-cache]` | 实例生命周期事件（调度 / 镜像拉取 / 保存镜像） |
 | `inspire notebook lifecycle <name>` | 多次启停的粗粒度时间线（一次 `start→stop` 一行） |
 | `inspire notebook {start,stop,delete} <name> [--yes]` | 生命周期；`delete` 不清本地 SSH 缓存，要 `forget <name>` |
-| `inspire notebook ssh <name>` | Bootstrap SSH（cache 以 notebook name 当 key）；后续直接 `inspire notebook shell/exec/scp/...` 就行。失败见 troubleshooting.md |
+| `inspire notebook ssh <name>` | Bootstrap SSH；后续直接 `inspire notebook shell/exec/scp/...` 就行。失败见 troubleshooting.md |
 | `inspire notebook exec <name> "<cmd>"` | 一次性远端命令（在 `INSPIRE_TARGET_DIR` 下） |
 | `inspire notebook shell <name>` | 持久交互 SSH |
-| `inspire notebook scp <name> <src> <dst>` | 传**非仓库**文件（源码走 `git push` + `exec "cd <repo> && git pull"`）。不继承 `INSPIRE_TARGET_DIR`，远端写绝对路径 |
+| `inspire notebook scp <name> <src> <dst>` | 传**非仓库**文件（源码走 `git push` + `exec <name> "cd <repo> && git pull"`）。不继承 `INSPIRE_TARGET_DIR`，远端写绝对路径 |
 | `inspire notebook install-deps <name> [--slurm --ray]` | 给已运行的 notebook 补齐 hpc/ray 依赖（对齐 unified-base:v2：slurm 客户端 + ray=2.55.1）；幂等，已装的自动 skip。准备好后 `image save` 派生项目镜像。仅可上网区计算组可用 |
 | `inspire notebook test [<name>]` | 连通性测试（带耗时），排障首选 |
 | `inspire notebook refresh <name>` | notebook 重启后刷 SSH 缓存 |
-| `inspire notebook {connections,forget}` | `connections` 列已 bootstrap 的 notebook；`forget <name>` 清本地 SSH 缓存 |
+| `inspire notebook connections` | 列已 bootstrap 的 notebook |
+| `inspire notebook forget <name>` | 清本地 SSH 缓存 |
 | `inspire notebook top [--watch]` | GPU 利用率实时 `nvidia-smi`（要 tunnel 活着） |
 | `inspire notebook metrics <name> [--metric core --json]` | 历史利用率曲线 PNG（8 种指标默认取前 4）；`job / hpc / serving metrics` 同 UX 同 flag |
 
