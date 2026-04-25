@@ -82,7 +82,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | `inspire notebook exec <alias> "<cmd>"` | 一次性远端命令（在 `INSPIRE_TARGET_DIR` 下） |
 | `inspire notebook shell [<alias>]` | 持久交互 SSH |
 | `inspire notebook scp <src> <dst>` | 传**非仓库**文件（源码走 `git push` + `exec "cd <repo> && git pull"`）。不继承 `INSPIRE_TARGET_DIR`，远端写绝对路径 |
-| `inspire notebook install-deps <alias> [--slurm --ray]` | 一次性把 hpc/ray 运行时依赖装进 notebook，对齐 unified-base:v2（slurm 客户端 + ray=2.55.1 默认）；准备好后 `image save` 派生项目镜像。仅可上网区计算组可用 |
+| `inspire notebook install-deps <alias> [--slurm --ray]` | 给已运行的 notebook 补齐 hpc/ray 依赖（对齐 unified-base:v2：slurm 客户端 + ray=2.55.1）；幂等，已装的自动 skip。准备好后 `image save` 派生项目镜像。仅可上网区计算组可用 |
 | `inspire notebook test [<alias>]` | 连通性测试（带耗时），排障首选 |
 | `inspire notebook refresh <alias>` | notebook 重启后刷 alias 连接 |
 | `inspire notebook {connections,forget,set-default}` | 本地 alias 管理 |
@@ -221,13 +221,15 @@ inspire notebook exec --alias mybox "hostname"
 
 **强烈推荐的一次性做法**：项目刚开张时在可上网区 CPU 空间用 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`（自带 ssh + slurm + ray 依赖）起一个基底 notebook，把后续要用到的所有依赖**一次性配齐**——`hpc create` 要的 slurm-client、`ray create` 要的 ray runtime、多节点 `job create` 要的 deepspeed 等等——然后 `image save` 派生为项目通用镜像，后续 notebook / job / hpc / ray 全用它。一次费力，永久省事。
 
-**裸镜像需要补 hpc/ray 时的快捷做法**：在 ubuntu 24.04 系列基底（`sandbox-base:ubuntu24.04-py3.1` 等）上 `notebook ssh` 拿到 alias 后跑：
+**给现有镜像补 hpc/ray 的快捷做法**：在 ubuntu 22.04 / 24.04 镜像（项目业务镜像如 `vtb-training:v1`、平台基底 `unified-base:v2` 等）上 `notebook ssh` 拿到 alias 后跑：
 
 ```bash
 inspire notebook install-deps <alias> --slurm --ray
 ```
 
-这会一次性装好 slurm 客户端依赖（`slurm-wlm slurm-client munge hwloc libpmix2`，对齐 unified-base:v2）+ pin 版本的 ray（默认 `2.55.1`），后续 `image save` 即得到能跑 hpc / ray 的项目镜像。`--ray` 自带清华源，无网区不可用——只有可上网的 `HPC-可上网区资源-2` / `CPU资源-1` 计算组能跑。**`slurm.conf` 由平台在 `hpc create` 时注入，install-deps 不动；分布式训练 lib（deepspeed / accelerate / transformers）项目自己 `notebook exec pip install`**。
+每步都先在容器里 probe 一次：`srun` / `sbatch` 已存在就 skip apt，目标版本的 ray 已装就 skip pip。所以**业务镜像里如果只缺 ray 不缺 slurm**，命令会自动跳过 apt 那步；在 `unified-base:v2` 上跑就完全是 no-op。两次跑也是幂等的。distro 不在 jammy / noble 里会清晰报错而不是让 apt 半路崩。
+
+`--ray` 默认走清华源（无网区不可用——只有可上网的 `HPC-可上网区资源-2` / `CPU资源-1` 等组能跑），版本默认 `2.55.1`（对齐 unified-base:v2），用 `--ray-version` 改。**`slurm.conf` 由平台在 `hpc create` 时注入，install-deps 不动；分布式训练 lib（deepspeed / accelerate / transformers）项目自决，用 `inspire notebook exec` 自己装**。
 
 **例外：镜像变体太多、不愿固化的**（infra 组的常见模式）→ 镜像不带 sshd 没问题，`notebook ssh` 自带 bootstrap（§1.1），每次连接现装现用；但 **slurm / ray / 分布式训练 lib 必须真实装在镜像里**（用上面的 `install-deps` 或手动 apt/pip），要跑 `hpc create` / `ray create` / 多节点 `job create` 就老老实实在那个镜像里把对应依赖装好。
 

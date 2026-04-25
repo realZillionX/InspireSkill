@@ -1,16 +1,23 @@
 """`inspire notebook install-deps`: bake hpc/ray runtime deps into a notebook.
 
-Pre-canned, version-pinned installs that mirror what
-``docker.sii.shaipower.online/inspire-studio/unified-base:v2`` ships with.
-Run inside a notebook you already have an SSH alias to, then ``image save``
-to derive a project base image with all the runtimes you need.
+Each step does its own *in-shell* probing before running anything destructive,
+so:
 
-Scope (intentionally narrow):
+  * Hitting `install-deps` twice is safe (second run is a no-op).
+  * The unified-base:v2 image — which already ships slurm + ray — short-circuits
+    everything; nothing is reinstalled.
+  * If the container's distro doesn't match what we know how to drive
+    (jammy / noble), we bail with a clear message instead of letting apt fall
+    over half-way through.
 
-* ``--slurm`` — apt-installs ``slurm-wlm slurm-client munge hwloc libpmix2``
-  so ``inspire hpc create`` can land on this image. Slurm config and munge
-  key are *not* touched; the platform injects ``/etc/slurm/slurm.conf`` at
-  ``hpc create`` time.
+Run inside a notebook you already have an SSH alias to, then ``image save`` to
+derive a project base image with all the runtimes you need.
+
+Scope:
+
+* ``--slurm`` — apt-installs ``slurm-wlm slurm-client munge hwloc libpmix2``,
+  matching unified-base:v2. Slurm config and munge key are *not* touched; the
+  platform injects ``/etc/slurm/slurm.conf`` at ``hpc create`` time.
 * ``--ray`` — pip-installs a version-pinned ``ray`` (default ``2.55.1`` to
   match unified-base:v2). Override with ``--ray-version``.
 
@@ -19,8 +26,6 @@ project-specific; install those with ``inspire notebook exec`` directly.
 """
 
 from __future__ import annotations
-
-from typing import Iterable
 
 import click
 
@@ -34,6 +39,7 @@ from inspire.cli.utils.errors import exit_with_error as _handle_error
 
 DEFAULT_RAY_VERSION = "2.55.1"
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+SUPPORTED_DISTROS = ("noble", "jammy")
 
 _SLURM_APT_PACKAGES = (
     "slurm-wlm",
@@ -44,10 +50,35 @@ _SLURM_APT_PACKAGES = (
 )
 
 
+def _distro_preflight() -> str:
+    """Bash snippet that exits 2 with a clear message on unsupported distros."""
+    supported = "|".join(SUPPORTED_DISTROS)
+    return (
+        "_codename=$(. /etc/os-release && echo \"$VERSION_CODENAME\"); "
+        f'case "$_codename" in {supported}) ;; '
+        "*) echo \"[install-deps] ERROR: unsupported distro '$_codename'; "
+        f'supported: {", ".join(SUPPORTED_DISTROS)}\" >&2; exit 2 ;; esac; '
+        'echo "[install-deps] distro=$_codename"'
+    )
+
+
 def _build_slurm_step() -> str:
+    """Detect-then-install slurm. Skips entirely if ``srun`` already exists.
+
+    Many real images (vtb-training, unified-base, etc.) ship some of these
+    packages already; ``apt-get install`` of an already-present package is a
+    no-op so we still call it for partial coverage, but we short-circuit the
+    whole step when the binaries are already in PATH to avoid the
+    ``apt-get update`` round-trip.
+    """
     pkgs = " ".join(_SLURM_APT_PACKAGES)
     return (
         "set -e; "
+        f"{_distro_preflight()}; "
+        'if command -v srun >/dev/null 2>&1 && command -v sbatch >/dev/null 2>&1; then '
+        '  echo "[install-deps] slurm already installed (srun=$(command -v srun)); skipping"; '
+        '  exit 0; '
+        "fi; "
         "export DEBIAN_FRONTEND=noninteractive; "
         "apt-get update; "
         f"apt-get install -y --no-install-recommends {pkgs}"
@@ -55,14 +86,27 @@ def _build_slurm_step() -> str:
 
 
 def _build_ray_step(version: str, *, pip_index_url: str) -> str:
+    """Detect-then-install ray. Skips when the requested version is already there."""
     spec = f"ray=={version}" if version else "ray"
-    # `--break-system-packages` is required on Ubuntu 24.04+ (PEP 668), which
+    # ``--break-system-packages`` is required on Ubuntu 24.04+ (PEP 668), which
     # marks the system Python as externally-managed. Our intent is exactly to
     # populate the system site-packages so `image save` bakes ray into a
-    # project base image — there's no venv in play.
+    # project base image — there's no venv in play. The flag is harmless on
+    # 22.04 jammy where PEP 668 isn't enforced.
     index_arg = f' --index-url "{pip_index_url}"' if pip_index_url else ""
+    target = version or "(any)"
     return (
-        f"set -e; pip install --upgrade --no-input --break-system-packages{index_arg} "
+        "set -e; "
+        f"{_distro_preflight()}; "
+        f'_have=$(pip show ray 2>/dev/null | awk \'/^Version:/ {{print $2}}\'); '
+        f'if [ -n "$_have" ] && [ "$_have" = "{version}" ]; then '
+        f'  echo "[install-deps] ray=={version} already installed; skipping"; '
+        "  exit 0; "
+        "fi; "
+        f'if [ -n "$_have" ]; then '
+        f'  echo "[install-deps] upgrading ray $_have -> {target}"; '
+        "fi; "
+        f"pip install --upgrade --no-input --break-system-packages{index_arg} "
         f'"{spec}"'
     )
 
@@ -94,13 +138,16 @@ def _run_step(label: str, command: str, *, alias: str, timeout: int) -> int:
     help=(
         "apt-install the Slurm client + dependencies that match "
         "unified-base:v2. Required for `inspire hpc create` to use the "
-        "saved image."
+        "saved image. Skipped automatically when srun + sbatch already exist."
     ),
 )
 @click.option(
     "--ray/--no-ray",
     default=False,
-    help="pip-install ray (version pinned via --ray-version).",
+    help=(
+        "pip-install ray (version pinned via --ray-version). Skipped "
+        "automatically when the requested version is already installed."
+    ),
 )
 @click.option(
     "--ray-version",
@@ -147,7 +194,9 @@ def install_deps_cmd(
 
     Designed to run once on a fresh notebook before `inspire image save`,
     so the resulting image is ready for `inspire hpc create` /
-    `inspire ray create` without further setup.
+    `inspire ray create` without further setup. Each step probes the
+    container first and skips itself if the requested runtime is already
+    in place — hitting this command twice is safe.
     """
     if not (slurm or ray):
         raise click.UsageError("Pass at least one of --slurm / --ray.")
@@ -191,4 +240,4 @@ def install_deps_cmd(
     click.echo("install-deps complete.")
 
 
-__all__ = ["install_deps_cmd", "DEFAULT_RAY_VERSION"]
+__all__ = ["install_deps_cmd", "DEFAULT_RAY_VERSION", "SUPPORTED_DISTROS"]
