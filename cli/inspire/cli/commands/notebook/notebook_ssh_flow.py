@@ -647,18 +647,26 @@ def run_notebook_ssh(
             json_output=False,
         )
 
-    # Alias resolution:
-    #   1. ``--save-as`` wins if the user asked for a specific label.
-    #   2. Else, reuse any alias already bound to this ``notebook_id`` — this
-    #      keeps legacy ``nb-<id[:8]>`` bridges from users who ran earlier CLI
-    #      versions working without forcing a rename.
+    # Alias resolution: enforce **one notebook ↔ one alias**.
+    #   1. ``--save-as <new>`` wins. If this notebook already had a different
+    #      alias, drop the old one — same machine, two short names is just
+    #      noise (and lets `notebook connections` accumulate dead duplicates).
+    #   2. Else, reuse the existing alias for this notebook (keeps legacy
+    #      ``nb-<id[:8]>`` bridges from earlier CLI versions working).
     #   3. Else, defer: after we fetch ``notebook_detail`` below we derive an
     #      alias from the notebook's display name (and only fall back to
     #      ``nb-<id[:8]>`` when the name sanitises to something too short).
     cached_config = load_tunnel_config(account=tunnel_account)
-    profile_name: Optional[str] = save_as or _find_alias_for_notebook_id(
-        cached_config, notebook_id
-    )
+    existing_alias = _find_alias_for_notebook_id(cached_config, notebook_id)
+    if save_as and existing_alias and existing_alias != save_as:
+        cached_config.remove_bridge(existing_alias)
+        save_tunnel_config(cached_config)
+        click.echo(
+            f"Renamed alias '{existing_alias}' → '{save_as}' "
+            f"(one notebook keeps one alias).",
+            err=True,
+        )
+    profile_name: Optional[str] = save_as or existing_alias
 
     if profile_name and profile_name in cached_config.bridges:
         cached_bridge = cached_config.bridges[profile_name]
