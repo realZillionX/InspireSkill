@@ -1,4 +1,4 @@
-"""Resources specs command (discover spec_id/quota_id by compute group)."""
+"""Resources specs command (discover quotas by name, no UUIDs surfaced)."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 
 _USAGE_SCHEDULE_TYPES = {
-    "auto": ("SCHEDULE_CONFIG_TYPE_HPC", "SCHEDULE_CONFIG_TYPE_DSW"),
     "notebook": ("SCHEDULE_CONFIG_TYPE_DSW",),
     "hpc": ("SCHEDULE_CONFIG_TYPE_HPC",),
     "ray": ("SCHEDULE_CONFIG_TYPE_RAY_JOB",),
@@ -74,12 +73,8 @@ def _usage_from_schedule_type(schedule_config_type: str) -> str:
 
 
 def _usage_sort_key(usage: str) -> int:
-    order = {"auto": 0, "hpc": 1, "notebook": 2, "ray": 3}
+    order = {"hpc": 0, "notebook": 1, "ray": 2}
     return order.get(usage, 99)
-
-
-def _should_stop_after_match(usage: str) -> bool:
-    return usage == "auto"
 
 
 def _query_workspace_specs(
@@ -91,7 +86,14 @@ def _query_workspace_specs(
     group_filter: str,
     include_empty: bool,
 ) -> list[dict]:
-    """Query all (group × schedule_type) specs for one workspace."""
+    """Query all (group × schedule_type) specs for one workspace.
+
+    Each emitted row carries names only (workspace, compute group, gpu type,
+    usage family) plus the spec_id consumed by `inspire ray create
+    --head-spec` etc. UUIDs (workspace_id, logic_compute_group_id) stay
+    inside this function as request inputs and are intentionally not
+    forwarded into the rows the CLI prints to the user.
+    """
     schedule_types = _USAGE_SCHEDULE_TYPES[usage]
     rows: list[dict] = []
     seen_rows: set[tuple[str, str, str, int, int, int, str]] = set()
@@ -109,7 +111,6 @@ def _query_workspace_specs(
         if group_filter and group_filter not in compute_group_name.lower():
             continue
 
-        matched_any = False
         for schedule_config_type in schedule_types:
             prices = browser_api_module.get_resource_prices(
                 workspace_id=workspace_id,
@@ -120,32 +121,20 @@ def _query_workspace_specs(
             usage_label = _usage_from_schedule_type(schedule_config_type)
 
             if not prices:
-                if include_empty and usage != "auto":
-                    empty_key = (
-                        logic_compute_group_id,
-                        usage_label,
-                        "",
-                        0,
-                        0,
-                        0,
-                        "",
-                    )
+                if include_empty:
+                    empty_key = (compute_group_name, usage_label, "", 0, 0, 0, "")
                     if empty_key not in seen_rows:
                         seen_rows.add(empty_key)
                         rows.append(
                             {
-                                "workspace_id": workspace_id,
                                 "workspace_name": workspace_name,
                                 "usage": usage_label,
-                                "schedule_config_type": schedule_config_type,
                                 "compute_group_name": compute_group_name,
-                                "logic_compute_group_id": logic_compute_group_id,
                                 "spec_id": "",
                                 "cpu_count": 0,
                                 "memory_size_gib": 0,
                                 "gpu_count": 0,
                                 "gpu_type": "",
-                                "total_price_per_hour": 0,
                             }
                         )
                 continue
@@ -157,7 +146,7 @@ def _query_workspace_specs(
                 gpu_count = int(price.get("gpu_count") or 0)
                 gpu_type = _extract_gpu_type(price)
                 row_key = (
-                    logic_compute_group_id,
+                    compute_group_name,
                     usage_label,
                     spec_id,
                     cpu_count,
@@ -170,52 +159,14 @@ def _query_workspace_specs(
                 seen_rows.add(row_key)
                 rows.append(
                     {
-                        "workspace_id": workspace_id,
                         "workspace_name": workspace_name,
                         "usage": usage_label,
-                        "schedule_config_type": schedule_config_type,
                         "compute_group_name": compute_group_name,
-                        "logic_compute_group_id": logic_compute_group_id,
                         "spec_id": spec_id,
                         "cpu_count": cpu_count,
                         "memory_size_gib": memory_size_gib,
                         "gpu_count": gpu_count,
                         "gpu_type": gpu_type,
-                        "total_price_per_hour": price.get("total_price_per_hour", 0),
-                    }
-                )
-            matched_any = True
-            if _should_stop_after_match(usage):
-                break
-
-        if matched_any:
-            continue
-        if include_empty and usage == "auto":
-            empty_key = (
-                logic_compute_group_id,
-                "auto",
-                "",
-                0,
-                0,
-                0,
-                "",
-            )
-            if empty_key not in seen_rows:
-                seen_rows.add(empty_key)
-                rows.append(
-                    {
-                        "workspace_id": workspace_id,
-                        "workspace_name": workspace_name,
-                        "usage": "auto",
-                        "schedule_config_type": "",
-                        "compute_group_name": compute_group_name,
-                        "logic_compute_group_id": logic_compute_group_id,
-                        "spec_id": "",
-                        "cpu_count": 0,
-                        "memory_size_gib": 0,
-                        "gpu_count": 0,
-                        "gpu_type": "",
-                        "total_price_per_hour": 0,
                     }
                 )
 
@@ -227,25 +178,39 @@ def _resolve_query_workspaces(
     session,  # noqa: ANN001
     explicit_workspace: Optional[str],
     config: Config,
-) -> list[tuple[str, str]]:
-    """Pick which workspaces to query.
+) -> list[str]:
+    """Pick which workspaces to query, returning workspace display names.
 
-    Default is to sweep every workspace the account can see — quotas are
-    cheap to fetch, and Ray / niche-hpc specs only live in a handful of
-    workspaces, so a default-workspace-only behaviour kept hiding them.
-    Pin to a single workspace by passing ``--workspace <name>``.
+    Default sweeps every workspace the account can see. UUIDs are looked up
+    from the names internally — they never surface to the caller.
     """
     if explicit_workspace:
         resolved = select_workspace_id(config, explicit_workspace_name=explicit_workspace)
-        ws_id = resolved or session.workspace_id
-        name = (getattr(session, "all_workspace_names", None) or {}).get(ws_id) or explicit_workspace
-        return [(ws_id, name)]
+        if not resolved:
+            return [explicit_workspace]
+        names = getattr(session, "all_workspace_names", None) or {}
+        return [names.get(resolved) or explicit_workspace]
 
     ws_ids = list(getattr(session, "all_workspace_ids", None) or [])
     names = getattr(session, "all_workspace_names", None) or {}
     if not ws_ids:
-        ws_ids = [session.workspace_id]
-    return [(wid, names.get(wid) or wid) for wid in ws_ids]
+        return [names.get(session.workspace_id) or session.workspace_id]
+    return [names.get(wid) or wid for wid in ws_ids]
+
+
+def _name_to_id(session, config: Config, ws_name: str) -> str:  # noqa: ANN001
+    """Map a workspace name back to its UUID for API calls."""
+    try:
+        resolved = select_workspace_id(config, explicit_workspace_name=ws_name)
+        if resolved:
+            return resolved
+    except ConfigError:
+        pass
+    names = getattr(session, "all_workspace_names", None) or {}
+    for wid, name in names.items():
+        if name == ws_name:
+            return wid
+    return session.workspace_id
 
 
 @click.command("specs")
@@ -260,12 +225,12 @@ def _resolve_query_workspaces(
 @click.option("--group", default=None, help="Filter by compute group name (partial match)")
 @click.option(
     "--usage",
-    type=click.Choice(["auto", "notebook", "hpc", "ray", "all"], case_sensitive=False),
-    default="auto",
+    type=click.Choice(["all", "notebook", "hpc", "ray"], case_sensitive=False),
+    default="all",
     show_default=True,
     help=(
-        "Spec family to query. auto = HPC first, fall back to notebook/DSW. "
-        "Use 'ray' for Ray head/worker quotas (ray create --head-spec / --worker spec=)."
+        "Spec family to query. 'all' returns notebook + hpc + ray; "
+        "narrow with the others."
     ),
 )
 @click.option("--include-empty", is_flag=True, help="Include compute groups that return no specs")
@@ -281,18 +246,15 @@ def list_specs(
 ) -> None:
     """Discover resource specs for notebook / HPC / Ray creation.
 
-    ``auto`` checks HPC quotas first and falls back to notebook/DSW quotas.
-    Use ``--usage ray`` for Ray head/worker quotas (consumed by
-    ``inspire ray create --head-spec`` / ``--worker spec=``).
-
     Default sweeps every workspace the account can see; pass
-    ``--workspace <name>`` to pin to one.
+    ``--workspace <name>`` to pin to one. ``--usage`` defaults to ``all``
+    so notebook + hpc + ray quotas surface together; narrow when you
+    only care about one family.
 
-    Returns per-spec entries including:
-    - workspace_id / workspace_name
-    - logic_compute_group_id
-    - spec_id (quota_id)
-    - cpu_count / memory_size_gib / gpu_count / gpu_type
+    Each row carries human-readable names (workspace, compute group,
+    GPU type) plus the ``spec_id`` you feed to ``inspire ray create
+    --head-spec`` / ``--worker spec=``. For hpc / notebook creation,
+    pass the (gpu, cpu, memory) triple as ``--quota gpu,cpu,mem``.
     """
 
     ctx.json_output = bool(ctx.json_output or json_output_local)
@@ -301,7 +263,7 @@ def list_specs(
         config, _ = Config.from_files_and_env(require_credentials=False, require_target_dir=False)
         session = get_web_session()
 
-        target_workspaces = _resolve_query_workspaces(
+        target_workspace_names = _resolve_query_workspaces(
             session=session,
             explicit_workspace=workspace,
             config=config,
@@ -309,7 +271,8 @@ def list_specs(
 
         group_filter = (group or "").strip().lower()
         rows: list[dict] = []
-        for ws_id, ws_name in target_workspaces:
+        for ws_name in target_workspace_names:
+            ws_id = _name_to_id(session, config, ws_name)
             rows.extend(
                 _query_workspace_specs(
                     session=session,
@@ -334,17 +297,10 @@ def list_specs(
         )
 
         if ctx.json_output:
-            ws_ids = [w for w, _ in target_workspaces]
-            ws_names = [n for _, n in target_workspaces]
             click.echo(
                 json_formatter.format_json(
                     {
-                        # First workspace kept for backwards compatibility with
-                        # any tooling that read this field; the list form below
-                        # is authoritative when multiple workspaces are searched.
-                        "workspace_id": ws_ids[0] if ws_ids else "",
-                        "workspace_ids": ws_ids,
-                        "workspace_names": ws_names,
+                        "workspace_names": target_workspace_names,
                         "usage_filter": usage,
                         "specs": rows,
                         "total": len(rows),
@@ -358,33 +314,16 @@ def list_specs(
             return
 
         # Show workspace column when more than one workspace was queried.
-        multi_ws = len({r.get("workspace_id") for r in rows}) > 1
+        multi_ws = len({r.get("workspace_name") for r in rows}) > 1
         if multi_ws:
-            headers = (
-                "Workspace",
-                "Usage",
-                "Compute Group",
-                "Spec ID",
-                "GPU",
-                "CPU",
-                "MemGiB",
-                "Logic Group ID",
-            )
-            widths = [16, 8, 24, 36, 8, 6, 8, 36]
+            headers = ("Workspace", "Usage", "Compute Group", "Spec ID", "GPU", "CPU", "MemGiB")
+            widths = [16, 9, 24, 36, 10, 6, 8]
         else:
-            headers = (
-                "Usage",
-                "Compute Group",
-                "Spec ID",
-                "GPU",
-                "CPU",
-                "MemGiB",
-                "Logic Group ID",
-            )
-            widths = [10, 24, 36, 8, 6, 8, 36]
+            headers = ("Usage", "Compute Group", "Spec ID", "GPU", "CPU", "MemGiB")
+            widths = [9, 24, 36, 10, 6, 8]
 
         click.echo("")
-        click.echo("Resource Specs (for notebook create / hpc create / ray create)")
+        click.echo("Resource Specs (for notebook / hpc / ray create)")
         click.echo("-" * (sum(widths) + len(widths) - 1))
         click.echo(" ".join(f"{h:<{w}}" for h, w in zip(headers, widths)))
         click.echo("-" * (sum(widths) + len(widths) - 1))
@@ -399,7 +338,6 @@ def list_specs(
                     gpu_desc[: widths[4] - 1],
                     str(row["cpu_count"]),
                     str(row["memory_size_gib"]),
-                    str(row["logic_compute_group_id"])[: widths[7] - 1],
                 ]
             else:
                 cells = [
@@ -409,7 +347,6 @@ def list_specs(
                     gpu_desc[: widths[3] - 1],
                     str(row["cpu_count"]),
                     str(row["memory_size_gib"]),
-                    str(row["logic_compute_group_id"])[: widths[6] - 1],
                 ]
             click.echo(" ".join(f"{c:<{w}}" for c, w in zip(cells, widths)))
         click.echo("-" * (sum(widths) + len(widths) - 1))
@@ -417,7 +354,7 @@ def list_specs(
             ws_summary = ", ".join(sorted({r.get("workspace_name", "") for r in rows}))
             click.echo(f"Workspaces searched: {ws_summary}")
         else:
-            click.echo(f"Workspace: {target_workspaces[0][1]}")
+            click.echo(f"Workspace: {target_workspace_names[0]}")
         click.echo(f"Total specs: {len(rows)}")
         if usage == "hpc":
             click.echo(
@@ -428,14 +365,6 @@ def list_specs(
             click.echo(
                 "Feed Spec ID to `inspire ray create --head-spec <id>` or "
                 "`--worker 'spec=<id>,...'`."
-            )
-        elif usage == "all":
-            click.echo(
-                "Filter with --usage {notebook|hpc|ray} to focus on one family."
-            )
-        elif usage == "auto":
-            click.echo(
-                "Auto mode prefers HPC quotas and falls back to notebook quotas when HPC is unavailable."
             )
         elif usage == "notebook":
             click.echo(
