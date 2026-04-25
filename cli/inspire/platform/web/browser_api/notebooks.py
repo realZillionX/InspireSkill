@@ -236,7 +236,7 @@ def get_resource_prices(
     - SCHEDULE_CONFIG_TYPE_DSW: notebook/DSW quotas
     - SCHEDULE_CONFIG_TYPE_HPC: HPC/Slurm predef_node_specs
     - SCHEDULE_CONFIG_TYPE_TRAIN: training-job framework specs
-    - SCHEDULE_CONFIG_TYPE_RAY: Ray head / worker quotas
+    - SCHEDULE_CONFIG_TYPE_RAY_JOB: Ray head / worker quotas
       (consumed by `inspire ray create --head-spec / --worker spec=`)
     """
     session, workspace_id = _get_session_and_workspace_id(

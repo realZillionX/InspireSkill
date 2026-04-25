@@ -317,7 +317,7 @@ def test_resources_specs_ray_json(
 
     def _fake_prices(**kwargs):
         calls.append(kwargs["schedule_config_type"])
-        assert kwargs["schedule_config_type"] == "SCHEDULE_CONFIG_TYPE_RAY"
+        assert kwargs["schedule_config_type"] == "SCHEDULE_CONFIG_TYPE_RAY_JOB"
         return [
             {
                 "quota_id": "quota-ray-head-32-256",
@@ -358,12 +358,12 @@ def test_resources_specs_ray_json(
     assert payload["data"]["total"] == 2
     rows = payload["data"]["specs"]
     assert {row["usage"] for row in rows} == {"ray"}
-    assert {row["schedule_config_type"] for row in rows} == {"SCHEDULE_CONFIG_TYPE_RAY"}
+    assert {row["schedule_config_type"] for row in rows} == {"SCHEDULE_CONFIG_TYPE_RAY_JOB"}
     assert {row["spec_id"] for row in rows} == {
         "quota-ray-head-32-256",
         "quota-ray-worker-8-64",
     }
-    assert calls == ["SCHEDULE_CONFIG_TYPE_RAY"]
+    assert calls == ["SCHEDULE_CONFIG_TYPE_RAY_JOB"]
 
 
 def test_resources_specs_all_includes_ray(
@@ -413,7 +413,7 @@ def test_resources_specs_all_includes_ray(
         [
             "SCHEDULE_CONFIG_TYPE_DSW",
             "SCHEDULE_CONFIG_TYPE_HPC",
-            "SCHEDULE_CONFIG_TYPE_RAY",
+            "SCHEDULE_CONFIG_TYPE_RAY_JOB",
         ]
     )
 
