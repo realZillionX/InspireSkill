@@ -3,21 +3,22 @@
 ## 1. `notebook ssh` bootstrap 失败
 
 CLI 在容器内跑 bootstrap shell 做两件事：
-1. 从 `/inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-<arch>/rtunnel` `cp` 到 `/tmp/rtunnel`
-2. 如果容器没 `/usr/sbin/sshd`，从 `/inspire/hdd/global_public/inspire-skill-bootstrap/v1/sshd-debs/*.deb` `dpkg -i`
+1. **起 sshd**：如果 `/usr/sbin/sshd` 不在，先 `dpkg -i /inspire/hdd/global_public/inspire-skill-bootstrap/v1/sshd-debs/*.deb` 装到容器内；再补 `useradd sshd` + 最小 `/etc/ssh/sshd_config`，`sshd -p 22222 -o ListenAddress=127.0.0.1 ...` 起来。
+2. **起 rtunnel**：直接 exec `/inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-<arch>/rtunnel`（Go 静态链接，GPFS 上原地跑，**不 cp 到容器**），把容器 22222 暴露给平台 WSS。
 
-全部是 GPFS 本地 cp / dpkg，**不走网络**。任何一步失败都先看远端这三个文件：
+两步都不走外网。任何一步失败都先看这几个文件：
 
-- `/tmp/rtunnel`（cp 之后应该存在且 `-x`）
 - `/tmp/rtunnel-server.log`（rtunnel server 启动日志）
-- `/var/log/dpkg.log` 的末尾（sshd deb 安装状态）
+- `/tmp/sshd-bootstrap.log`（sshd 启动日志，bootstrap 自己写的）
+- `/var/log/dpkg.log` 末尾（sshd deb 安装状态）
+- `ps -ef | grep -E '[s]shd -p 22222|[r]tunnel'`（看进程是否还在）
 
 ### 常见现象
 
 | 现象 | 处理 |
 | --- | --- |
 | `SSH bootstrap 失败:在容器里没能从 global_public kit 拿到 rtunnel` | kit 路径不可达。容器里 `ls /inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-amd64/rtunnel` 应当存在且可执行。不存在 → 平台侧 global_public 挂载没覆盖到这台实例，找 SII 运维。 |
-| `exec format error` / `/tmp/rtunnel --help` 崩 | kit 里落了一份**非当前容器架构**的 rtunnel，或者文件被截断。CLI 下次 bootstrap 会自动 wipe `/tmp/rtunnel` 重试；手动清也行。持续失败的话提 issue 附 `uname -m` + `file /inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-*/rtunnel` 输出。 |
+| `exec format error` / rtunnel 进程秒退 | kit 里落了一份**非当前容器架构**的 rtunnel，或者文件被截断。binary 直接从 GPFS 跑、本地没副本可清，所以这种情况只能靠 kit 修。提 issue 附 `uname -m` + `file /inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-*/rtunnel` 输出。 |
 | `dpkg: error processing archive ...` | 容器已有部分 openssh 组件且版本冲突。手动 `dpkg -i --force-overwrite /inspire/hdd/global_public/inspire-skill-bootstrap/v1/sshd-debs/*.deb` 一次。 |
 | `Privilege separation user sshd does not exist` | `dpkg -i` 装 openssh-server 时跳过了 postinst（cp/dpkg 路径不会跑 `useradd sshd`）。bootstrap script 自身已修复——`useradd -r -M -d /run/sshd -s /usr/sbin/nologin sshd`。手工复现见下面那段。 |
 | `/etc/ssh/sshd_config: No such file or directory` | 同上，postinst 没 deploy 默认 config。bootstrap 已自动写入最小 config（只 `UsePAM no` + `StrictModes no` + sftp Subsystem，**不要**写 `Port`/`ListenAddress`，否则会和 `-o ListenAddress=127.0.0.1` 叠加导致第二次 bind 报 `Address already in use`）。 |
@@ -29,20 +30,20 @@ CLI 在容器内跑 bootstrap shell 做两件事：
 ```bash
 KIT=/inspire/hdd/global_public/inspire-skill-bootstrap/v1
 ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
-
-# rtunnel
-cp "$KIT/rtunnel/linux-$ARCH/rtunnel" /tmp/rtunnel && chmod +x /tmp/rtunnel
+RT_BIN="$KIT/rtunnel/linux-$ARCH/rtunnel"
 
 # sshd（postinst 没跑，需要补 user + 最小 config）
 [ -x /usr/sbin/sshd ] || dpkg -i "$KIT/sshd-debs"/*.deb
 getent passwd sshd >/dev/null || useradd -r -M -d /run/sshd -s /usr/sbin/nologin sshd
 [ -f /etc/ssh/sshd_config ] || printf 'UsePAM no\nStrictModes no\nSubsystem sftp /usr/lib/openssh/sftp-server\n' > /etc/ssh/sshd_config
 
-# 启动
+# 启动 sshd
 mkdir -p /run/sshd && ssh-keygen -A >/dev/null 2>&1
 /usr/sbin/sshd -p 22222 -o ListenAddress=127.0.0.1 -o PermitRootLogin=yes \
   -o PasswordAuthentication=no -o PubkeyAuthentication=yes
-nohup /tmp/rtunnel 22222 31337 >/tmp/rtunnel-server.log 2>&1 &
+
+# 启动 rtunnel（直接从 GPFS exec，不 cp 到本地）
+nohup "$RT_BIN" 22222 31337 >/tmp/rtunnel-server.log 2>&1 &
 ```
 
 之后回本机重跑 `inspire notebook ssh <notebook-name>`。
