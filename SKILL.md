@@ -19,7 +19,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | HPC 规格余量 | 平台自身吃 `0.3` 核 CPU + `384 MB` 内存，应用层并发压到 **`cpus-per-task - 4`** 或更低。 |
 | CPU 空间唯一 hpc 组 | `CPU 资源空间` 下**只有 `HPC-可上网区资源-2`** 支持 `inspire hpc create`；其它组只能建 notebook。另外该组的 `500GB` 规格运维未配好，提交**静默排队**——真需要 500GB 内存就退化成在 `CPU资源-2` 开 notebook 交互跑。 |
 | 项目-实例挂载隔离 | 实例只挂**自身所在项目**的 fileset；其它项目的 `/inspire/{hdd,ssd,qb-ilm,qb-ilm2}/project/<others>/` 路径在该实例里**根本不存在**（`ls` 报 `No such file`）——不是权限问题。访问项目 `<X>` 的存储必须在 `project=<X>` 的实例里。 |
-| 跨项目 cp 要 root | `notebook scp` / `exec cp` / 单账号 CLI 都做不到，去**飞书项目群**找管理员。 |
+| 跨项目 cp | 一个 notebook 只挂自身项目的 fileset，CLI 没跨项目直 cp 能力。**绕过办法**：在项目 A 和项目 B 各起一个 notebook，用 `/inspire/hdd/global_user/<user>/` 个人盘做中转（A 写进去 → B 读出来）。**只在文件塞得下个人 quota 时管用**，超出部分（大数据集 / 全量 checkpoint）才去**飞书项目群**找管理员搬。 |
 | SSH bootstrap | `inspire notebook ssh <name>` 对**任何镜像 / 计算组 / 有无公网都能直接 ssh**，无需在镜像里预装。冷启时间贵就 `image save` 派生一份固化，否则用完即弃（notebook 停掉痕迹全没）。 |
 
 ### 1.2 通用规则
