@@ -133,6 +133,8 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ### 2.5 Ray（弹性计算）
 
+> **不是 infra 组成员的话默认不要用 Ray**。绝大多数 SII 任务的形态用 `job`（固定规模 GPU）或 `hpc`（固定规模 CPU）就够了。Ray 当前**仅在 `CI-情境智能` workspace（注意：和 `CI-情境智能` project 同名但不是一回事）+ `CPU资源-2` 计算组**有可用配额，**整体仍处于试验性阶段**，无业务理由别选这条路。
+
 一个 head + 若干 worker 组，每组实例数按实时负载在 `min_replicas` / `max_replicas` 之间自动扩缩。**`job` / `hpc` 是固定规模，Ray 是弹性**——driver 不主动退出集群就不停，worker 按 `min_replicas` 一直占配额。选型：流式 / 异构 worker / 长守护走 Ray；固定规模批处理走 `job` / `hpc`。
 
 | 命令 | 用途 |
