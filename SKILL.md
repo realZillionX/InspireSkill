@@ -107,16 +107,21 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ### 2.4 HPC(Slurm)
 
+`hpc create` **两层资源**——别混：
+
+- **节点级（`--quota gpu,cpu,mem`）** 选 web UI 上"计算资源规格"那一格，决定每个节点拿到的总 CPU 核 / 内存 / GPU；`--instance-count` 决定多少个这样的节点。三元组从 `inspire resources specs --usage hpc` 选。
+- **Slurm 级（`--number-of-tasks` / `--cpus-per-task` / `--memory-per-cpu`）** 是 slurm 调度参数，告诉 slurm 怎么在节点配额**内**切。不传时默认 `cpus-per-task = quota.cpu`、`memory-per-cpu = quota.mem // quota.cpu`、`number-of-tasks = 1`（即整节点一个 task）。
+
 `hpc create` 四约束：
 
 1. `-c` **只写 Slurm 正文**，平台自动补 `#SBATCH` 头；程序必须**显式 `srun`** 启动。
-2. `--compute-group "<name>"` 按 name 传（从 `inspire config context` 的 `compute_groups[]` 抄）。
-3. `--cpus-per-task` / `--memory-per-cpu` 超规格**静默排队不报错**。CLI 按 `(group, cpus, mem)` 自动匹配规格。
+2. `--compute-group "<name>"` 按 name 传（从 `inspire config context` 的 `compute_groups[]` 抄；`--quota` 跨多组撞名时强制需要）。
+3. **slurm 级超规格静默排队不报错**——`cpus-per-task * memory-per-cpu * number-of-tasks` 加起来超过 `--quota` 那个节点能给的就调度不上来。规格按 `--quota` 选定的节点总量算。
 4. `--image` 必须是**完整 Docker 地址** + 带可用 Slurm 环境。通用基底 `docker.sii.shaipower.online/inspire-studio/unified-base:v2`；`--image-type` 通常 `SOURCE_PRIVATE` / `SOURCE_PUBLIC`。
 
 | 命令 | 用途 |
 | --- | --- |
-| `inspire hpc create -n <name> -c <body> --compute-group <name> --workspace X --cpus-per-task N --memory-per-cpu M --image <URL> --image-type SOURCE_PRIVATE --project P` | 见上四约束 |
+| `inspire hpc create -n <name> -c <body> --compute-group <name> --workspace X -q gpu,cpu,mem [--instance-count N --number-of-tasks M --cpus-per-task K --memory-per-cpu L] --image <URL> --image-type SOURCE_PRIVATE --project P` | 见上两层 + 四约束 |
 | `inspire hpc status <name>` | **假成功警报**：`status=SUCCEEDED` ≠ payload 真跑过（entrypoint 早退 / srun 语法错 / shell 变量丢失都能 SUCCEEDED）。每次新 entrypoint 写**独一无二的 fingerprint 到共享盘**，同项目 notebook `cat` 回验。`slurm_cluster_spec.nodes` RUNNING 时应非空；CREATING 卡住或 RUNNING 时 `nodes=[]` 才是坏信号 |
 | `inspire hpc list` | 当前 workspace 所有创建者的任务 |
 | `inspire hpc events <name>` | Slurm 控制器事件。**HPC 不暴露 per-pod 事件**，只有 job-level |

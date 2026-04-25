@@ -89,111 +89,6 @@ def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
     )
 
 
-def _resolve_compute_group_id(config: Config, requested: str) -> str:
-    """Resolve a compute-group name to ``logic_compute_group_id``."""
-    requested = (requested or "").strip()
-    if not requested:
-        raise ConfigError("Compute group cannot be empty.")
-    if requested.startswith("lcg-"):
-        raise ConfigError(
-            f"--compute-group takes a compute-group name, not a raw ID ({requested!r}). "
-            "See `inspire config context` for available names."
-        )
-    for group in config.compute_groups or []:
-        if group.get("name") == requested:
-            group_id = str(group.get("id") or "").strip()
-            if group_id:
-                return group_id
-    available = sorted(
-        str(g.get("name") or "").strip()
-        for g in (config.compute_groups or [])
-        if str(g.get("name") or "").strip()
-    )
-    hint = ", ".join(available) if available else "(run 'inspire config context')"
-    raise ConfigError(f"Unknown compute group: {requested!r}. Available: {hint}")
-
-
-def _extract_memory_gib(price: dict) -> int:
-    value = (
-        price.get("memory_size_gib")
-        or price.get("memory_size")
-        or price.get("memory_size_gb")
-        or 0
-    )
-    try:
-        return int(value)
-    except Exception:
-        return 0
-
-
-def _resolve_hpc_spec_id(
-    *,
-    session,
-    workspace_id: str,
-    compute_group_id: str,
-    cpus_per_task: int,
-    memory_per_cpu: int,
-) -> str:
-    """Look up the HPC spec_id (predef_quota_id) from (compute_group, cpu, memory).
-
-    The Inspire platform returns one or more HPC specs per compute group
-    keyed by ``(cpu_count, memory_size_gib, gpu_count)``. For HPC specifically
-    gpu_count is always 0, so ``(compute_group, cpus_per_task,
-    cpus_per_task * memory_per_cpu)`` uniquely identifies the quota.
-
-    Raises ``ConfigError`` if no HPC spec in the compute group matches, or
-    if more than one matches (should not happen; guards against platform
-    changes).
-    """
-    try:
-        prices = browser_api_module.get_resource_prices(
-            workspace_id=workspace_id,
-            logic_compute_group_id=compute_group_id,
-            schedule_config_type="SCHEDULE_CONFIG_TYPE_HPC",
-            session=session,
-        )
-    except Exception as err:
-        raise ConfigError(
-            f"Could not query HPC specs for compute group {compute_group_id}: {err}. "
-            "Run 'inspire resources specs --usage hpc --json' to verify the compute group "
-            "exposes HPC quotas."
-        ) from err
-
-    target_memory = int(cpus_per_task) * int(memory_per_cpu)
-    matches = [
-        p
-        for p in prices
-        if int(p.get("cpu_count") or 0) == int(cpus_per_task)
-        and _extract_memory_gib(p) == target_memory
-        and int(p.get("gpu_count") or 0) == 0
-    ]
-    if not matches:
-        available = [
-            f"cpus={p.get('cpu_count')}/mem={_extract_memory_gib(p)}GiB"
-            for p in prices
-            if int(p.get("gpu_count") or 0) == 0
-        ]
-        hint = ", ".join(available) if available else "(this compute group exposes no HPC specs)"
-        raise ConfigError(
-            f"No HPC spec matches --cpus-per-task={cpus_per_task} "
-            f"--memory-per-cpu={memory_per_cpu} (→ {target_memory} GiB total) in this "
-            f"compute group. Available HPC specs: {hint}"
-        )
-    if len(matches) > 1:
-        raise ConfigError(
-            f"Ambiguous HPC spec: {len(matches)} specs share cpus={cpus_per_task} "
-            f"memory={target_memory}GiB. File an issue with the output of "
-            "`inspire resources specs --usage hpc --json`."
-        )
-    spec_id = str(matches[0].get("quota_id") or matches[0].get("spec_id") or "").strip()
-    if not spec_id:
-        raise ConfigError(
-            "Platform returned an HPC spec without a quota_id — cannot submit. "
-            "This is a platform bug; report the compute group name."
-        )
-    return spec_id
-
-
 def _extract_data(result: dict[str, Any]) -> dict[str, Any]:
     data = result.get("data")
     return data if isinstance(data, dict) else result
@@ -309,11 +204,17 @@ def list_hpc(
     help="Compute group name (e.g. 'HPC-可上网区资源-2'; see 'inspire config context').",
 )
 @click.option(
-    "--spec-id",
-    default=None,
+    "--quota",
+    "-q",
+    required=True,
     help=(
-        "Platform predef_quota_id escape hatch. Leave empty — the CLI resolves "
-        "it from (--compute-group, --cpus-per-task, --memory-per-cpu)."
+        "Node-level resource spec as 'gpu,cpu,mem' (mem in GiB). The triple "
+        "selects the platform 'compute-spec' (web UI: 计算资源规格), which "
+        "determines per-node CPU/memory/GPU totals. Use 'inspire resources "
+        "specs --usage hpc' to see available triples. Slurm-level knobs "
+        "below (--cpus-per-task / --memory-per-cpu / --number-of-tasks / "
+        "--instance-count) are independent — they describe how the slurm "
+        "scheduler subdivides the node, not what the node looks like."
     ),
 )
 @click.option(
@@ -329,16 +230,22 @@ def list_hpc(
     help="Docker image (default from [job].image)",
 )
 @click.option("--image-type", default="SOURCE_PRIVATE", show_default=True, help="Image source type")
-@click.option("--instance-count", type=int, default=1, show_default=True, help="Instance count")
+@click.option("--instance-count", type=int, default=1, show_default=True,
+              help="Number of nodes (web UI: 节点数)")
 @click.option(
     "--priority",
     type=click.IntRange(1, 10),
     default=None,
     help="Task priority 1-10 (higher numbers request higher priority; project quota may cap it)",
 )
-@click.option("--number-of-tasks", type=int, default=1, show_default=True, help="Number of tasks")
-@click.option("--cpus-per-task", type=int, required=True, help="CPUs per task")
-@click.option("--memory-per-cpu", type=int, required=True, help="Memory per CPU (GiB)")
+@click.option("--number-of-tasks", type=int, default=1, show_default=True,
+              help="Slurm --ntasks (web UI: 子任务数量)")
+@click.option("--cpus-per-task", type=int, default=None,
+              help="Slurm --cpus-per-task (web UI: 单个任务 CPU 核数). "
+                   "Default: derive from --quota cpu count")
+@click.option("--memory-per-cpu", type=int, default=None,
+              help="Slurm --mem-per-cpu in GiB (web UI: 每 CPU 使用内存 GB). "
+                   "Default: derive from --quota mem / --quota cpu")
 @click.option(
     "--enable-hyper-threading/--disable-hyper-threading",
     default=False,
@@ -351,7 +258,7 @@ def create_hpc(
     name: str,
     entrypoint: str,
     compute_group: str,
-    spec_id: Optional[str],
+    quota: str,
     project: Optional[str],
     workspace: Optional[str],
     image: Optional[str],
@@ -359,16 +266,30 @@ def create_hpc(
     instance_count: int,
     priority: Optional[int],
     number_of_tasks: int,
-    cpus_per_task: int,
-    memory_per_cpu: int,
+    cpus_per_task: Optional[int],
+    memory_per_cpu: Optional[int],
     enable_hyper_threading: bool,
 ) -> None:
     """Create a Slurm-backed HPC job.
 
-    ``-c/--entrypoint`` must be the Slurm script body. Do not include ``#SBATCH``
-    headers; use ``srun`` to launch the payload.
+    Two independent layers:
+      * Node-level: --quota gpu,cpu,mem picks a 计算资源规格 (which 'spec'
+        to allocate per node) + --instance-count says how many such nodes.
+      * Slurm-level: --number-of-tasks / --cpus-per-task / --memory-per-cpu
+        tell slurm how to subdivide each node.
+
+    ``-c/--entrypoint`` must be the Slurm script body. Do not include
+    ``#SBATCH`` headers; use ``srun`` to launch the payload.
     """
     try:
+        from inspire.cli.utils.quota_resolver import (
+            QuotaMatchError,
+            QuotaParseError,
+            SCHEDULE_TYPE_HPC,
+            parse_quota,
+            resolve_quota,
+        )
+
         config, _ = Config.from_files_and_env(require_target_dir=False)
         api = AuthManager.get_api(config)
 
@@ -395,17 +316,35 @@ def create_hpc(
             )
             return
 
-        resolved_compute_group_id = _resolve_compute_group_id(config, compute_group)
+        try:
+            quota_spec = parse_quota(quota)
+        except QuotaParseError as e:
+            _handle_error(ctx, "ValidationError", str(e), EXIT_CONFIG_ERROR)
+            return
 
-        if not spec_id:
+        try:
             session = get_web_session()
-            spec_id = _resolve_hpc_spec_id(
-                session=session,
+            resolved_quota = resolve_quota(
+                spec=quota_spec,
                 workspace_id=resolved_workspace_id,
-                compute_group_id=resolved_compute_group_id,
-                cpus_per_task=cpus_per_task,
-                memory_per_cpu=memory_per_cpu,
+                session=session,
+                schedule_config_type=SCHEDULE_TYPE_HPC,
+                group_override=compute_group,
             )
+        except QuotaMatchError as e:
+            _handle_error(ctx, "ValidationError", str(e), EXIT_CONFIG_ERROR)
+            return
+
+        spec_id = resolved_quota.quota_id
+        resolved_compute_group_id = resolved_quota.logic_compute_group_id
+
+        # Slurm subdivision defaults: assume one task spans the whole node
+        # unless the user explicitly carves it up. Total memory per task =
+        # node memory; mem-per-cpu = total / cpus-per-task.
+        if cpus_per_task is None:
+            cpus_per_task = max(1, int(quota_spec.cpu_count))
+        if memory_per_cpu is None:
+            memory_per_cpu = max(1, int(quota_spec.memory_gib) // max(1, int(cpus_per_task)))
 
         result = api.create_hpc_job(
             name=name,

@@ -68,6 +68,31 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 
     monkeypatch.setattr(auth_module.AuthManager, "get_api", fake_get_api)
     auth_module.AuthManager.clear_cache()
+
+    # Stub session + quota resolver so the test never hits the real platform.
+    import importlib
+
+    hpc_mod = importlib.import_module("inspire.cli.commands.hpc.hpc_commands")
+    quota_mod = importlib.import_module("inspire.cli.utils.quota_resolver")
+
+    class _FakeWebSession:
+        workspace_id = config.job_workspace_id
+
+    monkeypatch.setattr(hpc_mod, "get_web_session", lambda: _FakeWebSession())
+
+    def _fake_resolve_quota(*, spec, workspace_id, session=None, **_):  # noqa: ANN001
+        return quota_mod.ResolvedQuota(
+            quota_id="spec-test-default",
+            logic_compute_group_id="lcg-123",
+            compute_group_name="CG-123",
+            gpu_count=spec.gpu_count,
+            cpu_count=spec.cpu_count,
+            memory_gib=spec.memory_gib,
+            gpu_type="" if spec.gpu_count == 0 else "H200",
+            raw_price={"cpu_info": {"cpu_type": "Test"}},
+        )
+
+    monkeypatch.setattr(quota_mod, "resolve_quota", _fake_resolve_quota)
     return api
 
 
@@ -89,20 +114,20 @@ def test_hpc_create_json_uses_alias_resolution(
             "bash run_hpc.sh",
             "--compute-group",
             "CG-123",
-            "--spec-id",
-            "spec-123",
+            "--quota",
+            "0,32,256",
             "--project",
             "alias-project",
             "--workspace",
             "cpu-room",
             "--cpus-per-task",
-            "32",
-            "--memory-per-cpu",
             "8",
+            "--memory-per-cpu",
+            "4",
         ],
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert payload["data"]["job_id"] == "hpc-job-123"
@@ -111,6 +136,39 @@ def test_hpc_create_json_uses_alias_resolution(
     assert call["project_id"] == "project-alias"
     assert call["workspace_id"] == "ws-00000000-0000-0000-0000-000000000002"
     assert call["image"] == "registry.local/hpc:latest"
+    # spec_id resolved by the (stubbed) quota resolver from --quota 0,32,256
+    assert call["spec_id"] == "spec-test-default"
+    assert call["logic_compute_group_id"] == "lcg-123"
+    # Slurm-level knobs are forwarded as-is, independent of the node spec.
+    assert call["cpus_per_task"] == 8
+    assert call["memory_per_cpu"] == 4
+
+
+def test_hpc_create_slurm_knobs_default_from_quota(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without --cpus-per-task / --memory-per-cpu, the CLI fills them from --quota."""
+    api = patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main,
+        [
+            "hpc",
+            "create",
+            "-n",
+            "hpc-demo",
+            "-c",
+            "srun python train.py",
+            "--compute-group",
+            "CG-123",
+            "--quota",
+            "0,32,256",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    call = api.calls["create_hpc_job"]
+    # Defaults: cpus_per_task = quota.cpu, memory_per_cpu = mem // cpu
     assert call["cpus_per_task"] == 32
     assert call["memory_per_cpu"] == 8
 
@@ -121,7 +179,10 @@ def test_hpc_create_help_highlights_slurm_body() -> None:
 
     assert result.exit_code == 0
     assert "Slurm script body" in result.output
-    assert "predef_quota_id" in result.output
+    # Help must explain the two-layer model: --quota for node spec,
+    # slurm knobs for in-node subdivision.
+    assert "--quota" in result.output
+    assert "gpu,cpu,mem" in result.output
     assert "higher numbers request" in result.output
     assert "higher priority; project quota may cap it" in result.output
 
@@ -143,18 +204,14 @@ def test_hpc_create_human_output_includes_priority(
             "srun python train.py",
             "--compute-group",
             "CG-123",
-            "--spec-id",
-            "spec-123",
-            "--cpus-per-task",
-            "32",
-            "--memory-per-cpu",
-            "8",
+            "--quota",
+            "0,32,256",
             "--priority",
             "7",
         ],
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "Requested Priority: 7" in result.output
     assert "Entry:     srun python train.py" in result.output
 
@@ -172,12 +229,8 @@ def test_hpc_create_rejects_priority_11() -> None:
             "srun python train.py",
             "--compute-group",
             "CG-123",
-            "--spec-id",
-            "spec-123",
-            "--cpus-per-task",
-            "32",
-            "--memory-per-cpu",
-            "8",
+            "--quota",
+            "0,32,256",
             "--priority",
             "11",
         ],
@@ -204,12 +257,8 @@ def test_hpc_create_rejects_full_slurm_script(
             "#!/bin/bash\n#SBATCH --time=1:00:00\nsrun python train.py",
             "--compute-group",
             "CG-123",
-            "--spec-id",
-            "spec-123",
-            "--cpus-per-task",
-            "32",
-            "--memory-per-cpu",
-            "8",
+            "--quota",
+            "0,32,256",
         ],
     )
 

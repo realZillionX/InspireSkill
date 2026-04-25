@@ -126,7 +126,7 @@ inspire resources list --all --include-cpu
   </td>
   <td width="50%">
     <h4>🚀 HPC 任务分派</h4>
-    <code>inspire hpc create -c &lt;slurm-body&gt;</code> 只写 Slurm 正文 + 显式 <code>srun</code>，平台自动补 <code>#SBATCH</code> 头；规格用 <code>--cpus-per-task</code> / <code>--memory-per-cpu</code>，CLI 自动匹配。
+    <code>inspire hpc create -c &lt;slurm-body&gt;</code> 只写 Slurm 正文 + 显式 <code>srun</code>，平台自动补 <code>#SBATCH</code> 头。两层独立：节点规格用 <code>--quota gpu,cpu,mem</code>（CLI 自动解析到平台 spec），slurm 调度用 <code>--number-of-tasks / --cpus-per-task / --memory-per-cpu</code>。
   </td>
 </tr>
 <tr>
