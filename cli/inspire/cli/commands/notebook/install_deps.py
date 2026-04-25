@@ -92,14 +92,9 @@ def _build_slurm_step() -> str:
         'then _sim_failed=1; else _sim_failed=0; fi; '
         'if [ "$_sim_failed" != 0 ] || echo "$_sim_out" | grep -q "Unmet dependencies"; '
         "then "
-        '  echo "[install-deps] ERROR: apt graph inconsistent; cannot install slurm cleanly." >&2; '
-        '  echo "[install-deps] last 12 lines of dry-run output:" >&2; '
-        '  echo "$_sim_out" | tail -12 >&2; '
-        '  echo "" >&2; '
-        '  echo "[install-deps] This image has been built with mixed-distro libs and apt cannot reconcile slurm-wlm without downgrades." >&2; '
-        '  echo "[install-deps] Recommended workarounds:" >&2; '
-        "  echo \"  - derive your project image from 'docker.sii.shaipower.online/inspire-studio/unified-base:v2' (slurm preinstalled, no apt step needed)\" >&2; "
-        '  echo "  - or check if your image vendor (e.g. inspire-base / ngc-*) ships a slurm variant already" >&2; '
+        '  echo "[install-deps] auto-install not supported on this image (apt failed dependency check)." >&2; '
+        f'  echo "[install-deps] manual: apt-get install -y --no-install-recommends {pkgs}" >&2; '
+        '  echo "[install-deps] or use docker.sii.shaipower.online/inspire-studio/unified-base:v2 as the base image (slurm preinstalled)." >&2; '
         "  exit 3; "
         "fi; "
         # Real install only after a clean simulate.
@@ -165,13 +160,13 @@ def _build_ray_step(version: str, *, pip_index_url: str) -> str:
         f"{_distro_preflight()}; "
         # python3 + pip in PATH?
         'if ! command -v python3 >/dev/null 2>&1; then '
-        '  echo "[install-deps] ERROR: python3 not on PATH; this image likely uses conda/venv only." >&2; '
-        "  echo \"[install-deps] hint: activate the project's env first, then run \"\"pip install --break-system-packages "
-        f'ray=={version}\\"\\" by hand; or derive from a system-python image." >&2; '
+        '  echo "[install-deps] auto-install not supported: python3 not on PATH (image likely uses conda/venv)." >&2; '
+        f'  echo "[install-deps] manual: activate your env, then pip install --break-system-packages ray=={version}" >&2; '
         "  exit 5; "
         "fi; "
         'if ! command -v pip >/dev/null 2>&1 && ! command -v pip3 >/dev/null 2>&1; then '
-        '  echo "[install-deps] ERROR: pip not on PATH." >&2; '
+        '  echo "[install-deps] auto-install not supported: pip not on PATH." >&2; '
+        f'  echo "[install-deps] manual: install pip first, then pip install --break-system-packages ray=={version}" >&2; '
         "  exit 5; "
         "fi; "
         '_pip=$(command -v pip || command -v pip3); '

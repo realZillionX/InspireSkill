@@ -229,7 +229,7 @@ inspire notebook install-deps <alias> --slurm --ray
 
 每步先 probe 后下手：`srun` / `sbatch` 已存在就 skip apt，目标 ray 版本已装就 skip pip。**幂等**——同一镜像反复跑安全。`--ray` 默认清华源，**清华不通自动 fallback 到 pypi.org**（无网区两个都不通时清晰报错，不会卡 retry）。`slurm.conf` 由平台在 `hpc create` 时注入，install-deps 不动；分布式训练 lib（deepspeed / accelerate / transformers）项目自决，用 `inspire notebook exec` 自己装。
 
-**已知不适用**：SII 平台 `inspire-base` 系列（`ubuntu-inspire-base`、`pytorch-inspire-base` 等）和 NVIDIA NGC `ngc-*` 镜像在 build 时对系统 lib 做过非常规升级，apt graph 自身就不一致（`systemd` 跟 `libsystemd0` 跨版本），任何 `apt install` 都会撞依赖。install-deps 在这些镜像上**会先 simulate 再决定下手**，直接拒绝执行 + 提示走 unified-base:v2 派生路线，而不是让 apt 中途崩出 200 行错误。
+少数镜像 `apt install` 受限（base lib 被锁定）或没有 system python3，install-deps 会**直接弹出"不支持自动安装"+对应的手动安装命令**让你自行处理或换 `unified-base:v2` 派生，不会让 apt 中途崩。
 
 **例外：镜像变体太多、不愿固化的**（infra 组的常见模式）→ 镜像不带 sshd 没问题，`notebook ssh` 自带 bootstrap（§1.1），每次连接现装现用；但 **slurm / ray / 分布式训练 lib 必须真实装在镜像里**（用上面的 `install-deps` 或手动 apt/pip），要跑 `hpc create` / `ray create` / 多节点 `job create` 就老老实实在那个镜像里把对应依赖装好。
 

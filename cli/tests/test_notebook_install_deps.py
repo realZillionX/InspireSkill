@@ -90,8 +90,10 @@ def test_slurm_step_runs_apt_simulate_preflight(monkeypatch: pytest.MonkeyPatch)
     # dependencies" so we abort early on lib-pinned images.
     assert "apt-get install -y --no-install-recommends -s" in cmd
     assert 'grep -q "Unmet dependencies"' in cmd
-    assert "apt graph inconsistent" in cmd
-    # And it must point users to a workaround instead of dying silently.
+    # Failure message: short statement + manual command so the user knows
+    # what to do without us explaining apt-graph internals.
+    assert "auto-install not supported" in cmd
+    assert "manual: apt-get install" in cmd
     assert "unified-base:v2" in cmd
     assert "exit 3" in cmd
 
