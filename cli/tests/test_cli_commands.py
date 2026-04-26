@@ -1848,7 +1848,7 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "start", "ring-8h100-test", "--no-keepalive"])
+    result = runner.invoke(cli_main, ["notebook", "start", "ring-8h100-test"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert started["notebook_id"] == item["id"]
@@ -1954,7 +1954,7 @@ def test_notebook_start_name_conflict_prompts_selection(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["notebook", "start", "ring-8h100-test", "--no-keepalive"],
+        ["notebook", "start", "ring-8h100-test"],
         input="2\n",
     )
 

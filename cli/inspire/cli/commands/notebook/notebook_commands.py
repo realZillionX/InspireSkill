@@ -178,13 +178,6 @@ def run_notebook_ssh(*args, **kwargs):  # noqa: ANN002, ANN003
     help="Local shell script to upload and run in the notebook after RUNNING",
 )
 @click.option(
-    "--keepalive/--no-keepalive",
-    default=None,
-    hidden=True,
-    expose_value=False,
-    help="Deprecated no-op option kept for backward compatibility",
-)
-@click.option(
     "--json",
     "json_output",
     is_flag=True,
@@ -194,7 +187,10 @@ def run_notebook_ssh(*args, **kwargs):  # noqa: ANN002, ANN003
     "--priority",
     type=click.IntRange(1, 10),
     default=None,
-    help="Task priority (1-10, default from config [job].priority or 10)",
+    help=(
+        "Task priority 1-10 (1-3=LOW preemptible, 4=NORMAL, 5-10=HIGH stable). "
+        "Default from config [job].priority (or 10)."
+    ),
 )
 @click.option(
     "--group",
@@ -252,7 +248,6 @@ def create_notebook_cmd(
         shm_size=shm_size,
         auto_stop=auto_stop,
         wait=wait,
-        keepalive=None,
         post_start=post_start,
         post_start_script=post_start_script,
         json_output=json_output,
@@ -427,13 +422,6 @@ def delete_notebook_cmd(
     type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path),
     default=None,
     help="Local shell script to upload and run in the notebook after RUNNING",
-)
-@click.option(
-    "--keepalive/--no-keepalive",
-    default=None,
-    hidden=True,
-    expose_value=False,
-    help="Deprecated no-op option kept for backward compatibility",
 )
 @click.option(
     "--json",

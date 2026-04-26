@@ -538,7 +538,6 @@ def run_notebook_create(
     json_output: bool,
     priority: Optional[int] = None,
     project_explicit: bool = False,
-    keepalive: bool | None = None,
     group: Optional[str] = None,
 ) -> None:
     del project_explicit
@@ -558,7 +557,6 @@ def run_notebook_create(
             config=config,
             post_start=post_start,
             post_start_script=post_start_script,
-            keepalive=keepalive,
         )
     except ValueError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_CONFIG_ERROR)

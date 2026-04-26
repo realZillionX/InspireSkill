@@ -80,6 +80,6 @@ def test_job_logs_help_mentions_ssh_fast_path_and_workflow_fallback() -> None:
     result = runner.invoke(cli_main, ["job", "logs", "--help"])
     assert result.exit_code == 0
     assert "SSH tunnel fast path" in result.output
-    assert "Otherwise, fetches logs via GitHub workflow" in result.output
+    assert "fetches logs via GitHub workflow" in result.output
 
 

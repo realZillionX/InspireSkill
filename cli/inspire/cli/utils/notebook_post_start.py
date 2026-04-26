@@ -143,15 +143,7 @@ def resolve_notebook_post_start_spec(
     config: Config,
     post_start: str | None,
     post_start_script: Path | None,
-    keepalive: bool | None = None,
 ) -> NotebookPostStartSpec | None:
-    if keepalive is not None:
-        raise ValueError(
-            "The keepalive notebook post-start preset has been removed. "
-            "Use post_start='none', --post-start '<shell command>', "
-            "or --post-start-script PATH."
-        )
-
     if post_start_script is not None:
         return _build_script_spec(post_start_script)
 

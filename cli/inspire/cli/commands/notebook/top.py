@@ -313,9 +313,9 @@ def _format_human_output(payload: dict[str, Any]) -> str:
 
 @click.command("top")
 @click.option(
-    "--bridge",
-    "-b",
-    help="Sample a specific notebook-backed bridge (defaults to all notebook-backed bridges).",
+    "--notebook",
+    "-n",
+    help="Sample a specific cached notebook (defaults to all cached notebooks).",
 )
 @click.option(
     "--watch",
@@ -343,13 +343,14 @@ def _format_human_output(payload: dict[str, Any]) -> str:
 @pass_context
 def notebook_top(
     ctx: Context,
-    bridge: Optional[str],
+    notebook: Optional[str],
     watch: bool,
     interval: float,
     no_check: bool,
     json_output: bool,
 ) -> None:
-    """Show GPU utilization and memory for tunnel-backed notebooks."""
+    """Show GPU utilization and memory for cached notebooks."""
+    bridge = notebook
     json_output = resolve_json_output(ctx, json_output)
 
     if interval <= 0:

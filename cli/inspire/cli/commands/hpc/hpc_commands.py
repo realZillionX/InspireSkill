@@ -236,7 +236,10 @@ def list_hpc(
     "--priority",
     type=click.IntRange(1, 10),
     default=None,
-    help="Task priority 1-10 (higher numbers request higher priority; project quota may cap it)",
+    help=(
+        "Task priority 1-10 (1-3=LOW preemptible, 4=NORMAL, 5-10=HIGH stable). "
+        "Project quota may cap the requested value."
+    ),
 )
 @click.option("--number-of-tasks", type=int, default=1, show_default=True,
               help="Slurm --ntasks (web UI: 子任务数量)")

@@ -8,7 +8,7 @@ run records.
 
 This complements `inspire notebook events <name>`, which returns the
 *fine-grained* K8s-ish timeline (scheduling, image pulls, preemption,
-container start, save-as-image phases). The events tab and the run-index
+container start, image-save phases). The events tab and the run-index
 tab are rendered by different components on the web portal — the web
 `生命周期` tab uses `/run_index/list`; our `events` command uses
 `/notebook/events`.

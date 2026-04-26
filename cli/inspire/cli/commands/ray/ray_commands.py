@@ -414,7 +414,10 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
     "--priority",
     type=click.IntRange(1, 10),
     default=None,
-    help="Task priority 1-10 (platform convention: 1=LOW, 9/10=HIGH)",
+    help=(
+        "Task priority 1-10 (1-3=LOW preemptible, 4=NORMAL, 5-10=HIGH stable). "
+        "Project quota may cap the requested value."
+    ),
 )
 @click.option(
     "--head-image",

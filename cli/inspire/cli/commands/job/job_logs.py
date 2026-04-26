@@ -445,11 +445,8 @@ def _emit_tunnel_fallback_hint(ctx: Context, *, bridge_name: Optional[str]) -> N
         if remaining > 0:
             preview_text = f"{preview_text}, +{remaining} more"
         click.echo(
-            f"Connected tunnel profile(s): {preview_text}. Use --bridge <name> to target one explicitly.",
-            err=True,
-        )
-        click.echo(
-            "Note: saved aliases may not share the same remote directory/log path.",
+            f"Cached notebook tunnel(s): {preview_text}. "
+            "Use --notebook <name> to target one explicitly.",
             err=True,
         )
 
@@ -519,16 +516,16 @@ def _try_get_ssh_exit_code(
             if bridge_name and tunnel_config is not None and not bridge_configured:
                 _handle_error(
                     ctx,
-                    "BridgeNotFound",
-                    f"Bridge '{bridge_name}' not found.",
+                    "NotebookTunnelNotFound",
+                    f"No cached notebook tunnel for '{bridge_name}'.",
                     EXIT_GENERAL_ERROR,
-                    hint="Run 'inspire notebook connections' to see saved notebook aliases.",
+                    hint="Run 'inspire notebook connections' to see cached notebooks.",
                 )
             if bridge_configured and requires_remote_fetch:
                 bridge_label = (
-                    f"bridge '{bridge_name_for_checks}'"
+                    f"notebook '{bridge_name_for_checks}'"
                     if bridge_name_for_checks
-                    else "default bridge"
+                    else "default notebook"
                 )
                 _handle_error(
                     ctx,
@@ -537,8 +534,8 @@ def _try_get_ssh_exit_code(
                     EXIT_GENERAL_ERROR,
                     hint=(
                         "Run 'inspire notebook test' to troubleshoot. "
-                        "If needed, re-create the bridge via "
-                        "'inspire notebook ssh <notebook-name> --save-as <name>'."
+                        "If needed, re-bootstrap via "
+                        "'inspire notebook ssh <notebook-name>'."
                     ),
                 )
             _emit_tunnel_fallback_hint(ctx, bridge_name=bridge_name)
@@ -1094,9 +1091,12 @@ def _run_job_logs_single_job(
     help="Max cached jobs to process in bulk mode (0 = all).",
 )
 @click.option(
-    "--bridge",
-    "-b",
-    help="Saved notebook alias to use for the SSH tunnel fast path before workflow fallback",
+    "--notebook",
+    help=(
+        "Notebook name whose cached SSH tunnel should be used as the "
+        "fast path for log fetching (falls back to workflow if absent). "
+        "No short alias — `-n` is reserved for --tail."
+    ),
 )
 @pass_context
 def logs(
@@ -1110,15 +1110,16 @@ def logs(
     interval: int,
     status: tuple,
     limit: int,
-    bridge: Optional[str],
+    notebook: Optional[str],
 ) -> None:
     """View logs for a training job.
 
-    Prefers the SSH tunnel fast path when a saved notebook alias is available.
-    Otherwise, fetches logs via GitHub workflow and caches them locally.
-    Incremental fetching is enabled by default - only new bytes are
-    fetched when a local cache exists. Use --refresh to re-fetch from
-    the beginning.
+    Prefers the SSH tunnel fast path when a notebook connection is cached
+    (1:1 with the notebook name; bootstrap with `inspire notebook ssh
+    <notebook-name>` first). Otherwise fetches logs via GitHub workflow
+    and caches them locally. Incremental fetching is enabled by default
+    — only new bytes are fetched when a local cache exists. Use
+    --refresh to re-fetch from the beginning.
 
     \b
     Single job mode (with JOB name):
@@ -1137,16 +1138,17 @@ def logs(
         inspire job logs my-training-run --follow --interval 10
         inspire job logs my-training-run --path
         inspire job logs my-training-run --refresh
-        inspire job logs my-training-run --bridge my-profile
+        inspire job logs my-training-run --notebook my-cpu-box
         inspire job logs --status RUNNING --status SUCCEEDED
         inspire job logs --refresh --status RUNNING
     """
+    bridge = notebook
     if not job:
         if tail or head or path or follow or bridge:
             _handle_error(
                 ctx,
                 "InvalidUsage",
-                "--tail, --head, --path, --follow and --bridge require a JOB name",
+                "--tail, --head, --path, --follow and --notebook require a JOB name",
                 EXIT_VALIDATION_ERROR,
             )
             return

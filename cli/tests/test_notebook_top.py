@@ -92,7 +92,7 @@ def test_notebook_top_bridge_option_targets_one_bridge(monkeypatch: pytest.Monke
     monkeypatch.setattr(notebook_top_module, "run_ssh_command", fake_run_ssh_command)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "top", "--bridge", "gpu-b", "--no-check"])
+    result = runner.invoke(cli_main, ["notebook", "top", "--notebook", "gpu-b", "--no-check"])
     assert result.exit_code == 0
     assert sampled == ["gpu-b"]
     assert "gpu-b" in result.output
@@ -106,7 +106,7 @@ def test_notebook_top_rejects_non_notebook_backed_bridge(
     monkeypatch.setattr(notebook_top_module, "load_tunnel_config", lambda: config)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "top", "--bridge", "manual"])
+    result = runner.invoke(cli_main, ["notebook", "top", "--notebook", "manual"])
     assert result.exit_code == EXIT_CONFIG_ERROR
     assert "not notebook-backed" in result.output
 

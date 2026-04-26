@@ -210,11 +210,12 @@ def run_job_create(
 @click.option("--framework", default="pytorch", help="Training framework (default: pytorch)")
 @click.option(
     "--priority",
-    type=int,
+    type=click.IntRange(1, 10),
     default=None,
     help=(
-        "Requested priority 1-10 (higher numbers request higher priority; "
-        "project quota may cap it). Check `inspire job status` for priority_level."
+        "Task priority 1-10 (1-3=LOW preemptible, 4=NORMAL, 5-10=HIGH stable). "
+        "Project quota may cap the requested value. Check `inspire job status` "
+        "for the resolved priority_level."
     ),
 )
 @click.option("--max-time", type=float, default=100.0, help="Max runtime in hours (default: 100)")
