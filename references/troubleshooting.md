@@ -58,7 +58,7 @@ nohup "$RT_BIN" 22222 31337 >/tmp/rtunnel-server.log 2>&1 &
 | `steps=-/0` | 正文没用 `srun` 启动程序 |
 | `nodes=[]` | 调度未分配；可能是配额 / 优先级问题 |
 | `status=SUCCEEDED` 但目录 / `stdout.log` / 报告为空 | CPU 并发 / 内存贴边（应用层应留 `cpus-per-task - 4`、`384 MB` 内存） |
-| `spec_id not found` | 把 notebook `quota_id` 当成了 `predef_quota_id`；用 `resources specs --usage hpc` 重查 |
+| `quota match failed` / 0 候选 | `--quota gpu,cpu,mem` 在当前 workspace 找不到对应规格。用 `inspire resources specs --usage hpc` 列出可用三元组重选；多组撞名时加 `--group <name>` 消歧 |
 | `image not found` | 镜像地址不完整；必须是 `host/namespace/name:tag` 全形式 |
 | `429` | 已内置退避；持续失败再等几分钟 |
 

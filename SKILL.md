@@ -38,12 +38,12 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 ## 2. 命令速查
 
-> **`--quota` / `-q` 通用格式**（`notebook create` / `job create` / `run` 共用）：
+> **`--quota` / `-q` 通用格式**（`notebook create` / `job create` / `run` / `hpc create` / `ray create --head-quota` / `--worker quota=` 共用）：
 > - 三元组：`<gpu>,<cpu>,<mem>`（都是整数，`mem` 以 GiB 计）。例：`1,20,200` = 1 GPU + 20 CPU + 200 GiB。
 > - CPU-only：`0,<cpu>,<mem>`，如 `0,4,32`（CPU 批处理另走 `hpc`）。
-> - 三元组必须在 workspace 已注册的 `quota_id` 里唯一匹配。零匹配报错并列出可用规格；多个 compute_group 同时匹配同一三元组（比如 H100 组和 H200 组都有 `1,20,200`）需要加 `--group <名字>` 消歧。
+> - 三元组必须在 workspace 当前可见的规格里唯一匹配。零匹配报错并列出可用规格；多个 compute_group 同时撞上同一三元组（比如 H100 组和 H200 组都有 `1,20,200`）需要加 `--group <名字>` 消歧。
 >
-> GPU 型号由 workspace × compute_group 反推，不在 `--quota` 里指定。列当前 workspace 的合法三元组：`inspire resources specs --usage notebook`（notebook 规格）/ `--usage hpc`（HPC 规格）；train-job 规格目前查 `--usage all`。
+> GPU 型号由 workspace × compute_group 反推，不在 `--quota` 里指定。列规格：`inspire resources specs --usage {notebook,job,hpc,ray,all}`（默认 `all`，跨所有 workspace 搜；按家族窄化时挑对应的）。
 
 ### 2.1 资源 / 项目 / 用户 / 配置 / 账号
 
@@ -53,7 +53,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 | --- | --- |
 | `inspire resources list [--all --include-cpu]` | 实时可用量（默认只 GPU） |
 | `inspire resources nodes [-A]` | 整节点空余，多节点任务前必查 |
-| `inspire resources specs --usage {all,notebook,hpc,ray} [--workspace X --group Y --json]` | 规格表；默认 `all` 同时列 notebook / hpc / ray。**默认跨所有 workspace 搜**，加 `--workspace X` 锁定。挑一行的 `(GPU, CPU, MemGiB)` 三元组喂给 `--quota gpu,cpu,mem`（`notebook create` / `job create` / `run` / `ray create --head-quota` / `--worker quota=`），CLI 自己解析 |
+| `inspire resources specs --usage {all,notebook,job,hpc,ray} [--workspace X --group Y --json]` | 规格表；默认 `all` 同时列 notebook / job / hpc / ray。**默认跨所有 workspace 搜**，加 `--workspace X` 锁定。挑一行的 `(GPU, CPU, MemGiB)` 三元组喂给 `--quota gpu,cpu,mem`（`notebook create` / `job create` / `run` / `ray create --head-quota` / `--worker quota=`），CLI 自己解析 |
 | `inspire project list` | 项目 + 配额，定高/低优前必看 |
 | `inspire user whoami` | 当前登录身份 / 角色 |
 | `inspire user permissions [--workspace X]` | workspace 下授予的权限码（如 `job.trainingJob.create`） |
@@ -164,7 +164,7 @@ description: "Execution-first Inspire platform playbook for agents driving the i
 
 | 命令 | 用途 |
 | --- | --- |
-| `inspire image list [--source public\|private\|all]` | 浏览；`private` = UI "个人可见"，`all` 聚合去重 |
+| `inspire image list [--source official\|public\|private\|all]` | 浏览；UI 上的"官方镜像/个人可见镜像/公开可见镜像" 对应 `official`/`private`/`public`，`all` 聚合去重（默认 `official`） |
 | `inspire image save <notebook-name> -n X -v v1 [--public --wait --json]` | 从运行中实例保存为镜像；`--public/--private` 指定可见性 |
 | `inspire image set-visibility <name>:<ver> --public\|--private` | 翻转已有镜像可见性 |
 | `inspire image register [--method address]` | 注册外部镜像，优先 address 方式 |

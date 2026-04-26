@@ -122,7 +122,7 @@ inspire resources list --all --include-cpu
 <tr>
   <td width="50%">
     <h4>📝 Notebook 统一入口</h4>
-    全链路命令化：<code>create / list / status / start · stop / ssh / exec / shell / scp / refresh / forget / test / connections</code>。一次 <code>notebook ssh &lt;name&gt;</code> 就把 SSH 通路在本地缓存好，后续 <code>exec / shell / scp / ...</code> 都直接用 notebook name。<b>任何镜像、任何计算组、有无公网</b>都能直接 <code>ssh</code> —— rtunnel + sshd 从平台预置的 <code>global_public</code> 离线 kit 本地 cp / dpkg 起来，镜像里不需要预装。
+    全链路命令化：<code>create / list / status / start · stop / ssh / exec / shell / scp / refresh / forget / test / connections / install-deps / top / metrics / events / lifecycle</code>。一次 <code>notebook ssh &lt;name&gt;</code> 就把 SSH 通路在本地缓存好，后续 <code>exec / shell / scp / ...</code> 都直接用 notebook name。<b>任何镜像、任何计算组、有无公网</b>都能直接 <code>ssh</code> —— rtunnel 从平台预置的 <code>global_public</code> 离线 kit 直接 exec（GPFS zero-copy），sshd 缺失时从 kit 的 <code>.deb</code> 自动 <code>dpkg</code> 装上，镜像里不需要预装。
   </td>
   <td width="50%">
     <h4>🚀 HPC 任务分派</h4>
