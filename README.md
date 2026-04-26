@@ -50,7 +50,91 @@
 
 ---
 
+## 为什么比社区里其它启智 CLI 更值得用？
+
+启智社区还有两条独立维护的 CLI：[EmbodiedForge/Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) 和 [tianyilt/qzcli_tool](https://github.com/tianyilt/qzcli_tool)。它们各自解决了**一部分**问题。但你真去 clone 下来读源码会发现，**它们和 InspireSkill 的差异不在 SKILL 包做得多漂亮、命令名取得多顺口，差在底层基础设施**：能不能在任何镜像里把 SSH 通起来、能不能从平台拉到事件 / 生命周期 / GPU 利用率这些 OpenAPI 不暴露的观测信号、能不能让 Agent 端到端编排训练 / HPC / Ray / 推理多个工作负载。
+
+下面这些差异是我亲自 clone 两边仓库逐文件对比出来的，不是营销话术。
+
+### 1. 不联网 SSH 通任何 notebook —— 三家分别怎么做
+
+启智的训练空间默认**离线**（pod 起不来公网），bridge / SSH 工作流的硬骨头在于**怎么在不联网的容器里把 sshd + 反向隧道 binary 弄起来**。
+
+**InspireSkill** —— `inspire notebook ssh <name>` **零配置、零联网、零镜像预装**：
+
+- rtunnel binary 从平台预置的 `/inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-<arch>/rtunnel` **直接 GPFS exec**（Go 静态链接，不 cp 进容器）。
+- sshd 缺失时从同一 kit 的 `sshd-debs/*.deb` 直接 `dpkg -i`，bootstrap 自动补 `useradd sshd` + 最小 sshd_config（postinst 在 offline 路径不会跑）。
+- **用户在 TOML 里完全不用配任何 ssh.* 字段**。kit 由 InspireSkill 维护者推到 global_public，所有用户共享。
+
+**[Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli)** —— 看 [`inspire/platform/web/browser_api/rtunnel/commands.py`](https://github.com/EmbodiedForge/Inspire-cli/blob/main/inspire/platform/web/browser_api/rtunnel/commands.py) 实现是一棵**五路 fallback 树**，要用户自己负责"刚好命中其中一路"：
+
+- rtunnel：要么用户在 `[ssh].rtunnel_bin = "/path/on/shared/fs"` 配好并提前把 binary 放进去，要么**容器有公网**走 `curl <download_url>` 拉。
+- sshd：要么 `[ssh].sshd_deb_dir` + 用户预解压 `.deb`，要么**容器有公网** + apt-get install。
+- 还退化路：dropbear via `[ssh].apt_mirror_url` 指向私有内网 mirror，重写容器的 `/etc/apt/sources.list.d/`，再 `apt-get install dropbear-bin`。
+- 客户端侧 rtunnel binary **下载到用户本机** `~/.local/bin/rtunnel`（archtecture 不同：他们的 rtunnel 是本机 SSH ProxyCommand，InspireSkill 的 rtunnel 是容器侧 WSS server）。
+
+**结论**：他们的"任意镜像 SSH"是有条件的——离线训练空间 + 没预配 `sshd_deb_dir` 的容器就废。InspireSkill 把"kit 推到全平台只读盘"做了一次，所有用户继承。
+
+**[qzcli_tool](https://github.com/tianyilt/qzcli_tool)** —— 完全没有 SSH / tunnel / bridge 抽象，`grep -rn "ssh\|tunnel" qzcli/` 0 命中。你要 SSH 进 notebook 自己手动开。
+
+### 2. Browser API 覆盖广度 —— 事件、生命周期、GPU 利用率从哪来
+
+平台的 `/openapi/v1/...` 公开端点只有 10 条左右，**没有事件查询、没有 GPU 利用率、没有生命周期、没有 ray/serving/model 任何东西**。所有这些观测能力都得走 `/api/v1/...` 的内部 Browser API（cookie 认证、字段无文档），**只有反向抓包才能拿到**。
+
+我用 `grep` 数了三家在 `platform/` 目录下用到的 distinct 平台端点：
+
+| 项目 | distinct API endpoints | 缺失的关键观测能力 |
+| --- | --- | --- |
+| InspireSkill | **31** | — |
+| Inspire-cli | 10 | ❌ notebook events、❌ HPC events、❌ ray (整个不存在)、❌ serving、❌ model、❌ GPU/资源 metrics、❌ run_index 生命周期 |
+| qzcli_tool | 13 | ❌ notebook events、❌ notebook lifecycle、❌ HPC events、❌ ray、❌ serving、❌ model、❌ image registry |
+
+具体到 **InspireSkill 独有的**：
+
+- `POST /api/v1/notebook/events` — `inspire notebook events <name>`：拉 K8s 风格的细粒度事件流（调度失败、镜像拉取超时、preemption、container restart 全在这里）
+- `POST /api/v1/run_index/list` — `inspire notebook lifecycle <name>`：notebook 多次启停的粗粒度时间线
+- `POST /api/v1/train_job/events/list`、`/hpc_jobs/events/list`、`/ray_job/events/list` — 三类任务的 per-pod / job-level 事件
+- `POST /api/v1/cluster_metric/resource_metric_by_time` — `inspire {notebook,job,hpc,serving} metrics <name>`：GPU 利用率、显存占用、CPU、内存的时间序列曲线（PNG 或 JSON）
+- `POST /api/v1/notebook/list?notebook_top=true` + nvidia-smi via SSH tunnel — `inspire notebook top` 实时 GPU 监控
+- `POST /api/v1/ray_job/instances/list`、`scaling_histories/list` — Ray 集群弹性伸缩历史
+- `POST /api/v1/inference_servings/list` + `/openapi/v1/inference_servings/{detail,stop}` — 部署服务的观测 + 止损
+- `POST /api/v1/model/{list,detail}` — 模型注册表浏览
+- `POST /api/v1/user/quota`、`/user/my-api-key/list` — 用户配额 + API key 元数据
+
+平台行为出问题（任务卡 PENDING / FAILED 不知道为啥）时，**事件查询是排错的第一步**。Inspire-cli 和 qzcli 都没把这条路打通，agent 只能盯 status 字段干瞪眼。
+
+### 3. 特性矩阵速对照
+
+| 维度 | [Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) | [qzcli_tool](https://github.com/tianyilt/qzcli_tool) | **InspireSkill** |
+| --- | --- | --- | --- |
+| **License** | Proprietary — *Inspire Platform Members Only* | 无 LICENSE 文件 | **MIT** |
+| **分发** | 仅 git + `uv tool install` | 仅 `git clone && pip install -e .` | **PyPI** + `curl \| install.sh` 一行 |
+| **命令组数** | 12 组 | ~20 个扁平命令 | **13 组、~120 个 leaf 子命令** |
+| **HPC / Slurm** | ❌ | ✅（单层 `--cpus-per-task`） | ✅ **节点级 `--quota` + slurm 级 `--cpus-per-task` 双层独立** |
+| **Ray 弹性集群** | ❌ | ❌ | ✅ `--head-quota` + 多 `--worker` 组 |
+| **Serving / Model 注册表** | ❌ | ❌ | ✅ |
+| **不联网 SSH bootstrap** | 五路 fallback，需要用户预配 `[ssh].rtunnel_bin` 等 | ❌ 无 SSH 抽象 | ✅ 零配置，kit 在 global_public 上 |
+| **事件 / 生命周期 / GPU 利用率查询** | ❌ | ❌ | ✅ 5 类事件 + 4 类资源 metrics + run_index 生命周期 |
+| **多账号隔离** | `[accounts."<user>"]` 合并层 + 优先级链 | 单账号 | **一账号一独立目录**，`~/.inspire/current` 一行切换 |
+| **Agent 集成** | 无 | `qzcli-mcp`（1 家 harness） | **Skill 格式覆盖 5 家 harness** |
+| **`--json` 输出** | 全局 | 部分 | **全局 + 结构化错误 + exit codes** |
+| **测试** | 53 文件 | **3 文件** | **767 单元测试** |
+| **代码组织** | 模块化 | `cli.py` 单文件 **242 KB / 6641 行** | 模块化按命令组分目录 |
+| **Stars / Forks** | 25 / 5 | 72 / 14 | — |
+
+### 4. 怎么挑
+
+- 你只想要本机 SSH ProxyCommand + bridge tunnel UX、能接受 SII 成员闭源 license、容器有公网或愿意自己预配 sshd `.deb` 路径？→ [Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli)：`bridge exec --stdin` / `notebook top --watch` 是真细节，53 个测试也是真功夫。
+- 你只在小团队跑训练任务、要中文交互式 TUI 选规格、容忍 6641 行 `cli.py` 单文件 + 几乎无测试 + 无 license？→ [qzcli_tool](https://github.com/tianyilt/qzcli_tool)：`create -i` 全屏选规格 UX 是亮点，`qzcli-mcp` 拿到了 Codex/Claude 的早期 MCP 接入。
+- 你要 Agent 在**离线训练空间**端到端跑通 notebook 起停 → SSH bootstrap → 提任务 → 跟事件 → 看 GPU 利用率 → 保存镜像 → 切账号 → 提下一个？→ **InspireSkill**。
+
+简单一句话：**Inspire-cli 把 SSH ProxyCommand 这条路打磨得很细；qzcli 把交互式 TUI 选规格 + MCP 这件事做得不错；InspireSkill 把整个平台的操作面 + 观测面端到端铺平了，并且在离线场景下零配置可用。**
+
+---
+
 ## 快速上手
+
+> **平台支持**：macOS + Linux 一等公民。**Windows 用户请用 [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)**——CLI 大量依赖 SSH / rsync / GPFS 目录约定 / POSIX 文件权限，Windows 原生（PowerShell + cmd）不在 roadmap，已知 issue 见 [#2](https://github.com/realZillionX/InspireSkill/issues/2)。
 
 **Requirements**：`bash` · `curl` · `tar` · Python 3.10+ · `uv` 或 `pipx`
 
