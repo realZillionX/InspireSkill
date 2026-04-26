@@ -2359,7 +2359,10 @@ def _write_discovered_project_config(
             project_data.pop(sub_key, None)
 
     project_path.parent.mkdir(parents=True, exist_ok=True)
-    project_path.write_text(_toml_dumps(project_data))
+    # Always UTF-8: TOML spec mandates UTF-8, and on Windows the default
+    # locale (GBK / cp936 on Chinese Windows) would otherwise corrupt
+    # non-ASCII paths/names — see issue #2.
+    project_path.write_text(_toml_dumps(project_data), encoding="utf-8")
 
 
 def _print_discover_completion(
@@ -2606,7 +2609,9 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
             global_data.pop("project_catalog", None)
 
     global_path.parent.mkdir(parents=True, exist_ok=True)
-    global_path.write_text(_toml_dumps(global_data))
+    # Always UTF-8 — see project_path.write_text above for the Windows
+    # GBK story.
+    global_path.write_text(_toml_dumps(global_data), encoding="utf-8")
     if prompted_credentials:
         try:
             global_path.chmod(0o600)

@@ -520,7 +520,7 @@ def create_ray(
         session = get_web_session()
 
         if json_body_path is not None:
-            body = json.loads(json_body_path.read_text())
+            body = json.loads(json_body_path.read_text(encoding="utf-8"))
             if not isinstance(body, dict):
                 raise click.UsageError("--json-body file must contain a JSON object.")
         else:

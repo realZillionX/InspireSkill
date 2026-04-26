@@ -373,8 +373,8 @@ def _save_project_cache(
     try:
         os.makedirs(os.path.dirname(cache_file), exist_ok=True)
         tmp = f"{cache_file}.tmp"
-        with open(tmp, "w") as f:
-            json.dump(payload, f)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
         os.replace(tmp, cache_file)
         try:
             os.chmod(cache_file, 0o600)

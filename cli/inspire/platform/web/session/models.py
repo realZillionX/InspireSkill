@@ -121,8 +121,8 @@ class WebSession:
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         # Restrict permissions: session contains sensitive cookies/tokens.
         tmp_path = cache_file.with_suffix(".tmp")
-        with open(tmp_path, "w") as f:
-            json.dump(self.to_dict(), f)
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, ensure_ascii=False)
         os.replace(tmp_path, cache_file)
         try:
             os.chmod(cache_file, 0o600)

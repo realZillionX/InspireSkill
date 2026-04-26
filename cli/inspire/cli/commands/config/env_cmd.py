@@ -89,7 +89,7 @@ def generate_env(ctx: Context, template: str, output_file: str | None) -> None:
 
     if output_file:
         output_path = Path(output_file)
-        output_path.write_text(content)
+        output_path.write_text(content, encoding="utf-8")
         click.echo(click.style(f"Created {output_path}", fg="green"))
     else:
         click.echo(content)

@@ -208,7 +208,7 @@ def _load_state_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"version": _CACHE_VERSION, "notebooks": {}}
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return {"version": _CACHE_VERSION, "notebooks": {}}
     if not isinstance(raw, dict):
@@ -222,7 +222,10 @@ def _load_state_file(path: Path) -> dict[str, Any]:
 def _save_state_file(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    tmp_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
     os.replace(tmp_path, path)
     try:
         os.chmod(path, 0o600)
