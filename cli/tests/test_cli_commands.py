@@ -1026,6 +1026,188 @@ def test_job_list_name_filter_applies_to_local_cache(
     assert "other-job" not in result.output
 
 
+def test_job_status_web_accepts_job_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+
+    from importlib import import_module
+
+    job_commands_module = import_module("inspire.cli.commands.job.job_commands")
+
+    class FakeSession:
+        workspace_id = "ws-train"
+        storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
+
+    calls: dict[str, str] = {}
+
+    monkeypatch.setattr(job_commands_module, "get_web_session", lambda: FakeSession())
+
+    def fake_get_job_detail(job_id, session=None):  # noqa: ARG001
+        calls["job_id"] = job_id
+        return {
+            "job_id": job_id,
+            "name": "web-job",
+            "status": "job_queuing",
+            "command": "bash train.sh",
+        }
+
+    monkeypatch.setattr(browser_api_module, "get_job_detail", fake_get_job_detail)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main, ["--json", "job", "status", "--web", TEST_JOB_ID])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["data"]["source"] == "web"
+    assert payload["data"]["job"]["job_id"] == TEST_JOB_ID
+    assert calls["job_id"] == TEST_JOB_ID
+
+
+def test_job_instances_web_resolves_name_across_workspaces(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+
+    from importlib import import_module
+
+    job_commands_module = import_module("inspire.cli.commands.job.job_commands")
+    jobs_module = import_module("inspire.platform.web.browser_api.jobs")
+    JobInfo = jobs_module.JobInfo
+
+    class FakeSession:
+        workspace_id = "ws-main"
+        all_workspace_ids = ["ws-main", "ws-train"]
+        all_workspace_names = {"ws-main": "Main", "ws-train": "Training"}
+        storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
+
+    monkeypatch.setattr(job_commands_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_current_user",
+        lambda session=None: {"id": "user-me"},  # noqa: ARG005
+    )
+
+    def fake_list_jobs(
+        workspace_id=None,
+        created_by=None,
+        status=None,
+        page_num=1,
+        page_size=100,
+        session=None,
+    ):  # noqa: ARG001
+        if workspace_id == "ws-train":
+            return (
+                [
+                    JobInfo(
+                        job_id=TEST_JOB_ID,
+                        name="kchen-qwen35",
+                        status="job_queuing",
+                        command="bash train.sh",
+                        created_at="1778050130000",
+                        finished_at=None,
+                        created_by_name="Chen Ke",
+                        created_by_id=created_by or "user-me",
+                        project_id="project-1",
+                        project_name="CQ Project",
+                        compute_group_name="H200-3",
+                        gpu_type="NVIDIA H200",
+                        gpu_count=8,
+                        instance_count=6,
+                        priority=10,
+                        workspace_id="ws-train",
+                    )
+                ],
+                1,
+            )
+        return ([], 0)
+
+    monkeypatch.setattr(browser_api_module, "list_jobs", fake_list_jobs)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_job_instances",
+        lambda job_id, page_num=1, page_size=200, session=None: (  # noqa: ARG005
+            [
+                {
+                    "name": f"{job_id}-worker-0-0",
+                    "instance_status": "instance_creating",
+                    "instance_type": "instance_type_worker",
+                    "node": "",
+                    "created_at": "1778050182000",
+                }
+            ],
+            1,
+        ),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main, ["--json", "job", "instances", "-A", "qwen35"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["data"]["source"] == "web"
+    assert payload["data"]["job_id"] == TEST_JOB_ID
+    assert payload["data"]["instances"][0]["name"] == f"{TEST_JOB_ID}-worker-0-0"
+
+
+def test_job_events_web_all_instances_fetches_pod_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+
+    from importlib import import_module
+
+    events_utils_module = import_module("inspire.cli.utils.events")
+    job_events_module = import_module("inspire.cli.commands.job.job_events")
+
+    class FakeSession:
+        workspace_id = "ws-train"
+        storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(events_utils_module, "_EVENTS_CACHE_DIR", tmp_path / "events")
+    monkeypatch.setattr(job_events_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_job_instances",
+        lambda job_id, page_num=1, page_size=200, session=None: (  # noqa: ARG005
+            [{"name": f"{job_id}-worker-0-0"}, {"name": f"{job_id}-worker-0-1"}],
+            2,
+        ),
+    )
+
+    def fake_instance_events(job_id, pod_names, session=None):  # noqa: ARG001
+        captured["job_id"] = job_id
+        captured["pod_names"] = pod_names
+        return [
+            {
+                "type": "Warning",
+                "reason": "FailedScheduling",
+                "message": "Insufficient cpu",
+                "last_timestamp": "1778050182000",
+            }
+        ]
+
+    monkeypatch.setattr(job_events_module, "list_job_instance_events", fake_instance_events)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        ["--json", "job", "events", "--web", "--all-instances", TEST_JOB_ID],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["data"]["job_id"] == f"{TEST_JOB_ID}__all_instances"
+    assert payload["data"]["events"][0]["reason"] == "FailedScheduling"
+    assert captured["job_id"] == TEST_JOB_ID
+    assert captured["pod_names"] == [
+        f"{TEST_JOB_ID}-worker-0-0",
+        f"{TEST_JOB_ID}-worker-0-1",
+    ]
+
+
 def test_job_list_watch_json_does_not_clear_screen(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

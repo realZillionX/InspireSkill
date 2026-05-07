@@ -16,7 +16,9 @@ __all__ = [
     "JobInfo",
     "delete_job",
     "get_current_user",
+    "get_job_detail",
     "get_train_job_workdir",
+    "list_job_instances",
     "list_job_events",
     "list_job_instance_events",
     "list_job_users",
@@ -128,6 +130,69 @@ def get_current_user(session: Optional[WebSession] = None) -> dict:
         timeout=30,
     )
     return data.get("data", {})
+
+
+def get_job_detail(
+    job_id: str,
+    session: Optional[WebSession] = None,
+) -> dict:
+    """Fetch full detail for a distributed-training job from the web UI API."""
+    job_id = str(job_id or "").strip()
+    if not job_id:
+        raise ValueError("job_id is required")
+
+    if session is None:
+        session = get_web_session()
+
+    data = _request_json(
+        session,
+        "POST",
+        _browser_api_path("/train_job/detail"),
+        referer=f"{_get_base_url()}/jobs/distributedTrainingDetail/{job_id}",
+        body={"job_id": job_id},
+        timeout=30,
+    )
+
+    if data.get("code") != 0:
+        raise ValueError(f"API error: {data.get('message')}")
+
+    payload = data.get("data")
+    return payload if isinstance(payload, dict) else {}
+
+
+def list_job_instances(
+    job_id: str,
+    *,
+    page_num: int = 1,
+    page_size: int = 200,
+    session: Optional[WebSession] = None,
+) -> tuple[list[dict], int]:
+    """Fetch pod-level instances for a distributed-training job."""
+    job_id = str(job_id or "").strip()
+    if not job_id:
+        raise ValueError("job_id is required")
+
+    if session is None:
+        session = get_web_session()
+
+    data = _request_json(
+        session,
+        "POST",
+        _browser_api_path("/train_job/instance_list"),
+        referer=f"{_get_base_url()}/jobs/distributedTrainingDetail/{job_id}",
+        body={"job_id": job_id, "page_num": page_num, "page_size": page_size},
+        timeout=30,
+    )
+
+    if data.get("code") != 0:
+        raise ValueError(f"API error: {data.get('message')}")
+
+    payload = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(payload, dict):
+        return [], 0
+    items = payload.get("items") or []
+    total = payload.get("total") or len(items)
+    return (items if isinstance(items, list) else []), int(total)
 
 
 def list_job_users(
