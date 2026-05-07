@@ -26,6 +26,7 @@ from .jobs import (
     list_job_instance_events,
     list_job_users,
     list_jobs,
+    list_train_job_logs,
 )
 from .hpc_jobs import (
     HPCJobInfo,
@@ -121,6 +122,7 @@ __all__ = [
     "list_job_instance_events",
     "list_job_users",
     "list_jobs",
+    "list_train_job_logs",
     # HPC jobs
     "HPCJobInfo",
     "delete_hpc_job",

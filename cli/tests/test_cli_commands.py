@@ -752,7 +752,9 @@ def test_job_list_live_refresh_scans_beyond_ten_pages(
     jobs_module = import_module("inspire.platform.web.browser_api.jobs")
     JobInfo = jobs_module.JobInfo
 
-    def fake_list_jobs(workspace_id=None, page_num=1, page_size=100, session=None):  # noqa: ARG001
+    def fake_list_jobs(
+        workspace_id=None, keyword=None, page_num=1, page_size=100, session=None
+    ):  # noqa: ARG001
         if page_num < 11:
             return (
                 [
@@ -844,7 +846,9 @@ def test_job_list_refreshes_live_status_across_workspaces(
         web_session_module, "get_web_session", lambda *args, **kwargs: FakeSession()
     )
 
-    def fake_list_jobs(workspace_id=None, page_num=1, page_size=100, session=None):  # noqa: ARG001
+    def fake_list_jobs(
+        workspace_id=None, keyword=None, page_num=1, page_size=100, session=None
+    ):  # noqa: ARG001
         if workspace_id == "ws-train":
             return (
                 [
@@ -939,6 +943,7 @@ def test_job_list_web_name_search_scans_all_workspaces(
         workspace_id=None,
         created_by=None,
         status=None,
+        keyword=None,
         page_num=1,
         page_size=100,
         session=None,
@@ -948,6 +953,7 @@ def test_job_list_web_name_search_scans_all_workspaces(
                 "workspace_id": workspace_id,
                 "created_by": created_by,
                 "status": status,
+                "keyword": keyword,
                 "page_num": page_num,
                 "page_size": page_size,
             }
@@ -976,6 +982,30 @@ def test_job_list_web_name_search_scans_all_workspaces(
                 ],
                 1,
             )
+        if workspace_id == "ws-main":
+            return (
+                [
+                    JobInfo(
+                        job_id=TEST_JOB_ID_2,
+                        name="unrelated-job",
+                        status="job_succeeded",
+                        command="bash other.sh",
+                        created_at="2026-05-06T14:40:00",
+                        finished_at=None,
+                        created_by_name="Chen Ke",
+                        created_by_id="user-me",
+                        project_id="project-2",
+                        project_name="Other Project",
+                        compute_group_name="H200-1",
+                        gpu_type="NVIDIA H200",
+                        gpu_count=1,
+                        instance_count=1,
+                        priority=4,
+                        workspace_id="ws-main",
+                    )
+                ],
+                1000,
+            )
         return ([], 0)
 
     monkeypatch.setattr(browser_api_module, "list_jobs", fake_list_jobs)
@@ -993,7 +1023,15 @@ def test_job_list_web_name_search_scans_all_workspaces(
     assert payload["data"]["jobs"][0]["name"] == "kchen-slime-code-qwen35-35b-a3b-6node"
     assert payload["data"]["jobs"][0]["workspace_name"] == "Training Workspace"
     assert calls[0]["created_by"] == "user-me"
-    assert {call["workspace_id"] for call in calls} == {"ws-main", "ws-train"}
+    assert calls[0]["keyword"] == "qwen35"
+    assert sorted((call["workspace_id"], call["page_num"]) for call in calls) == [
+        ("ws-main", 1),
+        ("ws-train", 1),
+    ]
+    assert {row["workspace_id"]: row["pages"] for row in payload["data"]["scanned"]} == {
+        "ws-main": 1,
+        "ws-train": 1,
+    }
 
 
 def test_job_list_name_filter_applies_to_local_cache(
@@ -1168,6 +1206,7 @@ def test_job_instances_web_resolves_name_across_workspaces(
         workspace_id=None,
         created_by=None,
         status=None,
+        keyword=None,
         page_num=1,
         page_size=100,
         session=None,
@@ -1467,6 +1506,89 @@ def test_job_logs_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     assert "log_path" in data["data"]
     assert "content" in data["data"]
     assert "test log content" in data["data"]["content"]
+
+
+def test_job_logs_web_queries_instance_aggregated_logs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+
+    from importlib import import_module
+
+    job_logs_module = import_module("inspire.cli.commands.job.job_logs")
+
+    class FakeSession:
+        workspace_id = "ws-train"
+        storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
+
+    captured: dict[str, Any] = {}
+    pod_name = f"{TEST_JOB_ID}-worker-0"
+
+    monkeypatch.setattr(job_logs_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_job_detail",
+        lambda job_id, session=None: {  # noqa: ARG005
+            "job_id": job_id,
+            "created_at": "1778051163000",
+            "finished_at": "1778053007000",
+            "status": "job_succeeded",
+        },
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_job_instances",
+        lambda *_, **__: (_ for _ in ()).throw(AssertionError("instances should not be listed")),
+    )
+
+    def fake_list_train_job_logs(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return (
+            [
+                {
+                    "pod_name": pod_name,
+                    "timestamp_ms": "1778051164000",
+                    "message": "first line",
+                },
+                {
+                    "pod_name": pod_name,
+                    "timestamp_ms": "1778051165000",
+                    "message": "second line",
+                },
+            ],
+            2,
+        )
+
+    monkeypatch.setattr(browser_api_module, "list_train_job_logs", fake_list_train_job_logs)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "logs",
+            "--web",
+            TEST_JOB_ID,
+            "--instance",
+            pod_name,
+            "--tail",
+            "1",
+            "--since-minutes",
+            "30",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["data"]["source"] == "web"
+    assert payload["data"]["job_id"] == TEST_JOB_ID
+    assert payload["data"]["instances"] == [pod_name]
+    assert payload["data"]["shown"] == 1
+    assert payload["data"]["logs"][0]["message"] == "second line"
+    assert captured["job_id"] == TEST_JOB_ID
+    assert captured["pod_names"] == [pod_name]
 
 
 def test_job_logs_legacy_filename_is_migrated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

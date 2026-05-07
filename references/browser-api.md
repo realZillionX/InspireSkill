@@ -95,7 +95,7 @@ OpenAPI 这侧只有 `train_job/{create,detail,stop}`。**`list` 和事件都只
 
 | 方法 | 路径 | 用途 | CLI 引用 |
 | --- | --- | --- | --- |
-| `POST` | `{prefix}/train_job/list` | 列训练任务 | `browser_api.jobs.list_jobs`；`inspire job list` |
+| `POST` | `{prefix}/train_job/list` | 列训练任务；顶层 `keyword` 可做服务端关键词过滤（2026-05 实测，`filter` / `filter_by` 会被 proto 拒） | `browser_api.jobs.list_jobs`；`inspire job list` |
 | `POST` | `{prefix}/train_job/delete` | 永久删训练任务条目（destructive；**OpenAPI 无对应端点**）。body `{"job_id": <id>}`——2026-04-21 实测成功（`code:0`）；注意这是 train_job 域里唯一一个 POST-delete，notebook / hpc 那边都是 REST `DELETE /<res>/{id}`。 | `browser_api.jobs.delete_job`；`inspire job delete` |
 | `POST` | `{prefix}/train_job/detail` | Browser API 侧详情（与 OpenAPI `/openapi/v1/train_job/detail` 平行，返回字段一致）。前端 `/jobs/distributedTrainingDetail/{id}` 页在用 | —— |
 | `POST` | `{prefix}/train_job/users` | 当前 workspace 里谁在用资源（共用配额时判谁占着） | `browser_api.jobs.list_job_users` |
@@ -103,7 +103,7 @@ OpenAPI 这侧只有 `train_job/{create,detail,stop}`。**`list` 和事件都只
 | `POST` | `{prefix}/train_job/job_event_list` | **Job-level K8s 事件**（body: `{jobId:<id>}`；`Unschedulable` / `Pulling` / `Started` / `FailedCreate` / `SetPodTemplateSchedulerName` 等）。返回字段含 `type`/`reason`/`message`/`from`/`first_timestamp`/`last_timestamp`/`object_id`/`object_type`/`age`。 | `browser_api.jobs.list_job_events`；`inspire job events <name>`（带本地缓存到 `~/.inspire/events/<id>.events.json`） |
 | `POST` | `{prefix}/train_job/instance_list` | 该任务的 pod 实例 | body: `{jobId, page_num, page_size}` |
 | `POST` | `{prefix}/train_job/events/list` | **Per-instance 事件**（按 pod 名查询）。body 形如 `{page_num, page_size, filter:{object_type:"instance", object_ids:[<pod>], start_last_timestamp, end_last_timestamp}}`。返回 scheduler / kubelet 视角事件（`FailedScheduling`/`Scheduled`/`Pulled`/`Started`），对诊断具体调度失败原因更有用 | `browser_api.jobs.list_job_instance_events`；`inspire job events <name> --instance <pod>` |
-| `POST` | `{prefix}/logs/train` | Train job 聚合日志（按 podNames + 时间窗）。body 形如 `{page_size, filter:{podNames:[...], start_timestamp_ms, end_timestamp_ms}, sorter:[{field:"time",sort:"descend"}]}` | Web 前端 "聚合日志 → 日志" 子 tab |
+| `POST` | `{prefix}/logs/train` | Train job 聚合日志（按 podNames + 时间窗）。body 形如 `{page_size, filter:{podNames:[...], start_timestamp_ms:"...", end_timestamp_ms:"..."}}`；时间戳必须以字符串形式传 epoch-ms。2026-05 实测带 `{field:"time"}` sorter 会被拒，CLI 先不传 sorter 并在客户端排序。 | `browser_api.jobs.list_train_job_logs`；`inspire job logs --web` |
 
 ### HPC 任务
 

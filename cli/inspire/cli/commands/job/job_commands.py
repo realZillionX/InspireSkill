@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Optional
 
@@ -191,22 +192,6 @@ def _web_workspace_ids(session, workspace_id: Optional[str], all_workspaces: boo
     return ordered or [""]
 
 
-def _prioritize_job_search_workspaces(
-    session, workspace_ids: list[str]
-) -> list[str]:  # noqa: ANN001
-    current = str(getattr(session, "workspace_id", "") or "").strip()
-
-    def priority(workspace_id: str) -> tuple[int, int]:
-        name = _workspace_name(session, workspace_id)
-        if "分布式训练" in name or "distributed" in name.lower():
-            return (0, workspace_ids.index(workspace_id))
-        if workspace_id == current:
-            return (1, workspace_ids.index(workspace_id))
-        return (2, workspace_ids.index(workspace_id))
-
-    return sorted(workspace_ids, key=priority)
-
-
 def _job_matches_name(job, query: Optional[str]) -> bool:  # noqa: ANN001
     if not query:
         return True
@@ -244,6 +229,104 @@ def _job_info_to_row(job, *, workspace_name: str = "") -> dict:  # noqa: ANN001
         "workspace_name": workspace_name,
         "command": job.command or "",
     }
+
+
+def _scan_web_jobs_round_robin(
+    *,
+    session,  # noqa: ANN001
+    workspace_ids: list[str],
+    creator_id: Optional[str],
+    api_status: Optional[str],
+    allowed_statuses: set[str] | None,
+    name: Optional[str],
+    page_num: int,
+    page_size: int,
+    max_pages: int,
+    limit: int,
+) -> tuple[list[dict], list[dict]]:
+    """Scan all candidate workspaces one page at a time.
+
+    This keeps broad name searches responsive without assuming any semantic
+    workspace names. A sequential scan can spend all of ``max_pages`` on an
+    unrelated workspace before reaching the one that contains the match.
+    """
+    rows: list[dict] = []
+    workspace_states: list[dict] = [
+        {
+            "workspace_id": workspace_id,
+            "workspace_name": _workspace_name(session, workspace_id) if workspace_id else "",
+            "next_page": max(1, page_num),
+            "pages": 0,
+            "total": 0,
+            "done": False,
+        }
+        for workspace_id in workspace_ids
+    ]
+
+    while any(not state["done"] for state in workspace_states):
+        active_states = [state for state in workspace_states if not state["done"]]
+        if not active_states:
+            break
+
+        def fetch_page(state: dict) -> tuple[dict, list, int]:  # noqa: ANN001
+            workspace_id = str(state["workspace_id"] or "")
+            current_page = int(state["next_page"])
+            items, total = browser_api_module.list_jobs(
+                workspace_id=workspace_id or None,
+                created_by=creator_id,
+                status=api_status,
+                keyword=name,
+                page_num=current_page,
+                page_size=page_size,
+                session=session,
+            )
+            return state, items, total
+
+        max_workers = min(len(active_states), 4)
+        limit_reached = False
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(fetch_page, state): state for state in active_states}
+            for future in as_completed(future_map):
+                state, items, total = future.result()
+                current_page = int(state["next_page"])
+
+                state["pages"] += 1
+                state["total"] = total
+
+                for job in items:
+                    if allowed_statuses and job.status not in allowed_statuses:
+                        continue
+                    if not _job_matches_name(job, name):
+                        continue
+                    rows.append(_job_info_to_row(job, workspace_name=state["workspace_name"]))
+
+                if limit > 0 and len(rows) >= limit:
+                    limit_reached = True
+                if not items:
+                    state["done"] = True
+                    continue
+                if total is not None and current_page * page_size >= int(total):
+                    state["done"] = True
+                    continue
+                if int(state["pages"]) >= max_pages:
+                    state["done"] = True
+                    continue
+                state["next_page"] = current_page + 1
+        if limit_reached:
+            for remaining in workspace_states:
+                remaining["done"] = True
+
+    scanned = [
+        {
+            "workspace_id": state["workspace_id"],
+            "workspace_name": state["workspace_name"],
+            "total": state["total"],
+            "pages": state["pages"],
+        }
+        for state in workspace_states
+        if int(state["pages"]) > 0
+    ]
+    return rows, scanned
 
 
 def _format_web_job_list(rows: list[dict]) -> str:
@@ -433,7 +516,22 @@ def _list_web_jobs(
 
         workspace_ids = _web_workspace_ids(session, resolved_workspace_id, all_workspaces)
         if name and all_workspaces and not resolved_workspace_id:
-            workspace_ids = _prioritize_job_search_workspaces(session, workspace_ids)
+            rows, scanned = _scan_web_jobs_round_robin(
+                session=session,
+                workspace_ids=workspace_ids,
+                creator_id=creator_id,
+                api_status=api_status,
+                allowed_statuses=allowed_statuses,
+                name=name,
+                page_num=page_num,
+                page_size=page_size,
+                max_pages=max_pages,
+                limit=limit,
+            )
+            rows.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            if limit > 0:
+                rows = rows[:limit]
+            return rows, scanned
 
         for workspace_id in workspace_ids:
             current_page = max(1, page_num)
@@ -446,6 +544,7 @@ def _list_web_jobs(
                     workspace_id=workspace_id or None,
                     created_by=creator_id,
                     status=api_status,
+                    keyword=name,
                     page_num=current_page,
                     page_size=page_size,
                     session=session,

@@ -21,6 +21,7 @@ __all__ = [
     "list_job_instances",
     "list_job_events",
     "list_job_instance_events",
+    "list_train_job_logs",
     "list_job_users",
     "list_jobs",
 ]
@@ -76,6 +77,7 @@ def list_jobs(
     workspace_id: Optional[str] = None,
     created_by: Optional[str] = None,
     status: Optional[str] = None,
+    keyword: Optional[str] = None,
     page_num: int = 1,
     page_size: int = 50,
     session: Optional[WebSession] = None,
@@ -97,6 +99,8 @@ def list_jobs(
         body["created_by"] = created_by
     if status:
         body["status"] = status
+    if keyword:
+        body["keyword"] = keyword
 
     data = _request_json(
         session,
@@ -346,6 +350,60 @@ def list_job_instance_events(
         return []
     except Exception:
         return []
+
+
+def list_train_job_logs(
+    *,
+    pod_names: list[str],
+    start_timestamp_ms: int | str,
+    end_timestamp_ms: int | str,
+    page_size: int = 200,
+    job_id: str | None = None,
+    session: Optional[WebSession] = None,
+) -> tuple[list[dict], int]:
+    """Fetch aggregated train-job logs from the web UI API.
+
+    Endpoint: ``POST /api/v1/logs/train``. The web backend validates
+    ``start_timestamp_ms`` and ``end_timestamp_ms`` as string fields, even
+    though their values are epoch milliseconds.
+    """
+    if session is None:
+        session = get_web_session()
+
+    clean_pods = [str(name or "").strip() for name in pod_names if str(name or "").strip()]
+    body: dict[str, Any] = {
+        "page_size": page_size,
+        "filter": {
+            "podNames": clean_pods,
+            "start_timestamp_ms": str(start_timestamp_ms),
+            "end_timestamp_ms": str(end_timestamp_ms),
+        },
+    }
+    referer_job_id = str(job_id or "").strip()
+    referer = (
+        f"{_get_base_url()}/jobs/distributedTrainingDetail/{referer_job_id}"
+        if referer_job_id
+        else f"{_get_base_url()}/jobs/distributedTraining"
+    )
+
+    data = _request_json(
+        session,
+        "POST",
+        _browser_api_path("/logs/train"),
+        referer=referer,
+        body=body,
+        timeout=30,
+    )
+
+    if data.get("code") != 0:
+        raise ValueError(f"API error: {data.get('message')}")
+
+    payload = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(payload, dict):
+        return [], 0
+    logs = payload.get("logs") or []
+    total = payload.get("total") or len(logs)
+    return (logs if isinstance(logs, list) else []), int(total)
 
 
 def delete_job(
