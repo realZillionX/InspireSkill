@@ -44,6 +44,8 @@ def run_job_create(
     project: str | None,
     nodes: int,
     group: str | None,
+    auto_fault_tolerance: Optional[bool] = None,
+    fault_tolerance_max_retry: Optional[int] = None,
 ) -> None:
     """Run the job creation flow."""
     try:
@@ -54,6 +56,10 @@ def run_job_create(
             priority = config.job_priority
         if image is None:
             image = config.job_image
+        if auto_fault_tolerance is None:
+            auto_fault_tolerance = config.job_auto_fault_tolerance
+        if fault_tolerance_max_retry is None:
+            fault_tolerance_max_retry = config.job_fault_tolerance_max_retry
 
         try:
             quota_spec = parse_quota(quota)
@@ -140,6 +146,8 @@ def run_job_create(
                 nodes=nodes,
                 max_time_hours=max_time,
                 project_name=selected.name,
+                auto_fault_tolerance=auto_fault_tolerance,
+                fault_tolerance_max_retry=fault_tolerance_max_retry,
             )
         except ValueError as e:
             _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -164,6 +172,8 @@ def run_job_create(
                 click.echo(f"Priority: {priority}")
             if nodes > 1:
                 click.echo(f"Nodes:    {nodes}")
+            if auto_fault_tolerance:
+                click.echo(f"Fault tolerance: enabled (max retry: {fault_tolerance_max_retry or 10})")
             max_cmd_len = 80
             if len(wrapped_command) > max_cmd_len:
                 display_cmd = wrapped_command[:max_cmd_len]
@@ -219,6 +229,24 @@ def run_job_create(
         "for the resolved priority_level."
     ),
 )
+@click.option(
+    "--auto-fault-tolerance/--no-auto-fault-tolerance",
+    "auto_fault_tolerance",
+    default=None,
+    help=(
+        "Enable training fault tolerance (auto-restart on failures). "
+        "Default from config [job].auto_fault_tolerance, or False."
+    ),
+)
+@click.option(
+    "--fault-tolerance-max-retry",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Max retry count when --auto-fault-tolerance is enabled (default 10, "
+        "or config [job].fault_tolerance_max_retry). Ignored when fault tolerance is off."
+    ),
+)
 @click.option("--max-time", type=float, default=100.0, help="Max runtime in hours (default: 100)")
 @click.option("--workspace", help="Workspace name (from [workspaces])")
 @click.option(
@@ -254,6 +282,8 @@ def create(
     command: str,
     framework: str,
     priority: Optional[int],
+    auto_fault_tolerance: Optional[bool],
+    fault_tolerance_max_retry: Optional[int],
     max_time: float,
     workspace: Optional[str],
     group: Optional[str],
@@ -292,4 +322,6 @@ def create(
         project=project,
         nodes=nodes,
         group=group,
+        auto_fault_tolerance=auto_fault_tolerance,
+        fault_tolerance_max_retry=fault_tolerance_max_retry,
     )

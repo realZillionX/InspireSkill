@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from inspire.config.schema_models import ConfigOption, _parse_int
+from inspire.config.schema_models import ConfigOption, _parse_bool, _parse_int
 
 JOB_OPTIONS: list[ConfigOption] = [
     ConfigOption(
@@ -45,6 +45,26 @@ JOB_OPTIONS: list[ConfigOption] = [
         field_name="shm_size",
         description="Default shared memory size in GB (jobs + notebooks)",
         default=None,
+        category="Job",
+        parser=_parse_int,
+        scope="project",
+    ),
+    ConfigOption(
+        env_var="INSPIRE_JOB_AUTO_FAULT_TOLERANCE",
+        toml_key="job.auto_fault_tolerance",
+        field_name="job_auto_fault_tolerance",
+        description="Enable training fault tolerance by default",
+        default=False,
+        category="Job",
+        parser=_parse_bool,
+        scope="project",
+    ),
+    ConfigOption(
+        env_var="INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY",
+        toml_key="job.fault_tolerance_max_retry",
+        field_name="job_fault_tolerance_max_retry",
+        description="Default max retry count when fault tolerance is enabled",
+        default=10,
         category="Job",
         parser=_parse_int,
         scope="project",

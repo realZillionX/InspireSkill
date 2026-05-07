@@ -105,3 +105,83 @@ def test_create_training_job_smart_requires_overrides() -> None:
             name="demo",
             command="echo demo",
         )
+
+
+def test_create_training_job_smart_fault_tolerance_off_by_default() -> None:
+    """When auto_fault_tolerance is not set, neither field appears in the payload."""
+    api = _DummyAPI()
+    create_training_job_smart(
+        api,
+        name="demo",
+        command="echo demo",
+        spec_id_override="spec-1x-h200",
+        compute_group_id_override="lcg-h200-1",
+    )
+    payload = api.last_request[2]
+    assert "auto_fault_tolerance" not in payload
+    assert "fault_tolerance_max_retry" not in payload
+
+
+def test_create_training_job_smart_fault_tolerance_enabled_default_retry() -> None:
+    """auto_fault_tolerance=True without explicit retry defaults fault_tolerance_max_retry to 10."""
+    api = _DummyAPI()
+    create_training_job_smart(
+        api,
+        name="demo",
+        command="echo demo",
+        spec_id_override="spec-1x-h200",
+        compute_group_id_override="lcg-h200-1",
+        auto_fault_tolerance=True,
+    )
+    payload = api.last_request[2]
+    assert payload["auto_fault_tolerance"] is True
+    assert payload["fault_tolerance_max_retry"] == 10
+
+
+def test_create_training_job_smart_fault_tolerance_enabled_explicit_retry() -> None:
+    """auto_fault_tolerance=True with explicit retry uses the provided value."""
+    api = _DummyAPI()
+    create_training_job_smart(
+        api,
+        name="demo",
+        command="echo demo",
+        spec_id_override="spec-1x-h200",
+        compute_group_id_override="lcg-h200-1",
+        auto_fault_tolerance=True,
+        fault_tolerance_max_retry=5,
+    )
+    payload = api.last_request[2]
+    assert payload["auto_fault_tolerance"] is True
+    assert payload["fault_tolerance_max_retry"] == 5
+
+
+def test_create_training_job_smart_fault_tolerance_false_excludes_fields() -> None:
+    """auto_fault_tolerance=False must not add either field to the payload."""
+    api = _DummyAPI()
+    create_training_job_smart(
+        api,
+        name="demo",
+        command="echo demo",
+        spec_id_override="spec-1x-h200",
+        compute_group_id_override="lcg-h200-1",
+        auto_fault_tolerance=False,
+        fault_tolerance_max_retry=5,
+    )
+    payload = api.last_request[2]
+    assert "auto_fault_tolerance" not in payload
+    assert "fault_tolerance_max_retry" not in payload
+
+
+def test_create_training_job_smart_fault_tolerance_invalid_retry() -> None:
+    """fault_tolerance_max_retry < 1 with auto_fault_tolerance=True must raise ValidationError."""
+    api = _DummyAPI()
+    with pytest.raises(ValidationError, match="fault_tolerance_max_retry must be >= 1"):
+        create_training_job_smart(
+            api,
+            name="demo",
+            command="echo demo",
+            spec_id_override="spec-1x-h200",
+            compute_group_id_override="lcg-h200-1",
+            auto_fault_tolerance=True,
+            fault_tolerance_max_retry=0,
+        )

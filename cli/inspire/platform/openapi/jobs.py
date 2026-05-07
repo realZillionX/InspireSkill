@@ -34,6 +34,8 @@ def create_training_job_smart(
     shm_gi: Optional[int] = None,
     spec_id_override: Optional[str] = None,
     compute_group_id_override: Optional[str] = None,
+    auto_fault_tolerance: Optional[bool] = None,
+    fault_tolerance_max_retry: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Create a training job from a pre-resolved quota.
 
@@ -84,6 +86,16 @@ def create_training_job_smart(
         "max_running_time_ms": max_running_time_ms,
         "framework_config": [framework_item],
     }
+
+    if auto_fault_tolerance is True:
+        if fault_tolerance_max_retry is not None and fault_tolerance_max_retry < 1:
+            raise ValidationError(
+                "fault_tolerance_max_retry must be >= 1 when auto_fault_tolerance is enabled"
+            )
+        payload["auto_fault_tolerance"] = True
+        payload["fault_tolerance_max_retry"] = (
+            fault_tolerance_max_retry if fault_tolerance_max_retry is not None else 10
+        )
 
     try:
         result = api._make_request("POST", api.endpoints.TRAIN_JOB_CREATE, payload)

@@ -143,6 +143,8 @@ def submit_training_job(
     nodes: int,
     max_time_hours: float,
     project_name: Optional[str] = None,
+    auto_fault_tolerance: Optional[bool] = None,
+    fault_tolerance_max_retry: Optional[int] = None,
 ) -> JobSubmission:
     wrapped_command = wrap_in_bash(command)
     final_command, log_path = build_remote_logged_command(config, command=wrapped_command)
@@ -161,6 +163,8 @@ def submit_training_job(
         max_running_time_ms=max_time_ms,
         spec_id_override=quota.quota_id,
         compute_group_id_override=quota.logic_compute_group_id,
+        auto_fault_tolerance=auto_fault_tolerance,
+        fault_tolerance_max_retry=fault_tolerance_max_retry,
     )
 
     if config.shm_size is not None:

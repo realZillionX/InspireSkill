@@ -219,6 +219,8 @@ class InspireAPI:
         shm_gi: Optional[int] = None,
         spec_id_override: Optional[str] = None,
         compute_group_id_override: Optional[str] = None,
+        auto_fault_tolerance: Optional[bool] = None,
+        fault_tolerance_max_retry: Optional[int] = None,
     ) -> Dict[str, Any]:
         return _create_training_job_smart(
             self,
@@ -234,6 +236,8 @@ class InspireAPI:
             shm_gi=shm_gi,
             spec_id_override=spec_id_override,
             compute_group_id_override=compute_group_id_override,
+            auto_fault_tolerance=auto_fault_tolerance,
+            fault_tolerance_max_retry=fault_tolerance_max_retry,
         )
 
     def get_job_detail(self, job_id: str) -> Dict[str, Any]:

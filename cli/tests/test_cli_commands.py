@@ -435,6 +435,97 @@ def test_wrap_in_bash():
     assert wrap_in_bash("  bash -c 'foo'  ") == "  bash -c 'foo'  "
 
 
+def test_job_create_fault_tolerance_default_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Without --auto-fault-tolerance, neither field should appear in the OpenAPI payload."""
+    api = patch_config_and_auth(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main,
+        [
+            "job",
+            "create",
+            "--name",
+            "ft-off-job",
+            "--quota",
+            "1,20,200",
+            "--command",
+            "echo hi",
+            "--workspace",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    kwargs = api.calls["create_training_job_smart"]
+    assert not kwargs.get("auto_fault_tolerance")
+    assert "auto_fault_tolerance" not in kwargs or kwargs["auto_fault_tolerance"] is not True
+
+
+def test_job_create_fault_tolerance_enabled_default_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """--auto-fault-tolerance alone should produce auto_fault_tolerance=True, retry=10 in payload."""
+    api = patch_config_and_auth(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main,
+        [
+            "job",
+            "create",
+            "--name",
+            "ft-on-job",
+            "--quota",
+            "1,20,200",
+            "--command",
+            "echo hi",
+            "--workspace",
+            "cpu",
+            "--auto-fault-tolerance",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    kwargs = api.calls["create_training_job_smart"]
+    assert kwargs.get("auto_fault_tolerance") is True
+    assert kwargs.get("fault_tolerance_max_retry") == 10
+    assert "Fault tolerance: enabled" in result.output
+
+
+def test_job_create_fault_tolerance_enabled_explicit_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """--auto-fault-tolerance --fault-tolerance-max-retry 3 should produce retry=3 in payload."""
+    api = patch_config_and_auth(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main,
+        [
+            "job",
+            "create",
+            "--name",
+            "ft-retry3-job",
+            "--quota",
+            "1,20,200",
+            "--command",
+            "echo hi",
+            "--workspace",
+            "cpu",
+            "--auto-fault-tolerance",
+            "--fault-tolerance-max-retry",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    kwargs = api.calls["create_training_job_smart"]
+    assert kwargs.get("auto_fault_tolerance") is True
+    assert kwargs.get("fault_tolerance_max_retry") == 3
+    assert "Fault tolerance: enabled (max retry: 3)" in result.output
+
+
 def test_job_status_updates_cache_and_formats(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     patch_config_and_auth(monkeypatch, tmp_path)
     runner = CliRunner()

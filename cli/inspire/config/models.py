@@ -80,6 +80,8 @@ class Config:
     job_priority: int = 10
     job_image: Optional[str] = None
     job_project_id: Optional[str] = None
+    job_auto_fault_tolerance: bool = False
+    job_fault_tolerance_max_retry: int = 10
     # job_workspace_id removed in v3.1.0 — workspace must come from
     # `--workspace <alias>` per call (resolved against `workspaces` map below).
 
