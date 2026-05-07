@@ -906,6 +906,126 @@ def test_job_list_status_filter_accepts_api_aliases(
     assert TEST_JOB_ID in result.output
 
 
+def test_job_list_web_name_search_scans_all_workspaces(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+
+    from importlib import import_module
+
+    job_commands_module = import_module("inspire.cli.commands.job.job_commands")
+    jobs_module = import_module("inspire.platform.web.browser_api.jobs")
+    JobInfo = jobs_module.JobInfo
+
+    class FakeSession:
+        workspace_id = "ws-main"
+        all_workspace_ids = ["ws-main", "ws-train"]
+        all_workspace_names = {
+            "ws-main": "Main Workspace",
+            "ws-train": "Training Workspace",
+        }
+        storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
+
+    calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(job_commands_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_current_user",
+        lambda session=None: {"id": "user-me"},  # noqa: ARG005
+    )
+
+    def fake_list_jobs(
+        workspace_id=None,
+        created_by=None,
+        status=None,
+        page_num=1,
+        page_size=100,
+        session=None,
+    ):  # noqa: ARG001
+        calls.append(
+            {
+                "workspace_id": workspace_id,
+                "created_by": created_by,
+                "status": status,
+                "page_num": page_num,
+                "page_size": page_size,
+            }
+        )
+        if workspace_id == "ws-train" and page_num == 1:
+            return (
+                [
+                    JobInfo(
+                        job_id=TEST_JOB_ID,
+                        name="kchen-slime-code-qwen35-35b-a3b-6node",
+                        status="job_queuing",
+                        command="bash run_qwen35_35b_a3b_code_6node.sh",
+                        created_at="2026-05-06T14:48:50",
+                        finished_at=None,
+                        created_by_name="Chen Ke",
+                        created_by_id="user-me",
+                        project_id="project-1",
+                        project_name="CQ Project",
+                        compute_group_name="H200-3",
+                        gpu_type="NVIDIA H200",
+                        gpu_count=8,
+                        instance_count=6,
+                        priority=10,
+                        workspace_id="ws-train",
+                    )
+                ],
+                1,
+            )
+        return ([], 0)
+
+    monkeypatch.setattr(browser_api_module, "list_jobs", fake_list_jobs)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        ["--json", "job", "list", "-A", "--name", "qwen35", "--limit", "1"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["data"]["source"] == "web"
+    assert payload["data"]["jobs"][0]["name"] == "kchen-slime-code-qwen35-35b-a3b-6node"
+    assert payload["data"]["jobs"][0]["workspace_name"] == "Training Workspace"
+    assert calls[0]["created_by"] == "user-me"
+    assert {call["workspace_id"] for call in calls} == {"ws-main", "ws-train"}
+
+
+def test_job_list_name_filter_applies_to_local_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+
+    config = make_test_config(tmp_path)
+    cache = JobCache(config.get_expanded_cache_path())
+    cache.add_job(
+        job_id=TEST_JOB_ID,
+        name="kchen-qwen35",
+        resource="H200",
+        command="bash train.sh",
+        status="PENDING",
+    )
+    cache.add_job(
+        job_id=TEST_JOB_ID_2,
+        name="other-job",
+        resource="H200",
+        command="bash other.sh",
+        status="PENDING",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main, ["job", "list", "--name", "qwen35"])
+
+    assert result.exit_code == 0
+    assert "kchen-qwen35" in result.output
+    assert "other-job" not in result.output
+
+
 def test_job_list_watch_json_does_not_clear_screen(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1405,12 +1525,10 @@ def test_config_check_json_includes_base_url_resolution(
     project_dir = tmp_path / ".inspire"
     project_dir.mkdir(parents=True, exist_ok=True)
     project_config = project_dir / "config.toml"
-    project_config.write_text(
-        """
+    project_config.write_text("""
 [api]
 base_url = "https://my-inspire.internal"
-"""
-    )
+""")
     global_config = tmp_path / "global-config.toml"
 
     def fake_from_files_and_env(
@@ -2030,7 +2148,7 @@ def test_run_notebook_ssh_validates_dropbear_setup_script(
         "wait_for_notebook_running",
         lambda notebook_id, session=None: {
             "name": "test-nb",
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "H200"}}
+            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "H200"}},
         },
     )
     monkeypatch.setattr(

@@ -27,9 +27,9 @@ from inspire.cli.utils.auth import AuthManager, AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.job_cli import resolve_job_id
 from inspire.config import Config, ConfigError
+from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import get_web_session
-
+from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 _STATUS_ALIAS_MAP = {
     "PENDING": {"PENDING", "job_pending", "job_creating"},
@@ -130,6 +130,210 @@ def _refresh_live_jobs_from_web_api(cache, jobs: list[dict]) -> list[dict]:  # n
         return jobs
 
     return jobs
+
+
+def _looks_like_workspace_id(value: str) -> bool:
+    return value.strip().lower().startswith("ws-")
+
+
+def _resolve_job_list_workspace(config: Config, workspace: Optional[str]) -> Optional[str]:
+    if workspace is None:
+        return None
+    workspace = workspace.strip()
+    if not workspace:
+        raise ConfigError("Workspace cannot be empty")
+    if _looks_like_workspace_id(workspace):
+        return select_workspace_id(config, explicit_workspace_id=workspace)
+    return select_workspace_id(config, explicit_workspace_name=workspace)
+
+
+def _workspace_name(session, workspace_id: str) -> str:  # noqa: ANN001
+    names = getattr(session, "all_workspace_names", None) or {}
+    if isinstance(names, dict):
+        return str(names.get(workspace_id) or "")
+    return ""
+
+
+def _web_workspace_ids(session, workspace_id: Optional[str], all_workspaces: bool) -> list[str]:
+    if workspace_id:
+        return [workspace_id]
+    if not all_workspaces:
+        current = str(getattr(session, "workspace_id", "") or "").strip()
+        return [current] if current else [""]
+
+    ordered: list[str] = []
+    current = str(getattr(session, "workspace_id", "") or "").strip()
+    if current:
+        ordered.append(current)
+    for item in getattr(session, "all_workspace_ids", None) or []:
+        wid = str(item or "").strip()
+        if wid and wid not in ordered:
+            ordered.append(wid)
+    return ordered or [""]
+
+
+def _job_matches_name(job, query: Optional[str]) -> bool:  # noqa: ANN001
+    if not query:
+        return True
+    needle = query.lower()
+    haystack = " ".join(
+        [
+            job.job_id or "",
+            job.name or "",
+            job.command or "",
+            job.project_name or "",
+            job.compute_group_name or "",
+            job.created_by_name or "",
+        ]
+    ).lower()
+    return needle in haystack
+
+
+def _job_info_to_row(job, *, workspace_name: str = "") -> dict:  # noqa: ANN001
+    return {
+        "job_id": job.job_id or "N/A",
+        "name": job.name or "N/A",
+        "status": job.status or "N/A",
+        "created_at": job.created_at or "N/A",
+        "finished_at": job.finished_at or "",
+        "created_by_name": job.created_by_name or "",
+        "created_by_id": job.created_by_id or "",
+        "project_name": job.project_name or "",
+        "project_id": job.project_id or "",
+        "compute_group_name": job.compute_group_name or "",
+        "gpu_type": job.gpu_type or "",
+        "gpu_count": job.gpu_count,
+        "instance_count": job.instance_count,
+        "priority": job.priority,
+        "workspace_id": job.workspace_id or "",
+        "workspace_name": workspace_name,
+        "command": job.command or "",
+    }
+
+
+def _format_web_job_list(rows: list[dict]) -> str:
+    if not rows:
+        return "No web jobs found."
+
+    id_w = max(len("Job ID"), *(len(str(r["job_id"])) for r in rows))
+    name_w = max(len("Name"), *(len(str(r["name"])) for r in rows))
+    status_w = max(len("Status"), *(len(str(r["status"])) for r in rows))
+    created_w = max(len("Created"), *(len(str(r["created_at"])) for r in rows))
+    workspace_w = max(
+        len("Workspace"),
+        *(len(str(r.get("workspace_name") or r.get("workspace_id") or "")) for r in rows),
+    )
+    user_w = max(len("Created By"), *(len(str(r.get("created_by_name") or "")) for r in rows))
+
+    header = (
+        f"{'Job ID':<{id_w}} {'Name':<{name_w}} {'Status':<{status_w}} "
+        f"{'Created':<{created_w}} {'Workspace':<{workspace_w}} {'Created By':<{user_w}}"
+    )
+    sep = "-" * len(header)
+    lines = ["Web Jobs", header, sep]
+    for row in rows:
+        workspace = str(row.get("workspace_name") or row.get("workspace_id") or "")
+        created_by = str(row.get("created_by_name") or "")
+        lines.append(
+            f"{str(row['job_id']):<{id_w}} "
+            f"{str(row['name']):<{name_w}} "
+            f"{str(row['status']):<{status_w}} "
+            f"{str(row['created_at']):<{created_w}} "
+            f"{workspace:<{workspace_w}} "
+            f"{created_by:<{user_w}}"
+        )
+    lines.append(sep)
+    lines.append(f"Total: {len(rows)} job(s)")
+    return "\n".join(lines)
+
+
+def _list_web_jobs(
+    *,
+    config: Config,
+    workspace: Optional[str],
+    all_workspaces: bool,
+    all_users: bool,
+    created_by: Optional[str],
+    status: Optional[str],
+    name: Optional[str],
+    page_num: int,
+    page_size: int,
+    max_pages: int,
+    limit: int,
+) -> tuple[list[dict], list[dict]]:
+    try:
+        resolved_workspace_id = _resolve_job_list_workspace(config, workspace)
+        session = get_web_session()
+
+        creator_id = (created_by or "").strip() or None
+        if creator_id is None and not all_users:
+            me = browser_api_module.get_current_user(session=session)
+            creator_id = str(me.get("id") or me.get("user_id") or "").strip() or None
+
+        allowed_statuses = _expand_status_aliases([status]) if status else None
+        api_status = status if status and status.startswith("job_") else None
+        rows: list[dict] = []
+        scanned: list[dict] = []
+
+        for workspace_id in _web_workspace_ids(session, resolved_workspace_id, all_workspaces):
+            current_page = max(1, page_num)
+            pages_read = 0
+            total = 0
+            workspace_label = _workspace_name(session, workspace_id) if workspace_id else ""
+
+            while True:
+                items, total = browser_api_module.list_jobs(
+                    workspace_id=workspace_id or None,
+                    created_by=creator_id,
+                    status=api_status,
+                    page_num=current_page,
+                    page_size=page_size,
+                    session=session,
+                )
+                pages_read += 1
+
+                for job in items:
+                    if allowed_statuses and job.status not in allowed_statuses:
+                        continue
+                    if not _job_matches_name(job, name):
+                        continue
+                    rows.append(_job_info_to_row(job, workspace_name=workspace_label))
+
+                if not name:
+                    break
+                if limit > 0 and len(rows) >= limit:
+                    break
+                if not items:
+                    break
+                if total is not None and current_page * page_size >= int(total):
+                    break
+                if pages_read >= max_pages:
+                    break
+                current_page += 1
+
+            scanned.append(
+                {
+                    "workspace_id": workspace_id,
+                    "workspace_name": workspace_label,
+                    "total": total,
+                    "pages": pages_read,
+                }
+            )
+
+            if limit > 0 and len(rows) >= limit:
+                break
+
+        rows.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        if limit > 0:
+            rows = rows[:limit]
+        return rows, scanned
+    finally:
+        try:
+            from inspire.platform.web.session import _close_browser_client
+
+            _close_browser_client()
+        except Exception:
+            pass
 
 
 def _watch_jobs(
@@ -295,6 +499,30 @@ def _watch_jobs(
     default=10,
     help="Refresh interval in seconds for --watch (default: 10)",
 )
+@click.option("--web", is_flag=True, help="Query the web UI job list instead of local cache")
+@click.option("--workspace", default=None, help="Workspace alias or ws-... id (web mode)")
+@click.option(
+    "--all-workspaces",
+    "-A",
+    is_flag=True,
+    help="Search all visible workspaces via the web UI (implies --web)",
+)
+@click.option("--name", default=None, help="Case-insensitive keyword filter for job name/command")
+@click.option(
+    "--all-users",
+    is_flag=True,
+    help="Include jobs from all users in web mode (default: current user only)",
+)
+@click.option("--created-by", default=None, help="Filter web jobs by creator user ID")
+@click.option("--page-num", type=int, default=1, show_default=True, help="Web list page number")
+@click.option("--page-size", type=int, default=100, show_default=True, help="Web list page size")
+@click.option(
+    "--max-pages",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Max web pages to scan per workspace when --name is set",
+)
 @pass_context
 def list_jobs(
     ctx: Context,
@@ -303,17 +531,29 @@ def list_jobs(
     active: bool,
     watch: bool,
     interval: int,
+    web: bool,
+    workspace: Optional[str],
+    all_workspaces: bool,
+    name: Optional[str],
+    all_users: bool,
+    created_by: Optional[str],
+    page_num: int,
+    page_size: int,
+    max_pages: int,
 ) -> None:
-    """List recent jobs from local cache with best-effort live status refresh.
+    """List training jobs from local cache or the web UI.
 
-    The local cache remains the source of truth for which jobs are shown, but
+    By default the local cache remains the source of truth for which jobs are shown, but
     active jobs are opportunistically refreshed against the web job list API so
-    the displayed status does not lag far behind the web UI.
+    the displayed status does not lag far behind the web UI. Use --web or -A
+    to list jobs created directly from the web UI.
 
     \b
     Example:
         inspire job list
         inspire job list --limit 20 --status RUNNING
+        inspire job list --web --name qwen35
+        inspire job list -A --name qwen35 --limit 20
         inspire job list --active
         inspire job list --watch --active -n 20
         inspire job list --watch --interval 5
@@ -322,6 +562,8 @@ def list_jobs(
         config, _ = Config.from_files_and_env(require_credentials=False)
 
         if watch:
+            if web or all_workspaces or workspace or name or all_users or created_by:
+                raise click.ClickException("--watch is only supported for local-cache job list")
             _watch_jobs(
                 ctx=ctx,
                 config=config,
@@ -330,6 +572,28 @@ def list_jobs(
                 active=active,
                 interval=interval,
             )
+            return
+
+        if web or all_workspaces or workspace or all_users or created_by:
+            jobs, scanned = _list_web_jobs(
+                config=config,
+                workspace=workspace,
+                all_workspaces=all_workspaces,
+                all_users=all_users,
+                created_by=created_by,
+                status=status,
+                name=name,
+                page_num=page_num,
+                page_size=page_size,
+                max_pages=max_pages,
+                limit=limit,
+            )
+            if ctx.json_output:
+                click.echo(
+                    json_formatter.format_json({"source": "web", "jobs": jobs, "scanned": scanned})
+                )
+            else:
+                click.echo(_format_web_job_list(jobs))
             return
 
         cache = job_deps.JobCache(config.get_expanded_cache_path())
@@ -353,6 +617,22 @@ def list_jobs(
         if exclude_statuses:
             jobs = [j for j in jobs if j.get("status") not in exclude_statuses]
 
+        if name:
+            query = name.lower()
+            jobs = [
+                j
+                for j in jobs
+                if query
+                in " ".join(
+                    [
+                        str(j.get("job_id") or ""),
+                        str(j.get("name") or ""),
+                        str(j.get("command") or ""),
+                        str(j.get("resource") or ""),
+                    ]
+                ).lower()
+            ]
+
         jobs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         if limit is not None and limit > 0:
             jobs = jobs[:limit]
@@ -364,6 +644,8 @@ def list_jobs(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except (SessionExpiredError, ValueError) as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "Error", str(e), EXIT_GENERAL_ERROR)
 
@@ -439,9 +721,7 @@ def stop(ctx: Context, job: str, pick: Optional[int]) -> None:
 
         if ctx.json_output:
             click.echo(
-                json_formatter.format_json(
-                    {"name": job, "job_id": job_id, "status": "stopped"}
-                )
+                json_formatter.format_json({"name": job, "job_id": job_id, "status": "stopped"})
             )
         else:
             click.echo(human_formatter.format_success(f"Job stopped: {job}"))
