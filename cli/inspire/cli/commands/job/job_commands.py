@@ -191,6 +191,22 @@ def _web_workspace_ids(session, workspace_id: Optional[str], all_workspaces: boo
     return ordered or [""]
 
 
+def _prioritize_job_search_workspaces(
+    session, workspace_ids: list[str]
+) -> list[str]:  # noqa: ANN001
+    current = str(getattr(session, "workspace_id", "") or "").strip()
+
+    def priority(workspace_id: str) -> tuple[int, int]:
+        name = _workspace_name(session, workspace_id)
+        if "分布式训练" in name or "distributed" in name.lower():
+            return (0, workspace_ids.index(workspace_id))
+        if workspace_id == current:
+            return (1, workspace_ids.index(workspace_id))
+        return (2, workspace_ids.index(workspace_id))
+
+    return sorted(workspace_ids, key=priority)
+
+
 def _job_matches_name(job, query: Optional[str]) -> bool:  # noqa: ANN001
     if not query:
         return True
@@ -415,7 +431,11 @@ def _list_web_jobs(
         rows: list[dict] = []
         scanned: list[dict] = []
 
-        for workspace_id in _web_workspace_ids(session, resolved_workspace_id, all_workspaces):
+        workspace_ids = _web_workspace_ids(session, resolved_workspace_id, all_workspaces)
+        if name and all_workspaces and not resolved_workspace_id:
+            workspace_ids = _prioritize_job_search_workspaces(session, workspace_ids)
+
+        for workspace_id in workspace_ids:
             current_page = max(1, page_num)
             pages_read = 0
             total = 0
@@ -1092,8 +1112,38 @@ def delete(ctx: Context, job: str, yes: bool, pick: Optional[int]) -> None:
 @click.argument("job")
 @click.option("--timeout", type=int, default=14400, help="Timeout in seconds (default: 4 hours)")
 @click.option("--interval", type=int, default=30, help="Poll interval in seconds (default: 30)")
+@click.option("--web", is_flag=True, help="Poll the web UI detail API instead of OpenAPI")
+@click.option("--workspace", default=None, help="Workspace alias or ws-... id (web mode)")
+@click.option(
+    "--all-workspaces",
+    "-A",
+    is_flag=True,
+    help="Search all visible workspaces when resolving a web job name",
+)
+@click.option("--all-users", is_flag=True, help="Include jobs from all users in web mode")
+@click.option(
+    "--created-by", default=None, help="Filter web job name resolution by creator user ID"
+)
+@click.option(
+    "--max-pages",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Max web pages to scan per workspace when resolving a job name",
+)
 @pass_context
-def wait(ctx: Context, job: str, timeout: int, interval: int) -> None:
+def wait(
+    ctx: Context,
+    job: str,
+    timeout: int,
+    interval: int,
+    web: bool,
+    workspace: Optional[str],
+    all_workspaces: bool,
+    all_users: bool,
+    created_by: Optional[str],
+    max_pages: int,
+) -> None:
     """Wait for a job to complete.
 
     Polls the job status until it reaches a terminal state
@@ -1102,13 +1152,27 @@ def wait(ctx: Context, job: str, timeout: int, interval: int) -> None:
     \b
     Example:
         inspire job wait my-training-run --timeout 7200
+        inspire job wait --web job-... --timeout 60
     """
-    job_id = resolve_job_id(ctx, job)
-
     try:
-        config, _ = Config.from_files_and_env()
-        api = AuthManager.get_api(config)
-        cache = job_deps.JobCache(config.get_expanded_cache_path())
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        web_mode = web or workspace or all_workspaces or all_users or created_by
+        if web_mode:
+            job_id = _resolve_web_job_id(
+                config=config,
+                job=job,
+                workspace=workspace,
+                all_workspaces=all_workspaces,
+                all_users=all_users,
+                created_by=created_by,
+                max_pages=max_pages,
+            )
+            api = None
+            cache = None
+        else:
+            job_id = resolve_job_id(ctx, job)
+            api = AuthManager.get_api(config)
+            cache = job_deps.JobCache(config.get_expanded_cache_path())
 
         terminal_statuses = {
             "SUCCEEDED",
@@ -1132,11 +1196,19 @@ def wait(ctx: Context, job: str, timeout: int, interval: int) -> None:
                 return
 
             try:
-                result = api.get_job_detail(job_id)
-                job_data = result.get("data", {})
+                if web_mode:
+                    try:
+                        session = get_web_session()
+                        job_data = browser_api_module.get_job_detail(job_id, session=session)
+                    finally:
+                        _close_web_client()
+                else:
+                    result = api.get_job_detail(job_id)
+                    job_data = result.get("data", {})
                 current_status = job_data.get("status", "UNKNOWN")
 
-                cache.update_status(job_id, current_status)
+                if cache is not None:
+                    cache.update_status(job_id, current_status)
 
                 if current_status != last_status:
                     if ctx.json_output:
@@ -1180,7 +1252,11 @@ def wait(ctx: Context, job: str, timeout: int, interval: int) -> None:
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except WebJobResolutionError as e:
+        _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
     except AuthenticationError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except (SessionExpiredError, ValueError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except KeyboardInterrupt:
         if not ctx.json_output:
@@ -1296,49 +1372,105 @@ def update_jobs(ctx: Context, status: tuple, limit: int, delay: float) -> None:
 
 @click.command("command")
 @click.argument("job")
+@click.option("--web", is_flag=True, help="Read command from the web UI detail API")
+@click.option("--workspace", default=None, help="Workspace alias or ws-... id (web mode)")
+@click.option(
+    "--all-workspaces",
+    "-A",
+    is_flag=True,
+    help="Search all visible workspaces when resolving a web job name",
+)
+@click.option("--all-users", is_flag=True, help="Include jobs from all users in web mode")
+@click.option(
+    "--created-by", default=None, help="Filter web job name resolution by creator user ID"
+)
+@click.option(
+    "--max-pages",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Max web pages to scan per workspace when resolving a job name",
+)
 @pass_context
-def show_command(ctx: Context, job: str) -> None:
+def show_command(
+    ctx: Context,
+    job: str,
+    web: bool,
+    workspace: Optional[str],
+    all_workspaces: bool,
+    all_users: bool,
+    created_by: Optional[str],
+    max_pages: int,
+) -> None:
     """Show the training command used for a job."""
-    job_id = resolve_job_id(ctx, job)
-
-    cached_command = None
-    cache = job_deps.JobCache(os.getenv("INSPIRE_JOB_CACHE"))
-    cached_job = cache.get_job(job_id)
-    if cached_job:
-        cached_command = cached_job.get("command")
-
     command_value = None
     source = None
 
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        api = AuthManager.get_api(config)
+        web_mode = web or workspace or all_workspaces or all_users or created_by
+        if web_mode:
+            job_id = _resolve_web_job_id(
+                config=config,
+                job=job,
+                workspace=workspace,
+                all_workspaces=all_workspaces,
+                all_users=all_users,
+                created_by=created_by,
+                max_pages=max_pages,
+            )
+            try:
+                session = get_web_session()
+                job_data = browser_api_module.get_job_detail(job_id, session=session)
+            finally:
+                _close_web_client()
+            command_value = job_data.get("command")
+            if command_value:
+                source = "web"
+        else:
+            job_id = resolve_job_id(ctx, job)
+            cached_command = None
+            cache = job_deps.JobCache(os.getenv("INSPIRE_JOB_CACHE"))
+            cached_job = cache.get_job(job_id)
+            if cached_job:
+                cached_command = cached_job.get("command")
 
-        result = api.get_job_detail(job_id)
-        job_data = result.get("data", {})
-        command_value = job_data.get("command")
-        if command_value:
-            source = "api"
+            command_value = None
+            source = None
+
+            try:
+                api = AuthManager.get_api(config)
+                result = api.get_job_detail(job_id)
+                job_data = result.get("data", {})
+                command_value = job_data.get("command")
+                if command_value:
+                    source = "api"
+            except Exception:
+                if not cached_command:
+                    raise
+
+            if not command_value and cached_command:
+                command_value = cached_command
+                source = "cache"
     except ConfigError as e:
-        if not cached_command:
-            _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-            return
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        return
+    except WebJobResolutionError as e:
+        _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
+        return
     except AuthenticationError as e:
-        if not cached_command:
-            _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
-            return
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+        return
+    except (SessionExpiredError, ValueError) as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+        return
     except Exception as e:
-        if not cached_command:
-            msg = str(e).lower()
-            if "not found" in msg or "invalid job id" in msg:
-                _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
-            else:
-                _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
-            return
-
-    if not command_value and cached_command:
-        command_value = cached_command
-        source = "cache"
+        msg = str(e).lower()
+        if "not found" in msg or "invalid job id" in msg:
+            _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
+        else:
+            _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+        return
 
     if not command_value:
         _handle_error(

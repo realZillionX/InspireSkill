@@ -1063,6 +1063,83 @@ def test_job_status_web_accepts_job_id(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert calls["job_id"] == TEST_JOB_ID
 
 
+def test_job_command_web_accepts_job_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+
+    from importlib import import_module
+
+    job_commands_module = import_module("inspire.cli.commands.job.job_commands")
+
+    class FakeSession:
+        workspace_id = "ws-train"
+        storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
+
+    monkeypatch.setattr(job_commands_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_job_detail",
+        lambda job_id, session=None: {  # noqa: ARG005
+            "job_id": job_id,
+            "name": "web-job",
+            "status": "job_queuing",
+            "command": "bash train.sh",
+        },
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main, ["--json", "job", "command", "--web", TEST_JOB_ID])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["data"]["job_id"] == TEST_JOB_ID
+    assert payload["data"]["command"] == "bash train.sh"
+    assert payload["data"]["source"] == "web"
+
+
+def test_job_wait_web_accepts_job_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+
+    from importlib import import_module
+
+    job_commands_module = import_module("inspire.cli.commands.job.job_commands")
+
+    class FakeSession:
+        workspace_id = "ws-train"
+        storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
+
+    monkeypatch.setattr(job_commands_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_job_detail",
+        lambda job_id, session=None: {  # noqa: ARG005
+            "job_id": job_id,
+            "name": "web-job",
+            "status": "job_succeeded",
+        },
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        ["--json", "job", "wait", "--web", TEST_JOB_ID, "--timeout", "1", "--interval", "1"],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS
+    payloads = _parse_json_stream(result.output)
+    assert payloads[-1]["success"] is True
+    assert payloads[-1]["data"]["job_id"] == TEST_JOB_ID
+    assert payloads[-1]["data"]["status"] == "job_succeeded"
+
+
+def test_job_metrics_accepts_web_job_id() -> None:
+    from importlib import import_module
+
+    job_metrics_module = import_module("inspire.cli.commands.job.job_metrics")
+
+    assert job_metrics_module._job_name_to_id(Context(), TEST_JOB_ID) == TEST_JOB_ID
+
+
 def test_job_instances_web_resolves_name_across_workspaces(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

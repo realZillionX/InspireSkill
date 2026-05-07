@@ -42,6 +42,8 @@ def _resolve_job_lcg(task_id: str, session: WebSession) -> Optional[str]:
 def _job_name_to_id(ctx: Context, name: str) -> str:
     from inspire.cli.utils import job_cli as _jc
 
+    if str(name or "").strip().lower().startswith("job-"):
+        return str(name).strip()
     return _jc.resolve_job_id(ctx, name)
 
 
