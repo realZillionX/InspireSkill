@@ -240,7 +240,7 @@ def test_build_resource_spec_price_shape() -> None:
         gpu_count=1,
         cpu_count=20,
         memory_gib=200,
-        gpu_type="H200",
+        gpu_type="NVIDIA H200 (141GB)",
         raw_price={
             "cpu_info": {"cpu_type": "Intel Xeon"},
             "cpu_price_id": "rpc-cpu",
@@ -266,3 +266,37 @@ def test_build_resource_spec_price_shape() -> None:
         "logic_compute_group_id": "lcg-1",
         "quota_id": "q-1",
     }
+
+
+def test_build_resource_spec_price_requires_machine_gpu_type() -> None:
+    quota = ResolvedQuota(
+        quota_id="q-1",
+        logic_compute_group_id="lcg-1",
+        compute_group_name="H200 Group",
+        gpu_count=1,
+        cpu_count=20,
+        memory_gib=200,
+        gpu_type="NVIDIA H200 (141GB)",
+        raw_price={"cpu_info": {"cpu_type": "Intel Xeon"}},
+    )
+
+    with pytest.raises(QuotaMatchError, match="machine-readable gpu_info.gpu_type"):
+        build_resource_spec_price(quota=quota)
+
+
+def test_build_resource_spec_price_cpu_only_omits_gpu_type() -> None:
+    quota = ResolvedQuota(
+        quota_id="q-cpu",
+        logic_compute_group_id="lcg-cpu",
+        compute_group_name="CPU Group",
+        gpu_count=0,
+        cpu_count=4,
+        memory_gib=32,
+        gpu_type="",
+        raw_price={"cpu_info": {"cpu_type": "Intel Xeon"}},
+    )
+
+    payload = build_resource_spec_price(quota=quota)
+    assert "gpu_type" not in payload
+    assert payload["cpu_count"] == 4
+    assert payload["quota_id"] == "q-cpu"

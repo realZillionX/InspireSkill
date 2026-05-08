@@ -287,19 +287,40 @@ def build_resource_spec_price(
 ) -> dict[str, Any]:
     """Build the ``resource_spec_price`` dict the notebook create endpoint expects."""
     del shared_memory_size  # kept for symmetry; backend reads shared_memory_size elsewhere
-    raw_price = quota.raw_price or {}
-    cpu_info = raw_price.get("cpu_info") if isinstance(raw_price.get("cpu_info"), dict) else {}
-    gpu_info = raw_price.get("gpu_info") if isinstance(raw_price.get("gpu_info"), dict) else {}
-    gpu_type = gpu_info.get("gpu_type") or gpu_info.get("gpu_type_display") or quota.gpu_type
-    return {
+    price = quota.raw_price if isinstance(quota.raw_price, dict) else {}
+    cpu_info = (
+        price.get("cpu_info")
+        if isinstance(price.get("cpu_info"), dict)
+        else {}
+    )
+    gpu_info = (
+        price.get("gpu_info")
+        if isinstance(price.get("gpu_info"), dict)
+        else {}
+    )
+    machine_gpu_type = str(
+        gpu_info.get("gpu_type")
+        or price.get("gpu_type")
+        or ""
+    ).strip()
+    if quota.gpu_count > 0 and not machine_gpu_type:
+        raise QuotaMatchError(
+            "Matched GPU quota is missing machine-readable gpu_info.gpu_type; "
+            "cannot build notebook resource_spec_price safely."
+        )
+
+    payload = {
         "cpu_type": cpu_info.get("cpu_type", ""),
         "cpu_count": quota.cpu_count,
-        "gpu_type": gpu_type,
+        "gpu_type": machine_gpu_type,
         "gpu_count": quota.gpu_count,
         "memory_size_gib": quota.memory_gib,
         "logic_compute_group_id": quota.logic_compute_group_id,
         "quota_id": quota.quota_id,
     }
+    if quota.gpu_count <= 0:
+        payload.pop("gpu_type", None)
+    return payload
 
 
 __all__ = [
