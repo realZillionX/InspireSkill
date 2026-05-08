@@ -28,6 +28,33 @@ def _preferred_proxy_server(proxies: dict[str, str]) -> str:
     return _normalize_proxy(proxies.get("https")) or _normalize_proxy(proxies.get("http"))
 
 
+def _playwright_bypass_from_no_proxy() -> str:
+    raw = _normalize_proxy(os.environ.get("NO_PROXY") or os.environ.get("no_proxy"))
+    if not raw:
+        return ""
+
+    items: list[str] = []
+    for part in raw.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if item == "*" or item.startswith("*."):
+            items.append(item)
+        elif item.startswith("."):
+            items.append(f"*{item}")
+        else:
+            items.append(item)
+    return ",".join(dict.fromkeys(items))
+
+
+def _playwright_proxy_dict(server: str) -> dict[str, str]:
+    proxy = {"server": server}
+    bypass = _playwright_bypass_from_no_proxy()
+    if bypass:
+        proxy["bypass"] = bypass
+    return proxy
+
+
 def _load_proxy_toml_values() -> tuple[str, dict[str, str]]:
     base_url = _normalize_proxy(os.environ.get("INSPIRE_BASE_URL"))
     values: dict[str, str] = {}
@@ -90,18 +117,18 @@ def get_playwright_proxy() -> Optional[dict]:
         or os.environ.get("PLAYWRIGHT_PROXY")
     )
     if explicit_proxy:
-        return {"server": explicit_proxy}
+        return _playwright_proxy_dict(explicit_proxy)
 
     _, toml_values = _load_proxy_toml_values()
     toml_playwright = _normalize_proxy(toml_values.get("playwright"))
     if toml_playwright:
-        return {"server": toml_playwright}
+        return _playwright_proxy_dict(toml_playwright)
 
     requests_proxies, _ = _resolve_requests_proxy_config_with_toml(toml_values)
     chosen_requests_proxy = _preferred_proxy_server(requests_proxies)
 
     if chosen_requests_proxy:
-        return {"server": chosen_requests_proxy}
+        return _playwright_proxy_dict(chosen_requests_proxy)
     return None
 
 

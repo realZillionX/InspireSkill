@@ -25,6 +25,8 @@ def clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "HTTP_PROXY",
         "https_proxy",
         "HTTPS_PROXY",
+        "NO_PROXY",
+        "no_proxy",
     ]:
         monkeypatch.delenv(key, raising=False)
 
@@ -56,6 +58,21 @@ def test_get_playwright_proxy_falls_back_to_http_proxy(monkeypatch: pytest.Monke
     monkeypatch.setenv("https_proxy", "http://127.0.0.1:7897")
 
     assert get_playwright_proxy() == {"server": "http://127.0.0.1:7897"}
+
+
+def test_get_playwright_proxy_applies_no_proxy_bypass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:7897")
+    monkeypatch.setenv(
+        "NO_PROXY",
+        "localhost,127.0.0.1,qz.sii.edu.cn,.sii.edu.cn,*.sii.edu.cn,qz.sii.edu.cn",
+    )
+
+    assert get_playwright_proxy() == {
+        "server": "http://127.0.0.1:7897",
+        "bypass": "localhost,127.0.0.1,qz.sii.edu.cn,*.sii.edu.cn",
+    }
 
 
 def test_get_playwright_proxy_uses_proxy_toml(monkeypatch: pytest.MonkeyPatch) -> None:
