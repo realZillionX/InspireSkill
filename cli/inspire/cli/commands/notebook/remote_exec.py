@@ -657,7 +657,7 @@ def exec_via_workflow(
 @click.option(
     "--cwd",
     default=None,
-    help="Remote working directory or path alias (default: [paths].target_dir)",
+    help="Remote working directory or path alias (default: [paths].target_dir, else $HOME)",
 )
 @click.option(
     "stdin_mode",
@@ -685,7 +685,7 @@ def exec_command(
     artifact options are requested.
 
     NOTEBOOK is the cached notebook name (omit to use the default).
-    COMMAND is the shell command to run remotely (in [paths].target_dir or --cwd).
+    COMMAND is the shell command to run remotely (in --cwd, [paths].target_dir, or $HOME).
     Command output (stdout/stderr) is automatically displayed after completion.
 
     \b

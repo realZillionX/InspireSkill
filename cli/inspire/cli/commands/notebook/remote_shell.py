@@ -31,12 +31,30 @@ logger = logging.getLogger(__name__)
 _RUNNING_NOTEBOOK_STATUS = "RUNNING"
 
 
+def _resolve_shell_remote_cwd(*, cwd: Optional[str], config: Config) -> Optional[str]:
+    if cwd or config.target_dir:
+        return resolve_remote_cwd(
+            cwd=cwd,
+            target_dir=config.target_dir,
+            aliases=config.path_aliases,
+        )
+    return None
+
+
+def _build_remote_shell_command(*, target_dir: Optional[str], env_exports: str) -> Optional[str]:
+    if target_dir:
+        return f'{env_exports}cd "{target_dir}" && exec $SHELL -l'
+    if env_exports:
+        return f"{env_exports}exec $SHELL -l"
+    return None
+
+
 @click.command("ssh")
 @click.argument("notebook", required=False)
 @click.option(
     "--cwd",
     default=None,
-    help="Remote working directory or path alias (default: [paths].target_dir)",
+    help="Remote working directory or path alias (default: [paths].target_dir, else $HOME)",
 )
 @pass_context
 def bridge_ssh(ctx: Context, notebook: Optional[str], cwd: Optional[str]) -> None:
@@ -63,11 +81,7 @@ def bridge_ssh(ctx: Context, notebook: Optional[str], cwd: Optional[str]) -> Non
     bridge = notebook
     try:
         config, _ = Config.from_files_and_env(require_target_dir=False, require_credentials=False)
-        config.target_dir = resolve_remote_cwd(
-            cwd=cwd,
-            target_dir=config.target_dir,
-            aliases=config.path_aliases,
-        )
+        config.target_dir = _resolve_shell_remote_cwd(cwd=cwd, config=config)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 
@@ -98,8 +112,10 @@ def bridge_ssh(ctx: Context, notebook: Optional[str], cwd: Optional[str]) -> Non
     bridge_name = selected_bridge.name
     logger.debug("bridge_ssh start bridge=%s", bridge_name)
 
-    # Build interactive SSH command with env exports and cd to target dir
-    remote_command = f'{env_exports}cd "{config.target_dir}" && exec $SHELL -l'
+    remote_command = _build_remote_shell_command(
+        target_dir=config.target_dir,
+        env_exports=env_exports,
+    )
     reconnect_limit = max(0, int(getattr(config, "tunnel_retries", 0)))
     reconnect_pause = float(getattr(config, "tunnel_retry_pause", 0.0) or 0.0)
     reconnect_attempt = 0
@@ -239,7 +255,7 @@ def bridge_ssh(ctx: Context, notebook: Optional[str], cwd: Optional[str]) -> Non
         if not opened_once and not ctx.json_output:
             click.echo("Opening SSH connection...")
             click.echo(f"Notebook: {bridge_name}")
-            click.echo(f"Working directory: {config.target_dir}")
+            click.echo(f"Working directory: {config.target_dir or '$HOME'}")
             click.echo("Press Ctrl+D or type 'exit' to disconnect")
             click.echo("")
             opened_once = True
