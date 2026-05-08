@@ -20,6 +20,8 @@ from types import TracebackType
 from typing import BinaryIO
 from urllib.parse import urlencode, urlsplit
 
+import click
+
 from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url
 from inspire.platform.web.session import WebSession, get_web_session
 from inspire.platform.web.session.proxy import get_rtunnel_proxy_override
@@ -99,9 +101,9 @@ def select_job_instance(
     *,
     instance_name: str | None = None,
     rank: int | None = None,
-    pick: int | None = None,
+    prompt: bool = False,
 ) -> JobInstance:
-    """Select a running instance by name, rank, or 1-indexed picker."""
+    """Select a running instance by name, rank, or human prompt."""
     running = [
         inst for inst in instances if inst.status.lower() == RUNNING_INSTANCE_STATUS.lower()
     ]
@@ -132,11 +134,6 @@ def select_job_instance(
         )
         raise JobShellError(f"No running instance with rank {rank}. Running instances: {candidates}")
 
-    if pick is not None:
-        if pick < 1 or pick > len(running):
-            raise JobShellError(f"--pick {pick} out of range; {len(running)} running instances.")
-        return running[pick - 1]
-
     if len(running) == 1:
         return running[0]
 
@@ -145,8 +142,19 @@ def select_job_instance(
         + (f" (rank={inst.rank})" if inst.rank is not None else "")
         for idx, inst in enumerate(running, start=1)
     )
+    if prompt:
+        click.echo("Multiple running instances found:")
+        click.echo(candidates)
+        choice = click.prompt(
+            "Select instance",
+            type=click.IntRange(1, len(running)),
+            default=1,
+            show_default=True,
+        )
+        return running[choice - 1]
+
     raise JobShellError(
-        "Multiple running instances found. Pass --instance, --rank, or --pick.\n" + candidates
+        "Multiple running instances found. Pass --instance or --rank.\n" + candidates
     )
 
 
@@ -198,6 +206,7 @@ class _WebSocketClient:
         self.headers = headers
         self.timeout = timeout
         self.sock: socket.socket | ssl.SSLSocket | None = None
+        self._recv_buffer = b""
 
     def __enter__(self) -> "_WebSocketClient":
         self.connect()
@@ -250,7 +259,7 @@ class _WebSocketClient:
         request = "\r\n".join(lines) + "\r\n\r\n"
         sock.sendall(request.encode("ascii"))
 
-        response = self._read_http_response(sock)
+        response, extra = self._read_http_response(sock)
         status_line = response.split("\r\n", 1)[0]
         parts = status_line.split()
         status = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
@@ -267,6 +276,7 @@ class _WebSocketClient:
         if accept and accept != expected:
             sock.close()
             raise JobShellError("Remote shell websocket handshake returned an invalid accept key.")
+        self._recv_buffer = extra
         sock.settimeout(None)
         self.sock = sock
 
@@ -299,7 +309,7 @@ class _WebSocketClient:
             connect_lines.append(f"Proxy-Authorization: Basic {token}")
         request = "\r\n".join(connect_lines) + "\r\n\r\n"
         sock.sendall(request.encode("ascii"))
-        response = self._read_http_response(sock)
+        response, _ = self._read_http_response(sock)
         status_line = response.split("\r\n", 1)[0]
         parts = status_line.split()
         status = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 0
@@ -314,7 +324,7 @@ class _WebSocketClient:
         return str(get_rtunnel_proxy_override() or "").strip()
 
     @staticmethod
-    def _read_http_response(sock: socket.socket | ssl.SSLSocket) -> str:
+    def _read_http_response(sock: socket.socket | ssl.SSLSocket) -> tuple[str, bytes]:
         chunks: list[bytes] = []
         data = b""
         while b"\r\n\r\n" not in data:
@@ -325,7 +335,8 @@ class _WebSocketClient:
             data = b"".join(chunks)
             if len(data) > 65536:
                 raise JobShellError("Remote shell websocket handshake response is too large.")
-        return data.decode("iso-8859-1", errors="replace")
+        header, _, extra = data.partition(b"\r\n\r\n")
+        return (header + b"\r\n\r\n").decode("iso-8859-1", errors="replace"), extra
 
     @staticmethod
     def _header_value(response: str, name: str) -> str | None:
@@ -376,6 +387,11 @@ class _WebSocketClient:
             raise JobShellError("websocket is not connected")
         chunks: list[bytes] = []
         remaining = size
+        if self._recv_buffer:
+            chunk = self._recv_buffer[:remaining]
+            chunks.append(chunk)
+            remaining -= len(chunk)
+            self._recv_buffer = self._recv_buffer[len(chunk) :]
         while remaining > 0:
             chunk = self.sock.recv(remaining)
             if not chunk:

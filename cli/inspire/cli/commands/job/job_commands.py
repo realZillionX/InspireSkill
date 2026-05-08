@@ -352,6 +352,7 @@ def _resolve_web_job_id(
     all_users: bool,
     created_by: Optional[str],
     max_pages: int,
+    pick: Optional[int] = None,
 ) -> str:
     job = (job or "").strip()
     if not job:
@@ -359,6 +360,7 @@ def _resolve_web_job_id(
     if _looks_like_job_id(job):
         return job
 
+    limit = 0 if pick is not None else 2
     rows, _ = _list_web_jobs(
         config=config,
         workspace=workspace,
@@ -370,22 +372,29 @@ def _resolve_web_job_id(
         page_num=1,
         page_size=100,
         max_pages=max_pages,
-        limit=1,
+        limit=limit,
     )
     exact = [row for row in rows if row.get("name") == job]
+    if pick is not None:
+        candidate_rows = exact if exact else rows
+        if pick < 1 or pick > len(candidate_rows):
+            raise WebJobResolutionError(
+                f"--pick {pick} out of range; {len(candidate_rows)} web jobs match {job!r}."
+            )
+        return str(candidate_rows[pick - 1]["job_id"])
     if len(exact) == 1:
         return str(exact[0]["job_id"])
     if len(exact) > 1:
-        candidates = ", ".join(str(row.get("name") or "") for row in exact[:5])
+        candidate_names = ", ".join(str(row.get("name") or "") for row in exact[:5])
         raise WebJobResolutionError(
-            f"Multiple web jobs share name {job!r}; refine the name. Candidates: {candidates}"
+            f"Multiple web jobs share name {job!r}; refine the name. Candidates: {candidate_names}"
         )
     if len(rows) == 1:
         return str(rows[0]["job_id"])
     if rows:
-        candidates = ", ".join(str(row.get("name") or "") for row in rows[:5])
+        candidate_names = ", ".join(str(row.get("name") or "") for row in rows[:5])
         raise WebJobResolutionError(
-            f"Multiple web jobs match {job!r}; pass the full job name. Candidates: {candidates}"
+            f"Multiple web jobs match {job!r}; pass the full job name. Candidates: {candidate_names}"
         )
     raise WebJobResolutionError(
         f"No web job matching {job!r} found. Try `inspire job list -A --name {job}`."
@@ -1320,13 +1329,23 @@ def show_command(
     "--pick",
     type=int,
     default=None,
-    help="Pick the Nth running instance (1-indexed) when a job has multiple instances",
+    help="Pick the Nth matching job (1-indexed) when multiple jobs share a name",
 )
+@click.option("--workspace", default=None, help="Workspace alias or name")
 @click.option(
     "--all-workspaces",
     "-A",
     is_flag=True,
     help="Resolve the job name across every visible workspace, not just the current one",
+)
+@click.option("--all-users", is_flag=True, help="Include jobs from all users when resolving a name")
+@click.option("--created-by", default=None, help="Filter job name resolution by creator user ID")
+@click.option(
+    "--max-pages",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Max web pages to scan per workspace when resolving a job name",
 )
 @pass_context
 def shell(
@@ -1335,7 +1354,11 @@ def shell(
     rank: Optional[int],
     instance_name: Optional[str],
     pick: Optional[int],
+    workspace: Optional[str],
     all_workspaces: bool,
+    all_users: bool,
+    created_by: Optional[str],
+    max_pages: int,
 ) -> None:
     """Open an interactive shell inside a running training-job instance.
 
@@ -1346,17 +1369,27 @@ def shell(
         inspire job shell my-training-run --instance pytorchjob-worker-0
         inspire job shell my-training-run --pick 2
     """
-    if sum(value is not None for value in (rank, instance_name, pick)) > 1:
+    if rank is not None and instance_name is not None:
         _handle_error(
             ctx,
             "ValidationError",
-            "Use only one of --rank, --instance, or --pick.",
+            "Use only one of --rank or --instance.",
             EXIT_VALIDATION_ERROR,
         )
         return
 
     try:
-        job_id = resolve_job_id(ctx, job, all_workspaces=all_workspaces)
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        job_id = _resolve_web_job_id(
+            config=config,
+            job=job,
+            workspace=workspace,
+            all_workspaces=all_workspaces,
+            all_users=all_users,
+            created_by=created_by,
+            max_pages=max_pages,
+            pick=pick,
+        )
         session = get_web_session()
         try:
             raw_instances, _ = browser_api_module.list_job_instances(
@@ -1372,7 +1405,7 @@ def shell(
             normalize_job_instances(raw_instances),
             instance_name=instance_name,
             rank=rank,
-            pick=pick,
+            prompt=not ctx.json_output,
         )
 
         if not ctx.json_output:
@@ -1384,6 +1417,8 @@ def shell(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except WebJobResolutionError as e:
+        _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
     except AuthenticationError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except (SessionExpiredError, ValueError) as e:

@@ -78,9 +78,21 @@ def test_select_job_instance_requires_selector_for_multiple_running() -> None:
     with pytest.raises(job_shell.JobShellError, match="Multiple running instances"):
         job_shell.select_job_instance(instances)
 
-    assert job_shell.select_job_instance(instances, pick=2).name == "worker-1"
     assert job_shell.select_job_instance(instances, rank=0).name == "worker-0"
     assert job_shell.select_job_instance(instances, instance_name="worker-1").name == "worker-1"
+
+
+def test_select_job_instance_prompts_for_multiple_running(monkeypatch) -> None:  # noqa: ANN001
+    instances = job_shell.normalize_job_instances(
+        [
+            {"name": "worker-0", "instance_status": "instance_running"},
+            {"name": "worker-1", "instance_status": "instance_running"},
+        ]
+    )
+
+    monkeypatch.setattr(job_shell.click, "prompt", lambda *args, **kwargs: 2)
+
+    assert job_shell.select_job_instance(instances, prompt=True).name == "worker-1"
 
 
 def test_open_job_shell_retries_once_after_401(monkeypatch) -> None:  # noqa: ANN001
@@ -106,11 +118,22 @@ def test_open_job_shell_retries_once_after_401(monkeypatch) -> None:  # noqa: AN
     assert calls[1] is refreshed
 
 
-def test_job_shell_command_opens_selected_instance(monkeypatch) -> None:  # noqa: ANN001
+def test_job_shell_command_uses_web_resolver_and_rank_selector(monkeypatch) -> None:  # noqa: ANN001
     captured = {}
 
-    monkeypatch.setattr(job_commands, "resolve_job_id", lambda ctx, job, **kwargs: "job-abc")
+    monkeypatch.setattr(
+        job_commands,
+        "resolve_job_id",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not use slow resolver")),
+    )
     monkeypatch.setattr(job_commands, "get_web_session", lambda: _FakeSession())
+    monkeypatch.setattr(job_commands.Config, "from_files_and_env", lambda **kwargs: (object(), []))
+
+    def fake_resolve_web_job_id(**kwargs):  # noqa: ANN001
+        captured["resolve"] = kwargs
+        return "job-abc"
+
+    monkeypatch.setattr(job_commands, "_resolve_web_job_id", fake_resolve_web_job_id)
 
     def fake_list_job_instances(job_id, *, page_num, page_size, session):  # noqa: ANN001
         captured["list"] = {
@@ -139,20 +162,135 @@ def test_job_shell_command_opens_selected_instance(monkeypatch) -> None:  # noqa
     monkeypatch.setattr(job_commands, "open_job_shell", fake_open_job_shell)
     monkeypatch.setattr(job_commands, "_close_web_client", lambda: None)
 
-    result = CliRunner().invoke(cli_main, ["job", "shell", "train-a", "--pick", "2"])
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "shell",
+            "train-a",
+            "--pick",
+            "2",
+            "--rank",
+            "1",
+            "-A",
+            "--all-users",
+            "--created-by",
+            "user-1",
+            "--max-pages",
+            "7",
+        ],
+    )
 
     assert result.exit_code == 0, result.output
+    assert captured["resolve"]["job"] == "train-a"
+    assert captured["resolve"]["all_workspaces"] is True
+    assert captured["resolve"]["all_users"] is True
+    assert captured["resolve"]["created_by"] == "user-1"
+    assert captured["resolve"]["max_pages"] == 7
+    assert captured["resolve"]["pick"] == 2
     assert captured["list"]["job_id"] == "job-abc"
     assert captured["shell"]["job_id"] == "job-abc"
     assert captured["shell"]["instance_name"] == "worker-1"
     assert "Press Ctrl-]" in result.output
 
 
+def test_job_shell_command_prompts_for_multiple_instances(monkeypatch) -> None:  # noqa: ANN001
+    captured = {}
+
+    monkeypatch.setattr(job_commands.Config, "from_files_and_env", lambda **kwargs: (object(), []))
+    monkeypatch.setattr(job_commands, "_resolve_web_job_id", lambda **kwargs: "job-abc")
+    monkeypatch.setattr(job_commands, "get_web_session", lambda: _FakeSession())
+    monkeypatch.setattr(
+        job_commands.browser_api_module,
+        "list_job_instances",
+        lambda *args, **kwargs: (
+            [
+                {"name": "worker-0", "instance_status": "instance_running"},
+                {"name": "worker-1", "instance_status": "instance_running"},
+            ],
+            2,
+        ),
+    )
+    monkeypatch.setattr(
+        job_commands,
+        "open_job_shell",
+        lambda **kwargs: captured.update(kwargs) or 0,
+    )
+    monkeypatch.setattr(job_commands, "_close_web_client", lambda: None)
+
+    result = CliRunner().invoke(cli_main, ["job", "shell", "train-a"], input="2\n")
+
+    assert result.exit_code == 0, result.output
+    assert captured["instance_name"] == "worker-1"
+    assert "Select instance" in result.output
+
+
 def test_job_shell_command_rejects_multiple_selectors() -> None:
     result = CliRunner().invoke(
         cli_main,
-        ["job", "shell", "train-a", "--rank", "0", "--pick", "1"],
+        ["job", "shell", "train-a", "--rank", "0", "--instance", "worker-0"],
     )
 
     assert result.exit_code != 0
-    assert "Use only one of --rank, --instance, or --pick" in result.output
+    assert "Use only one of --rank or --instance" in result.output
+
+
+def test_resolve_web_job_id_pick_selects_matching_job(monkeypatch) -> None:  # noqa: ANN001
+    rows = [
+        {"name": "train-a", "job_id": "job-1"},
+        {"name": "train-a", "job_id": "job-2"},
+    ]
+    captured = {}
+
+    def fake_list_web_jobs(**kwargs):  # noqa: ANN001
+        captured.update(kwargs)
+        return rows, []
+
+    monkeypatch.setattr(job_commands, "_list_web_jobs", fake_list_web_jobs)
+
+    job_id = job_commands._resolve_web_job_id(
+        config=object(),
+        job="train-a",
+        workspace=None,
+        all_workspaces=True,
+        all_users=False,
+        created_by=None,
+        max_pages=50,
+        pick=2,
+    )
+
+    assert job_id == "job-2"
+    assert captured["limit"] == 0
+
+
+class _FakeSocket:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+
+    def recv(self, size: int) -> bytes:
+        if not self.chunks:
+            return b""
+        chunk = self.chunks.pop(0)
+        if len(chunk) > size:
+            self.chunks.insert(0, chunk[size:])
+            return chunk[:size]
+        return chunk
+
+
+def test_websocket_http_response_preserves_extra_frame_bytes() -> None:
+    sock = _FakeSocket([b"HTTP/1.1 101 Switching Protocols\r\nHeader: value\r\n\r\n\x82\x05hello"])
+
+    response, extra = job_shell._WebSocketClient._read_http_response(sock)
+
+    assert response == "HTTP/1.1 101 Switching Protocols\r\nHeader: value\r\n\r\n"
+    assert extra == b"\x82\x05hello"
+
+
+def test_websocket_recv_exact_consumes_buffer_before_socket() -> None:
+    sock = _FakeSocket([b"cd"])
+    client = job_shell._WebSocketClient("wss://example.invalid", {})
+    client.sock = sock
+    client._recv_buffer = b"ab"
+
+    assert client._recv_exact(3) == b"abc"
+    assert client._recv_buffer == b""
