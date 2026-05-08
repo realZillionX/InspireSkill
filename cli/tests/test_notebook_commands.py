@@ -1173,16 +1173,28 @@ def test_run_notebook_ssh_command_uses_non_interactive_executor(
         "setup_notebook_rtunnel",
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
     )
-    monkeypatch.setattr(
-        ssh_flow_module.subprocess,
-        "run",
-        lambda args, capture_output, timeout, text: subprocess.CompletedProcess(
-            args,
-            0,
-            stdout="ok\n",
-            stderr="",
-        ),
-    )
+    probe: dict[str, object] = {}
+
+    def fake_probe_run(
+        args: list[str],
+        *,
+        stdin=None,
+        capture_output: bool,
+        timeout: int,
+        text: bool,
+    ) -> subprocess.CompletedProcess:
+        probe.update(
+            {
+                "args": args,
+                "stdin": stdin,
+                "capture_output": capture_output,
+                "timeout": timeout,
+                "text": text,
+            }
+        )
+        return subprocess.CompletedProcess(args, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(ssh_flow_module.subprocess, "run", fake_probe_run)
 
     ssh_flow_module.run_notebook_ssh(
         Context(),
@@ -1201,6 +1213,7 @@ def test_run_notebook_ssh_command_uses_non_interactive_executor(
     assert streamed["config"] is fake_tunnel_config
     assert streamed["timeout"] == 300
     assert streamed["pass_stdin"] is True
+    assert probe["stdin"] is subprocess.DEVNULL
 
 
 def test_run_notebook_ssh_name_uses_cached_bridge_metadata(
@@ -1278,7 +1291,11 @@ def test_run_notebook_ssh_name_uses_cached_bridge_metadata(
     monkeypatch.setattr(
         ssh_flow_module.subprocess,
         "run",
-        lambda args, capture_output, timeout, text: subprocess.CompletedProcess(
+        lambda args,
+        stdin=None,
+        capture_output=True,
+        timeout=10,
+        text=True: subprocess.CompletedProcess(
             args,
             0,
             stdout="ok\n",
@@ -1404,7 +1421,11 @@ def test_run_notebook_ssh_command_timeout_is_reported(
     monkeypatch.setattr(
         ssh_flow_module.subprocess,
         "run",
-        lambda args, capture_output, timeout, text: subprocess.CompletedProcess(
+        lambda args,
+        stdin=None,
+        capture_output=True,
+        timeout=10,
+        text=True: subprocess.CompletedProcess(
             args,
             0,
             stdout="ok\n",
@@ -1529,7 +1550,11 @@ def test_run_notebook_ssh_command_failure_reports_exit_code_and_grep_hint(
     monkeypatch.setattr(
         ssh_flow_module.subprocess,
         "run",
-        lambda args, capture_output, timeout, text: subprocess.CompletedProcess(
+        lambda args,
+        stdin=None,
+        capture_output=True,
+        timeout=10,
+        text=True: subprocess.CompletedProcess(
             args,
             0,
             stdout="ok\n",

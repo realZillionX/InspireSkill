@@ -572,6 +572,7 @@ def run_notebook_ssh(
             try:
                 result = subprocess.run(
                     test_args,
+                    stdin=subprocess.DEVNULL,
                     capture_output=True,
                     timeout=10,
                     text=True,

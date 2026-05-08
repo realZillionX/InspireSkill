@@ -117,6 +117,7 @@ def _test_ssh_connection(
                 f"{bridge.ssh_user}@localhost",
                 "echo ok",
             ],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout + 5,

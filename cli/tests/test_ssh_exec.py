@@ -23,6 +23,29 @@ def _stub_resolve(*args: Any, **kwargs: Any) -> tuple[TunnelConfig, BridgeProfil
     )
 
 
+def test_tunnel_availability_probe_detaches_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import inspire.bridge.tunnel.ssh as ssh_module
+
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+    config = TunnelConfig()
+    bridge = BridgeProfile(name="default", proxy_url="https://proxy.example.com")
+
+    monkeypatch.setattr(ssh_module, "_ensure_rtunnel_binary", lambda config: config.rtunnel_bin)
+    monkeypatch.setattr(ssh_module, "_get_proxy_command", lambda *args, **kwargs: "proxy-cmd")
+    monkeypatch.setattr(ssh_module.subprocess, "run", fake_run)
+
+    assert ssh_module._test_ssh_connection(bridge, config)
+    assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
+
+
 def test_run_ssh_command_forces_c_locale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
