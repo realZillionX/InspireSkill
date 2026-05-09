@@ -66,6 +66,31 @@ HARNESS_ROOTS = {
 
 SKILL_ASSETS = ("SKILL.md", "references")
 
+PYPI_MIRROR_INDEX_URLS = (
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "https://mirrors.aliyun.com/pypi/simple",
+    "https://mirrors.cloud.tencent.com/pypi/simple",
+    "https://pypi.mirrors.ustc.edu.cn/simple",
+)
+
+NETWORK_OR_INDEX_ERROR_HINTS = (
+    "failed to fetch",
+    "request failed",
+    "error sending request",
+    "operation timed out",
+    "timed out",
+    "timeout",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "could not resolve",
+    "connection reset",
+    "connection refused",
+    "network is unreachable",
+    "tls",
+    "ssl",
+    "pypi.org/simple",
+)
+
 
 def _detect_harnesses() -> list[str]:
     return [h for h, root in HARNESS_ROOTS.items() if root.is_dir()]
@@ -89,6 +114,44 @@ def _detect_installer() -> str | None:
     if "pipx" in parts and "venvs" in parts:
         return "pipx"
     return None
+
+
+def _is_likely_network_or_index_error(output: str) -> bool:
+    text = output.lower()
+    return any(hint in text for hint in NETWORK_OR_INDEX_ERROR_HINTS)
+
+
+def _upgrade_env_with_index(index_url: str) -> dict[str, str]:
+    env = os.environ.copy()
+    # uv reads UV_DEFAULT_INDEX; pipx shells out to pip, which reads
+    # PIP_INDEX_URL. Set both so the retry path works for either installer
+    # without changing the user's global config.
+    env["UV_DEFAULT_INDEX"] = index_url
+    env["PIP_INDEX_URL"] = index_url
+    return env
+
+
+def _run_upgrade_command(
+    cmd: list[str],
+    *,
+    silent: bool,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str]:
+    proc = subprocess.run(
+        cmd,
+        check=False,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    output = (proc.stdout or "") + (proc.stderr or "")
+    if not silent:
+        if proc.stdout:
+            click.echo(proc.stdout, nl=False)
+        if proc.stderr:
+            click.echo(proc.stderr, nl=False, err=True)
+    return proc.returncode, output
 
 
 def _upgrade_cli(silent: bool) -> bool:
@@ -118,7 +181,7 @@ def _upgrade_cli(silent: bool) -> bool:
     if not silent:
         click.secho(f"› {' '.join(cmd)}", fg="blue")
     try:
-        subprocess.run(cmd, check=True)
+        returncode, output = _run_upgrade_command(cmd, silent=silent)
     except FileNotFoundError:
         if not silent:
             click.secho(
@@ -130,18 +193,65 @@ def _upgrade_cli(silent: bool) -> bool:
                 err=True,
             )
         return False
-    except subprocess.CalledProcessError as e:
+
+    if returncode == 0:
+        return True
+
+    if _is_likely_network_or_index_error(output):
+        for index_url in PYPI_MIRROR_INDEX_URLS:
+            if not silent:
+                click.secho(
+                    f"! PyPI/network error detected; retrying with mirror: {index_url}",
+                    fg="yellow",
+                    err=True,
+                )
+                click.secho(
+                    f"› {' '.join(cmd)}  (UV_DEFAULT_INDEX/PIP_INDEX_URL={index_url})",
+                    fg="blue",
+                )
+            try:
+                retry_code, retry_output = _run_upgrade_command(
+                    cmd,
+                    silent=silent,
+                    env=_upgrade_env_with_index(index_url),
+                )
+            except FileNotFoundError:
+                if not silent:
+                    click.secho(
+                        f"✗ `{cmd[0]}` disappeared from PATH while retrying.",
+                        fg="red",
+                        err=True,
+                    )
+                return False
+            if retry_code == 0:
+                if not silent:
+                    click.secho(f"✓ upgrade succeeded via mirror: {index_url}", fg="green")
+                return True
+            output += "\n" + retry_output
+
         if not silent:
             click.secho(
-                f"✗ {cmd[0]} upgrade failed (exit {e.returncode}). "
-                f"If this looks like a network / mirror error, retry; if it "
-                f"keeps failing, run `{' '.join(cmd)}` manually to see the "
-                f"underlying message.",
+                f"✗ {cmd[0]} upgrade failed after trying PyPI and common mirrors.\n"
+                "  If you are behind a proxy, enable the Clash virtual/TUN adapter "
+                "or make sure your terminal inherits HTTP(S)_PROXY.\n"
+                "  You can also configure a package mirror manually, for example:\n"
+                "      UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple "
+                f"{' '.join(cmd)}\n"
+                "      PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple "
+                f"{' '.join(cmd)}",
                 fg="red",
                 err=True,
             )
         return False
-    return True
+
+    if not silent:
+        click.secho(
+            f"✗ {cmd[0]} upgrade failed (exit {returncode}). "
+            f"Run `{' '.join(cmd)}` manually to see the underlying message.",
+            fg="red",
+            err=True,
+        )
+    return False
 
 
 def _download_tarball(timeout: int = 30) -> bytes | None:

@@ -22,11 +22,15 @@ otherwise scrubs the venv segment will fail here.
 
 from __future__ import annotations
 
+import importlib
+import subprocess
 import sys
 
 import pytest
 
-from inspire.cli.commands.update import _detect_installer
+from inspire.cli.commands.update import _detect_installer, _upgrade_cli
+
+update_module = importlib.import_module("inspire.cli.commands.update")
 
 
 @pytest.mark.parametrize(
@@ -61,3 +65,56 @@ def test_detect_installer_from_prefix(
 ) -> None:
     monkeypatch.setattr(sys, "prefix", prefix)
     assert _detect_installer() == expected
+
+
+def test_upgrade_cli_retries_pypi_network_errors_with_mirrors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], str | None]] = []
+
+    def fake_run(cmd, check, env, text, stdout, stderr):
+        calls.append((cmd, None if env is None else env.get("UV_DEFAULT_INDEX")))
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                cmd,
+                1,
+                stdout="Resolving dependencies...\n",
+                stderr=(
+                    "error: Failed to fetch: `https://pypi.org/simple/inspire-skill/`\n"
+                    "  Caused by: operation timed out\n"
+                ),
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="upgraded\n", stderr="")
+
+    monkeypatch.setattr(sys, "prefix", "/Users/vagrant/.local/share/uv/tools/inspire-skill")
+    monkeypatch.setattr(update_module.subprocess, "run", fake_run)
+
+    assert _upgrade_cli(silent=True) is True
+    assert calls == [
+        (["uv", "tool", "upgrade", "inspire-skill"], None),
+        (
+            ["uv", "tool", "upgrade", "inspire-skill"],
+            "https://pypi.tuna.tsinghua.edu.cn/simple",
+        ),
+    ]
+
+
+def test_upgrade_cli_does_not_retry_non_network_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, check, env, text, stdout, stderr):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            cmd,
+            2,
+            stdout="",
+            stderr="error: unrecognized option '--bad-flag'\n",
+        )
+
+    monkeypatch.setattr(sys, "prefix", "/Users/vagrant/.local/share/pipx/venvs/inspire-skill")
+    monkeypatch.setattr(update_module.subprocess, "run", fake_run)
+
+    assert _upgrade_cli(silent=True) is False
+    assert calls == [["pipx", "upgrade", "inspire-skill"]]
