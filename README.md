@@ -63,7 +63,7 @@
 | **HPC / Ray / Serving / Model** | 仅有部分 job + notebook | 仅 HPC（单层）+ job | **HPC 两层模型 + Ray 弹性 + Serving + Model** 全覆盖 |
 | **多账号** | `[accounts."<user>"]` 合并层 | 单账号 | 一账号一独立目录，`~/.inspire/current` 切换 |
 | **Agent 接入** | 无 | `qzcli-mcp`（1 家 harness） | Skill 格式覆盖 5 家 harness |
-| **测试** | 53 文件 | 3 文件 | **767 单元测试** |
+| **测试** | 53 文件 | 3 文件 | **809 单元测试** |
 
 一句话：**这两条 CLI 各做了一段路；InspireSkill 把整个平台的操作面和观测面端到端铺平了，并且在离线场景下零配置可用。**
 
@@ -124,8 +124,8 @@ inspire resources list --all --include-cpu
 </tr>
 <tr>
   <td>
-    <h4>🏃 GPU 多节点任务（不止训练）</h4>
-    <code>inspire job</code> 覆盖所有 GPU 多节点场景 —— 分布式训练 / 批量推理 / 并发 worker pool 全走这里（`hpc` 对应 CPU Slurm）。<code>inspire run "&lt;cmd&gt;" --watch</code> 自动选资源组 + 跟 <code>job logs --follow</code>；精细控制优先级 / 节点数用 <code>job create</code>。
+    <h4>🏃 GPU 后台任务（平台名：分布式训练）</h4>
+    平台官方把 <code>job</code> 这一路叫"分布式训练" / distributed training；实际提交接口只要求 GPU 计算资源和启动命令，不强制 payload 必须是训练。<code>inspire job</code> 可用于一张卡、多卡、单节点、多节点等后台 GPU 任务 —— 分布式训练 / 批量推理 / 并发 worker pool 都走这里（<code>hpc</code> 对应 CPU Slurm）。<code>inspire run "&lt;cmd&gt;" --watch</code> 自动选资源组 + 跟 <code>job logs --follow</code>；精细控制优先级 / 节点数用 <code>job create</code>。
   </td>
   <td>
     <h4>📊 资源情报</h4>
@@ -159,7 +159,7 @@ inspire resources list --all --include-cpu
   </td>
   <td width="50%">
     <h4>🗝 多账号（一账号一目录）</h4>
-    <code>inspire account add / list / use / current / remove / migrate</code> —— 每个账号的 <code>config.toml</code>、SSH tunnel bridges、SSO session cache 都在独立目录 <code>~/.inspire/accounts/&lt;name&gt;/</code>，活动账号由 <code>~/.inspire/current</code> 一行决定。不再有 <code>[accounts."&lt;user&gt;"]</code> 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。
+    <code>inspire account add / list / use / current / remove</code> —— 每个账号的 <code>config.toml</code>、SSH tunnel bridges、SSO session cache 都在独立目录 <code>~/.inspire/accounts/&lt;name&gt;/</code>，活动账号由 <code>~/.inspire/current</code> 一行决定。不再有 <code>[accounts."&lt;user&gt;"]</code> 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。
   </td>
 </tr>
 </table>
@@ -184,7 +184,7 @@ inspire resources list --all --include-cpu
 
 SKILL.md 装完是一份**通用默认 playbook**，默认口径是主力跑 `分布式训练空间` 下的 H100 / H200。如果你的主战场不在这儿（比如启智的国产卡 workspace `CI-情境智能-国产卡` / `CI-情境智能-国产卡-ssd3`，或小组自己划走的专属资源开发空间），两条口子做定制：
 
-1. **项目级（推荐）**：改仓库根的 `INSPIRE.md` —— `Path Conventions` 换 remote workspace 路径，`Existing Notebooks` / `Ongoing Jobs` 里显式写国产卡机型和任务。`INSPIRE.md` 属于你的 repo，不会被 `inspire update` 覆写，也方便跟组内协作。SKILL.md §1 "项目叙述上下文" 一行详述约定。
+1. **项目级（推荐）**：改仓库根的 `INSPIRE.md` —— `Path Conventions` 换 remote workspace 路径，`Existing Notebooks` / `Ongoing Jobs` 里显式写国产卡机型和任务。`INSPIRE.md` 属于你的 repo，不会被 `inspire update` 覆写，也方便跟组内协作。SKILL.md §4 "项目上下文" 说明了推荐字段。
 2. **Harness 级**：直接编辑 `~/.claude/skills/inspire/SKILL.md`（Codex / Gemini / OpenClaw / OpenCode 同理），改资源申请段落、默认镜像、常用 workspace 名。注意：`inspire update` **默认会覆盖 SKILL.md**；维护了本地改动后用 `inspire update --cli-only` 只升级 CLI 不动 skill 文件，想合并上游变更时再手动 diff。
 
 ---
@@ -224,7 +224,7 @@ SKILL.md 装完是一份**通用默认 playbook**，默认口径是主力跑 `�
 - [**SKILL.md**](SKILL.md) — Agent 看的主规约：硬约束、基础命令入口和按需加载索引。
 - [references/setup/install-and-config.md](references/setup/install-and-config.md) — 安装、更新、账号初始化和项目初始化。
 - [references/setup/proxy-setup.md](references/setup/proxy-setup.md) — Clash Verge 7897 分流配置和账号级代理衔接。
-- [references/dev/openapi.md](references/dev/openapi.md) — `/openapi/v1` 公开合约（10 条端点：train_job / hpc_jobs / inference_servings 的 `create/detail/stop` + `cluster_nodes/list`；CLI 都已封装，`inference_servings` 由 `inspire serving` 暴露）。
+- [references/dev/openapi.md](references/dev/openapi.md) — `/openapi/v1` 公开合约（10 条业务端点：train_job / hpc_jobs / inference_servings 的 `create/detail/stop` + `cluster_nodes/list`；CLI 暴露 job / hpc 的提交与生命周期、serving 的观测与停止，serving create 仅在 OpenAPI helper 层封装）。
 - [references/dev/browser-api.md](references/dev/browser-api.md) — `/api/v1` 前端 SSO API（列表 / 事件 / 模型注册表 / 部署管理 / 用户权限 / 配额 …… 观测性几乎全在这里，OpenAPI 上没有）。
 - [references/resources-and-paths.md](references/resources-and-paths.md) — 实时资源、规格三元组、共享盘作用域、存储池和项目路径。
 - [references/notebook.md](references/notebook.md) — Notebook 创建、SSH、远程执行、传文件和镜像固化。
