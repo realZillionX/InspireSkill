@@ -22,7 +22,7 @@ from .job_metrics import job_metrics
 
 @click.group()
 def job() -> None:
-    """Manage training jobs."""
+    """Manage distributed training jobs."""
 
 
 job.add_command(create)

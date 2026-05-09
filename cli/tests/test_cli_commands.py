@@ -311,7 +311,7 @@ def test_job_help_smoke(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
     result = runner.invoke(cli_main, ["job", "--help"])
     assert result.exit_code == 0
-    assert "Manage training jobs" in result.output
+    assert "Manage distributed training jobs" in result.output
 
 
 def test_job_list_help_uses_workspace_name_not_raw_id_hint(
