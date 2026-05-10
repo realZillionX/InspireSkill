@@ -676,7 +676,7 @@ def run_notebook_ssh(
     notebook_display_name = str(notebook_detail.get("name") or "").strip()
     if not notebook_display_name:
         # If the platform returns a notebook with no name, the cache would
-        # have to fall back to an id-shaped key — which would then violate
+        # have to fall back to a handle-shaped key, which would then violate
         # the name-only-at-user-boundary contract the cached-tunnel
         # commands (`shell` / `exec` / `scp`) rely on. Surface a clear
         # error instead of silently fabricating an `nb-<hex>` cache key.

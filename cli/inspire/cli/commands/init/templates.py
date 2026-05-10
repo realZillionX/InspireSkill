@@ -81,7 +81,6 @@ log_cache_dir = "~/.inspire/logs"
 server = "https://github.com"
 repo = "owner/repo"
 # token - use INSP_GITHUB_TOKEN env var (falls back to GITHUB_TOKEN)
-log_workflow = "retrieve_job_log.yml"
 sync_workflow = "sync_code.yml"
 bridge_workflow = "run_bridge_action.yml"
 remote_timeout = 90

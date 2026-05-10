@@ -2,7 +2,7 @@
 
 The Browser API serving endpoints have no public contract, so these tests
 pin the wire-format parsing we reverse-engineered from the
-`/jobs/modelDeployment` page: body shape (`filter_by: {my_serving: ...}`),
+`/jobs/modelDeployment` page: personal list scope,
 the list-or-`inference_servings` key fallback, `created_by` nested-object
 flattening, and the `code != 0` error path. The live account used during
 development had no servings in any of its 11 workspaces, so these unit
@@ -98,7 +98,6 @@ def test_list_servings_posts_expected_body_and_parses_response(monkeypatch) -> N
 
     items, total = list_servings(
         workspace_id="ws-given",
-        my_serving=True,
         page=2,
         page_size=20,
         session=_FakeSession(workspace_id="ws-session-default"),
@@ -159,7 +158,7 @@ def test_list_servings_supports_current_filter_fields(monkeypatch) -> None:
 
     list_servings(
         workspace_id="ws-given",
-        my_serving=False,
+        filter_by={"my_serving": False},
         keyword="qwen",
         project_ids=["project-1"],
         statuses=["RUNNING"],
@@ -168,7 +167,7 @@ def test_list_servings_supports_current_filter_fields(monkeypatch) -> None:
     )
 
     assert record["body"]["filter_by"] == {
-        "my_serving": False,
+        "my_serving": True,
         "keyword": "qwen",
         "project_id": ["project-1"],
         "status": ["RUNNING"],

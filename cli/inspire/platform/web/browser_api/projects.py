@@ -287,12 +287,12 @@ def select_project(
         """Return position in user-defined project_order (lower is better).
 
         Projects not in the list get a large rank so they sort after listed ones.
-        Matching is case-insensitive on name, and exact on project_id.
+        Matching is case-insensitive on name only.
         """
         if not project_order:
             return 0  # no preference — all equal
         for i, entry in enumerate(project_order):
-            if project.name.lower() == entry.lower() or project.project_id == entry:
+            if project.name.lower() == entry.lower():
                 return i
         return len(project_order)  # unlisted → after all listed
 

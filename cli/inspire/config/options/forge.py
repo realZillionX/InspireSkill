@@ -34,15 +34,6 @@ GITHUB_OPTIONS: list[ConfigOption] = [
         scope="global",
     ),
     ConfigOption(
-        env_var="INSP_GITHUB_LOG_WORKFLOW",
-        toml_key="github.log_workflow",
-        field_name="github_log_workflow",
-        description="Workflow filename for retrieving logs",
-        default="retrieve_job_log.yml",
-        category="GitHub",
-        scope="project",
-    ),
-    ConfigOption(
         env_var="INSP_GITHUB_SYNC_WORKFLOW",
         toml_key="github.sync_workflow",
         field_name="github_sync_workflow",

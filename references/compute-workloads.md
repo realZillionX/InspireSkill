@@ -128,7 +128,15 @@ inspire hpc events <name> --tail 50
 inspire ray events <name> --tail 50
 ```
 
-`job` 和 `ray` 可以进一步看 pod/instance 级原因；HPC 只暴露 job-level 事件。
+需要看实际 pod / component 列表时查 instances，并显式传 workspace：
+
+```bash
+inspire job instances <name> --workspace <WORKSPACE>
+inspire hpc instances <name> --workspace <WORKSPACE>
+inspire ray instances <name> --workspace <WORKSPACE>
+```
+
+`job events` 支持 pod/instance 级事件过滤；HPC 和 Ray 的 events 命令保持 job-level 事件观察，具体实例清单走对应 `instances` 命令。
 
 任务已启动但健康度不明时查指标。`metrics` 对应平台 `资源视图`，适合看 GPU、显存、CPU、内存、磁盘和网络是否持续工作，以及多 pod / 多 task 是否负载均衡：
 

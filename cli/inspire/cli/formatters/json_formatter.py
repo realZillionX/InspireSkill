@@ -41,6 +41,11 @@ def _sanitize_json_value(value: Any) -> Any:
     return value
 
 
+def sanitize_json_data(data: Any) -> Any:
+    """Return a CLI-safe JSON payload with platform handle fields removed."""
+    return _sanitize_json_value(data)
+
+
 def format_json(data: Any, success: bool = True, *, allow_ids: bool = False) -> str:
     """Format data as JSON output.
 
@@ -51,7 +56,7 @@ def format_json(data: Any, success: bool = True, *, allow_ids: bool = False) -> 
     Returns:
         JSON string with standard wrapper
     """
-    output = {"success": success, "data": data if allow_ids else _sanitize_json_value(data)}
+    output = {"success": success, "data": data if allow_ids else sanitize_json_data(data)}
     return json.dumps(output, indent=2, ensure_ascii=False)
 
 

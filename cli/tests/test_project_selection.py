@@ -290,13 +290,13 @@ def test_project_order_cpu_mode_ignores_gpu_limit_preference() -> None:
     assert selected.project_id == "p-capped"
 
 
-def test_project_order_by_project_id() -> None:
-    """project_order can match by project_id."""
+def test_project_order_does_not_match_project_handle() -> None:
+    """project_order is name-only."""
     a = _project("p-aaa", "Alpha", priority_name="10")
     b = _project("p-bbb", "Beta", priority_name="4")
 
     selected, _ = select_project([a, b], project_order=["p-bbb"])
-    assert selected.project_id == "p-bbb"
+    assert selected.project_id == "p-aaa"
 
 
 def test_project_order_case_insensitive_name() -> None:

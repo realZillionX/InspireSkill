@@ -43,7 +43,6 @@ class Config:
     github_repo: Optional[str] = None
     github_token: Optional[str] = None
     github_server: str = "https://github.com"
-    github_log_workflow: str = "retrieve_job_log.yml"
     github_sync_workflow: str = "sync_code.yml"
     github_bridge_workflow: str = "run_bridge_action.yml"
 

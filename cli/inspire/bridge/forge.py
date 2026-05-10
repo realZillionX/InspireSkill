@@ -1,16 +1,15 @@
-"""GitHub Actions forge: client + workflow orchestration + artifact/log fetching.
+"""GitHub Actions forge: client + workflow orchestration + artifact fetching.
 
 Flattened from the former `bridge/forge/` package after Gitea support was
 dropped. Contains a single concrete HTTP client (`GitHubClient`), thin
-config accessors, and the workflow/artifact/log helpers that `job logs` and
-`notebook exec` fall back to when no SSH tunnel is available.
+config accessors, and the workflow/artifact helpers that `notebook exec` can
+fall back to when no SSH tunnel is available.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 import zipfile
 from dataclasses import dataclass
@@ -84,9 +83,7 @@ def _get_active_server(config: Config) -> str:
 
 
 def _get_active_workflow_file(config: Config, workflow_type: str) -> str:
-    """Get the workflow filename for ``'log'`` / ``'sync'`` / ``'bridge'``."""
-    if workflow_type == "log":
-        return getattr(config, "github_log_workflow", "retrieve_job_log.yml")
+    """Get the workflow filename for ``'sync'`` / ``'bridge'``."""
     if workflow_type == "sync":
         return getattr(config, "github_sync_workflow", "sync_code.yml")
     if workflow_type == "bridge":
@@ -274,10 +271,6 @@ def _find_run_by_inputs(runs: list, expected_inputs: dict) -> Optional[dict]:
     return None
 
 
-def _artifact_name(job_handle: str, request_id: str) -> str:
-    return f"job-{job_handle}-log-{request_id}"
-
-
 # ---------------------------------------------------------------------------
 # Workflows
 # ---------------------------------------------------------------------------
@@ -298,23 +291,6 @@ def trigger_workflow_dispatch(
         return client.request_json("POST", url, data)
     except ForgeError as e:
         raise ForgeError(f"Failed to trigger workflow: {e}")
-
-
-def trigger_log_retrieval_workflow(
-    config: Config,
-    job_id: str,
-    remote_log_path: str,
-    request_id: str,
-    start_offset: int = 0,
-) -> None:
-    """Trigger the log-retrieval workflow with job/log/offset inputs."""
-    inputs = {
-        "job_handle": job_id,
-        "remote_log_path": remote_log_path,
-        "request_id": request_id,
-        "start_offset": str(start_offset),
-    }
-    trigger_workflow_dispatch(config, _get_active_workflow_file(config, "log"), inputs)
 
 
 def trigger_bridge_action_workflow(
@@ -451,78 +427,6 @@ def wait_for_bridge_action_completion(
 # ---------------------------------------------------------------------------
 
 
-def _find_artifact_by_name(config: Config, artifact_name: str) -> Optional[dict]:
-    """Search repository artifacts for one matching ``artifact_name`` and not expired."""
-    repo = _get_active_repo(config)
-    client = create_forge_client(config)
-
-    url = f"{client.get_api_base(repo)}/artifacts?limit=100"
-    try:
-        response = client.request_json("GET", url)
-        artifacts = response.get("artifacts", []) or []
-        for art in artifacts:
-            if art.get("name") == artifact_name and not art.get("expired", False):
-                return art
-    except ForgeError:
-        pass
-    return None
-
-
-def wait_for_log_artifact(
-    config: Config,
-    job_id: str,
-    request_id: str,
-    cache_path: Path,
-) -> None:
-    """Poll for the log file and download it.
-
-    Tries two methods:
-    1. GitHub Actions artifact API
-    2. Raw file from ``logs`` branch (fallback)
-    """
-    repo = _get_active_repo(config)
-    client = create_forge_client(config)
-
-    log_filename = _artifact_name(job_id, request_id)
-    deadline = time.time() + max(5, int(config.remote_timeout or 90))
-
-    while True:
-        if time.time() > deadline:
-            raise TimeoutError(
-                f"Remote log retrieval timed out after {config.remote_timeout} seconds."
-            )
-
-        artifact = _find_artifact_by_name(config, log_filename)
-        if artifact is not None:
-            artifact_id = artifact.get("id")
-            if artifact_id:
-                download_url = f"{client.get_api_base(repo)}/artifacts/{artifact_id}/zip"
-                try:
-                    data = client.request_bytes("GET", download_url)
-                    with zipfile.ZipFile(BytesIO(data)) as zf:
-                        members = [m for m in zf.infolist() if not m.is_dir()]
-                        if members:
-                            member = members[0]
-                            cache_path.parent.mkdir(parents=True, exist_ok=True)
-                            with zf.open(member, "r") as src, cache_path.open("wb") as dst:
-                                dst.write(src.read())
-                            return
-                except ForgeError:
-                    pass  # fall through to raw-file method
-
-        raw_url = client.get_raw_file_url(repo, "logs", f"{log_filename}.log")
-        try:
-            data = client.request_bytes("GET", raw_url)
-            if data and len(data) > 0:
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_bytes(data)
-                return
-        except ForgeError:
-            pass  # not ready yet, keep polling
-
-        time.sleep(3)
-
-
 def download_bridge_artifact(config: Config, request_id: str, local_path: Path) -> None:
     """Download the bridge-action artifact zip from the ``logs`` branch."""
     repo = _get_active_repo(config)
@@ -566,114 +470,6 @@ def fetch_bridge_output_log(config: Config, request_id: str) -> Optional[str]:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Remote-log orchestration
-# ---------------------------------------------------------------------------
-
-
-def _prune_old_logs(cache_dir: Path, max_age_days: int = 7) -> None:
-    """Remove log files older than ``max_age_days`` from the cache dir."""
-    if not cache_dir.exists():
-        return
-
-    max_age_seconds = max_age_days * 24 * 3600
-    now = time.time()
-
-    try:
-        for log_file in cache_dir.glob("*.log"):
-            if not log_file.is_file():
-                continue
-            age_seconds = now - log_file.stat().st_mtime
-            if age_seconds > max_age_seconds:
-                try:
-                    log_file.unlink()
-                except OSError:
-                    pass
-    except OSError:
-        pass
-
-
-def fetch_remote_log_via_bridge(
-    config: Config,
-    job_id: str,
-    remote_log_path: str,
-    cache_path: Path,
-    refresh: bool = False,
-) -> Path:
-    """Ensure a local cached copy of a remote log (full fetch, not incremental)."""
-    if cache_path.exists() and not refresh:
-        return cache_path
-
-    request_id = f"{int(time.time())}-{os.getpid()}"
-
-    trigger_log_retrieval_workflow(
-        config=config,
-        job_id=job_id,
-        remote_log_path=remote_log_path,
-        request_id=request_id,
-    )
-    wait_for_log_artifact(
-        config=config,
-        job_id=job_id,
-        request_id=request_id,
-        cache_path=cache_path,
-    )
-
-    _prune_old_logs(cache_path.parent, max_age_days=7)
-    return cache_path
-
-
-def fetch_remote_log_incremental(
-    config: Config,
-    job_id: str,
-    remote_log_path: str,
-    cache_path: Path,
-    start_offset: int = 0,
-) -> tuple[Path, int]:
-    """Fetch an incremental slice of a remote log starting at ``start_offset``.
-
-    Returns ``(cache_path, bytes_written)``. Appends to ``cache_path`` when
-    ``start_offset > 0`` and the cache already exists; otherwise replaces the
-    file.
-    """
-    request_id = f"{int(time.time())}-{os.getpid()}"
-
-    trigger_log_retrieval_workflow(
-        config=config,
-        job_id=job_id,
-        remote_log_path=remote_log_path,
-        request_id=request_id,
-        start_offset=start_offset,
-    )
-
-    temp_path = cache_path.parent / f"{job_id}.tmp.{os.getpid()}"
-    try:
-        wait_for_log_artifact(
-            config=config,
-            job_id=job_id,
-            request_id=request_id,
-            cache_path=temp_path,
-        )
-
-        bytes_written = temp_path.stat().st_size if temp_path.exists() else 0
-
-        if bytes_written > 0:
-            if cache_path.exists() and start_offset > 0:
-                with cache_path.open("ab") as dst:
-                    dst.write(temp_path.read_bytes())
-            else:
-                temp_path.replace(cache_path)
-                return cache_path, bytes_written
-
-        return cache_path, bytes_written
-    finally:
-        if temp_path.exists():
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
-
-
 __all__ = [
     # Errors
     "ForgeAuthError",
@@ -693,22 +489,14 @@ __all__ = [
     "_parse_event_inputs",
     "_matches_inputs",
     "_find_run_by_inputs",
-    "_artifact_name",
     # Workflows
     "trigger_workflow_dispatch",
-    "trigger_log_retrieval_workflow",
     "trigger_bridge_action_workflow",
     "get_workflow_runs",
     "get_workflow_run",
     "wait_for_workflow_completion",
     "wait_for_bridge_action_completion",
     # Artifacts
-    "_find_artifact_by_name",
-    "wait_for_log_artifact",
     "download_bridge_artifact",
     "fetch_bridge_output_log",
-    # Logs
-    "_prune_old_logs",
-    "fetch_remote_log_via_bridge",
-    "fetch_remote_log_incremental",
 ]

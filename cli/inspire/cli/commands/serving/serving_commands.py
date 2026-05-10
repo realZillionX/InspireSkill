@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import click
 
@@ -31,7 +31,6 @@ def _resolve_serving_name(
     name: str,
     *,
     workspace_id: Optional[str] = None,
-    show_all: bool = False,
     pick: Optional[int] = None,
 ) -> str:
     """Resolve a serving name to its platform id (``sv-<uuid>``).
@@ -44,7 +43,6 @@ def _resolve_serving_name(
         items, _ = browser_api_module.list_servings(
             workspace_id=workspace_id,
             session=session,
-            my_serving=not show_all,
             keyword=name,
             page_size=100,
         )
@@ -106,7 +104,7 @@ def _resolve_project_id(
     raise ConfigError(f"Unknown project: {requested!r}.")
 
 
-def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
+def _resolve_image_for_create(raw: str, *, session, ctx: Context) -> tuple[str, str]:
     """Resolve a visible image label to the `mirror_id` used by the web UI."""
     raw = (raw or "").strip()
     if not raw:
@@ -131,9 +129,15 @@ def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
             if target in {label.lower() for label in labels if label}:
                 image_id = str(img.image_id or "").strip()
                 if image_id:
-                    return image_id
+                    display = f"{img.name}:{img.version}" if img.name and img.version else raw
+                    return image_id, display
                 break
     raise ConfigError(f"Unknown image: {raw!r}.")
+
+
+def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
+    image_id, _display = _resolve_image_for_create(raw, session=session, ctx=ctx)
+    return image_id
 
 
 def _price_value(raw_price: dict[str, Any], nested_key: str, key: str) -> Any:
@@ -165,7 +169,7 @@ def _resolve_model_for_create(
     project_id: Optional[str],
     session,
     ctx: Context,
-) -> tuple[str, Optional[int]]:
+) -> tuple[str, Optional[int], str]:
     items, _ = browser_api_module.list_models(
         workspace_id=workspace_id,
         keyword=name,
@@ -194,10 +198,14 @@ def _resolve_model_for_create(
     for item in items:
         if item.model_id == model_id:
             try:
-                return model_id, int(item.latest_version) if item.latest_version else None
+                return (
+                    model_id,
+                    int(item.latest_version) if item.latest_version else None,
+                    item.name,
+                )
             except ValueError:
-                return model_id, None
-    return model_id, None
+                return model_id, None, item.name
+    return model_id, None, name
 
 
 def _serving_model_label(data: dict[str, Any]) -> str:
@@ -389,14 +397,6 @@ def _format_configs(data: dict[str, Any]) -> str:
 @click.option("--project", default=None, help="Project name filter")
 @click.option("--status", "status_filter", default=None, help="Serving status filter")
 @click.option("--keyword", default=None, help="Server-side name/model search")
-@click.option(
-    "-a",
-    "--all",
-    "show_all",
-    is_flag=True,
-    default=False,
-    help="Show all servings in the workspace (default: only the current user's)",
-)
 @click.option("--page", type=int, default=1, show_default=True)
 @click.option("--page-size", type=int, default=50, show_default=True)
 @pass_context
@@ -406,7 +406,6 @@ def list_serving(
     project: Optional[str],
     status_filter: Optional[str],
     keyword: Optional[str],
-    show_all: bool,
     page: int,
     page_size: int,
 ) -> None:
@@ -424,7 +423,6 @@ def list_serving(
         )
         items, total = browser_api_module.list_servings(
             workspace_id=resolved_workspace,
-            my_serving=not show_all,
             keyword=keyword,
             project_ids=[project_id] if project_id else None,
             statuses=[status_filter] if status_filter else None,
@@ -477,21 +475,12 @@ def list_serving(
 @click.command("status")
 @click.argument("name")
 @click.option("--workspace", default=None, help="Workspace name")
-@click.option(
-    "-a",
-    "--all",
-    "show_all",
-    is_flag=True,
-    default=False,
-    help="Resolve among all servings in the workspace (default: only current user's)",
-)
 @click.option("--pick", type=int, default=None, help="Pick Nth duplicate name (1-indexed)")
 @pass_context
 def status_serving(
     ctx: Context,
     name: str,
     workspace: Optional[str],
-    show_all: bool,
     pick: Optional[int],
 ) -> None:
     """Get detail of an inference serving (pass the serving name)."""
@@ -503,7 +492,6 @@ def status_serving(
             ctx,
             name,
             workspace_id=workspace_id,
-            show_all=show_all,
             pick=pick,
         )
         data = browser_api_module.get_serving_detail(
@@ -564,14 +552,6 @@ def status_serving(
 @click.argument("name")
 @click.option("--workspace", default=None, help="Workspace name")
 @click.option(
-    "-a",
-    "--all",
-    "show_all",
-    is_flag=True,
-    default=False,
-    help="Resolve among all servings in the workspace (default: only current user's)",
-)
-@click.option(
     "--pick",
     type=int,
     default=None,
@@ -582,7 +562,6 @@ def stop_serving(
     ctx: Context,
     name: str,
     workspace: Optional[str],
-    show_all: bool,
     pick: Optional[int],
 ) -> None:
     """Stop an inference serving (pass the serving name)."""
@@ -594,7 +573,6 @@ def stop_serving(
             ctx,
             name,
             workspace_id=workspace_id,
-            show_all=show_all,
             pick=pick,
         )
         data = browser_api_module.stop_serving(
@@ -620,14 +598,6 @@ def stop_serving(
 @click.argument("name")
 @click.option("--workspace", default=None, help="Workspace name")
 @click.option(
-    "-a",
-    "--all",
-    "show_all",
-    is_flag=True,
-    default=False,
-    help="Resolve among all servings in the workspace (default: only current user's)",
-)
-@click.option(
     "--pick",
     type=int,
     default=None,
@@ -638,7 +608,6 @@ def delete_serving(
     ctx: Context,
     name: str,
     workspace: Optional[str],
-    show_all: bool,
     pick: Optional[int],
 ) -> None:
     """Delete an inference serving entry (pass the serving name)."""
@@ -650,7 +619,6 @@ def delete_serving(
             ctx,
             name,
             workspace_id=workspace_id,
-            show_all=show_all,
             pick=pick,
         )
         data = browser_api_module.delete_serving(
@@ -752,11 +720,11 @@ def create_serving(
     name: str,
     model_name: str,
     model_version: Optional[int],
-    workspace: str,
+    workspace: Optional[str],
     project: Optional[str],
-    group: str,
-    quota: str,
-    image: str,
+    group: Optional[str],
+    quota: Optional[str],
+    image: Optional[str],
     profile_name: Optional[str],
     command: str,
     port: int,
@@ -793,11 +761,11 @@ def create_serving(
                 "quota": quota,
             },
         )
-        workspace = fields["workspace"]
-        project = fields["project"]
-        group = fields["group"]
-        image = fields["image"]
-        quota = fields["quota"]
+        workspace = cast(Optional[str], fields["workspace"])
+        project = cast(Optional[str], fields["project"])
+        group = cast(Optional[str], fields["group"])
+        image = cast(Optional[str], fields["image"])
+        quota = cast(Optional[str], fields["quota"])
         for field_name, value in (
             ("workspace", workspace),
             ("project", project),
@@ -807,6 +775,11 @@ def create_serving(
         ):
             if not value:
                 raise ConfigError(profile_required_message("serving", field_name))
+        workspace = cast(str, workspace)
+        project = cast(str, project)
+        group = cast(str, group)
+        image = cast(str, image)
+        quota = cast(str, quota)
 
         workspace_id = select_workspace_id(config, explicit_workspace_name=workspace, session=session)
         if not workspace_id:
@@ -832,7 +805,7 @@ def create_serving(
         except (QuotaParseError, QuotaMatchError) as exc:
             raise click.UsageError(str(exc)) from exc
 
-        model_id, latest_version = _resolve_model_for_create(
+        model_id, latest_version, model_label = _resolve_model_for_create(
             name=model_name,
             workspace_id=workspace_id,
             project_id=None,
@@ -845,7 +818,7 @@ def create_serving(
                 "Could not infer model version. Pass --model-version explicitly."
             )
 
-        mirror_id = _resolve_image_id(image, session=session, ctx=ctx)
+        mirror_id, image_label = _resolve_image_for_create(image, session=session, ctx=ctx)
         resource_spec_price = _build_resource_spec_price(resolved)
         final_priority = priority if priority is not None else 10
         payload = {
@@ -869,27 +842,46 @@ def create_serving(
             payload["custom_domain"] = custom_domain
 
         if dry_run:
+            plan = {
+                "dry_run": True,
+                "kind": "serving",
+                "name": name,
+                "workspace_name": workspace,
+                "project_name": project,
+                "compute_group_name": resolved.compute_group_name,
+                "image_name": image_label,
+                "model_name": model_label,
+                "model_version": final_model_version,
+                "resource": spec.display(),
+                "command": command,
+                "description": description,
+                "port": port,
+                "replicas": replicas,
+                "nodes_per_replica": nodes_per_replica,
+                "shm_gib": shm_gib,
+                "priority": final_priority,
+                "custom_domain": custom_domain,
+            }
             if ctx.json_output:
-                click.echo(json_formatter.format_json({"dry_run": True, "payload": payload}))
+                click.echo(json_formatter.format_json(plan))
             else:
-                click.echo("Inference Serving Create Payload")
-                for key in (
-                    "name",
-                    "project_id",
-                    "workspace_id",
-                    "logic_compute_group_id",
-                    "mirror_id",
-                    "model_id",
-                    "model_version",
-                    "port",
-                    "replicas",
-                    "node_num_per_replica",
-                    "shm_gi",
-                    "task_priority",
-                    "resource_spec_price",
-                ):
-                    value = payload.get(key)
-                    click.echo(f"{key}: {scrub_raw_ids(str(value))}")
+                click.echo("Inference Serving Create Plan")
+                click.echo(f"Name:      {scrub_raw_ids(name)}")
+                click.echo(f"Project:   {scrub_raw_ids(project)}")
+                click.echo(f"Workspace: {scrub_raw_ids(workspace)}")
+                click.echo(f"Compute:   {scrub_raw_ids(resolved.compute_group_name)}")
+                click.echo(f"Resource:  {spec.display()}")
+                click.echo(f"Image:     {scrub_raw_ids(image_label)}")
+                click.echo(f"Model:     {scrub_raw_ids(model_label)} v{final_model_version}")
+                click.echo(f"Command:   {scrub_raw_ids(command)}")
+                click.echo(f"Port:      {port}")
+                click.echo(f"Replicas:  {replicas} x {nodes_per_replica} node(s)")
+                if shm_gib is not None:
+                    click.echo(f"SHM:       {shm_gib} GiB")
+                click.echo(f"Priority:  {final_priority}")
+                if custom_domain:
+                    click.echo(f"Domain:    {scrub_raw_ids(custom_domain)}")
+                click.echo("No create API call was made.")
             return
 
         data = browser_api_module.create_serving(

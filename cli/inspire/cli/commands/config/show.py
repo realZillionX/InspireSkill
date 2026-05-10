@@ -14,6 +14,7 @@ from inspire.cli.context import (
     EXIT_GENERAL_ERROR,
     pass_context,
 )
+from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import (
@@ -195,7 +196,7 @@ def _show_json(
                 "description": option.description,
             }
 
-    click.echo(json.dumps(result, indent=2))
+    click.echo(json.dumps(json_formatter.sanitize_json_data(result), indent=2))
 
 
 def _show_env(cfg: Config, compact: bool, filter_category: str | None) -> None:

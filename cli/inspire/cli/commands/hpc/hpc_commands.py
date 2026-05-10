@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import click
 
@@ -64,6 +64,52 @@ def _resolve_hpc_name(ctx: Context, name: str, *, pick: Optional[int] = None) ->
         list_candidates=_lister,
         json_output=ctx.json_output,
         pick_index=pick,
+    )
+
+
+def _resolve_hpc_name_in_workspace(
+    ctx: Context,
+    *,
+    config: Config,
+    session,
+    name: str,
+    workspace: str,
+    num: int,
+) -> str:
+    workspace_id = select_workspace_id(
+        config,
+        explicit_workspace_name=workspace,
+        session=session,
+    )
+    if workspace_id is None:
+        raise ConfigError("--workspace is required.")
+    user_id = _current_user_id(session)
+
+    def _lister():
+        jobs, _ = browser_api_module.list_hpc_jobs(
+            workspace_id=workspace_id,
+            created_by=user_id,
+            page_num=1,
+            page_size=num,
+            session=session,
+        )
+        return [
+            {
+                "name": j.name,
+                "id": j.job_id,
+                "status": j.status,
+                "workspace_id": j.workspace_id,
+                "created_at": j.created_at,
+            }
+            for j in jobs
+        ]
+
+    return resolve_by_name(
+        ctx,
+        name=name,
+        resource_type="hpc",
+        list_candidates=_lister,
+        json_output=ctx.json_output,
     )
 
 
@@ -155,6 +201,54 @@ def _format_hpc_list_rows(rows: list[dict[str, str]]) -> str:
         )
     lines.append(sep)
     lines.append(f"Total: {len(rows)}")
+    return "\n".join(lines)
+
+
+def _hpc_instance_name(inst: dict[str, Any], idx: int) -> str:
+    for key in ("name", "instance_name", "pod_name", "component"):
+        value = str(inst.get(key) or "").strip()
+        if value:
+            return scrub_raw_ids(value)
+    return f"#{idx}"
+
+
+def _format_hpc_instances(instances: list[dict[str, Any]]) -> str:
+    """Format HPC pod/component instances without platform handles."""
+    if not instances:
+        return "No HPC instances found."
+
+    rendered = []
+    for idx, inst in enumerate(instances, start=1):
+        rendered.append(
+            {
+                "name": _hpc_instance_name(inst, idx),
+                "status": scrub_raw_ids(inst.get("status") or inst.get("instance_status") or ""),
+                "component": scrub_raw_ids(inst.get("component") or inst.get("type") or ""),
+                "node": scrub_raw_ids(inst.get("node") or inst.get("node_name") or ""),
+                "created": human_formatter.format_epoch(inst.get("created_at")),
+            }
+        )
+
+    name_w = max(len("Instance"), *(len(row["name"]) for row in rendered))
+    status_w = max(len("Status"), *(len(row["status"]) for row in rendered))
+    component_w = max(len("Component"), *(len(row["component"]) for row in rendered))
+    node_w = max(len("Node"), *(len(row["node"]) for row in rendered))
+    header = (
+        f"{'Instance':<{name_w}} {'Status':<{status_w}} "
+        f"{'Component':<{component_w}} {'Node':<{node_w}} Created"
+    )
+    sep = "-" * len(header)
+    lines = ["HPC Instances", header, sep]
+    for row in rendered:
+        lines.append(
+            f"{row['name']:<{name_w}} "
+            f"{row['status']:<{status_w}} "
+            f"{row['component']:<{component_w}} "
+            f"{row['node']:<{node_w}} "
+            f"{row['created']}"
+        )
+    lines.append(sep)
+    lines.append(f"Total: {len(instances)} instance(s)")
     return "\n".join(lines)
 
 
@@ -323,8 +417,8 @@ def create_hpc(
     ctx: Context,
     name: str,
     entrypoint: str,
-    compute_group: str,
-    quota: str,
+    compute_group: Optional[str],
+    quota: Optional[str],
     project: Optional[str],
     workspace: Optional[str],
     profile_name: Optional[str],
@@ -373,11 +467,11 @@ def create_hpc(
                 "quota": quota,
             },
         )
-        workspace = fields["workspace"]
-        project = fields["project"]
-        compute_group = fields["group"]
-        image = fields["image"]
-        quota = fields["quota"]
+        workspace = cast(Optional[str], fields["workspace"])
+        project = cast(Optional[str], fields["project"])
+        compute_group = cast(Optional[str], fields["group"])
+        image = cast(Optional[str], fields["image"])
+        quota = cast(Optional[str], fields["quota"])
 
         for field_name, value in (
             ("workspace", workspace),
@@ -394,6 +488,12 @@ def create_hpc(
                     EXIT_CONFIG_ERROR,
                 )
                 return
+
+        workspace = cast(str, workspace)
+        project = cast(str, project)
+        compute_group = cast(str, compute_group)
+        image = cast(str, image)
+        quota = cast(str, quota)
 
         resolved_project_id = _resolve_project_id(config, project)
         session = get_web_session()
@@ -488,7 +588,22 @@ def create_hpc(
             return
 
         assert api is not None
-        result = api.create_hpc_job(**create_kwargs)
+        result = api.create_hpc_job(
+            name=name,
+            logic_compute_group_id=resolved_compute_group_id,
+            project_id=resolved_project_id,
+            workspace_id=resolved_workspace_id,
+            image=final_image,
+            image_type=image_type,
+            entrypoint=entrypoint,
+            spec_id=spec_id,
+            instance_count=instance_count,
+            task_priority=final_priority,
+            number_of_tasks=number_of_tasks,
+            cpus_per_task=cpus_per_task,
+            memory_per_cpu=memory_per_cpu,
+            enable_hyper_threading=enable_hyper_threading,
+        )
 
         data = _extract_data(result)
         if ctx.json_output:
@@ -556,6 +671,58 @@ def status_hpc(ctx: Context, name: str) -> None:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except InspireAPIError as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("instances")
+@click.argument("name")
+@click.option(
+    "--workspace",
+    required=True,
+    help="Workspace name. Required; -A is not accepted.",
+)
+@click.option(
+    "--num",
+    type=click.IntRange(1),
+    default=500,
+    show_default=True,
+    help="Maximum HPC jobs to scan while resolving the name and maximum instances to query.",
+)
+@pass_context
+def instances_hpc(ctx: Context, name: str, workspace: str, num: int) -> None:
+    """List pod/component instances for an HPC job."""
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        job_id = _resolve_hpc_name_in_workspace(
+            ctx,
+            config=config,
+            session=session,
+            name=name,
+            workspace=workspace,
+            num=num,
+        )
+        rows, total = browser_api_module.list_hpc_job_instances(
+            job_id,
+            num=num,
+            session=session,
+        )
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {"source": "web", "job_id": job_id, "instances": rows, "total": total}
+                )
+            )
+            return
+
+        click.echo(_format_hpc_instances(rows))
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except (SessionExpiredError, ValueError) as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
@@ -673,4 +840,12 @@ def delete_hpc(ctx: Context, name: str, yes: bool, pick: Optional[int]) -> None:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
-__all__ = ["list_hpc", "create_hpc", "status_hpc", "hpc_id", "stop_hpc", "delete_hpc"]
+__all__ = [
+    "list_hpc",
+    "create_hpc",
+    "status_hpc",
+    "instances_hpc",
+    "hpc_id",
+    "stop_hpc",
+    "delete_hpc",
+]

@@ -493,8 +493,9 @@ def test_list_ray_job_instances_posts_expected_body(monkeypatch) -> None:
         record,
     )
 
-    instances = list_ray_job_instances("rj-abc", session=_FakeSession())
+    instances, total = list_ray_job_instances("rj-abc", num=25, session=_FakeSession())
 
+    assert total == 2
     assert len(instances) == 2
     assert instances[0]["instance_type"] == "head"
     assert instances[1]["worker_group_name"] == "w"
@@ -502,10 +503,15 @@ def test_list_ray_job_instances_posts_expected_body(monkeypatch) -> None:
     assert record["body"] == {
         "ray_job_id": "rj-abc",
         "page_num": 1,
-        "page_size": -1,
+        "page_size": 25,
     }
 
 
 def test_list_ray_job_instances_rejects_empty_id() -> None:
     with pytest.raises(ValueError, match="ray_job_id is required"):
         list_ray_job_instances("", session=_FakeSession())
+
+
+def test_list_ray_job_instances_rejects_non_positive_num() -> None:
+    with pytest.raises(ValueError, match="num must be positive"):
+        list_ray_job_instances("rj-abc", num=0, session=_FakeSession())

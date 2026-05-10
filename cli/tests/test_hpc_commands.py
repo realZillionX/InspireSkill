@@ -387,6 +387,79 @@ def test_hpc_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert "workspace_id" not in payload["data"]["jobs"][0]
 
 
+def test_hpc_instances_requires_workspace_and_uses_num(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    runner = CliRunner()
+    captured: dict[str, Any] = {}
+
+    from inspire.cli.commands.hpc import hpc_commands as hpc_cmd_module
+
+    def fake_list_hpc_jobs(**kwargs):  # noqa: ANN001
+        captured["resolve"] = kwargs
+        return (
+            [
+                HPCJobInfo(
+                    job_id="hpc-job-001",
+                    name="prep",
+                    status="RUNNING",
+                    entrypoint="srun python prep.py",
+                    created_at="1770000000",
+                    finished_at=None,
+                    created_by_name="tester",
+                    created_by_id="user-1",
+                    project_id="project-1",
+                    project_name="Project 1",
+                    compute_group_name="CPU资源-2",
+                    workspace_id=kwargs["workspace_id"],
+                )
+            ],
+            1,
+        )
+
+    def fake_list_hpc_job_instances(job_id, *, num, session):  # noqa: ANN001
+        captured["instances"] = {"job_id": job_id, "num": num, "session": session}
+        return (
+            [
+                {
+                    "name": "launcher",
+                    "component": "launcher",
+                    "status": "Running",
+                    "node": "cpu-node-a",
+                    "created_at": 1770000000,
+                }
+            ],
+            1,
+        )
+
+    monkeypatch.setattr(hpc_cmd_module.browser_api_module, "list_hpc_jobs", fake_list_hpc_jobs)
+    monkeypatch.setattr(
+        hpc_cmd_module.browser_api_module,
+        "list_hpc_job_instances",
+        fake_list_hpc_job_instances,
+    )
+
+    missing_workspace = runner.invoke(cli_main, ["hpc", "instances", "prep"])
+    assert missing_workspace.exit_code != 0
+    assert "Missing option '--workspace'" in missing_workspace.output
+
+    result = runner.invoke(
+        cli_main,
+        ["hpc", "instances", "prep", "--workspace", "cpu-room", "--num", "42"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["resolve"]["workspace_id"] == "ws-00000000-0000-0000-0000-000000000002"
+    assert captured["resolve"]["created_by"] == "user-1"
+    assert captured["resolve"]["page_num"] == 1
+    assert captured["resolve"]["page_size"] == 42
+    assert captured["instances"]["job_id"] == "hpc-job-001"
+    assert captured["instances"]["num"] == 42
+    assert "HPC Instances" in result.output
+    assert "launcher" in result.output
+
+
 def test_hpc_stop_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     api = patch_hpc_config_and_auth(monkeypatch, tmp_path)
     runner = CliRunner()

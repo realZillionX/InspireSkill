@@ -49,7 +49,7 @@ from inspire.cli.utils.job_submit import derive_remote_log_glob
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import SessionExpiredError, WebSession, get_web_session
 
 from .job_commands import WebJobResolutionError, _close_web_client, _resolve_web_job_id
 
@@ -147,7 +147,7 @@ def _follow_logs_via_web(
     start_ms: int,
     tail_lines: int,
     page_size: int,
-    session: object,
+    session: WebSession,
     poll_interval: float = 2.0,
 ) -> None:
     seen: set[tuple[int, str, str, str]] = set()

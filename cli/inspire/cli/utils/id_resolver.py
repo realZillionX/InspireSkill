@@ -105,7 +105,7 @@ def resolve_partial_id(
 
 
 # ---------------------------------------------------------------------------
-# name → id resolver (for job / hpc / ray / serving / image, etc.)
+# name-to-handle resolver (for job / hpc / ray / serving / image, etc.)
 # ---------------------------------------------------------------------------
 
 
@@ -250,7 +250,7 @@ def resolve_by_name(
 
 
 def _looks_like_platform_id(value: str) -> bool:
-    """Heuristic for id-shaped inputs rejected at the CLI boundary.
+    """Heuristic for handle-shaped inputs rejected at the CLI boundary.
 
     Catches the common prefixes (``job-`` / ``hpc-job-`` / ``rj-`` / ``sv-``
     / ``image-`` / ``notebook-`` / ``nb-``) and bare full UUIDs.

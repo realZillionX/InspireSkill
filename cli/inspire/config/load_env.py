@@ -73,7 +73,6 @@ def config_from_env() -> Config:
         github_repo=os.getenv("INSP_GITHUB_REPO"),
         github_token=os.getenv("INSP_GITHUB_TOKEN") or os.getenv("GITHUB_TOKEN"),
         github_server=os.getenv("INSP_GITHUB_SERVER", "https://github.com"),
-        github_log_workflow=os.getenv("INSP_GITHUB_LOG_WORKFLOW", "retrieve_job_log.yml"),
         github_sync_workflow=os.getenv("INSP_GITHUB_SYNC_WORKFLOW", "sync_code.yml"),
         github_bridge_workflow=os.getenv("INSP_GITHUB_BRIDGE_WORKFLOW", "run_bridge_action.yml"),
         log_cache_dir=log_cache_dir,

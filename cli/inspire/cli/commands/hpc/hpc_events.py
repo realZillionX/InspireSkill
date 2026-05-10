@@ -1,7 +1,7 @@
-"""`inspire hpc events <name>` — platform events for an HPC (Slurm) job.
+"""`inspire hpc events <name>` — job-level platform events for an HPC job.
 
-HPC currently exposes job-level events only, so there is no ``--instance``
-flag. The useful fields are reason, message, and first / last timestamp.
+Use `inspire hpc instances <name> --workspace <workspace>` for the
+pod/component inventory. Events remain scoped to the HPC job object.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def events(
     reason_filter: Optional[str],
     tail: Optional[int],
 ) -> None:
-    """Show platform events for an HPC job (job-level only; platform doesn't expose per-pod).
+    """Show job-level platform events for an HPC job.
 
     \b
     Examples:

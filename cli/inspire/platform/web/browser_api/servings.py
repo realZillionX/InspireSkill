@@ -89,14 +89,13 @@ class ServingInfo:
 def _merge_filter(
     filter_by: Optional[dict[str, Any]],
     *,
-    my_serving: bool,
     keyword: Optional[str] = None,
     project_ids: Optional[Iterable[str]] = None,
     statuses: Optional[Iterable[str]] = None,
     serving_types: Optional[Iterable[str]] = None,
 ) -> dict[str, Any]:
     merged = dict(filter_by or {})
-    merged.setdefault("my_serving", my_serving)
+    merged["my_serving"] = True
     if keyword:
         merged["keyword"] = keyword
     if project_ids:
@@ -117,7 +116,6 @@ def _merge_filter(
 def list_servings(
     workspace_id: Optional[str] = None,
     *,
-    my_serving: bool = True,
     page: int = 1,
     page_size: int = 20,
     filter_by: Optional[dict[str, Any]] = None,
@@ -129,8 +127,7 @@ def list_servings(
 ) -> tuple[list[ServingInfo], int]:
     """List inference servings via `POST /api/v1/inference_servings/list`.
 
-    Returns `(items, total)`. `my_serving=True` mirrors the UI's "我的部署"
-    default; pass `False` to see the workspace-wide "全部部署" view.
+    Returns `(items, total)`. The CLI always mirrors the UI's personal view.
     """
     session, workspace_id = _resolve_workspace(workspace_id, session)
     body = {
@@ -138,7 +135,6 @@ def list_servings(
         "page_size": page_size,
         "filter_by": _merge_filter(
             filter_by,
-            my_serving=my_serving,
             keyword=keyword,
             project_ids=project_ids,
             statuses=statuses,

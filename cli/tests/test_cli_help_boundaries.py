@@ -17,20 +17,21 @@ def test_job_logs_help_positions_web_as_fallback() -> None:
     assert "Fallback: read platform aggregated logs" in output
 
 
-def test_job_instances_help_uses_required_workspace_and_num() -> None:
-    result = CliRunner().invoke(cli_main, ["job", "instances", "--help"])
-    output = _one_line(result.output)
+def test_instances_help_uses_required_workspace_and_num() -> None:
+    for group in ("job", "ray", "hpc"):
+        result = CliRunner().invoke(cli_main, [group, "instances", "--help"])
+        output = _one_line(result.output)
 
-    assert result.exit_code == 0
-    assert "--workspace TEXT" in result.output
-    assert "Required; -A is not accepted" in output
-    assert "--num INTEGER" in result.output
-    assert "--web" not in result.output
-    assert "--all-workspaces" not in result.output
-    assert "--all-users" not in result.output
-    assert "--page-num" not in result.output
-    assert "--page-size" not in result.output
-    assert "--max-pages" not in result.output
+        assert result.exit_code == 0
+        assert "--workspace TEXT" in result.output
+        assert "Required; -A is not accepted" in output
+        assert "--num INTEGER" in result.output
+        assert "--web" not in result.output
+        assert "--all-workspaces" not in result.output
+        assert "--all-users" not in result.output
+        assert "--page-num" not in result.output
+        assert "--page-size" not in result.output
+        assert "--max-pages" not in result.output
 
 
 def test_resources_nodes_help_prefers_min_nodes_wording() -> None:

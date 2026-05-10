@@ -388,11 +388,11 @@ def create_notebook_and_report(
             _handle_error(
                 ctx,
                 "APIError",
-                f"Notebook '{name}' was submitted, but the platform response did not expose a usable notebook handle.",
+                f"Notebook '{name}' was submitted, but the CLI could not find the created notebook by name.",
                 EXIT_API_ERROR,
                 hint=_format_create_diagnostics(
                     diagnostics,
-                    reason="Create API response did not include a notebook handle, and live lookup by name did not find the new notebook.",
+                    reason="Create API response could not be matched to the new notebook by name.",
                 ),
             )
             return None

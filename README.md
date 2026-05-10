@@ -155,7 +155,7 @@ inspire resources list --all --include-cpu
 <tr>
   <td width="50%">
     <h4>📈 指标、事件 & 生命周期</h4>
-    <code>notebook metrics</code> / <code>job metrics</code> / <code>hpc metrics</code> / <code>serving metrics</code> 读取平台 <code>资源视图</code> 的历史时间序列，默认输出 PNG 趋势图，<code>--no-plot --sparkline</code> 适合终端快速判断；<code>job events</code> / <code>hpc events</code> / <code>notebook events</code> / <code>ray events</code> 拉平台事件流，<code>notebook lifecycle &lt;name&gt;</code> 看一个实例的多次启停记录。
+    <code>notebook metrics</code> / <code>job metrics</code> / <code>hpc metrics</code> / <code>serving metrics</code> 读取平台 <code>资源视图</code> 的历史时间序列，默认输出 PNG 趋势图，<code>--no-plot --sparkline</code> 适合终端快速判断；<code>job events</code> / <code>hpc events</code> / <code>notebook events</code> / <code>ray events</code> 拉平台事件流，<code>job instances</code> / <code>hpc instances</code> / <code>ray instances</code> 看 live pod / component 清单，<code>notebook lifecycle &lt;name&gt;</code> 看一个实例的多次启停记录。
   </td>
   <td width="50%">
     <h4>🗝 多账号（一账号一目录）</h4>

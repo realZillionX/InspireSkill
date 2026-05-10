@@ -3,9 +3,9 @@
 Structured pieces of the loaded config (active account, projects,
 workspaces, compute groups) aren't reachable through ``inspire config
 show``, which is focused on the flat env-var-backed options. This command
-fills that gap with a **name-only** view: every workspace, project, and
-compute group is identified by its platform name (``CI-情境智能``,
-``H200-3号机房``), not by a short alias or a raw ``ws-…`` ID. Agents feed
+    fills that gap with a **name-only** view: every workspace, project, and
+    compute group is shown by its platform name (``CI-情境智能``,
+    ``H200-3号机房``), not by a short alias or platform handle. Agents feed
 those names straight back into ``--workspace`` / ``--project`` / ``--group``
 flags without ever needing to touch config.toml.
 """

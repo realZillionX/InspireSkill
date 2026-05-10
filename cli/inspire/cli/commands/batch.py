@@ -12,7 +12,7 @@ import click
 try:  # pragma: no cover - Python 3.11 path
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
-    import tomli as tomllib  # type: ignore[no-redef]
+    import tomli as tomllib
 
 from inspire.cli.context import (
     Context,
@@ -573,7 +573,7 @@ def _submit_notebook_plan(plan: dict[str, Any], *, config: Config, session: Any)
     if wait and not notebook_id:
         raise ConfigError(
             f"Notebook {plan['name']!r} was submitted, but the platform response did not "
-            "expose a usable notebook handle for wait/post_start."
+            "let the CLI find the created notebook by name for wait/post_start."
         )
     if wait:
         browser_api_module.wait_for_notebook_running(

@@ -37,11 +37,7 @@ inspire --json notebook connections --no-check \
   | jq -r '.data.bridges[] | select(.name == "<name>").proxy_url'
 ```
 
-把模板里的 `/proxy/<cached-port>/` 改成服务端口 `/proxy/<container-port>/`，再追加服务路径。例如容器内 OpenAI-compatible 服务监听 `30000` 时，base URL 可写成：
-
-```text
-https://<notebook-domain>/ws-.../<jupyter|vscode>/<notebook-id>/<token>/proxy/30000/v1
-```
+把模板里的 `/proxy/<cached-port>/` 改成服务端口 `/proxy/<container-port>/`，再追加服务路径。不要手写 URL 里其它路径段；它们由平台和连接缓存生成。例如容器内 OpenAI-compatible 服务监听 `30000` 时，把模板中的 proxy 端口替换为 `30000` 后，在末尾追加 `/v1`。
 
 浏览器类服务直接访问对应路径；SDK 类服务把它填成 base URL。
 

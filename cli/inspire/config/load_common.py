@@ -37,7 +37,6 @@ def _default_config_values() -> dict[str, Any]:
         "github_repo": None,
         "github_token": None,
         "github_server": "https://github.com",
-        "github_log_workflow": "retrieve_job_log.yml",
         "github_sync_workflow": "sync_code.yml",
         "github_bridge_workflow": "run_bridge_action.yml",
         "log_cache_dir": "~/.inspire/logs",

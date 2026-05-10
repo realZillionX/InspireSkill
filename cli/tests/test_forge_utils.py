@@ -247,10 +247,3 @@ class TestHelperFunctions:
         runs_empty = [{"event_payload": "", "id": 3}]
         result = _find_run_by_inputs(runs_empty, {"request_id": "req-1"})
         assert result is None
-
-    def test_artifact_name(self):
-        """Test _artifact_name generates correct format."""
-        from inspire.bridge.forge import _artifact_name
-
-        result = _artifact_name("job-123", "req-456")
-        assert result == "job-job-123-log-req-456"

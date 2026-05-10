@@ -395,10 +395,9 @@ def list_ray_job_events(
 def list_ray_job_instances(
     ray_job_id: str,
     *,
-    page_num: int = 1,
-    page_size: int = -1,
+    num: int = 500,
     session: Optional[WebSession] = None,
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     """Fetch the pod-level view of a Ray job (head + worker instances).
 
     Each entry is a K8s pod-like record: ``instance_id`` / ``instance_type``
@@ -411,6 +410,8 @@ def list_ray_job_instances(
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
         raise ValueError("ray_job_id is required")
+    if num < 1:
+        raise ValueError("num must be positive")
 
     if session is None:
         session = get_web_session()
@@ -423,15 +424,25 @@ def list_ray_job_instances(
             referer=_ray_referer(),
             body={
                 "ray_job_id": ray_job_id,
-                "page_num": page_num,
-                "page_size": page_size,
+                "page_num": 1,
+                "page_size": num,
             },
             timeout=30,
         ),
         context="instances",
     )
     payload = data.get("data") or {}
-    return payload.get("items") or payload.get("list") or []
+    items = payload.get("items")
+    if not isinstance(items, list):
+        items = payload.get("list")
+    if not isinstance(items, list):
+        items = []
+    total_raw = payload.get("total")
+    try:
+        total = int(str(total_raw)) if total_raw is not None else len(items)
+    except ValueError:
+        total = len(items)
+    return [item for item in items if isinstance(item, dict)], total
 
 
 def list_ray_job_scaling_histories(

@@ -48,8 +48,7 @@ def test_list_hpc_job_instances_posts_job_id_body(monkeypatch: pytest.MonkeyPatc
 
     items, total = list_hpc_job_instances(
         "hpc-job-123",
-        page_num=2,
-        page_size=25,
+        num=25,
         session=_FakeSession(),
     )
 
@@ -59,9 +58,19 @@ def test_list_hpc_job_instances_posts_job_id_body(monkeypatch: pytest.MonkeyPatc
     assert record["url"].endswith("/hpc_jobs/instances/list")
     assert record["body"] == {
         "jobId": "hpc-job-123",
-        "page_num": 2,
+        "page_num": 1,
         "page_size": 25,
     }
+
+
+def test_list_hpc_job_instances_rejects_empty_id() -> None:
+    with pytest.raises(ValueError, match="job_id is required"):
+        list_hpc_job_instances("", session=_FakeSession())
+
+
+def test_list_hpc_job_instances_rejects_non_positive_num() -> None:
+    with pytest.raises(ValueError, match="num must be positive"):
+        list_hpc_job_instances("hpc-job-123", num=0, session=_FakeSession())
 
 
 def test_list_hpc_job_logs_omits_sorter(monkeypatch: pytest.MonkeyPatch) -> None:
