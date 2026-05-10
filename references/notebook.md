@@ -1,6 +1,6 @@
 # Notebook 工作流
 
-创建、连接、执行、传文件，或在 notebook 内准备基底环境时，先查本手册。镜像保存、注册、默认值和可见性看 [image-management.md](image-management.md)；workspace、compute group、quota 和 path alias 概念看 [resources-and-paths.md](resources-and-paths.md)。如果任务是把容器内 HTTP 服务暴露给浏览器或 SDK，单独看 [notebook-service-proxy.md](notebook-service-proxy.md)。
+创建、连接、执行、传文件，或在 notebook 内准备基底环境时，先查本手册。镜像保存、注册和可见性看 [image-management.md](image-management.md)；workspace、compute group、quota、workload profile 和 path alias 概念看 [resources-and-paths.md](resources-and-paths.md)。如果任务是把容器内 HTTP 服务暴露给浏览器或 SDK，单独看 [notebook-service-proxy.md](notebook-service-proxy.md)。
 
 ## 1. CLI help 查询
 
@@ -80,7 +80,7 @@ inspire notebook metrics <name> --metric gpu,gpu_mem,cpu,mem --sparkline --no-pl
 | 文件流转类型 | 做法 |
 | --- | --- |
 | 独立 repo 日常同步 | 本地 `git push`，远端 `git pull` |
-| 多仓库工作区 | 通过 `inspire init --discover` 配好 `me`，多个 repo 并列放在 `me:<repo>` |
+| 多仓库工作区 | 通过 `inspire init` 配好 `me`，多个 repo 并列放在 `me:<repo>` |
 | 非 Git 文件 | `notebook scp`，远端路径优先写 path alias，例如 `me:<repo>/file` |
 | 目标计算组不可上网但共享路径可见 | 在同一路径的可上网区 notebook 做 git 操作，离线训练实例只读共享盘结果 |
 
@@ -121,7 +121,7 @@ du -sh --max-depth=1 <dir>
 
 ## 6. 基底 notebook 与镜像
 
-项目刚开始时，建议在可上网 CPU 空间用统一基底镜像起一个基底 notebook，把 Slurm、Ray、分布式训练依赖和项目依赖一次性装好。本文只描述 notebook 内部准备和验证；固化为镜像、设置默认镜像和可见性由 [image-management.md](image-management.md) 负责。
+项目刚开始时，建议在可上网 CPU 空间用统一基底镜像起一个基底 notebook，把 Slurm、Ray、分布式训练依赖和项目依赖一次性装好。本文只描述 notebook 内部准备和验证；固化为镜像、写入对应 workload profile 和可见性由 [image-management.md](image-management.md) 负责。
 
 > 下述示例中的 `<GROUP>`、`<WORKSPACE>`、`<IMAGE_URL>` 仅为占位格式。实际值以 `inspire resources specs` 和 `inspire config context` 的实时输出为准。
 
@@ -134,7 +134,7 @@ inspire notebook ssh cpu-box
 inspire notebook exec cpu-box "apt-get update && apt-get install -y <deps> && pip install <pkgs>"
 ```
 
-依赖验证通过后，转到 [image-management.md](image-management.md) 执行 `image save`、确认 `READY`，再按项目需要设置默认镜像。
+依赖验证通过后，转到 [image-management.md](image-management.md) 执行 `image save`、确认 `READY`，再按项目需要把镜像名写入对应 workload profile，或在创建命令中显式传 `--image`。
 
 已有 Ubuntu 镜像需要补 Slurm/Ray 依赖时：
 

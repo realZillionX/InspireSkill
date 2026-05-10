@@ -191,7 +191,11 @@ def _resolve_query_workspaces(
     from the names internally — they never surface to the caller.
     """
     if explicit_workspace:
-        resolved = select_workspace_id(config, explicit_workspace_name=explicit_workspace)
+        resolved = select_workspace_id(
+            config,
+            explicit_workspace_name=explicit_workspace,
+            session=session,
+        )
         if not resolved:
             return [explicit_workspace]
         names = getattr(session, "all_workspace_names", None) or {}
@@ -207,7 +211,7 @@ def _resolve_query_workspaces(
 def _name_to_id(session, config: Config, ws_name: str) -> str:  # noqa: ANN001
     """Map a workspace name back to its UUID for API calls."""
     try:
-        resolved = select_workspace_id(config, explicit_workspace_name=ws_name)
+        resolved = select_workspace_id(config, explicit_workspace_name=ws_name, session=session)
         if resolved:
             return resolved
     except ConfigError:
@@ -224,7 +228,7 @@ def _name_to_id(session, config: Config, ws_name: str) -> str:  # noqa: ANN001
     "--workspace",
     default=None,
     help=(
-        "Workspace name (from [workspaces]). Omit to sweep every workspace " "the account can see."
+        "Workspace name. Omit to sweep every workspace " "the account can see."
     ),
 )
 @click.option("--group", default=None, help="Filter by compute group name (partial match)")
@@ -259,7 +263,7 @@ def list_specs(
     Each row carries human-readable names (workspace, compute group,
     GPU type) plus the (gpu, cpu, memory) triple. Feed the triple back
     via ``--quota gpu,cpu,mem`` to ``inspire notebook create`` /
-    ``job create`` / ``run`` / ``serving create`` /
+    ``job create`` / ``serving create`` /
     ``ray create --head-quota`` / ``--worker quota=...``.
     """
 
@@ -330,7 +334,7 @@ def list_specs(
             aligns = ["left", "left", "left", "right", "right"]
 
         click.echo("")
-        click.echo("Resource Specs (for notebook / job / serving / hpc / ray / run create)")
+        click.echo("Resource Specs (for notebook / job / serving / hpc / ray create)")
         table_rows = []
         for row in rows:
             gpu_desc = f"{row['gpu_count']}x{row['gpu_type'] or 'CPU'}"
@@ -373,7 +377,7 @@ def list_specs(
         click.echo(f"Total specs: {len(rows)}")
         if usage == "hpc":
             click.echo(
-                "Pass --compute-group <name>, --cpus-per-task <n>, --memory-per-cpu <n> "
+                "Pass --group <name>, --cpus-per-task <n>, --memory-per-cpu <n> "
                 "to `inspire hpc create`."
             )
         elif usage == "ray":
@@ -385,7 +389,7 @@ def list_specs(
         elif usage == "notebook":
             click.echo(
                 "Pick a row and pass its (gpu, cpu, memory_size_gib) triple as "
-                "--quota gpu,cpu,mem to `inspire notebook create` (or `job create` / `run`)."
+                "--quota gpu,cpu,mem to `inspire notebook create` or `job create`."
             )
         click.echo("")
 

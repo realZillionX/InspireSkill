@@ -24,6 +24,22 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 
 
+NOTEBOOK_CREATE_REQUIRED_ARGS = [
+    "--name",
+    "test-notebook",
+    "--workspace",
+    "cpu",
+    "--project",
+    "proj",
+    "--image",
+    "registry.local/notebook:latest",
+    "--group",
+    "H200 Room",
+    "--quota",
+    "1,20,200",
+]
+
+
 def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> config_module.Config:
     config = config_module.Config(
         username="user",
@@ -57,6 +73,55 @@ from inspire.cli.commands.notebook import notebook_lookup as _NBL_MOD  # noqa: E
 _REAL_RESOLVE_NOTEBOOK_ID = _NBL_MOD._resolve_notebook_id
 
 
+def test_current_user_id_uses_live_user_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeSession:
+        user_detail = {"id": "cached-user"}
+
+        def save(self) -> None:
+            self.saved = True
+
+    calls: list[tuple[str, str]] = []
+
+    def _fake_request_json(session, method, url, **kwargs):  # noqa: ANN001
+        calls.append((method, url))
+        return {"data": {"id": "live-user"}}
+
+    monkeypatch.setattr(_NBL_MOD.web_session_module, "request_json", _fake_request_json)
+
+    session = _FakeSession()
+    assert _NBL_MOD._try_get_current_user_ids(session, base_url="https://example.invalid") == [
+        "live-user"
+    ]
+    assert session.user_detail == {"id": "live-user"}
+    assert getattr(session, "saved", False) is True
+    assert calls == [("GET", "https://example.invalid/api/v1/user/detail")]
+
+
+def test_current_user_detail_uses_live_user_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeSession:
+        user_detail = {"id": "cached-user"}
+
+        def save(self) -> None:
+            self.saved = True
+
+    def _fake_request_json(session, method, url, **kwargs):  # noqa: ANN001
+        return {"data": {"id": "live-user", "name": "Live"}}
+
+    monkeypatch.setattr(_NBL_MOD.web_session_module, "request_json", _fake_request_json)
+
+    session = _FakeSession()
+    assert _NBL_MOD._get_current_user_detail(
+        session,
+        base_url="https://example.invalid",
+    ) == {"id": "live-user", "name": "Live"}
+    assert session.user_detail == {"id": "live-user", "name": "Live"}
+    assert getattr(session, "saved", False) is True
+
+
 def test_resolve_notebook_id_propagates_listing_errors(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -77,7 +142,6 @@ def test_resolve_notebook_id_propagates_listing_errors(
         pass
 
     config = make_test_config(tmp_path)
-    config.workspaces = {"cpu": "ws-77777777-7777-7777-7777-777777777777"}
 
     class _FakeSession:
         workspace_id = "ws-77777777-7777-7777-7777-777777777777"
@@ -91,6 +155,7 @@ def test_resolve_notebook_id_propagates_listing_errors(
         raise _BoomError("platform 503")
 
     monkeypatch.setattr(_NBL_MOD, "_list_notebooks_for_workspaces", _exploding_lister)
+    monkeypatch.setattr(_NBL_MOD, "_try_get_current_user_ids", lambda *args, **kwargs: ["user-1"])
 
     ctx = Context()
     with pytest.raises(_BoomError, match="platform 503"):
@@ -115,7 +180,6 @@ def test_resolve_notebook_id_retries_until_eventual_consistency_settles(
     monkeypatch.setattr(_NBL_MOD, "_resolve_notebook_id", _REAL_RESOLVE_NOTEBOOK_ID)
 
     config = make_test_config(tmp_path)
-    config.workspaces = {"cpu": "ws-77777777-7777-7777-7777-777777777777"}
 
     class _FakeSession:
         workspace_id = "ws-77777777-7777-7777-7777-777777777777"
@@ -142,6 +206,7 @@ def test_resolve_notebook_id_retries_until_eventual_consistency_settles(
 
     monkeypatch.setattr(_time, "sleep", lambda *_: None)
     monkeypatch.setattr(_NBL_MOD, "_list_notebooks_for_workspaces", _eventually_consistent_lister)
+    monkeypatch.setattr(_NBL_MOD, "_try_get_current_user_ids", lambda *args, **kwargs: ["user-1"])
 
     ctx = Context()
     notebook_id, ws_id = _NBL_MOD._resolve_notebook_id(
@@ -192,39 +257,6 @@ def test_notebook_connections_reads_active_account_cache(
     assert "test-nb" in result.output
 
 
-def test_run_watch_invokes_logs_subcommand_with_name_not_id(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """`inspire run --watch` re-execs ``inspire job logs <name> --follow``.
-
-    v2 names-only at user boundary; the watch path was historically using
-    the raw ``job_id`` returned from create, which the resolver would
-    reject on the next process. Codex caught this in its review. We don't
-    plug into the full create flow — we exercise the single call site
-    that fwd's args to ``os.execv`` and assert it gets a name-shaped
-    string, not a ``job-`` id.
-    """
-    import importlib
-
-    run_mod = importlib.import_module("inspire.cli.commands.run")
-
-    captured: dict[str, list[str]] = {}
-
-    def _capture_subcommand(args: list[str]) -> None:
-        captured["args"] = list(args)
-        raise SystemExit(0)  # avoid actual os.execv
-
-    monkeypatch.setattr(run_mod, "_exec_inspire_subcommand", _capture_subcommand)
-
-    name = "tight-iter-job"
-    with pytest.raises(SystemExit):
-        run_mod._exec_inspire_subcommand(["job", "logs", name, "--follow"])
-    assert captured.get("args") == ["job", "logs", name, "--follow"]
-    # Confirm we're not passing an id-shaped string (regression guard for
-    # the bug Codex flagged: previously this was `job_id`).
-    assert not captured["args"][2].startswith("job-")
-
-
 def test_notebook_create_accepts_priority_10(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
@@ -235,7 +267,10 @@ def test_notebook_create_accepts_priority_10(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(notebook_cmd_module, "run_notebook_create", fake_run_notebook_create)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "create", "--priority", "10"])
+    result = runner.invoke(
+        cli_main,
+        ["notebook", "create", *NOTEBOOK_CREATE_REQUIRED_ARGS, "--priority", "10"],
+    )
 
     assert result.exit_code == EXIT_SUCCESS
     assert captured["priority"] == 10
@@ -270,7 +305,10 @@ def test_notebook_create_accepts_post_start_command(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(notebook_cmd_module, "run_notebook_create", fake_run_notebook_create)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "create", "--post-start", "echo hi"])
+    result = runner.invoke(
+        cli_main,
+        ["notebook", "create", *NOTEBOOK_CREATE_REQUIRED_ARGS, "--post-start", "echo hi"],
+    )
 
     assert result.exit_code == EXIT_SUCCESS
     assert captured["post_start"] == "echo hi"
@@ -299,6 +337,7 @@ def test_notebook_create_rejects_post_start_and_script_together(
         [
             "notebook",
             "create",
+            *NOTEBOOK_CREATE_REQUIRED_ARGS,
             "--post-start",
             "echo hi",
             "--post-start-script",
@@ -321,12 +360,10 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
         log_cache_dir=str(tmp_path / "log_cache"),
-        workspaces={"a": ws_cpu, "b": ws_gpu},
         timeout=5,
         max_retries=0,
         retry_delay=0.0,
     )
-
     def fake_from_files_and_env(
         cls, require_credentials: bool = True
     ):  # type: ignore[override]
@@ -337,8 +374,10 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     )
 
     class FakeSession:
-        workspace_id = "ws-00000000-0000-0000-0000-000000000000"
+        workspace_id = ws_cpu
         storage_state = {}
+        all_workspace_ids = [ws_cpu, ws_gpu]
+        all_workspace_names = {ws_cpu: "a", ws_gpu: "b"}
 
     monkeypatch.setattr(web_session_module, "get_web_session", lambda: FakeSession())
 
@@ -416,12 +455,10 @@ def test_notebook_start_name_conflict_prompts_selection(
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
         log_cache_dir=str(tmp_path / "log_cache"),
-        workspaces={"a": ws_cpu, "b": ws_gpu},
         timeout=5,
         max_retries=0,
         retry_delay=0.0,
     )
-
     def fake_from_files_and_env(
         cls, require_credentials: bool = True
     ):  # type: ignore[override]
@@ -432,8 +469,10 @@ def test_notebook_start_name_conflict_prompts_selection(
     )
 
     class FakeSession:
-        workspace_id = "ws-00000000-0000-0000-0000-000000000000"
+        workspace_id = ws_cpu
         storage_state = {}
+        all_workspace_ids = [ws_cpu, ws_gpu]
+        all_workspace_names = {ws_cpu: "a", ws_gpu: "b"}
 
     monkeypatch.setattr(web_session_module, "get_web_session", lambda: FakeSession())
 
@@ -522,13 +561,11 @@ def test_notebook_start_warns_when_no_wait_conflicts_with_configured_post_start(
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
         log_cache_dir=str(tmp_path / "log_cache"),
-        workspaces={"a": ws_cpu, "b": ws_gpu},
         notebook_post_start="echo from config",
         timeout=5,
         max_retries=0,
         retry_delay=0.0,
     )
-
     def fake_from_files_and_env(
         cls, require_credentials: bool = True
     ):  # type: ignore[override]
@@ -539,8 +576,10 @@ def test_notebook_start_warns_when_no_wait_conflicts_with_configured_post_start(
     )
 
     class FakeSession:
-        workspace_id = "ws-00000000-0000-0000-0000-000000000000"
+        workspace_id = ws_cpu
         storage_state = {}
+        all_workspace_ids = [ws_cpu, ws_gpu]
+        all_workspace_names = {ws_cpu: "a", ws_gpu: "b"}
 
     monkeypatch.setattr(web_session_module, "get_web_session", lambda: FakeSession())
 

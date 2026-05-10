@@ -20,6 +20,7 @@ from inspire.config.toml import (
 
 from .load_common import _ProjectLayerState, _parse_alias_map
 from .path_aliases import normalize_path_alias_map
+from .workload_profiles import merge_workload_profiles, normalize_workload_profiles
 
 
 def _apply_project_layer(
@@ -55,6 +56,7 @@ def _apply_project_layer(
     project_compute_groups = project_raw.pop("compute_groups", [])
     project_remote_env = {str(k): str(v) for k, v in project_raw.pop("remote_env", {}).items()}
     project_path_aliases = normalize_path_alias_map(project_raw.pop("path_aliases", {}))
+    project_profiles = normalize_workload_profiles(project_raw.pop("profiles", {}))
     project_projects = _parse_alias_map(project_raw.pop("projects", {}))
     layer_state.project_projects = project_projects
 
@@ -67,10 +69,7 @@ def _apply_project_layer(
         raw_context.pop("account", None)
         layer_state.project_context = raw_context
 
-    project_workspaces: dict[str, str] = {}
-    raw_workspaces = project_raw.get("workspaces") or {}
-    if isinstance(raw_workspaces, dict):
-        project_workspaces = {str(k): str(v) for k, v in raw_workspaces.items()}
+    project_raw.pop("workspaces", None)
 
     flat_project = _flatten_toml(project_raw)
 
@@ -82,19 +81,21 @@ def _apply_project_layer(
     from inspire.config.schema import get_option_by_toml
 
     misplaced: list[str] = []
+    removed_defaults = {"notebook.quota"}
     for toml_key in flat_project:
+        if toml_key in removed_defaults:
+            misplaced.append(toml_key)
+            continue
         opt = get_option_by_toml(toml_key)
         if opt is not None and opt.scope == "global":
             misplaced.append(toml_key)
     if misplaced:
         raise ConfigError(
-            "Project config carries account-scope keys: "
-            f"{', '.join(misplaced)}. Move them to the active account's "
-            "config.toml (run `inspire init --discover` from inside the repo "
-            "to refresh project state, or `inspire account add` to (re)set "
-            "account-scope values). The project file should only contain "
-            "[paths] / [context] / [defaults] / [workspaces] / [projects] / "
-            "[compute_groups] / [remote_env] / [path_aliases] / [cli]."
+            "Project config carries account-scope keys or unsupported keys: "
+            f"{', '.join(misplaced)}. Refresh the file with `inspire init` "
+            "or remove those keys. The project file should only contain "
+            "[paths] / [context] / [defaults] / [projects] / "
+            "[compute_groups] / [remote_env] / [path_aliases] / [profiles] / [cli]."
         )
 
     for toml_key, value in flat_project.items():
@@ -114,6 +115,12 @@ def _apply_project_layer(
     if project_path_aliases:
         config_dict["path_aliases"] = project_path_aliases
         sources["path_aliases"] = SOURCE_PROJECT
+    if project_profiles:
+        config_dict["profiles"] = merge_workload_profiles(
+            config_dict.get("profiles", {}),
+            project_profiles,
+        )
+        sources["profiles"] = SOURCE_PROJECT
 
     # Merge project alias maps on top of account-level ones (project wins).
     if project_projects:
@@ -121,12 +128,6 @@ def _apply_project_layer(
         merged_projects.update(project_projects)
         config_dict["projects"] = merged_projects
         sources["projects"] = SOURCE_PROJECT
-    if project_workspaces:
-        merged_workspaces = dict(config_dict.get("workspaces", {}))
-        merged_workspaces.update(project_workspaces)
-        config_dict["workspaces"] = merged_workspaces
-        sources["workspaces"] = SOURCE_PROJECT
-
     return layer_state
 
 

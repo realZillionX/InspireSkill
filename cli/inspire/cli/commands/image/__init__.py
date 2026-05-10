@@ -7,7 +7,6 @@ Usage:
     inspire image save <notebook-name> -n "name" [--public|--private]
     inspire image set-visibility <name> --public|--private
     inspire image delete <name>
-    inspire image set-default --job <name> --notebook <name>
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from .image_commands import (
     list_images_cmd,
     register_image_cmd,
     save_image_cmd,
-    set_default_image_cmd,
     set_image_visibility_cmd,
 )
 
@@ -37,7 +35,6 @@ def image():
         inspire image save <notebook-name> -n shared --public
         inspire image set-visibility <name> --public    # Flip visibility
         inspire image register -n my-img -v v1.0        # Register external image
-        inspire image set-default --job my-pytorch      # Set default image
     """
     pass
 
@@ -48,4 +45,3 @@ image.add_command(register_image_cmd)
 image.add_command(save_image_cmd)
 image.add_command(set_image_visibility_cmd)
 image.add_command(delete_image_cmd)
-image.add_command(set_default_image_cmd)

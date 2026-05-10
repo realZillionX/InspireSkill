@@ -37,6 +37,7 @@ from inspire.cli.utils.quota_resolver import (
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
+from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NotebookFailedError
@@ -45,6 +46,7 @@ from .notebook_lookup import (
     _list_notebooks_for_workspace,
     _notebook_id_from_item,
     _sort_notebook_items,
+    _try_get_current_user_ids,
 )
 
 
@@ -79,7 +81,6 @@ def _workspace_label(
     *,
     workspace_id: str,
     session: WebSession,
-    config: Config,
     requested_workspace: str | None,
 ) -> str:
     if requested_workspace:
@@ -90,12 +91,6 @@ def _workspace_label(
         name = _first_non_empty_str(session_names.get(workspace_id))
         if name:
             return name
-
-    workspaces = getattr(config, "workspaces", None) or {}
-    if isinstance(workspaces, dict):
-        for alias, candidate_id in workspaces.items():
-            if str(candidate_id) == workspace_id:
-                return str(alias)
 
     return "(workspace name unavailable)"
 
@@ -185,11 +180,14 @@ def _resolve_created_notebook_id(
     session: WebSession,
 ) -> str:
     try:
+        user_ids = _try_get_current_user_ids(session, base_url=get_base_url())
+        if not user_ids:
+            return ""
         items = _list_notebooks_for_workspace(
             session,
             base_url=get_base_url(),
             workspace_id=workspace_id,
-            user_ids=[],
+            user_ids=user_ids,
             keyword=name,
             page_size=20,
         )
@@ -224,10 +222,6 @@ def resolve_notebook_project(
                 break
 
     try:
-        shared_groups = getattr(config, "project_shared_path_groups", None)
-        if not isinstance(shared_groups, dict) or not shared_groups:
-            shared_groups = None
-
         congested: set[str] | None = None
         if needs_gpu_quota and workspace_id and session:
             congested = (
@@ -243,7 +237,6 @@ def resolve_notebook_project(
             projects,
             project_value,
             allow_requested_over_quota=allow_requested_over_quota,
-            shared_path_group_by_id=shared_groups,
             needs_gpu_quota=needs_gpu_quota,
             project_order=config.project_order or None,
             congested_projects=congested,
@@ -613,15 +606,11 @@ def _resolve_create_inputs(
     shm_size: int | None,
 ) -> tuple[str, str | None, str | None, int]:
     if not quota:
-        quota = config.notebook_quota
-    if not quota:
-        raise ValueError(
-            "--quota is required (pass --quota gpu,cpu,mem or set [notebook].quota in config.toml)."
-        )
-    if not project and not config.project_order:
-        project = config.job_project_id
+        raise ValueError(profile_required_message("notebook", "quota"))
+    if not project:
+        raise ValueError(profile_required_message("notebook", "project"))
     if not image:
-        image = config.notebook_image or config.job_image
+        raise ValueError(profile_required_message("notebook", "image"))
     if shm_size is None:
         shm_size = config.shm_size if config.shm_size is not None else 32
     if shm_size < 1:
@@ -632,7 +621,7 @@ def _resolve_create_inputs(
 def _resolve_task_priority(priority: Optional[int], config: Config) -> Optional[int]:
     if priority is not None:
         return priority
-    return config.job_priority if hasattr(config, "job_priority") else None
+    return 10
 
 
 def _fetch_workspace_projects(
@@ -738,15 +727,13 @@ def _resolve_workspace_id(
         resolved = select_workspace_id(
             config,
             explicit_workspace_name=workspace,
+            session=session,
         )
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
         return None
 
     if not resolved:
-        # v3.1.0 dropped the implicit "default workspace" — including the one
-        # quietly inherited from the active web session. Force the caller to
-        # name a workspace explicitly so cross-workspace research stays safe.
         from inspire.config.workspaces import workspace_required_hint
 
         _handle_error(
@@ -800,6 +787,7 @@ def run_notebook_create(
     priority: Optional[int] = None,
     project_explicit: bool = False,
     group: Optional[str] = None,
+    profile_name: str | None = None,
 ) -> None:
     del project_explicit
     json_output = resolve_json_output(ctx, json_output)
@@ -809,6 +797,24 @@ def run_notebook_create(
         hint=WEB_AUTH_HINT,
     )
     config = load_config(ctx)
+
+    fields = apply_workload_profile(
+        profiles=getattr(config, "profiles", {}),
+        kind="notebook",
+        profile_name=profile_name,
+        values={
+            "workspace": workspace,
+            "project": project,
+            "group": group,
+            "image": image,
+            "quota": quota,
+        },
+    )
+    workspace = fields["workspace"]
+    project = fields["project"]
+    group = fields["group"]
+    image = fields["image"]
+    quota = fields["quota"]
 
     try:
         post_start_spec = resolve_notebook_post_start_spec(
@@ -830,6 +836,23 @@ def run_notebook_create(
         )
     except ValueError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_CONFIG_ERROR)
+        return
+
+    if not group:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            profile_required_message("notebook", "group"),
+            EXIT_CONFIG_ERROR,
+        )
+        return
+    if not workspace and not workspace_id:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            profile_required_message("notebook", "workspace"),
+            EXIT_CONFIG_ERROR,
+        )
         return
 
     try:
@@ -916,7 +939,6 @@ def run_notebook_create(
     workspace_label = _workspace_label(
         workspace_id=workspace_id,
         session=session,
-        config=config,
         requested_workspace=workspace,
     )
     diagnostics = NotebookCreateDiagnostics(

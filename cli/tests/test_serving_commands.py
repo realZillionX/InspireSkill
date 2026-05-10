@@ -43,8 +43,8 @@ def test_format_list_rows_full_page_uses_total_line() -> None:
     out = _format_list_rows(_rows(3), total=3)
     # Header present, sep present, all 3 rows, Total: 3 footer.
     assert "Inference Servings" in out
-    # IDs are intentionally hidden in human format (v2 names-only boundary);
-    # row presence is asserted via the names themselves.
+    # Platform handles are intentionally hidden in human format; row presence
+    # is asserted via the names themselves.
     assert "sv-" not in out
     for i in range(3):
         assert f"demo-{i}" in out

@@ -4,8 +4,8 @@ Identity and account-wide settings live at::
 
     ~/.inspire/accounts/<current>/config.toml
 
-Sections: ``[auth]``, ``[api]``, ``[proxy]``, ``[ssh]``, ``[workspaces]``,
-``[projects]``, ``[defaults]``, ``[[compute_groups]]``, ``[remote_env]``.
+Sections: ``[auth]``, ``[api]``, ``[proxy]``, ``[ssh]``, ``[projects]``,
+``[defaults]``, ``[[compute_groups]]``, ``[remote_env]``.
 
 **No ``[accounts."<user>"]`` nesting, no ``[context].account`` pointer.**
 One account = one file. Without an active account
@@ -33,17 +33,15 @@ from .load_common import (
 # across many repos, each with its own path aliases / Inspire project /
 # GitHub repo binding. Putting these at account level silently shadows the
 # correct project-level value, so we reject them outright. Other project-
-# scope fields (workspace aliases, default images/priority, workflow names,
-# etc.) *can* live at the account layer as defaults and are not policed here.
+# scope fields (priority, workflow names, etc.) can live at the account layer
+# and are not policed here.
 ACCOUNT_LAYER_DISALLOWED_KEYS = frozenset(
     {
         "paths.log_pattern",
         "github.repo",
-        "job.project_id",
         "path_aliases",
-        # job.workspace_id removed entirely in v3.1.0 — kept here would be
-        # double-jeopardy (legacy field rejected by load_legacy_workspace_default
-        # warning anyway).
+        "profiles",
+        "notebook.quota",
         "notebook.post_start",
     }
 )
@@ -107,11 +105,7 @@ def _apply_account_layer(
         defaults = raw_defaults
 
     projects = _parse_alias_map(raw.pop("projects", {}))
-
-    workspaces: dict[str, str] = {}
-    raw_workspaces = raw.get("workspaces") or {}
-    if isinstance(raw_workspaces, dict):
-        workspaces = {str(k): str(v) for k, v in raw_workspaces.items()}
+    raw.pop("workspaces", None)
 
     flat = _flatten_toml(raw)
     for toml_key, value in flat.items():
@@ -126,9 +120,6 @@ def _apply_account_layer(
     if remote_env:
         config_dict["remote_env"] = remote_env
         sources["remote_env"] = SOURCE_GLOBAL
-    if workspaces:
-        config_dict["workspaces"] = workspaces
-        sources["workspaces"] = SOURCE_GLOBAL
     if projects:
         config_dict["projects"] = projects
         sources["projects"] = SOURCE_GLOBAL
@@ -150,14 +141,16 @@ def _reject_per_repo_keys(raw: dict[str, Any], account_path: Path) -> None:
     offending = sorted(
         k
         for k in flat
-        if k in ACCOUNT_LAYER_DISALLOWED_KEYS or k.startswith("path_aliases.")
+        if k in ACCOUNT_LAYER_DISALLOWED_KEYS
+        or k.startswith("path_aliases.")
+        or k.startswith("profiles.")
     )
     if not offending:
         return
     raise ConfigError(
         f"Account config at {account_path} contains per-repository keys: "
         f"{', '.join(offending)}. These must live in the repo's own "
-        "./.inspire/config.toml (run 'inspire init --discover' from inside "
+        "./.inspire/config.toml (run 'inspire init' from inside "
         "the repo), not at the account level — a single account usually has "
         "many repos with different path aliases / Inspire projects / "
         "GitHub bindings, and placing per-repo values here silently shadows "

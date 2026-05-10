@@ -18,10 +18,14 @@ from __future__ import annotations
 
 import click
 
+from inspire.cli.commands.batch import notebook_batch
+from inspire.cli.commands.workload_profile import make_profile_command
+
 from .notebook_commands import (
     create_notebook_cmd,
     delete_notebook_cmd,
     list_notebooks,
+    notebook_id_cmd,
     notebook_status,
     set_path_alias_cmd,
     ssh_notebook_cmd,
@@ -63,7 +67,10 @@ def notebook():
 # Core lifecycle (existing).
 notebook.add_command(list_notebooks)            # list
 notebook.add_command(notebook_status)           # status
+notebook.add_command(notebook_id_cmd)           # id
 notebook.add_command(create_notebook_cmd)       # create
+notebook.add_command(make_profile_command("notebook"))  # profile
+notebook.add_command(notebook_batch)            # batch
 notebook.add_command(stop_notebook_cmd)         # stop
 notebook.add_command(start_notebook_cmd)        # start
 notebook.add_command(delete_notebook_cmd)       # delete

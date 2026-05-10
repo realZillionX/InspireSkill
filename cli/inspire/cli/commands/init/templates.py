@@ -68,7 +68,7 @@ log_pattern = "training_master_*.log"
 log_cache_dir = "~/.inspire/logs"
 
 [path_aliases]
-# Remote path aliases for notebook exec/shell/scp. `init --discover`
+# Remote path aliases for notebook exec/shell/scp. `inspire init`
 # fills these from /inspire/<tier>/project/<topic>/<user>/.
 # me = "/inspire/ssd/project/<topic>/<user>/"
 # public = "/inspire/ssd/project/<topic>/public/"
@@ -93,26 +93,20 @@ default_remote = "origin"
 action_timeout = 600
 denylist = ["*.tmp", ".git/*"]
 
-[workspaces]
-# Alias map for --workspace shorthand. Names are arbitrary; convention
-# below pairs naming with use case but you can rename freely. Every
-# command that needs a workspace requires --workspace <alias> explicitly
-# in v3.1.0+ (no implicit default; project does NOT auto-resolve a
-# workspace either).
-# cpu = "CPU 资源空间"
-# gpu = "分布式训练空间"
-# internet = "可联网资源空间"
-
 [job]
-# project = "CI-情境智能"
-# image = "pytorch:latest"
 # priority = 10
 # shm_size = 32  # Default shared memory (GiB) for notebooks; jobs use it when set
 
 [notebook]
-# quota = "1,20,200"  # gpu,cpu,mem (GiB); must match a resource spec in the workspace
-# image = "pytorch:latest"
 # post_start = "bash /workspace/setup.sh"  # none | shell command
+
+[profiles.notebook.example]
+# Workload condition profile used only when passed as --profile example.
+# workspace = "分布式训练空间"
+# project = "CI-情境智能"
+# group = "H200-2号机房"
+# quota = "1,20,200"
+# image = "unified-base:v2"
 
 [remote_env]
 # Environment variables exported before remote commands run.

@@ -274,8 +274,8 @@ def _find_run_by_inputs(runs: list, expected_inputs: dict) -> Optional[dict]:
     return None
 
 
-def _artifact_name(job_id: str, request_id: str) -> str:
-    return f"job-{job_id}-log-{request_id}"
+def _artifact_name(job_handle: str, request_id: str) -> str:
+    return f"job-{job_handle}-log-{request_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +309,7 @@ def trigger_log_retrieval_workflow(
 ) -> None:
     """Trigger the log-retrieval workflow with job/log/offset inputs."""
     inputs = {
-        "job_id": job_id,
+        "job_handle": job_id,
         "remote_log_path": remote_log_path,
         "request_id": request_id,
         "start_offset": str(start_offset),

@@ -1,6 +1,6 @@
 # Job、HPC 与 Ray
 
-提交 GPU job、快捷 `run`、CPU HPC、Ray 和 serving，或观察事件、日志和指标时，先查本手册。这里覆盖运行模型、优先级、事件、指标和状态判断；资源目录、path alias、项目配额看 [resources-and-paths.md](resources-and-paths.md)，镜像来源、保存、注册和默认值看 [image-management.md](image-management.md)。
+提交 GPU job、CPU HPC、Ray 和 serving，或观察事件、日志和指标时，先查本手册。这里覆盖运行模型、优先级、事件、指标和状态判断；资源目录、workload profile、path alias、项目配额看 [resources-and-paths.md](resources-and-paths.md)，镜像来源、保存、注册和可见性看 [image-management.md](image-management.md)。
 
 > 下述示例中的 `<GROUP>`、`<WORKSPACE>`、`<IMAGE_URL>` 仅为占位格式。实际值以 `inspire resources specs` 和 `inspire config context` 的实时输出为准。
 
@@ -8,11 +8,11 @@
 
 `inspire job` 覆盖 GPU 多节点工作负载，包括分布式训练、批量推理和并发单节点 worker pool。`job` 是 GPU 路径；`hpc` 是 CPU Slurm 路径。
 
-命令列表、参数和单命令功能以 CLI help 为准。先用 `inspire job --help` 看可用子命令；需要提交、查看、日志、事件、停止、删除或指标时，再分别查 `inspire job <subcommand> --help`。快速提交入口也可查 `inspire run --help`。
+命令列表、参数和单命令功能以 CLI help 为准。先用 `inspire job --help` 看可用子命令；需要提交、查看、日志、事件、停止、删除或指标时，再分别查 `inspire job <subcommand> --help`。
 
-`job list` 和状态判断都应使用平台实时结果，不把本地历史 cache 当事实来源。
+`job list`、状态判断和 events 诊断都应使用平台实时结果，不把本地历史 cache 当事实来源。
 
-配置了 `me` path alias 时，`job create` / `run` 会在远端先进入 `me` 根目录，并把 stdout/stderr 捕获到 `me/.inspire/` 供 `job logs` 查询。训练 repo 建议放在 `me:<repo>`；job 命令里写相对 `me` 的路径：
+配置了 `me` path alias 时，`job create` 会在远端先进入 `me` 根目录，并把 stdout/stderr 捕获到 `me/.inspire/` 供 `job logs` 查询。训练 repo 建议放在 `me:<repo>`；job 命令里写相对 `me` 的路径：
 
 ```bash
 inspire job create -n <name>-train -q 8,160,1800 --nodes 2 \
@@ -20,27 +20,11 @@ inspire job create -n <name>-train -q 8,160,1800 --nodes 2 \
   --image <IMAGE_URL> --priority 5
 ```
 
-`job create` / `run` 本身不解析 `me:<repo>`；alias 解析发生在 CLI 参数层，例如 `notebook exec --cwd me:<repo>` 和 `notebook scp ... me:<repo>/file`。
-
-### 1a. `run` 快捷入口
-
-`inspire run` 是 `inspire job create + --watch` 的快捷入口，只适用于 GPU job，不支持 HPC / Notebook / Ray。
+`job create` 本身不解析 `me:<repo>`；alias 解析发生在 CLI 参数层，例如 `notebook exec --cwd me:<repo>` 和 `notebook scp ... me:<repo>/file`。提交后需要跟日志时运行：
 
 ```bash
-inspire run 'bash <repo>/train.sh' -q 8,160,1800 --nodes 2 \
-  --workspace <WORKSPACE> --group <GROUP> --image <IMAGE_URL> --watch
-```
-
-`--watch` 在 job 终态后自动退出。等价于：
-
-```bash
-inspire job create -n <name>-train -q 8,160,1800 --nodes 2 \
-  -c 'bash <repo>/train.sh' --workspace <WORKSPACE> --group <GROUP> \
-  --image <IMAGE_URL> --priority 5 && \
 inspire job logs --follow <name>-train
 ```
-
-不指定 `--name` 时 `run` 自动生成 job 名。
 
 ## 2. 优先级
 
@@ -74,7 +58,7 @@ inspire job status <name>
 HPC 关键约束：
 
 1. `-c` 只写 Slurm 正文，平台自动补 `#SBATCH` 头；程序必须显式 `srun` 启动。
-2. `--compute-group "<name>"` 按 name 传。
+2. `--group "<name>"` 按 name 传。
 3. Slurm 级参数超出节点规格时可能静默排队。
 4. `--image` 必须是完整 Docker 地址，并带可用 Slurm 环境。
 5. 平台自身吃约 0.3 核 CPU 和 384 MB 内存，应用层并发压到 `cpus-per-task - 4` 或更低。
@@ -85,7 +69,7 @@ HPC 关键约束：
 ```bash
 inspire hpc create -n <name>-preprocess \
   -c 'srun bash -lc "python preprocess.py"' \
-  --compute-group <GROUP> --workspace <WORKSPACE> \
+  --group <GROUP> --workspace <WORKSPACE> \
   -q 0,20,256 \
   --cpus-per-task 16 --memory-per-cpu 12 \
   --number-of-tasks 1 --instance-count 1 \

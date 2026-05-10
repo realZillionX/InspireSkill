@@ -1,6 +1,6 @@
 # Image 管理
 
-选择现有镜像、从 notebook 固化镜像、注册外部镜像、设置项目默认镜像、调整可见性或清理镜像时，先查本手册。Notebook 内怎么安装依赖看 [notebook.md](notebook.md)；job / notebook 如何调度看对应业务手册。
+选择现有镜像、从 notebook 固化镜像、注册外部镜像、调整可见性或清理镜像时，先查本手册。Notebook 内怎么安装依赖看 [notebook.md](notebook.md)；job / notebook 如何调度看对应业务手册。
 
 命令是否存在、参数名和默认值以 CLI help 为准：
 
@@ -16,7 +16,6 @@ inspire image <subcommand> --help
 | 直接使用官方或已有自定义镜像 | `image list` / `image detail` | 镜像已经存在，且状态可用于调度 |
 | 把运行中的 notebook 环境固化 | `image save` | 依赖是在平台 notebook 里装好的 |
 | 把外部 Docker 镜像纳入平台 | `image register` | 镜像是在本地、CI 或外部 registry 构建的 |
-| 让后续创建任务默认用某镜像 | `image set-default` | 当前仓库要长期复用同一个 job / notebook 基底 |
 | 调整共享范围 | `image set-visibility` | 同项目或协作方需要复用，或实验镜像应收回私有 |
 | 清理废弃镜像 | `image delete` | 确认没有活跃 notebook、job、HPC 或 serving 依赖它 |
 
@@ -43,7 +42,7 @@ inspire image save <notebook-name> -n <img-name> -v v1 --public --wait
 
 使用要点：
 
-- `NOTEBOOK` 是 notebook 名称，不是 raw ID。
+- `NOTEBOOK` 是 notebook 名称，不是平台 handle。
 - 用 `--wait` 等到镜像进入 `READY`，否则后续任务可能拉不到镜像。
 - `--public` / `--private` 控制平台可见性；敏感依赖、内部数据或个人实验镜像默认保持私有。
 - 固化后再用 `image list` 或 `image detail` 确认名称、版本和状态。
@@ -74,13 +73,7 @@ inspire image register -n my-img -v v1.0 --method address
 
 注册后同样要等 `READY`。如果平台一直无法拉取镜像，优先怀疑 registry 权限、镜像地址不完整、tag 不存在或目标 workspace 无法访问该 registry。
 
-## 5. 默认镜像和可见性
-
-`image set-default` 写当前仓库的 `.inspire/config.toml`，不是修改平台全局状态。它适合把项目常用镜像设成默认，减少后续 `notebook create`、`job create` 或 `run` 的重复参数。
-
-```bash
-inspire image set-default --job <image-url> --notebook <image-url>
-```
+## 5. 可见性
 
 可见性翻转用于已经存在的自定义镜像：
 
@@ -96,5 +89,5 @@ inspire image set-visibility <name>:<version> --private
 只删除确认不再使用的自定义镜像。清理前至少确认：
 
 - 没有正在运行或排队的 notebook、job、HPC、Ray 或 serving 依赖该镜像。
-- 项目默认镜像没有指向它。
+- 后续创建命令不再显式引用它。
 - 协作者不再用这个版本复现实验。

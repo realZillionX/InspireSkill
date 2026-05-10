@@ -1,4 +1,4 @@
-"""Human-output helpers for keeping platform IDs out of agent context."""
+"""Output helpers for keeping platform handles out of CLI observation surfaces."""
 
 from __future__ import annotations
 
@@ -54,11 +54,10 @@ def _replace_prefixed_id(match: Match[str]) -> str:
 
 
 def scrub_raw_ids(value: object) -> str:
-    """Replace platform-looking raw IDs in human-visible strings.
+    """Replace platform-looking handles in human-visible strings.
 
-    JSON output remains the structured/script interface; this helper is for
-    human stdout/stderr only. It intentionally targets UUID-shaped platform
-    handles and common prefixed IDs while leaving ordinary names alone.
+    This helper intentionally targets UUID-shaped platform handles and common
+    prefixed handles while leaving ordinary names alone.
     """
 
     text = "" if value is None else str(value)

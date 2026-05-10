@@ -3,7 +3,7 @@
 The command supports job-level events and optional per-pod events via
 ``--instance`` / ``--all-instances``. Human output is meant for diagnosis:
 scheduling failures, image pulls, container starts, and related lifecycle
-messages. The cached copy is an offline fallback for the same named job.
+messages. Events are always fetched from the live platform API.
 """
 
 from __future__ import annotations
@@ -34,11 +34,6 @@ from .job_commands import WebJobResolutionError, _close_web_client, _resolve_web
     "json_output_local",
     is_flag=True,
     help="Output as JSON. Equivalent to top-level `--json`.",
-)
-@click.option(
-    "--from-cache",
-    is_flag=True,
-    help="Read the last cached events and skip the live fetch.",
 )
 @click.option(
     "--type",
@@ -72,20 +67,12 @@ from .job_commands import WebJobResolutionError, _close_web_client, _resolve_web
     help="Show only the last N events (applied after --type / --reason).",
 )
 @click.option("--web", is_flag=True, help="Use the platform detail view.")
-@click.option("--workspace", default=None, help="Workspace alias or name")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option(
     "--all-workspaces",
     "-A",
     is_flag=True,
     help="Search all visible workspaces when resolving a job name",
-)
-@click.option(
-    "--all-users",
-    is_flag=True,
-    help="Include jobs from all users when resolving a job name",
-)
-@click.option(
-    "--created-by", default=None, help="Advanced creator filter for web job name resolution"
 )
 @click.option(
     "--max-pages",
@@ -99,7 +86,6 @@ def events(
     ctx: Context,
     job: str,
     json_output_local: bool,
-    from_cache: bool,
     type_filter: Optional[str],
     reason_filter: Optional[str],
     instance_ids: tuple[str, ...],
@@ -108,8 +94,6 @@ def events(
     web: bool,
     workspace: Optional[str],
     all_workspaces: bool,
-    all_users: bool,
-    created_by: Optional[str],
     max_pages: int,
 ) -> None:
     """Show events for a training job.
@@ -123,9 +107,8 @@ def events(
       inspire job events <job-name> --instance <pod-name>
       inspire job events --web <job-name>
       inspire job events -A <job-name> --all-instances
-      inspire job events <job-name> --from-cache
     """
-    web_mode = web or workspace or all_workspaces or all_users or created_by or all_instances
+    web_mode = web or workspace or all_workspaces or all_instances
 
     if web_mode:
         try:
@@ -135,8 +118,6 @@ def events(
                 job=job,
                 workspace=workspace,
                 all_workspaces=all_workspaces,
-                all_users=all_users,
-                created_by=created_by,
                 max_pages=max_pages,
             )
         except ConfigError as e:
@@ -150,12 +131,11 @@ def events(
 
     pods = list(instance_ids) if instance_ids else None
     if all_instances:
-        cache_key = f"{resolved_id}__all_instances"
+        event_scope_key = f"{resolved_id}__all_instances"
     elif pods:
-        # per-instance cache key includes pod names (hash on the fly to keep path short)
-        cache_key = f"{resolved_id}__{'_'.join(p.rsplit('/', 1)[-1] for p in pods)}"
+        event_scope_key = f"{resolved_id}__{'_'.join(p.rsplit('/', 1)[-1] for p in pods)}"
     else:
-        cache_key = resolved_id
+        event_scope_key = resolved_id
 
     def _fetch_web_events() -> list[dict]:
         try:
@@ -163,8 +143,7 @@ def events(
             if all_instances:
                 instances, _ = browser_api_module.list_job_instances(
                     resolved_id,
-                    page_num=1,
-                    page_size=200,
+                    num=200,
                     session=session,
                 )
                 pod_names = [
@@ -184,10 +163,11 @@ def events(
 
     run_events_command(
         ctx,
-        job_id=cache_key,
+        resource_id=event_scope_key,
+        resource_type="job",
+        resource_name=job,
         fetch=_fetch_web_events if web_mode else _fetch_local_events,
         json_output_local=json_output_local,
-        from_cache=from_cache,
         type_filter=type_filter,
         reason_filter=reason_filter,
         tail=tail,

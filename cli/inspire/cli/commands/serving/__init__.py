@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import click
 
+from inspire.cli.commands.batch import serving_batch
+from inspire.cli.commands.workload_profile import make_profile_command
+
 from .serving_commands import (
     configs_serving,
     create_serving,
@@ -33,6 +36,8 @@ def serving() -> None:
 
 
 serving.add_command(create_serving)
+serving.add_command(make_profile_command("serving"))
+serving.add_command(serving_batch)
 serving.add_command(list_serving)
 serving.add_command(status_serving)
 serving.add_command(stop_serving)

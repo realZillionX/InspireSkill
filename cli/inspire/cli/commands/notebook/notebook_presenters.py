@@ -54,9 +54,7 @@ def _print_notebook_detail(notebook: dict) -> None:
 
     shm = start_cfg.get("shared_memory_size", 0) or 0
 
-    # Raw notebook_id intentionally omitted — v2 names-only boundary.
-    # `inspire --json notebook status <name>` exposes every field for
-    # callers that legitimately need the id.
+    # Raw notebook_id intentionally omitted — names are the CLI boundary.
     fields = [
         ("Status", notebook.get("status")),
         ("Project", project.get("name") or notebook.get("project_name")),
@@ -84,10 +82,8 @@ def _print_notebook_detail(notebook: dict) -> None:
 def _print_notebook_list(items: list, json_output: bool) -> None:
     """Print notebook list in appropriate format.
 
-    The human-readable table never shows the raw notebook UUID — at the v2
-    user boundary the CLI takes names only, and surfacing ids invites
-    agents to start round-tripping them. JSON output keeps every field
-    for callers that pipe to jq / write scripts.
+    The CLI takes names only. JSON output follows the same boundary; use
+    `inspire notebook id <name>` when the platform handle is explicitly needed.
     """
     if json_output:
         click.echo(json_formatter.format_json({"items": items, "total": len(items)}))

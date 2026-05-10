@@ -9,22 +9,12 @@ from typing import Any
 from inspire.config.models import SOURCE_DEFAULT
 
 _DEFAULTS_FIELD_MAP = {
-    "image": "job_image",
-    "notebook_image": "notebook_image",
-    "notebook_quota": "notebook_quota",
     "notebook_post_start": "notebook_post_start",
     "priority": "job_priority",
     "shm_size": "shm_size",
     "log_pattern": "log_pattern",
     "project_order": "project_order",
 }
-
-# `[context].workspace = ...` was the singular "default workspace" hook.
-# Removed in v3.1.0 — workspace must be passed explicitly via
-# `--workspace <alias>` on each command. Empty map kept here so the
-# loader still iterates but never writes anything.
-_CONTEXT_WORKSPACE_FIELD_MAP: dict[str, str] = {}
-
 
 @dataclass
 class _ProjectLayerState:
@@ -66,17 +56,10 @@ def _default_config_values() -> dict[str, Any]:
         "playwright_proxy": None,
         "rtunnel_proxy": None,
         "job_priority": 10,
-        "job_image": None,
-        "job_project_id": None,
-        "workspaces": {},
         "projects": {},
         "project_catalog": {},
-        "project_shared_path_groups": {},
         "project_workdirs": {},
-        "account_shared_path_group": None,
         "account_train_job_workdir": None,
-        "notebook_quota": None,
-        "notebook_image": None,
         "notebook_post_start": None,
         "tunnel_retries": 3,
         "tunnel_retry_pause": 2.0,
@@ -85,6 +68,7 @@ def _default_config_values() -> dict[str, Any]:
         "compute_groups": [],
         "remote_env": {},
         "path_aliases": {},
+        "profiles": {},
     }
 
 
@@ -168,10 +152,8 @@ def _normalize_project_catalog(raw_value: Any) -> dict[str, dict[str, Any]]:
 
         entry: dict[str, Any] = {}
         # ``name`` and ``path`` are the name-only metadata agents consume
-        # via ``inspire config context``. ``workdir`` / ``shared_path_group``
-        # are legacy fields still tolerated here so older-format configs
-        # don't fail to load, but discover no longer writes them.
-        for key in ("name", "path", "shared_path_group", "workdir"):
+        # via ``inspire config context``.
+        for key in ("name", "path"):
             value = raw_entry.get(key)
             if isinstance(value, str):
                 value = value.strip()
@@ -183,7 +165,7 @@ def _normalize_project_catalog(raw_value: Any) -> dict[str, dict[str, Any]]:
 
 
 def _resolve_alias(value: Any, mapping: dict[str, str], *, id_prefix: str) -> str | None:
-    """Resolve a project / workspace alias against an account-scoped mapping.
+    """Resolve a project alias against an account-scoped mapping.
 
     v4.0.0 made this strict: when *value* is neither a known alias under
     *mapping* nor an explicit platform id (``id_prefix`` like
@@ -209,13 +191,7 @@ def _resolve_alias(value: Any, mapping: dict[str, str], *, id_prefix: str) -> st
 def _coerce_project_default(field_name: str, raw_value: Any) -> Any:
     if field_name in {"job_priority", "shm_size"}:
         return int(raw_value)
-    if field_name in {
-        "job_image",
-        "notebook_image",
-        "notebook_quota",
-        "notebook_post_start",
-        "log_pattern",
-    }:
+    if field_name in {"notebook_post_start", "log_pattern"}:
         return str(raw_value)
     if field_name == "project_order":
         if isinstance(raw_value, list):
@@ -225,7 +201,6 @@ def _coerce_project_default(field_name: str, raw_value: Any) -> Any:
 
 
 __all__ = [
-    "_CONTEXT_WORKSPACE_FIELD_MAP",
     "_DEFAULTS_FIELD_MAP",
     "_ProjectLayerState",
     "_apply_defaults_overrides",

@@ -302,7 +302,7 @@ def list_notebook_compute_groups(
         _log.warning(
             "list_notebook_compute_groups: %s for workspace %s — "
             "falling back to %d compute_groups defined in config.toml. "
-            "The returned list may be stale; re-run `inspire init --discover` "
+            "The returned list may be stale; re-run `inspire init` "
             "to refresh.",
             reason,
             workspace_id,

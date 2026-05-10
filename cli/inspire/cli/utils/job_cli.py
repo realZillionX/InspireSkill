@@ -24,14 +24,11 @@ def resolve_job_id(
 ) -> str:
     """Resolve a training-job name to its internal ``job-<uuid>`` string.
 
-    v2.0.0: names only. Ids (``job-…`` / raw UUID / partial hex) are
-    rejected — the v2 CLI surface never accepts them, so agents that
-    only ever see names don't start guessing with ``rj-`` / ``job-``
-    prefixes they saw elsewhere.
+    Names are the CLI boundary. Platform handles (``job-…`` / raw UUID /
+    partial hex) are rejected on user input.
 
     Default scope is the platform session's workspace. ``all_workspaces=True``
-    widens the search across every value in the account's ``[workspaces]``
-    alias map (populated by ``inspire init --discover``).
+    widens the search across the workspaces visible in the live web session.
     """
     name = (name or "").strip()
     if not name:
@@ -45,19 +42,18 @@ def resolve_job_id(
         exit_with_error(
             ctx,
             "ValidationError",
-            "v2 CLI takes a job name, not an id / partial-id.",
+            "CLI commands take a job name, not a platform handle or partial handle.",
             EXIT_VALIDATION_ERROR,
             hint=(
-                "Use `inspire job list -A` to find the name and pass that instead. "
-                "Ids are intentionally not accepted on the v2 CLI."
+                "Use `inspire job list -A` to find the name. "
+                "Use `inspire job id <name>` only for explicit platform-handle lookup."
             ),
         )
 
     matches = _search_web_jobs_by_name(name, all_workspaces=all_workspaces)
     if not matches:
         scope_hint = (
-            "Use `inspire job list -A` to widen the search across every "
-            "configured workspace alias."
+            "Use `inspire job list -A` to widen the search across visible workspaces."
             if not all_workspaces
             else "Even with -A no matching job was found."
         )
@@ -90,13 +86,11 @@ def _search_web_jobs_by_name(
     """Exact-name match against the live platform job list.
 
     Default scope: the platform session's workspace × current user. With
-    ``all_workspaces=True``: every value in the account's ``[workspaces]``
-    alias map (curated via ``inspire init --discover``).
+    ``all_workspaces=True``: every workspace id visible in the live web session.
 
     Lets ``SessionExpiredError`` / ``AuthenticationError`` propagate so the
     real reason surfaces rather than a misleading "job not found".
     """
-    from inspire.config import Config
     from inspire.platform.web.browser_api.jobs import (
         get_current_user,
         list_jobs as web_list_jobs,
@@ -107,7 +101,11 @@ def _search_web_jobs_by_name(
         session = get_web_session()
         me = get_current_user(session=session)
         created_by = str(me.get("id") or me.get("user_id") or "").strip() or None
+        if not created_by:
+            raise ValueError("Cannot determine the current user from the live web session.")
     except (KeyboardInterrupt, SystemExit):
+        raise
+    except ValueError:
         raise
     except Exception as error:  # noqa: BLE001
         cls_name = type(error).__name__
@@ -117,25 +115,12 @@ def _search_web_jobs_by_name(
         return []
 
     if all_workspaces:
-        try:
-            config, _ = Config.from_files_and_env(require_credentials=False)
-        except Exception:  # noqa: BLE001
-            config = None
-        alias_values: list[str] = []
-        if config is not None:
-            alias_values = [str(v).strip() for v in (config.workspaces or {}).values() if v]
         seen: set[str] = set()
         workspace_ids: list[str] = []
         current = str(getattr(session, "workspace_id", "") or "").strip()
         if current:
             workspace_ids.append(current)
             seen.add(current)
-        # Union of [workspaces] alias values AND session.all_workspace_ids:
-        # the alias map is user-curated but may miss SSO-visible workspaces.
-        for wid in alias_values:
-            if wid and wid not in seen:
-                workspace_ids.append(wid)
-                seen.add(wid)
         for wid in getattr(session, "all_workspace_ids", None) or []:
             wid_s = str(wid or "").strip()
             if wid_s and wid_s not in seen:

@@ -87,12 +87,6 @@ def _try_get_current_user_ids(
     *,
     base_url: str,
 ) -> list[str]:
-    cached_detail = getattr(session, "user_detail", None)
-    if isinstance(cached_detail, dict):
-        user_id = cached_detail.get("id")
-        if user_id:
-            return [str(user_id)]
-
     try:
         user_data = web_session_module.request_json(
             session,
@@ -120,10 +114,6 @@ def _get_current_user_detail(
     *,
     base_url: str,
 ) -> dict:
-    cached_detail = getattr(session, "user_detail", None)
-    if isinstance(cached_detail, dict) and cached_detail:
-        return cached_detail
-
     user_data = web_session_module.request_json(
         session,
         "GET",
@@ -222,8 +212,7 @@ def _validate_notebook_account_access(
     ):
         return (
             False,
-            f"current user id '{current_user_id}' is not allowed for this notebook "
-            f"(owner ids: {', '.join(sorted(owner_ids))})",
+            "The current user is not allowed for this notebook.",
         )
 
     if owner_names and current_username and current_username not in owner_names:
@@ -246,6 +235,9 @@ def _list_notebooks_for_workspace(
     page_size: int = 20,
     status: list[str] | None = None,
 ) -> list[dict]:
+    if not user_ids:
+        raise ValueError("Cannot list notebooks without a current-user filter.")
+
     body = {
         "workspace_id": workspace_id,
         "page": 1,
@@ -337,31 +329,27 @@ def _collect_workspace_ids_for_lookup(
 ) -> list[str]:
     """Enumerate workspaces in which to look up a notebook by name.
 
-    v3.1.0 dropped the implicit default workspace; v4.0.0 also drops the
-    quiet "include the active web session's workspace as a search hit".
-    The canonical search space is whatever ``[workspaces]`` aliases the
-    active account has discovered (populated by ``inspire init --discover``).
-    Empty alias map means the user has not run discover yet — caller emits
-    a clear error pointing at it instead of silently widening the scope
-    to whatever workspace the platform session happened to land on.
-
-    ``session`` is kept in the signature because the caller passes it for
-    parity with other lookup helpers; we don't read its workspace_id.
+    Name lookup uses the live workspace IDs already attached to the
+    authenticated web session, falling back to the session's current workspace
+    when the platform did not enumerate the full visible set.
     """
-    del session  # see docstring
-    workspaces_map = getattr(config, "workspaces", None)
+    del config
     candidates: list[str] = []
-    if isinstance(workspaces_map, dict):
-        candidates.extend(str(value) for value in workspaces_map.values() if value)
+    all_workspace_ids = getattr(session, "all_workspace_ids", None)
+    if isinstance(all_workspace_ids, list):
+        candidates.extend(str(value) for value in all_workspace_ids if value)
+    current_workspace_id = getattr(session, "workspace_id", None)
+    if current_workspace_id:
+        candidates.append(str(current_workspace_id))
     return _unique_workspace_ids(candidates)
 
 
-def _workspace_label(config: Any, workspace_id: str) -> str:
-    workspaces = getattr(config, "workspaces", None)
-    if isinstance(workspaces, dict):
-        for name, candidate in workspaces.items():
-            if str(candidate) == workspace_id:
-                return str(name)
+def _workspace_label(session: web_session_module.WebSession, workspace_id: str) -> str:
+    names = getattr(session, "all_workspace_names", None)
+    if isinstance(names, dict):
+        name = names.get(workspace_id)
+        if name:
+            return str(name)
     return "(workspace name unavailable)"
 
 
@@ -383,16 +371,17 @@ def _resolve_notebook_id(
             EXIT_VALIDATION_ERROR,
         )
 
-    # v2.0.0: names only — reject id-shaped inputs so agents never see or
-    # repeat platform ids. Matches the rest of the CLI surface (job / hpc /
-    # ray / serving / image all do the same).
+    # Names are the CLI boundary. Reject handle-shaped inputs before platform lookup.
     if _looks_like_notebook_id(identifier) or is_partial_id(identifier, prefix="notebook-"):
         _handle_error(
             ctx,
             "ValidationError",
-            "v2 CLI takes a notebook name, not an id / partial-id.",
+            "CLI commands take a notebook name, not a platform handle or partial handle.",
             EXIT_VALIDATION_ERROR,
-            hint="Use `inspire notebook list` to find the name and pass that instead.",
+            hint=(
+                "Use `inspire notebook list` to find the name. "
+                "Use `inspire notebook id <name>` only for explicit platform-handle lookup."
+            ),
         )
 
     workspace_ids = _collect_workspace_ids_for_lookup(session, config)
@@ -401,15 +390,22 @@ def _resolve_notebook_id(
         _handle_error(
             ctx,
             "ConfigError",
-            "No workspace name configured or available for notebook lookup.",
+            "No workspace available for notebook lookup.",
             EXIT_CONFIG_ERROR,
             hint=(
-                "Run `inspire init --discover` to populate [workspaces] in your "
-                "account config.toml, or pass --workspace <alias> explicitly."
+                "Run `inspire config context` to list visible workspace names, "
+                "or pass --workspace <workspace-name> explicitly."
             ),
         )
 
-    user_ids: list[str] = []
+    user_ids = _try_get_current_user_ids(session, base_url=base_url)
+    if not user_ids:
+        _handle_error(
+            ctx,
+            "AuthenticationError",
+            "Cannot determine the current user from the live web session.",
+            EXIT_API_ERROR,
+        )
 
     # Retry the listing a few times when the name doesn't show up: the
     # platform list API has a small eventual-consistency window after a
@@ -475,7 +471,7 @@ def _resolve_notebook_id(
         status = str(item.get("status") or "Unknown")
         resource = _format_notebook_resource(item)
         created_at = str(item.get("created_at") or "")
-        workspace = _workspace_label(config, ws_id)
+        workspace = _workspace_label(session, ws_id)
         return scrub_raw_ids(
             f"{status:<12} {resource:<12} created_at={created_at}  workspace={workspace}"
         )
@@ -490,7 +486,7 @@ def _resolve_notebook_id(
             EXIT_VALIDATION_ERROR,
             hint=(
                 "Rename one of the duplicates so each notebook has a unique name — "
-                "v2 does not accept ids at the user boundary."
+                "normal CLI commands do not accept platform handles at the user boundary."
             ),
         )
 

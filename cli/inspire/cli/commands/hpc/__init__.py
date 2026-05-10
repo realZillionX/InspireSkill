@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import click
 
-from .hpc_commands import create_hpc, delete_hpc, list_hpc, status_hpc, stop_hpc
+from inspire.cli.commands.batch import hpc_batch
+from inspire.cli.commands.workload_profile import make_profile_command
+
+from .hpc_commands import create_hpc, delete_hpc, hpc_id, list_hpc, status_hpc, stop_hpc
 from .hpc_events import events as events_hpc
 from .hpc_metrics import hpc_metrics
 
@@ -23,7 +26,10 @@ def hpc() -> None:
 
 hpc.add_command(list_hpc)
 hpc.add_command(create_hpc)
+hpc.add_command(make_profile_command("hpc"))
+hpc.add_command(hpc_batch)
 hpc.add_command(status_hpc)
+hpc.add_command(hpc_id)
 hpc.add_command(stop_hpc)
 hpc.add_command(delete_hpc)
 hpc.add_command(events_hpc)

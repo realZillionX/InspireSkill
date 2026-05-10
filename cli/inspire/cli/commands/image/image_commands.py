@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 import click
@@ -10,7 +9,6 @@ import click
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
-    EXIT_CONFIG_ERROR,
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
@@ -729,111 +727,11 @@ def delete_image_cmd(
     click.echo(f"Image '{scrub_raw_ids(name)}' has been deleted.")
 
 
-# ---------------------------------------------------------------------------
-# set-default
-# ---------------------------------------------------------------------------
-
-
-@click.command("set-default")
-@click.option(
-    "--job",
-    "job_image",
-    default=None,
-    help="Set default image for jobs (written to [job].image in .inspire/config.toml)",
-)
-@click.option(
-    "--notebook",
-    "notebook_image",
-    default=None,
-    help="Set default image for notebooks (written to [notebook].image in .inspire/config.toml)",
-)
-@click.option(
-    "--json",
-    "json_output",
-    is_flag=True,
-    help="Alias for global --json",
-)
-@pass_context
-def set_default_image_cmd(
-    ctx: Context,
-    job_image: Optional[str],
-    notebook_image: Optional[str],
-    json_output: bool,
-) -> None:
-    """Save image preferences to .inspire/config.toml.
-
-    \b
-    Examples:
-        inspire image set-default --job my-pytorch-image
-        inspire image set-default --notebook my-notebook-image
-        inspire image set-default --job img1 --notebook img2
-    """
-    json_output = resolve_json_output(ctx, json_output)
-
-    if not job_image and not notebook_image:
-        _handle_error(
-            ctx,
-            "ValidationError",
-            "Specify at least one of --job or --notebook.",
-            EXIT_VALIDATION_ERROR,
-        )
-        return
-
-    from inspire.config.toml import _find_project_config
-
-    existing_config = _find_project_config()
-    config_path = existing_config if existing_config else Path(".inspire") / "config.toml"
-
-    # Read existing config if present
-    existing_data: dict = {}
-    if config_path.exists():
-        try:
-            from inspire.config.toml import _load_toml
-
-            existing_data = _load_toml(config_path)
-        except Exception:
-            existing_data = {}
-
-    # Update the relevant sections
-    updated: dict[str, str] = {}
-    if job_image:
-        if "job" not in existing_data:
-            existing_data["job"] = {}
-        existing_data["job"]["image"] = job_image
-        updated["job.image"] = job_image
-
-    if notebook_image:
-        if "notebook" not in existing_data:
-            existing_data["notebook"] = {}
-        existing_data["notebook"]["image"] = notebook_image
-        updated["notebook.image"] = notebook_image
-
-    # Write back
-    try:
-        from inspire.cli.commands.init.toml_helpers import _toml_dumps
-
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(_toml_dumps(existing_data), encoding="utf-8")
-    except Exception as e:
-        _handle_error(ctx, "ConfigError", f"Failed to write config: {e}", EXIT_CONFIG_ERROR)
-        return
-
-    if json_output:
-        click.echo(
-            json_formatter.format_json({"updated": updated, "config_path": str(config_path)})
-        )
-        return
-
-    for key, value in updated.items():
-        click.echo(f"Set {key} = {value!r} in {config_path}")
-
-
 __all__ = [
     "delete_image_cmd",
     "image_detail",
     "list_images_cmd",
     "register_image_cmd",
     "save_image_cmd",
-    "set_default_image_cmd",
     "set_image_visibility_cmd",
 ]

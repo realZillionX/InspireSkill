@@ -75,36 +75,23 @@ class Config:
 
     # Job settings
     job_priority: int = 10
-    job_image: Optional[str] = None
-    job_project_id: Optional[str] = None
     job_auto_fault_tolerance: bool = False
     job_fault_tolerance_max_retry: int = 10
-    # job_workspace_id removed in v3.1.0 — workspace must come from
-    # `--workspace <alias>` per call (resolved against `workspaces` map below).
-
-    # Full workspace map loaded from TOML [workspaces]
-    workspaces: dict[str, str] = field(default_factory=dict)
 
     # Project alias map for project_id resolution (alias -> project-...)
     projects: dict[str, str] = field(default_factory=dict)
 
     # Discovered per-account project metadata (loaded from the account layer
     # [project_catalog] table when present; kept for display helpers like
-    # `inspire config context` that surface per-project shared-path info).
+    # `inspire config context`).
     # project_id -> metadata dict (best-effort, schema may evolve)
     project_catalog: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # project_id -> shared-path grouping key (e.g. "/train/global_user/<user>")
-    project_shared_path_groups: dict[str, str] = field(default_factory=dict)
-    # project_id -> discovered workdir (best-effort; may come from API or probing)
+    # project_id -> discovered workdir (best-effort; may come from API)
     project_workdirs: dict[str, str] = field(default_factory=dict)
-    # Account-level shared-path grouping key (if available)
-    account_shared_path_group: Optional[str] = None
     # Account-level train job workdir (if available)
     account_train_job_workdir: Optional[str] = None
 
     # Notebook settings
-    notebook_quota: Optional[str] = None
-    notebook_image: Optional[str] = None
     notebook_post_start: Optional[str] = None
 
     # Tunnel retry settings
@@ -125,6 +112,10 @@ class Config:
 
     # Project-scoped remote path aliases used by notebook exec/shell/scp.
     path_aliases: dict[str, str] = field(default_factory=dict)
+
+    # Project-scoped workload condition profiles. These are command aliases
+    # for workspace/project/group/image/quota, not defaults.
+    profiles: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
 
     # Source precedence: "env" (default) = env vars win, "toml" = project TOML wins
     prefer_source: str = "env"

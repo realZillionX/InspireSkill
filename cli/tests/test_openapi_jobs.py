@@ -13,14 +13,12 @@ import pytest
 
 from inspire.platform.openapi.errors import ValidationError
 from inspire.platform.openapi.jobs import create_training_job_smart
+from inspire.job_defaults import DEFAULT_TRAINING_MAX_TIME_MS
 
 
 class _DummyAPI:
-    DEFAULT_PROJECT_ID = "project-default"
-    DEFAULT_WORKSPACE_ID = "ws-default"
     DEFAULT_TASK_PRIORITY = 10
-    DEFAULT_INSTANCE_COUNT = 1
-    DEFAULT_MAX_RUNNING_TIME = "3600000"
+    DEFAULT_MAX_RUNNING_TIME = DEFAULT_TRAINING_MAX_TIME_MS
     DEFAULT_SHM_SIZE = 128
     DEFAULT_IMAGE_TYPE = "SOURCE_PRIVATE"
 
@@ -33,15 +31,22 @@ class _DummyAPI:
         return None
 
     def _validate_required_params(self, **kwargs) -> None:  # noqa: ANN003
-        assert kwargs["name"]
-        assert kwargs["command"]
-
-    def _get_default_image(self) -> str:
-        return "registry.local/default:latest"
+        missing = [key for key, value in kwargs.items() if value in (None, "")]
+        if missing:
+            raise ValidationError(f"Missing required parameters: {', '.join(missing)}")
 
     def _make_request(self, method: str, endpoint: str, payload: dict) -> dict:
         self.last_request = (method, endpoint, payload)
         return {"code": 0, "data": {"job_id": "job-123"}}
+
+
+def _required_job_fields() -> dict[str, object]:
+    return {
+        "project_id": "project-explicit",
+        "workspace_id": "ws-explicit",
+        "image": "registry.local/explicit:latest",
+        "instance_count": 1,
+    }
 
 
 def test_create_training_job_smart_builds_framework_config_payload() -> None:
@@ -51,6 +56,7 @@ def test_create_training_job_smart_builds_framework_config_payload() -> None:
         api,
         name="demo",
         command="echo demo",
+        **_required_job_fields(),
         spec_id_override="spec-1x-h200",
         compute_group_id_override="lcg-h200-1",
     )
@@ -62,12 +68,13 @@ def test_create_training_job_smart_builds_framework_config_payload() -> None:
 
     assert payload["command"] == "echo demo"
     assert payload["logic_compute_group_id"] == "lcg-h200-1"
-    assert payload["project_id"] == "project-default"
-    assert payload["workspace_id"] == "ws-default"
+    assert payload["project_id"] == "project-explicit"
+    assert payload["workspace_id"] == "ws-explicit"
+    assert payload["max_running_time_ms"] == DEFAULT_TRAINING_MAX_TIME_MS
     assert payload["framework_config"] == [
         {
             "image_type": "SOURCE_PRIVATE",
-            "image": "registry.local/default:latest",
+            "image": "registry.local/explicit:latest",
             "instance_count": 1,
             "spec_id": "spec-1x-h200",
             "shm_gi": 128,
@@ -82,6 +89,8 @@ def test_create_training_job_smart_uses_overrides_for_framework_config() -> None
         api,
         name="demo",
         command="echo demo",
+        project_id="project-explicit",
+        workspace_id="ws-explicit",
         image="custom.registry/pytorch:tag",
         instance_count=2,
         shm_gi=256,
@@ -104,6 +113,19 @@ def test_create_training_job_smart_requires_overrides() -> None:
             api,
             name="demo",
             command="echo demo",
+            **_required_job_fields(),
+        )
+
+
+def test_create_training_job_smart_requires_create_fields() -> None:
+    api = _DummyAPI()
+    with pytest.raises(ValidationError, match="project_id"):
+        create_training_job_smart(
+            api,
+            name="demo",
+            command="echo demo",
+            spec_id_override="spec-1x-h200",
+            compute_group_id_override="lcg-h200-1",
         )
 
 
@@ -114,6 +136,7 @@ def test_create_training_job_smart_fault_tolerance_off_by_default() -> None:
         api,
         name="demo",
         command="echo demo",
+        **_required_job_fields(),
         spec_id_override="spec-1x-h200",
         compute_group_id_override="lcg-h200-1",
     )
@@ -129,6 +152,7 @@ def test_create_training_job_smart_fault_tolerance_enabled_default_retry() -> No
         api,
         name="demo",
         command="echo demo",
+        **_required_job_fields(),
         spec_id_override="spec-1x-h200",
         compute_group_id_override="lcg-h200-1",
         auto_fault_tolerance=True,
@@ -145,6 +169,7 @@ def test_create_training_job_smart_fault_tolerance_enabled_explicit_retry() -> N
         api,
         name="demo",
         command="echo demo",
+        **_required_job_fields(),
         spec_id_override="spec-1x-h200",
         compute_group_id_override="lcg-h200-1",
         auto_fault_tolerance=True,
@@ -162,6 +187,7 @@ def test_create_training_job_smart_fault_tolerance_false_excludes_fields() -> No
         api,
         name="demo",
         command="echo demo",
+        **_required_job_fields(),
         spec_id_override="spec-1x-h200",
         compute_group_id_override="lcg-h200-1",
         auto_fault_tolerance=False,
@@ -180,6 +206,7 @@ def test_create_training_job_smart_fault_tolerance_invalid_retry() -> None:
             api,
             name="demo",
             command="echo demo",
+            **_required_job_fields(),
             spec_id_override="spec-1x-h200",
             compute_group_id_override="lcg-h200-1",
             auto_fault_tolerance=True,

@@ -33,6 +33,7 @@ from inspire.platform.openapi.errors import (
     ValidationError,
 )
 from inspire.platform.openapi.models import InspireConfig
+from inspire.job_defaults import DEFAULT_TRAINING_MAX_TIME_MS
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -119,25 +120,12 @@ class InspireAPI:
 
     # Default value constants
     DEFAULT_TASK_PRIORITY = 8
-    DEFAULT_INSTANCE_COUNT = 1
     DEFAULT_SHM_SIZE = _get_default_shm_size()
-    DEFAULT_MAX_RUNNING_TIME = "360000000"  # 100 hours
+    DEFAULT_MAX_RUNNING_TIME = DEFAULT_TRAINING_MAX_TIME_MS
     DEFAULT_IMAGE_TYPE = "SOURCE_PRIVATE"
-    DEFAULT_PROJECT_ID = os.getenv(
-        "INSPIRE_PROJECT_ID",
-        "project-00000000-0000-0000-0000-000000000000",  # Placeholder - set INSPIRE_PROJECT_ID env var
-    )
     DEFAULT_WORKSPACE_ID = "ws-00000000-0000-0000-0000-000000000000"
-    DEFAULT_IMAGE = "docker.example.com/inspire-studio/ngc-cuda12.8-base:1.0"
-    DEFAULT_IMAGE_PATH = "inspire-studio/ngc-cuda12.8-base:1.0"
     DEFAULT_DOCKER_REGISTRY = "docker.example.com"
     ERROR_BODY_PREVIEW_LIMIT = 4000
-
-    def _get_default_image(self) -> str:
-        """Get the default Docker image, using configurable registry if set."""
-        if self.config.docker_registry:
-            return f"{self.config.docker_registry}/{self.DEFAULT_IMAGE_PATH}"
-        return self.DEFAULT_IMAGE
 
     def __init__(self, config: Optional[InspireConfig] = None):
         """

@@ -39,8 +39,7 @@ def test_list_job_instances_uses_job_id_camel_case(monkeypatch) -> None:  # noqa
 
     items, total = jobs_module.list_job_instances(
         "job-abc",
-        page_num=2,
-        page_size=7,
+        num=7,
         session=_FakeSession(),
     )
 
@@ -48,7 +47,7 @@ def test_list_job_instances_uses_job_id_camel_case(monkeypatch) -> None:  # noqa
     assert total == 0
     assert captured["method"] == "POST"
     assert captured["path"].endswith("/train_job/instance_list")
-    assert captured["body"] == {"jobId": "job-abc", "page_num": 2, "page_size": 7}
+    assert captured["body"] == {"jobId": "job-abc", "page_num": 1, "page_size": 7}
 
 
 def test_build_remote_cmd_url_and_headers(monkeypatch) -> None:  # noqa: ANN001
@@ -135,11 +134,10 @@ def test_job_shell_command_uses_web_resolver_and_rank_selector(monkeypatch) -> N
 
     monkeypatch.setattr(job_commands, "_resolve_web_job_id", fake_resolve_web_job_id)
 
-    def fake_list_job_instances(job_id, *, page_num, page_size, session):  # noqa: ANN001
+    def fake_list_job_instances(job_id, *, num, session):  # noqa: ANN001
         captured["list"] = {
             "job_id": job_id,
-            "page_num": page_num,
-            "page_size": page_size,
+            "num": num,
             "session": session,
         }
         return (
@@ -168,24 +166,19 @@ def test_job_shell_command_uses_web_resolver_and_rank_selector(monkeypatch) -> N
             "job",
             "shell",
             "train-a",
-            "--pick",
-            "2",
-            "--rank",
-            "1",
-            "-A",
-            "--all-users",
-            "--created-by",
-            "user-1",
-            "--max-pages",
-            "7",
-        ],
+                "--pick",
+                "2",
+                "--rank",
+                "1",
+                "-A",
+                "--max-pages",
+                "7",
+            ],
     )
 
     assert result.exit_code == 0, result.output
     assert captured["resolve"]["job"] == "train-a"
     assert captured["resolve"]["all_workspaces"] is True
-    assert captured["resolve"]["all_users"] is True
-    assert captured["resolve"]["created_by"] == "user-1"
     assert captured["resolve"]["max_pages"] == 7
     assert captured["resolve"]["pick"] == 2
     assert captured["list"]["job_id"] == "job-abc"
@@ -235,6 +228,62 @@ def test_job_shell_command_rejects_multiple_selectors() -> None:
     assert "Use only one of --rank or --instance" in result.output
 
 
+def test_job_instances_requires_workspace_and_uses_num(monkeypatch) -> None:  # noqa: ANN001
+    captured = {}
+
+    monkeypatch.setattr(job_commands.Config, "from_files_and_env", lambda **kwargs: (object(), []))
+    monkeypatch.setattr(job_commands, "get_web_session", lambda: _FakeSession())
+
+    def fake_resolve_web_job_id(**kwargs):  # noqa: ANN001
+        captured["resolve"] = kwargs
+        return "job-abc"
+
+    def fake_list_job_instances(job_id, *, num, session):  # noqa: ANN001
+        captured["list"] = {"job_id": job_id, "num": num, "session": session}
+        return (
+            [
+                {
+                    "name": "worker-0",
+                    "instance_status": "instance_running",
+                    "instance_type": "worker",
+                    "node": "node-a",
+                    "created_at": 0,
+                }
+            ],
+            1,
+        )
+
+    monkeypatch.setattr(job_commands, "_resolve_web_job_id", fake_resolve_web_job_id)
+    monkeypatch.setattr(job_commands.browser_api_module, "list_job_instances", fake_list_job_instances)
+    monkeypatch.setattr(job_commands, "_close_web_client", lambda: None)
+
+    missing_workspace = CliRunner().invoke(cli_main, ["job", "instances", "train-a"])
+    assert missing_workspace.exit_code != 0
+    assert "Missing option '--workspace'" in missing_workspace.output
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "instances",
+                "train-a",
+                "--workspace",
+                "分布式训练空间",
+                "--num",
+                "42",
+            ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["resolve"]["job"] == "train-a"
+    assert captured["resolve"]["workspace"] == "分布式训练空间"
+    assert captured["resolve"]["all_workspaces"] is False
+    assert captured["resolve"]["scan_num"] == 42
+    assert captured["list"]["job_id"] == "job-abc"
+    assert captured["list"]["num"] == 42
+    assert "worker-0" in result.output
+
+
 def test_resolve_web_job_id_pick_selects_matching_job(monkeypatch) -> None:  # noqa: ANN001
     rows = [
         {"name": "train-a", "job_id": "job-1"},
@@ -253,8 +302,6 @@ def test_resolve_web_job_id_pick_selects_matching_job(monkeypatch) -> None:  # n
         job="train-a",
         workspace=None,
         all_workspaces=True,
-        all_users=False,
-        created_by=None,
         max_pages=50,
         pick=2,
     )
@@ -268,13 +315,15 @@ def test_job_shell_command_rejects_job_id_boundary(monkeypatch) -> None:  # noqa
     monkeypatch.setattr(
         job_commands,
         "_list_web_jobs",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not resolve raw ids")),
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("should not resolve platform handles")
+        ),
     )
 
     result = CliRunner().invoke(cli_main, ["job", "shell", "job-abc"])
 
     assert result.exit_code != 0
-    assert "takes a job name, not an id / partial-id" in result.output
+    assert "take a job name, not a platform handle or partial handle" in result.output
 
 
 class _FakeSocket:

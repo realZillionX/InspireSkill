@@ -49,10 +49,11 @@ _STATUS_ALIAS_MAP = {
     "FAILED": {"FAILED", "job_failed"},
     "CANCELLED": {"CANCELLED", "job_cancelled", "job_stopped"},
 }
+_KNOWN_JOB_STATUSES = frozenset().union(*_STATUS_ALIAS_MAP.values())
 
 
 class WebJobResolutionError(Exception):
-    """Raised when a web job name/id cannot be resolved safely."""
+    """Raised when a web job name cannot be resolved safely."""
 
 
 class WebJobValidationError(WebJobResolutionError):
@@ -84,18 +85,20 @@ def _close_web_client() -> None:
         pass
 
 
-def _resolve_explicit_workspace(config: Config, workspace: Optional[str]) -> Optional[str]:
+def _resolve_explicit_workspace(config: Config, workspace: Optional[str], session) -> Optional[str]:  # noqa: ANN001
     if workspace is None:
         return None
     workspace = workspace.strip()
     if not workspace:
         raise ConfigError("Workspace cannot be empty")
+    if workspace == "-A":
+        raise ConfigError("--workspace requires a workspace name; -A is not accepted here.")
     if _looks_like_workspace_id(workspace):
         raise ConfigError(
-            "--workspace takes a workspace name or alias, not a raw ID. "
+            "--workspace takes a workspace name, not a platform handle. "
             "See `inspire config context` for available names."
         )
-    return select_workspace_id(config, explicit_workspace_name=workspace)
+    return select_workspace_id(config, explicit_workspace_name=workspace, session=session)
 
 
 def _workspace_name(session, workspace_id: str) -> str:  # noqa: ANN001
@@ -103,6 +106,14 @@ def _workspace_name(session, workspace_id: str) -> str:  # noqa: ANN001
     if isinstance(names, dict):
         return str(names.get(workspace_id) or "")
     return ""
+
+
+def _current_user_id(session) -> str:  # noqa: ANN001
+    me = browser_api_module.get_current_user(session=session)
+    user_id = str(me.get("id") or me.get("user_id") or "").strip()
+    if not user_id:
+        raise ValueError("Cannot determine the current user from the live web session.")
+    return user_id
 
 
 def _list_workspace_ids(
@@ -115,11 +126,9 @@ def _list_workspace_ids(
     """Pick workspace_ids for a job-list call.
 
     Precedence:
-      1. ``--workspace`` explicit alias / name
-      2. ``-A`` widens to the union of ``[workspaces]`` alias-map values and
-         the platform session's known workspaces (alias map preferred when
-         present; live list as a backstop when discover hasn't run)
-      3. Default = platform session's workspace
+      1. ``--workspace`` explicit workspace name
+      2. ``-A`` widens to the platform session's known workspaces
+      3. default = platform session's workspace
     """
     if explicit_workspace_id:
         return [explicit_workspace_id]
@@ -131,15 +140,6 @@ def _list_workspace_ids(
         if current:
             ordered.append(current)
             seen.add(current)
-        # Union of [workspaces] alias-map values (user-curated via
-        # `inspire init --discover`) AND session.all_workspace_ids (whatever
-        # SSO sees). Either source alone could miss workspaces the user
-        # actually wants to scan, so we widen across both.
-        alias_values = [str(v).strip() for v in (config.workspaces or {}).values() if v]
-        for wid in alias_values:
-            if wid and wid not in seen:
-                ordered.append(wid)
-                seen.add(wid)
         for wid in getattr(session, "all_workspace_ids", None) or []:
             wid_s = str(wid or "").strip()
             if wid_s and wid_s not in seen:
@@ -368,42 +368,41 @@ def _resolve_web_job_id(
     job: str,
     workspace: Optional[str],
     all_workspaces: bool,
-    all_users: bool,
-    created_by: Optional[str],
     max_pages: int,
     pick: Optional[int] = None,
     allow_raw_id: bool = False,
+    scan_num: Optional[int] = None,
 ) -> str:
     job = (job or "").strip()
     if not job:
-        raise WebJobResolutionError("Job name/id cannot be empty")
+        raise WebJobResolutionError("Job name cannot be empty")
     if _looks_like_job_id(job):
         if allow_raw_id:
             return job
         raise WebJobValidationError(
-            "v2 CLI takes a job name, not an id / partial-id. "
-            "Use `inspire job list -A` to find the name and pass that instead."
+            "CLI commands take a job name, not a platform handle or partial handle. "
+            "Use `inspire job list -A` to find the name."
         )
     if not allow_raw_id and (
         is_full_uuid(job, prefix="job-") or is_partial_id(job, prefix="job-")
     ):
         raise WebJobValidationError(
-            "v2 CLI takes a job name, not an id / partial-id. "
-            "Use `inspire job list -A` to find the name and pass that instead."
+            "CLI commands take a job name, not a platform handle or partial handle. "
+            "Use `inspire job list -A` to find the name."
         )
 
     limit = 0 if pick is not None else 2
+    page_size = max(1, int(scan_num)) if scan_num is not None else 100
+    scan_pages = 1 if scan_num is not None else max_pages
     rows, _ = _list_web_jobs(
         config=config,
         workspace=workspace,
         all_workspaces=all_workspaces,
-        all_users=all_users,
-        created_by=created_by,
         status=None,
         name=job,
         page_num=1,
-        page_size=100,
-        max_pages=max_pages,
+        page_size=page_size,
+        max_pages=scan_pages,
         limit=limit,
     )
     exact = [row for row in rows if row.get("name") == job]
@@ -431,19 +430,21 @@ def _resolve_web_job_id(
             f"Multiple web jobs match {scrub_raw_ids(job)!r}; pass the full job name. "
             f"Candidates: {candidate_names}"
         )
+    if workspace and not all_workspaces:
+        hint = f"inspire job list --workspace {scrub_raw_ids(workspace)} --name {scrub_raw_ids(job)}"
+    else:
+        hint = f"inspire job list -A --name {scrub_raw_ids(job)}"
     raise WebJobResolutionError(
         f"No web job matching {scrub_raw_ids(job)!r} found. "
-        f"Try `inspire job list -A --name {scrub_raw_ids(job)}`."
+        f"Try `{hint}`."
     )
 
 
 def _format_job_list(rows: list[dict]) -> str:
-    """Render jobs as a table without raw ids.
+    """Render jobs as a table without platform handles.
 
-    The v2 user boundary takes names only — surfacing ``job-<uuid>`` in
-    the listing invites agents to round-trip them and then hit
-    ``reject_id_at_boundary`` later. JSON output keeps every field for
-    scripts.
+    Names are the CLI boundary. Use `inspire job id <name>` when the
+    platform handle is explicitly needed.
     """
     if not rows:
         return "No jobs found."
@@ -493,13 +494,89 @@ def _format_job_list(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _build_status_catalog(rows: list[dict]) -> list[dict]:
+    buckets: dict[str, dict] = {}
+    for row in rows:
+        status = scrub_raw_ids(str(row.get("status") or "UNKNOWN"))
+        bucket = buckets.setdefault(
+            status,
+            {
+                "name": "known" if status in _KNOWN_JOB_STATUSES else "unknown",
+                "status": status,
+                "count": 0,
+                "job_names": [],
+            },
+        )
+        bucket["count"] += 1
+        job_name = scrub_raw_ids(str(row.get("name") or "N/A"))
+        if job_name and job_name not in bucket["job_names"] and len(bucket["job_names"]) < 5:
+            bucket["job_names"].append(job_name)
+
+    return sorted(
+        buckets.values(),
+        key=lambda x: (x["name"] != "unknown", -int(x["count"]), str(x["status"])),
+    )
+
+
+def _format_status_catalog(rows: list[dict]) -> str:
+    if not rows:
+        return "No job statuses found."
+
+    name_w = max(len("Name"), *(len(str(r["name"])) for r in rows))
+    status_w = max(len("Status"), *(len(str(r["status"])) for r in rows))
+    count_w = max(len("Count"), *(len(str(r["count"])) for r in rows))
+    header = f"{'Name':<{name_w}}  {'Status':<{status_w}}  {'Count':>{count_w}}"
+    sep = "-" * len(header)
+    lines = ["Job Status Catalog", header, sep]
+    for row in rows:
+        lines.append(
+            f"{str(row['name']):<{name_w}}  "
+            f"{scrub_raw_ids(str(row['status'])):<{status_w}}  "
+            f"{int(row['count']):>{count_w}}"
+        )
+    lines.append(sep)
+    unknown_total = sum(int(r["count"]) for r in rows if r["name"] == "unknown")
+    lines.append(f"Unknown: {unknown_total} job(s)")
+    return "\n".join(lines)
+
+
+def _scan_status_catalog_jobs(
+    *,
+    config: Config,
+    workspace: Optional[str],
+    all_workspaces: bool,
+    page_size: int,
+    max_pages: int,
+) -> tuple[list[dict], list[dict]]:
+    session = get_web_session()
+    explicit_workspace_id = _resolve_explicit_workspace(config, workspace, session)
+    creator_id = _current_user_id(session)
+
+    workspace_ids = _list_workspace_ids(
+        config,
+        session,
+        explicit_workspace_id=explicit_workspace_id,
+        all_workspaces=all_workspaces,
+    )
+    return _scan_web_jobs_round_robin(
+        session=session,
+        workspace_ids=workspace_ids,
+        creator_id=creator_id,
+        api_status=None,
+        allowed_statuses=None,
+        name=None,
+        page_num=1,
+        page_size=page_size,
+        max_pages=max_pages,
+        limit=0,
+    )
+
+
 def _list_web_jobs(
     *,
     config: Config,
     workspace: Optional[str],
     all_workspaces: bool,
-    all_users: bool,
-    created_by: Optional[str],
     status: Optional[str],
     name: Optional[str],
     page_num: int,
@@ -508,13 +585,9 @@ def _list_web_jobs(
     limit: int,
 ) -> tuple[list[dict], list[dict]]:
     try:
-        explicit_workspace_id = _resolve_explicit_workspace(config, workspace)
         session = get_web_session()
-
-        creator_id = (created_by or "").strip() or None
-        if creator_id is None and not all_users:
-            me = browser_api_module.get_current_user(session=session)
-            creator_id = str(me.get("id") or me.get("user_id") or "").strip() or None
+        explicit_workspace_id = _resolve_explicit_workspace(config, workspace, session)
+        creator_id = _current_user_id(session)
 
         allowed_statuses = _expand_status_aliases([status]) if status else None
         api_status = status if status and status.startswith("job_") else None
@@ -608,8 +681,6 @@ def _watch_jobs(
     config: Config,
     workspace: Optional[str],
     all_workspaces: bool,
-    all_users: bool,
-    created_by: Optional[str],
     status: Optional[str],
     name: Optional[str],
     page_size: int,
@@ -646,8 +717,6 @@ def _watch_jobs(
                 config=config,
                 workspace=workspace,
                 all_workspaces=all_workspaces,
-                all_users=all_users,
-                created_by=created_by,
                 status=status,
                 name=name,
                 page_num=1,
@@ -729,21 +798,14 @@ def _watch_jobs(
     show_default=True,
     help="Refresh interval in seconds for --watch",
 )
-@click.option("--web", is_flag=True, help="Accepted for compatibility; ignored.")
-@click.option("--workspace", default=None, help="Workspace alias or name")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option(
     "--all-workspaces",
     "-A",
     is_flag=True,
-    help="Search every visible workspace (current + [workspaces] alias values)",
+    help="Search every visible workspace",
 )
 @click.option("--name", default=None, help="Case-insensitive keyword filter for job name/command")
-@click.option(
-    "--all-users",
-    is_flag=True,
-    help="Include jobs from all users (default: current user only)",
-)
-@click.option("--created-by", default=None, help="Advanced creator filter")
 @click.option("--page-num", type=int, default=1, show_default=True, help="Result page number")
 @click.option("--page-size", type=int, default=100, show_default=True, help="Result page size")
 @click.option(
@@ -761,12 +823,9 @@ def list_jobs(
     active: bool,
     watch: bool,
     interval: int,
-    web: bool,
     workspace: Optional[str],
     all_workspaces: bool,
     name: Optional[str],
-    all_users: bool,
-    created_by: Optional[str],
     page_num: int,
     page_size: int,
     max_pages: int,
@@ -785,7 +844,6 @@ def list_jobs(
         inspire job list --active
         inspire job list --watch --active -n 20
     """
-    del web
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
 
@@ -795,8 +853,6 @@ def list_jobs(
                 config=config,
                 workspace=workspace,
                 all_workspaces=all_workspaces,
-                all_users=all_users,
-                created_by=created_by,
                 status=status,
                 name=name,
                 page_size=page_size,
@@ -811,8 +867,6 @@ def list_jobs(
             config=config,
             workspace=workspace,
             all_workspaces=all_workspaces,
-            all_users=all_users,
-            created_by=created_by,
             status=status,
             name=name,
             page_num=page_num,
@@ -846,18 +900,141 @@ def list_jobs(
         _handle_error(ctx, "Error", str(e), EXIT_GENERAL_ERROR)
 
 
-@click.command("status")
+@click.command("status-catalog")
+@click.option("--workspace", default=None, help="Workspace name")
+@click.option(
+    "--all-workspaces",
+    "-A",
+    is_flag=True,
+    help="Search every visible workspace",
+)
+@click.option("--page-size", type=int, default=100, show_default=True, help="Result page size")
+@click.option(
+    "--max-pages",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Max result pages to scan per workspace",
+)
+@pass_context
+def status_catalog(
+    ctx: Context,
+    workspace: Optional[str],
+    all_workspaces: bool,
+    page_size: int,
+    max_pages: int,
+) -> None:
+    """Maintainer diagnostic for platform status drift.
+
+    Scans live job list pages and groups status strings into values the CLI
+    already knows and values that may need formatter / wait-logic updates. Use
+    `job status <name>` for normal job inspection.
+    """
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        try:
+            rows, scanned = _scan_status_catalog_jobs(
+                config=config,
+                workspace=workspace,
+                all_workspaces=all_workspaces,
+                page_size=page_size,
+                max_pages=max_pages,
+            )
+        finally:
+            _close_web_client()
+        catalog = _build_status_catalog(rows)
+        unknown = [row for row in catalog if row["name"] == "unknown"]
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "source": "web",
+                        "statuses": catalog,
+                        "unknown_statuses": unknown,
+                        "scanned": scanned,
+                    }
+                )
+            )
+        else:
+            click.echo(_format_status_catalog(catalog))
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except (SessionExpiredError, ValueError) as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("id")
 @click.argument("job")
-@click.option("--web", is_flag=True, help="Use the platform detail view.")
-@click.option("--workspace", default=None, help="Workspace alias or name")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option(
     "--all-workspaces",
     "-A",
     is_flag=True,
     help="Resolve the job name across every visible workspace, not just the current one",
 )
-@click.option("--all-users", is_flag=True, help="Include jobs from all users when resolving a name")
-@click.option("--created-by", default=None, help="Advanced creator filter for job name resolution")
+@click.option(
+    "--pick",
+    type=int,
+    default=None,
+    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+)
+@click.option(
+    "--max-pages",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Max result pages to scan per workspace when resolving a job name",
+)
+@pass_context
+def show_id(
+    ctx: Context,
+    job: str,
+    workspace: Optional[str],
+    all_workspaces: bool,
+    pick: Optional[int],
+    max_pages: int,
+) -> None:
+    """Print the platform ID for a training job name."""
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        job_id = _resolve_web_job_id(
+            config=config,
+            job=job,
+            workspace=workspace,
+            all_workspaces=all_workspaces,
+            max_pages=max_pages,
+            pick=pick,
+        )
+        if ctx.json_output:
+            click.echo(json_formatter.format_json({"name": job, "id": job_id}, allow_ids=True))
+        else:
+            click.echo(job_id)
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except WebJobValidationError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+    except WebJobResolutionError as e:
+        _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
+    except (SessionExpiredError, ValueError) as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("status")
+@click.argument("job")
+@click.option("--web", is_flag=True, help="Use the platform detail view.")
+@click.option("--workspace", default=None, help="Workspace name")
+@click.option(
+    "--all-workspaces",
+    "-A",
+    is_flag=True,
+    help="Resolve the job name across every visible workspace, not just the current one",
+)
 @click.option(
     "--max-pages",
     type=int,
@@ -872,8 +1049,6 @@ def status(
     web: bool,
     workspace: Optional[str],
     all_workspaces: bool,
-    all_users: bool,
-    created_by: Optional[str],
     max_pages: int,
 ) -> None:
     """Check the status of a training job.
@@ -887,15 +1062,13 @@ def status(
     """
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        web_mode = web or workspace or all_users or created_by
+        web_mode = web or workspace
         if web_mode:
             job_id = _resolve_web_job_id(
                 config=config,
                 job=job,
                 workspace=workspace,
                 all_workspaces=all_workspaces,
-                all_users=all_users,
-                created_by=created_by,
                 max_pages=max_pages,
             )
             try:
@@ -941,57 +1114,41 @@ def status(
 
 @click.command("instances")
 @click.argument("job")
-@click.option("--web", is_flag=True, help="Accepted for compatibility; ignored.")
-@click.option("--workspace", default=None, help="Workspace alias or name")
 @click.option(
-    "--all-workspaces",
-    "-A",
-    is_flag=True,
-    help="Search every visible workspace when resolving a job name",
+    "--workspace",
+    required=True,
+    help="Workspace name. Required; -A is not accepted.",
 )
-@click.option("--all-users", is_flag=True, help="Include jobs from all users when resolving a name")
-@click.option("--created-by", default=None, help="Advanced creator filter for name resolution")
-@click.option("--page-num", type=int, default=1, show_default=True, help="Instance page number")
-@click.option("--page-size", type=int, default=200, show_default=True, help="Instance page size")
 @click.option(
-    "--max-pages",
-    type=int,
-    default=50,
+    "--num",
+    type=click.IntRange(1),
+    default=500,
     show_default=True,
-    help="Max result pages to scan per workspace when resolving a job name",
+    help="Maximum jobs to scan while resolving the name and maximum instances to query.",
 )
 @pass_context
 def instances(
     ctx: Context,
     job: str,
-    web: bool,
     workspace: Optional[str],
-    all_workspaces: bool,
-    all_users: bool,
-    created_by: Optional[str],
-    page_num: int,
-    page_size: int,
-    max_pages: int,
+    num: int,
 ) -> None:
     """List pod-level instances for a distributed-training job."""
-    del web
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         job_id = _resolve_web_job_id(
             config=config,
             job=job,
             workspace=workspace,
-            all_workspaces=all_workspaces,
-            all_users=all_users,
-            created_by=created_by,
-            max_pages=max_pages,
+            all_workspaces=False,
+            max_pages=1,
+            scan_num=num,
         )
         try:
             session = get_web_session()
             rows, total = browser_api_module.list_job_instances(
                 job_id,
-                page_num=page_num,
-                page_size=page_size,
+                num=num,
                 session=session,
             )
         finally:
@@ -1135,15 +1292,13 @@ def delete(ctx: Context, job: str, yes: bool, pick: Optional[int], all_workspace
 @click.option("--timeout", type=int, default=14400, help="Timeout in seconds (default: 4 hours)")
 @click.option("--interval", type=int, default=30, help="Poll interval in seconds (default: 30)")
 @click.option("--web", is_flag=True, help="Use the platform detail view while polling.")
-@click.option("--workspace", default=None, help="Workspace alias or name")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option(
     "--all-workspaces",
     "-A",
     is_flag=True,
     help="Resolve the job name across every visible workspace, not just the current one",
 )
-@click.option("--all-users", is_flag=True, help="Include jobs from all users when resolving a name")
-@click.option("--created-by", default=None, help="Advanced creator filter for job name resolution")
 @click.option(
     "--max-pages",
     type=int,
@@ -1160,8 +1315,6 @@ def wait(
     web: bool,
     workspace: Optional[str],
     all_workspaces: bool,
-    all_users: bool,
-    created_by: Optional[str],
     max_pages: int,
 ) -> None:
     """Wait for a job to complete.
@@ -1176,15 +1329,13 @@ def wait(
     """
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        web_mode = web or workspace or all_users or created_by
+        web_mode = web or workspace
         if web_mode:
             job_id = _resolve_web_job_id(
                 config=config,
                 job=job,
                 workspace=workspace,
                 all_workspaces=all_workspaces,
-                all_users=all_users,
-                created_by=created_by,
                 max_pages=max_pages,
             )
             api = None
@@ -1286,15 +1437,13 @@ def wait(
 @click.command("command")
 @click.argument("job")
 @click.option("--web", is_flag=True, help="Use the platform detail view.")
-@click.option("--workspace", default=None, help="Workspace alias or name")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option(
     "--all-workspaces",
     "-A",
     is_flag=True,
     help="Resolve the job name across every visible workspace, not just the current one",
 )
-@click.option("--all-users", is_flag=True, help="Include jobs from all users when resolving a name")
-@click.option("--created-by", default=None, help="Advanced creator filter for job name resolution")
 @click.option(
     "--max-pages",
     type=int,
@@ -1309,22 +1458,18 @@ def show_command(
     web: bool,
     workspace: Optional[str],
     all_workspaces: bool,
-    all_users: bool,
-    created_by: Optional[str],
     max_pages: int,
 ) -> None:
     """Show the training command used for a job."""
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        web_mode = web or workspace or all_users or created_by
+        web_mode = web or workspace
         if web_mode:
             job_id = _resolve_web_job_id(
                 config=config,
                 job=job,
                 workspace=workspace,
                 all_workspaces=all_workspaces,
-                all_users=all_users,
-                created_by=created_by,
                 max_pages=max_pages,
             )
             try:
@@ -1385,15 +1530,13 @@ def show_command(
     default=None,
     help="Pick the Nth matching job (1-indexed) when multiple jobs share a name",
 )
-@click.option("--workspace", default=None, help="Workspace alias or name")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option(
     "--all-workspaces",
     "-A",
     is_flag=True,
     help="Resolve the job name across every visible workspace, not just the current one",
 )
-@click.option("--all-users", is_flag=True, help="Include jobs from all users when resolving a name")
-@click.option("--created-by", default=None, help="Advanced creator filter for job name resolution")
 @click.option(
     "--max-pages",
     type=int,
@@ -1410,8 +1553,6 @@ def shell(
     pick: Optional[int],
     workspace: Optional[str],
     all_workspaces: bool,
-    all_users: bool,
-    created_by: Optional[str],
     max_pages: int,
 ) -> None:
     """Open an interactive shell inside a running training-job instance.
@@ -1439,8 +1580,6 @@ def shell(
             job=job,
             workspace=workspace,
             all_workspaces=all_workspaces,
-            all_users=all_users,
-            created_by=created_by,
             max_pages=max_pages,
             pick=pick,
             allow_raw_id=False,
@@ -1449,8 +1588,7 @@ def shell(
         try:
             raw_instances, _ = browser_api_module.list_job_instances(
                 job_id,
-                page_num=1,
-                page_size=200,
+                num=200,
                 session=session,
             )
         finally:
@@ -1496,7 +1634,9 @@ __all__ = [
     "list_jobs",
     "shell",
     "show_command",
+    "show_id",
     "status",
+    "status_catalog",
     "stop",
     "delete",
     "wait",

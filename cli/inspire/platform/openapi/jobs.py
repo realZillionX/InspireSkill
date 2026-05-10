@@ -55,20 +55,21 @@ def create_training_job_smart(
     spec_id = spec_id_override
     compute_group_id = compute_group_id_override
 
-    project_id = project_id or api.DEFAULT_PROJECT_ID
-    workspace_id = workspace_id or api.DEFAULT_WORKSPACE_ID
+    api._validate_required_params(
+        project_id=project_id,
+        workspace_id=workspace_id,
+        image=image,
+        instance_count=instance_count,
+    )
     task_priority = task_priority or api.DEFAULT_TASK_PRIORITY
-    instance_count = instance_count or api.DEFAULT_INSTANCE_COUNT
     max_running_time_ms = max_running_time_ms or api.DEFAULT_MAX_RUNNING_TIME
 
     if shm_gi is None:
         shm_gi = api.DEFAULT_SHM_SIZE
 
-    final_image = image or api._get_default_image()
-
     framework_item = {
         "image_type": api.DEFAULT_IMAGE_TYPE,
-        "image": final_image,
+        "image": image,
         "instance_count": instance_count,
         "spec_id": spec_id,
     }

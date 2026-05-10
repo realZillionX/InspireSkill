@@ -53,12 +53,8 @@ def _workspace_name_map(
     config: Optional[Config],
     session,
 ) -> dict[str, str]:
-    names = dict(session.all_workspace_names or {})
-    if config is not None:
-        for name, wid in getattr(config, "workspaces", {}).items():
-            if wid and wid not in names:
-                names[wid] = name
-    return names
+    del config
+    return dict(session.all_workspace_names or {})
 
 
 def _resolve_workspace_scope(
@@ -75,6 +71,7 @@ def _resolve_workspace_scope(
         resolved_workspace_id = select_workspace_id(
             config,
             explicit_workspace_name=explicit_workspace_name,
+            session=session,
         )
         return [str(resolved_workspace_id)], workspace_names, True
 
@@ -144,8 +141,12 @@ def _format_availability_table(availability, workspace_mode: bool = False) -> No
     )
     lines.append("")
     lines.append("💡 Usage:")
-    lines.append('  inspire run "python train.py" -q 1,20,200   # 1 GPU + 20 CPU + 200 GiB')
-    lines.append('  inspire run "python train.py" -q 4,80,800 --group H100   # Pin group')
+    lines.append(
+        '  inspire job create -n train -c "python train.py" -q 1,20,200   # 1 GPU + 20 CPU + 200 GiB'
+    )
+    lines.append(
+        '  inspire job create -n train -c "python train.py" -q 4,80,800 --group H100   # Pin group'
+    )
     lines.append("  inspire resources specs --usage notebook    # List valid quota triples")
     lines.append("")
 
@@ -368,8 +369,12 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
         lines.append("  CPU rows   = CPU-only compute groups with CPU and memory totals")
     lines.append("")
     lines.append("💡 Usage:")
-    lines.append('  inspire run "python train.py" -q 1,20,200   # 1 GPU + 20 CPU + 200 GiB')
-    lines.append('  inspire run "python train.py" -q 4,80,800 --group H100   # Pin group')
+    lines.append(
+        '  inspire job create -n train -c "python train.py" -q 1,20,200   # 1 GPU + 20 CPU + 200 GiB'
+    )
+    lines.append(
+        '  inspire job create -n train -c "python train.py" -q 4,80,800 --group H100   # Pin group'
+    )
     lines.append("  inspire resources specs --usage notebook    # List valid quota triples")
     lines.append("")
 

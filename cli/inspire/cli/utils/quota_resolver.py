@@ -49,7 +49,7 @@ class QuotaSpec:
 
 @dataclass(frozen=True)
 class ResolvedQuota:
-    """A matched quota row keyed to its platform IDs."""
+    """A matched quota row keyed to its platform handles."""
 
     quota_id: str
     logic_compute_group_id: str

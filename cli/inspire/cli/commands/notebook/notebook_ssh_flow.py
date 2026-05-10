@@ -677,7 +677,7 @@ def run_notebook_ssh(
     if not notebook_display_name:
         # If the platform returns a notebook with no name, the cache would
         # have to fall back to an id-shaped key — which would then violate
-        # the v2.0.0 name-only-at-user-boundary contract the cached-tunnel
+        # the name-only-at-user-boundary contract the cached-tunnel
         # commands (`shell` / `exec` / `scp`) rely on. Surface a clear
         # error instead of silently fabricating an `nb-<hex>` cache key.
         _handle_error(

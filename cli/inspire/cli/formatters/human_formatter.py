@@ -132,8 +132,7 @@ def format_job_status(job_data: Dict[str, Any]) -> str:
     status = str(job_data.get("status", "UNKNOWN"))
     lines = ["Job Status"]
 
-    # Core fields. Raw job_id intentionally omitted from the human view per
-    # the v2 names-only boundary; pass --json to surface every field.
+    # Core fields. Raw job_id intentionally omitted; names are the CLI boundary.
     fields = [
         ("Name", job_data.get("name", "N/A")),
         ("Status", status),

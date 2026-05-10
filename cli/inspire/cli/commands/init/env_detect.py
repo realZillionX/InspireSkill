@@ -70,7 +70,6 @@ def _generate_toml_content(
         "github",
         "sync",
         "bridge",
-        "workspaces",
         "job",
         "notebook",
         "ssh",

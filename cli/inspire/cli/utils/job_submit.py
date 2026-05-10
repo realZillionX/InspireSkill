@@ -26,6 +26,19 @@ class JobSubmission:
     max_time_ms: str
 
 
+@dataclass(frozen=True)
+class JobSubmissionPlan:
+    """Fully resolved local submission plan, before the create API call."""
+
+    create_kwargs: dict[str, Any]
+    log_path: Optional[str]
+    wrapped_command: str
+    max_time_ms: str
+    project_name: Optional[str]
+    workspace_id: str
+    quota: ResolvedQuota
+
+
 def wrap_in_bash(command: str) -> str:
     """Wrap a command in bash -c unless already wrapped."""
     stripped = command.strip()
@@ -142,8 +155,8 @@ def select_project_for_workspace(
     )
 
     requested_value = requested
-    if not requested_value and not config.project_order:
-        requested_value = config.job_project_id
+    if not requested_value:
+        raise ConfigError("--project is required.")
     if requested_value and not requested_value.startswith("project-"):
         alias_map = config.projects or {}
         for alias, project_id in alias_map.items():
@@ -151,14 +164,9 @@ def select_project_for_workspace(
                 requested_value = project_id
                 break
 
-    shared_groups = getattr(config, "project_shared_path_groups", None)
-    if not isinstance(shared_groups, dict) or not shared_groups:
-        shared_groups = None
-
     return browser_api_module.select_project(
         projects,
         requested_value,
-        shared_path_group_by_id=shared_groups,
         project_order=config.project_order or None,
         congested_projects=congested or None,
     )
@@ -170,8 +178,7 @@ def _quota_display(quota: ResolvedQuota) -> str:
     return f"{quota.cpu_count}xCPU"
 
 
-def submit_training_job(
-    api,  # noqa: ANN001
+def build_training_job_plan(
     *,
     config: Config,
     name: str,
@@ -187,8 +194,13 @@ def submit_training_job(
     project_name: Optional[str] = None,
     auto_fault_tolerance: Optional[bool] = None,
     fault_tolerance_max_retry: Optional[int] = None,
-) -> JobSubmission:
-    del project_name  # no longer cached locally; kept for caller compat
+) -> JobSubmissionPlan:
+    if not image:
+        raise ValueError("--image is required.")
+    if nodes is None:
+        raise ValueError("--nodes is required.")
+    if int(nodes) < 1:
+        raise ValueError("--nodes must be >= 1.")
 
     wrapped_command = wrap_in_bash(command)
     final_command, log_path = build_remote_logged_command(
@@ -221,7 +233,76 @@ def submit_training_job(
             )
         create_kwargs["shm_gi"] = shm_size
 
-    result = api.create_training_job_smart(**create_kwargs)
+    return JobSubmissionPlan(
+        create_kwargs=create_kwargs,
+        log_path=log_path,
+        wrapped_command=wrapped_command,
+        max_time_ms=max_time_ms,
+        project_name=project_name,
+        workspace_id=workspace_id,
+        quota=quota,
+    )
+
+
+def training_plan_payload(plan: JobSubmissionPlan) -> dict[str, Any]:
+    """Return a JSON-friendly dry-run payload for scripts."""
+    return {
+        "dry_run": True,
+        "kind": "training",
+        "create_kwargs": dict(plan.create_kwargs),
+        "project_name": plan.project_name,
+        "workspace_id": plan.workspace_id,
+        "quota": {
+            "quota_id": plan.quota.quota_id,
+            "logic_compute_group_id": plan.quota.logic_compute_group_id,
+            "compute_group_name": plan.quota.compute_group_name,
+            "gpu_count": plan.quota.gpu_count,
+            "gpu_type": plan.quota.gpu_type,
+            "cpu_count": plan.quota.cpu_count,
+            "memory_gib": plan.quota.memory_gib,
+        },
+        "wrapped_command": plan.wrapped_command,
+        "log_path": plan.log_path,
+        "max_time_ms": plan.max_time_ms,
+    }
+
+
+def submit_training_job(
+    api,  # noqa: ANN001
+    *,
+    config: Config,
+    name: str,
+    command: str,
+    quota: ResolvedQuota,
+    framework: str,
+    project_id: str,
+    workspace_id: str,
+    image: Optional[str],
+    priority: int,
+    nodes: int,
+    max_time_hours: float,
+    project_name: Optional[str] = None,
+    auto_fault_tolerance: Optional[bool] = None,
+    fault_tolerance_max_retry: Optional[int] = None,
+) -> JobSubmission:
+    plan = build_training_job_plan(
+        config=config,
+        name=name,
+        command=command,
+        quota=quota,
+        framework=framework,
+        project_id=project_id,
+        workspace_id=workspace_id,
+        image=image,
+        priority=priority,
+        nodes=nodes,
+        max_time_hours=max_time_hours,
+        project_name=project_name,
+        auto_fault_tolerance=auto_fault_tolerance,
+        fault_tolerance_max_retry=fault_tolerance_max_retry,
+    )
+
+    result = api.create_training_job_smart(**plan.create_kwargs)
     data = result.get("data", {}) if isinstance(result, dict) else {}
     job_id = data.get("job_id")
 
@@ -229,18 +310,21 @@ def submit_training_job(
         job_id=job_id,
         data=data,
         result=result,
-        log_path=log_path,
-        wrapped_command=wrapped_command,
-        max_time_ms=max_time_ms,
+        log_path=plan.log_path,
+        wrapped_command=plan.wrapped_command,
+        max_time_ms=plan.max_time_ms,
     )
 
 
 __all__ = [
     "JobSubmission",
+    "JobSubmissionPlan",
+    "build_training_job_plan",
     "build_remote_logged_command",
     "derive_remote_log_glob",
     "sanitize_job_name_for_filename",
     "select_project_for_workspace",
     "submit_training_job",
+    "training_plan_payload",
     "wrap_in_bash",
 ]

@@ -101,7 +101,7 @@ inspire update --skill-only   # 仅刷 SKILL.md / references/
 inspire account add <name>
 inspire config show --compact
 cd /path/to/your-repo
-inspire init --discover
+inspire init
 inspire resources list --all --include-cpu
 ```
 
@@ -125,7 +125,7 @@ inspire resources list --all --include-cpu
 <tr>
   <td>
     <h4>🏃 GPU 后台任务（平台名：分布式训练）</h4>
-    平台官方把 <code>job</code> 这一路叫"分布式训练" / distributed training；提交 job 时只要求 GPU 计算资源和启动命令，不强制程序必须是训练。<code>inspire job</code> 可用于一张卡、多卡、单节点、多节点等后台 GPU 任务 —— 分布式训练 / 批量推理 / 并发 worker pool 都走这里（<code>hpc</code> 对应 CPU Slurm）。<code>inspire run "&lt;cmd&gt;" --watch</code> 自动选资源组 + 跟 <code>job logs --follow</code>；精细控制优先级 / 节点数用 <code>job create</code>，健康度用 <code>job metrics</code> 看 GPU、显存、CPU、内存、I/O 和多 pod 负载是否同步。
+    平台官方把 <code>job</code> 这一路叫"分布式训练" / distributed training；提交 job 时只要求 GPU 计算资源和启动命令，不强制程序必须是训练。<code>inspire job</code> 可用于一张卡、多卡、单节点、多节点等后台 GPU 任务 —— 分布式训练 / 批量推理 / 并发 worker pool 都走这里（<code>hpc</code> 对应 CPU Slurm）。提交统一使用 <code>job create</code>；需要跟日志时用 <code>job logs --follow</code>，健康度用 <code>job metrics</code> 看 GPU、显存、CPU、内存、I/O 和多 pod 负载是否同步。
   </td>
   <td>
     <h4>📊 资源情报</h4>
@@ -135,7 +135,7 @@ inspire resources list --all --include-cpu
 <tr>
   <td>
     <h4>🗂 镜像管理</h4>
-    <code>image list / detail / save / register / set-default / set-visibility / delete</code>，默认镜像自动写回项目 <code>.inspire/config.toml</code>；<code>hpc create --image-type</code> 明确可见性。
+    <code>image list / detail / save / register / set-visibility / delete</code>，创建 notebook、job、HPC、Ray 或 serving 时显式传 <code>--image</code>；<code>hpc create --image-type</code> 明确可见性。
   </td>
   <td>
     <h4>🛰 模型部署 （Serving）</h4>
@@ -182,10 +182,10 @@ inspire resources list --all --include-cpu
 
 ## 自定义 SKILL.md / INSPIRE.md
 
-SKILL.md 装完是一份**通用默认 playbook**，默认口径是主力跑 `分布式训练空间` 下的 H100 / H200。如果你的主战场不在这儿（比如启智的国产卡 workspace `CI-情境智能-国产卡` / `CI-情境智能-国产卡-ssd3`，或小组自己划走的专属资源开发空间），两条口子做定制：
+SKILL.md 装完是一份**通用 playbook**。资源条件不要写成隐式默认值；把 `workspace`、`project`、`group`、`quota` 和 `image` 组合成 workload profile，并在 `inspire notebook/job/hpc/... create --profile <name>` 或 batch 文件里显式使用。如果你的主战场是启智的国产卡 workspace `CI-情境智能-国产卡` / `CI-情境智能-国产卡-ssd3`，或小组自己划走的专属资源开发空间，两条口子做定制：
 
-1. **项目级（推荐）**：改仓库根的 `INSPIRE.md` —— `Path Conventions` 换 remote workspace 路径，`Existing Notebooks` / `Ongoing Jobs` 里显式写国产卡机型和任务。`INSPIRE.md` 属于你的 repo，不会被 `inspire update` 覆写，也方便跟组内协作。`SKILL.md` 的“项目上下文”说明了推荐字段。
-2. **Harness 级**：直接编辑 `~/.claude/skills/inspire/SKILL.md` 和同目录 `references/`（Codex / Gemini / OpenClaw / OpenCode 同理），改按需加载入口、默认镜像、常用 workspace 名或对应使用手册。注意：`inspire update` **默认会覆盖 SKILL.md 和 references/**；维护了本地改动后用 `inspire update --cli-only` 只升级 CLI 不动 skill 文件，想合并上游变更时再手动 diff。
+1. **项目级（推荐）**：改仓库根的 `INSPIRE.md`，并用 `inspire <workload> profile set <name> ...` 保存条件组；`Path Conventions` 只写 remote path alias。`INSPIRE.md` 属于你的 repo，不会被 `inspire update` 覆写，也方便跟组内协作。
+2. **Harness 级**：直接编辑 `~/.claude/skills/inspire/SKILL.md` 和同目录 `references/`（Codex / Gemini / OpenClaw / OpenCode 同理），改按需加载入口或对应使用手册。注意：`inspire update` **默认会覆盖 SKILL.md 和 references/**；维护了本地改动后用 `inspire update --cli-only` 只升级 CLI 不动 skill 文件，想合并上游变更时再手动 diff。
 
 ---
 

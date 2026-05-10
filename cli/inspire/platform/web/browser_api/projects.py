@@ -258,7 +258,6 @@ def select_project(
     requested: Optional[str] = None,
     *,
     allow_requested_over_quota: bool = False,
-    shared_path_group_by_id: dict[str, str] | None = None,
     needs_gpu_quota: bool = True,
     project_order: list[str] | None = None,
     congested_projects: set[str] | None = None,
@@ -367,48 +366,16 @@ def select_project(
             p for p in projects if p is not target and p.has_quota(needs_gpu=needs_gpu_quota)
         ]
 
-        target_group = None
-        if shared_path_group_by_id is not None:
-            target_group = str(shared_path_group_by_id.get(target.project_id) or "").strip() or None
-
-        compatible_candidates = fallback_candidates
-        incompatible: list[ProjectInfo] = []
-        if target_group and shared_path_group_by_id is not None:
-            compatible_candidates = []
-            for project in fallback_candidates:
-                group = str(shared_path_group_by_id.get(project.project_id) or "").strip()
-                if group and group != target_group:
-                    incompatible.append(project)
-                    continue
-                compatible_candidates.append(project)
-
-        fallback = _best_by_quota(compatible_candidates)
+        fallback = _best_by_quota(fallback_candidates)
         if fallback is None:
-            suffix = ""
-            if target_group and incompatible:
-                suffix = (
-                    "\n\nNote: Some in-quota projects were excluded due to shared-path mismatch "
-                    f"(target group: {target_group})."
-                )
             raise ValueError(
-                "All compatible projects are over quota\n" + _format_candidates(projects) + suffix
+                "All projects are over quota\n" + _format_candidates(projects)
             )
-
-        group_note = ""
-        if target_group and shared_path_group_by_id is not None:
-            fallback_group = str(shared_path_group_by_id.get(fallback.project_id) or "").strip()
-            if not fallback_group:
-                group_note = (
-                    " Warning: selected fallback project has unknown shared-path group; "
-                    "run 'inspire init --discover --probe-shared-path' to populate it."
-                )
 
         fallback_msg = (
             f"Project '{target.name}' is over quota; using '{fallback.name}'. "
             "Hint: pass --project <name-or-id> to override."
         )
-        if group_note:
-            fallback_msg = fallback_msg + group_note
         return (fallback, fallback_msg)
 
     candidates = _quota_candidates(projects)

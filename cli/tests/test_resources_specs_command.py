@@ -17,10 +17,6 @@ def _patch_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         base_url="https://qz.sii.edu.cn",
         log_cache_dir=str(tmp_path / "logs"),
     )
-    cfg.workspaces = {
-        "分布式训练空间": "ws-11111111-1111-1111-1111-111111111111",
-        "CPU资源空间": "ws-22222222-2222-2222-2222-222222222222",
-    }
     monkeypatch.setattr(
         config_module.Config,
         "from_files_and_env",

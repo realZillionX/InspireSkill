@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import click
 
+from inspire.cli.commands.batch import job_batch
+from inspire.cli.commands.workload_profile import make_profile_command
+
 from .job_commands import (
     delete,
     instances,
     list_jobs,
     shell,
     show_command,
+    show_id,
     status,
+    status_catalog,
     stop,
     wait,
 )
@@ -34,11 +39,15 @@ def job() -> None:
 
 
 job.add_command(create)
+job.add_command(make_profile_command("job"))
+job.add_command(job_batch)
 job.add_command(status)
+job.add_command(show_id)
 job.add_command(logs)
 job.add_command(events)
 job.add_command(instances)
 job.add_command(list_jobs)
+job.add_command(status_catalog)
 job.add_command(shell)
 job.add_command(stop)
 job.add_command(delete)

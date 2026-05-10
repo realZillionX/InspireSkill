@@ -1,11 +1,10 @@
-"""Shared pytest fixtures for the v2 CLI.
+"""Shared pytest fixtures for the CLI.
 
-The CLI's resolvers reject platform ids at the user boundary (v2.0.0
-breaking change — only names cross the user / agent boundary). The test
-suite still exercises internal code paths by pre-resolving to a full
-platform id; this autouse fixture short-circuits the name→id lookup so
-existing tests keep passing against id-shaped fixtures without network
-calls while production code still enforces the no-id contract.
+The CLI's resolvers reject platform handles at the user boundary: only
+names cross normal command input. Some tests still exercise internal code
+paths with pre-resolved handles; this autouse fixture short-circuits lookup
+so those tests avoid live network calls while production code still enforces
+the name-only contract.
 """
 from __future__ import annotations
 
@@ -35,11 +34,10 @@ def _silence_normalize_environment(monkeypatch):  # noqa: ANN001
 
 @pytest.fixture(autouse=True)
 def _short_circuit_platform_resolvers(monkeypatch):  # noqa: ANN001
-    """Pass any id-like argument through resolvers untouched for tests.
+    """Pass resolver arguments through untouched for internal-path tests.
 
-    Production `resolve_job_id` etc. reject platform ids and force a
-    name lookup; here we let ids through unchanged so id-seeded fixtures
-    keep working. Real name→id resolution is covered by unit tests of
+    Production `resolve_job_id` etc. reject platform handles and force a
+    name lookup. Real name-to-handle resolution is covered by unit tests of
     `resolve_by_name` / `resolve_job_id` that mock the list API directly.
     """
     def _passthrough(ctx, arg, **_kwargs):  # noqa: ANN001,ANN003

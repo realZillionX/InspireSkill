@@ -286,8 +286,6 @@ def test_variants_emit_resource_tagged_json(
     payload = envelope["data"]
     assert payload["resource"] == resource
     assert payload["task_type"] == task_type
-    # JSON id field matches the resource noun (e.g. `hpc_id` for hpc), giving
-    # each variant a unique top-level identifier in mixed output.
-    assert payload[f"{resource}_id"] == args[2]
+    assert f"{resource}_id" not in payload
     # --json branch must skip PNG rendering.
     assert render_captures == []

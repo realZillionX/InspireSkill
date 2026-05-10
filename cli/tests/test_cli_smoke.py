@@ -8,7 +8,7 @@ def test_cli_help_includes_top_level_groups() -> None:
     runner = CliRunner()
     result = runner.invoke(cli_main, ["--help"])
     assert result.exit_code == 0
-    for group in ("job", "notebook", "image", "resources", "hpc", "run"):
+    for group in ("job", "notebook", "image", "resources", "hpc"):
         assert group in result.output, f"missing: {group}\n{result.output}"
     # bridge / tunnel were merged into notebook
     assert "bridge" not in result.output
@@ -32,8 +32,8 @@ def test_notebook_help_includes_key_subcommands() -> None:
         "connections", "refresh", "forget", "test",
     ):
         assert sub in result.output, f"missing: {sub}\n{result.output}"
-    # set-default and the --save-as alias concept are gone
-    assert "set-default" not in result.output
+    removed_default_cmd = "set" + "-default"
+    assert removed_default_cmd not in result.output
 
 
 def test_notebook_ssh_help_is_black_box_no_save_as() -> None:
@@ -64,16 +64,6 @@ def test_resources_help_includes_key_subcommands() -> None:
     assert result.exit_code == 0
     assert "list" in result.output
     assert "nodes" in result.output
-
-
-
-
-def test_run_help_mentions_watch_and_priority_level() -> None:
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["run", "--help"])
-    assert result.exit_code == 0
-    assert "Follow logs" in result.output
-    assert "priority_level" in result.output
 
 
 def test_job_logs_help_mentions_ssh_only() -> None:

@@ -30,7 +30,6 @@ from inspire.config import (
 from inspire.cli.commands.init import (
     init,
     _detect_env_vars,
-    _derive_shared_path_group,
     _generate_toml_content,
 )
 from inspire.cli.commands.config import config as config_command
@@ -142,7 +141,7 @@ class TestConfigSchema:
 
         # Job/Notebook settings should be project
         assert "INSP_PRIORITY" in project_env_vars
-        assert "INSPIRE_NOTEBOOK_QUOTA" in project_env_vars
+        assert "INSPIRE_NOTEBOOK_QUOTA" not in project_env_vars
 
         # Bridge/Sync settings should be project
         assert "INSPIRE_BRIDGE_DENYLIST" in project_env_vars
@@ -502,7 +501,6 @@ class TestAccountConfigLayer:
         [
             ('[paths]\nlog_pattern = "train_*.log"', "paths.log_pattern"),
             ('[github]\nrepo = "me/foo"', "github.repo"),
-            ('[job]\nproject_id = "project-abc"', "job.project_id"),
             # [job].workspace_id removed entirely in v3.1.0 — no longer
             # rejected at account layer because the field doesn't exist.
             ('[notebook]\npost_start = "bash setup.sh"', "notebook.post_start"),
@@ -534,24 +532,21 @@ class TestAccountConfigLayer:
         cfg, _ = Config.from_files_and_env(require_credentials=False)
         assert cfg.username == "alice"
 
-    def test_allowed_account_defaults_still_work(
+    def test_allowed_account_defaults_do_not_create_condition_fields(
         self, home: Path, clean_env: None
     ) -> None:
-        """Fields that CAN be account-level defaults must keep working
-        (workspace aliases, default image/priority, etc.)."""
+        """Allowed account-level defaults keep working without condition defaults."""
         self._write_account_config(
             home,
             "alice",
             '[auth]\nusername = "alice"\npassword = "pw"\n\n'
-            '[workspaces]\ncpu = "ws-cpu"\ngpu = "ws-gpu"\n\n'
-            '[job]\npriority = 5\nimage = "myimage:latest"\n\n'
-            '[notebook]\nquota = "1,20,200"\n',
+            "[job]\npriority = 5\n",
         )
 
         cfg, _ = Config.from_files_and_env(require_credentials=False)
         assert cfg.job_priority == 5
-        assert cfg.job_image == "myimage:latest"
-        assert cfg.notebook_quota == "1,20,200"
+        assert not hasattr(cfg, "job" + "_image")
+        assert not hasattr(cfg, "notebook_quota")
 
     def test_account_config_proxy_merges_with_env_override(
         self, home: Path, clean_env: None, monkeypatch: pytest.MonkeyPatch
@@ -747,19 +742,6 @@ class TestInitCommand:
         assert payload["error"]["type"] == "ValidationError"
         assert "--force" in payload["error"]["message"]
 
-    def test_init_help_includes_probe_pubkey_alias_and_scope_note(self) -> None:
-        """Test probe option help text clearly states discover+probe scope."""
-        runner = CliRunner()
-        result = runner.invoke(init, ["--help"])
-
-        assert result.exit_code == 0
-        assert "Template/smart modes avoid writing secrets." in result.output
-        assert "stored in global config for the selected account." in result.output
-        assert "--probe-pubkey" in result.output
-        assert "--pubkey" in result.output
-        assert "Only effective with --discover" in result.output
-        assert "shared-path" in result.output
-
     def test_init_warns_on_existing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
     ) -> None:
@@ -880,48 +862,6 @@ class TestInitCommand:
         # Global config should NOT exist (no global-scope vars)
         assert not global_config.exists()
 
-    def test_prompt_workspace_aliases_force_removes_duplicate_legacy_keys(self) -> None:
-        from inspire.cli.commands.init.discover import _prompt_workspace_aliases
-
-        merged_workspaces = {
-            "cpu": "ws-cpu",
-            "gpu": "ws-gpu",
-            "internet": "ws-net",
-            "hpc": "ws-hpc",
-            "whole_node": "ws-node",
-            "custom": "ws-custom",
-        }
-
-        _prompt_workspace_aliases(
-            force=True,
-            workspace_id="ws-cpu",
-            merged_workspaces=merged_workspaces,
-            env_overrides={},
-            discovered_workspace_ids=[
-                "ws-cpu",
-                "ws-gpu",
-                "ws-net",
-                "ws-hpc",
-                "ws-node",
-            ],
-            discovered_workspace_names={
-                "ws-cpu": "CPU资源空间",
-                "ws-gpu": "分布式训练空间",
-                "ws-net": "上网空间",
-                "ws-hpc": "高性能计算空间",
-                "ws-node": "整节点空间",
-            },
-        )
-
-        assert merged_workspaces["CPU资源空间"] == "ws-cpu"
-        assert merged_workspaces["分布式训练空间"] == "ws-gpu"
-        assert merged_workspaces["上网空间"] == "ws-net"
-        assert merged_workspaces["高性能计算空间"] == "ws-hpc"
-        assert merged_workspaces["整节点空间"] == "ws-node"
-        assert merged_workspaces["custom"] == "ws-custom"
-        for alias in ("cpu", "gpu", "internet", "hpc", "whole_node"):
-            assert alias not in merged_workspaces
-
     def test_default_path_aliases_use_selected_tier_project_topic_and_user(self) -> None:
         from inspire.cli.commands.init.discover import _default_path_aliases
 
@@ -964,6 +904,8 @@ class TestInitCommand:
             created_at=0.0,
             workspace_id=workspace_id,
             login_username="cached-user",
+            all_workspace_ids=[workspace_id],
+            all_workspace_names={workspace_id: "CPU临时测试空间"},
         )
 
         if get_web_session_side_effect is not None:
@@ -1031,31 +973,25 @@ class TestInitCommand:
 
         return global_config, workspace_id
 
-    def test_discover_probe_fails_when_probe_defaults_cannot_be_resolved(
+    def test_discover_does_not_print_session_workspace_as_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
     ) -> None:
-        import inspire.platform.web.browser_api as browser_api_module
-        from inspire.cli.commands.init import discover as discover_module
-
         self._setup_discover_mocks(monkeypatch, tmp_path)
-        monkeypatch.setenv("INSPIRE_USERNAME", "probe-user")
+        monkeypatch.setenv("INSPIRE_USERNAME", "cached-user")
         monkeypatch.setenv("INSPIRE_BASE_URL", "https://example.invalid")
 
-        monkeypatch.setattr(
-            discover_module, "_load_ssh_public_key", lambda _path: "ssh-ed25519 AAA"
-        )
-        monkeypatch.setattr(browser_api_module, "list_notebook_compute_groups", lambda **_: [])
-        monkeypatch.setattr(
-            discover_module,
-            "_select_probe_cpu_compute_group_id",
-            lambda _compute_groups: None,
-        )
-
         runner = CliRunner()
-        result = runner.invoke(init, ["--discover", "--force", "--probe-shared-path"])
+        result = runner.invoke(init, ["--force"])
 
-        assert result.exit_code == 1
-        assert "Failed to resolve probe defaults" in result.output
+        assert result.exit_code == 0, result.output
+        assert "Discovering account catalog" in result.output
+        assert "Workspace:" not in result.output
+        assert "CPU临时测试空间" not in result.output
+        project_config = tmp_path / PROJECT_CONFIG_DIR / CONFIG_FILENAME
+        assert project_config.exists()
+        project_content = project_config.read_text(encoding="utf-8")
+        assert "[context]" in project_content
+        assert "workspace" not in project_content.lower()
 
 
 # ===========================================================================
@@ -1168,37 +1104,6 @@ class TestInitHelpers:
 
         # Value should be properly escaped
         assert 'base_url = "https://example.com/path?foo=bar&baz=\\"test\\""' in toml_content
-
-    def test_derive_shared_path_group_extracts_global_user_dir(self) -> None:
-        group = _derive_shared_path_group(
-            "/inspire/hdd/global_user/user123/some/dir",
-            account_key=None,
-        )
-        assert group == "/inspire/hdd/global_user/user123"
-
-    def test_derive_shared_path_group_infers_global_user_dir_without_account_match(self) -> None:
-        group = _derive_shared_path_group(
-            "/inspire/hdd/project/myproj/user-dir",
-            account_key="acct-0000",
-        )
-        assert group == "/inspire/hdd/global_user/user-dir"
-
-    def test_derive_shared_path_group_falls_back_to_project_root_when_user_dir_missing(
-        self,
-    ) -> None:
-        group = _derive_shared_path_group(
-            "/inspire/hdd/project/myproj",
-            account_key="acct-0000",
-        )
-        assert group == "/inspire/hdd/project/myproj"
-
-    def test_derive_shared_path_group_normalizes_global_user_under_project_path(self) -> None:
-        group = _derive_shared_path_group(
-            "/inspire/hdd/project/myproj/global_user/user-dir",
-            account_key=None,
-        )
-        assert group == "/inspire/hdd/global_user/user-dir"
-
 
 # ===========================================================================
 # Config show command tests

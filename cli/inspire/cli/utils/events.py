@@ -6,67 +6,19 @@ but not all. Train jobs carry a Kubernetes-style `type` (`Normal` /
 `Warning`), HPC jobs don't. Both sets are lossy after GC (returning `[]`
 for long-completed jobs is the steady state).
 
-Design mirrors `job logs`: fetch live → cache to
-`~/.inspire/events/<id>.events.json` → format for stdout. Re-running with
-`--from-cache` skips the network call; the command is otherwise idempotent
-and safe to re-run.
+Events are always fetched from the live platform API. Local caches are not a
+source of truth for user-visible diagnostics.
 """
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 import click
 
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.raw_ids import scrub_raw_ids
-
-
-_EVENTS_CACHE_DIR = Path.home() / ".inspire" / "events"
-
-
-def events_cache_path(job_id: str) -> Path:
-    """Local cache path for events of a given job id."""
-    return _EVENTS_CACHE_DIR / f"{job_id}.events.json"
-
-
-def write_events_cache(job_id: str, events: list[dict]) -> Path:
-    """Write events to the local cache, best-effort; returns the path written.
-
-    Silently no-ops on I/O error (cache is a convenience, not load-bearing).
-    """
-    path = events_cache_path(job_id)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "job_id": job_id,
-            "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "events": events,
-        }
-        tmp = path.with_suffix(".json.tmp")
-        with tmp.open("w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        tmp.replace(path)
-    except OSError:
-        pass
-    return path
-
-
-def read_events_cache(job_id: str) -> Optional[list[dict]]:
-    """Load cached events if present; returns None when no cache exists."""
-    path = events_cache_path(job_id)
-    if not path.exists():
-        return None
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        events = data.get("events")
-        return events if isinstance(events, list) else None
-    except (OSError, json.JSONDecodeError):
-        return None
 
 
 def _fmt_timestamp(raw: Any) -> str:
@@ -163,35 +115,35 @@ def render_events_table(events: list[dict]) -> None:
 def emit_events(
     ctx_json: bool,
     local_json: bool,
-    job_id: str,
+    resource_type: str,
+    resource_name: str,
     events: list[dict],
-    cache_path: Path,
 ) -> None:
     """Render events for stdout according to JSON vs human preference."""
     if ctx_json or local_json:
         click.echo(
             json_formatter.format_json(
                 {
-                    "job_id": job_id,
+                    "resource_type": resource_type,
+                    "name": resource_name,
                     "count": len(events),
-                    "cache_path": str(cache_path),
+                    "source": "web",
                     "events": events,
                 }
             )
         )
     else:
         render_events_table(events)
-        click.echo()
-        click.echo(click.style("cached events locally", fg="white", dim=True), err=True)
 
 
 def run_events_command(
     ctx,
     *,
-    job_id: str,
+    resource_id: str,
+    resource_type: str,
+    resource_name: str,
     fetch: Callable[[], list[dict]],
     json_output_local: bool,
-    from_cache: bool,
     type_filter: Optional[str],
     reason_filter: Optional[str],
     tail: Optional[int],
@@ -200,23 +152,12 @@ def run_events_command(
 
     `fetch` is the per-job-kind platform call returning a list[dict].
     """
-    if from_cache:
-        cached = read_events_cache(job_id)
-        if cached is None:
-            click.secho(
-                f"No cached events for {scrub_raw_ids(job_id)}; run without --from-cache to fetch.",
-                fg="yellow",
-                err=True,
-            )
-            cached = []
-        events = cached
-    else:
-        try:
-            events = fetch()
-        except Exception as e:  # defensive: helpers already swallow, but belt-and-suspenders
-            click.secho(f"events fetch failed: {scrub_raw_ids(e)}", fg="red", err=True)
-            events = []
-        write_events_cache(job_id, events)
+    del resource_id
+    try:
+        events = fetch()
+    except Exception as e:  # defensive: helpers already swallow, but belt-and-suspenders
+        click.secho(f"events fetch failed: {scrub_raw_ids(e)}", fg="red", err=True)
+        events = []
 
     filtered = filter_events(
         events,
@@ -228,7 +169,7 @@ def run_events_command(
     emit_events(
         ctx_json=bool(getattr(ctx, "json_output", False)),
         local_json=json_output_local,
-        job_id=job_id,
+        resource_type=resource_type,
+        resource_name=resource_name,
         events=filtered,
-        cache_path=events_cache_path(job_id),
     )

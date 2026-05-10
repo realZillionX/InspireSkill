@@ -15,30 +15,8 @@ JOB_OPTIONS: list[ConfigOption] = [
         parser=_parse_int,
         scope="project",
     ),
-    ConfigOption(
-        env_var="INSP_IMAGE",
-        toml_key="job.image",
-        field_name="job_image",
-        description="Default Docker image for jobs",
-        default=None,
-        category="Job",
-        scope="project",
-    ),
-    ConfigOption(
-        env_var="INSPIRE_PROJECT_ID",
-        toml_key="job.project_id",
-        field_name="job_project_id",
-        description="Default project ID for jobs",
-        default=None,
-        category="Job",
-        scope="project",
-    ),
-    # NOTE: `[job].workspace_id` / `INSPIRE_WORKSPACE_ID` was removed in
-    # v3.1.0. The "default workspace" concept is gone — workspace must be
-    # passed explicitly via `--workspace <alias>` (resolved against
-    # ``[workspaces]`` map) on every command that needs one. The loader
-    # warns once if it still sees the legacy field; see
-    # ``config/load_common.py::_warn_legacy_default_workspace``.
+    # Job project, image, and workspace defaults are intentionally unsupported.
+    # Commands that need those values require explicit flags.
     ConfigOption(
         env_var="INSPIRE_SHM_SIZE",
         toml_key="job.shm_size",
@@ -72,24 +50,6 @@ JOB_OPTIONS: list[ConfigOption] = [
 ]
 
 NOTEBOOK_OPTIONS: list[ConfigOption] = [
-    ConfigOption(
-        env_var="INSPIRE_NOTEBOOK_QUOTA",
-        toml_key="notebook.quota",
-        field_name="notebook_quota",
-        description="Default quota for notebooks as 'gpu,cpu,mem' (mem in GiB)",
-        default=None,
-        category="Notebook",
-        scope="project",
-    ),
-    ConfigOption(
-        env_var="INSPIRE_NOTEBOOK_IMAGE",
-        toml_key="notebook.image",
-        field_name="notebook_image",
-        description="Default Docker image for notebooks",
-        default=None,
-        category="Notebook",
-        scope="project",
-    ),
     ConfigOption(
         env_var="INSPIRE_NOTEBOOK_POST_START",
         toml_key="notebook.post_start",

@@ -210,7 +210,7 @@ def test_select_project_requested_not_found_raises() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_notebook_project_passes_quota_and_shared_path_settings(monkeypatch) -> None:
+def test_resolve_notebook_project_passes_quota_settings(monkeypatch) -> None:
     requested = _project(
         "project-requested",
         "Requested Project",
@@ -225,14 +225,12 @@ def test_resolve_notebook_project_passes_quota_and_shared_path_settings(monkeypa
         requested_value=None,
         *,
         allow_requested_over_quota=False,
-        shared_path_group_by_id=None,
         needs_gpu_quota=True,
         project_order=None,
         congested_projects=None,
     ):
         called["requested"] = requested_value
         called["allow_requested_over_quota"] = allow_requested_over_quota
-        called["shared_path_group_by_id"] = shared_path_group_by_id
         called["needs_gpu_quota"] = needs_gpu_quota
         called["project_order"] = project_order
         called["congested_projects"] = congested_projects
@@ -257,7 +255,6 @@ def test_resolve_notebook_project_passes_quota_and_shared_path_settings(monkeypa
     assert resolved is requested
     assert called["requested"] == "project-requested"
     assert called["allow_requested_over_quota"] is True
-    assert called["shared_path_group_by_id"] is None
     assert called["needs_gpu_quota"] is False
 
 
@@ -436,7 +433,6 @@ def test_cpu_notebook_skips_health_check(monkeypatch) -> None:
         requested_value=None,
         *,
         allow_requested_over_quota=False,
-        shared_path_group_by_id=None,
         needs_gpu_quota=True,
         project_order=None,
         congested_projects=None,

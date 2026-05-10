@@ -6,8 +6,8 @@ show``, which is focused on the flat env-var-backed options. This command
 fills that gap with a **name-only** view: every workspace, project, and
 compute group is identified by its platform name (``CI-情境智能``,
 ``H200-3号机房``), not by a short alias or a raw ``ws-…`` ID. Agents feed
-those names straight back into ``--workspace`` / ``--project`` /
-``--compute-group`` flags without ever needing to touch config.toml.
+those names straight back into ``--workspace`` / ``--project`` / ``--group``
+flags without ever needing to touch config.toml.
 """
 
 from __future__ import annotations
@@ -28,30 +28,12 @@ from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 
 
-def _project_name_for_id(cfg: Config, project_id: str | None) -> str | None:  # noqa: D401
-    """Reverse-lookup a project id in the ``[projects]`` name→id table."""
-    if not project_id:
-        return None
-    for name, pid in (cfg.projects or {}).items():
-        if pid == project_id:
-            return name
-    catalog_entry = (cfg.project_catalog or {}).get(project_id)
-    if isinstance(catalog_entry, dict):
-        catalog_name = catalog_entry.get("name")
-        if isinstance(catalog_name, str) and catalog_name.strip():
-            return catalog_name.strip()
-    return None
-
-
 def _collect_context(cfg: Config) -> dict[str, Any]:
     from inspire.accounts import current_account, list_accounts
 
     active_account = scrub_raw_ids(current_account() or cfg.username or "") or None
 
-    active_project_name = scrub_raw_ids(_project_name_for_id(cfg, cfg.job_project_id) or "") or None
-    # `active.workspace` was the singular default-workspace concept removed
-    # in v3.1.0. The `[workspaces]` alias map below still surfaces every
-    # configured workspace, but no single one is "active" by default.
+    active_project_name = None
     active_workspace_name = None
 
     # Projects: name + optional path segment (e.g. 'embodied-multimodality').
@@ -81,17 +63,21 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
             bucket["path"] = scrub_raw_ids(path.strip())
     projects_view = sorted(projects_by_name.values(), key=lambda e: e["name"])
 
-    # Workspaces: just the name list, sorted.
-    workspaces_view = sorted(
-        scrub_raw_ids(name)
-        for name in (cfg.workspaces or {})
-        if isinstance(name, str) and name.strip()
-    )
+    # Workspaces: live names from the web session when available.
+    ws_name_for_id: dict[str, str] = {}
+    try:
+        from inspire.config.workspaces import workspace_name_map
+        from inspire.platform.web.session import get_web_session
+
+        ws_name_for_id = {
+            ws_id: scrub_raw_ids(name)
+            for ws_id, name in workspace_name_map(get_web_session()).items()
+        }
+    except Exception:
+        ws_name_for_id = {}
+    workspaces_view = sorted(set(ws_name_for_id.values()))
 
     # Compute groups: name + the workspace name it belongs to (when resolvable).
-    ws_name_for_id: dict[str, str] = {
-        ws_id: scrub_raw_ids(name) for name, ws_id in (cfg.workspaces or {}).items()
-    }
     compute_groups_view: list[dict[str, Any]] = []
     for group in cfg.compute_groups or []:
         if not isinstance(group, dict):
@@ -196,7 +182,7 @@ def show_context(ctx: Context, json_output_local: bool) -> None:
     All identifiers are platform names (e.g. ``CI-情境智能``, ``H200-3号机房``)
     — never a raw ``ws-…`` / ``project-…`` / ``lcg-…`` ID and never an
     alias. Feed these names straight into ``--workspace`` / ``--project``
-    / ``--compute-group`` flags on other commands.
+    / ``--group`` flags on other commands.
 
     \b
     Examples:

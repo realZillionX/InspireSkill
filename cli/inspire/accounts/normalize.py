@@ -32,12 +32,7 @@ _LEGACY_FILES_UNDER_CACHE = (
     ("rtunnel-proxy-state.json", "Pre-v3 rtunnel proxy state"),
 )
 
-_LEGACY_ENV_VARS = (
-    # v3.1.0 dropped the default-workspace concept entirely; this env var is no
-    # longer consulted anywhere. Listed here so users see a one-line nudge to
-    # remove it from their shell rc instead of debugging silent no-ops.
-    "INSPIRE_WORKSPACE_ID",
-)
+_LEGACY_ENV_VARS: tuple[str, ...] = ()
 
 
 def _cache_root() -> Path:

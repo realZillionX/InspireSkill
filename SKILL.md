@@ -30,6 +30,8 @@ uv run inspire hpc create --help
 
 `inspire --help` 的 `Commands` 区给出当前版本真实命令组；`inspire <command-group> --help` 给出该组所有子命令；`inspire <command-group> <subcommand> --help` 给出参数、默认值、必填项和注意事项。
 
+`workspace`、`project`、`group`、`quota` 和 `image` 没有隐式默认值。需要复用条件组时，先查 `inspire <command-group> profile --help`，用 `inspire notebook/job/hpc/ray/serving profile set <name> ...` 保存 workload profile；创建命令显式传 `--profile <name>`，batch 条目写 `profile = "<name>"`。Path alias 只表示远端路径，不能当作 workload profile。
+
 每次任务按这个顺序走：
 
 1. 用 help 确认命令和参数。
@@ -48,7 +50,7 @@ uv run inspire hpc create --help
 | 把 notebook 容器内 HTTP 服务暴露给浏览器、SDK 或小组成员 | [references/notebook-service-proxy.md](references/notebook-service-proxy.md) |
 | 提交 GPU job、HPC、Ray、serving，或观察事件、日志和指标 | [references/compute-workloads.md](references/compute-workloads.md) |
 | 一个项目要从环境准备、数据处理推进到训练 | [references/workflows.md](references/workflows.md) |
-| 浏览、注册、保存、设置默认或清理镜像 | [references/image-management.md](references/image-management.md) |
+| 浏览、注册、保存、调整可见性或清理镜像 | [references/image-management.md](references/image-management.md) |
 | 浏览或注册模型仓库条目，判断 model registry 和 serving 的关系 | [references/model.md](references/model.md) |
 | 安装、更新、账号、项目初始化、代理 setup | [references/setup/install-and-config.md](references/setup/install-and-config.md)、[references/setup/proxy-setup.md](references/setup/proxy-setup.md) |
 

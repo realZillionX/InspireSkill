@@ -20,6 +20,7 @@ from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import resolve_by_name
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
+from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import get_web_session
@@ -68,10 +69,10 @@ def _resolve_serving_name(
     )
 
 
-def _resolve_workspace_id(config: Config, workspace: Optional[str]) -> Optional[str]:
+def _resolve_workspace_id(config: Config, workspace: Optional[str], *, session=None) -> Optional[str]:
     if workspace is None:
         return None
-    return select_workspace_id(config, explicit_workspace_name=workspace)
+    return select_workspace_id(config, explicit_workspace_name=workspace, session=session)
 
 
 def _resolve_project_id(
@@ -88,7 +89,7 @@ def _resolve_project_id(
         if allow_config_raw_id:
             return requested
         raise ConfigError(
-            "--project takes a project name, not a raw ID. "
+            "--project takes a project name, not a platform handle. "
             "See `inspire project list` or `inspire config context`."
         )
     if requested in config.projects:
@@ -111,7 +112,7 @@ def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
     if not raw:
         raise ConfigError("Image is empty.")
     if raw.startswith(("image-", "mirror-")):
-        raise ConfigError("--image takes a visible image name or name:tag, not a raw ID.")
+        raise ConfigError("--image takes a visible image name or name:tag, not a platform handle.")
     target = raw.lower()
     for source in ("private", "public", "official"):
         try:
@@ -384,7 +385,7 @@ def _format_configs(data: dict[str, Any]) -> str:
 
 
 @click.command("list")
-@click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option("--project", default=None, help="Project name filter")
 @click.option("--status", "status_filter", default=None, help="Serving status filter")
 @click.option("--keyword", default=None, help="Server-side name/model search")
@@ -475,7 +476,7 @@ def list_serving(
 
 @click.command("status")
 @click.argument("name")
-@click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option(
     "-a",
     "--all",
@@ -561,7 +562,7 @@ def status_serving(
 
 @click.command("stop")
 @click.argument("name")
-@click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option(
     "-a",
     "--all",
@@ -617,7 +618,7 @@ def stop_serving(
 
 @click.command("delete")
 @click.argument("name")
-@click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option(
     "-a",
     "--all",
@@ -711,16 +712,21 @@ def configs_serving(
     default=None,
     help="Model version (default: latest version from model list)",
 )
-@click.option("--workspace", required=True, help="Workspace name (from [workspaces])")
+@click.option("--workspace", help="Workspace name. Required unless supplied by --profile.")
 @click.option(
     "--project",
     "-p",
-    default=None,
-    help="Project name (default from [context].project when configured)",
+    help="Project name. Required unless supplied by --profile.",
 )
-@click.option("--group", required=True, help="Compute group name")
-@click.option("--quota", "-q", required=True, help="Serving spec as gpu,cpu,mem")
-@click.option("--image", required=True, help="Visible image name or name:tag")
+@click.option("--group", help="Compute group name. Required unless supplied by --profile.")
+@click.option("--quota", "-q", help="Serving spec as gpu,cpu,mem. Required unless supplied by --profile.")
+@click.option("--image", help="Visible image name or name:tag. Required unless supplied by --profile.")
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    help="Serving condition profile providing workspace/project/group/quota/image.",
+)
 @click.option("--command", "-c", required=True, help="Serving startup command")
 @click.option("--port", type=int, required=True, help="Service port in the container")
 @click.option("--replicas", type=int, default=1, show_default=True)
@@ -729,8 +735,9 @@ def configs_serving(
 @click.option(
     "--priority",
     type=click.IntRange(1, 10),
-    default=None,
-    help="Task priority 1-10 (default from config or 1)",
+    default=10,
+    show_default=True,
+    help="Task priority 1-10.",
 )
 @click.option(
     "--custom-domain",
@@ -750,6 +757,7 @@ def create_serving(
     group: str,
     quota: str,
     image: str,
+    profile_name: Optional[str],
     command: str,
     port: int,
     replicas: int,
@@ -772,20 +780,45 @@ def create_serving(
 
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_id = select_workspace_id(config, explicit_workspace_name=workspace)
+
+        fields = apply_workload_profile(
+            profiles=getattr(config, "profiles", {}),
+            kind="serving",
+            profile_name=profile_name,
+            values={
+                "workspace": workspace,
+                "project": project,
+                "group": group,
+                "image": image,
+                "quota": quota,
+            },
+        )
+        workspace = fields["workspace"]
+        project = fields["project"]
+        group = fields["group"]
+        image = fields["image"]
+        quota = fields["quota"]
+        for field_name, value in (
+            ("workspace", workspace),
+            ("project", project),
+            ("group", group),
+            ("quota", quota),
+            ("image", image),
+        ):
+            if not value:
+                raise ConfigError(profile_required_message("serving", field_name))
+
+        workspace_id = select_workspace_id(config, explicit_workspace_name=workspace, session=session)
         if not workspace_id:
-            raise ConfigError("Missing workspace.")
+            raise ConfigError(profile_required_message("serving", "workspace"))
         project_id = _resolve_project_id(
             workspace_id=workspace_id,
             session=session,
             config=config,
-            requested=project or config.job_project_id,
-            allow_config_raw_id=project is None,
+            requested=project,
         )
         if not project_id:
-            raise ConfigError(
-                "Missing project. Pass --project <name> or configure [context].project."
-            )
+            raise ConfigError(profile_required_message("serving", "project"))
 
         try:
             spec = parse_quota(quota)
@@ -814,7 +847,7 @@ def create_serving(
 
         mirror_id = _resolve_image_id(image, session=session, ctx=ctx)
         resource_spec_price = _build_resource_spec_price(resolved)
-        final_priority = priority if priority is not None else (config.job_priority or 1)
+        final_priority = priority if priority is not None else 10
         payload = {
             "name": name,
             "logic_compute_group_id": resolved.logic_compute_group_id,

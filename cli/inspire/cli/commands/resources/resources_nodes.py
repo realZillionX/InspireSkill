@@ -14,6 +14,7 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
+from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.platform.web.session import SessionExpiredError, get_web_session
@@ -27,12 +28,8 @@ def _workspace_name_map(
     config: Optional[Config],
     session,
 ) -> dict[str, str]:
-    names = dict(session.all_workspace_names or {})
-    if config is not None:
-        for name, wid in getattr(config, "workspaces", {}).items():
-            if wid and wid not in names:
-                names[wid] = name
-    return names
+    del config
+    return dict(session.all_workspace_names or {})
 
 
 def _resolve_workspace_scope(
@@ -49,6 +46,7 @@ def _resolve_workspace_scope(
             select_workspace_id(
                 config,
                 explicit_workspace_name=explicit_workspace_name,
+                session=session,
             ),
             False,
         )
@@ -57,6 +55,18 @@ def _resolve_workspace_scope(
 
 @click.command("nodes")
 @click.option("--group", help="Filter by compute group name (partial match)")
+@click.option(
+    "--min-full-free-nodes",
+    "--min-free",
+    "--min-nodes",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help=(
+        "Only show groups with at least N fully idle 8-GPU nodes. "
+        "Use before multi-node jobs that need whole nodes, not scattered GPUs."
+    ),
+)
 @click.option(
     "--all",
     "show_all",
@@ -68,18 +78,20 @@ def _resolve_workspace_scope(
 def list_nodes(
     ctx: Context,
     group: str,
+    min_full_free_nodes: int,
     show_all: bool,
     workspace_name: Optional[str],
 ) -> None:
-    """Show how many FULL 8-GPU nodes are currently free per compute group.
+    """Show how many whole 8-GPU nodes are currently free per compute group.
 
     This accounts for GPU fragmentation across nodes, so it is the right view
-    when a workload needs whole 8-GPU nodes instead of scattered free GPUs.
+    when a workload needs whole nodes instead of scattered free GPUs.
 
     \b
     Examples:
         inspire resources nodes
         inspire resources nodes --group H200
+        inspire resources nodes --min-nodes 2
     """
     try:
         config = None
@@ -121,6 +133,8 @@ def list_nodes(
             name = c.group_name or name_map.get(c.group_id, "") or "Unknown"
             if group_lower and group_lower not in name.lower():
                 continue
+            if c.full_free_nodes < min_full_free_nodes:
+                continue
             # Use accurate available GPUs if available, otherwise fall back to computed
             free_gpus = accurate_map.get(c.group_id, c.full_free_nodes * c.gpu_per_node)
             filtered.append(
@@ -137,13 +151,23 @@ def list_nodes(
             )
 
         # Sort by full_free_nodes descending
-        filtered.sort(key=lambda x: x["full_free_nodes"], reverse=True)
+        filtered.sort(
+            key=lambda x: (
+                x["full_free_nodes"],
+                x["full_free_gpus"],
+                x["ready_nodes"],
+            ),
+            reverse=True,
+        )
+        recommendation = filtered[0] if filtered else None
 
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
                     {
                         "groups": filtered,
+                        "recommendation": recommendation,
+                        "min_full_free_nodes": min_full_free_nodes,
                         "workspace_filter": workspace_id
                         or ("all" if all_workspaces else "current"),
                         "total_full_free_nodes": sum(x["full_free_nodes"] for x in filtered),
@@ -157,6 +181,8 @@ def list_nodes(
         )
         click.echo("")
         click.echo("📊 Full-Free 8-GPU Nodes by Compute Group")
+        if min_full_free_nodes:
+            click.echo(f"Filter: at least {min_full_free_nodes} full-free node(s)")
         if show_workspace:
             headers: tuple[str, ...] = (
                 "Workspace",
@@ -178,7 +204,7 @@ def list_nodes(
         total_free_gpus = 0
         table_rows: list[tuple[object, ...]] = []
         for row in filtered:
-            name = row["group_name"]
+            name = scrub_raw_ids(row["group_name"])
             full_free = row["full_free_nodes"]
             ready = row["ready_nodes"]
             total = row["total_nodes"]
@@ -199,7 +225,7 @@ def list_nodes(
             if show_workspace:
                 table_rows.append(
                     (
-                        row["workspace_name"],
+                        scrub_raw_ids(row["workspace_name"]),
                         name,
                         full_free,
                         ready,
@@ -218,6 +244,16 @@ def list_nodes(
         click.echo(
             "\n".join(render_table(headers, table_rows, widths, aligns=aligns, line_char="─"))
         )
+        if recommendation is not None:
+            workspace = scrub_raw_ids(str(recommendation.get("workspace_name") or ""))
+            group_name = scrub_raw_ids(str(recommendation.get("group_name") or "Unknown"))
+            prefix = f"{workspace} / " if show_workspace and workspace else ""
+            click.echo("")
+            click.echo(
+                "Recommended: "
+                f"{prefix}{group_name} "
+                f"({recommendation['full_free_nodes']} full-free node(s))"
+            )
         click.echo("")
         click.echo("Full Free = READY nodes with 8 GPUs and no running tasks")
         click.echo("Free GPUs = Total available GPUs (matches 'inspire resources list')")

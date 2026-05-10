@@ -8,7 +8,6 @@ import pytest
 from click.testing import CliRunner
 
 from inspire.cli.main import main as cli_main
-from inspire.cli.context import EXIT_VALIDATION_ERROR
 from inspire.cli.formatters.human_formatter import format_image_list, format_image_detail
 from inspire import config as config_module
 from inspire.cli.commands.image import image_commands as image_commands_module
@@ -260,7 +259,8 @@ def test_image_help_includes_subcommands() -> None:
     assert "register" in result.output
     assert "save" in result.output
     assert "delete" in result.output
-    assert "set-default" in result.output
+    removed_default_cmd = "set" + "-default"
+    assert removed_default_cmd not in result.output
 
 
 def test_image_list_human_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -513,7 +513,7 @@ def test_image_detail_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     assert result.exit_code == 0
 
     payload = json.loads(result.output)
-    assert payload["data"]["image_id"] == "img-123"
+    assert "image_id" not in payload["data"]
     assert payload["data"]["name"] == "detail-img"
 
 
@@ -579,7 +579,7 @@ def test_image_register_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     assert result.exit_code == 0
 
     payload = json.loads(result.output)
-    assert payload["data"]["image_id"] == "img-new-001"
+    assert "image_id" not in payload["data"]
     assert captured["name"] == "my-img"
     assert captured["version"] == "v1.0"
     assert captured["add_method"] == 2
@@ -628,7 +628,7 @@ def test_image_save_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert result.exit_code == 0
 
     payload = json.loads(result.output)
-    assert payload["data"]["image_id"] == "img-saved-001"
+    assert "image_id" not in payload["data"]
     assert captured["notebook_id"] == "notebook-abc"
 
 
@@ -868,112 +868,12 @@ def test_image_delete_prompts_without_force(
     assert "img-del-003" not in result.output
 
 
-# ---------------------------------------------------------------------------
-# set-default tests
-# ---------------------------------------------------------------------------
-
-
-def test_set_default_job_image(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _patch_config_and_session(monkeypatch, tmp_path)
-
-    # cd to tmp_path so .inspire/config.toml is created there
-    monkeypatch.chdir(tmp_path)
-
+def test_image_set_default_command_is_removed() -> None:
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["image", "set-default", "--job", "my-pytorch"])
-    assert result.exit_code == 0
-    assert "job.image" in result.output
-    assert "my-pytorch" in result.output
-
-    # Verify the file was written
-    config_path = tmp_path / ".inspire" / "config.toml"
-    assert config_path.exists()
-    content = config_path.read_text()
-    assert 'image = "my-pytorch"' in content
-
-
-def test_set_default_both_images(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _patch_config_and_session(monkeypatch, tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli_main, ["image", "set-default", "--job", "job-img", "--notebook", "nb-img"]
-    )
-    assert result.exit_code == 0
-
-    config_path = tmp_path / ".inspire" / "config.toml"
-    content = config_path.read_text()
-    assert "[job]" in content
-    assert "[notebook]" in content
-
-
-def test_set_default_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _patch_config_and_session(monkeypatch, tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "image", "set-default", "--job", "test-img"])
-    assert result.exit_code == 0
-
-    payload = json.loads(result.output)
-    assert payload["data"]["updated"]["job.image"] == "test-img"
-
-
-def test_set_default_requires_at_least_one_option(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _patch_config_and_session(monkeypatch, tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["image", "set-default"])
-    assert result.exit_code == EXIT_VALIDATION_ERROR
-
-
-def test_set_default_preserves_existing_config(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _patch_config_and_session(monkeypatch, tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    # Create an existing config
-    config_dir = tmp_path / ".inspire"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "config.toml"
-    config_path.write_text('[api]\nbase_url = "https://example.com"\n')
-
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["image", "set-default", "--job", "new-img"])
-    assert result.exit_code == 0
-
-    content = config_path.read_text()
-    # Both the old and new content should be present
-    assert "base_url" in content
-    assert "new-img" in content
-
-
-def test_set_default_from_subdirectory_uses_project_config(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _patch_config_and_session(monkeypatch, tmp_path)
-
-    config_dir = tmp_path / ".inspire"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    config_path = config_dir / "config.toml"
-    config_path.write_text('[auth]\nusername = "test"\n')
-
-    subdir = tmp_path / "src" / "deep"
-    subdir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.chdir(subdir)
-
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["image", "set-default", "--job", "subdir-img"])
-    assert result.exit_code == 0
-
-    content = config_path.read_text()
-    assert "subdir-img" in content
-    assert not (subdir / ".inspire" / "config.toml").exists()
+    removed_default_cmd = "set" + "-default"
+    result = runner.invoke(cli_main, ["image", removed_default_cmd])
+    assert result.exit_code == 2
+    assert f"No such command '{removed_default_cmd}'" in result.output
 
 
 # ---------------------------------------------------------------------------

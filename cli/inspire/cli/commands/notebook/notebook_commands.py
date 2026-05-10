@@ -110,12 +110,12 @@ def run_notebook_ssh(*args, **kwargs):  # noqa: ANN002, ANN003
     )
 
 
-def _workspace_display(config, workspace_id: str) -> str:  # noqa: ANN001
-    workspaces = getattr(config, "workspaces", None)
-    if isinstance(workspaces, dict):
-        for name, candidate in workspaces.items():
-            if str(candidate) == workspace_id:
-                return str(name)
+def _workspace_display(session, workspace_id: str) -> str:  # noqa: ANN001
+    names = getattr(session, "all_workspace_names", None)
+    if isinstance(names, dict):
+        name = names.get(workspace_id)
+        if name:
+            return str(name)
     return "(workspace name unavailable)"
 
 
@@ -123,11 +123,12 @@ def _workspace_display(config, workspace_id: str) -> str:  # noqa: ANN001
 @click.option(
     "--name",
     "-n",
-    help="Notebook name (auto-generated if omitted)",
+    required=True,
+    help="Notebook name",
 )
 @click.option(
     "--workspace",
-    help="Workspace name (from [workspaces])",
+    help="Workspace name. Required unless supplied by --profile.",
 )
 @click.option(
     "--quota",
@@ -139,23 +140,18 @@ def _workspace_display(config, workspace_id: str) -> str:  # noqa: ANN001
         "Use '0,4,32' for CPU-only. "
         "The triple must match a resource spec in the workspace (see 'inspire resources specs'); "
         "pass --group to disambiguate when multiple compute groups offer the same triple. "
-        "Default from config [notebook].quota."
+        "Required unless supplied by --profile."
     ),
 )
 @click.option(
     "--project",
     "-p",
-    default=None,
-    help="Project name (default from config [context].project; see 'inspire config context')",
+    help="Project name. Required unless supplied by --profile.",
 )
 @click.option(
     "--image",
     "-i",
-    default=None,
-    help=(
-        "Image name/URL (default from config [notebook].image or [job].image; prompts interactively "
-        "if still omitted)"
-    ),
+    help="Image name or URL. Required unless supplied by --profile.",
 )
 @click.option(
     "--shm-size",
@@ -197,20 +193,23 @@ def _workspace_display(config, workspace_id: str) -> str:  # noqa: ANN001
 @click.option(
     "--priority",
     type=click.IntRange(1, 10),
-    default=None,
+    default=10,
+    show_default=True,
     help=(
         "Task priority 1-10 (1-3=LOW preemptible, 4=NORMAL, 5-10=HIGH stable). "
-        "Default from config [job].priority (or 10)."
+        "Project quota may cap the requested value."
     ),
 )
 @click.option(
     "--group",
     "group",
+    help="Compute group name. Required unless supplied by --profile. Partial matches accepted when unique.",
+)
+@click.option(
+    "--profile",
+    "profile_name",
     default=None,
-    help=(
-        "Disambiguate to a specific compute group by name when the --quota triple "
-        "matches multiple groups (e.g. 'HPC-可上网区资源-2'). Partial matches accepted."
-    ),
+    help="Notebook condition profile providing workspace/project/group/quota/image.",
 )
 @pass_context
 def create_notebook_cmd(
@@ -228,20 +227,19 @@ def create_notebook_cmd(
     json_output: bool,
     priority: Optional[int],
     group: Optional[str],
+    profile_name: Optional[str],
 ) -> None:
     """Create a new interactive notebook instance.
 
     \b
     Examples:
-        inspire notebook create -q 1,20,200                 # 1 GPU + 20 CPU + 200 GiB
-        inspire notebook create --quota 4,80,800 -n mytest  # 4 GPUs + 80 CPU + 800 GiB
-        inspire notebook create -q 0,4,32                   # CPU-only: 4 CPU + 32 GiB
-        inspire notebook create -q 1,20,200 --group H200
-        inspire notebook create -q 1,20,200 --shm-size 64
-        inspire notebook create --post-start 'bash /workspace/setup.sh'
-        inspire notebook create --post-start-script scripts/notebook_setup.sh
-        inspire notebook create --post-start none --no-wait
-        inspire notebook create --priority 5
+        inspire notebook create --workspace 分布式训练空间 --project CI-情境智能 \
+          --image sandbox-base:latest --group H200 -q 1,20,200
+        inspire notebook create --workspace CPU资源空间 --project CI-情境智能 \
+          --image sandbox-base:latest --group CPU资源-2 -q 0,4,32 --shm-size 64
+        inspire notebook create --workspace 分布式训练空间 --project CI-情境智能 \
+          --image sandbox-base:latest --group H200 -q 1,20,200 \
+          --post-start-script scripts/notebook_setup.sh
     """
     if post_start and post_start_script:
         raise click.UsageError("Use either --post-start or --post-start-script, not both.")
@@ -265,6 +263,7 @@ def create_notebook_cmd(
         priority=priority,
         project_explicit=project_explicit,
         group=group,
+        profile_name=profile_name,
     )
 
 
@@ -633,23 +632,52 @@ def notebook_status(
     return
 
 
+@click.command("id")
+@click.argument("notebook")
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    help="Alias for global --json",
+)
+@pass_context
+def notebook_id_cmd(
+    ctx: Context,
+    notebook: str,
+    json_output: bool,
+) -> None:
+    """Print the platform ID for a notebook name."""
+    json_output = resolve_json_output(ctx, json_output)
+    session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+    base_url = get_base_url()
+    config = load_config(ctx)
+    notebook_id, _ = _resolve_notebook_id(
+        ctx,
+        session=session,
+        config=config,
+        base_url=base_url,
+        identifier=notebook,
+        json_output=json_output,
+    )
+
+    if json_output:
+        click.echo(
+            json_formatter.format_json({"name": notebook, "id": notebook_id}, allow_ids=True)
+        )
+    else:
+        click.echo(notebook_id)
+
+
 @click.command("list")
 @click.option(
     "--workspace",
-    help="Workspace name (from [workspaces])",
-)
-@click.option(
-    "--all",
-    "-a",
-    "show_all",
-    is_flag=True,
-    help="Show all notebooks (not just your own)",
+    help="Workspace name",
 )
 @click.option(
     "--all-workspaces",
     "-A",
     is_flag=True,
-    help="List notebooks across all configured workspaces (cpu/gpu/internet)",
+    help="List notebooks across all visible workspaces",
 )
 @click.option(
     "--limit",
@@ -681,7 +709,6 @@ def notebook_status(
 def list_notebooks(
     ctx: Context,
     workspace: Optional[str],
-    show_all: bool,
     all_workspaces: bool,
     limit: int,
     status: tuple[str, ...],
@@ -693,12 +720,11 @@ def list_notebooks(
     \b
     Examples:
         inspire notebook list
-        inspire notebook list --all
         inspire notebook list -n 10
         inspire notebook list -s RUNNING
         inspire notebook list -s RUNNING -s STOPPED
         inspire notebook list --name my-notebook
-        inspire notebook list --workspace gpu -s RUNNING -n 5
+        inspire notebook list --workspace GPU资源空间 -s RUNNING -n 5
         inspire notebook list --all-workspaces
         inspire notebook list --json
     """
@@ -713,7 +739,7 @@ def list_notebooks(
     workspace_ids: list[str] = []
     if workspace:
         try:
-            resolved = select_workspace_id(config, explicit_workspace_name=workspace)
+            resolved = select_workspace_id(config, explicit_workspace_name=workspace, session=session)
         except ConfigError as e:
             _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
             return
@@ -721,10 +747,9 @@ def list_notebooks(
             workspace_ids = [resolved]
     elif all_workspaces:
         candidates: list[str] = []
-        if config.workspaces:
-            candidates.extend(config.workspaces.values())
         if getattr(session, "workspace_id", None):
             candidates.append(str(session.workspace_id))
+        candidates.extend(str(wid) for wid in getattr(session, "all_workspace_ids", None) or [])
 
         workspace_ids = _unique_workspace_ids(candidates)
         for ws_id in workspace_ids:
@@ -735,10 +760,8 @@ def list_notebooks(
                 return
 
     if not workspace_ids:
-        # No --workspace and no --all-workspaces — fall back to the
-        # web session's currently-active workspace (which login set up
-        # for the user). Per v3.1.0 we no longer consult any config-level
-        # default workspace; only the live web session.
+        # No --workspace and no --all-workspaces: use the web session's
+        # currently active workspace.
         resolved = getattr(session, "workspace_id", None)
         resolved = None if resolved == _ZERO_WORKSPACE_ID else resolved
         if not resolved:
@@ -756,7 +779,15 @@ def list_notebooks(
 
     base_url = get_base_url()
 
-    user_ids = [] if show_all else _try_get_current_user_ids(session, base_url=base_url)
+    user_ids = _try_get_current_user_ids(session, base_url=base_url)
+    if not user_ids:
+        _handle_error(
+            ctx,
+            "AuthenticationError",
+            "Cannot determine the current user from the live web session.",
+            EXIT_API_ERROR,
+        )
+        return
 
     all_items: list[dict] = []
     for ws_id in workspace_ids:
@@ -784,7 +815,7 @@ def list_notebooks(
                 return
             if not ctx.json_output:
                 click.echo(
-                    f"Warning: workspace {_workspace_display(config, ws_id)} failed: {scrub_raw_ids(e)}",
+                    f"Warning: workspace {_workspace_display(session, ws_id)} failed: {scrub_raw_ids(e)}",
                     err=True,
                 )
             continue
@@ -794,7 +825,7 @@ def list_notebooks(
                 return
             if not ctx.json_output:
                 click.echo(
-                    f"Warning: workspace {_workspace_display(config, ws_id)} failed: {scrub_raw_ids(e)}",
+                    f"Warning: workspace {_workspace_display(session, ws_id)} failed: {scrub_raw_ids(e)}",
                     err=True,
                 )
             continue
@@ -803,7 +834,7 @@ def list_notebooks(
         _handle_error(
             ctx,
             "APIError",
-            "Failed to list notebooks from configured workspaces.",
+            "Failed to list notebooks from visible workspaces.",
             EXIT_API_ERROR,
         )
         return

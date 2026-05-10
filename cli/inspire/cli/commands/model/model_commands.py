@@ -25,10 +25,10 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import get_web_session
 
 
-def _resolve_workspace_id(config: Config, workspace: Optional[str]) -> Optional[str]:
+def _resolve_workspace_id(config: Config, workspace: Optional[str], *, session=None) -> Optional[str]:
     if workspace is None:
         return None
-    return select_workspace_id(config, explicit_workspace_name=workspace)
+    return select_workspace_id(config, explicit_workspace_name=workspace, session=session)
 
 
 def _resolve_project_id(
@@ -42,7 +42,7 @@ def _resolve_project_id(
         return None
     if requested.startswith("project-"):
         raise ConfigError(
-            "--project takes a project name, not a raw ID. "
+            "--project takes a project name, not a platform handle. "
             "See `inspire project list` or `inspire config context`."
         )
     if requested in config.projects:
@@ -177,7 +177,7 @@ def _resolve_model_name(
 
 
 @click.command("list")
-@click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option("--project", default=None, help="Project name filter")
 @click.option("--keyword", default=None, help="Server-side model name/description search")
 @click.option("--mine", is_flag=True, default=False, help="Only show models registered by me")
@@ -243,7 +243,7 @@ def list_model(
 
 @click.command("status")
 @click.argument("name")
-@click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option("--project", default=None, help="Project name filter")
 @click.option("--mine", is_flag=True, default=False, help="Only search my models")
 @click.option("--pick", type=int, default=None, help="Pick Nth duplicate name (1-indexed)")
@@ -345,7 +345,7 @@ def status_model(
 
 @click.command("versions")
 @click.argument("name")
-@click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option("--project", default=None, help="Project name filter")
 @click.option("--mine", is_flag=True, default=False, help="Only search my models")
 @click.option("--pick", type=int, default=None, help="Pick Nth duplicate name (1-indexed)")
@@ -433,12 +433,12 @@ def versions_model(
 @click.command("register")
 @click.option("--name", "-n", required=True, help="Model name")
 @click.option("--source-path", required=True, help="Platform-visible model directory")
-@click.option("--workspace", required=True, help="Workspace name (from [workspaces])")
+@click.option("--workspace", required=True, help="Workspace name.")
 @click.option(
     "--project",
     "-p",
-    default=None,
-    help="Project name (default from [context].project when configured)",
+    required=True,
+    help="Project name.",
 )
 @click.option(
     "--type",
@@ -465,24 +465,19 @@ def register_model(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_id = _resolve_workspace_id(config, workspace)
+        workspace_id = _resolve_workspace_id(config, workspace, session=session)
         if not workspace_id:
             raise ConfigError("Missing workspace.")
-        requested_project = project or config.job_project_id
+        requested_project = project
         project_id: Optional[str]
-        if requested_project and requested_project.startswith("project-"):
-            project_id = requested_project
-        else:
-            project_id = _resolve_project_id(
-                config,
-                requested_project,
-                workspace_id=workspace_id,
-                session=session,
-            )
+        project_id = _resolve_project_id(
+            config,
+            requested_project,
+            workspace_id=workspace_id,
+            session=session,
+        )
         if not project_id:
-            raise ConfigError(
-                "Missing project. Pass --project <name> or configure [context].project."
-            )
+            raise ConfigError("--project is required.")
 
         data = browser_api_module.create_model(
             name=name,

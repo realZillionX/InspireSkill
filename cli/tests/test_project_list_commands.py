@@ -1,9 +1,7 @@
 import json
 
 from click.testing import CliRunner
-import pytest
 
-from inspire import config as config_module
 from inspire.cli.commands.project import project_commands as project_cmd_module
 from inspire.cli.main import main as cli_main
 from inspire.cli.utils import notebook_cli as notebook_cli_module
@@ -32,38 +30,17 @@ def _project(project_id: str, name: str, workspace_id: str) -> browser_api_modul
     )
 
 
-@pytest.fixture(autouse=True)
-def _isolate_project_cache(monkeypatch: pytest.MonkeyPatch, tmp_path):
-    """Redirect the project-list cache file into tmp_path."""
-    cache_file = tmp_path / "project_list.json"
-    monkeypatch.setattr(
-        project_cmd_module, "_project_list_cache_file", lambda session: str(cache_file)
+def test_project_list_uses_session_workspace_ids(monkeypatch):
+    session_obj = FakeSession(
+        all_workspace_ids=[WS_CPU, WS_GPU, WS_INET, WS_EXTRA],
+        workspace_id=WS_CPU,
     )
-
-
-def test_project_list_uses_config_workspaces_when_session_discovery_missing(monkeypatch):
-    session_obj = FakeSession(all_workspace_ids=None, workspace_id=None)
     monkeypatch.setattr(
         notebook_cli_module.web_session_module,
         "get_web_session",
         lambda: session_obj,
     )
 
-    cfg = config_module.Config(
-        username="user",
-        password="pass",
-        workspaces={
-            "cpu": WS_CPU,
-            "gpu": WS_GPU,
-            "internet": WS_INET,
-            "extra": WS_EXTRA,
-        },
-    )
-    monkeypatch.setattr(
-        config_module.Config,
-        "from_files_and_env",
-        classmethod(lambda cls, require_credentials=True: (cfg, {})),
-    )
     monkeypatch.setattr(project_cmd_module, "_PROJECT_LIST_MAX_WORKERS", 1)
 
     calls: list[str | None] = []
@@ -117,7 +94,8 @@ def test_project_list_tolerates_workspace_specific_failure(monkeypatch):
     assert result.exit_code == 0
     payload = json.loads(result.output)["data"]
     assert payload["total"] == 1
-    assert payload["projects"][0]["project_id"] == "project-good"
+    assert "project_id" not in payload["projects"][0]
+    assert payload["projects"][0]["name"] == "Good"
     assert calls == [WS_BAD, WS_GOOD]
 
 
@@ -148,7 +126,8 @@ def test_project_list_falls_back_to_default_query_when_all_workspace_queries_fai
     assert result.exit_code == 0
     payload = json.loads(result.output)["data"]
     assert payload["total"] == 1
-    assert payload["projects"][0]["project_id"] == "project-default"
+    assert "project_id" not in payload["projects"][0]
+    assert payload["projects"][0]["name"] == "Default"
     assert calls == [WS_BAD, WS_BAD_2, None]
 
 
@@ -216,7 +195,7 @@ def test_project_list_all_workspaces_bypasses_fanout_limit(monkeypatch):
     assert calls == [WS_BAD, WS_GOOD, WS_CPU, WS_GPU]
 
 
-def test_project_list_uses_cache_for_all_workspaces(monkeypatch, tmp_path):
+def test_project_list_refreshes_platform_for_all_workspaces(monkeypatch):
     session_obj = FakeSession(
         all_workspace_ids=[WS_BAD, WS_GOOD, WS_CPU, WS_GPU],
         workspace_id=WS_GOOD,
@@ -226,7 +205,6 @@ def test_project_list_uses_cache_for_all_workspaces(monkeypatch, tmp_path):
         "get_web_session",
         lambda: session_obj,
     )
-    monkeypatch.setattr(project_cmd_module, "_PROJECT_LIST_CACHE_TTL_SECONDS", 600)
     monkeypatch.setattr(project_cmd_module, "_PROJECT_LIST_MAX_WORKERS", 1)
 
     calls: list[str | None] = []
@@ -249,4 +227,4 @@ def test_project_list_uses_cache_for_all_workspaces(monkeypatch, tmp_path):
     second_payload = json.loads(second.output)["data"]
     assert first_payload["total"] == 4
     assert second_payload["total"] == 4
-    assert calls == [WS_BAD, WS_GOOD, WS_CPU, WS_GPU]
+    assert calls == [WS_BAD, WS_GOOD, WS_CPU, WS_GPU, WS_BAD, WS_GOOD, WS_CPU, WS_GPU]

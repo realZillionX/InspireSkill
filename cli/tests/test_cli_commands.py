@@ -66,12 +66,6 @@ def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> co
         max_retries=0,
         retry_delay=0.0,
     )
-    # v3.1.0 dropped the implicit "default workspace" — every command path
-    # that needs a workspace now requires --workspace <alias>. Tests that
-    # exercise those paths pass --workspace cpu, which resolves through
-    # this alias map. The id format must satisfy `ws-` + UUID; the
-    # `select_workspace_id` validator rejects non-UUID test stubs.
-    config.workspaces = {"cpu": "ws-77777777-7777-7777-7777-777777777777"}
     # Add test compute groups if requested
     if include_compute_groups:
         test_group_id = "lcg-test000-0000-0000-0000-000000000000"
@@ -174,11 +168,17 @@ def patch_config_and_auth(
     class FakeWebSession:
         workspace_id = "ws-test-workspace"
         storage_state = {}
-        all_workspace_ids = ["ws-test-workspace", "ws-gpu", "ws-cpu"]
+        all_workspace_ids = [
+            "ws-test-workspace",
+            "ws-gpu",
+            "ws-cpu",
+            "ws-77777777-7777-7777-7777-777777777777",
+        ]
         all_workspace_names = {
             "ws-test-workspace": "Test Workspace",
             "ws-gpu": "分布式训练空间",
             "ws-cpu": "CPU资源空间",
+            "ws-77777777-7777-7777-7777-777777777777": "cpu",
         }
 
     monkeypatch.setattr(
@@ -198,7 +198,6 @@ def patch_config_and_auth(
 
     quota_resolver_module = importlib.import_module("inspire.cli.utils.quota_resolver")
     job_create_module = importlib.import_module("inspire.cli.commands.job.job_create")
-    run_module = importlib.import_module("inspire.cli.commands.run")
     notebook_flow_module = importlib.import_module(
         "inspire.cli.commands.notebook.notebook_create_flow"
     )
@@ -217,12 +216,10 @@ def patch_config_and_auth(
 
     monkeypatch.setattr(quota_resolver_module, "resolve_quota", _fake_resolve_quota)
     monkeypatch.setattr(job_create_module, "resolve_quota", _fake_resolve_quota)
-    monkeypatch.setattr(run_module, "resolve_quota", _fake_resolve_quota)
     monkeypatch.setattr(notebook_flow_module, "resolve_quota", _fake_resolve_quota)
 
-    # job create / run import `get_web_session` by name, so patch each namespace.
+    # job create imports `get_web_session` by name, so patch that namespace.
     monkeypatch.setattr(job_create_module, "get_web_session", lambda: FakeWebSession())
-    monkeypatch.setattr(run_module, "get_web_session", lambda: FakeWebSession())
 
     test_project = browser_api_module.ProjectInfo(
         project_id="project-test-123",
@@ -282,7 +279,7 @@ def test_global_json_flag_with_resources_list(monkeypatch: pytest.MonkeyPatch, t
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert "availability" in payload["data"]
-    assert payload["data"]["availability"][0]["group_id"] == test_group_id
+    assert "group_id" not in payload["data"]["availability"][0]
 
 
 def test_global_debug_flag_runs_subcommand(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -319,7 +316,7 @@ def test_job_list_help_uses_workspace_name_not_raw_id_hint(
     result = runner.invoke(cli_main, ["job", "list", "--help"])
 
     assert result.exit_code == 0
-    assert "Workspace alias or name" in result.output
+    assert "Workspace name" in result.output
     assert "ws-... id" not in result.output
 
 
@@ -346,13 +343,22 @@ def test_job_create_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             "echo hi",
             "--workspace",
             "cpu",
+            "--project",
+            "proj",
+            "--group",
+            "H200 TestRoom",
+            "--image",
+            "registry.local/train:latest",
+            "--nodes",
+            "1",
         ],
     )
 
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data["success"] is True
-    assert data["data"]["job_id"] == TEST_JOB_ID
+    assert data["data"]["name"] == "test-job"
+    assert "job_id" not in data["data"]
 
 
 def test_wrap_in_bash():
@@ -453,23 +459,20 @@ def test_build_remote_logged_command_without_default_path_alias_keeps_existing_b
     assert log_path is None
 
 
-def test_job_status_human_output_hides_raw_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Human ``job status`` shows the name, never the raw ``job-<uuid>``.
+def test_job_status_human_output_uses_name(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Human ``job status`` shows the name, never the platform handle.
 
-    v2 names-only boundary: surfacing ids in the human view tempts agents
-    to round-trip them and then hit ``reject_id_at_boundary``. JSON
-    output keeps every field for scripts.
+    Name-only boundary: surfacing platform handles in the human view tempts
+    callers to round-trip them and then hit ``reject_id_at_boundary``.
     """
     patch_config_and_auth(monkeypatch, tmp_path)
     runner = CliRunner()
 
-    # Test conftest patches resolve_job_id to accept the raw id and pass
-    # it through; that's a fixture convenience, not a real-CLI behaviour.
-    result = runner.invoke(cli_main, ["job", "status", TEST_JOB_ID])
+    result = runner.invoke(cli_main, ["job", "status", "test-job"])
     assert result.exit_code == 0
     assert "Job Status" in result.output
     assert "Name: test-job" in result.output
-    assert TEST_JOB_ID not in result.output  # raw id stays out of human output
+    assert TEST_JOB_ID not in result.output  # platform handle stays out of human output
 
 
 def test_legacy_human_job_list_formatter_is_name_only() -> None:
@@ -478,7 +481,7 @@ def test_legacy_human_job_list_formatter_is_name_only() -> None:
     output = format_job_list(
         [
             {
-                "job_id": TEST_JOB_ID,
+            "job_id": TEST_JOB_ID,
                 "name": "visible-name",
                 "status": "RUNNING",
                 "created_at": "2026-05-06T14:48:50",
@@ -513,13 +516,14 @@ def test_job_stop_with_force_and_json(monkeypatch: pytest.MonkeyPatch, tmp_path:
 
     result = runner.invoke(
         cli_main,
-        ["--json", "job", "stop", TEST_JOB_ID],
+        ["--json", "job", "stop", "test-job"],
     )
     assert result.exit_code == 0
 
     data = json.loads(result.output)
-    assert data["data"]["job_id"] == TEST_JOB_ID
+    assert data["data"]["name"] == "test-job"
     assert data["data"]["status"] == "stopped"
+    assert "job_id" not in data["data"]
 
 
 def test_job_wait_succeeds_and_exits_zero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -541,7 +545,7 @@ def test_job_wait_succeeds_and_exits_zero(monkeypatch: pytest.MonkeyPatch, tmp_p
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["job", "wait", TEST_JOB_ID, "--timeout", "60", "--interval", "1"],
+        ["job", "wait", "wait-job", "--timeout", "60", "--interval", "1"],
     )
     assert result.exit_code == EXIT_SUCCESS
     assert "SUCCEEDED" in result.output
@@ -567,7 +571,7 @@ def test_job_wait_json_output_has_no_human_banner(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["--json", "job", "wait", TEST_JOB_ID, "--timeout", "60", "--interval", "1"],
+        ["--json", "job", "wait", "wait-job", "--timeout", "60", "--interval", "1"],
     )
 
     assert result.exit_code == EXIT_SUCCESS
@@ -598,7 +602,7 @@ def test_job_wait_times_out(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["job", "wait", TEST_JOB_ID, "--timeout", "1", "--interval", "1"],
+        ["job", "wait", "wait-job", "--timeout", "1", "--interval", "1"],
     )
     assert result.exit_code == EXIT_TIMEOUT
     assert "Timeout after 1s" in result.output
@@ -690,12 +694,10 @@ def test_job_list_web_name_search_scans_all_workspaces(
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert payload["data"]["source"] == "web"
-    assert payload["data"]["jobs"][0]["job_id"] == TEST_JOB_ID
+    assert "job_id" not in payload["data"]["jobs"][0]
     assert payload["data"]["jobs"][0]["name"] == "kchen-slime-code-qwen35-35b-a3b-6node"
     assert payload["data"]["jobs"][0]["workspace_name"] == "Training Workspace"
     assert calls[0]["created_by"] == "user-me"
-    # -A unions [workspaces] alias values + session.all_workspace_ids; the
-    # test fixture's "cpu" alias is also scanned as part of that union.
     scanned = {call["workspace_id"] for call in calls}
     assert {"ws-main", "ws-train"} <= scanned
 
@@ -1234,12 +1236,10 @@ def test_notebook_list_all_workspaces_combines_results(
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
         log_cache_dir=str(tmp_path / "log_cache"),
-        workspaces={"a": ws_cpu, "b": ws_gpu},
         timeout=5,
         max_retries=0,
         retry_delay=0.0,
     )
-
     def fake_from_files_and_env(
         cls, require_credentials: bool = True
     ):  # type: ignore[override]
@@ -1250,8 +1250,10 @@ def test_notebook_list_all_workspaces_combines_results(
     )
 
     class FakeSession:
-        workspace_id = "ws-00000000-0000-0000-0000-000000000000"
+        workspace_id = ws_cpu
         storage_state = {}
+        all_workspace_ids = [ws_cpu, ws_gpu]
+        all_workspace_names = {ws_cpu: "a", ws_gpu: "b"}
 
     monkeypatch.setattr(web_session_module, "get_web_session", lambda: FakeSession())
 
@@ -1301,14 +1303,20 @@ def test_notebook_list_all_workspaces_combines_results(
         return {"code": 0, "data": {"list": []}}
 
     monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "_try_get_current_user_ids",
+        lambda *args, **kwargs: ["user"],
+    )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "list", "--all-workspaces", "--all", "--json"])
+    result = runner.invoke(cli_main, ["--json", "notebook", "list", "--all-workspaces"])
 
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
     items = payload["data"]["items"]
-    assert [item["id"] for item in items] == ["nb-gpu", "nb-cpu"]
+    assert [item["name"] for item in items] == ["gpu-notebook", "cpu-notebook"]
+    assert all("id" not in item for item in items)
     assert calls == [ws_cpu, ws_gpu]
 
 
@@ -1322,12 +1330,10 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
         log_cache_dir=str(tmp_path / "log_cache"),
-        workspaces={"a": ws_cpu, "b": ws_gpu},
         timeout=5,
         max_retries=0,
         retry_delay=0.0,
     )
-
     def fake_from_files_and_env(
         cls, require_credentials: bool = True
     ):  # type: ignore[override]
@@ -1338,8 +1344,10 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     )
 
     class FakeSession:
-        workspace_id = "ws-00000000-0000-0000-0000-000000000000"
+        workspace_id = ws_cpu
         storage_state = {}
+        all_workspace_ids = [ws_cpu, ws_gpu]
+        all_workspace_names = {ws_cpu: "a", ws_gpu: "b"}
 
     monkeypatch.setattr(web_session_module, "get_web_session", lambda: FakeSession())
 
@@ -1417,12 +1425,10 @@ def test_notebook_start_name_conflict_prompts_selection(
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
         log_cache_dir=str(tmp_path / "log_cache"),
-        workspaces={"a": ws_cpu, "b": ws_gpu},
         timeout=5,
         max_retries=0,
         retry_delay=0.0,
     )
-
     def fake_from_files_and_env(
         cls, require_credentials: bool = True
     ):  # type: ignore[override]
@@ -1433,8 +1439,10 @@ def test_notebook_start_name_conflict_prompts_selection(
     )
 
     class FakeSession:
-        workspace_id = "ws-00000000-0000-0000-0000-000000000000"
+        workspace_id = ws_cpu
         storage_state = {}
+        all_workspace_ids = [ws_cpu, ws_gpu]
+        all_workspace_names = {ws_cpu: "a", ws_gpu: "b"}
 
     monkeypatch.setattr(web_session_module, "get_web_session", lambda: FakeSession())
 

@@ -12,7 +12,6 @@ import sys
 import click
 
 from inspire import __version__
-from inspire.cli.utils.profile import apply_env_profile
 from inspire.cli.logging_setup import clear_debug_logging, configure_debug_logging
 from inspire.cli.context import (
     Context,
@@ -24,7 +23,6 @@ from inspire.cli.commands import (
     job,
     resources,
     config,
-    run,
     notebook,
     init,
     image,
@@ -39,31 +37,13 @@ from inspire.cli.commands import (
 from inspire.cli.utils.update_notice import maybe_notify_update, maybe_spawn_check
 
 
-def _apply_profile_option(
-    ctx: click.Context, param: click.Parameter, value: str | None
-) -> str | None:
-    if value:
-        apply_env_profile(value)
-    return value
-
-
 @click.group()
-@click.option(
-    "--profile",
-    help="Apply env profile (INSPIRE_PROFILE_<NAME>_*)",
-    expose_value=False,
-    is_eager=True,
-    callback=_apply_profile_option,
-)
 @click.version_option(version=__version__, prog_name="inspire")
 @click.option(
     "--json",
     "json_output",
     is_flag=True,
-    help=(
-        "Output as JSON for scripts. Interactive use should keep the default "
-        "human format."
-    ),
+    help="Output as JSON for scripts or structured automation.",
 )
 @click.option(
     "--debug",
@@ -79,8 +59,14 @@ def main(ctx: Context, json_output: bool, debug: bool) -> None:
 
     \b
     Output:
+        Default output is name-first.
         Default human output is the interactive observation surface.
+        JSON is for scripts and structured automation.
         Use JSON only for scripts or structured automation.
+
+    \b
+    Global options:
+        --json prints structured script output.
 
     \b
     Examples:
@@ -115,7 +101,6 @@ main.add_command(account)
 main.add_command(job)
 main.add_command(resources)
 main.add_command(config)
-main.add_command(run)
 main.add_command(notebook)
 main.add_command(init)
 main.add_command(image)

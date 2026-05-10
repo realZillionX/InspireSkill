@@ -20,7 +20,8 @@ from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import resolve_by_name
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
-from inspire.config.workspaces import select_workspace_id
+from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
+from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
@@ -28,7 +29,7 @@ from inspire.platform.web.session import SessionExpiredError, get_web_session
 def _resolve_ray_name(ctx: Context, name: str, *, pick: Optional[int] = None) -> str:
     """Resolve a Ray job name to its platform id (``rj-<uuid>``).
 
-    v2.0.0: names only. Candidate set is restricted to the current user's
+    Names only. Candidate set is restricted to the current user's
     Ray jobs in the session's workspace — avoids cross-user same-name
     ambiguity (you wouldn't have permission to operate on a teammate's
     job anyway). Full-page fetch (`page_size=10000`) so large workspaces
@@ -39,7 +40,9 @@ def _resolve_ray_name(ctx: Context, name: str, *, pick: Optional[int] = None) ->
         session = get_web_session()
         me = browser_api_module.get_current_user(session=session)
         uid = str(me.get("id") or me.get("user_id") or "").strip()
-        user_ids = [uid] if uid else None  # keep widen-behaviour as a last resort
+        if not uid:
+            raise ValueError("Cannot determine the current user from the live web session.")
+        user_ids = [uid]
         jobs, _ = browser_api_module.list_ray_jobs(
             session=session, user_ids=user_ids, page_size=10000
         )
@@ -98,57 +101,33 @@ def _format_ray_list_rows(rows: list[dict[str, str]]) -> str:
 
 
 @click.command("list")
-@click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
-@click.option(
-    "--all-users",
-    "-A",
-    is_flag=True,
-    help="Include jobs from all users (default: only the current user).",
-)
-@click.option(
-    "--created-by",
-    "created_by",
-    default=None,
-    help="Advanced creator filter; comma-separated values are accepted.",
-)
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option("--page-num", type=int, default=1, show_default=True, help="Page number")
 @click.option("--page-size", type=int, default=20, show_default=True, help="Page size")
 @pass_context
 def list_ray(
     ctx: Context,
     workspace: Optional[str],
-    all_users: bool,
-    created_by: Optional[str],
     page_num: int,
     page_size: int,
 ) -> None:
     """List Ray (弹性计算) jobs in a workspace."""
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
         resolved_workspace_id = None
         if workspace is not None:
             resolved_workspace_id = select_workspace_id(
                 config,
                 explicit_workspace_name=workspace,
+                session=session,
             )
 
-        session = get_web_session()
-
-        user_ids: Optional[list[str]] = None
-        if all_users:
-            user_ids = None
-        elif created_by:
-            user_ids = [uid.strip() for uid in created_by.split(",") if uid.strip()]
-        else:
-            # Default: scope to the logged-in user, mirroring the platform's
-            # "我的" tab so a shared workspace doesn't dump everyone's jobs.
-            try:
-                me = browser_api_module.get_current_user(session=session)
-                current_user_id = str(me.get("id") or me.get("user_id") or "").strip()
-                if current_user_id:
-                    user_ids = [current_user_id]
-            except Exception:
-                user_ids = None
+        me = browser_api_module.get_current_user(session=session)
+        current_user_id = str(me.get("id") or me.get("user_id") or "").strip()
+        if not current_user_id:
+            raise ValueError("Cannot determine the current user from the live web session.")
+        user_ids: Optional[list[str]] = [current_user_id]
 
         jobs, total = browser_api_module.list_ray_jobs(
             workspace_id=resolved_workspace_id,
@@ -286,7 +265,7 @@ def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
     if requested:
         if requested.startswith("project-"):
             raise ConfigError(
-                "--project takes a project name, not a raw ID. "
+                "--project takes a project name, not a platform handle. "
                 "See `inspire config context` for available names."
             )
         if requested in config.projects:
@@ -304,12 +283,7 @@ def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
         )
         hint = ", ".join(available) if available else "(run 'inspire config context')"
         raise ConfigError(f"Unknown project: {requested!r}. Available: {hint}")
-    if config.job_project_id:
-        return config.job_project_id
-    raise ConfigError(
-        "Missing project. Set --project <name> or configure [context].project in "
-        "./.inspire/config.toml."
-    )
+    raise ConfigError("--project is required.")
 
 
 def _project_label(config: Config, project_id: str, requested: Optional[str]) -> str:
@@ -322,15 +296,6 @@ def _project_label(config: Config, project_id: str, requested: Optional[str]) ->
     if isinstance(entry, dict) and entry.get("name"):
         return str(entry["name"])
     return "(project name unavailable)"
-
-
-def _workspace_label(config: Config, workspace_id: str, requested: Optional[str]) -> str:
-    if requested:
-        return requested
-    for name, candidate in (config.workspaces or {}).items():
-        if candidate == workspace_id:
-            return name
-    return "(workspace name unavailable)"
 
 
 def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
@@ -427,14 +392,20 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
 @click.option(
     "--project",
     "-p",
-    default=None,
-    help="Project name / alias (default from [context].project)",
+    help="Project name. Required unless supplied by --profile.",
 )
-@click.option("--workspace", default=None, help="Workspace name (from [workspaces])")
+@click.option("--workspace", help="Workspace name. Required unless supplied by --profile.")
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    help="Ray condition profile for workspace/project and head image/group/quota.",
+)
 @click.option(
     "--priority",
     type=click.IntRange(1, 10),
-    default=None,
+    default=10,
+    show_default=True,
     help=(
         "Task priority 1-10 (1-3=LOW preemptible, 4=NORMAL, 5-10=HIGH stable). "
         "Project quota may cap the requested value."
@@ -442,6 +413,7 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
 )
 @click.option(
     "--head-image",
+    "--image",
     default=None,
     help="Head node image name or Docker URL (resolved through the visible image catalog)",
 )
@@ -453,11 +425,13 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
 )
 @click.option(
     "--head-group",
+    "--group",
     default=None,
     help="Head compute group name; see 'inspire config context'",
 )
 @click.option(
     "--head-quota",
+    "--quota",
     default=None,
     help=(
         "Head resource quota as 'gpu,cpu,mem' (mem in GiB). "
@@ -503,6 +477,7 @@ def create_ray(
     description: str,
     project: Optional[str],
     workspace: Optional[str],
+    profile_name: Optional[str],
     priority: Optional[int],
     head_image: Optional[str],
     head_image_type: str,
@@ -516,7 +491,7 @@ def create_ray(
     """Create a Ray (弹性计算) job with one head + one or more worker groups.
 
     Resource sizing uses the same ``--quota gpu,cpu,mem`` triple as
-    notebook / job / run. For each (head + worker) entry the CLI looks
+    notebook / job. For each (head + worker) entry the CLI looks
     up the matching Ray quota under the chosen workspace and compute
     group; pass ``--workspace`` and head/worker ``group=`` names if
     auto-resolution would be ambiguous.
@@ -545,6 +520,23 @@ def create_ray(
             if not isinstance(body, dict):
                 raise click.UsageError("--json-body file must contain a JSON object.")
         else:
+            fields = apply_workload_profile(
+                profiles=getattr(config, "profiles", {}),
+                kind="ray",
+                profile_name=profile_name,
+                values={
+                    "workspace": workspace,
+                    "project": project,
+                    "group": head_group,
+                    "image": head_image,
+                    "quota": head_quota,
+                },
+            )
+            workspace = fields["workspace"]
+            project = fields["project"]
+            head_group = fields["group"]
+            head_image = fields["image"]
+            head_quota = fields["quota"]
             body = _assemble_create_body(
                 ctx,
                 config=config,
@@ -573,7 +565,7 @@ def create_ray(
                 f"Project:   {scrub_raw_ids(_project_label(config, body.get('project_id', ''), project))}"
             )
             click.echo(
-                f"Workspace: {scrub_raw_ids(_workspace_label(config, body.get('workspace_id', ''), workspace))}"
+                f"Workspace: {scrub_raw_ids(workspace_label(session, body.get('workspace_id', ''), workspace))}"
             )
             click.echo(f"Workers:   {len(body.get('worker_groups') or [])} group(s)")
             return
@@ -589,7 +581,7 @@ def create_ray(
             f"Project:   {scrub_raw_ids(_project_label(config, body.get('project_id', ''), project))}"
         )
         click.echo(
-            f"Workspace: {scrub_raw_ids(_workspace_label(config, body.get('workspace_id', ''), workspace))}"
+            f"Workspace: {scrub_raw_ids(workspace_label(session, body.get('workspace_id', ''), workspace))}"
         )
         click.echo(f"Workers:   {len(body.get('worker_groups') or [])} group(s)")
         sub_msg = data.get("sub_msg") or ""
@@ -638,10 +630,15 @@ def _assemble_create_body(
         raise click.UsageError(
             "--command is required (the Ray driver entrypoint; wire field `entrypoint`)."
         )
-    if not head_image or not head_group or not head_quota:
-        raise click.UsageError(
-            "Head node needs --head-image, --head-group, and --head-quota gpu,cpu,mem."
-        )
+    for field_name, value in (
+        ("image", head_image),
+        ("group", head_group),
+        ("quota", head_quota),
+        ("workspace", workspace),
+        ("project", project),
+    ):
+        if not value:
+            raise click.UsageError(profile_required_message("ray", field_name))
     if not workers:
         raise click.UsageError(
             "At least one --worker is required. Format: "
@@ -652,9 +649,10 @@ def _assemble_create_body(
     resolved_workspace_id = select_workspace_id(
         config,
         explicit_workspace_name=workspace,
+        session=session,
     )
     if resolved_workspace_id is None:
-        raise ConfigError("Missing workspace. Set --workspace or configure [workspaces].")
+        raise ConfigError(profile_required_message("ray", "workspace"))
 
     def _resolve_ray(triple: str, group_name: str) -> Any:
         try:
@@ -708,7 +706,7 @@ def _assemble_create_body(
         "head_node": head_node,
         "worker_groups": worker_groups,
     }
-    final_priority = priority if priority is not None else config.job_priority
+    final_priority = priority if priority is not None else 10
     if final_priority is not None:
         body["task_priority"] = final_priority
     return body

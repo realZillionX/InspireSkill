@@ -1,0 +1,9 @@
+"""Shared training-job defaults."""
+
+from __future__ import annotations
+
+DEFAULT_TRAINING_MAX_TIME_HOURS = 24.0 * 365
+DEFAULT_TRAINING_MAX_TIME_MS = str(int(DEFAULT_TRAINING_MAX_TIME_HOURS * 3600 * 1000))
+
+
+__all__ = ["DEFAULT_TRAINING_MAX_TIME_HOURS", "DEFAULT_TRAINING_MAX_TIME_MS"]

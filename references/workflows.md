@@ -4,13 +4,13 @@
 
 ## 1. 阶段 A：CPU 空间准备基底环境
 
-默认先在可上网 CPU 空间起可上网 notebook，安装项目依赖、Slurm/Ray/训练依赖，并保存成项目通用镜像。这样后续 notebook、job、HPC、Ray 都复用同一基底，减少冷启动和重复安装。
+先选定一个可上网 CPU 空间起基底 notebook，安装项目依赖、Slurm/Ray/训练依赖，并保存成项目通用镜像。这样后续 notebook、job、HPC、Ray 都复用同一基底，减少冷启动和重复安装。资源条件通过显式参数或 workload profile 传入，不依赖隐式默认值。
 
 > 下述示例中的 `<GROUP>`、`<WORKSPACE>`、`<IMAGE_URL>` 仅为占位格式。实际值以 `inspire resources specs` 和 `inspire config context` 的实时输出为准。
 
 仓库远端路径默认从 `me` path alias 开始；多个 repo 并列时用 `me:<repo>`。如果需要更短名字，先用 `inspire notebook set-path ... as repo` 写入仓库级 alias。
 
-基底 notebook 准备看 [notebook.md](notebook.md)，镜像固化和默认镜像看 [image-management.md](image-management.md)。一次性临时任务可以跳过 `image save`。
+基底 notebook 准备看 [notebook.md](notebook.md)，镜像固化和可见性看 [image-management.md](image-management.md)。一次性临时任务可以跳过 `image save`。
 
 ```bash
 # 创建并配置基底 notebook -> 安装依赖 -> 保存为项目镜像
@@ -22,7 +22,6 @@ inspire notebook ssh <name>-base --cwd me
 inspire notebook exec <name>-base --cwd me:<repo> "python --version && nvidia-smi || true"
 inspire notebook install-deps <name>-base --slurm --ray
 inspire image save <name>-base -n <img> -v v1 --public --wait
-inspire image set-default --job <URL> --notebook <URL>
 ```
 
 ## 2. 阶段 B：CPU 空间跑数据处理
@@ -46,11 +45,13 @@ HPC 和 Ray 的资源模型、示例与状态判断看 [compute-workloads.md](co
 
 单节点调试：先用 `inspire notebook create` 在训练空间起 notebook；连接、执行和事件观察看 [notebook.md](notebook.md)。
 
-多节点训练命令和异常判断看 [compute-workloads.md](compute-workloads.md)。快速提交并跟日志用 `inspire run`：
+多节点训练命令和异常判断看 [compute-workloads.md](compute-workloads.md)。提交后用 `job logs --follow` 跟日志：
 
 ```bash
-inspire run 'bash <repo>/train.sh' -q 8,160,1800 --nodes 2 \
-  --workspace <WORKSPACE> --group <GROUP> --image <IMAGE_URL> --watch
+inspire job create -n <name>-train -q 8,160,1800 --nodes 2 \
+  -c 'bash <repo>/train.sh' --workspace <WORKSPACE> --group <GROUP> \
+  --image <IMAGE_URL> --priority 5
+inspire job logs --follow <name>-train
 ```
 
 训练失败或长时间排队时，先查：

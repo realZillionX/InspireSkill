@@ -53,7 +53,7 @@ def test_ssh_keys_list_human_hides_raw_ids(monkeypatch) -> None:
     assert "ssh-12345678" not in result.output
 
 
-def test_ssh_keys_list_json_keeps_raw_payload_for_scripts(monkeypatch) -> None:
+def test_ssh_keys_list_json_omits_raw_ids(monkeypatch) -> None:
     _patch_session(monkeypatch)
     monkeypatch.setattr(
         browser_api_module,
@@ -68,7 +68,8 @@ def test_ssh_keys_list_json_keeps_raw_payload_for_scripts(monkeypatch) -> None:
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["data"]["items"][0]["id"].startswith("ssh-")
+    assert "id" not in payload["data"]["items"][0]
+    assert payload["data"]["items"][0]["name"] == "main-key"
 
 
 def test_ssh_keys_add_validates_and_uses_content(monkeypatch) -> None:
@@ -154,4 +155,4 @@ def test_ssh_keys_delete_rejects_id_shaped_input(monkeypatch) -> None:
     )
 
     assert result.exit_code == EXIT_VALIDATION_ERROR
-    assert "takes a SSH key name" in result.output
+    assert "take a SSH key name" in result.output

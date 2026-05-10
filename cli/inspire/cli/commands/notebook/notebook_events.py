@@ -26,11 +26,6 @@ from inspire.platform.web.browser_api.notebooks import list_notebook_events
     help="Output as JSON. Equivalent to top-level `--json`.",
 )
 @click.option(
-    "--from-cache",
-    is_flag=True,
-    help="Read the last cached events and skip the live fetch.",
-)
-@click.option(
     "--type",
     "type_filter",
     help="Filter events by `type` (Normal / Warning; case-insensitive prefix match).",
@@ -50,7 +45,6 @@ def events(
     ctx: Context,
     name: str,
     json_output_local: bool,
-    from_cache: bool,
     type_filter: Optional[str],
     reason_filter: Optional[str],
     tail: Optional[int],
@@ -63,17 +57,17 @@ def events(
       inspire --json notebook events <name>
       inspire notebook events <name> --type Warning
       inspire notebook events <name> --reason FailedScheduling
-      inspire notebook events <name> --from-cache
     """
     from inspire.cli.commands.notebook.notebook_metrics import _notebook_name_to_id
 
     notebook_id = _notebook_name_to_id(ctx, name)
     run_events_command(
         ctx,
-        job_id=notebook_id,
+        resource_id=notebook_id,
+        resource_type="notebook",
+        resource_name=name,
         fetch=lambda: list_notebook_events(notebook_id),
         json_output_local=json_output_local,
-        from_cache=from_cache,
         type_filter=type_filter,
         reason_filter=reason_filter,
         tail=tail,

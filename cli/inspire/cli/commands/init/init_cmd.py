@@ -183,57 +183,6 @@ def _bootstrap_first_account_if_needed(
     help="Overwrite existing files without prompting",
 )
 @click.option(
-    "--discover",
-    is_flag=True,
-    help="Discover projects/workspaces and write per-account catalog",
-)
-@click.option(
-    "--probe-shared-path",
-    is_flag=True,
-    help=(
-        "Probe shared filesystem paths by SSHing into a small CPU notebook per project "
-        "(slow; creates notebooks)."
-    ),
-)
-@click.option(
-    "--probe-limit",
-    type=int,
-    default=0,
-    show_default=True,
-    help=(
-        "Limit number of projects to probe (0 = all). "
-        "Only effective with --discover --probe-shared-path."
-    ),
-)
-@click.option(
-    "--probe-keep-notebooks",
-    is_flag=True,
-    help=(
-        "Keep probe notebooks running (do not stop them after probing). "
-        "Only effective with --discover --probe-shared-path."
-    ),
-)
-@click.option(
-    "--probe-pubkey",
-    "--pubkey",
-    "probe_pubkey",
-    default=None,
-    help=(
-        "SSH public key path for probing (defaults to ~/.ssh/id_ed25519.pub or ~/.ssh/id_rsa.pub). "
-        "Only effective with --discover --probe-shared-path."
-    ),
-)
-@click.option(
-    "--probe-timeout",
-    type=int,
-    default=900,
-    show_default=True,
-    help=(
-        "Per-project probe timeout in seconds. "
-        "Only effective with --discover --probe-shared-path."
-    ),
-)
-@click.option(
     "--template",
     "-t",
     "template_flag",
@@ -244,12 +193,12 @@ def _bootstrap_first_account_if_needed(
     "--username",
     "-u",
     default=None,
-    help="Platform username (prompted if not configured). Only used with --discover.",
+    help="Platform username (prompted if not configured). Used by plain init discovery.",
 )
 @click.option(
     "--base-url",
     default=None,
-    help="Platform base URL (prompted if not configured). Only used with --discover.",
+    help="Platform base URL (prompted if not configured). Used by plain init discovery.",
 )
 @click.option(
     "--select-project",
@@ -257,7 +206,7 @@ def _bootstrap_first_account_if_needed(
     default=None,
     help=(
         "Pick a project explicitly by name (skips the interactive "
-        "prompt and the platform-heuristic guess). Only used with --discover."
+        "prompt and the platform-heuristic guess). Used by plain init discovery."
     ),
 )
 @pass_context
@@ -267,12 +216,6 @@ def init(
     global_flag: bool,
     project_flag: bool,
     force: bool,
-    discover: bool,
-    probe_shared_path: bool,
-    probe_limit: int,
-    probe_keep_notebooks: bool,
-    probe_pubkey: str | None,
-    probe_timeout: int,
     template_flag: bool,
     username: str | None,
     base_url: str | None,
@@ -280,48 +223,53 @@ def init(
 ) -> None:
     """Initialize Inspire CLI configuration.
 
-    Detects environment variables and creates config.toml files.
-    By default, options are auto-split by scope: global options go to
-    ~/.config/inspire/config.toml, project options go to ./.inspire/config.toml.
+    Plain `inspire init` logs in or uses the active account, discovers visible
+    workspaces / projects / compute groups, asks which storage tier the `me`
+    path alias should use, then writes account config plus this repository's
+    ./.inspire/config.toml.
 
-    Use --global or --project to force all options to a single file.
-    Template/smart modes avoid writing secrets. In --discover mode, prompted
-    account passwords are stored in global config for the selected account.
+    Legacy non-discovery modes are still available. `--template` writes a
+    placeholder config. `--global` or `--project` forces environment-variable
+    detection / smart init into one config file instead of running discovery.
 
-    If no environment variables are detected (or with --template), creates
-    a template config with placeholder values.
+    Discovery writes account-scoped catalogs to the active account config and
+    project-scoped context/path aliases to ./.inspire/config.toml.
 
-    Use --discover to log in through the platform browser flow, discover accessible projects and
-    compute groups, and write an account-scoped catalog to the global config.
+    \b
+    Prompted passwords are stored in global config for the selected account.
+
+    Template/smart modes avoid writing secrets.
+
+    Without discovery, if no environment variables are detected (or with
+    --template), init creates a template config with placeholder values.
+
+    Discovery also creates path aliases such as `me`, `public`, `global-me`,
+    `ssd.me`, `hdd.me`, and `qb-ilm2.me`; the top-level `me` points at the
+    selected path tier, with `ssd` suggested for the path hot tier.
 
     \b
     Examples:
-        # Auto-detect env vars and split by scope
+        # Discover account/project/workspace catalog and path aliases
         inspire init
 
         \b
-        # Force all options to global config
-        inspire init --global
+        # Refresh discovered config non-interactively where possible
+        inspire init --force
 
         \b
-        # Force all options to project config
-        inspire init --project
-
-        \b
-        # Create template with placeholders
+        # Create a placeholder project config instead of discovery
         inspire init --template
 
         \b
-        # Discover projects/workspaces and write per-account catalog
-        inspire init --discover
+        # Legacy: detect env vars and write only project/global config
+        inspire init --project
+        inspire init --global
     """
     ctx.json_output = bool(ctx.json_output or json_output_local)
     effective_json = ctx.json_output
     warnings: list[str] = []
 
-    default_discover = not discover and not template_flag and not global_flag and not project_flag
-    if default_discover:
-        discover = True
+    run_discovery = not template_flag and not global_flag and not project_flag
 
     def _warn(msg: str) -> None:
         warnings.append(msg)
@@ -330,7 +278,7 @@ def init(
 
     try:
         bootstrapped_account = False
-        if discover:
+        if run_discovery:
             bootstrapped_account = _bootstrap_first_account_if_needed(
                 effective_json=effective_json,
                 cli_username=username,
@@ -340,32 +288,15 @@ def init(
         global_path, project_path = _get_config_paths()
         before = snapshot_paths(global_path, project_path)
 
-        if not discover and (
-            probe_limit or probe_keep_notebooks or probe_pubkey or probe_timeout != 900
-        ):
+        if not run_discovery and (username or base_url or select_project_name):
             _warn(
-                "Probe options are only effective with --discover --probe-shared-path and were ignored."
-            )
-
-        if not discover and (username or base_url):
-            _warn(
-                "--username and --base-url are only effective with --discover and were ignored."
+                "--username, --base-url, and --select-project are only effective with plain `inspire init` and were ignored."
             )
 
         if global_flag and project_flag:
             raise ValueError("Cannot specify both --global and --project")
 
-        if discover:
-            if template_flag:
-                raise ValueError("Cannot combine --discover with --template")
-            if global_flag or project_flag:
-                raise ValueError("--discover always writes both global and project config")
-
-            if not probe_shared_path and (
-                probe_limit or probe_keep_notebooks or probe_pubkey or probe_timeout != 900
-            ):
-                _warn("Probe options require --probe-shared-path and were ignored.")
-
+        if run_discovery:
             if effective_json and not force and (global_path.exists() or project_path.exists()):
                 raise ValueError(
                     "JSON mode is non-interactive for discover updates; rerun with --force when "
@@ -376,11 +307,6 @@ def init(
                 _init_discover_mode,
                 effective_json,
                 force,
-                probe_shared_path=probe_shared_path,
-                probe_limit=probe_limit,
-                probe_keep_notebooks=probe_keep_notebooks,
-                probe_pubkey=probe_pubkey,
-                probe_timeout=probe_timeout,
                 cli_username=username,
                 cli_base_url=base_url,
                 cli_select_project=select_project_name,
@@ -393,19 +319,11 @@ def init(
                 detected=[],
                 warnings=warnings,
                 discover={
-                    "probe_enabled": bool(probe_shared_path),
-                    "probe_limit": int(probe_limit),
-                    "probe_keep_notebooks": bool(probe_keep_notebooks),
-                    "probe_timeout": int(probe_timeout),
-                    "probe_pubkey_provided": bool(probe_pubkey),
                     "bootstrapped_account": bootstrapped_account,
                 },
                 effective_json=effective_json,
             )
             return
-
-        if probe_shared_path:
-            raise ValueError("--probe-shared-path requires --discover")
 
         if template_flag:
             if effective_json:

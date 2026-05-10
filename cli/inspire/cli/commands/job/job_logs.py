@@ -110,22 +110,81 @@ def _web_log_sort_key(item: dict) -> tuple[int, str]:
     return timestamp_ms, log_id
 
 
+def _web_log_identity(item: dict) -> tuple[int, str, str, str]:
+    timestamp_ms = _coerce_epoch_ms(item.get("timestamp_ms")) or 0
+    log_id = str(item.get("log_id") or "")
+    pod_name = str(item.get("pod_name") or "").strip()
+    message = str(item.get("message") or item.get("log") or item.get("content") or "")
+    return timestamp_ms, log_id, pod_name, message
+
+
+def _format_web_log_line(item: dict) -> str:
+    timestamp = str(
+        item.get("timestamp_str") or item.get("time") or item.get("timestamp_ms") or ""
+    ).strip()
+    pod_name = scrub_raw_ids(str(item.get("pod_name") or "").strip())
+    message = scrub_raw_ids(
+        str(item.get("message") or item.get("log") or item.get("content") or "")
+    )
+    prefix = " ".join(part for part in (timestamp, pod_name) if part)
+    return f"{prefix} {message}".rstrip() if prefix else message
+
+
 def _format_web_logs(logs: list[dict]) -> str:
     if not logs:
         return "No web logs found."
 
     lines = ["Web Job Logs"]
     for item in logs:
-        timestamp = str(
-            item.get("timestamp_str") or item.get("time") or item.get("timestamp_ms") or ""
-        ).strip()
-        pod_name = scrub_raw_ids(str(item.get("pod_name") or "").strip())
-        message = scrub_raw_ids(
-            str(item.get("message") or item.get("log") or item.get("content") or "")
-        )
-        prefix = " ".join(part for part in (timestamp, pod_name) if part)
-        lines.append(f"{prefix} {message}".rstrip() if prefix else message)
+        lines.append(_format_web_log_line(item))
     return "\n".join(lines)
+
+
+def _follow_logs_via_web(
+    *,
+    job_id: str,
+    pod_names: list[str],
+    start_ms: int,
+    tail_lines: int,
+    page_size: int,
+    session: object,
+    poll_interval: float = 2.0,
+) -> None:
+    seen: set[tuple[int, str, str, str]] = set()
+    first_fetch = True
+
+    click.echo("Following web logs...")
+    click.echo(f"(showing last {tail_lines} lines, then polling new content)")
+    click.echo("Press Ctrl+C to stop\n")
+
+    try:
+        while True:
+            end_ms = int(time.time() * 1000)
+            logs, _total = browser_api_module.list_train_job_logs(
+                job_id=job_id,
+                pod_names=pod_names,
+                start_timestamp_ms=start_ms,
+                end_timestamp_ms=end_ms,
+                page_size=max(page_size, tail_lines),
+                session=session,
+            )
+            ordered = sorted(logs, key=_web_log_sort_key)
+            unseen = [item for item in ordered if _web_log_identity(item) not in seen]
+
+            if first_fetch:
+                unseen = unseen[-tail_lines:]
+                first_fetch = False
+
+            for item in unseen:
+                click.echo(_format_web_log_line(item))
+                seen.add(_web_log_identity(item))
+
+            for item in ordered:
+                seen.add(_web_log_identity(item))
+
+            time.sleep(poll_interval)
+    except KeyboardInterrupt:
+        click.echo("\nStopped following logs.")
 
 
 def _fetch_log_via_ssh(
@@ -511,8 +570,6 @@ def _run_job_logs_web_single_job(
     follow: bool,
     workspace: Optional[str],
     all_workspaces: bool,
-    all_users: bool,
-    created_by: Optional[str],
     max_pages: int,
     instance_ids: tuple[str, ...],
     since_minutes: int | None,
@@ -526,12 +583,13 @@ def _run_job_logs_web_single_job(
             EXIT_VALIDATION_ERROR,
         )
         return
-    if follow:
+    if follow and ctx.json_output:
         _handle_error(
             ctx,
             "InvalidUsage",
-            "--follow is not supported for web aggregated logs yet",
+            "--json --follow --web is not supported",
             EXIT_VALIDATION_ERROR,
+            hint="Drop --json to follow web logs, or drop --follow for a one-shot JSON fetch.",
         )
         return
     if since_minutes is not None and since_minutes <= 0:
@@ -558,8 +616,6 @@ def _run_job_logs_web_single_job(
             job=job,
             workspace=workspace,
             all_workspaces=all_workspaces,
-            all_users=all_users,
-            created_by=created_by,
             max_pages=max_pages,
         )
 
@@ -575,8 +631,7 @@ def _run_job_logs_web_single_job(
             else:
                 instances, _ = browser_api_module.list_job_instances(
                     job_id,
-                    page_num=1,
-                    page_size=200,
+                    num=200,
                     session=session,
                 )
                 pod_names = [
@@ -596,6 +651,18 @@ def _run_job_logs_web_single_job(
 
             start_ms, end_ms = _web_log_time_range(job_data, since_minutes)
             fetch_size = max(web_page_size, tail or 0, head or 0)
+
+            if follow:
+                _follow_logs_via_web(
+                    job_id=job_id,
+                    pod_names=pod_names,
+                    start_ms=start_ms,
+                    tail_lines=tail or 50,
+                    page_size=web_page_size,
+                    session=session,
+                )
+                return
+
             logs, total = browser_api_module.list_train_job_logs(
                 job_id=job_id,
                 pod_names=pod_names,
@@ -653,7 +720,12 @@ def _run_job_logs_web_single_job(
 @click.option("--tail", "-n", type=int, help="Show last N lines only")
 @click.option("--head", type=int, help="Show first N lines only")
 @click.option("--path", is_flag=True, help="Just print log path, don't read content")
-@click.option("--follow", "-f", is_flag=True, help="Stream new log content via tail -f over SSH")
+@click.option(
+    "--follow",
+    "-f",
+    is_flag=True,
+    help="Follow new log content; default mode uses SSH tail -f, --web polls platform logs",
+)
 @click.option(
     "--remote-log-path",
     default=None,
@@ -671,16 +743,21 @@ def _run_job_logs_web_single_job(
         "No short alias — `-n` is reserved for --tail."
     ),
 )
-@click.option("--web", is_flag=True, help="Read platform aggregated logs instead of SSH logs")
-@click.option("--workspace", default=None, help="Workspace alias or name")
+@click.option(
+    "--web",
+    is_flag=True,
+    help=(
+        "Fallback: read platform aggregated logs instead of the CLI-managed SSH log file. "
+        "Use when no cached notebook SSH bridge or shared-FS log path is available."
+    ),
+)
+@click.option("--workspace", default=None, help="Workspace name")
 @click.option(
     "--all-workspaces",
     "-A",
     is_flag=True,
     help="Resolve the job name across every visible workspace, not just the current one",
 )
-@click.option("--all-users", is_flag=True, help="Include jobs from all users in web mode")
-@click.option("--created-by", default=None, help="Advanced creator filter for web job name resolution")
 @click.option(
     "--max-pages",
     type=int,
@@ -720,20 +797,22 @@ def logs(
     web: bool,
     workspace: Optional[str],
     all_workspaces: bool,
-    all_users: bool,
-    created_by: Optional[str],
     max_pages: int,
     instance_ids: tuple[str, ...],
     since_minutes: int | None,
     web_page_size: int,
 ) -> None:
-    """Tail / cat the remote log file for a training job over SSH.
+    """Read the CLI-managed remote log file for a training job over SSH.
 
-    Requires a cached notebook connection (`inspire notebook ssh <name>`).
-    The log path defaults to the convention written by `inspire run` /
-    `inspire job create`
-    (``<me>/.inspire/training_master_<name>.log``);
-    use ``--remote-log-path`` to override for jobs whose path differs.
+    Requires a cached notebook connection.
+
+    Default mode reads the log file written by `inspire job create` under
+    the `me` path alias, usually
+    ``<me>/.inspire/training_master_<name>_*.log``. It requires a cached
+    notebook connection / SSH bridge from `inspire notebook ssh <notebook>`.
+
+    Use ``--web`` only as a fallback to platform aggregated logs when no cached
+    notebook bridge or shared-FS log path is available.
 
     \b
     Examples:
@@ -745,6 +824,7 @@ def logs(
         inspire job logs my-training-run --notebook my-cpu-box
         inspire job logs my-training-run --remote-log-path /inspire/.../custom.log
         inspire job logs --web my-training-run --tail 100
+        inspire job logs --web my-training-run --follow
     """
     if notebook is not None:
         from inspire.cli.utils.id_resolver import reject_id_at_boundary
@@ -760,8 +840,6 @@ def logs(
     web_mode = (
         web
         or workspace
-        or all_users
-        or created_by
         or bool(instance_ids)
         or since_minutes is not None
     )
@@ -791,8 +869,6 @@ def logs(
             follow=follow,
             workspace=workspace,
             all_workspaces=all_workspaces,
-            all_users=all_users,
-            created_by=created_by,
             max_pages=max_pages,
             instance_ids=instance_ids,
             since_minutes=since_minutes,
@@ -829,7 +905,7 @@ def logs(
                 "Cannot derive remote log path: no default path alias is configured.",
                 EXIT_CONFIG_ERROR,
                 hint=(
-                    "Run `inspire init --discover` to populate the `me` path alias, "
+                    "Run `inspire init` to populate the `me` path alias, "
                     "or pass --remote-log-path explicitly."
                 ),
             )

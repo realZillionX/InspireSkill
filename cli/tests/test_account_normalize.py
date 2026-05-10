@@ -103,12 +103,14 @@ def test_no_legacy_files_no_quarantine(
     assert (inspire_home / NORMALIZATION_SENTINEL).exists()
 
 
-def test_stale_env_var_reported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_workspace_env_var_is_not_special_cased(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     _isolate_inspire_home(monkeypatch, tmp_path)
     monkeypatch.setenv("INSPIRE_WORKSPACE_ID", "ws-xxxxxx")
 
     report = normalize_environment()
-    assert "INSPIRE_WORKSPACE_ID" in report.stale_env_vars
+    assert report.stale_env_vars == []
 
 
 def test_stale_env_var_unset_not_reported(

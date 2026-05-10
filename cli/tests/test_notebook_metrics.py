@@ -145,8 +145,8 @@ def test_metrics_json_output_is_raw_time_series_and_skips_plot(
     assert envelope["success"] is True
     payload = envelope["data"]
     assert payload["resource"] == "notebook"
-    assert payload["notebook_id"] == _NOTEBOOK_ID
-    assert payload["logic_compute_group_id"] == "lcg-abc"
+    assert "notebook_id" not in payload
+    assert "logic_compute_group_id" not in payload
     assert payload["task_type"] == "interactive_modeling"
     assert payload["metric_types"] == ["gpu_usage_rate", "cpu_usage_rate"]
     assert payload["time_range"]["interval_second"] == 60

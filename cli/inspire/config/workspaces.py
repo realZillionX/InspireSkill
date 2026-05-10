@@ -1,28 +1,11 @@
-"""Workspace selection utilities.
-
-The CLI never guesses a workspace by GPU type or "CPU vs GPU" role. As of
-v3.1.0 there is also **no implicit "default workspace"** — workspace must
-come from one of:
-
-1. ``--workspace <name-or-id>`` on the command itself → ``explicit_*``
-2. The ``[workspaces]`` alias map (looked up by ``--workspace cpu`` etc.)
-
-There is intentionally no config-level fallback. ``[job].workspace_id`` /
-``INSPIRE_WORKSPACE_ID`` / ``[context].workspace`` were removed in v3.1.0
-because "default workspace" was a redundant concept once ``[context].project``
-exists, and made it easy for commands to silently target the wrong workspace.
-
-If none of the explicit paths resolve, ``select_workspace_id`` returns
-``None`` and the caller is expected to surface a clear error pointing at
-``--workspace`` or the alias map.
-"""
+"""Workspace-name resolution utilities."""
 
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Any, Optional
 
-from inspire.config import Config, ConfigError
+from inspire.config import ConfigError
 
 _WORKSPACE_ID_RE = re.compile(
     r"^ws-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -34,75 +17,114 @@ _PLACEHOLDER_WORKSPACE_ID = "ws-00000000-0000-0000-0000-000000000000"
 
 def _validate_workspace_id(value: str) -> None:
     if value == _PLACEHOLDER_WORKSPACE_ID:
-        raise ConfigError(
-            "workspace_id is the placeholder. Pass a real workspace via "
-            "--workspace <alias> (configure aliases under [workspaces])."
-        )
+        raise ConfigError("workspace_id is the placeholder. Pass a real workspace name.")
     if not _WORKSPACE_ID_RE.match(value):
         raise ConfigError(f"Invalid workspace_id format: {value!r}")
 
 
+def _session_workspace_names(session: Any) -> dict[str, str]:
+    names = getattr(session, "all_workspace_names", None)
+    if isinstance(names, dict):
+        return {str(wid): str(name) for wid, name in names.items() if wid and name}
+    return {}
+
+
+def _enumerated_workspace_names(session: Any) -> dict[str, str]:
+    try:
+        from inspire.platform.web.browser_api.workspaces import try_enumerate_workspaces
+
+        items = try_enumerate_workspaces(session)
+    except Exception:
+        return {}
+
+    out: dict[str, str] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        wid = str(item.get("id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if wid and name:
+            out[wid] = name
+    return out
+
+
+def workspace_name_map(session: Any) -> dict[str, str]:
+    """Return the visible ``workspace_id -> workspace name`` map."""
+    resolved = _session_workspace_names(session)
+    for wid, name in _enumerated_workspace_names(session).items():
+        resolved.setdefault(wid, name)
+    return resolved
+
+
+def workspace_label(session: Any, workspace_id: str, requested: str | None = None) -> str:
+    if requested:
+        return requested
+    return workspace_name_map(session).get(workspace_id) or "(workspace name unavailable)"
+
+
 def select_workspace_id(
-    config: Config,
+    config: Any,
     *,
-    gpu_type: Optional[str] = None,  # ignored — kept for backwards-compat signature
-    cpu_only: Optional[bool] = None,  # ignored
-    prefer_internet: bool = False,  # ignored
+    gpu_type: Optional[str] = None,
+    cpu_only: Optional[bool] = None,
+    prefer_internet: bool = False,
     explicit_workspace_id: Optional[str] = None,
     explicit_workspace_name: Optional[str] = None,
+    session: Any | None = None,
 ) -> Optional[str]:
-    """Resolve a workspace id from explicit args only — no config default.
+    """Resolve an explicit workspace name to a workspace id.
 
-    Precedence:
-      1. ``explicit_workspace_id``
-      2. ``explicit_workspace_name`` — looked up against ``[workspaces]``
-      3. ``None`` (no fallback) — caller MUST handle by erroring out.
-
-    Removed in v3.1.0: ``config.job_workspace_id`` fallback (was sourced
-    from ``[job].workspace_id`` / ``INSPIRE_WORKSPACE_ID`` /
-    ``[context].workspace``). See module docstring.
+    User-facing CLI options accept workspace names only. Raw ``ws-...`` ids are
+    only accepted through ``explicit_workspace_id`` for internal call sites that
+    already obtained ids from the live session.
     """
-    del gpu_type, cpu_only, prefer_internet  # no longer consulted
+    del config, gpu_type, cpu_only, prefer_internet
 
     if explicit_workspace_id:
         _validate_workspace_id(explicit_workspace_id)
         return explicit_workspace_id
 
-    if explicit_workspace_name:
-        key = explicit_workspace_name.strip()
-        if not key:
-            raise ConfigError("Workspace name cannot be empty")
+    if explicit_workspace_name is None:
+        return None
 
-        candidate: Optional[str] = None
-        normalized = key.lower()
-        for name, workspace_id in (config.workspaces or {}).items():
-            if name.lower() == normalized:
-                candidate = workspace_id
-                break
+    key = explicit_workspace_name.strip()
+    if not key:
+        raise ConfigError("Workspace name cannot be empty")
+    if _WORKSPACE_ID_RE.match(key):
+        raise ConfigError("--workspace takes a workspace name, not a raw workspace ID.")
 
-        if not candidate:
-            available = sorted((config.workspaces or {}).keys())
-            available_hint = ", ".join(available) if available else "(none configured)"
-            raise ConfigError(
-                f"Unknown workspace name: {explicit_workspace_name!r}. "
-                f"Configure it under [workspaces] in config.toml. Available: {available_hint}"
-            )
+    if session is None:
+        from inspire.platform.web.session import get_web_session
 
-        _validate_workspace_id(candidate)
-        return candidate
+        session = get_web_session()
 
-    return None
+    candidates = [
+        (wid, name)
+        for wid, name in workspace_name_map(session).items()
+        if name.lower() == key.lower()
+    ]
+    if len(candidates) == 1:
+        return candidates[0][0]
+    if len(candidates) > 1:
+        names = ", ".join(name for _wid, name in candidates[:5])
+        raise ConfigError(f"Workspace name {key!r} is ambiguous. Candidates: {names}")
+
+    available = sorted(set(workspace_name_map(session).values()))
+    available_hint = ", ".join(available) if available else "(no workspace names available)"
+    raise ConfigError(f"Unknown workspace name: {explicit_workspace_name!r}. Available: {available_hint}")
 
 
-def workspace_required_hint(config: Config) -> str:
-    """Build a one-line hint for the missing-workspace error path.
-
-    Lists configured aliases so the user knows what `--workspace` will accept.
-    """
-    aliases = sorted((config.workspaces or {}).keys())
-    if aliases:
-        return "pass --workspace <alias> " f"(configured aliases: {', '.join(aliases)})"
+def workspace_required_hint(config: Any | None = None) -> str:
+    del config
     return (
-        "pass --workspace <alias>. No aliases configured yet — "
-        "run `inspire init --discover` to populate [workspaces]"
+        "pass --workspace <workspace-name>. Run `inspire config context` "
+        "to list visible workspace names"
     )
+
+
+__all__ = [
+    "select_workspace_id",
+    "workspace_label",
+    "workspace_name_map",
+    "workspace_required_hint",
+]

@@ -40,26 +40,6 @@ def _apply_env_layer(
         else:
             new_value = value
 
-        # Cross-account / cross-repo guard: if the active project's
-        # `[context].project` already resolved to a value, refuse to let
-        # an `INSPIRE_PROJECT_ID` env var silently shadow it. Two repos
-        # with different projects sharing the same shell would otherwise
-        # have one of them quietly running against the wrong project.
-        # User can override explicitly by clearing the project setting in
-        # the repo or unsetting the env var.
-        if (
-            option.env_var == "INSPIRE_PROJECT_ID"
-            and sources.get(field_name) == SOURCE_PROJECT
-            and config_dict.get(field_name)
-            and str(config_dict[field_name]) != str(new_value)
-        ):
-            raise ConfigError(
-                "INSPIRE_PROJECT_ID conflicts with the project resolved from "
-                f"this repo's [context].project ({config_dict[field_name]!r} "
-                f"vs env {new_value!r}). Pick one: unset the env var, or "
-                "remove [context].project from ./.inspire/config.toml."
-            )
-
         if prefer_source == "toml" and sources.get(field_name) == SOURCE_PROJECT:
             continue
 

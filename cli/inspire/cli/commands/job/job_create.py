@@ -27,15 +27,16 @@ from inspire.cli.utils.quota_resolver import (
     resolve_quota,
 )
 from inspire.config import Config, ConfigError
-from inspire.config.workspaces import select_workspace_id
+from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
+from inspire.config.workspaces import select_workspace_id, workspace_label
+from inspire.job_defaults import DEFAULT_TRAINING_MAX_TIME_HOURS
 from inspire.platform.web.session import get_web_session
-
 
 def run_job_create(
     ctx: Context,
     *,
     name: str,
-    quota: str,
+    quota: str | None,
     command: str,
     framework: str,
     priority: int | None,
@@ -43,24 +44,85 @@ def run_job_create(
     workspace: str | None,
     image: str | None,
     project: str | None,
-    nodes: int,
+    nodes: int | None,
     group: str | None,
+    profile_name: str | None = None,
+    dry_run: bool = False,
     auto_fault_tolerance: Optional[bool] = None,
     fault_tolerance_max_retry: Optional[int] = None,
 ) -> None:
     """Run the job creation flow."""
     try:
         config, _ = Config.from_files_and_env()
-        api = AuthManager.get_api(config)
+        api = None if dry_run else AuthManager.get_api(config)
+
+        fields = apply_workload_profile(
+            profiles=getattr(config, "profiles", {}),
+            kind="job",
+            profile_name=profile_name,
+            values={
+                "workspace": workspace,
+                "project": project,
+                "group": group,
+                "image": image,
+                "quota": quota,
+            },
+        )
+        workspace = fields["workspace"]
+        project = fields["project"]
+        group = fields["group"]
+        image = fields["image"]
+        quota = fields["quota"]
 
         if priority is None:
-            priority = config.job_priority
-        if image is None:
-            image = config.job_image
+            priority = 10
         if auto_fault_tolerance is None:
             auto_fault_tolerance = config.job_auto_fault_tolerance
         if fault_tolerance_max_retry is None:
             fault_tolerance_max_retry = config.job_fault_tolerance_max_retry
+
+        if not group:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                profile_required_message("job", "group"),
+                EXIT_CONFIG_ERROR,
+            )
+            return
+        if not image:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                profile_required_message("job", "image"),
+                EXIT_CONFIG_ERROR,
+            )
+            return
+        if not project:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                profile_required_message("job", "project"),
+                EXIT_CONFIG_ERROR,
+            )
+            return
+        if not workspace:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                profile_required_message("job", "workspace"),
+                EXIT_CONFIG_ERROR,
+            )
+            return
+        if not quota:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                profile_required_message("job", "quota"),
+                EXIT_CONFIG_ERROR,
+            )
+            return
+        if nodes is None:
+            nodes = 1
 
         try:
             quota_spec = parse_quota(quota)
@@ -68,9 +130,11 @@ def run_job_create(
             _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
             return
 
+        session = get_web_session()
         selected_workspace_id = select_workspace_id(
             config,
             explicit_workspace_name=workspace,
+            session=session,
         )
         if not selected_workspace_id:
             from inspire.config.workspaces import workspace_required_hint
@@ -78,13 +142,11 @@ def run_job_create(
             _handle_error(
                 ctx,
                 "ConfigError",
-                f"--workspace is required (no longer falls back to a config default in v3.1.0). "
-                f"To proceed: {workspace_required_hint(config)}.",
+                f"{profile_required_message('job', 'workspace')} {workspace_required_hint(config)}.",
                 EXIT_CONFIG_ERROR,
             )
             return
 
-        session = get_web_session()
         try:
             resolved_quota = resolve_quota(
                 spec=quota_spec,
@@ -137,8 +199,7 @@ def run_job_create(
             )
 
         try:
-            submission = job_submit.submit_training_job(
-                api,
+            plan = job_submit.build_training_job_plan(
                 config=config,
                 name=name,
                 command=command,
@@ -158,6 +219,47 @@ def run_job_create(
             _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
             return
 
+        if dry_run:
+            if ctx.json_output:
+                click.echo(json_formatter.format_json(job_submit.training_plan_payload(plan)))
+                return
+            click.echo(human_formatter.format_success(f"Dry run: job create plan for {name}"))
+            click.echo(f"Project: {scrub_raw_ids(selected.name)}")
+            click.echo(
+                f"Workspace: {scrub_raw_ids(workspace_label(session, selected_workspace_id, workspace))}"
+            )
+            click.echo(f"Compute: {scrub_raw_ids(resolved_quota.compute_group_name)}")
+            click.echo(f"Quota: {quota_spec.display()}")
+            if priority is not None:
+                click.echo(f"Priority: {priority}")
+            if nodes > 1:
+                click.echo(f"Nodes: {nodes}")
+            click.echo(f"Image: {scrub_raw_ids(image)}")
+            click.echo(f"Command: {scrub_raw_ids(plan.wrapped_command)}")
+            if plan.log_path:
+                click.echo(f"Log file: {scrub_raw_ids(plan.log_path)}")
+            click.echo("No create API call was made.")
+            return
+
+        assert api is not None
+        submission = job_submit.submit_training_job(
+            api,
+            config=config,
+            name=name,
+            command=command,
+            quota=resolved_quota,
+            framework=framework,
+            project_id=selected_project_id,
+            workspace_id=selected_workspace_id,
+            image=image,
+            priority=priority,
+            nodes=nodes,
+            max_time_hours=max_time,
+            project_name=selected.name,
+            auto_fault_tolerance=auto_fault_tolerance,
+            fault_tolerance_max_retry=fault_tolerance_max_retry,
+        )
+
         wrapped_command = submission.wrapped_command
         log_path = submission.log_path
         result = submission.result
@@ -166,7 +268,8 @@ def run_job_create(
         job_id = submission.job_id
 
         if ctx.json_output:
-            payload = data if data else result
+            payload = dict(data if data else result)
+            payload.setdefault("name", name)
             click.echo(json_formatter.format_json(payload))
             return
 
@@ -212,7 +315,6 @@ def run_job_create(
 @click.option(
     "--quota",
     "-q",
-    required=True,
     help=(
         "Resource quota as 'gpu,cpu,mem' (mem in GiB). "
         "Example: '4,80,800' for 4 GPU + 80 CPU + 800 GiB. "
@@ -221,11 +323,20 @@ def run_job_create(
     ),
 )
 @click.option("--command", "-c", required=True, help="Start command")
-@click.option("--framework", default="pytorch", help="Training framework (default: pytorch)")
+@click.option(
+    "--framework",
+    default="pytorch",
+    help=(
+        "Platform training-framework label sent to the create API "
+        "(default: pytorch). This does not choose the Docker image; use "
+        "--image for that. Most users should keep the default."
+    ),
+)
 @click.option(
     "--priority",
     type=click.IntRange(1, 10),
-    default=None,
+    default=10,
+    show_default=True,
     help=(
         "Task priority 1-10 (1-3=LOW preemptible, 4=NORMAL, 5-10=HIGH stable). "
         "Project quota may cap the requested value. Check `inspire job status` "
@@ -237,7 +348,7 @@ def run_job_create(
     "auto_fault_tolerance",
     default=None,
     help=(
-        "Enable training fault tolerance (auto-restart on failures). "
+        "Ask the platform to auto-restart the training job after failures. "
         "Default from config [job].auto_fault_tolerance, or False."
     ),
 )
@@ -246,36 +357,55 @@ def run_job_create(
     type=click.IntRange(min=1),
     default=None,
     help=(
-        "Max retry count when --auto-fault-tolerance is enabled (default 10, "
-        "or config [job].fault_tolerance_max_retry). Ignored when fault tolerance is off."
+        "Max platform restart attempts when --auto-fault-tolerance is enabled "
+        "(default 10, or config [job].fault_tolerance_max_retry). Ignored when "
+        "fault tolerance is off."
     ),
 )
-@click.option("--max-time", type=float, default=100.0, help="Max runtime in hours (default: 100)")
-@click.option("--workspace", help="Workspace name (from [workspaces])")
+@click.option(
+    "--max-time",
+    type=float,
+    default=DEFAULT_TRAINING_MAX_TIME_HOURS,
+    show_default=True,
+    help="Max runtime in hours",
+)
+@click.option("--workspace", help="Workspace name. Required unless supplied by --profile.")
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    help="Job condition profile providing workspace/project/group/quota/image.",
+)
 @click.option(
     "--group",
-    default=None,
     help=(
-        "Disambiguate to a specific compute group by name when the --quota triple "
-        "matches multiple groups. Partial matches accepted."
+        "Compute group name. Required unless supplied by --profile. "
+        "Partial matches accepted when unique."
     ),
 )
 @click.option(
     "--image",
-    default=None,
-    help="Custom Docker image (default from config [job].image)",
+    help="Docker image URL or visible image name. Required unless supplied by --profile.",
 )
 @click.option(
     "--project",
     "-p",
-    default=None,
-    help="Project name (default from config [context].project; see 'inspire config context')",
+    help="Project name. Required unless supplied by --profile.",
 )
 @click.option(
     "--nodes",
     type=int,
     default=1,
-    help="Number of nodes for multi-node training (default: 1)",
+    show_default=True,
+    help="Number of nodes for multi-node training.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help=(
+        "Resolve workspace, project, quota, compute group, image, and final command, "
+        "then print the plan without calling the create API."
+    ),
 )
 @pass_context
 def create(
@@ -289,10 +419,12 @@ def create(
     fault_tolerance_max_retry: Optional[int],
     max_time: float,
     workspace: Optional[str],
+    profile_name: Optional[str],
     group: Optional[str],
     image: Optional[str],
     project: Optional[str],
-    nodes: int,
+    nodes: Optional[int],
+    dry_run: bool,
 ) -> None:
     """Create a new training job.
 
@@ -301,9 +433,12 @@ def create(
 
     \b
     Examples:
-        inspire job create -n pr-123 -q 4,80,800 -c "bash repo/train.sh"
-        inspire job create -n test -q 1,20,200 -c "python train.py" --priority 9
-        inspire job create -n test -q 4,80,800 -c "python train.py" --group H200
+        inspire job create -n pr-123 --workspace 分布式训练空间 --project CI-情境智能 \
+          --group H200 -q 4,80,800 --image sandbox-base:latest --nodes 1 \
+          -c "bash repo/train.sh"
+        inspire job create -n test --workspace 分布式训练空间 --project CI-情境智能 \
+          --group H200 -q 1,20,200 --image sandbox-base:latest --nodes 1 \
+          -c "python train.py" --priority 9
 
     \b
     Priority:
@@ -324,6 +459,8 @@ def create(
         project=project,
         nodes=nodes,
         group=group,
+        profile_name=profile_name,
+        dry_run=dry_run,
         auto_fault_tolerance=auto_fault_tolerance,
         fault_tolerance_max_retry=fault_tolerance_max_retry,
     )

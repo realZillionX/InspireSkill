@@ -167,14 +167,15 @@ def get_job_detail(
 def list_job_instances(
     job_id: str,
     *,
-    page_num: int = 1,
-    page_size: int = 200,
+    num: int = 500,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict], int]:
     """Fetch pod-level instances for a distributed-training job."""
     job_id = str(job_id or "").strip()
     if not job_id:
         raise ValueError("job_id is required")
+    if num < 1:
+        raise ValueError("num must be positive")
 
     if session is None:
         session = get_web_session()
@@ -184,7 +185,7 @@ def list_job_instances(
         "POST",
         _browser_api_path("/train_job/instance_list"),
         referer=f"{_get_base_url()}/jobs/distributedTrainingDetail/{job_id}",
-        body={"jobId": job_id, "page_num": page_num, "page_size": page_size},
+        body={"jobId": job_id, "page_num": 1, "page_size": num},
         timeout=30,
     )
 

@@ -9,8 +9,8 @@ def test_root_help_keeps_json_as_script_interface() -> None:
     result = runner.invoke(cli_main, ["--help"])
 
     assert result.exit_code == 0
-    assert "Default human output is the interactive observation surface." in result.output
-    assert "Use JSON only for scripts or structured automation." in result.output
+    assert "Default output is name-first." in result.output
+    assert "JSON is for scripts and structured automation." in result.output
 
 
 def test_job_status_formatter_shows_platform_priority_fields() -> None:
@@ -29,3 +29,5 @@ def test_job_status_formatter_shows_platform_priority_fields() -> None:
     assert "Requested Priority: 10" in output
     assert "Priority Name: 10" in output
     assert "Priority Level: HIGH" in output
+    assert "job-123" not in output
+    assert "Job ID" not in output

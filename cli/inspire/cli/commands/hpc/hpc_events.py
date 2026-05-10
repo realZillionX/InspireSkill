@@ -25,11 +25,6 @@ from inspire.platform.web.browser_api.hpc_jobs import list_hpc_job_events
     help="Output as JSON. Equivalent to top-level `--json`.",
 )
 @click.option(
-    "--from-cache",
-    is_flag=True,
-    help="Read the last cached events and skip the live fetch.",
-)
-@click.option(
     "--reason",
     "reason_filter",
     help="Filter events whose `reason` contains this substring (case-insensitive).",
@@ -44,7 +39,6 @@ def events(
     ctx: Context,
     name: str,
     json_output_local: bool,
-    from_cache: bool,
     reason_filter: Optional[str],
     tail: Optional[int],
 ) -> None:
@@ -55,15 +49,15 @@ def events(
       inspire hpc events <name>
       inspire --json hpc events <name>
       inspire hpc events <name> --reason Deleted
-      inspire hpc events <name> --from-cache
     """
     job_id = _resolve_hpc_name(ctx, name)
     run_events_command(
         ctx,
-        job_id=job_id,
+        resource_id=job_id,
+        resource_type="hpc",
+        resource_name=name,
         fetch=lambda: list_hpc_job_events(job_id),
         json_output_local=json_output_local,
-        from_cache=from_cache,
         type_filter=None,  # HPC events lack `type`; filter not applicable
         reason_filter=reason_filter,
         tail=tail,

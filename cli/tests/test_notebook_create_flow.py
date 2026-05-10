@@ -70,35 +70,32 @@ def test_format_quota_display_cpu_only() -> None:
     assert display == "4CPU + 32GiB"
 
 
-def test_resolve_create_inputs_uses_config_quota_default() -> None:
+def test_resolve_create_inputs_requires_explicit_or_profile_quota() -> None:
     config = SimpleNamespace(
-        notebook_quota="2,40,400",
         project_order=None,
-        job_project_id="project-x",
-        notebook_image=None,
-        job_image="img-x",
         shm_size=64,
     )
-    quota, project, image, shm = flow_module._resolve_create_inputs(
-        config=config, quota=None, project=None, image=None, shm_size=None
-    )
-    assert quota == "2,40,400"
-    assert project == "project-x"
-    assert image == "img-x"
-    assert shm == 64
+    with pytest.raises(ValueError, match="--quota is required"):
+        flow_module._resolve_create_inputs(
+            config=config,
+            quota=None,
+            project="Project One",
+            image="img-x",
+            shm_size=None,
+        )
 
 
 def test_resolve_create_inputs_prefers_cli_arg_over_config() -> None:
     config = SimpleNamespace(
-        notebook_quota="2,40,400",
         project_order=None,
-        job_project_id=None,
-        notebook_image=None,
-        job_image=None,
         shm_size=None,
     )
     quota, _p, _i, shm = flow_module._resolve_create_inputs(
-        config=config, quota="1,20,200", project=None, image=None, shm_size=None
+        config=config,
+        quota="1,20,200",
+        project="Project One",
+        image="img-x",
+        shm_size=None,
     )
     assert quota == "1,20,200"
     assert shm == 32  # default fallback
@@ -106,11 +103,7 @@ def test_resolve_create_inputs_prefers_cli_arg_over_config() -> None:
 
 def test_resolve_create_inputs_requires_quota_somewhere() -> None:
     config = SimpleNamespace(
-        notebook_quota=None,
         project_order=None,
-        job_project_id=None,
-        notebook_image=None,
-        job_image=None,
         shm_size=None,
     )
     with pytest.raises(ValueError, match="--quota is required"):
@@ -131,17 +124,12 @@ def _configure_create_happy_path(
     resolved = resolved_quota or _make_resolved_quota()
 
     config = SimpleNamespace(
-        notebook_quota="1,20,200",
         project_order=None,
-        job_project_id="project-1111",
-        notebook_image=None,
         notebook_post_start=post_start_value,
-        job_image="img-default",
         shm_size=32,
         job_priority=9,
         projects={},
-        project_shared_path_groups={},
-        workspaces={"gpu": "ws-1111"},
+        profiles={},
     )
 
     selected_project = SimpleNamespace(
@@ -224,11 +212,11 @@ def test_run_notebook_create_orchestrates_happy_path(monkeypatch: pytest.MonkeyP
     flow_module.run_notebook_create(
         ctx,
         name=None,
-        workspace=None,
+        workspace="gpu",
         workspace_id=None,
-        quota=None,
-        project=None,
-        image=None,
+        quota="1,20,200",
+        project="Project One",
+        image="Image One",
         shm_size=None,
         auto_stop=True,
         wait=True,
@@ -237,7 +225,7 @@ def test_run_notebook_create_orchestrates_happy_path(monkeypatch: pytest.MonkeyP
         json_output=False,
         priority=None,
         project_explicit=False,
-        group=None,
+        group="H200 Group",
     )
 
     # Priority should be capped to the selected project's max priority (6).
@@ -262,11 +250,11 @@ def test_run_notebook_create_skips_wait_without_post_start(
     flow_module.run_notebook_create(
         ctx,
         name=None,
-        workspace=None,
+        workspace="gpu",
         workspace_id=None,
-        quota=None,
-        project=None,
-        image=None,
+        quota="1,20,200",
+        project="Project One",
+        image="Image One",
         shm_size=None,
         auto_stop=True,
         wait=False,
@@ -275,7 +263,7 @@ def test_run_notebook_create_skips_wait_without_post_start(
         json_output=False,
         priority=None,
         project_explicit=False,
-        group=None,
+        group="H200 Group",
     )
 
     assert "wait_called" not in calls
@@ -290,11 +278,11 @@ def test_run_notebook_create_skips_post_start_when_wait_fails(
     flow_module.run_notebook_create(
         ctx,
         name=None,
-        workspace=None,
+        workspace="gpu",
         workspace_id=None,
-        quota=None,
-        project=None,
-        image=None,
+        quota="1,20,200",
+        project="Project One",
+        image="Image One",
         shm_size=None,
         auto_stop=True,
         wait=True,
@@ -303,7 +291,7 @@ def test_run_notebook_create_skips_post_start_when_wait_fails(
         json_output=False,
         priority=None,
         project_explicit=False,
-        group=None,
+        group="H200 Group",
     )
 
     assert calls["wait_called"] is True
@@ -319,11 +307,11 @@ def test_run_notebook_create_honors_cpu_only_quota(monkeypatch: pytest.MonkeyPat
     flow_module.run_notebook_create(
         ctx,
         name=None,
-        workspace=None,
+        workspace="gpu",
         workspace_id=None,
         quota="0,4,32",
-        project=None,
-        image=None,
+        project="Project One",
+        image="Image One",
         shm_size=None,
         auto_stop=False,
         wait=True,
@@ -332,7 +320,7 @@ def test_run_notebook_create_honors_cpu_only_quota(monkeypatch: pytest.MonkeyPat
         json_output=False,
         priority=None,
         project_explicit=False,
-        group=None,
+        group="CPU Pool",
     )
 
     assert calls["quota"].gpu_count == 0

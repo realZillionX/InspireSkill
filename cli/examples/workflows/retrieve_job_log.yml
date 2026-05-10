@@ -12,8 +12,8 @@ name: Retrieve Job Log
 on:
   workflow_dispatch:
     inputs:
-      job_id:
-        description: 'Inspire job ID'
+      job_handle:
+        description: 'Internal Inspire job handle'
         required: true
         type: string
       remote_log_path:
@@ -46,13 +46,13 @@ jobs:
 
       - name: Push log to orphan logs branch
         env:
-          JOB_ID: ${{ inputs.job_id }}
+          JOB_HANDLE: ${{ inputs.job_handle }}
           REQUEST_ID: ${{ inputs.request_id }}
           LOG_PATH: ${{ inputs.remote_log_path }}
           START_OFFSET: ${{ inputs.start_offset }}
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          LOG_FILENAME="job-${JOB_ID}-log-${REQUEST_ID}.log"
+          LOG_FILENAME="job-${JOB_HANDLE}-log-${REQUEST_ID}.log"
 
           # Create temp dir with cleanup trap
           TEMP_DIR=$(mktemp -d)
@@ -82,7 +82,7 @@ jobs:
           # Create orphan branch and force push (no history, single file)
           git checkout --orphan logs-new
           git add "$LOG_FILENAME"
-          git commit -m "Log for job ${JOB_ID} (request ${REQUEST_ID}, offset ${START_OFFSET})"
+          git commit -m "Log for job ${JOB_HANDLE} (request ${REQUEST_ID}, offset ${START_OFFSET})"
           git push --force origin logs-new:logs
 
           echo "Log uploaded: $LOG_FILENAME"
