@@ -83,7 +83,7 @@ def _print_notebook_list(items: list, json_output: bool) -> None:
     """Print notebook list in appropriate format.
 
     The CLI takes names only. JSON output follows the same boundary; use
-    `inspire notebook id <name>` when the platform handle is explicitly needed.
+    `inspire notebook id <name>` when a platform lookup is explicitly needed.
     """
     if json_output:
         click.echo(json_formatter.format_json({"items": items, "total": len(items)}))

@@ -42,7 +42,7 @@ def _resolve_project_id(
         return None
     if requested.startswith("project-"):
         raise ConfigError(
-            "--project takes a project name, not a platform handle. "
+            "--project takes a project name. "
             "See `inspire project list` or `inspire config context`."
         )
     if requested in config.projects:
@@ -60,7 +60,10 @@ def _resolve_project_id(
 
 def _current_user_id(session) -> str:  # noqa: ANN001
     user = browser_api_module.get_current_user(session=session)
-    return str(user.get("id") or user.get("user_id") or "").strip()
+    user_id = str(user.get("id") or user.get("user_id") or "").strip()
+    if not user_id:
+        raise ConfigError("Cannot determine the current user from the live web session.")
+    return user_id
 
 
 def _status_label(value: Any) -> str:
@@ -180,7 +183,6 @@ def _resolve_model_name(
 @click.option("--workspace", default=None, help="Workspace name")
 @click.option("--project", default=None, help="Project name filter")
 @click.option("--keyword", default=None, help="Server-side model name/description search")
-@click.option("--mine", is_flag=True, default=False, help="Only show models registered by me")
 @click.option("--page", type=int, default=1, show_default=True)
 @click.option("--page-size", type=int, default=-1, show_default=True, help="-1 = fetch all")
 @pass_context
@@ -189,7 +191,6 @@ def list_model(
     workspace: Optional[str],
     project: Optional[str],
     keyword: Optional[str],
-    mine: bool,
     page: int,
     page_size: int,
 ) -> None:
@@ -201,7 +202,7 @@ def list_model(
         project_id = _resolve_project_id(
             config, project, workspace_id=resolved_workspace, session=session
         )
-        user_id = _current_user_id(session) if mine else None
+        user_id = _current_user_id(session)
         items, total = browser_api_module.list_models(
             workspace_id=resolved_workspace,
             page=page,
@@ -245,7 +246,6 @@ def list_model(
 @click.argument("name")
 @click.option("--workspace", default=None, help="Workspace name")
 @click.option("--project", default=None, help="Project name filter")
-@click.option("--mine", is_flag=True, default=False, help="Only search my models")
 @click.option("--pick", type=int, default=None, help="Pick Nth duplicate name (1-indexed)")
 @pass_context
 def status_model(
@@ -253,7 +253,6 @@ def status_model(
     name: str,
     workspace: Optional[str],
     project: Optional[str],
-    mine: bool,
     pick: Optional[int],
 ) -> None:
     """Show detail of a specific model by name."""
@@ -264,7 +263,7 @@ def status_model(
         project_id = _resolve_project_id(
             config, project, workspace_id=workspace_id, session=session
         )
-        user_id = _current_user_id(session) if mine else None
+        user_id = _current_user_id(session)
         model_id = _resolve_model_name(
             ctx,
             name,
@@ -347,7 +346,6 @@ def status_model(
 @click.argument("name")
 @click.option("--workspace", default=None, help="Workspace name")
 @click.option("--project", default=None, help="Project name filter")
-@click.option("--mine", is_flag=True, default=False, help="Only search my models")
 @click.option("--pick", type=int, default=None, help="Pick Nth duplicate name (1-indexed)")
 @pass_context
 def versions_model(
@@ -355,7 +353,6 @@ def versions_model(
     name: str,
     workspace: Optional[str],
     project: Optional[str],
-    mine: bool,
     pick: Optional[int],
 ) -> None:
     """List all versions of a model by name."""
@@ -366,7 +363,7 @@ def versions_model(
         project_id = _resolve_project_id(
             config, project, workspace_id=workspace_id, session=session
         )
-        user_id = _current_user_id(session) if mine else None
+        user_id = _current_user_id(session)
         model_id = _resolve_model_name(
             ctx,
             name,

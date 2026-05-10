@@ -95,7 +95,7 @@ def _resolve_explicit_workspace(config: Config, workspace: Optional[str], sessio
         raise ConfigError("--workspace requires a workspace name; -A is not accepted here.")
     if _looks_like_workspace_id(workspace):
         raise ConfigError(
-            "--workspace takes a workspace name, not a platform handle. "
+            "--workspace takes a workspace name. "
             "See `inspire config context` for available names."
         )
     return select_workspace_id(config, explicit_workspace_name=workspace, session=session)
@@ -380,14 +380,14 @@ def _resolve_web_job_id(
         if allow_raw_id:
             return job
         raise WebJobValidationError(
-            "CLI commands take a job name, not a platform handle or partial handle. "
+            "CLI commands take a job name. "
             "Use `inspire job list -A` to find the name."
         )
     if not allow_raw_id and (
         is_full_uuid(job, prefix="job-") or is_partial_id(job, prefix="job-")
     ):
         raise WebJobValidationError(
-            "CLI commands take a job name, not a platform handle or partial handle. "
+            "CLI commands take a job name. "
             "Use `inspire job list -A` to find the name."
         )
 
@@ -441,11 +441,7 @@ def _resolve_web_job_id(
 
 
 def _format_job_list(rows: list[dict]) -> str:
-    """Render jobs as a table without platform handles.
-
-    Names are the CLI boundary. Use `inspire job id <name>` when the
-    platform handle is explicitly needed.
-    """
+    """Render jobs as a compact name-first table."""
     if not rows:
         return "No jobs found."
 

@@ -118,7 +118,7 @@ def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
     if requested:
         if requested.startswith("project-"):
             raise ConfigError(
-                "--project takes a project name, not a platform handle. "
+                "--project takes a project name. "
                 "See `inspire config context` for available names."
             )
         if requested in config.projects:
@@ -182,7 +182,7 @@ def _hpc_plan_payload(
 
 
 def _format_hpc_list_rows(rows: list[dict[str, str]]) -> str:
-    """Format HPC job rows into a compact table without platform handles."""
+    """Format HPC job rows into a compact name-first table."""
     if not rows:
         return "No HPC jobs found."
 
@@ -213,7 +213,7 @@ def _hpc_instance_name(inst: dict[str, Any], idx: int) -> str:
 
 
 def _format_hpc_instances(instances: list[dict[str, Any]]) -> str:
-    """Format HPC pod/component instances without platform handles."""
+    """Format HPC pod/component instances as name-first rows."""
     if not instances:
         return "No HPC instances found."
 

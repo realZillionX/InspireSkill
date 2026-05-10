@@ -68,14 +68,26 @@ def list_hpc_jobs(
 
     if workspace_id is None:
         workspace_id = session.workspace_id or DEFAULT_WORKSPACE_ID
+    if created_by is None:
+        data = _request_json(
+            session,
+            "GET",
+            _browser_api_path("/user/detail"),
+            referer=f"{_get_base_url()}/jobs/highPerformanceComputing",
+            timeout=30,
+        )
+        user_payload = data.get("data")
+        current_user: dict[str, Any] = user_payload if isinstance(user_payload, dict) else {}
+        created_by = str(current_user.get("id") or current_user.get("user_id") or "").strip()
+        if not created_by:
+            raise ValueError("current user is required for HPC listing")
 
     body: dict[str, Any] = {
         "workspace_id": workspace_id,
         "page_num": page_num,
         "page_size": page_size,
+        "created_by": created_by,
     }
-    if created_by:
-        body["created_by"] = created_by
     if status:
         body["status"] = status
 

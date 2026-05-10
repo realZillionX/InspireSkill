@@ -177,3 +177,26 @@ def test_events_help_has_no_cache_mode() -> None:
 
         assert result.exit_code == 0
         assert "--from-cache" not in result.output
+
+
+def test_model_help_has_no_cross_user_filter() -> None:
+    for subcommand in ("list", "status", "versions"):
+        result = CliRunner().invoke(cli_main, ["model", subcommand, "--help"])
+
+        assert result.exit_code == 0
+        assert "--mine" not in result.output
+
+
+def test_serving_help_has_no_all_users_mode() -> None:
+    for subcommand in ("list", "status", "stop", "delete"):
+        result = CliRunner().invoke(cli_main, ["serving", subcommand, "--help"])
+
+        assert result.exit_code == 0
+        assert "--all" not in result.output
+
+
+def test_ray_create_help_has_no_raw_json_body_escape_hatch() -> None:
+    result = CliRunner().invoke(cli_main, ["ray", "create", "--help"])
+
+    assert result.exit_code == 0
+    assert "--json-body" not in result.output

@@ -122,7 +122,7 @@ def test_list_models_posts_current_filter_shape_and_parses_response(monkeypatch)
 def test_list_models_rejects_nonzero_code(monkeypatch) -> None:
     _install_fake_request(monkeypatch, {"code": 100002, "message": "bad"}, {})
     with pytest.raises(ValueError, match="API error: bad"):
-        list_models(session=_FakeSession())
+        list_models(user_id="user-1", session=_FakeSession())
 
 
 def test_model_detail_and_version_endpoints(monkeypatch) -> None:

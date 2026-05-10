@@ -371,16 +371,16 @@ def _resolve_notebook_id(
             EXIT_VALIDATION_ERROR,
         )
 
-    # Names are the CLI boundary. Reject handle-shaped inputs before platform lookup.
+    # Names are the CLI boundary. Reject copied platform values before lookup.
     if _looks_like_notebook_id(identifier) or is_partial_id(identifier, prefix="notebook-"):
         _handle_error(
             ctx,
             "ValidationError",
-            "CLI commands take a notebook name, not a platform handle or partial handle.",
+            "CLI commands take a notebook name.",
             EXIT_VALIDATION_ERROR,
             hint=(
                 "Use `inspire notebook list` to find the name. "
-                "Use `inspire notebook id <name>` only for explicit platform-handle lookup."
+                "Use `inspire notebook id <name>` only for explicit platform lookup."
             ),
         )
 
@@ -461,7 +461,7 @@ def _resolve_notebook_id(
             _handle_error(
                 ctx,
                 "APIError",
-                f"Notebook '{identifier}' is missing an internal handle in API response.",
+                f"Notebook '{identifier}' is missing a required API field.",
                 EXIT_API_ERROR,
             )
             raise RuntimeError("unreachable")
@@ -486,7 +486,7 @@ def _resolve_notebook_id(
             EXIT_VALIDATION_ERROR,
             hint=(
                 "Rename one of the duplicates so each notebook has a unique name — "
-                "normal CLI commands do not accept platform handles at the user boundary."
+                "normal CLI commands resolve by name."
             ),
         )
 
@@ -506,7 +506,7 @@ def _resolve_notebook_id(
         _handle_error(
             ctx,
             "APIError",
-            f"Notebook '{identifier}' is missing an internal handle in API response.",
+            f"Notebook '{identifier}' is missing a required API field.",
             EXIT_API_ERROR,
         )
         raise RuntimeError("unreachable")

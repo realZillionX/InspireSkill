@@ -464,7 +464,7 @@ def save_image_cmd(
         hint=WEB_AUTH_HINT,
     )
 
-    # Resolve the notebook name to its platform handle through the notebook
+    # Resolve the notebook name through the notebook
     # resolver, which rejects handle-shaped normal CLI inputs.
     from inspire.cli.commands.notebook.notebook_lookup import _resolve_notebook_id
     from inspire.cli.utils.notebook_cli import get_base_url, load_config

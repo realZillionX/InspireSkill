@@ -167,6 +167,22 @@ def _merge_filter(
     return merged
 
 
+def _current_user_id(session: WebSession, workspace_id: str) -> str:
+    data = _request_json(
+        session,
+        "GET",
+        _browser_api_path("/user/detail"),
+        referer=_referer(workspace_id),
+        timeout=30,
+    )
+    raw_payload = data.get("data")
+    payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
+    user_id = str(payload.get("id") or payload.get("user_id") or "").strip()
+    if not user_id:
+        raise ValueError("current user is required for model listing")
+    return user_id
+
+
 def list_models(
     workspace_id: Optional[str] = None,
     *,
@@ -184,6 +200,8 @@ def list_models(
     Returns `(items, total)`. `page_size=-1` mirrors the UI (fetch all).
     """
     session, workspace_id = _resolve_workspace(workspace_id, session)
+    if user_id is None:
+        user_id = _current_user_id(session, workspace_id)
     body = {
         "page": page,
         "page_size": page_size,

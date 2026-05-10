@@ -87,7 +87,7 @@ def _resolve_project_id(
         if allow_config_raw_id:
             return requested
         raise ConfigError(
-            "--project takes a project name, not a platform handle. "
+            "--project takes a project name. "
             "See `inspire project list` or `inspire config context`."
         )
     if requested in config.projects:
@@ -110,7 +110,7 @@ def _resolve_image_for_create(raw: str, *, session, ctx: Context) -> tuple[str, 
     if not raw:
         raise ConfigError("Image is empty.")
     if raw.startswith(("image-", "mirror-")):
-        raise ConfigError("--image takes a visible image name or name:tag, not a platform handle.")
+        raise ConfigError("--image takes a visible image name or name:tag.")
     target = raw.lower()
     for source in ("private", "public", "official"):
         try:
@@ -167,6 +167,7 @@ def _resolve_model_for_create(
     name: str,
     workspace_id: Optional[str],
     project_id: Optional[str],
+    user_id: str,
     session,
     ctx: Context,
 ) -> tuple[str, Optional[int], str]:
@@ -174,6 +175,7 @@ def _resolve_model_for_create(
         workspace_id=workspace_id,
         keyword=name,
         project_ids=[project_id] if project_id else None,
+        user_id=user_id,
         page=1,
         page_size=100,
         session=session,
@@ -792,6 +794,10 @@ def create_serving(
         )
         if not project_id:
             raise ConfigError(profile_required_message("serving", "project"))
+        user = browser_api_module.get_current_user(session=session)
+        current_user_id = str(user.get("id") or user.get("user_id") or "").strip()
+        if not current_user_id:
+            raise ConfigError("Cannot determine the current user from the live web session.")
 
         try:
             spec = parse_quota(quota)
@@ -809,6 +815,7 @@ def create_serving(
             name=model_name,
             workspace_id=workspace_id,
             project_id=None,
+            user_id=current_user_id,
             session=session,
             ctx=ctx,
         )

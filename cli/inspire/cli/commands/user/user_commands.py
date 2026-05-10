@@ -239,7 +239,7 @@ def api_keys_user(ctx: Context) -> None:
 
         click.echo(f"API Keys (total={len(items)})")
         for i, item in enumerate(items, 1):
-            name = item.get("name") or item.get("title") or item.get("id") or "?"
+            name = scrub_raw_ids(item.get("name") or item.get("title") or f"key-{i}")
             created = item.get("create_at") or item.get("created_at") or ""
             last_used = item.get("last_used_at") or item.get("last_used") or ""
             suffix = []

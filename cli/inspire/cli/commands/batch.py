@@ -388,7 +388,7 @@ def _prepare_hpc_item(
 def _project_request_value(config: Config, requested: str) -> str:
     if requested.startswith("project-"):
         raise ConfigError(
-            "Batch item field project takes a project name, not a platform handle. "
+            "Batch item field project takes a project name. "
             "See `inspire config context` for available names."
         )
     for alias, project_id in (config.projects or {}).items():
@@ -709,10 +709,15 @@ def _prepare_serving_item(
         schedule_config_type=SCHEDULE_TYPE_SERVING,
         group_override=_require_condition_str(item, "group", kind="serving"),
     )
-    model_id, latest_version = _resolve_model_for_create(
+    user = browser_api_module.get_current_user(session=session)
+    current_user_id = str(user.get("id") or user.get("user_id") or "").strip()
+    if not current_user_id:
+        raise ConfigError("Cannot determine the current user from the live web session.")
+    model_id, latest_version, _model_label = _resolve_model_for_create(
         name=_require_str(item, "model"),
         workspace_id=workspace_id,
         project_id=project_id,
+        user_id=current_user_id,
         session=session,
         ctx=ctx,
     )

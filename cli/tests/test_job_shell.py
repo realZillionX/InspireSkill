@@ -323,7 +323,7 @@ def test_job_shell_command_rejects_job_id_boundary(monkeypatch) -> None:  # noqa
     result = CliRunner().invoke(cli_main, ["job", "shell", "job-abc"])
 
     assert result.exit_code != 0
-    assert "take a job name, not a platform handle or partial handle" in result.output
+    assert "take a job name" in result.output
 
 
 class _FakeSocket:

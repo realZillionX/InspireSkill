@@ -497,13 +497,13 @@ def _load_projects_for_discovery(
 
     # Explicit `--select-project <name>` takes precedence over every
     # heuristic and skips the interactive prompt entirely. Matches case-insensitively
-    # on name only; platform handles are not part of the CLI boundary.
+    # on names only; copied platform values are not part of the CLI boundary.
     if requested_project:
         rq = requested_project.strip()
         if rq.startswith("project-"):
             click.echo(
                 click.style(
-                    "--select-project takes a project name, not a platform handle.",
+                    "--select-project takes a project name.",
                     fg="red",
                 )
             )

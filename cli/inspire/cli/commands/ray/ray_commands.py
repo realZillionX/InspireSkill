@@ -369,7 +369,7 @@ def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
     if requested:
         if requested.startswith("project-"):
             raise ConfigError(
-                "--project takes a project name, not a platform handle. "
+                "--project takes a project name. "
                 "See `inspire config context` for available names."
             )
         if requested in config.projects:

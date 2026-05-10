@@ -116,8 +116,6 @@ def list_ray_jobs(
 ) -> tuple[list[RayJobInfo], int]:
     """List Ray (弹性计算) jobs in a workspace.
 
-    ``user_ids`` filters to a specific user or set of users; pass ``None``
-    to see every caller's jobs (mirrors the "所有人" tab in the web UI).
     Returns ``(jobs, total)`` where ``total`` is the server-reported match
     count, useful for paging.
     """
@@ -126,14 +124,29 @@ def list_ray_jobs(
 
     if workspace_id is None:
         workspace_id = session.workspace_id or DEFAULT_WORKSPACE_ID
+    if not user_ids:
+        user_data = _request_json(
+            session,
+            "GET",
+            _browser_api_path("/user/detail"),
+            referer=_ray_referer(),
+            timeout=30,
+        )
+        user_payload = user_data.get("data")
+        current_user: dict[str, Any] = user_payload if isinstance(user_payload, dict) else {}
+        current_user_id = str(
+            current_user.get("id") or current_user.get("user_id") or ""
+        ).strip()
+        if not current_user_id:
+            raise ValueError("current user is required for Ray listing")
+        user_ids = [current_user_id]
 
     body: dict[str, Any] = {
         "workspace_id": workspace_id,
         "page_num": page_num,
         "page_size": page_size,
+        "filter_by": {"user_id": list(user_ids)},
     }
-    if user_ids:
-        body["filter_by"] = {"user_id": list(user_ids)}
 
     data = _assert_ok(
         _request_json(

@@ -108,19 +108,22 @@ def test_list_ray_jobs_posts_expected_body_and_parses(monkeypatch) -> None:
     assert record["body"]["page_size"] == 20
 
 
-def test_list_ray_jobs_without_user_filter_omits_filter_by(monkeypatch) -> None:
-    record: dict[str, Any] = {}
-    _install_fake_request(
-        monkeypatch,
-        {"code": 0, "data": {"items": [], "total": 0}},
-        record,
-    )
+def test_list_ray_jobs_without_user_filter_uses_current_user(monkeypatch) -> None:
+    records: list[dict[str, Any]] = []
+
+    def fake_request(session, method, url, *, referer=None, body=None, timeout=30):
+        records.append({"method": method, "url": url, "body": body})
+        if url.endswith("/user/detail"):
+            return {"code": 0, "data": {"id": "user-current"}}
+        return {"code": 0, "data": {"items": [], "total": 0}}
+
+    monkeypatch.setattr(ray_jobs_module, "_request_json", fake_request)
 
     jobs, total = list_ray_jobs(workspace_id="ws-x", session=_FakeSession())
 
     assert jobs == []
     assert total == 0
-    assert "filter_by" not in record["body"]
+    assert records[-1]["body"]["filter_by"] == {"user_id": ["user-current"]}
 
 
 def test_list_ray_jobs_falls_back_to_session_workspace(monkeypatch) -> None:
@@ -131,7 +134,7 @@ def test_list_ray_jobs_falls_back_to_session_workspace(monkeypatch) -> None:
         record,
     )
 
-    list_ray_jobs(session=_FakeSession(workspace_id="ws-from-session"))
+    list_ray_jobs(user_ids=["user-1"], session=_FakeSession(workspace_id="ws-from-session"))
 
     assert record["body"]["workspace_id"] == "ws-from-session"
 
@@ -144,7 +147,7 @@ def test_list_ray_jobs_raises_on_non_zero_code(monkeypatch) -> None:
     )
 
     with pytest.raises(ValueError, match="list failed"):
-        list_ray_jobs(workspace_id="ws-x", session=_FakeSession())
+        list_ray_jobs(workspace_id="ws-x", user_ids=["user-1"], session=_FakeSession())
 
 
 # ---------------------------------------------------------------------------
