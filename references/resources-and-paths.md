@@ -27,14 +27,13 @@
 
 ## 3. 资源查询入口
 
-资源、规格和用户相关能力以 CLI help 为准：
+资源和规格以 CLI help 为准：
 
 ```bash
 inspire resources --help
 inspire resources specs --help
 inspire resources list --help
 inspire resources nodes --help
-inspire user --help
 ```
 
 常用判断顺序：
@@ -44,7 +43,6 @@ inspire user --help
 3. GPU 训练 / serving 用 `inspire resources specs --usage <kind> --workspace 分布式训练空间` 选合法的 `--quota gpu,cpu,mem` 三元组。
 4. `inspire resources list --all --include-cpu` 看实时空余。
 5. 多节点 GPU 任务再用 `inspire resources nodes --min-nodes <n>` 看整节点空闲。
-6. 只有需要确认项目归属、负责人、组级预算或平台返回的项目级提示时，再查 `inspire project --help`。
 
 资源和可用量以平台实时查询为准。本地缓存、历史截图和旧文档不能当作资源事实。
 
@@ -86,20 +84,19 @@ inspire notebook exec prep-box --cwd me:<repo> "git pull && pip install -r requi
 
 `分布式训练空间` 不可上网时，不要在目标 GPU notebook / job 里反复尝试公网下载；先回到 `CPU资源空间` 的可上网 CPU notebook 准备共享盘内容或镜像，再提交目标任务。
 
-SII 内部源和公网不是一回事。即使 compute group 没有公网，内部源通常仍可访问；安装包、补系统依赖、拉内部镜像或访问内部对象存储前，先查飞书 [内部源使用说明](https://sii-czxy.feishu.cn/wiki/VkYDwTldrisk5AkOspDccKWBnRb)。该教程覆盖 Python 包、Linux 系统包和常见工程生态源，核心入口如下：
+SII 内部源和公网不是一回事。即使 compute group 没有公网，内部源通常仍可访问；安装包、补系统依赖、拉内部镜像或访问内部对象存储前，先按下面的入口判断内部源是否可用：
 
 | 类型 | 地址 / 用法 |
 | --- | --- |
 | PIP | `pip install <pkg> -i http://nexus.sii.shaipower.online/repository/pypi/simple --trusted-host nexus.sii.shaipower.online` |
 | PIP 永久配置 | `pip config set global.index-url http://nexus.sii.shaipower.online/repository/pypi/simple`；再设 `pip config set global.trusted-host nexus.sii.shaipower.online` |
-| PIP 临时配置 | 飞书也给出 `PIP_INDEX_URL=http://nexus.sii.shaipower.online/repository/pypi/simple/` 和 `PIP_TRUSTED_HOST=nexus.sii.shaipower.online`；准备长期 notebook / 镜像时优先用 `pip config` 固化 |
-| Apt | `http://nexus.sii.shaipower.online/repository/ubuntu/`；飞书教程给的是 Ubuntu `focal` 示例，实际镜像要匹配自己的 Ubuntu codename |
+| Apt | `http://nexus.sii.shaipower.online/repository/ubuntu/`；实际镜像要匹配自己的 Ubuntu codename |
 | Conda | `http://nexus.sii.shaipower.online/repository/anaconda/main` |
 | npm / Maven | `http://nexus.sii.shaipower.online/repository/npm/`、`http://nexus.sii.shaipower.online/repository/maven/` |
 | Docker / OSS | `harbor.sii.edu.cn`、`oss.sii.edu.cn` |
 | DNS / NTP | `10.252.176.10`、`10.252.176.11`；`ntp.sii.shaipower.online` |
 
-Apt 的黑盒用法是改 `/etc/apt/sources.list`、`sudo apt-get update`、再 `sudo apt-get install <pkg>`。飞书示例使用 `focal`、`focal-updates`、`focal-backports` 和 `focal-security`；如果镜像是 `jammy`、`noble` 或其它发行版，不要机械粘贴 `focal` 行，先确认镜像 codename 和内部源是否有对应路径。
+Apt 的黑盒用法是改 `/etc/apt/sources.list`、`sudo apt-get update`、再 `sudo apt-get install <pkg>`。如果镜像是 `jammy`、`noble` 或其它发行版，不要机械粘贴其它发行版的源行，先确认镜像 codename 和内部源是否有对应路径。
 
 ## 6. 远端路径作用域
 
@@ -167,9 +164,3 @@ inspire notebook exec <name> --cwd repo "pytest -q"
 ```
 
 不要把配置文件内容复制到项目说明里；仓库级语义说明写在 `INSPIRE.md`。
-
-## 10. 项目和用户元数据
-
-`inspire project` 是项目组级元数据入口，用来看项目归属、负责人、组级预算 / 点券和平台展示的优先级字段。它不在日常个人算力决策主路径里；普通创建任务优先看 `CPU资源空间` / `分布式训练空间`、compute group、`resources specs` 和实时空余。当前登录身份、workspace 权限码、API Key 元数据和 SSH key 用 `inspire user --help` 选择对应子命令。
-
-API Key 值只在创建时一次性下发；创建 / 删除走平台用户中心页面。

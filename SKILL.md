@@ -24,14 +24,14 @@ description: "Execution-first Inspire platform CLI usage manual, with on-demand 
 
 日常主 workspace 基本只有两类：`CPU资源空间` 用于 CPU notebook、HPC、联网下载、依赖安装和镜像准备；`分布式训练空间` 用于 GPU notebook、GPU job、模型 serving 和训练调试。国产卡分区、`CI-情境智能` 工作空间或其它小组专属空间是特殊项目 / 特殊硬件路径，只有任务明确需要时才切换。
 
-联网能力属于 workspace / compute group 的实际环境，而不是命令本身。`分布式训练空间` 常见为不可上网；拉 Git、取 Hugging Face 权重、访问外部数据源时，优先在 `CPU资源空间` 的可上网 CPU notebook 中完成，然后把结果留在 `me` / `public` 等 path alias 指向的共享路径，或保存成镜像，再去 `分布式训练空间` 创建 GPU notebook / job。SII 内部源和公网不是同一个能力：飞书 [内部源使用说明](https://sii-czxy.feishu.cn/wiki/VkYDwTldrisk5AkOspDccKWBnRb) 覆盖 PIP、Apt、Conda、npm、Maven、Docker Harbor、OSS、DNS 和 NTP；即使 compute group 没有公网，也应先判断内部源是否可用，再决定是否回到 `CPU资源空间` 准备镜像或共享盘内容。
+联网能力属于 workspace / compute group 的实际环境，而不是命令本身。`分布式训练空间` 常见为不可上网；拉 Git、取 Hugging Face 权重、访问外部数据源时，优先在 `CPU资源空间` 的可上网 CPU notebook 中完成，然后把结果留在 `me` / `public` 等 path alias 指向的共享路径，或保存成镜像，再去 `分布式训练空间` 创建 GPU notebook / job。SII 内部源和公网不是同一个能力：内部源覆盖 PIP、Apt、Conda、npm、Maven、Docker Harbor、OSS、DNS 和 NTP；即使 compute group 没有公网，也应先判断内部源是否可用，再决定是否回到 `CPU资源空间` 准备镜像或共享盘内容。
 
 ## 2. 执行闭环
 
 日常任务按这个顺序推进：
 
 1. 用 help 确认可用命令和参数。
-2. 用 `inspire config context` 和 `inspire resources specs --usage <kind> --workspace CPU资源空间` 或 `--workspace 分布式训练空间` 确认名字和可用规格；只有需要查看项目组级元数据时再用 `inspire project`。
+2. 用 `inspire config context` 和 `inspire resources specs --usage <kind> --workspace CPU资源空间` 或 `--workspace 分布式训练空间` 确认名字和可用规格。
 3. 如果 `分布式训练空间` 或目标 compute group 不可上网，外部下载走 `CPU资源空间`；Python / Linux 包、Conda、npm、Maven、Docker 镜像、OSS、DNS / NTP 这类平台内部可达资源先按 SII 内部源处理。
 4. 用 notebook / job / hpc / ray / serving 的 create 命令提交，必要时先 `--dry-run`。
 5. 用 events 看调度和启动原因，用 logs 看程序输出，用 metrics 看资源是否真的在工作，用 status / instances 看对象和实例状态。

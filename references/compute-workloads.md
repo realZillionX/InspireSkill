@@ -1,6 +1,6 @@
 # Job、HPC、Ray 与 Serving
 
-提交 GPU job、CPU HPC、Ray 和 serving，或观察事件、日志和指标时，先查本手册。资源目录、workload profile、path alias 和项目元数据边界看 [resources-and-paths.md](resources-and-paths.md)，镜像来源和可见性看 [image-management.md](image-management.md)。
+提交 GPU job、CPU HPC、Ray 和 serving，或观察事件、日志和指标时，先查本手册。资源目录、workload profile 和 path alias 看 [resources-and-paths.md](resources-and-paths.md)，镜像来源和可见性看 [image-management.md](image-management.md)。
 
 ## 1. 先选工作负载类型
 
@@ -19,7 +19,6 @@
 2. `inspire image list` / `image detail` 确认镜像 `READY`。
 3. 用 create 命令提交；复杂条件先 `--dry-run`。
 4. 卡住或失败先看 events；已启动但健康度不明看 metrics；程序行为看 logs 或产出文件。
-5. 只有需要确认项目归属、负责人或平台返回项目级限制提示时，再查 `inspire project list/detail`。
 
 ## 3. GPU Job
 
