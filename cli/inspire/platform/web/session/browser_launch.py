@@ -13,6 +13,8 @@ CHROMIUM_CONTAINER_ARGS = (
     "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
 )
+CHROMIUM_EXECUTABLE_ENV = "INSPIRE_PLAYWRIGHT_CHROMIUM_EXECUTABLE"
+CHROMIUM_CHANNEL_ENV = "INSPIRE_PLAYWRIGHT_CHROMIUM_CHANNEL"
 
 
 def should_install_playwright_system_deps() -> bool:
@@ -73,13 +75,21 @@ def chromium_launch_kwargs(*, headless: bool = True, proxy: Any = None) -> dict[
         "headless": headless,
         "args": list(CHROMIUM_CONTAINER_ARGS),
     }
+    executable_path = os.environ.get(CHROMIUM_EXECUTABLE_ENV, "").strip()
+    channel = os.environ.get(CHROMIUM_CHANNEL_ENV, "").strip()
+    if executable_path:
+        kwargs["executable_path"] = executable_path
+    elif channel:
+        kwargs["channel"] = channel
     if proxy is not None:
         kwargs["proxy"] = proxy
     return kwargs
 
 
 __all__ = [
+    "CHROMIUM_CHANNEL_ENV",
     "CHROMIUM_CONTAINER_ARGS",
+    "CHROMIUM_EXECUTABLE_ENV",
     "chromium_launch_kwargs",
     "is_playwright_browser_runtime_error",
     "playwright_install_args",

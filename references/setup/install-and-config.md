@@ -40,6 +40,7 @@ curl -fsSL .../install.sh | bash -s -- --no-schedule
 
 - 装完后 `inspire: command not found`：运行 `exec $SHELL` 或开新终端。
 - `installer failed` / 包索引超时：先确认本机网络和代理；必要时在工具配置或 shell profile 中持久设置 Python 包索引，再重跑安装脚本。不要把一次性环境变量前缀写进任务命令示例。
+- `Playwright does not support chromium on ...` 或 `Executable doesn't exist at ~/.cache/ms-playwright/...`：说明当前 Playwright bundled Chromium 没有可用运行时。若本机已安装 Google Chrome，可设置 `INSPIRE_PLAYWRIGHT_CHROMIUM_CHANNEL=chrome`；需要指定完整路径时，设置 `INSPIRE_PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/google/chrome/chrome`，该路径优先于 channel。
 - 同一台机器已经装过：直接重跑安装脚本，脚本是幂等的。
 
 ## 3. 更新

@@ -10,7 +10,9 @@ from inspire.platform.web import session as ws
 from inspire.platform.web.session import auth as ws_auth
 from inspire.platform.web.session import browser_launch
 from inspire.platform.web.session.browser_launch import (
+    CHROMIUM_CHANNEL_ENV,
     CHROMIUM_CONTAINER_ARGS,
+    CHROMIUM_EXECUTABLE_ENV,
     chromium_launch_kwargs,
 )
 from inspire.platform.web.session import browser_client as ws_browser_client
@@ -92,7 +94,11 @@ class DummyBrowserContext:
         self.request = DummyRequestContext()
 
 
-def test_chromium_launch_kwargs_include_container_compat_args() -> None:
+def test_chromium_launch_kwargs_include_container_compat_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(CHROMIUM_EXECUTABLE_ENV, raising=False)
+    monkeypatch.delenv(CHROMIUM_CHANNEL_ENV, raising=False)
     proxy = {"server": "http://127.0.0.1:7897"}
 
     kwargs = chromium_launch_kwargs(headless=True, proxy=proxy)
@@ -101,6 +107,30 @@ def test_chromium_launch_kwargs_include_container_compat_args() -> None:
     assert kwargs["proxy"] == proxy
     for arg in CHROMIUM_CONTAINER_ARGS:
         assert arg in kwargs["args"]
+
+
+def test_chromium_launch_kwargs_uses_executable_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CHROMIUM_EXECUTABLE_ENV, "  /opt/google/chrome/chrome  ")
+    monkeypatch.setenv(CHROMIUM_CHANNEL_ENV, "chrome")
+
+    kwargs = chromium_launch_kwargs(headless=True)
+
+    assert kwargs["executable_path"] == "/opt/google/chrome/chrome"
+    assert "channel" not in kwargs
+
+
+def test_chromium_launch_kwargs_uses_channel_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(CHROMIUM_EXECUTABLE_ENV, raising=False)
+    monkeypatch.setenv(CHROMIUM_CHANNEL_ENV, "  chrome  ")
+
+    kwargs = chromium_launch_kwargs(headless=True)
+
+    assert kwargs["channel"] == "chrome"
+    assert "executable_path" not in kwargs
 
 
 def test_browser_closed_error_detection() -> None:
