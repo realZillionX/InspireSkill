@@ -51,10 +51,26 @@ inspire notebook create --workspace 分布式训练空间 --group <GPU_GROUP_FUL
 
 ## 4. 连接、`shell` 与 `exec`
 
-先建立 notebook 连接：
+打开交互 SSH：
 
 ```bash
-inspire notebook ssh connect <name> --workspace CPU资源空间
+inspire notebook ssh <name> --workspace CPU资源空间
+```
+
+运行一次性远程命令也可以走 SSH 直觉：
+
+```bash
+inspire notebook ssh <name> -- hostname
+```
+
+`--workspace` 只用于首次解析或同名 notebook 消歧；连接缓存后，后续命令可直接按 notebook 名使用。需要显式管理缓存时，用 `inspire notebook connection list/status/refresh/forget/prune`。旧的 `inspire notebook ssh connect <name> --workspace <workspace>` 仍保留为兼容入口。
+
+需要给原生 OpenSSH / scp / rsync / VS Code Remote SSH 使用时，输出配置片段：
+
+```bash
+inspire notebook ssh-config <name> --workspace CPU资源空间 >> ~/.ssh/config
+ssh inspire-<name>
+scp file inspire-<name>:/tmp/
 ```
 
 `inspire notebook shell <name>` 是持久 SSH 会话，cwd、环境变量和 history 会保留到 `exit`。多个终端并开就是多个独立会话，互相共享同一容器资源。
@@ -109,7 +125,7 @@ inspire notebook scp <notebook-name> --download me:<repo>/outputs/ ./outputs/ -r
 inspire notebook create --workspace CPU资源空间 --group CPU资源-2 -q 0,20,256 \
   --name base-box --image <BASE_IMAGE> --project <PROJECT> --wait
 
-inspire notebook ssh connect base-box --workspace CPU资源空间
+inspire notebook connection refresh base-box --workspace CPU资源空间
 inspire notebook exec base-box --cwd me:<repo> \
   "pip3 config set global.index-url http://nexus.sii.shaipower.online/repository/pypi/simple/ && \
    pip3 config set global.trusted-host nexus.sii.shaipower.online && \

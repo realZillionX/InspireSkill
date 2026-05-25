@@ -13,7 +13,7 @@ Notebook HTTPS proxy 只解决“外部客户端如何到达容器内某个 HTTP
 | 容器里跑 Gradio / FastAPI | 服务监听 `<container-port>`，对外使用 notebook proxy URL |
 | 容器里跑 OpenAI-compatible API | base URL 指向 `/proxy/<container-port>/v1` |
 | 小组内临时共享 demo | 使用 notebook proxy URL，并在应用层开启登录或 API key |
-| 本机 CLI 文件操作 | 不用本文，直接用 `notebook ssh connect`、`exec`、`shell`、`scp` |
+| 本机 CLI 文件操作 | 不用本文，直接用 `notebook ssh`、`connection`、`exec`、`shell`、`scp` |
 
 ## 2. 发布流程
 
@@ -27,13 +27,13 @@ inspire notebook exec <name> "curl -sS http://127.0.0.1:<container-port>/health"
 建立一次 notebook 连接，让 CLI 写入连接信息：
 
 ```bash
-inspire notebook ssh connect <name> --workspace <workspace>
+inspire notebook connection refresh <name> --workspace <workspace>
 ```
 
 读取 notebook proxy URL 模板：
 
 ```bash
-inspire --json notebook ssh test <name> \
+inspire --json notebook connection status <name> \
   | jq -r '.data.bridge.proxy_url'
 ```
 
@@ -55,7 +55,7 @@ inspire --json notebook ssh test <name> \
 inspire notebook exec <name> "curl -sS http://127.0.0.1:30000/v1/models"
 
 # 本机取得 proxy URL 模板
-inspire --json notebook ssh test <name> \
+inspire --json notebook connection status <name> \
   | jq -r '.data.bridge.proxy_url'
 ```
 

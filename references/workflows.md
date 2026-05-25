@@ -28,7 +28,7 @@ inspire notebook quota --workspace CPU资源空间 --group CPU资源-2
 ```bash
 inspire notebook create --workspace CPU资源空间 --group CPU资源-2 -q 0,20,256 \
   --name <name>-base --image <BASE_IMAGE> --project <PROJECT> --wait
-inspire notebook ssh connect <name>-base --workspace CPU资源空间
+inspire notebook connection refresh <name>-base --workspace CPU资源空间
 ```
 
 准备共享盘内容：
@@ -94,7 +94,7 @@ inspire hpc create -n <name>-preprocess \
 ```bash
 inspire notebook create --workspace 分布式训练空间 --group <GPU_GROUP_FULL_NAME> -q 1,20,200 \
   --name <name>-probe --image <IMAGE> --project <PROJECT> --wait
-inspire notebook ssh connect <name>-probe --workspace 分布式训练空间
+inspire notebook connection refresh <name>-probe --workspace 分布式训练空间
 inspire notebook exec <name>-probe --cwd me:<repo> "bash scripts/probe.sh"
 ```
 

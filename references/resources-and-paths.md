@@ -73,7 +73,7 @@ inspire notebook quota --workspace CPU资源空间 --include-empty
 inspire notebook quota --workspace CPU资源空间 --group CPU资源-2
 inspire notebook create --workspace CPU资源空间 --group CPU资源-2 -q 0,20,256 \
   --project <PROJECT> --image <BASE_IMAGE> --name prep-box --wait
-inspire notebook ssh connect prep-box --workspace CPU资源空间
+inspire notebook connection refresh prep-box --workspace CPU资源空间
 inspire notebook exec prep-box --cwd me:<repo> "git pull && pip install -r requirements.txt"
 ```
 
