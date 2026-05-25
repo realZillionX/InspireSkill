@@ -41,6 +41,7 @@ curl -fsSL .../install.sh | bash -s -- --no-schedule
 - 装完后 `inspire: command not found`：运行 `exec $SHELL` 或开新终端。
 - `installer failed` / 包索引超时：先确认本机网络和代理；必要时在工具配置或 shell profile 中持久设置 Python 包索引，再重跑安装脚本。不要把一次性环境变量前缀写进任务命令示例。
 - `Playwright does not support chromium on ...` 或 `Executable doesn't exist at ~/.cache/ms-playwright/...`：说明当前 Playwright bundled Chromium 没有可用运行时。若本机已安装 Google Chrome，可设置 `INSPIRE_PLAYWRIGHT_CHROMIUM_CHANNEL=chrome`；需要指定完整路径时，设置 `INSPIRE_PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/google/chrome/chrome`，该路径优先于 channel。
+- Notebook SSH 命令面检查：`inspire notebook ssh --help` 应显示 `ssh <notebook>` 主入口；`inspire notebook connection --help` 管理连接缓存；`inspire notebook ssh-config --help` 输出原生 OpenSSH 配置片段。
 - 同一台机器已经装过：直接重跑安装脚本，脚本是幂等的。
 
 ## 3. 更新
@@ -111,7 +112,7 @@ inspire account use <name>
 inspire account current
 ```
 
-每个账号的 config、SSH tunnel bridges、Notebook rtunnel proxy state 和 Web session 登录缓存都放在 `~/.inspire/accounts/<name>/` 下；活动账号由 `~/.inspire/current` 选择。`inspire account use <name>` 只切换指针并刷新当前进程里的账号敏感缓存，不删除被切走账号的本地缓存；需要删除账号目录时才用 `inspire account remove <name>`。
+每个账号的 config、notebook SSH 连接缓存、Notebook rtunnel proxy state 和 Web session 登录缓存都放在 `~/.inspire/accounts/<name>/` 下；活动账号由 `~/.inspire/current` 选择。`inspire account use <name>` 只切换指针并刷新当前进程里的账号敏感缓存，不删除被切走账号的本地缓存；需要删除账号目录时才用 `inspire account remove <name>`。连接缓存通过 `inspire notebook connection list/status/refresh/forget/prune` 管理；`connection forget/prune` 只影响 Inspire 运行时缓存，不会修改用户的 `~/.ssh/config`。
 
 ## 7. 代理 setup
 
