@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import importlib
 import json
+from types import SimpleNamespace
 
 from click.testing import CliRunner
 
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
 from inspire.cli.commands.notebook import connection as connection_module
 from inspire.cli.commands.notebook import ssh as ssh_module
-from inspire.cli.context import EXIT_CONFIG_ERROR, EXIT_SUCCESS
+from inspire.cli.context import EXIT_API_ERROR, EXIT_CONFIG_ERROR, EXIT_SUCCESS
 from inspire.cli.main import main as cli_main
+from inspire.platform.web.browser_api import NotebookFailedError
 
+flow_module = importlib.import_module("inspire.cli.commands.notebook.notebook_ssh_flow")
+ssh_tunnel_module = importlib.import_module("inspire.bridge.tunnel")
 ssh_config_module = importlib.import_module("inspire.cli.commands.notebook.ssh_config_cmd")
 ssh_proxy_module = importlib.import_module("inspire.cli.commands.notebook.ssh_proxy_cmd")
+workspace_module = importlib.import_module("inspire.config.workspaces")
 
 
 def test_notebook_ssh_default_route_runs_notebook_command(monkeypatch) -> None:  # noqa: ANN001
@@ -161,3 +166,70 @@ def test_ssh_proxy_requires_workspace_without_cached_bridge(monkeypatch) -> None
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     assert "No cached notebook connection and no workspace was provided" in result.output
+
+
+def test_notebook_ssh_stopped_error_is_actionable(monkeypatch) -> None:  # noqa: ANN001
+    events = "\n".join(
+        [
+            "The service is starting up...",
+            "Notebook stopped because its CPU/GPU/MEM usage has not met the auto-recycle rules set by the manager.",
+            "Heartbeat lost when saving notebook nb-raw as image demo: Error invalid response code",
+        ]
+    )
+
+    monkeypatch.setattr(
+        flow_module,
+        "require_web_session",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            all_workspace_ids=["ws-cpu"],
+            all_workspace_names={"ws-cpu": "CPU资源空间"},
+        ),
+    )
+    monkeypatch.setattr(flow_module, "get_base_url", lambda: "https://example.invalid")
+    monkeypatch.setattr(
+        flow_module,
+        "load_config",
+        lambda _ctx: SimpleNamespace(tunnel_retries=0, tunnel_retry_pause=0.0),
+    )
+    monkeypatch.setattr(
+        workspace_module,
+        "resolve_workspace_query_scope",
+        lambda *_args, **_kwargs: (["ws-cpu"], "CPU资源空间"),
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "_resolve_notebook_id",
+        lambda *_args, **_kwargs: ("nb-stopped", "ws-cpu"),
+    )
+    monkeypatch.setattr(
+        ssh_tunnel_module,
+        "load_tunnel_config",
+        lambda account=None: TunnelConfig(),
+    )
+
+    def fake_wait_for_notebook_running(*_args, **_kwargs):  # noqa: ANN202
+        raise NotebookFailedError(
+            "nb-stopped",
+            "STOPPED",
+            {"status": "STOPPED", "name": "demo-box"},
+            events=events,
+        )
+
+    monkeypatch.setattr(
+        flow_module.browser_api_module,
+        "wait_for_notebook_running",
+        fake_wait_for_notebook_running,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["notebook", "ssh", "demo-box", "--workspace", "CPU资源空间"],
+    )
+
+    assert result.exit_code == EXIT_API_ERROR
+    assert "Notebook is stopped: demo-box" in result.output
+    assert "Notebook failed to start" not in result.output
+    assert "Stop reason: Notebook stopped because its CPU/GPU/MEM usage" in result.output
+    assert "Heartbeat lost" not in result.output
+    assert "inspire notebook start demo-box --workspace 'CPU资源空间' --wait" in result.output
+    assert "inspire notebook ssh demo-box --workspace 'CPU资源空间'" in result.output

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -152,6 +153,65 @@ def _command_failure_hint(command: str, exit_code: int) -> str | None:
     if exit_code == 1 and re.search(r"\bgrep\b", command):
         return "grep returns exit code 1 when no matches are found."
     return None
+
+
+def _extract_notebook_stop_reason(events: str) -> str | None:
+    lines = [line.strip() for line in str(events or "").splitlines() if line.strip()]
+    for line in reversed(lines):
+        lowered = line.lower()
+        if "notebook stopped because" in lowered:
+            return line
+    for line in reversed(lines):
+        lowered = line.lower()
+        if "stopped because" in lowered:
+            return line
+    for line in reversed(lines):
+        lowered = line.lower()
+        if lowered.startswith("notebook stopped") or " notebook stopped" in lowered:
+            return line
+    return None
+
+
+def _workspace_name_for_hint(
+    *,
+    session,
+    explicit_workspace: str | None,
+    resolved_workspace_id: str | None,
+) -> str | None:
+    if explicit_workspace:
+        return explicit_workspace
+    if not resolved_workspace_id:
+        return None
+    label = _workspace_label(session, resolved_workspace_id)
+    if label.startswith("("):
+        return None
+    return label
+
+
+def _stopped_notebook_hint(
+    *,
+    notebook_name: str,
+    workspace_name: str | None,
+    events: str,
+) -> str:
+    workspace = workspace_name or "<workspace>"
+    start_cmd = (
+        "inspire notebook start "
+        f"{shlex.quote(notebook_name)} --workspace {shlex.quote(workspace)} --wait"
+    )
+    retry_cmd = (
+        "inspire notebook ssh "
+        f"{shlex.quote(notebook_name)} --workspace {shlex.quote(workspace)}"
+    )
+    parts: list[str] = []
+    stop_reason = _extract_notebook_stop_reason(events)
+    if stop_reason:
+        parts.append(f"Stop reason: {stop_reason}")
+    parts.append("Start it first:")
+    parts.append(f"  {start_cmd}")
+    parts.append("Then retry:")
+    parts.append(f"  {retry_cmd}")
+    return "\n".join(parts)
 
 
 def _should_retry_non_interactive_disconnect(
@@ -696,6 +756,29 @@ def run_notebook_ssh(
                 notebook_id=notebook_id, session=session
             )
     except NotebookFailedError as e:
+        if str(e.status or "").upper() == "STOPPED":
+            stopped_name = (
+                str(e.detail.get("name") or "").strip()
+                or str(requested_identifier or "").strip()
+                or str(notebook_id)
+            )
+            stopped_workspace = _workspace_name_for_hint(
+                session=session,
+                explicit_workspace=explicit_workspace,
+                resolved_workspace_id=resolved_workspace_id,
+            )
+            _handle_error(
+                ctx,
+                "NotebookStopped",
+                f"Notebook is stopped: {stopped_name}",
+                EXIT_API_ERROR,
+                hint=_stopped_notebook_hint(
+                    notebook_name=stopped_name,
+                    workspace_name=stopped_workspace,
+                    events=e.events,
+                ),
+            )
+            return
         _handle_error(
             ctx,
             "NotebookFailed",
