@@ -186,9 +186,10 @@ def test_notebook_top_command_is_removed() -> None:
     assert "No such command 'top'" in result.output
 
 
-def test_notebook_ssh_cache_commands_are_nested_under_ssh() -> None:
+def test_notebook_ssh_compat_commands_and_connection_group() -> None:
     notebook_help = CliRunner().invoke(cli_main, ["notebook", "--help"])
     ssh_help = CliRunner().invoke(cli_main, ["notebook", "ssh", "--help"])
+    connection_help = CliRunner().invoke(cli_main, ["notebook", "connection", "--help"])
 
     assert notebook_help.exit_code == 0
     for removed in ("connections", "refresh", "forget", "test"):
@@ -196,15 +197,19 @@ def test_notebook_ssh_cache_commands_are_nested_under_ssh() -> None:
         result = CliRunner().invoke(cli_main, ["notebook", removed, "--help"])
         assert result.exit_code != 0
         assert f"No such command '{removed}'" in result.output
+    for command in ("connection", "ssh-config", "ssh-proxy"):
+        assert f"\n  {command} " in notebook_help.output
 
     assert ssh_help.exit_code == 0
+    assert "Open SSH to a notebook or run a remote command" in ssh_help.output
     for subcommand in ("connect", "refresh", "forget", "test"):
         assert f"\n  {subcommand} " in ssh_help.output
     for removed in ("list", "status", "exec", "shell", "scp", "install-deps"):
         assert f"\n  {removed} " not in ssh_help.output
-        result = CliRunner().invoke(cli_main, ["notebook", "ssh", removed, "--help"])
-        assert result.exit_code != 0
-        assert f"No such command '{removed}'" in result.output
+
+    assert connection_help.exit_code == 0
+    for subcommand in ("list", "status", "refresh", "forget", "prune"):
+        assert f"\n  {subcommand} " in connection_help.output
 
 
 def test_job_batch_help_keeps_scope_small() -> None:

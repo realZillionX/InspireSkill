@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import subprocess
 import time
+from pathlib import Path
 from typing import Optional
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
@@ -38,10 +39,12 @@ from inspire.platform.web.browser_api import NotebookFailedError
 from inspire.platform.web.browser_api.rtunnel import redact_proxy_url
 
 from .notebook_lookup import (
+    _collect_workspace_ids_for_lookup,
     _get_current_user_detail,
     _looks_like_notebook_id,
     _resolve_notebook_id,
     _validate_notebook_account_access,
+    _workspace_label,
 )
 
 
@@ -75,6 +78,26 @@ def _describe_proxy_http_status(proxy_url: str, timeout_s: float = 4.0) -> str:
 
 def load_ssh_public_key(pubkey_path: Optional[str] = None) -> str:
     return load_ssh_public_key_material(pubkey_path)
+
+
+def _identity_file_for_pubkey(pubkey_path: Optional[str] = None) -> str | None:
+    candidates: list[Path] = []
+    if pubkey_path:
+        pubkey = Path(pubkey_path).expanduser()
+        if pubkey.name.endswith(".pub"):
+            candidates.append(pubkey.with_name(pubkey.name[:-4]))
+        candidates.append(pubkey)
+    else:
+        candidates.extend(
+            [
+                Path.home() / ".ssh" / "id_ed25519",
+                Path.home() / ".ssh" / "id_rsa",
+            ]
+        )
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def _find_cached_entry_for_notebook_id(cached_config, notebook_id: str) -> Optional[str]:
@@ -510,7 +533,7 @@ def run_notebook_ssh(
     ctx: Context,
     *,
     notebook_id: str,
-    workspace: str,
+    workspace: Optional[str],
     wait: bool,
     pubkey: Optional[str],
     port: int,
@@ -519,6 +542,7 @@ def run_notebook_ssh(
     command_timeout: Optional[int] = None,
     debug_playwright: bool,
     setup_timeout: int,
+    setup_only: bool = False,
 ) -> None:
     from inspire.bridge.tunnel import (
         BridgeProfile,
@@ -535,24 +559,33 @@ def run_notebook_ssh(
     config = load_config(ctx)
     from inspire.config.workspaces import resolve_workspace_query_scope
 
-    workspace_ids, _ = resolve_workspace_query_scope(
-        config,
-        workspace=workspace,
-        session=session,
-    )
     requested_identifier = notebook_id
     cached_bridge, cached_notebook_id, tunnel_account = _cached_bridge_for_identifier(
         identifier=notebook_id,
         config=config,
     )
+    explicit_workspace = str(workspace or "").strip() or None
+    if explicit_workspace:
+        workspace_ids, _ = resolve_workspace_query_scope(
+            config,
+            workspace=explicit_workspace,
+            session=session,
+        )
+    elif cached_bridge and getattr(cached_bridge, "workspace_id", None):
+        workspace_ids = [str(cached_bridge.workspace_id)]
+    else:
+        workspace_ids = _collect_workspace_ids_for_lookup(session, config)
 
     if not ctx.json_output:
         click.echo("Resolving notebook target...", err=True)
 
+    resolved_workspace_id: str | None = (
+        str(getattr(cached_bridge, "workspace_id", "") or "").strip() or None
+    )
     if cached_notebook_id:
         notebook_id = cached_notebook_id
     else:
-        notebook_id, _ = _resolve_notebook_id(
+        notebook_id, resolved_workspace_id = _resolve_notebook_id(
             ctx,
             session=session,
             config=config,
@@ -561,6 +594,8 @@ def run_notebook_ssh(
             json_output=False,
             workspace_ids=workspace_ids,
         )
+    if explicit_workspace and workspace_ids:
+        resolved_workspace_id = workspace_ids[0]
 
     # Cache key = notebook name. If a legacy custom-named entry exists for
     # this notebook_id (from older CLI versions that supported custom names),
@@ -598,6 +633,8 @@ def run_notebook_ssh(
                         except Exception:
                             pass
                     click.echo("Using cached tunnel connection (fast path).", err=True)
+                    if setup_only:
+                        return
                     if command is None:
                         _run_interactive_notebook_ssh_with_reconnect(
                             ctx,
@@ -747,6 +784,7 @@ def run_notebook_ssh(
     except ValueError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
         return
+    identity_file = _identity_file_for_pubkey(pubkey)
 
     try:
         proxy_url = browser_api_module.setup_notebook_rtunnel(
@@ -800,6 +838,12 @@ def run_notebook_ssh(
         _handle_error(ctx, "APIError", f"Failed to set up notebook tunnel: {e}", EXIT_API_ERROR)
         return
 
+    resolved_workspace_name = explicit_workspace
+    if not resolved_workspace_name and resolved_workspace_id:
+        label = _workspace_label(session, resolved_workspace_id)
+        if not label.startswith("("):
+            resolved_workspace_name = label
+
     bridge = BridgeProfile(
         name=profile_name,
         proxy_url=proxy_url,
@@ -808,6 +852,9 @@ def run_notebook_ssh(
         has_internet=has_internet,
         notebook_id=notebook_id,
         notebook_name=str(notebook_detail.get("name") or "").strip() or None,
+        workspace_id=resolved_workspace_id,
+        workspace_name=resolved_workspace_name,
+        identity_file=identity_file,
         rtunnel_port=port,
     )
 
@@ -855,6 +902,9 @@ def run_notebook_ssh(
         f"(internet: {internet_status}, GPU: {scrub_raw_ids(gpu_label)})",
         err=True,
     )
+
+    if setup_only:
+        return
 
     if command is None:
         _run_interactive_notebook_ssh_with_reconnect(

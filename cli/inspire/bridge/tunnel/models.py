@@ -86,6 +86,9 @@ class BridgeProfile:
     # Optional notebook binding for saved notebook SSH profiles.
     notebook_id: Optional[str] = None
     notebook_name: Optional[str] = None
+    workspace_id: Optional[str] = None
+    workspace_name: Optional[str] = None
+    identity_file: Optional[str] = None
     # Optional rtunnel server port in the notebook.
     rtunnel_port: Optional[int] = None
 
@@ -101,6 +104,12 @@ class BridgeProfile:
             payload["notebook_id"] = self.notebook_id
         if self.notebook_name:
             payload["notebook_name"] = self.notebook_name
+        if self.workspace_id:
+            payload["workspace_id"] = self.workspace_id
+        if self.workspace_name:
+            payload["workspace_name"] = self.workspace_name
+        if self.identity_file:
+            payload["identity_file"] = self.identity_file
         if self.rtunnel_port is not None:
             payload["rtunnel_port"] = self.rtunnel_port
         return payload
@@ -121,6 +130,9 @@ class BridgeProfile:
             has_internet=data.get("has_internet", True),  # Default True for backward compat
             notebook_id=data.get("notebook_id"),
             notebook_name=data.get("notebook_name"),
+            workspace_id=data.get("workspace_id"),
+            workspace_name=data.get("workspace_name"),
+            identity_file=data.get("identity_file"),
             rtunnel_port=rtunnel_port,
         )
 

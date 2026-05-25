@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -18,6 +19,26 @@ from .rtunnel import _ensure_rtunnel_binary
 # ---------------------------------------------------------------------------
 
 
+def _ws_proxy_url(proxy_url: str) -> str:
+    if proxy_url.startswith("https://"):
+        return "wss://" + proxy_url[8:]
+    if proxy_url.startswith("http://"):
+        return "ws://" + proxy_url[7:]
+    return proxy_url
+
+
+def _proxy_env() -> dict[str, str]:
+    proxy_value = get_rtunnel_proxy_override()
+    if not proxy_value:
+        return {}
+    return {
+        "HTTP_PROXY": proxy_value,
+        "HTTPS_PROXY": proxy_value,
+        "http_proxy": proxy_value,
+        "https_proxy": proxy_value,
+    }
+
+
 def _get_proxy_command(bridge: BridgeProfile, rtunnel_bin: Path, quiet: bool = False) -> str:
     """Build the ProxyCommand string for SSH.
 
@@ -31,27 +52,13 @@ def _get_proxy_command(bridge: BridgeProfile, rtunnel_bin: Path, quiet: bool = F
     """
     import shlex
 
-    # Convert https:// URL to wss:// for websocket
-    proxy_url = bridge.proxy_url
-    if proxy_url.startswith("https://"):
-        ws_url = "wss://" + proxy_url[8:]
-    elif proxy_url.startswith("http://"):
-        ws_url = "ws://" + proxy_url[7:]
-    else:
-        ws_url = proxy_url
+    ws_url = _ws_proxy_url(bridge.proxy_url)
 
     def _prepend_proxy_env(command: str) -> str:
-        proxy_value = get_rtunnel_proxy_override()
-        if not proxy_value:
+        env_values = _proxy_env()
+        if not env_values:
             return command
-        env_prefix = " ".join(
-            [
-                f"HTTP_PROXY={shlex.quote(proxy_value)}",
-                f"HTTPS_PROXY={shlex.quote(proxy_value)}",
-                f"http_proxy={shlex.quote(proxy_value)}",
-                f"https_proxy={shlex.quote(proxy_value)}",
-            ]
-        )
+        env_prefix = " ".join(f"{key}={shlex.quote(value)}" for key, value in env_values.items())
         return f"{env_prefix} {command}"
 
     # ProxyCommand is executed by a shell on the client; quote the URL because it
@@ -66,6 +73,30 @@ def _get_proxy_command(bridge: BridgeProfile, rtunnel_bin: Path, quiet: bool = F
         cmd = f"{base_cmd} 2>/dev/null"
         return f"sh -c {shlex.quote(cmd)}"
     return base_cmd
+
+
+def exec_rtunnel_proxy(
+    bridge: BridgeProfile,
+    config: TunnelConfig,
+    *,
+    target_host: str = "localhost",
+    target_port: int | None = None,
+) -> None:
+    """Replace the current process with rtunnel for OpenSSH ProxyCommand.
+
+    The caller must keep stdout clean: after exec, stdout is the SSH byte
+    stream between OpenSSH and the remote notebook sshd.
+    """
+    _ensure_rtunnel_binary(config)
+    port = int(target_port or bridge.ssh_port)
+    args = [
+        str(config.rtunnel_bin),
+        _ws_proxy_url(bridge.proxy_url),
+        f"stdio://{target_host}:{port}",
+    ]
+    env = os.environ.copy()
+    env.update(_proxy_env())
+    os.execve(args[0], args, env)
 
 
 # ---------------------------------------------------------------------------

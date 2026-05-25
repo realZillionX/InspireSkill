@@ -26,6 +26,7 @@ from .rtunnel import (
 from .ssh import (
     _get_proxy_command,
     _test_ssh_connection,
+    exec_rtunnel_proxy,
     get_tunnel_status,
     is_tunnel_available,
 )
@@ -57,6 +58,7 @@ __all__ = [
     # SSH helpers
     "_get_proxy_command",
     "_test_ssh_connection",
+    "exec_rtunnel_proxy",
     "get_ssh_command_args",
     "get_tunnel_status",
     "is_tunnel_available",

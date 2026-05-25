@@ -820,7 +820,11 @@ def list_notebooks(
 
 @click.command("connect")
 @click.argument("notebook")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.option(
+    "--workspace",
+    required=False,
+    help="Workspace name. Optional for SSH; used to disambiguate duplicate notebook names.",
+)
 @click.option(
     "--wait/--no-wait",
     default=True,
@@ -901,11 +905,12 @@ def ssh_notebook_cmd(
     from inspire.accounts import normalize_environment
 
     normalize_environment()
-    try:
-        validate_workspace_operation_name(workspace)
-    except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-        return
+    if workspace:
+        try:
+            validate_workspace_operation_name(workspace)
+        except ConfigError as e:
+            _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+            return
 
     # Fast path: if a cached bridge already exists for this notebook
     # name, hand off to the reconnect flow (no bootstrap needed).
@@ -925,11 +930,12 @@ def ssh_notebook_cmd(
 
     session = require_web_session(ctx, hint=WEB_AUTH_HINT)
     config = load_config(ctx)
-    try:
-        resolve_workspace_operation_scope(config, workspace=workspace, session=session)
-    except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-        return
+    if workspace:
+        try:
+            resolve_workspace_operation_scope(config, workspace=workspace, session=session)
+        except ConfigError as e:
+            _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+            return
 
     run_notebook_ssh(
         ctx,
