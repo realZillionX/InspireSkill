@@ -19,6 +19,14 @@ from inspire.platform.web.session import browser_client as ws_browser_client
 from inspire.platform.web.session import WebSession
 from inspire.platform.web.session import requests as ws_requests_module
 
+CAS_RSA_EXPONENT = "010001"
+CAS_RSA_MODULUS = (
+    "008aed7e057fe8f14c73550b0e6467b023616ddc8fa91846d2613cdb7f7621e3cada4cd5"
+    "d812d627af6b87727ade4e26d26208b7326815941492b2204c3167ab2d53df1e3a2c"
+    "9153bdb7c8c2e968df97a5e7e01cc410f92c4c2c2fba529b3ee988ebc1fca99ff"
+    "5119e036d732c368acf8beba01aa2fdafa45b21e4de4928d0d403"
+)
+
 
 class DummyResponse:
     def __init__(self, status_code: int, payload=None, text: str = "") -> None:
@@ -180,6 +188,101 @@ def test_workspace_routes_from_payload_extracts_workspace_list() -> None:
         "ws-11111111-1111-1111-1111-111111111111": "CPU资源空间",
         "ws-22222222-2222-2222-2222-222222222222": "分布式训练空间",
     }
+
+
+def test_legacy_cas_encrypt_password_matches_page_rsa() -> None:
+    assert (
+        ws_auth._legacy_cas_encrypt_password("abc", CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
+        == "050d4541820093722eb891339242b9e3147ba98618ed03dd97dc98f4719b0a76"
+        "a139138a7087ca84ee933dc56d7e7fa615a2dbcd4cda0f356eabedd98616a7a5"
+        "cb06926a5005f4c1fe367725e3c0d4651889c92eec7912eb6b01e8edc342acb5"
+        "bb11bd05b8bbd51cb4111954df11bcaf2b904c6eabddf6e1a881d57d95490cd5"
+    )
+    assert (
+        ws_auth._legacy_cas_encrypt_password("password123", CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
+        == "33547d9dd849975180b45e4bb2377dff321cafb69206403602c31078746174ab"
+        "0fd67a3749053d7c864302da7a4603fffca1247ce45d18b5a8f4944692541c409"
+        "8f6fe4e0bbd25218c7cc55c5b51d7dc4fb89b66d96cdace1581f09d39ade57b"
+        "f83aa7d40bcf1ecff98e92bab666ad3c38808bf83e09eeaa792fa3bf83f1ecc6"
+    )
+
+
+def test_extract_login_form_picks_cas_password_form() -> None:
+    html = """
+    <form id="fm2" action="/sms"><input name="username"><input name="smscode"></form>
+    <form id="fm1" action="/cas/login?service=x">
+      <input name="username" value="">
+      <input id="passwordShow" type="password">
+      <input id="password" name="password" type="hidden">
+      <input name="execution" value="exec-1">
+      <input name="_eventId" value="submit">
+      <input name="loginType" value="1">
+    </form>
+    """
+
+    action, fields = ws_auth._extract_login_form(html, "https://cas.sii.edu.cn/cas/login")
+
+    assert action == "https://cas.sii.edu.cn/cas/login?service=x"
+    assert fields["username"] == ""
+    assert fields["password"] == ""
+    assert fields["execution"] == "exec-1"
+    assert fields["_eventId"] == "submit"
+    assert fields["loginType"] == "1"
+
+
+def test_extract_cas_rsa_key_from_login_js() -> None:
+    text = f"""
+    RSAUtils.setMaxDigits(131);
+    var key = RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", '', "{CAS_RSA_MODULUS}");
+    var result = RSAUtils.encryptedString(key, password);
+    """
+
+    assert ws_auth._extract_cas_rsa_key(text) == (CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
+
+
+def test_resolve_cas_rsa_key_reads_same_origin_script() -> None:
+    class Response:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+        def raise_for_status(self) -> None:
+            pass
+
+    class HTTP:
+        def __init__(self) -> None:
+            self.urls: list[str] = []
+
+        def get(self, url: str, timeout: int) -> Response:
+            self.urls.append(url)
+            return Response(
+                f'var key = RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");'
+            )
+
+    html = """
+    <script src="https://cdn.example.com/ignored.js"></script>
+    <script src="/cas/themes/sudy_fudan_ai/js/login.js"></script>
+    """
+    http = HTTP()
+
+    assert ws_auth._resolve_cas_rsa_key(http, html, "https://cas.sii.edu.cn/cas/login") == (
+        CAS_RSA_EXPONENT,
+        CAS_RSA_MODULUS,
+    )
+    assert http.urls == ["https://cas.sii.edu.cn/cas/themes/sudy_fudan_ai/js/login.js"]
+
+
+def test_decode_keycloak_login_url() -> None:
+    html = '"loginUrl": "\\/realms\\/inf-internal\\/broker\\/cas\\/login?client_id=x"'
+
+    url = ws_auth._decode_keycloak_login_url(
+        html,
+        "https://keycloak-inspire-prod.sii.edu.cn/realms/inf-internal/login",
+    )
+
+    assert (
+        url
+        == "https://keycloak-inspire-prod.sii.edu.cn/realms/inf-internal/broker/cas/login?client_id=x"
+    )
 
 
 def test_playwright_install_args_include_deps_for_root_linux_apt(
@@ -438,9 +541,7 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
     refresh_calls = {"count": 0}
 
     def fake_get_browser_client(current_session: WebSession):  # type: ignore[no-untyped-def]
-        cookie_value = current_session.storage_state.get("cookies", [{}])[0].get(
-            "value"
-        )  # type: ignore[index]
+        cookie_value = current_session.storage_state.get("cookies", [{}])[0].get("value")  # type: ignore[index]
         if cookie_value == "old":
             return ExpiringBrowserClient()
         return working
@@ -606,9 +707,7 @@ def test_browser_client_recreates_closed_thread_local_client(monkeypatch: pytest
     ws_browser_client._close_browser_client()
 
 
-def test_get_credentials_reads_account_toml(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_get_credentials_reads_account_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """v4.0.0: account TOML is the sole identity source.
 
     Identity (`[auth]`) is account-scope and cannot live in the project

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from html.parser import HTMLParser
+import json
+import logging
 import re
 import time
+from http.cookiejar import Cookie
 from typing import TYPE_CHECKING, Any, Optional, cast
+from urllib.parse import urljoin
 
 from inspire.config import Config
 
@@ -18,6 +23,14 @@ from .proxy import get_playwright_proxy
 
 if TYPE_CHECKING:
     from playwright.sync_api import ProxySettings
+
+logger = logging.getLogger(__name__)
+
+_CAS_PROVIDER_LOGIN_RE = re.compile(r'"loginUrl"\s*:\s*"([^"]*broker[^"]*cas[^"]*login[^"]*)"')
+_CAS_RSA_KEY_RE = re.compile(
+    r"RSAUtils\.getKeyPair\(\s*['\"]([0-9a-fA-F]+)['\"]\s*,\s*['\"][^'\"]*['\"]\s*,"
+    r"\s*['\"]([0-9a-fA-F]+)['\"]"
+)
 
 
 def _load_runtime_config() -> Config:
@@ -106,6 +119,257 @@ def _merge_workspace_routes(
             current_names[ws_id] = new_names[ws_id]
 
 
+def _cas_rsa_chunk_size(modulus_hex: str) -> int:
+    modulus = modulus_hex.lstrip("0") or "0"
+    digit_count = (len(modulus) + 3) // 4
+    return 2 * (digit_count - 1)
+
+
+def _legacy_cas_encrypt_password(password: str, exponent_hex: str, modulus_hex: str) -> str:
+    """Match the CAS page's legacy RSAUtils.encryptedString implementation."""
+    exponent = int(exponent_hex, 16)
+    modulus = int(modulus_hex, 16)
+    chunk_size = _cas_rsa_chunk_size(modulus_hex)
+
+    values = [ord(ch) for ch in password]
+    while len(values) % chunk_size != 0:
+        values.append(0)
+
+    encrypted: list[str] = []
+    for offset in range(0, len(values), chunk_size):
+        block = 0
+        for byte_offset, value in enumerate(values[offset : offset + chunk_size]):
+            block += value << (8 * byte_offset)
+        text = f"{pow(block, exponent, modulus):x}"
+        if len(text) % 4:
+            text = text.zfill(len(text) + (4 - len(text) % 4))
+        encrypted.append(text)
+    return " ".join(encrypted)
+
+
+class _LoginFormParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.forms: list[dict[str, Any]] = []
+        self.script_sources: list[str] = []
+        self._current: dict[str, Any] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = {key: value or "" for key, value in attrs}
+        lower_tag = tag.lower()
+        if lower_tag == "form":
+            self._current = {"attrs": attrs_dict, "inputs": []}
+            self.forms.append(self._current)
+            return
+        if lower_tag == "input" and self._current is not None:
+            self._current["inputs"].append(attrs_dict)
+        elif lower_tag == "script" and attrs_dict.get("src"):
+            self.script_sources.append(attrs_dict["src"])
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "form":
+            self._current = None
+
+
+def _extract_login_form(html: str, page_url: str) -> tuple[str, dict[str, str]]:
+    parser = _LoginFormParser()
+    parser.feed(html)
+
+    selected: dict[str, Any] | None = None
+    for form in parser.forms:
+        attrs = form.get("attrs") or {}
+        inputs = form.get("inputs") or []
+        names = {str(item.get("name") or "") for item in inputs}
+        if attrs.get("id") == "fm1" or {"username", "password"}.issubset(names):
+            selected = form
+            break
+    if selected is None:
+        raise ValueError("CAS login form not found.")
+
+    attrs = selected.get("attrs") or {}
+    action = urljoin(page_url, str(attrs.get("action") or ""))
+    fields: dict[str, str] = {}
+    for item in selected.get("inputs") or []:
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        fields[name] = str(item.get("value") or "")
+    return action, fields
+
+
+def _extract_script_sources(html: str) -> list[str]:
+    parser = _LoginFormParser()
+    parser.feed(html)
+    return parser.script_sources
+
+
+def _extract_cas_rsa_key(text: str) -> tuple[str, str] | None:
+    match = _CAS_RSA_KEY_RE.search(text)
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _resolve_cas_rsa_key(http: Any, html: str, page_url: str) -> tuple[str, str]:
+    from urllib.parse import urlparse
+
+    key = _extract_cas_rsa_key(html)
+    if key:
+        return key
+
+    page_host = urlparse(page_url).netloc
+    for source in _extract_script_sources(html):
+        script_url = urljoin(page_url, source)
+        if urlparse(script_url).netloc != page_host:
+            continue
+        try:
+            response = http.get(script_url, timeout=15)
+            response.raise_for_status()
+        except Exception:
+            continue
+        key = _extract_cas_rsa_key(response.text)
+        if key:
+            return key
+
+    raise ValueError("CAS RSA key not found.")
+
+
+def _decode_keycloak_login_url(html: str, page_url: str) -> str | None:
+    match = _CAS_PROVIDER_LOGIN_RE.search(html)
+    if not match:
+        return None
+    raw = match.group(1)
+    try:
+        decoded = json.loads(f'"{raw}"')
+    except json.JSONDecodeError:
+        decoded = raw.replace("\\/", "/")
+    return urljoin(page_url, decoded)
+
+
+def _cookie_to_storage_entry(cookie: Cookie) -> dict[str, Any]:
+    rest = {str(k).lower(): v for k, v in getattr(cookie, "_rest", {}).items()}
+    same_site = str(rest.get("samesite") or "Lax")
+    if same_site.lower() not in {"strict", "lax", "none"}:
+        same_site = "Lax"
+    return {
+        "name": cookie.name,
+        "value": cookie.value,
+        "domain": cookie.domain,
+        "path": cookie.path or "/",
+        "expires": float(cookie.expires) if cookie.expires else -1,
+        "httpOnly": "httponly" in rest,
+        "secure": bool(cookie.secure),
+        "sameSite": same_site.capitalize(),
+    }
+
+
+def _login_with_cas_requests(
+    username: str,
+    password: str,
+    *,
+    base_url: str,
+) -> WebSession:
+    import requests
+    import urllib3
+
+    from .proxy import resolve_requests_proxy_config
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    proxies, _source = resolve_requests_proxy_config()
+    http = requests.Session()
+    http.trust_env = False
+    http.proxies.update(proxies)
+    http.verify = False
+    http.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) InspireSkill",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+    )
+
+    login_resp = http.get(f"{base_url.rstrip('/')}/login", timeout=30, allow_redirects=True)
+    login_resp.raise_for_status()
+    cas_login_url = _decode_keycloak_login_url(login_resp.text, login_resp.url)
+    if cas_login_url:
+        login_resp = http.get(cas_login_url, timeout=30, allow_redirects=True)
+        login_resp.raise_for_status()
+
+    action, fields = _extract_login_form(login_resp.text, login_resp.url)
+    exponent_hex, modulus_hex = _resolve_cas_rsa_key(http, login_resp.text, login_resp.url)
+    fields["username"] = username
+    fields["password"] = _legacy_cas_encrypt_password(password, exponent_hex, modulus_hex)
+    fields.setdefault("encrypted", "true")
+    fields.setdefault("_eventId", "submit")
+    fields.setdefault("loginType", "1")
+
+    auth_resp = http.post(
+        action,
+        data=fields,
+        headers={"Referer": login_resp.url},
+        timeout=30,
+        allow_redirects=True,
+    )
+    auth_resp.raise_for_status()
+
+    api_headers = {"Accept": "application/json", "Referer": f"{base_url.rstrip('/')}/login"}
+    user_detail: dict | None = None
+    user_detail_resp = http.get(
+        f"{base_url.rstrip('/')}/api/v1/user/detail",
+        headers=api_headers,
+        timeout=15,
+    )
+    if user_detail_resp.status_code != 200:
+        raise ValueError(
+            "Login did not complete. Check that the password is correct and "
+            "`auth.username` is the platform login ID (phone, student ID, or email), "
+            "not the display name."
+        )
+    payload = user_detail_resp.json()
+    data = payload.get("data")
+    if isinstance(data, dict):
+        user_detail = data
+
+    all_workspace_ids: list[str] = []
+    all_workspace_names: dict[str, str] = {}
+    try:
+        routes_resp = http.get(
+            f"{base_url.rstrip('/')}/api/v1/user/routes/default",
+            headers=api_headers,
+            timeout=15,
+        )
+        if routes_resp.status_code == 200:
+            route_ids, route_names = _workspace_routes_from_payload(routes_resp.json())
+            _merge_workspace_routes(
+                all_workspace_ids,
+                all_workspace_names,
+                route_ids,
+                route_names,
+            )
+    except Exception:
+        pass
+
+    storage_state = {
+        "cookies": [_cookie_to_storage_entry(cookie) for cookie in http.cookies],
+        "origins": [],
+    }
+    cookie_dict = {cookie.name: cookie.value for cookie in http.cookies}
+    workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
+    session = WebSession(
+        storage_state=storage_state,
+        cookies=cookie_dict,
+        workspace_id=workspace_id,
+        login_username=username,
+        base_url=base_url,
+        user_detail=user_detail,
+        all_workspace_ids=all_workspace_ids or None,
+        all_workspace_names=all_workspace_names or None,
+        created_at=time.time(),
+    )
+    session.save()
+    return session
+
+
 def get_credentials() -> tuple[str, str]:
     """Get web credentials from layered config (project/global/env/default)."""
     config = _load_runtime_config()
@@ -144,6 +408,11 @@ def login_with_playwright(
         )
 
     from playwright.sync_api import sync_playwright
+
+    try:
+        return _login_with_cas_requests(username, password, base_url=base_url)
+    except Exception:
+        logger.debug("CAS requests login failed; falling back to Playwright.", exc_info=True)
 
     proxy = cast("ProxySettings | None", get_playwright_proxy())
     with sync_playwright() as p:
