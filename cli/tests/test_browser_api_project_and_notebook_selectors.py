@@ -13,6 +13,7 @@ from inspire.platform.web.browser_api.notebooks import (
     list_notebook_users,
 )
 from inspire.platform.web.browser_api.projects import (
+    list_all_projects,
     list_project_page_records,
     list_projects_v2,
 )
@@ -93,6 +94,71 @@ def test_list_project_page_records_posts_management_body(monkeypatch: pytest.Mon
     assert record["method"] == "POST"
     assert record["url"].endswith("/project/list_for_page")
     assert record["body"] == {"page": 2, "page_size": 5, "filter": {"name": "demo"}}
+
+
+def test_list_all_projects_posts_single_unscoped_project_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        projects_module,
+        monkeypatch,
+        {
+            "code": 0,
+            "data": {
+                "items": [
+                    {
+                        "id": "project-1",
+                        "name": "Demo",
+                        "member_remain_budget": "12.5",
+                        "space_list": [{"id": "ws-1", "name": "Workspace One"}],
+                    }
+                ],
+                "total": 1,
+            },
+        },
+        record,
+    )
+
+    projects = list_all_projects(session=_FakeSession())
+
+    assert len(projects) == 1
+    assert projects[0].project_id == "project-1"
+    assert projects[0].member_remain_budget == 12.5
+    assert projects[0].workspace_id == "ws-1"
+    assert projects[0].workspace_ids == ("ws-1",)
+    assert projects[0].workspace_names == ("Workspace One",)
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/project/list")
+    assert record["body"] == {"page": 1, "page_size": 100, "filter": {"check_admin": True}}
+
+
+def test_list_all_projects_paginates_project_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def _fake(session, method, url, *, referer=None, body=None, timeout=30, **kwargs):
+        calls.append(body)
+        page = body["page"]
+        if page == 1:
+            return {
+                "code": 0,
+                "data": {
+                    "items": [{"id": f"project-{idx}", "name": f"Demo {idx}"} for idx in range(100)],
+                    "total": 101,
+                },
+            }
+        return {
+            "code": 0,
+            "data": {"items": [{"id": "project-100", "name": "Demo 100"}], "total": 101},
+        }
+
+    monkeypatch.setattr(projects_module, "_request_json", _fake)
+
+    projects = list_all_projects(session=_FakeSession())
+
+    assert len(projects) == 101
+    assert [call["page"] for call in calls] == [1, 2]
+    assert all(call["page_size"] == 100 for call in calls)
 
 
 def test_list_notebook_users_posts_workspace_id(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -735,6 +735,43 @@ def test_browser_client_recreates_closed_thread_local_client(monkeypatch: pytest
     ws_browser_client._close_browser_client()
 
 
+def test_close_browser_client_does_not_block_on_hung_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
+        cookies={"session": "abc"},
+        workspace_id="ws-test",
+        created_at=0,
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    class HangingBrowserClient:
+        def __init__(self, current_session: WebSession) -> None:
+            self.session_fingerprint = ws_browser_client._session_fingerprint(current_session)
+            self._closed = False
+
+        def close(self) -> None:
+            self._closed = True
+            started.set()
+            release.wait(timeout=5)
+
+    monkeypatch.setattr(ws_browser_client, "_BrowserRequestClient", HangingBrowserClient)
+    monkeypatch.setattr(ws_browser_client, "_BROWSER_CLIENT_CLOSE_TIMEOUT_SECONDS", 0.01)
+    ws_browser_client._close_browser_client()
+
+    client = ws_browser_client._get_browser_client(session)
+    start = time.monotonic()
+    ws_browser_client._close_browser_client()
+    elapsed = time.monotonic() - start
+    release.set()
+
+    assert started.wait(timeout=1)
+    assert elapsed < 0.5
+    assert client._closed is True
+
+
 def test_get_credentials_reads_account_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """v4.0.0: account TOML is the sole identity source.
 

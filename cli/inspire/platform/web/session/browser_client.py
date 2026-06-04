@@ -117,6 +117,7 @@ def _session_fingerprint(session: WebSession) -> str:
 _BROWSER_CLIENT_TLS = threading.local()
 _BROWSER_CLIENTS: "WeakSet[_BrowserRequestClient]" = WeakSet()
 _BROWSER_CLIENTS_LOCK = threading.Lock()
+_BROWSER_CLIENT_CLOSE_TIMEOUT_SECONDS = 1.0
 
 
 def _get_thread_client() -> Optional[_BrowserRequestClient]:
@@ -158,7 +159,7 @@ def _get_browser_client(session: WebSession) -> _BrowserRequestClient:
         return client
 
     if client:
-        client.close()
+        _close_client_best_effort(client)
         _unregister_client(client)
         _clear_thread_client()
 
@@ -168,12 +169,36 @@ def _get_browser_client(session: WebSession) -> _BrowserRequestClient:
     return client
 
 
+def _close_client_best_effort(client: _BrowserRequestClient, *, timeout: float | None = None) -> bool:
+    """Close a Playwright request client without letting cleanup block CLI exit."""
+    done = threading.Event()
+
+    def _runner() -> None:
+        try:
+            client.close()
+        except BaseException:
+            pass
+        finally:
+            done.set()
+
+    thread = threading.Thread(
+        target=_runner,
+        name="inspire-browser-client-close",
+        daemon=True,
+    )
+    thread.start()
+    thread.join(
+        _BROWSER_CLIENT_CLOSE_TIMEOUT_SECONDS if timeout is None else max(0.0, timeout)
+    )
+    return done.is_set()
+
+
 def _close_browser_client() -> None:
     with _BROWSER_CLIENTS_LOCK:
         clients = list(_BROWSER_CLIENTS)
         _BROWSER_CLIENTS.clear()
 
     for client in clients:
-        client.close()
+        _close_client_best_effort(client)
 
     _clear_thread_client()

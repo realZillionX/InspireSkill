@@ -42,6 +42,8 @@ def _project_to_dict(proj: browser_api_module.ProjectInfo) -> dict:
         "project_id": proj.project_id,
         "name": proj.name,
         "workspace_id": proj.workspace_id,
+        "workspace_ids": list(proj.workspace_ids),
+        "workspace_names": list(proj.workspace_names),
         "budget": proj.budget,
         "remain_budget": proj.remain_budget,
         "member_remain_budget": proj.member_remain_budget,
@@ -164,6 +166,18 @@ def _collect_workspace_projects(
     return projects, workspace_errors
 
 
+def _collect_all_workspace_projects(
+    workspace_ids: list[str],
+    *,
+    session,
+) -> tuple[list[browser_api_module.ProjectInfo], list[tuple[str, str]]]:
+    """Collect all visible projects, preferring the single project-scoped endpoint."""
+    try:
+        return browser_api_module.list_all_projects(session=session), []
+    except Exception:
+        return _collect_workspace_projects(workspace_ids, session=session)
+
+
 def _select_workspace_ids_for_listing(
     workspace_ids: list[str],
     *,
@@ -229,15 +243,21 @@ def list_projects_cmd(
             workspace=workspace,
             session=session,
         )
-        query_workspace_ids = _select_workspace_ids_for_listing(
-            workspace_ids,
-            session_workspace_id=None,
-            all_workspaces=all_workspaces,
-        )
-        projects, workspace_errors = _collect_workspace_projects(
-            query_workspace_ids,
-            session=session,
-        )
+        if all_workspaces:
+            projects, workspace_errors = _collect_all_workspace_projects(
+                workspace_ids,
+                session=session,
+            )
+        else:
+            query_workspace_ids = _select_workspace_ids_for_listing(
+                workspace_ids,
+                session_workspace_id=None,
+                all_workspaces=all_workspaces,
+            )
+            projects, workspace_errors = _collect_workspace_projects(
+                query_workspace_ids,
+                session=session,
+            )
         if not projects and workspace_errors:
             error_samples = ", ".join(
                 f"{ws_id}: {message}" for ws_id, message in workspace_errors[:3]

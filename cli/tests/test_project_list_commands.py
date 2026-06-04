@@ -20,6 +20,7 @@ class FakeSession:
     def __init__(self, *, all_workspace_ids, workspace_id: str | None) -> None:
         self.all_workspace_ids = all_workspace_ids
         self.workspace_id = workspace_id
+        self.all_workspace_names = {wid: wid for wid in all_workspace_ids}
 
 
 def _project(project_id: str, name: str, workspace_id: str) -> browser_api_module.ProjectInfo:
@@ -30,7 +31,7 @@ def _project(project_id: str, name: str, workspace_id: str) -> browser_api_modul
     )
 
 
-def test_project_list_uses_session_workspace_ids(monkeypatch):
+def test_project_list_all_uses_single_project_query(monkeypatch):
     session_obj = FakeSession(
         all_workspace_ids=[WS_CPU, WS_GPU, WS_INET, WS_EXTRA],
         workspace_id=WS_CPU,
@@ -41,20 +42,22 @@ def test_project_list_uses_session_workspace_ids(monkeypatch):
         lambda: session_obj,
     )
 
-    monkeypatch.setattr(project_cmd_module, "_PROJECT_LIST_MAX_WORKERS", 1)
+    calls: list[str] = []
 
-    calls: list[str | None] = []
+    def fake_list_all_projects(session=None):  # type: ignore[no-untyped-def]
+        calls.append("all")
+        return [
+            _project("project-cpu", "CPU", WS_CPU),
+            _project("project-gpu", "GPU", WS_GPU),
+            _project("project-extra", "Extra", WS_EXTRA),
+        ]
 
-    def fake_list_projects(workspace_id=None, session=None):  # type: ignore[no-untyped-def]
-        calls.append(workspace_id)
-        data = {
-            WS_CPU: [_project("project-cpu", "CPU", WS_CPU)],
-            WS_GPU: [_project("project-gpu", "GPU", WS_GPU)],
-            WS_EXTRA: [_project("project-extra", "Extra", WS_EXTRA)],
-        }
-        return data.get(workspace_id, [])
-
-    monkeypatch.setattr(browser_api_module, "list_projects", fake_list_projects)
+    monkeypatch.setattr(browser_api_module, "list_all_projects", fake_list_all_projects)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_projects",
+        lambda **_: (_ for _ in ()).throw(AssertionError("fanout should not run")),
+    )
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["--json", "project", "list", "--workspace", "all"])
@@ -62,7 +65,7 @@ def test_project_list_uses_session_workspace_ids(monkeypatch):
     assert result.exit_code == 0
     payload = json.loads(result.output)["data"]
     assert payload["total"] == 3
-    assert calls == [WS_CPU, WS_GPU, WS_INET, WS_EXTRA]
+    assert calls == ["all"]
 
 
 def test_project_list_tolerates_workspace_specific_failure(monkeypatch):
@@ -87,6 +90,11 @@ def test_project_list_tolerates_workspace_specific_failure(monkeypatch):
         return []
 
     monkeypatch.setattr(browser_api_module, "list_projects", fake_list_projects)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_all_projects",
+        lambda **_: (_ for _ in ()).throw(ValueError("single query unavailable")),
+    )
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["--json", "project", "list", "--workspace", "all"])
@@ -117,6 +125,11 @@ def test_project_list_does_not_fallback_to_default_query_when_all_workspace_quer
         raise ValueError("workspace denied")
 
     monkeypatch.setattr(browser_api_module, "list_projects", fake_list_projects)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_all_projects",
+        lambda **_: (_ for _ in ()).throw(ValueError("single query unavailable")),
+    )
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["--json", "project", "list", "--workspace", "all"])
@@ -125,39 +138,40 @@ def test_project_list_does_not_fallback_to_default_query_when_all_workspace_quer
     assert calls == [WS_BAD, WS_BAD_2]
 
 
-def test_project_list_default_mode_queries_all_workspaces(monkeypatch):
+def test_project_list_specific_workspace_uses_workspace_query(monkeypatch):
     session_obj = FakeSession(
         all_workspace_ids=[WS_BAD, WS_GOOD, WS_CPU, WS_GPU],
         workspace_id=WS_GOOD,
     )
+    session_obj.all_workspace_names = {WS_GOOD: "good", WS_BAD: "bad", WS_CPU: "cpu", WS_GPU: "gpu"}
     monkeypatch.setattr(
         notebook_cli_module.web_session_module,
         "get_web_session",
         lambda: session_obj,
     )
-    monkeypatch.setattr(project_cmd_module, "_PROJECT_LIST_WORKSPACE_FANOUT_LIMIT", 2)
-    monkeypatch.setattr(project_cmd_module, "_PROJECT_LIST_MAX_WORKERS", 1)
-
     calls: list[str | None] = []
 
     def fake_list_projects(workspace_id=None, session=None):  # type: ignore[no-untyped-def]
         calls.append(workspace_id)
-        if workspace_id is None:
-            return []
         return [_project(f"project-{workspace_id}", workspace_id, workspace_id)]
 
     monkeypatch.setattr(browser_api_module, "list_projects", fake_list_projects)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_all_projects",
+        lambda **_: (_ for _ in ()).throw(AssertionError("all query should not run")),
+    )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "project", "list", "--workspace", "all"])
+    result = runner.invoke(cli_main, ["--json", "project", "list", "--workspace", "good"])
 
     assert result.exit_code == 0
     payload = json.loads(result.output)["data"]
-    assert payload["total"] == 4
-    assert calls == [WS_BAD, WS_GOOD, WS_CPU, WS_GPU]
+    assert payload["total"] == 1
+    assert calls == [WS_GOOD]
 
 
-def test_project_list_all_workspaces_bypasses_fanout_limit(monkeypatch):
+def test_project_list_all_fallback_bypasses_fanout_limit(monkeypatch):
     session_obj = FakeSession(
         all_workspace_ids=[WS_BAD, WS_GOOD, WS_CPU, WS_GPU],
         workspace_id=WS_GOOD,
@@ -179,6 +193,11 @@ def test_project_list_all_workspaces_bypasses_fanout_limit(monkeypatch):
         return [_project(f"project-{workspace_id}", workspace_id, workspace_id)]
 
     monkeypatch.setattr(browser_api_module, "list_projects", fake_list_projects)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_all_projects",
+        lambda **_: (_ for _ in ()).throw(ValueError("single query unavailable")),
+    )
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["--json", "project", "list", "--workspace", "all"])
@@ -201,15 +220,13 @@ def test_project_list_refreshes_platform_for_all_workspaces(monkeypatch):
     )
     monkeypatch.setattr(project_cmd_module, "_PROJECT_LIST_MAX_WORKERS", 1)
 
-    calls: list[str | None] = []
+    calls: list[str] = []
 
-    def fake_list_projects(workspace_id=None, session=None):  # type: ignore[no-untyped-def]
-        calls.append(workspace_id)
-        if workspace_id is None:
-            return []
-        return [_project(f"project-{workspace_id}", workspace_id, workspace_id)]
+    def fake_list_all_projects(session=None):  # type: ignore[no-untyped-def]
+        calls.append("all")
+        return [_project("project-live", "Live", WS_GOOD)]
 
-    monkeypatch.setattr(browser_api_module, "list_projects", fake_list_projects)
+    monkeypatch.setattr(browser_api_module, "list_all_projects", fake_list_all_projects)
 
     runner = CliRunner()
     first = runner.invoke(cli_main, ["--json", "project", "list", "--workspace", "all"])
@@ -219,6 +236,6 @@ def test_project_list_refreshes_platform_for_all_workspaces(monkeypatch):
     assert second.exit_code == 0
     first_payload = json.loads(first.output)["data"]
     second_payload = json.loads(second.output)["data"]
-    assert first_payload["total"] == 4
-    assert second_payload["total"] == 4
-    assert calls == [WS_BAD, WS_GOOD, WS_CPU, WS_GPU, WS_BAD, WS_GOOD, WS_CPU, WS_GPU]
+    assert first_payload["total"] == 1
+    assert second_payload["total"] == 1
+    assert calls == ["all", "all"]

@@ -14,10 +14,13 @@ from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_u
 from inspire.platform.web.browser_api.jobs import list_job_events, list_jobs
 from inspire.platform.web.session import WebSession, get_web_session
 
+_PROJECT_LIST_PAGE_SIZE = 100
+
 __all__ = [
     "ProjectInfo",
     "check_scheduling_health",
     "get_project_detail",
+    "list_all_projects",
     "list_project_owners",
     "list_project_page_records",
     "list_projects",
@@ -43,6 +46,8 @@ class ProjectInfo:
     member_gpu_limit: bool = False  # Whether member GPU limits are enforced (informational)
     priority_level: str = ""  # Priority level (HIGH, NORMAL, etc.)
     priority_name: str = ""  # Priority name (numeric string like "10", "4")
+    workspace_ids: tuple[str, ...] = ()
+    workspace_names: tuple[str, ...] = ()
 
     @property
     def gpu_unlimited(self) -> bool:
@@ -76,6 +81,107 @@ class ProjectInfo:
         return " (GPU-hour limit enforced)"
 
 
+def _parse_float(value) -> float:
+    if value is None or value == "":
+        return 0.0
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _project_info_from_item(item: dict[str, Any], *, workspace_id: str = "") -> ProjectInfo:
+    space_list = item.get("space_list")
+    workspace_ids: list[str] = []
+    workspace_names: list[str] = []
+    if isinstance(space_list, list):
+        for space in space_list:
+            if not isinstance(space, dict):
+                continue
+            sid = str(space.get("id") or space.get("workspace_id") or "").strip()
+            if sid and sid not in workspace_ids:
+                workspace_ids.append(sid)
+            name = str(space.get("name") or space.get("workspace_name") or "").strip()
+            if name and name not in workspace_names:
+                workspace_names.append(name)
+
+    resolved_workspace_id = (
+        str(item.get("workspace_id") or "").strip()
+        or workspace_id
+        or (workspace_ids[0] if workspace_ids else "")
+    )
+    if resolved_workspace_id and resolved_workspace_id not in workspace_ids:
+        workspace_ids.insert(0, resolved_workspace_id)
+
+    remain_budget = _parse_float(item.get("remain_budget"))
+    member_remain_budget = _parse_float(item.get("member_remain_budget"))
+    if member_remain_budget == 0.0 and "member_remain_budget" not in item:
+        member_remain_budget = remain_budget
+
+    return ProjectInfo(
+        project_id=item.get("id", ""),
+        name=item.get("name", ""),
+        workspace_id=resolved_workspace_id,
+        en_name=item.get("en_name", ""),
+        budget=_parse_float(item.get("budget")),
+        remain_budget=remain_budget,
+        member_remain_budget=member_remain_budget,
+        member_remain_gpu_hours=_parse_float(item.get("member_remain_gpu_hours")),
+        gpu_limit=bool(item.get("gpu_limit", False)),
+        member_gpu_limit=bool(item.get("member_gpu_limit", False)),
+        priority_level=item.get("priority_level", ""),
+        priority_name=item.get("priority_name", ""),
+        workspace_ids=tuple(workspace_ids),
+        workspace_names=tuple(workspace_names),
+    )
+
+
+def _coerce_total(value: Any, fallback: int) -> int:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _list_project_items(
+    *,
+    session: WebSession,
+    filter_body: dict[str, Any],
+    referer: str,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    page = 1
+
+    while True:
+        body = {
+            "page": page,
+            "page_size": _PROJECT_LIST_PAGE_SIZE,
+            "filter": dict(filter_body),
+        }
+        data = _request_json(
+            session,
+            "POST",
+            _browser_api_path("/project/list"),
+            referer=referer,
+            body=body,
+            timeout=30,
+        )
+
+        if data.get("code") != 0:
+            raise ValueError(f"API error: {data.get('message')}")
+
+        payload = data.get("data", {}) or {}
+        page_items = payload.get("items", [])
+        if not isinstance(page_items, list):
+            page_items = []
+        items.extend(item for item in page_items if isinstance(item, dict))
+
+        total = _coerce_total(payload.get("total"), len(items))
+        if len(items) >= total or len(page_items) < _PROJECT_LIST_PAGE_SIZE:
+            return items
+        page += 1
+
+
 def list_projects(
     workspace_id: Optional[str] = None,
     session: Optional[WebSession] = None,
@@ -87,53 +193,37 @@ def list_projects(
     if workspace_id is None:
         raise ValueError("workspace_id is required")
 
-    body = {
-        "page": 1,
-        "page_size": -1,
-        "filter": {
+    items = _list_project_items(
+        session=session,
+        filter_body={
             "workspace_id": workspace_id,
             "check_admin": True,
         },
-    }
-
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/project/list"),
         referer=f"{_get_base_url()}/jobs/interactiveModeling",
-        body=body,
-        timeout=30,
     )
-
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    items = data.get("data", {}).get("items", [])
-
-    def _parse_float(value) -> float:
-        if value is None or value == "":
-            return 0.0
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            return 0.0
-
     return [
-        ProjectInfo(
-            project_id=item.get("id", ""),
-            name=item.get("name", ""),
-            workspace_id=item.get("workspace_id", workspace_id),
-            en_name=item.get("en_name", ""),
-            budget=_parse_float(item.get("budget")),
-            remain_budget=_parse_float(item.get("remain_budget")),
-            member_remain_budget=_parse_float(item.get("member_remain_budget")),
-            member_remain_gpu_hours=_parse_float(item.get("member_remain_gpu_hours")),
-            gpu_limit=bool(item.get("gpu_limit", False)),
-            member_gpu_limit=bool(item.get("member_gpu_limit", False)),
-            priority_level=item.get("priority_level", ""),
-            priority_name=item.get("priority_name", ""),
-        )
+        _project_info_from_item(item, workspace_id=workspace_id)
         for item in items
+        if isinstance(item, dict)
+    ]
+
+
+def list_all_projects(session: Optional[WebSession] = None) -> list[ProjectInfo]:
+    """List all visible projects with one project-scoped browser API call."""
+    if session is None:
+        session = get_web_session()
+
+    items = _list_project_items(
+        session=session,
+        filter_body={
+            "check_admin": True,
+        },
+        referer=f"{_get_base_url()}/projects",
+    )
+    return [
+        _project_info_from_item(item)
+        for item in items
+        if isinstance(item, dict)
     ]
 
 

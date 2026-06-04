@@ -45,7 +45,7 @@ from inspire.platform.web.browser_api.metrics import (
 )
 from inspire.platform.web.session import SessionExpiredError, WebSession, get_web_session
 
-from inspire.cli.utils.metrics_plot import render_metrics_png
+render_metrics_png = None
 
 # ---------------------------------------------------------------------------
 # Metric selection
@@ -564,6 +564,12 @@ def build_metrics_command(
                 else _default_plot_path(resource_name, name, end_ts)
             )
             try:
+                global render_metrics_png
+                if render_metrics_png is None:
+                    from inspire.cli.utils.metrics_plot import render_metrics_png as _renderer
+
+                    render_metrics_png = _renderer
+
                 chart_path = render_metrics_png(
                     task_id=scrub_raw_ids(name),
                     task_label=resource_label,
