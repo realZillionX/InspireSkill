@@ -83,7 +83,7 @@ from .notebooks import (
     stop_notebook,
     wait_for_notebook_running,
 )
-from .playwright_notebooks import run_command_in_notebook
+from .playwright_notebooks import resolve_notebook_vscode_proxy_suffix, run_command_in_notebook
 from .images import (
     CustomImageInfo,
     create_image,
@@ -246,6 +246,7 @@ __all__ = [
     "list_notebook_lifecycle",
     "list_notebook_runs",
     "list_notebook_users",
+    "resolve_notebook_vscode_proxy_suffix",
     "run_command_in_notebook",
     "OpenSSHInternalInstallError",
     "OpenSSHJammyInstallError",
