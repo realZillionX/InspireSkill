@@ -250,6 +250,9 @@ def create_notebook_cmd(
           --image sandbox-base:latest --group CPU资源-2 -q 0,4,32 --shm-size 64
         inspire notebook create --workspace 分布式训练空间 --project CI-情境智能 \
           --image sandbox-base:latest --group H200-2号机房 -q 1,20,200 \
+          --post-start-script scripts/notebook_setup.sh
+        inspire notebook create --workspace 分布式训练空间 --project CI-情境智能 \
+          --image sandbox-base:latest --group H200-2号机房 -q 1,20,200 \
           --node qb-prod-gpu1736
     """
     if post_start and post_start_script:

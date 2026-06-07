@@ -416,13 +416,6 @@ def create_notebook(
     The request body must match the exact structure the platform UI sends.
     Captured via Playwright network interception — the proto rejects unknown
     fields, so only send fields the backend expects.
-
-    ``node_id`` pins the notebook to a specific cluster node. The value is the
-    node *name* (e.g. ``qb-prod-gpu1736``), not the cluster-prefixed
-    ``node.id`` — this mirrors ``start_config.node_id`` on notebooks created
-    with a node selected in the web UI, and matches how every other flat create
-    field maps onto a ``start_config`` field of the same name. Omitted (left out
-    of the body) when no node is requested, so the platform schedules normally.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
