@@ -181,6 +181,7 @@ def _configure_create_happy_path(
     def fake_create_notebook_and_report(*_args, **kwargs):  # noqa: ANN001
         calls["task_priority"] = kwargs["task_priority"]
         calls["quota"] = kwargs["quota"]
+        calls["node_id"] = kwargs.get("node_id")
         return "nb-1111"
 
     monkeypatch.setattr(flow_module, "create_notebook_and_report", fake_create_notebook_and_report)
@@ -485,3 +486,127 @@ def test_wait_failure_reports_events_and_suppresses_raw_notebook_id(
     assert "FailedScheduling: notebook <notebook-id> cannot allocate GPU" in err
     assert "NodeName: node-a" in err
     assert "nb-secret-2222" not in err
+
+
+def test_run_notebook_create_threads_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx, calls = _configure_create_happy_path(
+        monkeypatch, wait_result=True, post_start_value=None
+    )
+
+    flow_module.run_notebook_create(
+        ctx,
+        name="pinned-nb",
+        workspace="gpu",
+        workspace_id=None,
+        quota="1,20,200",
+        project="Project One",
+        image="Image One",
+        shm_size=None,
+        auto_stop=False,
+        wait=False,
+        post_start=None,
+        post_start_script=None,
+        json_output=False,
+        priority=None,
+        project_explicit=False,
+        group="H200 Group",
+        node="qb-prod-gpu1736",
+    )
+
+    assert calls["node_id"] == "qb-prod-gpu1736"
+
+
+def test_run_notebook_create_node_defaults_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx, calls = _configure_create_happy_path(
+        monkeypatch, wait_result=True, post_start_value=None
+    )
+
+    flow_module.run_notebook_create(
+        ctx,
+        name="unpinned-nb",
+        workspace="gpu",
+        workspace_id=None,
+        quota="1,20,200",
+        project="Project One",
+        image="Image One",
+        shm_size=None,
+        auto_stop=False,
+        wait=False,
+        post_start=None,
+        post_start_script=None,
+        json_output=False,
+        priority=None,
+        project_explicit=False,
+        group="H200 Group",
+    )
+
+    assert calls["node_id"] is None
+
+
+def test_create_notebook_payload_includes_node_id_when_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from inspire.platform.web.browser_api import notebooks as notebooks_module
+
+    captured: dict[str, object] = {}
+
+    def fake_request(_session, _method, _path, *, body=None, **_kwargs):  # noqa: ANN001
+        captured["body"] = body
+        return {"id": "nb-1"}
+
+    monkeypatch.setattr(notebooks_module, "_request_notebooks_data", fake_request)
+
+    notebooks_module.create_notebook(
+        name="n",
+        project_id="project-1",
+        project_name="P",
+        image_id="img-1",
+        image_url="docker://image",
+        logic_compute_group_id="lcg-1",
+        quota_id="quota-1",
+        gpu_type="H200",
+        gpu_count=1,
+        cpu_count=20,
+        memory_size=200,
+        shared_memory_size=64,
+        auto_stop=False,
+        workspace_id="ws-1",
+        session=SimpleNamespace(workspace_id="ws-1"),
+        node_id="qb-prod-gpu1736",
+    )
+
+    assert captured["body"]["node_id"] == "qb-prod-gpu1736"
+
+
+def test_create_notebook_payload_omits_node_id_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from inspire.platform.web.browser_api import notebooks as notebooks_module
+
+    captured: dict[str, object] = {}
+
+    def fake_request(_session, _method, _path, *, body=None, **_kwargs):  # noqa: ANN001
+        captured["body"] = body
+        return {"id": "nb-1"}
+
+    monkeypatch.setattr(notebooks_module, "_request_notebooks_data", fake_request)
+
+    notebooks_module.create_notebook(
+        name="n",
+        project_id="project-1",
+        project_name="P",
+        image_id="img-1",
+        image_url="docker://image",
+        logic_compute_group_id="lcg-1",
+        quota_id="quota-1",
+        gpu_type="H200",
+        gpu_count=1,
+        cpu_count=20,
+        memory_size=200,
+        shared_memory_size=64,
+        auto_stop=False,
+        workspace_id="ws-1",
+        session=SimpleNamespace(workspace_id="ws-1"),
+    )
+
+    assert "node_id" not in captured["body"]

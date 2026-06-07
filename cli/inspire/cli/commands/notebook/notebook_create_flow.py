@@ -355,6 +355,7 @@ def create_notebook_and_report(
     session: WebSession,
     json_output: bool,
     task_priority: Optional[int] = None,
+    node_id: Optional[str] = None,
 ) -> str | None:
     try:
         resource_spec_price = build_resource_spec_price(
@@ -379,6 +380,7 @@ def create_notebook_and_report(
             session=session,
             task_priority=task_priority,
             resource_spec_price=resource_spec_price,
+            node_id=node_id,
         )
 
         notebook_id = _extract_notebook_id(result)
@@ -792,6 +794,7 @@ def run_notebook_create(
     priority: Optional[int] = None,
     project_explicit: bool = False,
     group: Optional[str] = None,
+    node: Optional[str] = None,
     profile_name: str | None = None,
 ) -> None:
     del project_explicit
@@ -888,9 +891,10 @@ def run_notebook_create(
 
     resource_display = format_quota_display(resolved_quota)
     if not json_output:
+        node_note = f", pinned to node {scrub_raw_ids(node)}" if node else ""
         click.echo(
             f"Creating notebook with {scrub_raw_ids(resource_display)} on "
-            f"{scrub_raw_ids(resolved_quota.compute_group_name)}..."
+            f"{scrub_raw_ids(resolved_quota.compute_group_name)}{node_note}..."
         )
 
     task_priority = _resolve_task_priority(priority, config)
@@ -969,6 +973,7 @@ def run_notebook_create(
         session=session,
         json_output=json_output,
         task_priority=task_priority,
+        node_id=node,
     )
     if not notebook_id:
         return

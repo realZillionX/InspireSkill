@@ -207,6 +207,16 @@ def _workspace_display(session, workspace_id: str) -> str:  # noqa: ANN001
     ),
 )
 @click.option(
+    "--node",
+    "node",
+    default=None,
+    help=(
+        "Pin the notebook to a specific cluster node by name (e.g. qb-prod-gpu1736). "
+        "The node must belong to the selected compute group; the platform rejects "
+        "a mismatch. Omit to let the scheduler place it."
+    ),
+)
+@click.option(
     "--profile",
     "profile_name",
     default=None,
@@ -227,6 +237,7 @@ def create_notebook_cmd(
     post_start_script: Optional[Path],
     priority: Optional[int],
     group: Optional[str],
+    node: Optional[str],
     profile_name: Optional[str],
 ) -> None:
     """Create a new interactive notebook instance.
@@ -239,7 +250,7 @@ def create_notebook_cmd(
           --image sandbox-base:latest --group CPU资源-2 -q 0,4,32 --shm-size 64
         inspire notebook create --workspace 分布式训练空间 --project CI-情境智能 \
           --image sandbox-base:latest --group H200-2号机房 -q 1,20,200 \
-          --post-start-script scripts/notebook_setup.sh
+          --node qb-prod-gpu1736
     """
     if post_start and post_start_script:
         raise click.UsageError("Use either --post-start or --post-start-script, not both.")
@@ -263,6 +274,7 @@ def create_notebook_cmd(
         priority=priority,
         project_explicit=project_explicit,
         group=group,
+        node=node,
         profile_name=profile_name,
     )
 
