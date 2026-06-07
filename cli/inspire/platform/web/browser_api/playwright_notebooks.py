@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import shlex
 import time
@@ -21,8 +20,6 @@ from inspire.platform.web.browser_api.core import (
     _run_in_thread,
 )
 from inspire.platform.web.session import WebSession, build_requests_session, get_web_session
-
-_log = logging.getLogger(__name__)
 
 COMMAND_COMPLETION_MARKER_PREFIX = "INSPIRE_NOTEBOOK_COMMAND_DONE_"
 
