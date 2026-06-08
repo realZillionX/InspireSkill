@@ -106,7 +106,7 @@ PROJECT_CONFIG_TEMPLATE = """# Inspire CLI Project Configuration
 log_pattern = "training_master_*.log"
 
 [path_aliases]
-# Remote path aliases for notebook exec/shell/scp. Plain `inspire init`
+# Remote path aliases for notebook exec/shell/scp. `inspire init --scope project`
 # fills these from /inspire/<tier>/project/<topic>/<path-user>/.
 # <path-user> is the shared-storage personal directory segment reported by
 # the platform, which can differ from the login username.

@@ -101,8 +101,9 @@ inspire update --skill-only   # 仅刷 SKILL.md / references/
 ```bash
 inspire account add <name>
 inspire config show --compact
-cd /path/to/your-repo
 inspire init
+cd /path/to/your-repo
+inspire init --scope project
 inspire resources availability --workspace all --include-cpu
 ```
 

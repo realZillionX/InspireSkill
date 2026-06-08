@@ -156,8 +156,9 @@ def _bootstrap_first_account_if_needed(
 @click.option(
     "--scope",
     type=click.Choice(["project", "global"], case_sensitive=False),
-    default=None,
-    help="Write template/smart config to project or global scope.",
+    default="global",
+    show_default=True,
+    help="Select the discovery/config target scope.",
 )
 @click.option(
     "--force",
@@ -171,6 +172,11 @@ def _bootstrap_first_account_if_needed(
     "template_flag",
     is_flag=True,
     help="Create template with placeholders (skip env var detection)",
+)
+@click.option(
+    "--no-discover",
+    is_flag=True,
+    help="Skip platform discovery and only write template/smart config.",
 )
 @click.option(
     "--username",
@@ -198,48 +204,58 @@ def _bootstrap_first_account_if_needed(
 @pass_context
 def init(
     ctx: Context,
-    scope: str | None,
+    scope: str,
     force: bool,
     template_flag: bool,
+    no_discover: bool,
     username: str | None,
     base_url: str | None,
     select_project_name: str | None,
 ) -> None:
     """Initialize Inspire CLI configuration.
 
-    Plain `inspire init` logs in or uses the active account, discovers visible
-    workspaces / projects / compute groups, asks which storage tier the `me`
-    path alias should use, then writes account config plus this repository's
+    Plain `inspire init` defaults to global scope: it logs in or uses the
+    active account, discovers visible workspaces / projects / compute groups,
+    then writes account-level catalogs to
+    ~/.inspire/accounts/<account>/config.toml.
+
+    `--scope project` also discovers platform catalogs, then writes this
+    repository's project context and path aliases to
     ./.inspire/accounts/<account>/config.toml.
 
-    `--template` writes a placeholder config. `--scope project|global` forces
+    `--template` writes a placeholder config. `--no-discover` forces
     environment-variable detection / smart init into one config file instead
     of running discovery.
 
     Discovery writes account-scoped catalogs to the active account config and
-    project-scoped context/path aliases to this repository's account-scoped
-    project config.
+    only project-scoped context/path aliases to this repository's account-scoped
+    project config when `--scope project` is selected.
 
     \b
     Prompted passwords are stored in global config for the selected account.
 
     Template/smart modes avoid writing secrets.
 
-    Without discovery, if no environment variables are detected (or with
-    --template), init creates a template config with placeholder values.
+    Without discovery (`--no-discover`), if no environment variables are
+    detected (or with --template), init creates a template config with
+    placeholder values.
 
-    Discovery also creates path aliases such as `me`, `public`, `global-me`,
-    `ssd.me`, `hdd.me`, and `qb-ilm2.me`; the top-level `me` points at the
-    selected path tier, with `ssd` suggested for the path hot tier.
+    Project discovery also creates path aliases such as `me`, `public`,
+    `global-me`, `ssd.me`, `hdd.me`, and `qb-ilm2.me`; the top-level `me`
+    points at the selected path tier, with `ssd` suggested for the path hot tier.
 
     \b
     Examples:
-        # Discover account/project/workspace catalog and path aliases
+        # Discover account/workspace/project catalogs globally
         inspire init
 
         \b
-        # Refresh discovered config non-interactively where possible
+        # Refresh discovered global config non-interactively where possible
         inspire init --force
+
+        \b
+        # Discover project context and path aliases for this repository
+        inspire init --scope project
 
         \b
         # Create a placeholder project config instead of discovery
@@ -247,16 +263,16 @@ def init(
 
         \b
         # Detect env vars and write only project/global config
-        inspire init --scope project
-        inspire init --scope global
+        inspire init --no-discover --scope project
+        inspire init --no-discover --scope global
     """
     effective_json = ctx.json_output
     warnings: list[str] = []
 
-    scope_value = scope.lower() if scope else None
+    scope_value = scope.lower()
     global_flag = scope_value == "global"
     project_flag = scope_value == "project"
-    run_discovery = not template_flag and scope_value is None
+    run_discovery = not template_flag and not no_discover
 
     def _warn(msg: str) -> None:
         warnings.append(msg)
@@ -274,15 +290,16 @@ def init(
 
         global_path, project_path = _get_config_paths()
         before = snapshot_paths(global_path, project_path)
+        discover_target_paths = [global_path, project_path] if project_flag else [global_path]
 
         if not run_discovery and (username or base_url or select_project_name):
             _warn(
                 "--username, --base-url, and --select-project are only effective with "
-                "plain `inspire init` and were ignored."
+                "discovery and were ignored."
             )
 
         if run_discovery:
-            if effective_json and not force and (global_path.exists() or project_path.exists()):
+            if effective_json and not force and any(path.exists() for path in discover_target_paths):
                 raise ValueError(
                     "JSON mode is non-interactive for discover updates; rerun with --force when "
                     "config files already exist."
@@ -292,6 +309,7 @@ def init(
                 _init_discover_mode,
                 effective_json,
                 force,
+                scope=scope_value,
                 cli_username=username,
                 cli_base_url=base_url,
                 cli_select_project=select_project_name,
@@ -299,12 +317,13 @@ def init(
 
             emit_init_json(
                 mode="discover",
-                target_paths=[global_path, project_path],
+                target_paths=discover_target_paths,
                 before=before,
                 detected=[],
                 warnings=warnings,
                 discover={
                     "bootstrapped_account": bootstrapped_account,
+                    "scope": scope_value,
                 },
                 effective_json=effective_json,
             )
@@ -312,10 +331,6 @@ def init(
 
         if template_flag:
             if effective_json:
-                if not global_flag and not project_flag:
-                    # Match interactive default choice for machine mode.
-                    project_flag = True
-
                 target_path = global_path if global_flag else project_path
                 if target_path.exists() and not force:
                     raise ValueError(
@@ -348,8 +363,7 @@ def init(
                         "JSON mode is non-interactive for overwrites; rerun with --force."
                     )
                 if (
-                    not global_flag
-                    and not project_flag
+                    not (global_flag or project_flag)
                     and (global_path.exists() or project_path.exists())
                 ):
                     raise ValueError(
@@ -386,8 +400,6 @@ def init(
             return
 
         if effective_json:
-            if not global_flag and not project_flag:
-                project_flag = True
             target_path = global_path if global_flag else project_path
             if target_path.exists() and not force:
                 raise ValueError("JSON mode is non-interactive for overwrites; rerun with --force.")

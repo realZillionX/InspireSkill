@@ -842,11 +842,10 @@ class TestInitCommand:
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()
 
-        # Template mode still supports the legacy interactive project/global choice.
-        result = runner.invoke(init, ["--template"], input="p\n")
+        result = runner.invoke(init, ["--no-discover", "--scope", "project", "--force"])
 
         assert result.exit_code == 0
-        assert "Creating template config" in result.output
+        assert "No environment variables detected. Creating template config" in result.output
         config_file = self._project_config_path(tmp_path)
         assert config_file.exists()
         content = config_file.read_text()
@@ -861,7 +860,7 @@ class TestInitCommand:
         """A global template must be loadable as an account config."""
         monkeypatch.chdir(tmp_path)
 
-        result = CliRunner().invoke(init, ["--scope", "global", "--force"])
+        result = CliRunner().invoke(init, ["--template", "--scope", "global", "--force"])
 
         assert result.exit_code == 0, result.output
         content = self._account_config_path().read_text()
@@ -1004,7 +1003,7 @@ class TestInitCommand:
         monkeypatch.setenv("INSP_GITHUB_REPO", "user/repo")  # project
 
         runner = CliRunner()
-        result = runner.invoke(init, ["--scope", "project", "--force"])
+        result = runner.invoke(init, ["--no-discover", "--scope", "project", "--force"])
 
         assert result.exit_code == 0
 
@@ -1025,7 +1024,7 @@ class TestInitCommand:
         monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
         monkeypatch.setenv("INSP_GITHUB_REPO", "user/repo")
 
-        result = CliRunner().invoke(init, ["--scope", "global", "--force"])
+        result = CliRunner().invoke(init, ["--no-discover", "--scope", "global", "--force"])
 
         assert result.exit_code == 0, result.output
         account_content = self._account_config_path().read_text()
@@ -1040,7 +1039,7 @@ class TestInitCommand:
         self._account_config_path().write_text('[auth]\nusername = "existing"\n')
         monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
 
-        result = CliRunner().invoke(init, ["--scope", "project", "--force"])
+        result = CliRunner().invoke(init, ["--no-discover", "--scope", "project", "--force"])
 
         assert result.exit_code == 0, result.output
         assert "No project-scope environment variables detected" in result.output
@@ -1056,7 +1055,7 @@ class TestInitCommand:
         monkeypatch.setenv("INSPIRE_PASSWORD", "secretpass")
 
         runner = CliRunner()
-        result = runner.invoke(init, ["--scope", "global", "--force"])
+        result = runner.invoke(init, ["--no-discover", "--scope", "global", "--force"])
 
         assert result.exit_code == 0
         content = self._account_config_path().read_text()
@@ -1094,7 +1093,7 @@ class TestInitCommand:
         monkeypatch.setenv("INSP_GITHUB_REPO", "user/repo")
 
         runner = CliRunner()
-        result = runner.invoke(init, ["--scope", "project", "--force"])
+        result = runner.invoke(init, ["--no-discover", "--scope", "project", "--force"])
 
         assert result.exit_code == 0
 
@@ -1367,10 +1366,34 @@ class TestInitCommand:
         assert "Discovering account catalog" in result.output
         assert "Workspace:" not in result.output
         assert "CPU临时测试空间" not in result.output
+        account_config = self._account_config_path()
+        assert account_config.exists()
+        account_content = account_config.read_text(encoding="utf-8")
+        assert "[projects]" in account_content
+        assert "[project_catalog" in account_content
+        assert not self._project_config_path(tmp_path).exists()
+
+    def test_project_scope_discover_writes_project_context(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
+    ) -> None:
+        self._setup_discover_mocks(monkeypatch, tmp_path)
+        monkeypatch.setenv("INSPIRE_USERNAME", "cached-user")
+        monkeypatch.setenv("INSPIRE_BASE_URL", "https://example.invalid")
+
+        runner = CliRunner()
+        result = runner.invoke(init, ["--scope", "project", "--force"])
+
+        assert result.exit_code == 0, result.output
+        account_content = self._account_config_path().read_text(encoding="utf-8")
+        assert "[projects]" in account_content
+        assert "[project_catalog" in account_content
+
         project_config = self._project_config_path(tmp_path)
         assert project_config.exists()
         project_content = project_config.read_text(encoding="utf-8")
         assert "[context]" in project_content
+        assert 'project = "My Project"' in project_content
+        assert "[path_aliases]" not in project_content
         assert "workspace" not in project_content.lower()
 
 

@@ -70,17 +70,23 @@ http://127.0.0.1:7897
 
 CLI 不需要 shell 里的 `http_proxy`、`INSPIRE_FORCE_PROXY`、`INSPIRE_PLAYWRIGHT_PROXY` 之类一次性环境变量；账号级 proxy 就是标准入口。
 
-## 4. 项目初始化
+## 4. 全局发现与项目初始化
 
-每个本地仓库各做一次：
+账号配置完成后，先做一次全局发现，把可见 project、project catalog 和 compute group catalog 写入账号配置：
 
 ```bash
-cd /path/to/your-repo
 inspire init
 inspire resources availability --workspace all --include-cpu
 ```
 
-`inspire init` 会把当前仓库的项目上下文写入 `./.inspire/accounts/<account>/config.toml`，并发现远端 path alias。远端工作目录不要写成账号级默认值；用 alias：
+每个需要远端路径 alias 的本地仓库，再各做一次项目初始化：
+
+```bash
+cd /path/to/your-repo
+inspire init --scope project
+```
+
+`inspire init --scope project` 会把当前仓库的项目上下文写入 `./.inspire/accounts/<account>/config.toml`，并发现远端 path alias。远端工作目录不要写成账号级默认值；用 alias：
 
 ```bash
 inspire notebook exec <name> --cwd me "pwd"

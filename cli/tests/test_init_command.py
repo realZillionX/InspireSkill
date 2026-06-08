@@ -106,6 +106,7 @@ def test_init_defaults_to_discover_mode_with_active_account(
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert calls["func"] is init_cmd_module._init_discover_mode
     assert calls["force"] is True
+    assert calls["kwargs"]["scope"] == "global"
 
 
 def test_init_bootstraps_first_account_before_discover(
@@ -139,6 +140,7 @@ def test_init_bootstraps_first_account_before_discover(
     assert "Creating the first account" in result.output
     assert "Active account: default" in result.output
     assert calls["func"] is init_cmd_module._init_discover_mode
+    assert calls["kwargs"]["scope"] == "global"
     assert (tmp_path / ".inspire" / "current").read_text(encoding="utf-8") == "default\n"
     account_config = (
         tmp_path / ".inspire" / "accounts" / "default" / "config.toml"

@@ -2,6 +2,16 @@
 
 本文件同步 GitHub Releases 正文格式；Release 页面是发布说明的标准口径。
 
+# Unreleased
+
+## 更新内容
+
+### 变更
+
+- 调整 `inspire init` 的 scope 语义：默认 `--scope global`，裸 `inspire init` 会执行全局发现，并把 project catalog、compute group catalog 等账号级发现结果写入 `~/.inspire/accounts/<account>/config.toml`。
+- `inspire init --scope project` 现在执行项目发现：刷新账号级 catalog，并把当前仓库的 `[context]` 与 `[path_aliases]` 写入 `./.inspire/accounts/<account>/config.toml`。
+- 新增 `inspire init --no-discover`，用于跳过平台发现，只走旧的 env smart init / template config 写入路径。
+
 # v6.0.1
 
 ## 更新内容

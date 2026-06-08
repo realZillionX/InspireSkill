@@ -31,6 +31,7 @@ _CATALOG_DROP_FIELDS = frozenset(
 @dataclass(frozen=True)
 class _DiscoveryPersistRequest:
     force: bool
+    scope: str
     config: Config
     browser_api_module: Any
     session: Any
@@ -612,7 +613,13 @@ def _load_projects_for_discovery(
     return projects, projects[choice - 1]
 
 
-def _confirm_discovery_writes(*, force: bool, global_path: Path, project_path: Path) -> bool:
+def _confirm_discovery_writes(
+    *,
+    force: bool,
+    scope: str,
+    global_path: Path,
+    project_path: Path,
+) -> bool:
     if global_path.exists() and not force:
         click.echo()
         click.echo(click.style(f"Global config already exists: {global_path}", fg="yellow"))
@@ -622,7 +629,7 @@ def _confirm_discovery_writes(*, force: bool, global_path: Path, project_path: P
             click.echo("Aborted.")
             return False
 
-    if project_path.exists() and not force:
+    if scope == "project" and project_path.exists() and not force:
         click.echo()
         click.echo(click.style(f"Project config already exists: {project_path}", fg="yellow"))
         if not click.confirm(
@@ -711,23 +718,34 @@ def _seed_project_discovery_metadata(
 
 def _resolve_project_catalog_aliases(
     *,
+    global_data: dict[str, Any],
+    global_account_section: dict[str, Any],
     project_data: dict[str, Any],
     project_account_section: dict[str, Any],
     projects: list[Any],
 ) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
-    existing_projects = project_data.get("projects")
+    existing_projects = global_data.get("projects")
+    if not isinstance(existing_projects, dict):
+        existing_projects = global_account_section.get("projects")
+    if not isinstance(existing_projects, dict):
+        existing_projects = project_data.get("projects")
     if not isinstance(existing_projects, dict):
         existing_projects = project_account_section.get("projects")
     if not isinstance(existing_projects, dict):
         existing_projects = {}
     merged_projects, alias_for_id = _build_project_aliases(projects, existing=existing_projects)
-    project_data["projects"] = merged_projects
+    global_data["projects"] = merged_projects
+    global_account_section.pop("projects", None)
+    project_data.pop("projects", None)
     project_account_section.pop("projects", None)
 
-    project_catalog = project_account_section.get("project_catalog")
+    project_catalog = global_data.get("project_catalog")
+    if not isinstance(project_catalog, dict):
+        project_catalog = global_account_section.get("project_catalog")
+    if not isinstance(project_catalog, dict):
+        project_catalog = project_account_section.get("project_catalog")
     if not isinstance(project_catalog, dict):
         project_catalog = {}
-        project_account_section["project_catalog"] = project_catalog
 
     typed_catalog: dict[str, dict[str, Any]] = {}
     for project_id, entry in project_catalog.items():
@@ -738,7 +756,9 @@ def _resolve_project_catalog_aliases(
         else:
             typed_catalog[project_id] = {}
 
-    project_account_section["project_catalog"] = typed_catalog
+    global_data["project_catalog"] = typed_catalog
+    global_account_section.pop("project_catalog", None)
+    project_account_section.pop("project_catalog", None)
     return alias_for_id, typed_catalog
 
 
@@ -1371,13 +1391,14 @@ def _write_discovered_project_config(
 def _print_discover_completion(
     *,
     global_path: Path,
-    project_path: Path,
+    project_path: Path | None,
     prompted_credentials: tuple[str, str, str] | None,
 ) -> None:
     click.echo()
     click.echo(click.style("Wrote configuration:", bold=True))
     click.echo(f"  - {global_path}")
-    click.echo(f"  - {project_path}")
+    if project_path is not None:
+        click.echo(f"  - {project_path}")
     click.echo()
     if prompted_credentials:
         click.echo("Note: prompted account password was stored in global config for this account.")
@@ -1394,6 +1415,7 @@ def _print_discover_completion(
 
 def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
     force = request.force
+    scope = request.scope
     config = request.config
     browser_api_module = request.browser_api_module
     session = request.session
@@ -1407,7 +1429,10 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         raise click.ClickException("No active account configured. Run `inspire account add` first.")
     project_path = _project_config_write_path()
     if not _confirm_discovery_writes(
-        force=force, global_path=global_path, project_path=project_path
+        force=force,
+        scope=scope,
+        global_path=global_path,
+        project_path=project_path,
     ):
         return
 
@@ -1415,17 +1440,23 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         global_path=global_path,
         account_key=account_key,
     )
-    project_data, project_account_section = _load_discovery_project_state(
-        project_path=project_path,
-        account_key=account_key,
-    )
-    _seed_project_discovery_metadata(
-        project_data=project_data,
-        project_account_section=project_account_section,
+    if scope == "project":
+        project_data, project_account_section = _load_discovery_project_state(
+            project_path=project_path,
+            account_key=account_key,
+        )
+        _seed_project_discovery_metadata(
+            project_data=project_data,
+            project_account_section=project_account_section,
+            global_data=global_data,
+            global_account_section=account_section,
+        )
+    else:
+        project_data = {}
+        project_account_section = {}
+    alias_for_id, project_catalog = _resolve_project_catalog_aliases(
         global_data=global_data,
         global_account_section=account_section,
-    )
-    alias_for_id, project_catalog = _resolve_project_catalog_aliases(
         project_data=project_data,
         project_account_section=project_account_section,
         projects=projects,
@@ -1439,20 +1470,8 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         account_key=account_key,
         force=force,
     )
-    project_workspace_ids = {
-        str(getattr(project, "workspace_id", "") or "").strip()
-        for project in projects
-        if str(getattr(project, "workspace_id", "") or "").strip()
-    }
-    if len(project_workspace_ids) > 1:
-        project_aliases = project_data.get("projects")
-        if isinstance(project_aliases, dict) and project_aliases:
-            account_section["projects"] = deepcopy(project_aliases)
-        if project_catalog:
-            account_section["project_catalog"] = deepcopy(project_catalog)
-    else:
-        account_section.pop("projects", None)
-        account_section.pop("project_catalog", None)
+    account_section.pop("projects", None)
+    account_section.pop("project_catalog", None)
     _persist_api_base_url(
         global_data=global_data,
         account_section=account_section,
@@ -1560,26 +1579,29 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         except OSError:
             pass
 
-    selected_alias = alias_for_id.get(selected_project.project_id)
-    if not selected_alias:
-        selected_alias = _slugify_alias(selected_project.name) or "default"
-    selected_tier = _select_default_path_alias_tier(force=force)
-    _write_discovered_project_config(
-        project_path=project_path,
-        project_data=project_data,
-        config=config,
-        account_key=account_key,
-        selected_alias=selected_alias,
-        selected_project=selected_project,
-        project_catalog=project_catalog,
-        force=force,
-        selected_tier=selected_tier,
-    )
+    wrote_project_path: Path | None = None
+    if scope == "project":
+        selected_alias = alias_for_id.get(selected_project.project_id)
+        if not selected_alias:
+            selected_alias = _slugify_alias(selected_project.name) or "default"
+        selected_tier = _select_default_path_alias_tier(force=force)
+        _write_discovered_project_config(
+            project_path=project_path,
+            project_data=project_data,
+            config=config,
+            account_key=account_key,
+            selected_alias=selected_alias,
+            selected_project=selected_project,
+            project_catalog=project_catalog,
+            force=force,
+            selected_tier=selected_tier,
+        )
+        wrote_project_path = project_path
 
     _ensure_ssh_key()
     _print_discover_completion(
         global_path=global_path,
-        project_path=project_path,
+        project_path=wrote_project_path,
         prompted_credentials=prompted_credentials,
     )
 
@@ -1587,6 +1609,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
 def _init_discover_mode(
     force: bool,
     *,
+    scope: str = "global",
     cli_username: str | None = None,
     cli_base_url: str | None = None,
     cli_select_project: str | None = None,
@@ -1620,6 +1643,7 @@ def _init_discover_mode(
         _persist_discovery_catalog(
             _DiscoveryPersistRequest(
                 force=force,
+                scope=scope,
                 config=config,
                 browser_api_module=browser_api_module,
                 session=session,

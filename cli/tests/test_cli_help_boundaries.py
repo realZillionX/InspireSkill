@@ -133,12 +133,14 @@ def test_init_help_explains_plain_init_discovery() -> None:
     removed_flag = "--" + "discover"
 
     assert result.exit_code == 0
-    assert "Plain `inspire init` logs in or uses the active account" in output
+    assert "Plain `inspire init` defaults to global scope" in output
     assert removed_flag not in output
-    assert "asks which storage tier the `me` path alias should use" in output
+    assert "writes account-level catalogs" in output
+    assert "`--scope project` also discovers platform catalogs" in output
     assert "top-level `me` points at the selected path tier" in output
     assert "`ssd` suggested for the path hot tier" in output
     assert "--scope [project|global]" in result.output
+    assert "--no-discover" in result.output
     assert "--global" not in result.output
     assert "--project, -p" not in result.output
     assert "--json" not in result.output

@@ -186,7 +186,7 @@ Apt 的黑盒用法是改 `/etc/apt/sources.list`、`sudo apt-get update`、再 
 
 ## 9. Path Alias 配置入口
 
-项目远端路径由 `inspire init` 写入当前仓库的 `.inspire/accounts/<account>/config.toml`，落在 `[path_aliases]`。查看生效配置用：
+项目远端路径由 `inspire init --scope project` 写入当前仓库的 `.inspire/accounts/<account>/config.toml`，落在 `[path_aliases]`。查看生效配置用：
 
 ```bash
 inspire config show --compact
