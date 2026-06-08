@@ -36,6 +36,7 @@ def _format_ssh_config(*, host: str, bridge: BridgeProfile) -> str:
     if bridge.workspace_name:
         proxy_parts.extend(["--workspace", bridge.workspace_name])
     proxy_parts.extend(["--port", "%p"])
+    proxy_parts.append("--quiet")
     proxy_command = " ".join(shlex.quote(part) for part in proxy_parts)
 
     lines = [

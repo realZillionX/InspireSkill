@@ -81,11 +81,14 @@ def exec_rtunnel_proxy(
     *,
     target_host: str = "localhost",
     target_port: int | None = None,
+    quiet: bool = False,
 ) -> None:
     """Replace the current process with rtunnel for OpenSSH ProxyCommand.
 
     The caller must keep stdout clean: after exec, stdout is the SSH byte
-    stream between OpenSSH and the remote notebook sshd.
+    stream between OpenSSH and the remote notebook sshd. When *quiet* is true,
+    rtunnel stderr is redirected to ``/dev/null`` immediately before exec so
+    its client lifecycle logs do not appear in the user's SSH session.
     """
     _ensure_rtunnel_binary(config)
     port = int(target_port or bridge.ssh_port)
@@ -96,7 +99,29 @@ def exec_rtunnel_proxy(
     ]
     env = os.environ.copy()
     env.update(_proxy_env())
-    os.execve(args[0], args, env)
+
+    saved_stderr_fd: int | None = None
+    if quiet:
+        saved_stderr_fd = os.dup(2)
+        try:
+            devnull_fd = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(devnull_fd, 2)
+            finally:
+                os.close(devnull_fd)
+        except Exception:
+            os.close(saved_stderr_fd)
+            raise
+
+    try:
+        os.execve(args[0], args, env)
+    except Exception:
+        if saved_stderr_fd is not None:
+            try:
+                os.dup2(saved_stderr_fd, 2)
+            finally:
+                os.close(saved_stderr_fd)
+        raise
 
 
 # ---------------------------------------------------------------------------

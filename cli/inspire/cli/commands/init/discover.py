@@ -26,6 +26,8 @@ _CATALOG_DROP_FIELDS = frozenset(
         "workspace_id",
     }
 )
+_USERNAME_PLACEHOLDERS = frozenset({"your_username"})
+_BASE_URL_PLACEHOLDER = "https://api.example.com"
 
 
 @dataclass(frozen=True)
@@ -139,14 +141,10 @@ def _resolve_credentials_interactive(
     confirm_config_username: bool = False,
 ) -> tuple[str, str, str]:
     """Resolve base_url, username, and password, prompting when missing."""
-    placeholder = "https://api.example.com"
-
     # --- base_url ---
     base_url = (cli_base_url or "").strip()
     if not base_url:
-        cfg_base_url = str(getattr(config, "base_url", "") or "").strip()
-        if cfg_base_url and cfg_base_url != placeholder:
-            base_url = cfg_base_url
+        base_url = _usable_base_url(getattr(config, "base_url", ""))
     if not base_url:
         base_url = click.prompt("Platform URL", type=str).strip()
     if not base_url:
@@ -156,7 +154,7 @@ def _resolve_credentials_interactive(
     # --- username ---
     username = (cli_username or "").strip()
     if not username:
-        cfg_username = str(getattr(config, "username", "") or "").strip()
+        cfg_username = _usable_username(getattr(config, "username", ""))
         if cfg_username and confirm_config_username:
             username = click.prompt(
                 "Platform login username (login ID, not display name)",
@@ -222,6 +220,22 @@ def _ensure_ssh_key() -> None:
         click.echo(f"SSH key generated: {key_path}")
     else:
         click.echo(click.style("SSH key generation failed.", fg="yellow"))
+
+
+def _usable_username(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.lower() in _USERNAME_PLACEHOLDERS:
+        return ""
+    return text
+
+
+def _usable_base_url(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text == _BASE_URL_PLACEHOLDER:
+        return ""
+    return text
 
 
 def _merge_alias_map(
@@ -391,22 +405,26 @@ def _resolve_discover_runtime(
                 click.echo("Logged in.")
 
     if prompted_credentials:
-        account_key = prompted_credentials[0]
+        account_key = _usable_username(prompted_credentials[0])
     else:
-        account_key = (config.username or session.login_username or "").strip()
+        account_key = (
+            _usable_username(getattr(session, "login_username", ""))
+            or _usable_username(getattr(config, "username", ""))
+        )
     if not account_key:
         click.echo(click.style("Could not resolve account key (username)", fg="red"))
         raise SystemExit(1)
 
-    placeholder = "https://api.example.com"
     if prompted_credentials:
         _set_base_url(prompted_credentials[2])
     else:
-        cfg_base_url = str(getattr(config, "base_url", "") or "").strip()
-        if cfg_base_url and cfg_base_url != placeholder:
+        cfg_base_url = _usable_base_url(getattr(config, "base_url", ""))
+        if cfg_base_url:
             _set_base_url(cfg_base_url)
-        elif session.base_url:
-            _set_base_url(session.base_url)
+        else:
+            session_base_url = _usable_base_url(getattr(session, "base_url", ""))
+            if session_base_url:
+                _set_base_url(session_base_url)
 
     workspace_id = str(session.workspace_id or "").strip()
     if not workspace_id or workspace_id == default_workspace_id:
@@ -895,14 +913,18 @@ def _persist_api_base_url(
     global_data: dict[str, Any],
     account_section: dict[str, Any],
     config: Config,
+    session: Any | None = None,
 ) -> None:
-    base_url = (config.base_url or "").strip()
-    if base_url and base_url != "https://api.example.com":
+    base_url = _usable_base_url(getattr(config, "base_url", ""))
+    if not base_url and session is not None:
+        base_url = _usable_base_url(getattr(session, "base_url", ""))
+    if base_url:
         api_section = global_data.get("api")
         if not isinstance(api_section, dict):
             api_section = {}
             global_data["api"] = api_section
-        api_section.setdefault("base_url", base_url)
+        if not _usable_base_url(api_section.get("base_url")):
+            api_section["base_url"] = base_url
     account_section.pop("api", None)
 
 
@@ -1109,6 +1131,23 @@ def _persist_prompted_credentials(
         api = {}
         global_data["api"] = api
     api["base_url"] = prompted_base_url
+
+
+def _persist_cached_session_identity(
+    *,
+    global_data: dict[str, Any],
+    session: Any,
+) -> None:
+    username = _usable_username(getattr(session, "login_username", ""))
+    if not username:
+        return
+
+    auth = global_data.get("auth")
+    if not isinstance(auth, dict):
+        auth = {}
+        global_data["auth"] = auth
+    if not _usable_username(auth.get("username")):
+        auth["username"] = username
 
 
 def _get_or_create_dict_table(
@@ -1436,6 +1475,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
     ):
         return
 
+    click.echo("Preparing account catalog update...")
     global_data, account_section = _load_discovery_global_state(
         global_path=global_path,
         account_key=account_key,
@@ -1461,6 +1501,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         project_account_section=project_account_section,
         projects=projects,
     )
+    click.echo(f"Discovering storage paths for {len(projects)} project(s)...")
     _populate_project_catalog(
         project_catalog=project_catalog,
         projects=projects,
@@ -1476,7 +1517,9 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         global_data=global_data,
         account_section=account_section,
         config=config,
+        session=session,
     )
+    click.echo("Discovering container image registry...")
     _discover_docker_registry(
         global_data=global_data,
         browser_api_module=browser_api_module,
@@ -1502,6 +1545,9 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
 
     compute_groups: list[dict[str, Any]] = list(existing_project_compute_groups)
     if missing_workspace_ids:
+        click.echo(
+            f"Discovering compute groups across {len(missing_workspace_ids)} workspace(s)..."
+        )
         max_workers = min(len(missing_workspace_ids), 6)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             future_map = {
@@ -1541,6 +1587,11 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         account_section=account_section,
         prompted_credentials=prompted_credentials,
     )
+    if not prompted_credentials:
+        _persist_cached_session_identity(
+            global_data=global_data,
+            session=session,
+        )
     _cleanup_global_discovery_metadata(
         global_data=global_data,
         account_key=account_key,
@@ -1569,6 +1620,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         if not catalog:
             global_data.pop("project_catalog", None)
 
+    click.echo("Preparing default remote path aliases...")
     selected_tier = _select_default_path_alias_tier(force=force)
     _persist_default_path_aliases(
         project_data=global_data,
@@ -1579,6 +1631,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         selected_tier=selected_tier,
     )
 
+    click.echo("Writing configuration files...")
     global_path.parent.mkdir(parents=True, exist_ok=True)
     # Always UTF-8 — see project_path.write_text above for the Windows
     # GBK story.
@@ -1640,6 +1693,7 @@ def _init_discover_mode(
 
     click.echo(click.style("Discovering account catalog...", bold=True))
     click.echo(f"Account: {account_key}")
+    click.echo("Discovering projects across accessible workspaces...")
     projects, selected_project = _load_projects_for_discovery(
         config=config,
         browser_api_module=browser_api_module,
@@ -1648,6 +1702,7 @@ def _init_discover_mode(
         force=force,
         requested_project=cli_select_project,
     )
+    click.echo(f"Discovered {len(projects)} project(s).")
     try:
         _persist_discovery_catalog(
             _DiscoveryPersistRequest(

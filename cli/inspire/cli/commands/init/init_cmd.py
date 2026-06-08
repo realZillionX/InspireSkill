@@ -89,7 +89,15 @@ def _bootstrap_first_account_if_needed(
     click.echo("No active account configured. Creating the first account.\n")
 
     while True:
-        raw_name = click.prompt("Account alias", default="default", show_default=True)
+        raw_name = click.prompt(
+            "Account alias",
+            default="",
+            show_default=False,
+            type=str,
+        ).strip()
+        if not raw_name:
+            click.echo(click.style("Account alias is required.", fg="red"), err=True)
+            continue
         try:
             account_name = validate_name(raw_name)
         except AccountError as err:

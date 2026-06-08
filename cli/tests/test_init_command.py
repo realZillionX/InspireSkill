@@ -133,20 +133,55 @@ def test_init_bootstraps_first_account_before_discover(
     result = runner.invoke(
         cli_main,
         ["init", "--force", "--username", "zillionx", "--base-url", "https://qz.sii.edu.cn"],
-        input="\nsecret\nsecret\n\n",
+        input="zillionx\nsecret\nsecret\n\n",
     )
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert "Creating the first account" in result.output
-    assert "Active account: default" in result.output
+    assert "Active account: zillionx" in result.output
     assert calls["func"] is init_cmd_module._init_discover_mode
     assert calls["kwargs"]["scope"] == "global"
-    assert (tmp_path / ".inspire" / "current").read_text(encoding="utf-8") == "default\n"
+    assert (tmp_path / ".inspire" / "current").read_text(encoding="utf-8") == "zillionx\n"
     account_config = (
-        tmp_path / ".inspire" / "accounts" / "default" / "config.toml"
+        tmp_path / ".inspire" / "accounts" / "zillionx" / "config.toml"
     ).read_text(encoding="utf-8")
     assert 'username = "zillionx"' in account_config
     assert 'base_url = "https://qz.sii.edu.cn"' in account_config
+
+
+def test_init_bootstrap_reprompts_empty_account_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    monkeypatch.chdir(repo_dir)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(init_cmd_module, "normalize_environment", lambda **kwargs: None)
+    monkeypatch.setattr(init_cmd_module, "snapshot_paths", lambda *args, **kwargs: {})
+    monkeypatch.setattr(init_cmd_module, "emit_init_json", lambda **kwargs: None)
+
+    def fake_run_init_action(func, effective_json, force, **kwargs):  # noqa: ANN001
+        calls["func"] = func
+
+    monkeypatch.setattr(init_cmd_module, "run_init_action", fake_run_init_action)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        ["init", "--force", "--username", "zillionx", "--base-url", "https://qz.sii.edu.cn"],
+        input="\nlocal-account\nsecret\nsecret\n\n",
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "Account alias is required." in result.output
+    assert "Active account: local-account" in result.output
+    assert calls["func"] is init_cmd_module._init_discover_mode
+    assert (tmp_path / ".inspire" / "current").read_text(encoding="utf-8") == (
+        "local-account\n"
+    )
 
 
 def test_discover_relogin_confirms_configured_username(
@@ -184,6 +219,43 @@ def test_discover_relogin_confirms_configured_username(
     assert password == "secret"
     assert base_url == "https://qz.sii.edu.cn"
     assert prompts[0] == ("Platform login username (login ID, not display name)", "仝")
+
+
+def test_discover_relogin_ignores_template_username(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = type(
+        "Cfg",
+        (),
+        {
+            "username": "your_username",
+            "password": "",
+            "base_url": "https://qz.sii.edu.cn",
+        },
+    )()
+    prompts: list[tuple[str, object]] = []
+
+    def fake_prompt(text: str, **kwargs):  # noqa: ANN001
+        prompts.append((text, kwargs.get("default")))
+        if text.startswith("Platform login username"):
+            return "253108120116"
+        if text == "Password":
+            return "secret"
+        raise AssertionError(f"unexpected prompt: {text}")
+
+    monkeypatch.setattr(discover_module.click, "prompt", fake_prompt)
+
+    username, password, base_url = discover_module._resolve_credentials_interactive(
+        cfg,
+        cli_username=None,
+        cli_base_url=None,
+        confirm_config_username=True,
+    )
+
+    assert username == "253108120116"
+    assert password == "secret"
+    assert base_url == "https://qz.sii.edu.cn"
+    assert prompts[0] == ("Platform login username (login ID, not display name)", None)
 
 
 def test_discover_runtime_retries_configured_login_after_browser_repair(

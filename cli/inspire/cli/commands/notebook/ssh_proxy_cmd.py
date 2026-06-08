@@ -48,6 +48,12 @@ from .notebook_ssh_flow import run_notebook_ssh
     show_default=True,
     help="Timeout in seconds for notebook connection setup.",
 )
+@click.option(
+    "--quiet/--verbose",
+    default=True,
+    show_default=True,
+    help="Suppress rtunnel client lifecycle logs after the proxy starts.",
+)
 @pass_context
 def ssh_proxy_cmd(
     ctx: Context,
@@ -57,11 +63,13 @@ def ssh_proxy_cmd(
     connection_port: int,
     pubkey: str | None,
     setup_timeout: int,
+    quiet: bool,
 ) -> None:
     """Connect OpenSSH to a notebook SSH server through Inspire's tunnel.
 
     This command is intended for OpenSSH ProxyCommand. It streams raw SSH
-    traffic on stdin/stdout; diagnostics are written to stderr.
+    traffic on stdin/stdout. Bootstrap diagnostics are written to stderr;
+    rtunnel's own lifecycle logs are suppressed by default.
     """
     config = load_tunnel_config()
     bridge = config.get_bridge(notebook)
@@ -121,6 +129,7 @@ def ssh_proxy_cmd(
             config,
             target_host="localhost",
             target_port=ssh_port,
+            quiet=quiet,
         )
     except Exception as exc:  # noqa: BLE001
         click.echo(f"Notebook ssh proxy failed: {exc}", err=True)

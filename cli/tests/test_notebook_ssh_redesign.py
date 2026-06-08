@@ -112,7 +112,7 @@ def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  
     assert "IdentityFile /home/me/.ssh/id_ed25519" in result.output
     assert (
         "ProxyCommand inspire notebook ssh-proxy %h --workspace "
-        "'CPU资源空间' --port %p"
+        "'CPU资源空间' --port %p --quiet"
     ) in result.output
     assert "proxy.invalid" not in result.output
 
@@ -167,6 +167,52 @@ def test_ssh_proxy_requires_workspace_without_cached_bridge(monkeypatch) -> None
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     assert "No cached notebook connection and no workspace was provided" in result.output
+
+
+def test_ssh_proxy_suppresses_rtunnel_logs_by_default(monkeypatch) -> None:  # noqa: ANN001
+    tunnel_config = TunnelConfig()
+    bridge = BridgeProfile(
+        name="demo-box",
+        proxy_url="https://proxy.invalid/proxy/31337/",
+        workspace_name="CPU资源空间",
+    )
+    tunnel_config.add_bridge(bridge)
+    calls = []
+
+    def fake_exec_rtunnel_proxy(*args, **kwargs):  # noqa: ANN001
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(ssh_proxy_module, "load_tunnel_config", lambda: tunnel_config)
+    monkeypatch.setattr(ssh_proxy_module, "is_tunnel_available", lambda **_kwargs: True)
+    monkeypatch.setattr(ssh_proxy_module, "exec_rtunnel_proxy", fake_exec_rtunnel_proxy)
+
+    result = CliRunner().invoke(cli_main, ["notebook", "ssh-proxy", "demo-box"])
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert calls[0][1]["quiet"] is True
+
+
+def test_ssh_proxy_verbose_keeps_rtunnel_logs(monkeypatch) -> None:  # noqa: ANN001
+    tunnel_config = TunnelConfig()
+    bridge = BridgeProfile(
+        name="demo-box",
+        proxy_url="https://proxy.invalid/proxy/31337/",
+        workspace_name="CPU资源空间",
+    )
+    tunnel_config.add_bridge(bridge)
+    calls = []
+
+    def fake_exec_rtunnel_proxy(*args, **kwargs):  # noqa: ANN001
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(ssh_proxy_module, "load_tunnel_config", lambda: tunnel_config)
+    monkeypatch.setattr(ssh_proxy_module, "is_tunnel_available", lambda **_kwargs: True)
+    monkeypatch.setattr(ssh_proxy_module, "exec_rtunnel_proxy", fake_exec_rtunnel_proxy)
+
+    result = CliRunner().invoke(cli_main, ["notebook", "ssh-proxy", "demo-box", "--verbose"])
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert calls[0][1]["quiet"] is False
 
 
 def test_notebook_ssh_stopped_error_is_actionable(monkeypatch) -> None:  # noqa: ANN001

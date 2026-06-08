@@ -1323,6 +1323,7 @@ class TestInitCommand:
             created_at=0.0,
             workspace_id=workspace_id,
             login_username="cached-user",
+            base_url="https://qz.sii.edu.cn",
             all_workspace_ids=[workspace_id],
             all_workspace_names={workspace_id: "CPU临时测试空间"},
         )
@@ -1406,6 +1407,10 @@ class TestInitCommand:
 
         assert result.exit_code == 0, result.output
         assert "Discovering account catalog" in result.output
+        assert "Discovering projects across accessible workspaces" in result.output
+        assert "Preparing account catalog update" in result.output
+        assert "Discovering compute groups across 1 workspace(s)" in result.output
+        assert "Writing configuration files" in result.output
         assert "Workspace:" not in result.output
         assert "CPU临时测试空间" not in result.output
         account_config = self._account_config_path()
@@ -1414,6 +1419,25 @@ class TestInitCommand:
         assert "[projects]" in account_content
         assert "[project_catalog" in account_content
         assert not self._project_config_path(tmp_path).exists()
+
+    def test_discover_replaces_template_username_with_session_login(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
+    ) -> None:
+        self._setup_discover_mocks(monkeypatch, tmp_path)
+        self._account_config_path().write_text(
+            '[auth]\nusername = "your_username"\n\n'
+            '[api]\nbase_url = "https://api.example.com"\n',
+            encoding="utf-8",
+        )
+
+        result = CliRunner().invoke(init, ["--force"])
+
+        assert result.exit_code == 0, result.output
+        assert "Account: cached-user" in result.output
+        account_content = self._account_config_path().read_text(encoding="utf-8")
+        assert 'username = "cached-user"' in account_content
+        assert 'base_url = "https://qz.sii.edu.cn"' in account_content
+        assert "your_username" not in account_content
 
     def test_global_scope_discover_writes_account_path_aliases(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None

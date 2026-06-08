@@ -654,3 +654,51 @@ class TestProxyCommand:
         cmd = _get_proxy_command(bridge, rtunnel_bin, quiet=False)
 
         assert "HTTP_PROXY=http://127.0.0.1:7897" in cmd
+
+    def test_exec_rtunnel_proxy_quiet_redirects_stderr_during_exec(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import inspire.bridge.tunnel.ssh as ssh_module
+
+        class ExecCalled(Exception):
+            pass
+
+        bridge = BridgeProfile(
+            name="test",
+            proxy_url="https://proxy.example.com/proxy/31337/",
+        )
+        config = TunnelConfig()
+        calls: list[tuple] = []
+
+        def fake_execve(path, args, env):  # noqa: ANN001
+            calls.append(("execve", path, args, env))
+            raise ExecCalled()
+
+        monkeypatch.setattr(ssh_module, "_ensure_rtunnel_binary", lambda _config: None)
+        monkeypatch.setattr(ssh_module, "_proxy_env", lambda: {})
+        monkeypatch.setattr(ssh_module.os, "dup", lambda fd: calls.append(("dup", fd)) or 99)
+        monkeypatch.setattr(
+            ssh_module.os,
+            "open",
+            lambda path, flags: calls.append(("open", path, flags)) or 88,
+        )
+        monkeypatch.setattr(
+            ssh_module.os,
+            "dup2",
+            lambda src, dst: calls.append(("dup2", src, dst)),
+        )
+        monkeypatch.setattr(ssh_module.os, "close", lambda fd: calls.append(("close", fd)))
+        monkeypatch.setattr(ssh_module.os, "execve", fake_execve)
+
+        with pytest.raises(ExecCalled):
+            ssh_module.exec_rtunnel_proxy(bridge, config, quiet=True)
+
+        assert calls[0] == ("dup", 2)
+        assert calls[1] == ("open", ssh_module.os.devnull, ssh_module.os.O_WRONLY)
+        assert calls[2] == ("dup2", 88, 2)
+        assert calls[3] == ("close", 88)
+        assert calls[4][0] == "execve"
+        assert calls[4][2][1] == "wss://proxy.example.com/proxy/31337/"
+        assert calls[4][2][2] == "stdio://localhost:22222"
+        assert calls[-2:] == [("dup2", 99, 2), ("close", 99)]
