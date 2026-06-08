@@ -1069,6 +1069,20 @@ def test_build_rtunnel_setup_commands_installs_openssh_via_internal_ubuntu_apt()
     assert "apt-cache $_apt_opts policy openssh-server" in script
     assert "apt-cache $_apt_opts policy openssh-client" in script
     assert "apt-cache $_apt_opts policy openssh-sftp-server" in script
+    assert "_openssh_installed_usable(){" in script
+    assert "[ -x /usr/sbin/sshd ] || return 1" in script
+    assert "[ -x /usr/bin/ssh ] || return 1" in script
+    assert "[ -e /usr/lib/openssh/sftp-server ] || return 1" in script
+    assert "ssh-keygen -A" in script
+    assert "useradd -r -M -d /run/sshd -s /usr/sbin/nologin sshd" in script
+    assert "Subsystem sftp /usr/lib/openssh/sftp-server" in script
+    assert "/usr/sbin/sshd -t" in script
+    assert "if _openssh_installed_usable; then" in script
+    assert "using already-installed OpenSSH" in script
+    assert (
+        'SII internal Ubuntu apt mirror did not provide OpenSSH packages for ${_OS_CODENAME}.'
+        in script
+    )
     assert "apt-get $_apt_opts remove" in script
     assert "dpkg --remove --force-depends openssh-server openssh-client openssh-sftp-server" in script
     assert "--allow-downgrades" in script

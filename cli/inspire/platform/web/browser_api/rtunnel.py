@@ -124,6 +124,19 @@ def build_rtunnel_setup_commands(
         'openssh-sftp-server=${_OPENSSH_SFTP_VERSION:-none}"',
         '_fail_openssh(){ touch "$OPENSSH_INSTALL_FAILED_FILE"; '
         'echo "[inspire bootstrap] ERROR: $1" | tee -a "$OPENSSH_INSTALL_LOG"; }',
+        '_openssh_installed_usable(){ '
+        '[ -x /usr/sbin/sshd ] || return 1; '
+        '[ -x /usr/bin/ssh ] || return 1; '
+        '[ -e /usr/lib/openssh/sftp-server ] || return 1; '
+        'mkdir -p /run/sshd && chmod 0755 /run/sshd; '
+        'ssh-keygen -A >>"$OPENSSH_INSTALL_LOG" 2>&1 || true; '
+        'getent passwd sshd >/dev/null 2>&1 || '
+        'useradd -r -M -d /run/sshd -s /usr/sbin/nologin sshd >/dev/null 2>&1 || true; '
+        'if [ ! -f /etc/ssh/sshd_config ]; then '
+        'mkdir -p /etc/ssh; '
+        "printf 'UsePAM no\\nStrictModes no\\nSubsystem sftp /usr/lib/openssh/sftp-server\\n' "
+        '> /etc/ssh/sshd_config; fi; '
+        '/usr/sbin/sshd -t >>"$OPENSSH_INSTALL_LOG" 2>&1; }',
     ]
 
     # sshd:
@@ -165,7 +178,10 @@ def build_rtunnel_setup_commands(
         'if [ -z "$_OPENSSH_SERVER_CANDIDATE" ] || [ "$_OPENSSH_SERVER_CANDIDATE" = "(none)" ] '
         '|| [ -z "$_OPENSSH_CLIENT_CANDIDATE" ] || [ "$_OPENSSH_CLIENT_CANDIDATE" = "(none)" ] '
         '|| [ -z "$_OPENSSH_SFTP_CANDIDATE" ] || [ "$_OPENSSH_SFTP_CANDIDATE" = "(none)" ]; then '
-        '_fail_openssh "SII internal Ubuntu apt mirror did not provide OpenSSH packages for ${_OS_CODENAME}."; '
+        'if _openssh_installed_usable; then '
+        'echo "[inspire bootstrap] internal apt mirror did not provide OpenSSH candidate; '
+        'using already-installed OpenSSH" >>"$OPENSSH_INSTALL_LOG"; '
+        'else _fail_openssh "SII internal Ubuntu apt mirror did not provide OpenSSH packages for ${_OS_CODENAME}."; fi; '
         'else '
         '_need_openssh=0; '
         'if [ ! -x /usr/sbin/sshd ]; then _need_openssh=1; fi; '
