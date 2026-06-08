@@ -5,7 +5,7 @@ Identity and account-wide settings live at::
     ~/.inspire/accounts/<current>/config.toml
 
 Sections: ``[auth]``, ``[api]``, ``[proxy]``, ``[ssh]``, ``[projects]``,
-``[defaults]``, ``[[compute_groups]]``, ``[remote_env]``.
+``[defaults]``, ``[[compute_groups]]``, ``[remote_env]``, ``[path_aliases]``.
 
 **No ``[accounts."<user>"]`` nesting, no ``[context].account`` pointer.**
 One account = one file. Without an active account
@@ -28,18 +28,17 @@ from .load_common import (
     _normalize_project_catalog,
     _parse_alias_map,
 )
+from .path_aliases import normalize_path_alias_map
 
 # Keys whose *value* must differ per repository — a single account is used
-# across many repos, each with its own path aliases / Inspire project /
-# GitHub repo binding. Putting these at account level silently shadows the
-# correct project-level value, so we reject them outright. Other project-
-# scope fields (priority, workflow names, etc.) can live at the account layer
-# and are not policed here.
+# across many repos, each with its own Inspire project / GitHub repo binding.
+# Putting these at account level silently shadows the correct project-level
+# value, so we reject them outright. Remote path aliases are allowed as account
+# defaults and are overridden by project config when present.
 ACCOUNT_LAYER_DISALLOWED_KEYS = frozenset(
     {
         "paths.log_pattern",
         "github.repo",
-        "path_aliases",
         "profiles",
         "notebook.quota",
         "notebook.post_start",
@@ -91,12 +90,13 @@ def _apply_account_layer(
     raw.pop("context", None)
 
     # Reject per-repository keys anywhere in the file. A single account
-    # spans many repos; these values must live in each repo's own
-    # the account-scoped project config or come from env vars.
+    # spans many repos; these values must live in the repo's account-scoped
+    # project config or come from env vars.
     _reject_per_repo_keys(raw, account_path)
 
     compute_groups = raw.pop("compute_groups", [])
     remote_env = {str(k): str(v) for k, v in raw.pop("remote_env", {}).items()}
+    path_aliases = normalize_path_alias_map(raw.pop("path_aliases", {}))
     project_catalog = _normalize_project_catalog(raw.pop("project_catalog", {}))
 
     defaults: dict[str, Any] = {}
@@ -120,6 +120,9 @@ def _apply_account_layer(
     if remote_env:
         config_dict["remote_env"] = remote_env
         sources["remote_env"] = SOURCE_GLOBAL
+    if path_aliases:
+        config_dict["path_aliases"] = path_aliases
+        sources["path_aliases"] = SOURCE_GLOBAL
     if projects:
         config_dict["projects"] = projects
         sources["projects"] = SOURCE_GLOBAL
@@ -141,20 +144,19 @@ def _reject_per_repo_keys(raw: dict[str, Any], account_path: Path) -> None:
     offending = sorted(
         k
         for k in flat
-        if k in ACCOUNT_LAYER_DISALLOWED_KEYS
-        or k.startswith("path_aliases.")
-        or k.startswith("profiles.")
+        if k in ACCOUNT_LAYER_DISALLOWED_KEYS or k.startswith("profiles.")
     )
     if not offending:
         return
     raise ConfigError(
         f"Account config at {account_path} contains per-repository keys: "
-        f"{', '.join(offending)}. These must live in the repo's own "
-        "this repo's account-scoped project config (run 'inspire init' from "
-        "inside the repo), not at the account level — a single account usually has "
-        "many repos with different path aliases / Inspire projects / "
-        "GitHub bindings, and placing per-repo values here silently shadows "
-        "the correct ones."
+        f"{', '.join(offending)}. These must live in this repo's "
+        "account-scoped project config (run 'inspire init --scope project' "
+        "from inside the repo), not at the account level — a single account usually has "
+        "many repos with different Inspire projects / GitHub bindings / "
+        "workload profiles, and placing per-repo values here silently shadows "
+        "the correct ones. Remote path aliases may live here as account defaults "
+        "and be overridden by a repo config."
     )
 
 

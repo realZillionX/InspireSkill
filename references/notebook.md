@@ -136,7 +136,7 @@ inspire notebook proxy-url <name> --workspace CPU资源空间 --port 30000 --pat
 | 文件流转类型 | 做法 |
 | --- | --- |
 | 独立 repo 日常同步 | 本地 `git push`，远端 `git pull` |
-| 多仓库工作区 | 通过 `inspire init --scope project` 配好 `me`，多个 repo 并列放在 `me:<repo>` |
+| 多仓库工作区 | 通过 `inspire init` 配好账号默认 `me`；需要当前 repo 覆盖时再跑 `inspire init --scope project`，多个 repo 并列放在 `me:<repo>` |
 | 非 Git 文件 | `notebook scp`，远端路径优先写 alias，例如 `me:<repo>/file` |
 | `分布式训练空间` 或目标计算组不可上网但共享路径可见 | 在 `CPU资源空间` 的可上网 CPU notebook 做下载 / git / pip，离线训练实例读取共享盘结果 |
 

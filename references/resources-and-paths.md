@@ -156,7 +156,7 @@ Apt 的黑盒用法是改 `/etc/apt/sources.list`、`sudo apt-get update`、再 
 
 ## 6. 远端路径作用域
 
-先决定作用域，再选存储池。仓库级、账号隔离的 `[path_aliases]` 表达项目远端路径；不要维护单独的“远端工作目录”字段。
+先决定作用域，再选存储池。账号级 `[path_aliases]` 表达默认远端路径，仓库级、账号隔离的 `[path_aliases]` 表达当前 repo 的覆盖；不要维护单独的“远端工作目录”字段。
 
 | 作用域 | 路径样例 | 定位 |
 | --- | --- | --- |
@@ -186,7 +186,7 @@ Apt 的黑盒用法是改 `/etc/apt/sources.list`、`sudo apt-get update`、再 
 
 ## 9. Path Alias 配置入口
 
-项目远端路径由 `inspire init --scope project` 写入当前仓库的 `.inspire/accounts/<account>/config.toml`，落在 `[path_aliases]`。查看生效配置用：
+默认远端路径由 `inspire init` 写入账号配置 `~/.inspire/accounts/<account>/config.toml`，落在 `[path_aliases]`。需要当前仓库覆盖默认值时，运行 `inspire init --scope project` 写入 `.inspire/accounts/<account>/config.toml`；项目级 alias 会覆盖账号级默认值。查看生效配置用：
 
 ```bash
 inspire config show --compact
@@ -213,7 +213,7 @@ inspire notebook exec <name> --cwd me:<repo> "git pull"
 inspire notebook scp <name> ./config.yaml me:<repo>/config.yaml
 ```
 
-需要给常用子目录命名时，通过项目级 path alias 命令记录：
+需要给常用子目录命名时，通过项目级 path alias 命令记录，作为当前 repo 的覆盖或补充：
 
 ```bash
 inspire notebook path set repo /inspire/ssd/project/<topic>/<path-user>/<repo>

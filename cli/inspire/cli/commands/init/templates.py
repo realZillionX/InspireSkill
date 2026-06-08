@@ -43,9 +43,9 @@ ACCOUNT_CONFIG_TEMPLATE = """# Inspire CLI Account Configuration
 # Location: {location_comment}
 #
 # Account-level values are shared by every repository that uses this account.
-# Per-repository values such as path_aliases, github.repo, and profiles belong
-# in ./.inspire/accounts/<account>/config.toml. Run `inspire init` inside each
-# repository to create or refresh that file.
+# `inspire init` discovery may also write account-level default path aliases
+# here. Per-repository overrides such as github.repo and workload profiles
+# belong in ./.inspire/accounts/<account>/config.toml.
 #
 # Values here are overridden by environment variables.
 # Sensitive values (passwords, tokens) should use env vars.
@@ -106,8 +106,8 @@ PROJECT_CONFIG_TEMPLATE = """# Inspire CLI Project Configuration
 log_pattern = "training_master_*.log"
 
 [path_aliases]
-# Remote path aliases for notebook exec/shell/scp. `inspire init --scope project`
-# fills these from /inspire/<tier>/project/<topic>/<path-user>/.
+# Remote path aliases for notebook exec/shell/scp. Plain `inspire init` writes
+# account-level defaults; `inspire init --scope project` writes repo overrides.
 # <path-user> is the shared-storage personal directory segment reported by
 # the platform, which can differ from the login username.
 # me = "/inspire/ssd/project/<topic>/<path-user>/"
@@ -196,8 +196,9 @@ def _init_template_mode(global_flag: bool, project_flag: bool, force: bool) -> N
     click.echo("\nNext steps:")
     if is_global:
         click.echo(f"  1. Edit {config_path} with your account-level settings")
-        click.echo("  2. Run 'inspire init' inside each repo for project-level settings")
-        click.echo("  3. Run 'inspire config show' to verify your configuration")
+        click.echo("  2. Run 'inspire init' to discover catalogs and default path aliases")
+        click.echo("  3. Run 'inspire init --scope project' in a repo for overrides")
+        click.echo("  4. Run 'inspire config show' to verify your configuration")
     else:
         click.echo(f"  1. Edit {config_path} with your project-level settings")
         click.echo("  2. Run 'inspire account add <name>' if you have not configured credentials")

@@ -114,7 +114,9 @@ def _apply_project_layer(
         config_dict["remote_env"] = merged_remote_env
         sources["remote_env"] = SOURCE_PROJECT
     if project_path_aliases:
-        config_dict["path_aliases"] = project_path_aliases
+        merged_path_aliases = dict(config_dict.get("path_aliases", {}))
+        merged_path_aliases.update(project_path_aliases)
+        config_dict["path_aliases"] = merged_path_aliases
         sources["path_aliases"] = SOURCE_PROJECT
     if project_profiles:
         config_dict["profiles"] = merge_workload_profiles(

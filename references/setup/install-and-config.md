@@ -72,21 +72,21 @@ CLI 不需要 shell 里的 `http_proxy`、`INSPIRE_FORCE_PROXY`、`INSPIRE_PLAYW
 
 ## 4. 全局发现与项目初始化
 
-账号配置完成后，先做一次全局发现，把可见 project、project catalog 和 compute group catalog 写入账号配置：
+账号配置完成后，先做一次全局发现，把可见 project、project catalog、compute group catalog 和默认远端 path alias 写入账号配置：
 
 ```bash
 inspire init
 inspire resources availability --workspace all --include-cpu
 ```
 
-每个需要远端路径 alias 的本地仓库，再各做一次项目初始化：
+每个需要仓库 project context 或覆盖默认 path alias 的本地仓库，再各做一次项目初始化：
 
 ```bash
 cd /path/to/your-repo
 inspire init --scope project
 ```
 
-`inspire init --scope project` 会把当前仓库的项目上下文写入 `./.inspire/accounts/<account>/config.toml`，并发现远端 path alias。远端工作目录不要写成账号级默认值；用 alias：
+`inspire init --scope project` 会把当前仓库的项目上下文写入 `./.inspire/accounts/<account>/config.toml`，并把发现到的远端 path alias 作为项目级覆盖写入同一个文件。不要维护单独的“远端工作目录”字段；用 alias：
 
 ```bash
 inspire notebook exec <name> --cwd me "pwd"

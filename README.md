@@ -107,6 +107,8 @@ inspire init --scope project
 inspire resources availability --workspace all --include-cpu
 ```
 
+`inspire init` 默认做账号级全局发现，写入平台 catalog 和默认 path alias；`--scope project` 用于当前仓库的 project context 和 path alias 覆盖。
+
 账号级 / 项目级配置分层、多账号和代理 setup 见 [references/setup/install-and-config.md](references/setup/install-and-config.md)。
 
 ---

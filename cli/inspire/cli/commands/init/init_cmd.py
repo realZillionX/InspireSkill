@@ -216,20 +216,20 @@ def init(
 
     Plain `inspire init` defaults to global scope: it logs in or uses the
     active account, discovers visible workspaces / projects / compute groups,
-    then writes account-level catalogs to
+    then writes account-level catalogs and remote path aliases to
     ~/.inspire/accounts/<account>/config.toml.
 
     `--scope project` also discovers platform catalogs, then writes this
-    repository's project context and path aliases to
+    repository's project context and path-alias overrides to
     ./.inspire/accounts/<account>/config.toml.
 
     `--template` writes a placeholder config. `--no-discover` forces
     environment-variable detection / smart init into one config file instead
     of running discovery.
 
-    Discovery writes account-scoped catalogs to the active account config and
-    only project-scoped context/path aliases to this repository's account-scoped
-    project config when `--scope project` is selected.
+    Discovery writes account-scoped catalogs and default path aliases to the
+    active account config. When `--scope project` is selected, it also writes
+    this repository's context and path-alias overrides to the repo config.
 
     \b
     Prompted passwords are stored in global config for the selected account.
@@ -240,13 +240,13 @@ def init(
     detected (or with --template), init creates a template config with
     placeholder values.
 
-    Project discovery also creates path aliases such as `me`, `public`,
-    `global-me`, `ssd.me`, `hdd.me`, and `qb-ilm2.me`; the top-level `me`
-    points at the selected path tier, with `ssd` suggested for the path hot tier.
+    Discovery creates path aliases such as `me`, `public`, `global-me`,
+    `ssd.me`, `hdd.me`, and `qb-ilm2.me`; the top-level `me` points at the
+    selected path tier, with `ssd` suggested for the path hot tier.
 
     \b
     Examples:
-        # Discover account/workspace/project catalogs globally
+        # Discover account/workspace/project catalogs and default path aliases
         inspire init
 
         \b
@@ -254,7 +254,7 @@ def init(
         inspire init --force
 
         \b
-        # Discover project context and path aliases for this repository
+        # Discover project context and path-alias overrides for this repository
         inspire init --scope project
 
         \b

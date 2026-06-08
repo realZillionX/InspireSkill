@@ -1569,6 +1569,16 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         if not catalog:
             global_data.pop("project_catalog", None)
 
+    selected_tier = _select_default_path_alias_tier(force=force)
+    _persist_default_path_aliases(
+        project_data=global_data,
+        account_key=account_key,
+        selected_project=selected_project,
+        project_catalog=project_catalog,
+        force=force,
+        selected_tier=selected_tier,
+    )
+
     global_path.parent.mkdir(parents=True, exist_ok=True)
     # Always UTF-8 — see project_path.write_text above for the Windows
     # GBK story.
@@ -1584,7 +1594,6 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         selected_alias = alias_for_id.get(selected_project.project_id)
         if not selected_alias:
             selected_alias = _slugify_alias(selected_project.name) or "default"
-        selected_tier = _select_default_path_alias_tier(force=force)
         _write_discovered_project_config(
             project_path=project_path,
             project_data=project_data,
