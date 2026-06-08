@@ -705,6 +705,23 @@ def _is_reachable_proxy_response(*, status_code: int, body: str) -> bool:
     return False
 
 
+def _response_body_prefix(response: Any, *, limit: int = 400) -> str:
+    try:
+        chunks: list[str] = []
+        seen = 0
+        for chunk in response.iter_content(chunk_size=min(limit, 400), decode_unicode=True):
+            if not chunk:
+                continue
+            text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
+            chunks.append(text)
+            seen += len(text)
+            if seen >= limit:
+                break
+        return "".join(chunks)[:limit]
+    except Exception:
+        return ""
+
+
 def _candidate_urls_from_tunnel_config(
     *,
     notebook_id: str,
@@ -765,25 +782,32 @@ def probe_existing_rtunnel_proxy_url(
     try:
         http = build_requests_session(session, base_url)
         for url in deduped_urls:
+            resp = None
             try:
-                resp = http.get(url, timeout=5)
-            except (ConnectionError, OSError, RuntimeError, TimeoutError, ValueError):
-                continue
-            body = resp.text[:400] if resp.text else ""
-            if not _is_reachable_proxy_response(status_code=resp.status_code, body=body):
+                resp = http.get(url, timeout=(5, 5), stream=True)
+            except Exception:
                 continue
             try:
-                save_rtunnel_proxy_state(
-                    notebook_id=notebook_id,
-                    proxy_url=url,
-                    port=port,
-                    ssh_port=22222,
-                    base_url=base_url,
-                    account=resolved_account,
-                )
-            except OSError:
-                pass
-            return url
+                body = _response_body_prefix(resp)
+                if not _is_reachable_proxy_response(status_code=resp.status_code, body=body):
+                    continue
+                try:
+                    save_rtunnel_proxy_state(
+                        notebook_id=notebook_id,
+                        proxy_url=url,
+                        port=port,
+                        ssh_port=22222,
+                        base_url=base_url,
+                        account=resolved_account,
+                    )
+                except OSError:
+                    pass
+                return url
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
         return None
     except (OSError, ValueError, RuntimeError, AttributeError):
         return None
@@ -2208,7 +2232,12 @@ def _setup_notebook_rtunnel_sync(
         setup_terminal_cleanup: Callable[[], None] | None = None
 
         try:
-            lab_frame = open_notebook_lab(page, notebook_id=notebook_id, timeout=60000)
+            lab_frame = open_notebook_lab(
+                page,
+                notebook_id=notebook_id,
+                timeout=max(60000, int(timeout) * 1000),
+                session=session,
+            )
             timer.mark("open_lab")
             jupyter_proxy_url = build_jupyter_proxy_url(lab_frame.url, port=port)
             timer.mark("build_proxy_url")

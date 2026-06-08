@@ -9,7 +9,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
 from inspire.platform.web.browser_api.core import (
     _browser_api_path,
@@ -34,12 +34,13 @@ def _is_lab_like_url(url: str, *, notebook_lab_pattern: str) -> bool:
     if not value:
         return False
 
-    normalized = value.rstrip("/")
-    if "notebook-inspire" in value and normalized.endswith("/lab"):
+    parsed = urlsplit(value)
+    path = parsed.path.rstrip("/")
+    if "notebook-inspire" in value and path.endswith("/lab"):
         return True
-    if notebook_lab_pattern.lstrip("/") in value:
+    if notebook_lab_pattern.lstrip("/") in path.lstrip("/"):
         return True
-    if "/jupyter/" in value and normalized.endswith("/lab"):
+    if "/jupyter/" in path and path.endswith("/lab"):
         return True
     return False
 
@@ -71,16 +72,65 @@ def _wait_for_lab_handle(
     return None
 
 
-def open_notebook_lab(page, *, notebook_id: str, timeout: int = 60000):  # noqa: ANN001
+def _resolve_direct_lab_url(
+    direct_lab_url: str,
+    *,
+    session: Optional[WebSession],
+    timeout_s: float,
+) -> str:
+    if session is None:
+        return direct_lab_url
+
+    http = None
+    try:
+        http = build_requests_session(session, direct_lab_url)
+        response = http.get(
+            direct_lab_url,
+            timeout=(5, max(5.0, timeout_s)),
+            allow_redirects=False,
+            stream=True,
+        )
+        try:
+            if 300 <= response.status_code < 400:
+                location = str(response.headers.get("location") or "").strip()
+                if location:
+                    return urljoin(direct_lab_url, location)
+            if 200 <= response.status_code < 400:
+                return str(response.url or direct_lab_url)
+        finally:
+            response.close()
+    except Exception:
+        return direct_lab_url
+    finally:
+        if http is not None:
+            try:
+                http.close()
+            except Exception:
+                pass
+    return direct_lab_url
+
+
+def open_notebook_lab(
+    page,  # noqa: ANN001
+    *,
+    notebook_id: str,
+    timeout: int = 60000,
+    session: Optional[WebSession] = None,
+):
     """Open the notebook's JupyterLab and return the lab frame/page handle."""
     base_url = _get_base_url()
     timeout_ms = max(int(timeout), 10000)
     timeout_s = max(timeout_ms // 1000, 10)
-    page.goto(
-        f"{base_url}/ide?notebook_id={notebook_id}",
-        timeout=timeout_ms,
-        wait_until="domcontentloaded",
-    )
+    started_at = time.time()
+    ide_timeout_ms = min(timeout_ms, 20000)
+    try:
+        page.goto(
+            f"{base_url}/ide?notebook_id={notebook_id}",
+            timeout=ide_timeout_ms,
+            wait_until="domcontentloaded",
+        )
+    except Exception:
+        pass
 
     notebook_lab_pattern = _browser_api_path("/notebook/lab/")
     frame_probe_s = min(10.0, max(4.0, timeout_s / 6.0))
@@ -93,14 +143,18 @@ def open_notebook_lab(page, *, notebook_id: str, timeout: int = 60000):  # noqa:
         return lab_handle
 
     notebook_lab_prefix = _browser_api_path("/notebook/lab").rstrip("/")
-    direct_lab_url = f"{base_url}{notebook_lab_prefix}/{notebook_id}/"
-    elapsed_ms = int(frame_probe_s * 1000)
+    direct_lab_url = f"{base_url}{notebook_lab_prefix}/{notebook_id}"
+    elapsed_ms = int((time.time() - started_at) * 1000)
     remaining_ms = max(10000, timeout_ms - elapsed_ms)
-    direct_timeout_ms = min(remaining_ms, 20000)
+    direct_lab_url = _resolve_direct_lab_url(
+        direct_lab_url,
+        session=session,
+        timeout_s=min(15.0, max(5.0, remaining_ms / 1000.0)),
+    )
     page.goto(
         direct_lab_url,
-        timeout=direct_timeout_ms,
-        wait_until="domcontentloaded",
+        timeout=remaining_ms,
+        wait_until="commit",
     )
     lab_handle = _wait_for_lab_handle(
         page,
@@ -670,7 +724,7 @@ def _run_command_in_notebook_sync(
         page = context.new_page()
 
         try:
-            lab_frame = open_notebook_lab(page, notebook_id=notebook_id)
+            lab_frame = open_notebook_lab(page, notebook_id=notebook_id, session=session)
             timeout_ms = max(int(timeout * 1000), 1000)
 
             try:

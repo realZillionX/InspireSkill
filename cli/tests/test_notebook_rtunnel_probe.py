@@ -15,15 +15,27 @@ class DummyResponse:
     def __init__(self, status_code: int, text: str = "") -> None:
         self.status_code = status_code
         self.text = text
+        self.closed = False
+
+    def iter_content(self, chunk_size: int, decode_unicode: bool = False):  # noqa: ANN201
+        del chunk_size
+        if not self.text:
+            return
+        yield self.text if decode_unicode else self.text.encode()
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class DummyHTTP:
     def __init__(self, responses: dict[str, DummyResponse]) -> None:
         self.responses = responses
         self.calls: list[str] = []
+        self.kwargs: list[dict] = []
 
-    def get(self, url: str, timeout: int = 5):  # noqa: ANN001
+    def get(self, url: str, **kwargs):  # noqa: ANN001, ANN003
         self.calls.append(url)
+        self.kwargs.append(kwargs)
         return self.responses.get(url, DummyResponse(404, "not found"))
 
     def close(self) -> None:
@@ -115,6 +127,8 @@ def test_probe_uses_cached_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resolved == cached_url
     assert known_url in http.calls
     assert cached_url in http.calls
+    assert all(call["stream"] is True for call in http.kwargs)
+    assert all(call["timeout"] == (5, 5) for call in http.kwargs)
 
 
 def test_probe_uses_tunnel_profile_and_rewrites_proxy_port(
@@ -194,3 +208,57 @@ def test_probe_rejects_html_response(monkeypatch: pytest.MonkeyPatch) -> None:
         account="user-1",
     )
     assert resolved is None
+
+
+def test_probe_reads_only_stream_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session()
+    base_url = "https://qz.example"
+    notebook_id = "nb-stream"
+    known_url = f"{base_url}/api/v1/notebook/lab/{notebook_id}/proxy/31337/"
+
+    class StreamingResponse:
+        status_code = 200
+        closed = False
+
+        @property
+        def text(self) -> str:
+            raise AssertionError("probe must not read the full response body")
+
+        def iter_content(self, chunk_size: int, decode_unicode: bool = False):  # noqa: ANN201
+            del chunk_size
+            yield "rtunnel ready" if decode_unicode else b"rtunnel ready"
+
+        def close(self) -> None:
+            self.closed = True
+
+    response = StreamingResponse()
+
+    monkeypatch.setattr(rtunnel_module, "_get_base_url", lambda: base_url)
+    monkeypatch.setattr(
+        rtunnel_module,
+        "get_cached_rtunnel_proxy_candidates",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        rtunnel_module,
+        "save_rtunnel_proxy_state",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        rtunnel_module,
+        "load_tunnel_config",
+        lambda account=None: TunnelConfig(account=account),
+    )
+
+    http = DummyHTTP({known_url: response})
+    monkeypatch.setattr(rtunnel_module, "build_requests_session", lambda _session, _base: http)
+
+    resolved = rtunnel_module.probe_existing_rtunnel_proxy_url(
+        notebook_id=notebook_id,
+        port=31337,
+        session=session,
+        account="user-1",
+    )
+
+    assert resolved == known_url
+    assert response.closed is True

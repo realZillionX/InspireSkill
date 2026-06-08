@@ -12,6 +12,7 @@ CHROMIUM_CONTAINER_ARGS = (
     "--no-sandbox",
     "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
+    "--disable-gpu",
 )
 CHROMIUM_EXECUTABLE_ENV = "INSPIRE_PLAYWRIGHT_CHROMIUM_EXECUTABLE"
 CHROMIUM_CHANNEL_ENV = "INSPIRE_PLAYWRIGHT_CHROMIUM_CHANNEL"

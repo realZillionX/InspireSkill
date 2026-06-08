@@ -40,6 +40,18 @@ def test_build_jupyter_proxy_url_notebook_lab_pattern() -> None:
     assert proxy_url == "https://qz.sii.edu.cn/api/v1/notebook/lab/notebook-123/proxy/31337/"
 
 
+def test_lab_like_url_accepts_jupyter_lab_with_query_token() -> None:
+    lab_url = (
+        "https://nat2-notebook-inspire.sii.edu.cn/ws-1/project-1/user-1/"
+        "jupyter/nb-123/token-123/lab?token=token-123"
+    )
+
+    assert notebooks_module._is_lab_like_url(  # noqa: SLF001
+        lab_url,
+        notebook_lab_pattern="/api/v1/notebook/lab/",
+    )
+
+
 class _FakeFrame:
     def __init__(self, url: str) -> None:
         self.url = url
@@ -49,6 +61,7 @@ class _FakePage:
     def __init__(self, fake_time: list[float]) -> None:
         self._fake_time = fake_time
         self.goto_calls: list[str] = []
+        self.goto_timeouts: list[int] = []
         self.wait_calls = 0
         self._frames: list[_FakeFrame] = []
         self.url = ""
@@ -59,12 +72,16 @@ class _FakePage:
 
     def goto(self, url: str, timeout: int, wait_until: str) -> None:
         assert timeout > 0
-        assert wait_until == "domcontentloaded"
+        if "/ide?notebook_id=" in url:
+            assert wait_until == "domcontentloaded"
+        else:
+            assert wait_until == "commit"
         self.goto_calls.append(url)
+        self.goto_timeouts.append(timeout)
         self.url = url
         if "/ide?notebook_id=" in url:
             self._frames = []
-        elif "/api/v1/notebook/lab/" in url:
+        elif "/api/v1/notebook/lab/" in url or "/jupyter/" in url:
             self._frames = [_FakeFrame(url)]
 
     def wait_for_timeout(self, timeout_ms: int) -> None:
@@ -84,8 +101,93 @@ def test_open_notebook_lab_falls_back_early_to_direct_url(monkeypatch) -> None: 
     assert lab is not None
     assert len(page.goto_calls) == 2
     assert page.goto_calls[0] == "https://qz.sii.edu.cn/ide?notebook_id=nb-123"
-    assert page.goto_calls[1] == "https://qz.sii.edu.cn/api/v1/notebook/lab/nb-123/"
+    assert page.goto_calls[1] == "https://qz.sii.edu.cn/api/v1/notebook/lab/nb-123"
+    assert page.goto_timeouts[0] == 20000
+    assert page.goto_timeouts[1] > 20000
     assert fake_time[0] < 20.0
+
+
+def test_open_notebook_lab_falls_back_when_ide_entry_times_out(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake_time = [0.0]
+
+    class _TimeoutPage(_FakePage):
+        def goto(self, url: str, timeout: int, wait_until: str) -> None:
+            if "/ide?notebook_id=" in url:
+                self.goto_calls.append(url)
+                self.goto_timeouts.append(timeout)
+                self._fake_time[0] += timeout / 1000.0
+                raise TimeoutError("ide entry timed out")
+            super().goto(url, timeout, wait_until)
+
+    page = _TimeoutPage(fake_time)
+    monkeypatch.setattr(notebooks_module, "_get_base_url", lambda: "https://qz.sii.edu.cn")
+    monkeypatch.setattr(notebooks_module, "_browser_api_path", lambda path: f"/api/v1{path}")
+    monkeypatch.setattr(notebooks_module.time, "time", lambda: fake_time[0])
+
+    lab = notebooks_module.open_notebook_lab(page, notebook_id="nb-123", timeout=60000)
+
+    assert lab is not None
+    assert page.goto_calls == [
+        "https://qz.sii.edu.cn/ide?notebook_id=nb-123",
+        "https://qz.sii.edu.cn/api/v1/notebook/lab/nb-123",
+    ]
+    assert page.goto_timeouts[0] == 20000
+    assert page.goto_timeouts[1] >= 30000
+
+
+def test_open_notebook_lab_uses_resolved_direct_redirect(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    fake_time = [0.0]
+    page = _FakePage(fake_time)
+    monkeypatch.setattr(notebooks_module, "_get_base_url", lambda: "https://qz.sii.edu.cn")
+    monkeypatch.setattr(notebooks_module, "_browser_api_path", lambda path: f"/api/v1{path}")
+    monkeypatch.setattr(notebooks_module.time, "time", lambda: fake_time[0])
+
+    final_lab_url = (
+        "https://nat2-notebook-inspire.sii.edu.cn/ws-1/project-1/user-1/"
+        "jupyter/nb-123/token-123/lab?token=token-123"
+    )
+
+    class _Response:
+        status_code = 301
+        headers = {"location": final_lab_url}
+        url = "https://qz.sii.edu.cn/api/v1/notebook/lab/nb-123"
+
+        def close(self) -> None:
+            return None
+
+    class _Http:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object, bool, bool]] = []
+            self.closed = False
+
+        def get(self, url, timeout, allow_redirects, stream):  # noqa: ANN001
+            self.calls.append((url, timeout, allow_redirects, stream))
+            return _Response()
+
+        def close(self) -> None:
+            self.closed = True
+
+    http = _Http()
+    monkeypatch.setattr(notebooks_module, "build_requests_session", lambda *_args: http)
+
+    lab = notebooks_module.open_notebook_lab(
+        page,
+        notebook_id="nb-123",
+        timeout=60000,
+        session=object(),
+    )
+
+    assert lab is not None
+    assert page.goto_calls[1] == final_lab_url
+    assert http.calls == [
+        (
+            "https://qz.sii.edu.cn/api/v1/notebook/lab/nb-123",
+            (5, 15.0),
+            False,
+            True,
+        )
+    ]
+    assert http.closed is True
 
 
 def test_send_command_via_terminal_ws_cleans_up_terminal(monkeypatch) -> None:  # type: ignore[no-untyped-def]

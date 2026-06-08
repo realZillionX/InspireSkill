@@ -648,6 +648,19 @@ class TestProxyCommand:
             "from_files_and_env",
             classmethod(lambda cls, **kwargs: (_ for _ in ()).throw(RuntimeError("no config"))),
         )
+        for key in (
+            "INSPIRE_RTUNNEL_PROXY",
+            "inspire_rtunnel_proxy",
+            "INSPIRE_PLAYWRIGHT_PROXY",
+            "inspire_playwright_proxy",
+            "PLAYWRIGHT_PROXY",
+            "INSPIRE_REQUESTS_HTTP_PROXY",
+            "INSPIRE_REQUESTS_HTTPS_PROXY",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "https_proxy",
+        ):
+            monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("INSPIRE_BASE_URL", "https://qz.sii.edu.cn")
         monkeypatch.setenv("http_proxy", "http://127.0.0.1:7897")
 
