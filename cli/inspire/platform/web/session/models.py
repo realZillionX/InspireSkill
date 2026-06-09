@@ -73,6 +73,7 @@ class WebSession:
     user_detail: Optional[dict[str, Any]] = None
     all_workspace_ids: Optional[list[str]] = None
     all_workspace_names: Optional[dict[str, str]] = None
+    account: Optional[str] = None
 
     # Back-compat: older cache stored only name->value cookies
     cookies: Optional[dict[str, str]] = None
@@ -91,6 +92,7 @@ class WebSession:
             "user_detail": self.user_detail,
             "all_workspace_ids": self.all_workspace_ids,
             "all_workspace_names": self.all_workspace_names,
+            "account": self.account,
             "created_at": self.created_at,
         }
 
@@ -110,6 +112,7 @@ class WebSession:
             user_detail=data.get("user_detail"),
             all_workspace_ids=data.get("all_workspace_ids"),
             all_workspace_names=data.get("all_workspace_names"),
+            account=data.get("account"),
             created_at=data["created_at"],
         )
 
@@ -118,6 +121,7 @@ class WebSession:
         cache_file = get_session_cache_file(account)
         if cache_file is None:
             return
+        self.account = _resolve_account_for_storage(account)
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         # Restrict permissions: session contains sensitive cookies/tokens.
         tmp_path = cache_file.with_suffix(".tmp")
@@ -150,6 +154,7 @@ class WebSession:
             session = cls.from_dict(data)
         except (json.JSONDecodeError, KeyError):
             return None
+        session.account = _resolve_account_for_storage(account)
         if allow_expired or session.is_valid():
             return session
         return None

@@ -18,8 +18,11 @@ from inspire.config.models import (
 from inspire.config.schema import get_option_by_toml
 
 
-def _active_project_config_account() -> str | None:
+def _active_project_config_account(account: str | None = None) -> str | None:
     """Return the account name that scopes this repo's project config."""
+    explicit = str(account or "").strip()
+    if explicit:
+        return explicit
     try:
         from inspire.accounts import current_account
     except ImportError:  # pragma: no cover - accounts module ships with the CLI
@@ -40,8 +43,8 @@ def _home_search_boundary() -> Path | None:
         return None
 
 
-def _find_project_config() -> Path | None:
-    account = _active_project_config_account()
+def _find_project_config(account: str | None = None) -> Path | None:
+    account = _active_project_config_account(account)
     current = Path.cwd()
     home = _home_search_boundary()
     while current != current.parent:

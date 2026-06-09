@@ -53,6 +53,8 @@ description: "Inspire platform operating model for Agents: decide workspace, res
 
 Name-only 边界始终有效：普通输入输出使用名称、alias、可读状态和短表格，不让用户理解或传递平台 handle。需要平台 handle 只走专门 `id` 命令或内部 resolver。
 
+Notebook 连接类命令可跨账号解析已有连接；`--account <name>` 指本地 account alias，SSH tunnel rebuild 应使用目标 notebook 所属账号的 session 和配置。
+
 ## 4. 按需加载索引
 
 先按问题类型选一份 reference；跨边界时再读第二份。不要把 reference 当命令大全；命令语法回到 CLI help。

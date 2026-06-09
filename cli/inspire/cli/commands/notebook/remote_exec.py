@@ -56,6 +56,8 @@ from inspire.cli.utils.tunnel_reconnect import (
 )
 from inspire.platform.web import browser_api as browser_api_module
 
+from .target_resolver import resolve_cached_notebook_target
+
 logger = logging.getLogger(__name__)
 _RUNNING_NOTEBOOK_STATUS = "RUNNING"
 
@@ -116,11 +118,16 @@ def _emit_command_failed(ctx: Context, *, returncode: int) -> int:
     return _emit_error(ctx, "CommandFailed", f"Command failed with exit code {returncode}")
 
 
+def _load_tunnel_config_for_account(account: Optional[str]) -> TunnelConfig:
+    return load_tunnel_config(account=account) if account else load_tunnel_config()
+
+
 def try_exec_via_ssh_tunnel(
     ctx: Context,
     *,
     command: str,
     bridge_name: Optional[str],
+    tunnel_account: Optional[str],
     stdin_mode: bool,
     config: Config,
     remote_cwd: Optional[str],
@@ -194,7 +201,17 @@ def try_exec_via_ssh_tunnel(
         if notebook_id:
             try:
                 if reconnect_state.web_session is None:
-                    reconnect_state.web_session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+                    if tunnel_account:
+                        reconnect_state.web_session = require_web_session(
+                            ctx,
+                            hint=WEB_AUTH_HINT,
+                            account=tunnel_account,
+                        )
+                    else:
+                        reconnect_state.web_session = require_web_session(
+                            ctx,
+                            hint=WEB_AUTH_HINT,
+                        )
                 notebook_detail = browser_api_module.get_notebook_detail(
                     notebook_id=notebook_id,
                     session=reconnect_state.web_session,
@@ -233,7 +250,13 @@ def try_exec_via_ssh_tunnel(
             bridge_name=bridge.name,
             bridge=bridge,
             tunnel_config=tunnel_config,
-            session_loader=lambda: require_web_session(ctx, hint=WEB_AUTH_HINT),
+            session_loader=lambda: require_web_session(
+                ctx,
+                hint=WEB_AUTH_HINT,
+                account=tunnel_account,
+            )
+            if tunnel_account
+            else require_web_session(ctx, hint=WEB_AUTH_HINT),
             rebuild_fn=rebuild_notebook_bridge_profile,
             key_loader=_load_public_key,
         )
@@ -302,7 +325,7 @@ def try_exec_via_ssh_tunnel(
 
     while True:
         try:
-            tunnel_config = load_tunnel_config()
+            tunnel_config = _load_tunnel_config_for_account(tunnel_account)
             bridge = tunnel_config.get_bridge(resolved_bridge_name)
             if bridge_name and bridge is None:
                 return _emit_error(
@@ -627,6 +650,12 @@ def exec_via_workflow(
 @click.command("exec")
 @click.argument("notebook")
 @click.argument("command_parts", nargs=-1, type=click.UNPROCESSED, required=True)
+@click.option("--account", required=False, help="Account name for this notebook target.")
+@click.option(
+    "--ignore-target-cache",
+    is_flag=True,
+    help="Ignore the remembered notebook target and resolve candidates again.",
+)
 @click.option(
     "denylist",
     "--denylist",
@@ -670,6 +699,8 @@ def exec_command(
     ctx: Context,
     notebook: str,
     command_parts: tuple[str, ...],
+    account: str | None,
+    ignore_target_cache: bool,
     denylist: tuple[str, ...],
     artifact_path: tuple[str, ...],
     download: Optional[str],
@@ -708,7 +739,6 @@ def exec_command(
         resource_type="notebook",
         list_command="inspire notebook list",
     )
-    bridge = notebook
     command = _normalize_exec_command(command_parts)
 
     try:
@@ -752,11 +782,33 @@ def exec_command(
 
     # SSH tunnel is the default command transport when artifacts are not requested.
     if not artifact_path and not download:
+        target = resolve_cached_notebook_target(
+            ctx,
+            notebook=notebook,
+            workspace=None,
+            account=account,
+            ignore_target_cache=ignore_target_cache,
+            verify_target_cache=False,
+            allow_prompt=not ctx.json_output,
+        )
+        if target is None:
+            explicit_account = (
+                str(account or "").strip()
+                if str(account or "").strip() and str(account or "").strip().lower() != "all"
+                else None
+            )
+            bridge = notebook
+            tunnel_account = explicit_account
+        else:
+            bridge = target.bridge.name
+            tunnel_account = target.account
+
         effective_stdin_mode = stdin_mode or _should_auto_passthrough_stdin()
         ssh_exit_code = try_exec_via_ssh_tunnel(
             ctx,
             command=command,
             bridge_name=bridge,
+            tunnel_account=tunnel_account,
             stdin_mode=effective_stdin_mode,
             config=config,
             remote_cwd=remote_cwd,

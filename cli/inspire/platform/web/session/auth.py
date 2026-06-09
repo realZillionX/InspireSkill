@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from html.parser import HTMLParser
 import json
+import os
 import logging
 import re
 import time
@@ -33,9 +34,41 @@ _CAS_RSA_KEY_RE = re.compile(
 )
 
 
-def _load_runtime_config() -> Config:
+def _load_runtime_config(account: Optional[str] = None) -> Config:
+    account_name = str(account or "").strip()
+    if account_name:
+        return _load_account_runtime_config(account_name)
     config, _ = Config.from_files_and_env(require_credentials=False)
     return config
+
+
+def _load_account_runtime_config(account: str) -> Config:
+    """Load account-level auth/runtime fields without changing active account."""
+    from inspire.accounts import account_config_path, account_exists
+    from inspire.config.load_common import _default_config_values
+    from inspire.config.toml import _flatten_toml, _load_toml, _toml_key_to_field
+
+    if not account_exists(account):
+        raise ValueError(f"Account not found: {account}")
+    path = account_config_path(account)
+    if not path.exists():
+        raise ValueError(f"Account config not found: {path}")
+
+    config_dict = _default_config_values()
+    raw = _load_toml(path)
+    raw.pop("accounts", None)
+    raw.pop("context", None)
+    for toml_key, value in _flatten_toml(raw).items():
+        field_name = _toml_key_to_field(toml_key)
+        if field_name and field_name in config_dict:
+            config_dict[field_name] = value
+
+    if not config_dict.get("password"):
+        env_password = os.getenv("INSPIRE_PASSWORD")
+        if env_password:
+            config_dict["password"] = env_password
+
+    return Config(**config_dict)
 
 
 def _session_matches_username(cached: WebSession, username: str) -> bool:
@@ -268,6 +301,7 @@ def _login_with_cas_requests(
     password: str,
     *,
     base_url: str,
+    account: Optional[str] = None,
 ) -> WebSession:
     import requests
     import urllib3
@@ -276,7 +310,7 @@ def _login_with_cas_requests(
 
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    proxies, _source = resolve_requests_proxy_config()
+    proxies, _source = resolve_requests_proxy_config(account=account)
     http = requests.Session()
     http.trust_env = False
     http.proxies.update(proxies)
@@ -366,13 +400,13 @@ def _login_with_cas_requests(
         all_workspace_names=all_workspace_names or None,
         created_at=time.time(),
     )
-    session.save()
+    session.save(account=account)
     return session
 
 
-def get_credentials() -> tuple[str, str]:
+def get_credentials(account: Optional[str] = None) -> tuple[str, str]:
     """Get web credentials from layered config (project/global/env/default)."""
-    config = _load_runtime_config()
+    config = _load_runtime_config(account)
     username = (config.username or "").strip()
     password = config.password or ""
 
@@ -391,6 +425,7 @@ def login_with_playwright(
     password: str,
     base_url: str = "https://api.example.com",
     headless: bool = True,
+    account: Optional[str] = None,
 ) -> WebSession:
     """Login to Inspire web UI using Playwright and capture session storage state.
 
@@ -405,16 +440,22 @@ def login_with_playwright(
             password,
             base_url=base_url,
             headless=headless,
+            account=account,
         )
 
     from playwright.sync_api import sync_playwright
 
     try:
-        return _login_with_cas_requests(username, password, base_url=base_url)
+        return _login_with_cas_requests(
+            username,
+            password,
+            base_url=base_url,
+            account=account,
+        )
     except Exception:
         logger.debug("CAS requests login failed; falling back to Playwright.", exc_info=True)
 
-    proxy = cast("ProxySettings | None", get_playwright_proxy())
+    proxy = cast("ProxySettings | None", get_playwright_proxy(account=account))
     with sync_playwright() as p:
         try:
             browser = p.chromium.launch(**chromium_launch_kwargs(headless=headless, proxy=proxy))
@@ -589,14 +630,19 @@ def login_with_playwright(
             user_detail=user_detail,
             all_workspace_ids=all_workspace_ids or None,
             all_workspace_names=all_workspace_names or None,
+            account=account,
             created_at=time.time(),
         )
-        session.save()
+        session.save(account=account)
 
         return session
 
 
-def get_web_session(force_refresh: bool = False, require_workspace: bool = False) -> WebSession:
+def get_web_session(
+    force_refresh: bool = False,
+    require_workspace: bool = False,
+    account: Optional[str] = None,
+) -> WebSession:
     """Get a valid web session, logging in if necessary.
 
     Args:
@@ -609,17 +655,17 @@ def get_web_session(force_refresh: bool = False, require_workspace: bool = False
     # Resolve credentials early so we can avoid reusing a cache from another user.
     credentials_error: Optional[ValueError] = None
     try:
-        username, password = get_credentials()
+        username, password = get_credentials(account)
     except ValueError as e:
         credentials_error = e
         try:
-            username = (_load_runtime_config().username or "").strip()
+            username = (_load_runtime_config(account).username or "").strip()
         except Exception:
             username = ""
         password = ""
 
     if not force_refresh:
-        cached = WebSession.load()
+        cached = WebSession.load(account=account)
         if cached and cached.storage_state.get("cookies"):
             if require_workspace and not _has_real_workspace_id(cached):
                 pass
@@ -632,7 +678,7 @@ def get_web_session(force_refresh: bool = False, require_workspace: bool = False
 
     # If we can't refresh (missing credentials), try the cached session anyway.
     if credentials_error is not None:
-        cached = WebSession.load(allow_expired=True)
+        cached = WebSession.load(allow_expired=True, account=account)
         if cached and cached.storage_state.get("cookies"):
             if require_workspace and not _has_real_workspace_id(cached):
                 raise credentials_error
@@ -643,7 +689,7 @@ def get_web_session(force_refresh: bool = False, require_workspace: bool = False
     # The session cookies may still be valid server-side; let API calls determine validity.
     # Skip this when force_refresh is set — the caller explicitly wants a fresh login.
     if not force_refresh:
-        cached = WebSession.load(allow_expired=True)
+        cached = WebSession.load(allow_expired=True, account=account)
         if cached and cached.storage_state.get("cookies"):
             if (
                 not require_workspace or _has_real_workspace_id(cached)
@@ -652,5 +698,5 @@ def get_web_session(force_refresh: bool = False, require_workspace: bool = False
                 return cached
 
     # Session is missing or has no cookies, perform fresh login
-    base_url = _load_runtime_config().base_url
-    return login_with_playwright(username, password, base_url=base_url)
+    base_url = _load_runtime_config(account).base_url
+    return login_with_playwright(username, password, base_url=base_url, account=account)

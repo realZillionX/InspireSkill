@@ -9,7 +9,7 @@ from click.testing import CliRunner
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
 from inspire.cli.commands.notebook import connection as connection_module
 from inspire.cli.commands.notebook import ssh as ssh_module
-from inspire.cli.context import EXIT_API_ERROR, EXIT_CONFIG_ERROR, EXIT_SUCCESS
+from inspire.cli.context import Context, EXIT_API_ERROR, EXIT_CONFIG_ERROR, EXIT_SUCCESS
 from inspire.cli.main import main as cli_main
 from inspire.platform.web.browser_api import NotebookFailedError
 
@@ -56,6 +56,8 @@ def test_notebook_ssh_default_route_runs_notebook_command(monkeypatch) -> None: 
             "command_timeout": None,
             "debug_playwright": False,
             "setup_timeout": 300,
+            "account": None,
+            "ignore_target_cache": False,
         }
     ]
 
@@ -213,6 +215,114 @@ def test_ssh_proxy_verbose_keeps_rtunnel_logs(monkeypatch) -> None:  # noqa: ANN
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert calls[0][1]["quiet"] is False
+
+
+def test_notebook_ssh_explicit_account_bootstraps_without_switching_active(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    calls = {"session_accounts": [], "config_accounts": [], "base_accounts": []}
+    session = SimpleNamespace(
+        all_workspace_ids=["ws-cpu"],
+        all_workspace_names={"ws-cpu": "CPU资源空间"},
+    )
+    saved = []
+
+    monkeypatch.setattr(
+        flow_module,
+        "resolve_cached_notebook_target",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fake_require_web_session(_ctx, *, hint, account=None):  # noqa: ANN001
+        del hint
+        calls["session_accounts"].append(account)
+        return session
+
+    def fake_load_config(_ctx, account=None):  # noqa: ANN001
+        calls["config_accounts"].append(account)
+        return SimpleNamespace(tunnel_retries=0, tunnel_retry_pause=0.0)
+
+    def fake_get_base_url(account=None):  # noqa: ANN001
+        calls["base_accounts"].append(account)
+        return "https://bob.invalid"
+
+    monkeypatch.setattr(flow_module, "require_web_session", fake_require_web_session)
+    monkeypatch.setattr(flow_module, "load_config", fake_load_config)
+    monkeypatch.setattr(flow_module, "get_base_url", fake_get_base_url)
+    monkeypatch.setattr(
+        workspace_module,
+        "resolve_workspace_query_scope",
+        lambda *_args, **_kwargs: (["ws-cpu"], False),
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "_resolve_notebook_id",
+        lambda *_args, **_kwargs: ("nb-bob", "ws-cpu"),
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "_get_current_user_detail",
+        lambda *_args, **_kwargs: {"username": "bob"},
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "_validate_notebook_account_access",
+        lambda **_kwargs: (True, ""),
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "load_ssh_public_key",
+        lambda _pubkey=None: "ssh-ed25519 AAA",
+    )
+    monkeypatch.setattr(ssh_tunnel_module, "has_internet_for_gpu_type", lambda _gpu: True)
+    monkeypatch.setattr(
+        flow_module.browser_api_module,
+        "get_notebook_detail",
+        lambda **_kwargs: {
+            "name": "demo-box",
+            "status": "RUNNING",
+            "resource_spec_price": {"gpu_info": {}},
+        },
+    )
+    monkeypatch.setattr(
+        flow_module.browser_api_module,
+        "setup_notebook_rtunnel",
+        lambda **_kwargs: "https://proxy.invalid/proxy/31337/",
+    )
+    monkeypatch.setattr(
+        ssh_tunnel_module,
+        "load_tunnel_config",
+        lambda account=None: TunnelConfig(account=account),
+    )
+    monkeypatch.setattr(ssh_tunnel_module, "save_tunnel_config", lambda cfg: saved.append(cfg))
+    monkeypatch.setattr(ssh_tunnel_module, "is_tunnel_available", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        flow_module,
+        "remember_notebook_target_aliases",
+        lambda **kwargs: calls.setdefault("remember", kwargs),
+    )
+
+    flow_module.run_notebook_ssh(
+        Context(),
+        notebook_id="demo-box",
+        workspace="CPU资源空间",
+        wait=False,
+        pubkey=None,
+        port=31337,
+        ssh_port=22222,
+        command=None,
+        debug_playwright=False,
+        setup_timeout=300,
+        setup_only=True,
+        account="bob",
+    )
+
+    assert calls["session_accounts"] == ["bob"]
+    assert calls["config_accounts"] == ["bob"]
+    assert calls["base_accounts"] == ["bob"]
+    assert saved and saved[0].account == "bob"
+    assert saved[0].get_bridge("demo-box") is not None
+    assert calls["remember"]["account"] == "bob"
 
 
 def test_notebook_ssh_stopped_error_is_actionable(monkeypatch) -> None:  # noqa: ANN001

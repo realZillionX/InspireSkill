@@ -527,7 +527,7 @@ def test_request_json_reauth_is_silent(
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: ExpiringBrowserClient())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", True)
-    monkeypatch.setattr(ws, "clear_session_cache", lambda: None)
+    monkeypatch.setattr(ws, "clear_session_cache", lambda **_kwargs: None)
     monkeypatch.setattr(ws, "get_web_session", lambda **_kwargs: refreshed)
 
     with pytest.raises(ws.SessionExpiredError):
@@ -580,7 +580,7 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(ws, "_get_browser_client", fake_get_browser_client)
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
-    monkeypatch.setattr(ws, "clear_session_cache", lambda: None)
+    monkeypatch.setattr(ws, "clear_session_cache", lambda **_kwargs: None)
     monkeypatch.setattr(ws, "get_web_session", fake_get_web_session)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", True)
 
@@ -822,14 +822,20 @@ def test_get_web_session_reauths_when_cached_user_mismatch(monkeypatch: pytest.M
         "load",
         classmethod(lambda cls, allow_expired=False, account=None: cached),
     )
-    monkeypatch.setattr(ws_auth, "get_credentials", lambda: ("new-user", "new-pass"))
+    monkeypatch.setattr(ws_auth, "get_credentials", lambda account=None: ("new-user", "new-pass"))
     monkeypatch.setattr(
         ws_auth,
         "_load_runtime_config",
-        lambda: type("Cfg", (), {"base_url": "https://example.invalid"})(),
+        lambda account=None: type("Cfg", (), {"base_url": "https://example.invalid"})(),
     )
 
-    def fake_login(username: str, password: str, base_url: str = "", headless: bool = True):
+    def fake_login(
+        username: str,
+        password: str,
+        base_url: str = "",
+        headless: bool = True,
+        account=None,  # noqa: ANN001
+    ):
         calls["username"] = username
         calls["password"] = password
         calls["base_url"] = base_url
@@ -866,7 +872,7 @@ def test_get_web_session_reads_cached_session_without_explicit_account(
         return cached
 
     monkeypatch.setattr(ws_auth.WebSession, "load", classmethod(fake_load))
-    monkeypatch.setattr(ws_auth, "get_credentials", lambda: ("project-user", "secret"))
+    monkeypatch.setattr(ws_auth, "get_credentials", lambda account=None: ("project-user", "secret"))
 
     session = ws_auth.get_web_session(force_refresh=False, require_workspace=False)
 
@@ -874,6 +880,60 @@ def test_get_web_session_reads_cached_session_without_explicit_account(
     assert load_calls
     # Caller passes no explicit account; internal resolution handles it.
     assert load_calls[0] is None
+
+
+def test_get_web_session_explicit_account_uses_account_cache_and_login(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    refreshed = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "new"}]},
+        cookies={"session": "new"},
+        workspace_id="ws-new",
+        login_username="alice-user",
+        created_at=1,
+    )
+    calls: dict[str, object] = {"loads": []}
+
+    def fake_load(cls, allow_expired=False, account=None):  # type: ignore[no-untyped-def]
+        calls["loads"].append((allow_expired, account))
+        return None
+
+    def fake_get_credentials(account=None):  # type: ignore[no-untyped-def]
+        calls["credentials_account"] = account
+        return "alice-user", "alice-pass"
+
+    def fake_runtime_config(account=None):  # type: ignore[no-untyped-def]
+        calls["runtime_account"] = account
+        return type("Cfg", (), {"base_url": "https://alice.invalid"})()
+
+    def fake_login(
+        username: str,
+        password: str,
+        base_url: str = "",
+        headless: bool = True,
+        account=None,  # noqa: ANN001
+    ):
+        calls["login"] = {
+            "username": username,
+            "password": password,
+            "base_url": base_url,
+            "headless": headless,
+            "account": account,
+        }
+        return refreshed
+
+    monkeypatch.setattr(ws_auth.WebSession, "load", classmethod(fake_load))
+    monkeypatch.setattr(ws_auth, "get_credentials", fake_get_credentials)
+    monkeypatch.setattr(ws_auth, "_load_runtime_config", fake_runtime_config)
+    monkeypatch.setattr(ws_auth, "login_with_playwright", fake_login)
+
+    session = ws_auth.get_web_session(account="alice")
+
+    assert session is refreshed
+    assert calls["loads"] == [(False, "alice"), (True, "alice")]
+    assert calls["credentials_account"] == "alice"
+    assert calls["runtime_account"] == "alice"
+    assert calls["login"]["account"] == "alice"
 
 
 def test_get_web_session_force_refresh_bypasses_cache(monkeypatch: pytest.MonkeyPatch):
@@ -898,7 +958,13 @@ def test_get_web_session_force_refresh_bypasses_cache(monkeypatch: pytest.Monkey
         load_calls.append((allow_expired, account))
         return cached
 
-    def fake_login(username: str, password: str, base_url: str = "", headless: bool = True):
+    def fake_login(
+        username: str,
+        password: str,
+        base_url: str = "",
+        headless: bool = True,
+        account=None,  # noqa: ANN001
+    ):
         login_calls["username"] = username
         login_calls["password"] = password
         login_calls["base_url"] = base_url
@@ -906,11 +972,15 @@ def test_get_web_session_force_refresh_bypasses_cache(monkeypatch: pytest.Monkey
         return refreshed
 
     monkeypatch.setattr(ws_auth.WebSession, "load", classmethod(fake_load))
-    monkeypatch.setattr(ws_auth, "get_credentials", lambda: ("refresh-user", "refresh-pass"))
+    monkeypatch.setattr(
+        ws_auth,
+        "get_credentials",
+        lambda account=None: ("refresh-user", "refresh-pass"),
+    )
     monkeypatch.setattr(
         ws_auth,
         "_load_runtime_config",
-        lambda: type("Cfg", (), {"base_url": "https://example.invalid"})(),
+        lambda account=None: type("Cfg", (), {"base_url": "https://example.invalid"})(),
     )
     monkeypatch.setattr(ws_auth, "login_with_playwright", fake_login)
 

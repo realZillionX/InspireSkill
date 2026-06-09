@@ -46,18 +46,19 @@ ACCOUNT_LAYER_DISALLOWED_KEYS = frozenset(
 )
 
 
-def _resolve_account_config_path() -> Path | None:
-    """Return the active account's ``config.toml`` path, or ``None``.
+def _resolve_account_config_path(account: str | None = None) -> Path | None:
+    """Return an account's ``config.toml`` path, or ``None``.
 
-    ``None`` means either no active account (``~/.inspire/current`` missing)
-    or the active account has no config file yet (fresh ``account add``
+    Without an explicit account, this uses the active account. ``None`` means
+    either no active account (``~/.inspire/current`` missing) or the selected
+    account has no config file yet (fresh ``account add``
     without running ``init``).
     """
     try:
         from inspire.accounts import account_config_path, current_account
     except ImportError:  # pragma: no cover - accounts module ships with the CLI
         return None
-    name = current_account()
+    name = str(account or "").strip() or current_account()
     if not name:
         return None
     path = account_config_path(name)
@@ -68,15 +69,16 @@ def _apply_account_layer(
     *,
     config_dict: dict[str, Any],
     sources: dict[str, str],
+    account: str | None = None,
 ) -> Path | None:
-    """Apply the active account's ``config.toml``.
+    """Apply the selected account's ``config.toml``.
 
     Returns the path that was read, or ``None`` if no account config applies.
     The source label is ``SOURCE_GLOBAL`` — this layer occupies the slot
     that the legacy global config used to fill; callers that inspect
     ``sources`` do not need to learn a new source label.
     """
-    account_path = _resolve_account_config_path()
+    account_path = _resolve_account_config_path(account)
     if account_path is None:
         return None
 

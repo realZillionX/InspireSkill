@@ -45,6 +45,12 @@ class NotebookSSHGroup(click.Group):
 @click.argument("notebook")
 @click.argument("command_parts", nargs=-1, type=click.UNPROCESSED)
 @click.option("--workspace", required=False, help="Workspace name.")
+@click.option("--account", required=False, help="Account name for this notebook target.")
+@click.option(
+    "--ignore-target-cache",
+    is_flag=True,
+    help="Ignore the remembered notebook target and resolve candidates again.",
+)
 @click.option("--wait/--no-wait", default=True, help="Wait for notebook to reach RUNNING status")
 @click.option(
     "--pubkey",
@@ -86,6 +92,8 @@ def _ssh_open(
     notebook: str,
     command_parts: tuple[str, ...],
     workspace: str | None,
+    account: str | None,
+    ignore_target_cache: bool,
     wait: bool,
     pubkey: str | None,
     port: int,
@@ -108,6 +116,8 @@ def _ssh_open(
         command_timeout=command_timeout,
         debug_playwright=debug_playwright,
         setup_timeout=setup_timeout,
+        account=account,
+        ignore_target_cache=ignore_target_cache,
     )
 
 

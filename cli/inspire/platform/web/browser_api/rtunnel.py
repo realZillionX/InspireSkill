@@ -315,7 +315,8 @@ def _resolve_rtunnel_account(
     explicit: Optional[str],
     session: Optional[WebSession] = None,
 ) -> str | None:
-    return (explicit or "").strip() or _active_account_name() or (
+    session_account = str(getattr(session, "account", "") or "").strip()
+    return (explicit or "").strip() or session_account or _active_account_name() or (
         str(getattr(session, "login_username", "") or "").strip() or None
     )
 

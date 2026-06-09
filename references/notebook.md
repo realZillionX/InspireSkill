@@ -39,6 +39,16 @@ Notebook 是交互工作台，不只是“开一个终端”。
 
 `--workspace` 主要用于首次解析或同名 notebook 消歧；连接缓存建立后，后续命令通常可按名称使用。缓存是性能和连接复用工具，不是平台事实来源。
 
+### 跨账号 Notebook 连接
+
+Notebook 连接类命令包括 `ssh`、`exec`、`shell`、`scp`、`ssh-config` 和 `ssh-proxy`。它们的 `--account <name>` 参数使用本地 account alias，也就是 `~/.inspire/accounts/<name>/` 的目录名，不是平台登录 username。`all` 是跨账号扫描 selector。
+
+不传 `--account` 时，CLI 会先查 remembered target cache；如果没有可用记录，再扫描所有账号下已有的 cached bridge。唯一匹配会自动使用；多匹配时会列出候选，交互环境会 prompt 选择并把选择写入 target cache。需要忽略 remembered target 时传 `--ignore-target-cache`。
+
+已缓存的 notebook connection 不要求当前 active account 是 notebook 所属账号。SSH tunnel 不可用、需要 rebuild 时，CLI 会自动用目标 account alias 对应的 Web session、账号配置、Playwright proxy 和 rtunnel state 重建；用户不需要先 `inspire account use <name>`。
+
+没有任何 cached connection 时，首次 bootstrap 仍需要能解析 notebook 的上下文：通常传 `--workspace <workspace>`，必要时再传 `--account <alias>` 指定所属账号。`ssh-config` 生成的 OpenSSH `ProxyCommand` 会固化解析出的 account alias，后续 VS Code Remote SSH / 原生 OpenSSH 连接也按该账号路径执行。
+
 `exec` 超过 20 分钟时，把任务写成远端后台进程和 sentinel 文件，再从本机轮询，不要让本机同步等待。
 
 ## 4. 路径和文件流转

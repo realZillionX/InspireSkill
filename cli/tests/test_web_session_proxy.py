@@ -91,6 +91,33 @@ def test_get_playwright_proxy_uses_proxy_toml(monkeypatch: pytest.MonkeyPatch) -
     assert get_playwright_proxy() == {"server": "http://127.0.0.1:7897"}
 
 
+def test_get_playwright_proxy_uses_explicit_account_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str | None] = []
+
+    def fake_from_files_and_env(cls, **kwargs):  # type: ignore[no-untyped-def]
+        del cls
+        account = kwargs.get("account")
+        calls.append(account)
+        proxy = "http://127.0.0.1:18080" if account == "bob" else "http://127.0.0.1:7897"
+        return config_module.Config(
+            username="",
+            password="",
+            base_url="https://qz.sii.edu.cn",
+            playwright_proxy=proxy,
+        ), {}
+
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(fake_from_files_and_env),
+    )
+
+    assert get_playwright_proxy(account="bob") == {"server": "http://127.0.0.1:18080"}
+    assert calls == ["bob"]
+
+
 def test_resolve_requests_proxy_config_prefers_toml(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = config_module.Config(
         username="",

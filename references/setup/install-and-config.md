@@ -102,7 +102,11 @@ inspire account use <name>
 inspire account current
 ```
 
+这里的 `<name>` 是本地 account alias，也就是 `~/.inspire/accounts/<name>/` 的目录名；它不要求等于平台登录 username。`~/.inspire/current` 是普通文本文件，不是 symlink，内容只有当前 active account alias 一行。`inspire account use <name>` 只更新这个默认指针，不会移动或合并任何账号目录。
+
 账号目录、Web session、Notebook SSH 连接缓存和 rtunnel proxy state 都在 `~/.inspire/accounts/<name>/` 下。连接缓存用 `inspire notebook connection list/status/refresh/forget/prune` 管理。
+
+Notebook 连接类命令的 `--account <name>` 也使用本地 account alias，不用平台登录 username 反查 alias。`ssh` / `exec` / `shell` / `scp` / `ssh-config` / `ssh-proxy` 在不传 `--account` 时可以跨账号解析已有 notebook connection；传 `--account all` 表示扫描全部账号，传具体 alias 表示只使用该账号。
 
 ## 5. SII Proxy
 

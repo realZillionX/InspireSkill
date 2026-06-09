@@ -161,8 +161,9 @@ def request_json(
         # Auto-retry once with fresh session
         if _retry_count < 1:
             logger.debug("Web session expired; refreshing cached session.")
-            clear_session_cache()
-            new_session = get_web_session(force_refresh=True)
+            refresh_account = getattr(session, "account", None)
+            clear_session_cache(account=refresh_account)
+            new_session = get_web_session(force_refresh=True, account=refresh_account)
             _refresh_session_in_place(session, new_session)
             return request_json(
                 session,
@@ -199,8 +200,16 @@ def login_with_playwright(
     )
 
 
-def get_web_session(force_refresh: bool = False, require_workspace: bool = False) -> WebSession:
-    return _get_web_session(force_refresh=force_refresh, require_workspace=require_workspace)
+def get_web_session(
+    force_refresh: bool = False,
+    require_workspace: bool = False,
+    account: Optional[str] = None,
+) -> WebSession:
+    return _get_web_session(
+        force_refresh=force_refresh,
+        require_workspace=require_workspace,
+        account=account,
+    )
 
 
 def fetch_node_specs(

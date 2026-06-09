@@ -28,6 +28,8 @@ from inspire.cli.utils.tunnel_reconnect import (
 from inspire.config import Config, ConfigError, build_env_exports, resolve_remote_cwd
 from inspire.platform.web import browser_api as browser_api_module
 
+from .target_resolver import resolve_cached_notebook_target
+
 logger = logging.getLogger(__name__)
 _RUNNING_NOTEBOOK_STATUS = "RUNNING"
 
@@ -44,15 +46,31 @@ def _build_remote_shell_command(*, remote_cwd: Optional[str], env_exports: str) 
     return None
 
 
+def _load_tunnel_config_for_account(account: str | None):
+    return load_tunnel_config(account=account) if account else load_tunnel_config()
+
+
 @click.command("shell")
 @click.argument("notebook")
+@click.option("--account", required=False, help="Account name for this notebook target.")
+@click.option(
+    "--ignore-target-cache",
+    is_flag=True,
+    help="Ignore the remembered notebook target and resolve candidates again.",
+)
 @click.option(
     "--cwd",
     default=None,
     help="Remote working directory or path alias (default: 'me' alias, else $HOME)",
 )
 @pass_context
-def bridge_ssh(ctx: Context, notebook: str, cwd: Optional[str]) -> None:
+def bridge_ssh(
+    ctx: Context,
+    notebook: str,
+    account: str | None,
+    ignore_target_cache: bool,
+    cwd: Optional[str],
+) -> None:
     """Open an interactive SSH shell to a cached notebook.
 
     Requires a cached notebook connection. Create one with
@@ -72,7 +90,6 @@ def bridge_ssh(ctx: Context, notebook: str, cwd: Optional[str]) -> None:
         resource_type="notebook",
         list_command="inspire notebook list",
     )
-    bridge = notebook
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         remote_cwd = _resolve_shell_remote_cwd(cwd=cwd, config=config)
@@ -84,21 +101,34 @@ def bridge_ssh(ctx: Context, notebook: str, cwd: Optional[str]) -> None:
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 
-    tunnel_config = load_tunnel_config()
-    selected_bridge = tunnel_config.get_bridge(bridge)
-    if bridge and selected_bridge is None:
-        _handle_error(
-            ctx,
-            "BridgeNotFound",
-            f"No cached notebook connection for '{bridge}'.",
-            hint="Run `inspire notebook connection refresh <name> --workspace <workspace>` to create or refresh this notebook connection.",
+    target = resolve_cached_notebook_target(
+        ctx,
+        notebook=notebook,
+        workspace=None,
+        account=account,
+        ignore_target_cache=ignore_target_cache,
+        verify_target_cache=False,
+        allow_prompt=not ctx.json_output,
+    )
+    if target is None:
+        explicit_account = (
+            str(account or "").strip()
+            if str(account or "").strip() and str(account or "").strip().lower() != "all"
+            else None
         )
-        raise RuntimeError("unreachable")
+        tunnel_config = _load_tunnel_config_for_account(explicit_account)
+        selected_bridge = tunnel_config.get_bridge(notebook)
+        target_account = tunnel_config.account
+    else:
+        tunnel_config = target.config
+        selected_bridge = target.bridge
+        target_account = target.account
+
     if selected_bridge is None:
         _handle_error(
             ctx,
             "TunnelError",
-            "No cached notebook connection.",
+            f"No cached notebook connection for '{notebook}'.",
             hint="Create one with: inspire notebook connection refresh <notebook> --workspace <workspace>",
         )
         raise RuntimeError("unreachable")
@@ -119,7 +149,7 @@ def bridge_ssh(ctx: Context, notebook: str, cwd: Optional[str]) -> None:
     ssh_public_key = ""
 
     while True:
-        tunnel_config = load_tunnel_config()
+        tunnel_config = _load_tunnel_config_for_account(target_account)
         bridge_profile = tunnel_config.get_bridge(bridge_name)
         if bridge_profile is None:
             _handle_error(
@@ -165,7 +195,14 @@ def bridge_ssh(ctx: Context, notebook: str, cwd: Optional[str]) -> None:
 
             try:
                 if web_session is None:
-                    web_session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+                    if target_account:
+                        web_session = require_web_session(
+                            ctx,
+                            hint=WEB_AUTH_HINT,
+                            account=target_account,
+                        )
+                    else:
+                        web_session = require_web_session(ctx, hint=WEB_AUTH_HINT)
                 notebook_detail = browser_api_module.get_notebook_detail(
                     notebook_id=notebook_id,
                     session=web_session,
@@ -199,7 +236,14 @@ def bridge_ssh(ctx: Context, notebook: str, cwd: Optional[str]) -> None:
                 )
             try:
                 if web_session is None:
-                    web_session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+                    if target_account:
+                        web_session = require_web_session(
+                            ctx,
+                            hint=WEB_AUTH_HINT,
+                            account=target_account,
+                        )
+                    else:
+                        web_session = require_web_session(ctx, hint=WEB_AUTH_HINT)
                 if not ssh_public_key:
                     ssh_public_key = load_ssh_public_key_material()
                 rebuild_notebook_bridge_profile(

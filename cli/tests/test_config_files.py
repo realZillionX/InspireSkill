@@ -727,6 +727,38 @@ class TestAccountConfigLayer:
         assert alice_sources["path_aliases"] == SOURCE_PROJECT
         assert bob_sources["path_aliases"] == SOURCE_PROJECT
 
+    def test_explicit_account_config_load_does_not_switch_active_account(
+        self, home: Path, clean_env: None, tmp_path: Path
+    ) -> None:
+        self._write_account_config(
+            home,
+            "alice",
+            '[auth]\nusername = "alice"\npassword = "pw"\n[api]\ntimeout = 11\n',
+        )
+        self._write_account_config(
+            home,
+            "bob",
+            '[auth]\nusername = "bob"\npassword = "pw"\n[api]\ntimeout = 22\n',
+        )
+        self._write_project_account_config(
+            tmp_path,
+            "bob",
+            '[path_aliases]\nme = "/inspire/ssd/project/topic/bob/"\n',
+        )
+        (home / ".inspire" / "current").write_text("alice\n")
+
+        cfg, sources = Config.from_files_and_env(
+            require_credentials=False,
+            account="bob",
+        )
+
+        assert cfg.username == "bob"
+        assert cfg.timeout == 22
+        assert cfg.path_aliases["me"] == "/inspire/ssd/project/topic/bob/"
+        assert sources["username"] == SOURCE_GLOBAL
+        assert sources["path_aliases"] == SOURCE_PROJECT
+        assert (home / ".inspire" / "current").read_text() == "alice\n"
+
     def test_project_path_aliases_merge_over_account_defaults(
         self, home: Path, clean_env: None, tmp_path: Path
     ) -> None:

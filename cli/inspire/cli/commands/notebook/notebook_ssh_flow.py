@@ -47,6 +47,10 @@ from .notebook_lookup import (
     _validate_notebook_account_access,
     _workspace_label,
 )
+from .target_resolver import (
+    remember_notebook_target_aliases,
+    resolve_cached_notebook_target,
+)
 
 
 def _format_proxy_http_body(raw: bytes) -> str:
@@ -130,6 +134,7 @@ def _cached_bridge_for_identifier(
     *,
     identifier: str,
     config,
+    account: Optional[str] = None,
 ):
     from inspire.bridge.tunnel import load_tunnel_config
 
@@ -139,8 +144,8 @@ def _cached_bridge_for_identifier(
     if _looks_like_notebook_id(normalized):
         return None, None, None
 
-    tunnel_account = None
-    tunnel_config = load_tunnel_config()
+    tunnel_account = account
+    tunnel_config = load_tunnel_config(account=account) if account else load_tunnel_config()
     for bridge in tunnel_config.bridges.values():
         notebook_name = str(getattr(bridge, "notebook_name", "") or "").strip()
         notebook_id = str(getattr(bridge, "notebook_id", "") or "").strip()
@@ -244,12 +249,34 @@ def _should_retry_non_interactive_disconnect(
     return not tunnel_ready
 
 
+def _reconnect_session_loader(ctx: Context, tunnel_account: Optional[str]):
+    def _load_session():
+        if tunnel_account:
+            return require_web_session(ctx, hint=WEB_AUTH_HINT, account=tunnel_account)
+        return require_web_session(ctx, hint=WEB_AUTH_HINT)
+
+    return _load_session
+
+
+def _load_config_for_account(ctx: Context, account: Optional[str]):
+    if account:
+        return load_config(ctx, account=account)
+    return load_config(ctx)
+
+
+def _get_base_url_for_account(account: Optional[str]) -> str:
+    if account:
+        return get_base_url(account=account)
+    return get_base_url()
+
+
 def _run_notebook_command_with_reconnect(
     ctx: Context,
     *,
     profile_name: str,
     tunnel_account: Optional[str],
     session,
+    session_loader=None,
     pubkey: Optional[str],
     command: str,
     command_timeout: Optional[int],
@@ -271,6 +298,14 @@ def _run_notebook_command_with_reconnect(
     )
     timeout_s = _command_timeout_seconds(command_timeout)
     announced_command_start = False
+
+    def _load_reconnect_session():
+        nonlocal session
+        if session is None:
+            if session_loader is None:
+                raise ConfigError("Cannot rebuild notebook tunnel without a web session.")
+            session = session_loader()
+        return session
 
     def _attempt_rebuild() -> bool:
         tunnel_config = load_tunnel_config(account=tunnel_account)
@@ -299,7 +334,7 @@ def _run_notebook_command_with_reconnect(
             bridge_name=profile_name,
             bridge=bridge,
             tunnel_config=tunnel_config,
-            session_loader=lambda: session,
+            session_loader=_load_reconnect_session,
             rebuild_fn=rebuild_notebook_bridge_profile,
             key_loader=lambda path: load_ssh_public_key(path),
             pubkey_path=pubkey,
@@ -447,6 +482,7 @@ def _run_interactive_notebook_ssh_with_reconnect(
     profile_name: str,
     tunnel_account: Optional[str],
     session,
+    session_loader=None,
     pubkey: Optional[str],
     debug_playwright: bool,
     setup_timeout: int,
@@ -464,6 +500,14 @@ def _run_interactive_notebook_ssh_with_reconnect(
         reconnect_limit=reconnect_limit,
         reconnect_pause=tunnel_retry_pause,
     )
+
+    def _load_reconnect_session():
+        nonlocal session
+        if session is None:
+            if session_loader is None:
+                raise ConfigError("Cannot rebuild notebook tunnel without a web session.")
+            session = session_loader()
+        return session
 
     while True:
         tunnel_config = load_tunnel_config(account=tunnel_account)
@@ -512,7 +556,7 @@ def _run_interactive_notebook_ssh_with_reconnect(
             bridge_name=profile_name,
             bridge=bridge,
             tunnel_config=tunnel_config,
-            session_loader=lambda: session,
+            session_loader=_load_reconnect_session,
             rebuild_fn=rebuild_notebook_bridge_profile,
             key_loader=lambda path: load_ssh_public_key(path),
             pubkey_path=pubkey,
@@ -603,6 +647,8 @@ def run_notebook_ssh(
     debug_playwright: bool,
     setup_timeout: int,
     setup_only: bool = False,
+    account: Optional[str] = None,
+    ignore_target_cache: bool = False,
 ) -> None:
     from inspire.bridge.tunnel import (
         BridgeProfile,
@@ -613,16 +659,73 @@ def run_notebook_ssh(
         save_tunnel_config,
     )
 
-    session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+    explicit_tunnel_account = (
+        str(account or "").strip()
+        if str(account or "").strip() and str(account or "").strip().lower() != "all"
+        else None
+    )
 
-    base_url = get_base_url()
-    config = load_config(ctx)
+    cached_target = resolve_cached_notebook_target(
+        ctx,
+        notebook=notebook_id,
+        workspace=workspace,
+        account=account,
+        ignore_target_cache=ignore_target_cache,
+        verify_target_cache=True,
+        allow_prompt=not ctx.json_output,
+    )
+    if cached_target is not None:
+        config = _load_config_for_account(ctx, cached_target.account)
+        cached_profile_name = cached_target.bridge.name
+        tunnel_account = cached_target.account
+        if not ctx.json_output:
+            click.echo("Using cached tunnel connection (fast path).", err=True)
+        if setup_only:
+            return
+        if command is None:
+            _run_interactive_notebook_ssh_with_reconnect(
+                ctx,
+                profile_name=cached_profile_name,
+                tunnel_account=tunnel_account,
+                session=None,
+                session_loader=_reconnect_session_loader(ctx, tunnel_account),
+                pubkey=pubkey,
+                debug_playwright=debug_playwright,
+                setup_timeout=setup_timeout,
+                tunnel_retries=config.tunnel_retries,
+                tunnel_retry_pause=config.tunnel_retry_pause,
+            )
+            return
+        _run_notebook_command_with_reconnect(
+            ctx,
+            profile_name=cached_profile_name,
+            tunnel_account=tunnel_account,
+            session=None,
+            session_loader=_reconnect_session_loader(ctx, tunnel_account),
+            pubkey=pubkey,
+            command=command,
+            command_timeout=command_timeout,
+            debug_playwright=debug_playwright,
+            setup_timeout=setup_timeout,
+            tunnel_retries=config.tunnel_retries,
+            tunnel_retry_pause=config.tunnel_retry_pause,
+        )
+        return
+
+    if explicit_tunnel_account:
+        session = require_web_session(ctx, hint=WEB_AUTH_HINT, account=explicit_tunnel_account)
+    else:
+        session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+
+    base_url = _get_base_url_for_account(explicit_tunnel_account)
+    config = _load_config_for_account(ctx, explicit_tunnel_account)
     from inspire.config.workspaces import resolve_workspace_query_scope
 
     requested_identifier = notebook_id
     cached_bridge, cached_notebook_id, tunnel_account = _cached_bridge_for_identifier(
         identifier=notebook_id,
         config=config,
+        account=explicit_tunnel_account,
     )
     explicit_workspace = str(workspace or "").strip() or None
     if explicit_workspace:
@@ -852,8 +955,8 @@ def run_notebook_ssh(
             EXIT_CONFIG_ERROR,
             hint=(
                 f"This notebook belongs to another account (current: {user_label}). "
-                f"Switch with `inspire account use <name>`, or run "
-                f"`inspire account add <name>` for the owning account."
+                "Retry with `--account <name>`, or run `inspire account add <name>` "
+                "for the owning account."
             ),
         )
         return
@@ -977,6 +1080,13 @@ def run_notebook_ssh(
             ),
         )
         return
+
+    remember_notebook_target_aliases(
+        requested_identifier=requested_identifier,
+        workspace=explicit_workspace,
+        account=tunnel_account,
+        bridge=bridge,
+    )
 
     internet_status = "yes" if has_internet else "no"
     gpu_label = gpu_type if gpu_type else "CPU"

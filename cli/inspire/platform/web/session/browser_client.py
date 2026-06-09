@@ -20,7 +20,7 @@ class _BrowserRequestClient:
     def __init__(self, session: WebSession) -> None:
         from playwright.sync_api import sync_playwright
 
-        proxy = cast("ProxySettings | None", get_playwright_proxy())
+        proxy = cast("ProxySettings | None", get_playwright_proxy(account=session.account))
         self._closed = False
         self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(

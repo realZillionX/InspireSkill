@@ -55,11 +55,14 @@ def _playwright_proxy_dict(server: str) -> dict[str, str]:
     return proxy
 
 
-def _load_proxy_toml_values() -> tuple[str, dict[str, str]]:
+def _load_proxy_toml_values(account: str | None = None) -> tuple[str, dict[str, str]]:
     base_url = _normalize_proxy(os.environ.get("INSPIRE_BASE_URL"))
     values: dict[str, str] = {}
     try:
-        config, _ = Config.from_files_and_env(require_credentials=False)
+        if account:
+            config, _ = Config.from_files_and_env(require_credentials=False, account=account)
+        else:
+            config, _ = Config.from_files_and_env(require_credentials=False)
     except Exception:
         return base_url, values
 
@@ -104,12 +107,12 @@ def _resolve_requests_proxy_config_with_toml(
     return {}, "none"
 
 
-def resolve_requests_proxy_config() -> tuple[dict[str, str], str]:
-    _, toml_values = _load_proxy_toml_values()
+def resolve_requests_proxy_config(account: str | None = None) -> tuple[dict[str, str], str]:
+    _, toml_values = _load_proxy_toml_values(account)
     return _resolve_requests_proxy_config_with_toml(toml_values)
 
 
-def get_playwright_proxy() -> Optional[dict]:
+def get_playwright_proxy(account: str | None = None) -> Optional[dict]:
     # Explicit override for browser automation only.
     explicit_proxy = _normalize_proxy(
         os.environ.get("INSPIRE_PLAYWRIGHT_PROXY")
@@ -119,7 +122,7 @@ def get_playwright_proxy() -> Optional[dict]:
     if explicit_proxy:
         return _playwright_proxy_dict(explicit_proxy)
 
-    _, toml_values = _load_proxy_toml_values()
+    _, toml_values = _load_proxy_toml_values(account)
     toml_playwright = _normalize_proxy(toml_values.get("playwright"))
     if toml_playwright:
         return _playwright_proxy_dict(toml_playwright)
@@ -132,7 +135,7 @@ def get_playwright_proxy() -> Optional[dict]:
     return None
 
 
-def get_rtunnel_proxy_override() -> str | None:
+def get_rtunnel_proxy_override(account: str | None = None) -> str | None:
     explicit = _normalize_proxy(
         os.environ.get("INSPIRE_RTUNNEL_PROXY")
         or os.environ.get("inspire_rtunnel_proxy")
@@ -143,7 +146,7 @@ def get_rtunnel_proxy_override() -> str | None:
     if explicit:
         return explicit
 
-    _, toml_values = _load_proxy_toml_values()
+    _, toml_values = _load_proxy_toml_values(account)
     toml_rtunnel = _normalize_proxy(toml_values.get("rtunnel"))
     if toml_rtunnel:
         return toml_rtunnel

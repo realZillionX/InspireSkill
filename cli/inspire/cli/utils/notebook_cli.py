@@ -23,9 +23,12 @@ WEB_AUTH_HINT = (
 )
 
 
-def get_base_url() -> str:
+def get_base_url(account: str | None = None) -> str:
     try:
-        config, _ = Config.from_files_and_env(require_credentials=False)
+        if account:
+            config, _ = Config.from_files_and_env(require_credentials=False, account=account)
+        else:
+            config, _ = Config.from_files_and_env(require_credentials=False)
         return config.base_url
     except Exception:
         return os.environ.get("INSPIRE_BASE_URL", "https://api.example.com")
@@ -37,17 +40,27 @@ def resolve_json_output(ctx: Context, json_output: bool) -> bool:
     return ctx.json_output
 
 
-def require_web_session(ctx: Context, *, hint: str) -> web_session_module.WebSession:
+def require_web_session(
+    ctx: Context,
+    *,
+    hint: str,
+    account: str | None = None,
+) -> web_session_module.WebSession:
     try:
+        if account:
+            return web_session_module.get_web_session(account=account)
         return web_session_module.get_web_session()
     except (ValueError, ConfigError) as e:
         exit_with_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR, hint=hint)
         raise  # pragma: no cover
 
 
-def load_config(ctx: Context) -> Config:
+def load_config(ctx: Context, account: str | None = None) -> Config:
     try:
-        config, _ = Config.from_files_and_env(require_credentials=False)
+        if account:
+            config, _ = Config.from_files_and_env(require_credentials=False, account=account)
+        else:
+            config, _ = Config.from_files_and_env(require_credentials=False)
         return config
     except ConfigError as e:
         exit_with_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

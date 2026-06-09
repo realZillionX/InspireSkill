@@ -27,8 +27,9 @@ def _apply_project_layer(
     *,
     config_dict: dict[str, Any],
     sources: dict[str, str],
+    account: str | None = None,
 ) -> _ProjectLayerState:
-    project_config_path = _find_project_config()
+    project_config_path = _find_project_config(account) if account else _find_project_config()
     layer_state = _ProjectLayerState(
         project_config_path=project_config_path,
         project_projects={},

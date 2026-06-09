@@ -39,6 +39,18 @@ def _silence_normalize_environment(monkeypatch):  # noqa: ANN001
 
 
 @pytest.fixture(autouse=True)
+def _isolate_notebook_target_resolver(monkeypatch):  # noqa: ANN001
+    """Do not let tests scan the developer machine's real account caches."""
+    import importlib
+
+    target_resolver = importlib.import_module("inspire.cli.commands.notebook.target_resolver")
+
+    monkeypatch.setattr(target_resolver, "current_account", lambda: None)
+    monkeypatch.setattr(target_resolver, "list_accounts", lambda: [])
+    monkeypatch.setattr(target_resolver, "account_exists", lambda _name: False)
+
+
+@pytest.fixture(autouse=True)
 def _short_circuit_platform_resolvers(monkeypatch):  # noqa: ANN001
     """Pass resolver arguments through untouched for internal-path tests.
 

@@ -119,7 +119,7 @@ inspire resources availability --workspace all --include-cpu
 <tr>
   <td width="50%">
     <h4>📝 Notebook 统一入口</h4>
-    全链路命令化：<code>create / list / status / start · stop / ssh / connection / ssh-config / exec / shell / scp / install-deps / metrics / events / lifecycle</code>。<code>notebook ssh &lt;name&gt;</code> 像 SSH 一样打开交互终端，<code>notebook connection refresh &lt;name&gt;</code> 可显式刷新连接缓存，<code>notebook ssh-config &lt;name&gt;</code> 可接入原生 OpenSSH / scp / rsync。<b>任何镜像、任何计算组、有无公网</b>都能直接使用远程执行和文件流转命令。
+    全链路命令化：<code>create / list / status / start · stop / ssh / connection / ssh-config / exec / shell / scp / install-deps / metrics / events / lifecycle</code>。<code>notebook ssh &lt;name&gt;</code> 像 SSH 一样打开交互终端，<code>notebook connection refresh &lt;name&gt;</code> 可显式刷新连接缓存，<code>notebook ssh-config &lt;name&gt;</code> 可接入原生 OpenSSH / scp / rsync。SSH / exec / shell / scp / ssh-config / ssh-proxy 会跨账号解析本地已缓存的 notebook connection，不要求先切 active account。<b>任何镜像、任何计算组、有无公网</b>都能直接使用远程执行和文件流转命令。
   </td>
   <td width="50%">
     <h4>🚀 HPC 任务分派</h4>
@@ -163,7 +163,7 @@ inspire resources availability --workspace all --include-cpu
   </td>
   <td width="50%">
     <h4>🗝 多账号（一账号一目录）</h4>
-    <code>inspire account add / list / use / current / remove</code> —— 每个账号的 <code>config.toml</code>、SSH tunnel bridges 和登录缓存都在独立目录 <code>~/.inspire/accounts/&lt;name&gt;/</code>，活动账号由 <code>~/.inspire/current</code> 一行决定。不再有 <code>[accounts."&lt;user&gt;"]</code> 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。
+    <code>inspire account add / list / use / current / remove</code> —— 每个账号的 <code>config.toml</code>、SSH tunnel bridges 和登录缓存都在独立目录 <code>~/.inspire/accounts/&lt;name&gt;/</code>，活动账号由 <code>~/.inspire/current</code> 一行决定。不再有 <code>[accounts."&lt;user&gt;"]</code> 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。Notebook 连接类命令的 <code>--account &lt;name&gt;</code> 使用本地 account alias，不是平台登录用户名；<code>all</code> 是跨账号扫描 selector。
   </td>
 </tr>
 </table>

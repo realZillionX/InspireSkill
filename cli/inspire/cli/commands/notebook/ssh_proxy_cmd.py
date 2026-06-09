@@ -15,11 +15,55 @@ from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, 
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 from .notebook_ssh_flow import run_notebook_ssh
+from .target_resolver import NotebookConnectionTarget, resolve_cached_notebook_target
+
+
+def _load_proxy_target(
+    ctx: Context,
+    *,
+    notebook: str,
+    workspace: str | None,
+    account: str | None,
+    ignore_target_cache: bool,
+) -> NotebookConnectionTarget | None:
+    target = resolve_cached_notebook_target(
+        ctx,
+        notebook=notebook,
+        workspace=workspace,
+        account=account,
+        ignore_target_cache=ignore_target_cache,
+        verify_target_cache=False,
+        allow_prompt=False,
+    )
+    if target is not None:
+        return target
+
+    explicit_account = (
+        str(account or "").strip()
+        if str(account or "").strip() and str(account or "").strip().lower() != "all"
+        else None
+    )
+    config = load_tunnel_config(account=explicit_account) if explicit_account else load_tunnel_config()
+    bridge = config.get_bridge(notebook)
+    if bridge is None:
+        return None
+    return NotebookConnectionTarget(
+        account=config.account,
+        config=config,
+        bridge=bridge,
+        source="active_bridge_cache",
+    )
 
 
 @click.command("ssh-proxy")
 @click.argument("notebook")
 @click.option("--workspace", required=False, help="Workspace name.")
+@click.option("--account", required=False, help="Account name for this notebook target.")
+@click.option(
+    "--ignore-target-cache",
+    is_flag=True,
+    help="Ignore the remembered notebook target and resolve candidates again.",
+)
 @click.option(
     "--port",
     "ssh_port",
@@ -59,6 +103,8 @@ def ssh_proxy_cmd(
     ctx: Context,
     notebook: str,
     workspace: str | None,
+    account: str | None,
+    ignore_target_cache: bool,
     ssh_port: int,
     connection_port: int,
     pubkey: str | None,
@@ -71,8 +117,15 @@ def ssh_proxy_cmd(
     traffic on stdin/stdout. Bootstrap diagnostics are written to stderr;
     rtunnel's own lifecycle logs are suppressed by default.
     """
-    config = load_tunnel_config()
-    bridge = config.get_bridge(notebook)
+    target = _load_proxy_target(
+        ctx,
+        notebook=notebook,
+        workspace=workspace,
+        account=account,
+        ignore_target_cache=ignore_target_cache,
+    )
+    config = target.config if target else None
+    bridge = target.bridge if target else None
     needs_bootstrap = bridge is None
     if bridge is not None:
         ready = is_tunnel_available(
@@ -112,11 +165,20 @@ def ssh_proxy_cmd(
             debug_playwright=False,
             setup_timeout=setup_timeout,
             setup_only=True,
+            account=account,
+            ignore_target_cache=ignore_target_cache,
         )
-        config = load_tunnel_config()
-        bridge = config.get_bridge(notebook)
+        target = _load_proxy_target(
+            ctx,
+            notebook=notebook,
+            workspace=bootstrap_workspace,
+            account=account,
+            ignore_target_cache=True,
+        )
+        config = target.config if target else None
+        bridge = target.bridge if target else None
 
-    if bridge is None:
+    if bridge is None or config is None:
         click.echo(
             f"No cached notebook connection for {scrub_raw_ids(notebook)} after bootstrap.",
             err=True,

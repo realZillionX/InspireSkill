@@ -33,6 +33,7 @@ from .load_runtime import (
 def config_from_files_and_env(
     *,
     require_credentials: bool = True,
+    account: str | None = None,
 ) -> tuple[Config, dict[str, str]]:
     """Load config from files + env vars with layered precedence."""
     config_dict = _default_config_values()
@@ -41,8 +42,13 @@ def config_from_files_and_env(
     account_config_path = _apply_account_layer(
         config_dict=config_dict,
         sources=sources,
+        account=account,
     )
-    project_layer_state = _apply_project_layer(config_dict=config_dict, sources=sources)
+    project_layer_state = _apply_project_layer(
+        config_dict=config_dict,
+        sources=sources,
+        account=account,
+    )
 
     _apply_project_context_and_defaults(
         config_dict=config_dict,

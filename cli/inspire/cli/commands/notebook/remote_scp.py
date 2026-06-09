@@ -27,6 +27,8 @@ from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
+from .target_resolver import resolve_cached_notebook_target
+
 
 def _scp_failure_details(result: object) -> str | None:
     for attr in ("stderr", "stdout"):
@@ -58,6 +60,12 @@ def _warn_if_remote_path_is_relative(remote_path: str, *, download: bool) -> Non
 @click.argument("notebook")
 @click.argument("source")
 @click.argument("destination")
+@click.option("--account", required=False, help="Account name for this notebook target.")
+@click.option(
+    "--ignore-target-cache",
+    is_flag=True,
+    help="Ignore the remembered notebook target and resolve candidates again.",
+)
 @click.option("--download", "-d", is_flag=True, help="Download from remote (default is upload)")
 @click.option("--recursive", "-r", is_flag=True, help="Copy directories recursively")
 @click.option("--timeout", "-t", type=click.IntRange(1), default=None, help="Timeout in seconds")
@@ -67,6 +75,8 @@ def bridge_scp(
     notebook: str,
     source: str,
     destination: str,
+    account: str | None,
+    ignore_target_cache: bool,
     download: bool,
     recursive: bool,
     timeout: Optional[int],
@@ -97,7 +107,6 @@ def bridge_scp(
         resource_type="notebook",
         list_command="inspire notebook list",
     )
-    bridge = notebook
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
     except ConfigError as e:
@@ -114,11 +123,34 @@ def bridge_scp(
         if local.is_dir() and not recursive:
             recursive = True
 
-    tunnel_config = load_tunnel_config()
-    if bridge and tunnel_config.get_bridge(bridge) is None:
-        message = f"No cached notebook connection for '{bridge}'."
+    target = resolve_cached_notebook_target(
+        ctx,
+        notebook=notebook,
+        workspace=None,
+        account=account,
+        ignore_target_cache=ignore_target_cache,
+        verify_target_cache=False,
+        allow_prompt=not ctx.json_output,
+    )
+    if target is None:
+        explicit_account = (
+            str(account or "").strip()
+            if str(account or "").strip() and str(account or "").strip().lower() != "all"
+            else None
+        )
+        tunnel_config = load_tunnel_config(account=explicit_account) if explicit_account else load_tunnel_config()
+        bridge_profile = tunnel_config.get_bridge(notebook)
+    else:
+        tunnel_config = target.config
+        bridge_profile = target.bridge
+
+    if bridge_profile is None:
+        message = f"No cached notebook connection for '{notebook}'."
         hint = "Run `inspire notebook connection refresh <name> --workspace <workspace>` to create or refresh this notebook connection."
         _handle_error(ctx, "BridgeNotFound", message, EXIT_GENERAL_ERROR, hint=hint)
+        return
+
+    bridge = bridge_profile.name
 
     if not is_tunnel_available(bridge_name=bridge, config=tunnel_config):
         hint = (

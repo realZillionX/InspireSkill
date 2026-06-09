@@ -9,7 +9,7 @@ from click.testing import CliRunner
 
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
 from inspire.cli.main import main as cli_main
-from inspire.cli.context import EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, EXIT_SUCCESS, EXIT_TIMEOUT
+from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, EXIT_SUCCESS, EXIT_TIMEOUT
 from inspire.config import Config
 
 # Import the submodules where the patched names actually live
@@ -1078,6 +1078,79 @@ def test_bridge_exec_rebuilds_notebook_tunnel_before_command(
 
     assert result.exit_code == EXIT_SUCCESS
     assert calls["rebuild"] == 1
+    assert calls["stream"] == 1
+
+
+def test_bridge_exec_cross_account_rebuild_uses_target_account_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = make_sync_config(tmp_path)
+    config.tunnel_retries = 2
+    config.tunnel_retry_pause = 0.0
+    calls: Dict[str, Any] = {"availability": 0, "rebuild": 0, "stream": 0, "accounts": []}
+
+    tunnel_config = TunnelConfig(account="alice")
+    tunnel_config.add_bridge(
+        BridgeProfile(
+            name="gpu-main",
+            proxy_url="https://proxy.example.com/proxy/31337/",
+            notebook_id="notebook-1",
+        )
+    )
+    session = object()
+
+    def fake_load_tunnel_config(account=None):  # type: ignore[no-untyped-def]
+        calls.setdefault("load_accounts", []).append(account)
+        return tunnel_config
+
+    def fake_is_tunnel_available(*args: Any, **kwargs: Any) -> bool:
+        calls["availability"] += 1
+        return calls["availability"] > 1
+
+    def fake_require_web_session(ctx, hint, account=None):  # type: ignore[no-untyped-def]
+        del ctx, hint
+        calls["accounts"].append(account)
+        return session
+
+    def fake_rebuild(*args: Any, **kwargs: Any) -> BridgeProfile:
+        calls["rebuild"] += 1
+        calls["rebuild_session"] = kwargs.get("session")
+        calls["rebuild_config"] = kwargs.get("tunnel_config")
+        return tunnel_config.bridges["gpu-main"]
+
+    def fake_stream(*args: Any, **kwargs: Any) -> int:
+        calls["stream"] += 1
+        return 0
+
+    monkeypatch.setattr(exec_cmd_module, "load_tunnel_config", fake_load_tunnel_config)
+    monkeypatch.setattr(exec_cmd_module, "is_tunnel_available", fake_is_tunnel_available)
+    monkeypatch.setattr(exec_cmd_module, "require_web_session", fake_require_web_session)
+    monkeypatch.setattr(exec_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
+    monkeypatch.setattr(exec_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
+    monkeypatch.setattr(exec_cmd_module.browser_api_module, "get_notebook_detail", lambda **_: {"status": "RUNNING"})
+
+    exit_code = exec_cmd_module.try_exec_via_ssh_tunnel(
+        Context(),
+        command="echo hi",
+        bridge_name="gpu-main",
+        tunnel_account="alice",
+        stdin_mode=False,
+        config=config,
+        remote_cwd=None,
+        env_exports="",
+        timeout_s=30,
+        is_tunnel_available_fn=fake_is_tunnel_available,
+        run_ssh_command_fn=lambda **_: None,
+        run_ssh_command_streaming_fn=fake_stream,
+    )
+
+    assert exit_code == EXIT_SUCCESS
+    assert calls["accounts"] == ["alice"]
+    assert calls["rebuild"] == 1
+    assert calls["rebuild_session"] is session
+    assert calls["rebuild_config"] is tunnel_config
+    assert "alice" in calls["load_accounts"]
     assert calls["stream"] == 1
 
 

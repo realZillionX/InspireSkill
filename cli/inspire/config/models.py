@@ -173,11 +173,11 @@ class Config:
 
     @classmethod
     def from_files_and_env(
-        cls, require_credentials: bool = True
+        cls, require_credentials: bool = True, account: str | None = None
     ) -> tuple["Config", dict[str, str]]:
         from inspire.config.load import config_from_files_and_env
 
-        return config_from_files_and_env(require_credentials=require_credentials)
+        return config_from_files_and_env(require_credentials=require_credentials, account=account)
 
     @classmethod
     def get_config_paths(cls) -> tuple[Path | None, Path | None]:
