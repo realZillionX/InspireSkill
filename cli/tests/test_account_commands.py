@@ -7,6 +7,7 @@ resolve all paths lazily through ``Path.home()``, so this is sufficient.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -121,6 +122,93 @@ class TestCreateListCurrent:
         (accounts / "no-config-here").mkdir()
         storage.create_account("alice", "x = 1\n")
         assert storage.list_accounts() == ["alice"]
+
+
+class TestRenameStorage:
+    def test_rename_active_account_updates_current_and_preserves_files(
+        self, home: Path
+    ) -> None:
+        storage.create_account("old", "x = 1\n")
+        account_dir = storage.account_dir("old")
+        (account_dir / "web_session.json").write_text('{"account": "old"}\n')
+        (account_dir / "bridges.json").write_text('{"bridges": []}\n')
+        storage.set_current_account("old")
+
+        storage.rename_account("old", "new")
+
+        assert storage.list_accounts() == ["new"]
+        assert storage.current_account() == "new"
+        assert not (home / ".inspire" / "accounts" / "old").exists()
+        new_dir = home / ".inspire" / "accounts" / "new"
+        assert (new_dir / "config.toml").read_text() == "x = 1\n"
+        assert (new_dir / "web_session.json").read_text() == '{"account": "old"}\n'
+        assert (new_dir / "bridges.json").read_text() == '{"bridges": []}\n'
+
+    def test_rename_inactive_account_keeps_current(self, home: Path) -> None:
+        storage.create_account("alice", "x = 1\n")
+        storage.create_account("bob", "x = 1\n")
+        storage.set_current_account("alice")
+
+        storage.rename_account("bob", "charlie")
+
+        assert storage.list_accounts() == ["alice", "charlie"]
+        assert storage.current_account() == "alice"
+
+    def test_rename_rejects_missing_source(self, home: Path) -> None:
+        with pytest.raises(storage.AccountError, match="not found"):
+            storage.rename_account("ghost", "new")
+
+    def test_rename_rejects_existing_target(self, home: Path) -> None:
+        storage.create_account("old", "x = 1\n")
+        storage.create_account("new", "x = 1\n")
+
+        with pytest.raises(storage.AccountError, match="already exists"):
+            storage.rename_account("old", "new")
+
+    def test_rename_rejects_same_name(self, home: Path) -> None:
+        storage.create_account("alice", "x = 1\n")
+
+        with pytest.raises(storage.AccountError, match="same"):
+            storage.rename_account("alice", "alice")
+
+    def test_rename_rewrites_notebook_target_cache(self, home: Path) -> None:
+        storage.create_account("old", "x = 1\n")
+        storage.create_account("other", "x = 1\n")
+        cache = home / ".inspire" / "notebook-targets.json"
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "targets": {
+                        "nb|workspace=CPU": {
+                            "account": "old",
+                            "bridge_name": "nb",
+                            "updated_at": 1,
+                        },
+                        "other|workspace=CPU": {
+                            "account": "other",
+                            "bridge_name": "other",
+                            "updated_at": 1,
+                        },
+                        "none|workspace=CPU": {
+                            "account": None,
+                            "bridge_name": "none",
+                        },
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        storage.rename_account("old", "new")
+
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        assert data["targets"]["nb|workspace=CPU"]["account"] == "new"
+        assert data["targets"]["nb|workspace=CPU"]["updated_at"] >= 1
+        assert data["targets"]["other|workspace=CPU"]["account"] == "other"
+        assert data["targets"]["none|workspace=CPU"]["account"] is None
 
 
 # --- CLI command tests ----------------------------------------------------
@@ -474,6 +562,52 @@ class TestAccountUseCommand:
         assert not (home / ".inspire" / "accounts" / "user-1").exists()
 
 
+class TestAccountRenameCommand:
+    def test_rename_active_account(self, home: Path, runner: CliRunner) -> None:
+        storage.create_account(
+            "old",
+            '[auth]\nusername = "platform-user"\npassword = "pw"\n',
+        )
+        storage.set_current_account("old")
+
+        result = runner.invoke(account, ["rename", "old", "new"])
+
+        assert result.exit_code == 0, result.output
+        assert "Renamed account: old -> new" in result.output
+        assert "Active account: new" in result.output
+        assert storage.current_account() == "new"
+        assert storage.list_accounts() == ["new"]
+        assert 'username = "platform-user"' in storage.account_config_path("new").read_text()
+
+    def test_rename_inactive_account(self, home: Path, runner: CliRunner) -> None:
+        storage.create_account("alice", "x = 1\n")
+        storage.create_account("bob", "x = 1\n")
+        storage.set_current_account("alice")
+
+        result = runner.invoke(account, ["rename", "bob", "charlie"])
+
+        assert result.exit_code == 0, result.output
+        assert "Renamed account: bob -> charlie" in result.output
+        assert "Active account:" not in result.output
+        assert storage.current_account() == "alice"
+        assert storage.list_accounts() == ["alice", "charlie"]
+
+    def test_rename_unknown_fails(self, home: Path, runner: CliRunner) -> None:
+        result = runner.invoke(account, ["rename", "ghost", "new"])
+
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    def test_rename_existing_target_fails(self, home: Path, runner: CliRunner) -> None:
+        storage.create_account("old", "x = 1\n")
+        storage.create_account("new", "x = 1\n")
+
+        result = runner.invoke(account, ["rename", "old", "new"])
+
+        assert result.exit_code != 0
+        assert "already exists" in result.output
+
+
 class TestAccountCurrentCommand:
     def test_current_prints_active(self, home: Path, runner: CliRunner) -> None:
         storage.create_account("alice", "x = 1\n")
@@ -543,5 +677,5 @@ def test_account_group_help_lists_subcommands() -> None:
     runner = CliRunner()
     result = runner.invoke(cli_main, ["account", "--help"])
     assert result.exit_code == 0
-    for sub in ("add", "list", "use", "current", "remove"):
+    for sub in ("add", "list", "use", "current", "remove", "rename"):
         assert sub in result.output, f"missing subcommand in help: {sub}\n{result.output}"

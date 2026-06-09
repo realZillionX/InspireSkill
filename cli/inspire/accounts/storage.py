@@ -14,12 +14,15 @@ place to change when the on-disk layout evolves.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 
 CONFIG_FILENAME = "config.toml"
+NOTEBOOK_TARGET_CACHE_FILENAME = "notebook-targets.json"
 
 
 def _atomic_write_text(target: Path, content: str) -> None:
@@ -200,3 +203,64 @@ def remove_account(name: str) -> None:
     shutil.rmtree(target)
     if was_active:
         clear_current_account()
+
+
+def rename_account(old_name: str, new_name: str) -> None:
+    """Rename a local account alias without changing platform credentials."""
+    old = validate_name(old_name)
+    new = validate_name(new_name)
+    if old == new:
+        raise AccountError("Source and target account names are the same.")
+    if not account_exists(old):
+        raise AccountError(f"Account not found: {old}")
+
+    ensure_inspire_home()
+    source = accounts_dir() / old
+    target = accounts_dir() / new
+    if target.exists():
+        raise AccountError(f"Account already exists: {new}")
+
+    was_active = current_account() == old
+    source.rename(target)
+    _rewrite_notebook_target_cache_account(old, new)
+    if was_active:
+        _atomic_write_text(current_file(), new + "\n")
+    _clear_process_account_caches()
+
+
+def _rewrite_notebook_target_cache_account(old: str, new: str) -> None:
+    """Rewrite remembered cross-account notebook target selections."""
+    path = inspire_home() / NOTEBOOK_TARGET_CACHE_FILENAME
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return
+    except (json.JSONDecodeError, OSError):
+        return
+    if not isinstance(data, dict):
+        return
+    targets = data.get("targets")
+    if not isinstance(targets, dict):
+        return
+
+    changed = False
+    updated_at = int(time.time())
+    for entry in targets.values():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("account") != old:
+            continue
+        entry["account"] = new
+        entry["updated_at"] = updated_at
+        changed = True
+    if not changed:
+        return
+
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)

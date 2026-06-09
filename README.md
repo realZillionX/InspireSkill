@@ -163,7 +163,7 @@ inspire resources availability --workspace all --include-cpu
   </td>
   <td width="50%">
     <h4>🗝 多账号（一账号一目录）</h4>
-    <code>inspire account add / list / use / current / remove</code> —— 每个账号的 <code>config.toml</code>、SSH tunnel bridges 和登录缓存都在独立目录 <code>~/.inspire/accounts/&lt;name&gt;/</code>，活动账号由 <code>~/.inspire/current</code> 一行决定。不再有 <code>[accounts."&lt;user&gt;"]</code> 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。Notebook 连接类命令的 <code>--account &lt;name&gt;</code> 使用本地 account alias，不是平台登录用户名；<code>all</code> 是跨账号扫描 selector。
+    <code>inspire account add / list / use / rename / current / remove</code> —— 每个账号的 <code>config.toml</code>、SSH tunnel bridges 和登录缓存都在独立目录 <code>~/.inspire/accounts/&lt;name&gt;/</code>，活动账号由 <code>~/.inspire/current</code> 一行决定。不再有 <code>[accounts."&lt;user&gt;"]</code> 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。Notebook 连接类命令的 <code>--account &lt;name&gt;</code> 使用本地 account alias，不是平台登录用户名；<code>all</code> 是跨账号扫描 selector。
   </td>
 </tr>
 </table>

@@ -25,6 +25,7 @@ from inspire.accounts.storage import (
     inspire_home,
     list_accounts,
     remove_account,
+    rename_account,
     set_current_account,
     validate_name,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "list_accounts",
     "normalize_environment",
     "remove_account",
+    "rename_account",
     "set_current_account",
     "validate_name",
 ]
