@@ -72,6 +72,32 @@ SII_UBUNTU_APT_MIRROR = "http://nexus.sii.shaipower.online/repository/ubuntu"
 INSPIRE_BOOTSTRAP_ROOT = "/inspire/hdd/global_public/inspire-skill-bootstrap/v1"
 
 
+def _authorized_keys_setup_command(ssh_public_key: Optional[str]) -> str:
+    if ssh_public_key:
+        ssh_public_key_escaped = ssh_public_key.replace("'", "'\"'\"'")
+        return (
+            "mkdir -p /root/.ssh && chmod 700 /root/.ssh && "
+            "touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys && "
+            f"_INSPIRE_SSH_KEY='{ssh_public_key_escaped}'; "
+            "_INSPIRE_SSH_KEY_ID=$(printf '%s\\n' \"$_INSPIRE_SSH_KEY\" "
+            "| awk 'NF {print $1 \" \" $2; exit}'); "
+            'if [ -n "$_INSPIRE_SSH_KEY_ID" ] && ! awk -v k="$_INSPIRE_SSH_KEY_ID" '
+            "'NF && $1 \" \" $2 == k {found=1} END{exit found?0:1}' "
+            "/root/.ssh/authorized_keys; then "
+            "printf '%s\\n' \"$_INSPIRE_SSH_KEY\" >> /root/.ssh/authorized_keys; fi; "
+            "_AK_TMP=/root/.ssh/authorized_keys.tmp.$$; "
+            "awk 'NF { k=$1 \" \" $2; if (!seen[k]++) print $0 }' "
+            '/root/.ssh/authorized_keys >"$_AK_TMP" && cat "$_AK_TMP" '
+            '>/root/.ssh/authorized_keys; rm -f "$_AK_TMP"; '
+            "chmod 600 /root/.ssh/authorized_keys"
+        )
+
+    return (
+        "mkdir -p /root/.ssh && chmod 700 /root/.ssh && "
+        "touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+    )
+
+
 def build_rtunnel_setup_commands(
     *,
     port: int,
@@ -85,15 +111,7 @@ def build_rtunnel_setup_commands(
     version correction always uses the SII internal Ubuntu apt mirror selected
     from the container's Ubuntu codename.
     """
-    if ssh_public_key:
-        ssh_public_key_escaped = ssh_public_key.replace("'", "'\"'\"'")
-        key_line = (
-            "mkdir -p /root/.ssh && chmod 700 /root/.ssh && echo "
-            f"'{ssh_public_key_escaped}' >> /root/.ssh/authorized_keys && chmod 600 "
-            "/root/.ssh/authorized_keys"
-        )
-    else:
-        key_line = "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
+    key_line = _authorized_keys_setup_command(ssh_public_key)
 
     cmd_lines: list[str] = [
         f"PORT={port}",
@@ -105,25 +123,35 @@ def build_rtunnel_setup_commands(
         f"OPENSSH_INSTALL_LOG={OPENSSH_INSTALL_LOG}",
         f"SII_UBUNTU_APT_MIRROR={SII_UBUNTU_APT_MIRROR}",
         # Detect container arch once — rtunnel ships one binary per Linux arch.
-        '_RT_ARCH=$(uname -m 2>/dev/null); '
+        "_RT_ARCH=$(uname -m 2>/dev/null); "
         'case "$_RT_ARCH" in arm64|aarch64) _RT_ARCH=arm64;; *) _RT_ARCH=amd64;; esac',
         # rtunnel is statically-linked (Go) and lives read-only on GPFS at
         # /inspire/hdd/global_public/inspire-skill-bootstrap/v1/rtunnel/linux-<arch>/rtunnel
         # We exec it straight from there — no copy / chmod into the container.
         '_RT_BIN="$KIT/rtunnel/linux-${_RT_ARCH}/rtunnel"',
         '_OS_ID=$(. /etc/os-release 2>/dev/null && echo "${ID:-}" || true)',
-        '_OS_CODENAME=$(. /etc/os-release 2>/dev/null && '
+        "_OS_CODENAME=$(. /etc/os-release 2>/dev/null && "
         'echo "${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}" || true)',
-        '_OPENSSH_SERVER_VERSION=$(dpkg-query -W -f=\'${Version}\' openssh-server 2>/dev/null || true)',
-        '_OPENSSH_CLIENT_VERSION=$(dpkg-query -W -f=\'${Version}\' openssh-client 2>/dev/null || true)',
-        '_OPENSSH_SFTP_VERSION=$(dpkg-query -W -f=\'${Version}\' openssh-sftp-server 2>/dev/null || true)',
-        '_OPENSSH_BINARY_VERSION=$(/usr/sbin/sshd -V 2>&1 || true)',
+        "_OPENSSH_SERVER_VERSION=$(dpkg-query -W -f='${Version}' openssh-server 2>/dev/null || true)",
+        "_OPENSSH_CLIENT_VERSION=$(dpkg-query -W -f='${Version}' openssh-client 2>/dev/null || true)",
+        "_OPENSSH_SFTP_VERSION=$(dpkg-query -W -f='${Version}' openssh-sftp-server 2>/dev/null || true)",
+        "_OPENSSH_BINARY_VERSION=$(/usr/sbin/sshd -V 2>&1 || true)",
         'echo "[inspire bootstrap] distro=${_OS_ID:-unknown}/${_OS_CODENAME:-unknown} '
-        'openssh-server=${_OPENSSH_SERVER_VERSION:-none} '
-        'openssh-client=${_OPENSSH_CLIENT_VERSION:-none} '
+        "openssh-server=${_OPENSSH_SERVER_VERSION:-none} "
+        "openssh-client=${_OPENSSH_CLIENT_VERSION:-none} "
         'openssh-sftp-server=${_OPENSSH_SFTP_VERSION:-none}"',
         '_fail_openssh(){ touch "$OPENSSH_INSTALL_FAILED_FILE"; '
         'echo "[inspire bootstrap] ERROR: $1" | tee -a "$OPENSSH_INSTALL_LOG"; }',
+        '_inspire_sshd_running(){ ps -ef | grep -q "[s]shd -p $SSH_PORT"; }',
+        "_inspire_rtunnel_running(){ ps -ef | "
+        'grep -Eq "[r]tunnel .*([[:space:]]|:)$PORT([[:space:]]|$)"; }',
+        'if [ -f "$BOOTSTRAP_SENTINEL" ] && [ -x "$_RT_BIN" ] '
+        "&& [ -x /usr/sbin/sshd ] && _inspire_sshd_running "
+        "&& _inspire_rtunnel_running; then "
+        'rm -f "$OPENSSH_INSTALL_FAILED_FILE"; '
+        'echo "[inspire bootstrap] existing sshd and rtunnel are running; fast path"; '
+        'echo "INSPIRE_RTUNNEL_STATUS=running"; '
+        f"echo {SETUP_DONE_MARKER}; exit 0; fi",
     ]
 
     # sshd:
@@ -137,7 +165,7 @@ def build_rtunnel_setup_commands(
         'echo "[inspire bootstrap] resolving Ubuntu ${_OS_CODENAME} OpenSSH via SII internal apt mirror" '
         '| tee "$OPENSSH_INSTALL_LOG"; '
         '_apt_source="/tmp/inspire-openssh-${_OS_CODENAME}.sources.list"; '
-        '_apt_sourceparts=/tmp/inspire-empty-apt-sourceparts; '
+        "_apt_sourceparts=/tmp/inspire-empty-apt-sourceparts; "
         '_apt_lists="/tmp/inspire-openssh-${_OS_CODENAME}-apt-lists"; '
         'rm -rf "$_apt_sourceparts"; mkdir -p "$_apt_sourceparts"; '
         'rm -rf "$_apt_lists"; mkdir -p "$_apt_lists/partial"; '
@@ -147,57 +175,57 @@ def build_rtunnel_setup_commands(
         '"deb $SII_UBUNTU_APT_MIRROR $_OS_CODENAME-security main restricted universe multiverse" '
         '> "$_apt_source"; '
         '_apt_opts="-o Dir::Etc::sourcelist=$_apt_source '
-        '-o Dir::Etc::sourceparts=$_apt_sourceparts -o Dir::State::lists=$_apt_lists '
+        "-o Dir::Etc::sourceparts=$_apt_sourceparts -o Dir::State::lists=$_apt_lists "
         '-o APT::Get::List-Cleanup=0"; '
-        'export DEBIAN_FRONTEND=noninteractive; '
-        'if ! timeout 45 apt-get $_apt_opts -o Acquire::Retries=2 -o Acquire::http::Timeout=15 update -qq '
+        "export DEBIAN_FRONTEND=noninteractive; "
+        "if ! timeout 45 apt-get $_apt_opts -o Acquire::Retries=2 -o Acquire::http::Timeout=15 update -qq "
         '>>"$OPENSSH_INSTALL_LOG" 2>&1; then '
         '_fail_openssh "apt update failed; SII internal Ubuntu apt mirror is unreachable or rejected."; '
-        'else '
-        '_OPENSSH_SERVER_CANDIDATE=$(apt-cache $_apt_opts policy openssh-server '
-        '2>>"$OPENSSH_INSTALL_LOG" | awk \'/Candidate:/ {print $2; exit}\' || true); '
-        '_OPENSSH_CLIENT_CANDIDATE=$(apt-cache $_apt_opts policy openssh-client '
-        '2>>"$OPENSSH_INSTALL_LOG" | awk \'/Candidate:/ {print $2; exit}\' || true); '
-        '_OPENSSH_SFTP_CANDIDATE=$(apt-cache $_apt_opts policy openssh-sftp-server '
-        '2>>"$OPENSSH_INSTALL_LOG" | awk \'/Candidate:/ {print $2; exit}\' || true); '
+        "else "
+        "_OPENSSH_SERVER_CANDIDATE=$(apt-cache $_apt_opts policy openssh-server "
+        "2>>\"$OPENSSH_INSTALL_LOG\" | awk '/Candidate:/ {print $2; exit}' || true); "
+        "_OPENSSH_CLIENT_CANDIDATE=$(apt-cache $_apt_opts policy openssh-client "
+        "2>>\"$OPENSSH_INSTALL_LOG\" | awk '/Candidate:/ {print $2; exit}' || true); "
+        "_OPENSSH_SFTP_CANDIDATE=$(apt-cache $_apt_opts policy openssh-sftp-server "
+        "2>>\"$OPENSSH_INSTALL_LOG\" | awk '/Candidate:/ {print $2; exit}' || true); "
         'echo "[inspire bootstrap] internal apt candidate openssh-server=${_OPENSSH_SERVER_CANDIDATE:-none}" '
         '>>"$OPENSSH_INSTALL_LOG"; '
         'if [ -z "$_OPENSSH_SERVER_CANDIDATE" ] || [ "$_OPENSSH_SERVER_CANDIDATE" = "(none)" ] '
         '|| [ -z "$_OPENSSH_CLIENT_CANDIDATE" ] || [ "$_OPENSSH_CLIENT_CANDIDATE" = "(none)" ] '
         '|| [ -z "$_OPENSSH_SFTP_CANDIDATE" ] || [ "$_OPENSSH_SFTP_CANDIDATE" = "(none)" ]; then '
         '_fail_openssh "SII internal Ubuntu apt mirror did not provide OpenSSH packages for ${_OS_CODENAME}."; '
-        'else '
-        '_need_openssh=0; '
-        'if [ ! -x /usr/sbin/sshd ]; then _need_openssh=1; fi; '
+        "else "
+        "_need_openssh=0; "
+        "if [ ! -x /usr/sbin/sshd ]; then _need_openssh=1; fi; "
         'if [ "$_OPENSSH_SERVER_VERSION" != "$_OPENSSH_SERVER_CANDIDATE" ]; then _need_openssh=1; fi; '
         'if [ "$_OPENSSH_CLIENT_VERSION" != "$_OPENSSH_CLIENT_CANDIDATE" ]; then _need_openssh=1; fi; '
         'if [ "$_OPENSSH_SFTP_VERSION" != "$_OPENSSH_SFTP_CANDIDATE" ]; then _need_openssh=1; fi; '
         'if [ "$_need_openssh" = "1" ]; then '
         'if [ -n "$_OPENSSH_SERVER_VERSION" ] || [ -n "$_OPENSSH_CLIENT_VERSION" ] '
         '|| [ -n "$_OPENSSH_SFTP_VERSION" ]; then '
-        'timeout 45 apt-get $_apt_opts remove -y -qq '
-        'openssh-server openssh-client openssh-sftp-server '
+        "timeout 45 apt-get $_apt_opts remove -y -qq "
+        "openssh-server openssh-client openssh-sftp-server "
         '>>"$OPENSSH_INSTALL_LOG" 2>&1 || true; '
-        'dpkg --remove --force-depends openssh-server openssh-client openssh-sftp-server '
+        "dpkg --remove --force-depends openssh-server openssh-client openssh-sftp-server "
         '>>"$OPENSSH_INSTALL_LOG" 2>&1 || true; fi; '
-        'if ! timeout 120 apt-get $_apt_opts install -y -qq --allow-downgrades --no-install-recommends '
+        "if ! timeout 120 apt-get $_apt_opts install -y -qq --allow-downgrades --no-install-recommends "
         '"openssh-server=$_OPENSSH_SERVER_CANDIDATE" "openssh-client=$_OPENSSH_CLIENT_CANDIDATE" '
         '"openssh-sftp-server=$_OPENSSH_SFTP_CANDIDATE" '
         '>>"$OPENSSH_INSTALL_LOG" 2>&1; then '
         '_fail_openssh "apt install failed; SII internal Ubuntu apt mirror did not provide usable OpenSSH packages."; '
-        'else '
+        "else "
         'echo "[inspire bootstrap] installed OpenSSH from SII internal Ubuntu apt mirror" '
         '>>"$OPENSSH_INSTALL_LOG"; '
-        'fi; '
-        'else '
+        "fi; "
+        "else "
         'echo "[inspire bootstrap] existing OpenSSH matches internal apt candidate" '
         '>>"$OPENSSH_INSTALL_LOG"; '
-        'fi; '
-        '_OPENSSH_SERVER_VERSION=$(dpkg-query -W -f=\'${Version}\' openssh-server 2>/dev/null || true); '
-        '_OPENSSH_CLIENT_VERSION=$(dpkg-query -W -f=\'${Version}\' openssh-client 2>/dev/null || true); '
-        '_OPENSSH_SFTP_VERSION=$(dpkg-query -W -f=\'${Version}\' openssh-sftp-server 2>/dev/null || true); '
-        '_OPENSSH_BINARY_VERSION=$(/usr/sbin/sshd -V 2>&1 || true); '
-        'if [ ! -x /usr/sbin/sshd ]; then '
+        "fi; "
+        "_OPENSSH_SERVER_VERSION=$(dpkg-query -W -f='${Version}' openssh-server 2>/dev/null || true); "
+        "_OPENSSH_CLIENT_VERSION=$(dpkg-query -W -f='${Version}' openssh-client 2>/dev/null || true); "
+        "_OPENSSH_SFTP_VERSION=$(dpkg-query -W -f='${Version}' openssh-sftp-server 2>/dev/null || true); "
+        "_OPENSSH_BINARY_VERSION=$(/usr/sbin/sshd -V 2>&1 || true); "
+        "if [ ! -x /usr/sbin/sshd ]; then "
         '_fail_openssh "OpenSSH install completed without /usr/sbin/sshd."; '
         'elif [ "$_OPENSSH_SERVER_VERSION" != "$_OPENSSH_SERVER_CANDIDATE" ]; then '
         '_fail_openssh "installed OpenSSH does not match the internal apt candidate for ${_OS_CODENAME}."; '
@@ -205,9 +233,9 @@ def build_rtunnel_setup_commands(
         '_fail_openssh "installed OpenSSH client does not match the internal apt candidate for ${_OS_CODENAME}."; '
         'elif [ "$_OPENSSH_SFTP_VERSION" != "$_OPENSSH_SFTP_CANDIDATE" ]; then '
         '_fail_openssh "installed OpenSSH SFTP server does not match the internal apt candidate for ${_OS_CODENAME}."; '
-        'fi; '
-        'fi; fi; '
-        'elif [ ! -x /usr/sbin/sshd ]; then '
+        "fi; "
+        "fi; fi; "
+        "elif [ ! -x /usr/sbin/sshd ]; then "
         '_fail_openssh "OpenSSH is missing and this image is not a detectable Ubuntu release; '
         'internal apt installation was skipped."; '
         "fi"
@@ -235,7 +263,7 @@ def build_rtunnel_setup_commands(
         "useradd -r -M -d /run/sshd -s /usr/sbin/nologin sshd >/dev/null 2>&1 || true"
     )
     cmd_lines.append(
-        'if [ -x /usr/sbin/sshd ] && [ ! -f /etc/ssh/sshd_config ]; then '
+        "if [ -x /usr/sbin/sshd ] && [ ! -f /etc/ssh/sshd_config ]; then "
         "mkdir -p /etc/ssh; "
         "printf 'UsePAM no\\nStrictModes no\\nSubsystem sftp /usr/lib/openssh/sftp-server\\n' "
         "> /etc/ssh/sshd_config; fi"
@@ -267,15 +295,9 @@ def build_rtunnel_setup_commands(
         'echo "INSPIRE_RTUNNEL_STATUS=running"; '
         'else echo "INSPIRE_RTUNNEL_STATUS=not_running"; fi'
     )
+    cmd_lines.append(f'if [ ! -x "$_RT_BIN" ]; then echo {RTUNNEL_MISSING_MARKER}; fi')
     cmd_lines.append(
-        'if [ ! -x "$_RT_BIN" ]; then '
-        f'echo {RTUNNEL_MISSING_MARKER}; '
-        "fi"
-    )
-    cmd_lines.append(
-        'if [ -f "$OPENSSH_INSTALL_FAILED_FILE" ]; then '
-        f'echo {OPENSSH_INSTALL_FAILED_MARKER}; '
-        "fi"
+        f'if [ -f "$OPENSSH_INSTALL_FAILED_FILE" ]; then echo {OPENSSH_INSTALL_FAILED_MARKER}; fi'
     )
     cmd_lines.append(f"echo {SETUP_DONE_MARKER}")
 
@@ -316,8 +338,11 @@ def _resolve_rtunnel_account(
     session: Optional[WebSession] = None,
 ) -> str | None:
     session_account = str(getattr(session, "account", "") or "").strip()
-    return (explicit or "").strip() or session_account or _active_account_name() or (
-        str(getattr(session, "login_username", "") or "").strip() or None
+    return (
+        (explicit or "").strip()
+        or session_account
+        or _active_account_name()
+        or (str(getattr(session, "login_username", "") or "").strip() or None)
     )
 
 
@@ -743,14 +768,85 @@ def _candidate_urls_from_tunnel_config(
     return candidates
 
 
-def probe_existing_rtunnel_proxy_url(
+def _candidate_urls_from_ide_port_forward(
     *,
     notebook_id: str,
     port: int,
     session: WebSession,
+    timeout_s: int,
+) -> list[str]:
+    try:
+        from inspire.platform.web.browser_api.playwright_notebooks import (
+            resolve_notebook_port_forward_url,
+        )
+
+        proxy_url = resolve_notebook_port_forward_url(
+            notebook_id,
+            port=port,
+            session=session,
+            timeout=max(10, int(timeout_s)),
+        )
+    except Exception:
+        return []
+    return [proxy_url] if proxy_url else []
+
+
+def _ssh_probe_rtunnel_proxy_url(
+    *,
+    proxy_url: str,
+    port: int,
+    ssh_port: int,
+    timeout_s: int,
+    ssh_public_key: Optional[str] = None,
+) -> bool:
+    try:
+        from inspire.bridge.tunnel import (
+            BridgeProfile,
+            TunnelConfig,
+            _test_ssh_connection,
+            run_ssh_command,
+        )
+
+        config = TunnelConfig()
+        bridge = BridgeProfile(
+            name="__rtunnel_probe__",
+            proxy_url=proxy_url,
+            ssh_port=ssh_port,
+            rtunnel_port=port,
+        )
+        config.add_bridge(bridge)
+        timeout = max(3, int(timeout_s))
+        if not _test_ssh_connection(bridge, config, timeout=timeout):
+            return False
+        if not ssh_public_key:
+            return True
+
+        result = run_ssh_command(
+            _authorized_keys_setup_command(ssh_public_key),
+            bridge_name=bridge.name,
+            config=config,
+            timeout=timeout + 5,
+            capture_output=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def probe_existing_rtunnel_proxy_url(
+    *,
+    notebook_id: str,
+    port: int,
+    ssh_port: int = 22222,
+    session: WebSession,
     candidate_urls: Optional[list[str]] = None,
     account: Optional[str] = None,
     cache_ttl_seconds: int = DEFAULT_PROXY_CACHE_TTL_SECONDS,
+    verify_ssh: bool = False,
+    include_ide_port_forward: bool = False,
+    ide_timeout_s: int = 20,
+    ssh_public_key: Optional[str] = None,
 ) -> str | None:
     """Return the existing proxy URL if it looks reachable (otherwise None)."""
     base_url = _get_base_url().rstrip("/")
@@ -758,7 +854,17 @@ def probe_existing_rtunnel_proxy_url(
     known_proxy_url = f"{base_url}{notebook_lab_path}"
 
     resolved_account = _resolve_rtunnel_account(explicit=account, session=session)
-    urls: list[str] = [known_proxy_url]
+    urls: list[str] = []
+    if include_ide_port_forward:
+        urls.extend(
+            _candidate_urls_from_ide_port_forward(
+                notebook_id=notebook_id,
+                port=port,
+                session=session,
+                timeout_s=ide_timeout_s,
+            )
+        )
+    urls.append(known_proxy_url)
     if candidate_urls:
         urls.extend(candidate_urls)
     urls.extend(
@@ -781,10 +887,35 @@ def probe_existing_rtunnel_proxy_url(
 
     http = None
     try:
-        http = build_requests_session(session, base_url)
+        if not verify_ssh:
+            http = build_requests_session(session, base_url)
         for url in deduped_urls:
+            if verify_ssh:
+                if not _ssh_probe_rtunnel_proxy_url(
+                    proxy_url=url,
+                    port=port,
+                    ssh_port=ssh_port,
+                    timeout_s=6,
+                    ssh_public_key=ssh_public_key,
+                ):
+                    continue
+                try:
+                    save_rtunnel_proxy_state(
+                        notebook_id=notebook_id,
+                        proxy_url=url,
+                        port=port,
+                        ssh_port=ssh_port,
+                        base_url=base_url,
+                        account=resolved_account,
+                    )
+                except OSError:
+                    pass
+                return url
+
             resp = None
             try:
+                if http is None:
+                    continue
                 resp = http.get(url, timeout=(5, 5), stream=True)
             except Exception:
                 continue
@@ -1298,11 +1429,11 @@ def _check_rtunnel_present_via_ws(
     present_marker = "__INSPIRE_RTUNNEL_PRESENT__"
     absent_marker = "__INSPIRE_RTUNNEL_ABSENT__"
     command = (
-        '_rt_arch=$(uname -m 2>/dev/null); '
+        "_rt_arch=$(uname -m 2>/dev/null); "
         'case "$_rt_arch" in arm64|aarch64) _rt_arch=arm64;; *) _rt_arch=amd64;; esac; '
         f'_kit_rt="{INSPIRE_BOOTSTRAP_ROOT}/rtunnel/linux-${{_rt_arch}}/rtunnel"; '
         f'([ -x /tmp/rtunnel ] || [ -x "$_kit_rt" ]) && echo {present_marker} '
-        f'|| echo {absent_marker}'
+        f"|| echo {absent_marker}"
     )
     return _probe_terminal_command_markers_via_ws(
         context=context,
@@ -1321,10 +1452,7 @@ def _check_openssh_install_failed_via_ws(
 ) -> Optional[bool]:
     failed_marker = "__INSPIRE_OPENSSH_FAILED__"
     ok_marker = "__INSPIRE_OPENSSH_OK__"
-    command = (
-        f'[ -f "{OPENSSH_INSTALL_FAILED_FILE}" ] '
-        f'&& echo {failed_marker} || echo {ok_marker}'
-    )
+    command = f'[ -f "{OPENSSH_INSTALL_FAILED_FILE}" ] && echo {failed_marker} || echo {ok_marker}'
     return _probe_terminal_command_markers_via_ws(
         context=context,
         lab_frame=lab_frame,
@@ -2210,8 +2338,13 @@ def _setup_notebook_rtunnel_sync(
     existing = probe_existing_rtunnel_proxy_url(
         notebook_id=notebook_id,
         port=port,
+        ssh_port=ssh_port,
         session=session,
         account=account,
+        verify_ssh=True,
+        include_ide_port_forward=True,
+        ide_timeout_s=min(max(10, int(timeout // 4)), 30),
+        ssh_public_key=ssh_public_key,
     )
     if existing:
         timer.mark("probe_existing")

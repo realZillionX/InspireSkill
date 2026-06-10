@@ -250,13 +250,15 @@ def try_exec_via_ssh_tunnel(
             bridge_name=bridge.name,
             bridge=bridge,
             tunnel_config=tunnel_config,
-            session_loader=lambda: require_web_session(
-                ctx,
-                hint=WEB_AUTH_HINT,
-                account=tunnel_account,
-            )
-            if tunnel_account
-            else require_web_session(ctx, hint=WEB_AUTH_HINT),
+            session_loader=lambda: (
+                require_web_session(
+                    ctx,
+                    hint=WEB_AUTH_HINT,
+                    account=tunnel_account,
+                )
+                if tunnel_account
+                else require_web_session(ctx, hint=WEB_AUTH_HINT)
+            ),
             rebuild_fn=rebuild_notebook_bridge_profile,
             key_loader=_load_public_key,
         )
@@ -788,7 +790,7 @@ def exec_command(
             workspace=None,
             account=account,
             ignore_target_cache=ignore_target_cache,
-            verify_target_cache=False,
+            verify_target_cache=True,
             allow_prompt=not ctx.json_output,
         )
         if target is None:

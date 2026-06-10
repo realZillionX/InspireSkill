@@ -129,7 +129,7 @@ def bridge_scp(
         workspace=None,
         account=account,
         ignore_target_cache=ignore_target_cache,
-        verify_target_cache=False,
+        verify_target_cache=True,
         allow_prompt=not ctx.json_output,
     )
     if target is None:
@@ -138,7 +138,11 @@ def bridge_scp(
             if str(account or "").strip() and str(account or "").strip().lower() != "all"
             else None
         )
-        tunnel_config = load_tunnel_config(account=explicit_account) if explicit_account else load_tunnel_config()
+        tunnel_config = (
+            load_tunnel_config(account=explicit_account)
+            if explicit_account
+            else load_tunnel_config()
+        )
         bridge_profile = tunnel_config.get_bridge(notebook)
     else:
         tunnel_config = target.config

@@ -406,8 +406,9 @@ def test_send_setup_command_via_terminal_ws_cleans_up_terminal(
     monkeypatch.setattr(
         rtunnel_module,
         "_delete_terminal_via_api",
-        lambda _ctx, *, lab_url, term_name: events.append(("delete", f"{lab_url}|{term_name}"))
-        or True,
+        lambda _ctx, *, lab_url, term_name: (
+            events.append(("delete", f"{lab_url}|{term_name}")) or True
+        ),
     )
 
     assert (
@@ -498,19 +499,20 @@ def test_send_rtunnel_setup_script_defers_browser_terminal_cleanup(
     monkeypatch.setattr(
         rtunnel_module,
         "_open_or_create_terminal",
-        lambda _context, _page, lab_frame: setattr(
-            lab_frame,
-            "url",
-            "https://nb.example.com/lab/terminals/browser-term",
-        )
-        or (True, "browser-term"),
+        lambda _context, _page, lab_frame: (
+            setattr(
+                lab_frame,
+                "url",
+                "https://nb.example.com/lab/terminals/browser-term",
+            )
+            or (True, "browser-term")
+        ),
     )
     monkeypatch.setattr(rtunnel_module, "_focus_terminal_input", lambda *_a, **_k: True)
     monkeypatch.setattr(
         rtunnel_module,
         "_delete_terminal_via_api",
-        lambda _ctx, *, lab_url, term_name: events.append(f"delete:{lab_url}|{term_name}")
-        or True,
+        lambda _ctx, *, lab_url, term_name: events.append(f"delete:{lab_url}|{term_name}") or True,
     )
 
     result = _send_rtunnel_setup_script(
@@ -999,12 +1001,10 @@ def test_open_terminal_via_rest_api_handles_playwright_navigation_error(
         def goto(self, *_args, **_kwargs) -> None:
             raise rtunnel_module.PlaywrightError("navigation failed")
 
-    terminal_ready, api_term_created, term_name = (
-        rtunnel_module._open_terminal_via_rest_api(  # noqa: SLF001
-            context=object(),
-            page=object(),
-            lab_frame=_Frame(),
-        )
+    terminal_ready, api_term_created, term_name = rtunnel_module._open_terminal_via_rest_api(  # noqa: SLF001
+        context=object(),
+        page=object(),
+        lab_frame=_Frame(),
     )
     assert terminal_ready is False
     assert api_term_created is True
@@ -1070,7 +1070,9 @@ def test_build_rtunnel_setup_commands_installs_openssh_via_internal_ubuntu_apt()
     assert "apt-cache $_apt_opts policy openssh-client" in script
     assert "apt-cache $_apt_opts policy openssh-sftp-server" in script
     assert "apt-get $_apt_opts remove" in script
-    assert "dpkg --remove --force-depends openssh-server openssh-client openssh-sftp-server" in script
+    assert (
+        "dpkg --remove --force-depends openssh-server openssh-client openssh-sftp-server" in script
+    )
     assert "--allow-downgrades" in script
     assert '"openssh-server=$_OPENSSH_SERVER_CANDIDATE"' in script
     assert '"openssh-client=$_OPENSSH_CLIENT_CANDIDATE"' in script
@@ -1079,6 +1081,22 @@ def test_build_rtunnel_setup_commands_installs_openssh_via_internal_ubuntu_apt()
     assert OPENSSH_INSTALL_FAILED_MARKER in script
     assert '"$KIT/sshd-debs"/*.deb' not in script
     assert "dpkg -i" not in script
+
+
+def test_build_rtunnel_setup_commands_dedupes_authorized_keys_and_fast_paths() -> None:
+    commands = build_rtunnel_setup_commands(
+        port=31337,
+        ssh_port=22222,
+        ssh_public_key="ssh-ed25519 AAA comment-one",
+    )
+    script = "\n".join(commands)
+
+    assert "_INSPIRE_SSH_KEY_ID" in script
+    assert 'awk -v k="$_INSPIRE_SSH_KEY_ID"' in script
+    assert "if (!seen[k]++) print $0" in script
+    assert "existing sshd and rtunnel are running; fast path" in script
+    assert SETUP_DONE_MARKER in script
+    assert "exit 0" in script
 
 
 def test_rtunnel_presence_probe_accepts_zero_copy_kit_binary(

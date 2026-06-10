@@ -155,6 +155,53 @@ def test_resolver_prompt_choice_is_cached_and_can_be_ignored(
     assert ignored.account == "alice"
 
 
+def test_forget_notebook_targets_removes_matching_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    bridge = _bridge("dev-box", workspace="CPU资源空间")
+    target_resolver.remember_notebook_target(
+        notebook="dev-box",
+        workspace=None,
+        account="alice",
+        bridge=bridge,
+    )
+    target_resolver.remember_notebook_target(
+        notebook="dev-box",
+        workspace="CPU资源空间",
+        account="alice",
+        bridge=bridge,
+    )
+
+    removed = target_resolver.forget_notebook_targets(notebook="dev-box")
+
+    assert removed == ["dev-box|workspace=", "dev-box|workspace=CPU资源空间"]
+    cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text())
+    assert cache["targets"] == {}
+
+
+def test_connection_target_forget_removes_remembered_targets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    bridge = _bridge("dev-box", workspace="CPU资源空间")
+    target_resolver.remember_notebook_target(
+        notebook="dev-box",
+        workspace=None,
+        account="alice",
+        bridge=bridge,
+    )
+
+    result = CliRunner().invoke(cli_main, ["notebook", "connection", "target", "forget", "dev-box"])
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "Removed remembered notebook target entries for dev-box: 1" in result.output
+    cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text())
+    assert cache["targets"] == {}
+
+
 def test_resolver_reselects_when_cached_target_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

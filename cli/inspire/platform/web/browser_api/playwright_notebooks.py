@@ -289,6 +289,30 @@ def _find_ide_gateway_url(page: Any) -> Optional[str]:
     return _ide_gateway_url(getattr(page, "url", "") or "")
 
 
+def build_notebook_port_forward_url(
+    ide_url: str,
+    *,
+    port: int,
+    service_path: str = "",
+) -> Optional[str]:
+    """Build the full IDE port-forward URL for a container service."""
+    parsed = _split_ide_gateway(ide_url)
+    if parsed is None:
+        return None
+    scheme, netloc, path, query = parsed
+    if not scheme or not netloc:
+        return None
+
+    proxy_path = f"{path.rstrip('/')}/proxy/{int(port)}/"
+    service_parts = urlsplit(str(service_path or "").strip())
+    extra_path = service_parts.path.strip()
+    if extra_path:
+        proxy_path = f"{proxy_path.rstrip('/')}/{extra_path.lstrip('/')}"
+
+    query_parts = [part for part in (query, service_parts.query) if part]
+    return urlunsplit((scheme, netloc, proxy_path, "&".join(query_parts), ""))
+
+
 # ---------------------------------------------------------------------------
 # VSCode proxy suffix — per-account cache, probe, resolution
 # ---------------------------------------------------------------------------
@@ -336,9 +360,7 @@ def _save_ide_url_cache(path: Path, payload: dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         os.replace(tmp, path)
         try:
             os.chmod(path, 0o600)
@@ -547,6 +569,29 @@ def resolve_notebook_vscode_proxy_suffix(
     Pass ``refresh=True`` to skip the cache/probe and force a fresh browser
     derivation. Returns ``None`` if the IDE never loads (notebook not RUNNING).
     """
+    ide_url = resolve_notebook_vscode_ide_url(
+        notebook_id,
+        session=session,
+        headless=headless,
+        timeout=timeout,
+        refresh=refresh,
+        cache_ttl_seconds=cache_ttl_seconds,
+    )
+    if not ide_url:
+        return None
+    return _vscode_proxy_suffix(ide_url)
+
+
+def resolve_notebook_vscode_ide_url(
+    notebook_id: str,
+    *,
+    session: Optional[WebSession] = None,
+    headless: bool = True,
+    timeout: int = 60,
+    refresh: bool = False,
+    cache_ttl_seconds: int = DEFAULT_IDE_URL_CACHE_TTL_SECONDS,
+) -> Optional[str]:
+    """Resolve the full VSCode IDE gateway URL with cache validation."""
     if session is None:
         session = get_web_session()
     base_url = _get_base_url()
@@ -557,12 +602,12 @@ def resolve_notebook_vscode_proxy_suffix(
         candidates = ([cached] if cached else []) + _warm_ide_url_candidates(notebook_id, account)
         seen: set[str] = set()
         for ide_url in candidates:
-            if ide_url in seen:
+            if not ide_url or ide_url in seen:
                 continue
             seen.add(ide_url)
             if _is_ide_url_live(session, ide_url):
                 _write_cached_ide_url(notebook_id, ide_url, base_url, account)
-                return _vscode_proxy_suffix(ide_url)
+                return ide_url
 
     fresh_url = resolve_notebook_ide_url(
         notebook_id, session=session, headless=headless, timeout=timeout
@@ -570,7 +615,36 @@ def resolve_notebook_vscode_proxy_suffix(
     if not fresh_url:
         return None
     _write_cached_ide_url(notebook_id, fresh_url, base_url, account)
-    return _vscode_proxy_suffix(fresh_url)
+    return fresh_url
+
+
+def resolve_notebook_port_forward_url(
+    notebook_id: str,
+    *,
+    port: int,
+    service_path: str = "",
+    session: Optional[WebSession] = None,
+    headless: bool = True,
+    timeout: int = 60,
+    refresh: bool = False,
+    cache_ttl_seconds: int = DEFAULT_IDE_URL_CACHE_TTL_SECONDS,
+) -> Optional[str]:
+    """Resolve the full web-IDE port-forward URL for a notebook service."""
+    ide_url = resolve_notebook_vscode_ide_url(
+        notebook_id,
+        session=session,
+        headless=headless,
+        timeout=timeout,
+        refresh=refresh,
+        cache_ttl_seconds=cache_ttl_seconds,
+    )
+    if not ide_url:
+        return None
+    return build_notebook_port_forward_url(
+        ide_url,
+        port=port,
+        service_path=service_path,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -616,10 +690,7 @@ def _default_completion_marker() -> str:
 
 def _wrap_command_for_completion(command: str, completion_marker: str) -> str:
     inner = (
-        f"{command}; "
-        f"status=$?; "
-        f"printf '\\n%s\\n' {shlex.quote(completion_marker)}; "
-        "exit $status"
+        f"{command}; status=$?; printf '\\n%s\\n' {shlex.quote(completion_marker)}; exit $status"
     )
     return f"bash -lc {shlex.quote(inner)}"
 
@@ -764,8 +835,11 @@ def _run_command_in_notebook_sync(
 
 
 __all__ = [
+    "build_notebook_port_forward_url",
     "build_jupyter_proxy_url",
     "open_notebook_lab",
+    "resolve_notebook_port_forward_url",
+    "resolve_notebook_vscode_ide_url",
     "resolve_notebook_vscode_proxy_suffix",
     "run_command_in_notebook",
 ]

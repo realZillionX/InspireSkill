@@ -107,7 +107,7 @@ def bridge_ssh(
         workspace=None,
         account=account,
         ignore_target_cache=ignore_target_cache,
-        verify_target_cache=False,
+        verify_target_cache=True,
         allow_prompt=not ctx.json_output,
     )
     if target is None:
@@ -184,14 +184,14 @@ def bridge_ssh(
             if not notebook_id:
                 _handle_error(
                     ctx,
-                        "TunnelError",
-                        "SSH tunnel not available",
-                        hint=(
-                            "This cached connection is missing notebook metadata, so it cannot be "
-                            "rebuilt automatically. Re-create it via "
-                            "'inspire notebook connection refresh <notebook> --workspace <workspace>'."
-                        ),
-                    )
+                    "TunnelError",
+                    "SSH tunnel not available",
+                    hint=(
+                        "This cached connection is missing notebook metadata, so it cannot be "
+                        "rebuilt automatically. Re-create it via "
+                        "'inspire notebook connection refresh <notebook> --workspace <workspace>'."
+                    ),
+                )
 
             try:
                 if web_session is None:

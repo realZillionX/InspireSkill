@@ -113,10 +113,13 @@ def test_current_user_id_failure_records_live_user_detail_error(
     monkeypatch.setattr(_NBL_MOD.web_session_module, "request_json", _fake_request_json)
 
     session = _FakeSession()
-    assert _NBL_MOD._try_get_current_user_ids(
-        session,
-        base_url="https://example.invalid",
-    ) == []
+    assert (
+        _NBL_MOD._try_get_current_user_ids(
+            session,
+            base_url="https://example.invalid",
+        )
+        == []
+    )
     message = _NBL_MOD._current_user_lookup_failure_message(session)
     assert "/api/v1/user/detail" in message
     assert "browser runtime missing" in message
@@ -2009,6 +2012,40 @@ def test_notebook_exec_cwd_uses_path_alias(
 
     assert result.exit_code == EXIT_SUCCESS
     assert 'cd "/inspire/ssd/project/topic/alice/repo" && pwd' in str(captured["command"])
+
+
+def test_notebook_exec_verifies_target_cache_before_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = config_module.Config(username="", password="")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=True: (config, {})),
+    )
+
+    def fake_resolve_cached_notebook_target(ctx: Context, **kwargs: object) -> None:
+        del ctx
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(
+        remote_exec_module,
+        "resolve_cached_notebook_target",
+        fake_resolve_cached_notebook_target,
+    )
+    monkeypatch.setattr(
+        remote_exec_module,
+        "try_exec_via_ssh_tunnel",
+        lambda *args, **kwargs: EXIT_SUCCESS,
+    )
+
+    result = CliRunner().invoke(cli_main, ["notebook", "exec", "gpu-main", "pwd"])
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert captured["verify_target_cache"] is True
 
 
 def test_notebook_shell_cwd_uses_path_alias(

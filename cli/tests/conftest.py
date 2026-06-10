@@ -6,6 +6,7 @@ paths with pre-resolved handles; this autouse fixture short-circuits lookup
 so those tests avoid live network calls while production code still enforces
 the name-only contract.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -58,6 +59,7 @@ def _short_circuit_platform_resolvers(monkeypatch):  # noqa: ANN001
     name lookup. Real name-to-handle resolution is covered by unit tests of
     `resolve_by_name` / `resolve_job_id` that mock the list API directly.
     """
+
     def _passthrough(ctx, arg, **_kwargs):  # noqa: ANN001,ANN003
         return arg
 
@@ -78,6 +80,7 @@ def _short_circuit_platform_resolvers(monkeypatch):  # noqa: ANN001
 
     try:
         import importlib as _il
+
         _nb_lookup = _il.import_module("inspire.cli.commands.notebook.notebook_lookup")
         monkeypatch.setattr(_nb_lookup, "_resolve_notebook_id", _nb_passthrough)
     except (ImportError, AttributeError):  # pragma: no cover

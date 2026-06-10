@@ -9,15 +9,13 @@ Two separate ways to address a notebook's web IDE:
   ``/ws-.../project-.../user-.../vscode/<runtime>/<token>`` (starts with ``/``).
   This drives a headless browser to read the live gateway URL, so the notebook
   must be RUNNING and the embedded token is ephemeral.
-- ``proxy-url`` appends ``/proxy/<port>/`` and an optional service path to that
-  suffix, returning a full URL for container HTTP services.
+- ``proxy-url`` resolves the web IDE gateway and returns the same full
+  port-forward URL shape the IDE uses for container HTTP services.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit, urlunsplit
-
 import click
 
 from inspire.cli.context import Context, pass_context
@@ -26,9 +24,7 @@ if TYPE_CHECKING:
     from inspire.platform.web.session import WebSession
 
 
-def _resolve_notebook(
-    ctx: Context, notebook: str, workspace: str
-) -> tuple[WebSession, str, str]:
+def _resolve_notebook(ctx: Context, notebook: str, workspace: str) -> tuple[WebSession, str, str]:
     """Resolve a notebook name to ``(session, base_url, notebook_id)``.
 
     Exits via the shared error formatter on a workspace/config error.
@@ -169,18 +165,19 @@ def notebook_vscode_proxy_suffix(
         click.echo(suffix)
 
 
-def _build_proxy_url(base_url: str, suffix: str, *, port: int, service_path: str) -> str:
-    base = urlsplit(base_url)
-    suffix_parts = urlsplit(suffix)
+def _build_proxy_url(ide_url: str, *, port: int, service_path: str) -> str:
+    from inspire.platform.web.browser_api.playwright_notebooks import (
+        build_notebook_port_forward_url,
+    )
 
-    proxy_path = f"{suffix_parts.path.rstrip('/')}/proxy/{port}/"
-    service_parts = urlsplit(str(service_path or "").strip())
-    extra_path = service_parts.path.strip()
-    if extra_path:
-        proxy_path = f"{proxy_path.rstrip('/')}/{extra_path.lstrip('/')}"
-
-    query_parts = [part for part in (suffix_parts.query, service_parts.query) if part]
-    return urlunsplit((base.scheme, base.netloc, proxy_path, "&".join(query_parts), ""))
+    url = build_notebook_port_forward_url(
+        ide_url,
+        port=port,
+        service_path=service_path,
+    )
+    if not url:
+        raise ValueError("Could not build a port-forward URL from the IDE gateway URL.")
+    return url
 
 
 @click.command("proxy-url")
@@ -234,16 +231,18 @@ def notebook_proxy_url(
     from inspire.cli.context import EXIT_API_ERROR
     from inspire.cli.formatters import json_formatter
     from inspire.cli.utils.errors import exit_with_error as _handle_error
-    from inspire.platform.web.browser_api import resolve_notebook_vscode_proxy_suffix
+    from inspire.platform.web.browser_api import resolve_notebook_port_forward_url
 
-    session, base_url, notebook_id = _resolve_notebook(ctx, notebook, workspace)
-    suffix = resolve_notebook_vscode_proxy_suffix(
+    session, _base_url, notebook_id = _resolve_notebook(ctx, notebook, workspace)
+    url = resolve_notebook_port_forward_url(
         notebook_id,
+        port=port,
+        service_path=service_path,
         session=session,
         timeout=timeout,
         refresh=refresh,
     )
-    if not suffix:
+    if not url:
         _handle_error(
             ctx,
             "APIError",
@@ -253,8 +252,6 @@ def notebook_proxy_url(
             hint="Retry once it is RUNNING.",
         )
         return
-
-    url = _build_proxy_url(base_url, suffix, port=port, service_path=service_path)
 
     if ctx.json_output:
         click.echo(

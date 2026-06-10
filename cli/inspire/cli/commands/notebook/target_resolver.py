@@ -48,6 +48,14 @@ def notebook_target_cache_key(notebook: str, workspace: str | None) -> str:
     return f"{identifier}|workspace={workspace_key}"
 
 
+def _split_target_cache_key(key: str) -> tuple[str, str]:
+    marker = "|workspace="
+    if marker not in key:
+        return key, ""
+    identifier, workspace = key.split(marker, 1)
+    return identifier, workspace
+
+
 def _read_target_cache() -> dict[str, Any]:
     path = target_cache_path()
     try:
@@ -137,6 +145,124 @@ def remember_notebook_target_aliases(
         )
 
 
+def list_notebook_targets() -> list[dict[str, Any]]:
+    data = _read_target_cache()
+    targets = data.get("targets") or {}
+    if not isinstance(targets, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for key, raw_entry in sorted(targets.items()):
+        if not isinstance(raw_entry, dict):
+            continue
+        identifier, workspace_key = _split_target_cache_key(str(key))
+        notebook_id = str(raw_entry.get("notebook_id") or "")
+        rows.append(
+            {
+                "key": key,
+                "identifier": identifier,
+                "workspace_key": workspace_key,
+                "account": raw_entry.get("account"),
+                "bridge_name": raw_entry.get("bridge_name"),
+                "notebook_name": raw_entry.get("notebook_name"),
+                "has_notebook_id": bool(notebook_id),
+                "notebook_id_prefix": notebook_id[:8] if notebook_id else None,
+                "workspace_name": raw_entry.get("workspace_name"),
+                "workspace_id": raw_entry.get("workspace_id"),
+                "updated_at": raw_entry.get("updated_at"),
+            }
+        )
+    return rows
+
+
+def _target_entry_matches(
+    *,
+    key: str,
+    entry: object,
+    notebook: str | None,
+    workspace: str | None,
+    account: str | None,
+    bridge_name: str | None,
+    notebook_id: str | None,
+) -> bool:
+    if not isinstance(entry, dict):
+        return False
+
+    identifier, workspace_key = _split_target_cache_key(str(key))
+    requested_notebook = str(notebook or "").strip()
+    if requested_notebook:
+        notebook_values = {
+            identifier,
+            str(entry.get("bridge_name") or "").strip(),
+            str(entry.get("notebook_name") or "").strip(),
+            str(entry.get("notebook_id") or "").strip(),
+        }
+        if requested_notebook not in notebook_values:
+            return False
+
+    requested_workspace = str(workspace or "").strip()
+    if requested_workspace and requested_workspace.lower() != "all":
+        workspace_values = {
+            workspace_key,
+            str(entry.get("workspace_name") or "").strip(),
+            str(entry.get("workspace_id") or "").strip(),
+        }
+        if requested_workspace not in workspace_values:
+            return False
+
+    requested_account = str(account or "").strip()
+    if requested_account and requested_account.lower() != "all":
+        if str(entry.get("account") or "").strip() != requested_account:
+            return False
+
+    requested_bridge = str(bridge_name or "").strip()
+    if requested_bridge and str(entry.get("bridge_name") or "").strip() != requested_bridge:
+        return False
+
+    requested_notebook_id = str(notebook_id or "").strip()
+    if (
+        requested_notebook_id
+        and str(entry.get("notebook_id") or "").strip() != requested_notebook_id
+    ):
+        return False
+
+    return True
+
+
+def forget_notebook_targets(
+    *,
+    notebook: str | None = None,
+    workspace: str | None = None,
+    account: str | None = None,
+    bridge_name: str | None = None,
+    notebook_id: str | None = None,
+) -> list[str]:
+    data = _read_target_cache()
+    targets = data.get("targets") or {}
+    if not isinstance(targets, dict) or not targets:
+        return []
+
+    removed: list[str] = []
+    kept: dict[str, Any] = {}
+    for key, entry in targets.items():
+        if _target_entry_matches(
+            key=str(key),
+            entry=entry,
+            notebook=notebook,
+            workspace=workspace,
+            account=account,
+            bridge_name=bridge_name,
+            notebook_id=notebook_id,
+        ):
+            removed.append(str(key))
+        else:
+            kept[str(key)] = entry
+
+    if removed:
+        data["targets"] = kept
+        _write_target_cache(data)
+    return removed
+
+
 def _account_scope(account: str | None) -> list[str]:
     selector = str(account or "").strip()
     if selector and selector.lower() != "all":
@@ -190,7 +316,11 @@ def _candidate_from_cache_entry(
     bridge_name = str(entry.get("bridge_name") or "").strip()
     notebook_id = str(entry.get("notebook_id") or "").strip()
     try:
-        config = tunnel_module.load_tunnel_config(account=account) if account else tunnel_module.load_tunnel_config()
+        config = (
+            tunnel_module.load_tunnel_config(account=account)
+            if account
+            else tunnel_module.load_tunnel_config()
+        )
     except Exception:
         return None
     try:
@@ -412,10 +542,7 @@ def resolve_cached_notebook_target(
             if verify_target_cache and not _target_available(candidate):
                 if not ctx.json_output:
                     click.echo(
-                        (
-                            "Cached notebook target is unavailable; "
-                            "rediscovering cached candidates."
-                        ),
+                        ("Cached notebook target is unavailable; rediscovering cached candidates."),
                         err=True,
                     )
             else:
@@ -445,6 +572,8 @@ def resolve_cached_notebook_target(
 __all__ = [
     "NotebookConnectionTarget",
     "NotebookTargetCandidate",
+    "forget_notebook_targets",
+    "list_notebook_targets",
     "notebook_target_cache_key",
     "remember_notebook_target",
     "remember_notebook_target_aliases",

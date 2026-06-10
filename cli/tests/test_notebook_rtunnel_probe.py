@@ -131,6 +131,63 @@ def test_probe_uses_cached_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     assert all(call["timeout"] == (5, 5) for call in http.kwargs)
 
 
+def test_probe_uses_ide_port_forward_candidate_with_ssh_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session()
+    base_url = "https://qz.example"
+    notebook_id = "notebook-ide"
+    ide_proxy_url = "https://nat.example/ws/x/vscode/notebook-ide/token/proxy/31337/"
+    saved: list[dict[str, object]] = []
+    probed: list[dict[str, object]] = []
+
+    monkeypatch.setattr(rtunnel_module, "_get_base_url", lambda: base_url)
+    monkeypatch.setattr(
+        rtunnel_module,
+        "_candidate_urls_from_ide_port_forward",
+        lambda **_kwargs: [ide_proxy_url],
+    )
+    monkeypatch.setattr(
+        rtunnel_module,
+        "get_cached_rtunnel_proxy_candidates",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        rtunnel_module,
+        "_candidate_urls_from_tunnel_config",
+        lambda **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        rtunnel_module,
+        "_ssh_probe_rtunnel_proxy_url",
+        lambda **kwargs: probed.append(kwargs) or kwargs["proxy_url"] == ide_proxy_url,
+    )
+    monkeypatch.setattr(
+        rtunnel_module, "save_rtunnel_proxy_state", lambda **kwargs: saved.append(kwargs)
+    )
+    monkeypatch.setattr(
+        rtunnel_module,
+        "build_requests_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("HTTP probe must not run")),
+    )
+
+    resolved = rtunnel_module.probe_existing_rtunnel_proxy_url(
+        notebook_id=notebook_id,
+        port=31337,
+        ssh_port=22222,
+        session=session,
+        account="user-1",
+        verify_ssh=True,
+        include_ide_port_forward=True,
+        ssh_public_key="ssh-ed25519 AAA test-key",
+    )
+
+    assert resolved == ide_proxy_url
+    assert probed[0]["ssh_public_key"] == "ssh-ed25519 AAA test-key"
+    assert saved[0]["proxy_url"] == ide_proxy_url
+    assert saved[0]["ssh_port"] == 22222
+
+
 def test_probe_uses_tunnel_profile_and_rewrites_proxy_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

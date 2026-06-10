@@ -113,8 +113,7 @@ def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  
     assert "HostName demo-box" in result.output
     assert "IdentityFile /home/me/.ssh/id_ed25519" in result.output
     assert (
-        "ProxyCommand inspire notebook ssh-proxy %h --workspace "
-        "'CPU资源空间' --port %p --quiet"
+        "ProxyCommand inspire notebook ssh-proxy %h --workspace 'CPU资源空间' --port %p --quiet"
     ) in result.output
     assert "proxy.invalid" not in result.output
 
@@ -135,12 +134,10 @@ def test_connection_list_json_keeps_proxy_url(monkeypatch) -> None:  # noqa: ANN
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     payload = json.loads(result.output)
-    assert payload["data"]["connections"][0]["proxy_url"] == (
-        "https://proxy.invalid/proxy/31337/"
-    )
+    assert payload["data"]["connections"][0]["proxy_url"] == ("https://proxy.invalid/proxy/31337/")
 
 
-def test_connection_forget_removes_cache_only(monkeypatch) -> None:  # noqa: ANN001
+def test_connection_forget_removes_cache_and_target_entries(monkeypatch) -> None:  # noqa: ANN001
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(
         BridgeProfile(
@@ -150,9 +147,15 @@ def test_connection_forget_removes_cache_only(monkeypatch) -> None:  # noqa: ANN
         )
     )
     saved = []
+    removed_targets = []
 
     monkeypatch.setattr(connection_module, "load_tunnel_config", lambda: tunnel_config)
     monkeypatch.setattr(connection_module, "save_tunnel_config", lambda cfg: saved.append(cfg))
+    monkeypatch.setattr(
+        connection_module,
+        "forget_notebook_targets",
+        lambda **kwargs: removed_targets.append(kwargs) or ["demo-box|workspace="],
+    )
 
     result = CliRunner().invoke(cli_main, ["notebook", "connection", "forget", "demo-box"])
 
@@ -160,6 +163,15 @@ def test_connection_forget_removes_cache_only(monkeypatch) -> None:  # noqa: ANN
     assert "OpenSSH config was not modified" in result.output
     assert saved == [tunnel_config]
     assert "demo-box" not in tunnel_config.bridges
+    assert removed_targets == [
+        {
+            "notebook": "demo-box",
+            "workspace": None,
+            "account": None,
+            "bridge_name": "demo-box",
+            "notebook_id": None,
+        }
+    ]
 
 
 def test_ssh_proxy_requires_workspace_without_cached_bridge(monkeypatch) -> None:  # noqa: ANN001

@@ -64,6 +64,15 @@ def test_ide_gateway_url_requires_a_host() -> None:
     assert pw._ide_gateway_url("") is None
 
 
+def test_build_port_forward_url_keeps_ide_gateway_host() -> None:
+    out = pw.build_notebook_port_forward_url(
+        _IDE_URL,
+        port=30000,
+        service_path="/v1/models?limit=1",
+    )
+    assert out == (f"{_IDE_URL}/proxy/30000/v1/models?limit=1")
+
+
 # ---------------------------------------------------------------------------
 # _find_ide_gateway_url
 # ---------------------------------------------------------------------------
@@ -181,9 +190,7 @@ def _patch_resolve(monkeypatch) -> None:  # noqa: ANN001
 
 def test_url_prints_entrance_link(monkeypatch) -> None:  # noqa: ANN001
     _patch_resolve(monkeypatch)
-    result = CliRunner().invoke(
-        cli_main, ["notebook", "url", "nb", "--workspace", "CPU资源空间"]
-    )
+    result = CliRunner().invoke(cli_main, ["notebook", "url", "nb", "--workspace", "CPU资源空间"])
     assert result.exit_code == 0
     assert result.output.strip() == f"{_BASE_URL}/ide?notebook_id={_NOTEBOOK_ID}"
 
@@ -228,23 +235,22 @@ def test_vscode_proxy_suffix_json(monkeypatch) -> None:  # noqa: ANN001
 
 
 def test_build_proxy_url_appends_port_path_and_queries() -> None:
-    suffix = "/ws-a/project-b/user-c/vscode/run?token=secret"
     out = url_cmd_mod._build_proxy_url(
-        _BASE_URL,
-        suffix,
+        "https://gw/ws-a/project-b/user-c/vscode/run?token=secret",
         port=30000,
         service_path="/v1/models?limit=1",
     )
     assert out == (
-        "https://qz.sii.edu.cn/ws-a/project-b/user-c/vscode/run/proxy/30000/v1/models"
-        "?token=secret&limit=1"
+        "https://gw/ws-a/project-b/user-c/vscode/run/proxy/30000/v1/models?token=secret&limit=1"
     )
 
 
 def test_proxy_url_prints_full_service_url(monkeypatch) -> None:  # noqa: ANN001
     _patch_resolve(monkeypatch)
     monkeypatch.setattr(
-        browser_api_mod, "resolve_notebook_vscode_proxy_suffix", lambda *a, **k: _SUFFIX
+        browser_api_mod,
+        "resolve_notebook_port_forward_url",
+        lambda *a, **k: f"{_IDE_URL}/proxy/{k['port']}{k['service_path']}",
     )
     result = CliRunner().invoke(
         cli_main,
@@ -261,13 +267,15 @@ def test_proxy_url_prints_full_service_url(monkeypatch) -> None:  # noqa: ANN001
         ],
     )
     assert result.exit_code == 0
-    assert result.output.strip() == f"{_BASE_URL}{_SUFFIX}/proxy/30000/v1"
+    assert result.output.strip() == f"{_IDE_URL}/proxy/30000/v1"
 
 
 def test_proxy_url_json(monkeypatch) -> None:  # noqa: ANN001
     _patch_resolve(monkeypatch)
     monkeypatch.setattr(
-        browser_api_mod, "resolve_notebook_vscode_proxy_suffix", lambda *a, **k: _SUFFIX
+        browser_api_mod,
+        "resolve_notebook_port_forward_url",
+        lambda *a, **k: f"{_IDE_URL}/proxy/{k['port']}{k['service_path']}",
     )
     result = CliRunner().invoke(
         cli_main,
@@ -290,7 +298,7 @@ def test_proxy_url_json(monkeypatch) -> None:  # noqa: ANN001
         "name": "nb",
         "port": 30000,
         "path": "/v1",
-        "url": f"{_BASE_URL}{_SUFFIX}/proxy/30000/v1",
+        "url": f"{_IDE_URL}/proxy/30000/v1",
     }
 
 

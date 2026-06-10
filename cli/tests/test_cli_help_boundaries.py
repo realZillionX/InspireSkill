@@ -210,7 +210,7 @@ def test_notebook_ssh_removed_compat_commands_and_connection_group() -> None:
         assert f"\n  {removed} " not in ssh_help.output
 
     assert connection_help.exit_code == 0
-    for subcommand in ("list", "status", "refresh", "forget", "prune"):
+    for subcommand in ("list", "status", "refresh", "forget", "prune", "target"):
         assert f"\n  {subcommand} " in connection_help.output
 
 
@@ -221,7 +221,7 @@ def test_job_batch_help_keeps_scope_small() -> None:
     assert result.exit_code == 0
     assert "Submit a JSON/TOML matrix through `job create`" in result.output
     assert "top-level `jobs` is required" in output
-    assert "condition fields may come from `profile = \"<name>\"`" in output
+    assert 'condition fields may come from `profile = "<name>"`' in output
     assert "Required fields after expansion:" in result.output
     assert "Optional fields use create-command defaults" in result.output
 
@@ -242,7 +242,7 @@ def test_notebook_batch_help_keeps_scope_small() -> None:
     assert result.exit_code == 0
     assert "Create notebook instances from a JSON/TOML matrix" in result.output
     assert "Top-level `notebooks` is required" in result.output
-    assert "condition fields may come from `profile = \"<name>\"`" in output
+    assert 'condition fields may come from `profile = "<name>"`' in output
 
 
 def test_ray_and_serving_batch_help_keeps_scope_small() -> None:
