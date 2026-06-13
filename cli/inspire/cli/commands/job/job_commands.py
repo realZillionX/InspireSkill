@@ -25,6 +25,7 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters.table import display_width, render_table
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import is_full_uuid, is_partial_id
@@ -220,6 +221,34 @@ def _job_info_to_row(job, *, workspace_name: str = "") -> dict:  # noqa: ANN001
     }
 
 
+def _job_list_page_size(limit: Optional[int]) -> int:
+    if limit is not None and limit > 0:
+        return min(limit, 100)
+    return 100
+
+
+def _job_list_limit_value(limit: Optional[int]) -> int | None:
+    if limit is None or limit <= 0:
+        return None
+    return limit
+
+
+def _limit_job_rows_per_workspace(rows: list[dict], limit: Optional[int]) -> list[dict]:
+    limit_value = _job_list_limit_value(limit)
+    if limit_value is None:
+        return rows
+    counts: dict[str, int] = {}
+    limited: list[dict] = []
+    for row in rows:
+        workspace_key = str(row.get("workspace_id") or row.get("workspace_name") or "")
+        current = counts.get(workspace_key, 0)
+        if current >= limit_value:
+            continue
+        counts[workspace_key] = current + 1
+        limited.append(row)
+    return limited
+
+
 def _scan_web_jobs_round_robin(
     *,
     session,  # noqa: ANN001
@@ -231,10 +260,11 @@ def _scan_web_jobs_round_robin(
     page_num: int,
     page_size: int,
     max_pages: int,
-    limit: int,
+    limit: Optional[int],
 ) -> tuple[list[dict], list[dict]]:
     """Scan all candidate workspaces one page at a time."""
     rows: list[dict] = []
+    limit_value = _job_list_limit_value(limit)
     workspace_states: list[dict] = [
         {
             "workspace_id": workspace_id,
@@ -242,6 +272,7 @@ def _scan_web_jobs_round_robin(
             "next_page": max(1, page_num),
             "pages": 0,
             "total": 0,
+            "matched": 0,
             "done": False,
         }
         for workspace_id in workspace_ids
@@ -266,7 +297,6 @@ def _scan_web_jobs_round_robin(
             )
             return state, items, total
 
-        limit_reached = False
         max_workers = min(len(active_states), 4)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {executor.submit(fetch_page, state): state for state in active_states}
@@ -281,10 +311,15 @@ def _scan_web_jobs_round_robin(
                         continue
                     if not _job_matches_name(job, name):
                         continue
+                    if limit_value is not None and int(state["matched"]) >= limit_value:
+                        state["done"] = True
+                        break
                     rows.append(_job_info_to_row(job, workspace_name=state["workspace_name"]))
+                    state["matched"] = int(state["matched"]) + 1
 
-                if limit > 0 and len(rows) >= limit:
-                    limit_reached = True
+                if limit_value is not None and int(state["matched"]) >= limit_value:
+                    state["done"] = True
+                    continue
                 if not items:
                     state["done"] = True
                     continue
@@ -295,9 +330,6 @@ def _scan_web_jobs_round_robin(
                     state["done"] = True
                     continue
                 state["next_page"] = current_page + 1
-        if limit_reached:
-            for remaining in workspace_states:
-                remaining["done"] = True
 
     scanned = [
         {
@@ -482,42 +514,43 @@ def _format_job_list(rows: list[dict]) -> str:
             **r,
             "name": scrub_raw_ids(r.get("name", "")),
             "status": scrub_raw_ids(r.get("status", "")),
-            "created_at": scrub_raw_ids(r.get("created_at", "")),
+            "created_at": scrub_raw_ids(human_formatter.format_epoch(r.get("created_at"))),
             "workspace_name": scrub_raw_ids(r.get("workspace_name", "")),
             "created_by_name": scrub_raw_ids(r.get("created_by_name", "")),
         }
         for r in rows
     ]
 
-    name_w = max(len("Name"), *(len(str(r["name"])) for r in rendered_rows))
-    status_w = max(len("Status"), *(len(str(r["status"])) for r in rendered_rows))
-    created_w = max(len("Created"), *(len(str(r["created_at"])) for r in rendered_rows))
-    workspace_w = max(
-        len("Workspace"),
-        *(len(str(r.get("workspace_name") or "")) for r in rendered_rows),
-    )
-    user_w = max(
-        len("Created By"),
-        *(len(str(r.get("created_by_name") or "")) for r in rendered_rows),
-    )
+    def width(header: str, values: list[str], *, max_width: int) -> int:
+        return min(max(display_width(header), *(display_width(value) for value in values), 1), max_width)
 
-    header = (
-        f"{'Name':<{name_w}}  {'Status':<{status_w}}  "
-        f"{'Created':<{created_w}}  {'Workspace':<{workspace_w}}  {'Created By':<{user_w}}"
-    )
-    sep = "-" * len(header)
-    lines = ["Jobs", header, sep]
-    for row in rendered_rows:
-        workspace = str(row.get("workspace_name") or "")
-        created_by = str(row.get("created_by_name") or "")
-        lines.append(
-            f"{str(row['name']):<{name_w}}  "
-            f"{str(row['status']):<{status_w}}  "
-            f"{str(row['created_at']):<{created_w}}  "
-            f"{workspace:<{workspace_w}}  "
-            f"{created_by:<{user_w}}"
+    table_rows = [
+        (
+            str(row["name"]),
+            str(row["status"]),
+            str(row["created_at"]),
+            str(row.get("workspace_name") or ""),
+            str(row.get("created_by_name") or ""),
         )
-    lines.append(sep)
+        for row in rendered_rows
+    ]
+    widths = [
+        width("Name", [row[0] for row in table_rows], max_width=120),
+        width("Status", [row[1] for row in table_rows], max_width=16),
+        width("Created", [row[2] for row in table_rows], max_width=19),
+        width("Workspace", [row[3] for row in table_rows], max_width=24),
+        width("Created By", [row[4] for row in table_rows], max_width=16),
+    ]
+
+    lines = [
+        "Jobs",
+        *render_table(
+            ("Name", "Status", "Created", "Workspace", "Created By"),
+            table_rows,
+            widths,
+            line_char="─",
+        ),
+    ]
     lines.append(f"Total: {len(rows)} job(s)")
     return "\n".join(lines)
 
@@ -532,7 +565,7 @@ def _list_web_jobs(
     page_num: int,
     page_size: int,
     max_pages: int,
-    limit: int,
+    limit: Optional[int],
     api_statuses: tuple[str, ...] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     try:
@@ -544,6 +577,7 @@ def _list_web_jobs(
         query_statuses: tuple[str | None, ...] = mapped_api_statuses or (None,)
         rows: list[dict] = []
         scanned: list[dict] = []
+        limit_value = _job_list_limit_value(limit)
         workspace_ids = _list_workspace_ids(
             config,
             session,
@@ -566,25 +600,24 @@ def _list_web_jobs(
                 )
                 rows.extend(status_rows)
                 scanned.extend(status_scanned)
-                if limit > 0 and len(rows) >= limit:
-                    break
             rows = _dedupe_job_rows(rows)
             rows.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-            if limit > 0:
-                rows = rows[:limit]
-            return rows, scanned
+            return _limit_job_rows_per_workspace(rows, limit), scanned
 
         for workspace_id in workspace_ids:
             pages_read_total = 0
             total_seen = 0
             workspace_label = _workspace_name(session, workspace_id) if workspace_id else ""
-            limit_reached = False
 
             for query_status in query_statuses:
                 current_page = max(1, page_num)
                 pages_read = 0
+                status_total = 0
+                status_matched = 0
 
                 while True:
+                    if limit_value is not None and status_matched >= limit_value:
+                        break
                     items, total = browser_api_module.list_jobs(
                         workspace_id=workspace_id or None,
                         created_by=creator_id,
@@ -596,19 +629,19 @@ def _list_web_jobs(
                     )
                     pages_read += 1
                     pages_read_total += 1
-                    total_seen += int(total or 0)
+                    status_total = max(status_total, int(total or 0))
 
                     for job in items:
                         if allowed_statuses and job.status not in allowed_statuses:
                             continue
                         if not _job_matches_name(job, name):
                             continue
+                        if limit_value is not None and status_matched >= limit_value:
+                            break
                         rows.append(_job_info_to_row(job, workspace_name=workspace_label))
+                        status_matched += 1
 
-                    if not name:
-                        break
-                    if limit > 0 and len(rows) >= limit:
-                        limit_reached = True
+                    if limit_value is not None and status_matched >= limit_value:
                         break
                     if not items:
                         break
@@ -618,8 +651,7 @@ def _list_web_jobs(
                         break
                     current_page += 1
 
-                if limit_reached:
-                    break
+                total_seen += status_total
 
             scanned.append(
                 {
@@ -630,14 +662,9 @@ def _list_web_jobs(
                 }
             )
 
-            if limit > 0 and len(rows) >= limit:
-                break
-
         rows = _dedupe_job_rows(rows)
         rows.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        if limit > 0:
-            rows = rows[:limit]
-        return rows, scanned
+        return _limit_job_rows_per_workspace(rows, limit), scanned
     finally:
         _close_web_client()
 
@@ -652,7 +679,7 @@ def _watch_jobs(
     name: Optional[str],
     page_size: int,
     max_pages: int,
-    limit: int,
+    limit: Optional[int],
     interval: int,
     active: bool,
 ) -> None:
@@ -682,6 +709,7 @@ def _watch_jobs(
                 page_size=page_size,
                 max_pages=max_pages,
                 limit=limit,
+                api_statuses=_JOB_ACTIVE_API_STATUSES if active and not status else None,
             )
             if exclude_statuses:
                 jobs = [j for j in jobs if j.get("status") not in exclude_statuses]
@@ -745,9 +773,11 @@ def _watch_jobs(
     "--limit",
     "-n",
     type=click.IntRange(1),
-    default=100,
-    show_default=True,
-    help="Maximum jobs to query and display.",
+    default=None,
+    help=(
+        "Maximum jobs per workspace to query and display. "
+        "If omitted, query all pages in each workspace."
+    ),
 )
 @click.option("--status", "-s", help="Filter by status (PENDING, RUNNING, SUCCEEDED, FAILED)")
 @click.option(
@@ -769,7 +799,7 @@ def _watch_jobs(
 @pass_context
 def list_jobs(
     ctx: Context,
-    limit: int,
+    limit: Optional[int],
     status: Optional[str],
     active: bool,
     watch: bool,
@@ -802,7 +832,7 @@ def list_jobs(
                 all_workspaces=False,
                 status=status,
                 name=keyword,
-                page_size=limit,
+                page_size=_job_list_page_size(limit),
                 max_pages=50,
                 limit=limit,
                 interval=interval,
@@ -817,7 +847,7 @@ def list_jobs(
             status=status,
             name=keyword,
             page_num=1,
-            page_size=limit,
+            page_size=_job_list_page_size(limit),
             max_pages=50,
             limit=limit,
             api_statuses=_JOB_ACTIVE_API_STATUSES if active and not status else None,

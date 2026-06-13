@@ -23,6 +23,7 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
+from inspire.cli.formatters.table import display_width, render_table
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
@@ -118,6 +119,9 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
 
 
 def _render_human(data: dict[str, Any]) -> None:
+    def width(header: str, values: list[str], *, max_width: int) -> int:
+        return min(max(display_width(header), *(display_width(value) for value in values), 1), max_width)
+
     active = data["active"]
     click.echo(click.style("Active", bold=True))
     click.echo(f"  account    {active['account'] or '(not set)'}")
@@ -128,44 +132,82 @@ def _render_human(data: dict[str, Any]) -> None:
     projects: list[dict[str, str]] = data["projects"]
     if projects:
         click.echo(click.style(f"Projects ({len(projects)})", bold=True))
-        name_width = max(len(p["name"]) for p in projects)
-        for entry in projects:
-            path = entry.get("path")
-            suffix = f"  (path: {path})" if path else ""
-            click.echo(f"  {entry['name'].ljust(name_width)}{suffix}")
+        project_rows = [(entry["name"], entry.get("path") or "-") for entry in projects]
+        click.echo(
+            "\n".join(
+                render_table(
+                    ("Name", "Path"),
+                    project_rows,
+                    [
+                        width("Name", [row[0] for row in project_rows], max_width=48),
+                        width("Path", [row[1] for row in project_rows], max_width=72),
+                    ],
+                    line_char="─",
+                )
+            )
+        )
         click.echo()
 
     workspaces: list[str] = data["workspaces"]
     if workspaces:
         click.echo(click.style(f"Workspaces ({len(workspaces)})", bold=True))
-        for name in workspaces:
-            click.echo(f"  {name}")
+        workspace_rows = [(name,) for name in workspaces]
+        click.echo(
+            "\n".join(
+                render_table(
+                    ("Name",),
+                    workspace_rows,
+                    [width("Name", workspaces, max_width=48)],
+                    line_char="─",
+                )
+            )
+        )
         click.echo()
 
     compute_groups: list[dict[str, Any]] = data["compute_groups"]
     if compute_groups:
         click.echo(click.style(f"Compute groups ({len(compute_groups)})", bold=True))
-        name_width = max(len(g["name"]) for g in compute_groups)
+        group_rows: list[tuple[str, str, str]] = []
         for group in compute_groups:
-            bits: list[str] = []
             gpu = group.get("gpu_type")
-            if gpu:
-                bits.append(f"gpu={gpu}")
             workspace = group.get("workspace")
+            workspace_text = ""
             if workspace:
                 if isinstance(workspace, list):
-                    bits.append(f"workspaces={'+'.join(workspace)}")
+                    workspace_text = ", ".join(workspace)
                 else:
-                    bits.append(f"workspace={workspace}")
-            suffix = f"  ({', '.join(bits)})" if bits else ""
-            click.echo(f"  {group['name'].ljust(name_width)}{suffix}")
+                    workspace_text = str(workspace)
+            group_rows.append((str(group["name"]), str(gpu or "-"), workspace_text or "-"))
+        click.echo(
+            "\n".join(
+                render_table(
+                    ("Name", "GPU", "Workspace"),
+                    group_rows,
+                    [
+                        width("Name", [row[0] for row in group_rows], max_width=48),
+                        width("GPU", [row[1] for row in group_rows], max_width=16),
+                        width("Workspace", [row[2] for row in group_rows], max_width=48),
+                    ],
+                    line_char="─",
+                )
+            )
+        )
         click.echo()
 
     accounts: list[str] = data["accounts"]
     if accounts:
         click.echo(click.style(f"Accounts ({len(accounts)})", bold=True))
-        for name in accounts:
-            click.echo(f"  {name}")
+        account_rows = [(name,) for name in accounts]
+        click.echo(
+            "\n".join(
+                render_table(
+                    ("Name",),
+                    account_rows,
+                    [width("Name", accounts, max_width=48)],
+                    line_char="─",
+                )
+            )
+        )
 
 
 @click.command("context")

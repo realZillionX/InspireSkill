@@ -14,13 +14,12 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
+from inspire.cli.formatters.table import render_table
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_query_scope, workspace_name_map
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
-
-from .resources.table import render_table
 
 
 _SCHEDULE_TYPE_BY_WORKLOAD = {

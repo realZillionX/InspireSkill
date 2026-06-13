@@ -40,6 +40,18 @@ def _silence_normalize_environment(monkeypatch):  # noqa: ANN001
 
 
 @pytest.fixture(autouse=True)
+def _isolate_web_session_runtime(monkeypatch):  # noqa: ANN001
+    """Keep web-session fallback state from leaking between tests."""
+    from inspire.platform.web import session as web_session_module
+    from inspire.platform.web.session.browser_client import _close_browser_client
+
+    monkeypatch.setattr(web_session_module, "_BROWSER_API_FORCE_BROWSER", False)
+    yield
+    web_session_module._BROWSER_API_FORCE_BROWSER = False
+    _close_browser_client()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_notebook_target_resolver(monkeypatch):  # noqa: ANN001
     """Do not let tests scan the developer machine's real account caches."""
     import importlib

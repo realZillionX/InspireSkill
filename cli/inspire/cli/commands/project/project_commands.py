@@ -36,14 +36,26 @@ _PROJECT_LIST_WORKSPACE_FANOUT_LIMIT = 6
 # ---------------------------------------------------------------------------
 
 
-def _project_to_dict(proj: browser_api_module.ProjectInfo) -> dict:
+def _project_to_dict(
+    proj: browser_api_module.ProjectInfo,
+    *,
+    workspace_names_by_id: dict[str, str] | None = None,
+) -> dict:
     """Convert a ProjectInfo to a plain dict for JSON output."""
+    workspace_names = list(proj.workspace_names)
+    if not workspace_names and workspace_names_by_id:
+        workspace_ids = list(proj.workspace_ids) or [proj.workspace_id]
+        for workspace_id in workspace_ids:
+            workspace_name = workspace_names_by_id.get(workspace_id)
+            if workspace_name and workspace_name not in workspace_names:
+                workspace_names.append(workspace_name)
+
     return {
         "project_id": proj.project_id,
         "name": proj.name,
         "workspace_id": proj.workspace_id,
         "workspace_ids": list(proj.workspace_ids),
-        "workspace_names": list(proj.workspace_names),
+        "workspace_names": workspace_names,
         "budget": proj.budget,
         "remain_budget": proj.remain_budget,
         "member_remain_budget": proj.member_remain_budget,
@@ -100,6 +112,25 @@ def _merge_projects(
         if project.project_id not in seen:
             seen.add(project.project_id)
             projects.append(project)
+            continue
+        for existing in projects:
+            if existing.project_id != project.project_id:
+                continue
+            workspace_ids = _unique_workspace_ids(
+                [
+                    *existing.workspace_ids,
+                    existing.workspace_id,
+                    *project.workspace_ids,
+                    project.workspace_id,
+                ]
+            )
+            workspace_names = list(existing.workspace_names)
+            for workspace_name in project.workspace_names:
+                if workspace_name and workspace_name not in workspace_names:
+                    workspace_names.append(workspace_name)
+            existing.workspace_ids = tuple(workspace_ids)
+            existing.workspace_names = tuple(workspace_names)
+            break
 
 
 def _collect_workspace_projects(
@@ -173,7 +204,16 @@ def _collect_all_workspace_projects(
 ) -> tuple[list[browser_api_module.ProjectInfo], list[tuple[str, str]]]:
     """Collect all visible projects, preferring the single project-scoped endpoint."""
     try:
-        return browser_api_module.list_all_projects(session=session), []
+        projects = browser_api_module.list_all_projects(session=session)
+        if any(p.workspace_id or p.workspace_ids or p.workspace_names for p in projects):
+            return projects, []
+        workspace_projects, workspace_errors = _collect_workspace_projects(
+            workspace_ids,
+            session=session,
+        )
+        if workspace_projects:
+            return workspace_projects, workspace_errors
+        return projects, []
     except Exception:
         return _collect_workspace_projects(workspace_ids, session=session)
 
@@ -275,7 +315,8 @@ def list_projects_cmd(
         _handle_error(ctx, "APIError", f"Failed to list projects: {e}", EXIT_API_ERROR)
         return
 
-    results = [_project_to_dict(p) for p in projects]
+    session_workspace_names = dict(getattr(session, "all_workspace_names", None) or {})
+    results = [_project_to_dict(p, workspace_names_by_id=session_workspace_names) for p in projects]
 
     if json_output:
         click.echo(json_formatter.format_json({"projects": results, "total": len(results)}))

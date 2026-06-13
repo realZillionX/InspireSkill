@@ -14,6 +14,7 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters.table import render_table
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.compute_groups import compute_group_name_map, load_compute_groups_from_config
 from inspire.config import Config, ConfigError
@@ -25,7 +26,6 @@ from inspire.platform.web.resources import (
     fetch_resource_availability,
 )
 from inspire.platform.web.session import SessionExpiredError, get_web_session
-from .table import render_table
 
 
 def _known_compute_groups_from_config(*, show_all: bool) -> dict[str, str]:

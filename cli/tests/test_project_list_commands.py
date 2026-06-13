@@ -47,9 +47,27 @@ def test_project_list_all_uses_single_project_query(monkeypatch):
     def fake_list_all_projects(session=None):  # type: ignore[no-untyped-def]
         calls.append("all")
         return [
-            _project("project-cpu", "CPU", WS_CPU),
-            _project("project-gpu", "GPU", WS_GPU),
-            _project("project-extra", "Extra", WS_EXTRA),
+            browser_api_module.ProjectInfo(
+                project_id="project-cpu",
+                name="CPU",
+                workspace_id=WS_CPU,
+                workspace_ids=(WS_CPU,),
+                workspace_names=("CPU资源空间",),
+            ),
+            browser_api_module.ProjectInfo(
+                project_id="project-gpu",
+                name="GPU",
+                workspace_id=WS_GPU,
+                workspace_ids=(WS_GPU,),
+                workspace_names=("分布式训练空间",),
+            ),
+            browser_api_module.ProjectInfo(
+                project_id="project-extra",
+                name="Extra",
+                workspace_id=WS_EXTRA,
+                workspace_ids=(WS_EXTRA,),
+                workspace_names=("专项空间",),
+            ),
         ]
 
     monkeypatch.setattr(browser_api_module, "list_all_projects", fake_list_all_projects)
@@ -66,6 +84,41 @@ def test_project_list_all_uses_single_project_query(monkeypatch):
     payload = json.loads(result.output)["data"]
     assert payload["total"] == 3
     assert calls == ["all"]
+
+
+def test_project_list_all_fans_out_when_single_query_lacks_workspace_binding(monkeypatch):
+    session_obj = FakeSession(
+        all_workspace_ids=[WS_CPU, WS_GPU],
+        workspace_id=WS_CPU,
+    )
+    session_obj.all_workspace_names = {WS_CPU: "CPU资源空间", WS_GPU: "分布式训练空间"}
+    monkeypatch.setattr(
+        notebook_cli_module.web_session_module,
+        "get_web_session",
+        lambda: session_obj,
+    )
+
+    calls: list[str | None] = []
+
+    def fake_list_all_projects(session=None):  # type: ignore[no-untyped-def]
+        calls.append("all")
+        return [_project("project-shared", "Shared", "")]
+
+    def fake_list_projects(workspace_id=None, session=None):  # type: ignore[no-untyped-def]
+        calls.append(workspace_id)
+        return [_project("project-shared", "Shared", workspace_id or "")]
+
+    monkeypatch.setattr(browser_api_module, "list_all_projects", fake_list_all_projects)
+    monkeypatch.setattr(browser_api_module, "list_projects", fake_list_projects)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main, ["--json", "project", "list", "--workspace", "all"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)["data"]
+    assert payload["total"] == 1
+    assert payload["projects"][0]["workspace_names"] == ["CPU资源空间", "分布式训练空间"]
+    assert calls == ["all", WS_CPU, WS_GPU]
 
 
 def test_project_list_tolerates_workspace_specific_failure(monkeypatch):
@@ -169,6 +222,50 @@ def test_project_list_specific_workspace_uses_workspace_query(monkeypatch):
     payload = json.loads(result.output)["data"]
     assert payload["total"] == 1
     assert calls == [WS_GOOD]
+
+
+def test_project_list_human_output_uses_workspace_table(monkeypatch):
+    session_obj = FakeSession(
+        all_workspace_ids=[WS_GOOD],
+        workspace_id=WS_GOOD,
+    )
+    session_obj.all_workspace_names = {WS_GOOD: "CI-情境智能"}
+    monkeypatch.setattr(
+        notebook_cli_module.web_session_module,
+        "get_web_session",
+        lambda: session_obj,
+    )
+
+    def fake_list_projects(workspace_id=None, session=None):  # type: ignore[no-untyped-def]
+        assert workspace_id == WS_GOOD
+        return [
+            browser_api_module.ProjectInfo(
+                project_id="project-good",
+                name="专项项目-2",
+                workspace_id=WS_GOOD,
+                workspace_ids=(WS_GOOD,),
+                priority_level="HIGH",
+                member_remain_budget=1234.0,
+            )
+        ]
+
+    monkeypatch.setattr(browser_api_module, "list_projects", fake_list_projects)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_all_projects",
+        lambda **_: (_ for _ in ()).throw(AssertionError("all query should not run")),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main, ["project", "list", "--workspace", "CI-情境智能"])
+
+    assert result.exit_code == 0
+    assert "Projects" in result.output
+    assert "Workspace" in result.output
+    assert "专项项目-2" in result.output
+    assert "CI-情境智能" in result.output
+    assert "1,234" in result.output
+    assert "project-good" not in result.output
 
 
 def test_project_list_all_fallback_bypasses_fanout_limit(monkeypatch):

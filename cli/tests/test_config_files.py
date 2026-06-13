@@ -1343,6 +1343,7 @@ class TestInitCommand:
         from inspire.platform.web.browser_api.projects import ProjectInfo
         import inspire.platform.web.session as web_session_module
         import inspire.platform.web.browser_api as browser_api_module
+        import inspire.platform.web.browser_api.workspaces as workspaces_module
 
         global_config = tmp_path / ".config" / "inspire" / "config.toml"
         monkeypatch.chdir(tmp_path)
@@ -1385,6 +1386,7 @@ class TestInitCommand:
             ),
         ]
         monkeypatch.setattr(browser_api_module, "list_projects", lambda **_: projects)
+        monkeypatch.setattr(browser_api_module, "list_images", lambda **_: [])
         monkeypatch.setattr(
             browser_api_module,
             "list_compute_groups",
@@ -1417,6 +1419,7 @@ class TestInitCommand:
             "list_project_file_directories",
             lambda **_: project_file_directories,
         )
+        monkeypatch.setattr(workspaces_module, "try_enumerate_workspaces", lambda *_a, **_kw: [])
 
         # Stub out _ensure_playwright_browser and _ensure_ssh_key so they never
         # touch the real filesystem or try to launch a browser.

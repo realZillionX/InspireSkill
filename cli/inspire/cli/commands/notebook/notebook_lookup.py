@@ -49,6 +49,96 @@ def _sort_notebook_items(items: list[dict]) -> list[dict]:
     return sorted(items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
+def _positive_int(value: Any) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return result if result > 0 else 0
+
+
+def _dict_value(item: dict, key: str) -> Any:
+    value = item.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _normalize_gpu_type_for_display(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    upper = text.upper().replace("_", " ").replace("-", " ")
+    if upper == "CPU":
+        return ""
+    if "H200" in upper:
+        return "H200"
+    if "H100" in upper:
+        return "H100"
+    if "4090" in upper:
+        return "4090"
+    if "3090" in upper:
+        return "3090"
+    if "A800" in upper:
+        return "A800"
+    if "A100" in upper:
+        return "A100"
+    if "L40S" in upper:
+        return "L40S"
+    if "V100" in upper:
+        return "V100"
+    if "PPU" in upper or "ZW810" in upper:
+        return "PPU ZW810"
+
+    if "(" in text:
+        text = text.split("(", maxsplit=1)[0].strip()
+    if text.upper().startswith("NVIDIA "):
+        text = text[7:].strip()
+    if text.upper().startswith("RTX "):
+        text = text[4:].strip()
+    return text
+
+
+def _notebook_gpu_type(item: dict) -> str:
+    resource_spec_price = _dict_value(item, "resource_spec_price")
+    gpu_info = _dict_value(resource_spec_price, "gpu_info")
+    quota = _dict_value(item, "quota")
+    resource_spec = _dict_value(item, "resource_spec")
+    node_gpu_info = _dict_value(_dict_value(item, "node"), "gpu_info")
+    logic_compute_group = _dict_value(item, "logic_compute_group")
+    compute_group = _dict_value(item, "compute_group")
+
+    candidates = [
+        gpu_info.get("gpu_product_simple"),
+        gpu_info.get("gpu_type_display"),
+        gpu_info.get("brand_name"),
+        gpu_info.get("gpu_type"),
+        resource_spec_price.get("gpu_type_display"),
+        resource_spec_price.get("gpu_type"),
+        quota.get("gpu_type"),
+        resource_spec.get("gpu_type_display"),
+        resource_spec.get("gpu_type"),
+        node_gpu_info.get("gpu_product_simple"),
+        node_gpu_info.get("gpu_type_display"),
+        node_gpu_info.get("brand_name"),
+        node_gpu_info.get("gpu_type"),
+        item.get("gpu_product_simple"),
+        item.get("gpu_type_display"),
+        item.get("gpu_type"),
+        logic_compute_group.get("gpu_type"),
+        logic_compute_group.get("gpu_type_display"),
+        logic_compute_group.get("name"),
+        logic_compute_group.get("logic_compute_group_name"),
+        compute_group.get("gpu_type"),
+        compute_group.get("gpu_type_display"),
+        compute_group.get("name"),
+    ]
+    for candidate in candidates:
+        gpu_type = _normalize_gpu_type_for_display(candidate)
+        if gpu_type:
+            return gpu_type
+    return ""
+
+
 def _looks_like_notebook_id(value: str) -> bool:
     value = value.strip().lower()
     if not value:
@@ -68,18 +158,33 @@ def _notebook_id_from_item(item: dict) -> str | None:
     return str(notebook_id)
 
 
-def _format_notebook_resource(item: dict) -> str:
+def _format_notebook_gpu(item: dict) -> str:
     quota = item.get("quota") or {}
-    gpu_count = quota.get("gpu_count", 0)
+    gpu_count = _positive_int(quota.get("gpu_count"))
 
-    if gpu_count and gpu_count > 0:
-        gpu_info = (item.get("resource_spec_price") or {}).get("gpu_info") or {}
-        gpu_type = gpu_info.get("gpu_product_simple") or quota.get("gpu_type") or "GPU"
-        return scrub_raw_ids(f"{gpu_count}x{gpu_type}")
+    if gpu_count:
+        gpu_type = _notebook_gpu_type(item) or "GPU"
+        return scrub_raw_ids(f"{gpu_count}x {gpu_type}")
+    return "-"
 
-    cpu_count = quota.get("cpu_count", 0)
+
+def _format_notebook_cpu(item: dict) -> str:
+    quota = item.get("quota") or {}
+    cpu_count = _positive_int(quota.get("cpu_count"))
     if cpu_count:
-        return f"{cpu_count}xCPU"
+        return f"{cpu_count} CPU"
+    return "-"
+
+
+def _format_notebook_resource(item: dict) -> str:
+    gpu = _format_notebook_gpu(item)
+    cpu = _format_notebook_cpu(item)
+    if gpu != "-" and cpu != "-":
+        return f"{gpu} + {cpu}"
+    if gpu != "-":
+        return gpu
+    if cpu != "-":
+        return cpu
     return "N/A"
 
 
@@ -274,42 +379,66 @@ def _list_notebooks_for_workspace(
     workspace_id: str,
     user_ids: list[str],
     keyword: str = "",
-    page_size: int = 20,
+    page_size: int = 100,
+    max_pages: int = 100,
     status: list[str] | None = None,
 ) -> list[dict]:
     if not user_ids:
         raise ValueError("Cannot list notebooks without a current-user filter.")
 
-    body = {
-        "workspace_id": workspace_id,
-        "page": 1,
-        "page_size": page_size,
-        "filter_by": {
-            "keyword": keyword,
-            "user_id": user_ids,
-            "logic_compute_group_id": [],
-            "status": status or [],
-            "mirror_url": [],
-        },
-        "order_by": [{"field": "created_at", "order": "desc"}],
-    }
+    page_size = max(1, int(page_size))
+    max_pages = max(1, int(max_pages))
+    all_items: list[dict] = []
+    current_page = 1
+    total: int | None = None
 
-    data = web_session_module.request_json(
-        session,
-        "POST",
-        f"{base_url}/api/v1/notebook/list",
-        body=body,
-        timeout=30,
-    )
+    while current_page <= max_pages:
+        body = {
+            "workspace_id": workspace_id,
+            "page": current_page,
+            "page_size": page_size,
+            "filter_by": {
+                "keyword": keyword,
+                "user_id": user_ids,
+                "logic_compute_group_id": [],
+                "status": status or [],
+                "mirror_url": [],
+            },
+            "order_by": [{"field": "created_at", "order": "desc"}],
+        }
 
-    if data.get("code") != 0:
-        message = data.get("message", "Unknown error")
-        raise ValueError(f"API error: {message}")
+        data = web_session_module.request_json(
+            session,
+            "POST",
+            f"{base_url}/api/v1/notebook/list",
+            body=body,
+            timeout=30,
+        )
 
-    items = data.get("data", {}).get("list", [])
-    if not isinstance(items, list):
-        return []
-    return [item for item in items if isinstance(item, dict)]
+        if data.get("code") != 0:
+            message = data.get("message", "Unknown error")
+            raise ValueError(f"API error: {message}")
+
+        payload = data.get("data", {})
+        payload = payload if isinstance(payload, dict) else {}
+        items = payload.get("list", [])
+        if not isinstance(items, list) or not items:
+            break
+
+        all_items.extend(item for item in items if isinstance(item, dict))
+
+        if total is None:
+            try:
+                total = int(payload["total"])
+            except (KeyError, TypeError, ValueError):
+                total = None
+        if total is not None and current_page * page_size >= total:
+            break
+        if len(items) < page_size:
+            break
+        current_page += 1
+
+    return all_items
 
 
 def _list_notebooks_for_workspaces(
@@ -319,7 +448,8 @@ def _list_notebooks_for_workspaces(
     workspace_ids: list[str],
     user_ids: list[str],
     keyword: str = "",
-    page_size: int = 20,
+    page_size: int = 100,
+    max_pages: int = 100,
     status: list[str] | None = None,
     errors: dict[str, Exception] | None = None,
 ) -> dict[str, list[dict]]:
@@ -335,6 +465,7 @@ def _list_notebooks_for_workspaces(
                 user_ids=user_ids,
                 keyword=keyword,
                 page_size=page_size,
+                max_pages=max_pages,
                 status=status,
             )
         }
@@ -351,6 +482,7 @@ def _list_notebooks_for_workspaces(
                 user_ids=user_ids,
                 keyword=keyword,
                 page_size=page_size,
+                max_pages=max_pages,
                 status=status,
             ),
         )

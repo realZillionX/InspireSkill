@@ -202,6 +202,7 @@ def patch_config_and_auth(
     config_check_module = importlib.import_module("inspire.cli.commands.config.check")
     job_commands_module = importlib.import_module("inspire.cli.commands.job.job_commands")
     job_create_module = importlib.import_module("inspire.cli.commands.job.job_create")
+    workspaces_module = importlib.import_module("inspire.platform.web.browser_api.workspaces")
     notebook_flow_module = importlib.import_module(
         "inspire.cli.commands.notebook.notebook_create_flow"
     )
@@ -224,6 +225,7 @@ def patch_config_and_auth(
     monkeypatch.setattr(quota_resolver_module, "resolve_quota", _fake_resolve_quota)
     monkeypatch.setattr(job_create_module, "resolve_quota", _fake_resolve_quota)
     monkeypatch.setattr(notebook_flow_module, "resolve_quota", _fake_resolve_quota)
+    monkeypatch.setattr(workspaces_module, "try_enumerate_workspaces", lambda *_a, **_kw: [])
 
     # job create imports `get_web_session` by name, so patch that namespace.
     monkeypatch.setattr(job_create_module, "get_web_session", lambda: FakeWebSession())
@@ -856,6 +858,179 @@ def test_job_list_web_name_search_scans_all_workspaces(
     assert {"ws-main", "ws-train"} <= scanned
 
 
+def test_job_list_without_keyword_fetches_all_pages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+
+    from importlib import import_module
+
+    job_commands_module = import_module("inspire.cli.commands.job.job_commands")
+    jobs_module = import_module("inspire.platform.web.browser_api.jobs")
+    JobInfo = jobs_module.JobInfo
+
+    class FakeSession:
+        workspace_id = "ws-main"
+        all_workspace_ids = ["ws-main"]
+        all_workspace_names = {"ws-main": "Main Workspace"}
+        storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
+
+    calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(job_commands_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_current_user",
+        lambda session=None: {"id": "user-me"},  # noqa: ARG005
+    )
+
+    def _job(index: int) -> JobInfo:
+        return JobInfo(
+            job_id=TEST_JOB_ID,
+            name=f"train-{index:03d}",
+            status="job_succeeded",
+            command="bash train.sh",
+            created_at=f"2026-06-05T10:00:{index % 60:02d}",
+            finished_at=None,
+            created_by_name="Chen Ke",
+            created_by_id="user-me",
+            project_id="project-1",
+            project_name="CQ Project",
+            compute_group_name="H200-3",
+            gpu_type="NVIDIA H200",
+            gpu_count=8,
+            instance_count=1,
+            priority=10,
+            workspace_id="ws-main",
+        )
+
+    def fake_list_jobs(
+        workspace_id=None,
+        created_by=None,
+        status=None,
+        keyword=None,
+        page_num=1,
+        page_size=100,
+        session=None,
+    ):  # noqa: ARG001
+        calls.append(
+            {
+                "workspace_id": workspace_id,
+                "created_by": created_by,
+                "status": status,
+                "keyword": keyword,
+                "page_num": page_num,
+                "page_size": page_size,
+            }
+        )
+        if page_num == 1:
+            return ([_job(index) for index in range(101, 1, -1)], 101)
+        if page_num == 2:
+            return ([_job(1)], 101)
+        raise AssertionError(f"unexpected page: {page_num}")
+
+    monkeypatch.setattr(browser_api_module, "list_jobs", fake_list_jobs)
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main, ["--json", "job", "list", "--workspace", "Main Workspace"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert len(payload["data"]["jobs"]) == 101
+    assert {row["name"] for row in payload["data"]["jobs"]} >= {"train-101", "train-001"}
+    assert [call["page_num"] for call in calls] == [1, 2]
+    assert all(call["page_size"] == 100 for call in calls)
+
+
+def test_job_list_limit_applies_per_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+
+    from importlib import import_module
+
+    job_commands_module = import_module("inspire.cli.commands.job.job_commands")
+    jobs_module = import_module("inspire.platform.web.browser_api.jobs")
+    JobInfo = jobs_module.JobInfo
+
+    class FakeSession:
+        workspace_id = "ws-main"
+        all_workspace_ids = ["ws-main", "ws-train"]
+        all_workspace_names = {
+            "ws-main": "Main Workspace",
+            "ws-train": "Training Workspace",
+        }
+        storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
+
+    calls: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(job_commands_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_current_user",
+        lambda session=None: {"id": "user-me"},  # noqa: ARG005
+    )
+
+    def _job(name: str, workspace_id: str) -> JobInfo:
+        return JobInfo(
+            job_id=TEST_JOB_ID,
+            name=name,
+            status="job_running",
+            command="bash train.sh",
+            created_at="2026-06-05T10:00:00",
+            finished_at=None,
+            created_by_name="Chen Ke",
+            created_by_id="user-me",
+            project_id="project-1",
+            project_name="CQ Project",
+            compute_group_name="H200-3",
+            gpu_type="NVIDIA H200",
+            gpu_count=8,
+            instance_count=1,
+            priority=10,
+            workspace_id=workspace_id,
+        )
+
+    def fake_list_jobs(
+        workspace_id=None,
+        created_by=None,
+        status=None,
+        keyword=None,
+        page_num=1,
+        page_size=100,
+        session=None,
+    ):  # noqa: ARG001
+        calls.append(
+            {
+                "workspace_id": workspace_id,
+                "created_by": created_by,
+                "status": status,
+                "keyword": keyword,
+                "page_num": page_num,
+                "page_size": page_size,
+            }
+        )
+        return ([_job(f"{workspace_id}-job-{page_num}", workspace_id or "ws-main")], 2)
+
+    monkeypatch.setattr(browser_api_module, "list_jobs", fake_list_jobs)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        ["--json", "job", "list", "--workspace", "all", "--limit", "1"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert {row["name"] for row in payload["data"]["jobs"]} == {
+        "ws-main-job-1",
+        "ws-train-job-1",
+    }
+    assert [call["workspace_id"] for call in calls] == ["ws-main", "ws-train"]
+    assert all(call["page_num"] == 1 for call in calls)
+    assert all(call["page_size"] == 1 for call in calls)
+
+
 def test_job_list_active_queries_only_active_platform_statuses(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -964,9 +1139,12 @@ def test_job_list_human_output_hides_raw_ids_and_name_search_ignores_job_id(
 
     from importlib import import_module
 
+    from inspire.cli.formatters.human_formatter import format_epoch
+
     job_commands_module = import_module("inspire.cli.commands.job.job_commands")
     jobs_module = import_module("inspire.platform.web.browser_api.jobs")
     JobInfo = jobs_module.JobInfo
+    created_at = "1781230039000"
 
     class FakeSession:
         workspace_id = "ws-main"
@@ -1001,7 +1179,7 @@ def test_job_list_human_output_hides_raw_ids_and_name_search_ignores_job_id(
                         name="kchen-slime-code-qwen35-35b-a3b-6node",
                         status="job_queuing",
                         command="bash run_qwen35_35b_a3b_code_6node.sh",
-                        created_at="2026-05-06T14:48:50",
+                        created_at=created_at,
                         finished_at=None,
                         created_by_name="Chen Ke",
                         created_by_id="user-me",
@@ -1030,6 +1208,8 @@ def test_job_list_human_output_hides_raw_ids_and_name_search_ignores_job_id(
     assert human_result.exit_code == 0
     assert "kchen-slime-code-qwen35-35b-a3b-6node" in human_result.output
     assert "Training Workspace" in human_result.output
+    assert format_epoch(created_at) in human_result.output
+    assert created_at not in human_result.output
     assert TEST_JOB_ID not in human_result.output
     assert "ws-train" not in human_result.output
     assert "project-1" not in human_result.output
@@ -1603,7 +1783,7 @@ def test_notebook_list_all_workspaces_combines_results(
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
     items = payload["data"]["items"]
-    assert [item["name"] for item in items] == ["gpu-notebook", "cpu-notebook"]
+    assert [item["name"] for item in items] == ["cpu-notebook", "gpu-notebook"]
     assert all("id" not in item for item in items)
     assert calls == [ws_cpu, ws_gpu]
 

@@ -122,6 +122,21 @@ def _workspace_display(session, workspace_id: str) -> str:  # noqa: ANN001
     return "(workspace name unavailable)"
 
 
+def _has_workspace_display_name(item: dict) -> bool:
+    workspace = item.get("workspace")
+    if isinstance(workspace, dict):
+        if workspace.get("name") or workspace.get("workspace_name") or workspace.get("workspaceName"):
+            return True
+    return bool(item.get("workspace_name") or item.get("workspaceName"))
+
+
+def _with_workspace_display_name(item: dict, workspace_name: str) -> dict:
+    result = dict(item)
+    if workspace_name and not _has_workspace_display_name(result):
+        result["workspace_name"] = workspace_name
+    return result
+
+
 @click.command("create")
 @click.option(
     "--name",
@@ -716,9 +731,8 @@ def notebook_id_cmd(
     "--limit",
     "-n",
     type=click.IntRange(1),
-    default=20,
-    show_default=True,
-    help="Maximum notebooks to query and display.",
+    default=None,
+    help="Maximum rows to display after querying all matching notebooks.",
 )
 @click.option(
     "--status",
@@ -736,7 +750,7 @@ def notebook_id_cmd(
 def list_notebooks(
     ctx: Context,
     workspace: Optional[str],
-    limit: int,
+    limit: Optional[int],
     status: tuple[str, ...],
     keyword: str,
 ) -> None:
@@ -791,7 +805,7 @@ def list_notebooks(
             workspace_ids=workspace_ids,
             user_ids=user_ids,
             keyword=keyword,
-            page_size=limit,
+            page_size=100,
             status=status_filter,
             errors=workspace_errors,
         )
@@ -810,7 +824,12 @@ def list_notebooks(
 
     all_items: list[dict] = []
     for ws_id in workspace_ids:
-        all_items.extend(workspace_items.get(ws_id, []))
+        workspace_name = _workspace_display(session, ws_id)
+        workspace_rows = [
+            _with_workspace_display_name(item, workspace_name)
+            for item in workspace_items.get(ws_id, [])
+        ]
+        all_items.extend(_sort_notebook_items(workspace_rows))
 
     if workspace_errors and not ctx.json_output:
         for ws_id, error in workspace_errors.items():
@@ -828,7 +847,8 @@ def list_notebooks(
         )
         return
 
-    all_items = _sort_notebook_items(all_items)
+    if limit is not None:
+        all_items = all_items[:limit]
     _print_notebook_list(all_items, ctx.json_output)
 
 

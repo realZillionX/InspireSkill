@@ -2,12 +2,53 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 import click
 
 from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.human_formatter import format_epoch
 from inspire.cli.utils.raw_ids import scrub_raw_ids
-from .notebook_lookup import _format_notebook_resource
+from .notebook_lookup import _format_notebook_cpu, _format_notebook_gpu, _notebook_gpu_type, _positive_int
+
+
+def _nested_name(item: dict, key: str, *fallback_keys: str) -> str:
+    value = item.get(key)
+    if isinstance(value, dict):
+        for nested_key in ("name", *fallback_keys):
+            nested_value = value.get(nested_key)
+            if nested_value:
+                return scrub_raw_ids(str(nested_value))
+    for fallback_key in fallback_keys:
+        fallback_value = item.get(fallback_key)
+        if fallback_value:
+            return scrub_raw_ids(str(fallback_value))
+    return "-"
+
+
+def _format_notebook_project(item: dict) -> str:
+    return _nested_name(item, "project", "project_name", "projectName")
+
+
+def _format_notebook_workspace(item: dict) -> str:
+    return _nested_name(item, "workspace", "workspace_name", "workspaceName")
+
+
+def _display_width(value: str) -> int:
+    width = 0
+    for char in value:
+        if unicodedata.combining(char):
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+    return width
+
+
+def _column_width(title: str, values: list[str]) -> int:
+    return max(_display_width(title), *(_display_width(value) for value in values))
+
+
+def _pad(value: str, width: int) -> str:
+    return value + (" " * max(0, width - _display_width(value)))
 
 
 def _print_notebook_detail(notebook: dict) -> None:
@@ -23,17 +64,9 @@ def _print_notebook_detail(notebook: dict) -> None:
     image = notebook.get("image") or {}
     start_cfg = notebook.get("start_config") or {}
     workspace = notebook.get("workspace") or {}
-    node = notebook.get("node") or {}
 
-    gpu_type = ""
-    node_gpu_info = node.get("gpu_info")
-    if isinstance(node_gpu_info, dict):
-        gpu_type = node_gpu_info.get("gpu_product_simple", "")
-    if not gpu_type:
-        spec = notebook.get("resource_spec") or {}
-        gpu_type = spec.get("gpu_type", "")
-
-    gpu_count = quota.get("gpu_count", 0)
+    gpu_type = _notebook_gpu_type(notebook)
+    gpu_count = _positive_int(quota.get("gpu_count"))
     gpu_str = f"{gpu_count}x {gpu_type}" if gpu_type and gpu_count else str(gpu_count or "N/A")
 
     img_name = image.get("name", "")
@@ -95,25 +128,39 @@ def _print_notebook_list(items: list, json_output: bool) -> None:
 
     name_strings = [scrub_raw_ids(item.get("name") or "N/A") for item in items]
     status_strings = [scrub_raw_ids(item.get("status") or "Unknown") for item in items]
-    resource_strings = [scrub_raw_ids(_format_notebook_resource(item)) for item in items]
+    project_strings = [_format_notebook_project(item) for item in items]
+    workspace_strings = [_format_notebook_workspace(item) for item in items]
+    gpu_strings = [scrub_raw_ids(_format_notebook_gpu(item)) for item in items]
+    cpu_strings = [scrub_raw_ids(_format_notebook_cpu(item)) for item in items]
     created_strings = [scrub_raw_ids(format_epoch(item.get("created_at"))) for item in items]
 
-    name_w = max(len("Name"), *(len(s) for s in name_strings))
-    status_w = max(len("Status"), *(len(s) for s in status_strings))
-    resource_w = max(len("Resource"), *(len(s) for s in resource_strings))
-    created_w = max(len("Created"), *(len(s) for s in created_strings))
+    name_w = _column_width("Name", name_strings)
+    status_w = _column_width("Status", status_strings)
+    project_w = _column_width("Project", project_strings)
+    workspace_w = _column_width("Workspace", workspace_strings)
+    gpu_w = _column_width("GPU", gpu_strings)
+    cpu_w = _column_width("CPU", cpu_strings)
+    created_w = _column_width("Created", created_strings)
 
     header = (
-        f"{'Name':<{name_w}}  {'Status':<{status_w}}  "
-        f"{'Resource':<{resource_w}}  {'Created':<{created_w}}"
+        f"{_pad('Name', name_w)}  {_pad('Status', status_w)}  "
+        f"{_pad('Project', project_w)}  {_pad('Workspace', workspace_w)}  "
+        f"{_pad('GPU', gpu_w)}  {_pad('CPU', cpu_w)}  {_pad('Created', created_w)}"
     )
     lines = [header, "-" * len(header)]
-    for name, status, resource, created in zip(
-        name_strings, status_strings, resource_strings, created_strings
+    for name, status, project, workspace, gpu, cpu, created in zip(
+        name_strings,
+        status_strings,
+        project_strings,
+        workspace_strings,
+        gpu_strings,
+        cpu_strings,
+        created_strings,
     ):
         lines.append(
-            f"{name:<{name_w}}  {status:<{status_w}}  "
-            f"{resource:<{resource_w}}  {created:<{created_w}}"
+            f"{_pad(name, name_w)}  {_pad(status, status_w)}  "
+            f"{_pad(project, project_w)}  {_pad(workspace, workspace_w)}  "
+            f"{_pad(gpu, gpu_w)}  {_pad(cpu, cpu_w)}  {_pad(created, created_w)}"
         )
 
     lines.append("")

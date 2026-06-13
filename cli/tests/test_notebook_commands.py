@@ -319,6 +319,153 @@ def test_notebook_list_all_uses_multi_workspace_helper(
     assert captured["status"] == ["RUNNING"]
 
 
+def test_notebook_list_fetches_all_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages: list[int] = []
+
+    def _fake_request_json(session, method, url, *, body, timeout):  # noqa: ANN001, ARG001
+        assert method == "POST"
+        assert url == "https://example.invalid/api/v1/notebook/list"
+        assert timeout == 30
+        page = int(body["page"])
+        pages.append(page)
+        if page == 1:
+            return {
+                "code": 0,
+                "data": {
+                    "total": 3,
+                    "list": [{"name": "n3"}, {"name": "n2"}],
+                },
+            }
+        if page == 2:
+            return {"code": 0, "data": {"total": 3, "list": [{"name": "n1"}]}}
+        raise AssertionError(f"unexpected page: {page}")
+
+    monkeypatch.setattr(_NBL_MOD.web_session_module, "request_json", _fake_request_json)
+
+    rows = _NBL_MOD._list_notebooks_for_workspace(
+        SimpleNamespace(),
+        base_url="https://example.invalid",
+        workspace_id="ws-a",
+        user_ids=["user-1"],
+        page_size=2,
+    )
+
+    assert [row["name"] for row in rows] == ["n3", "n2", "n1"]
+    assert pages == [1, 2]
+
+
+def test_notebook_resource_display_uses_specific_gpu_models() -> None:
+    h200_item = {
+        "quota": {"gpu_count": 2, "cpu_count": 40},
+        "resource_spec_price": {
+            "gpu_info": {"gpu_type": "NVIDIA_H200_SXM_141G"},
+        },
+    }
+    assert (
+        _NBL_MOD._format_notebook_gpu(h200_item)
+        == "2x H200"
+    )
+    assert _NBL_MOD._format_notebook_cpu(h200_item) == "40 CPU"
+    assert _NBL_MOD._format_notebook_resource(h200_item) == "2x H200 + 40 CPU"
+    assert (
+        _NBL_MOD._format_notebook_gpu(
+            {
+                "quota": {"gpu_count": 1},
+                "resource_spec": {"gpu_type_display": "NVIDIA H100 (80GB)"},
+            }
+        )
+        == "1x H100"
+    )
+    assert (
+        _NBL_MOD._format_notebook_gpu(
+            {
+                "quota": {"gpu_count": 8},
+                "node": {"gpu_info": {"gpu_type_display": "RTX 4090"}},
+            }
+        )
+        == "8x 4090"
+    )
+    assert _NBL_MOD._format_notebook_gpu({"quota": {"gpu_count": 0, "cpu_count": 55}}) == "-"
+    assert _NBL_MOD._format_notebook_cpu({"quota": {"gpu_count": 0, "cpu_count": 55}}) == "55 CPU"
+    assert (
+        _NBL_MOD._format_notebook_resource({"quota": {"gpu_count": 0, "cpu_count": 55}})
+        == "55 CPU"
+    )
+
+
+def test_notebook_list_human_shows_project_workspace_and_gpu_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = make_test_config(tmp_path)
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=True: (config, {})),
+    )
+    monkeypatch.setattr(notebook_cmd_module, "get_base_url", lambda: "https://example.invalid")
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "_try_get_current_user_ids",
+        lambda session, *, base_url: ["user-1"],  # noqa: ARG005
+    )
+
+    class _FakeSession:
+        workspace_id = "ws-a"
+        all_workspace_ids = ["ws-a", "ws-b"]
+        all_workspace_names = {"ws-a": "GPU A", "ws-b": "GPU B"}
+
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "require_web_session",
+        lambda ctx, *, hint: _FakeSession(),  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "_list_notebooks_for_workspaces",
+        lambda *args, **kwargs: {
+            "ws-a": [
+                {
+                    "name": "a-h200-notebook",
+                    "status": "RUNNING",
+                    "created_at": "2026-06-05 10:00:00",
+                    "project": {"name": "Project One"},
+                    "quota": {"gpu_count": 2, "cpu_count": 40},
+                    "resource_spec_price": {
+                        "gpu_info": {"gpu_type": "NVIDIA_H200_SXM_141G"},
+                    },
+                }
+            ],
+            "ws-b": [
+                {
+                    "name": "b-cpu-notebook",
+                    "status": "STOPPED",
+                    "created_at": "2026-06-06 10:00:00",
+                    "project": {"name": "Project Two"},
+                    "quota": {"gpu_count": 0, "cpu_count": 55},
+                }
+            ]
+        },
+        raising=False,
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli_main, ["notebook", "list", "--workspace", "all"])
+
+    assert result.exit_code == 0
+    assert "Project" in result.output
+    assert "Workspace" in result.output
+    assert "GPU" in result.output
+    assert "CPU" in result.output
+    assert "Project One" in result.output
+    assert "Project Two" in result.output
+    assert "GPU A" in result.output
+    assert "GPU B" in result.output
+    assert "2x H200" in result.output
+    assert "40 CPU" in result.output
+    assert "55 CPU" in result.output
+    assert result.output.index("a-h200-notebook") < result.output.index("b-cpu-notebook")
+
+
 def test_notebook_create_accepts_priority_10(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 

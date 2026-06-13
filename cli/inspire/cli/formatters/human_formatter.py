@@ -9,6 +9,7 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from inspire.cli.formatters.table import display_width, render_table
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 # ---------------------------------------------------------------------------
@@ -59,6 +60,13 @@ def format_warning(message: str) -> str:
 def print_error(message: str, hint: Optional[str] = None) -> None:
     """Print an error message to stderr."""
     print(format_error(message, hint), file=sys.stderr)
+
+
+def _column_width(header: str, values: list[str], *, max_width: int | None = None) -> int:
+    width = max(display_width(header), *(display_width(value) for value in values), 1)
+    if max_width is not None:
+        return min(width, max_width)
+    return width
 
 
 # ---------------------------------------------------------------------------
@@ -175,29 +183,26 @@ def format_job_list(jobs: List[Dict[str, Any]]) -> str:
     if not jobs:
         return "No jobs found."
 
-    # Determine dynamic column widths to avoid truncation while keeping the table aligned.
     name_strings = [scrub_raw_ids(job.get("name", "N/A")) for job in jobs]
-    name_width = max(len("Name"), *(len(name) for name in name_strings))
     status_strings = [scrub_raw_ids(job.get("status", "UNKNOWN")) for job in jobs]
-    status_width = (
-        max(len("Status"), *(len(s) for s in status_strings)) if status_strings else len("Status")
-    )
-    created_strings = [scrub_raw_ids(job.get("created_at", "N/A")) for job in jobs]
-    created_width = max(len("Created"), *(len(created) for created in created_strings))
+    created_strings = [scrub_raw_ids(format_epoch(job.get("created_at"))) for job in jobs]
 
-    header_line = (
-        f"{'Name':<{name_width}}  {'Status':<{status_width}}  {'Created':<{created_width}}"
-    )
-    separator = "-" * len(header_line)
-    lines = ["Jobs", header_line, separator]
+    widths = [
+        _column_width("Name", name_strings, max_width=120),
+        _column_width("Status", status_strings, max_width=16),
+        _column_width("Created", created_strings, max_width=19),
+    ]
+    table_rows = list(zip(name_strings, status_strings, created_strings))
+    lines = [
+        "Jobs",
+        *render_table(
+            ("Name", "Status", "Created"),
+            table_rows,
+            widths,
+            line_char="─",
+        ),
+    ]
 
-    for name, status_str, created in zip(name_strings, status_strings, created_strings):
-
-        lines.append(
-            f"{name:<{name_width}}  {status_str:<{status_width}}  {created:<{created_width}}"
-        )
-
-    lines.append(separator)
     lines.append(f"Total: {len(jobs)} job(s)")
 
     return "\n".join(lines)
@@ -362,20 +367,45 @@ def format_project_list(projects: List[Dict[str, Any]]) -> str:
     if not projects:
         return "No projects found."
 
-    lines = [
-        f"{'Name':<24} {'Priority':<10} {'Budget remain':<16}",
-        "-" * 52,
-    ]
+    rendered: list[dict[str, str]] = []
 
     for proj in projects:
-        name = scrub_raw_ids(str(proj.get("name", "N/A")))[:24]
-        priority = scrub_raw_ids(str(proj.get("priority_level", "")))[:10] or "-"
+        name = scrub_raw_ids(str(proj.get("name", "N/A")))
+        workspace_names = proj.get("workspace_names") or []
+        workspace = ", ".join(scrub_raw_ids(str(name)) for name in workspace_names) or "-"
+        priority = scrub_raw_ids(str(proj.get("priority_level") or proj.get("priority_name") or ""))
+        priority = priority or "-"
         budget = proj.get("member_remain_budget", 0.0)
-        budget_str = f"{budget:,.0f}"
+        try:
+            budget_str = f"{float(budget):,.0f}"
+        except (TypeError, ValueError):
+            budget_str = str(budget or "0")
+        rendered.append(
+            {
+                "name": name,
+                "workspace": workspace,
+                "priority": priority,
+                "budget": budget_str,
+            }
+        )
 
-        lines.append(f"{name:<24} {priority:<10} {budget_str:<16}")
-
-    lines.append("-" * 52)
+    widths = [
+        _column_width("Name", [r["name"] for r in rendered], max_width=48),
+        _column_width("Workspace", [r["workspace"] for r in rendered], max_width=32),
+        _column_width("Priority", [r["priority"] for r in rendered], max_width=12),
+        _column_width("Budget remain", [r["budget"] for r in rendered], max_width=16),
+    ]
+    rows = [(r["name"], r["workspace"], r["priority"], r["budget"]) for r in rendered]
+    lines = [
+        "Projects",
+        *render_table(
+            ("Name", "Workspace", "Priority", "Budget remain"),
+            rows,
+            widths,
+            aligns=["left", "left", "left", "right"],
+            line_char="─",
+        ),
+    ]
     lines.append(f"Total: {len(projects)} project(s)")
 
     return "\n".join(lines)
