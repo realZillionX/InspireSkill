@@ -40,6 +40,8 @@
 
 `--quota` / `-q` 是 `gpu,cpu,mem` 三元组，`mem` 以 GiB 计。GPU 型号不写进三元组，而由 workspace + compute group 决定。
 
+`mem` 表示实例常规内存规格，不是 shared memory。GPU job 的 `/dev/shm` / IPC 空间用 `--shm-size <GiB>` 控制；需要项目级默认时用 `INSPIRE_SHM_SIZE` 或 `[job] shm_size`。
+
 三元组必须在当前可见规格里唯一匹配。如果多个 compute group 有同一组三元组，先用查询命令按 group 关键词收窄，再在 create 或 profile 中写完整 group 名称。
 
 申请资源前按真实任务需求和实时空余选择规格。不要因为猜测主动降档；只有调度语义、空余量或项目策略明确不足时再缩小规模。

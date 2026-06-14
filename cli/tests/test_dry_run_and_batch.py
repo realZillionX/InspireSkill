@@ -40,7 +40,12 @@ class FakeWebSession:
     }
 
 
-def _patch_submit_deps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> DummyAPI:
+def _patch_submit_deps(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    shm_size: int | None = None,
+) -> DummyAPI:
     config = config_module.Config(
         username="user",
         password="pass",
@@ -48,6 +53,7 @@ def _patch_submit_deps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Dummy
         job_priority=5,
         path_aliases={"me": str(tmp_path / "remote")},
     )
+    config.shm_size = shm_size
     config.projects = {"proj": "project-12345678-1234-1234-1234-123456789abc"}
     config.profiles = {
         "job": {
@@ -266,6 +272,66 @@ def test_job_create_profile_fills_condition_fields(
     assert api.training_calls == []
 
 
+def test_job_create_shm_size_overrides_config_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path, shm_size=32)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "create",
+            "--name",
+            "shm-job",
+            "--profile",
+            "h200",
+            "--command",
+            "python train.py",
+            "--shm-size",
+            "64",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    framework_config = payload["data"]["create_kwargs"]["framework_config"][0]
+    assert framework_config["shm_gi"] == 64
+    assert api.training_calls == []
+
+
+def test_job_create_uses_config_shm_size_when_flag_absent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path, shm_size=48)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "create",
+            "--name",
+            "config-shm-job",
+            "--profile",
+            "h200",
+            "--command",
+            "python train.py",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    framework_config = payload["data"]["create_kwargs"]["framework_config"][0]
+    assert framework_config["shm_gi"] == 48
+    assert api.training_calls == []
+
+
 def test_job_create_rejects_profile_with_explicit_condition_field(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -324,6 +390,7 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
                     "auto_fault_tolerance": False,
                     "fault_tolerance_max_retry": 0,
                     "exclude_nodes": ["qb-prod-gpu17{seed}"],
+                    "shm_size": 96,
                 },
                 "matrix": {"seed": [1, 2]},
                 "jobs": [
@@ -356,6 +423,8 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert items[1]["create_kwargs"]["framework_config"][0]["exclude_nodes"] == [
         "qb-prod-gpu172"
     ]
+    assert items[0]["create_kwargs"]["framework_config"][0]["shm_gi"] == 96
+    assert items[1]["create_kwargs"]["framework_config"][0]["shm_gi"] == 96
     assert items[0]["create_kwargs"]["task_priority"] == 7
     assert api.training_calls == []
 

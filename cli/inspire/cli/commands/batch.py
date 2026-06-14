@@ -351,6 +351,7 @@ def _prepare_training_item(
         auto_fault_tolerance=_optional_bool(item, "auto_fault_tolerance", default=False),
         fault_tolerance_max_retry=10 if fault_retry is None else fault_retry,
         exclude_nodes=_optional_str_list(item, "exclude_nodes"),
+        shm_size=_optional_int(item, "shm_size", min_value=1),
     )
 
 
@@ -840,7 +841,7 @@ def job_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
         name, command, quota, workspace, project, group, image
         Optional fields use create-command defaults: priority, framework,
         nodes, max_time, auto_fault_tolerance, fault_tolerance_max_retry,
-        exclude_nodes
+        exclude_nodes, shm_size
 
     \b
     Examples:

@@ -206,6 +206,19 @@ def training_plan_exclude_nodes(plan: JobSubmissionPlan) -> list[str]:
     return []
 
 
+def _resolve_shm_size(config: Config, shm_size: Optional[int]) -> int | None:
+    resolved = shm_size if shm_size is not None else config.shm_size
+    if resolved is None:
+        return None
+    resolved_int = int(resolved)
+    if resolved_int < 1:
+        raise ValueError(
+            "Shared memory size must be >= 1 "
+            "(set --shm-size, INSPIRE_SHM_SIZE, or job.shm_size)."
+        )
+    return resolved_int
+
+
 def build_training_job_plan(
     *,
     config: Config,
@@ -223,6 +236,7 @@ def build_training_job_plan(
     auto_fault_tolerance: Optional[bool] = None,
     fault_tolerance_max_retry: Optional[int] = None,
     exclude_nodes: Iterable[str] | None = None,
+    shm_size: Optional[int] = None,
 ) -> JobSubmissionPlan:
     if not image:
         raise ValueError("--image is required.")
@@ -263,13 +277,9 @@ def build_training_job_plan(
     if max_time_ms is not None:
         create_kwargs["max_running_time_ms"] = max_time_ms
 
-    if config.shm_size is not None:
-        shm_size = int(config.shm_size)
-        if shm_size < 1:
-            raise ValueError(
-                "Shared memory size must be >= 1 (set INSPIRE_SHM_SIZE or job.shm_size)."
-            )
-        framework_config["shm_gi"] = shm_size
+    resolved_shm_size = _resolve_shm_size(config, shm_size)
+    if resolved_shm_size is not None:
+        framework_config["shm_gi"] = resolved_shm_size
 
     normalized_exclude_nodes = normalize_exclude_nodes(exclude_nodes)
     if normalized_exclude_nodes:
@@ -337,6 +347,7 @@ def submit_training_job(
     auto_fault_tolerance: Optional[bool] = None,
     fault_tolerance_max_retry: Optional[int] = None,
     exclude_nodes: Iterable[str] | None = None,
+    shm_size: Optional[int] = None,
 ) -> JobSubmission:
     plan = build_training_job_plan(
         config=config,
@@ -354,6 +365,7 @@ def submit_training_job(
         auto_fault_tolerance=auto_fault_tolerance,
         fault_tolerance_max_retry=fault_tolerance_max_retry,
         exclude_nodes=exclude_nodes,
+        shm_size=shm_size,
     )
 
     data = browser_api_module.create_training_job(

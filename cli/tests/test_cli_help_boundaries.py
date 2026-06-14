@@ -125,6 +125,9 @@ def test_job_create_help_explains_framework_and_fault_tolerance() -> None:
     assert "auto-restart the training job after failures" in output
     assert "Max platform restart attempts" in output
     assert "Ignored when fault tolerance is off" in output
+    assert "--shm-size INTEGER" in result.output
+    assert "Overrides INSPIRE_SHM_SIZE/job.shm_size" in output
+    assert "platform shm_gi" in output
 
 
 def test_init_help_explains_plain_init_discovery() -> None:

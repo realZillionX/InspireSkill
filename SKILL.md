@@ -15,12 +15,12 @@ description: "Inspire platform operating model for Agents: decide workspace, res
 
 | 平面 | 要回答的问题 | 不要混淆 |
 | --- | --- | --- |
-| 调度条件 | 跑在哪个 workspace / project / compute group，用多少 GPU / CPU / 内存，基于哪个镜像 | 不是远端路径，也不是对象名字 |
+| 调度条件 | 跑在哪个 workspace / project / compute group，用多少 GPU / CPU / 内存 / shared memory，基于哪个镜像 | 不是远端路径，也不是对象名字 |
 | 远端文件 | 代码、数据、权重、checkpoint、产物放在哪个共享盘路径 | path alias 不能代替 workspace / project / group / quota |
 | 工作负载 | 需要交互调试、GPU 后台任务、CPU Slurm、Ray 弹性集群，还是模型服务 | 不要为了“能跑”把所有事都塞进 notebook |
 | 观察收尾 | 如何判断排队、失败、空转、已完成，以及何时 stop / delete | `status=RUNNING` 不等于业务健康，`status=SUCCEEDED` 不等于产物完整 |
 
-`workspace`、`project`、`group`、`quota`、`image` 是调度条件，没有隐式默认值。创建 workload 时显式传入，或用 workload profile 明确保存这五类条件。Path alias 只表示远端路径，服务于 `--cwd`、scp、日志路径和共享盘约定。
+`workspace`、`project`、`group`、`quota`、`image` 是核心调度条件，没有隐式默认值。创建 workload 时显式传入，或用 workload profile 明确保存这五类条件。GPU job shared memory 属于资源细项，不等同于 `quota` 的内存字段；需要时查 job create help 或 [references/compute-workloads.md](references/compute-workloads.md)。Path alias 只表示远端路径，服务于 `--cwd`、scp、日志路径和共享盘约定。
 
 日常 workspace 选择通常很直接：
 

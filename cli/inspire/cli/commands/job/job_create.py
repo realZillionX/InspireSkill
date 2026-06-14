@@ -48,6 +48,7 @@ def run_job_create(
     auto_fault_tolerance: Optional[bool] = None,
     fault_tolerance_max_retry: Optional[int] = None,
     exclude_nodes: tuple[str, ...] | None = None,
+    shm_size: Optional[int] = None,
 ) -> None:
     """Run the job creation flow."""
     try:
@@ -212,6 +213,7 @@ def run_job_create(
                 auto_fault_tolerance=auto_fault_tolerance,
                 fault_tolerance_max_retry=fault_tolerance_max_retry,
                 exclude_nodes=exclude_nodes,
+                shm_size=shm_size,
             )
         except ValueError as e:
             _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -260,6 +262,7 @@ def run_job_create(
             auto_fault_tolerance=auto_fault_tolerance,
             fault_tolerance_max_retry=fault_tolerance_max_retry,
             exclude_nodes=exclude_nodes,
+            shm_size=shm_size,
         )
 
         wrapped_command = submission.wrapped_command
@@ -420,6 +423,15 @@ def run_job_create(
     ),
 )
 @click.option(
+    "--shm-size",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Per-instance shared memory in GiB. Overrides "
+        "INSPIRE_SHM_SIZE/job.shm_size and maps to platform shm_gi."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help=(
@@ -445,6 +457,7 @@ def create(
     project: Optional[str],
     nodes: Optional[int],
     exclude_nodes: tuple[str, ...],
+    shm_size: Optional[int],
     dry_run: bool,
 ) -> None:
     """Create a GPU batch job.
@@ -488,4 +501,5 @@ def create(
         auto_fault_tolerance=auto_fault_tolerance,
         fault_tolerance_max_retry=fault_tolerance_max_retry,
         exclude_nodes=exclude_nodes,
+        shm_size=shm_size,
     )
