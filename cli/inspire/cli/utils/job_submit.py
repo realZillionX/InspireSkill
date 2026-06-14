@@ -219,6 +219,16 @@ def _resolve_shm_size(config: Config, shm_size: Optional[int]) -> int | None:
     return resolved_int
 
 
+def _validate_shm_size_fits_memory(shm_size: int, memory_gib: int) -> None:
+    memory_int = int(memory_gib)
+    if shm_size > memory_int:
+        raise ValueError(
+            f"Shared memory size ({shm_size} GiB) must be <= quota memory "
+            f"({memory_int} GiB). Lower --shm-size, INSPIRE_SHM_SIZE, or "
+            "job.shm_size, or choose a quota with more memory."
+        )
+
+
 def build_training_job_plan(
     *,
     config: Config,
@@ -279,6 +289,7 @@ def build_training_job_plan(
 
     resolved_shm_size = _resolve_shm_size(config, shm_size)
     if resolved_shm_size is not None:
+        _validate_shm_size_fits_memory(resolved_shm_size, quota.memory_gib)
         framework_config["shm_gi"] = resolved_shm_size
 
     normalized_exclude_nodes = normalize_exclude_nodes(exclude_nodes)

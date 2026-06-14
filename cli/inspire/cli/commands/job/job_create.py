@@ -427,8 +427,8 @@ def run_job_create(
     type=click.IntRange(min=1),
     default=None,
     help=(
-        "Per-instance shared memory in GiB. Overrides "
-        "INSPIRE_SHM_SIZE/job.shm_size and maps to platform shm_gi."
+        "Per-instance shared memory in GiB. Must be <= quota mem. "
+        "Overrides INSPIRE_SHM_SIZE/job.shm_size and maps to platform shm_gi."
     ),
 )
 @click.option(

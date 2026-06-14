@@ -32,7 +32,7 @@ Job 覆盖 GPU 多节点工作负载，包括分布式训练、批量推理和�
 Job 的关键边界：
 
 - 日志和工作目录依赖共享盘约定；训练 repo 建议在 `me:<repo>`，启动命令里使用相对共享盘路径或让脚本自己切目录。
-- Shared memory 是每个 job instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`。PyTorch DataLoader workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置；也可用 `INSPIRE_SHM_SIZE` 或 `[job] shm_size` 作为默认值，命令行参数优先。
+- Shared memory 是每个 job instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置；也可用 `INSPIRE_SHM_SIZE` 或 `[job] shm_size` 作为默认值，命令行参数优先。
 - 多节点训练要关注每个 pod 的 GPU、显存、CPU 和网络曲线是否同步；某个 worker 长期低负载通常比日志更早暴露问题。
 - 排除坏节点是“不要调度到这些 Ready 节点”，不是固定节点；候选节点来自所选 compute group。
 

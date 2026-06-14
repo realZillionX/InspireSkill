@@ -332,6 +332,68 @@ def test_job_create_uses_config_shm_size_when_flag_absent(
     assert api.training_calls == []
 
 
+def test_job_create_rejects_shm_size_above_quota_memory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "create",
+            "--name",
+            "oversized-shm-job",
+            "--profile",
+            "h200",
+            "--command",
+            "python train.py",
+            "--shm-size",
+            "256",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert (
+        "Shared memory size (256 GiB) must be <= quota memory (200 GiB)"
+        in result.output
+    )
+    assert api.training_calls == []
+
+
+def test_job_create_rejects_config_shm_size_above_quota_memory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path, shm_size=256)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "create",
+            "--name",
+            "oversized-config-shm-job",
+            "--profile",
+            "h200",
+            "--command",
+            "python train.py",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert (
+        "Shared memory size (256 GiB) must be <= quota memory (200 GiB)"
+        in result.output
+    )
+    assert api.training_calls == []
+
+
 def test_job_create_rejects_profile_with_explicit_condition_field(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -426,6 +488,52 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert items[0]["create_kwargs"]["framework_config"][0]["shm_gi"] == 96
     assert items[1]["create_kwargs"]["framework_config"][0]["shm_gi"] == 96
     assert items[0]["create_kwargs"]["task_priority"] == 7
+    assert api.training_calls == []
+
+
+def test_batch_rejects_shm_size_above_quota_memory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    batch_path = tmp_path / "batch.json"
+    batch_path.write_text(
+        json.dumps(
+            {
+                "profiles": {
+                    "job": {
+                        "h200": {
+                            "quota": "1,20,200",
+                            "workspace": "cpu",
+                            "project": "proj",
+                            "group": "H200 Room",
+                            "image": "registry.batch/train:latest",
+                        }
+                    }
+                },
+                "defaults": {
+                    "type": "job",
+                    "profile": "h200",
+                    "shm_size": 256,
+                },
+                "jobs": [
+                    {"name": "train", "command": "python train.py"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "job", "batch", str(batch_path), "--dry-run"],
+    )
+
+    assert result.exit_code != 0
+    assert (
+        "Shared memory size (256 GiB) must be <= quota memory (200 GiB)"
+        in result.output
+    )
     assert api.training_calls == []
 
 
