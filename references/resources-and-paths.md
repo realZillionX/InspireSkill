@@ -36,6 +36,8 @@
 
 `resources availability`、`resources nodes` 和各 workload 的 `quota` 是资源事实入口；具体参数和输出以 help 为准。
 
+`Low Pri` 表示低优任务占用的可抢占 GPU；判断高优任务（priority 5-10）时不要只看 `Available`，提交后仍以 events 为准。
+
 ## 4. Quota 语义
 
 `--quota` / `-q` 是 `gpu,cpu,mem` 三元组，`mem` 以 GiB 计。GPU 型号不写进三元组，而由 workspace + compute group 决定。
