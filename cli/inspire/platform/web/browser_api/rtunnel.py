@@ -73,29 +73,36 @@ INSPIRE_BOOTSTRAP_ROOT = "/inspire/hdd/global_public/inspire-skill-bootstrap/v1"
 
 
 def _authorized_keys_setup_command(ssh_public_key: Optional[str]) -> str:
+    authorized_keys_path_setup = (
+        '_INSPIRE_SSH_USER=$(id -un 2>/dev/null || printf root); '
+        '_INSPIRE_SSH_HOME=$(getent passwd "$_INSPIRE_SSH_USER" 2>/dev/null '
+        "| awk -F: 'NF {print $6; exit}' || true); "
+        '[ -n "$_INSPIRE_SSH_HOME" ] || _INSPIRE_SSH_HOME="${HOME:-/root}"; '
+        '_INSPIRE_AUTHORIZED_KEYS_DIR="$_INSPIRE_SSH_HOME/.ssh"; '
+        '_INSPIRE_AUTHORIZED_KEYS="$_INSPIRE_AUTHORIZED_KEYS_DIR/authorized_keys"; '
+        'mkdir -p "$_INSPIRE_AUTHORIZED_KEYS_DIR" && '
+        'chmod 700 "$_INSPIRE_AUTHORIZED_KEYS_DIR" && '
+        'touch "$_INSPIRE_AUTHORIZED_KEYS" && chmod 600 "$_INSPIRE_AUTHORIZED_KEYS"'
+    )
     if ssh_public_key:
         ssh_public_key_escaped = ssh_public_key.replace("'", "'\"'\"'")
         return (
-            "mkdir -p /root/.ssh && chmod 700 /root/.ssh && "
-            "touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys && "
+            f"{authorized_keys_path_setup} && "
             f"_INSPIRE_SSH_KEY='{ssh_public_key_escaped}'; "
             "_INSPIRE_SSH_KEY_ID=$(printf '%s\\n' \"$_INSPIRE_SSH_KEY\" "
             "| awk 'NF {print $1 \" \" $2; exit}'); "
             'if [ -n "$_INSPIRE_SSH_KEY_ID" ] && ! awk -v k="$_INSPIRE_SSH_KEY_ID" '
             "'NF && $1 \" \" $2 == k {found=1} END{exit found?0:1}' "
-            "/root/.ssh/authorized_keys; then "
-            "printf '%s\\n' \"$_INSPIRE_SSH_KEY\" >> /root/.ssh/authorized_keys; fi; "
-            "_AK_TMP=/root/.ssh/authorized_keys.tmp.$$; "
+            '"$_INSPIRE_AUTHORIZED_KEYS"; then '
+            'printf \'%s\\n\' "$_INSPIRE_SSH_KEY" >> "$_INSPIRE_AUTHORIZED_KEYS"; fi; '
+            '_AK_TMP="${_INSPIRE_AUTHORIZED_KEYS}.tmp.$$"; '
             "awk 'NF { k=$1 \" \" $2; if (!seen[k]++) print $0 }' "
-            '/root/.ssh/authorized_keys >"$_AK_TMP" && cat "$_AK_TMP" '
-            '>/root/.ssh/authorized_keys; rm -f "$_AK_TMP"; '
-            "chmod 600 /root/.ssh/authorized_keys"
+            '"$_INSPIRE_AUTHORIZED_KEYS" >"$_AK_TMP" && cat "$_AK_TMP" '
+            '>"$_INSPIRE_AUTHORIZED_KEYS"; rm -f "$_AK_TMP"; '
+            'chmod 600 "$_INSPIRE_AUTHORIZED_KEYS"'
         )
 
-    return (
-        "mkdir -p /root/.ssh && chmod 700 /root/.ssh && "
-        "touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
-    )
+    return authorized_keys_path_setup
 
 
 def build_rtunnel_setup_commands(

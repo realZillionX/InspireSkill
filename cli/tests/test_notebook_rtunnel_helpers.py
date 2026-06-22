@@ -1094,6 +1094,10 @@ def test_build_rtunnel_setup_commands_dedupes_authorized_keys_and_fast_paths() -
     assert "_INSPIRE_SSH_KEY_ID" in script
     assert 'awk -v k="$_INSPIRE_SSH_KEY_ID"' in script
     assert "if (!seen[k]++) print $0" in script
+    assert 'getent passwd "$_INSPIRE_SSH_USER"' in script
+    assert '$_INSPIRE_SSH_HOME/.ssh' in script
+    assert "/root/.ssh" not in script
+    assert "AuthorizedKeysFile" not in script
     assert "existing sshd and rtunnel are running; fast path" in script
     assert SETUP_DONE_MARKER in script
     assert "exit 0" in script
