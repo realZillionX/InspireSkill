@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/realZillionX/InspireSkill/tree/main/cli"><img src="https://img.shields.io/badge/CLI-bundled-3366FF?style=for-the-badge" alt="CLI bundled"/></a>
-  <img src="https://img.shields.io/badge/harness-Claude%20Code%20·%20Codex%20·%20Antigravity%20·%20Cursor%20·%20OpenClaw%20·%20OpenCode%20·%20Qoder-5566FF?style=for-the-badge" alt="Harnesses"/>
+  <img src="https://img.shields.io/badge/harness-Claude%20Code%20·%20Codex%20·%20Antigravity%20·%20Cursor%20·%20OpenClaw%20·%20OpenCode%20·%20Qoder%20·%20Kimi%20Code-5566FF?style=for-the-badge" alt="Harnesses"/>
   <img src="https://img.shields.io/badge/status-actively%20maintained-22CCEE?style=for-the-badge" alt="Actively maintained"/>
   <img src="https://img.shields.io/badge/license-MIT-0f172a?style=for-the-badge" alt="License MIT"/>
 </p>
@@ -20,14 +20,14 @@
 
 启智平台网页 `qz.sii.edu.cn` 是用户日常实验链路里最慢的那一环——每次申请资源、新建 notebook、开 SSH、同步代码都要反复点点点。
 
-**InspireSkill 把这些步骤交给 AI Agent。** 当 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder 识别到这个 skill，它会：
+**InspireSkill 把这些步骤交给 AI Agent。** 当 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder / Kimi Code 识别到这个 skill，它会：
 
 - 直接调用 `inspire` 命令查实时资源、开 notebook、提 HPC 任务、拉日志
 - 提供**可选**的 Clash Verge mixed-port 分流模板，让**公网与启智内网共存**一套本地代理配置，取代多人共用断连的 aTrust；CLI 本身不绑定固定端口，任何能同时覆盖公网与 `*.sii.edu.cn` 的代理方案都行
 - 把平台网页上的常用操作都变成**可复现、可串联、可自动化**的命令链
 - 从 SKILL.md 按需加载对应使用手册，理解调度语义、资源申请原则和验收点，不需要用户在对话里反复向 Agent 解释平台语义
 
-目标是让 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder **成为推进科研项目的唯一入口**，不用再在浏览器里手动点。
+目标是让 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder / Kimi Code **成为推进科研项目的唯一入口**，不用再在浏览器里手动点。
 
 ---
 
@@ -39,8 +39,8 @@
 | --- | --- | --- |
 | **Agent 生命周期** | 绑死在某一个 notebook 实例；实例回收 / 崩溃，对话与状态一起没 | 跑在本机 harness 里，与任何一个 Inspire 实例解耦 |
 | **调度范围** | 只能操作它所在那一个实例的文件系统与运行时 | 一个 Agent 横跨多 workspace / notebook / HPC job / image，**全平台统一编排** |
-| **入口** | 必须打开 `qz.sii.edu.cn` 的实例终端 | 用户本来就在用的 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder |
-| **harness / 模型选择** | 锁定 OpenCode + 它支持的模型 | 任选本机已装的 7 家 harness，模型随 harness |
+| **入口** | 必须打开 `qz.sii.edu.cn` 的实例终端 | 用户本来就在用的 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder / Kimi Code |
+| **harness / 模型选择** | 锁定 OpenCode + 它支持的模型 | 任选本机已装的 8 家 harness，模型随 harness |
 | **上下文来源** | 只有实例里能看到的东西；本地代码仓库不在场 | 本机完整 repo + git 状态 + 编辑器 + 其他 MCP 工具（Figma / Preview / Playwright …）一起可用 |
 | **计算占用** | Agent 进程吃 Inspire 实例的 CPU / RAM 配额；API key 必须放在实例里 | Agent 进程跑本机；Inspire 实例的 CPU / RAM 全给训练 / HPC；API key 只留本地 |
 | **连接依赖** | 平台网页断 = Agent 断；aTrust 掉线对话就停 | `inspire` CLI 直接操作平台；Agent 推理甚至可以完全离 SII 内网 |
@@ -62,7 +62,7 @@
 | **事件 / 生命周期 / GPU 利用率查询** | 无 | 无 | **5 类 events + notebook/job/hpc/serving metrics + run_index 生命周期** |
 | **HPC / Ray / Serving / Model** | 仅有部分 job + notebook | 仅 HPC（单层）+ job | **HPC 两层模型 + Ray 弹性 + Serving + Model** 全覆盖 |
 | **多账号** | `[accounts."<user>"]` 合并层 | 单账号 | 一账号一独立目录，`~/.inspire/current` 切换 |
-| **Agent 接入** | 无 | `qzcli-mcp`（1 家 harness） | Skill 格式覆盖 7 家 harness |
+| **Agent 接入** | 无 | `qzcli-mcp`（1 家 harness） | Skill 格式覆盖 8 家 harness |
 | **测试** | 多文件回归套件 | 3 文件 | 持续扩展的单元测试套件 |
 
 一句话：**这两条 CLI 各做了一段路；InspireSkill 把整个平台的操作面和观测面端到端铺平了，并且在离线场景下零配置可用。**
@@ -181,8 +181,9 @@ inspire resources availability --workspace all --include-cpu
 | [OpenClaw](https://github.com/openclaw/openclaw) | `~/.openclaw/skills/inspire/` | 全局 "managed skills" 层；workspace 层 （`~/.openclaw/workspace/skills/`） 可覆盖 |
 | [OpenCode](https://github.com/anomalyco/opencode) | `~/.config/opencode/skills/inspire/` | 遵循 XDG；`$OPENCODE_CONFIG_DIR` 可改根 |
 | [Qoder CLI](https://docs.qoder.com/en/cli/Skills) | `~/.qoder/skills/inspire/` | 用户级 Skills 层，跨项目可用 |
+| [Kimi Code](https://github.com/MoonshotAI/kimi-code) | `~/.kimi-code/skills/inspire/` | 用户级 Skills 层，跨项目可用 |
 
-**为什么默认推 Claude Code**：它的 scheduler 支持在**后台 Bash 命令结束时自动唤醒 Agent**。把 `inspire job logs <name> --workspace <workspace> --follow` / 长轮询 checkpoint / `inspire hpc status <name> --workspace <workspace>` 监视之类长 watch 挂到后台，训练或 HPC 任务跑完 Agent 自己醒过来接下一步。Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder 目前没有这个能力，做长流水的自动化会弱一档。
+**为什么默认推 Claude Code**：它的 scheduler 支持在**后台 Bash 命令结束时自动唤醒 Agent**。把 `inspire job logs <name> --workspace <workspace> --follow` / 长轮询 checkpoint / `inspire hpc status <name> --workspace <workspace>` 监视之类长 watch 挂到后台，训练或 HPC 任务跑完 Agent 自己醒过来接下一步。Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder / Kimi Code 目前没有这个能力，做长流水的自动化会弱一档。
 
 ---
 
@@ -191,7 +192,7 @@ inspire resources availability --workspace all --include-cpu
 SKILL.md 装完是一份**通用 playbook**。日常 workspace 基本就是 `CPU资源空间` 和 `分布式训练空间`；资源条件不要写成隐式默认值，把 `workspace`、`project`、`group`、`quota` 和 `image` 组合成 workload profile，并在 `inspire notebook/job/hpc/... create --profile <name>` 或 batch 文件里显式使用。如果你的主战场是启智的国产卡分区、`CI-情境智能` 工作空间，或小组自己划走的专属资源开发空间，两条口子做定制：
 
 1. **项目级（必须）**：维护仓库根的 `INSPIRE.md`，并用 `inspire <workload> profile set <name> ...` 保存条件组；`Path Conventions` 只写 remote path alias。`INSPIRE.md` 属于当前 repo，不会被 `inspire update` 覆写，也方便跟组内协作。启智相关上下文必须和 `AGENTS.md` / `CLAUDE.md` 这类本地 Agent 计划分开维护。
-2. **Harness 级**：直接编辑 `~/.claude/skills/inspire/SKILL.md` 和同目录 `references/`（Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder 同理），改按需加载入口或对应使用手册。注意：`inspire update` **默认会覆盖 SKILL.md 和 references/**；维护了本地改动后用 `inspire update --cli-only` 只升级 CLI 与运行时、不动 skill 文件，想合并上游变更时再手动 diff。
+2. **Harness 级**：直接编辑 `~/.claude/skills/inspire/SKILL.md` 和同目录 `references/`（Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder / Kimi Code 同理），改按需加载入口或对应使用手册。注意：`inspire update` **默认会覆盖 SKILL.md 和 references/**；维护了本地改动后用 `inspire update --cli-only` 只升级 CLI 与运行时、不动 skill 文件，想合并上游变更时再手动 diff。
 
 ---
 

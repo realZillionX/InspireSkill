@@ -79,7 +79,7 @@ def test_detect_installer_from_prefix(
     assert _detect_installer() == expected
 
 
-def test_detect_harnesses_includes_antigravity_cursor_and_qoder(
+def test_detect_harnesses_includes_antigravity_cursor_qoder_and_kimi_code(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -88,15 +88,23 @@ def test_detect_harnesses_includes_antigravity_cursor_and_qoder(
         "antigravity": tmp_path / ".gemini",
         "cursor": tmp_path / ".cursor",
         "qoder": tmp_path / ".qoder",
+        "kimi-code": tmp_path / ".kimi-code",
         "opencode": tmp_path / ".config" / "opencode",
     }
     roots["claude"].mkdir()
     roots["antigravity"].mkdir()
     roots["cursor"].mkdir()
     roots["qoder"].mkdir()
+    roots["kimi-code"].mkdir()
     monkeypatch.setattr(update_module, "HARNESS_ROOTS", roots)
 
-    assert update_module._detect_harnesses() == ["claude", "antigravity", "cursor", "qoder"]
+    assert update_module._detect_harnesses() == [
+        "claude",
+        "antigravity",
+        "cursor",
+        "qoder",
+        "kimi-code",
+    ]
 
 
 def test_antigravity_skill_dir_uses_google_global_config_path() -> None:
@@ -110,6 +118,12 @@ def test_antigravity_skill_dir_uses_google_global_config_path() -> None:
 def test_cursor_skill_dir_uses_cursor_global_skills_path() -> None:
     assert update_module.HARNESS_SKILL_DIRS["cursor"] == (
         Path.home() / ".cursor" / "skills" / "inspire"
+    )
+
+
+def test_kimi_code_skill_dir_uses_kimi_code_global_skills_path() -> None:
+    assert update_module.HARNESS_SKILL_DIRS["kimi-code"] == (
+        Path.home() / ".kimi-code" / "skills" / "inspire"
     )
 
 
