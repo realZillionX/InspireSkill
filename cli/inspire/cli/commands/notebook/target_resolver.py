@@ -530,6 +530,7 @@ def resolve_cached_notebook_target(
                 click.echo(human_formatter.format_error(str(exc)), err=True)
             raise SystemExit(EXIT_CONFIG_ERROR) from exc
 
+    require_candidate_verification = False
     if not selector and not ignore_target_cache:
         data = _read_target_cache()
         entry = (data.get("targets") or {}).get(notebook_target_cache_key(notebook, workspace))
@@ -545,6 +546,7 @@ def resolve_cached_notebook_target(
                         ("Cached notebook target is unavailable; rediscovering cached candidates."),
                         err=True,
                     )
+                require_candidate_verification = True
             else:
                 return NotebookConnectionTarget(
                     account=candidate.account,
@@ -560,6 +562,10 @@ def resolve_cached_notebook_target(
     )
     if not candidates:
         return None
+    if verify_target_cache and require_candidate_verification:
+        candidates = [candidate for candidate in candidates if _target_available(candidate)]
+        if not candidates:
+            return None
     return _select_candidate(
         ctx,
         notebook=notebook,

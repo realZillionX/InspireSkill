@@ -239,6 +239,36 @@ def test_resolver_reselects_when_cached_target_is_unavailable(
     assert selected.account == "bob"
 
 
+def test_resolver_returns_none_when_rediscovered_target_is_still_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    configs = {
+        "alice": _config("alice", _bridge("dev-box")),
+    }
+    _install_accounts(monkeypatch, configs)
+    target_resolver.remember_notebook_target(
+        notebook="dev-box",
+        workspace=None,
+        account="alice",
+        bridge=configs["alice"].get_bridge("dev-box"),
+    )
+    monkeypatch.setattr(ssh_tunnel_module, "is_tunnel_available", lambda **kwargs: False)
+
+    selected = target_resolver.resolve_cached_notebook_target(
+        Context(),
+        notebook="dev-box",
+        workspace=None,
+        verify_target_cache=True,
+        allow_prompt=False,
+    )
+
+    assert selected is None
+    assert "Cached notebook target is unavailable" in capsys.readouterr().err
+
+
 def test_ssh_config_proxy_command_pins_resolved_account(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
