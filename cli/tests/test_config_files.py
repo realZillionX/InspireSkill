@@ -1898,6 +1898,152 @@ class TestConfigShowCommand:
         # Other categories should not appear
         assert "GitHub" not in result.output
 
+    def test_config_show_compact_displays_effective_shell_proxy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Runtime shell proxies remain visible even when config proxy fields are unset."""
+        cfg = Config(username="", password="", base_url="https://qz.sii.edu.cn")
+        monkeypatch.setattr(
+            Config,
+            "from_files_and_env",
+            classmethod(lambda cls, **kwargs: (cfg, {})),
+        )
+        monkeypatch.setattr(
+            Config,
+            "get_config_paths",
+            classmethod(lambda cls: (None, None)),
+        )
+        monkeypatch.delenv("http_proxy", raising=False)
+        monkeypatch.delenv("HTTP_PROXY", raising=False)
+        monkeypatch.delenv("https_proxy", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        monkeypatch.delenv("all_proxy", raising=False)
+        monkeypatch.delenv("ALL_PROXY", raising=False)
+        monkeypatch.setenv(
+            "HTTPS_PROXY",
+            "http://alice:secret@proxy.example:18443/proxy-secret-path?token=value",
+        )
+        monkeypatch.setenv("NO_PROXY", ".example.org")
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            config_command,
+            ["show", "--compact", "--filter", "Proxy"],
+        )
+
+        assert result.exit_code == 0
+        assert "Effective runtime proxy" in result.output
+        assert "source=system_env" in result.output
+        assert "route=proxy" in result.output
+        assert "http://<redacted>@proxy.example:18443" in result.output
+        assert "NO_PROXY=not_matched" in result.output
+        assert "alice" not in result.output
+        assert "secret" not in result.output
+        assert "proxy-secret-path" not in result.output
+        assert "token" not in result.output
+
+    def test_config_show_json_includes_effective_proxy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = Config(username="", password="", base_url="https://qz.sii.edu.cn")
+        monkeypatch.setattr(
+            Config,
+            "from_files_and_env",
+            classmethod(lambda cls, **kwargs: (cfg, {})),
+        )
+        monkeypatch.setattr(
+            Config,
+            "get_config_paths",
+            classmethod(lambda cls: (None, None)),
+        )
+        monkeypatch.delenv("http_proxy", raising=False)
+        monkeypatch.delenv("HTTP_PROXY", raising=False)
+        monkeypatch.delenv("https_proxy", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("all_proxy", raising=False)
+        monkeypatch.delenv("ALL_PROXY", raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:18443")
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            config_command,
+            ["show", "--format", "json", "--filter", "Proxy"],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "values" in data
+        assert data["effective_proxy"]["target"] == "qz.sii.edu.cn"
+        assert data["effective_proxy"]["requests"]["source"] == "system_env"
+        assert data["effective_proxy"]["playwright"]["source"] == "requests:system_env"
+
+    def test_config_show_redacts_configured_proxy_credentials(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = Config(
+            username="",
+            password="",
+            base_url="https://qz.sii.edu.cn",
+            requests_https_proxy=(
+                "http://proxy-user:proxy-password@proxy.example:18443/secret-path?token=value"
+            ),
+        )
+        monkeypatch.setattr(
+            Config,
+            "from_files_and_env",
+            classmethod(lambda cls, **kwargs: (cfg, {"requests_https_proxy": SOURCE_GLOBAL})),
+        )
+        monkeypatch.setattr(
+            Config,
+            "get_config_paths",
+            classmethod(lambda cls: (None, None)),
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            config_command,
+            ["show", "--compact", "--filter", "Proxy"],
+        )
+
+        assert result.exit_code == 0
+        assert "INSPIRE_REQUESTS_HTTPS_PROXY" in result.output
+        assert "http://<redacted>@proxy.example:18443" in result.output
+        assert "proxy-user" not in result.output
+        assert "proxy-password" not in result.output
+        assert "secret-path" not in result.output
+        assert "token" not in result.output
+
+    def test_config_show_env_omits_effective_runtime_proxy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = Config(
+            username="",
+            password="",
+            base_url="https://qz.sii.edu.cn",
+            requests_https_proxy="http://user:password@configured.example:18443/private",
+        )
+        monkeypatch.setattr(
+            Config,
+            "from_files_and_env",
+            classmethod(lambda cls, **kwargs: (cfg, {})),
+        )
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:18443")
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            config_command,
+            ["show", "--format", "env", "--compact", "--filter", "Proxy"],
+        )
+
+        assert result.exit_code == 0
+        assert "Effective runtime proxy" not in result.output
+        assert "proxy.example" not in result.output
+        assert "# INSPIRE_REQUESTS_HTTPS_PROXY=<configured; redacted>" in result.output
+        assert "user" not in result.output
+        assert "password" not in result.output
+        assert "configured.example" not in result.output
+
 
 # ===========================================================================
 # Config env command tests

@@ -10,7 +10,7 @@ import re
 import time
 from http.cookiejar import Cookie
 from typing import TYPE_CHECKING, Any, Optional, cast
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import urljoin
 
 from inspire.config import Config
 
@@ -20,7 +20,12 @@ from .browser_launch import (
     is_playwright_browser_runtime_error,
     playwright_install_hint,
 )
-from .proxy import get_playwright_proxy
+from .proxy import (
+    describe_effective_proxy_config,
+    describe_proxy_config as _describe_proxy_config,
+    redact_proxy_url,
+    resolve_playwright_proxy_config,
+)
 
 if TYPE_CHECKING:
     from playwright.sync_api import ProxySettings
@@ -161,6 +166,8 @@ def _login_not_complete_message(
     status: int | None = None,
     current_url: str | None = None,
     page_hint: str | None = None,
+    proxy_source: str | None = None,
+    base_proxy_route: str | None = None,
 ) -> str:
     lines = [
         "Login did not complete.",
@@ -172,6 +179,13 @@ def _login_not_complete_message(
         "Run `inspire config show --compact` to confirm the active account, base URL, and "
         "proxy settings. Re-run with `inspire --debug init` if you need a debug report.",
     ]
+    if proxy_source and "system_env" in proxy_source:
+        lines.append(
+            "Shell HTTP_PROXY/HTTPS_PROXY/ALL_PROXY is configured for this login (including "
+            "lowercase variants). The reported route applies to the base URL; CAS/Keycloak "
+            "redirects may match NO_PROXY differently. If SII should be reached directly, "
+            "check NO_PROXY or retry with the shell proxy variables unset."
+        )
     details: list[str] = []
     if status is not None:
         details.append(f"last auth check status={status}")
@@ -179,26 +193,14 @@ def _login_not_complete_message(
         details.append(f"current_url={current_url}")
     if page_hint:
         details.append(f"page_hint={page_hint}")
+    if proxy_source:
+        proxy_detail = f"proxy_source={proxy_source}"
+        if base_proxy_route:
+            proxy_detail = f"{proxy_detail}, base_route={base_proxy_route}"
+        details.append(proxy_detail)
     if details:
         lines.append("Details: " + "; ".join(details))
     return "\n".join(lines)
-
-
-def _redact_proxy_url(url: str) -> str:
-    parsed = urlsplit(str(url or "").strip())
-    if not parsed.netloc:
-        return str(url or "").strip()
-    host = parsed.hostname or ""
-    netloc = host
-    if parsed.port is not None:
-        netloc = f"{netloc}:{parsed.port}"
-    if parsed.username or parsed.password:
-        netloc = f"<redacted>@{netloc}"
-    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
-
-
-def _describe_proxy_config(proxies: dict[str, str]) -> dict[str, str]:
-    return {key: _redact_proxy_url(value) for key, value in sorted(proxies.items())}
 
 
 _WORKSPACE_ID_PATTERN = re.compile(
@@ -404,8 +406,14 @@ def _login_with_cas_requests(
         _describe_proxy_config(proxies),
     )
     http = requests.Session()
-    http.trust_env = False
-    http.proxies.update(proxies)
+    if proxy_source == "system_env":
+        # Let Requests apply standard HTTP(S)_PROXY and NO_PROXY semantics.
+        http.trust_env = True
+    else:
+        # Explicit Inspire/TOML proxy settings are authoritative. The none
+        # branch also stays isolated from unrelated variables such as ALL_PROXY.
+        http.trust_env = False
+        http.proxies.update(proxies)
     http.verify = False
     http.headers.update(
         {
@@ -549,7 +557,21 @@ def login_with_playwright(
     except Exception:
         logger.debug("CAS requests login failed; falling back to Playwright.", exc_info=True)
 
-    proxy = cast("ProxySettings | None", get_playwright_proxy(account=account))
+    resolved_proxy, playwright_proxy_source = resolve_playwright_proxy_config(account=account)
+    proxy = cast("ProxySettings | None", resolved_proxy)
+    effective_proxy = describe_effective_proxy_config(account=account, base_url=base_url)
+    playwright_diagnostics = effective_proxy.get("playwright")
+    playwright_proxy_route = (
+        str(playwright_diagnostics.get("route"))
+        if isinstance(playwright_diagnostics, dict)
+        else None
+    )
+    logger.debug(
+        "Playwright login using proxy_source=%s server=%s bypass_configured=%s",
+        playwright_proxy_source,
+        redact_proxy_url(resolved_proxy.get("server")) if resolved_proxy else "",
+        bool(resolved_proxy and resolved_proxy.get("bypass")),
+    )
     with sync_playwright() as p:
         try:
             browser = p.chromium.launch(**chromium_launch_kwargs(headless=headless, proxy=proxy))
@@ -664,6 +686,8 @@ def login_with_playwright(
                     status=last_status,
                     current_url=current_url,
                     page_hint=page_hint,
+                    proxy_source=playwright_proxy_source,
+                    base_proxy_route=playwright_proxy_route,
                 )
             )
 

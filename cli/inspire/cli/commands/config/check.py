@@ -26,6 +26,9 @@ from inspire.config import (
 )
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session.proxy import describe_effective_proxy_config
+
+from .proxy_output import format_effective_proxy_lines
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -224,6 +227,7 @@ def check_config(ctx: Context) -> None:
 
         _validate_required_credentials(cfg)
         _validate_required_registry(cfg)
+        effective_proxy = describe_effective_proxy_config(base_url=cfg.base_url)
 
         auth_ok = True
         auth_error = None
@@ -252,6 +256,7 @@ def check_config(ctx: Context) -> None:
             "retry_delay": cfg.retry_delay,
             "auth_ok": auth_ok,
             "base_url_resolution": base_url_resolution,
+            "effective_proxy": effective_proxy,
             "validation": {
                 "placeholder_host_issues": placeholder_issues,
                 "base_url_default_hint": default_base_url_hint,
@@ -293,6 +298,10 @@ def check_config(ctx: Context) -> None:
 
             if default_base_url_hint:
                 click.echo(click.style(f"  Note: {default_base_url_hint}", fg="yellow"))
+
+            click.echo()
+            for line in format_effective_proxy_lines(effective_proxy):
+                click.echo(line)
 
             if auth_error:
                 click.echo(f"\nDetails: {scrub_raw_ids(auth_error)}")

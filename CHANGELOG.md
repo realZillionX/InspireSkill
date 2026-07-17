@@ -2,6 +2,30 @@
 
 本文件同步 GitHub Releases 正文格式；Release 页面是发布说明的标准口径。
 
+# Unreleased
+
+## 更新内容
+
+### 修复
+
+- 修复 request-based CAS 登录在代理来源为通用 Shell `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 时手工注入代理并关闭 Requests 环境解析、从而忽略 `NO_PROXY` 的问题；该路径现在与登录后的 Requests Browser API 一致，由 Requests 原生解析 Shell proxy 和 bypass。
+- `inspire config show --compact --filter Proxy` 现在即使没有设置 Inspire 专用代理字段，也会显示 Requests、Playwright 和 rtunnel 的脱敏有效代理来源与目标路由；`config check` 的人类和 JSON 输出同步包含相同摘要，认证失败时仍可用于诊断。
+- 登录失败诊断现在会记录 Playwright 的脱敏代理来源、base URL 路由和 bypass 是否配置，并明确说明 CAS / Keycloak 重定向主机可能匹配不同的 bypass；检测到 Shell proxy 时会提示检查 `NO_PROXY` 或临时取消相关变量。
+- Proxy 配置与 Debug 摘要不再暴露 URL userinfo、path、query 或 fragment，避免代理密码和 URL token 出现在终端或日志中。
+
+### 文档
+
+- 安装与配置 Reference 明确通用 Shell proxy 的兼容继承、账号级 proxy 优先级、有效代理查询方式，以及直连 SII 时的 `NO_PROXY` / 单次取消代理方法。
+
+### 验证
+
+- 完整测试套件通过：`1136 passed`
+- `uv lock --check`
+- `uv run ruff check inspire tests`
+- `uv run mypy`
+- `uv build`
+- `git diff --check`
+
 # v6.1.4
 
 ## 更新内容

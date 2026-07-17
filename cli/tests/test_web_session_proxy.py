@@ -4,8 +4,10 @@ import pytest
 
 from inspire import config as config_module
 from inspire.platform.web.session.proxy import (
+    describe_effective_proxy_config,
     get_playwright_proxy,
     get_rtunnel_proxy_override,
+    redact_proxy_url,
     resolve_requests_proxy_config,
 )
 
@@ -27,6 +29,8 @@ def clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "HTTPS_PROXY",
         "NO_PROXY",
         "no_proxy",
+        "ALL_PROXY",
+        "all_proxy",
     ]:
         monkeypatch.delenv(key, raising=False)
 
@@ -73,6 +77,22 @@ def test_get_playwright_proxy_applies_no_proxy_bypass(
         "server": "http://127.0.0.1:7897",
         "bypass": "localhost,127.0.0.1,qz.sii.edu.cn,*.sii.edu.cn",
     }
+
+
+def test_lowercase_no_proxy_takes_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:18443")
+    monkeypatch.setenv("NO_PROXY", ".sii.edu.cn")
+    monkeypatch.setenv("no_proxy", ".example.org")
+
+    assert get_playwright_proxy() == {
+        "server": "http://proxy.example:18443",
+        "bypass": "*.example.org",
+    }
+    summary = describe_effective_proxy_config(base_url="https://qz.sii.edu.cn")
+    assert summary["requests"]["no_proxy"] == "not_matched"
+    assert summary["requests"]["route"] == "proxy"
 
 
 def test_get_playwright_proxy_uses_proxy_toml(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -154,3 +174,140 @@ def test_get_rtunnel_proxy_override_uses_toml(monkeypatch: pytest.MonkeyPatch) -
     )
 
     assert get_rtunnel_proxy_override() == "http://127.0.0.1:7897"
+
+
+def test_describe_effective_proxy_config_reports_shell_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:18080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://secure-proxy.example:18443")
+    monkeypatch.setenv("NO_PROXY", ".sii.edu.cn")
+
+    summary = describe_effective_proxy_config(base_url="https://qz.sii.edu.cn")
+
+    assert summary == {
+        "target": "qz.sii.edu.cn",
+        "requests": {
+            "source": "system_env",
+            "route": "direct",
+            "http": "http://proxy.example:18080",
+            "https": "http://secure-proxy.example:18443",
+            "all": None,
+            "selected": "http://secure-proxy.example:18443",
+            "no_proxy": "matched",
+        },
+        "playwright": {
+            "source": "requests:system_env",
+            "route": "direct",
+            "server": "http://secure-proxy.example:18443",
+            "no_proxy": "matched",
+        },
+        "rtunnel": {
+            "source": "requests:system_env",
+            "route": "proxy",
+            "server": "http://secure-proxy.example:18443",
+        },
+    }
+
+
+def test_system_proxy_preserves_scheme_specific_requests_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:18080")
+
+    proxies, source = resolve_requests_proxy_config()
+    summary = describe_effective_proxy_config(base_url="https://qz.sii.edu.cn")
+
+    assert source == "system_env"
+    assert proxies == {"http": "http://proxy.example:18080"}
+    assert summary["requests"] == {
+        "source": "system_env",
+        "route": "direct",
+        "http": "http://proxy.example:18080",
+        "https": None,
+        "all": None,
+        "selected": None,
+        "no_proxy": "not_set",
+    }
+    assert summary["playwright"] == {
+        "source": "requests:system_env",
+        "route": "proxy",
+        "server": "http://proxy.example:18080",
+        "no_proxy": "not_set",
+    }
+
+
+def test_describe_effective_proxy_config_none_is_stable() -> None:
+    summary = describe_effective_proxy_config(base_url="https://qz.sii.edu.cn")
+
+    assert summary["requests"] == {
+        "source": "none",
+        "route": "direct",
+        "http": None,
+        "https": None,
+        "all": None,
+        "selected": None,
+        "no_proxy": "not_applicable",
+    }
+    assert summary["playwright"] == {
+        "source": "none",
+        "route": "direct",
+        "server": None,
+        "no_proxy": "not_applicable",
+    }
+    assert summary["rtunnel"] == {
+        "source": "none",
+        "route": "direct",
+        "server": None,
+    }
+
+
+def test_effective_proxy_summary_redacts_credentials_and_url_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = "http://alice:secret@proxy.example:18443/private?token=value#fragment"
+    monkeypatch.setenv("HTTPS_PROXY", proxy)
+
+    summary = describe_effective_proxy_config(base_url="https://qz.sii.edu.cn")
+    rendered = repr(summary)
+
+    assert "alice" not in rendered
+    assert "secret" not in rendered
+    assert "private" not in rendered
+    assert "token" not in rendered
+    assert "value" not in rendered
+    assert "http://<redacted>@proxy.example:18443" in rendered
+    assert redact_proxy_url("proxy-without-a-scheme:7897") == "<configured>"
+
+
+def test_all_proxy_is_modeled_for_every_fallback_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "ALL_PROXY",
+        "socks5://proxy-user:proxy-password@all-proxy.example:1080/private?token=value",
+    )
+
+    proxies, source = resolve_requests_proxy_config()
+    summary = describe_effective_proxy_config(base_url="https://qz.sii.edu.cn")
+    rendered = repr(summary)
+
+    assert source == "system_env"
+    assert proxies == {
+        "all": (
+            "socks5://proxy-user:proxy-password@all-proxy.example:1080/private?token=value"
+        )
+    }
+    assert summary["requests"]["route"] == "proxy"
+    assert summary["requests"]["selected"] == (
+        "socks5://<redacted>@all-proxy.example:1080"
+    )
+    assert summary["playwright"]["source"] == "requests:system_env"
+    assert summary["playwright"]["server"] == (
+        "socks5://<redacted>@all-proxy.example:1080"
+    )
+    assert summary["rtunnel"]["server"] == "socks5://<redacted>@all-proxy.example:1080"
+    assert "proxy-user" not in rendered
+    assert "proxy-password" not in rendered
+    assert "private" not in rendered
+    assert "token" not in rendered

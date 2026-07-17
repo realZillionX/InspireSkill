@@ -17,6 +17,7 @@ from inspire.platform.web.session.browser_launch import (
 )
 from inspire.platform.web.session import browser_client as ws_browser_client
 from inspire.platform.web.session import WebSession
+from inspire.platform.web.session import proxy as ws_proxy
 from inspire.platform.web.session import requests as ws_requests_module
 
 CAS_RSA_EXPONENT = "010001"
@@ -256,6 +257,8 @@ def test_login_not_complete_message_includes_diagnostics() -> None:
         status=401,
         current_url="https://cas.sii.edu.cn/login",
         page_hint="账号或密码错误",
+        proxy_source="requests:system_env",
+        base_proxy_route="proxy",
     )
 
     assert "Login did not complete." in message
@@ -264,18 +267,124 @@ def test_login_not_complete_message_includes_diagnostics() -> None:
     assert "inspire config show --compact" in message
     assert "last auth check status=401" in message
     assert "page_hint=账号或密码错误" in message
+    assert "Shell HTTP_PROXY/HTTPS_PROXY/ALL_PROXY is configured" in message
+    assert "CAS/Keycloak redirects may match NO_PROXY differently" in message
+    assert "proxy_source=requests:system_env, base_route=proxy" in message
 
 
 def test_describe_proxy_config_redacts_credentials() -> None:
     assert ws_auth._describe_proxy_config(
         {
-            "https": "http://user:secret@127.0.0.1:7897",
+            "https": "http://user:secret@127.0.0.1:7897/private?token=value",
             "http": "http://127.0.0.1:7897",
         }
     ) == {
         "http": "http://127.0.0.1:7897",
         "https": "http://<redacted>@127.0.0.1:7897",
     }
+
+
+class _StopCASProbe(RuntimeError):
+    pass
+
+
+class _RecordingRequestsSession(requests.Session):
+    def __init__(self) -> None:
+        super().__init__()
+        self.request_url = ""
+        self.effective_proxies: dict[str, str] = {}
+
+    def get(self, url, *args, **kwargs):  # noqa: ANN001
+        del args, kwargs
+        self.request_url = url
+        settings = self.merge_environment_settings(url, {}, None, None, None)
+        self.effective_proxies = dict(settings["proxies"])
+        raise _StopCASProbe
+
+
+def _clear_standard_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "http_proxy",
+        "HTTP_PROXY",
+        "https_proxy",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "no_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_cas_requests_login_honors_no_proxy_for_system_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_standard_proxy_env(monkeypatch)
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:18080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://secure-proxy.example:18443")
+    monkeypatch.setenv("ALL_PROXY", "http://all-proxy.example:18081")
+    monkeypatch.setenv("NO_PROXY", ".sii.edu.cn")
+    session = _RecordingRequestsSession()
+    monkeypatch.setattr(requests, "Session", lambda: session)
+    monkeypatch.setattr(
+        ws_proxy,
+        "resolve_requests_proxy_config",
+        lambda account=None: (
+            {
+                "http": "http://proxy.example:18080",
+                "https": "http://secure-proxy.example:18443",
+            },
+            "system_env",
+        ),
+    )
+
+    with pytest.raises(_StopCASProbe):
+        ws_auth._login_with_cas_requests(
+            "user",
+            "password",
+            base_url="https://qz.sii.edu.cn",
+        )
+
+    assert session.trust_env is True
+    assert session.proxies == {}
+    assert session.request_url == "https://qz.sii.edu.cn/login"
+    assert session.effective_proxies == {}
+    external_settings = session.merge_environment_settings(
+        "https://example.com", {}, None, None, None
+    )
+    assert external_settings["proxies"]["https"] == "http://secure-proxy.example:18443"
+    assert external_settings["proxies"]["all"] == "http://all-proxy.example:18081"
+
+
+@pytest.mark.parametrize("source", ["toml", "explicit_env"])
+def test_cas_requests_login_forces_explicit_proxy_despite_no_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+) -> None:
+    _clear_standard_proxy_env(monkeypatch)
+    monkeypatch.setenv("NO_PROXY", ".sii.edu.cn")
+    proxies = {
+        "http": "http://proxy.example:18080",
+        "https": "http://secure-proxy.example:18443",
+    }
+    session = _RecordingRequestsSession()
+    monkeypatch.setattr(requests, "Session", lambda: session)
+    monkeypatch.setattr(
+        ws_proxy,
+        "resolve_requests_proxy_config",
+        lambda account=None: (proxies, source),
+    )
+
+    with pytest.raises(_StopCASProbe):
+        ws_auth._login_with_cas_requests(
+            "user",
+            "password",
+            base_url="https://qz.sii.edu.cn",
+        )
+
+    assert session.trust_env is False
+    assert session.proxies == proxies
+    assert session.effective_proxies == proxies
 
 
 def test_resolve_cas_rsa_key_reads_same_origin_script() -> None:

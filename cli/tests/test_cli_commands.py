@@ -1370,6 +1370,32 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     from inspire.cli.commands.config import check as config_check_module
 
+    effective_proxy = {
+        "target": "my-inspire.internal",
+        "requests": {
+            "source": "system_env",
+            "route": "proxy",
+            "http": "http://proxy.internal:8080",
+            "https": "http://proxy.internal:8080",
+            "no_proxy": "not_matched",
+        },
+        "playwright": {
+            "source": "requests:system_env",
+            "route": "proxy",
+            "server": "http://proxy.internal:8080",
+            "no_proxy": "not_matched",
+        },
+        "rtunnel": {
+            "source": "requests:system_env",
+            "route": "proxy",
+            "server": "http://proxy.internal:8080",
+        },
+    }
+    monkeypatch.setattr(
+        config_check_module,
+        "describe_effective_proxy_config",
+        lambda **kwargs: effective_proxy,
+    )
     monkeypatch.setattr(config_check_module, "get_web_session", lambda: object())
     monkeypatch.setattr(
         config_check_module.browser_api_module,
@@ -1382,6 +1408,8 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     assert result.exit_code == EXIT_AUTH_ERROR
     assert "Authentication failed" in result.output
+    assert "Effective runtime proxy" in result.output
+    assert "source=system_env" in result.output
 
 
 def test_config_check_config_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -1432,6 +1460,28 @@ base_url = "https://my-inspire.internal"
     )
     from inspire.cli.commands.config import check as config_check_module
 
+    effective_proxy = {
+        "target": "my-inspire.internal",
+        "requests": {
+            "source": "none",
+            "route": "direct",
+            "http": None,
+            "https": None,
+            "no_proxy": "not_applicable",
+        },
+        "playwright": {
+            "source": "none",
+            "route": "direct",
+            "server": None,
+            "no_proxy": "not_applicable",
+        },
+        "rtunnel": {"source": "none", "route": "direct", "server": None},
+    }
+    monkeypatch.setattr(
+        config_check_module,
+        "describe_effective_proxy_config",
+        lambda **kwargs: effective_proxy,
+    )
     monkeypatch.setenv("INSPIRE_BASE_URL", "https://env.example")
     monkeypatch.setattr(config_check_module, "get_web_session", lambda: object())
     monkeypatch.setattr(
@@ -1452,6 +1502,7 @@ base_url = "https://my-inspire.internal"
     assert resolution["env_present"] is True
     assert resolution["project_config_path"] == str(project_config)
     assert resolution["global_config_path"] == str(global_config)
+    assert payload["data"]["effective_proxy"] == effective_proxy
 
 
 def test_config_check_accepts_local_json_alias(

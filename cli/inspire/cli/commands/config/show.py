@@ -29,6 +29,12 @@ from inspire.config import (
     get_categories,
     get_options_by_category,
 )
+from inspire.platform.web.session.proxy import (
+    describe_effective_proxy_config,
+    redact_proxy_url,
+)
+
+from .proxy_output import format_effective_proxy_lines
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -58,6 +64,8 @@ def _get_field_value(cfg: Config, option: ConfigOption) -> tuple[str | None, boo
 
     if option.secret and value:
         return "********", is_set
+    if option.category == "Proxy" and value:
+        return redact_proxy_url(value), is_set
     if value is None:
         return "(not set)", False
     if isinstance(value, list):
@@ -77,6 +85,7 @@ def _show_table(
     project_path: Path | None,
     compact: bool,
     filter_category: str | None,
+    effective_proxy: dict[str, Any] | None,
 ) -> None:
     click.echo(click.style("Configuration Overview", bold=True))
     click.echo()
@@ -171,6 +180,11 @@ def _show_table(
 
         click.echo()
 
+    if effective_proxy is not None:
+        for line in format_effective_proxy_lines(effective_proxy):
+            click.echo(line)
+        click.echo()
+
     click.echo(click.style("Legend:", dim=True))
     legend_parts = []
     for _source, (label, color) in SOURCE_LABELS.items():
@@ -185,6 +199,7 @@ def _show_json(
     project_path: Path | None,
     compact: bool,
     filter_category: str | None,
+    effective_proxy: dict[str, Any] | None,
 ) -> None:
     result: dict[str, Any] = {
         "config_files": {
@@ -204,6 +219,8 @@ def _show_json(
         "prefer_source": getattr(cfg, "prefer_source", "env"),
         "values": {},
     }
+    if effective_proxy is not None:
+        result["effective_proxy"] = effective_proxy
     try:
         from inspire.cli.env_bootstrap import loaded_env_file_path
 
@@ -260,9 +277,11 @@ def _show_env(cfg: Config, compact: bool, filter_category: str | None) -> None:
 
         click.echo(f"# {category}")
         for option in options:
-            value_str, _is_set = _get_field_value(cfg, option)
+            value_str, is_set = _get_field_value(cfg, option)
             if option.secret:
                 click.echo(f"# {option.env_var}=<secret>")
+            elif option.category == "Proxy" and is_set:
+                click.echo(f"# {option.env_var}=<configured; redacted>")
             elif value_str and value_str != "(not set)":
                 if " " in value_str or "," in value_str:
                     click.echo(f'{option.env_var}="{value_str}"')
@@ -271,6 +290,12 @@ def _show_env(cfg: Config, compact: bool, filter_category: str | None) -> None:
             else:
                 click.echo(f"# {option.env_var}=")
         click.echo()
+
+
+def _filter_includes_proxy(filter_category: str | None) -> bool:
+    if filter_category is None:
+        return True
+    return filter_category.lower() in "proxy"
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +335,8 @@ def show_config(
 
     Shows configuration values from all sources (defaults, global config,
     project config, environment variables) with clear indication of where
-    each value comes from.
+    each value comes from. Table and JSON output also include a redacted
+    effective runtime proxy summary.
 
     By default, all options are shown including unset ones. Use --compact
     to hide unset options.
@@ -334,12 +360,32 @@ def show_config(
         if effective_json:
             output_format = "json"
 
+        effective_proxy = None
+        if output_format in {"table", "json"} and _filter_includes_proxy(filter_category):
+            effective_proxy = describe_effective_proxy_config(base_url=cfg.base_url)
+
         if output_format == "json":
-            _show_json(cfg, sources, global_path, project_path, compact, filter_category)
+            _show_json(
+                cfg,
+                sources,
+                global_path,
+                project_path,
+                compact,
+                filter_category,
+                effective_proxy,
+            )
         elif output_format == "env":
             _show_env(cfg, compact, filter_category)
         else:
-            _show_table(cfg, sources, global_path, project_path, compact, filter_category)
+            _show_table(
+                cfg,
+                sources,
+                global_path,
+                project_path,
+                compact,
+                filter_category,
+                effective_proxy,
+            )
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

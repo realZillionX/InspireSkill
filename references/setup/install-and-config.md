@@ -71,7 +71,20 @@ http://127.0.0.1:7897
 
 能直连 SII 校园网时，账号 proxy 可以留空；如果想复用同一套 Clash 配置，就仍然填本机 mixed port，然后在 Clash 的 `SII Proxy` 组里选择 `DIRECT`。
 
-CLI 不需要 shell 里的 `http_proxy`、`INSPIRE_FORCE_PROXY`、`INSPIRE_PLAYWRIGHT_PROXY` 之类一次性环境变量；账号级 proxy 就是标准入口。
+账号级 proxy 是标准入口，也会优先于通用 Shell 代理。为兼容现有开发环境，CLI 仍会继承 `http_proxy` / `HTTP_PROXY`、`https_proxy` / `HTTPS_PROXY` 和 `all_proxy` / `ALL_PROXY`；因此即使账号配置里没有 proxy，这些变量也可能改变登录和 Browser API 的实际链路。用下面的命令查看脱敏后的有效代理来源、目标路由和 `NO_PROXY` 匹配结果：
+
+```bash
+inspire config show --compact --filter Proxy
+```
+
+平台登录和 Browser API 的通用 Shell HTTP(S) 代理来源会遵守 `NO_PROXY` / `no_proxy`。如果当前网络应直连 SII，可把 `.sii.edu.cn` 加入 bypass；确认是 Shell 代理干扰时，也可只对本次命令取消大小写两组变量：
+
+```bash
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  -u http_proxy -u https_proxy -u all_proxy inspire init
+```
+
+不再使用 `INSPIRE_FORCE_PROXY` 等旧式一次性开关；需要稳定代理时写入账号配置。
 
 ## 4. 全局发现与项目初始化
 
@@ -248,4 +261,4 @@ curl -sS -o /dev/null -w "sii: %{http_code}\n" -x http://127.0.0.1:<mixed-port> 
 inspire config check
 ```
 
-如果 `qz.sii.edu.cn` 失败，先查 Clash Verge 规则里是否有 `DOMAIN-SUFFIX,sii.edu.cn,SII Proxy`，再查 `SII Proxy` 组当前选中的是可用代理还是 `DIRECT`，最后查 `inspire config show --compact` 里的账号级 proxy 是否指向本机实际 mixed port。
+如果 `qz.sii.edu.cn` 失败，先查 Clash Verge 规则里是否有 `DOMAIN-SUFFIX,sii.edu.cn,SII Proxy`，再查 `SII Proxy` 组当前选中的是可用代理还是 `DIRECT`，最后用 `inspire config show --compact --filter Proxy` 同时确认账号级 proxy、Shell proxy、有效路由和 `NO_PROXY` 匹配结果。
