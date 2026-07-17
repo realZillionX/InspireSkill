@@ -47,6 +47,7 @@ def run_job_create(
     dry_run: bool = False,
     auto_fault_tolerance: Optional[bool] = None,
     fault_tolerance_max_retry: Optional[int] = None,
+    enable_notification: bool = False,
     exclude_nodes: tuple[str, ...] | None = None,
     shm_size: Optional[int] = None,
 ) -> None:
@@ -212,6 +213,7 @@ def run_job_create(
                 project_name=selected.name,
                 auto_fault_tolerance=auto_fault_tolerance,
                 fault_tolerance_max_retry=fault_tolerance_max_retry,
+                enable_notification=enable_notification,
                 exclude_nodes=exclude_nodes,
                 shm_size=shm_size,
             )
@@ -263,6 +265,7 @@ def run_job_create(
             project_name=selected.name,
             auto_fault_tolerance=auto_fault_tolerance,
             fault_tolerance_max_retry=fault_tolerance_max_retry,
+            enable_notification=enable_notification,
             exclude_nodes=exclude_nodes,
             shm_size=shm_size,
         )
@@ -380,6 +383,14 @@ def run_job_create(
     ),
 )
 @click.option(
+    "--enable-notification/--no-enable-notification",
+    default=False,
+    help=(
+        "Enable Feishu status notifications for this job. The platform sends "
+        "updates to the current user's bound Feishu account."
+    ),
+)
+@click.option(
     "--max-time",
     type=click.FloatRange(min=0, min_open=True),
     default=None,
@@ -456,6 +467,7 @@ def create(
     priority: Optional[int],
     auto_fault_tolerance: Optional[bool],
     fault_tolerance_max_retry: Optional[int],
+    enable_notification: bool,
     max_time: Optional[float],
     workspace: Optional[str],
     profile_name: Optional[str],
@@ -507,6 +519,7 @@ def create(
         dry_run=dry_run,
         auto_fault_tolerance=auto_fault_tolerance,
         fault_tolerance_max_retry=fault_tolerance_max_retry,
+        enable_notification=enable_notification,
         exclude_nodes=exclude_nodes,
         shm_size=shm_size,
     )

@@ -240,6 +240,7 @@ def build_training_job_plan(
     project_name: Optional[str] = None,
     auto_fault_tolerance: Optional[bool] = None,
     fault_tolerance_max_retry: Optional[int] = None,
+    enable_notification: bool = False,
     exclude_nodes: Iterable[str] | None = None,
     shm_size: Optional[int] = None,
 ) -> JobSubmissionPlan:
@@ -276,6 +277,7 @@ def build_training_job_plan(
         workspace_id=workspace_id,
         logic_compute_group_id=quota.logic_compute_group_id,
         task_priority=priority,
+        enable_notification=bool(enable_notification),
         framework_config=[framework_config],
     )
 
@@ -354,6 +356,7 @@ def submit_training_job(
     project_name: Optional[str] = None,
     auto_fault_tolerance: Optional[bool] = None,
     fault_tolerance_max_retry: Optional[int] = None,
+    enable_notification: bool = False,
     exclude_nodes: Iterable[str] | None = None,
     shm_size: Optional[int] = None,
 ) -> JobSubmission:
@@ -372,6 +375,7 @@ def submit_training_job(
         project_name=project_name,
         auto_fault_tolerance=auto_fault_tolerance,
         fault_tolerance_max_retry=fault_tolerance_max_retry,
+        enable_notification=enable_notification,
         exclude_nodes=exclude_nodes,
         shm_size=shm_size,
     )

@@ -129,6 +129,8 @@ def test_job_create_help_explains_framework_and_fault_tolerance() -> None:
     assert "--shm-size INTEGER" in result.output
     assert "Overrides INSPIRE_SHM_SIZE/job.shm_size" in output
     assert "platform shm_gi" in output
+    assert "--enable-notification / --no-enable-notification" in output
+    assert "Feishu status notifications" in output
 
 
 def test_notebook_create_help_explains_auto_stop_boundary() -> None:

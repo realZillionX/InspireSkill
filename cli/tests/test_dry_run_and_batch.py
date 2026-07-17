@@ -196,6 +196,7 @@ def test_job_create_dry_run_resolves_plan_without_create_api(
     assert payload["success"] is True
     assert payload["data"]["dry_run"] is True
     assert payload["data"]["create_kwargs"]["name"] == "dry-job"
+    assert payload["data"]["create_kwargs"]["enable_notification"] is False
     assert payload["data"]["create_kwargs"]["exclude_nodes"] == [
         "qb-prod-gpu1736",
         "qb-prod-gpu1737",
@@ -203,6 +204,43 @@ def test_job_create_dry_run_resolves_plan_without_create_api(
     assert "exclude_nodes" not in payload["data"]["create_kwargs"]["framework_config"][0]
     assert payload["data"]["project_name"] == "Project One"
     assert "project_id" not in payload["data"]["create_kwargs"]
+    assert api.training_calls == []
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    (("--enable-notification", True), ("--no-enable-notification", False)),
+)
+def test_job_create_notification_flag_controls_top_level_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    flag: str,
+    expected: bool,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "create",
+            "--name",
+            "notify-job",
+            "--profile",
+            "h200",
+            "--command",
+            "python train.py",
+            flag,
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    create_kwargs = payload["data"]["create_kwargs"]
+    assert create_kwargs["enable_notification"] is expected
+    assert "enable_notification" not in create_kwargs["framework_config"][0]
     assert api.training_calls == []
 
 
@@ -507,6 +545,7 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
                     "max_time": 24,
                     "auto_fault_tolerance": False,
                     "fault_tolerance_max_retry": 0,
+                    "enable_notification": True,
                     "exclude_nodes": ["qb-prod-gpu17{seed}"],
                     "shm_size": 96,
                 },
@@ -544,6 +583,7 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert items[0]["shm_size_gib"] == 96
     assert items[1]["shm_size_gib"] == 96
     assert items[0]["create_kwargs"]["task_priority"] == 7
+    assert items[0]["create_kwargs"]["enable_notification"] is True
     assert api.training_calls == []
 
 
