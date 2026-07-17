@@ -126,7 +126,10 @@ Chrome bundle 还定义了这些文件操作入口，当前 CLI 不封装 destru
 
 `CreateJobConsole` 的顶层可选字段 `enable_notification` 默认为 `false`；设为
 `true` 时，平台向当前用户绑定的飞书账号发送任务状态通知。该字段不属于
-`framework_config[]`，也不接受 CLI 指定任意收件人。
+`framework_config[]`，也不接受 CLI 指定任意收件人。`inspire job create` 可用
+`--enable-notification/--no-enable-notification` 显式覆盖；持久默认值使用
+`[job].enable_notification` 或 `INSPIRE_JOB_ENABLE_NOTIFICATION`。`job batch`
+在 item 未声明该字段时继承同一默认值，item 中的布尔值优先。
 
 当前前端训练任务页面加载的 service bundle 使用 `/api/v2/train?Action=...`：`CreateJobConsole`、`GetJob`、`ListJobs`、`StopJob`、`DeleteJob`、`ListJobInstances`、`ListJobEvents`、`GetJobLog`、`GetJobWorkdir`、`ListJobCreators`。CLI create/detail/list/stop/instances 已使用 v2；delete/events/logs/workdir 仍按现有 v1 Browser API wrapper 维护，直到对应命令迁到 v2。
 

@@ -76,6 +76,7 @@ class Config:
     job_priority: int = 10
     job_auto_fault_tolerance: bool = False
     job_fault_tolerance_max_retry: int = 10
+    job_enable_notification: bool = False
 
     # Project alias map for project_id resolution (alias -> project-...)
     projects: dict[str, str] = field(default_factory=dict)

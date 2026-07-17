@@ -46,6 +46,7 @@ def _patch_submit_deps(
     tmp_path: Path,
     *,
     shm_size: int | None = None,
+    enable_notification: bool = False,
 ) -> DummyAPI:
     config = config_module.Config(
         username="user",
@@ -55,6 +56,7 @@ def _patch_submit_deps(
         path_aliases={"me": str(tmp_path / "remote")},
     )
     config.shm_size = shm_size
+    config.job_enable_notification = enable_notification
     config.projects = {"proj": "project-12345678-1234-1234-1234-123456789abc"}
     config.profiles = {
         "job": {
@@ -208,16 +210,59 @@ def test_job_create_dry_run_resolves_plan_without_create_api(
 
 
 @pytest.mark.parametrize(
-    ("flag", "expected"),
-    (("--enable-notification", True), ("--no-enable-notification", False)),
+    ("config_default", "flag", "expected"),
+    (
+        (False, "--enable-notification", True),
+        (True, "--no-enable-notification", False),
+        (True, None, True),
+    ),
 )
-def test_job_create_notification_flag_controls_top_level_payload(
+def test_job_create_notification_precedence_controls_top_level_payload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    flag: str,
+    config_default: bool,
+    flag: str | None,
     expected: bool,
 ) -> None:
-    api = _patch_submit_deps(monkeypatch, tmp_path)
+    api = _patch_submit_deps(
+        monkeypatch,
+        tmp_path,
+        enable_notification=config_default,
+    )
+
+    args = [
+        "--json",
+        "job",
+        "create",
+        "--name",
+        "notify-job",
+        "--profile",
+        "h200",
+        "--command",
+        "python train.py",
+    ]
+    if flag is not None:
+        args.append(flag)
+    args.append("--dry-run")
+
+    result = CliRunner().invoke(
+        cli_main,
+        args,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    create_kwargs = payload["data"]["create_kwargs"]
+    assert create_kwargs["enable_notification"] is expected
+    assert "enable_notification" not in create_kwargs["framework_config"][0]
+    assert api.training_calls == []
+
+
+def test_job_create_notification_reaches_live_create_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path, enable_notification=True)
 
     result = CliRunner().invoke(
         cli_main,
@@ -231,17 +276,14 @@ def test_job_create_notification_flag_controls_top_level_payload(
             "h200",
             "--command",
             "python train.py",
-            flag,
-            "--dry-run",
         ],
     )
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    create_kwargs = payload["data"]["create_kwargs"]
-    assert create_kwargs["enable_notification"] is expected
-    assert "enable_notification" not in create_kwargs["framework_config"][0]
-    assert api.training_calls == []
+    assert payload["data"]["enable_notification"] is True
+    assert api.training_calls[0]["enable_notification"] is True
+    assert "enable_notification" not in api.training_calls[0]["framework_config"][0]
 
 
 def test_training_plan_exclude_nodes_reads_top_level_payload() -> None:
@@ -587,6 +629,60 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert api.training_calls == []
 
 
+def test_batch_notification_item_overrides_config_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path, enable_notification=True)
+    batch_path = tmp_path / "notification-default.json"
+    batch_path.write_text(
+        json.dumps(
+            {
+                "profiles": {
+                    "job": {
+                        "h200": {
+                            "quota": "1,20,200",
+                            "workspace": "cpu",
+                            "project": "proj",
+                            "group": "H200 Room",
+                            "image": "registry.batch/train:latest",
+                        }
+                    }
+                },
+                "defaults": {
+                    "type": "job",
+                    "profile": "h200",
+                    "priority": 7,
+                    "framework": "pytorch",
+                    "nodes": 1,
+                },
+                "jobs": [
+                    {"name": "inherits", "command": "python train.py"},
+                    {
+                        "name": "disabled",
+                        "command": "python train.py",
+                        "enable_notification": False,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "job", "batch", str(batch_path), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    items = json.loads(result.output)["data"]["items"]
+    assert [item["create_kwargs"]["enable_notification"] for item in items] == [
+        True,
+        False,
+    ]
+    assert api.training_calls == []
+
+
 def test_batch_rejects_shm_size_above_quota_memory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -676,6 +772,7 @@ nodes = 1
 max_time = 24
 auto_fault_tolerance = false
 fault_tolerance_max_retry = 0
+enable_notification = true
 
 [matrix]
 lr = ["1e-4", "2e-4"]
@@ -696,6 +793,7 @@ command = "python train.py --lr {lr}"
         "registry.batch/train:latest"
     }
     assert {call["task_priority"] for call in api.training_calls} == {7}
+    assert {call["enable_notification"] for call in api.training_calls} == {True}
 
 
 def test_batch_does_not_fall_back_to_config_job_defaults(

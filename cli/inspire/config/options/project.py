@@ -47,6 +47,16 @@ JOB_OPTIONS: list[ConfigOption] = [
         parser=_parse_int,
         scope="project",
     ),
+    ConfigOption(
+        env_var="INSPIRE_JOB_ENABLE_NOTIFICATION",
+        toml_key="job.enable_notification",
+        field_name="job_enable_notification",
+        description="Enable Feishu training-job status notifications by default",
+        default=False,
+        category="Job",
+        parser=_parse_bool,
+        scope="project",
+    ),
 ]
 
 NOTEBOOK_OPTIONS: list[ConfigOption] = [

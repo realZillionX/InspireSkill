@@ -71,6 +71,17 @@ class TestConfig:
         assert config.max_retries == 5
         assert config.retry_delay == 2.5
 
+    def test_from_env_loads_job_notification_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
+        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
+        monkeypatch.setenv("INSPIRE_JOB_ENABLE_NOTIFICATION", "true")
+
+        config = Config.from_env()
+
+        assert config.job_enable_notification is True
+
     def test_from_env_invalid_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test error with invalid timeout value."""
         monkeypatch.setenv("INSPIRE_USERNAME", "testuser")

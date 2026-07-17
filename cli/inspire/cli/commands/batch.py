@@ -348,9 +348,19 @@ def _prepare_training_item(
         nodes=_optional_int(item, "nodes", min_value=1) or 1,
         max_time_hours=_optional_max_time_hours(item),
         project_name=selected.name,
-        auto_fault_tolerance=_optional_bool(item, "auto_fault_tolerance", default=False),
-        fault_tolerance_max_retry=10 if fault_retry is None else fault_retry,
-        enable_notification=_optional_bool(item, "enable_notification", default=False),
+        auto_fault_tolerance=_optional_bool(
+            item,
+            "auto_fault_tolerance",
+            default=config.job_auto_fault_tolerance,
+        ),
+        fault_tolerance_max_retry=(
+            config.job_fault_tolerance_max_retry if fault_retry is None else fault_retry
+        ),
+        enable_notification=_optional_bool(
+            item,
+            "enable_notification",
+            default=config.job_enable_notification,
+        ),
         exclude_nodes=_optional_str_list(item, "exclude_nodes"),
         shm_size=_optional_int(item, "shm_size", min_value=1),
     )

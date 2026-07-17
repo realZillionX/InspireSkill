@@ -137,6 +137,7 @@ denylist = ["*.tmp", ".git/*"]
 # shm_size = 32  # Default shared memory (GiB) for notebooks; jobs use it when set
 # auto_fault_tolerance = false
 # fault_tolerance_max_retry = 10
+# enable_notification = false  # Feishu status updates to the current user's bound account
 
 [notebook]
 # post_start = "bash /workspace/setup.sh"  # none | shell command

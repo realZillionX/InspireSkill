@@ -245,6 +245,9 @@ class TestLayeredConfig:
             "INSPIRE_REQUESTS_HTTPS_PROXY",
             "INSPIRE_PLAYWRIGHT_PROXY",
             "INSPIRE_RTUNNEL_PROXY",
+            "INSPIRE_JOB_AUTO_FAULT_TOLERANCE",
+            "INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY",
+            "INSPIRE_JOB_ENABLE_NOTIFICATION",
             "INSP_GITHUB_SERVER",
         ]
         for var in env_vars:
@@ -301,6 +304,30 @@ class TestLayeredConfig:
         cfg, sources = Config.from_files_and_env(require_credentials=False)
         assert cfg.path_aliases["me"] == "/inspire/test"
         assert sources["path_aliases"] == SOURCE_PROJECT
+
+    def test_job_behavior_config_loads_and_env_overrides_notification(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
+    ) -> None:
+        """Job behavior options must survive the layered config field allowlist."""
+        project_dir = tmp_path / ".inspire"
+        project_dir.mkdir()
+        (project_dir / "config.toml").write_text(
+            "[job]\n"
+            "auto_fault_tolerance = true\n"
+            "fault_tolerance_max_retry = 6\n"
+            "enable_notification = false\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("INSPIRE_JOB_ENABLE_NOTIFICATION", "true")
+
+        cfg, sources = Config.from_files_and_env(require_credentials=False)
+
+        assert cfg.job_auto_fault_tolerance is True
+        assert cfg.job_fault_tolerance_max_retry == 6
+        assert cfg.job_enable_notification is True
+        assert sources["job_auto_fault_tolerance"] == SOURCE_PROJECT
+        assert sources["job_fault_tolerance_max_retry"] == SOURCE_PROJECT
+        assert sources["job_enable_notification"] == SOURCE_ENV
 
     def test_from_files_and_env_loads_project_path_aliases(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None

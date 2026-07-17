@@ -131,6 +131,8 @@ def test_job_create_help_explains_framework_and_fault_tolerance() -> None:
     assert "platform shm_gi" in output
     assert "--enable-notification / --no-enable-notification" in output
     assert "Feishu status notifications" in output
+    assert "INSPIRE_JOB_ENABLE_NOTIFICATION" in output
+    assert "[job].enable_notification" in output
 
 
 def test_notebook_create_help_explains_auto_stop_boundary() -> None:
