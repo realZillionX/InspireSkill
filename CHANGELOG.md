@@ -2,6 +2,19 @@
 
 本文件同步 GitHub Releases 正文格式；Release 页面是发布说明的标准口径。
 
+# Unreleased
+
+## 更新内容
+
+### 修复
+
+- 任务优先级现在按实时 Workspace 调度能力统一解析：公平调度空间默认 HIGH（4）且仅接受 LOW（1）/ HIGH（4），标准空间继续使用 1–10 且默认 10。
+- Job、Notebook、HPC、Ray 与自定义 Serving 的直接创建和 Batch 路径都会应用所选项目的优先级上限；标准 Workspace 不再遗漏项目上限。
+- Workspace 的公平调度能力会随 Web Session 缓存持久化，重新启动 CLI 后不会因能力信息丢失而回退到错误策略。
+- 历史任务数据中的优先级 0、1、2、3 继续按 LOW / 可抢占资源统计，避免旧任务占用被错误计入高优资源。
+- Ray 命令不再把普通 API `ValueError` 误报为认证失败；只有 Session 过期会返回 AuthenticationError。
+- 已删除的 `[job].priority`、`[defaults].priority` 和 `INSP_PRIORITY` 现在会给出明确迁移错误，避免旧静态默认值被静默忽略；显式优先级请使用 `--priority` 或 Batch item。
+
 # v6.2.0
 
 ## 更新内容

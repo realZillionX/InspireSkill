@@ -85,14 +85,39 @@ def test_invalid_requested_priority_is_rejected(
         resolve_task_priority(requested, fair_scheduling=fair_scheduling)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("priority", [1, 2, 3])
+@pytest.mark.parametrize("priority", [0, 1, 2, 3])
 def test_historical_low_priorities_remain_low(priority: int) -> None:
     assert is_low_task_priority(priority) is True
 
 
-@pytest.mark.parametrize("priority", [0, 4, 5, 10, None, "invalid"])
+@pytest.mark.parametrize("priority", [4, 5, 10, None, "invalid"])
 def test_non_low_priorities_are_not_classified_as_low(priority: object) -> None:
     assert is_low_task_priority(priority) is False
+
+
+@pytest.mark.parametrize("project_limit", ["", "invalid", True, 3.9])
+def test_fair_workspace_rejects_malformed_project_limit(project_limit: object) -> None:
+    with pytest.raises(
+        TaskPriorityError,
+        match="Could not resolve the selected project's fair-scheduling priority limit",
+    ):
+        resolve_task_priority(
+            None,
+            fair_scheduling=True,
+            project_limit=project_limit,
+        )
+
+
+@pytest.mark.parametrize("project_limit", ["", "invalid", True, 3.9])
+def test_standard_workspace_ignores_malformed_project_limit(project_limit: object) -> None:
+    assert (
+        resolve_task_priority(
+            None,
+            fair_scheduling=False,
+            project_limit=project_limit,
+        )
+        == 10
+    )
 
 
 def test_workspace_capability_requires_an_exact_true_boolean(
@@ -180,3 +205,15 @@ def test_workspace_capability_cache_avoids_route_lookup(
     session = _session(all_workspace_fair_scheduling={FAIR_WORKSPACE_ID: True})
 
     assert workspaces.is_fair_scheduling_workspace(session, FAIR_WORKSPACE_ID) is True
+
+
+def test_workspace_capability_cache_requires_an_exact_true_boolean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unexpected(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("cached capability should not issue a request")
+
+    monkeypatch.setattr(workspaces, "_request_json", _unexpected)
+    session = _session(all_workspace_fair_scheduling={FAIR_WORKSPACE_ID: "true"})
+
+    assert workspaces.is_fair_scheduling_workspace(session, FAIR_WORKSPACE_ID) is False

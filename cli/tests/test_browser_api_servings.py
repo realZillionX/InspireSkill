@@ -11,6 +11,7 @@ tests are the only coverage for the happy-path.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import pytest
@@ -425,6 +426,12 @@ def test_create_serving_posts_current_web_ui_payload(monkeypatch) -> None:
         "custom_domain": "demo-svc",
         "shm_gi": 16,
     }
+
+
+def test_create_serving_requires_resolved_task_priority() -> None:
+    parameter = inspect.signature(create_serving).parameters["task_priority"]
+
+    assert parameter.default is inspect.Parameter.empty
 
 
 def test_serving_actions_use_v2_action_endpoint(monkeypatch) -> None:

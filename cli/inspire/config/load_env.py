@@ -8,9 +8,17 @@ from inspire.config.env import _parse_denylist, _parse_remote_timeout
 from inspire.config.models import Config, ConfigError
 from inspire.config.schema_models import _parse_bool
 
+from .load_common import REMOVED_TASK_PRIORITY_ENV_VAR
+
 
 def config_from_env() -> Config:
     """Create configuration from environment variables."""
+    if os.getenv(REMOVED_TASK_PRIORITY_ENV_VAR) is not None:
+        raise ConfigError(
+            f"{REMOVED_TASK_PRIORITY_ENV_VAR} was removed. Unset it and use --priority "
+            "(or a batch item priority) when needed; otherwise the CLI derives the "
+            "default from the live workspace policy."
+        )
     username = os.getenv("INSPIRE_USERNAME")
     password = os.getenv("INSPIRE_PASSWORD")
 

@@ -61,6 +61,7 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     import importlib
 
     hpc_mod = importlib.import_module("inspire.cli.commands.hpc.hpc_commands")
+    projects_mod = importlib.import_module("inspire.platform.web.browser_api.projects")
     quota_mod = importlib.import_module("inspire.cli.utils.quota_resolver")
 
     class _FakeWebSession:
@@ -72,6 +73,13 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         all_workspace_ids = [workspace_id]
 
     monkeypatch.setattr(hpc_mod, "get_web_session", lambda: _FakeWebSession())
+    project = projects_mod.ProjectInfo(
+        project_id="project-alias",
+        name="Project",
+        workspace_id=_FakeWebSession.workspace_id,
+        priority_name="10",
+    )
+    monkeypatch.setattr(projects_mod, "list_projects", lambda **_kwargs: [project])
     monkeypatch.setattr(
         hpc_mod.browser_api_module,
         "get_current_user",

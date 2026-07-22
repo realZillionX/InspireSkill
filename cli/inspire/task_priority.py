@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 FAIR_PRIORITY_LOW = 1
@@ -21,9 +22,30 @@ def default_task_priority(*, fair_scheduling: bool) -> int:
 
 
 def _project_priority_limit(value: Any, *, fair_scheduling: bool) -> int | None:
-    try:
-        limit = int(value)
-    except (TypeError, ValueError):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        if fair_scheduling:
+            raise TaskPriorityError(
+                "Could not resolve the selected project's fair-scheduling priority limit."
+            )
+        return None
+    if isinstance(value, int):
+        limit = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not re.fullmatch(r"[+-]?\d+", text):
+            if fair_scheduling:
+                raise TaskPriorityError(
+                    "Could not resolve the selected project's fair-scheduling priority limit."
+                )
+            return None
+        limit = int(text)
+    else:
+        if fair_scheduling:
+            raise TaskPriorityError(
+                "Could not resolve the selected project's fair-scheduling priority limit."
+            )
         return None
 
     if fair_scheduling:
@@ -59,12 +81,12 @@ def resolve_task_priority(
 
 
 def is_low_task_priority(value: Any) -> bool:
-    """Classify task values while retaining support for historical 2/3 rows."""
+    """Classify task values while retaining support for historical 0/2/3 rows."""
     try:
         priority = int(value)
     except (TypeError, ValueError):
         return False
-    return FAIR_PRIORITY_LOW <= priority < FAIR_PRIORITY_HIGH
+    return 0 <= priority < FAIR_PRIORITY_HIGH
 
 
 __all__ = [

@@ -95,7 +95,7 @@ def is_fair_scheduling_workspace(session: WebSession, workspace_id: str) -> bool
     """Return the live workspace capability used by qz priority selectors."""
     cached = getattr(session, "all_workspace_fair_scheduling", None) or {}
     if workspace_id in cached:
-        return bool(cached[workspace_id])
+        return cached[workspace_id] is True
 
     if not isinstance(session, WebSession) or not _WS_ID_RE.match(workspace_id):
         return False

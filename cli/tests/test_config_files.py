@@ -252,6 +252,7 @@ class TestLayeredConfig:
             "INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY",
             "INSPIRE_JOB_ENABLE_NOTIFICATION",
             "INSP_GITHUB_SERVER",
+            "INSP_PRIORITY",
         ]
         for var in env_vars:
             monkeypatch.delenv(var, raising=False)
@@ -331,6 +332,38 @@ class TestLayeredConfig:
         assert sources["job_auto_fault_tolerance"] == SOURCE_PROJECT
         assert sources["job_fault_tolerance_max_retry"] == SOURCE_PROJECT
         assert sources["job_enable_notification"] == SOURCE_ENV
+
+    @pytest.mark.parametrize(
+        ("section", "setting"),
+        [("job", "job.priority"), ("defaults", "defaults.priority")],
+    )
+    def test_project_config_rejects_removed_static_priority(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        clean_env: None,
+        section: str,
+        setting: str,
+    ) -> None:
+        project_dir = tmp_path / ".inspire"
+        project_dir.mkdir()
+        (project_dir / "config.toml").write_text(f"[{section}]\npriority = 5\n")
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConfigError, match=re.escape(setting)):
+            Config.from_files_and_env(require_credentials=False)
+
+    def test_removed_priority_environment_variable_is_rejected(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        clean_env: None,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("INSP_PRIORITY", "5")
+
+        with pytest.raises(ConfigError, match="INSP_PRIORITY"):
+            Config.from_files_and_env(require_credentials=False)
 
     def test_from_files_and_env_loads_project_path_aliases(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
@@ -413,6 +446,7 @@ class TestAccountConfigLayer:
             "INSPIRE_PASSWORD",
             "INSPIRE_BASE_URL",
             "INSPIRE_TIMEOUT",
+            "INSP_PRIORITY",
         ):
             monkeypatch.delenv(var, raising=False)
         yield
@@ -724,6 +758,27 @@ class TestAccountConfigLayer:
         )
 
         with pytest.raises(ConfigError, match=re.escape(dotted_key)):
+            Config.from_files_and_env(require_credentials=False)
+
+    @pytest.mark.parametrize(
+        ("section", "setting"),
+        [("job", "job.priority"), ("defaults", "defaults.priority")],
+    )
+    def test_account_config_rejects_removed_static_priority(
+        self,
+        home: Path,
+        clean_env: None,
+        section: str,
+        setting: str,
+    ) -> None:
+        self._write_account_config(
+            home,
+            "alice",
+            '[auth]\nusername = "alice"\npassword = "pw"\n\n'
+            f"[{section}]\npriority = 5\n",
+        )
+
+        with pytest.raises(ConfigError, match=re.escape(setting)):
             Config.from_files_and_env(require_credentials=False)
 
     def test_empty_paths_section_in_account_config_is_tolerated(

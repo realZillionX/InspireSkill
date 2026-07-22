@@ -172,6 +172,7 @@ def test_workspace_routes_from_payload_extracts_workspace_list() -> None:
                         {
                             "name": "分布式训练空间",
                             "path": "ws-22222222-2222-2222-2222-222222222222",
+                            "is_fair_workspace": True,
                         },
                     ],
                 },
@@ -179,7 +180,7 @@ def test_workspace_routes_from_payload_extracts_workspace_list() -> None:
         }
     }
 
-    ids, names = ws_auth._workspace_routes_from_payload(payload)
+    ids, names, fair_scheduling = ws_auth._workspace_routes_from_payload(payload)
 
     assert ids == [
         "ws-11111111-1111-1111-1111-111111111111",
@@ -188,6 +189,26 @@ def test_workspace_routes_from_payload_extracts_workspace_list() -> None:
     assert names == {
         "ws-11111111-1111-1111-1111-111111111111": "CPU资源空间",
         "ws-22222222-2222-2222-2222-222222222222": "分布式训练空间",
+    }
+    assert fair_scheduling == {
+        "ws-11111111-1111-1111-1111-111111111111": False,
+        "ws-22222222-2222-2222-2222-222222222222": True,
+    }
+
+
+def test_web_session_round_trip_preserves_workspace_capabilities() -> None:
+    session = WebSession(
+        storage_state={"cookies": [], "origins": []},
+        workspace_id="ws-test",
+        all_workspace_fair_scheduling={"ws-test": True, "ws-standard": False},
+        created_at=1.0,
+    )
+
+    restored = WebSession.from_dict(session.to_dict())
+
+    assert restored.all_workspace_fair_scheduling == {
+        "ws-test": True,
+        "ws-standard": False,
     }
 
 
@@ -697,6 +718,7 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
         cookies={"session": "new"},
         workspace_id="ws-new",
         login_username="new-user",
+        all_workspace_fair_scheduling={"ws-new": True},
         created_at=2.0,
     )
 
@@ -738,6 +760,7 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
     assert session.cookies == refreshed.cookies
     assert session.workspace_id == refreshed.workspace_id
     assert session.login_username == refreshed.login_username
+    assert session.all_workspace_fair_scheduling == refreshed.all_workspace_fair_scheduling
     assert session.created_at == refreshed.created_at
     assert working.calls == 1
 

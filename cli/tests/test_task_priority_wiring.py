@@ -6,10 +6,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from click.testing import CliRunner
 
 from inspire.cli.commands import batch
 from inspire.cli.commands.ray import ray_commands
-from inspire.cli.context import Context
+from inspire.cli.context import EXIT_API_ERROR, Context
+from inspire.cli.main import main as cli_main
 from inspire.cli.utils import quota_resolver
 from inspire.cli.utils.quota_resolver import ResolvedQuota
 from inspire.cli.utils.task_priority import resolve_workspace_task_priority
@@ -140,15 +142,52 @@ def test_workspace_resolver_loads_fair_project_limit_by_id(
     assert calls == [(WORKSPACE_ID, session)]
 
 
-def test_workspace_resolver_does_not_load_project_in_standard_workspace(
+def test_workspace_resolver_loads_standard_project_limit_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    session = object()
+    monkeypatch.setattr(workspaces, "is_fair_scheduling_workspace", lambda *_args: False)
+
+    def _list_projects(*, workspace_id: str, session: object):
+        calls.append((workspace_id, session))
+        return [
+            projects.ProjectInfo(
+                project_id=PROJECT_ID,
+                name="Project",
+                workspace_id=WORKSPACE_ID,
+                priority_name="6",
+            )
+        ]
+
+    monkeypatch.setattr(projects, "list_projects", _list_projects)
+
+    assert (
+        resolve_workspace_task_priority(
+            None,
+            session=session,
+            workspace_id=WORKSPACE_ID,
+            project_id=PROJECT_ID,
+        )
+        == 6
+    )
+    assert (
+        resolve_workspace_task_priority(
+            9,
+            session=session,
+            workspace_id=WORKSPACE_ID,
+            project_id=PROJECT_ID,
+        )
+        == 6
+    )
+    assert calls == [(WORKSPACE_ID, session), (WORKSPACE_ID, session)]
+
+
+def test_workspace_resolver_tolerates_missing_standard_project_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(workspaces, "is_fair_scheduling_workspace", lambda *_args: False)
-    monkeypatch.setattr(
-        projects,
-        "list_projects",
-        lambda **_kwargs: pytest.fail("standard priority must not query project policy"),
-    )
+    monkeypatch.setattr(projects, "list_projects", lambda **_kwargs: [])
 
     assert (
         resolve_workspace_task_priority(
@@ -159,6 +198,51 @@ def test_workspace_resolver_does_not_load_project_in_standard_workspace(
         )
         == 10
     )
+
+
+def test_ray_create_reports_project_lookup_value_error_as_api_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ray_commands.Config,
+        "from_files_and_env",
+        lambda **_kwargs: (_config(), {}),
+    )
+    monkeypatch.setattr(ray_commands, "get_web_session", lambda: object())
+
+    def _fail(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        raise ValueError("API error: project lookup failed")
+
+    monkeypatch.setattr(ray_commands, "_assemble_create_body", _fail)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "ray",
+            "create",
+            "--name",
+            "ray",
+            "--command",
+            "python driver.py",
+            "--project",
+            "project",
+            "--workspace",
+            "workspace",
+            "--image",
+            "image",
+            "--group",
+            "group",
+            "--quota",
+            "0,4,16",
+            "--worker",
+            "name=worker;image=worker-image;group=group;quota=0,4,16;min=1;max=1",
+        ],
+    )
+
+    assert result.exit_code == EXIT_API_ERROR
+    assert '"type": "APIError"' in result.output
+    assert "AuthenticationError" not in result.output
 
 
 def _patch_fair_training_batch(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -208,9 +208,12 @@ _WORKSPACE_ID_PATTERN = re.compile(
 )
 
 
-def _workspace_routes_from_payload(payload: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
+def _workspace_routes_from_payload(
+    payload: dict[str, Any],
+) -> tuple[list[str], dict[str, str], dict[str, bool]]:
     workspace_ids: list[str] = []
     workspace_names: dict[str, str] = {}
+    fair_scheduling: dict[str, bool] = {}
     for route_group in (payload.get("data") or {}).get("routes") or []:
         if not isinstance(route_group, dict):
             continue
@@ -225,20 +228,25 @@ def _workspace_routes_from_payload(payload: dict[str, Any]) -> tuple[list[str], 
                 if ws_id not in workspace_names:
                     workspace_ids.append(ws_id)
                     workspace_names[ws_id] = ws_name
-    return workspace_ids, workspace_names
+                fair_scheduling[ws_id] = entry.get("is_fair_workspace") is True
+    return workspace_ids, workspace_names, fair_scheduling
 
 
 def _merge_workspace_routes(
     current_ids: list[str],
     current_names: dict[str, str],
+    current_fair_scheduling: dict[str, bool],
     new_ids: list[str],
     new_names: dict[str, str],
+    new_fair_scheduling: dict[str, bool],
 ) -> None:
     for ws_id in new_ids:
         if ws_id not in current_names:
             current_ids.append(ws_id)
         if new_names.get(ws_id):
             current_names[ws_id] = new_names[ws_id]
+        if ws_id in new_fair_scheduling:
+            current_fair_scheduling[ws_id] = new_fair_scheduling[ws_id]
 
 
 def _cas_rsa_chunk_size(modulus_hex: str) -> int:
@@ -468,6 +476,7 @@ def _login_with_cas_requests(
 
     all_workspace_ids: list[str] = []
     all_workspace_names: dict[str, str] = {}
+    all_workspace_fair_scheduling: dict[str, bool] = {}
     try:
         routes_resp = http.get(
             f"{base_url.rstrip('/')}/api/v1/user/routes/default",
@@ -475,12 +484,16 @@ def _login_with_cas_requests(
             timeout=15,
         )
         if routes_resp.status_code == 200:
-            route_ids, route_names = _workspace_routes_from_payload(routes_resp.json())
+            route_ids, route_names, route_fair_scheduling = _workspace_routes_from_payload(
+                routes_resp.json()
+            )
             _merge_workspace_routes(
                 all_workspace_ids,
                 all_workspace_names,
+                all_workspace_fair_scheduling,
                 route_ids,
                 route_names,
+                route_fair_scheduling,
             )
     except Exception:
         pass
@@ -500,6 +513,7 @@ def _login_with_cas_requests(
         user_detail=user_detail,
         all_workspace_ids=all_workspace_ids or None,
         all_workspace_names=all_workspace_names or None,
+        all_workspace_fair_scheduling=all_workspace_fair_scheduling or None,
         created_at=time.time(),
     )
     session.save(account=account)
@@ -726,6 +740,7 @@ def login_with_playwright(
         # the user can access, each with name (display name) and path (ws-... ID).
         all_workspace_ids: list[str] = []
         all_workspace_names: dict[str, str] = {}
+        all_workspace_fair_scheduling: dict[str, bool] = {}
         for routes_workspace_id in ("default",):
             try:
                 routes_resp = context.request.get(
@@ -734,12 +749,16 @@ def login_with_playwright(
                     timeout=15000,
                 )
                 if routes_resp.status == 200:
-                    route_ids, route_names = _workspace_routes_from_payload(routes_resp.json())
+                    route_ids, route_names, route_fair_scheduling = (
+                        _workspace_routes_from_payload(routes_resp.json())
+                    )
                     _merge_workspace_routes(
                         all_workspace_ids,
                         all_workspace_names,
+                        all_workspace_fair_scheduling,
                         route_ids,
                         route_names,
+                        route_fair_scheduling,
                     )
             except Exception:
                 pass
@@ -764,6 +783,7 @@ def login_with_playwright(
             user_detail=user_detail,
             all_workspace_ids=all_workspace_ids or None,
             all_workspace_names=all_workspace_names or None,
+            all_workspace_fair_scheduling=all_workspace_fair_scheduling or None,
             account=account,
             created_at=time.time(),
         )

@@ -8,6 +8,8 @@ from typing import Any
 from inspire.config.models import SOURCE_ENV, SOURCE_ENV_FILE, SOURCE_PROJECT, ConfigError
 from inspire.config.schema import CONFIG_OPTIONS
 
+from .load_common import REMOVED_TASK_PRIORITY_ENV_VAR
+
 
 def _env_source_for(key: str) -> str:
     try:
@@ -24,6 +26,12 @@ def _apply_env_layer(
     sources: dict[str, str],
     prefer_source: str,
 ) -> str | None:
+    if os.getenv(REMOVED_TASK_PRIORITY_ENV_VAR) is not None:
+        raise ConfigError(
+            f"{REMOVED_TASK_PRIORITY_ENV_VAR} was removed. Unset it and use --priority "
+            "(or a batch item priority) when needed; otherwise the CLI derives the "
+            "default from the live workspace policy."
+        )
     env_password = os.getenv("INSPIRE_PASSWORD")
 
     for option in CONFIG_OPTIONS:

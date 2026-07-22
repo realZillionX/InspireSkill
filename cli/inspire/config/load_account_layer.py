@@ -27,6 +27,7 @@ from .load_common import (
     _apply_defaults_overrides,
     _normalize_project_catalog,
     _parse_alias_map,
+    _reject_removed_task_priority_settings,
 )
 from .path_aliases import normalize_path_alias_map
 
@@ -83,6 +84,7 @@ def _apply_account_layer(
         return None
 
     raw = _load_toml(account_path)
+    _reject_removed_task_priority_settings(raw, source=f"Account config at {account_path}")
 
     # Guard against stray legacy sections copied into a per-account file.
     # ``[accounts."<user>"]`` and ``[context]`` have no meaning in the new

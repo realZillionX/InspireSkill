@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from inspire.config.models import SOURCE_DEFAULT
+from inspire.config.models import SOURCE_DEFAULT, ConfigError
+
+REMOVED_TASK_PRIORITY_ENV_VAR = "INSP_PRIORITY"
 
 _DEFAULTS_FIELD_MAP = {
     "notebook_post_start": "notebook_post_start",
@@ -14,6 +16,27 @@ _DEFAULTS_FIELD_MAP = {
     "log_pattern": "log_pattern",
     "project_order": "project_order",
 }
+
+
+def _reject_removed_task_priority_settings(
+    raw: dict[str, Any],
+    *,
+    source: str,
+) -> None:
+    removed: list[str] = []
+    job_section = raw.get("job")
+    if isinstance(job_section, dict) and "priority" in job_section:
+        removed.append("job.priority")
+    defaults_section = raw.get("defaults")
+    if isinstance(defaults_section, dict) and "priority" in defaults_section:
+        removed.append("defaults.priority")
+    if not removed:
+        return
+    raise ConfigError(
+        f"{source} contains removed static task-priority settings: {', '.join(removed)}. "
+        "Remove them and use --priority (or a batch item priority) when needed; "
+        "otherwise the CLI derives the default from the live workspace policy."
+    )
 
 
 @dataclass
@@ -205,6 +228,7 @@ def _coerce_project_default(field_name: str, raw_value: Any) -> Any:
 
 
 __all__ = [
+    "REMOVED_TASK_PRIORITY_ENV_VAR",
     "_DEFAULTS_FIELD_MAP",
     "_ProjectLayerState",
     "_apply_defaults_overrides",
@@ -214,5 +238,6 @@ __all__ = [
     "_normalize_compute_groups",
     "_normalize_project_catalog",
     "_parse_alias_map",
+    "_reject_removed_task_priority_settings",
     "_resolve_alias",
 ]

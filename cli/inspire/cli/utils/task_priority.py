@@ -42,7 +42,7 @@ def resolve_workspace_task_priority(
     from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
 
     fair_scheduling = is_fair_scheduling_workspace(session, workspace_id)
-    if fair_scheduling and project_limit is None and project_id:
+    if project_limit is None and project_id:
         from inspire.platform.web.browser_api.projects import list_projects
 
         project_limit = next(
@@ -53,7 +53,7 @@ def resolve_workspace_task_priority(
             ),
             None,
         )
-        if project_limit is None:
+        if project_limit is None and fair_scheduling:
             raise TaskPriorityError(
                 "Could not resolve the selected project's fair-scheduling priority limit."
             )

@@ -23,7 +23,11 @@ from inspire.config.toml import (
     _toml_key_to_field,
 )
 
-from .load_common import _ProjectLayerState, _parse_alias_map
+from .load_common import (
+    _ProjectLayerState,
+    _parse_alias_map,
+    _reject_removed_task_priority_settings,
+)
 from .path_aliases import normalize_path_alias_map
 from .workload_profiles import merge_workload_profiles, normalize_workload_profiles
 
@@ -67,6 +71,10 @@ def _apply_one_project_file(
     project_config_path: Path,
 ) -> None:
     project_raw = _load_toml(project_config_path)
+    _reject_removed_task_priority_settings(
+        project_raw,
+        source=f"Project config at {project_config_path}",
+    )
 
     # Legacy structural sections are silently ignored at project level too —
     # a project config should never carry an account catalog or [context].account.

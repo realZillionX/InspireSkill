@@ -93,6 +93,7 @@ class WebSession:
             "user_detail": self.user_detail,
             "all_workspace_ids": self.all_workspace_ids,
             "all_workspace_names": self.all_workspace_names,
+            "all_workspace_fair_scheduling": self.all_workspace_fair_scheduling,
             "account": self.account,
             "created_at": self.created_at,
         }
@@ -113,6 +114,7 @@ class WebSession:
             user_detail=data.get("user_detail"),
             all_workspace_ids=data.get("all_workspace_ids"),
             all_workspace_names=data.get("all_workspace_names"),
+            all_workspace_fair_scheduling=data.get("all_workspace_fair_scheduling"),
             account=data.get("account"),
             created_at=data["created_at"],
         )

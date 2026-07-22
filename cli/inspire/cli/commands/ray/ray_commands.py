@@ -247,7 +247,7 @@ def list_ray(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except (SessionExpiredError, ValueError) as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
@@ -310,7 +310,7 @@ def status_ray(ctx: Context, name: str, workspace: str) -> None:
             "spec and elastic instance ranges."
         )
 
-    except (SessionExpiredError, ValueError) as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
@@ -356,7 +356,7 @@ def stop_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> No
             return
         click.echo(human_formatter.format_success(f"Ray job stopped: {name}"))
 
-    except (SessionExpiredError, ValueError) as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
@@ -692,7 +692,7 @@ def create_ray(
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except click.UsageError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_CONFIG_ERROR)
-    except (SessionExpiredError, ValueError) as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
@@ -904,7 +904,7 @@ def events_ray(
             interval=interval,
         )
 
-    except (SessionExpiredError, ValueError) as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
@@ -974,7 +974,7 @@ def instances_ray(ctx: Context, name: str, workspace: str, limit: int) -> None:
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except (SessionExpiredError, ValueError) as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
@@ -1037,7 +1037,7 @@ def delete_ray(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
             return
         click.echo(human_formatter.format_success(f"Ray job deleted: {name}"))
 
-    except (SessionExpiredError, ValueError) as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)

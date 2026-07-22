@@ -137,11 +137,13 @@ def _patch_submit_deps(
     hpc_module = importlib.import_module("inspire.cli.commands.hpc.hpc_commands")
     job_create_module = importlib.import_module("inspire.cli.commands.job.job_create")
     job_submit_module = importlib.import_module("inspire.cli.utils.job_submit")
+    projects_module = importlib.import_module("inspire.platform.web.browser_api.projects")
     quota_module = importlib.import_module("inspire.cli.utils.quota_resolver")
 
     monkeypatch.setattr(batch_module, "get_web_session", lambda: FakeWebSession())
     monkeypatch.setattr(batch_module, "resolve_quota", fake_resolve_quota)
     monkeypatch.setattr(hpc_module, "get_web_session", lambda: FakeWebSession())
+    monkeypatch.setattr(projects_module, "list_projects", lambda **_kwargs: [project])
     monkeypatch.setattr(job_create_module, "get_web_session", lambda: FakeWebSession())
     monkeypatch.setattr(job_create_module, "resolve_quota", fake_resolve_quota)
     monkeypatch.setattr(
