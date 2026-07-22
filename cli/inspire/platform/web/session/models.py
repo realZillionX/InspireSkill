@@ -73,6 +73,7 @@ class WebSession:
     user_detail: Optional[dict[str, Any]] = None
     all_workspace_ids: Optional[list[str]] = None
     all_workspace_names: Optional[dict[str, str]] = None
+    all_workspace_fair_scheduling: Optional[dict[str, bool]] = None
     account: Optional[str] = None
 
     # Back-compat: older cache stored only name->value cookies

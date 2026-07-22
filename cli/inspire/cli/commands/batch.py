@@ -37,6 +37,10 @@ from inspire.cli.utils.quota_resolver import (
     resolve_quota,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.task_priority import (
+    TaskPriorityError,
+    resolve_workspace_task_priority,
+)
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import (
     PROFILE_FIELDS,
@@ -335,6 +339,12 @@ def _prepare_training_item(
         requested=_require_condition_str(item, "project", kind="job"),
     )
     fault_retry = _optional_int(item, "fault_tolerance_max_retry", min_value=0)
+    task_priority = resolve_workspace_task_priority(
+        _optional_int(item, "priority", min_value=1),
+        session=session,
+        workspace_id=workspace_id,
+        project_limit=selected.priority_name,
+    )
     return job_submit.build_training_job_plan(
         config=config,
         name=_require_str(item, "name"),
@@ -344,7 +354,7 @@ def _prepare_training_item(
         project_id=selected.project_id,
         workspace_id=workspace_id,
         image=_require_condition_str(item, "image", kind="job"),
-        priority=_optional_int(item, "priority", min_value=1) or 10,
+        priority=task_priority,
         nodes=_optional_int(item, "nodes", min_value=1) or 1,
         max_time_hours=_optional_max_time_hours(item),
         project_name=selected.name,
@@ -401,17 +411,26 @@ def _prepare_hpc_item(
     memory_per_cpu = _optional_int(item, "memory_per_cpu", min_value=1)
     if memory_per_cpu is None:
         memory_per_cpu = max(1, int(quota_spec.memory_gib) // max(1, int(cpus_per_task)))
+    project_id = _resolve_project_id(
+        config,
+        _require_condition_str(item, "project", kind="hpc"),
+    )
     return build_hpc_create_payload(
         name=_require_str(item, "name"),
         logic_compute_group_id=resolved_quota.logic_compute_group_id,
-        project_id=_resolve_project_id(config, _require_condition_str(item, "project", kind="hpc")),
+        project_id=project_id,
         workspace_id=workspace_id,
         image=_require_condition_str(item, "image", kind="hpc"),
         image_type=_optional_str(item, "image_type") or "SOURCE_PRIVATE",
         entrypoint=entrypoint,
         quota_id=resolved_quota.quota_id,
         instance_count=_optional_int(item, "instance_count", min_value=1) or 1,
-        task_priority=_optional_int(item, "priority", min_value=1) or 10,
+        task_priority=resolve_workspace_task_priority(
+            _optional_int(item, "priority", min_value=1),
+            session=session,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        ),
         number_of_tasks=_optional_int(item, "number_of_tasks", min_value=1) or 1,
         cpus_per_task=int(cpus_per_task),
         memory_per_cpu=int(memory_per_cpu),
@@ -530,7 +549,12 @@ def _prepare_notebook_item(
         session=session,
     )
     shm_size = _optional_int(item, "shm_size", min_value=1) or 32
-    task_priority = _optional_int(item, "priority", min_value=1) or 10
+    task_priority = resolve_workspace_task_priority(
+        _optional_int(item, "priority", min_value=1),
+        session=session,
+        workspace_id=workspace_id,
+        project_limit=selected_project.priority_name,
+    )
     resource_spec_price = build_resource_spec_price(
         quota=resolved_quota,
         shared_memory_size=shm_size,
@@ -701,7 +725,7 @@ def _prepare_ray_item(
         description=_optional_str(item, "description") or "",
         project=_require_condition_str(item, "project", kind="ray"),
         workspace=_require_condition_str(item, "workspace", kind="ray"),
-        priority=_optional_int(item, "priority", min_value=1) or 10,
+        priority=_optional_int(item, "priority", min_value=1),
         image=_require_condition_str(item, "image", kind="ray"),
         image_type=_optional_str(item, "image_type") or "SOURCE_PUBLIC",
         group=_require_condition_str(item, "group", kind="ray"),
@@ -786,7 +810,12 @@ def _prepare_serving_item(
         "replicas": _optional_int(item, "replicas", min_value=1) or 1,
         "node_num_per_replica": _optional_int(item, "nodes_per_replica", min_value=1) or 1,
         "shm_gi": _optional_int(item, "shm_gib", min_value=1),
-        "task_priority": _optional_int(item, "priority", min_value=1) or 10,
+        "task_priority": resolve_workspace_task_priority(
+            _optional_int(item, "priority", min_value=1),
+            session=session,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        ),
         "custom_domain": _optional_str(item, "custom_domain"),
         "resource_spec_price": _build_serving_resource_spec_price(resolved),
     }
@@ -818,6 +847,8 @@ def _emit_batch_result(
 
 
 def _handle_batch_exception(ctx: Context, error: Exception) -> None:
+    if isinstance(error, TaskPriorityError):
+        _handle_error(ctx, "ValidationError", str(error), EXIT_VALIDATION_ERROR)
     if isinstance(error, (ConfigError, KeyError)):
         _handle_error(ctx, "ConfigError", str(error), EXIT_CONFIG_ERROR)
     if isinstance(error, click.UsageError):

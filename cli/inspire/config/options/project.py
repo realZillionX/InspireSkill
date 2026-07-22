@@ -5,16 +5,6 @@ from __future__ import annotations
 from inspire.config.schema_models import ConfigOption, _parse_bool, _parse_int
 
 JOB_OPTIONS: list[ConfigOption] = [
-    ConfigOption(
-        env_var="INSP_PRIORITY",
-        toml_key="job.priority",
-        field_name="job_priority",
-        description="Default job priority (1-10)",
-        default=10,
-        category="Job",
-        parser=_parse_int,
-        scope="project",
-    ),
     # Job project, image, and workspace defaults are intentionally unsupported.
     # Commands that need those values require explicit flags.
     ConfigOption(

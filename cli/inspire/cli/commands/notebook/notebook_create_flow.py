@@ -10,7 +10,12 @@ from typing import Any, Optional
 
 import click
 
-from inspire.cli.context import Context, EXIT_API_ERROR, EXIT_CONFIG_ERROR
+from inspire.cli.context import (
+    Context,
+    EXIT_API_ERROR,
+    EXIT_CONFIG_ERROR,
+    EXIT_VALIDATION_ERROR,
+)
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.notebook_cli import (
@@ -36,11 +41,16 @@ from inspire.cli.utils.quota_resolver import (
     resolve_quota,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.task_priority import TaskPriorityError, resolve_task_priority
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NotebookFailedError
+from inspire.platform.web.browser_api.workspaces import (
+    WorkspaceCapabilityError,
+    is_fair_scheduling_workspace,
+)
 from inspire.platform.web.session import WebSession
 from .notebook_lookup import (
     _list_notebooks_for_workspace,
@@ -625,12 +635,6 @@ def _resolve_create_inputs(
     return quota, project, image, shm_size
 
 
-def _resolve_task_priority(priority: Optional[int], config: Config) -> Optional[int]:
-    if priority is not None:
-        return priority
-    return 10
-
-
 def _fetch_workspace_projects(
     ctx: Context,
     *,
@@ -648,31 +652,6 @@ def _fetch_workspace_projects(
 
     _handle_error(ctx, "ConfigError", "No projects available in this workspace", EXIT_CONFIG_ERROR)
     return None
-
-
-def _cap_task_priority(
-    *,
-    task_priority: Optional[int],
-    selected_project,
-    json_output: bool,
-) -> Optional[int]:
-    if not selected_project.priority_name:
-        return task_priority
-
-    try:
-        max_priority = int(selected_project.priority_name)
-    except ValueError:
-        return task_priority
-
-    if task_priority is None or task_priority <= max_priority:
-        return task_priority
-
-    if not json_output:
-        click.echo(
-            f"Capping priority {task_priority} -> {max_priority} "
-            f"(max for project '{scrub_raw_ids(selected_project.name)}')"
-        )
-    return max_priority
 
 
 def _fetch_notebook_images(
@@ -897,7 +876,18 @@ def run_notebook_create(
             f"{scrub_raw_ids(resolved_quota.compute_group_name)}{node_note}..."
         )
 
-    task_priority = _resolve_task_priority(priority, config)
+    try:
+        fair_scheduling = is_fair_scheduling_workspace(session, workspace_id)
+        uncapped_priority = resolve_task_priority(
+            priority,
+            fair_scheduling=fair_scheduling,
+        )
+    except WorkspaceCapabilityError as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+        return
+    except TaskPriorityError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
     projects = _fetch_workspace_projects(ctx, workspace_id=workspace_id, session=session)
     if projects is None:
         return
@@ -916,11 +906,16 @@ def run_notebook_create(
     if not selected_project:
         return
 
-    task_priority = _cap_task_priority(
-        task_priority=task_priority,
-        selected_project=selected_project,
-        json_output=json_output,
+    task_priority = resolve_task_priority(
+        priority,
+        fair_scheduling=fair_scheduling,
+        project_limit=selected_project.priority_name,
     )
+    if task_priority != uncapped_priority and not json_output:
+        click.echo(
+            f"Capping priority {uncapped_priority} -> {task_priority} "
+            f"(max for project '{scrub_raw_ids(selected_project.name)}')"
+        )
 
     images = _fetch_notebook_images(
         ctx,

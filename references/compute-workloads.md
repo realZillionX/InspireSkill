@@ -38,9 +38,9 @@ Job 的关键边界：
 - 多节点训练要关注每个 Pod 的 GPU、显存、CPU 和网络曲线是否同步；某个 Worker 长期低负载通常比日志更早暴露问题。
 - 排除坏节点是“不要调度到这些 Ready 节点”，不是固定节点；候选节点来自所选 Compute Group。
 
-优先级是平台调度信号：1 到 3 低，4 普通，5 到 10 高。任务需要稳定训练但显示 LOW 时，先 stop，再按项目策略用更合适优先级重提。
+优先级是 Workspace 能力限定的调度信号。qz 公平调度 Workspace 只接受 `1=LOW`（可抢占）或 `4=HIGH`（稳定且可抢占 LOW），默认 4；其他 Workspace 保留 `1–10`，默认 10。CLI 从 live `is_fair_workspace` 选择合同，项目策略仍可能降低最终优先级。任务需要稳定训练但显示 LOW 时，先 stop，再按当前 Workspace 和项目策略重提。
 
-qz 训练区的碎卡任务是明确例外：它只能以 LOW 优先级（1–3，可抢占）提交；需要普通或高优先级碎卡时改选开发区中真实存在的 Live Quota Row。整节点 / 碎卡按每个 Job Instance 的 Quota 判断，不按 `quota.gpu × --nodes` 的总卡数判断；例如 2 个 4 GPU Instance 仍是碎卡请求。训练区碎卡提交后用 Status / Events 核实解析后的优先级和调度结果。
+qz 当前公平调度训练区的碎卡任务是明确例外：它只能以 `1=LOW`（可抢占）提交；需要稳定优先级的碎卡任务时改选开发区中真实存在的 Live Quota Row。整节点 / 碎卡按每个 Job Instance 的 Quota 判断，不按 `quota.gpu × --nodes` 的总卡数判断；例如 2 个 4 GPU Instance 仍是碎卡请求。训练区碎卡提交后用 Status / Events 核实解析后的优先级和调度结果。
 
 ## 4. HPC
 

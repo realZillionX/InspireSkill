@@ -85,6 +85,7 @@ def _refresh_session_in_place(current: "WebSession", refreshed: "WebSession") ->
     current.user_detail = refreshed.user_detail
     current.all_workspace_ids = refreshed.all_workspace_ids
     current.all_workspace_names = refreshed.all_workspace_names
+    current.all_workspace_fair_scheduling = refreshed.all_workspace_fair_scheduling
     current.created_at = refreshed.created_at
 
 

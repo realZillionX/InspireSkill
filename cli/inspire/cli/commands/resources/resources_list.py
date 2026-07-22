@@ -398,7 +398,7 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
     lines.append(
         "  Available = platform-reported total minus used; negative values come from the platform API"
     )
-    lines.append("  High Pri  = Available + Low Pri; capacity a priority 5-10 job may reclaim")
+    lines.append("  High Pri  = Available + Low Pri; capacity a high-priority job may reclaim")
     lines.append("  Low Pri   = low-priority GPU usage that can be preempted by high-priority jobs")
     lines.append("  ↯         = no idle GPU, but high-priority preemption may help; confirm via events")
     if include_cpu:

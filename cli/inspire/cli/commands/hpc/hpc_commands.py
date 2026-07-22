@@ -11,6 +11,7 @@ from inspire.cli.context import (
     EXIT_API_ERROR,
     EXIT_AUTH_ERROR,
     EXIT_CONFIG_ERROR,
+    EXIT_VALIDATION_ERROR,
     pass_context,
 )
 from inspire.cli.formatters import human_formatter, json_formatter
@@ -18,6 +19,11 @@ from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.task_priority import (
+    TaskPriorityError,
+    resolve_workspace_task_priority,
+    task_priority_option,
+)
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.cli.utils.id_resolver import reject_id_at_boundary, resolve_by_name
@@ -397,16 +403,7 @@ def list_hpc(
     show_default=True,
     help="Number of selected nodes to allocate.",
 )
-@click.option(
-    "--priority",
-    type=click.IntRange(1, 10),
-    default=10,
-    show_default=True,
-    help=(
-        "Task priority 1-10 (1-3=LOW preemptible, 4=NORMAL, 5-10=HIGH stable). "
-        "The selected project's platform policy may cap the requested value."
-    ),
-)
+@task_priority_option()
 @click.option(
     "--number-of-tasks",
     type=click.IntRange(1),
@@ -539,7 +536,12 @@ def create_hpc(
         )
         if resolved_workspace_id is None:
             raise ConfigError(profile_required_message("hpc", "workspace"))
-        final_priority = priority if priority is not None else 10
+        final_priority = resolve_workspace_task_priority(
+            priority,
+            session=session,
+            workspace_id=resolved_workspace_id,
+            project_id=resolved_project_id,
+        )
         final_image = image
         if _looks_like_full_slurm_script(entrypoint):
             _handle_error(
@@ -646,6 +648,8 @@ def create_hpc(
             click.echo(f"Requested Priority: {final_priority}")
         click.echo(f"Entry:     {scrub_raw_ids(entrypoint)}")
 
+    except TaskPriorityError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except AuthenticationError as e:

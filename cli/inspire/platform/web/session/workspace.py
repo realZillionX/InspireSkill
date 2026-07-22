@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from inspire.task_priority import is_low_task_priority
+
 from .models import WebSession
 
 
@@ -138,8 +140,7 @@ def fetch_gpu_availability(
                 else:
                     # Check if tasks are low priority
                     for task in tasks:
-                        priority = task.get("priority", 10)
-                        if priority < 5:  # Low priority threshold
+                        if is_low_task_priority(task.get("priority")):
                             low_priority_gpus += 1
 
                 if not group_name:

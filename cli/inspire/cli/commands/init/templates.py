@@ -133,7 +133,6 @@ default_remote = "origin"
 denylist = ["*.tmp", ".git/*"]
 
 [job]
-# priority = 10
 # shm_size = 32  # Default shared memory (GiB) for notebooks; jobs use it when set
 # auto_fault_tolerance = false
 # fault_tolerance_max_retry = 10

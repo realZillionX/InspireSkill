@@ -103,6 +103,18 @@ def test_create_and_profile_group_help_requires_full_name() -> None:
         assert "compute group name keyword/substring" not in output
 
 
+def test_create_help_explains_workspace_aware_priority() -> None:
+    for group in ("notebook", "job", "hpc", "ray", "serving"):
+        result = CliRunner().invoke(cli_main, [group, "create", "--help"])
+        output = _one_line(result.output)
+
+        assert result.exit_code == 0
+        assert "Fair-scheduling workspaces accept 1=LOW" in output
+        assert "4=HIGH (default: 4)" in output
+        assert "other workspaces accept 1-10 (default: 10)" in output
+        assert "selected project's platform policy may cap" in output
+
+
 def test_dry_run_help_says_resolve_not_submit() -> None:
     for args in (
         ["job", "create", "--help"],

@@ -207,7 +207,7 @@ def test_qz_quota_human_output_explains_scheduling_zones(
     assert "开发区 supports both full-node and partial-node GPU workloads" in result.output
     assert "训练区 prioritizes full-node workloads" in result.output
     assert "partial-node GPU workloads there require LOW priority" in result.output
-    assert "1-3, preemptible" in result.output
+    assert "1 in fair-scheduling workspaces, preemptible" in result.output
     assert "per instance/node quota, not aggregate GPU count" in result.output
     assert "Use --group and --quota from the same live quota row" in result.output
 
@@ -342,7 +342,7 @@ def test_resources_availability_human_hides_raw_group_ids(
         in result.output
     )
     assert (
-        "High Pri  = Available + Low Pri; capacity a priority 5-10 job may reclaim"
+        "High Pri  = Available + Low Pri; capacity a high-priority job may reclaim"
         in result.output
     )
     assert "↯" in result.output

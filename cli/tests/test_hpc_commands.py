@@ -205,10 +205,6 @@ def test_hpc_create_help_highlights_slurm_body() -> None:
     # slurm knobs for in-node subdivision.
     assert "--quota" in result.output
     assert "gpu,cpu,mem" in result.output
-    # Priority help must surface the three-band convention.
-    assert "1-3=LOW" in result.output
-    assert "5-10=HIGH" in result.output
-    assert "platform policy" in result.output
 
 
 def test_hpc_create_human_output_includes_priority(

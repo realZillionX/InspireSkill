@@ -17,6 +17,11 @@ from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils import job_submit
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.task_priority import (
+    TaskPriorityError,
+    resolve_task_priority,
+    task_priority_option,
+)
 from inspire.cli.utils.quota_resolver import (
     QuotaMatchError,
     QuotaParseError,
@@ -28,6 +33,8 @@ from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web.session import get_web_session
+from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
+
 
 def run_job_create(
     ctx: Context,
@@ -73,8 +80,6 @@ def run_job_create(
         image = fields["image"]
         quota = fields["quota"]
 
-        if priority is None:
-            priority = 10
         if auto_fault_tolerance is None:
             auto_fault_tolerance = config.job_auto_fault_tolerance
         if fault_tolerance_max_retry is None:
@@ -172,19 +177,18 @@ def run_job_create(
             return
 
         selected_project_id = selected.project_id
-
-        if selected.priority_name:
-            try:
-                max_priority = int(selected.priority_name)
-                if priority is not None and priority > max_priority:
-                    if not ctx.json_output:
-                        click.echo(
-                            f"Capping priority {priority} → {max_priority} "
-                            f"(max for project '{scrub_raw_ids(selected.name)}')"
-                        )
-                    priority = max_priority
-            except ValueError:
-                pass
+        fair_scheduling = is_fair_scheduling_workspace(session, selected_workspace_id)
+        uncapped_priority = resolve_task_priority(priority, fair_scheduling=fair_scheduling)
+        priority = resolve_task_priority(
+            priority,
+            fair_scheduling=fair_scheduling,
+            project_limit=selected.priority_name,
+        )
+        if priority != uncapped_priority and not ctx.json_output:
+            click.echo(
+                f"Capping priority {uncapped_priority} → {priority} "
+                f"(max for project '{scrub_raw_ids(selected.name)}')"
+            )
 
         if not ctx.json_output:
             if fallback_msg:
@@ -331,6 +335,8 @@ def run_job_create(
             f"inspire job status {scrub_raw_ids(name)} --workspace {scrub_raw_ids(workspace)}"
         )
 
+    except TaskPriorityError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except Exception as e:
@@ -359,17 +365,7 @@ def run_job_create(
         "Most users should keep the default."
     ),
 )
-@click.option(
-    "--priority",
-    type=click.IntRange(1, 10),
-    default=10,
-    show_default=True,
-    help=(
-        "Task priority 1-10 (1-3=LOW preemptible, 4=NORMAL, 5-10=HIGH stable). "
-        "The selected project's platform policy may cap the requested value. "
-        "Check `inspire job status <name> --workspace <workspace>` for the resolved priority_level."
-    ),
-)
+@task_priority_option()
 @click.option(
     "--auto-fault-tolerance/--no-auto-fault-tolerance",
     "auto_fault_tolerance",
@@ -502,7 +498,7 @@ def create(
           -c "bash repo/train.sh"
         inspire job create -n test --workspace 分布式训练空间 --project CI-情境智能 \
           --group H200-2号机房 -q 1,20,200 --image sandbox-base:latest --nodes 1 \
-          -c "python train.py" --priority 9
+          -c "python train.py" --priority 4
 
     \b
     Priority:

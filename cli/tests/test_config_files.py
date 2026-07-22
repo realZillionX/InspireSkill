@@ -141,8 +141,11 @@ class TestConfigSchema:
         # GitHub repo should be project
         assert "INSP_GITHUB_REPO" in project_env_vars
 
-        # Job/Notebook settings should be project
-        assert "INSP_PRIORITY" in project_env_vars
+        # Supported Job/Notebook settings should be project-scoped. The removed
+        # task-priority default must not remain in either config layer.
+        assert "INSPIRE_JOB_ENABLE_NOTIFICATION" in project_env_vars
+        assert "INSP_PRIORITY" not in project_env_vars
+        assert "INSP_PRIORITY" not in global_env_vars
         assert "INSPIRE_NOTEBOOK_QUOTA" not in project_env_vars
 
         # Bridge/Sync settings should be project
@@ -744,11 +747,12 @@ class TestAccountConfigLayer:
             home,
             "alice",
             '[auth]\nusername = "alice"\npassword = "pw"\n\n'
-            "[job]\npriority = 5\n",
+            "[api]\ntimeout = 45\n",
         )
 
         cfg, _ = Config.from_files_and_env(require_credentials=False)
-        assert cfg.job_priority == 5
+        assert cfg.timeout == 45
+        assert not hasattr(cfg, "job_priority")
         assert not hasattr(cfg, "job" + "_image")
         assert not hasattr(cfg, "notebook_quota")
 

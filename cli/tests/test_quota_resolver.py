@@ -246,7 +246,7 @@ def test_qz_scheduling_zone_hint_detects_each_zone_name(group_name: str) -> None
     assert "supports both full-node and partial-node GPU workloads" in hint
     assert "prioritizes full-node workloads" in hint
     assert "partial-node GPU workloads there require LOW priority" in hint
-    assert "1-3, preemptible" in hint
+    assert "1 in fair-scheduling workspaces, preemptible" in hint
     assert "per instance/node quota, not aggregate GPU count" in hint
     assert "same live quota row" in hint
 
@@ -273,7 +273,7 @@ def test_resolve_quota_qz_exact_group_miss_adds_scheduling_zone_hint() -> None:
     message = str(exc.value)
     assert "No compute group name exactly matches --group" in message
     assert "QZ scheduling zones:" in message
-    assert "require LOW priority (1-3, preemptible)" in message
+    assert "require LOW priority (1 in fair-scheduling workspaces, preemptible)" in message
 
 
 def test_resolve_quota_qz_group_quota_mismatch_adds_scheduling_zone_hint() -> None:

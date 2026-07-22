@@ -38,7 +38,7 @@ def job() -> None:
     \b
     Examples:
         inspire job quota --workspace 分布式训练空间 --group H200
-        inspire job create --name train-a --workspace 分布式训练空间 --project CI-情境智能 --group H200-2号机房 -q 8,160,1800 --image train-base:v1 --nodes 2 --command "bash repo/train.sh" --priority 5
+        inspire job create --name train-a --workspace 分布式训练空间 --project CI-情境智能 --group H200-2号机房 -q 8,160,1800 --image train-base:v1 --nodes 2 --command "bash repo/train.sh" --priority 4
         inspire job logs train-a --workspace 分布式训练空间 --follow
         inspire job metrics train-a --workspace 分布式训练空间 --window 30m
         inspire job events train-a --workspace 分布式训练空间 --tail 50

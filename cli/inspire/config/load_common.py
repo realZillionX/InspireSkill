@@ -10,7 +10,6 @@ from inspire.config.models import SOURCE_DEFAULT
 
 _DEFAULTS_FIELD_MAP = {
     "notebook_post_start": "notebook_post_start",
-    "priority": "job_priority",
     "shm_size": "shm_size",
     "log_pattern": "log_pattern",
     "project_order": "project_order",
@@ -56,7 +55,6 @@ def _default_config_values() -> dict[str, Any]:
         "requests_https_proxy": None,
         "playwright_proxy": None,
         "rtunnel_proxy": None,
-        "job_priority": 10,
         "job_auto_fault_tolerance": False,
         "job_fault_tolerance_max_retry": 10,
         "job_enable_notification": False,
@@ -195,7 +193,7 @@ def _resolve_alias(value: Any, mapping: dict[str, str], *, id_prefix: str) -> st
 
 
 def _coerce_project_default(field_name: str, raw_value: Any) -> Any:
-    if field_name in {"job_priority", "shm_size"}:
+    if field_name == "shm_size":
         return int(raw_value)
     if field_name in {"notebook_post_start", "log_pattern"}:
         return str(raw_value)

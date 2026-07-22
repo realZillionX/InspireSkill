@@ -22,7 +22,7 @@ description: "Inspire Platform Operating Model For Agents: Decide Workspace, Res
 
 `workspace`、`project`、`group`、`quota`、`image` 是核心调度条件，没有隐式默认值。创建 Workload 时显式传入，或用 Workload Profile 保存。GPU Job Shared Memory 属于资源细项，不等同于 `quota` 的内存字段，且不能超过 `quota` 的实例内存；需要时查 `job create --help` 或 [`references/compute-workloads.md`](references/compute-workloads.md)。Path Alias 只表示远端路径，服务于 `--cwd`、`scp`、日志路径和共享盘约定。
 
-Compute Group 名称可能承载平台调度区语义，例如 `开发区` / `训练区`。开发区同时支持整节点和碎卡 GPU 任务；训练区优先保障整节点任务，碎卡任务只能用 LOW 优先级（当前 CLI 为 1–3，可抢占）。整节点 / 碎卡按每个实例或节点选择的 Live Quota Row 判断，不按多节点任务的 GPU 总数判断；`--nodes` 只放大实例数。选择资源时从同一行复制完整 `group` 和 `quota`，训练区碎卡提交后再从 Status / Events 核实解析后的优先级和调度结果。
+Compute Group 名称可能承载平台调度区语义，例如 `开发区` / `训练区`。qz 公平调度 Workspace 只接受 `1=LOW`（可抢占）或 `4=HIGH`（稳定），其他 Workspace 保留 `1–10`；CLI 从 live `is_fair_workspace` 能力选择合同。开发区同时支持整节点和碎卡 GPU 任务，训练区优先保障整节点任务，碎卡任务只能用 `1=LOW`。整节点 / 碎卡按每个实例或节点选择的 Live Quota Row 判断，不按多节点任务的 GPU 总数判断；`--nodes` 只放大实例数。选择资源时从同一行复制完整 `group` 和 `quota`，训练区碎卡提交后再从 Status / Events 核实解析后的优先级和调度结果。
 
 资源可用性里 `Available` 是即时空闲 GPU，`Low Pri` 是低优可抢占占用，`High Pri` 是高优任务可能回收的 `Available + Low Pri` 上限；正式提交后仍以 Events / Instances / Metrics 判断调度结果。
 

@@ -52,7 +52,6 @@ def _patch_submit_deps(
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        job_priority=5,
         path_aliases={"me": str(tmp_path / "remote")},
     )
     config.shm_size = shm_size

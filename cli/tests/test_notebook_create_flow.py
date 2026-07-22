@@ -127,7 +127,6 @@ def _configure_create_happy_path(
         project_order=None,
         notebook_post_start=post_start_value,
         shm_size=32,
-        job_priority=9,
         projects={},
         profiles={},
     )

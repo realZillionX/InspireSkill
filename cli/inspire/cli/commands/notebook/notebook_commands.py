@@ -39,6 +39,7 @@ from inspire.cli.utils.notebook_cli import (
     require_web_session,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.task_priority import task_priority_option
 from inspire.cli.utils.notebook_post_start import (
     NO_WAIT_POST_START_WARNING,
     resolve_notebook_post_start_spec,
@@ -219,16 +220,7 @@ def _with_workspace_display_name(item: dict, workspace_name: str) -> dict:
     default=None,
     help="Local shell script to upload and run in the notebook after RUNNING",
 )
-@click.option(
-    "--priority",
-    type=click.IntRange(1, 10),
-    default=10,
-    show_default=True,
-    help=(
-        "Task priority 1-10 (1-3=LOW preemptible, 4=NORMAL, 5-10=HIGH stable). "
-        "The selected project's platform policy may cap the requested value."
-    ),
-)
+@task_priority_option()
 @click.option(
     "--group",
     "group",

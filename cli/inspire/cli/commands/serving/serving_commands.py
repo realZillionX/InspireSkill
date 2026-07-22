@@ -12,6 +12,7 @@ from inspire.cli.context import (
     EXIT_API_ERROR,
     EXIT_AUTH_ERROR,
     EXIT_CONFIG_ERROR,
+    EXIT_VALIDATION_ERROR,
     pass_context,
 )
 from inspire.cli.formatters import human_formatter, json_formatter
@@ -20,6 +21,11 @@ from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import resolve_by_name
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.task_priority import (
+    TaskPriorityError,
+    resolve_workspace_task_priority,
+    task_priority_option,
+)
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import select_workspace_id
@@ -770,13 +776,7 @@ def configs_serving(
 @click.option("--replicas", type=click.IntRange(1), default=1, show_default=True)
 @click.option("--nodes-per-replica", type=click.IntRange(1), default=1, show_default=True)
 @click.option("--shm-gib", type=click.IntRange(1), default=None, help="Shared memory size in GiB")
-@click.option(
-    "--priority",
-    type=click.IntRange(1, 10),
-    default=10,
-    show_default=True,
-    help="Task priority 1-10.",
-)
+@task_priority_option()
 @click.option(
     "--custom-domain",
     default=None,
@@ -909,7 +909,12 @@ def create_serving(
 
         mirror_id, image_label = _resolve_image_for_create(image, session=session, ctx=ctx)
         resource_spec_price = _build_resource_spec_price(resolved)
-        final_priority = priority if priority is not None else 10
+        final_priority = resolve_workspace_task_priority(
+            priority,
+            session=session,
+            workspace_id=workspace_id,
+            project_id=project_id,
+        )
         payload = {
             "name": name,
             "logic_compute_group_id": resolved.logic_compute_group_id,
@@ -997,6 +1002,8 @@ def create_serving(
             return
         click.echo(human_formatter.format_success(f"Inference serving created: {name}"))
 
+    except TaskPriorityError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except AuthenticationError as e:

@@ -73,7 +73,6 @@ class Config:
     rtunnel_proxy: Optional[str] = None
 
     # Job settings
-    job_priority: int = 10
     job_auto_fault_tolerance: bool = False
     job_fault_tolerance_max_retry: int = 10
     job_enable_notification: bool = False
