@@ -1,6 +1,6 @@
 ---
 name: inspire
-description: "Inspire Platform Operating Model For Agents: Decide Workspace, Resources, Paths, Workload Type, Observation, Cleanup, And Load Focused References; Use CLI Help For Command Syntax."
+description: "Use when a task involves the Inspire/qz training platform or the inspire CLI: setup, accounts, proxy routing, workspace/resource/path/image/model decisions, Notebook/Job/HPC/Ray/Serving lifecycles, observation, cleanup, or Browser API maintenance. Use CLI help for syntax and load only the matching reference."
 ---
 
 # Inspire Skill
@@ -77,6 +77,8 @@ Notebook 连接类命令可跨账号解析已有连接；`--account <name>` 指�
 
 先按问题类型选一份 Reference；跨边界时再读第二份。不要把 Reference 当命令大全；命令语法回到 CLI Help。
 
+### 平台操作
+
 | 用户问题或 Agent 判断点 | 先加载 |
 | --- | --- |
 | 安装、更新、账号添加 / 切换、首次初始化、`inspire init` 全局发现与项目初始化、SII Proxy Setup | [`references/setup/install-and-config.md`](references/setup/install-and-config.md) |
@@ -88,6 +90,13 @@ Notebook 连接类命令可跨账号解析已有连接；`--account <name>` 指�
 | 一个项目跨越 CPU 准备、数据处理、GPU 训练、部署或交付，需要阶段化计划 | [`references/workflows.md`](references/workflows.md) |
 | 选择已有镜像、从 Notebook 保存镜像、注册外部镜像、调整可见性、清理临时镜像 | [`references/image-management.md`](references/image-management.md) |
 | 浏览 / 注册模型仓库条目，判断 Model Registry、Model Version 和 Serving 的关系 | [`references/model.md`](references/model.md) |
+
+### CLI 开发
+
+仅在维护 CLI Browser API 封装、核对前端接口合同、执行 Reverse Capture，或用户明确要求查看接口时加载开发者手册：
+
+| 开发任务 | 先加载 |
+| --- | --- |
 | 维护 CLI Browser API 封装、排查前端接口合同、Reverse Capture 平台请求，或用户明确要求看接口 | [`references/dev/browser-api.md`](references/dev/browser-api.md) |
 
 ## 5. 项目上下文
