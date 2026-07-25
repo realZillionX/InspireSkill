@@ -10,6 +10,7 @@
 
 - Inspire Skill 的触发描述新增启智平台、`qz.sii.edu.cn` 和核心 Workload 入口，并把普通平台操作与 Browser API 开发路由分开。
 - Clash Verge 的 SII Proxy / DIRECT 分流模板迁入独立 Reference；安装、更新、账号和项目初始化任务无需加载代理脚本。
+- 主 `SKILL.md` 收敛为四平面不变量、网络与合规闸门、最短执行闭环和精确 Reference 索引；调度细节继续由资源与 Workload 手册按需承载。
 
 ### 修复
 
