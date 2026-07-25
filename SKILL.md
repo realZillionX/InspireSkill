@@ -1,6 +1,6 @@
 ---
 name: inspire
-description: "Use when a task involves the Inspire/qz training platform or the inspire CLI: setup, accounts, proxy routing, workspace/resource/path/image/model decisions, Notebook/Job/HPC/Ray/Serving lifecycles, observation, cleanup, or Browser API maintenance. Use CLI help for syntax and load only the matching reference."
+description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire CLI: install/update, account or SII proxy setup, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, Image, or Model Registry lifecycle, observation, and cleanup. Also use for Inspire CLI Browser API maintenance; use CLI help for syntax and load only the matching reference."
 ---
 
 # Inspire Skill
@@ -79,25 +79,24 @@ Notebook 连接类命令可跨账号解析已有连接；`--account <name>` 指�
 
 ### 平台操作
 
-| 用户问题或 Agent 判断点 | 先加载 |
+| 用户问题或判断点 | 先加载 |
 | --- | --- |
-| 安装、更新、账号添加 / 切换、首次初始化、`inspire init` 全局发现与项目初始化、SII Proxy Setup | [`references/setup/install-and-config.md`](references/setup/install-and-config.md) |
-| 选择 `CPU资源空间` / `分布式训练空间` / 特殊 Workspace，理解 Compute Group、`--quota gpu,cpu,mem`、资源实时查询和 Workload Profile | [`references/resources-and-paths.md`](references/resources-and-paths.md) |
-| 需要区分公网、SII 内部源、离线 GPU 空间，或查 PyPI / `pip`、Apt、Conda、PyTorch Wheels、`npm`、Maven、Docker Registry、OSS、NTP 等内部源地址 | [`references/network-and-sources.md`](references/network-and-sources.md) |
-| 理解共享盘作用域、存储池、挂载隔离、Path Alias 和远端路径不可见 | [`references/paths.md`](references/paths.md) |
-| 创建交互环境、连接 Notebook、SSH / `exec` / `shell` / `scp`、IDE URL、容器 HTTP 服务暴露、基底环境准备、大文件流转 | [`references/notebook.md`](references/notebook.md) |
-| 在 GPU Job、CPU HPC、Ray、Serving 之间选型，或提交后观察 Events / Logs / Metrics / Instances / Status，分析排队、失败、空转、优先级和异常状态 | [`references/compute-workloads.md`](references/compute-workloads.md) |
-| 一个项目跨越 CPU 准备、数据处理、GPU 训练、部署或交付，需要阶段化计划 | [`references/workflows.md`](references/workflows.md) |
-| 选择已有镜像、从 Notebook 保存镜像、注册外部镜像、调整可见性、清理临时镜像 | [`references/image-management.md`](references/image-management.md) |
-| 浏览 / 注册模型仓库条目，判断 Model Registry、Model Version 和 Serving 的关系 | [`references/model.md`](references/model.md) |
+| 安装、更新、账号、首次发现、项目初始化 | [`references/setup/install-and-config.md`](references/setup/install-and-config.md) |
+| 本机 Clash Verge 的 `*.sii.edu.cn`、`SII Proxy` / `DIRECT` 分流 | [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md) |
+| Workspace、Compute Group、Quota、实时资源、Workload Profile | [`references/resources-and-paths.md`](references/resources-and-paths.md) |
+| 公网、SII 内部源、离线 GPU 空间、镜像固化 | [`references/network-and-sources.md`](references/network-and-sources.md) |
+| 共享盘、存储池、挂载隔离、Path Alias | [`references/paths.md`](references/paths.md) |
+| Notebook 创建、连接、`exec` / `shell` / `scp`、IDE URL、文件流转 | [`references/notebook.md`](references/notebook.md) |
+| GPU Job、CPU HPC、Ray、Serving，及提交后的观察与异常 | [`references/compute-workloads.md`](references/compute-workloads.md) |
+| CPU 准备、数据处理、GPU 训练、部署或交付的阶段化计划 | [`references/workflows.md`](references/workflows.md) |
+| Image 选择、保存、注册、可见性和清理 | [`references/image-management.md`](references/image-management.md) |
+| Model Registry、Model Version 与 Serving 关系 | [`references/model.md`](references/model.md) |
 
 ### CLI 开发
 
-仅在维护 CLI Browser API 封装、核对前端接口合同、执行 Reverse Capture，或用户明确要求查看接口时加载开发者手册：
+仅在维护 CLI Browser API 封装、核对前端接口合同、执行 Reverse Capture，或用户明确要求接口细节时加载：
 
-| 开发任务 | 先加载 |
-| --- | --- |
-| 维护 CLI Browser API 封装、排查前端接口合同、Reverse Capture 平台请求，或用户明确要求看接口 | [`references/dev/browser-api.md`](references/dev/browser-api.md) |
+[`references/dev/browser-api.md`](references/dev/browser-api.md)
 
 ## 5. 项目上下文
 

@@ -113,7 +113,7 @@ inspire resources availability --workspace all --include-cpu
 
 `inspire init` 默认做账号级全局发现，写入平台 Catalog 和默认 Path Alias；`--scope project` 用于当前仓库的 Project Context 和 Path Alias 覆盖。
 
-账号级 / 项目级配置分层、多账号和代理 Setup 见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。
+账号级 / 项目级配置分层与多账号操作见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)；Clash Verge 的 SII 分流模板见 [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)。
 
 ---
 
@@ -215,7 +215,7 @@ inspire resources availability --workspace all --include-cpu
 
 # 代理配置
 
-不常驻 SII 的科研人员通常需要让本机代理转发 `*.sii.edu.cn` 流量；能直连 SII 校园网的人可以走 `DIRECT`。Clash Verge Mixed Port 的 SII Proxy / DIRECT 分流模板见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)；CLI 本身不绑定固定端口。代理地址通过 `inspire account add` 写入账号配置，并可用 `inspire config show --compact` 核对。
+不常驻 SII 的科研人员通常需要让本机代理转发 `*.sii.edu.cn` 流量；能直连 SII 校园网的人可以走 `DIRECT`。Clash Verge Mixed Port 的 SII Proxy / DIRECT 分流模板见 [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)；账号级 proxy、Shell proxy 与 `NO_PROXY` 诊断见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。CLI 本身不绑定固定端口。代理地址通过 `inspire account add` 写入账号配置，并可用 `inspire config show --compact` 核对。
 
 > 凭据（Host / User / Password）**从实验室或组织管理员获取**，不要提交到任何公开仓库或聊天记录。
 
@@ -236,7 +236,8 @@ inspire resources availability --workspace all --include-cpu
 # 文档索引
 
 - [`SKILL.md`](SKILL.md) — 日常使用入口：CLI Help 查询方式、按需加载索引和项目上下文字段。
-- [`references/setup/install-and-config.md`](references/setup/install-and-config.md) — 安装、更新、账号初始化、项目初始化和 SII Proxy Setup。
+- [`references/setup/install-and-config.md`](references/setup/install-and-config.md) — 安装、更新、账号初始化和项目初始化。
+- [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md) — Clash Verge 的 SII Proxy / DIRECT 分流模板和验证步骤。
 - [`references/dev/browser-api.md`](references/dev/browser-api.md) — CLI 维护参考：网页会话接口和当前前端请求合约。
 - [`references/resources-and-paths.md`](references/resources-and-paths.md) — Workspace、Compute Group、规格三元组、实时资源和 Workload Profile 边界。
 - [`references/network-and-sources.md`](references/network-and-sources.md) — 公网、离线 GPU 空间、SII 内部源和镜像固化策略。
