@@ -892,8 +892,8 @@ def _refresh_skill_files(silent: bool, *, latest_version: str | None = None) -> 
                 (agents_dir / "openai.yaml").write_text(
                     'interface:\n'
                     '  display_name: "Inspire"\n'
-                    '  short_description: "Execution-first Inspire operations via the inspire CLI, '
-                    'including auth, proxy routing, notebook/image workflows, and job/HPC execution."\n',
+                    '  short_description: "Operate Inspire with focused references and live platform data."\n'
+                    '  default_prompt: "Use $inspire to plan and execute this Inspire platform task safely."\n',
                     encoding="utf-8",
                 )
 

@@ -260,7 +260,8 @@ install_skill() {
     cat >"$target/agents/openai.yaml" <<'YAML'
 interface:
   display_name: "Inspire"
-  short_description: "Execution-first Inspire operations via the inspire CLI, including auth, proxy routing, notebook/image workflows, and job/HPC execution."
+  short_description: "Operate Inspire with focused references and live platform data."
+  default_prompt: "Use $inspire to plan and execute this Inspire platform task safely."
 YAML
   fi
 

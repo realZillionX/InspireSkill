@@ -6,6 +6,12 @@
 
 ## 更新内容
 
+### 文档
+
+- `SKILL.md` 补齐 Inspire、启智平台、`qz.sii.edu.cn`、主要 Workload 和 Browser API 维护触发词，并收敛为核心操作模型、网络与合规闸门、最短执行闭环和精确 Reference 路由；正文使用自然段落，不再插入与语义无关的硬换行，Codex 安装元数据同步更新。
+- Clash Verge 的 SII Proxy / DIRECT 模板迁入独立 Reference；安装与配置文档删除代理脚本和重复的 Notebook Transport 说明，只保留账号、项目和代理来源配置边界。
+- README 修正启智平台链接，并同步拆分安装配置、账号代理诊断与本机 SII 分流入口。
+
 ### 修复
 
 - 任务优先级现在按实时 Workspace 调度能力统一解析：公平调度空间默认 HIGH（4）且仅接受 LOW（1）/ HIGH（4），标准空间继续使用 1–10 且默认 10。

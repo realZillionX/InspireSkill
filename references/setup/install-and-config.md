@@ -1,6 +1,6 @@
-# 安装、配置与 SII Proxy
+# 安装与配置
 
-安装、更新、账号配置、项目初始化和本机 SII proxy setup 都看这一份。平台任务运行看 notebook / compute workloads / resources 等业务手册；这里不维护命令清单，命令表面以 CLI help 为准。
+安装、更新、账号配置和项目初始化看这一份。本机需要通过 Clash Verge 为 `*.sii.edu.cn` 分流时，加载 [`sii-proxy.md`](sii-proxy.md)。平台任务运行看 Notebook、Compute Workloads、Resources 等业务 Reference；命令表面以 CLI Help 为准。
 
 ## 1. 安装
 
@@ -67,7 +67,7 @@ inspire config check
 
 `inspire account add` 会询问平台登录 username、password、base URL 和代理。username 必须是登录 ID，不是网页右上角中文显示名。配置写入 `~/.inspire/accounts/<name>/config.toml`。
 
-不常驻 SII、但本机 Clash Verge 能转发 `*.sii.edu.cn` 时，代理填本机 Clash mixed port。端口以本机 Clash Verge 设置为准，下面只用 `7897` 作为示例：
+不常驻 SII、但本机 Clash Verge 能转发 `*.sii.edu.cn` 时，先按 [`sii-proxy.md`](sii-proxy.md) 配置本机分流，再把账号 proxy 填为 Clash mixed port。端口以本机设置为准，下面只用 `7897` 作为示例：
 
 ```text
 http://127.0.0.1:7897
@@ -142,127 +142,4 @@ inspire account current
 这里的 `<name>` 是本地 account alias，也就是 `~/.inspire/accounts/<name>/` 的目录名；它不要求等于平台登录 username。`~/.inspire/current` 是普通文本文件，不是 symlink，内容只有当前 active account alias 一行。`inspire account use <name>` 只更新这个默认指针，不会移动或合并任何账号目录。
 `inspire account rename <old-name> <new-name>` 只改本地 alias：移动 `~/.inspire/accounts/<old-name>/` 到新目录，若旧 alias 是 active account 则同步更新 `~/.inspire/current`，并把 remembered notebook target cache 中的旧 alias 改成新 alias。平台登录 username 保留在该账号的 `config.toml` 中，不会被 rename 修改。
 
-账号目录、Web session、联网 Notebook SSH 连接缓存和 rtunnel proxy state 都在 `~/.inspire/accounts/<name>/` 下。连接缓存用 `inspire notebook connection list/status/refresh/forget/prune` 管理。
-
-Notebook 连接类命令的 `--account <name>` 也使用本地 account alias，不用平台登录 username 反查 alias。`ssh` / `exec` / `shell` / `scp` / `ssh-config` / `ssh-proxy` 在不传 `--account` 时可以跨账号解析已有 notebook connection；传 `--account all` 表示扫描全部账号，传具体 alias 表示只使用该账号。
-
-联网 notebook 才创建或刷新 SSH / rtunnel connection。不可上网区 notebook 的 `exec` / `shell` 走 JupyterTerminal；文件流转先落到 `/inspire/...` 共享路径，再通过可上网 notebook 的 `notebook scp` 或外部 `rsync` 上传 / 下载。
-
-## 5. SII Proxy
-
-Clash Verge 的目标只有一个：把 `*.sii.edu.cn` 分到单独的 `SII Proxy` 组。公网环境在这个组里选 SII proxy 节点；能直连 SII 校园网时选 `DIRECT`；其它流量继续走订阅原有规则。
-
-Clash Verge Rev 的脚本常见路径：
-
-```text
-~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/Script.js
-```
-
-先在 Clash Verge 设置页确认本机 mixed port，再在 `Script.js` 里按下面模板合并 SII 分流逻辑。下面只是模板：节点数量、节点端口和本机 mixed port 都按自己的环境改。`<...>` 必须替换为组织分发的真实 SII proxy host、port、user、password；不要提交真实凭据。`DIRECT` 是给校园网直连使用的选项，不要删。
-
-```javascript
-var SII_PROXY_GROUP_NAME = "SII Proxy";
-var SII_PROXY_NAMES = ["SII Proxy 1", "SII Proxy 2", "DIRECT"];
-var SII_PROXIES = [
-  {
-    name: "SII Proxy 1",
-    type: "socks5",
-    server: "<sii-proxy-host-1>",
-    port: <sii-proxy-port-1>,
-    username: "<sii-proxy-user-1>",
-    password: "<sii-proxy-password-1>",
-    tls: false,
-    udp: true,
-    "skip-cert-verify": true
-  },
-  {
-    name: "SII Proxy 2",
-    type: "socks5",
-    server: "<sii-proxy-host-2>",
-    port: <sii-proxy-port-2>,
-    username: "<sii-proxy-user-2>",
-    password: "<sii-proxy-password-2>",
-    tls: false,
-    udp: true,
-    "skip-cert-verify": true
-  }
-];
-
-var SII_PROXY_GROUP = {
-  name: SII_PROXY_GROUP_NAME,
-  type: "select",
-  proxies: SII_PROXY_NAMES
-};
-
-var SII_MANAGED_PROXY_NAMES = {
-  "SII Proxy 1": 1,
-  "SII Proxy 2": 1
-};
-
-function ensureArray(v) {
-  return Array.isArray(v) ? v : [];
-}
-
-function forceUnshift(rules, rule) {
-  var idx = rules.indexOf(rule);
-  if (idx !== -1) rules.splice(idx, 1);
-  rules.unshift(rule);
-}
-
-function upsertProxy(proxies, newProxy) {
-  var out = [];
-  for (var i = 0; i < proxies.length; i++) {
-    if (proxies[i] && proxies[i].name === newProxy.name) continue;
-    out.push(proxies[i]);
-  }
-  out.push(newProxy);
-  return out;
-}
-
-function removeProxyNames(proxies, names) {
-  var out = [];
-  for (var i = 0; i < proxies.length; i++) {
-    var p = proxies[i];
-    if (p && p.name && names[p.name]) continue;
-    out.push(p);
-  }
-  return out;
-}
-
-function resetSiiProxy(config) {
-  config.proxies = removeProxyNames(ensureArray(config.proxies), SII_MANAGED_PROXY_NAMES);
-  config["proxy-groups"] = ensureArray(config["proxy-groups"]).filter(function(group) {
-    return group && group.name !== SII_PROXY_GROUP_NAME;
-  });
-}
-
-function injectSiiProxy(config) {
-  config.proxies = ensureArray(config.proxies);
-  for (var i = 0; i < SII_PROXIES.length; i++) {
-    config.proxies = upsertProxy(config.proxies, SII_PROXIES[i]);
-  }
-
-  config["proxy-groups"] = ensureArray(config["proxy-groups"]);
-  config["proxy-groups"].unshift(SII_PROXY_GROUP);
-
-  var rules = ensureArray(config.rules);
-  forceUnshift(rules, "DOMAIN-SUFFIX,sii.edu.cn," + SII_PROXY_GROUP_NAME);
-  config.rules = rules;
-}
-
-function main(config, profileName) {
-  resetSiiProxy(config);
-  injectSiiProxy(config);
-  return config;
-}
-```
-
-验证只看三件事：
-
-```bash
-lsof -iTCP:<mixed-port> -sTCP:LISTEN
-curl -sS -o /dev/null -w "sii: %{http_code}\n" -x http://127.0.0.1:<mixed-port> https://qz.sii.edu.cn
-inspire config check
-```
-
-如果 `qz.sii.edu.cn` 失败，先查 Clash Verge 规则里是否有 `DOMAIN-SUFFIX,sii.edu.cn,SII Proxy`，再查 `SII Proxy` 组当前选中的是可用代理还是 `DIRECT`，最后用 `inspire config show --compact --filter Proxy` 同时确认账号级 proxy、Shell proxy、有效路由和 `NO_PROXY` 匹配结果。
+账号目录、Web Session、联网 Notebook SSH Connection Cache 和 rtunnel proxy state 都在 `~/.inspire/accounts/<name>/` 下。Notebook 连接类命令的 `--account <name>` 同样使用本地 Account Alias；跨账号解析、Connection Cache 管理、SSH / JupyterTerminal Transport 和受限 Notebook 文件流转统一见 [`../notebook.md`](../notebook.md)。

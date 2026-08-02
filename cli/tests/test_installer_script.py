@@ -99,6 +99,17 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
     assert result.returncode == 0, result.stderr + result.stdout
     assert "unbound variable" not in result.stderr
     assert (home / ".codex" / "skills" / "inspire" / "SKILL.md").exists()
+    codex_metadata = (
+        home / ".codex" / "skills" / "inspire" / "agents" / "openai.yaml"
+    ).read_text(encoding="utf-8")
+    assert (
+        'short_description: "Operate Inspire with focused references and live platform data."'
+        in codex_metadata
+    )
+    assert (
+        'default_prompt: "Use $inspire to plan and execute this Inspire platform task safely."'
+        in codex_metadata
+    )
     assert (home / ".gemini" / "config" / "skills" / "inspire" / "SKILL.md").exists()
     assert not (home / ".gemini" / "skills" / "inspire").exists()
     assert (home / ".cursor" / "skills" / "inspire" / "SKILL.md").exists()
