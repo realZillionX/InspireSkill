@@ -17,11 +17,11 @@
 
 # 本项目建立的意义
 
-在本项目开始筹办之初，对于所有 SII 的学生，[启智平台](https://qz.sii.edu.cn)是科研实验链路里最慢的那一环：每次申请资源、新建 Notebook、新建训练任务、同步代码都要反复点点点，SSH 等更进一步的功能更是遥遥无期。
+在本项目开始筹办之初，对于所有 SII 的学生，[启智平台](qz.sii.edu.cn)是科研实验链路里最慢的那一环：每次申请资源、新建 Notebook、新建训练任务、同步代码都要反复点点点，SSH 等更进一步的功能更是遥遥无期。
 
 本着过渡到大 Agent 时代、将一切重复性机械工作交给 Agent 的初衷，我们创办了 InspireSkill 项目，旨在将启智平台 GUI 打平为 CLI，并建立了 CLI + Skill 的一体化系统，让 InspireSkill 成为所有 Agent 开箱即用的工具、让你的 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Desktop 成为进行科研工作的唯一入口。
 
-建立和维护本项目的过程并非易事，InspireSkill 也并非只是将[启智平台](https://qz.sii.edu.cn)的网页 API 打平重构为 CLI 的简单工作，在维护本项目的过程中，设计高于平台语义的高层功能、寻找启智平台中细枝末节的 API 并将其优雅融入 CLI 系统中、尤其是维护一个易于 Agent 阅读且包含平台所有特性的文档系统都给我们带来了不小于 CLI 本身的麻烦。
+建立和维护本项目的过程并非易事，InspireSkill 也并非只是将[启智平台](qz.sii.edu.cn)的网页 API 打平重构为 CLI 的简单工作，在维护本项目的过程中，设计高于平台语义的高层功能、寻找启智平台中细枝末节的 API 并将其优雅融入 CLI 系统中、尤其是维护一个易于 Agent 阅读且包含平台所有特性的文档系统都给我们带来了不小于 CLI 本身的麻烦。
 
 在长时间的开发与维护中，以 [@realZillionX](https://github.com/realZillionX) 和 [@JingYiJun](https://github.com/JingYiJun) 为首的开发团队始终秉持着注重细节与优雅的开发者精神，最终构建出一个令人满意的项目。时至今日，我们可以自豪地说：**InspireSkill 所包含的功能，只有你想不到，没有我们做不到**。它们包括但不限于：对 HDD/SSD/QB-ILM 等项目路径的优雅维护、翻转镜像的可见范围、将平台内部源入口交给 Agent（从而使在不可上网区配置镜像成为可能）、联网 Notebook 的 SSH 板块、受限 Notebook 的 JupyterTerminal 执行路径、空闲 8 卡整节点总量的查询、低优任务占用总量的查询、将 Notebook / 训练任务的资源视图 / 事件 / 聚合日志交给 Agent。
 
@@ -113,7 +113,7 @@ inspire resources availability --workspace all --include-cpu
 
 `inspire init` 默认做账号级全局发现，写入平台 Catalog 和默认 Path Alias；`--scope project` 用于当前仓库的 Project Context 和 Path Alias 覆盖。
 
-账号级 / 项目级配置分层与多账号操作见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)；Clash Verge 的 SII 分流模板见 [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)。
+账号级 / 项目级配置分层、多账号和代理 Setup 见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。
 
 ---
 
@@ -215,7 +215,7 @@ inspire resources availability --workspace all --include-cpu
 
 # 代理配置
 
-不常驻 SII 的科研人员通常需要让本机代理转发 `*.sii.edu.cn` 流量；能直连 SII 校园网的人可以走 `DIRECT`。Clash Verge Mixed Port 的 SII Proxy / DIRECT 分流模板见 [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)；账号级 proxy、Shell proxy 与 `NO_PROXY` 诊断见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。CLI 本身不绑定固定端口。代理地址通过 `inspire account add` 写入账号配置，并可用 `inspire config show --compact` 核对。
+不常驻 SII 的科研人员通常需要让本机代理转发 `*.sii.edu.cn` 流量；能直连 SII 校园网的人可以走 `DIRECT`。Clash Verge Mixed Port 的 SII Proxy / DIRECT 分流模板见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)；CLI 本身不绑定固定端口。代理地址通过 `inspire account add` 写入账号配置，并可用 `inspire config show --compact` 核对。
 
 > 凭据（Host / User / Password）**从实验室或组织管理员获取**，不要提交到任何公开仓库或聊天记录。
 
@@ -236,8 +236,7 @@ inspire resources availability --workspace all --include-cpu
 # 文档索引
 
 - [`SKILL.md`](SKILL.md) — 日常使用入口：CLI Help 查询方式、按需加载索引和项目上下文字段。
-- [`references/setup/install-and-config.md`](references/setup/install-and-config.md) — 安装、更新、账号初始化和项目初始化。
-- [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md) — Clash Verge 的 SII Proxy / DIRECT 分流模板和验证步骤。
+- [`references/setup/install-and-config.md`](references/setup/install-and-config.md) — 安装、更新、账号初始化、项目初始化和 SII Proxy Setup。
 - [`references/dev/browser-api.md`](references/dev/browser-api.md) — CLI 维护参考：网页会话接口和当前前端请求合约。
 - [`references/resources-and-paths.md`](references/resources-and-paths.md) — Workspace、Compute Group、规格三元组、实时资源和 Workload Profile 边界。
 - [`references/network-and-sources.md`](references/network-and-sources.md) — 公网、离线 GPU 空间、SII 内部源和镜像固化策略。
