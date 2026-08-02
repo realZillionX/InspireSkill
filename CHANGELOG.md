@@ -11,6 +11,7 @@
 - `SKILL.md` 补齐 Inspire、启智平台、`qz.sii.edu.cn`、主要 Workload 和 Browser API 维护触发词，并收敛为核心操作模型、网络与合规闸门、最短执行闭环和精确 Reference 路由；正文使用自然段落，不再插入与语义无关的硬换行，Codex 安装元数据同步更新。
 - Clash Verge 的 SII Proxy / DIRECT 模板迁入独立 Reference；安装与配置文档删除代理脚本和重复的 Notebook Transport 说明，只保留账号、项目和代理来源配置边界。
 - README 修正启智平台链接，并同步拆分安装配置、账号代理诊断与本机 SII 分流入口。
+- 修正 `INSPIRE.md` 的所有权：它是具体启智科研或工程项目工作区的持久资产合同，不是所有仓库必备的上下文文件；删除 InspireSkill 源仓库根的错误文件，并新增项目资产合同 Reference。
 
 ### 修复
 

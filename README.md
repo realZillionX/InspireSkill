@@ -56,7 +56,7 @@ InspireSkill 将算力平台的一切入口交给 AI Agent。当 Claude Code / C
 
 启智社区还有两条独立维护的 CLI：[EmbodiedForge/Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) 和 [tianyilt/qzcli_tool](https://github.com/tianyilt/qzcli_tool)。它们都解决了部分网页操作自动化问题，尤其 qzcli_tool 已经覆盖资源查询、GPU Job 提交、HPC Submit、Logs、Dashboard 和 Jupyter Exec，也提供 `qzcli-mcp` 给 MCP-Capable Harness 使用。
 
-InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命令，而是把启智平台整理成一套 Agent 能长期使用的操作模型。安装、命令面、`SKILL.md`、`references/`、项目 `INSPIRE.md`、Path Alias、Workload Profile、观测和清理闭环都在同一套设计里。
+InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命令，而是把启智平台整理成一套 Agent 能长期使用的操作模型。安装、命令面、`SKILL.md`、`references/`、具体启智项目的 `INSPIRE.md` 资产合同、Path Alias、Workload Profile、观测和清理闭环都在同一套设计里。
 
 | 维度 | [Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) | [qzcli_tool](https://github.com/tianyilt/qzcli_tool) | InspireSkill |
 | --- | --- | --- | --- |
@@ -66,7 +66,7 @@ InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命�
 | Notebook 连接 | 依赖用户预配本地组件或容器公网 | Jupyter Terminal API Exec | SSH / Shell / Exec / SCP / OpenSSH Config / Proxy URL / Connection Cache / 跨账号重建 |
 | Workload 覆盖 | 少量训练 / HPC 能力 | 资源、GPU Job、HPC Submit、Logs、Dashboard、Jupyter Exec | Notebook / GPU Job / CPU HPC / Ray / Serving / Model / Image / Resources 全覆盖 |
 | 观测闭环 | 有限 | Job Logs、Watch、Usage / Dashboard | Events / Logs / Metrics / Instances / Lifecycle / Status 分层诊断 |
-| 资源与路径语义 | 主要是配置和命令参数 | 资源缓存、Workspace / Compute Group / Spec 解析 | Workload Profile 管调度条件，Path Alias 管远端路径，`INSPIRE.md` 管项目上下文 |
+| 资源与路径语义 | 主要是配置和命令参数 | 资源缓存、Workspace / Compute Group / Spec 解析 | Workload Profile 管调度条件，Path Alias 管远端路径，具体启智项目的 `INSPIRE.md` 管持久资产合同 |
 | 多账号与项目层 | `[accounts."<user>"]` 合并层 | 以单套 `~/.qzcli/` 配置为中心 | 一账号一目录，账号级默认值和仓库级项目覆盖分层 |
 
 一句话：这两条 CLI 各做了一段路；InspireSkill 把整个平台的操作面、文档面和观测面端到端铺平，让 Agent 不只是“能调用命令”，而是能理解应该怎么用启智平台。
@@ -193,11 +193,11 @@ inspire resources availability --workspace all --include-cpu
 
 ---
 
-# 自定义 `SKILL.md` / `INSPIRE.md`
+# 通用 Skill 与项目资产合同
 
 `SKILL.md` 装完是一份通用 Playbook。日常 Workspace 基本就是 `CPU资源空间` 和 `分布式训练空间`；资源条件不要写成隐式默认值，把 `workspace`、`project`、`group`、`quota` 和 `image` 组合成 Workload Profile，并在 `inspire notebook/job/hpc/... create --profile <name>` 或 Batch 文件里显式使用。
 
-项目仓库维护根目录 `INSPIRE.md`，记录该项目的人类可读启智上下文；具体字段和边界以 `SKILL.md` 为准。`INSPIRE.md` 属于当前 Repo，不会被 `inspire update` 覆写。
+`INSPIRE.md` 不是所有仓库必备的文件。只有某个具体科研或工程项目在启智上维护稳定拓扑、Canonical Remote Paths、永久基础设施或 Image / Model / Dataset / Checkpoint 等持久资产时，才在该项目工作区根维护 `INSPIRE.md`。CLI、Skill、文档和其它通用工具源码仓库不应为了“使用了启智”而创建它；字段与生命周期边界见 [`references/project-assets.md`](references/project-assets.md)。
 
 需要定制 Harness 级入口时，直接编辑 `~/.claude/skills/inspire/SKILL.md` 和同目录 `references/`（Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Desktop 同理）。`inspire update` 默认会覆盖 `SKILL.md` 和 `references/`；维护本地改动后用 `inspire update --cli-only` 只升级 CLI 与运行时。
 
@@ -247,6 +247,7 @@ inspire resources availability --workspace all --include-cpu
 - [`references/compute-workloads.md`](references/compute-workloads.md) — GPU Job、CPU HPC、Ray、Serving 的适用边界、调度语义和观察闭环。
 - [`references/workflows.md`](references/workflows.md) — CPU 准备、数据处理、分布式训练三阶段项目流程。
 - [`references/model.md`](references/model.md) — Model Registry 与 Serving 的职责边界、注册限制和版本判断。
+- [`references/project-assets.md`](references/project-assets.md) — 具体项目工作区的 `INSPIRE.md` 资产合同、内容边界和生命周期。
 - [`cli/`](cli/) — CLI 源码；入口 `cli/inspire/cli/main.py`。
 - [`scripts/install.sh`](scripts/install.sh) — Curl Pipe Bash 安装器。
 

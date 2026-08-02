@@ -63,11 +63,14 @@ Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和�
 | CPU 准备、数据处理、GPU 训练、部署或交付的阶段化计划 | [`references/workflows.md`](references/workflows.md) |
 | Image 选择、保存、注册、可见性和清理 | [`references/image-management.md`](references/image-management.md) |
 | Model Registry、Model Version 与 Serving 的关系 | [`references/model.md`](references/model.md) |
+| 具体项目的稳定平台拓扑、远端路径、永久基础设施、资产身份与生命周期 | [`references/project-assets.md`](references/project-assets.md) |
 
 ### CLI 开发
 
 仅在维护 CLI Browser API 封装、核对前端请求合同、执行 Reverse Capture，或用户明确要求接口细节时加载 [`references/dev/browser-api.md`](references/dev/browser-api.md)。
 
-## 项目上下文所有权
+## 具体项目的资产合同
 
-每个启智项目仓库必须在根目录维护 `INSPIRE.md`，只保存 Default Image、Path Conventions、Public Directory Layout、Existing Notebooks、Ongoing Jobs 等持久、非配置性的项目事实。账号、凭据、代理密钥、平台 Session 和 `.inspire` 配置由 CLI 配置层管理，本地 Agent 计划由 `AGENTS.md` / `CLAUDE.md` 管理；不同 Harness 共享同一份 `INSPIRE.md`。
+`INSPIRE.md` 只属于某个具体使用启智平台的科研或工程项目工作区，用于让不同 Agent 共享该项目的稳定平台拓扑、Canonical Remote Paths、永久基础设施，以及 Image、Model、Dataset、Checkpoint 等资产的精确身份、消费者、来源和生命周期。它不是 InspireSkill 安装产物，也不是所有仓库必备的元数据；CLI、Skill 或通用工具源码仓库不因自身涉及启智而创建 `INSPIRE.md`。
+
+账号、凭据、代理、平台 Session、`.inspire` 配置、实时资源余量、当前 Workload 状态、日志、Smoke 结果和短期计划不进入 `INSPIRE.md`。需要创建或维护具体项目的资产合同时，加载 [`references/project-assets.md`](references/project-assets.md)。

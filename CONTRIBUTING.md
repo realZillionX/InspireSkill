@@ -72,7 +72,7 @@ Path alias 只表示远端路径。`me`、`public`、`global-me` 和存储池前
 
 上下文要节制。内部源地址这类必要事实要集中在专门 reference 里，不要在多份文档反复复写；历史兼容故事、旧命令列表、无关接口细节或“为了说明它没用而提到它”的内容不要放进 Agent 文档。重要的是已经整理过的结论和可执行步骤。
 
-启智项目仓库必须维护根目录 `INSPIRE.md`。它记录项目级启智上下文和协作约定；`AGENTS.md`、`CLAUDE.md` 等文件只承载本地 Agent 计划或 harness 私有说明。不要把启智上下文散落在多个 Agent 专属文件里，也不要把账号配置、代理密钥、平台 session 或 `.inspire/accounts/<account>/config.toml` 内容写入 `INSPIRE.md`。
+`INSPIRE.md` 不是仓库级必备元数据，只属于某个具体使用启智平台的科研或工程项目工作区，用于维护稳定平台拓扑、Canonical Remote Paths、永久基础设施和资产生命周期。InspireSkill 本身是 CLI、Skill 与文档的通用工具源仓库，不对应业务项目资产，因此根目录不应存在 `INSPIRE.md`。通用文档只说明该合同的边界，不复制任何具体项目的路径、资产 ID 或运行状态。
 
 ## 代码维护
 
