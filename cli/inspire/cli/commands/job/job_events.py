@@ -81,7 +81,7 @@ def events(
     interval: int,
     workspace: Optional[str],
 ) -> None:
-    """Show events for a training job.
+    """Show events for a training job by name or Job ID.
 
     \b
     Examples:
@@ -91,6 +91,7 @@ def events(
       inspire job events <job-name> --workspace 分布式训练空间 --reason Unschedulable
       inspire job events <job-name> --workspace 分布式训练空间 --instance <pod-name>
       inspire job events <job-name> --workspace 分布式训练空间 --follow
+      inspire job events <job-id> --workspace 分布式训练空间
       inspire job events <job-name> --workspace all --all-instances
     """
     try:
@@ -101,6 +102,7 @@ def events(
             workspace=workspace,
             all_workspaces=False,
             max_pages=50,
+            allow_raw_id=True,
         )
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

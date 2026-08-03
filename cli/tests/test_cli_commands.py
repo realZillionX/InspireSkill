@@ -550,15 +550,17 @@ def test_build_remote_logged_command_without_default_path_alias_keeps_existing_b
 
 
 def test_job_status_human_output_uses_name(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Human ``job status`` shows the name, never the platform handle.
-
-    Name-only boundary: surfacing platform handles in the human view tempts
-    callers to round-trip them and then hit ``reject_id_at_boundary``.
-    """
+    """Human ``job status <id>`` resolves directly but still shows the job name."""
     patch_config_and_auth(monkeypatch, tmp_path)
     from inspire.cli.commands.job import job_commands
 
-    monkeypatch.setattr(job_commands, "_resolve_web_job_id", lambda **kwargs: TEST_JOB_ID)
+    monkeypatch.setattr(
+        job_commands,
+        "_list_web_jobs",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("raw Job ID should bypass name resolution")
+        ),
+    )
     monkeypatch.setattr(job_commands, "get_web_session", web_session_module.get_web_session)
     monkeypatch.setattr(
         job_commands.browser_api_module,
@@ -574,7 +576,7 @@ def test_job_status_human_output_uses_name(monkeypatch: pytest.MonkeyPatch, tmp_
 
     result = runner.invoke(
         cli_main,
-        ["job", "status", "test-job", "--workspace", "Test Workspace"],
+        ["job", "status", TEST_JOB_ID, "--workspace", "Test Workspace"],
     )
     assert result.exit_code == 0
     assert "Web Job Status" in result.output
@@ -858,6 +860,27 @@ def test_job_list_web_name_search_scans_all_workspaces(
     assert "job_id" not in payload["data"]["jobs"][0]
     assert payload["data"]["jobs"][0]["name"] == "kchen-slime-code-qwen35-35b-a3b-6node"
     assert payload["data"]["jobs"][0]["workspace_name"] == "Training Workspace"
+
+    id_result = runner.invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "list",
+            "--workspace",
+            "all",
+            "--keyword",
+            "qwen35",
+            "--limit",
+            "1",
+            "--show-ids",
+        ],
+    )
+    assert id_result.exit_code == 0
+    id_payload = json.loads(id_result.output)
+    assert id_payload["data"]["jobs"][0]["job_id"] == TEST_JOB_ID
+    assert "project_id" not in id_payload["data"]["jobs"][0]
+    assert "workspace_id" not in id_payload["data"]["jobs"][0]
     assert calls[0]["created_by"] == "user-me"
     scanned = {call["workspace_id"] for call in calls}
     assert {"ws-main", "ws-train"} <= scanned
@@ -1222,6 +1245,16 @@ def test_job_list_human_output_hides_raw_ids_and_name_search_ignores_job_id(
     assert TEST_JOB_ID not in human_result.output
     assert "ws-train" not in human_result.output
     assert "project-1" not in human_result.output
+
+    human_id_result = runner.invoke(
+        cli_main,
+        ["job", "list", "--workspace", "all", "--keyword", "qwen35", "--show-ids"],
+    )
+    assert human_id_result.exit_code == 0
+    assert "Job ID" in human_id_result.output
+    assert TEST_JOB_ID in human_id_result.output
+    assert "ws-train" not in human_id_result.output
+    assert "project-1" not in human_id_result.output
 
     id_query_result = runner.invoke(
         cli_main,

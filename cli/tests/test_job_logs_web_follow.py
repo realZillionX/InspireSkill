@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from click.testing import CliRunner
 
-from inspire.cli.commands.job import job_logs
+from inspire.cli.commands.job import job_commands, job_logs
 from inspire.cli.main import main as cli_main
 
 
@@ -33,6 +33,56 @@ def _patch_web_resolution(monkeypatch) -> _FakeSession:  # noqa: ANN001
         ),
     )
     return session
+
+
+def test_platform_logs_accept_job_id_without_name_resolution(monkeypatch) -> None:  # noqa: ANN001
+    job_id = "job-12345678-1234-1234-1234-123456789abc"
+    session = _FakeSession()
+    monkeypatch.setattr(job_logs.Config, "from_files_and_env", lambda **kwargs: (object(), []))
+    monkeypatch.setattr(job_logs, "get_web_session", lambda: session)
+    monkeypatch.setattr(job_logs, "_close_web_client", lambda: None)
+    monkeypatch.setattr(
+        job_commands,
+        "_list_web_jobs",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("raw Job ID should bypass name resolution")
+        ),
+    )
+    monkeypatch.setattr(
+        job_logs.browser_api_module,
+        "get_job_detail_v2",
+        lambda resolved_id, *, session: {"job_id": resolved_id, "created_at": "1000"},
+    )
+    monkeypatch.setattr(
+        job_logs.browser_api_module,
+        "list_job_instances",
+        lambda resolved_id, *, limit, session: ([{"name": "worker-0"}], 1),
+    )
+    captured = {}
+
+    def fake_logs(**kwargs):  # noqa: ANN001
+        captured.update(kwargs)
+        return ([{"timestamp_ms": "1000", "message": "ready"}], 1)
+
+    monkeypatch.setattr(job_logs.browser_api_module, "list_train_job_logs", fake_logs)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "logs",
+            job_id,
+            "--workspace",
+            "Test Workspace",
+            "--tail",
+            "1",
+            "--limit",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["job_id"] == job_id
 
 
 def test_web_follow_polls_new_logs_and_scrubs_human_output(monkeypatch) -> None:  # noqa: ANN001

@@ -632,6 +632,7 @@ def _run_job_logs_web_single_job(
             workspace=workspace,
             all_workspaces=all_workspaces,
             max_pages=max_pages,
+            allow_raw_id=True,
         )
 
         try:
@@ -807,6 +808,7 @@ def logs(
 
     Platform logs are the default. Use ``--source ssh`` when you specifically
     need the CLI-managed remote log file through a cached notebook bridge.
+    Platform logs accept a job name or Job ID; SSH logs require the job name.
 
     \b
     Examples:
@@ -814,6 +816,7 @@ def logs(
         inspire job logs my-training-run --workspace 分布式训练空间 --tail 100
         inspire job logs my-training-run --workspace 分布式训练空间 --window 30m
         inspire job logs my-training-run --workspace 分布式训练空间 --follow
+        inspire job logs <job-id> --workspace 分布式训练空间
         inspire job logs my-training-run --workspace 分布式训练空间 --source ssh --notebook my-cpu-box
     """
     if notebook is not None:

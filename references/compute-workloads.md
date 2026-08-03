@@ -31,6 +31,12 @@ Job 覆盖 GPU 多节点工作负载，包括分布式训练、批量推理和�
 
 Job 的关键边界：
 
+- 多个 Job-specific 命令需要同一任务时，先用带服务端短关键词和小 `--limit` 的
+  `inspire --json job list ... --show-ids` 获取目标 `job_id`，核对名称后在本轮复用该
+  ID。`status`、平台 `logs`、`events`、`instances`、`metrics`、`command`、`wait`，
+  以及经确认后的 `shell`、`stop`、`delete` 都接受 Job ID，并会跳过按长名称重新扫描
+  列表。不要再为每个后续命令重复做精确长名称检索；SSH 来源日志仍需任务名称来推导
+  文件名。
 - 日志和工作目录依赖共享盘约定；训练 Repo 建议在 `me:<repo>`，启动命令里使用相对共享盘路径或让脚本自己切目录。
 - Shared Memory 是每个 Job Instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader Workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置；也可用 `INSPIRE_SHM_SIZE` 或 `[job] shm_size` 作为默认值，命令行参数优先。提交前用 `job create --dry-run` 看解析后的 Shared Memory；提交后用 `job list/status` 确认平台返回的 Per-Instance SHM。
 - 需要平台在任务状态变化时通知当前用户，可在 `job create` 使用 `--enable-notification`；平台收件人来自当前用户绑定的飞书账号，CLI 不接受任意收件人 ID。持久默认值用 `[job].enable_notification` 或 `INSPIRE_JOB_ENABLE_NOTIFICATION`，显式 `--enable-notification/--no-enable-notification` 优先。`job batch` 在 item 未设置时继承该默认值，item 内布尔值优先。

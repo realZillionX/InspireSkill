@@ -319,23 +319,40 @@ def test_resolve_web_job_id_pick_selects_matching_job(monkeypatch) -> None:  # n
     assert captured["limit"] == 0
 
 
-def test_job_shell_command_rejects_job_id_boundary(monkeypatch) -> None:  # noqa: ANN001
+def test_job_shell_command_accepts_job_id_fast_path(monkeypatch) -> None:  # noqa: ANN001
+    job_id = "job-12345678-1234-1234-1234-123456789abc"
     monkeypatch.setattr(job_commands.Config, "from_files_and_env", lambda **kwargs: (object(), []))
     monkeypatch.setattr(
         job_commands,
         "_list_web_jobs",
         lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("should not resolve platform handles")
+            AssertionError("raw Job ID should bypass name resolution")
         ),
     )
+    monkeypatch.setattr(job_commands, "get_web_session", lambda: _FakeSession())
+    monkeypatch.setattr(
+        job_commands.browser_api_module,
+        "list_job_instances",
+        lambda *args, **kwargs: (
+            [{"name": "worker-0", "instance_status": "instance_running"}],
+            1,
+        ),
+    )
+    captured = {}
+    monkeypatch.setattr(
+        job_commands,
+        "open_job_shell",
+        lambda **kwargs: captured.update(kwargs) or 0,
+    )
+    monkeypatch.setattr(job_commands, "_close_web_client", lambda: None)
 
     result = CliRunner().invoke(
         cli_main,
-        ["job", "shell", "job-abc", "--workspace", "Test Workspace"],
+        ["job", "shell", job_id, "--workspace", "Test Workspace"],
     )
 
-    assert result.exit_code != 0
-    assert "take a job name" in result.output
+    assert result.exit_code == 0, result.output
+    assert captured["job_id"] == job_id
 
 
 class _FakeSocket:

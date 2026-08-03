@@ -1,4 +1,4 @@
-"""`inspire job metrics <name>` — resource-utilization time series for GPU jobs.
+"""`inspire job metrics <name-or-id>` — resource-utilization time series for GPU jobs.
 
 Primary use case: monitoring multi-node distributed training. Every worker
 pod renders as its own line in the PNG chart and gets per-pod stats in the

@@ -443,6 +443,8 @@ def _resolve_web_job_id(
     job = (job or "").strip()
     if not job:
         raise WebJobResolutionError("Job name cannot be empty")
+    if workspace_must_be_single and (workspace or "").strip().lower() == "all":
+        raise ConfigError("--workspace must be a workspace name for this command.")
     if _looks_like_job_id(job):
         if allow_raw_id:
             return job
@@ -457,9 +459,6 @@ def _resolve_web_job_id(
             "CLI commands take a job name. "
             "Use `inspire job list --workspace <name|all>` to find the name."
         )
-    if workspace_must_be_single and (workspace or "").strip().lower() == "all":
-        raise ConfigError("--workspace must be a workspace name for this command.")
-
     limit = 0 if pick is not None else 2
     page_size = max(1, int(scan_limit)) if scan_limit is not None else 100
     scan_pages = 1 if scan_limit is not None else max_pages
@@ -507,7 +506,7 @@ def _resolve_web_job_id(
     )
 
 
-def _format_job_list(rows: list[dict]) -> str:
+def _format_job_list(rows: list[dict], *, show_ids: bool = False) -> str:
     """Render jobs as a compact name-first table."""
     if not rows:
         return "No jobs found."
@@ -548,7 +547,7 @@ def _format_job_list(rows: list[dict]) -> str:
         for r in rows
     ]
 
-    table_rows = [
+    table_rows: list[tuple[str, ...]] = [
         (
             str(row["name"]),
             str(row["status"]),
@@ -559,7 +558,15 @@ def _format_job_list(rows: list[dict]) -> str:
         )
         for row in rendered_rows
     ]
-    widths = [
+    headers: tuple[str, ...] = (
+        "Name",
+        "Status",
+        "Resource",
+        "Created",
+        "Workspace",
+        "Created By",
+    )
+    widths: list[int] = [
         column_width("Name", [row[0] for row in table_rows], max_width=120),
         column_width("Status", [row[1] for row in table_rows], max_width=16),
         column_width("Resource", [row[2] for row in table_rows], max_width=32),
@@ -567,18 +574,38 @@ def _format_job_list(rows: list[dict]) -> str:
         column_width("Workspace", [row[4] for row in table_rows], max_width=24),
         column_width("Created By", [row[5] for row in table_rows], max_width=16),
     ]
+    if show_ids:
+        job_ids = [str(row.get("job_id") or "") for row in rows]
+        table_rows = [
+            (job_id, *table_row) for job_id, table_row in zip(job_ids, table_rows, strict=True)
+        ]
+        headers = ("Job ID", *headers)
+        widths = [column_width("Job ID", job_ids, max_width=40, scrub=False), *widths]
 
     lines = [
         "Jobs",
         *render_table(
-            ("Name", "Status", "Resource", "Created", "Workspace", "Created By"),
+            headers,
             table_rows,
             widths,
             line_char="─",
+            scrub=not show_ids,
         ),
     ]
     lines.append(f"Total: {len(rows)} job(s)")
     return "\n".join(lines)
+
+
+def _job_rows_for_json(rows: list[dict], *, show_ids: bool) -> list[dict]:
+    """Sanitize list rows while optionally preserving only the Job ID field."""
+    safe_rows = json_formatter.sanitize_json_data(rows)
+    if not isinstance(safe_rows, list):
+        return []
+    if show_ids:
+        for safe_row, raw_row in zip(safe_rows, rows, strict=True):
+            if isinstance(safe_row, dict) and raw_row.get("job_id"):
+                safe_row["job_id"] = str(raw_row["job_id"])
+    return safe_rows
 
 
 def _list_web_jobs(
@@ -708,6 +735,7 @@ def _watch_jobs(
     limit: Optional[int],
     interval: int,
     active: bool,
+    show_ids: bool,
 ) -> None:
     """Continuously poll live platform results and re-render the job list."""
     api_logger = logging.getLogger("inspire.inspire_api_control")
@@ -757,21 +785,26 @@ def _watch_jobs(
 
             if ctx.json_output:
                 timestamp = datetime.now().strftime("%H:%M:%S")
+                payload = {
+                    "event": "refresh",
+                    "timestamp": timestamp,
+                    "source": "web",
+                    "jobs": _job_rows_for_json(jobs, show_ids=show_ids),
+                    "scanned": json_formatter.sanitize_json_data(scanned),
+                    "completed_this_session": _job_rows_for_json(
+                        completed_this_session,
+                        show_ids=show_ids,
+                    ),
+                }
                 click.echo(
                     json_formatter.format_json(
-                        {
-                            "event": "refresh",
-                            "timestamp": timestamp,
-                            "source": "web",
-                            "jobs": jobs,
-                            "scanned": scanned,
-                            "completed_this_session": completed_this_session,
-                        }
+                        payload,
+                        allow_ids=show_ids,
                     )
                 )
             else:
                 os.system("clear")
-                click.echo(_format_job_list(jobs))
+                click.echo(_format_job_list(jobs, show_ids=show_ids))
                 if completed_this_session:
                     click.echo(f"\n✅ Completed This Session ({len(completed_this_session)})")
                     click.echo("─" * 60)
@@ -822,6 +855,11 @@ def _watch_jobs(
 )
 @click.option("--workspace", required=True, help="Workspace name or 'all'.")
 @click.option("--keyword", default=None, help="Case-insensitive keyword filter for job name/command")
+@click.option(
+    "--show-ids",
+    is_flag=True,
+    help="Include Job IDs for direct use with Job-specific follow-up commands.",
+)
 @pass_context
 def list_jobs(
     ctx: Context,
@@ -832,6 +870,7 @@ def list_jobs(
     interval: int,
     workspace: Optional[str],
     keyword: Optional[str],
+    show_ids: bool,
 ) -> None:
     """List training jobs from the platform.
 
@@ -844,6 +883,7 @@ def list_jobs(
         inspire job list --workspace 分布式训练空间 --limit 20 --status RUNNING
         inspire job list --workspace 分布式训练空间 --keyword qwen35
         inspire job list --workspace all --keyword qwen35 --limit 20
+        inspire job list --workspace 分布式训练空间 --keyword qwen35 --show-ids
         inspire job list --workspace 分布式训练空间 --active
         inspire job list --workspace 分布式训练空间 --watch --active -n 20
     """
@@ -863,6 +903,7 @@ def list_jobs(
                 limit=limit,
                 interval=interval,
                 active=active,
+                show_ids=show_ids,
             )
             return
 
@@ -883,11 +924,16 @@ def list_jobs(
             rows = [j for j in rows if j.get("status") in _JOB_ACTIVE_STATUSES]
 
         if ctx.json_output:
+            payload = {
+                "source": "web",
+                "jobs": _job_rows_for_json(rows, show_ids=show_ids),
+                "scanned": json_formatter.sanitize_json_data(scanned),
+            }
             click.echo(
-                json_formatter.format_json({"source": "web", "jobs": rows, "scanned": scanned})
+                json_formatter.format_json(payload, allow_ids=show_ids)
             )
         else:
-            click.echo(_format_job_list(rows))
+            click.echo(_format_job_list(rows, show_ids=show_ids))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -949,9 +995,9 @@ def status(
     job: str,
     workspace: Optional[str],
 ) -> None:
-    """Check the status of a training job.
+    """Check the status of a training job by name or Job ID.
 
-    JOB is the name shown in `inspire job list`.
+    JOB is a name from `inspire job list`, or an ID from `job list --show-ids`.
 
     \b
     Example:
@@ -965,6 +1011,7 @@ def status(
             workspace=workspace,
             all_workspaces=False,
             max_pages=50,
+            allow_raw_id=True,
         )
         try:
             session = get_web_session()
@@ -1017,7 +1064,7 @@ def instances(
     workspace: Optional[str],
     limit: int,
 ) -> None:
-    """List pod-level instances for a distributed-training job."""
+    """List pod-level instances for a distributed-training job by name or Job ID."""
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         job_id = _resolve_web_job_id(
@@ -1026,6 +1073,7 @@ def instances(
             workspace=workspace,
             all_workspaces=False,
             max_pages=1,
+            allow_raw_id=True,
             scan_limit=limit,
         )
         try:
@@ -1068,7 +1116,7 @@ def instances(
 )
 @pass_context
 def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) -> None:
-    """Stop a running training job.
+    """Stop a running training job by name or Job ID.
 
     \b
     Example:
@@ -1083,6 +1131,7 @@ def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) 
             all_workspaces=False,
             max_pages=50,
             pick=pick,
+            allow_raw_id=True,
             workspace_must_be_single=True,
         )
         session = get_web_session()
@@ -1124,7 +1173,7 @@ def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) 
 )
 @pass_context
 def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Optional[int]) -> None:
-    """Permanently delete a training job entry from the platform.
+    """Permanently delete a training job entry by name or Job ID.
 
     \b
     The entry disappears from the platform distributed-training list.
@@ -1143,6 +1192,7 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
             all_workspaces=False,
             max_pages=50,
             pick=pick,
+            allow_raw_id=True,
             workspace_must_be_single=True,
         )
     except ConfigError as e:
@@ -1206,7 +1256,7 @@ def wait(
     interval: int,
     workspace: Optional[str],
 ) -> None:
-    """Wait for a job to complete.
+    """Wait for a job name or Job ID to complete.
 
     Polls the job status until it reaches a terminal state
     (SUCCEEDED, FAILED, or CANCELLED).
@@ -1223,6 +1273,7 @@ def wait(
             workspace=workspace,
             all_workspaces=False,
             max_pages=50,
+            allow_raw_id=True,
         )
 
         terminal_statuses = {
@@ -1320,7 +1371,7 @@ def show_command(
     job: str,
     workspace: Optional[str],
 ) -> None:
-    """Show the training command used for a job."""
+    """Show the training command used for a job name or Job ID."""
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         job_id = _resolve_web_job_id(
@@ -1329,6 +1380,7 @@ def show_command(
             workspace=workspace,
             all_workspaces=False,
             max_pages=50,
+            allow_raw_id=True,
         )
         try:
             session = get_web_session()
@@ -1392,7 +1444,7 @@ def shell(
     pick: Optional[int],
     workspace: Optional[str],
 ) -> None:
-    """Open an interactive shell inside a running training-job instance.
+    """Open a shell inside a running training-job instance by name or Job ID.
 
     \b
     Examples:
@@ -1419,7 +1471,7 @@ def shell(
             all_workspaces=False,
             max_pages=50,
             pick=pick,
-            allow_raw_id=False,
+            allow_raw_id=True,
             workspace_must_be_single=True,
         )
         session = get_web_session()
