@@ -37,22 +37,6 @@ _CAS_RSA_KEY_RE = re.compile(
     r"RSAUtils\.getKeyPair\(\s*['\"]([0-9a-fA-F]+)['\"]\s*,\s*['\"][^'\"]*['\"]\s*,"
     r"\s*['\"]([0-9a-fA-F]+)['\"]"
 )
-_LOGIN_HINT_KEYWORDS = (
-    "captcha",
-    "verify",
-    "verification",
-    "invalid",
-    "incorrect",
-    "error",
-    "验证码",
-    "校验",
-    "验证",
-    "密码",
-    "账号",
-    "用户名",
-    "错误",
-    "失败",
-)
 
 
 def _load_runtime_config(account: Optional[str] = None) -> Config:
@@ -135,30 +119,157 @@ def _raise_browser_closed_error(exc: BaseException) -> None:
     ) from exc
 
 
-def _extract_login_failure_hint(text: str, *, limit: int = 180) -> str:
-    """Return a compact user-facing hint from a login page or response body."""
-    if not text:
-        return ""
-    cleaned = re.sub(r"(?is)<(script|style).*?</\1>", " ", text)
-    cleaned = re.sub(r"(?s)<[^>]+>", " ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    if not cleaned:
+class _CasLoginErrorParser(HTMLParser):
+    """Extract text from explicit CAS login error containers."""
+
+    _ERROR_CLASS = "form-error"
+    _BREAK_TAGS = frozenset({"br", "div", "li", "p"})
+    _IGNORED_TAGS = frozenset({"noscript", "script", "style", "template"})
+    _VOID_TAGS = frozenset(
+        {
+            "area",
+            "base",
+            "br",
+            "col",
+            "embed",
+            "hr",
+            "img",
+            "input",
+            "link",
+            "meta",
+            "param",
+            "source",
+            "track",
+            "wbr",
+        }
+    )
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.messages: list[str] = []
+        self._container_tag: str | None = None
+        self._container_depth = 0
+        self._ignored_depth = 0
+        self._suppressed_tag: str | None = None
+        self._suppressed_depth = 0
+        self._parts: list[str] = []
+
+    @staticmethod
+    def _attributes(attrs: list[tuple[str, str | None]]) -> dict[str, str]:
+        return {key: value or "" for key, value in attrs}
+
+    @staticmethod
+    def _is_hidden(attrs: dict[str, str]) -> bool:
+        classes = attrs.get("class", "").split()
+        style = re.sub(r"\s+", "", attrs.get("style", "").lower())
+        return (
+            "hidden" in attrs
+            or "hidden" in classes
+            or attrs.get("aria-hidden", "").strip().lower() == "true"
+            or "display:none" in style
+            or "visibility:hidden" in style
+        )
+
+    @classmethod
+    def _is_error_container(cls, tag: str, attrs: dict[str, str]) -> bool:
+        classes = attrs.get("class", "").split()
+        return tag == "div" and cls._ERROR_CLASS in classes and not cls._is_hidden(attrs)
+
+    def _append_break(self, tag: str) -> None:
+        if self._ignored_depth == 0 and tag in self._BREAK_TAGS:
+            self._parts.append(" ")
+
+    def _finish_container(self) -> None:
+        message = " ".join("".join(self._parts).split())
+        if message:
+            self.messages.append(message)
+        self._container_tag = None
+        self._container_depth = 0
+        self._ignored_depth = 0
+        self._parts = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        lower_tag = tag.lower()
+        if self._container_tag is None:
+            if self._suppressed_tag is not None:
+                if lower_tag == self._suppressed_tag:
+                    self._suppressed_depth += 1
+                return
+
+            attrs_dict = self._attributes(attrs)
+            if lower_tag not in self._VOID_TAGS and (
+                lower_tag in self._IGNORED_TAGS or self._is_hidden(attrs_dict)
+            ):
+                self._suppressed_tag = lower_tag
+                self._suppressed_depth = 1
+            elif self._is_error_container(lower_tag, attrs_dict):
+                self._container_tag = lower_tag
+                self._container_depth = 1
+            return
+
+        if lower_tag == self._container_tag:
+            self._container_depth += 1
+        if lower_tag in self._IGNORED_TAGS:
+            self._ignored_depth += 1
+        else:
+            self._append_break(lower_tag)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if self._container_tag is not None:
+            self._append_break(tag.lower())
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._container_tag is None:
+            lower_tag = tag.lower()
+            if lower_tag == self._suppressed_tag:
+                self._suppressed_depth -= 1
+                if self._suppressed_depth == 0:
+                    self._suppressed_tag = None
+            return
+
+        lower_tag = tag.lower()
+        if lower_tag == self._container_tag:
+            self._container_depth -= 1
+            if self._container_depth == 0:
+                self._finish_container()
+                return
+        if lower_tag in self._IGNORED_TAGS and self._ignored_depth:
+            self._ignored_depth -= 1
+        else:
+            self._append_break(lower_tag)
+
+    def handle_data(self, data: str) -> None:
+        if self._container_tag is not None and self._ignored_depth == 0:
+            self._parts.append(data)
+
+    def close(self) -> None:
+        super().close()
+        if self._container_tag is not None:
+            self._finish_container()
+
+
+def _extract_login_failure_hint(html: str, *, limit: int = 180) -> str:
+    """Return text from the first non-empty CAS login error container."""
+    if not html or limit <= 0:
         return ""
 
-    lower = cleaned.lower()
-    for keyword in _LOGIN_HINT_KEYWORDS:
-        index = lower.find(keyword.lower())
-        if index < 0:
-            continue
-        start = max(0, index - 60)
-        end = min(len(cleaned), index + 120)
-        snippet = cleaned[start:end].strip(" .:-")
-        if start:
-            snippet = f"...{snippet}"
-        if end < len(cleaned):
-            snippet = f"{snippet}..."
-        return snippet[:limit]
-    return cleaned[:limit]
+    parser = _CasLoginErrorParser()
+    try:
+        parser.feed(html)
+        parser.close()
+    except (TypeError, ValueError):
+        return ""
+    return parser.messages[0][:limit] if parser.messages else ""
+
+
+def _extract_page_login_failure_hint(page: Any, *, limit: int = 180) -> str:
+    """Extract a login failure hint from a Playwright page without masking auth errors."""
+    try:
+        html = page.content()
+    except Exception:
+        return ""
+    return _extract_login_failure_hint(html, limit=limit)
 
 
 def _login_not_complete_message(
@@ -169,16 +280,23 @@ def _login_not_complete_message(
     proxy_source: str | None = None,
     base_proxy_route: str | None = None,
 ) -> str:
-    lines = [
-        "Login did not complete.",
-        "Check that the password is correct and `auth.username` is the platform login ID "
-        "(phone, student ID, or email), not the display name.",
-        "If those are correct, verify that the configured proxy can reach both the public "
-        "internet and *.sii.edu.cn, and whether the platform login page is asking for "
-        "CAPTCHA, MFA, or another manual verification step.",
+    lines = ["Login did not complete."]
+    if page_hint:
+        lines.append(f"Platform reported: {page_hint}")
+    else:
+        lines.extend(
+            [
+                "Check that the password is correct and `auth.username` is the platform login "
+                "ID (phone, student ID, or email), not the display name.",
+                "If those are correct, verify that the configured proxy can reach both the "
+                "public internet and *.sii.edu.cn, and whether the platform login page is "
+                "asking for CAPTCHA, MFA, or another manual verification step.",
+            ]
+        )
+    lines.append(
         "Run `inspire config show --compact` to confirm the active account, base URL, and "
-        "proxy settings. Re-run with `inspire --debug init` if you need a debug report.",
-    ]
+        "proxy settings. Re-run with `inspire --debug init` if you need a debug report."
+    )
     if proxy_source and "system_env" in proxy_source:
         lines.append(
             "Shell HTTP_PROXY/HTTPS_PROXY/ALL_PROXY is configured for this login (including "
@@ -191,8 +309,6 @@ def _login_not_complete_message(
         details.append(f"last auth check status={status}")
     if current_url:
         details.append(f"current_url={current_url}")
-    if page_hint:
-        details.append(f"page_hint={page_hint}")
     if proxy_source:
         proxy_detail = f"proxy_source={proxy_source}"
         if base_proxy_route:
@@ -689,12 +805,7 @@ def login_with_playwright(
                 current_url = page.url
             except Exception:
                 current_url = ""
-            try:
-                page_hint = _extract_login_failure_hint(
-                    page.locator("body").inner_text(timeout=1000)
-                )
-            except Exception:
-                page_hint = ""
+            page_hint = _extract_page_login_failure_hint(page)
             raise ValueError(
                 _login_not_complete_message(
                     status=last_status,
