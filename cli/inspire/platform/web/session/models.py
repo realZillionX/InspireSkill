@@ -13,6 +13,7 @@ the rare callsite that knows better.
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -54,6 +55,37 @@ def get_session_cache_file(account: Optional[str] = None) -> Optional[Path]:
     if not name:
         return None
     return Path.home() / ".inspire" / "accounts" / name / "web_session.json"
+
+
+def _is_valid_session_cache_payload(data: object) -> bool:
+    """Return whether a decoded cache has the shape required by its consumers."""
+    if not isinstance(data, dict):
+        return False
+
+    created_at = data.get("created_at")
+    if isinstance(created_at, bool) or not isinstance(created_at, (int, float)):
+        return False
+    try:
+        if not math.isfinite(created_at):
+            return False
+    except OverflowError:
+        return False
+
+    storage_state = data.get("storage_state")
+    if storage_state is not None:
+        if not isinstance(storage_state, dict):
+            return False
+        for field in ("cookies", "origins"):
+            if field not in storage_state:
+                continue
+            entries = storage_state[field]
+            if not isinstance(entries, list) or not all(
+                isinstance(entry, dict) for entry in entries
+            ):
+                return False
+
+    legacy_cookies = data.get("cookies")
+    return legacy_cookies is None or isinstance(legacy_cookies, dict)
 
 
 @dataclass
@@ -152,11 +184,14 @@ class WebSession:
         if cache_file is None or not cache_file.exists():
             return None
         try:
-            with open(cache_file) as f:
+            with open(cache_file, encoding="utf-8") as f:
                 data = json.load(f)
-            session = cls.from_dict(data)
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return None
+        if not _is_valid_session_cache_payload(data):
+            return None
+
+        session = cls.from_dict(data)
         session.account = _resolve_account_for_storage(account)
         if allow_expired or session.is_valid():
             return session
