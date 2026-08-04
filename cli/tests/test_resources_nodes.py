@@ -113,6 +113,10 @@ def test_resources_nodes_filters_and_returns_json_recommendation(
     assert data["recommendation"]["group_name"] == "H200-2号机房"
     assert data["recommendation"]["full_free_nodes"] == 6
     assert data["min_full_free_nodes"] == 2
+    assert data["workspace_name"] == "Default WS"
+    assert "group_id" not in result.output
+    assert "workspace_id" not in result.output
+    assert "cg-11111111" not in result.output
 
 
 def test_resources_nodes_human_scrubs_raw_ids(
@@ -163,5 +167,35 @@ def test_resources_nodes_human_scrubs_raw_ids(
 
     assert result.exit_code == 0, result.output
     assert raw_group_id not in result.output
-    assert "<raw-id>" in result.output
+    assert "<raw-id>" not in result.output
+    assert "cg-" not in result.output
+    assert "H200" in result.output
     assert "Recommended:" in result.output
+
+
+def test_resources_nodes_rejects_group_id_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_config(monkeypatch, tmp_path)
+
+    from inspire.cli.commands.resources import resources_nodes as nodes_module
+
+    monkeypatch.setattr(nodes_module, "get_web_session", lambda: _Session())
+    raw_group_id = "lcg-11111111-1111-1111-1111-111111111111"
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "resources",
+            "nodes",
+            "--workspace",
+            "Default WS",
+            "--group",
+            raw_group_id,
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "compute group name" in result.output
+    assert raw_group_id not in result.output

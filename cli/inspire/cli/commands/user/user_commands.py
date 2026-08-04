@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import click
 
@@ -38,6 +38,21 @@ _SSH_KEY_TYPES = {
     "sk-ecdsa-sha2-nistp256@openssh.com",
 }
 
+_PUBLIC_NOISE_KEYS = {
+    "debug",
+    "internal",
+    "metadata",
+    "payload",
+    "progress",
+    "raw",
+    "request",
+    "response",
+    "result",
+    "scanned",
+    "source",
+    "trace",
+}
+
 
 def _resolve_workspace_id(config: Config, workspace: Optional[str], session) -> Optional[str]:  # noqa: ANN001
     if workspace is None:
@@ -55,6 +70,84 @@ def _ssh_key_name(item: dict) -> str:
 
 def _ssh_key_fingerprint(item: dict) -> str:
     return str(item.get("fingerprint") or item.get("finger_print") or "").strip()
+
+
+def _public_value(value: Any) -> Any:
+    sanitized = json_formatter.sanitize_json_data(value)
+    if isinstance(sanitized, dict):
+        return {
+            key: _public_value(child)
+            for key, child in sanitized.items()
+            if str(key).replace("-", "_").strip().lower() not in _PUBLIC_NOISE_KEYS
+        }
+    if isinstance(sanitized, list):
+        return [_public_value(item) for item in sanitized]
+    if isinstance(sanitized, tuple):
+        return [_public_value(item) for item in sanitized]
+    if isinstance(sanitized, str):
+        return scrub_raw_ids(sanitized)
+    return sanitized
+
+
+def _current_user_summary(info: dict[str, Any]) -> dict[str, str]:
+    extra = info.get("extra_info") if isinstance(info.get("extra_info"), dict) else {}
+    fields = {
+        "name": info.get("name") or info.get("username"),
+        "login": extra.get("login_name") or info.get("login_name"),
+        "role": info.get("global_role") or info.get("role"),
+        "email": info.get("email"),
+    }
+    return {
+        key: scrub_raw_ids(str(value))
+        for key, value in fields.items()
+        if value not in (None, "")
+    }
+
+
+def _api_key_summary(item: dict[str, Any], index: int) -> dict[str, str]:
+    fields = {
+        "name": item.get("name") or item.get("title") or f"key-{index}",
+        "created_at": item.get("create_at") or item.get("created_at"),
+        "last_used_at": item.get("last_used_at") or item.get("last_used"),
+        "status": item.get("status"),
+    }
+    return {
+        key: scrub_raw_ids(str(value))
+        for key, value in fields.items()
+        if value not in (None, "")
+    }
+
+
+def _ssh_key_summary(item: dict[str, Any]) -> dict[str, str]:
+    fields = {
+        "name": _ssh_key_name(item) or "-",
+        "fingerprint": _ssh_key_fingerprint(item),
+        "created_at": item.get("created_at") or item.get("create_at"),
+    }
+    return {
+        key: scrub_raw_ids(str(value))
+        for key, value in fields.items()
+        if value not in (None, "")
+    }
+
+
+def _flatten_public_values(value: Any, *, prefix: str = "") -> list[tuple[str, str]]:
+    if isinstance(value, dict):
+        rows: list[tuple[str, str]] = []
+        for key in sorted(value):
+            child_prefix = f"{prefix}.{key}" if prefix else str(key)
+            rows.extend(_flatten_public_values(value[key], prefix=child_prefix))
+        return rows
+    if isinstance(value, list):
+        if all(not isinstance(item, (dict, list, tuple)) for item in value):
+            return [(prefix, ", ".join(scrub_raw_ids(item) for item in value))]
+        rows = []
+        for index, child in enumerate(value, start=1):
+            rows.extend(_flatten_public_values(child, prefix=f"{prefix}[{index}]"))
+        return rows
+    if isinstance(value, tuple):
+        return _flatten_public_values(list(value), prefix=prefix)
+    return [(prefix or "quota", scrub_raw_ids(value))]
 
 
 def _read_public_key(
@@ -163,17 +256,18 @@ def whoami_user(ctx: Context) -> None:
     try:
         session = get_web_session()
         info = browser_api_module.get_current_user(session=session) or {}
+        summary = _current_user_summary(info)
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json(info))
+            click.echo(json_formatter.format_json(summary))
             return
 
-        click.echo("Current User")
-        click.echo(f"Name:      {info.get('name', 'N/A')}")
-        click.echo(f"Login:     {(info.get('extra_info') or {}).get('login_name', 'N/A')}")
-        click.echo(f"Role:      {info.get('global_role', 'N/A')}")
-        if info.get("email"):
-            click.echo(f"Email:     {info.get('email')}")
+        if not summary:
+            click.echo("No user details returned.")
+            return
+        for label, key in (("Name", "name"), ("Login", "login"), ("Role", "role"), ("Email", "email")):
+            if key in summary:
+                click.echo(f"{label}: {summary[key]}")
 
     except AuthenticationError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
@@ -195,15 +289,15 @@ def quota_user(ctx: Context) -> None:
     try:
         session = get_web_session()
         data = browser_api_module.get_user_quota(session=session)
+        public_quota = _public_value(data)
         if ctx.json_output:
-            click.echo(json_formatter.format_json(data))
+            click.echo(json_formatter.format_json({"quota": public_quota}))
             return
-        if not data:
+        if not public_quota:
             click.echo("No quota data returned.")
             return
-        click.echo("User Quota")
-        for k, v in data.items():
-            click.echo(f"  {k}: {v}")
+        for key, value in _flatten_public_values(public_quota):
+            click.echo(f"{key}: {value}")
 
     except AuthenticationError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
@@ -231,26 +325,26 @@ def api_keys_user(ctx: Context) -> None:
     try:
         session = get_web_session()
         items = browser_api_module.list_user_api_keys(session=session)
+        rows = [_api_key_summary(item, index) for index, item in enumerate(items, 1)]
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"total": len(items), "items": items}))
+            click.echo(json_formatter.format_json({"items": rows}))
             return
 
-        if not items:
+        if not rows:
             click.echo("No API keys found.")
             return
 
-        click.echo(f"API Keys (total={len(items)})")
-        for i, item in enumerate(items, 1):
-            name = scrub_raw_ids(item.get("name") or item.get("title") or f"key-{i}")
-            created = item.get("create_at") or item.get("created_at") or ""
-            last_used = item.get("last_used_at") or item.get("last_used") or ""
+        for row in rows:
             suffix = []
-            if created:
-                suffix.append(f"created={created}")
-            if last_used:
-                suffix.append(f"last_used={last_used}")
-            click.echo(f"  [{i}] {name}  " + "  ".join(suffix))
+            if row.get("created_at"):
+                suffix.append(f"created={row['created_at']}")
+            if row.get("last_used_at"):
+                suffix.append(f"last_used={row['last_used_at']}")
+            if row.get("status"):
+                suffix.append(f"status={row['status']}")
+            details = f"  {'  '.join(suffix)}" if suffix else ""
+            click.echo(f"{row['name']}{details}")
 
     except AuthenticationError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
@@ -269,28 +363,25 @@ def list_ssh_keys(ctx: Context) -> None:
     """List the current user's SSH public keys."""
     try:
         session = get_web_session()
-        items, total = browser_api_module.list_user_ssh_keys(session=session)
+        items, _ = browser_api_module.list_user_ssh_keys(session=session)
+        rows = [_ssh_key_summary(item) for item in items]
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"total": total, "items": items}))
+            click.echo(json_formatter.format_json({"items": rows}))
             return
 
-        if not items:
+        if not rows:
             click.echo("No SSH keys found.")
             return
 
-        rows = [
-            {
-                "name": scrub_raw_ids(_ssh_key_name(item) or "-"),
-                "fingerprint": scrub_raw_ids(_ssh_key_fingerprint(item) or "-"),
-                "created": scrub_raw_ids(
-                    str(item.get("created_at") or item.get("create_at") or "-")
-                ),
-            }
-            for item in items
+        table_rows = [
+            (
+                row["name"],
+                row.get("fingerprint", "-"),
+                row.get("created_at", "-"),
+            )
+            for row in rows
         ]
-        click.echo(f"SSH Keys (total={total})")
-        table_rows = [(row["name"], row["fingerprint"], row["created"]) for row in rows]
         widths = [
             column_width("Name", [row[0] for row in table_rows], max_width=48),
             column_width("Fingerprint", [row[1] for row in table_rows], max_width=64),
@@ -351,7 +442,7 @@ def add_ssh_key(
                 f"SSH key '{scrub_raw_ids(key_name)}' already exists.",
                 EXIT_VALIDATION_ERROR,
             )
-        result = browser_api_module.create_user_ssh_key(
+        browser_api_module.create_user_ssh_key(
             name=key_name,
             content=content,
             session=session,
@@ -359,9 +450,7 @@ def add_ssh_key(
 
         if ctx.json_output:
             click.echo(
-                json_formatter.format_json(
-                    {"name": key_name, "status": "created", "result": result}
-                )
+                json_formatter.format_json({"name": key_name, "status": "created"})
             )
             return
 
@@ -389,12 +478,10 @@ def delete_ssh_key(ctx: Context, name: str, yes: bool) -> None:
                 click.echo("Cancelled.")
                 return
 
-        result = browser_api_module.delete_user_ssh_key(_ssh_key_id(key), session=session)
+        browser_api_module.delete_user_ssh_key(_ssh_key_id(key), session=session)
         if ctx.json_output:
             click.echo(
-                json_formatter.format_json(
-                    {"name": key_name, "status": "deleted", "result": result}
-                )
+                json_formatter.format_json({"name": key_name, "status": "deleted"})
             )
             return
 
@@ -410,8 +497,10 @@ def delete_ssh_key(ctx: Context, name: str, yes: bool) -> None:
 @click.option("--workspace", required=True, help="Workspace name")
 @pass_context
 def permissions_user(
-    ctx: Context, workspace: Optional[str],) -> None:
-    """Show per-workspace permission matrix (`/user/permissions/{ws}`)."""
+    ctx: Context,
+    workspace: Optional[str],
+) -> None:
+    """Show granted permissions in a workspace."""
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
@@ -419,19 +508,27 @@ def permissions_user(
         perms = browser_api_module.get_user_permissions(
             workspace_id=resolved_workspace, session=session
         )
+        permissions = sorted(set(perms))
+        workspace_name = scrub_raw_ids(workspace or "")
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"workspace_id": resolved_workspace, "permissions": perms}))
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "workspace": workspace_name,
+                        "permissions": permissions,
+                    }
+                )
+            )
             return
 
-        if not perms:
+        if not permissions:
             click.echo("No permissions granted in this workspace.")
             return
 
-        workspace_label = workspace
-        click.echo(f"Permissions in workspace {workspace_label} ({len(perms)} granted)")
-        for p in sorted(perms):
-            click.echo(f"  {p}")
+        click.echo(f"Workspace: {workspace_name}")
+        for permission in permissions:
+            click.echo(permission)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

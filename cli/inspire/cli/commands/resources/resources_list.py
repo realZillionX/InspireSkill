@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 import click
@@ -16,6 +17,8 @@ from inspire.cli.context import (
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.formatters.table import render_table
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.compute_groups import compute_group_name_map, load_compute_groups_from_config
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_query_scope
@@ -26,6 +29,10 @@ from inspire.platform.web.resources import (
     fetch_resource_availability,
 )
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+
+_REDACTED_ID_RE = re.compile(
+    r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?<[^<>]+-id>"
+)
 
 
 def _known_compute_groups_from_config(*, show_all: bool) -> dict[str, str]:
@@ -76,115 +83,126 @@ def _format_metric(value: float | int) -> str:
     return f"{numeric:.1f}"
 
 
+def _display_name(value: object, *, fallback: str = "-") -> str:
+    text = _REDACTED_ID_RE.sub(" ", scrub_raw_ids(value))
+    return " ".join(text.split()) or fallback
+
+
+def _public_availability_row(availability) -> dict[str, object]:  # noqa: ANN001
+    row: dict[str, object] = {
+        "workspace_name": _display_name(
+            getattr(availability, "workspace_name", ""),
+            fallback="",
+        ),
+        "group_name": _display_name(getattr(availability, "group_name", "")),
+        "resource_kind": getattr(availability, "resource_kind", "gpu") or "gpu",
+    }
+    if row["resource_kind"] == "cpu":
+        row.update(
+            {
+                "cpu_total": availability.cpu_total,
+                "cpu_used": availability.cpu_used,
+                "cpu_available": availability.cpu_available,
+                "memory_total_gib": availability.memory_total_gib,
+                "memory_used_gib": availability.memory_used_gib,
+                "memory_available_gib": availability.memory_available_gib,
+            }
+        )
+        return row
+
+    row.update(
+        {
+            "gpu_type": _display_name(getattr(availability, "gpu_type", "")),
+            "total_gpus": availability.total_gpus,
+            "used_gpus": availability.used_gpus,
+            "available_gpus": availability.available_gpus,
+            "high_priority_available_gpus": availability.high_priority_available_gpus,
+            "low_priority_gpus": availability.low_priority_gpus,
+            "total_nodes": availability.total_nodes,
+            "ready_nodes": availability.ready_nodes,
+            "free_nodes": availability.free_nodes,
+            "gpus_per_node": availability.gpu_per_node,
+        }
+    )
+    return row
+
+
 def _format_availability_table(availability, workspace_mode: bool = False) -> None:
-    title = "📊 GPU Availability (Workspace)" if workspace_mode else "📊 GPU Availability (Live)"
-    scope_note = "Shows availability in your workspace only" if workspace_mode else ""
-
-    lines = [
-        "",
-        title,
-        "─" * 80,
-    ]
-
-    if scope_note:
-        lines.append(f"{scope_note}")
-        lines.append("─" * 80)
-
-    rows = []
+    del workspace_mode
+    rows: list[tuple[object, ...]] = []
     for a in availability:
-        free_gpus = a.free_gpus
-        if free_gpus >= 8:
-            status = ""
-        elif free_gpus > 0:
-            status = "⚠"
-        else:
-            status = "✗"
-
         rows.append(
             (
-                a.gpu_type,
-                a.group_name,
+                _display_name(a.group_name),
+                _display_name(a.gpu_type),
                 a.ready_nodes,
                 a.free_nodes,
-                free_gpus,
-                status,
+                a.free_gpus,
             )
         )
 
-    lines.extend(
-        render_table(
-            ("GPU Type", "Location", "Ready", "Free", "Free GPUs", ""),
-            rows,
-            [12, 25, 8, 8, 12, 2],
-            aligns=["left", "left", "right", "right", "right", "left"],
-            line_char="─",
+    click.echo(
+        "\n".join(
+            render_table(
+                ("Compute Group", "GPU", "Ready Nodes", "Free Nodes", "Free GPUs"),
+                rows,
+                [25, 16, 12, 12, 10],
+                aligns=["left", "left", "right", "right", "right"],
+                line_char="─",
+            )
         )
     )
-    lines.append("")
-    lines.append("💡 Usage:")
-    lines.append(
-        "  inspire job quota --workspace <workspace> --group H100   # Filter to find full group names"
-    )
-    lines.append(
-        '  inspire job create -n train --workspace <workspace> --project <project> --group H100-2号机房 -q 4,80,800 -c "python train.py"'
-    )
-    lines.append("  # create/profile --group requires the full compute group name")
-    lines.append("")
-
-    click.echo("\n".join(lines))
 
 
 def _format_accurate_availability_table(availability, *, include_cpu: bool) -> None:
     gpu_rows = [a for a in availability if getattr(a, "resource_kind", "gpu") == "gpu"]
     cpu_rows = [a for a in availability if getattr(a, "resource_kind", "gpu") == "cpu"]
     workspace_names = {
-        str(getattr(a, "workspace_name", "") or getattr(a, "workspace_id", ""))
+        _display_name(getattr(a, "workspace_name", ""), fallback="")
         for a in availability
     }
     show_workspace = len(workspace_names - {""}) > 1
 
-    lines = ["", "📊 Compute Group Availability (Accurate Real-Time)"]
+    sections: list[str] = []
 
     if gpu_rows:
-        gpu_widths = (
-            [16, 22, 25, 10, 10, 8, 8, 8, 2]
-            if show_workspace
-            else [22, 25, 10, 10, 8, 8, 8, 2]
-        )
+        gpu_widths = [16, 25, 18, 10, 12, 8, 8, 10] if show_workspace else [
+            25,
+            18,
+            10,
+            12,
+            8,
+            8,
+            10,
+        ]
         gpu_headers = (
             (
                 "Workspace",
-                "GPU Type",
                 "Compute Group",
+                "GPU",
                 "Available",
-                "High Pri",
+                "Reclaimable",
                 "Used",
-                "Low Pri",
                 "Total",
-                "",
+                "Free Nodes",
             )
             if show_workspace
             else (
-                "GPU Type",
                 "Compute Group",
+                "GPU",
                 "Available",
-                "High Pri",
+                "Reclaimable",
                 "Used",
-                "Low Pri",
                 "Total",
-                "",
+                "Free Nodes",
             )
         )
         gpu_aligns = (
-            ["left", "left", "left", "right", "right", "right", "right", "right", "left"]
+            ["left", "left", "left", "right", "right", "right", "right", "right"]
             if show_workspace
-            else ["left", "left", "right", "right", "right", "right", "right", "left"]
+            else ["left", "left", "right", "right", "right", "right", "right"]
         )
         gpu_table_rows: list[tuple[object, ...]] = []
-        if show_workspace:
-            total_row: tuple[object, ...] = ("TOTAL", "", "", 0, 0, 0, 0, 0, "")
-        else:
-            total_row = ("TOTAL", "", 0, 0, 0, 0, 0, "")
 
         sorted_gpu_rows = sorted(
             gpu_rows,
@@ -194,117 +212,105 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
         total_available = 0
         total_high_priority_available = 0
         total_used = 0
-        total_low_pri = 0
         total_gpus = 0
+        total_free_nodes = 0
 
         for row in sorted_gpu_rows:
-            available = row.available_gpus
-            high_priority_available = row.high_priority_available_gpus
-            if available >= 100:
-                status = "✓"
-            elif available >= 32:
-                status = "○"
-            elif available >= 8:
-                status = "◐"
-            elif available > 0:
-                status = "⚠"
-            elif high_priority_available > 0:
-                status = "↯"
-            else:
-                status = "✗"
-
             if show_workspace:
                 gpu_table_rows.append(
                     (
-                        row.workspace_name,
-                        row.gpu_type,
-                        row.group_name,
+                        _display_name(row.workspace_name, fallback=""),
+                        _display_name(row.group_name),
+                        _display_name(row.gpu_type),
                         row.available_gpus,
-                        high_priority_available,
+                        row.high_priority_available_gpus,
                         row.used_gpus,
-                        row.low_priority_gpus,
                         row.total_gpus,
-                        status,
+                        row.free_nodes,
                     )
                 )
             else:
                 gpu_table_rows.append(
                     (
-                        row.gpu_type,
-                        row.group_name,
+                        _display_name(row.group_name),
+                        _display_name(row.gpu_type),
                         row.available_gpus,
-                        high_priority_available,
+                        row.high_priority_available_gpus,
                         row.used_gpus,
-                        row.low_priority_gpus,
                         row.total_gpus,
-                        status,
+                        row.free_nodes,
                     )
                 )
 
             total_available += row.available_gpus
-            total_high_priority_available += high_priority_available
+            total_high_priority_available += row.high_priority_available_gpus
             total_used += row.used_gpus
-            total_low_pri += row.low_priority_gpus
             total_gpus += row.total_gpus
+            total_free_nodes += row.free_nodes
 
         if show_workspace:
-            total_row = (
-                "TOTAL",
-                "",
-                "",
-                total_available,
-                total_high_priority_available,
-                total_used,
-                total_low_pri,
-                total_gpus,
-                "",
+            gpu_table_rows.append(
+                (
+                    "TOTAL",
+                    "",
+                    "",
+                    total_available,
+                    total_high_priority_available,
+                    total_used,
+                    total_gpus,
+                    total_free_nodes,
+                )
             )
         else:
-            total_row = (
-                "TOTAL",
-                "",
-                total_available,
-                total_high_priority_available,
-                total_used,
-                total_low_pri,
-                total_gpus,
-                "",
+            gpu_table_rows.append(
+                (
+                    "TOTAL",
+                    "",
+                    total_available,
+                    total_high_priority_available,
+                    total_used,
+                    total_gpus,
+                    total_free_nodes,
+                )
             )
-        gpu_table_rows.append(total_row)
-        lines.extend(
-            render_table(
-                gpu_headers,
-                gpu_table_rows,
-                gpu_widths,
-                aligns=gpu_aligns,
-                line_char="─",
+        sections.append(
+            "\n".join(
+                render_table(
+                    gpu_headers,
+                    gpu_table_rows,
+                    gpu_widths,
+                    aligns=gpu_aligns,
+                    line_char="─",
+                )
             )
         )
 
     if include_cpu and cpu_rows:
         cpu_widths = (
-            [16, 25, 10, 10, 10, 12, 12, 12] if show_workspace else [25, 10, 10, 10, 12, 12, 12]
+            [16, 25, 12, 10, 10, 14, 12, 12]
+            if show_workspace
+            else [25, 12, 10, 10, 14, 12, 12]
         )
         cpu_headers = (
             (
                 "Workspace",
                 "Compute Group",
-                "Avail CPU",
-                "Used CPU",
-                "Total CPU",
-                "Avail GiB",
-                "Used GiB",
-                "Total GiB",
+                "CPU Available",
+                "CPU Used",
+                "CPU Total",
+                "Memory Available",
+                "Memory Used",
+                "Memory Total",
             )
             if show_workspace
             else (
                 "Compute Group",
-                "Avail CPU",
-                "Used CPU",
-                "Total CPU",
-                "Avail GiB",
-                "Used GiB",
-                "Total GiB",
+                "CPU Available",
+                "CPU Used",
+                "CPU Total",
+                "Memory Available",
+                "Memory Used",
+                "Memory Total",
             )
         )
         cpu_aligns = (
@@ -313,108 +319,65 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
             else ["left", "right", "right", "right", "right", "right", "right"]
         )
         cpu_table_rows: list[tuple[object, ...]] = []
-        lines.append("")
-        lines.append("CPU-Only Compute Groups")
+        totals = {
+            "cpu_available": 0.0,
+            "cpu_used": 0.0,
+            "cpu_total": 0.0,
+            "memory_available": 0.0,
+            "memory_used": 0.0,
+            "memory_total": 0.0,
+        }
 
-        sorted_cpu_rows = sorted(cpu_rows, key=lambda x: x.cpu_available, reverse=True)
-        total_cpu_available = 0.0
-        total_cpu_used = 0.0
-        total_cpu = 0.0
-        total_mem_available = 0.0
-        total_mem_used = 0.0
-        total_mem = 0.0
-
-        for row in sorted_cpu_rows:
+        for row in sorted(cpu_rows, key=lambda item: item.cpu_available, reverse=True):
+            values = (
+                _display_name(row.group_name),
+                _format_metric(row.cpu_available),
+                _format_metric(row.cpu_used),
+                _format_metric(row.cpu_total),
+                f"{_format_metric(row.memory_available_gib)} GiB",
+                f"{_format_metric(row.memory_used_gib)} GiB",
+                f"{_format_metric(row.memory_total_gib)} GiB",
+            )
             if show_workspace:
                 cpu_table_rows.append(
-                    (
-                        row.workspace_name,
-                        row.group_name,
-                        _format_metric(row.cpu_available),
-                        _format_metric(row.cpu_used),
-                        _format_metric(row.cpu_total),
-                        _format_metric(row.memory_available_gib),
-                        _format_metric(row.memory_used_gib),
-                        _format_metric(row.memory_total_gib),
-                    )
+                    (_display_name(row.workspace_name, fallback=""), *values)
                 )
             else:
-                cpu_table_rows.append(
-                    (
-                        row.group_name,
-                        _format_metric(row.cpu_available),
-                        _format_metric(row.cpu_used),
-                        _format_metric(row.cpu_total),
-                        _format_metric(row.memory_available_gib),
-                        _format_metric(row.memory_used_gib),
-                        _format_metric(row.memory_total_gib),
-                    )
-                )
+                cpu_table_rows.append(values)
 
-            total_cpu_available += row.cpu_available
-            total_cpu_used += row.cpu_used
-            total_cpu += row.cpu_total
-            total_mem_available += row.memory_available_gib
-            total_mem_used += row.memory_used_gib
-            total_mem += row.memory_total_gib
+            totals["cpu_available"] += row.cpu_available
+            totals["cpu_used"] += row.cpu_used
+            totals["cpu_total"] += row.cpu_total
+            totals["memory_available"] += row.memory_available_gib
+            totals["memory_used"] += row.memory_used_gib
+            totals["memory_total"] += row.memory_total_gib
 
+        total_values: tuple[object, ...] = (
+            "TOTAL",
+            _format_metric(totals["cpu_available"]),
+            _format_metric(totals["cpu_used"]),
+            _format_metric(totals["cpu_total"]),
+            f"{_format_metric(totals['memory_available'])} GiB",
+            f"{_format_metric(totals['memory_used'])} GiB",
+            f"{_format_metric(totals['memory_total'])} GiB",
+        )
         if show_workspace:
-            cpu_table_rows.append(
-                (
-                    "TOTAL",
-                    "",
-                    _format_metric(total_cpu_available),
-                    _format_metric(total_cpu_used),
-                    _format_metric(total_cpu),
-                    _format_metric(total_mem_available),
-                    _format_metric(total_mem_used),
-                    _format_metric(total_mem),
-                )
-            )
+            cpu_table_rows.append(("TOTAL", "", *total_values[1:]))
         else:
-            cpu_table_rows.append(
-                (
-                    "TOTAL",
-                    _format_metric(total_cpu_available),
-                    _format_metric(total_cpu_used),
-                    _format_metric(total_cpu),
-                    _format_metric(total_mem_available),
-                    _format_metric(total_mem_used),
-                    _format_metric(total_mem),
+            cpu_table_rows.append(total_values)
+        sections.append(
+            "\n".join(
+                render_table(
+                    cpu_headers,
+                    cpu_table_rows,
+                    cpu_widths,
+                    aligns=cpu_aligns,
+                    line_char="─",
                 )
-            )
-        lines.extend(
-            render_table(
-                cpu_headers,
-                cpu_table_rows,
-                cpu_widths,
-                aligns=cpu_aligns,
-                line_char="─",
             )
         )
 
-    lines.append("")
-    lines.append("💡 Legend:")
-    lines.append(
-        "  Available = platform-reported total minus used; negative values come from the platform API"
-    )
-    lines.append("  High Pri  = Available + Low Pri; capacity a high-priority job may reclaim")
-    lines.append("  Low Pri   = low-priority GPU usage that can be preempted by high-priority jobs")
-    lines.append("  ↯         = no idle GPU, but high-priority preemption may help; confirm via events")
-    if include_cpu:
-        lines.append("  CPU rows   = CPU-only compute groups with CPU and memory totals")
-    lines.append("")
-    lines.append("💡 Usage:")
-    lines.append(
-        "  inspire notebook quota --workspace <workspace> --group H100   # Filter to find full group names"
-    )
-    lines.append(
-        '  inspire job create -n train --workspace <workspace> --project <project> --group H100-2号机房 -q 4,80,800 -c "python train.py"'
-    )
-    lines.append("  # create/profile --group requires the full compute group name")
-    lines.append("")
-
-    click.echo("\n".join(lines))
+    click.echo("\n\n".join(sections))
 
 
 def _list_accurate_resources(
@@ -469,32 +432,7 @@ def _list_accurate_resources(
             return
 
         if ctx.json_output:
-            output = [
-                {
-                    "workspace_id": a.workspace_id,
-                    "workspace_name": a.workspace_name,
-                    "group_id": a.group_id,
-                    "group_name": a.group_name,
-                    "resource_kind": a.resource_kind,
-                    "gpu_type": a.gpu_type,
-                    "total_gpus": a.total_gpus,
-                    "used_gpus": a.used_gpus,
-                    "available_gpus": a.available_gpus,
-                    "high_priority_available_gpus": a.high_priority_available_gpus,
-                    "low_priority_gpus": a.low_priority_gpus,
-                    "total_nodes": a.total_nodes,
-                    "ready_nodes": a.ready_nodes,
-                    "free_nodes": a.free_nodes,
-                    "gpu_per_node": a.gpu_per_node,
-                    "cpu_total": a.cpu_total,
-                    "cpu_used": a.cpu_used,
-                    "cpu_available": a.cpu_available,
-                    "memory_total_gib": a.memory_total_gib,
-                    "memory_used_gib": a.memory_used_gib,
-                    "memory_available_gib": a.memory_available_gib,
-                }
-                for a in availability
-            ]
+            output = [_public_availability_row(entry) for entry in availability]
             click.echo(json_formatter.format_json({"availability": output}))
         else:
             _format_accurate_availability_table(availability, include_cpu=include_cpu)
@@ -531,9 +469,8 @@ def _list_workspace_resources(ctx: Context, show_all: bool, no_cache: bool) -> N
         if ctx.json_output:
             output = [
                 {
-                    "group_id": a.group_id,
-                    "group_name": a.group_name,
-                    "gpu_type": a.gpu_type,
+                    "group_name": _display_name(a.group_name),
+                    "gpu_type": _display_name(a.gpu_type),
                     "gpus_per_node": a.gpu_per_node,
                     "total_nodes": a.total_nodes,
                     "ready_nodes": a.ready_nodes,
@@ -562,6 +499,13 @@ def run_resources_list(
     limit: Optional[int],
     include_cpu: bool,
 ) -> None:
+    if group:
+        group = reject_id_at_boundary(
+            ctx,
+            group,
+            resource_type="compute group",
+            list_command=f"inspire resources availability --workspace {workspace}",
+        )
     _list_accurate_resources(
         ctx,
         workspace=workspace,

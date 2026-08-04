@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 import click
@@ -16,11 +17,21 @@ from inspire.cli.context import (
 from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.table import render_table
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_query_scope
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+
+_REDACTED_ID_RE = re.compile(
+    r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?<[^<>]+-id>"
+)
+
+
+def _display_name(value: object, *, fallback: str = "-") -> str:
+    text = _REDACTED_ID_RE.sub(" ", scrub_raw_ids(value))
+    return " ".join(text.split()) or fallback
 
 
 def _workspace_name_map(
@@ -46,6 +57,18 @@ def _resolve_workspace_scope(
         session=session,
     )
     return (None if all_workspaces else workspace_ids[0], all_workspaces)
+
+
+def _public_group(row: dict) -> dict[str, object]:
+    return {
+        "group_name": _display_name(row.get("group_name")),
+        "workspace_name": _display_name(row.get("workspace_name"), fallback=""),
+        "gpus_per_node": row["gpu_per_node"],
+        "total_nodes": row["total_nodes"],
+        "ready_nodes": row["ready_nodes"],
+        "full_free_nodes": row["full_free_nodes"],
+        "full_free_gpus": row["full_free_gpus"],
+    }
 
 
 @click.command("nodes")
@@ -88,6 +111,13 @@ def list_nodes(
         inspire resources nodes --workspace 分布式训练空间 --min-nodes 2
     """
     try:
+        if group:
+            group = reject_id_at_boundary(
+                ctx,
+                group,
+                resource_type="compute group",
+                list_command=f"inspire resources nodes --workspace {workspace}",
+            )
         config = None
         try:
             config, _ = Config.from_files_and_env(
@@ -153,28 +183,30 @@ def list_nodes(
             reverse=True,
         )
         recommendation = filtered[0] if filtered else None
+        public_groups = [_public_group(row) for row in filtered]
+        public_recommendation = _public_group(recommendation) if recommendation else None
 
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
                     {
-                        "groups": filtered,
-                        "recommendation": recommendation,
+                        "groups": public_groups,
+                        "recommendation": public_recommendation,
                         "min_full_free_nodes": min_full_free_nodes,
-                        "workspace_filter": "all" if all_workspaces else workspace_id,
+                        "workspace_name": "all" if all_workspaces else workspace,
                         "total_full_free_nodes": sum(x["full_free_nodes"] for x in filtered),
                     }
                 )
             )
             return
 
+        if not filtered:
+            click.echo("No compute groups match.")
+            return
+
         show_workspace = (
             len({row["workspace_name"] for row in filtered if row["workspace_name"]}) > 1
         )
-        click.echo("")
-        click.echo("📊 Full-Free 8-GPU Nodes by Compute Group")
-        if min_full_free_nodes:
-            click.echo(f"Filter: at least {min_full_free_nodes} full-free node(s)")
         if show_workspace:
             headers: tuple[str, ...] = (
                 "Workspace",
@@ -183,20 +215,19 @@ def list_nodes(
                 "Ready",
                 "Total",
                 "Free GPUs",
-                "",
             )
-            widths = [16, 25, 10, 8, 8, 10, 2]
-            aligns = ["left", "left", "right", "right", "right", "right", "left"]
+            widths = [16, 25, 10, 8, 8, 10]
+            aligns = ["left", "left", "right", "right", "right", "right"]
         else:
-            headers = ("Group", "Full Free", "Ready", "Total", "Free GPUs", "")
-            widths = [25, 10, 8, 8, 10, 2]
-            aligns = ["left", "right", "right", "right", "right", "left"]
+            headers = ("Group", "Full Free", "Ready", "Total", "Free GPUs")
+            widths = [25, 10, 8, 8, 10]
+            aligns = ["left", "right", "right", "right", "right"]
 
         total_full_free = 0
         total_free_gpus = 0
         table_rows: list[tuple[object, ...]] = []
         for row in filtered:
-            name = scrub_raw_ids(row["group_name"])
+            name = _display_name(row["group_name"])
             full_free = row["full_free_nodes"]
             ready = row["ready_nodes"]
             total = row["total_nodes"]
@@ -205,51 +236,39 @@ def list_nodes(
             total_full_free += full_free
             total_free_gpus += free_gpus
 
-            if full_free >= 10:
-                indicator = "🟢"
-            elif full_free >= 3:
-                indicator = "🟡"
-            elif full_free > 0:
-                indicator = "🟠"
-            else:
-                indicator = "🔴"
-
             if show_workspace:
                 table_rows.append(
                     (
-                        scrub_raw_ids(row["workspace_name"]),
+                        _display_name(row["workspace_name"], fallback=""),
                         name,
                         full_free,
                         ready,
                         total,
                         free_gpus,
-                        indicator,
                     )
                 )
             else:
-                table_rows.append((name, full_free, ready, total, free_gpus, indicator))
+                table_rows.append((name, full_free, ready, total, free_gpus))
 
         if show_workspace:
-            table_rows.append(("TOTAL", "", total_full_free, "", "", total_free_gpus, ""))
+            table_rows.append(("TOTAL", "", total_full_free, "", "", total_free_gpus))
         else:
-            table_rows.append(("TOTAL", total_full_free, "", "", total_free_gpus, ""))
+            table_rows.append(("TOTAL", total_full_free, "", "", total_free_gpus))
         click.echo(
             "\n".join(render_table(headers, table_rows, widths, aligns=aligns, line_char="─"))
         )
         if recommendation is not None:
-            workspace = scrub_raw_ids(str(recommendation.get("workspace_name") or ""))
-            group_name = scrub_raw_ids(str(recommendation.get("group_name") or "Unknown"))
-            prefix = f"{workspace} / " if show_workspace and workspace else ""
-            click.echo("")
+            workspace_name = _display_name(
+                recommendation.get("workspace_name"),
+                fallback="",
+            )
+            group_name = _display_name(recommendation.get("group_name"), fallback="Unknown")
+            prefix = f"{workspace_name} / " if show_workspace and workspace_name else ""
             click.echo(
                 "Recommended: "
                 f"{prefix}{group_name} "
                 f"({recommendation['full_free_nodes']} full-free node(s))"
             )
-        click.echo("")
-        click.echo("Full Free = READY nodes with 8 GPUs and no running tasks")
-        click.echo("Free GPUs = Total available GPUs (matches 'inspire resources availability')")
-        click.echo("")
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

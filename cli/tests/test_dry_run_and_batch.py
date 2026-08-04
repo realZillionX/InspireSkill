@@ -41,6 +41,32 @@ class FakeWebSession:
     }
 
 
+def _assert_public_batch_output(value: Any) -> None:
+    forbidden = {
+        "create_body",
+        "create_kwargs",
+        "debug",
+        "payload",
+        "progress",
+        "raw",
+        "request",
+        "response",
+        "result",
+        "scanned",
+        "source",
+    }
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = str(key).replace("-", "_").lower()
+            assert normalized not in forbidden
+            assert normalized not in {"id", "ids"}
+            assert not normalized.endswith(("_id", "_ids"))
+            _assert_public_batch_output(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_public_batch_output(child)
+
+
 def _patch_submit_deps(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -612,21 +638,21 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     items = payload["data"]["items"]
-    assert [item["create_kwargs"]["name"] for item in items] == ["train-s1", "train-s2"]
-    assert "--seed 2" in items[1]["create_kwargs"]["command"]
-    assert items[0]["create_kwargs"]["framework_config"][0]["image"] == (
-        "registry.batch/train:latest"
-    )
-    assert items[0]["create_kwargs"]["exclude_nodes"] == ["qb-prod-gpu171"]
-    assert items[1]["create_kwargs"]["exclude_nodes"] == ["qb-prod-gpu172"]
-    assert "exclude_nodes" not in items[0]["create_kwargs"]["framework_config"][0]
-    assert "exclude_nodes" not in items[1]["create_kwargs"]["framework_config"][0]
-    assert items[0]["create_kwargs"]["framework_config"][0]["shm_gi"] == 96
-    assert items[1]["create_kwargs"]["framework_config"][0]["shm_gi"] == 96
-    assert items[0]["shm_size_gib"] == 96
-    assert items[1]["shm_size_gib"] == 96
-    assert items[0]["create_kwargs"]["task_priority"] == 7
-    assert items[0]["create_kwargs"]["enable_notification"] is True
+    assert [item["name"] for item in items] == ["train-s1", "train-s2"]
+    assert items[0]["kind"] == "job"
+    assert items[0]["workspace"] == "cpu"
+    assert items[0]["project"] == "Project One"
+    assert items[0]["compute_group"] == "H200 Room"
+    assert items[0]["image"] == "registry.batch/train:latest"
+    assert items[1]["command"] == "python train.py --seed 2"
+    assert items[0]["exclude_nodes"] == ["qb-prod-gpu171"]
+    assert items[1]["exclude_nodes"] == ["qb-prod-gpu172"]
+    assert items[0]["shared_memory_gib"] == 96
+    assert items[1]["shared_memory_gib"] == 96
+    assert items[0]["priority"] == 7
+    assert items[0]["notifications"] is True
+    assert items[0]["matrix"] == {"seed": 1}
+    _assert_public_batch_output(payload["data"])
     assert api.training_calls == []
 
 
@@ -677,10 +703,11 @@ def test_batch_notification_item_overrides_config_default(
 
     assert result.exit_code == 0, result.output
     items = json.loads(result.output)["data"]["items"]
-    assert [item["create_kwargs"]["enable_notification"] for item in items] == [
+    assert [item["notifications"] for item in items] == [
         True,
         False,
     ]
+    _assert_public_batch_output(items)
     assert api.training_calls == []
 
 
@@ -749,6 +776,51 @@ def test_batch_requires_jobs_array(tmp_path: Path) -> None:
     assert "jobs must be a non-empty array" in result.output
 
 
+def test_batch_rejects_platform_ids_in_name_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    raw_project_id = "project-12345678-1234-1234-1234-123456789abc"
+    batch_path = tmp_path / "raw-id.json"
+    batch_path.write_text(
+        json.dumps(
+            {
+                "profiles": {
+                    "job": {
+                        "bad": {
+                            "quota": "1,20,200",
+                            "workspace": "cpu",
+                            "project": raw_project_id,
+                            "group": "H200 Room",
+                            "image": "registry.batch/train:latest",
+                        }
+                    }
+                },
+                "jobs": [
+                    {
+                        "type": "job",
+                        "profile": "bad",
+                        "name": "train",
+                        "command": "python train.py",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["job", "batch", str(batch_path), "--dry-run"],
+    )
+
+    assert result.exit_code != 0
+    assert "project name" in result.output
+    assert raw_project_id not in result.output
+    assert api.training_calls == []
+
+
 def test_batch_matrix_submit_calls_create_for_each_item(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -785,10 +857,21 @@ command = "python train.py --lr {lr}"
         encoding="utf-8",
     )
 
-    result = CliRunner().invoke(cli_main, ["job", "batch", str(batch_path)])
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "job", "batch", str(batch_path)],
+    )
 
     assert result.exit_code == 0, result.output
-    assert "Submitted 2 job batch item(s)" in result.output
+    payload = json.loads(result.output)
+    assert payload["data"] == {
+        "dry_run": False,
+        "items": [
+            {"kind": "job", "name": "train-1e-4"},
+            {"kind": "job", "name": "train-2e-4"},
+        ],
+    }
+    _assert_public_batch_output(payload["data"])
     assert [call["name"] for call in api.training_calls] == ["train-1e-4", "train-2e-4"]
     assert {call["framework_config"][0]["image"] for call in api.training_calls} == {
         "registry.batch/train:latest"
@@ -942,9 +1025,15 @@ def test_notebook_batch_matrix_dry_run_expands_json_without_submit(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     items = payload["data"]["items"]
-    assert [item["create_kwargs"]["name"] for item in items] == ["nb-s1", "nb-s2"]
+    assert [item["name"] for item in items] == ["nb-s1", "nb-s2"]
     assert items[0]["kind"] == "notebook"
-    assert items[0]["create_kwargs"]["shared_memory_size"] == 32
+    assert items[0]["workspace"] == "cpu"
+    assert items[0]["project"] == "Project One"
+    assert items[0]["compute_group"] == "H200 Room"
+    assert items[0]["image"] == "registry.batch/notebook:latest"
+    assert items[0]["shared_memory_gib"] == 32
+    assert items[0]["matrix"] == {"seed": 1}
+    _assert_public_batch_output(payload["data"])
 
 
 def test_batch_requires_training_fields_after_expansion(

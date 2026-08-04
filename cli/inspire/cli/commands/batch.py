@@ -22,10 +22,11 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import json_formatter
 from inspire.cli.utils import job_submit
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.quota_resolver import (
     QuotaMatchError,
     QuotaParseError,
@@ -53,6 +54,86 @@ from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NotebookFailedError
 from inspire.platform.web.session import get_web_session
+
+_BATCH_NOISE_KEYS = {
+    "code",
+    "create_body",
+    "create_kwargs",
+    "data",
+    "debug",
+    "internal",
+    "metadata",
+    "payload",
+    "progress",
+    "raw",
+    "request",
+    "response",
+    "result",
+    "scanned",
+    "source",
+    "trace",
+}
+
+_REFERENCE_FIELDS = {
+    "workspace": ("workspace", "inspire config context"),
+    "project": ("project", "inspire project list --workspace <workspace-name>"),
+    "group": (
+        "compute group",
+        "inspire resources availability --workspace <workspace-name>",
+    ),
+    "image": ("image", "inspire image list --workspace <workspace-name>"),
+    "model": (
+        "model",
+        "inspire model list --workspace <workspace-name> --project <project-name>",
+    ),
+}
+
+_PUBLIC_FIELDS_BY_KIND = {
+    "job": (
+        ("framework", "framework"),
+        ("nodes", "nodes"),
+        ("priority", "priority"),
+        ("max_time", "max_time_hours"),
+        ("max_time_hours", "max_time_hours"),
+        ("enable_notification", "notifications"),
+        ("auto_fault_tolerance", "auto_fault_tolerance"),
+        ("fault_tolerance_max_retry", "fault_tolerance_max_retry"),
+        ("exclude_nodes", "exclude_nodes"),
+        ("shm_size", "shared_memory_gib"),
+        ("command", "command"),
+    ),
+    "hpc": (
+        ("instance_count", "instances"),
+        ("number_of_tasks", "tasks"),
+        ("cpus_per_task", "cpus_per_task"),
+        ("memory_per_cpu", "memory_per_cpu_gib"),
+        ("priority", "priority"),
+        ("entrypoint", "entrypoint"),
+    ),
+    "notebook": (
+        ("priority", "priority"),
+        ("shm_size", "shared_memory_gib"),
+        ("auto_stop", "auto_stop"),
+        ("wait", "wait"),
+        ("post_start", "post_start"),
+    ),
+    "ray": (
+        ("priority", "priority"),
+        ("shm_size", "shared_memory_gib"),
+        ("command", "command"),
+        ("workers", "workers"),
+    ),
+    "serving": (
+        ("model_version", "model_version"),
+        ("priority", "priority"),
+        ("port", "port"),
+        ("replicas", "replicas"),
+        ("nodes_per_replica", "nodes_per_replica"),
+        ("shm_gib", "shared_memory_gib"),
+        ("custom_domain", "custom_domain"),
+        ("command", "command"),
+    ),
+}
 
 
 class _FormatMap(dict[str, Any]):
@@ -255,6 +336,93 @@ def _apply_item_profile(
         if value is not None:
             merged[field] = value
     return merged
+
+
+def _public_value(value: Any) -> Any:
+    sanitized = json_formatter.sanitize_json_data(value)
+    if isinstance(sanitized, dict):
+        return {
+            key: _public_value(child)
+            for key, child in sanitized.items()
+            if str(key).replace("-", "_").strip().lower() not in _BATCH_NOISE_KEYS
+        }
+    if isinstance(sanitized, list):
+        return [_public_value(item) for item in sanitized]
+    if isinstance(sanitized, tuple):
+        return [_public_value(item) for item in sanitized]
+    if isinstance(sanitized, str):
+        return scrub_raw_ids(sanitized)
+    return sanitized
+
+
+def _validate_name_references(ctx: Context, item: dict[str, Any]) -> None:
+    for field, (resource_type, list_command) in _REFERENCE_FIELDS.items():
+        value = item.get(field)
+        if isinstance(value, str) and value.strip():
+            reject_id_at_boundary(
+                ctx,
+                value,
+                resource_type=resource_type,
+                list_command=list_command,
+            )
+
+
+def _validate_worker_reference_string(ctx: Context, spec: str) -> None:
+    for segment in spec.split(";"):
+        field, separator, value = segment.partition("=")
+        if not separator:
+            continue
+        metadata = _REFERENCE_FIELDS.get(field.strip().lower())
+        if metadata is None or not value.strip():
+            continue
+        resource_type, list_command = metadata
+        reject_id_at_boundary(
+            ctx,
+            value,
+            resource_type=resource_type,
+            list_command=list_command,
+        )
+
+
+def _public_batch_plan(
+    item: dict[str, Any],
+    *,
+    kind: str,
+    name: str,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    output: dict[str, Any] = {
+        "kind": kind,
+        "name": name,
+    }
+    common_fields = (
+        ("workspace", "workspace"),
+        ("project", "project"),
+        ("group", "compute_group"),
+        ("quota", "quota"),
+        ("image", "image"),
+        ("model", "model"),
+    )
+    for source, target in (*common_fields, *_PUBLIC_FIELDS_BY_KIND[kind]):
+        value = item.get(source)
+        if value not in (None, "", [], {}):
+            output[target] = value
+    matrix = item.get("_matrix")
+    if matrix:
+        output["matrix"] = matrix
+    for key, value in (overrides or {}).items():
+        if value in (None, "", [], {}):
+            output.pop(key, None)
+        else:
+            output[key] = value
+    return _public_value(output)
+
+
+def _submitted_batch_item(*, kind: str, name: str) -> dict[str, str]:
+    return {
+        "kind": kind,
+        "name": scrub_raw_ids(name),
+    }
 
 
 def _require_condition_str(item: dict[str, Any], key: str, *, kind: str) -> str:
@@ -648,7 +816,7 @@ def _submit_notebook_plan(plan: dict[str, Any], *, config: Config, session: Any)
             completion_marker=post_start_spec.completion_marker,
         )
 
-    return {"kind": "notebook", "name": plan["name"], "result": result}
+    return _submitted_batch_item(kind="notebook", name=str(plan["name"]))
 
 
 def _require_list(item: dict[str, Any], key: str) -> list[Any]:
@@ -661,6 +829,7 @@ def _require_list(item: dict[str, Any], key: str) -> list[Any]:
 def _ray_worker_specs(
     item: dict[str, Any],
     *,
+    ctx: Context,
     config: Config,
     local_profiles: dict[str, dict[str, dict[str, str]]],
 ) -> tuple[str, ...]:
@@ -669,6 +838,7 @@ def _ray_worker_specs(
         if isinstance(raw, str):
             if not raw.strip():
                 raise ConfigError("Batch item field workers must not contain empty strings.")
+            _validate_worker_reference_string(ctx, raw)
             specs.append(raw)
             continue
         if not isinstance(raw, dict):
@@ -679,6 +849,7 @@ def _ray_worker_specs(
             item=dict(raw),
             local_profiles=local_profiles,
         )
+        _validate_name_references(ctx, worker)
         missing = {"name", "min", "max"} - set(worker.keys())
         if missing:
             raise ConfigError(f"Ray worker spec is missing keys: {sorted(missing)}.")
@@ -731,7 +902,12 @@ def _prepare_ray_item(
         group=_require_condition_str(item, "group", kind="ray"),
         quota=_require_condition_str(item, "quota", kind="ray"),
         shm_size=_optional_int(item, "shm_size", min_value=1),
-        workers=_ray_worker_specs(item, config=config, local_profiles=local_profiles),
+        workers=_ray_worker_specs(
+            item,
+            ctx=ctx,
+            config=config,
+            local_profiles=local_profiles,
+        ),
     )
 
 
@@ -828,22 +1004,23 @@ def _emit_batch_result(
     outputs: list[dict[str, Any]],
     command_name: str,
 ) -> None:
+    public_outputs = [_public_value(item) for item in outputs]
     if ctx.json_output:
-        click.echo(json_formatter.format_json({"dry_run": dry_run, "items": outputs}))
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "dry_run": dry_run,
+                    "items": public_outputs,
+                }
+            )
+        )
         return
 
-    click.echo(
-        human_formatter.format_success(
-            f"{'Dry run' if dry_run else 'Submitted'} {len(outputs)} "
-            f"{command_name} batch item(s)"
-        )
-    )
-    for index, item in enumerate(outputs, start=1):
+    action = "Planned" if dry_run else "Submitted"
+    click.echo(f"{action} {len(public_outputs)} {command_name} batch item(s)")
+    for item in public_outputs:
         name = item.get("name") or item.get("create_kwargs", {}).get("name") or "-"
-        kind = item.get("kind") or command_name
-        click.echo(f"{index}. {kind}: {scrub_raw_ids(str(name))}")
-    if dry_run:
-        click.echo("No workloads were submitted.")
+        click.echo(f"- {scrub_raw_ids(str(name))}")
 
 
 def _handle_batch_exception(ctx: Context, error: Exception) -> None:
@@ -910,19 +1087,46 @@ def job_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
                 item=item,
                 local_profiles=local_profiles,
             )
+            _validate_name_references(ctx, item)
             plan = _prepare_training_item(item, config=config, session=session)
             if dry_run:
-                payload = job_submit.training_plan_payload(plan)
-                payload["matrix"] = item.get("_matrix", {})
-                outputs.append(payload)
+                outputs.append(
+                    _public_batch_plan(
+                        item,
+                        kind="job",
+                        name=str(plan.create_kwargs["name"]),
+                        overrides={
+                            "workspace": workspace_label(
+                                session,
+                                plan.workspace_id,
+                                _require_condition_str(item, "workspace", kind="job"),
+                            ),
+                            "project": plan.project_name,
+                            "compute_group": plan.quota.compute_group_name,
+                            "quota": {
+                                "gpu_count": plan.quota.gpu_count,
+                                "gpu_type": plan.quota.gpu_type,
+                                "cpu_count": plan.quota.cpu_count,
+                                "memory_gib": plan.quota.memory_gib,
+                            },
+                            "priority": plan.create_kwargs.get("task_priority"),
+                            "nodes": plan.create_kwargs.get("instance_count"),
+                            "notifications": plan.create_kwargs.get("enable_notification"),
+                            "exclude_nodes": job_submit.training_plan_exclude_nodes(plan),
+                            "shared_memory_gib": plan.shm_size_gib,
+                        },
+                    )
+                )
             else:
-                data = browser_api_module.create_training_job(
+                browser_api_module.create_training_job(
                     payload=plan.create_kwargs,
                     session=session,
                 )
-                result = {"code": 0, "data": data}
                 outputs.append(
-                    {"kind": "training", "name": plan.create_kwargs["name"], "result": result}
+                    _submitted_batch_item(
+                        kind="job",
+                        name=str(plan.create_kwargs["name"]),
+                    )
                 )
         _emit_batch_result(ctx, dry_run=dry_run, outputs=outputs, command_name="job")
     except Exception as e:
@@ -969,24 +1173,31 @@ def hpc_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
                 item=item,
                 local_profiles=local_profiles,
             )
+            _validate_name_references(ctx, item)
             create_kwargs = _prepare_hpc_item(item, config=config, session=session)
             if dry_run:
                 outputs.append(
-                    {
-                        "dry_run": True,
-                        "kind": "hpc",
-                        "name": create_kwargs["job_name"],
-                        "create_kwargs": create_kwargs,
-                        "matrix": item.get("_matrix", {}),
-                    }
+                    _public_batch_plan(
+                        item,
+                        kind="hpc",
+                        name=str(create_kwargs["job_name"]),
+                        overrides={
+                            "priority": create_kwargs.get("task_priority"),
+                            "instances": create_kwargs.get("instance_count"),
+                        },
+                    )
                 )
             else:
-                data = browser_api_module.create_hpc_job(
+                browser_api_module.create_hpc_job(
                     payload=create_kwargs,
                     session=session,
                 )
-                result = {"code": 0, "data": data}
-                outputs.append({"kind": "hpc", "name": create_kwargs["job_name"], "result": result})
+                outputs.append(
+                    _submitted_batch_item(
+                        kind="hpc",
+                        name=str(create_kwargs["job_name"]),
+                    )
+                )
         _emit_batch_result(ctx, dry_run=dry_run, outputs=outputs, command_name="hpc")
     except Exception as e:
         _handle_batch_exception(ctx, e)
@@ -1038,21 +1249,26 @@ def notebook_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
                 item=item,
                 local_profiles=local_profiles,
             )
+            _validate_name_references(ctx, item)
             plan = _prepare_notebook_item(item, config=config, session=session)
             if dry_run:
                 outputs.append(
-                    {
-                        "dry_run": True,
-                        "kind": "notebook",
-                        "name": plan["name"],
-                        "create_kwargs": plan["create_kwargs"],
-                        "workspace_name": plan["workspace_name"],
-                        "project_name": plan["project_name"],
-                        "image_name": plan["image_name"],
-                        "resource": plan["resource"],
-                        "compute_group_name": plan["compute_group_name"],
-                        "matrix": item.get("_matrix", {}),
-                    }
+                    _public_batch_plan(
+                        item,
+                        kind="notebook",
+                        name=str(plan["name"]),
+                        overrides={
+                            "workspace": plan["workspace_name"],
+                            "project": plan["project_name"],
+                            "image": plan["image_name"],
+                            "compute_group": plan["compute_group_name"],
+                            "quota": plan["resource"],
+                            "priority": plan["create_kwargs"].get("task_priority"),
+                            "shared_memory_gib": plan["create_kwargs"].get(
+                                "shared_memory_size"
+                            ),
+                        },
+                    )
                 )
             else:
                 outputs.append(_submit_notebook_plan(plan, config=config, session=session))
@@ -1102,6 +1318,7 @@ def ray_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
                 item=item,
                 local_profiles=local_profiles,
             )
+            _validate_name_references(ctx, item)
             body = _prepare_ray_item(
                 item,
                 ctx=ctx,
@@ -1111,17 +1328,17 @@ def ray_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
             )
             if dry_run:
                 outputs.append(
-                    {
-                        "dry_run": True,
-                        "kind": "ray",
-                        "name": body["name"],
-                        "create_body": body,
-                        "matrix": item.get("_matrix", {}),
-                    }
+                    _public_batch_plan(
+                        item,
+                        kind="ray",
+                        name=str(body["name"]),
+                    )
                 )
             else:
-                result = browser_api_module.create_ray_job(body, session=session)
-                outputs.append({"kind": "ray", "name": body["name"], "result": result})
+                browser_api_module.create_ray_job(body, session=session)
+                outputs.append(
+                    _submitted_batch_item(kind="ray", name=str(body["name"]))
+                )
         _emit_batch_result(ctx, dry_run=dry_run, outputs=outputs, command_name="ray")
     except Exception as e:
         _handle_batch_exception(ctx, e)
@@ -1174,28 +1391,32 @@ def serving_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
                 item=item,
                 local_profiles=local_profiles,
             )
+            _validate_name_references(ctx, item)
             payload = _prepare_serving_item(item, ctx=ctx, config=config, session=session)
             if dry_run:
                 outputs.append(
-                    {
-                        "dry_run": True,
-                        "kind": "serving",
-                        "name": payload["name"],
-                        "payload": payload,
-                        "matrix": item.get("_matrix", {}),
-                    }
+                    _public_batch_plan(
+                        item,
+                        kind="serving",
+                        name=str(payload["name"]),
+                    )
                 )
             else:
                 submit_payload = dict(payload)
                 workspace_id = str(submit_payload.pop("workspace_id"))
                 project_id = str(submit_payload.pop("project_id"))
-                result = browser_api_module.create_serving(
+                browser_api_module.create_serving(
                     workspace_id=workspace_id,
                     project_id=project_id,
                     session=session,
                     **submit_payload,
                 )
-                outputs.append({"kind": "serving", "name": payload["name"], "result": result})
+                outputs.append(
+                    _submitted_batch_item(
+                        kind="serving",
+                        name=str(payload["name"]),
+                    )
+                )
         _emit_batch_result(ctx, dry_run=dry_run, outputs=outputs, command_name="serving")
     except Exception as e:
         _handle_batch_exception(ctx, e)

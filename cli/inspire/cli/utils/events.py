@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional
 import click
 
 from inspire.cli.formatters import json_formatter
+from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 
@@ -72,56 +73,65 @@ def filter_events(
     return out
 
 
-def render_events_table(events: list[dict]) -> None:
-    """Print events as a dense table to stdout.
+def public_event(event: dict) -> dict[str, Any]:
+    """Project a platform event onto the compact public diagnostic schema."""
+    message = event.get("message") or event.get("content")
+    timestamp = (
+        event.get("last_timestamp")
+        or event.get("first_timestamp")
+        or event.get("timestamp")
+        or event.get("age")
+    )
+    projected = {
+        "time": _fmt_timestamp(timestamp) if timestamp not in (None, "") else None,
+        "type": event.get("type"),
+        "reason": event.get("reason"),
+        "message": message,
+        "count": event.get("count"),
+    }
+    return {
+        key: scrub_raw_ids(value) if isinstance(value, str) else value
+        for key, value in projected.items()
+        if value not in (None, "")
+    }
 
-    Columns: TIME (last_timestamp) · TYPE (Normal/Warning/–) · REASON · FROM · MESSAGE.
-    Missing `type` (HPC events lack it) renders as blank.
-    """
+
+def render_events_table(events: list[dict]) -> None:
+    """Print compact event diagnostics to stdout."""
     if not events:
         click.echo("(no events — platform GCs events for long-completed jobs)")
         return
 
-    def row(e: dict) -> tuple[str, str, str, str, str]:
+    def row(event: dict) -> tuple[str, str, str, str, str]:
+        item = public_event(event)
         return (
-            _fmt_timestamp(e.get("last_timestamp")),
-            str(e.get("type", "") or "-"),
-            scrub_raw_ids(e.get("reason", "") or "-"),
-            scrub_raw_ids(e.get("from", "") or "-"),
-            scrub_raw_ids(str(e.get("message", "") or "").replace("\n", " ")),
+            str(item.get("time") or "-"),
+            str(item.get("type") or "-"),
+            str(item.get("reason") or "-"),
+            str(item.get("count") or "-"),
+            str(item.get("message") or "-").replace("\n", " "),
         )
 
     rows = [row(e) for e in events]
-    header = ("TIME", "TYPE", "REASON", "FROM", "MESSAGE")
+    header = ("Time", "Type", "Reason", "Count", "Message")
     widths = [
-        max(len(header[i]), max((len(r[i]) for r in rows), default=0))
-        for i in range(4)
+        column_width(header[0], [row[0] for row in rows], max_width=19),
+        column_width(header[1], [row[1] for row in rows], max_width=10),
+        column_width(header[2], [row[2] for row in rows], max_width=32),
+        column_width(header[3], [row[3] for row in rows], max_width=7),
+        column_width(header[4], [row[4] for row in rows], max_width=80),
     ]
-    widths[2] = min(widths[2], 40)
-    widths[3] = min(widths[3], 30)
-
     click.echo(
-        f"{header[0].ljust(widths[0])}  "
-        f"{header[1].ljust(widths[1])}  "
-        f"{header[2].ljust(widths[2])}  "
-        f"{header[3].ljust(widths[3])}  "
-        f"{header[4]}"
-    )
-    click.echo("-" * (sum(widths) + 8 + 40))
-    for r in rows:
-        reason = r[2] if len(r[2]) <= widths[2] else r[2][: widths[2] - 1] + "…"
-        src = r[3] if len(r[3]) <= widths[3] else r[3][: widths[3] - 1] + "…"
-        line = (
-            f"{r[0].ljust(widths[0])}  "
-            f"{r[1].ljust(widths[1])}  "
-            f"{reason.ljust(widths[2])}  "
-            f"{src.ljust(widths[3])}  "
-            f"{r[4]}"
+        "\n".join(
+            render_table(
+                header,
+                rows,
+                widths,
+                aligns=["left", "left", "left", "right", "left"],
+                line_char="─",
+            )
         )
-        if r[1].lower() == "warning":
-            click.echo(click.style(line, fg="yellow"))
-        else:
-            click.echo(line)
+    )
 
 
 def emit_events(
@@ -133,14 +143,14 @@ def emit_events(
 ) -> None:
     """Render events for stdout according to JSON vs human preference."""
     if ctx_json or local_json:
+        public_events = [public_event(event) for event in events]
         click.echo(
             json_formatter.format_json(
                 {
-                    "resource_type": resource_type,
+                    "resource": resource_type,
                     "name": resource_name,
-                    "count": len(events),
-                    "source": "web",
-                    "events": events,
+                    "count": len(public_events),
+                    "events": public_events,
                 }
             )
         )
