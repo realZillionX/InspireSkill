@@ -19,8 +19,10 @@ Design notes:
 """
 from __future__ import annotations
 
+import contextlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -30,7 +32,9 @@ import sys
 import tarfile
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,6 +54,8 @@ from inspire.accounts.normalize import (
     _playwright_chromium_available,
 )
 from inspire.platform.web.session.browser_launch import playwright_install_args
+
+logger = logging.getLogger(__name__)
 
 
 def _opencode_config_dir() -> Path:
@@ -157,6 +163,43 @@ _CHANGELOG_RELEASE_HEADING_RE = re.compile(
     r"^#\s+(?P<tag>v?\d+(?:\.\d+){1,3}(?:[A-Za-z0-9._+-]*)?)\s*$",
     re.MULTILINE,
 )
+_RELEASE_BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?P<text>.+?)\s*$")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_RAW_URL_RE = re.compile(r"https?://\S+")
+_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.])/(?:[^\s`/]+/)*[^\s`/]+")
+_RELEASE_SUMMARY_MAX_RELEASES = 3
+_RELEASE_SUMMARY_MAX_ITEMS = 6
+_RELEASE_SUMMARY_ITEM_MAX_CHARS = 160
+_RELEASE_ENGINEERING_HINTS = (
+    "uv tool ",
+    "pipx ",
+    "playwright install",
+    "python -m ",
+    "curl ",
+    "pypi",
+    "http_proxy",
+    "https_proxy",
+)
+_DEBUG_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+_DEBUG_SECRET_OPTION_RE = re.compile(
+    r"(?i)(?P<prefix>--(?:access[-_]?token|refresh[-_]?token|token|password|passwd|"
+    r"api[-_]?key|apikey)(?:=|\s+))(?P<value>\S+)"
+)
+_DEBUG_SECRET_ASSIGNMENT_RE = re.compile(
+    r"""(?ix)
+    (?P<prefix>
+        (?<![\w-])
+        ["']?
+        (?:access[-_]?token|refresh[-_]?token|token|password|passwd|api[-_]?key|apikey)
+        ["']?
+        \s*[:=]\s*
+    )
+    (?P<value>"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;&]+)
+    """
+)
+_DEBUG_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![:/\w.])/(?:[^\s`/]+/)*[^\s`/]+"
+)
 
 
 @dataclass(frozen=True)
@@ -177,6 +220,106 @@ class ReleaseEntry:
     tag: str
     body: str
     url: str | None = None
+
+
+def _emit_stage(message: str, *, silent: bool) -> None:
+    if not silent:
+        click.secho(f"› {message}", fg="blue")
+
+
+def _emit_update_failure(*, silent: bool, check_only: bool = False) -> None:
+    if silent:
+        return
+    action = "check" if check_only else "update"
+    click.secho(
+        f"✗ InspireSkill {action} failed. Retry with `inspire --debug update"
+        f"{' --check' if check_only else ''}` for diagnostics.",
+        fg="red",
+        err=True,
+    )
+
+
+def _scrub_debug_text(value: str) -> str:
+    def _scrub_url(match: re.Match[str]) -> str:
+        raw = match.group(0)
+        trailing = ""
+        while raw and raw[-1] in ".,;)]}":
+            trailing = raw[-1] + trailing
+            raw = raw[:-1]
+        try:
+            parsed = urllib.parse.urlsplit(raw)
+            hostname = parsed.hostname
+            if not hostname:
+                return "<url>" + trailing
+            host = f"[{hostname}]" if ":" in hostname else hostname
+            try:
+                port = parsed.port
+            except ValueError:
+                port = None
+            netloc = f"{host}:{port}" if port is not None else host
+            query = "<redacted>" if parsed.query else ""
+            fragment = "<redacted>" if parsed.fragment else ""
+            scrubbed = urllib.parse.urlunsplit(
+                (parsed.scheme, netloc, parsed.path, query, fragment)
+            )
+            return scrubbed + trailing
+        except ValueError:
+            return "<url>" + trailing
+
+    scrubbed = _DEBUG_URL_RE.sub(_scrub_url, str(value or ""))
+    scrubbed = _DEBUG_SECRET_OPTION_RE.sub(
+        lambda match: f"{match.group('prefix')}<redacted>",
+        scrubbed,
+    )
+    scrubbed = _DEBUG_SECRET_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group('prefix')}<redacted>",
+        scrubbed,
+    )
+    return _DEBUG_ABSOLUTE_PATH_RE.sub("<path>", scrubbed)
+
+
+def _log_completed_process(
+    label: str,
+    proc: subprocess.CompletedProcess[str],
+    *,
+    cmd: list[str] | None = None,
+) -> None:
+    logger.debug(
+        "%s command=%s exit=%s stdout=%r stderr=%r",
+        label,
+        _scrub_debug_text(shlex.join(cmd)) if cmd else "<internal>",
+        proc.returncode,
+        _scrub_debug_text(proc.stdout or ""),
+        _scrub_debug_text(proc.stderr or ""),
+    )
+
+
+@contextlib.contextmanager
+def _suppress_subprocess_output() -> Iterator[None]:
+    """Capture child-process output for debug logs without printing it."""
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    with (
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout,
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr,
+    ):
+        try:
+            os.dup2(stdout.fileno(), 1)
+            os.dup2(stderr.fileno(), 2)
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                yield
+        finally:
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+            stdout.seek(0)
+            stderr.seek(0)
+            logger.debug(
+                "Suppressed child output: stdout=%r stderr=%r",
+                _scrub_debug_text(stdout.read()),
+                _scrub_debug_text(stderr.read()),
+            )
 
 
 def _detect_harnesses() -> list[str]:
@@ -319,6 +462,7 @@ def _run_upgrade_command(
     silent: bool,
     env: dict[str, str] | None = None,
 ) -> tuple[int, str]:
+    del silent  # Output is always captured; --debug receives it through logging.
     proc = subprocess.run(
         cmd,
         check=False,
@@ -328,11 +472,7 @@ def _run_upgrade_command(
         stderr=subprocess.PIPE,
     )
     output = (proc.stdout or "") + (proc.stderr or "")
-    if not silent:
-        if proc.stdout:
-            click.echo(proc.stdout, nl=False)
-        if proc.stderr:
-            click.echo(proc.stderr, nl=False, err=True)
+    _log_completed_process("package upgrade", proc, cmd=cmd)
     return proc.returncode, output
 
 
@@ -341,70 +481,41 @@ def _upgrade_cli(silent: bool, target_version: str | None = None) -> bool:
     uv_info = None if silent and installer in {"uv", "pipx"} else _uv_tool_info()
     if installer == "uv":
         cmd = _official_uv_install_cmd(target_version)
-        if uv_info and _is_local_requirement(uv_info.required) and not silent:
-            click.secho(
-                f"! Existing uv tool install uses a local source ({uv_info.required}); "
-                "resetting the global tool to the official PyPI package.",
-                fg="yellow",
-                err=True,
+        if uv_info and _is_local_requirement(uv_info.required):
+            logger.debug(
+                "Resetting local uv requirement: %s",
+                _scrub_debug_text(uv_info.required or ""),
             )
     elif installer == "pipx":
         cmd = ["pipx", "upgrade", PACKAGE_NAME]
     elif uv_info is not None:
         cmd = _official_uv_install_cmd(target_version)
-        if not silent:
-            click.secho(
-                "› Current process is not the global uv tool install; "
-                "updating the global `inspire` executable managed by uv.",
-                fg="blue",
+        logger.debug("Updating the discovered global uv tool installation")
+        if _is_local_requirement(uv_info.required):
+            logger.debug(
+                "Resetting local uv requirement: %s",
+                _scrub_debug_text(uv_info.required or ""),
             )
-            if _is_local_requirement(uv_info.required):
-                click.secho(
-                    f"! Existing uv tool install uses a local source ({uv_info.required}); "
-                    "resetting the global tool to the official PyPI package.",
-                    fg="yellow",
-                    err=True,
-                )
     elif _pipx_tool_info() is not None:
         cmd = ["pipx", "upgrade", PACKAGE_NAME]
-        if not silent:
-            click.secho(
-                "› Current process is not the global pipx install; "
-                "updating the global `inspire` executable managed by pipx.",
-                fg="blue",
-            )
+        logger.debug("Updating the discovered global pipx installation")
     else:
-        if not silent:
-            click.secho(
-                "✗ Can't find a global InspireSkill install managed by "
-                "`uv tool install` or `pipx install`.",
-                fg="red",
-                err=True,
-            )
-            click.secho(f"  python = {sys.executable}", fg="red", err=True)
-            click.secho(f"  prefix = {sys.prefix}", fg="red", err=True)
-            click.echo(
-                "\n  Reinstall through the official installer so future updates "
-                "use the same path as first-time installs:\n"
-                "      curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scripts/install.sh | bash",
-                err=True,
-            )
+        logger.debug(
+            "No supported global installer found: executable=%s prefix=%s",
+            sys.executable,
+            sys.prefix,
+        )
         return False
 
-    if not silent:
-        click.secho(f"› {' '.join(cmd)}", fg="blue")
+    logger.debug(
+        "Selected installer=%s command=%s",
+        installer or "discovered",
+        _scrub_debug_text(shlex.join(cmd)),
+    )
     try:
         returncode, output = _run_upgrade_command(cmd, silent=silent)
-    except FileNotFoundError:
-        if not silent:
-            click.secho(
-                f"✗ `{cmd[0]}` not on PATH — you said this build was managed "
-                f"by {cmd[0]} but the binary is gone.\n"
-                f"  Reinstall via scripts/install.sh or run `{cmd[0]} --version` "
-                f"to confirm.",
-                fg="red",
-                err=True,
-            )
+    except FileNotFoundError as exc:
+        logger.debug("Package installer is unavailable: %s", exc, exc_info=True)
         return False
 
     if returncode == 0:
@@ -412,92 +523,53 @@ def _upgrade_cli(silent: bool, target_version: str | None = None) -> bool:
 
     if _is_likely_network_or_index_error(output):
         for index_url in PYPI_MIRROR_INDEX_URLS:
-            if not silent:
-                click.secho(
-                    f"! PyPI/network error detected; retrying with mirror: {index_url}",
-                    fg="yellow",
-                    err=True,
-                )
-                click.secho(
-                    f"› {' '.join(cmd)}  (UV_DEFAULT_INDEX/PIP_INDEX_URL={index_url})",
-                    fg="blue",
-                )
+            logger.debug("Retrying package upgrade with mirror=%s", index_url)
             try:
                 retry_code, retry_output = _run_upgrade_command(
                     cmd,
                     silent=silent,
                     env=_upgrade_env_with_index(index_url),
                 )
-            except FileNotFoundError:
-                if not silent:
-                    click.secho(
-                        f"✗ `{cmd[0]}` disappeared from PATH while retrying.",
-                        fg="red",
-                        err=True,
-                    )
+            except FileNotFoundError as exc:
+                logger.debug("Package installer disappeared during retry: %s", exc, exc_info=True)
                 return False
             if retry_code == 0:
-                if not silent:
-                    click.secho(f"✓ upgrade succeeded via mirror: {index_url}", fg="green")
                 return True
             output += "\n" + retry_output
 
-        if not silent:
-            click.secho(
-                f"✗ {cmd[0]} upgrade failed after trying PyPI and common mirrors.\n"
-                "  If you are behind a proxy, enable the Clash virtual/TUN adapter "
-                "or make sure your terminal inherits HTTP(S)_PROXY.\n"
-                "  You can also configure a package mirror manually, for example:\n"
-                "      UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple "
-                f"{' '.join(cmd)}\n"
-                "      PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple "
-                f"{' '.join(cmd)}",
-                fg="red",
-                err=True,
-            )
+        logger.debug(
+            "Package upgrade failed after all mirror retries: %s",
+            _scrub_debug_text(output),
+        )
         return False
 
-    if not silent:
-        click.secho(
-            f"✗ {cmd[0]} upgrade failed (exit {returncode}). "
-            f"Run `{' '.join(cmd)}` manually to see the underlying message.",
-            fg="red",
-            err=True,
-        )
+    logger.debug(
+        "Package upgrade failed with exit=%s output=%s",
+        returncode,
+        _scrub_debug_text(output),
+    )
     return False
 
 
 def _ensure_playwright_runtime(silent: bool) -> bool:
     """Ensure the installed InspireSkill environment can launch Chromium."""
+    del silent
     if _playwright_chromium_available():
-        if not silent:
-            click.secho("✓ Playwright Chromium runtime verified", fg="green")
+        logger.debug("Playwright Chromium runtime is ready")
         return True
 
-    if not silent:
-        click.secho("› preparing Playwright Chromium runtime", fg="blue")
-    if not _install_playwright_chromium(include_system_deps=None):
-        if not silent:
-            click.secho(
-                "✗ Playwright Chromium runtime setup failed. Re-run `inspire update` "
-                "after checking network access to the package and browser mirrors.",
-                fg="red",
-                err=True,
-            )
+    logger.debug("Installing Playwright Chromium runtime")
+    with _suppress_subprocess_output():
+        installed = _install_playwright_chromium(include_system_deps=None)
+    if not installed:
+        logger.debug("Playwright Chromium runtime installation failed")
         return False
 
     if _playwright_chromium_available():
-        if not silent:
-            click.secho("✓ Playwright Chromium runtime verified", fg="green")
+        logger.debug("Playwright Chromium runtime verified after installation")
         return True
 
-    if not silent:
-        click.secho(
-            "✗ Playwright Chromium was installed but could not start in this environment. "
-            "Re-run the standard installer after checking local browser support.",
-            fg="red",
-            err=True,
-        )
+    logger.debug("Playwright Chromium installed but launch probe failed")
     return False
 
 
@@ -516,13 +588,6 @@ with sync_playwright() as p:
     browser = p.chromium.launch(**chromium_launch_kwargs(headless=True))
     browser.close()
 """
-
-
-def _emit_completed_process(proc: subprocess.CompletedProcess[str]) -> None:
-    if proc.stdout:
-        click.echo(proc.stdout, nl=False)
-    if proc.stderr:
-        click.echo(proc.stderr, nl=False, err=True)
 
 
 def _run_runtime_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -558,27 +623,26 @@ def _wrapper_python_from_inspire_executable(executable: str) -> str | None:
 
 
 def _ensure_playwright_runtime_with_wrapper_python(executable: str, silent: bool) -> bool:
+    del silent
     python = _wrapper_python_from_inspire_executable(executable)
     if not python:
-        if not silent:
-            click.secho(
-                f"✗ could not resolve the Python runtime behind `{executable}`.",
-                fg="red",
-                err=True,
-            )
+        logger.debug("Could not resolve wrapper Python: executable=%s", executable)
         return False
 
-    install_proc = _run_runtime_command(
-        [python, "-m", "playwright", *playwright_install_args(include_system_deps=None)],
-    )
-    if not silent:
-        _emit_completed_process(install_proc)
+    install_cmd = [
+        python,
+        "-m",
+        "playwright",
+        *playwright_install_args(include_system_deps=None),
+    ]
+    install_proc = _run_runtime_command(install_cmd)
+    _log_completed_process("Playwright install", install_proc, cmd=install_cmd)
     if install_proc.returncode != 0:
         return False
 
-    probe_proc = _run_runtime_command([python, "-c", _PLAYWRIGHT_RUNTIME_PROBE])
-    if not silent:
-        _emit_completed_process(probe_proc)
+    probe_cmd = [python, "-c", _PLAYWRIGHT_RUNTIME_PROBE]
+    probe_proc = _run_runtime_command(probe_cmd)
+    _log_completed_process("Playwright probe", probe_proc, cmd=probe_cmd)
     return probe_proc.returncode == 0
 
 
@@ -589,12 +653,7 @@ def _is_missing_runtime_hook(output: str) -> bool:
 def _ensure_global_playwright_runtime(silent: bool) -> bool:
     executable = _global_inspire_executable()
     if not executable:
-        if not silent:
-            click.secho(
-                "✗ `inspire` is not on PATH after update, so runtime setup could not run.",
-                fg="red",
-                err=True,
-            )
+        logger.debug("Global inspire executable is unavailable for runtime setup")
         return False
 
     cmd = [executable, "_ensure-playwright-runtime"]
@@ -612,26 +671,17 @@ def _ensure_global_playwright_runtime(silent: bool) -> bool:
             stderr=subprocess.PIPE,
         )
     except OSError as e:
-        if not silent:
-            click.secho(f"✗ runtime setup could not start `{executable}`: {e}", fg="red", err=True)
+        logger.debug("Runtime setup could not start: executable=%s error=%s", executable, e)
         return False
+    _log_completed_process("global runtime setup", proc, cmd=cmd)
     if proc.returncode == 0:
-        if not silent:
-            _emit_completed_process(proc)
         return True
 
     output = (proc.stdout or "") + (proc.stderr or "")
     if _is_missing_runtime_hook(output):
-        if not silent:
-            click.secho(
-                "› installed CLI is older than the runtime setup hook; "
-                "using the installed wrapper environment",
-                fg="blue",
-            )
+        logger.debug("Runtime hook is unavailable; using wrapper Python fallback")
         return _ensure_playwright_runtime_with_wrapper_python(executable, silent)
 
-    if not silent:
-        _emit_completed_process(proc)
     return False
 
 
@@ -644,12 +694,7 @@ def _run_post_update_command(
 ) -> bool:
     executable = _global_inspire_executable()
     if not executable:
-        if not silent:
-            click.secho(
-                "✗ `inspire` is not on PATH after update, so post-update setup could not run.",
-                fg="red",
-                err=True,
-            )
+        logger.debug("Global inspire executable is unavailable for post-update setup")
         return False
 
     cmd = [
@@ -677,11 +722,9 @@ def _run_post_update_command(
             stderr=subprocess.PIPE,
         )
     except OSError as e:
-        if not silent:
-            click.secho(f"✗ post-update setup could not start `{executable}`: {e}", fg="red", err=True)
+        logger.debug("Post-update setup could not start: executable=%s error=%s", executable, e)
         return False
-    if not silent:
-        _emit_completed_process(proc)
+    _log_completed_process("post-update setup", proc, cmd=cmd)
     return proc.returncode == 0
 
 
@@ -694,8 +737,7 @@ def _download_tarball(timeout: int = 30, *, silent: bool = False) -> bytes | Non
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read()
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        if not silent:
-            click.secho(f"✗ tarball fetch failed: {e}", fg="red", err=True)
+        logger.debug("Skill tarball fetch failed: %s", e, exc_info=True)
         return None
 
 
@@ -721,11 +763,7 @@ def _extract_assets(tarball: bytes, dest: Path) -> Path | None:
                 return None
             top_segments = {m.name.split("/", 1)[0] for m in members if m.name}
             if len(top_segments) != 1:
-                click.secho(
-                    f"✗ tarball has unexpected layout (top-level dirs: {sorted(top_segments)}).",
-                    fg="red",
-                    err=True,
-                )
+                logger.debug("Skill tarball has unexpected top-level entries: %s", top_segments)
                 return None
             top = top_segments.pop()
             try:
@@ -737,7 +775,7 @@ def _extract_assets(tarball: bytes, dest: Path) -> Path | None:
             extracted = dest / top
             return extracted if extracted.is_dir() else None
     except (tarfile.TarError, OSError) as e:
-        click.secho(f"✗ tarball extract failed: {e}", fg="red", err=True)
+        logger.debug("Skill tarball extraction failed: %s", e, exc_info=True)
         return None
 
 
@@ -796,12 +834,10 @@ def _clean_legacy_skill_targets(harness: str, silent: bool) -> bool:
                 legacy.unlink()
             else:
                 shutil.rmtree(legacy)
-            if not silent:
-                click.secho(f"✓ removed legacy skill path → {legacy}", fg="green")
+            logger.debug("Removed legacy skill path: %s", legacy)
         except OSError as e:
             ok = False
-            if not silent:
-                click.secho(f"✗ couldn't clean legacy skill path {legacy}: {e}", fg="red", err=True)
+            logger.debug("Could not clean legacy skill path %s: %s", legacy, e, exc_info=True)
     return ok
 
 
@@ -824,40 +860,31 @@ def _write_install_state(target: Path, *, latest_version: str | None = None) -> 
 
 
 def _refresh_skill_files(silent: bool, *, latest_version: str | None = None) -> bool:
+    del silent
     harnesses = _detect_harnesses()
     if not harnesses:
-        if not silent:
-            click.secho(
-                "! No agent harness detected "
-                "(checked ~/.claude, ~/.codex, ~/.gemini, ~/.cursor, ~/.openclaw, "
-                "$OPENCODE_CONFIG_DIR or ~/.config/opencode, ~/.qoder, ~/.qoderwork, "
-                "$KIMI_CODE_HOME or ~/.kimi-code, and Kimi Desktop's Application Support "
-                "directory); "
-                "skipping SKILL refresh.",
-                fg="yellow",
-                err=True,
-            )
+        logger.debug("No supported agent harness detected; skipping skill refresh")
         return True  # not a failure; user may run skill-less
 
-    tarball = _download_tarball()
+    tarball = _download_tarball(silent=True)
     if tarball is None:
         return False
 
     with tempfile.TemporaryDirectory(prefix="inspire-skill-") as tmp:
         extracted = _extract_assets(tarball, Path(tmp))
         if extracted is None:
-            click.secho("✗ tarball layout unexpected (no top-level dir).", fg="red", err=True)
+            logger.debug("Skill tarball has no usable top-level directory")
             return False
 
         src_skill = extracted / "SKILL.md"
         src_refs = extracted / "references"
         if not src_skill.is_file():
-            click.secho("✗ SKILL.md missing in tarball.", fg="red", err=True)
+            logger.debug("SKILL.md is missing from the skill tarball")
             return False
 
         for harness in harnesses:
             target = HARNESS_SKILL_DIRS[harness]
-            if not _clean_legacy_skill_targets(harness, silent):
+            if not _clean_legacy_skill_targets(harness, True):
                 return False
             # Wipe any previous install, including stale symlinks or files.
             if target.exists() or target.is_symlink():
@@ -867,7 +894,7 @@ def _refresh_skill_files(silent: bool, *, latest_version: str | None = None) -> 
                     else:
                         shutil.rmtree(target)
                 except OSError as e:
-                    click.secho(f"✗ couldn't clean {target}: {e}", fg="red", err=True)
+                    logger.debug("Could not clean skill target %s: %s", target, e, exc_info=True)
                     return False
             target.mkdir(parents=True, exist_ok=True)
 
@@ -878,12 +905,11 @@ def _refresh_skill_files(silent: bool, *, latest_version: str | None = None) -> 
 
             verify_errors = _verify_skill_target(extracted, target)
             if verify_errors:
-                if not silent:
-                    click.secho(f"✗ refreshed skill verification failed for {target}:", fg="red")
-                    for error in verify_errors[:20]:
-                        click.echo(f"  - {error}", err=True)
-                    if len(verify_errors) > 20:
-                        click.echo(f"  ... {len(verify_errors) - 20} more", err=True)
+                logger.debug(
+                    "Skill verification failed for %s: %s",
+                    target,
+                    verify_errors,
+                )
                 return False
 
             if harness == "codex":
@@ -897,8 +923,7 @@ def _refresh_skill_files(silent: bool, *, latest_version: str | None = None) -> 
                     encoding="utf-8",
                 )
 
-            if not silent:
-                click.secho(f"✓ refreshed skill → {target}", fg="green")
+            logger.debug("Refreshed %s skill at %s", harness, target)
 
     return True
 
@@ -1026,6 +1051,42 @@ def _release_body_for_display(body: str) -> str:
     return "\n".join(lines)
 
 
+def _compact_release_item(text: str) -> str:
+    text = _MARKDOWN_LINK_RE.sub(r"\1", text)
+    text = _RAW_URL_RE.sub("", text)
+    text = _ABSOLUTE_PATH_RE.sub("<path>", text)
+    text = re.sub(r"\s+", " ", text).strip(" -:")
+    if len(text) > _RELEASE_SUMMARY_ITEM_MAX_CHARS:
+        text = text[: _RELEASE_SUMMARY_ITEM_MAX_CHARS - 1].rstrip() + "…"
+    return text
+
+
+def _release_items_for_display(body: str) -> list[str]:
+    body = _release_body_for_display(body)
+    items: list[str] = []
+    for line in body.splitlines():
+        match = _RELEASE_BULLET_RE.match(line)
+        if not match:
+            continue
+        item = _compact_release_item(match.group("text"))
+        if any(hint in item.lower() for hint in _RELEASE_ENGINEERING_HINTS):
+            continue
+        if item and item not in items:
+            items.append(item)
+    if items:
+        return items
+
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "```", ">")):
+            continue
+        item = _compact_release_item(stripped)
+        if any(hint in item.lower() for hint in _RELEASE_ENGINEERING_HINTS):
+            continue
+        return [item] if item else []
+    return []
+
+
 def _print_release_summary(previous_version: str, new_version: str, *, silent: bool) -> None:
     if silent or not _is_newer(new_version, previous_version):
         return
@@ -1036,32 +1097,53 @@ def _print_release_summary(previous_version: str, new_version: str, *, silent: b
         new_version=new_version,
     )
     if not entries:
-        click.secho(
-            f"! 未能获取 v{previous_version} 到 v{new_version} 的 GitHub Release 更新内容。",
-            fg="yellow",
-            err=True,
+        logger.debug(
+            "No release summary available between v%s and v%s",
+            previous_version,
+            new_version,
         )
         return
 
-    click.echo()
-    click.secho(f"更新内容（v{previous_version} → v{new_version}）", bold=True)
-    for entry in entries:
+    displayed: list[tuple[str, str]] = []
+    for entry in entries[:_RELEASE_SUMMARY_MAX_RELEASES]:
         version = _normalize_release_version(entry.tag)
-        body = _release_body_for_display(entry.body)
-        click.echo()
-        click.secho(f"v{version}", bold=True)
-        if body:
-            click.echo(body)
+        for item in _release_items_for_display(entry.body):
+            displayed.append((version, item))
+            if len(displayed) >= _RELEASE_SUMMARY_MAX_ITEMS:
+                break
+        if len(displayed) >= _RELEASE_SUMMARY_MAX_ITEMS:
+            break
+
+    if not displayed:
+        logger.debug("Release entries contained no compact user-facing summary")
+        return
+
+    click.secho(
+        f"What's new (v{previous_version} → v{new_version}):",
+        bold=True,
+    )
+    for version, item in displayed:
+        click.echo(f"- v{version}: {item}")
 
 
 def _normalize_after_success(silent: bool) -> None:
+    del silent
     try:
         from inspire.accounts import normalize_environment
 
-        normalize_environment(interactive=not silent)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            normalize_environment(interactive=False)
+        if stdout.getvalue() or stderr.getvalue():
+            logger.debug(
+                "Environment normalization output: stdout=%r stderr=%r",
+                stdout.getvalue(),
+                stderr.getvalue(),
+            )
     except Exception:
         # Normalization is best-effort cleanup; never fail the upgrade itself.
-        pass
+        logger.debug("Environment normalization failed", exc_info=True)
 
 
 def _run_post_update_tasks(
@@ -1092,12 +1174,6 @@ def _run_post_update_tasks(
         return False
 
     _normalize_after_success(silent)
-
-    if not silent:
-        click.secho("✓ InspireSkill updated.", fg="green", bold=True)
-
-    new_version = str(actual_version or expected_version or __version__)
-    _print_release_summary(previous_version, new_version, silent=silent)
     return True
 
 
@@ -1130,66 +1206,53 @@ def _read_inspire_version(executable: str | None = None) -> tuple[str | None, st
 
 
 def _audit_global_cli(expected_version: str | None, silent: bool) -> tuple[bool, str | None]:
+    del silent
     uv_info = _uv_tool_info()
     executable_hint = uv_info.executable_path if uv_info and uv_info.executable_path else None
     executable, actual_version, detail = _read_inspire_version(executable_hint)
     ok = True
     if executable is None:
         ok = False
-        if not silent:
-            click.secho("✗ `inspire` is not on PATH after update.", fg="red", err=True)
+        logger.debug("Global inspire executable is not on PATH after update")
     elif actual_version is None:
         ok = False
-        if not silent:
-            click.secho(
-                f"✗ couldn't parse `{executable} --version` after update: {detail}",
-                fg="red",
-                err=True,
-            )
+        logger.debug(
+            "Could not parse updated InspireSkill version: executable=%s detail=%s",
+            executable,
+            detail,
+        )
     elif expected_version and _is_newer(expected_version, actual_version):
         ok = False
-        if not silent:
-            click.secho(
-                f"✗ PATH executable is still v{actual_version}; expected v{expected_version}.",
-                fg="red",
-                err=True,
-            )
-            click.echo(f"  executable: {executable}", err=True)
-    elif not silent:
-        click.secho(f"✓ PATH inspire → {executable} (v{actual_version})", fg="green")
+        logger.debug(
+            "Updated executable is stale: executable=%s actual=%s expected=%s",
+            executable,
+            actual_version,
+            expected_version,
+        )
+    else:
+        logger.debug("Updated executable verified: executable=%s version=%s", executable, actual_version)
 
     if uv_info and _is_local_requirement(uv_info.required):
         ok = False
-        if not silent:
-            click.secho(
-                f"✗ global uv tool install still points at local source: {uv_info.required}",
-                fg="red",
-                err=True,
-            )
-            click.echo("  Run `inspire update` again or reinstall with the official installer.", err=True)
+        logger.debug("Global uv tool still points at local source: %s", uv_info.required)
     return ok, actual_version
 
 
 def _audit_installed_skills(silent: bool) -> bool:
+    del silent
     ok = True
     for harness in _detect_harnesses():
         target = HARNESS_SKILL_DIRS[harness]
         if not (target / "SKILL.md").is_file():
             ok = False
-            if not silent:
-                click.secho(f"✗ {harness} skill missing: {target / 'SKILL.md'}", fg="red", err=True)
+            logger.debug("%s skill is missing from %s", harness, target)
             continue
         stale_errors = _scan_stale_skill_patterns(target)
         if stale_errors:
             ok = False
-            if not silent:
-                click.secho(f"✗ {harness} skill contains stale update patterns:", fg="red", err=True)
-                for error in stale_errors[:20]:
-                    click.echo(f"  - {error}", err=True)
-                if len(stale_errors) > 20:
-                    click.echo(f"  ... {len(stale_errors) - 20} more", err=True)
-        elif not silent:
-            click.secho(f"✓ {harness} skill verified → {target}", fg="green")
+            logger.debug("%s skill contains stale patterns: %s", harness, stale_errors)
+        else:
+            logger.debug("%s skill verified at %s", harness, target)
     return ok
 
 
@@ -1216,27 +1279,20 @@ def _print_status(check_result: dict, silent: bool) -> None:
     latest = check_result.get("latest")
     current = check_result.get("current") or __version__
     if not latest:
-        click.secho(
-            f"! Couldn't reach upstream ({check_result.get('source')}); "
-            "check your proxy / network.",
-            fg="yellow",
-            err=True,
-        )
+        logger.debug("Update check did not return a latest version: %s", check_result)
         return
     if _is_newer(latest, current):
         click.secho(
-            f"⚠ InspireSkill v{latest} available (current v{current}).",
+            f"Update available: v{current} → v{latest}.",
             fg="yellow",
         )
-        click.echo("  run `inspire update` (no flags) to upgrade CLI + SKILL files in one go.")
     elif _is_newer(current, latest):
         click.secho(
-            f"! Local InspireSkill v{current} is newer than published v{latest}.",
+            f"Local version v{current}; published version v{latest}.",
             fg="yellow",
         )
-        click.echo("  global `inspire update` will install the latest published PyPI package.")
     else:
-        click.secho(f"✓ InspireSkill is up to date (v{current}).", fg="green")
+        click.secho(f"InspireSkill is up to date (v{current}).", fg="green")
 
 
 @click.command("update")
@@ -1251,8 +1307,8 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
 
     # --- check path -------------------------------------------------------
     if check_only:
+        _emit_stage("Checking for updates...", silent=silent)
         result = run_check(write=True)
-        _print_status(result, silent)
         audit_ok, actual_version = _audit_update_state(
             expected_version=result.get("latest"),
             check_cli=True,
@@ -1262,38 +1318,53 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
         if actual_version:
             run_check(write=True, current_version=actual_version)
         if not result.get("latest"):
+            _emit_update_failure(silent=silent, check_only=True)
             sys.exit(1)
         if not audit_ok:
+            _emit_update_failure(silent=silent, check_only=True)
             sys.exit(1)
+        _print_status(result, silent)
         return
 
     # --- upgrade path -----------------------------------------------------
     # Always refresh the version cache first so subsequent invocations show
     # the correct state and the notice goes away if we successfully upgrade.
+    _emit_stage("Checking for updates...", silent=silent)
     pre = run_check(write=True)
-    if not silent:
-        _print_status(pre, silent=False)
+    logger.debug("Pre-update status: %s", pre)
 
     ok = True
     if not skill_only:
+        _emit_stage("Updating CLI...", silent=silent)
         ok = _upgrade_cli(silent, target_version=pre.get("latest")) and ok
         expected_version = str(pre.get("latest") or "")
         previous_version = str(pre.get("current") or __version__)
         if ok and expected_version and _is_newer(expected_version, __version__):
+            _emit_stage("Completing setup...", silent=silent)
             if not _run_post_update_command(
                 previous_version=previous_version,
                 expected_version=expected_version,
                 cli_only=cli_only,
                 silent=silent,
             ):
+                _emit_update_failure(silent=silent)
                 sys.exit(1)
+            if not silent:
+                click.secho(
+                    f"✓ InspireSkill updated to v{expected_version}.",
+                    fg="green",
+                    bold=True,
+                )
+            _print_release_summary(previous_version, expected_version, silent=silent)
             return
     if not cli_only:
+        _emit_stage("Refreshing agent skills...", silent=silent)
         ok = _refresh_skill_files(silent, latest_version=pre.get("latest")) and ok
 
     # Verify the observable install state rather than trusting command exit
     # codes. This catches PATH shadowing, stale agent skill files, and local
     # uv-tool sources that would otherwise keep the global command outdated.
+    _emit_stage("Verifying installation...", silent=silent)
     audit_ok, actual_version = _audit_update_state(
         expected_version=pre.get("latest"),
         check_cli=not skill_only,
@@ -1303,6 +1374,7 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
     ok = audit_ok and ok
 
     if ok and not skill_only:
+        _emit_stage("Preparing browser runtime...", silent=silent)
         ok = _ensure_global_playwright_runtime(silent) and ok
 
     # Re-check after upgrade so the cache reflects the externally visible
@@ -1310,6 +1382,7 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
     run_check(write=True, current_version=actual_version or __version__)
 
     if not ok:
+        _emit_update_failure(silent=silent)
         sys.exit(1)
 
     # Run environment normalization once after a successful upgrade so users
@@ -1319,7 +1392,12 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
     _normalize_after_success(silent)
 
     if not silent:
-        click.secho("✓ InspireSkill updated.", fg="green", bold=True)
+        final_version = str(actual_version or pre.get("latest") or __version__)
+        click.secho(
+            f"✓ InspireSkill updated to v{final_version}.",
+            fg="green",
+            bold=True,
+        )
 
     if not skill_only:
         previous_version = str(pre.get("current") or __version__)

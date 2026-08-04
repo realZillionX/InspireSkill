@@ -34,11 +34,16 @@ from inspire.config.toml import _project_config_write_path
 from .discover import _init_discover_mode
 from .env_detect import _detect_env_vars
 from .errors import run_init_action
-from .json_report import emit_init_json, snapshot_paths
+from .json_report import emit_init_result, snapshot_paths
 from .templates import _init_smart_mode, _init_template_mode
 
 
 _NO_ACTIVE_ACCOUNT_MESSAGE = "No active account configured. Run `inspire account add` first."
+
+
+def _stdin_is_interactive() -> bool:
+    stream = click.get_text_stream("stdin")
+    return bool(getattr(stream, "isatty", lambda: False)())
 
 
 def _require_active_account_config_path() -> Path:
@@ -64,6 +69,7 @@ def _get_config_paths() -> tuple[Path, Path]:
 def _bootstrap_first_account_if_needed(
     *,
     effective_json: bool,
+    non_interactive: bool,
     cli_username: str | None,
     cli_base_url: str | None,
 ) -> bool:
@@ -80,10 +86,10 @@ def _bootstrap_first_account_if_needed(
         raise ValueError(
             "No active account configured. Run `inspire account use <name>` first."
         )
-    if effective_json:
+    if effective_json or non_interactive:
         raise ValueError(
             "No active account configured. Run `inspire account add <name>` first; "
-            "JSON init cannot prompt for credentials."
+            "non-interactive init cannot prompt for credentials."
         )
 
     ensure_inspire_home()
@@ -155,7 +161,7 @@ def _bootstrap_first_account_if_needed(
     except AccountError as err:
         raise ValueError(str(err)) from err
 
-    click.echo(f"Created account: {target}")
+    del target
     click.echo(f"Active account: {account_name}")
     normalize_environment(interactive=True, auto_install_playwright=True)
     return True
@@ -271,6 +277,7 @@ def init(
       inspire init --scope project --env-file .env
     """
     effective_json = ctx.json_output
+    non_interactive = effective_json or not _stdin_is_interactive()
     warnings: list[str] = []
 
     scope_value = scope.lower()
@@ -288,17 +295,17 @@ def init(
             return None
         path = write_shared_project_env_file(env_file)
         if not effective_json:
-            click.echo(click.style(f"Registered project env file in {path}", fg="green"))
+            click.echo(click.style("Registered project env file.", fg="green"))
         return path
 
     try:
         if env_file and not project_flag:
             raise ValueError("--env-file is only supported with `inspire init --scope project`.")
 
-        bootstrapped_account = False
         if run_discovery:
-            bootstrapped_account = _bootstrap_first_account_if_needed(
+            _bootstrap_first_account_if_needed(
                 effective_json=effective_json,
+                non_interactive=non_interactive,
                 cli_username=username,
                 cli_base_url=base_url,
             )
@@ -314,10 +321,12 @@ def init(
             )
 
         if run_discovery:
-            if effective_json and not force and any(path.exists() for path in discover_target_paths):
+            if non_interactive and not force and any(
+                path.exists() for path in discover_target_paths
+            ):
                 raise ValueError(
-                    "JSON mode is non-interactive for discover updates; rerun with --force when "
-                    "config files already exist."
+                    "Non-interactive discover updates require --force when config files "
+                    "already exist."
                 )
 
             run_init_action(
@@ -328,43 +337,45 @@ def init(
                 cli_username=username,
                 cli_base_url=base_url,
                 cli_select_project=select_project_name,
+                non_interactive=non_interactive,
                 verbose=ctx.debug,
             )
             env_file_config_path = _register_env_file()
             if env_file_config_path is not None and env_file_config_path not in discover_target_paths:
                 discover_target_paths.append(env_file_config_path)
 
-            emit_init_json(
-                mode="discover",
+            emit_init_result(
+                scope=scope_value,
                 target_paths=discover_target_paths,
                 before=before,
-                detected=[],
                 warnings=warnings,
-                discover={
-                    "bootstrapped_account": bootstrapped_account,
-                    "scope": scope_value,
-                },
                 effective_json=effective_json,
             )
             return
 
         if template_flag:
-            if effective_json:
+            if non_interactive:
                 target_path = global_path if global_flag else project_path
                 if target_path.exists() and not force:
                     raise ValueError(
-                        "JSON mode is non-interactive for overwrites; rerun with --force."
+                        "Non-interactive init requires --force to overwrite configuration."
                     )
-            run_init_action(_init_template_mode, effective_json, global_flag, project_flag, force)
+            run_init_action(
+                _init_template_mode,
+                effective_json,
+                global_flag,
+                project_flag,
+                force,
+                verbose=ctx.debug,
+            )
             env_file_config_path = _register_env_file()
             target_paths = [global_path] if global_flag else [project_path]
             if env_file_config_path is not None and env_file_config_path not in target_paths:
                 target_paths.append(env_file_config_path)
-            emit_init_json(
-                mode="template",
+            emit_init_result(
+                scope=scope_value,
                 target_paths=target_paths,
                 before=before,
-                detected=[],
                 warnings=warnings,
                 effective_json=effective_json,
             )
@@ -373,26 +384,31 @@ def init(
         detected = _detect_env_vars()
 
         if detected:
-            if effective_json and not force:
+            if non_interactive and not force:
                 if global_flag and global_path.exists():
                     raise ValueError(
-                        "JSON mode is non-interactive for overwrites; rerun with --force."
+                        "Non-interactive init requires --force to overwrite configuration."
                     )
                 if project_flag and project_path.exists():
                     raise ValueError(
-                        "JSON mode is non-interactive for overwrites; rerun with --force."
+                        "Non-interactive init requires --force to overwrite configuration."
                     )
                 if (
                     not (global_flag or project_flag)
                     and (global_path.exists() or project_path.exists())
                 ):
                     raise ValueError(
-                        "JSON mode is non-interactive for overwrite prompts in auto-split mode; "
-                        "rerun with --force."
+                        "Non-interactive init requires --force for auto-split overwrites."
                     )
 
             run_init_action(
-                _init_smart_mode, effective_json, detected, global_flag, project_flag, force
+                _init_smart_mode,
+                effective_json,
+                detected,
+                global_flag,
+                project_flag,
+                force,
+                verbose=ctx.debug,
             )
             target_paths = []
             if global_flag:
@@ -412,30 +428,37 @@ def init(
             env_file_config_path = _register_env_file()
             if env_file_config_path is not None and env_file_config_path not in target_paths:
                 target_paths.append(env_file_config_path)
-            emit_init_json(
-                mode="smart",
+            emit_init_result(
+                scope=scope_value,
                 target_paths=target_paths,
                 before=before,
-                detected=detected,
                 warnings=warnings,
                 effective_json=effective_json,
             )
             return
 
-        if effective_json:
+        if non_interactive:
             target_path = global_path if global_flag else project_path
             if target_path.exists() and not force:
-                raise ValueError("JSON mode is non-interactive for overwrites; rerun with --force.")
-        run_init_action(_init_template_mode, effective_json, global_flag, project_flag, force)
+                raise ValueError(
+                    "Non-interactive init requires --force to overwrite configuration."
+                )
+        run_init_action(
+            _init_template_mode,
+            effective_json,
+            global_flag,
+            project_flag,
+            force,
+            verbose=ctx.debug,
+        )
         env_file_config_path = _register_env_file()
         target_paths = [global_path] if global_flag else [project_path]
         if env_file_config_path is not None and env_file_config_path not in target_paths:
             target_paths.append(env_file_config_path)
-        emit_init_json(
-            mode="template",
+        emit_init_result(
+            scope=scope_value,
             target_paths=target_paths,
             before=before,
-            detected=[],
             warnings=warnings,
             effective_json=effective_json,
         )

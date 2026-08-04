@@ -23,6 +23,7 @@ otherwise scrubs the venv segment will fail here.
 from __future__ import annotations
 
 import importlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -205,6 +206,7 @@ def test_upgrade_cli_retries_pypi_network_errors_with_mirrors(
         return subprocess.CompletedProcess(cmd, 0, stdout="upgraded\n", stderr="")
 
     monkeypatch.setattr(sys, "prefix", "/Users/vagrant/.local/share/uv/tools/inspire-skill")
+    monkeypatch.setattr(update_module, "_uv_tool_info", lambda: None)
     monkeypatch.setattr(update_module.subprocess, "run", fake_run)
 
     assert _upgrade_cli(silent=True) is True
@@ -215,6 +217,110 @@ def test_upgrade_cli_retries_pypi_network_errors_with_mirrors(
             "https://pypi.tuna.tsinghua.edu.cn/simple",
         ),
     ]
+
+
+def test_upgrade_cli_default_output_does_not_forward_installer_details(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = 0
+
+    def fake_run(cmd, check, env, text, stdout, stderr):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(
+                cmd,
+                1,
+                stdout="Using Python /private/tmp/tool/bin/python\n",
+                stderr=(
+                    "Failed to fetch https://pypi.org/simple/inspire-skill/?token=secret\n"
+                    "Run uv tool install --force inspire-skill\n"
+                ),
+            )
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="Installed from https://pypi.tuna.tsinghua.edu.cn/simple\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(sys, "prefix", "/Users/vagrant/.local/share/uv/tools/inspire-skill")
+    monkeypatch.setattr(update_module, "_uv_tool_info", lambda: None)
+    monkeypatch.setattr(update_module.subprocess, "run", fake_run)
+
+    assert _upgrade_cli(silent=False) is True
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_completed_process_debug_log_scrubs_secrets_urls_and_paths(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cmd = [
+        "/Users/alice/.local/bin/uv",
+        "tool",
+        "install",
+        "https://user:basic-secret@example.test/pkg?token=query-secret&channel=stable",
+        "--api-key",
+        "command-secret",
+    ]
+    proc = subprocess.CompletedProcess(
+        cmd,
+        1,
+        stdout=(
+            "download https://download-user:download-pass@example.test/archive"
+            "?access_token=stdout-query\n"
+            "password=hunter2 api_key=stdout-key path=/Users/alice/private/cache\n"
+            "normal diagnostic remains\n"
+        ),
+        stderr='{"token": "stderr-token"} --password stderr-password\n',
+    )
+
+    with caplog.at_level("DEBUG", logger=update_module.__name__):
+        update_module._log_completed_process("package upgrade", proc, cmd=cmd)
+
+    rendered = caplog.text
+    for secret in (
+        "basic-secret",
+        "query-secret",
+        "command-secret",
+        "download-user",
+        "download-pass",
+        "stdout-query",
+        "hunter2",
+        "stdout-key",
+        "stderr-token",
+        "stderr-password",
+        "/Users/alice",
+    ):
+        assert secret not in rendered
+    assert "example.test/pkg?<redacted>" in rendered
+    assert "example.test/archive?<redacted>" in rendered
+    assert "<redacted>" in rendered
+    assert "<path>" in rendered
+    assert "normal diagnostic remains" in rendered
+
+
+def test_suppressed_child_debug_log_is_scrubbed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("DEBUG", logger=update_module.__name__):
+        with update_module._suppress_subprocess_output():
+            print("token=python-secret /Users/alice/private")
+            os.write(
+                2,
+                b"https://user:fd-secret@example.test/runtime?password=query-secret\n",
+            )
+
+    rendered = caplog.text
+    assert "python-secret" not in rendered
+    assert "fd-secret" not in rendered
+    assert "query-secret" not in rendered
+    assert "/Users/alice" not in rendered
+    assert "<redacted>" in rendered
+    assert "<path>" in rendered
 
 
 def test_upgrade_cli_pins_known_target_version_for_uv(
@@ -307,6 +413,28 @@ def test_update_runtime_check_fails_if_playwright_still_cannot_start(
     assert _ensure_playwright_runtime(silent=True) is False
 
 
+def test_update_runtime_check_suppresses_playwright_installer_output(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    readiness = iter([False, True])
+
+    def noisy_install(**_kwargs) -> bool:
+        print("playwright stdout /private/tmp/browser")
+        print("playwright stderr https://browser.example/download", file=sys.stderr)
+        os.write(1, b"child stdout\n")
+        os.write(2, b"child stderr\n")
+        return True
+
+    monkeypatch.setattr(update_module, "_playwright_chromium_available", lambda: next(readiness))
+    monkeypatch.setattr(update_module, "_install_playwright_chromium", noisy_install)
+
+    assert _ensure_playwright_runtime(silent=False) is True
+    captured = capfd.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
 def test_global_runtime_setup_uses_global_inspire_executable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -358,6 +486,34 @@ def test_global_runtime_setup_falls_back_when_hidden_hook_is_missing(
 
     assert _ensure_global_playwright_runtime(silent=True) is True
     assert fallback_calls == [("/Users/zillionx/.local/bin/inspire", True)]
+
+
+def test_global_runtime_setup_does_not_forward_child_output(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        update_module,
+        "_uv_tool_info",
+        lambda: update_module.UvToolInfo(
+            executable_path="/Users/zillionx/.local/bin/inspire",
+        ),
+    )
+    monkeypatch.setattr(
+        update_module.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="Python: /private/tmp/tool/bin/python\n",
+            stderr="playwright install chromium\n",
+        ),
+    )
+
+    assert _ensure_global_playwright_runtime(silent=False) is True
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_update_runs_global_runtime_setup_after_cli_upgrade(
@@ -543,11 +699,110 @@ def test_update_prints_release_summary_after_successful_cli_upgrade(
     )
 
     output = capsys.readouterr().out
-    assert "更新内容（v5.2.1 → v5.2.3）" in output
-    assert "v5.2.3" in output
-    assert "新增 Cursor Harness 支持" in output
-    assert "v5.2.2" in output
-    assert "修复 Antigravity 安装目录" in output
+    assert "What's new (v5.2.1 → v5.2.3):" in output
+    assert "- v5.2.3: 新增 Cursor Harness 支持。" in output
+    assert "- v5.2.2: 修复 Antigravity 安装目录。" in output
+    assert "## 更新内容" not in output
+    assert "### 新增" not in output
+
+
+def test_release_summary_is_bounded_and_removes_engineering_details(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    long_item = "A" * 300
+    monkeypatch.setattr(
+        update_module,
+        "_fetch_release_entries",
+        lambda: [
+            ReleaseEntry(
+                tag="v5.2.4",
+                body=(
+                    "## 更新内容\n\n"
+                    "- 用户可见改进 https://example.com/details?token=secret\n"
+                    "- 修复 /Users/alice/private/config.toml 的兼容性\n"
+                    "- uv tool install --force --refresh inspire-skill\n"
+                    f"- {long_item}\n"
+                    "- 第五项\n"
+                    "- 第六项\n"
+                    "- 第七项\n"
+                ),
+            ),
+            ReleaseEntry(tag="v5.2.3", body="- 不应超过总上限\n"),
+            ReleaseEntry(tag="v5.2.2", body="- 旧版本摘要\n"),
+            ReleaseEntry(tag="v5.2.1", body="- 不应读取第四个 release\n"),
+        ],
+    )
+
+    update_module._print_release_summary("5.2.0", "5.2.4", silent=False)
+
+    output = capsys.readouterr().out
+    summary_items = [line for line in output.splitlines() if line.startswith("- v")]
+    assert len(summary_items) <= update_module._RELEASE_SUMMARY_MAX_ITEMS
+    assert "https://" not in output
+    assert "/Users/alice" not in output
+    assert "uv tool install" not in output
+    assert "A" * update_module._RELEASE_SUMMARY_ITEM_MAX_CHARS not in output
+    assert "…" in output
+    assert "不应读取第四个 release" not in output
+
+
+def test_update_failure_output_is_one_compact_actionable_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        update_module,
+        "run_check",
+        lambda **_kwargs: {"current": "5.2.1", "latest": "5.2.2"},
+    )
+    monkeypatch.setattr(update_module, "_upgrade_cli", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(update_module, "_refresh_skill_files", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(update_module, "_audit_update_state", lambda **_kwargs: (False, None))
+
+    with pytest.raises(SystemExit):
+        update_module.update.callback(
+            check_only=False,
+            silent=False,
+            cli_only=False,
+            skill_only=False,
+        )
+
+    captured = capsys.readouterr()
+    assert captured.err.splitlines() == [
+        "✗ InspireSkill update failed. Retry with `inspire --debug update` for diagnostics."
+    ]
+    combined = captured.out + captured.err
+    assert "/Users/" not in combined
+    assert "uv tool install" not in combined
+    assert "https://" not in combined
+
+
+def test_update_silent_mode_is_fully_quiet(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        update_module,
+        "run_check",
+        lambda **_kwargs: {"current": "5.2.1", "latest": "5.2.1"},
+    )
+    monkeypatch.setattr(update_module, "_upgrade_cli", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(update_module, "_refresh_skill_files", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(update_module, "_audit_update_state", lambda **_kwargs: (True, "5.2.1"))
+    monkeypatch.setattr(update_module, "_ensure_global_playwright_runtime", lambda _silent: True)
+    monkeypatch.setattr(update_module, "_normalize_after_success", lambda _silent: None)
+
+    update_module.update.callback(
+        check_only=False,
+        silent=True,
+        cli_only=False,
+        skill_only=False,
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_parse_uv_tool_list_captures_local_source_and_executable() -> None:

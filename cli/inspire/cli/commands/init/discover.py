@@ -51,6 +51,7 @@ class _DiscoveryPersistRequest:
     projects: list[Any]
     selected_project: Any
     prompted_credentials: tuple[str, str, str] | None
+    non_interactive: bool = False
     verbose: bool = False
 
 
@@ -104,7 +105,7 @@ def _make_unique_alias(alias: str, used: set[str]) -> str:
     return alias
 
 
-def _ensure_playwright_browser() -> None:
+def _ensure_playwright_browser(*, non_interactive: bool = False) -> None:
     """Check that the local browser runtime is installed; offer to install it."""
     import subprocess
     import sys
@@ -123,27 +124,38 @@ def _ensure_playwright_browser() -> None:
     except Exception:
         pass
 
-    click.echo()
     install_args = playwright_install_args()
-    if "--with-deps" in install_args:
-        click.echo(
-            "A local browser runtime and Linux system dependencies are required for "
-            "platform login (one-time setup)."
-        )
-    else:
-        click.echo(
-            "A local browser runtime is required for platform login (one-time ~150 MB download)."
-        )
-    if not click.confirm("Install Chromium now?", default=True):
-        click.echo("Cannot proceed without a browser for platform login.")
-        raise SystemExit(1)
+    if not non_interactive:
+        click.echo()
+        if "--with-deps" in install_args:
+            click.echo(
+                "A local browser runtime and Linux system dependencies are required for "
+                "platform login (one-time setup)."
+            )
+        else:
+            click.echo(
+                "A local browser runtime is required for platform login "
+                "(one-time ~150 MB download)."
+            )
+        if not click.confirm("Install Chromium now?", default=True):
+            click.echo("Cannot proceed without a browser for platform login.")
+            raise SystemExit(1)
 
     result = subprocess.run(
         [sys.executable, "-m", "playwright", *install_args],
-        capture_output=False,
+        check=False,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
-        click.echo(click.style("Chromium installation failed.", fg="red"))
+        click.echo(
+            click.style(
+                "Chromium installation failed. Run `python -m playwright install chromium` "
+                "and retry.",
+                fg="red",
+            ),
+            err=True,
+        )
         raise SystemExit(1)
 
 
@@ -154,6 +166,7 @@ def _resolve_credentials_interactive(
     cli_base_url: str | None,
     allow_config_password: bool = False,
     confirm_config_username: bool = False,
+    non_interactive: bool = False,
 ) -> tuple[str, str, str]:
     """Resolve base_url, username, and password, prompting when missing."""
     # --- base_url ---
@@ -161,6 +174,8 @@ def _resolve_credentials_interactive(
     if not base_url:
         base_url = _usable_base_url(getattr(config, "base_url", ""))
     if not base_url:
+        if non_interactive:
+            raise ValueError("Platform URL is required for non-interactive init.")
         base_url = click.prompt("Platform URL", type=str).strip()
     if not base_url:
         click.echo(click.style("Platform URL is required.", fg="red"))
@@ -170,7 +185,7 @@ def _resolve_credentials_interactive(
     username = (cli_username or "").strip()
     if not username:
         cfg_username = _usable_username(getattr(config, "username", ""))
-        if cfg_username and confirm_config_username:
+        if cfg_username and confirm_config_username and not non_interactive:
             username = click.prompt(
                 "Platform login username (login ID, not display name)",
                 default=cfg_username,
@@ -179,6 +194,8 @@ def _resolve_credentials_interactive(
         elif cfg_username:
             username = cfg_username
     if not username:
+        if non_interactive:
+            raise ValueError("Username is required for non-interactive init.")
         username = click.prompt(
             "Platform login username (login ID, not display name)",
             type=str,
@@ -193,9 +210,11 @@ def _resolve_credentials_interactive(
     # --force mode.  In the session-failed fallback path the old password may be
     # stale, so always prompt for a fresh one.
     password = ""
-    if allow_config_password:
+    if allow_config_password or non_interactive:
         password = str(getattr(config, "password", "") or "").strip()
     if not password:
+        if non_interactive:
+            raise ValueError("Password is required for non-interactive init.")
         password = click.prompt("Password", type=str, hide_input=True)
     if not password:
         click.echo(click.style("Password is required.", fg="red"))
@@ -204,13 +223,16 @@ def _resolve_credentials_interactive(
     return username, password, base_url
 
 
-def _ensure_ssh_key() -> None:
+def _ensure_ssh_key(*, non_interactive: bool = False) -> None:
     """Check for an SSH key; offer to generate one if missing."""
     import subprocess
 
     ssh_dir = Path.home() / ".ssh"
     candidates = [ssh_dir / "id_ed25519.pub", ssh_dir / "id_rsa.pub"]
     if any(p.exists() for p in candidates):
+        return
+
+    if non_interactive:
         return
 
     click.echo()
@@ -229,10 +251,12 @@ def _ensure_ssh_key() -> None:
     key_path = ssh_dir / "id_ed25519"
     result = subprocess.run(
         ["ssh-keygen", "-t", "ed25519", "-f", str(key_path), "-N", "", "-C", "inspire-skill"],
+        check=False,
         capture_output=True,
+        text=True,
     )
     if result.returncode == 0:
-        click.echo(f"SSH key generated: {key_path}")
+        click.echo("SSH key generated.")
     else:
         click.echo(click.style("SSH key generation failed.", fg="yellow"))
 
@@ -408,6 +432,7 @@ def _resolve_discover_runtime(
     default_workspace_id: str,
     cli_username: str | None,
     cli_base_url: str | None,
+    non_interactive: bool = False,
     verbose: bool = False,
 ) -> tuple[object, tuple[str, str, str] | None, str, str]:
     # When the caller explicitly provides credentials via CLI flags, skip the
@@ -416,12 +441,13 @@ def _resolve_discover_runtime(
     session = None
     prompted_credentials: tuple[str, str, str] | None = None
     if cli_username or cli_base_url:
-        _ensure_playwright_browser()
+        _ensure_playwright_browser(non_interactive=non_interactive)
         username, password, base_url = _resolve_credentials_interactive(
             config,
             cli_username=cli_username,
             cli_base_url=cli_base_url,
             allow_config_password=True,
+            non_interactive=non_interactive,
         )
         prompted_credentials = (username, password, base_url)
         _progress(verbose, "Logging in...")
@@ -435,7 +461,7 @@ def _resolve_discover_runtime(
         try:
             session = web_session_module.get_web_session(require_workspace=True)
         except (ValueError, RuntimeError) as exc:
-            _ensure_playwright_browser()
+            _ensure_playwright_browser(non_interactive=non_interactive)
             if is_playwright_browser_runtime_error(exc):
                 try:
                     session = web_session_module.get_web_session(
@@ -451,6 +477,7 @@ def _resolve_discover_runtime(
                     cli_username=cli_username,
                     cli_base_url=cli_base_url,
                     confirm_config_username=True,
+                    non_interactive=non_interactive,
                 )
                 prompted_credentials = (username, password, base_url)
                 _progress(verbose, "Logging in...")
@@ -572,6 +599,7 @@ def _load_projects_for_discovery(
     workspace_id: str,
     force: bool,
     requested_project: str | None = None,
+    non_interactive: bool = False,
 ) -> tuple[list[Any], Any]:
     projects, workspace_errors = _collect_discovery_projects(
         browser_api_module=browser_api_module,
@@ -640,7 +668,7 @@ def _load_projects_for_discovery(
     except Exception:
         heuristic_pick = projects[0]
 
-    if force:
+    if force or non_interactive:
         return projects, heuristic_pick
 
     click.echo()
@@ -679,10 +707,19 @@ def _confirm_discovery_writes(
     scope: str,
     global_path: Path,
     project_path: Path,
+    non_interactive: bool,
+    verbose: bool,
 ) -> bool:
     if global_path.exists() and not force:
+        if non_interactive:
+            raise ValueError(
+                "Account configuration already exists; rerun non-interactive init with --force."
+            )
         click.echo()
-        click.echo(click.style(f"Global config already exists: {global_path}", fg="yellow"))
+        message = "Account configuration already exists."
+        if verbose:
+            message += f" ({global_path})"
+        click.echo(click.style(message, fg="yellow"))
         if not click.confirm(
             "Update it with discovered catalogs? (will rewrite file)", default=True
         ):
@@ -690,8 +727,15 @@ def _confirm_discovery_writes(
             return False
 
     if scope == "project" and project_path.exists() and not force:
+        if non_interactive:
+            raise ValueError(
+                "Project configuration already exists; rerun non-interactive init with --force."
+            )
         click.echo()
-        click.echo(click.style(f"Project config already exists: {project_path}", fg="yellow"))
+        message = "Project configuration already exists."
+        if verbose:
+            message += f" ({project_path})"
+        click.echo(click.style(message, fg="yellow"))
         if not click.confirm(
             "Update it with discovered context/defaults? (will rewrite file)", default=True
         ):
@@ -1388,8 +1432,8 @@ def _prompt_storage_tier(current_path: str) -> str:
     return str(choice).lower()
 
 
-def _select_default_path_alias_tier(*, force: bool) -> str:
-    if force:
+def _select_default_path_alias_tier(*, force: bool, non_interactive: bool = False) -> str:
+    if force or non_interactive:
         return "ssd"
     return _prompt_storage_tier("")
 
@@ -1531,7 +1575,10 @@ def _print_discover_completion(
     global_path: Path,
     project_path: Path | None,
     prompted_credentials: tuple[str, str, str] | None,
+    verbose: bool,
 ) -> None:
+    if not verbose:
+        return
     paths = [str(global_path)]
     if project_path is not None:
         paths.append(str(project_path))
@@ -1551,6 +1598,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
     projects = request.projects
     selected_project = request.selected_project
     prompted_credentials = request.prompted_credentials
+    non_interactive = request.non_interactive
     verbose = request.verbose
     global_path = Config.writable_config_path()
     if global_path is None:
@@ -1561,6 +1609,8 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         scope=scope,
         global_path=global_path,
         project_path=project_path,
+        non_interactive=non_interactive,
+        verbose=verbose,
     ):
         return
 
@@ -1710,7 +1760,10 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
             global_data.pop("project_catalog", None)
 
     _progress(verbose, "Preparing default remote path aliases...")
-    selected_tier = _select_default_path_alias_tier(force=force)
+    selected_tier = _select_default_path_alias_tier(
+        force=force,
+        non_interactive=non_interactive,
+    )
     _persist_default_path_aliases(
         project_data=global_data,
         account_key=account_key,
@@ -1749,11 +1802,12 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         )
         wrote_project_path = project_path
 
-    _ensure_ssh_key()
+    _ensure_ssh_key(non_interactive=non_interactive)
     _print_discover_completion(
         global_path=global_path,
         project_path=wrote_project_path,
         prompted_credentials=prompted_credentials,
+        verbose=verbose,
     )
 
 
@@ -1764,6 +1818,7 @@ def _init_discover_mode(
     cli_username: str | None = None,
     cli_base_url: str | None = None,
     cli_select_project: str | None = None,
+    non_interactive: bool = False,
     verbose: bool = False,
 ) -> None:
     """Initialize per-account catalogs by discovering projects and compute groups."""
@@ -1779,6 +1834,7 @@ def _init_discover_mode(
         default_workspace_id=DEFAULT_WORKSPACE_ID,
         cli_username=cli_username,
         cli_base_url=cli_base_url,
+        non_interactive=non_interactive,
         verbose=verbose,
     )
 
@@ -1792,6 +1848,7 @@ def _init_discover_mode(
         workspace_id=workspace_id,
         force=force,
         requested_project=cli_select_project,
+        non_interactive=non_interactive,
     )
     _progress(verbose, f"Discovered {len(projects)} project(s).")
     try:
@@ -1807,6 +1864,7 @@ def _init_discover_mode(
                 projects=projects,
                 selected_project=selected_project,
                 prompted_credentials=prompted_credentials,
+                non_interactive=non_interactive,
                 verbose=verbose,
             )
         )

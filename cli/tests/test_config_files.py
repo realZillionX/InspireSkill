@@ -1101,7 +1101,7 @@ class TestInitCommand:
         result = runner.invoke(init, ["--no-discover", "--scope", "project", "--force"])
 
         assert result.exit_code == 0
-        assert "Created " in result.output
+        assert result.output == "Configuration updated (scope: project).\n"
         config_file = self._project_config_path(tmp_path)
         assert config_file.exists()
         content = config_file.read_text()
@@ -1176,7 +1176,7 @@ class TestInitCommand:
         result = runner.invoke(init, ["--template", "--scope", "project"])
 
         assert result.exit_code == 0
-        assert "Created " in result.output
+        assert result.output == "Configuration updated (scope: project).\n"
         config_file = self._project_config_path(tmp_path)
         assert config_file.exists()
         content = config_file.read_text()
@@ -1200,9 +1200,8 @@ class TestInitCommand:
         assert result.exit_code == 0
         payload = json.loads(result.output)
         assert payload["success"] is True
-        assert payload["data"]["mode"] == "template"
-        assert payload["data"]["configs"] == [str(self._project_config_path(tmp_path))]
-        assert payload["data"]["status"] == "updated"
+        assert payload["data"] == {"status": "updated", "scope": "project"}
+        assert str(tmp_path) not in result.output
 
     def test_init_json_fails_when_overwrite_prompt_would_be_needed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1229,7 +1228,10 @@ class TestInitCommand:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
     ) -> None:
         """Test that init warns when config exists."""
+        from inspire.cli.commands.init import init_cmd as init_cmd_module
+
         monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(init_cmd_module, "_stdin_is_interactive", lambda: True)
 
         # Create existing config
         config_file = self._project_config_path(tmp_path)
@@ -1314,7 +1316,7 @@ class TestInitCommand:
         result = CliRunner().invoke(init, ["--no-discover", "--scope", "project", "--force"])
 
         assert result.exit_code == 0, result.output
-        assert "No project-scope environment variables detected" in result.output
+        assert result.output == "Configuration unchanged (scope: project).\n"
         assert not self._project_config_path(tmp_path).exists()
         assert 'username = "existing"' in self._account_config_path().read_text()
 
@@ -1626,8 +1628,16 @@ class TestInitCommand:
         # touch the real filesystem or try to launch a browser.
         from inspire.cli.commands.init import discover as discover_module
 
-        monkeypatch.setattr(discover_module, "_ensure_playwright_browser", lambda: None)
-        monkeypatch.setattr(discover_module, "_ensure_ssh_key", lambda: None)
+        monkeypatch.setattr(
+            discover_module,
+            "_ensure_playwright_browser",
+            lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            discover_module,
+            "_ensure_ssh_key",
+            lambda **_kwargs: None,
+        )
 
         return global_config, workspace_id
 
@@ -1642,7 +1652,7 @@ class TestInitCommand:
         result = runner.invoke(init, ["--force"])
 
         assert result.exit_code == 0, result.output
-        assert "Initialized: " in result.output
+        assert result.output == "Configuration updated (scope: global).\n"
         assert "Discovering account catalog" not in result.output
         assert "Writing configuration files" not in result.output
         assert "Workspace:" not in result.output
@@ -1667,7 +1677,7 @@ class TestInitCommand:
         result = CliRunner().invoke(init, ["--force"])
 
         assert result.exit_code == 0, result.output
-        assert "Initialized: " in result.output
+        assert result.output == "Configuration updated (scope: global).\n"
         assert "Account: cached-user" not in result.output
         account_content = self._account_config_path().read_text(encoding="utf-8")
         assert 'username = "cached-user"' in account_content
@@ -1907,10 +1917,14 @@ class TestConfigShowCommand:
         result = runner.invoke(config_command, ["show"])
 
         assert result.exit_code == 0
-        assert "Configuration Overview" in result.output
+        assert "Configuration" in result.output
         assert "INSPIRE_USERNAME" in result.output
         assert "testuser" in result.output
-        assert "[env]" in result.output
+        assert "[env]" not in result.output
+
+        detailed = runner.invoke(config_command, ["show", "--details"])
+        assert detailed.exit_code == 0
+        assert "[env]" in detailed.output
 
     def test_config_show_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test config show JSON output."""
@@ -1922,10 +1936,12 @@ class TestConfigShowCommand:
         result = runner.invoke(config_command, ["show", "--format", "json"])
 
         assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert "config_files" in data
-        assert "values" in data
-        assert "INSPIRE_USERNAME" in data["values"]
+        payload = json.loads(result.output)
+        assert payload["success"] is True
+        data = payload["data"]
+        assert "config_files" not in data
+        assert data["values"]["INSPIRE_USERNAME"] == "testuser"
+        assert data["values"]["INSPIRE_PASSWORD"] == "********"
 
     def test_config_show_rejects_command_local_json(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2029,7 +2045,7 @@ class TestConfigShowCommand:
         )
 
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        data = json.loads(result.output)["data"]
         assert "values" in data
         assert data["effective_proxy"]["target"] == "qz.sii.edu.cn"
         assert data["effective_proxy"]["requests"]["source"] == "system_env"
@@ -2175,10 +2191,13 @@ class TestConfigEnvCommand:
         project_config.parent.mkdir()
         project_config.write_text('[cli]\nenv_file = ".env"\n', encoding="utf-8")
 
-        result = CliRunner().invoke(cli_main, ["config", "show", "--format", "json"])
+        result = CliRunner().invoke(
+            cli_main,
+            ["config", "show", "--format", "json", "--details"],
+        )
 
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
+        data = json.loads(result.output)["data"]
         assert data["env_file"] == str(tmp_path / ".env")
         assert data["values"]["INSP_GITHUB_REPO"]["value"] == "owner/from-dotenv"
         assert data["values"]["INSP_GITHUB_REPO"]["source"] == SOURCE_ENV_FILE
@@ -2202,10 +2221,13 @@ class TestConfigEnvCommand:
         project_config.parent.mkdir()
         project_config.write_text('[cli]\nenv_file = ".env"\n', encoding="utf-8")
 
-        result = CliRunner().invoke(cli_main, ["config", "show", "--format", "json"])
+        result = CliRunner().invoke(
+            cli_main,
+            ["config", "show", "--format", "json", "--details"],
+        )
 
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
+        data = json.loads(result.output)["data"]
         assert data["values"]["INSP_GITHUB_REPO"]["value"] == "owner/from-real-env"
         assert data["values"]["INSP_GITHUB_REPO"]["source"] == SOURCE_ENV
 
@@ -2406,7 +2428,7 @@ prefer_source = "toml"
         monkeypatch.chdir(tmp_path)
 
         runner = CliRunner()
-        result = runner.invoke(config_command, ["show"])
+        result = runner.invoke(config_command, ["show", "--details"])
 
         assert result.exit_code == 0
         assert "Precedence:" in result.output
@@ -2419,11 +2441,11 @@ prefer_source = "toml"
         monkeypatch.chdir(tmp_path)
 
         runner = CliRunner()
-        result = runner.invoke(config_command, ["show"])
+        result = runner.invoke(config_command, ["show", "--details"])
 
         assert result.exit_code == 0
         assert "Precedence:" in result.output
-        assert "env vars win" in result.output
+        assert "environment wins" in result.output
 
     def test_config_show_json_includes_prefer_source(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
@@ -2441,8 +2463,11 @@ prefer_source = "toml"
         monkeypatch.chdir(tmp_path)
 
         runner = CliRunner()
-        result = runner.invoke(config_command, ["show", "--format", "json"])
+        result = runner.invoke(
+            config_command,
+            ["show", "--format", "json", "--details"],
+        )
 
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        data = json.loads(result.output)["data"]
         assert data["prefer_source"] == "toml"
