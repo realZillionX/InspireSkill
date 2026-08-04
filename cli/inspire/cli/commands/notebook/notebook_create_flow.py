@@ -19,6 +19,7 @@ from inspire.cli.context import (
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary, remember_resource_identity
+from inspire.cli.utils.project_resolver import resolve_project
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
     get_base_url,
@@ -238,10 +239,11 @@ def resolve_notebook_project(
         else project
     )
     if project_value:
-        for alias, project_id in (config.projects or {}).items():
-            if alias.lower() == project_value.lower():
-                project_value = project_id
-                break
+        project_value = resolve_project(
+            config,
+            project_value,
+            projects,
+        ).name
 
     try:
         congested: set[str] | None = None

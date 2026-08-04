@@ -82,7 +82,7 @@ def _patch_submit_deps(
     )
     config.shm_size = shm_size
     config.job_enable_notification = enable_notification
-    config.projects = {"proj": "project-12345678-1234-1234-1234-123456789abc"}
+    config.projects = {"proj": "Project One"}
     config.profiles = {
         "job": {
             "h200": {

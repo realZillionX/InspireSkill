@@ -421,7 +421,7 @@ def select_project(
         lines = [
             "Candidates:",
             *(
-                f"  - {p.name} ({p.project_id}){p.get_quota_status(needs_gpu=needs_gpu_quota)}"
+                f"  - {p.name}{p.get_quota_status(needs_gpu=needs_gpu_quota)}"
                 for p in ordered
                 if p.name
             ),
@@ -431,12 +431,12 @@ def select_project(
     if requested:
         target = None
         for project in projects:
-            if project.name.lower() == requested.lower() or project.project_id == requested:
+            if project.name.lower() == requested.lower():
                 target = project
                 break
 
         if not target:
-            raise ValueError(f"Project '{requested}' not found")
+            raise ValueError("Project name not found")
 
         if target.has_quota(needs_gpu=needs_gpu_quota):
             msg = None

@@ -165,7 +165,7 @@ def test_select_project_requested_returns_directly() -> None:
 
     selected, message = select_project(
         [requested, other],
-        requested="project-requested",
+        requested="Requested Project",
     )
 
     assert selected.project_id == "project-requested"
@@ -190,7 +190,7 @@ def test_select_project_requested_over_quota_allowed_for_cpu() -> None:
 
     selected, message = select_project(
         [requested, fallback],
-        requested="project-requested",
+        requested="Requested Project",
         needs_gpu_quota=False,
     )
 
@@ -246,14 +246,14 @@ def test_resolve_notebook_project_passes_quota_settings(monkeypatch) -> None:
         notebook_create_flow.Context(),
         projects=[requested],
         config=config,
-        project="project-requested",
+        project="Requested Project",
         allow_requested_over_quota=True,
         needs_gpu_quota=False,
         json_output=True,
     )
 
     assert resolved is requested
-    assert called["requested"] == "project-requested"
+    assert called["requested"] == "Requested Project"
     assert called["allow_requested_over_quota"] is True
     assert called["needs_gpu_quota"] is False
 
@@ -352,7 +352,7 @@ def test_project_order_does_not_affect_explicit_request() -> None:
     a = _project("p-a", "Alpha", priority_name="10")
     b = _project("p-b", "Beta", priority_name="4")
 
-    selected, _ = select_project([a, b], requested="p-a", project_order=["Beta"])
+    selected, _ = select_project([a, b], requested="Alpha", project_order=["Beta"])
     assert selected.project_id == "p-a"
 
 
@@ -389,13 +389,23 @@ def test_congested_project_explicit_still_selected_with_warning() -> None:
 
     selected, msg = select_project(
         [proj, other],
-        requested="p-congested",
+        requested="Congested",
         congested_projects={"p-congested"},
     )
     assert selected.project_id == "p-congested"
     assert msg is not None
     assert "Unschedulable" in msg
     assert "Congested" in msg
+
+
+def test_select_project_rejects_platform_id_and_hides_candidates_ids() -> None:
+    requested = _project("project-a1b2", "Requested Project")
+    other = _project("project-c3d4", "Other Project")
+
+    with pytest.raises(ValueError, match="not found") as exc_info:
+        select_project([requested, other], requested="project-a1b2")
+
+    assert "project-a1b2" not in str(exc_info.value)
 
 
 def test_no_congestion_data_uses_default_sort() -> None:

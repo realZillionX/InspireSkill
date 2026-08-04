@@ -19,10 +19,10 @@ from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import (
-    looks_like_platform_id,
     remember_resource_identity,
     resolve_by_name,
 )
+from inspire.cli.utils.project_resolver import resolve_project_id as resolve_project_id_by_name
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id
@@ -45,42 +45,13 @@ def _resolve_project_id(
 ) -> Optional[str]:
     if not requested:
         return None
-    if looks_like_platform_id(requested):
-        raise ConfigError("--project takes a project name.")
-
-    requested_names = [requested]
-    configured = str(config.projects.get(requested) or "").strip()
-    if configured:
-        if configured.startswith("project-"):
-            metadata = config.project_catalog.get(configured)
-            if isinstance(metadata, dict):
-                configured_name = str(metadata.get("name") or "").strip()
-                if configured_name:
-                    requested_names.insert(0, configured_name)
-        else:
-            requested_names.insert(0, configured)
-
-    catalog_entry = config.project_catalog.get(requested)
-    if isinstance(catalog_entry, dict):
-        catalog_name = str(catalog_entry.get("name") or "").strip()
-        if catalog_name:
-            requested_names.insert(0, catalog_name)
-
     projects = browser_api_module.list_projects(
         workspace_id=workspace_id, session=session
     )
-    targets = {name.casefold() for name in requested_names if name}
-    matches = [project for project in projects if project.name.casefold() in targets]
-    if len(matches) == 1:
-        return matches[0].project_id
-    if len(matches) > 1:
-        raise ConfigError(
-            f"Project name {requested!r} is ambiguous in the selected workspace."
-        )
-
-    available = ", ".join(sorted({project.name for project in projects if project.name}))
-    raise ConfigError(
-        f"Unknown project name {requested!r}. Available: {available or '(none)'}."
+    return resolve_project_id_by_name(
+        config,
+        requested,
+        projects,
     )
 
 

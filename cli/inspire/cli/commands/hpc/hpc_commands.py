@@ -33,6 +33,10 @@ from inspire.cli.utils.id_resolver import (
     remember_resource_identity,
     resolve_by_name,
 )
+from inspire.cli.utils.project_resolver import (
+    project_display_name,
+    resolve_project_id as resolve_project_id_by_name,
+)
 from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
@@ -127,47 +131,34 @@ def _resolve_project_id(
     config: Config,
     requested: Optional[str],
     *,
+    workspace_id: Optional[str] = None,
+    session=None,
     ctx: Context | None = None,
 ) -> str:
-    """Resolve a project name to the underlying project_id."""
-    if requested:
-        if ctx is not None:
-            requested = reject_id_at_boundary(
-                ctx,
-                requested,
-                resource_type="project",
-                list_command="inspire project list",
-            )
-        elif looks_like_platform_id(requested):
-            raise ConfigError("--project takes a project name.")
-        if requested in config.projects:
-            return config.projects[requested]
-        for project_id, metadata in config.project_catalog.items():
-            if metadata.get("name") == requested:
-                return project_id
-        available = sorted(
-            a
-            for a in (
-                set(config.projects.keys())
-                | {str(m.get("name") or "").strip() for m in config.project_catalog.values()}
-            )
-            if a
+    """Resolve a visible project name against the current workspace."""
+    if not requested:
+        raise ConfigError("--project is required.")
+    if ctx is not None:
+        requested = reject_id_at_boundary(
+            ctx,
+            requested,
+            resource_type="project",
+            list_command="inspire project list",
         )
-        hint = ", ".join(available) if available else "(run 'inspire config context')"
-        raise ConfigError(f"Unknown project: {requested!r}. Available: {hint}")
-
-    raise ConfigError("--project is required.")
+    elif looks_like_platform_id(requested):
+        raise ConfigError("--project takes a project name.")
+    if not workspace_id or session is None:
+        raise ConfigError("A live workspace project list is required to resolve --project.")
+    projects = browser_api_module.list_projects(
+        workspace_id=workspace_id,
+        session=session,
+    )
+    return resolve_project_id_by_name(config, requested, projects)
 
 
 def _project_label(config: Config, project_id: str, requested: Optional[str]) -> str:
     if requested:
-        return requested
-    for name, candidate in (config.projects or {}).items():
-        if candidate == project_id:
-            return name
-    entry = (config.project_catalog or {}).get(project_id)
-    if isinstance(entry, dict) and entry.get("name"):
-        return str(entry["name"])
+        return project_display_name(config, requested)
     return "(project name unavailable)"
 
 
@@ -611,7 +602,6 @@ def create_hpc(
         image = cast(str, image)
         quota = cast(str, quota)
 
-        resolved_project_id = _resolve_project_id(config, project, ctx=ctx)
         session = get_web_session()
         resolved_workspace_id = select_workspace_id(
             config,
@@ -620,6 +610,13 @@ def create_hpc(
         )
         if resolved_workspace_id is None:
             raise ConfigError(profile_required_message("hpc", "workspace"))
+        resolved_project_id = _resolve_project_id(
+            config,
+            project,
+            workspace_id=resolved_workspace_id,
+            session=session,
+            ctx=ctx,
+        )
         final_priority = resolve_workspace_task_priority(
             priority,
             session=session,

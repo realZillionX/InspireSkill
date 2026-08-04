@@ -21,7 +21,12 @@ from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.id_resolver import (
+    forget_resource_identity,
+    reject_id_at_boundary,
+    remember_resource_identity,
+    resolve_by_name,
+)
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id
@@ -214,40 +219,47 @@ def _validate_public_key(ctx: Context, value: str) -> str:
     return lines[0]
 
 
-def _resolve_ssh_key_by_name(ctx: Context, name: str, *, session) -> dict:  # noqa: ANN001
+def _resolve_ssh_key_by_name(
+    ctx: Context,
+    name: str,
+    *,
+    session,
+    require_live: bool = False,
+) -> dict:  # noqa: ANN001
     key_name = reject_id_at_boundary(
         ctx,
         name,
         resource_type="SSH key",
         list_command="inspire user ssh-keys list",
     )
-    items, _ = browser_api_module.list_user_ssh_keys(page_size=1000, session=session)
-    matches = [item for item in items if _ssh_key_name(item) == key_name]
-    if not matches:
-        _handle_error(
-            ctx,
-            "ValidationError",
-            f"SSH key '{scrub_raw_ids(key_name)}' was not found.",
-            EXIT_VALIDATION_ERROR,
-            hint="Run `inspire user ssh-keys list` to see available key names.",
+
+    def _lister() -> list[dict[str, Any]]:
+        items, _ = browser_api_module.list_user_ssh_keys(
+            page_size=1000,
+            session=session,
         )
-    if len(matches) > 1:
-        _handle_error(
-            ctx,
-            "ValidationError",
-            f"Multiple SSH keys are named '{scrub_raw_ids(key_name)}'.",
-            EXIT_VALIDATION_ERROR,
-            hint="Rename or delete the duplicate key from the platform user center first.",
-        )
-    ssh_id = _ssh_key_id(matches[0])
-    if not ssh_id:
-        _handle_error(
-            ctx,
-            "APIError",
-            f"SSH key '{scrub_raw_ids(key_name)}' has no delete handle in the API response.",
-            EXIT_API_ERROR,
-        )
-    return matches[0]
+        return [
+            {
+                "name": _ssh_key_name(item),
+                "id": _ssh_key_id(item),
+                "created_at": item.get("created_at") or item.get("create_at") or "",
+            }
+            for item in items
+            if _ssh_key_name(item) and _ssh_key_id(item)
+        ]
+
+    ssh_id = resolve_by_name(
+        ctx,
+        name=key_name,
+        resource_type="SSH key",
+        list_candidates=_lister,
+        json_output=ctx.json_output,
+        session=session,
+        owner_scope="self",
+        require_live=require_live,
+        list_command="inspire user ssh-keys list",
+    )
+    return {"name": key_name, "ssh_id": ssh_id}
 
 
 @click.command("whoami")
@@ -443,11 +455,20 @@ def add_ssh_key(
                 f"SSH key '{scrub_raw_ids(key_name)}' already exists.",
                 EXIT_VALIDATION_ERROR,
             )
-        browser_api_module.create_user_ssh_key(
+        created = browser_api_module.create_user_ssh_key(
             name=key_name,
             content=content,
             session=session,
         )
+        created_id = _ssh_key_id(created if isinstance(created, dict) else {})
+        if created_id:
+            remember_resource_identity(
+                session=session,
+                resource_type="ssh-key",
+                resource_id=created_id,
+                name=key_name,
+                owner_scope="self",
+            )
 
         if ctx.json_output:
             click.echo(
@@ -473,13 +494,49 @@ def delete_ssh_key(ctx: Context, name: str, yes: bool) -> None:
         session = get_web_session()
         key = _resolve_ssh_key_by_name(ctx, name, session=session)
         key_name = _ssh_key_name(key) or name
+        key_id = _ssh_key_id(key)
 
         if not yes and not ctx.json_output:
             if not click.confirm(f"Delete SSH key '{scrub_raw_ids(key_name)}'?"):
                 click.echo("Cancelled.")
                 return
 
-        browser_api_module.delete_user_ssh_key(_ssh_key_id(key), session=session)
+        try:
+            browser_api_module.delete_user_ssh_key(key_id, session=session)
+        except Exception as exc:
+            # A cached name may point at a deleted-and-recreated key.  Retry
+            # only for an explicit stale-handle response; transient network
+            # failures must not repeat a destructive operation.
+            message = str(exc).lower()
+            stale = any(
+                marker in message
+                for marker in ("not found", "does not exist", "不存在", "404", "invalid")
+            )
+            if not stale:
+                raise
+            forget_resource_identity(
+                session=session,
+                resource_type="ssh-key",
+                resource_id=key_id,
+                name=key_name,
+                owner_scope="self",
+            )
+            fresh_key = _resolve_ssh_key_by_name(
+                ctx,
+                key_name,
+                session=session,
+                require_live=True,
+            )
+            fresh_id = _ssh_key_id(fresh_key)
+            browser_api_module.delete_user_ssh_key(fresh_id, session=session)
+            key_id = fresh_id
+        forget_resource_identity(
+            session=session,
+            resource_type="ssh-key",
+            resource_id=key_id,
+            name=key_name,
+            owner_scope="self",
+        )
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json({"name": key_name, "status": "deleted"})

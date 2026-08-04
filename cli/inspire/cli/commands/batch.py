@@ -26,7 +26,8 @@ from inspire.cli.formatters import json_formatter
 from inspire.cli.utils import job_submit
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import looks_like_platform_id, reject_id_at_boundary
+from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.project_resolver import project_name_candidates
 from inspire.cli.utils.quota_resolver import (
     QuotaMatchError,
     QuotaParseError,
@@ -582,6 +583,8 @@ def _prepare_hpc_item(
     project_id = _resolve_project_id(
         config,
         _require_condition_str(item, "project", kind="hpc"),
+        workspace_id=workspace_id,
+        session=session,
     )
     return build_hpc_create_payload(
         name=_require_str(item, "name"),
@@ -607,12 +610,10 @@ def _prepare_hpc_item(
     )
 
 def _project_request_value(config: Config, requested: str) -> str:
-    if looks_like_platform_id(requested):
-        raise ConfigError("Batch item field project takes a project name.")
-    for alias, project_id in (config.projects or {}).items():
-        if alias.lower() == requested.lower():
-            return project_id
-    return requested
+    try:
+        return project_name_candidates(config, requested)[0]
+    except ConfigError as e:
+        raise ConfigError("Batch item field project takes a project name.") from e
 
 
 def _select_notebook_project(

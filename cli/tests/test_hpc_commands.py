@@ -40,7 +40,7 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         base_url="https://example.invalid",
         log_cache_dir=str(tmp_path / "logs"),
     )
-    config.projects = {"alias-project": "project-alias"}
+    config.projects = {"alias-project": "Project"}
     config.compute_groups = [{"id": "lcg-123", "name": "CG-123"}]
 
     def fake_from_files_and_env(
@@ -66,8 +66,10 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 
     class _FakeWebSession:
         # The HPC create flow needs an active workspace from the web session.
-        # Use the alias-mapped id we set above so resolve_workspace_id /
-        # quota lookup find a real value.
+        # Keep the fake session close enough to a real web session for the
+        # live project and quota resolvers.
+        storage_state: dict[str, Any] = {}
+        cookies: dict[str, str] = {}
         workspace_id = "ws-00000000-0000-0000-0000-000000000002"
         all_workspace_names = {workspace_id: "cpu-room"}
         all_workspace_ids = [workspace_id]
@@ -80,6 +82,11 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         priority_name="10",
     )
     monkeypatch.setattr(projects_mod, "list_projects", lambda **_kwargs: [project])
+    monkeypatch.setattr(
+        hpc_mod.browser_api_module,
+        "list_projects",
+        lambda **_kwargs: [project],
+    )
     monkeypatch.setattr(
         hpc_mod.browser_api_module,
         "get_current_user",

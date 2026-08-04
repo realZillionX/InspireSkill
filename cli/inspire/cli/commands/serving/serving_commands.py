@@ -25,6 +25,7 @@ from inspire.cli.utils.id_resolver import (
     remember_resource_identity,
     resolve_by_name,
 )
+from inspire.cli.utils.project_resolver import resolve_project_id as resolve_project_id_by_name
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
@@ -152,18 +153,19 @@ def _resolve_project_id(
         resource_type="project",
         list_command="inspire project list",
     )
-    if requested in config.projects:
-        return config.projects[requested]
-    for project_id, metadata in config.project_catalog.items():
-        if metadata.get("name") == requested:
-            return project_id
     data = browser_api_module.list_serving_user_project(
         workspace_id=workspace_id, session=session
     )
-    for item in data.get("projects") or []:
-        if item.get("project_name") == requested or item.get("name") == requested:
-            return str(item.get("project_id") or item.get("id") or "")
-    raise ConfigError(f"Unknown project: {requested!r}.")
+    projects = data.get("projects") or []
+    return resolve_project_id_by_name(
+        config,
+        requested,
+        (item for item in projects if isinstance(item, dict)),
+        name_getter=lambda item: str(
+            item.get("project_name") or item.get("name") or ""
+        ),
+        id_getter=lambda item: str(item.get("project_id") or item.get("id") or ""),
+    )
 
 
 def _resolve_image_for_create(raw: str, *, session, ctx: Context) -> tuple[str, str]:
