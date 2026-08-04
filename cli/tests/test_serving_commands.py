@@ -8,6 +8,7 @@ total when the caller is paginating. Complements the wire-format tests in
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,6 +27,7 @@ from inspire.cli.commands.serving.serving_commands import (
 )
 from inspire.cli.main import main as cli_main
 from inspire.platform.web import browser_api as browser_api_module
+from inspire.platform.web.browser_api.servings import ServingInfo
 
 _REAL_RESOLVE_SERVING_NAME = serving_commands_module._resolve_serving_name
 
@@ -175,6 +177,73 @@ def _patch_delete_deps(monkeypatch) -> dict[str, Any]:  # noqa: ANN001
     return calls
 
 
+def test_serving_list_all_expands_and_limit_conflict_is_pre_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = config_module.Config(username="user", password="pass")
+    calls: list[int] = []
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=True: (config, {})),
+    )
+    monkeypatch.setattr(serving_commands_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        serving_commands_module,
+        "_resolve_workspace_id",
+        lambda _config, _workspace: "ws-1",
+    )
+
+    def fake_list_servings(**kwargs):  # noqa: ANN001
+        calls.append(kwargs["page_size"])
+        count = kwargs["page_size"]
+        return (
+            [
+                ServingInfo(
+                    inference_serving_id=f"serving-{index}",
+                    name=f"serving-{index}",
+                    status="RUNNING",
+                    model_name="demo-model",
+                    model_version="1",
+                    project_name="demo-project",
+                    workspace_id=kwargs["workspace_id"],
+                )
+                for index in range(count)
+            ],
+            25,
+        )
+
+    monkeypatch.setattr(browser_api_module, "list_servings", fake_list_servings)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "serving", "list", "--workspace", "Serving空间", "--all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["data"]
+    assert calls == [20, 25]
+    assert len(payload["items"]) == 25
+    assert "truncated" not in payload
+
+    calls.clear()
+    conflict = CliRunner().invoke(
+        cli_main,
+        [
+            "serving",
+            "list",
+            "--workspace",
+            "Serving空间",
+            "--all",
+            "--limit",
+            "3",
+        ],
+    )
+    assert conflict.exit_code != 0
+    assert "Use either --limit or --all, not both." in conflict.output
+    assert calls == []
+
+
 def test_serving_raw_handle_is_rejected_before_detail_api(monkeypatch) -> None:  # noqa: ANN001
     config = config_module.Config(username="user", password="pass")
     monkeypatch.setattr(
@@ -205,7 +274,8 @@ def test_serving_raw_handle_is_rejected_before_detail_api(monkeypatch) -> None: 
     )
 
     assert result.exit_code != 0
-    assert "platform handle" in result.output
+    assert "only accept a serving name" in result.output
+    assert "handle" not in result.output.lower()
 
 
 def test_serving_delete_prompts_by_default(monkeypatch) -> None:  # noqa: ANN001
@@ -232,6 +302,66 @@ def test_serving_delete_yes_skips_prompt(monkeypatch) -> None:  # noqa: ANN001
     assert result.exit_code == 0
     assert calls["serving_id"] == "sv-1"
     assert "Inference serving deleted: demo" in result.output
+
+
+def test_serving_status_retries_stale_cached_handle_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = config_module.Config(username="user", password="pass")
+    calls: list[object] = []
+    invalidated: list[str] = []
+
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=True: (config, {})),
+    )
+    monkeypatch.setattr(serving_commands_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        serving_commands_module,
+        "_resolve_workspace_id",
+        lambda _config, _workspace: "ws-1",
+    )
+
+    def _resolve(
+        _ctx,
+        name,
+        *,
+        workspace_id=None,
+        pick=None,
+        require_live=False,
+    ):
+        calls.append(("resolve", name, require_live))
+        return "sv-new" if require_live else "sv-old"
+
+    monkeypatch.setattr(serving_commands_module, "_resolve_serving_name", _resolve)
+    monkeypatch.setattr(
+        serving_commands_module,
+        "forget_resource_identity",
+        lambda **kwargs: invalidated.append(kwargs["resource_id"]),
+    )
+
+    def _detail(*, inference_serving_id, session):
+        calls.append(("detail", inference_serving_id))
+        if inference_serving_id == "sv-old":
+            raise RuntimeError("404 resource not found")
+        return {"name": "demo", "status": "RUNNING"}
+
+    monkeypatch.setattr(browser_api_module, "get_serving_detail", _detail)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "serving", "status", "demo", "--workspace", "Test Workspace"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert invalidated == ["sv-old"]
+    assert calls == [
+        ("resolve", "demo", False),
+        ("detail", "sv-old"),
+        ("resolve", "demo", True),
+        ("detail", "sv-new"),
+    ]
 
 
 def test_serving_create_rejects_invalid_custom_domain() -> None:

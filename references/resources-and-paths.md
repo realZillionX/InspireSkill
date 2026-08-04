@@ -40,6 +40,32 @@ Restricted Notebook 的文件流转边界是 `/inspire/<storage>/...` 共享路�
 
 `Available` 是平台上当前未被占用的 GPU，`Low Pri` 是低优任务占用、可被高优任务抢占的 GPU，`High Pri` 是 `Available + Low Pri`。判断高优任务时不要只看 `Available`，但 `High Pri` 也只是可抢占容量上限；提交后仍以 Events 为准。公平调度 Workspace 的高优写入值为 4，其他 Workspace 仍按其 `1–10` 策略。
 
+### Name 解析缓存
+
+CLI 为每个启智账号维护一份可丢弃的本地资源名称索引，只用于加速 Name 到内部请求 Handle 的解析。普通 `list`、`status`、`events`、`metrics`、Quota、规格和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。
+
+- 缓存项使用短 TTL；存在有效 Web Session 时，普通命令会静默触发到期范围的后台刷新。
+- Create 成功后会立即写入新名称，Delete 成功后会将旧映射标记为失效。
+- 平台侧删除、同名重建或 Compute Group 变动会在 Live 重解析、到期刷新或手动刷新时替换旧映射。
+- 缓存数据库损坏、锁冲突或刷新失败不能阻断正常的 Live 查询；清空缓存不会删除任何平台资源。
+
+需要主动管理时使用：
+
+```bash
+inspire cache status
+inspire cache refresh
+inspire cache refresh --full
+inspire cache refresh --resource notebook --workspace CPU资源空间
+inspire cache refresh --resource notebook --name prep-box
+inspire cache clear --yes
+```
+
+`cache refresh` 默认只刷新到期范围；指定 Resource、Workspace、Name 或 `--full` 时会主动刷新对应范围。具体可选 Resource 以 `inspire cache refresh --help` 为准。
+
+### 输出预算
+
+发现类列表默认最多展示 20 项；用对应命令的 `--limit` 收窄，或用 `--all` 明确请求完整结果。Batch 命令会完整处理输入条目，但默认只展示 20 个结果名称；用 `--result-limit` 或 `--all-results` 扩展展示。Job 日志默认最多展示 100 行 / 条目，并受 16,000 个字符的总预算约束。默认输出被截断时，CLI 只显示短提示和可用的完整结果选项；`--json` 会提供 `shown`、`total`、`truncated` 等最小元数据。
+
 ## 4. Quota 语义
 
 `--quota` / `-q` 是 `gpu,cpu,mem` 三元组，`mem` 以 GiB 计。GPU 型号不写进三元组，而由 Workspace + Compute Group 决定。

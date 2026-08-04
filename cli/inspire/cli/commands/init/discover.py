@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 from copy import deepcopy
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +12,7 @@ from typing import Any
 
 import click
 
-from inspire.cli.utils.id_resolver import is_full_uuid, is_partial_id
+from inspire.cli.utils.id_resolver import is_full_uuid, looks_like_platform_id
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config
 from inspire.config.toml import _project_config_write_path
@@ -19,6 +20,8 @@ from inspire.platform.web.session.browser_launch import is_playwright_browser_ru
 from .toml_helpers import _toml_dumps
 
 from inspire.platform.web.browser_api.core import _set_base_url
+
+logger = logging.getLogger(__name__)
 
 _CATALOG_DROP_FIELDS = frozenset(
     {
@@ -57,7 +60,7 @@ class _DiscoveryPersistRequest:
 
 def _progress(verbose: bool, message: str) -> None:
     if verbose:
-        click.echo(message)
+        logger.debug("%s", message)
 
 
 def _slugify_alias(value: str) -> str:
@@ -281,23 +284,13 @@ def _looks_like_project_handle(value: object) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
-    if is_full_uuid(text) or is_partial_id(text):
+    if is_full_uuid(text):
         return True
 
     lowered = text.casefold()
-    for prefix in _PROJECT_HANDLE_PREFIXES:
-        if not lowered.startswith(prefix):
-            continue
-        body = text[len(prefix) :]
-        return bool(
-            body
-            and (
-                is_full_uuid(body)
-                or is_partial_id(body)
-                or any(character.isdigit() for character in body)
-            )
-        )
-    return False
+    return any(
+        lowered.startswith(prefix) for prefix in _PROJECT_HANDLE_PREFIXES
+    ) and looks_like_platform_id(text)
 
 
 def _catalog_project_name(
@@ -718,7 +711,7 @@ def _confirm_discovery_writes(
         click.echo()
         message = "Account configuration already exists."
         if verbose:
-            message += f" ({global_path})"
+            logger.debug("Existing account configuration path: %s", global_path)
         click.echo(click.style(message, fg="yellow"))
         if not click.confirm(
             "Update it with discovered catalogs? (will rewrite file)", default=True
@@ -734,7 +727,7 @@ def _confirm_discovery_writes(
         click.echo()
         message = "Project configuration already exists."
         if verbose:
-            message += f" ({project_path})"
+            logger.debug("Existing project configuration path: %s", project_path)
         click.echo(click.style(message, fg="yellow"))
         if not click.confirm(
             "Update it with discovered context/defaults? (will rewrite file)", default=True
@@ -1579,12 +1572,11 @@ def _print_discover_completion(
 ) -> None:
     if not verbose:
         return
-    paths = [str(global_path)]
+    logger.debug("Initialization completed; account config: %s", global_path)
     if project_path is not None:
-        paths.append(str(project_path))
-    click.echo("Initialized: " + ", ".join(paths))
+        logger.debug("Initialization completed; project config: %s", project_path)
     if prompted_credentials:
-        click.echo(f"Password saved in account config: {global_path}")
+        logger.debug("Prompted credentials saved in account configuration.")
 
 
 def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:

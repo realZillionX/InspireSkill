@@ -12,6 +12,7 @@ from inspire.cli.utils.id_resolver import (
     is_full_uuid,
     is_stale_handle_error,
     is_partial_id,
+    looks_like_platform_id,
     remember_resource_identity,
     resolve_by_name,
     run_with_stale_handle_retry,
@@ -91,6 +92,27 @@ class TestIsPartialId:
     def test_long_hex_not_uuid_format(self):
         # 32 hex chars without hyphens — partial, not a full UUID
         assert is_partial_id("c4eb3ac36d83405caa29059bc945c4bf") is True
+
+
+@pytest.mark.parametrize("name", ["2026", "cafe", "deadbeef", "face"])
+def test_bare_hex_names_are_not_rejected_as_platform_ids(name: str) -> None:
+    assert looks_like_platform_id(name) is False
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "ws-1",
+        "cg-1",
+        "lcg-1",
+        "group-123456",
+        "compute-group-abcdef",
+        "workspace-abcdef",
+        "proj-123456",
+    ],
+)
+def test_compute_and_workspace_handles_are_rejected(value: str) -> None:
+    assert looks_like_platform_id(value) is True
 
 
 class _FakeContext:

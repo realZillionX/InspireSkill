@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -81,6 +82,11 @@ _WINDOW_RE = re.compile(r"^(\d+)\s*([smhd])$")
 _WINDOW_MULT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 _SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+# Raw samples are useful for an explicit diagnostic request, but an accidental
+# wide time window must not turn the CLI into an unbounded context stream.
+DEFAULT_RAW_SAMPLE_LIMIT = 500
+MAX_RAW_SAMPLE_LIMIT = 2_000
 
 
 def _parse_window(text: str) -> int:
@@ -210,8 +216,62 @@ def _per_pod_last(metric_groups: list[MetricGroup]) -> list[tuple[str, float]]:
     out: list[tuple[str, float]] = []
     for g in metric_groups:
         if g.samples:
-            out.append((g.group_name, g.samples[-1].value))
+            sample = max(g.samples, key=lambda item: item.timestamp)
+            out.append((g.group_name, sample.value))
     return out
+
+
+def _ordered_samples(group: MetricGroup) -> list[Any]:
+    """Return samples in timestamp order without mutating the API response."""
+    return sorted(group.samples, key=lambda sample: sample.timestamp)
+
+
+def _series_summary(group: MetricGroup) -> dict[str, Any]:
+    """Build the compact, name-only JSON representation of one series."""
+    samples = _ordered_samples(group)
+    unit = scrub_raw_ids(_short_pod(group.group_name))
+    summary: dict[str, Any] = {
+        "unit": unit,
+        "metric": group.metric_type,
+        "count": len(samples),
+    }
+    if samples:
+        values = [sample.value for sample in samples]
+        summary.update(
+            {
+                "min": min(values),
+                "max": max(values),
+                "avg": sum(values) / len(values),
+                "last": values[-1],
+            }
+        )
+    return summary
+
+
+def _raw_series(group: MetricGroup, *, limit: int) -> dict[str, Any]:
+    """Add bounded raw samples to a compact series summary.
+
+    The most recent samples are retained when truncation is necessary. This
+    makes ``--raw`` useful for current diagnosis while preserving the total
+    count and explicit truncation state.
+    """
+    effective_limit = max(1, min(int(limit), MAX_RAW_SAMPLE_LIMIT))
+    summary = _series_summary(group)
+    samples = _ordered_samples(group)
+    returned_samples = samples[-effective_limit:]
+    summary.update(
+        {
+            "sample_mode": "raw",
+            "returned": len(returned_samples),
+            "total": len(samples),
+            "truncated": len(returned_samples) < len(samples),
+            "samples": [
+                {"timestamp": sample.timestamp, "value": sample.value}
+                for sample in returned_samples
+            ],
+        }
+    )
+    return summary
 
 
 def _format_text_summary(
@@ -225,13 +285,16 @@ def _format_text_summary(
     groups: list[MetricGroup],
     include_sparkline: bool,
     chart_path: Optional[Path],
+    show_chart_path: bool = False,
 ) -> str:
     by_metric = _aggregate_by_metric(metrics, groups)
     pods = sorted({g.group_name for g in groups if g.group_name})
 
     lines: list[str] = []
     if chart_path is not None:
-        lines.append(f"Chart: {chart_path}")
+        lines.append(
+            f"Chart: {chart_path}" if show_chart_path else "Chart saved."
+        )
         lines.append("")
 
     lines.extend(
@@ -338,6 +401,15 @@ def _open_file(path: Path) -> None:
 # LCG-resolver type
 # ---------------------------------------------------------------------------
 
+
+@dataclass(frozen=True)
+class ResolvedMetricsTarget:
+    """Internal task handle plus detail-derived compute-group handle."""
+
+    task_id: str
+    logic_compute_group_id: Optional[str] = None
+
+
 # Signature: (task_id, session) -> lcg | None. Implementations may issue
 # additional live detail calls to locate the field.
 LcgResolver = Callable[[str, WebSession], Optional[str]]
@@ -401,7 +473,7 @@ def build_metrics_command(
     *,
     resource_name: str,
     resource_label: str,
-    name_resolver: Callable[[Any, str], str],
+    name_resolver: Callable[[Any, str], str | ResolvedMetricsTarget],
     lcg_resolver: LcgResolver,
 ) -> click.Command:
     """Return a Click command that queries metrics for one task type.
@@ -477,6 +549,25 @@ def build_metrics_command(
         help="Add an inline unicode sparkline under each metric's stats line.",
     )
     @click.option(
+        "--raw",
+        "raw_output",
+        is_flag=True,
+        help=(
+            "Include bounded raw samples in JSON output. Without --raw, JSON "
+            "contains only compact per-unit summaries."
+        ),
+    )
+    @click.option(
+        "--raw-limit",
+        type=click.IntRange(1, MAX_RAW_SAMPLE_LIMIT),
+        default=DEFAULT_RAW_SAMPLE_LIMIT,
+        show_default=True,
+        help=(
+            f"Maximum samples returned per unit when --raw is used "
+            f"(hard limit: {MAX_RAW_SAMPLE_LIMIT})."
+        ),
+    )
+    @click.option(
         "--open",
         "open_after",
         is_flag=True,
@@ -496,6 +587,8 @@ def build_metrics_command(
         plot_path: Optional[str],
         no_plot: bool,
         sparkline: bool,
+        raw_output: bool,
+        raw_limit: int,
         open_after: bool,
     ) -> None:
         """Query historical GPU / CPU / memory / disk / network utilization.
@@ -506,7 +599,6 @@ def build_metrics_command(
         the PNG chart and summarized in the terminal output.
         """
         setattr(ctx, "workspace", workspace)
-        task_id = name_resolver(ctx, name)
 
         json_output = ctx.json_output
 
@@ -540,6 +632,14 @@ def build_metrics_command(
         interval_s = INTERVAL_CHOICES[interval]
 
         try:
+            resolved_target = name_resolver(ctx, name)
+            if isinstance(resolved_target, ResolvedMetricsTarget):
+                task_id = resolved_target.task_id
+                detail_lcg = resolved_target.logic_compute_group_id
+            else:
+                task_id = resolved_target
+                detail_lcg = None
+
             session = get_web_session()
 
             lcg = (
@@ -550,7 +650,7 @@ def build_metrics_command(
                     name=compute_group_name,
                 )
                 if compute_group_name
-                else None
+                else detail_lcg
             )
             if lcg is None:
                 lcg = lcg_resolver(task_id, session)
@@ -598,13 +698,9 @@ def build_metrics_command(
                     "interval": interval,
                 },
                 "series": [
-                    {
-                        "unit": _short_pod(g.group_name),
-                        "metric": g.metric_type,
-                        "samples": [
-                            {"timestamp": s.timestamp, "value": s.value} for s in g.samples
-                        ],
-                    }
+                    _raw_series(g, limit=raw_limit)
+                    if raw_output
+                    else _series_summary(g)
                     for g in groups
                 ],
             }
@@ -657,6 +753,7 @@ def build_metrics_command(
                 groups=groups,
                 include_sparkline=sparkline,
                 chart_path=chart_path,
+                show_chart_path=bool(plot_path),
             )
         )
 
@@ -671,4 +768,4 @@ def build_metrics_command(
     return metrics_cmd
 
 
-__all__ = ["LcgResolver", "build_metrics_command"]
+__all__ = ["LcgResolver", "ResolvedMetricsTarget", "build_metrics_command"]

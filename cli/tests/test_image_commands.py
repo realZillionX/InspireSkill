@@ -10,7 +10,13 @@ from click.testing import CliRunner
 from inspire import config as config_module
 from inspire.cli.commands.image import image_commands as image_commands_module
 from inspire.cli.commands.notebook import notebook_lookup as notebook_lookup_module
+from inspire.cli.context import Context
 from inspire.cli.main import main as cli_main
+from inspire.cli.utils.resource_index import (
+    ResourceIdentity,
+    ResourceIndex,
+    ResourceScope,
+)
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.browser_api.images import (
@@ -29,6 +35,8 @@ _FORBIDDEN_PUBLIC_KEYS = {
     "scanned",
     "source",
 }
+
+_REAL_RESOLVE_IMAGE_NAME = image_commands_module._resolve_image_name
 
 
 def _json_data(output: str) -> Any:
@@ -126,6 +134,24 @@ def _patch_image_name_resolver(
         return mapping[name]
 
     monkeypatch.setattr(image_commands_module, "_resolve_image_name", _fake_resolve)
+
+
+def _cacheable_image_session() -> FakeWebSession:
+    session = FakeWebSession()
+    session.base_url = "https://inspire.example"
+    session.user_detail = {"id": "user-one"}
+    session.login_username = "alice"
+    return session
+
+
+def _image_scope() -> ResourceScope:
+    return ResourceScope(
+        base_url="https://inspire.example",
+        subject_id="user-one",
+        resource_type="image",
+        workspace_id="ws-test-workspace",
+        owner_scope="self",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +585,108 @@ def test_image_list_all_sources_all_fail(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert result.exit_code != 0
 
 
+def test_image_name_resolver_uses_successful_sources_when_others_fail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    session = _cacheable_image_session()
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _image_scope()
+    index.upsert(
+        scope,
+        [ResourceIdentity(resource_id="img-old", name="target:v1")],
+    )
+    monkeypatch.setattr(
+        ResourceIndex,
+        "for_account",
+        classmethod(lambda cls, account=None: index),
+    )
+
+    def fake_list_by_source(source="official", session=None):
+        if source != "private":
+            raise RuntimeError(f"{source} unavailable")
+        return [
+            CustomImageInfo(
+                image_id="img-new",
+                url="registry/target:v1",
+                name="target",
+                framework="",
+                version="v1",
+                source="SOURCE_PRIVATE",
+                status="READY",
+                description="",
+                created_at="",
+            )
+        ]
+
+    monkeypatch.setattr(browser_api_module, "list_images_by_source", fake_list_by_source)
+
+    resolved = _REAL_RESOLVE_IMAGE_NAME(
+        Context(),
+        "target:v1",
+        session=session,
+        require_live=True,
+    )
+
+    assert resolved == "img-new"
+    assert [item.resource_id for item in index.lookup(scope, "target:v1")] == [
+        "img-new"
+    ]
+    old = index.lookup_id(scope, "img-old", include_tombstoned=True)
+    assert old is not None
+    assert old.tombstoned_at is not None
+
+
+def test_destructive_image_lookup_all_sources_fail_preserves_cached_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    session = _cacheable_image_session()
+    monkeypatch.setattr(web_session_module, "get_web_session", lambda: session)
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _image_scope()
+    index.upsert(
+        scope,
+        [ResourceIdentity(resource_id="img-old", name="target:v1")],
+    )
+    monkeypatch.setattr(
+        ResourceIndex,
+        "for_account",
+        classmethod(lambda cls, account=None: index),
+    )
+    monkeypatch.setattr(
+        image_commands_module,
+        "_resolve_image_name",
+        _REAL_RESOLVE_IMAGE_NAME,
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_images_by_source",
+        lambda source="official", session=None: (_ for _ in ()).throw(
+            RuntimeError(f"{source} endpoint unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "delete_image",
+        lambda **_: pytest.fail("delete must not run after catalogue failure"),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "image", "delete", "target:v1", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    assert "APIError" in result.output
+    assert "all image catalogues failed" in result.output
+    assert [item.resource_id for item in index.lookup(scope, "target:v1")] == [
+        "img-old"
+    ]
+    old = index.lookup_id(scope, "img-old", include_tombstoned=True)
+    assert old is not None
+    assert old.tombstoned_at is None
+
+
 def test_image_detail_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _patch_config_and_session(monkeypatch, tmp_path)
     _patch_image_name_resolver(monkeypatch, {"detail-img:2.0": "img-123"})
@@ -617,6 +745,63 @@ def test_image_detail_human(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     assert "Image Detail" not in result.output
     assert "Source:" not in result.output
     assert "img-123" not in result.output
+
+
+def test_image_detail_retries_stale_cached_handle_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    resolve_calls: list[bool] = []
+    detail_calls: list[str] = []
+    invalidated: list[str] = []
+
+    def _resolve(
+        _ctx,
+        _name,
+        *,
+        require_live=False,
+        **_kwargs,
+    ):
+        resolve_calls.append(require_live)
+        return "img-new" if require_live else "img-old"
+
+    monkeypatch.setattr(image_commands_module, "_resolve_image_name", _resolve)
+    monkeypatch.setattr(
+        image_commands_module,
+        "forget_resource_identity",
+        lambda **kwargs: invalidated.append(kwargs["resource_id"]),
+    )
+
+    def _detail(image_id, session=None):
+        detail_calls.append(image_id)
+        if image_id == "img-old":
+            raise RuntimeError("404 image not found")
+        return browser_api_module.CustomImageInfo(
+            image_id=image_id,
+            url="registry/detail-img",
+            name="detail-img",
+            framework="pytorch",
+            version="2.0",
+            source="SOURCE_PRIVATE",
+            status="READY",
+            description="Detailed",
+            created_at="2026-01-15",
+        )
+
+    monkeypatch.setattr(browser_api_module, "get_image_detail", _detail)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "image", "detail", "detail-img:2.0"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert resolve_calls == [False, True]
+    assert detail_calls == ["img-old", "img-new"]
+    assert invalidated == ["img-old"]
+    assert "img-old" not in result.output
+    assert "img-new" not in result.output
 
 
 # Removed in v2.0.0: partial-hex id resolution was replaced by name-only

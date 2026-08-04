@@ -239,6 +239,15 @@ def refresh_cache(
     )
     selected = tuple(resource.lower() for resource in resources) or RESOURCE_TYPES
     exact_name = str(name or "").strip()
+    validated_workspaces = tuple(
+        reject_id_at_boundary(
+            ctx,
+            workspace,
+            resource_type="workspace",
+            list_command="inspire config context",
+        )
+        for workspace in workspaces
+    )
     if exact_name:
         if len(selected) != 1:
             exit_with_error(
@@ -262,7 +271,7 @@ def refresh_cache(
             session=session,
             index=index,
             resource_types=selected,
-            workspace_names=workspaces or None,
+            workspace_names=validated_workspaces or None,
             exact_name=exact_name,
             force=force,
         )

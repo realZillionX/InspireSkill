@@ -181,3 +181,32 @@ def test_web_follow_json_is_rejected_before_web_calls(monkeypatch) -> None:  # n
 
     assert result.exit_code != 0
     assert "--json --follow --source platform is not supported" in result.output
+
+
+def test_job_logs_rejects_instance_handle_before_web_calls(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        job_logs.Config,
+        "from_files_and_env",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("instance validation should run before web setup")
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "logs",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+            "--source",
+            "platform",
+            "--instance",
+            "pod-1234abcd",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "job instance name" in result.output
+    assert "pod-1234abcd" not in result.output

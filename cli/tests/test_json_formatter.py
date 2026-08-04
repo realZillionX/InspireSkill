@@ -197,3 +197,16 @@ def test_final_output_guard_scrubs_text_and_bytes() -> None:
         "invalid job id <redacted>"
     )
     assert sanitize_output_message("commit deadbeef") == "commit deadbeef"
+
+
+def test_final_output_guard_scrubs_short_handles_without_scrubbing_names() -> None:
+    raw = "lcg-1 cg-1 ws-1 | group-a cg-alpha workspace-1-name"
+
+    assert sanitize_output_message(raw) == (
+        "<redacted> <redacted> <redacted> | "
+        "group-a cg-alpha workspace-1-name"
+    )
+    assert sanitize_output_message(raw.encode()) == (
+        b"<redacted> <redacted> <redacted> | "
+        b"group-a cg-alpha workspace-1-name"
+    )

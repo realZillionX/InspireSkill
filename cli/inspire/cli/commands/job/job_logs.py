@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, Optional
 
 import click
 
@@ -41,9 +43,79 @@ from .job_commands import (
     WebJobResolutionError,
     WebJobValidationError,
     _close_web_client,
+    _reject_job_instance_name,
     _public_output,
     _resolve_web_job_id,
+    _run_readonly_web_job_operation,
 )
+
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_SSH_TAIL_LINES = 100
+DEFAULT_PLATFORM_LOG_RECORDS = 100
+DEFAULT_LOG_CHARACTER_LIMIT = 16_000
+_FOLLOW_SEEN_LIMIT = 5_000
+
+
+@dataclass(frozen=True)
+class _TextLogSelection:
+    content: str
+    truncated: bool
+    shown: int
+    total: int | None
+    limit: int | None
+    character_limit: int | None
+
+
+@dataclass(frozen=True)
+class _WebLogSelection:
+    logs: list[dict[str, Any]]
+    truncated: bool
+    shown: int
+    total: int
+    limit: int | None
+    character_limit: int | None
+    shown_chars: int
+
+
+def _line_count(text: str) -> int:
+    return len(text.splitlines()) if text else 0
+
+
+def _truncate_text_to_character_limit(
+    text: str,
+    *,
+    character_limit: int,
+    keep_tail: bool,
+) -> tuple[str, bool]:
+    if len(text) <= character_limit:
+        return text, False
+    if keep_tail:
+        return text[-character_limit:], True
+    return text[:character_limit], True
+
+
+def _emit_truncation_hint(
+    *,
+    shown: int,
+    total: int | None,
+    unit: str,
+    all_output: bool = False,
+) -> None:
+    if all_output:
+        detail = (
+            f"showing {shown} of {total} {unit}" if total is not None else f"showing {shown} {unit}"
+        )
+        click.echo(
+            f"Logs incomplete ({detail}); the platform returned fewer records than reported.",
+            err=True,
+        )
+        return
+    detail = (
+        f"showing {shown} of {total} {unit}" if total is not None else f"showing {shown} {unit}"
+    )
+    click.echo(f"Logs truncated ({detail}); use --all for complete one-shot output.", err=True)
 
 
 def _window_to_minutes(window: str) -> int:
@@ -122,12 +194,12 @@ def _web_log_sort_key(item: dict) -> tuple[int, str]:
     return timestamp_ms, log_id
 
 
-def _web_log_identity(item: dict) -> tuple[int, str, str, str]:
+def _web_log_identity(item: dict) -> tuple[int, str, str, int]:
     timestamp_ms = _coerce_epoch_ms(item.get("timestamp_ms")) or 0
     log_id = str(item.get("log_id") or "")
     pod_name = str(item.get("pod_name") or "").strip()
     message = str(item.get("message") or item.get("log") or item.get("content") or "")
-    return timestamp_ms, log_id, pod_name, message
+    return timestamp_ms, log_id, pod_name, hash(message)
 
 
 def _format_web_log_line(item: dict) -> str:
@@ -144,12 +216,158 @@ def _format_web_log_line(item: dict) -> str:
 
 def _format_web_logs(logs: list[dict]) -> str:
     if not logs:
-        return "No web logs found."
+        return "No job logs found."
 
-    lines = ["Web Job Logs"]
+    lines = ["Job Logs"]
     for item in logs:
         lines.append(_format_web_log_line(item))
     return "\n".join(lines)
+
+
+def _public_web_logs(logs: list[dict]) -> list[dict[str, Any]]:
+    public = _public_output(logs)
+    if not isinstance(public, list):
+        return []
+    return [dict(item) for item in public if isinstance(item, dict)]
+
+
+def _truncate_web_log_item(
+    item: dict[str, Any],
+    *,
+    character_limit: int,
+    keep_tail: bool,
+) -> dict[str, Any]:
+    rendered = _format_web_log_line(item)
+    clipped, _ = _truncate_text_to_character_limit(
+        rendered,
+        character_limit=character_limit,
+        keep_tail=keep_tail,
+    )
+    if len(rendered) <= character_limit:
+        return item
+
+    message_key = next(
+        (key for key in ("message", "log", "content") if item.get(key) not in (None, "")),
+        None,
+    )
+    if message_key is None:
+        return {"message": clipped}
+
+    truncated = dict(item)
+    message = str(truncated.get(message_key) or "")
+    without_message = dict(truncated)
+    without_message[message_key] = ""
+    prefix = _format_web_log_line(without_message).rstrip()
+    separator = 1 if prefix and message else 0
+    available = character_limit - len(prefix) - separator
+    if available <= 0:
+        return {"message": clipped}
+    shortened, _ = _truncate_text_to_character_limit(
+        message,
+        character_limit=available,
+        keep_tail=keep_tail,
+    )
+    truncated[message_key] = shortened
+    return truncated
+
+
+def _budget_web_logs(
+    logs: list[dict[str, Any]],
+    *,
+    character_limit: int,
+    keep_tail: bool,
+) -> tuple[list[dict[str, Any]], bool, int]:
+    if not logs:
+        return [], False, 0
+
+    candidates = list(reversed(logs)) if keep_tail else list(logs)
+    kept: list[dict[str, Any]] = []
+    used = 0
+    truncated = False
+
+    for item in candidates:
+        separator = 1 if kept else 0
+        available = character_limit - used - separator
+        if available <= 0:
+            truncated = True
+            break
+
+        rendered = _format_web_log_line(item)
+        if len(rendered) > available:
+            if not kept:
+                kept.append(
+                    _truncate_web_log_item(
+                        item,
+                        character_limit=available,
+                        keep_tail=keep_tail,
+                    )
+                )
+                used += len(_format_web_log_line(kept[-1]))
+            truncated = True
+            break
+
+        kept.append(item)
+        used += separator + len(rendered)
+
+    if len(kept) < len(logs):
+        truncated = True
+    if keep_tail:
+        kept.reverse()
+    return kept, truncated, used
+
+
+def _select_web_logs(
+    logs: list[dict],
+    *,
+    total: int,
+    tail: int | None,
+    head: int | None,
+    record_limit: int,
+    all_output: bool,
+) -> _WebLogSelection:
+    public_logs = _public_web_logs(sorted(logs, key=_web_log_sort_key))
+    normalized_total = max(int(total), len(public_logs))
+
+    if all_output:
+        selected = public_logs
+        limit = None
+        keep_tail = False
+    elif head is not None:
+        selected = public_logs[:head]
+        limit = head
+        keep_tail = False
+    elif tail is not None:
+        selected = public_logs[-tail:]
+        limit = tail
+        keep_tail = True
+    else:
+        selected = public_logs[-record_limit:]
+        limit = record_limit
+        keep_tail = True
+
+    record_truncated = len(selected) < normalized_total
+    if all_output:
+        budgeted = selected
+        character_truncated = False
+        shown_chars = sum(len(_format_web_log_line(item)) for item in budgeted)
+        character_limit = None
+    else:
+        budgeted, character_truncated, shown_chars = _budget_web_logs(
+            selected,
+            character_limit=DEFAULT_LOG_CHARACTER_LIMIT,
+            keep_tail=keep_tail,
+        )
+        character_limit = DEFAULT_LOG_CHARACTER_LIMIT
+
+    return _WebLogSelection(
+        logs=budgeted,
+        truncated=record_truncated or character_truncated,
+        shown=len(budgeted),
+        total=normalized_total,
+        limit=limit,
+        character_limit=character_limit,
+        shown_chars=shown_chars,
+    )
 
 
 def _follow_logs_via_web(
@@ -162,8 +380,19 @@ def _follow_logs_via_web(
     session: WebSession,
     poll_interval: float = 2.0,
 ) -> None:
-    seen: set[tuple[int, str, str, str]] = set()
+    seen: set[tuple[int, str, str, int]] = set()
+    seen_order: deque[tuple[int, str, str, int]] = deque()
     first_fetch = True
+    truncation_announced = False
+
+    def remember(item: dict) -> None:
+        identity = _web_log_identity(item)
+        if identity in seen:
+            return
+        seen.add(identity)
+        seen_order.append(identity)
+        if len(seen_order) > _FOLLOW_SEEN_LIMIT:
+            seen.discard(seen_order.popleft())
 
     try:
         while True:
@@ -183,12 +412,23 @@ def _follow_logs_via_web(
                 unseen = unseen[-tail_lines:]
                 first_fetch = False
 
-            for item in unseen:
+            public_unseen = _public_web_logs(unseen)
+            shown, truncated, _shown_chars = _budget_web_logs(
+                public_unseen,
+                character_limit=DEFAULT_LOG_CHARACTER_LIMIT,
+                keep_tail=True,
+            )
+            for item in shown:
                 click.echo(_format_web_log_line(item))
-                seen.add(_web_log_identity(item))
+            if truncated and not truncation_announced:
+                click.echo(
+                    "Follow update truncated to the character budget; long or excess records were skipped.",
+                    err=True,
+                )
+                truncation_announced = True
 
             for item in ordered:
-                seen.add(_web_log_identity(item))
+                remember(item)
 
             time.sleep(poll_interval)
     except KeyboardInterrupt:
@@ -200,20 +440,67 @@ def _fetch_log_via_ssh(
     tail: Optional[int] = None,
     head: Optional[int] = None,
     bridge_name: Optional[str] = None,
-) -> str:
-    if tail:
-        command = f"tail -n {tail} '{remote_log_path}'"
-    elif head:
-        command = f"head -n {head} '{remote_log_path}'"
+) -> _TextLogSelection:
+    all_output = tail is None and head is None
+    if tail is not None:
+        line_limit = tail
+        command = f"tail -n {line_limit + 1} '{remote_log_path}'"
+        keep_tail = True
+    elif head is not None:
+        line_limit = head
+        command = f"head -n {line_limit + 1} '{remote_log_path}'"
+        keep_tail = False
     else:
+        line_limit = None
         command = f"cat '{remote_log_path}'"
+        keep_tail = False
 
-    result = run_ssh_command(command=command, capture_output=True, bridge_name=bridge_name)
+    try:
+        result = run_ssh_command(command=command, capture_output=True, bridge_name=bridge_name)
+    except Exception as exc:
+        logger.debug(
+            "SSH job log read failed for path %r: %s",
+            remote_log_path,
+            exc,
+            exc_info=True,
+        )
+        raise IOError("Could not read the requested job log over SSH.") from None
 
     if result.returncode != 0:
-        raise IOError(f"Failed to read log file: {result.stderr}")
+        logger.debug(
+            "SSH job log read failed for path %r: %s",
+            remote_log_path,
+            str(result.stderr or "").strip(),
+        )
+        raise IOError("Could not read the requested job log over SSH.")
 
-    return result.stdout
+    content = scrub_raw_ids(result.stdout or "")
+    raw_lines = content.splitlines(keepends=True)
+    line_truncated = False
+    if line_limit is not None and len(raw_lines) > line_limit:
+        line_truncated = True
+        raw_lines = raw_lines[-line_limit:] if keep_tail else raw_lines[:line_limit]
+    selected = "".join(raw_lines)
+
+    if all_output:
+        character_truncated = False
+        character_limit = None
+    else:
+        selected, character_truncated = _truncate_text_to_character_limit(
+            selected,
+            character_limit=DEFAULT_LOG_CHARACTER_LIMIT,
+            keep_tail=keep_tail,
+        )
+        character_limit = DEFAULT_LOG_CHARACTER_LIMIT
+
+    return _TextLogSelection(
+        content=selected,
+        truncated=line_truncated or character_truncated,
+        shown=_line_count(selected),
+        total=_line_count(content) if all_output else None,
+        limit=line_limit,
+        character_limit=character_limit,
+    )
 
 
 def _follow_logs_via_ssh(
@@ -285,6 +572,26 @@ def _follow_logs_via_ssh(
     ssh_args = get_ssh_command_args(bridge_name=bridge_name, remote_command=command)
 
     process = None
+    truncation_announced = False
+
+    def emit_follow_line(line: str) -> None:
+        nonlocal truncation_announced
+        sanitized = scrub_raw_ids(line)
+        bounded, truncated = _truncate_text_to_character_limit(
+            sanitized,
+            character_limit=DEFAULT_LOG_CHARACTER_LIMIT,
+            keep_tail=False,
+        )
+        click.echo(bounded, nl=False)
+        if truncated and not truncation_announced:
+            if bounded and not bounded.endswith("\n"):
+                click.echo()
+            click.echo(
+                "Follow line truncated to the character budget.",
+                err=True,
+            )
+            truncation_announced = True
+
     try:
         process = subprocess.Popen(
             ssh_args,
@@ -302,7 +609,7 @@ def _follow_logs_via_ssh(
         while True:
             if process.poll() is not None:
                 for line in stdout:
-                    click.echo(scrub_raw_ids(line), nl=False)
+                    emit_follow_line(line)
                 break
 
             ready, _, _ = select.select([stdout], [], [], 1.0)
@@ -310,7 +617,7 @@ def _follow_logs_via_ssh(
             if ready:
                 line = stdout.readline()
                 if line:
-                    click.echo(scrub_raw_ids(line), nl=False)
+                    emit_follow_line(line)
                 elif process.poll() is not None:
                     break
 
@@ -429,13 +736,12 @@ def _run_job_logs_single_job(
     head: int | None,
     path: bool,
     follow: bool,
+    all_output: bool,
     workspace: Optional[str],
     bridge_name: Optional[str] = None,
 ) -> None:
     try:
-        config, _ = Config.from_files_and_env(
-            require_credentials=False
-        )
+        config, _ = Config.from_files_and_env(require_credentials=False)
 
         effective_bridge_name, tunnel_config, bridge_configured = _resolve_tunnel_preflight_target(
             bridge_name
@@ -468,7 +774,12 @@ def _run_job_logs_single_job(
 
         if path:
             if ctx.json_output:
-                click.echo(json_formatter.format_json({"log_path": scrub_raw_ids(remote_log_path)}))
+                click.echo(
+                    json_formatter.format_json(
+                        {"log_path": scrub_raw_ids(remote_log_path)},
+                        preserve_paths={"log_path"},
+                    )
+                )
             else:
                 click.echo(scrub_raw_ids(remote_log_path))
             sys.exit(EXIT_SUCCESS)
@@ -488,7 +799,7 @@ def _run_job_logs_single_job(
                 job_id=job_id,
                 config=config,
                 remote_log_path=remote_log_path,
-                tail_lines=tail or 50,
+                tail_lines=tail or DEFAULT_SSH_TAIL_LINES,
                 bridge_name=bridge_name,
                 status_hint=f"inspire job status {job} --workspace {workspace or '<workspace>'}",
             )
@@ -500,9 +811,11 @@ def _run_job_logs_single_job(
             sys.exit(EXIT_SUCCESS)
 
         try:
-            content = _fetch_log_via_ssh(
+            selection = _fetch_log_via_ssh(
                 remote_log_path=remote_log_path,
-                tail=tail,
+                tail=tail
+                if tail is not None
+                else (None if all_output or head else DEFAULT_SSH_TAIL_LINES),
                 head=head,
                 bridge_name=bridge_name,
             )
@@ -526,13 +839,25 @@ def _run_job_logs_single_job(
                 json_formatter.format_json(
                     {
                         "log_path": remote_log_path,
-                        "content": scrub_raw_ids(content),
+                        "content": selection.content,
+                        "truncated": selection.truncated,
+                        "shown": selection.shown,
+                        "total": selection.total,
+                        "limit": selection.limit,
+                        "character_limit": selection.character_limit,
                     }
                 )
             )
             return
 
-        click.echo(scrub_raw_ids(content))
+        click.echo(selection.content)
+        if selection.truncated:
+            _emit_truncation_hint(
+                shown=selection.shown,
+                total=selection.total,
+                unit="lines",
+                all_output=all_output,
+            )
 
     except TunnelNotAvailableError:
         _emit_no_tunnel_error(ctx, bridge_name=bridge_name)
@@ -550,10 +875,11 @@ def _run_job_logs_web_single_job(
     head: int | None,
     path: bool,
     follow: bool,
+    all_output: bool,
     workspace: Optional[str],
     all_workspaces: bool,
     max_pages: int,
-    instance_ids: tuple[str, ...],
+    instance_names: tuple[str, ...],
     since_minutes: int | None,
     web_page_size: int,
 ) -> None:
@@ -593,23 +919,12 @@ def _run_job_logs_web_single_job(
 
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        job_id = _resolve_web_job_id(
-            config=config,
-            job=job,
-            workspace=workspace,
-            all_workspaces=all_workspaces,
-            max_pages=max_pages,
-        )
+        fetch_size = max(web_page_size, tail or 0, head or 0)
 
-        try:
-            session = get_web_session()
+        def _load_logs(job_id: str, session: WebSession):
             job_data = browser_api_module.get_job_detail_v2(job_id, session=session)
-            if instance_ids:
-                pod_names = [
-                    str(instance_id or "").strip()
-                    for instance_id in instance_ids
-                    if str(instance_id or "").strip()
-                ]
+            if instance_names:
+                pod_names = list(instance_names)
             else:
                 instances, _ = browser_api_module.list_job_instances(
                     job_id,
@@ -622,6 +937,42 @@ def _run_job_logs_web_single_job(
                     if str(item.get("name") or "").strip()
                 ]
 
+            start_ms, end_ms = _web_log_time_range(job_data, since_minutes)
+            if follow or not pod_names:
+                return job_id, session, pod_names, start_ms, [], 0
+
+            initial_fetch_size = DEFAULT_PLATFORM_LOG_RECORDS if all_output else fetch_size
+            logs, total = browser_api_module.list_train_job_logs(
+                job_id=job_id,
+                pod_names=pod_names,
+                start_timestamp_ms=start_ms,
+                end_timestamp_ms=end_ms,
+                page_size=initial_fetch_size,
+                session=session,
+            )
+            if all_output and total > len(logs):
+                logs, total = browser_api_module.list_train_job_logs(
+                    job_id=job_id,
+                    pod_names=pod_names,
+                    start_timestamp_ms=start_ms,
+                    end_timestamp_ms=end_ms,
+                    page_size=total,
+                    session=session,
+                )
+            return job_id, session, pod_names, start_ms, logs, total
+
+        try:
+            job_id, session, pod_names, start_ms, logs, total = _run_readonly_web_job_operation(
+                config=config,
+                job=job,
+                workspace=workspace,
+                all_workspaces=all_workspaces,
+                max_pages=max_pages,
+                session_factory=get_web_session,
+                resolver=_resolve_web_job_id,
+                operation=_load_logs,
+            )
+
             if not pod_names:
                 _handle_error(
                     ctx,
@@ -631,50 +982,56 @@ def _run_job_logs_web_single_job(
                 )
                 return
 
-            start_ms, end_ms = _web_log_time_range(job_data, since_minutes)
-            fetch_size = max(web_page_size, tail or 0, head or 0)
-
             if follow:
+                initial_tail = tail or min(
+                    web_page_size,
+                    DEFAULT_PLATFORM_LOG_RECORDS,
+                )
                 _follow_logs_via_web(
                     job_id=job_id,
                     pod_names=pod_names,
                     start_ms=start_ms,
-                    tail_lines=tail or 50,
+                    tail_lines=initial_tail,
                     page_size=web_page_size,
                     session=session,
                 )
                 return
-
-            logs, total = browser_api_module.list_train_job_logs(
-                job_id=job_id,
-                pod_names=pod_names,
-                start_timestamp_ms=start_ms,
-                end_timestamp_ms=end_ms,
-                page_size=fetch_size,
-                session=session,
-            )
         finally:
             _close_web_client()
 
-        logs = sorted(logs, key=_web_log_sort_key)
-        shown = logs
-        if head:
-            shown = shown[:head]
-        if tail:
-            shown = shown[-tail:]
+        selection = _select_web_logs(
+            logs,
+            total=total,
+            tail=tail,
+            head=head,
+            record_limit=web_page_size,
+            all_output=all_output,
+        )
 
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
                     {
-                        "logs": _public_output(shown),
-                        "total": total,
+                        "logs": selection.logs,
+                        "truncated": selection.truncated,
+                        "shown": selection.shown,
+                        "total": selection.total,
+                        "limit": selection.limit,
+                        "character_limit": selection.character_limit,
+                        "shown_chars": selection.shown_chars,
                     }
                 )
             )
             return
 
-        click.echo(_format_web_logs(shown))
+        click.echo(_format_web_logs(selection.logs))
+        if selection.truncated:
+            _emit_truncation_hint(
+                shown=selection.shown,
+                total=selection.total,
+                unit="records",
+                all_output=all_output,
+            )
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -690,14 +1047,35 @@ def _run_job_logs_web_single_job(
 
 @click.command("logs")
 @click.argument("job")
-@click.option("--tail", "-n", type=click.IntRange(1), help="Show last N lines only")
-@click.option("--head", type=click.IntRange(1), help="Show first N lines only")
+@click.option(
+    "--tail",
+    "-n",
+    type=click.IntRange(1),
+    help=(
+        f"Show the last N lines or platform records. "
+        f"Default one-shot output uses {DEFAULT_SSH_TAIL_LINES}."
+    ),
+)
+@click.option("--head", type=click.IntRange(1), help="Show the first N lines or records.")
+@click.option(
+    "--all",
+    "all_output",
+    is_flag=True,
+    help=(
+        f"Show complete one-shot logs without line, record, or the default "
+        f"{DEFAULT_LOG_CHARACTER_LIMIT}-character limit. "
+        "Cannot be combined with --tail, --head, --limit, --follow, or --path."
+    ),
+)
 @click.option("--path", is_flag=True, help="Just print log path, don't read content")
 @click.option(
     "--follow",
     "-f",
     is_flag=True,
-    help="Follow new log content; platform logs are polled, SSH logs use tail -f.",
+    help=(
+        "Follow new log content; platform logs are polled and SSH logs use tail -f. "
+        "Initial output is bounded and long updates are shortened."
+    ),
 )
 @click.option(
     "--remote-log-path",
@@ -729,9 +1107,9 @@ def _run_job_logs_web_single_job(
 @click.option("--workspace", required=True, help="Workspace name or 'all'.")
 @click.option(
     "--instance",
-    "instance_ids",
+    "instance_names",
     multiple=True,
-    help="Pod instance name to query. Repeat to query multiple pods.",
+    help="Instance name to query. Repeat for multiple instances.",
 )
 @click.option(
     "--window",
@@ -741,9 +1119,11 @@ def _run_job_logs_web_single_job(
 @click.option(
     "--limit",
     type=click.IntRange(1),
-    default=500,
-    show_default=True,
-    help="Max platform log records fetched. For SSH logs, use --tail for line count.",
+    default=None,
+    help=(
+        f"Maximum platform records fetched per request (default: "
+        f"{DEFAULT_PLATFORM_LOG_RECORDS}). Use --tail for SSH line count."
+    ),
 )
 @pass_context
 def logs(
@@ -751,20 +1131,23 @@ def logs(
     job: str,
     tail: int | None,
     head: int | None,
+    all_output: bool,
     path: bool,
     follow: bool,
     remote_log_path: Optional[str],
     notebook: Optional[str],
     source: str,
     workspace: Optional[str],
-    instance_ids: tuple[str, ...],
+    instance_names: tuple[str, ...],
     window: str | None,
-    limit: int,
+    limit: int | None,
 ) -> None:
     """Read training-job logs from the platform or an SSH log file.
 
-    Platform logs are the default. Use ``--source ssh`` when you specifically
-    need the CLI-managed remote log file through a cached notebook bridge.
+    Platform logs are the default. One-shot output shows a bounded latest
+    snapshot and applies a total character budget. Use ``--all`` only when the
+    complete log is required. Use ``--source ssh`` for the CLI-managed remote
+    log file through a cached notebook bridge.
 
     \b
     Examples:
@@ -772,8 +1155,49 @@ def logs(
         inspire job logs my-training-run --workspace 分布式训练空间 --tail 100
         inspire job logs my-training-run --workspace 分布式训练空间 --window 30m
         inspire job logs my-training-run --workspace 分布式训练空间 --follow
+        inspire job logs my-training-run --workspace 分布式训练空间 --all
         inspire job logs my-training-run --workspace 分布式训练空间 --source ssh --notebook my-cpu-box
     """
+    if tail is not None and head is not None:
+        _handle_error(
+            ctx,
+            "InvalidUsage",
+            "--tail and --head cannot be used together.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+
+    all_conflicts = [
+        option
+        for option, enabled in (
+            ("--tail", tail is not None),
+            ("--head", head is not None),
+            ("--limit", limit is not None),
+            ("--follow", follow),
+            ("--path", path),
+        )
+        if enabled
+    ]
+    if all_output and all_conflicts:
+        _handle_error(
+            ctx,
+            "InvalidUsage",
+            f"--all cannot be combined with {', '.join(all_conflicts)}.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+
+    if follow and head is not None:
+        _handle_error(
+            ctx,
+            "InvalidUsage",
+            "--follow cannot be combined with --head; use --tail for the initial snapshot.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+
+    effective_limit = limit or DEFAULT_PLATFORM_LOG_RECORDS
+
     if notebook is not None:
         from inspire.cli.utils.id_resolver import reject_id_at_boundary
 
@@ -784,6 +1208,8 @@ def logs(
             list_command="inspire notebook list",
         )
     bridge = notebook
+    if instance_names:
+        instance_names = tuple(_reject_job_instance_name(ctx, value) for value in instance_names)
 
     try:
         since_minutes = _window_to_minutes(window) if window else None
@@ -815,24 +1241,44 @@ def logs(
             head=head,
             path=path,
             follow=follow,
+            all_output=all_output,
             workspace=workspace,
             all_workspaces=False,
             max_pages=50,
-            instance_ids=instance_ids,
+            instance_names=instance_names,
             since_minutes=since_minutes,
-            web_page_size=limit,
+            web_page_size=effective_limit,
         )
         return
 
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        job_id = _resolve_web_job_id(
-            config=config,
-            job=job,
-            workspace=workspace,
-            all_workspaces=False,
-            max_pages=50,
-        )
+        if follow:
+            try:
+                job_id = _run_readonly_web_job_operation(
+                    config=config,
+                    job=job,
+                    workspace=workspace,
+                    session_factory=get_web_session,
+                    resolver=_resolve_web_job_id,
+                    operation=lambda resolved_id, session: (
+                        browser_api_module.get_job_detail_v2(
+                            resolved_id,
+                            session=session,
+                        ),
+                        resolved_id,
+                    )[1],
+                )
+            finally:
+                _close_web_client()
+        else:
+            job_id = _resolve_web_job_id(
+                config=config,
+                job=job,
+                workspace=workspace,
+                all_workspaces=False,
+                max_pages=50,
+            )
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
         return
@@ -884,7 +1330,7 @@ def logs(
                 _handle_error(
                     ctx,
                     "LogNotFound",
-                    f"No log file matches {glob_pattern!r} on the shared filesystem.",
+                    "No job log was found on the shared filesystem.",
                     EXIT_LOG_NOT_FOUND,
                     hint=(
                         "The job may not have started writing yet. Pass --follow "
@@ -907,6 +1353,7 @@ def logs(
         head=head,
         path=path,
         follow=follow,
+        all_output=all_output,
         workspace=workspace,
         bridge_name=bridge,
     )

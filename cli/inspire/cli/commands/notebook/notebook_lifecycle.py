@@ -62,9 +62,9 @@ def lifecycle(ctx: Context, name: str) -> None:
     """
     from inspire.cli.commands.notebook.notebook_metrics import _notebook_name_to_id
 
-    notebook_id = _notebook_name_to_id(ctx, name)
+    target = _notebook_name_to_id(ctx, name)
     try:
-        runs = list_notebook_runs(notebook_id)
+        runs = list_notebook_runs(target.task_id)
     except AuthenticationError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
         return

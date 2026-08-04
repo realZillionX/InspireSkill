@@ -44,6 +44,7 @@ def _resolve_notebook(ctx: Context, notebook: str, workspace: str) -> tuple[WebS
     )
     from inspire.config import ConfigError
     from inspire.config.workspaces import resolve_workspace_query_scope
+    from inspire.platform.web import browser_api as browser_api_module
 
     session = require_web_session(ctx, hint=WEB_AUTH_HINT)
     base_url = get_base_url()
@@ -58,14 +59,20 @@ def _resolve_notebook(ctx: Context, notebook: str, workspace: str) -> tuple[WebS
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
         raise  # unreachable: _handle_error exits
 
-    notebook_id, _ = _nb._resolve_notebook_id(
-        ctx,
-        session=session,
-        config=config,
-        base_url=base_url,
-        identifier=notebook,
-        json_output=ctx.json_output,
-        workspace_ids=workspace_ids,
+    _detail, notebook_id, _workspace_id = (
+        _nb._run_notebook_operation_with_stale_handle_retry(
+            ctx,
+            session=session,
+            config=config,
+            base_url=base_url,
+            identifier=notebook,
+            json_output=ctx.json_output,
+            workspace_ids=workspace_ids,
+            operation=lambda resolved_id: browser_api_module.get_notebook_detail(
+                notebook_id=resolved_id,
+                session=session,
+            ),
+        )
     )
     return session, base_url, notebook_id
 
@@ -256,8 +263,8 @@ def notebook_proxy_url(
 ) -> None:
     """Open a notebook container service in the system browser.
 
-    The generated proxy URL contains ephemeral runtime handles and is never
-    printed or returned.  Use the browser window opened by this command.
+    The generated proxy URL contains temporary routing information and is
+    never printed or returned. Use the browser window opened by this command.
     """
     from inspire.cli.context import EXIT_API_ERROR
     from inspire.cli.utils.errors import exit_with_error as _handle_error

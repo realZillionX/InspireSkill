@@ -16,6 +16,11 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.table import render_table
+from inspire.cli.utils.collection_output import (
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
@@ -172,8 +177,9 @@ def make_quota_command(workload: str) -> click.Command:
         "-n",
         type=click.IntRange(min=1),
         default=None,
-        help="Maximum rows to show.",
+        help="Maximum rows to show (default: 20).",
     )
+    @click.option("--all", "show_all", is_flag=True, help="Show every matching quota row.")
     @pass_context
     def quota_cmd(
         ctx: Context,
@@ -181,8 +187,15 @@ def make_quota_command(workload: str) -> click.Command:
         group: str | None,
         include_empty: bool,
         limit: int | None,
+        show_all: bool,
     ) -> None:
         """List valid ``--quota gpu,cpu,mem`` triples for this workload."""
+        try:
+            effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+        except ValueError as e:
+            _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+            return
+
         try:
             config, _ = Config.from_files_and_env(require_credentials=False)
             session = get_web_session()
@@ -213,11 +226,18 @@ def make_quota_command(workload: str) -> click.Command:
                     )
                 )
             _sort_rows(rows)
-            if limit is not None:
-                rows = rows[:limit]
+            page = bound_collection(rows, limit=effective_limit)
+            rows = page.items
 
             if ctx.json_output:
-                click.echo(json_formatter.format_json({"quotas": rows}))
+                click.echo(
+                    json_formatter.format_json(
+                        {
+                            "quotas": rows,
+                            **page.metadata(),
+                        }
+                    )
+                )
                 return
 
             if not rows:
@@ -256,6 +276,9 @@ def make_quota_command(workload: str) -> click.Command:
                 ]
 
             click.echo("\n".join(render_table(headers, table_rows, widths)))
+            notice = truncation_notice(page)
+            if notice:
+                click.echo(notice)
             qz_hint = qz_scheduling_zone_hint_for_group_names(
                 row.get("group") for row in rows
             )

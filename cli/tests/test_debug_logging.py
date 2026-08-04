@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from inspire.cli.context import EXIT_GENERAL_ERROR
 from inspire.cli.logging_setup import clear_debug_logging, configure_debug_logging, redact_text
 from inspire.cli.main import main as cli_main
+from inspire.config import Config, SOURCE_ENV
 
 
 def test_redact_text_masks_common_sensitive_patterns() -> None:
@@ -89,7 +90,9 @@ def test_clear_debug_logging_restores_logger_state(monkeypatch, tmp_path: Path) 
     inspire_logger.propagate = original_propagate
 
 
-def test_debug_error_prints_report_path_in_human_mode(monkeypatch, tmp_path: Path) -> None:
+def test_debug_error_keeps_report_path_out_of_human_mode(
+    monkeypatch, tmp_path: Path
+) -> None:
     log_dir = tmp_path / "debug-logs"
     monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
 
@@ -101,7 +104,8 @@ def test_debug_error_prints_report_path_in_human_mode(monkeypatch, tmp_path: Pat
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "Local path not found" in result.output
-    assert "Debug report:" in result.output
+    assert "Debug diagnostics were written locally." in result.output
+    assert str(log_dir) not in result.output
     assert len(list(log_dir.glob("inspire-debug-*.log"))) == 1
 
 
@@ -121,3 +125,128 @@ def test_debug_error_keeps_json_output_clean(monkeypatch, tmp_path: Path) -> Non
     assert payload["success"] is False
     assert "Debug report:" not in result.output
     assert len(list(log_dir.glob("inspire-debug-*.log"))) == 1
+
+
+def test_debug_does_not_expand_config_show_output(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    log_dir = tmp_path / "debug-logs"
+    monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
+    cfg = Config(
+        username="alice",
+        password="secret",
+        base_url="https://inspire.example",
+    )
+    sources = {
+        "username": SOURCE_ENV,
+        "password": SOURCE_ENV,
+        "base_url": SOURCE_ENV,
+    }
+    monkeypatch.setattr(
+        Config,
+        "from_files_and_env",
+        classmethod(lambda cls, **_kwargs: (cfg, sources)),
+    )
+    monkeypatch.setattr(
+        Config,
+        "get_config_paths",
+        classmethod(lambda cls: (tmp_path / "global.toml", tmp_path / "project.toml")),
+    )
+
+    runner = CliRunner()
+    plain_human = runner.invoke(
+        cli_main,
+        ["--no-env-file", "config", "show"],
+    )
+    debug_human = runner.invoke(
+        cli_main,
+        ["--debug", "--no-env-file", "config", "show"],
+    )
+    plain_json = runner.invoke(
+        cli_main,
+        ["--json", "--no-env-file", "config", "show"],
+    )
+    debug_json = runner.invoke(
+        cli_main,
+        ["--debug", "--json", "--no-env-file", "config", "show"],
+    )
+    clear_debug_logging()
+
+    assert plain_human.exit_code == 0, plain_human.output
+    assert debug_human.exit_code == 0, debug_human.output
+    assert debug_human.output == plain_human.output
+    assert "Files:" not in debug_human.output
+    assert "Precedence:" not in debug_human.output
+
+    assert plain_json.exit_code == 0, plain_json.output
+    assert debug_json.exit_code == 0, debug_json.output
+    assert json.loads(debug_json.output) == json.loads(plain_json.output)
+    data = json.loads(debug_json.output)["data"]
+    assert set(data) == {"values"}
+    assert data["values"]["INSPIRE_USERNAME"] == "alice"
+
+
+def test_debug_does_not_expand_config_check_output(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from inspire.cli.commands.config import check as check_module
+
+    log_dir = tmp_path / "debug-logs"
+    monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
+    cfg = Config(
+        username="alice",
+        password="secret",
+        base_url="https://inspire.example",
+        docker_registry="registry.example",
+    )
+    monkeypatch.setattr(
+        Config,
+        "from_files_and_env",
+        classmethod(lambda cls, **_kwargs: (cfg, {"base_url": SOURCE_ENV})),
+    )
+    monkeypatch.setattr(
+        Config,
+        "get_config_paths",
+        classmethod(lambda cls: (tmp_path / "global.toml", tmp_path / "project.toml")),
+    )
+    monkeypatch.setattr(check_module, "get_web_session", lambda: object())
+    monkeypatch.setattr(
+        check_module.browser_api_module,
+        "get_current_user",
+        lambda session=None: {"name": "alice"},
+    )
+
+    runner = CliRunner()
+    plain_human = runner.invoke(
+        cli_main,
+        ["--no-env-file", "config", "check"],
+    )
+    debug_human = runner.invoke(
+        cli_main,
+        ["--debug", "--no-env-file", "config", "check"],
+    )
+    plain_json = runner.invoke(
+        cli_main,
+        ["--json", "--no-env-file", "config", "check"],
+    )
+    debug_json = runner.invoke(
+        cli_main,
+        ["--debug", "--json", "--no-env-file", "config", "check"],
+    )
+    clear_debug_logging()
+
+    assert plain_human.exit_code == 0, plain_human.output
+    assert debug_human.exit_code == 0, debug_human.output
+    assert debug_human.output == plain_human.output
+    assert "Endpoint:" not in debug_human.output
+    assert "Config files:" not in debug_human.output
+
+    assert plain_json.exit_code == 0, plain_json.output
+    assert debug_json.exit_code == 0, debug_json.output
+    assert json.loads(debug_json.output) == json.loads(plain_json.output)
+    assert json.loads(debug_json.output)["data"] == {
+        "configured": True,
+        "authenticated": True,
+    }

@@ -37,6 +37,74 @@ def _patch_config(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def test_ray_list_all_expands_and_limit_conflict_is_pre_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_config(monkeypatch)
+    session = _FakeSession()
+    calls: list[int] = []
+    monkeypatch.setattr(ray_commands, "get_web_session", lambda: session)
+    monkeypatch.setattr(
+        ray_commands.browser_api_module,
+        "get_current_user",
+        lambda session=None: {"id": "user-1"},
+    )
+
+    def fake_list_ray_jobs(**kwargs):  # noqa: ANN001
+        calls.append(kwargs["page_size"])
+        count = kwargs["page_size"]
+        return (
+            [
+                RayJobInfo(
+                    ray_job_id=f"ray-job-{index}",
+                    name=f"job-{index}",
+                    status="RUNNING",
+                    workspace_id=kwargs["workspace_id"],
+                    project_id="project-1",
+                    project_name="Project",
+                    created_at="1770000000",
+                    finished_at=None,
+                    created_by_id="user-1",
+                    created_by_name="tester",
+                    priority=1,
+                    raw={},
+                )
+                for index in range(count)
+            ],
+            25,
+        )
+
+    monkeypatch.setattr(ray_commands.browser_api_module, "list_ray_jobs", fake_list_ray_jobs)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "ray", "list", "--workspace", "Ray资源空间", "--all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["data"]
+    assert calls == [20, 25]
+    assert len(payload["jobs"]) == 25
+    assert "truncated" not in payload
+
+    calls.clear()
+    conflict = CliRunner().invoke(
+        cli_main,
+        [
+            "ray",
+            "list",
+            "--workspace",
+            "Ray资源空间",
+            "--all",
+            "--limit",
+            "3",
+        ],
+    )
+    assert conflict.exit_code != 0
+    assert "Use either --limit or --all, not both." in conflict.output
+    assert calls == []
+
+
 def test_ray_instances_requires_workspace_and_uses_num(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_config(monkeypatch)
     session = _FakeSession()
@@ -166,3 +234,179 @@ def test_ray_instances_json_omits_platform_handle(monkeypatch: pytest.MonkeyPatc
     assert payload["success"] is True
     assert "ray_job_id" not in payload["data"]
     assert "instance_id" not in payload["data"]["instances"][0]
+
+
+def test_ray_instances_default_budget_notifies_and_keeps_resolution_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_config(monkeypatch)
+    session = _FakeSession()
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(ray_commands, "get_web_session", lambda: session)
+    monkeypatch.setattr(
+        ray_commands.browser_api_module,
+        "get_current_user",
+        lambda session=None: {"id": "user-1"},
+    )
+
+    def fake_list_ray_jobs(**kwargs):  # noqa: ANN001
+        captured["resolve"] = kwargs
+        return (
+            [
+                RayJobInfo(
+                    ray_job_id="rj-abc",
+                    name="elastic-a",
+                    status="RUNNING",
+                    workspace_id=kwargs["workspace_id"],
+                    project_id="project-1",
+                    project_name="Project 1",
+                    created_at="1770000000",
+                    finished_at=None,
+                    created_by_id="user-1",
+                    created_by_name="tester",
+                    priority=7,
+                    raw={},
+                )
+            ],
+            1,
+        )
+
+    def fake_list_ray_job_instances(ray_job_id, *, limit, session):  # noqa: ANN001
+        captured["instance_limit"] = limit
+        return (
+            [
+                {
+                    "name": f"worker-{index}",
+                    "instance_type": "worker",
+                    "status": "running",
+                }
+                for index in range(20)
+            ],
+            25,
+        )
+
+    monkeypatch.setattr(ray_commands.browser_api_module, "list_ray_jobs", fake_list_ray_jobs)
+    monkeypatch.setattr(
+        ray_commands.browser_api_module,
+        "list_ray_job_instances",
+        fake_list_ray_job_instances,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["ray", "instances", "elastic-a", "--workspace", "Ray资源空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["resolve"]["page_size"] == 500
+    assert captured["instance_limit"] == 20
+    assert "Showing 20 of 25. Use --all for the full list." in result.output
+
+    json_result = CliRunner().invoke(
+        cli_main,
+        ["--json", "ray", "instances", "elastic-a", "--workspace", "Ray资源空间"],
+    )
+    assert json_result.exit_code == 0, json_result.output
+    metadata = json.loads(json_result.output)["data"]
+    assert metadata["shown"] == 20
+    assert metadata["total"] == 25
+    assert metadata["truncated"] is True
+    assert metadata["limit"] == 20
+
+
+def test_ray_instances_all_expands_and_json_conflict_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_config(monkeypatch)
+    monkeypatch.setattr(ray_commands, "get_web_session", lambda: _FakeSession())
+    monkeypatch.setattr(
+        ray_commands.browser_api_module,
+        "get_current_user",
+        lambda session=None: {"id": "user-1"},
+    )
+    monkeypatch.setattr(
+        ray_commands.browser_api_module,
+        "list_ray_jobs",
+        lambda **kwargs: (
+            [
+                RayJobInfo(
+                    ray_job_id="rj-abc",
+                    name="elastic-a",
+                    status="RUNNING",
+                    workspace_id=kwargs["workspace_id"],
+                    project_id="project-1",
+                    project_name="Project 1",
+                    created_at="1770000000",
+                    finished_at=None,
+                    created_by_id="user-1",
+                    created_by_name="tester",
+                    priority=7,
+                    raw={},
+                )
+            ],
+            1,
+        ),
+    )
+    calls: list[int] = []
+
+    def fake_list_ray_job_instances(ray_job_id, *, limit, session):  # noqa: ANN001
+        calls.append(limit)
+        count = 25 if limit == 25 else 20
+        return (
+            [
+                {
+                    "instance_id": f"rj-abc-worker-{index}",
+                    "name": f"worker-{index}",
+                    "instance_type": "worker",
+                    "status": "running",
+                }
+                for index in range(count)
+            ],
+            25,
+        )
+
+    monkeypatch.setattr(
+        ray_commands.browser_api_module,
+        "list_ray_job_instances",
+        fake_list_ray_job_instances,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "ray",
+            "instances",
+            "elastic-a",
+            "--workspace",
+            "Ray资源空间",
+            "--all",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["data"]
+    assert calls == [20, 25]
+    assert len(payload["instances"]) == 25
+    assert payload["total"] == 25
+    assert "truncated" not in payload
+    assert all("instance_id" not in item for item in payload["instances"])
+    assert "rj-abc-worker" not in result.output
+
+    conflict = CliRunner().invoke(
+        cli_main,
+        [
+            "ray",
+            "instances",
+            "elastic-a",
+            "--workspace",
+            "Ray资源空间",
+            "--all",
+            "--limit",
+            "3",
+        ],
+    )
+
+    assert conflict.exit_code != 0
+    assert "Use either --limit or --all, not both." in conflict.output

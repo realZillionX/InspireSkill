@@ -11,16 +11,25 @@ from inspire.cli.context import (
     EXIT_API_ERROR,
     EXIT_AUTH_ERROR,
     EXIT_CONFIG_ERROR,
+    EXIT_VALIDATION_ERROR,
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.human_formatter import format_epoch
 from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.auth import AuthenticationError
+from inspire.cli.utils.collection_output import (
+    DEFAULT_COLLECTION_LIMIT,
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import (
+    forget_resource_identity,
     remember_resource_identity,
     resolve_by_name,
+    run_with_stale_handle_retry,
 )
 from inspire.cli.utils.project_resolver import resolve_project_id as resolve_project_id_by_name
 from inspire.cli.utils.raw_ids import scrub_raw_ids
@@ -372,17 +381,18 @@ def _resolve_model_name(
     "--limit",
     "-n",
     type=click.IntRange(1),
-    default=100,
-    show_default=True,
-    help="Maximum models to query and display.",
+    default=None,
+    help="Maximum models to display (default: 20).",
 )
+@click.option("--all", "show_all", is_flag=True, help="Show every model.")
 @pass_context
 def list_model(
     ctx: Context,
     workspace: Optional[str],
     project: Optional[str],
     keyword: Optional[str],
-    limit: int,
+    limit: Optional[int],
+    show_all: bool,
 ) -> None:
     """List registered models owned by the current user.
 
@@ -391,6 +401,15 @@ def list_model(
     choose the version for serving or reproducibility.
     """
     try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    request_limit = (
+        effective_limit if effective_limit is not None else DEFAULT_COLLECTION_LIMIT
+    )
+    try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
         resolved_workspace = _resolve_workspace_id(config, workspace, session=session)
@@ -398,17 +417,29 @@ def list_model(
             config, project, workspace_id=resolved_workspace, session=session
         )
         user_id = _current_user_id(session)
-        items, _ = browser_api_module.list_models(
+        items, total = browser_api_module.list_models(
             workspace_id=resolved_workspace,
             page=1,
-            page_size=limit,
+            page_size=request_limit,
             keyword=keyword,
             project_ids=[project_id] if project_id else None,
             user_id=user_id,
             session=session,
         )
+        if show_all and total > len(items):
+            items, expanded_total = browser_api_module.list_models(
+                workspace_id=resolved_workspace,
+                page=1,
+                page_size=max(total, len(items), 1),
+                keyword=keyword,
+                project_ids=[project_id] if project_id else None,
+                user_id=user_id,
+                session=session,
+            )
+            total = max(total, expanded_total, len(items))
 
         views = [_model_list_view(model) for model in items]
+        page = bound_collection(views, limit=effective_limit, total=total)
         for model in items:
             remember_resource_identity(
                 session=session,
@@ -421,7 +452,14 @@ def list_model(
                 created_at=model.created_at,
             )
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"models": views}))
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "models": page.items,
+                        **page.metadata(),
+                    }
+                )
+            )
             return
 
         rows = [
@@ -432,9 +470,12 @@ def list_model(
                 "project": view.get("project", "-"),
                 "updated_at": view.get("updated_at", "-"),
             }
-            for view in views
+            for view in page.items
         ]
         click.echo(_format_model_rows(rows))
+        notice = truncation_notice(page, full_option="--all")
+        if notice:
+            click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
@@ -470,20 +511,48 @@ def status_model(
             config, project, workspace_id=workspace_id, session=session
         )
         user_id = _current_user_id(session)
-        model_id = _resolve_model_name(
-            ctx,
-            name,
-            workspace_id=workspace_id,
-            project_id=project_id,
-            user_id=user_id,
-            pick=pick,
-            session=session,
-        )
-        data = browser_api_module.get_model_detail(
-            model_id=model_id, session=session, workspace_id=workspace_id
-        )
-        version_data = browser_api_module.list_model_version_records(
-            model_id=model_id, session=session, workspace_id=workspace_id
+        model_id, data, version_data = run_with_stale_handle_retry(
+            name=name,
+            resolve_cached=lambda: _resolve_model_name(
+                ctx,
+                name,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                user_id=user_id,
+                pick=pick,
+                session=session,
+            ),
+            resolve_live=lambda live_name: _resolve_model_name(
+                ctx,
+                live_name,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                user_id=user_id,
+                pick=pick,
+                session=session,
+                require_live=True,
+            ),
+            operation=lambda resolved_model_id: (
+                resolved_model_id,
+                browser_api_module.get_model_detail(
+                    model_id=resolved_model_id,
+                    session=session,
+                    workspace_id=workspace_id,
+                ),
+                browser_api_module.list_model_version_records(
+                    model_id=resolved_model_id,
+                    session=session,
+                    workspace_id=workspace_id,
+                ),
+            ),
+            invalidate=lambda resolved_model_id: forget_resource_identity(
+                session=session,
+                resource_type="model",
+                resource_id=resolved_model_id,
+                name=name,
+                workspace_id=str(workspace_id or ""),
+                owner_scope="self",
+            ),
         )
         remember_resource_identity(
             session=session,
@@ -514,6 +583,14 @@ def status_model(
 @click.option("--workspace", required=True, help="Workspace name")
 @click.option("--project", default=None, help="Project name filter")
 @click.option("--pick", type=click.IntRange(1), default=None, help="Pick Nth duplicate name (1-indexed)")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum versions to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every model version.")
 @pass_context
 def versions_model(
     ctx: Context,
@@ -521,6 +598,8 @@ def versions_model(
     workspace: Optional[str],
     project: Optional[str],
     pick: Optional[int],
+    limit: int | None,
+    show_all: bool,
 ) -> None:
     """List all versions of one registered model by name.
 
@@ -529,6 +608,12 @@ def versions_model(
     version shown by model listing.
     """
     try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
         workspace_id = _resolve_workspace_id(config, workspace, session=session)
@@ -536,17 +621,43 @@ def versions_model(
             config, project, workspace_id=workspace_id, session=session
         )
         user_id = _current_user_id(session)
-        model_id = _resolve_model_name(
-            ctx,
-            name,
-            workspace_id=workspace_id,
-            project_id=project_id,
-            user_id=user_id,
-            pick=pick,
-            session=session,
-        )
-        data = browser_api_module.list_model_version_records(
-            model_id=model_id, session=session, workspace_id=workspace_id
+        model_id, data = run_with_stale_handle_retry(
+            name=name,
+            resolve_cached=lambda: _resolve_model_name(
+                ctx,
+                name,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                user_id=user_id,
+                pick=pick,
+                session=session,
+            ),
+            resolve_live=lambda live_name: _resolve_model_name(
+                ctx,
+                live_name,
+                workspace_id=workspace_id,
+                project_id=project_id,
+                user_id=user_id,
+                pick=pick,
+                session=session,
+                require_live=True,
+            ),
+            operation=lambda resolved_model_id: (
+                resolved_model_id,
+                browser_api_module.list_model_version_records(
+                    model_id=resolved_model_id,
+                    session=session,
+                    workspace_id=workspace_id,
+                ),
+            ),
+            invalidate=lambda resolved_model_id: forget_resource_identity(
+                session=session,
+                resource_type="model",
+                resource_id=resolved_model_id,
+                name=name,
+                workspace_id=str(workspace_id or ""),
+                owner_scope="self",
+            ),
         )
         remember_resource_identity(
             session=session,
@@ -558,19 +669,27 @@ def versions_model(
         )
 
         versions = _model_version_views(data)
+        page = bound_collection(versions, limit=effective_limit)
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"name": scrub_raw_ids(name), "versions": versions}
+                    {
+                        "name": scrub_raw_ids(name),
+                        "versions": page.items,
+                        **page.metadata(),
+                    }
                 )
             )
             return
 
-        if not versions:
+        if not page.items:
             click.echo(f"No versions for model {scrub_raw_ids(name)}.")
             return
 
-        click.echo(_format_model_versions(versions))
+        click.echo(_format_model_versions(page.items))
+        notice = truncation_notice(page)
+        if notice:
+            click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)

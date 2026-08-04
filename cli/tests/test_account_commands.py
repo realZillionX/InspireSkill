@@ -8,6 +8,7 @@ resolve all paths lazily through ``Path.home()``, so this is sufficient.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -232,8 +233,7 @@ class TestAccountAddCommand:
         assert "Confirm password" in result.output
         assert "Inspire base URL" in result.output
         assert "Proxy URL" in result.output
-        assert "Created account" in result.output
-        assert "Active account: alice" in result.output
+        assert "Account added: alice (active)" in result.output
 
         config = (home / ".inspire" / "accounts" / "alice" / "config.toml").read_text()
         assert 'username = "alice"' in config
@@ -289,7 +289,7 @@ class TestAccountAddCommand:
         inputs = "\npw\npw\n\n\nn\n"
         result = _add(runner, "bob", input_=inputs)
         assert result.exit_code == 0, result.output
-        assert "Active account unchanged: alice" in result.output
+        assert "Account added: bob" in result.output
         assert storage.current_account() == "alice"
 
     def test_non_interactive_requires_password(
@@ -574,7 +574,7 @@ class TestAccountRenameCommand:
 
         assert result.exit_code == 0, result.output
         assert "Renamed account: old -> new" in result.output
-        assert "Active account: new" in result.output
+        assert result.output.strip() == "Renamed account: old -> new (active)"
         assert storage.current_account() == "new"
         assert storage.list_accounts() == ["new"]
         assert 'username = "platform-user"' in storage.account_config_path("new").read_text()
@@ -657,6 +657,120 @@ class TestAccountRemoveCommand:
         result = runner.invoke(account, ["remove", "alice", "--yes"])
         assert result.exit_code == 0
         assert storage.current_account() is None
+
+
+class TestAccountJsonOutput:
+    @staticmethod
+    def _invoke(runner: CliRunner, *args: str):
+        from inspire.cli.main import main as cli_main
+
+        return runner.invoke(
+            cli_main,
+            ["--json", "--no-env-file", "account", *args],
+        )
+
+    def test_all_account_commands_emit_compact_json(
+        self,
+        home: Path,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def noisy_normalize(**_kwargs):
+            print(home / ".inspire" / "legacy-config.toml")
+            print(home / ".cache" / "playwright-install.log", file=sys.stderr)
+            return None
+
+        monkeypatch.setattr("inspire.accounts.normalize_environment", noisy_normalize)
+
+        added = self._invoke(runner, "add", "alice", "--password", "pw")
+        assert added.exit_code == 0, added.output
+        assert "Platform login username" not in added.output
+        assert str(home) not in added.output
+        assert json.loads(added.output) == {
+            "success": True,
+            "data": {"name": "alice", "active": True},
+        }
+
+        second = self._invoke(
+            runner,
+            "add",
+            "bob",
+            "--password",
+            "pw",
+            "--no-use",
+        )
+        assert second.exit_code == 0, second.output
+        assert json.loads(second.output) == {
+            "success": True,
+            "data": {"name": "bob", "active": False},
+        }
+
+        listed = self._invoke(runner, "list")
+        assert listed.exit_code == 0, listed.output
+        assert json.loads(listed.output) == {
+            "success": True,
+            "data": {
+                "accounts": [
+                    {"name": "alice", "active": True},
+                    {"name": "bob", "active": False},
+                ]
+            },
+        }
+
+        current = self._invoke(runner, "current")
+        assert current.exit_code == 0, current.output
+        assert json.loads(current.output) == {
+            "success": True,
+            "data": {"name": "alice"},
+        }
+
+        used = self._invoke(runner, "use", "bob")
+        assert used.exit_code == 0, used.output
+        assert json.loads(used.output) == {
+            "success": True,
+            "data": {"name": "bob"},
+        }
+
+        renamed = self._invoke(runner, "rename", "bob", "primary")
+        assert renamed.exit_code == 0, renamed.output
+        assert json.loads(renamed.output) == {
+            "success": True,
+            "data": {
+                "old_name": "bob",
+                "name": "primary",
+                "active": True,
+            },
+        }
+
+        removed = self._invoke(runner, "remove", "primary", "--yes")
+        assert removed.exit_code == 0, removed.output
+        assert json.loads(removed.output) == {
+            "success": True,
+            "data": {"name": "primary"},
+        }
+        assert str(home) not in removed.output
+
+    def test_json_errors_do_not_prompt_or_expose_account_paths(
+        self,
+        home: Path,
+        runner: CliRunner,
+    ) -> None:
+        missing_password = self._invoke(runner, "add", "alice")
+        assert missing_password.exit_code != 0
+        assert "Platform password:" not in missing_password.output
+        assert str(home) not in missing_password.output
+        password_error = json.loads(missing_password.output)
+        assert password_error["success"] is False
+        assert password_error["error"]["type"] == "AccountError"
+
+        storage.create_account("alice", "x = 1\n")
+        confirmation = self._invoke(runner, "remove", "alice")
+        assert confirmation.exit_code != 0
+        assert "Remove account" not in confirmation.output
+        assert str(home) not in confirmation.output
+        confirmation_error = json.loads(confirmation.output)
+        assert confirmation_error["success"] is False
+        assert confirmation_error["error"]["type"] == "ConfirmationRequired"
 
 
 # --- CLI wiring sanity ----------------------------------------------------

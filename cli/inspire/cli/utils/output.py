@@ -8,7 +8,6 @@ import click
 
 from inspire.cli.context import Context
 from inspire.cli.formatters import json_formatter
-from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 
 def _emit_debug_report_hint(ctx: Context) -> None:
@@ -17,7 +16,7 @@ def _emit_debug_report_hint(ctx: Context) -> None:
     debug_report_path = getattr(ctx, "debug_report_path", None)
     if not debug_report_path:
         return
-    click.echo(f"Debug report: {debug_report_path}", err=True)
+    click.echo("Debug diagnostics were written locally.", err=True)
 
 
 def emit_success(ctx: Context, *, payload: dict[str, Any], text: str | None = None) -> None:
@@ -48,11 +47,20 @@ def emit_error(
 
     if human_lines is not None:
         for line in human_lines:
-            click.echo(scrub_raw_ids(line), err=True)
+            click.echo(
+                json_formatter.sanitize_text(line, redact_paths=True),
+                err=True,
+            )
         _emit_debug_report_hint(ctx)
         return
 
-    click.echo(scrub_raw_ids(message), err=True)
+    click.echo(
+        json_formatter.sanitize_text(message, redact_paths=True),
+        err=True,
+    )
     if hint:
-        click.echo(f"Hint: {scrub_raw_ids(hint)}", err=True)
+        click.echo(
+            f"Hint: {json_formatter.sanitize_text(hint, redact_paths=True)}",
+            err=True,
+        )
     _emit_debug_report_hint(ctx)

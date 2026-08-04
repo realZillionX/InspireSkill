@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -20,8 +21,14 @@ from inspire.cli.context import (
     EXIT_CONFIG_ERROR,
     EXIT_SUCCESS,
     EXIT_TIMEOUT,
+    EXIT_VALIDATION_ERROR,
 )
 from inspire.cli.main import main as cli_main
+from inspire.cli.utils.resource_index import (
+    ResourceIdentity,
+    ResourceIndex,
+    ResourceScope,
+)
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 
@@ -101,8 +108,9 @@ def test_current_user_id_uses_live_user_detail(
     assert calls == [("GET", "https://example.invalid/api/v1/user/detail")]
 
 
-def test_current_user_id_failure_records_live_user_detail_error(
+def test_current_user_id_failure_keeps_api_details_in_debug_log(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     class _FakeSession:
         user_detail = {"id": "cached-user"}
@@ -111,6 +119,7 @@ def test_current_user_id_failure_records_live_user_detail_error(
         raise RuntimeError("browser runtime missing")
 
     monkeypatch.setattr(_NBL_MOD.web_session_module, "request_json", _fake_request_json)
+    caplog.set_level(logging.DEBUG, logger=_NBL_MOD.__name__)
 
     session = _FakeSession()
     assert (
@@ -121,10 +130,15 @@ def test_current_user_id_failure_records_live_user_detail_error(
         == []
     )
     message = _NBL_MOD._current_user_lookup_failure_message(session)
-    assert "/api/v1/user/detail" in message
-    assert "browser runtime missing" in message
+    assert message == (
+        "Cannot determine the current platform account. "
+        "Refresh the account session with `inspire account login`, then retry."
+    )
+    assert "/api/v1/user/detail" not in message
+    assert "browser runtime missing" not in message
     assert "inspire account login" in message
-    assert "inspire update --cli-only" in message
+    assert "/api/v1/user/detail" in caplog.text
+    assert "browser runtime missing" in caplog.text
 
 
 def test_current_user_detail_uses_live_user_detail(
@@ -148,6 +162,79 @@ def test_current_user_detail_uses_live_user_detail(
     ) == {"id": "live-user", "name": "Live"}
     assert session.user_detail == {"id": "live-user", "name": "Live"}
     assert getattr(session, "saved", False) is True
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("notebook-smoke-20260507", False),
+        ("nb-training-2026", False),
+        ("notebook-abc", True),
+        ("nb-a1b2c3d4", True),
+        ("notebook-12345678-1234-1234-1234-123456789abc", True),
+        ("550e8400-e29b-41d4-a716-446655440000", True),
+    ],
+)
+def test_looks_like_notebook_id_uses_platform_handle_shape(
+    value: str,
+    expected: bool,
+) -> None:
+    assert _NBL_MOD._looks_like_notebook_id(value) is expected
+
+
+def test_resolve_notebook_id_allows_notebook_prefixed_human_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(_NBL_MOD, "_resolve_notebook_id", _REAL_RESOLVE_NOTEBOOK_ID)
+    workspace_id = "ws-77777777-7777-7777-7777-777777777777"
+    notebook_name = "notebook-smoke-20260507"
+    index = ResourceIndex(tmp_path / "resource-index.sqlite3")
+
+    session = SimpleNamespace(
+        base_url="https://example.invalid",
+        user_detail={"id": "user-one"},
+        workspace_id=workspace_id,
+        all_workspace_ids=[workspace_id],
+        all_workspace_names={workspace_id: "cpu"},
+    )
+    monkeypatch.setattr(
+        _NBL_MOD,
+        "_try_get_current_user_ids",
+        lambda *_args, **_kwargs: ["user-one"],
+    )
+
+    def fake_list_notebooks(*_args, **kwargs):  # noqa: ANN001
+        assert kwargs["keyword"] == notebook_name
+        return {
+            workspace_id: [
+                {
+                    "name": notebook_name,
+                    "notebook_id": "notebook-a1b2c3d4",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        _NBL_MOD,
+        "_list_notebooks_for_workspaces",
+        fake_list_notebooks,
+    )
+
+    notebook_id, resolved_workspace_id = _NBL_MOD._resolve_notebook_id(
+        Context(),
+        session=session,
+        config=make_test_config(tmp_path),
+        base_url="https://example.invalid",
+        identifier=notebook_name,
+        json_output=False,
+        workspace_ids=[workspace_id],
+        require_live=True,
+        cache_index=index,
+    )
+
+    assert notebook_id == "notebook-a1b2c3d4"
+    assert resolved_workspace_id == workspace_id
 
 
 def test_resolve_notebook_id_propagates_listing_errors(
@@ -248,6 +335,325 @@ def test_resolve_notebook_id_retries_until_eventual_consistency_settles(
     assert notebook_id == "abcd1234-5678-90ab-cdef-1234567890ab"
     assert ws_id == "ws-77777777-7777-7777-7777-777777777777"
     assert len(call_log) >= 2  # at least one retry past the initial empty result
+
+
+def test_notebook_live_snapshot_cannot_overwrite_newer_write_through(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(_NBL_MOD, "_resolve_notebook_id", _REAL_RESOLVE_NOTEBOOK_ID)
+    workspace_id = "ws-77777777-7777-7777-7777-777777777777"
+
+    class _FakeSession:
+        base_url = "https://example.invalid"
+        user_detail = {"id": "user-one"}
+
+        def __init__(self) -> None:
+            self.workspace_id = workspace_id
+            self.all_workspace_ids = [workspace_id]
+            self.all_workspace_names = {workspace_id: "cpu"}
+
+    index = ResourceIndex(tmp_path / "resource-index.sqlite3")
+    scope = ResourceScope(
+        base_url="https://example.invalid",
+        subject_id="user-one",
+        resource_type="notebook",
+        workspace_id=workspace_id,
+        owner_scope="self",
+    )
+    index.upsert(
+        scope,
+        [ResourceIdentity(resource_id="notebook-old", name="demo")],
+    )
+
+    def _stale_live_list(*_args, **_kwargs):
+        index.mark_deleted(scope, resource_id="notebook-old")
+        index.upsert(
+            scope,
+            [ResourceIdentity(resource_id="notebook-new", name="demo")],
+        )
+        return {
+            workspace_id: [
+                {
+                    "name": "demo",
+                    "notebook_id": "notebook-old",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        _NBL_MOD,
+        "_list_notebooks_for_workspaces",
+        _stale_live_list,
+    )
+    monkeypatch.setattr(
+        _NBL_MOD,
+        "_try_get_current_user_ids",
+        lambda *_args, **_kwargs: ["user-one"],
+    )
+
+    notebook_id, resolved_workspace_id = _NBL_MOD._resolve_notebook_id(
+        Context(),
+        session=_FakeSession(),
+        config=make_test_config(tmp_path),
+        base_url="https://example.invalid",
+        identifier="demo",
+        json_output=False,
+        workspace_ids=[workspace_id],
+        require_live=True,
+        cache_index=index,
+    )
+
+    assert notebook_id == "notebook-new"
+    assert resolved_workspace_id == workspace_id
+    assert [
+        item.resource_id
+        for item in index.lookup(scope, "demo", fresh_only=False)
+    ] == ["notebook-new"]
+
+
+def test_notebook_clear_during_live_lookup_does_not_repopulate_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(_NBL_MOD, "_resolve_notebook_id", _REAL_RESOLVE_NOTEBOOK_ID)
+    workspace_id = "ws-77777777-7777-7777-7777-777777777777"
+
+    class _FakeSession:
+        base_url = "https://example.invalid"
+        user_detail = {"id": "user-one"}
+
+        def __init__(self) -> None:
+            self.workspace_id = workspace_id
+            self.all_workspace_ids = [workspace_id]
+            self.all_workspace_names = {workspace_id: "cpu"}
+
+    index = ResourceIndex(tmp_path / "resource-index.sqlite3")
+    scope = ResourceScope(
+        base_url="https://example.invalid",
+        subject_id="user-one",
+        resource_type="notebook",
+        workspace_id=workspace_id,
+        owner_scope="self",
+    )
+
+    def _live_list(*_args, **_kwargs):
+        index.clear()
+        return {
+            workspace_id: [
+                {
+                    "name": "demo",
+                    "notebook_id": "notebook-live",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(_NBL_MOD, "_list_notebooks_for_workspaces", _live_list)
+    monkeypatch.setattr(
+        _NBL_MOD,
+        "_try_get_current_user_ids",
+        lambda *_args, **_kwargs: ["user-one"],
+    )
+
+    notebook_id, resolved_workspace_id = _NBL_MOD._resolve_notebook_id(
+        Context(),
+        session=_FakeSession(),
+        config=make_test_config(tmp_path),
+        base_url="https://example.invalid",
+        identifier="demo",
+        json_output=False,
+        workspace_ids=[workspace_id],
+        require_live=True,
+        cache_index=index,
+    )
+
+    assert notebook_id == "notebook-live"
+    assert resolved_workspace_id == workspace_id
+    assert index.list_identities(scope, fresh_only=False) == []
+
+
+def test_notebook_snapshot_failure_skips_live_cache_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(_NBL_MOD, "_resolve_notebook_id", _REAL_RESOLVE_NOTEBOOK_ID)
+    workspace_id = "ws-77777777-7777-7777-7777-777777777777"
+
+    class _FakeSession:
+        base_url = "https://example.invalid"
+        user_detail = {"id": "user-one"}
+
+        def __init__(self) -> None:
+            self.workspace_id = workspace_id
+            self.all_workspace_ids = [workspace_id]
+            self.all_workspace_names = {workspace_id: "cpu"}
+
+    index = ResourceIndex(tmp_path / "resource-index.sqlite3")
+    scope = ResourceScope(
+        base_url="https://example.invalid",
+        subject_id="user-one",
+        resource_type="notebook",
+        workspace_id=workspace_id,
+        owner_scope="self",
+    )
+    monkeypatch.setattr(
+        index,
+        "snapshot_token",
+        lambda _scope: (_ for _ in ()).throw(OSError("cache unavailable")),
+    )
+    monkeypatch.setattr(
+        _NBL_MOD,
+        "_list_notebooks_for_workspaces",
+        lambda *_args, **_kwargs: {
+            workspace_id: [
+                {
+                    "name": "demo",
+                    "notebook_id": "notebook-live",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        _NBL_MOD,
+        "_try_get_current_user_ids",
+        lambda *_args, **_kwargs: ["user-one"],
+    )
+
+    notebook_id, resolved_workspace_id = _NBL_MOD._resolve_notebook_id(
+        Context(),
+        session=_FakeSession(),
+        config=make_test_config(tmp_path),
+        base_url="https://example.invalid",
+        identifier="demo",
+        json_output=False,
+        workspace_ids=[workspace_id],
+        require_live=True,
+        cache_index=index,
+    )
+
+    assert notebook_id == "notebook-live"
+    assert resolved_workspace_id == workspace_id
+    assert index.list_identities(scope, fresh_only=False) == []
+
+
+def test_notebook_stale_handle_retry_tombstones_exact_old_handle_and_resolves_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _NotFoundError(RuntimeError):
+        status_code = 404
+
+    session = SimpleNamespace(base_url="https://example.invalid")
+    resolve_calls: list[bool] = []
+    operation_calls: list[str] = []
+    tombstones: list[dict[str, object]] = []
+
+    def fake_resolve(*_args, require_live=False, **_kwargs):  # noqa: ANN001
+        resolve_calls.append(require_live)
+        if require_live:
+            return "notebook-new", "ws-new"
+        return "notebook-old", "ws-old"
+
+    def operation(handle: str) -> str:
+        operation_calls.append(handle)
+        if handle == "notebook-old":
+            raise _NotFoundError("API returned 404")
+        return "ok"
+
+    monkeypatch.setattr(_NBL_MOD, "_resolve_notebook_id", fake_resolve)
+    monkeypatch.setattr(
+        _NBL_MOD,
+        "forget_resource_identity",
+        lambda **kwargs: tombstones.append(kwargs),
+    )
+
+    result, handle, workspace_id = (
+        _NBL_MOD._run_notebook_operation_with_stale_handle_retry(
+            Context(),
+            session=session,
+            config=SimpleNamespace(),
+            base_url="https://example.invalid",
+            identifier="demo-notebook",
+            json_output=False,
+            workspace_ids=["ws-old", "ws-new"],
+            operation=operation,
+        )
+    )
+
+    assert result == "ok"
+    assert handle == "notebook-new"
+    assert workspace_id == "ws-new"
+    assert resolve_calls == [False, True]
+    assert operation_calls == ["notebook-old", "notebook-new"]
+    assert tombstones == [
+        {
+            "session": session,
+            "resource_type": "notebook",
+            "resource_id": "notebook-old",
+            "workspace_id": "ws-old",
+            "owner_scope": "self",
+            "cache_index": None,
+        }
+    ]
+    assert "name" not in tombstones[0]
+
+
+def test_notebook_status_runs_detail_fetch_through_stale_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = SimpleNamespace()
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "require_web_session",
+        lambda *_args, **_kwargs: session,
+    )
+    monkeypatch.setattr(notebook_cmd_module, "get_base_url", lambda: "https://example.invalid")
+    monkeypatch.setattr(notebook_cmd_module, "load_config", lambda _ctx: SimpleNamespace())
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "resolve_workspace_query_scope",
+        lambda *_args, **_kwargs: (["ws-live"], "ws-live"),
+    )
+
+    def fake_retry(*_args, operation, **kwargs):  # noqa: ANN001
+        seen.update(kwargs)
+        return operation("notebook-live"), "notebook-live", "ws-live"
+
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "_run_notebook_operation_with_stale_handle_retry",
+        fake_retry,
+    )
+    monkeypatch.setattr(
+        notebook_cmd_module.web_session_module,
+        "request_json",
+        lambda _session, _method, url, **_kwargs: {
+            "code": 0,
+            "data": {
+                "notebook_id": url.rsplit("/", maxsplit=1)[-1],
+                "name": "demo-notebook",
+                "status": "RUNNING",
+            },
+        },
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "notebook",
+            "status",
+            "demo-notebook",
+            "--workspace",
+            "CPU资源空间",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["identifier"] == "demo-notebook"
+    assert seen["workspace_ids"] == ["ws-live"]
+    assert "notebook-live" not in result.output
 
 
 def test_notebook_list_all_uses_multi_workspace_helper(
@@ -2174,6 +2580,72 @@ def test_notebook_connection_status_json_is_name_only(
     assert "proxy.example" not in result.output
     assert "31337" not in result.output
     assert "notebook-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" not in result.output
+
+
+@pytest.mark.parametrize(
+    "args",
+    (
+        [
+            "notebook",
+            "connection",
+            "target",
+            "forget",
+            "gpu-main",
+            "--workspace",
+            "ws-123456",
+        ],
+        [
+            "notebook",
+            "connection",
+            "status",
+            "gpu-main",
+            "--workspace",
+            "ws-123456",
+        ],
+        [
+            "notebook",
+            "connection",
+            "refresh",
+            "gpu-main",
+            "--workspace",
+            "ws-123456",
+        ],
+        [
+            "notebook",
+            "connection",
+            "forget",
+            "gpu-main",
+            "--workspace",
+            "ws-123456",
+        ],
+    ),
+)
+def test_notebook_connection_workspace_rejects_id_shaped_values(
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+) -> None:
+    monkeypatch.setattr(
+        connection_module,
+        "_load_bridge_or_exit",
+        lambda *_args, **_kwargs: pytest.fail("workspace validation did not run first"),
+    )
+    monkeypatch.setattr(
+        connection_module,
+        "forget_notebook_targets",
+        lambda **_kwargs: pytest.fail("workspace validation did not run first"),
+    )
+    monkeypatch.setattr(
+        connection_module,
+        "preflight_notebook_transport_policy",
+        lambda *_args, **_kwargs: pytest.fail("workspace validation did not run first"),
+    )
+
+    result = CliRunner().invoke(cli_main, args)
+
+    assert result.exit_code == EXIT_VALIDATION_ERROR
+    assert "only accept a workspace name" in result.output
+    assert "handle" not in result.output.lower()
+    assert "ws-123456" not in result.output
 
 
 def test_notebook_path_commands_manage_project_path_alias(

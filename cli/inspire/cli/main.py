@@ -13,12 +13,14 @@ import sys
 from pathlib import Path
 
 import click
+import click.exceptions as click_exceptions
 
 from inspire import __version__
 from inspire.cli.logging_setup import clear_debug_logging, configure_debug_logging
 from inspire.cli.context import (
     Context,
     pass_context,
+    EXIT_CONFIG_ERROR,
     EXIT_GENERAL_ERROR,
 )
 from inspire.cli.commands import (
@@ -39,11 +41,47 @@ from inspire.cli.commands import (
     user,
 )
 from inspire.cli.utils.update_notice import maybe_notify_update, maybe_spawn_check
-from inspire.cli.utils.output_guard import install_output_guard
+from inspire.cli.utils.output_guard import (
+    clear_parser_redactions,
+    install_output_guard,
+    parser_echo,
+    set_parser_redactions,
+)
+from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.env_bootstrap import bootstrap_env_file
 
 
-@click.group()
+_PARSER_GUARD_INSTALLED = False
+
+
+def _install_pre_parse_output_guard(args: list[str] | tuple[str, ...]) -> None:
+    """Install the output firewall before Click renders parser errors."""
+    global _PARSER_GUARD_INSTALLED
+    install_output_guard()
+    set_parser_redactions(args)
+    if _PARSER_GUARD_INSTALLED:
+        return
+    # Click's exception module keeps its own imported echo reference, so the
+    # callback-time monkey patch alone cannot sanitize parser diagnostics.
+    click_exceptions.echo = parser_echo
+    _PARSER_GUARD_INSTALLED = True
+
+
+class _NameOnlyGroup(click.Group):
+    def main(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        cli_args = kwargs.get("args")
+        if cli_args is None and args:
+            cli_args = args[0]
+        if cli_args is None:
+            cli_args = sys.argv[1:]
+        _install_pre_parse_output_guard(tuple(str(value) for value in cli_args))
+        try:
+            return super().main(*args, **kwargs)
+        finally:
+            clear_parser_redactions()
+
+
+@click.group(cls=_NameOnlyGroup)
 @click.version_option(version=__version__, prog_name="inspire")
 @click.option(
     "--json",
@@ -101,7 +139,10 @@ def main(
     ctx.debug = debug
     install_output_guard()
 
-    bootstrap_env_file(env_file=env_file, disabled=no_env_file)
+    try:
+        bootstrap_env_file(env_file=env_file, disabled=no_env_file)
+    except click.ClickException as exc:
+        _handle_error(ctx, "ConfigError", str(exc), EXIT_CONFIG_ERROR)
 
     if debug:
         ctx.debug_report_path = configure_debug_logging(argv=sys.argv)

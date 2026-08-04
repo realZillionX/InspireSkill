@@ -205,14 +205,20 @@ def _build_base_url_resolution(
 
 
 @click.command("check")
+@click.option(
+    "--details",
+    is_flag=True,
+    help="Show endpoint, source precedence, retry, proxy, and config-file details.",
+)
 @pass_context
-def check_config(ctx: Context) -> None:
+def check_config(ctx: Context, details: bool) -> None:
     """Check configuration files and platform authentication.
 
     Verifies required account settings, validates host-shaped values, and
     confirms the active account can authenticate to the platform.
     """
     effective_json = ctx.json_output
+    show_details = details
 
     try:
         cfg, sources = Config.from_files_and_env(
@@ -227,7 +233,11 @@ def check_config(ctx: Context) -> None:
 
         _validate_required_credentials(cfg)
         _validate_required_registry(cfg)
-        effective_proxy = describe_effective_proxy_config(base_url=cfg.base_url)
+        effective_proxy = (
+            describe_effective_proxy_config(base_url=cfg.base_url)
+            if show_details
+            else None
+        )
 
         auth_ok = True
         auth_error = None
@@ -247,64 +257,61 @@ def check_config(ctx: Context) -> None:
                 "the active account config or run inspire account add."
             )
 
-        result = {
-            "username": cfg.username,
-            "base_url": cfg.base_url,
-            "log_pattern": cfg.log_pattern,
-            "timeout": cfg.timeout,
-            "max_retries": cfg.max_retries,
-            "retry_delay": cfg.retry_delay,
-            "auth_ok": auth_ok,
-            "base_url_resolution": base_url_resolution,
-            "effective_proxy": effective_proxy,
-            "validation": {
-                "placeholder_host_issues": placeholder_issues,
-                "base_url_default_hint": default_base_url_hint,
-            },
+        result: dict[str, object] = {
+            "configured": True,
+            "authenticated": auth_ok,
         }
-        if auth_error:
-            result["auth_error"] = auth_error
+        if show_details:
+            result.update(
+                {
+                    "endpoint": cfg.base_url,
+                    "request": {
+                        "timeout_seconds": cfg.timeout,
+                        "max_retries": cfg.max_retries,
+                        "retry_delay_seconds": cfg.retry_delay,
+                    },
+                    "base_url_resolution": base_url_resolution,
+                    "effective_proxy": effective_proxy,
+                }
+            )
+            if default_base_url_hint:
+                result["note"] = default_base_url_hint
+            if auth_error:
+                result["authentication_error"] = auth_error
 
         if effective_json:
             click.echo(json_formatter.format_json(result, success=auth_ok))
         else:
+            click.echo(human_formatter.format_success("Configuration: OK"))
             if auth_ok:
-                click.echo(human_formatter.format_success("Configuration looks good"))
+                click.echo(human_formatter.format_success("Authentication: OK"))
             else:
-                click.echo(human_formatter.format_error("Authentication failed"))
+                click.echo(human_formatter.format_error("Authentication: FAILED"))
 
-            click.echo(f"\nUsername:     {scrub_raw_ids(cfg.username)}")
-            click.echo(f"Base URL:     {cfg.base_url}")
-            click.echo(f"Log pattern:  {scrub_raw_ids(cfg.log_pattern)}")
-            click.echo(f"Timeout:      {cfg.timeout}s")
-            click.echo(f"Max retries:  {cfg.max_retries}")
-            click.echo(f"Retry delay:  {cfg.retry_delay}s")
-            click.echo("\nBase URL resolution:")
-            click.echo(f"  Value:                {base_url_resolution['value']}")
-            click.echo(f"  Source:               {base_url_resolution['source']}")
-            click.echo(f"  Precedence:           {base_url_resolution['precedence']}")
-            click.echo(
-                "  INSPIRE_BASE_URL set: "
-                f"{'yes' if base_url_resolution['env_present'] else 'no'}"
-            )
-            click.echo(
-                "  Global config:        "
-                f"{base_url_resolution['global_config_path'] or '(not found)'}"
-            )
-            click.echo(
-                "  Project config:       "
-                f"{base_url_resolution['project_config_path'] or '(not found)'}"
-            )
-
-            if default_base_url_hint:
-                click.echo(click.style(f"  Note: {default_base_url_hint}", fg="yellow"))
-
-            click.echo()
-            for line in format_effective_proxy_lines(effective_proxy):
-                click.echo(line)
-
-            if auth_error:
-                click.echo(f"\nDetails: {scrub_raw_ids(auth_error)}")
+            if show_details:
+                click.echo(f"Endpoint: {cfg.base_url}")
+                click.echo(
+                    "Request: "
+                    f"timeout={cfg.timeout}s retries={cfg.max_retries} "
+                    f"delay={cfg.retry_delay}s"
+                )
+                click.echo(
+                    "Source: "
+                    f"{base_url_resolution['source']} "
+                    f"({base_url_resolution['precedence']})"
+                )
+                click.echo(
+                    "Config files: "
+                    f"global={'yes' if global_path else 'no'} "
+                    f"project={'yes' if project_path else 'no'}"
+                )
+                if default_base_url_hint:
+                    click.echo(click.style(f"Note: {default_base_url_hint}", fg="yellow"))
+                if effective_proxy is not None:
+                    for line in format_effective_proxy_lines(effective_proxy):
+                        click.echo(line)
+                if auth_error:
+                    click.echo(f"Authentication error: {scrub_raw_ids(auth_error)}")
 
         if not auth_ok:
             sys.exit(EXIT_AUTH_ERROR)

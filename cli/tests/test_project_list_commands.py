@@ -444,6 +444,62 @@ def test_project_detail_json_is_name_only_and_compact(monkeypatch):
     assert "user-secret-123" not in result.output
 
 
+def test_project_detail_retries_stale_cached_handle_by_name(monkeypatch):
+    session_obj = FakeSession(all_workspace_ids=[WS_GOOD], workspace_id=WS_GOOD)
+    session_obj.all_workspace_names = {WS_GOOD: "研发空间"}
+    monkeypatch.setattr(
+        notebook_cli_module.web_session_module,
+        "get_web_session",
+        lambda: session_obj,
+    )
+
+    resolve_calls: list[bool] = []
+    detail_calls: list[str] = []
+    invalidated: list[str] = []
+
+    def _resolve(
+        _ctx,
+        _name,
+        *,
+        require_live=False,
+        **_kwargs,
+    ):
+        resolve_calls.append(require_live)
+        return "project-new" if require_live else "project-old"
+
+    monkeypatch.setattr(project_cmd_module, "_resolve_project_name", _resolve)
+    monkeypatch.setattr(
+        project_cmd_module,
+        "forget_resource_identity",
+        lambda **kwargs: invalidated.append(kwargs["resource_id"]),
+    )
+
+    def _detail(project_id, session=None):
+        detail_calls.append(project_id)
+        if project_id == "project-old":
+            raise RuntimeError("project not found")
+        return {"name": "视觉模型项目"}
+
+    monkeypatch.setattr(browser_api_module, "get_project_detail", _detail)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "project",
+            "detail",
+            "视觉模型项目",
+            "--workspace",
+            "研发空间",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert resolve_calls == [False, True]
+    assert detail_calls == ["project-old", "project-new"]
+    assert invalidated == ["project-old"]
+
+
 def test_project_detail_omits_nested_budget_and_text_metadata(monkeypatch):
     session_obj = FakeSession(all_workspace_ids=[WS_GOOD], workspace_id=WS_GOOD)
     session_obj.all_workspace_names = {WS_GOOD: "研发空间"}

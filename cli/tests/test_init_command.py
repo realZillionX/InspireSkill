@@ -506,29 +506,58 @@ def test_persist_prompted_credentials_updates_auth_username() -> None:
     assert "password" not in account_section
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("project-alpha-2026", False),
+        ("workspace-research-2026", False),
+        ("lcg-training-room-2026", False),
+        ("project-a1b2c3d4", True),
+        ("proj-deadbeef", True),
+        ("workspace-a1b2c3d4", True),
+        ("550e8400-e29b-41d4-a716-446655440000", True),
+    ],
+)
+def test_looks_like_project_handle_uses_platform_handle_shape(
+    value: str,
+    expected: bool,
+) -> None:
+    assert discover_module._looks_like_project_handle(value) is expected
+
+
+def test_build_project_aliases_preserves_project_prefixed_human_name() -> None:
+    aliases, alias_for_id = discover_module._build_project_aliases(
+        [],
+        existing={"project-alpha-2026": "project-alpha-2026"},
+    )
+
+    assert aliases == {"project-alpha-2026": "project-alpha-2026"}
+    assert alias_for_id == {}
+
+
 def test_build_project_aliases_migrates_legacy_id_to_live_name() -> None:
     projects = [
         SimpleNamespace(
-            project_id="project-new-456",
+            project_id="project-a1b2c3d4",
             name="模型项目",
         )
     ]
 
     aliases, alias_for_id = discover_module._build_project_aliases(
         projects,
-        existing={"production": "project-old-123"},
+        existing={"production": "project-deadbeef"},
     )
 
     assert aliases == {"模型项目": "模型项目"}
-    assert alias_for_id == {"project-new-456": "模型项目"}
-    assert "project-old-123" not in json.dumps(aliases, ensure_ascii=False)
-    assert "project-new-456" not in json.dumps(aliases, ensure_ascii=False)
+    assert alias_for_id == {"project-a1b2c3d4": "模型项目"}
+    assert "project-deadbeef" not in json.dumps(aliases, ensure_ascii=False)
+    assert "project-a1b2c3d4" not in json.dumps(aliases, ensure_ascii=False)
 
 
 def test_build_project_aliases_preserves_legacy_alias_when_catalog_name_is_live() -> None:
     projects = [
         SimpleNamespace(
-            project_id="project-new-456",
+            project_id="project-a1b2c3d4",
             name="模型项目",
         )
     ]
@@ -539,45 +568,45 @@ def test_build_project_aliases_preserves_legacy_alias_when_catalog_name_is_live(
     )
 
     assert aliases == {"production": "模型项目"}
-    assert alias_for_id == {"project-new-456": "production"}
+    assert alias_for_id == {"project-a1b2c3d4": "production"}
 
 
 def test_build_project_aliases_uses_legacy_catalog_to_migrate_stale_id() -> None:
     projects = [
         SimpleNamespace(
-            project_id="project-new-456",
+            project_id="project-a1b2c3d4",
             name="模型项目",
         )
     ]
 
     aliases, alias_for_id = discover_module._build_project_aliases(
         projects,
-        existing={"production": "project-old-123"},
-        existing_catalog={"project-old-123": {"name": "模型项目"}},
+        existing={"production": "project-deadbeef"},
+        existing_catalog={"project-deadbeef": {"name": "模型项目"}},
     )
 
     assert aliases == {"production": "模型项目"}
-    assert alias_for_id == {"project-new-456": "production"}
+    assert alias_for_id == {"project-a1b2c3d4": "production"}
     serialized = json.dumps(aliases, ensure_ascii=False)
-    assert "project-old-123" not in serialized
-    assert "project-new-456" not in serialized
+    assert "project-deadbeef" not in serialized
+    assert "project-a1b2c3d4" not in serialized
 
 
 def test_build_project_aliases_replaces_handle_shaped_alias_with_name() -> None:
     projects = [
         SimpleNamespace(
-            project_id="project-new-456",
+            project_id="project-a1b2c3d4",
             name="模型项目",
         )
     ]
 
     aliases, alias_for_id = discover_module._build_project_aliases(
         projects,
-        existing={"project-old-123": "模型项目"},
+        existing={"project-deadbeef": "模型项目"},
     )
 
     assert aliases == {"模型项目": "模型项目"}
-    assert alias_for_id == {"project-new-456": "模型项目"}
+    assert alias_for_id == {"project-a1b2c3d4": "模型项目"}
 
 
 def test_merge_compute_groups_strips_ids_and_persists_workspace_names() -> None:

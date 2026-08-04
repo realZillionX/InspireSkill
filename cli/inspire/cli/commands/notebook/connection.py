@@ -15,8 +15,20 @@ from inspire.bridge.tunnel import (
     run_ssh_command,
     save_tunnel_config,
 )
-from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, pass_context
+from inspire.cli.context import (
+    Context,
+    EXIT_CONFIG_ERROR,
+    EXIT_GENERAL_ERROR,
+    EXIT_VALIDATION_ERROR,
+    pass_context,
+)
 from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.utils.collection_output import (
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
+from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
@@ -32,6 +44,17 @@ def _safe_bridge_name(bridge: BridgeProfile) -> str:
         if name:
             return name
     return "(unknown)"
+
+
+def _validate_workspace_selector(ctx: Context, workspace: str | None) -> str | None:
+    if workspace is None:
+        return None
+    return reject_id_at_boundary(
+        ctx,
+        workspace,
+        resource_type="workspace",
+        list_command="inspire config context",
+    )
 
 
 def _bridge_payload(bridge: BridgeProfile, *, healthy: bool | None = None) -> dict[str, object]:
@@ -80,19 +103,41 @@ def connection_target() -> None:
 
 
 @connection_target.command("list")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum remembered targets to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every remembered target.")
 @pass_context
-def connection_target_list(ctx: Context) -> None:
+def connection_target_list(ctx: Context, limit: int | None, show_all: bool) -> None:
     """List remembered notebook target selections."""
-    rows = list_notebook_targets()
-    if ctx.json_output:
-        click.echo(json_formatter.format_json({"targets": rows}))
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
         return
 
-    if not rows:
+    rows = list_notebook_targets()
+    page = bound_collection(rows, limit=effective_limit)
+    if ctx.json_output:
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "targets": page.items,
+                    **page.metadata(),
+                }
+            )
+        )
+        return
+
+    if not page.items:
         click.echo("No remembered notebook targets.")
         return
 
-    for row in rows:
+    for row in page.items:
         name = str(row.get("name") or "(unknown)")
         account = str(row.get("account") or "(none)")
         workspace = str(row.get("workspace") or "(any)")
@@ -100,6 +145,9 @@ def connection_target_list(ctx: Context) -> None:
             f"{scrub_raw_ids(name)}  account={scrub_raw_ids(account)}  "
             f"workspace={scrub_raw_ids(workspace)}"
         )
+    notice = truncation_notice(page)
+    if notice:
+        click.echo(notice)
 
 
 @connection_target.command("forget")
@@ -114,6 +162,7 @@ def connection_target_forget(
     account: str | None,
 ) -> None:
     """Forget remembered target selections without removing SSH connections."""
+    workspace = _validate_workspace_selector(ctx, workspace)
     notebook = reject_id_at_boundary(
         ctx,
         notebook,
@@ -151,12 +200,35 @@ def connection_target_forget(
     default=False,
     help="Verify each cached connection with SSH before printing.",
 )
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum cached connections to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every cached connection.")
 @pass_context
-def connection_list(ctx: Context, verify: bool) -> None:
+def connection_list(
+    ctx: Context,
+    verify: bool,
+    limit: int | None,
+    show_all: bool,
+) -> None:
     """List cached notebook connections."""
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
     config = load_tunnel_config()
+    bridge_page = bound_collection(
+        list(config.list_bridges()),
+        limit=effective_limit,
+    )
     rows: list[dict[str, object]] = []
-    for bridge in config.list_bridges():
+    for bridge in bridge_page.items:
         healthy = (
             is_tunnel_available(
                 bridge_name=bridge.name,
@@ -171,32 +243,29 @@ def connection_list(ctx: Context, verify: bool) -> None:
         rows.append(_bridge_payload(bridge, healthy=healthy))
 
     if ctx.json_output:
-        click.echo(json_formatter.format_json({"connections": rows}))
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "connections": rows,
+                    **bridge_page.metadata(),
+                }
+            )
+        )
         return
 
     if not rows:
         click.echo("No cached notebook connections.")
         return
 
-    for bridge in config.list_bridges():
-        name = _safe_bridge_name(bridge)
-        workspace = (
-            sanitize_public_text(bridge.workspace_name, omit_urls=True)
-            or "(workspace unknown)"
-        )
+    for row in rows:
+        workspace = row.get("workspace") or "(workspace unknown)"
         status = ""
         if verify:
-            healthy = is_tunnel_available(
-                bridge_name=bridge.name,
-                config=config,
-                retries=0,
-                retry_pause=0.0,
-                progressive=False,
-            )
-            status = "  connected=yes" if healthy else "  connected=no"
-        click.echo(
-            f"{name}  workspace={workspace}{status}"
-        )
+            status = "  connected=yes" if row.get("connected") else "  connected=no"
+        click.echo(f"{row['name']}  workspace={workspace}{status}")
+    notice = truncation_notice(bridge_page)
+    if notice:
+        click.echo(notice)
 
 
 @notebook_connection.command("status")
@@ -209,6 +278,7 @@ def connection_list(ctx: Context, verify: bool) -> None:
 @pass_context
 def connection_status(ctx: Context, notebook: str, workspace: str | None) -> None:
     """Test a cached notebook connection."""
+    workspace = _validate_workspace_selector(ctx, workspace)
     del workspace
     config, bridge = _load_bridge_or_exit(ctx, notebook)
     start = time.time()
@@ -324,6 +394,7 @@ def connection_refresh(
     setup_timeout: int,
 ) -> None:
     """Create or refresh SSH/rtunnel cache for public-internet notebooks."""
+    workspace = _validate_workspace_selector(ctx, workspace)
     notebook = reject_id_at_boundary(
         ctx,
         notebook,
@@ -364,6 +435,7 @@ def connection_refresh(
 @pass_context
 def connection_forget(ctx: Context, notebook: str, workspace: str | None) -> None:
     """Forget a cached notebook connection."""
+    workspace = _validate_workspace_selector(ctx, workspace)
     config, bridge = _load_bridge_or_exit(ctx, notebook)
     if workspace and bridge.workspace_name and bridge.workspace_name != workspace:
         message = (

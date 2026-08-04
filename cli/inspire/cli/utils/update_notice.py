@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import click
+
 from inspire import __version__
 
 REPO_SLUG = "realZillionX/InspireSkill"
@@ -177,11 +179,13 @@ def maybe_notify_update() -> None:
     if not _is_newer(latest, __version__):
         return
     try:
-        # ANSI yellow; Click will handle non-tty gracefully when we print via click.echo,
-        # but we go through sys.stderr to avoid touching click's context here.
-        sys.stderr.write(
-            f"\033[33m⚠ InspireSkill v{latest} available (current v{current}); "
-            f"run `inspire update` to upgrade.\033[0m\n"
+        click.echo(
+            click.style(
+                f"⚠ InspireSkill v{latest} available (current v{current}); "
+                "run `inspire update` to upgrade.",
+                fg="yellow",
+            ),
+            err=True,
         )
     except Exception:
         pass

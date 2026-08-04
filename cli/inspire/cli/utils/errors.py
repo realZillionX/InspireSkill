@@ -11,7 +11,6 @@ import click
 
 from inspire.cli.context import EXIT_GENERAL_ERROR, Context
 from inspire.cli.formatters import human_formatter, json_formatter
-from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 
 def _emit_debug_report_hint(ctx: Context) -> None:
@@ -20,7 +19,7 @@ def _emit_debug_report_hint(ctx: Context) -> None:
     debug_report_path = getattr(ctx, "debug_report_path", None)
     if not debug_report_path:
         return
-    click.echo(f"Debug report: {debug_report_path}", err=True)
+    click.echo("Debug diagnostics were written locally.", err=True)
 
 
 def emit_error(
@@ -39,7 +38,14 @@ def emit_error(
         )
     else:
         click.echo(
-            human_formatter.format_error(scrub_raw_ids(message), hint=scrub_raw_ids(hint)),
+            human_formatter.format_error(
+                json_formatter.sanitize_text(message, redact_paths=True),
+                hint=(
+                    json_formatter.sanitize_text(hint, redact_paths=True)
+                    if hint
+                    else None
+                ),
+            ),
             err=True,
         )
         _emit_debug_report_hint(ctx)

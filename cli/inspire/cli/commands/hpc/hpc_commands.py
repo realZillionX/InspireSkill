@@ -17,6 +17,12 @@ from inspire.cli.context import (
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.auth import AuthenticationError
+from inspire.cli.utils.collection_output import (
+    DEFAULT_COLLECTION_LIMIT,
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
@@ -32,6 +38,7 @@ from inspire.cli.utils.id_resolver import (
     reject_id_at_boundary,
     remember_resource_identity,
     resolve_by_name,
+    run_with_stale_handle_retry,
 )
 from inspire.cli.utils.project_resolver import (
     project_display_name,
@@ -40,6 +47,8 @@ from inspire.cli.utils.project_resolver import (
 from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+
+_DEFAULT_INSTANCE_SCAN_LIMIT = 500
 
 
 def _current_user_id(session) -> str:  # noqa: ANN001
@@ -124,6 +133,53 @@ def _reject_hpc_name_at_boundary(ctx: Context, name: str) -> str:
         name,
         resource_type="hpc",
         list_command="inspire hpc list --workspace <workspace>",
+    )
+
+
+def _run_readonly_hpc_operation(
+    ctx: Context,
+    *,
+    config: Config,
+    session,
+    name: str,
+    workspace: str,
+    limit: int,
+    operation,
+):
+    """Run a read-only HPC operation and recover one stale cache hit."""
+    def _resolve(require_live: bool) -> str:
+        return _resolve_hpc_name_in_workspace(
+            ctx,
+            config=config,
+            session=session,
+            name=name,
+            workspace=workspace,
+            limit=limit,
+            require_live=require_live,
+        )
+
+    def _invalidate(job_id: str) -> None:
+        workspace_id = select_workspace_id(
+            config,
+            explicit_workspace_name=workspace,
+            session=session,
+        )
+        if workspace_id is None:
+            raise ConfigError("--workspace is required.")
+        forget_resource_identity(
+            session=session,
+            resource_type="hpc",
+            resource_id=job_id,
+            workspace_id=workspace_id,
+            owner_scope="self",
+        )
+
+    return run_with_stale_handle_retry(
+        name=name,
+        resolve_cached=lambda: _resolve(False),
+        resolve_live=lambda _name: _resolve(True),
+        operation=lambda job_id: operation(job_id, session),
+        invalidate=_invalidate,
     )
 
 
@@ -352,6 +408,30 @@ def _format_hpc_instances(instances: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _fetch_hpc_instances(
+    job_id: str,
+    *,
+    limit: int,
+    session,
+    show_all: bool,
+) -> tuple[list[dict[str, Any]], int]:
+    """Fetch the bounded instance page, expanding it only for explicit ``--all``."""
+    rows, total = browser_api_module.list_hpc_job_instances(
+        job_id,
+        limit=limit,
+        session=session,
+    )
+    if show_all and total > len(rows):
+        expanded_rows, expanded_total = browser_api_module.list_hpc_job_instances(
+            job_id,
+            limit=max(total, len(rows), 1),
+            session=session,
+        )
+        rows = expanded_rows
+        total = max(total, expanded_total, len(rows))
+    return rows, total
+
+
 @click.command("list")
 @click.option("--workspace", required=True, help="Workspace name")
 @click.option("--status", "status_filter", default=None, help="Filter by HPC job status")
@@ -359,16 +439,17 @@ def _format_hpc_instances(instances: list[dict[str, Any]]) -> str:
     "--limit",
     "-n",
     type=click.IntRange(1),
-    default=50,
-    show_default=True,
-    help="Maximum HPC jobs to query and display.",
+    default=None,
+    help="Maximum HPC jobs to display (default: 20).",
 )
+@click.option("--all", "show_all", is_flag=True, help="Show every HPC job.")
 @pass_context
 def list_hpc(
     ctx: Context,
     workspace: Optional[str],
     status_filter: Optional[str],
-    limit: int,
+    limit: Optional[int],
+    show_all: bool,
 ) -> None:
     """List the current user's HPC jobs.
 
@@ -376,6 +457,15 @@ def list_hpc(
     Examples:
         inspire hpc list --workspace CPU资源空间 --status RUNNING
     """
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    request_limit = (
+        effective_limit if effective_limit is not None else DEFAULT_COLLECTION_LIMIT
+    )
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
@@ -391,9 +481,20 @@ def list_hpc(
             created_by=created_by,
             status=status_filter,
             page_num=1,
-            page_size=limit,
+            page_size=request_limit,
             session=session,
         )
+        if show_all and total > len(jobs):
+            jobs, expanded_total = browser_api_module.list_hpc_jobs(
+                workspace_id=resolved_workspace_id,
+                created_by=created_by,
+                status=status_filter,
+                page_num=1,
+                page_size=max(total, len(jobs), 1),
+                session=session,
+            )
+            total = max(total, expanded_total, len(jobs))
+        page = bound_collection(jobs, limit=effective_limit, total=total)
         rows = [
             {
                 "name": scrub_raw_ids(job.name or "N/A"),
@@ -403,14 +504,24 @@ def list_hpc(
                 "project_name": scrub_raw_ids(job.project_name or ""),
                 "compute_group_name": scrub_raw_ids(job.compute_group_name or ""),
             }
-            for job in jobs
+            for job in page.items
         ]
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"jobs": _public_output(rows), "total": total}))
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "jobs": _public_output(rows),
+                        **page.metadata(),
+                    }
+                )
+            )
             return
 
         click.echo(_format_hpc_list_rows(rows))
+        notice = truncation_notice(page, full_option="--all")
+        if notice:
+            click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -760,15 +871,20 @@ def status_hpc(ctx: Context, name: str, workspace: str) -> None:
     try:
         config, _ = Config.from_files_and_env()
         session = get_web_session()
-        job_id = _resolve_hpc_name_in_workspace(
+        data = _run_readonly_hpc_operation(
             ctx,
             config=config,
             session=session,
             name=name,
             workspace=workspace,
             limit=10000,
+            operation=lambda job_id, live_session: (
+                browser_api_module.get_hpc_job_detail(
+                    job_id,
+                    session=live_session,
+                )
+            ),
         )
-        data = browser_api_module.get_hpc_job_detail(job_id, session=session)
 
         if ctx.json_output:
             click.echo(json_formatter.format_json(_public_output(data)))
@@ -809,40 +925,72 @@ def status_hpc(ctx: Context, name: str, workspace: str) -> None:
     "--limit",
     "-n",
     type=click.IntRange(1),
-    default=500,
-    show_default=True,
-    help="Maximum HPC jobs to scan while resolving the name and maximum instances to query.",
+    default=None,
+    help="Maximum instances to display (default: 20).",
+)
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    help="Show the complete instance list.",
 )
 @pass_context
-def instances_hpc(ctx: Context, name: str, workspace: str, limit: int) -> None:
+def instances_hpc(
+    ctx: Context,
+    name: str,
+    workspace: str,
+    limit: Optional[int],
+    show_all: bool,
+) -> None:
     """List pod/component instances for an HPC job."""
+    try:
+        output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    request_limit = (
+        output_limit if output_limit is not None else DEFAULT_COLLECTION_LIMIT
+    )
+    resolution_limit = (
+        limit if limit is not None else _DEFAULT_INSTANCE_SCAN_LIMIT
+    )
+
     name = _reject_hpc_name_at_boundary(ctx, name)
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        job_id = _resolve_hpc_name_in_workspace(
+        rows, total = _run_readonly_hpc_operation(
             ctx,
             config=config,
             session=session,
             name=name,
             workspace=workspace,
-            limit=limit,
+            limit=resolution_limit,
+            operation=lambda job_id, live_session: _fetch_hpc_instances(
+                job_id,
+                limit=request_limit,
+                session=live_session,
+                show_all=show_all,
+            ),
         )
-        rows, total = browser_api_module.list_hpc_job_instances(
-            job_id,
-            limit=limit,
-            session=session,
-        )
+        page = bound_collection(rows, limit=output_limit, total=total)
 
         if ctx.json_output:
-            click.echo(
-                json_formatter.format_json(
-                    {"instances": _public_output(rows), "total": total}
-                )
-            )
+            payload: dict[str, Any] = {
+                "instances": _public_output(page.items),
+                "total": page.total,
+            }
+            if page.truncated:
+                payload.update(page.metadata())
+                payload["limit"] = output_limit
+            click.echo(json_formatter.format_json(payload))
             return
 
-        click.echo(_format_hpc_instances(rows))
+        click.echo(_format_hpc_instances(page.items))
+        notice = truncation_notice(page)
+        if notice:
+            click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

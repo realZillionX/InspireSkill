@@ -10,6 +10,7 @@ a clean v3.x layout without scattered ``if old_format`` guards.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -24,6 +25,7 @@ from inspire.platform.web.session.browser_launch import (
 )
 
 NORMALIZATION_SENTINEL = ".environment-normalized-v3"
+logger = logging.getLogger(__name__)
 
 _LEGACY_FILES_UNDER_INSPIRE_HOME = (
     ("bridges.json", "Pre-v3 SSH tunnel cache"),
@@ -68,10 +70,10 @@ def normalize_environment(
     playwright check run every time (cheap; users may flip these between
     invocations).
 
-    ``interactive=True`` permits printing reminders to stderr; pair with
-    ``auto_install_playwright=True`` from `inspire account add` to offer
-    automatic browser runtime setup when Chromium is missing. Other entry
-    points should call with both False.
+    ``interactive=True`` permits automatic browser runtime setup when paired
+    with ``auto_install_playwright=True``. Detailed observations are returned
+    to callers and written to the local debug log; any concise actionable
+    notice goes through the shared sanitized CLI emitter.
     """
     report = NormalizationReport()
 
@@ -138,14 +140,22 @@ def normalize_environment(
         if report.playwright_install_succeeded:
             report.playwright_ready = _playwright_chromium_available()
 
-    # Quarantining is destructive (rename), so we announce it even when not
-    # interactive — scripted callers still need to know which files moved.
-    # The remaining observations (stale env, missing playwright) only print
-    # under interactive mode where the user can act on them.
-    if report.quarantined:
-        _print_quarantine_notice(report)
-    if interactive and (report.stale_env_vars or not report.playwright_ready):
-        _print_remaining_observations(report)
+    _log_normalization_report(report)
+    if interactive and not report.playwright_ready:
+        from inspire.cli.context import Context
+        from inspire.cli.utils.output import emit_error
+
+        emit_error(
+            Context(),
+            error_type="EnvironmentNotice",
+            message="Playwright Chromium is not ready.",
+            exit_code=0,
+            human_lines=[
+                "Playwright Chromium is not ready. "
+                f"Run `{playwright_install_hint(include_system_deps=False)}` "
+                "before browser login."
+            ],
+        )
 
     return report
 
@@ -158,42 +168,26 @@ def _quarantine_if_present(path: Path, report: NormalizationReport) -> None:
     report.quarantined.append((path, target))
 
 
-def _print_quarantine_notice(report: NormalizationReport) -> None:
+def _log_normalization_report(report: NormalizationReport) -> None:
     for orig, new in report.quarantined:
-        print(
-            f"  Quarantined legacy file: {orig} → {new.name}",
-            file=sys.stderr,
-        )
-
-
-def _print_remaining_observations(report: NormalizationReport) -> None:
+        logger.debug("Quarantined legacy path: %s -> %s", orig, new)
     for env in report.stale_env_vars:
-        print(
-            f"  Stale env var '{env}' is set but ignored by v3.x. "
-            f"Run `unset {env}` (or remove from your shell rc) to silence this.",
-            file=sys.stderr,
-        )
+        logger.debug("Ignored stale environment variable: %s", env)
     if not report.playwright_ready:
         if report.playwright_install_attempted and not report.playwright_install_succeeded:
-            print(
-                "  Playwright chromium setup failed. SSO login will fail until the "
-                "standard CLI environment is repaired:\n"
-                f"    {playwright_install_hint(include_system_deps=False)}",
-                file=sys.stderr,
+            logger.debug(
+                "Playwright Chromium setup failed; repair command: %s",
+                playwright_install_hint(include_system_deps=False),
             )
         elif report.playwright_install_attempted and report.playwright_install_succeeded:
-            print(
-                "  Playwright chromium is installed but cannot start in this environment. "
-                "Repair the standard CLI environment, then retry:\n"
-                f"    {playwright_install_hint()}",
-                file=sys.stderr,
+            logger.debug(
+                "Playwright Chromium installed but launch probe failed; repair command: %s",
+                playwright_install_hint(),
             )
         else:
-            print(
-                "  Playwright chromium not detected. SSO login will need it. "
-                "Prepare the standard CLI environment with:\n"
-                f"    {playwright_install_hint(include_system_deps=False)}",
-                file=sys.stderr,
+            logger.debug(
+                "Playwright Chromium not detected; setup command: %s",
+                playwright_install_hint(include_system_deps=False),
             )
 
 
@@ -243,9 +237,30 @@ def _install_playwright_chromium(
 
     for cmd in candidates:
         try:
-            subprocess.run(cmd, check=True, timeout=timeout_s)
+            subprocess.run(
+                cmd,
+                check=True,
+                timeout=timeout_s,
+                capture_output=True,
+                text=True,
+            )
             return True
-        except (subprocess.SubprocessError, OSError):
+        except subprocess.CalledProcessError as err:
+            logger.debug(
+                "Playwright install failed: command=%r stdout=%r stderr=%r",
+                cmd,
+                err.stdout,
+                err.stderr,
+            )
+        except subprocess.TimeoutExpired as err:
+            logger.debug(
+                "Playwright install timed out: command=%r stdout=%r stderr=%r",
+                cmd,
+                err.stdout,
+                err.stderr,
+            )
+        except OSError as err:
+            logger.debug("Playwright install could not start: command=%r error=%s", cmd, err)
             continue
     return False
 

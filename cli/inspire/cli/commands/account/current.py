@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-import sys
-
 import click
 
 from inspire.accounts import current_account
+from inspire.cli.context import Context, EXIT_GENERAL_ERROR, pass_context
+from inspire.cli.formatters import json_formatter
+from inspire.cli.utils.errors import exit_with_error
+from inspire.cli.utils.output import emit_success
 
 
 @click.command("current")
-def current() -> None:
+@pass_context
+def current(ctx: Context) -> None:
     """Print the active account name (exits 1 if none is set).
 
     stdout stays scriptable: ``active=$(inspire account current)`` works.
@@ -18,9 +21,15 @@ def current() -> None:
     """
     name = current_account()
     if not name:
-        click.echo(
-            "No active account. Use 'inspire account use <name>' to set one.",
-            err=True,
+        exit_with_error(
+            ctx,
+            "AccountError",
+            "No active account.",
+            EXIT_GENERAL_ERROR,
+            hint="Use 'inspire account use <name>' to set one.",
         )
-        sys.exit(1)
-    click.echo(name)
+    emit_success(
+        ctx,
+        payload={"name": name},
+        text=json_formatter.sanitize_text(name, redact_paths=True),
+    )

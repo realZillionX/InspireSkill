@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import io
+import logging
+from contextlib import redirect_stderr, redirect_stdout
+
 import click
 
 from inspire.accounts import (
@@ -13,9 +17,14 @@ from inspire.accounts import (
     set_current_account,
     validate_name,
 )
+from inspire.cli.context import Context, EXIT_VALIDATION_ERROR, pass_context
+from inspire.cli.formatters import json_formatter
+from inspire.cli.utils.errors import exit_with_error
+from inspire.cli.utils.output import emit_success
 
 DEFAULT_BASE_URL = "https://qz.sii.edu.cn"
 EXAMPLE_PROXY = "http://127.0.0.1:7897"
+logger = logging.getLogger(__name__)
 
 
 @click.command("add")
@@ -52,7 +61,9 @@ EXAMPLE_PROXY = "http://127.0.0.1:7897"
     is_flag=True,
     help="Skip all prompts. Missing fields fall back to defaults; missing --password aborts.",
 )
+@pass_context
 def add(
+    ctx: Context,
     name: str,
     username: str | None,
     password: str | None,
@@ -80,14 +91,21 @@ def add(
           --username user-abc123 --password "$INSPIRE_PW" \\
           --proxy http://127.0.0.1:7897 --use --non-interactive
     """
+    non_interactive = non_interactive or ctx.json_output
+
     try:
         validated = validate_name(name)
     except AccountError as err:
-        raise click.ClickException(str(err)) from err
+        exit_with_error(ctx, "AccountError", str(err), EXIT_VALIDATION_ERROR)
 
     ensure_inspire_home()
     if account_dir(validated).exists():
-        raise click.ClickException(f"Account already exists: {validated}")
+        exit_with_error(
+            ctx,
+            "AccountError",
+            f"Account already exists: {validated}",
+            EXIT_VALIDATION_ERROR,
+        )
 
     # ---- username -------------------------------------------------------
     if username is None:
@@ -101,13 +119,21 @@ def add(
             )
     resolved_username = username.strip()
     if not resolved_username:
-        raise click.ClickException("Username cannot be empty.")
+        exit_with_error(
+            ctx,
+            "AccountError",
+            "Username cannot be empty.",
+            EXIT_VALIDATION_ERROR,
+        )
 
     # ---- password -------------------------------------------------------
     if password is None:
         if non_interactive:
-            raise click.ClickException(
-                "--password is required in non-interactive mode."
+            exit_with_error(
+                ctx,
+                "AccountError",
+                "--password is required in non-interactive mode.",
+                EXIT_VALIDATION_ERROR,
             )
         password = click.prompt(
             "Platform password",
@@ -149,11 +175,9 @@ def add(
     )
 
     try:
-        target = create_account(validated, content)
+        create_account(validated, content)
     except AccountError as err:
-        raise click.ClickException(str(err)) from err
-
-    click.echo(f"Created account: {target}")
+        exit_with_error(ctx, "AccountError", str(err), EXIT_VALIDATION_ERROR)
 
     # ---- active-account decision ---------------------------------------
     existing_active = current_account()
@@ -170,9 +194,6 @@ def add(
 
     if make_active:
         set_current_account(validated)
-        click.echo(f"Active account: {validated}")
-    elif existing_active:
-        click.echo(f"Active account unchanged: {existing_active}")
 
     # Normalize the wider environment once — quarantine pre-v3 unscoped files,
     # warn on stale env vars dropped by v3.x, ensure playwright is ready for
@@ -181,9 +202,28 @@ def add(
     # invocations are silent when the environment is already clean.
     from inspire.accounts import normalize_environment
 
-    normalize_environment(
-        interactive=not non_interactive,
-        auto_install_playwright=not non_interactive,
+    normalization_stdout = io.StringIO()
+    normalization_stderr = io.StringIO()
+    with redirect_stdout(normalization_stdout), redirect_stderr(normalization_stderr):
+        report = normalize_environment(
+            interactive=not non_interactive,
+            auto_install_playwright=not non_interactive,
+        )
+    if captured := normalization_stdout.getvalue().strip():
+        logger.debug("Suppressed normalization stdout: %s", captured)
+    if captured := normalization_stderr.getvalue().strip():
+        logger.debug("Suppressed normalization stderr: %s", captured)
+    logger.debug("Account environment normalization result: %r", report)
+
+    is_active = current_account() == validated
+    suffix = " (active)" if is_active else ""
+    emit_success(
+        ctx,
+        payload={"name": validated, "active": is_active},
+        text=json_formatter.sanitize_text(
+            f"Account added: {validated}{suffix}",
+            redact_paths=True,
+        ),
     )
 
 

@@ -14,7 +14,11 @@ import click
 
 from inspire.cli.context import Context, EXIT_API_ERROR, pass_context
 from inspire.cli.formatters import json_formatter
-from inspire.cli.utils.events import filter_events, run_events_command
+from inspire.cli.utils.events import (
+    DEFAULT_EVENT_TAIL,
+    filter_events,
+    run_events_command,
+)
 from inspire.platform.web.browser_api.notebooks import list_notebook_events
 
 from .public_output import public_events
@@ -31,7 +35,7 @@ from .public_output import public_events
 @click.option(
     "--tail",
     type=click.IntRange(1),
-    help="Show only the last N events (applied after --keyword).",
+    help=f"Show the latest {DEFAULT_EVENT_TAIL} events by default; use --tail N to change the limit.",
 )
 @click.option("--follow", "-f", is_flag=True, help="Follow the event timeline and print new events.")
 @click.option(
@@ -78,17 +82,25 @@ def events(
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
         return
-    notebook_id, _ = _nb._resolve_notebook_id(
-        ctx,
-        session=session,
-        config=config,
-        base_url=get_base_url(),
-        identifier=name,
-        json_output=getattr(ctx, "json_output", False),
-        workspace_ids=workspace_ids,
-    )
+    base_url = get_base_url()
+
     def fetch_raw() -> list[dict]:
-        return list_notebook_events(notebook_id, session=session)
+        raw_events, _notebook_id, _workspace_id = (
+            _nb._run_notebook_operation_with_stale_handle_retry(
+                ctx,
+                session=session,
+                config=config,
+                base_url=base_url,
+                identifier=name,
+                json_output=getattr(ctx, "json_output", False),
+                workspace_ids=workspace_ids,
+                operation=lambda notebook_id: list_notebook_events(
+                    notebook_id,
+                    session=session,
+                ),
+            )
+        )
+        return raw_events
 
     if ctx.json_output:
         if follow:
@@ -116,7 +128,7 @@ def events(
 
     run_events_command(
         ctx,
-        resource_id=notebook_id,
+        resource_id="",
         resource_type="notebook",
         resource_name=name,
         fetch=lambda: public_events(fetch_raw()),

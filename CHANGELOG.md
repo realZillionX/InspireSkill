@@ -6,6 +6,17 @@
 
 ## 更新内容
 
+### 新增
+
+- 新增按启智账号、平台地址、登录主体、资源类型和 Workspace 隔离的本地 Name 解析索引；缓存使用 SQLite/WAL、短 TTL、单飞刷新 Lease、定时后台刷新、Create 写穿和 Delete Tombstone，并支持 `inspire cache status|refresh|clear` 手动管理。
+- Name 缓存覆盖 Workspace、Project、Compute Group、Image、Model、Job、HPC、Ray、Serving、Notebook 和 SSH Key；普通资源列表与状态查询仍以 Live 平台为事实源。
+
+### 变更
+
+- CLI 资源边界统一为 Name-only：公开参数、Help、人类输出、JSON 输出、错误和 Hint 不再接受或展示平台 ID、UUID 或内部 Handle；同名歧义通过可读属性和 `--pick` 处理。
+- 默认人类输出和 JSON 输出删除低价值的请求元数据、调试字段、绝对内部路径、原始响应包装与重复日志；需要工程诊断的信息改为显式 `--details`、`--debug` 或用户主动请求的日志/路径输出。
+- 发现类列表默认最多展示 20 项，Batch 默认最多展示 20 个结果，Job 日志默认限制为 100 行 / 条目和 16,000 个字符；`--limit` / `--all`、`--result-limit` / `--all-results` 可显式调整上下文开销，截断时只保留最小计数元数据。
+
 ### 文档
 
 - `SKILL.md` 补齐 Inspire、启智平台、`qz.sii.edu.cn`、主要 Workload 和 Browser API 维护触发词，并收敛为核心操作模型、网络与合规闸门、最短执行闭环和精确 Reference 路由；正文使用自然段落，不再插入与语义无关的硬换行，Codex 安装元数据同步更新。
@@ -15,6 +26,8 @@
 
 ### 修复
 
+- 删除后同名重建、Compute Group 变更或缓存命中旧 Handle 时，CLI 会 Tombstone 旧映射、按 Name Live 重解析并仅重试一次明确的 Not Found 操作。
+- 缓存刷新使用 generation 与 scope revision 防止旧 Live 快照覆盖 Create/Delete 写穿；`cache clear`、Workspace orphan 清理和并发刷新不会重新填充或删除更新后的映射，缓存损坏与刷新失败会保留最后成功快照并降级到 Live API。
 - 登录失败诊断现在只读取 CAS 明确、可见且非惰性容器中的错误文本；隐藏控件、脚本内容和普通“验证码登录”文案不会再被误报为失败原因。
 - 损坏或结构不完整的 Web Session 缓存现在会被视为缓存未命中并触发重新登录；缓存校验覆盖时间戳、Cookie、Origin、Workspace 能力和兼容字段，且不会吞掉真正的反序列化错误。
 - 任务优先级现在按实时 Workspace 调度能力统一解析：公平调度空间默认 HIGH（4）且仅接受 LOW（1）/ HIGH（4），标准空间继续使用 1–10 且默认 10。

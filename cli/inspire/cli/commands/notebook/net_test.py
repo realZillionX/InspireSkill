@@ -13,14 +13,12 @@ from inspire.cli.utils.notebook_cli import (
 )
 from inspire.platform.web import browser_api as browser_api_module
 
-from .notebook_lookup import _resolve_notebook_id
-
-
 def _resolve_notebook_for_net_test(
     ctx: Context,
     *,
     notebook: str,
     workspace: str,
+    timeout: int,
 ):
     from inspire.config.workspaces import resolve_workspace_query_scope
 
@@ -31,16 +29,25 @@ def _resolve_notebook_for_net_test(
         workspace=workspace,
         session=session,
     )
-    notebook_id, _workspace_id = _resolve_notebook_id(
-        ctx,
-        session=session,
-        config=config,
-        base_url=get_base_url(),
-        identifier=notebook,
-        json_output=ctx.json_output,
-        workspace_ids=workspace_ids,
+    from .notebook_lookup import _run_notebook_operation_with_stale_handle_retry
+
+    result, _notebook_id, _workspace_id = (
+        _run_notebook_operation_with_stale_handle_retry(
+            ctx,
+            session=session,
+            config=config,
+            base_url=get_base_url(),
+            identifier=notebook,
+            json_output=ctx.json_output,
+            workspace_ids=workspace_ids,
+            operation=lambda notebook_id: browser_api_module.probe_notebook_network(
+                notebook_id=notebook_id,
+                session=session,
+                timeout=timeout,
+            ),
+        )
     )
-    return session, notebook_id, notebook
+    return result, notebook
 
 
 def _yes_no_unknown(value: bool | None) -> str:
@@ -59,14 +66,10 @@ def _yes_no_unknown(value: bool | None) -> str:
 def notebook_net_test(ctx: Context, notebook: str, workspace: str, timeout: int) -> None:
     """Probe notebook egress through JupyterTerminal, without SSH or rtunnel."""
     try:
-        session, notebook_id, notebook_name = _resolve_notebook_for_net_test(
+        result, notebook_name = _resolve_notebook_for_net_test(
             ctx,
             notebook=notebook,
             workspace=workspace,
-        )
-        result = browser_api_module.probe_notebook_network(
-            notebook_id=notebook_id,
-            session=session,
             timeout=timeout,
         )
     except Exception as exc:

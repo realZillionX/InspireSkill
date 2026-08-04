@@ -18,6 +18,7 @@ import click
 from inspire.cli.context import Context, EXIT_API_ERROR, EXIT_CONFIG_ERROR, EXIT_TIMEOUT
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
     get_base_url,
@@ -646,6 +647,12 @@ def run_notebook_ssh(
         save_tunnel_config,
     )
 
+    notebook_id = reject_id_at_boundary(
+        ctx,
+        notebook_id,
+        resource_type="notebook",
+        list_command="inspire notebook list",
+    )
     explicit_tunnel_account = (
         str(account or "").strip()
         if str(account or "").strip() and str(account or "").strip().lower() != "all"

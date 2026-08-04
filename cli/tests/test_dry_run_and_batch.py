@@ -182,6 +182,30 @@ def _patch_submit_deps(
     return api
 
 
+def _write_job_batch(path: Path, *, count: int) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "defaults": {
+                    "type": "job",
+                    "profile": "h200",
+                    "priority": 7,
+                    "framework": "pytorch",
+                    "nodes": 1,
+                },
+                "matrix": {"case": list(range(count))},
+                "jobs": [
+                    {
+                        "name": "train-{case}",
+                        "command": "python train.py --case {case}",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_job_create_dry_run_resolves_plan_without_create_api(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -644,8 +668,100 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert items[0]["priority"] == 7
     assert items[0]["notifications"] is True
     assert items[0]["matrix"] == {"seed": 1}
+    assert set(payload["data"]) == {"dry_run", "items"}
     _assert_public_batch_output(payload["data"])
     assert api.training_calls == []
+
+
+@pytest.mark.parametrize(
+    ("output_args", "expected_shown", "expected_metadata"),
+    (
+        (
+            (),
+            20,
+            {"shown": 20, "total": 25, "truncated": True},
+        ),
+        (
+            ("--all-results",),
+            25,
+            {},
+        ),
+        (
+            ("--result-limit", "7"),
+            7,
+            {"shown": 7, "total": 25, "truncated": True},
+        ),
+    ),
+)
+def test_job_batch_result_output_budget_does_not_limit_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    output_args: tuple[str, ...],
+    expected_shown: int,
+    expected_metadata: dict[str, int | bool],
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    batch_path = tmp_path / "budget.json"
+    _write_job_batch(batch_path, count=25)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "job", "batch", str(batch_path), *output_args],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(api.training_calls) == 25
+    payload = json.loads(result.output)["data"]
+    assert payload["dry_run"] is False
+    assert [item["name"] for item in payload["items"]] == [
+        f"train-{index}" for index in range(expected_shown)
+    ]
+    assert set(payload) == {"dry_run", "items", *expected_metadata}
+    for key, value in expected_metadata.items():
+        assert payload[key] == value
+    _assert_public_batch_output(payload)
+
+
+def test_job_batch_rejects_result_limit_with_all_results_before_loading_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    batch_path = tmp_path / "conflict.json"
+    batch_path.write_text("{}", encoding="utf-8")
+    batch_module = importlib.import_module("inspire.cli.commands.batch")
+
+    def fail_before_api(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("conflicting output options must fail before batch/API work")
+
+    monkeypatch.setattr(batch_module, "_load_config", fail_before_api)
+    monkeypatch.setattr(batch_module, "get_web_session", fail_before_api)
+    monkeypatch.setattr(
+        batch_module.browser_api_module,
+        "create_training_job",
+        fail_before_api,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "batch",
+            str(batch_path),
+            "--all-results",
+            "--result-limit",
+            "3",
+        ],
+    )
+
+    assert result.exit_code != 0
+    payload = json.loads(result.output)
+    assert payload["success"] is False
+    assert payload["error"]["type"] == "ValidationError"
+    assert (
+        payload["error"]["message"]
+        == "Use either --result-limit or --all-results, not both."
+    )
 
 
 def test_batch_notification_item_overrides_config_default(

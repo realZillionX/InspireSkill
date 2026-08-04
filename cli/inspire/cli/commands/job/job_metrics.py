@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Optional
 
 from inspire.cli.context import Context
-from inspire.cli.utils.metrics_shared import build_metrics_command
+from inspire.cli.utils.metrics_shared import ResolvedMetricsTarget, build_metrics_command
 from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url, _request_json
 from inspire.platform.web.session import WebSession
 
@@ -36,18 +36,23 @@ def _resolve_job_lcg(task_id: str, session: WebSession) -> Optional[str]:
     return None
 
 
-def _job_name_to_id(ctx: Context, name: str) -> str:
+def _job_name_to_id(ctx: Context, name: str) -> ResolvedMetricsTarget:
     from inspire.cli.commands.job import job_commands as _job
     from inspire.config import Config
+    from inspire.platform.web.session import get_web_session
 
     config, _ = Config.from_files_and_env(require_credentials=False)
-    return _job._resolve_web_job_id(
+    task_id, lcg = _job._run_readonly_web_job_operation(
         config=config,
         job=name,
         workspace=str(getattr(ctx, "workspace", "") or ""),
-        all_workspaces=False,
-        max_pages=50,
+        session_factory=get_web_session,
+        operation=lambda resolved_id, session: (
+            resolved_id,
+            _resolve_job_lcg(resolved_id, session),
+        ),
     )
+    return ResolvedMetricsTarget(task_id=task_id, logic_compute_group_id=lcg)
 
 
 job_metrics = build_metrics_command(

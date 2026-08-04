@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 
 import click
@@ -14,6 +15,8 @@ from inspire.config import (
 from inspire.config.toml import _project_config_write_path
 
 from .env_detect import _generate_toml_content
+
+logger = logging.getLogger(__name__)
 
 
 def _atomic_write_text(target: Path, content: str) -> None:
@@ -157,14 +160,22 @@ denylist = ["*.tmp", ".git/*"]
 """
 
 
-def _init_template_mode(global_flag: bool, project_flag: bool, force: bool) -> None:
+def _init_template_mode(
+    global_flag: bool,
+    project_flag: bool,
+    force: bool,
+    *,
+    verbose: bool = False,
+) -> None:
     """Initialize config using template with placeholders (template mode)."""
     global_path = _require_writable_global_path()
     is_global = False
+    label = "Project configuration"
     if global_flag:
         config_path = global_path
         location_comment = f"{global_path} (account)"
         is_global = True
+        label = "Account configuration"
     elif project_flag:
         config_path = _project_config_write_path()
         location_comment = f"{config_path} (project/account)"
@@ -180,12 +191,17 @@ def _init_template_mode(global_flag: bool, project_flag: bool, force: bool) -> N
             config_path = global_path
             location_comment = f"{global_path} (account)"
             is_global = True
+            label = "Account configuration"
         else:
             config_path = _project_config_write_path()
             location_comment = f"{config_path} (project/account)"
 
     if config_path.exists() and not force:
-        click.echo(click.style(f"Config file already exists: {config_path}", fg="yellow"))
+        label = "Account configuration" if is_global else "Project configuration"
+        message = f"{label} already exists."
+        if verbose:
+            logger.debug("Existing %s configuration path: %s", label.lower(), config_path)
+        click.echo(click.style(message, fg="yellow"))
         if not click.confirm("\nOverwrite existing config?"):
             click.echo("Aborted.")
             return
@@ -194,7 +210,8 @@ def _init_template_mode(global_flag: bool, project_flag: bool, force: bool) -> N
     content = template.format(location_comment=location_comment)
     _atomic_write_text(config_path, content)
 
-    click.echo(click.style(f"Created {config_path}", fg="green"))
+    if verbose:
+        logger.debug("Created %s configuration at %s", label.lower(), config_path)
 
 
 def _write_single_file(
@@ -202,11 +219,14 @@ def _write_single_file(
     output_path: Path,
     force: bool,
     dest_name: str,
+    *,
+    verbose: bool = False,
 ) -> None:
-    _ = dest_name
-
     if output_path.exists() and not force:
-        click.echo(click.style(f"Config file already exists: {output_path}", fg="yellow"))
+        message = f"{dest_name.capitalize()} configuration already exists."
+        if verbose:
+            logger.debug("Existing %s configuration path: %s", dest_name, output_path)
+        click.echo(click.style(message, fg="yellow"))
         if not click.confirm("\nOverwrite existing config?"):
             click.echo("Aborted.")
             return
@@ -214,7 +234,8 @@ def _write_single_file(
     toml_content = _generate_toml_content(detected)
 
     _atomic_write_text(output_path, toml_content)
-    click.echo(click.style(f"Created {output_path}", fg="green"))
+    if verbose:
+        logger.debug("Created %s configuration at %s", dest_name, output_path)
 
 
 def _write_auto_split(
@@ -225,6 +246,8 @@ def _write_auto_split(
     project_path: Path,
     force: bool,
     secrets: list[ConfigOption],
+    *,
+    verbose: bool = False,
 ) -> None:
     _ = secrets
 
@@ -232,7 +255,10 @@ def _write_auto_split(
 
     if global_opts:
         if global_path.exists() and not force:
-            click.echo(f"Global config already exists: {global_path}")
+            message = "Account configuration already exists."
+            if verbose:
+                logger.debug("Existing account configuration path: %s", global_path)
+            click.echo(message)
             if click.confirm("Overwrite?", default=False):
                 files_to_write.append(("global", global_path))
             else:
@@ -243,7 +269,10 @@ def _write_auto_split(
 
     if project_opts:
         if project_path.exists() and not force:
-            click.echo(f"Project config already exists: {project_path}")
+            message = "Project configuration already exists."
+            if verbose:
+                logger.debug("Existing project configuration path: %s", project_path)
+            click.echo(message)
             if click.confirm("Overwrite?", default=False):
                 files_to_write.append(("project", project_path))
             else:
@@ -253,14 +282,15 @@ def _write_auto_split(
             files_to_write.append(("project", project_path))
 
     if not files_to_write:
-        click.echo("No files written.")
+        if verbose:
+            logger.debug("No configuration files were written.")
         return
 
     for scope, path in files_to_write:
         content = _generate_toml_content(detected, scope_filter=scope)
         _atomic_write_text(path, content)
-        color = "cyan" if scope == "global" else "green"
-        click.echo(click.style(f"Created {path}", fg=color))
+        if verbose:
+            logger.debug("Created %s configuration at %s", scope, path)
 
 
 
@@ -269,6 +299,8 @@ def _init_smart_mode(
     global_flag: bool,
     project_flag: bool,
     force: bool,
+    *,
+    verbose: bool = False,
 ) -> None:
     """Initialize config using detected env vars (smart mode)."""
     secrets = [opt for opt, _ in detected if opt.secret]
@@ -278,21 +310,36 @@ def _init_smart_mode(
     summary = f"Detected {len(detected)} configuration value(s)"
     if secrets:
         summary += f"; {len(secrets)} secret(s) excluded"
-    click.echo(summary + ".")
+    if verbose:
+        logger.debug("%s.", summary)
 
     global_path = _require_writable_global_path()
     project_path = _project_config_write_path()
 
     if global_flag:
         if not global_opts:
-            click.echo("No global-scope environment variables detected. No files written.")
+            if verbose:
+                logger.debug("No account-scope environment variables detected.")
             return
-        _write_single_file(global_opts, global_path, force, "global")
+        _write_single_file(
+            global_opts,
+            global_path,
+            force,
+            "account",
+            verbose=verbose,
+        )
     elif project_flag:
         if not project_opts:
-            click.echo("No project-scope environment variables detected. No files written.")
+            if verbose:
+                logger.debug("No project-scope environment variables detected.")
             return
-        _write_single_file(project_opts, project_path, force, "project")
+        _write_single_file(
+            project_opts,
+            project_path,
+            force,
+            "project",
+            verbose=verbose,
+        )
     else:
         _write_auto_split(
             detected,
@@ -302,4 +349,5 @@ def _init_smart_mode(
             project_path,
             force,
             secrets,
+            verbose=verbose,
         )

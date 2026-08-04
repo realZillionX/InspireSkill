@@ -1,4 +1,4 @@
-"""JSON reporting helpers for `inspire init` command."""
+"""Compact result reporting helpers for `inspire init`."""
 
 from __future__ import annotations
 
@@ -39,33 +39,29 @@ def resolve_write_state(
     return written, skipped
 
 
-def emit_init_json(
+def emit_init_result(
     *,
-    mode: str,
+    scope: str,
     target_paths: list[Path],
     before: dict[str, dict[str, int | bool]],
-    detected: list[tuple],
     warnings: list[str],
     effective_json: bool,
-    discover: dict[str, object] | None = None,
 ) -> None:
-    """Emit a compact machine-readable init result."""
-    if not effective_json:
-        return
-
-    files_written: list[str] = []
+    """Emit one compact init result without exposing local file-system paths."""
+    files_written = 0
     for path in target_paths:
         written, _ = resolve_write_state(before, path)
         if written:
-            files_written.append(str(path))
+            files_written += 1
 
     payload: dict[str, object] = {
-        "mode": mode,
         "status": "updated" if files_written else "unchanged",
-        "configs": files_written,
+        "scope": scope,
     }
     if warnings:
         payload["warnings"] = warnings
 
-    del detected, discover
-    click.echo(json_formatter.format_json(payload))
+    if effective_json:
+        click.echo(json_formatter.format_json(payload))
+        return
+    click.echo(f"Configuration {payload['status']} (scope: {scope}).")

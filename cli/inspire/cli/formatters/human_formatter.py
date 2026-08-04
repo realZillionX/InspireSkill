@@ -5,9 +5,10 @@ Provides compact plain-text output for terminal and agent use.
 
 from __future__ import annotations
 
-import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+import click
 
 from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.raw_ids import scrub_raw_ids
@@ -59,7 +60,7 @@ def format_warning(message: str) -> str:
 
 def print_error(message: str, hint: Optional[str] = None) -> None:
     """Print an error message to stderr."""
-    print(format_error(message, hint), file=sys.stderr)
+    click.echo(format_error(message, hint), err=True)
 
 
 def _column_width(header: str, values: list[str], *, max_width: int | None = None) -> int:

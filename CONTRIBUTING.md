@@ -36,15 +36,17 @@ uv run pre-commit run --config ../.pre-commit-config.yaml --all-files
 
 命令表面以 CLI help 为准。新增、删除或修改命令时，`inspire --help`、`inspire <command-group> --help` 和 `inspire <command-group> <subcommand> --help` 必须反映真实 Agent 入口；日常文档不要重新维护完整命令表。
 
-平台事实以 live 查询为准。`list`、`status`、`events`、`metrics`、资源规格、资源可用量、项目和账号视图不能依赖本地缓存、旧截图、旧文档或历史推测。缓存只用于 Web session / auth、连接复用、日志传输等性能场景，不能作为 Agent 可见事实来源。
+平台事实以 live 查询为准。`list`、`status`、`events`、`metrics`、资源规格、资源可用量、项目和账号视图不能依赖本地缓存、旧截图、旧文档或历史推测。缓存只用于 Web session / auth、Name 解析、连接复用、日志传输等性能场景，不能作为 Agent 可见事实来源。
 
 Browser API 文档只收录已经闭合的合同。没有验证请求体、响应形状、Referer、权限边界和 destructive 语义的端点，留在抓包输出或任务记录里，不写进正式 reference。
 
 ## Agent 合同
 
-普通 CLI 输入输出坚持 Name-only。Agent 应该使用名称、alias、可读状态和短表格理解对象；平台 handle 只能停留在 resolver、API payload、debug 日志和专门的 `id` 查询命令里。
+普通 CLI 输入输出坚持 Name-only。Agent 应该使用名称、alias、可读状态和短表格理解对象；平台 handle 只能停留在 resolver、API payload 和 debug 日志里，不能成为任何 CLI 命令的输入或输出。
 
 默认文本输出面向 Agent，要求短、清楚、能操作。脚本接口使用 `--json`，但 `--json` 也不应默认泄露低价值平台 handle。错误、hint 和歧义列表不要把 raw ID 当作解决方案暴露给 Agent。
+
+集合和日志输出必须有显式预算。发现类集合默认最多 20 项，Job 日志默认最多 100 行 / 条目和 16,000 个字符，Batch 结果默认最多展示 20 项；提供 `--limit` / `--all` 或 `--result-limit` / `--all-results` 作为明确的上下文开销选择。截断元数据只保留 `shown`、`total`、`truncated` 等能帮助 Agent 决策的字段。
 
 中文输出和文档要照顾宽度、标点和中英混排。表格需要中文宽度 aware；中文与 English / 数字 / 命令名相邻时保留半角空格；中文标点使用全角。
 

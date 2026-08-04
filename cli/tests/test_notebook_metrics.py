@@ -28,6 +28,7 @@ notebook_cli_module = importlib.import_module("inspire.cli.utils.notebook_cli")
 notebook_lookup_module = importlib.import_module(
     "inspire.cli.commands.notebook.notebook_lookup"
 )
+workspace_module = importlib.import_module("inspire.config.workspaces")
 
 _NOTEBOOK_NAME = "demo-notebook"
 _NOTEBOOK_ID = "nb-xyz"
@@ -112,7 +113,53 @@ def _sample_groups() -> list[MetricGroup]:
     ]
 
 
-def test_metrics_json_output_is_compact_name_only_series_and_skips_plot(
+def test_notebook_metrics_name_resolution_validates_cached_handle_with_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _FakeSession()
+    ctx = SimpleNamespace(workspace="Fake Workspace", json_output=False)
+    seen: dict[str, object] = {}
+    detail_calls: list[str] = []
+
+    monkeypatch.setattr(
+        notebook_cli_module,
+        "require_web_session",
+        lambda *_args, **_kwargs: session,
+    )
+    monkeypatch.setattr(notebook_cli_module, "load_config", lambda _ctx: SimpleNamespace())
+    monkeypatch.setattr(notebook_cli_module, "get_base_url", lambda: "https://example.test")
+    monkeypatch.setattr(
+        workspace_module,
+        "resolve_workspace_query_scope",
+        lambda *_args, **_kwargs: (["ws-live"], "ws-live"),
+    )
+
+    def fake_retry(*_args, operation, **kwargs):  # noqa: ANN001
+        seen.update(kwargs)
+        return operation("notebook-live"), "notebook-live", "ws-live"
+
+    monkeypatch.setattr(
+        notebook_lookup_module,
+        "_run_notebook_operation_with_stale_handle_retry",
+        fake_retry,
+    )
+    monkeypatch.setattr(
+        notebook_metrics_module.browser_api_module,
+        "get_notebook_detail",
+        lambda *, notebook_id, session: detail_calls.append(notebook_id)
+        or {"name": _NOTEBOOK_NAME},
+    )
+
+    target = notebook_metrics_module._notebook_name_to_id(ctx, _NOTEBOOK_NAME)
+
+    assert target.task_id == "notebook-live"
+    assert target.logic_compute_group_id is None
+    assert seen["identifier"] == _NOTEBOOK_NAME
+    assert seen["workspace_ids"] == ["ws-live"]
+    assert detail_calls == ["notebook-live"]
+
+
+def test_metrics_json_output_is_compact_name_only_summary_and_skips_plot(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     capture: dict = {}
@@ -165,17 +212,22 @@ def test_metrics_json_output_is_compact_name_only_series_and_skips_plot(
     assert payload["series"][0] == {
         "unit": "pod-1",
         "metric": "gpu_usage_rate",
-        "samples": [
-            {"timestamp": 100, "value": 0.1},
-            {"timestamp": 160, "value": 0.8},
-            {"timestamp": 220, "value": 0.5},
-        ],
+        "count": 3,
+        "min": 0.1,
+        "max": 0.8,
+        "avg": pytest.approx((0.1 + 0.8 + 0.5) / 3),
+        "last": 0.5,
     }
     assert payload["series"][1] == {
         "unit": "pod-1",
         "metric": "cpu_usage_rate",
-        "samples": [{"timestamp": 100, "value": 0.02}],
+        "count": 1,
+        "min": 0.02,
+        "max": 0.02,
+        "avg": 0.02,
+        "last": 0.02,
     }
+    assert all("samples" not in series for series in payload["series"])
 
     assert capture["task_type"] == "interactive_modeling"
     assert capture["logic_compute_group_id"] == "lcg-abc"
@@ -208,7 +260,8 @@ def test_metrics_default_output_writes_png_and_prints_path(
     # entry points that share the same base dir.
     expected = tmp_path / "notebook-demo-notebook-1000000.png"
     assert out_path == expected
-    assert f"Chart: {expected}" in result.output
+    assert "Chart saved." in result.output
+    assert str(expected) not in result.output
     assert render_captures[0]["task_label"] == "Notebook"
     assert render_captures[0]["task_id"] == _NOTEBOOK_NAME
 
@@ -286,6 +339,76 @@ def test_metrics_custom_plot_path_is_honored(
     assert result.exit_code == 0, result.output
     assert render_captures[0]["out_path"] == custom
     assert f"Chart: {custom}" in result.output
+
+
+def test_metrics_json_raw_is_bounded_and_reports_truncation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _install_common_fakes(
+        monkeypatch,
+        notebook_detail={"start_config": {"logic_compute_group_id": "lcg-abc"}},
+        groups=_sample_groups(),
+        tmp_metrics_dir=str(tmp_path),
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        [
+            "--json",
+            "notebook",
+            "metrics",
+            _NOTEBOOK_NAME,
+            "--workspace",
+            "all",
+            "--metric",
+            "gpu",
+            "--raw",
+            "--raw-limit",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    series = json.loads(result.output)["data"]["series"][0]
+    assert series["sample_mode"] == "raw"
+    assert series["count"] == 3
+    assert series["total"] == 3
+    assert series["returned"] == 2
+    assert series["truncated"] is True
+    assert series["samples"] == [
+        {"timestamp": 160, "value": 0.8},
+        {"timestamp": 220, "value": 0.5},
+    ]
+
+
+def test_metrics_raw_default_limit_is_hard_bounded() -> None:
+    group = MetricGroup(
+        group_name="pod-1",
+        metric_type="gpu_usage_rate",
+        resource_name="GPU",
+        samples=[MetricSample(timestamp=i, value=0.5) for i in range(2_001)],
+    )
+
+    series = metrics_shared._raw_series(
+        group,
+        limit=metrics_shared.DEFAULT_RAW_SAMPLE_LIMIT,
+    )
+
+    assert series["total"] == 2_001
+    assert series["returned"] == metrics_shared.DEFAULT_RAW_SAMPLE_LIMIT
+    assert len(series["samples"]) == metrics_shared.DEFAULT_RAW_SAMPLE_LIMIT
+    assert series["truncated"] is True
+    assert series["samples"][0]["timestamp"] == 1_501
+    assert series["samples"][-1]["timestamp"] == 2_000
+
+
+def test_metrics_help_documents_raw_mode_and_limit() -> None:
+    result = CliRunner().invoke(cli_main, ["notebook", "metrics", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--raw" in result.output
+    assert "--raw-limit" in result.output
+    assert "hard limit" in result.output
 
 
 def test_metrics_rejects_unknown_alias(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -25,6 +25,7 @@ from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
+DEFAULT_EVENT_TAIL = 20
 FOLLOW_EVENT_KEY_LIMIT = 2048
 
 
@@ -55,7 +56,7 @@ def filter_events(
     keyword_filter: Optional[str] = None,
     tail: Optional[int] = None,
 ) -> list[dict]:
-    """Apply optional filters + tail to an events list."""
+    """Apply optional filters and return a bounded event window."""
     out = events
     if type_filter:
         needle = type_filter.lower()
@@ -73,8 +74,9 @@ def filter_events(
                 for key in ("reason", "message", "from", "type", "content")
             )
         ]
-    if tail and tail > 0:
-        out = out[-tail:]
+    effective_tail = DEFAULT_EVENT_TAIL if tail is None else tail
+    if effective_tail > 0:
+        out = out[-effective_tail:]
     return out
 
 
@@ -95,7 +97,11 @@ def public_event(event: dict) -> dict[str, Any]:
         "count": event.get("count"),
     }
     return {
-        key: scrub_raw_ids(value) if isinstance(value, str) else value
+        key: (
+            json_formatter.sanitize_text(value, redact_paths=True)
+            if isinstance(value, str)
+            else value
+        )
         for key, value in projected.items()
         if value not in (None, "")
     }
@@ -209,6 +215,7 @@ def _fetch_filtered_events(
     type_filter: Optional[str],
     reason_filter: Optional[str],
     keyword_filter: Optional[str] = None,
+    tail: Optional[int] = None,
 ) -> list[dict]:
     events = fetch()
     return filter_events(
@@ -216,7 +223,7 @@ def _fetch_filtered_events(
         type_filter=type_filter,
         reason_filter=reason_filter,
         keyword_filter=keyword_filter,
-        tail=None,
+        tail=tail,
     )
 
 
@@ -253,6 +260,7 @@ def run_events_command(
             type_filter=type_filter,
             reason_filter=reason_filter,
             keyword_filter=keyword_filter,
+            tail=tail,
         )
     except Exception as e:
         exit_with_error(
@@ -262,13 +270,11 @@ def run_events_command(
             EXIT_API_ERROR,
         )
         return
-    initial = filtered[-tail:] if tail and tail > 0 else filtered
-
     if follow:
         seen = _RecentEventKeys()
         for event in filtered:
             seen.remember(event)
-        render_events_table(initial)
+        render_events_table(filtered)
         while True:
             try:
                 time.sleep(interval)
@@ -281,6 +287,7 @@ def run_events_command(
                     type_filter=type_filter,
                     reason_filter=reason_filter,
                     keyword_filter=keyword_filter,
+                    tail=tail,
                 )
             except Exception as e:
                 exit_with_error(
@@ -304,5 +311,5 @@ def run_events_command(
         local_json=json_output_local,
         resource_type=resource_type,
         resource_name=resource_name,
-        events=initial,
+        events=filtered,
     )

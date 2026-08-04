@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
-import json
 import logging
+import os
 import shlex
 import subprocess
 import sys
@@ -22,6 +21,7 @@ from inspire.cli.context import (
     EXIT_TIMEOUT,
     pass_context,
 )
+from inspire.cli.formatters import json_formatter
 from inspire.config import Config, ConfigError, build_env_exports, resolve_remote_cwd
 from inspire.bridge.forge import (
     ForgeAuthError,
@@ -239,7 +239,7 @@ def try_exec_via_ssh_tunnel(
                     status_error,
                 )
 
-        if not ctx.json_output:
+        if _verbose_output(ctx):
             click.echo(
                 (
                     f"{reason} "
@@ -512,21 +512,14 @@ def try_exec_via_jupyter_terminal(
             )
             return EXIT_SUCCESS
         click.echo(
-            json.dumps(
-                {
-                    "success": False,
-                    "error": {
-                        "type": "CommandFailed",
-                        "code": result.returncode,
-                        "message": f"Command failed with exit code {result.returncode}",
-                    },
-                    "data": {
-                        "returncode": result.returncode,
-                        "output": result.output,
-                    },
+            json_formatter.format_json_error(
+                "CommandFailed",
+                "Remote command failed",
+                result.returncode,
+                data={
+                    "returncode": result.returncode,
+                    "output": result.output,
                 },
-                indent=2,
-                ensure_ascii=False,
             ),
             err=True,
         )

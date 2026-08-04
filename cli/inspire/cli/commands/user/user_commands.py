@@ -18,14 +18,19 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
-from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.auth import AuthenticationError
+from inspire.cli.utils.collection_output import (
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import (
     forget_resource_identity,
     reject_id_at_boundary,
     remember_resource_identity,
     resolve_by_name,
+    run_with_stale_handle_retry,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
@@ -57,6 +62,7 @@ _PUBLIC_NOISE_KEYS = {
     "source",
     "trace",
 }
+_OMITTED = object()
 
 
 def _resolve_workspace_id(config: Config, workspace: Optional[str], session) -> Optional[str]:  # noqa: ANN001
@@ -71,10 +77,6 @@ def _ssh_key_id(item: dict) -> str:
 
 def _ssh_key_name(item: dict) -> str:
     return str(item.get("name") or item.get("title") or "").strip()
-
-
-def _ssh_key_fingerprint(item: dict) -> str:
-    return str(item.get("fingerprint") or item.get("finger_print") or "").strip()
 
 
 def _public_value(value: Any) -> Any:
@@ -111,30 +113,41 @@ def _current_user_summary(info: dict[str, Any]) -> dict[str, str]:
 
 
 def _api_key_summary(item: dict[str, Any], index: int) -> dict[str, str]:
-    fields = {
-        "name": item.get("name") or item.get("title") or f"key-{index}",
-        "created_at": item.get("create_at") or item.get("created_at"),
-        "last_used_at": item.get("last_used_at") or item.get("last_used"),
-        "status": item.get("status"),
-    }
-    return {
-        key: scrub_raw_ids(str(value))
-        for key, value in fields.items()
-        if value not in (None, "")
-    }
+    name = item.get("name") or item.get("title") or f"key-{index}"
+    return {"name": scrub_raw_ids(str(name))}
 
 
 def _ssh_key_summary(item: dict[str, Any]) -> dict[str, str]:
-    fields = {
-        "name": _ssh_key_name(item) or "-",
-        "fingerprint": _ssh_key_fingerprint(item),
-        "created_at": item.get("created_at") or item.get("create_at"),
-    }
-    return {
-        key: scrub_raw_ids(str(value))
-        for key, value in fields.items()
-        if value not in (None, "")
-    }
+    return {"name": scrub_raw_ids(_ssh_key_name(item) or "-")}
+
+
+def _list_ssh_keys_for_output(
+    *,
+    session,
+    limit: int | None,
+) -> tuple[list[dict[str, Any]], int]:  # noqa: ANN001
+    if limit is not None:
+        return browser_api_module.list_user_ssh_keys(
+            page=1,
+            page_size=limit,
+            session=session,
+        )
+
+    page = 1
+    page_size = 1000
+    collected: list[dict[str, Any]] = []
+    known_total = 0
+    while True:
+        items, total = browser_api_module.list_user_ssh_keys(
+            page=page,
+            page_size=page_size,
+            session=session,
+        )
+        collected.extend(items)
+        known_total = max(known_total, total, len(collected))
+        if not items or len(collected) >= known_total:
+            return collected, known_total
+        page += 1
 
 
 def _flatten_public_values(value: Any, *, prefix: str = "") -> list[tuple[str, str]]:
@@ -145,8 +158,6 @@ def _flatten_public_values(value: Any, *, prefix: str = "") -> list[tuple[str, s
             rows.extend(_flatten_public_values(value[key], prefix=child_prefix))
         return rows
     if isinstance(value, list):
-        if all(not isinstance(item, (dict, list, tuple)) for item in value):
-            return [(prefix, ", ".join(scrub_raw_ids(item) for item in value))]
         rows = []
         for index, child in enumerate(value, start=1):
             rows.extend(_flatten_public_values(child, prefix=f"{prefix}[{index}]"))
@@ -154,6 +165,54 @@ def _flatten_public_values(value: Any, *, prefix: str = "") -> list[tuple[str, s
     if isinstance(value, tuple):
         return _flatten_public_values(list(value), prefix=prefix)
     return [(prefix or "quota", scrub_raw_ids(value))]
+
+
+def _prune_public_value(value: Any, remaining: int) -> tuple[Any, int]:
+    if remaining <= 0:
+        return _OMITTED, 0
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        used = 0
+        for key in sorted(value):
+            child, child_used = _prune_public_value(value[key], remaining - used)
+            if child is not _OMITTED:
+                result[str(key)] = child
+            used += child_used
+            if used >= remaining:
+                break
+        return result, used
+    if isinstance(value, list):
+        if all(not isinstance(item, (dict, list, tuple)) for item in value):
+            shown = min(len(value), remaining)
+            return list(value[:shown]), shown
+        result_list: list[Any] = []
+        used = 0
+        for item in value:
+            child, child_used = _prune_public_value(item, remaining - used)
+            if child is not _OMITTED:
+                result_list.append(child)
+            used += child_used
+            if used >= remaining:
+                break
+        return result_list, used
+    if isinstance(value, tuple):
+        return _prune_public_value(list(value), remaining)
+    return value, 1
+
+
+def _bound_public_value(
+    value: Any,
+    *,
+    limit: int | None,
+) -> tuple[Any, list[tuple[str, str]], dict[str, int | bool]]:
+    rows = _flatten_public_values(value)
+    page = bound_collection(rows, limit=limit)
+    if not page.truncated:
+        return value, page.items, {}
+    bounded_value, _used = _prune_public_value(value, page.shown)
+    if bounded_value is _OMITTED:
+        bounded_value = {}
+    return bounded_value, page.items, page.metadata()
 
 
 def _read_public_key(
@@ -251,7 +310,7 @@ def _resolve_ssh_key_by_name(
     ssh_id = resolve_by_name(
         ctx,
         name=key_name,
-        resource_type="SSH key",
+        resource_type="ssh-key",
         list_candidates=_lister,
         json_output=ctx.json_output,
         session=session,
@@ -289,8 +348,16 @@ def whoami_user(ctx: Context) -> None:
 
 
 @click.command("quota")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum quota rows to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every quota row.")
 @pass_context
-def quota_user(ctx: Context) -> None:
+def quota_user(ctx: Context, limit: int | None, show_all: bool) -> None:
     """Show the current user's quota.
 
     \b
@@ -300,17 +367,39 @@ def quota_user(ctx: Context) -> None:
     metadata.
     """
     try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    try:
         session = get_web_session()
         data = browser_api_module.get_user_quota(session=session)
         public_quota = _public_value(data)
+        bounded_quota, rows, metadata = _bound_public_value(
+            public_quota,
+            limit=effective_limit,
+        )
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"quota": public_quota}))
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "quota": bounded_quota,
+                        **metadata,
+                    }
+                )
+            )
             return
         if not public_quota:
             click.echo("No quota data returned.")
             return
-        for key, value in _flatten_public_values(public_quota):
+        for key, value in rows:
             click.echo(f"{key}: {value}")
+        if metadata:
+            click.echo(
+                f"Showing {metadata['shown']} of {metadata['total']}. "
+                "Use --all for the full list."
+            )
 
     except AuthenticationError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
@@ -328,36 +417,53 @@ def quota_user(ctx: Context) -> None:
 
 
 @click.command("api-keys")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum key names to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every API key name.")
 @pass_context
-def api_keys_user(ctx: Context) -> None:
+def api_keys_user(ctx: Context, limit: int | None, show_all: bool) -> None:
     """List the current user's API keys.
 
-    Values are not returned by list — only metadata. Create/delete are not
+    Values are not returned by list — only names. Create/delete are not
     wrapped; use the platform user center for those.
     """
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
     try:
         session = get_web_session()
         items = browser_api_module.list_user_api_keys(session=session)
         rows = [_api_key_summary(item, index) for index, item in enumerate(items, 1)]
+        page = bound_collection(rows, limit=effective_limit)
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"items": rows}))
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "items": page.items,
+                        **page.metadata(),
+                    }
+                )
+            )
             return
 
-        if not rows:
+        if not page.items:
             click.echo("No API keys found.")
             return
 
-        for row in rows:
-            suffix = []
-            if row.get("created_at"):
-                suffix.append(f"created={row['created_at']}")
-            if row.get("last_used_at"):
-                suffix.append(f"last_used={row['last_used_at']}")
-            if row.get("status"):
-                suffix.append(f"status={row['status']}")
-            details = f"  {'  '.join(suffix)}" if suffix else ""
-            click.echo(f"{row['name']}{details}")
+        for row in page.items:
+            click.echo(row["name"])
+        notice = truncation_notice(page)
+        if notice:
+            click.echo(notice)
 
     except AuthenticationError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
@@ -371,45 +477,52 @@ def ssh_keys_user() -> None:
 
 
 @ssh_keys_user.command("list")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum key names to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every SSH key name.")
 @pass_context
-def list_ssh_keys(ctx: Context) -> None:
+def list_ssh_keys(ctx: Context, limit: int | None, show_all: bool) -> None:
     """List the current user's SSH public keys."""
     try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    try:
         session = get_web_session()
-        items, _ = browser_api_module.list_user_ssh_keys(session=session)
+        items, total = _list_ssh_keys_for_output(
+            session=session,
+            limit=effective_limit,
+        )
         rows = [_ssh_key_summary(item) for item in items]
+        page = bound_collection(rows, limit=effective_limit, total=total)
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"items": rows}))
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "items": page.items,
+                        **page.metadata(),
+                    }
+                )
+            )
             return
 
-        if not rows:
+        if not page.items:
             click.echo("No SSH keys found.")
             return
 
-        table_rows = [
-            (
-                row["name"],
-                row.get("fingerprint", "-"),
-                row.get("created_at", "-"),
-            )
-            for row in rows
-        ]
-        widths = [
-            column_width("Name", [row[0] for row in table_rows], max_width=48),
-            column_width("Fingerprint", [row[1] for row in table_rows], max_width=64),
-            column_width("Created", [row[2] for row in table_rows], max_width=24),
-        ]
-        click.echo(
-            "\n".join(
-                render_table(
-                    ("Name", "Fingerprint", "Created"),
-                    table_rows,
-                    widths,
-                    line_char="─",
-                )
-            )
-        )
+        for row in page.items:
+            click.echo(row["name"])
+        notice = truncation_notice(page)
+        if notice:
+            click.echo(notice)
 
     except AuthenticationError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
@@ -501,35 +614,29 @@ def delete_ssh_key(ctx: Context, name: str, yes: bool) -> None:
                 click.echo("Cancelled.")
                 return
 
-        try:
-            browser_api_module.delete_user_ssh_key(key_id, session=session)
-        except Exception as exc:
-            # A cached name may point at a deleted-and-recreated key.  Retry
-            # only for an explicit stale-handle response; transient network
-            # failures must not repeat a destructive operation.
-            message = str(exc).lower()
-            stale = any(
-                marker in message
-                for marker in ("not found", "does not exist", "不存在", "404", "invalid")
-            )
-            if not stale:
-                raise
-            forget_resource_identity(
+        def _delete(resolved_id: str) -> str:
+            browser_api_module.delete_user_ssh_key(resolved_id, session=session)
+            return resolved_id
+
+        key_id = run_with_stale_handle_retry(
+            name=key_name,
+            resolve_cached=lambda: key_id,
+            resolve_live=lambda live_name: _ssh_key_id(
+                _resolve_ssh_key_by_name(
+                    ctx,
+                    live_name,
+                    session=session,
+                    require_live=True,
+                )
+            ),
+            operation=_delete,
+            invalidate=lambda stale_id: forget_resource_identity(
                 session=session,
                 resource_type="ssh-key",
-                resource_id=key_id,
-                name=key_name,
+                resource_id=stale_id,
                 owner_scope="self",
-            )
-            fresh_key = _resolve_ssh_key_by_name(
-                ctx,
-                key_name,
-                session=session,
-                require_live=True,
-            )
-            fresh_id = _ssh_key_id(fresh_key)
-            browser_api_module.delete_user_ssh_key(fresh_id, session=session)
-            key_id = fresh_id
+            ),
+        )
         forget_resource_identity(
             session=session,
             resource_type="ssh-key",
@@ -553,12 +660,28 @@ def delete_ssh_key(ctx: Context, name: str, yes: bool) -> None:
 
 @click.command("permissions")
 @click.option("--workspace", required=True, help="Workspace name")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum permission names to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every permission name.")
 @pass_context
 def permissions_user(
     ctx: Context,
     workspace: Optional[str],
+    limit: int | None,
+    show_all: bool,
 ) -> None:
     """Show granted permissions in a workspace."""
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
@@ -567,6 +690,7 @@ def permissions_user(
             workspace_id=resolved_workspace, session=session
         )
         permissions = sorted(set(perms))
+        page = bound_collection(permissions, limit=effective_limit)
         workspace_name = scrub_raw_ids(workspace or "")
 
         if ctx.json_output:
@@ -574,19 +698,23 @@ def permissions_user(
                 json_formatter.format_json(
                     {
                         "workspace": workspace_name,
-                        "permissions": permissions,
+                        "permissions": page.items,
+                        **page.metadata(),
                     }
                 )
             )
             return
 
-        if not permissions:
+        if not page.items:
             click.echo("No permissions granted in this workspace.")
             return
 
         click.echo(f"Workspace: {workspace_name}")
-        for permission in permissions:
+        for permission in page.items:
             click.echo(permission)
+        notice = truncation_notice(page)
+        if notice:
+            click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

@@ -145,9 +145,7 @@ def select_project_for_workspace(
     if not requested_name:
         raise ConfigError("--project is required.")
     if _looks_like_platform_id(requested_name):
-        raise ConfigError(
-            "--project takes a project name, not a platform handle or partial handle."
-        )
+        raise ConfigError("--project only accepts a project name.")
 
     try:
         session = web_session_module.get_web_session()

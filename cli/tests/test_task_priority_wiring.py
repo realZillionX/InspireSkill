@@ -22,13 +22,18 @@ from inspire.task_priority import TaskPriorityError
 
 WORKSPACE_ID = "ws-11111111-1111-1111-1111-111111111111"
 PROJECT_ID = "project-11111111-1111-1111-1111-111111111111"
+PROJECT_NAME = "Project"
+
+
+class _Session:
+    storage_state: dict[str, Any] = {}
 
 
 def _config() -> Config:
     return Config(
         username="user",
         password="pass",
-        projects={"project": PROJECT_ID},
+        projects={"project": PROJECT_NAME},
     )
 
 
@@ -54,17 +59,24 @@ def _patch_fair_ray_boundary(
     monkeypatch.setattr(ray_commands, "_resolve_image_id", lambda *_args, **_kwargs: "image-id")
     monkeypatch.setattr(quota_resolver, "resolve_quota", lambda **_kwargs: _resolved_quota())
     monkeypatch.setattr(workspaces, "is_fair_scheduling_workspace", lambda *_args: True)
-    monkeypatch.setattr(
-        projects,
-        "list_projects",
-        lambda **_kwargs: [
+
+    def _list_projects(*, workspace_id: str, session: object):
+        assert workspace_id == WORKSPACE_ID
+        assert isinstance(session, _Session)
+        return [
             projects.ProjectInfo(
                 project_id=PROJECT_ID,
-                name="Project",
+                name=PROJECT_NAME,
                 workspace_id=WORKSPACE_ID,
                 priority_name=project_limit,
             )
-        ],
+        ]
+
+    monkeypatch.setattr(ray_commands.browser_api_module, "list_projects", _list_projects)
+    monkeypatch.setattr(
+        projects,
+        "list_projects",
+        _list_projects,
     )
 
 
@@ -72,7 +84,7 @@ def _assemble_ray_body(*, priority: int | None) -> dict[str, Any]:
     return ray_commands._assemble_create_body(
         Context(),
         config=_config(),
-        session=object(),
+        session=_Session(),
         name="ray",
         command="python driver.py",
         description="",
@@ -96,7 +108,10 @@ def test_fair_ray_create_defaults_and_applies_project_cap(
 ) -> None:
     _patch_fair_ray_boundary(monkeypatch, project_limit=project_limit)
 
-    assert _assemble_ray_body(priority=None)["task_priority"] == expected
+    body = _assemble_ray_body(priority=None)
+
+    assert body["project_id"] == PROJECT_ID
+    assert body["task_priority"] == expected
 
 
 def test_fair_ray_create_rejects_unavailable_priority(

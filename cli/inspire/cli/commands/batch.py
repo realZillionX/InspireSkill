@@ -25,6 +25,11 @@ from inspire.cli.context import (
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils import job_submit
 from inspire.cli.utils.auth import AuthenticationError
+from inspire.cli.utils.collection_output import (
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.project_resolver import project_name_candidates
@@ -1002,14 +1007,17 @@ def _emit_batch_result(
     dry_run: bool,
     outputs: list[dict[str, Any]],
     command_name: str,
+    output_limit: int | None,
 ) -> None:
     public_outputs = [_public_value(item) for item in outputs]
+    page = bound_collection(public_outputs, limit=output_limit)
     if ctx.json_output:
         click.echo(
             json_formatter.format_json(
                 {
                     "dry_run": dry_run,
-                    "items": public_outputs,
+                    "items": page.items,
+                    **page.metadata(),
                 }
             )
         )
@@ -1017,9 +1025,34 @@ def _emit_batch_result(
 
     action = "Planned" if dry_run else "Submitted"
     click.echo(f"{action} {len(public_outputs)} {command_name} batch item(s)")
-    for item in public_outputs:
+    for item in page.items:
         name = item.get("name") or item.get("create_kwargs", {}).get("name") or "-"
         click.echo(f"- {scrub_raw_ids(str(name))}")
+    notice = truncation_notice(page, full_option="--all-results")
+    if notice:
+        click.echo(notice)
+
+
+def _resolve_batch_output_limit(
+    ctx: Context,
+    *,
+    result_limit: int | None,
+    all_results: bool,
+) -> int | None:
+    """Validate batch result-output controls before any workload is submitted."""
+    try:
+        return resolve_collection_limit(
+            limit=result_limit,
+            show_all=all_results,
+        )
+    except ValueError:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            "Use either --result-limit or --all-results, not both.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return None
 
 
 def _handle_batch_exception(ctx: Context, error: Exception) -> None:
@@ -1045,8 +1078,25 @@ def _handle_batch_exception(ctx: Context, error: Exception) -> None:
     is_flag=True,
     help="Expand the matrix, resolve each job, and print plans without submitting anything.",
 )
+@click.option(
+    "--result-limit",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum result rows to print (default: 20).",
+)
+@click.option(
+    "--all-results",
+    is_flag=True,
+    help="Print every result row after processing the full batch.",
+)
 @pass_context
-def job_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
+def job_batch(
+    ctx: Context,
+    config_path: Path,
+    dry_run: bool,
+    result_limit: int | None,
+    all_results: bool,
+) -> None:
     """Submit a JSON/TOML matrix through `job create`.
 
     The config format is command-local: top-level `jobs` is required, while
@@ -1066,6 +1116,11 @@ def job_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
         inspire job batch experiments.json --dry-run
         inspire job batch experiments.toml
     """
+    output_limit = _resolve_batch_output_limit(
+        ctx,
+        result_limit=result_limit,
+        all_results=all_results,
+    )
     try:
         data = _load_config(config_path)
         local_profiles = _batch_profiles(data)
@@ -1127,7 +1182,13 @@ def job_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
                         name=str(plan.create_kwargs["name"]),
                     )
                 )
-        _emit_batch_result(ctx, dry_run=dry_run, outputs=outputs, command_name="job")
+        _emit_batch_result(
+            ctx,
+            dry_run=dry_run,
+            outputs=outputs,
+            command_name="job",
+            output_limit=output_limit,
+        )
     except Exception as e:
         _handle_batch_exception(ctx, e)
 
@@ -1139,8 +1200,25 @@ def job_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
     is_flag=True,
     help="Expand the matrix, resolve each HPC job, and print plans without submitting anything.",
 )
+@click.option(
+    "--result-limit",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum result rows to print (default: 20).",
+)
+@click.option(
+    "--all-results",
+    is_flag=True,
+    help="Print every result row after processing the full batch.",
+)
 @pass_context
-def hpc_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
+def hpc_batch(
+    ctx: Context,
+    config_path: Path,
+    dry_run: bool,
+    result_limit: int | None,
+    all_results: bool,
+) -> None:
     """Submit a JSON/TOML matrix through `hpc create`.
 
     Top-level `jobs` is required. Optional `defaults`, `profiles`, and
@@ -1156,6 +1234,11 @@ def hpc_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
         inspire hpc batch jobs.json --dry-run
         inspire hpc batch jobs.toml
     """
+    output_limit = _resolve_batch_output_limit(
+        ctx,
+        result_limit=result_limit,
+        all_results=all_results,
+    )
     try:
         data = _load_config(config_path)
         local_profiles = _batch_profiles(data)
@@ -1197,7 +1280,13 @@ def hpc_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
                         name=str(create_kwargs["job_name"]),
                     )
                 )
-        _emit_batch_result(ctx, dry_run=dry_run, outputs=outputs, command_name="hpc")
+        _emit_batch_result(
+            ctx,
+            dry_run=dry_run,
+            outputs=outputs,
+            command_name="hpc",
+            output_limit=output_limit,
+        )
     except Exception as e:
         _handle_batch_exception(ctx, e)
 
@@ -1209,8 +1298,25 @@ def hpc_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
     is_flag=True,
     help="Expand the matrix, resolve each notebook, and print plans without creating anything.",
 )
+@click.option(
+    "--result-limit",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum result rows to print (default: 20).",
+)
+@click.option(
+    "--all-results",
+    is_flag=True,
+    help="Print every result row after processing the full batch.",
+)
 @pass_context
-def notebook_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
+def notebook_batch(
+    ctx: Context,
+    config_path: Path,
+    dry_run: bool,
+    result_limit: int | None,
+    all_results: bool,
+) -> None:
     """Create notebook instances from a JSON/TOML matrix.
 
     Top-level `notebooks` is required. Optional `defaults`, `profiles`, and `matrix`
@@ -1228,6 +1334,11 @@ def notebook_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
         inspire notebook batch notebooks.json --dry-run
         inspire notebook batch notebooks.toml
     """
+    output_limit = _resolve_batch_output_limit(
+        ctx,
+        result_limit=result_limit,
+        all_results=all_results,
+    )
     try:
         data = _load_config(config_path)
         local_profiles = _batch_profiles(data)
@@ -1271,7 +1382,13 @@ def notebook_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
                 )
             else:
                 outputs.append(_submit_notebook_plan(plan, config=config, session=session))
-        _emit_batch_result(ctx, dry_run=dry_run, outputs=outputs, command_name="notebook")
+        _emit_batch_result(
+            ctx,
+            dry_run=dry_run,
+            outputs=outputs,
+            command_name="notebook",
+            output_limit=output_limit,
+        )
     except Exception as e:
         _handle_batch_exception(ctx, e)
 
@@ -1283,8 +1400,25 @@ def notebook_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
     is_flag=True,
     help="Expand the matrix, resolve each Ray job, and print plans without submitting anything.",
 )
+@click.option(
+    "--result-limit",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum result rows to print (default: 20).",
+)
+@click.option(
+    "--all-results",
+    is_flag=True,
+    help="Print every result row after processing the full batch.",
+)
 @pass_context
-def ray_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
+def ray_batch(
+    ctx: Context,
+    config_path: Path,
+    dry_run: bool,
+    result_limit: int | None,
+    all_results: bool,
+) -> None:
     """Create Ray jobs from a JSON/TOML matrix.
 
     Top-level `jobs` is required. Each expanded item must describe the Ray
@@ -1301,6 +1435,11 @@ def ray_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
         inspire ray batch ray-jobs.json --dry-run
         inspire ray batch ray-jobs.toml
     """
+    output_limit = _resolve_batch_output_limit(
+        ctx,
+        result_limit=result_limit,
+        all_results=all_results,
+    )
     try:
         data = _load_config(config_path)
         local_profiles = _batch_profiles(data)
@@ -1338,7 +1477,13 @@ def ray_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
                 outputs.append(
                     _submitted_batch_item(kind="ray", name=str(body["name"]))
                 )
-        _emit_batch_result(ctx, dry_run=dry_run, outputs=outputs, command_name="ray")
+        _emit_batch_result(
+            ctx,
+            dry_run=dry_run,
+            outputs=outputs,
+            command_name="ray",
+            output_limit=output_limit,
+        )
     except Exception as e:
         _handle_batch_exception(ctx, e)
 
@@ -1353,8 +1498,25 @@ def ray_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
         "without creating anything."
     ),
 )
+@click.option(
+    "--result-limit",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum result rows to print (default: 20).",
+)
+@click.option(
+    "--all-results",
+    is_flag=True,
+    help="Print every result row after processing the full batch.",
+)
 @pass_context
-def serving_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
+def serving_batch(
+    ctx: Context,
+    config_path: Path,
+    dry_run: bool,
+    result_limit: int | None,
+    all_results: bool,
+) -> None:
     """Create inference servings from a JSON/TOML matrix.
 
     Top-level `servings` is required. Each expanded item must include the
@@ -1370,6 +1532,11 @@ def serving_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
         inspire serving batch servings.json --dry-run
         inspire serving batch servings.toml
     """
+    output_limit = _resolve_batch_output_limit(
+        ctx,
+        result_limit=result_limit,
+        all_results=all_results,
+    )
     try:
         data = _load_config(config_path)
         local_profiles = _batch_profiles(data)
@@ -1416,7 +1583,13 @@ def serving_batch(ctx: Context, config_path: Path, dry_run: bool) -> None:
                         name=str(payload["name"]),
                     )
                 )
-        _emit_batch_result(ctx, dry_run=dry_run, outputs=outputs, command_name="serving")
+        _emit_batch_result(
+            ctx,
+            dry_run=dry_run,
+            outputs=outputs,
+            command_name="serving",
+            output_limit=output_limit,
+        )
     except Exception as e:
         _handle_batch_exception(ctx, e)
 

@@ -10,13 +10,23 @@ from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
     EXIT_CONFIG_ERROR,
+    EXIT_VALIDATION_ERROR,
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.human_formatter import format_epoch
 from inspire.cli.formatters.table import column_width, render_table
+from inspire.cli.utils.collection_output import (
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import resolve_by_name
+from inspire.cli.utils.id_resolver import (
+    forget_resource_identity,
+    resolve_by_name,
+    run_with_stale_handle_retry,
+)
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
@@ -180,7 +190,14 @@ def _owner_views(items: list[dict]) -> list[dict[str, str]]:
     return owners
 
 
-def _resolve_project_name(ctx: Context, name: str, *, session, workspace_id: str) -> str:  # noqa: ANN001
+def _resolve_project_name(
+    ctx: Context,
+    name: str,
+    *,
+    session,
+    workspace_id: str,
+    require_live: bool = False,
+) -> str:  # noqa: ANN001
     workspace_name = str(
         (getattr(session, "all_workspace_names", None) or {}).get(workspace_id)
         or "the selected workspace"
@@ -206,6 +223,7 @@ def _resolve_project_name(ctx: Context, name: str, *, session, workspace_id: str
         json_output=ctx.json_output,
         session=session,
         workspace_id=workspace_id,
+        require_live=require_live,
         list_command=f"inspire project list --workspace {workspace_name}",
     )
 
@@ -379,10 +397,20 @@ def _select_workspace_ids_for_listing(
     required=True,
     help="Workspace name or 'all'.",
 )
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum projects to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every matching project.")
 @pass_context
 def list_projects_cmd(
     ctx: Context,
     workspace: str,
+    limit: int | None,
+    show_all: bool,
 ) -> None:
     """List project-level metadata.
 
@@ -392,6 +420,11 @@ def list_projects_cmd(
         inspire --json project list --workspace all
     """
     json_output = ctx.json_output
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
 
     session = require_web_session(
         ctx,
@@ -449,12 +482,23 @@ def list_projects_cmd(
 
     session_workspace_names = dict(getattr(session, "all_workspace_names", None) or {})
     results = [_project_to_dict(p, workspace_names_by_id=session_workspace_names) for p in projects]
+    page = bound_collection(results, limit=effective_limit)
 
     if json_output:
-        click.echo(json_formatter.format_json({"projects": results}))
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "projects": page.items,
+                    **page.metadata(),
+                }
+            )
+        )
         return
 
-    click.echo(_format_project_list(results))
+    click.echo(_format_project_list(page.items))
+    notice = truncation_notice(page)
+    if notice:
+        click.echo(notice)
 
 
 @click.command("detail")
@@ -473,8 +517,36 @@ def detail_project_cmd(ctx: Context, project: str, workspace: str) -> None:
         )
         if is_all:
             raise ConfigError("project detail requires a single workspace name, not 'all'.")
-        project_id = _resolve_project_name(ctx, project, session=session, workspace_id=workspace_ids[0])
-        data = browser_api_module.get_project_detail(project_id, session=session)
+        project_id, data = run_with_stale_handle_retry(
+            name=project,
+            resolve_cached=lambda: _resolve_project_name(
+                ctx,
+                project,
+                session=session,
+                workspace_id=workspace_ids[0],
+            ),
+            resolve_live=lambda live_name: _resolve_project_name(
+                ctx,
+                live_name,
+                session=session,
+                workspace_id=workspace_ids[0],
+                require_live=True,
+            ),
+            operation=lambda resolved_project_id: (
+                resolved_project_id,
+                browser_api_module.get_project_detail(
+                    resolved_project_id,
+                    session=session,
+                ),
+            ),
+            invalidate=lambda resolved_project_id: forget_resource_identity(
+                session=session,
+                resource_type="project",
+                resource_id=resolved_project_id,
+                name=project,
+                workspace_id=workspace_ids[0],
+            ),
+        )
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
         return

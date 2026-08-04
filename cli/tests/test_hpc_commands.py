@@ -442,10 +442,65 @@ def test_hpc_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"]["total"] == 1
+    assert "total" not in payload["data"]
     assert payload["data"]["jobs"][0]["name"] == "prep"
     assert "job_id" not in payload["data"]["jobs"][0]
     assert "workspace_id" not in payload["data"]["jobs"][0]
+
+
+def test_hpc_list_all_expands_and_limit_conflict_is_pre_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.hpc import hpc_commands as hpc_cmd_module
+
+    calls: list[int] = []
+
+    def fake_list_hpc_jobs(**kwargs):  # noqa: ANN001
+        calls.append(kwargs["page_size"])
+        count = kwargs["page_size"]
+        return (
+            [
+                HPCJobInfo(
+                    job_id=f"hpc-job-{index}",
+                    name=f"job-{index}",
+                    status="RUNNING",
+                    entrypoint="bash run.sh",
+                    created_at="1770000000",
+                    finished_at=None,
+                    created_by_name="tester",
+                    created_by_id="user-1",
+                    project_id="project-1",
+                    project_name="Project",
+                    compute_group_name="CPU",
+                    workspace_id=kwargs["workspace_id"],
+                )
+                for index in range(count)
+            ],
+            25,
+        )
+
+    monkeypatch.setattr(hpc_cmd_module.browser_api_module, "list_hpc_jobs", fake_list_hpc_jobs)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "hpc", "list", "--workspace", "cpu-room", "--all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["data"]
+    assert calls == [20, 25]
+    assert len(payload["jobs"]) == 25
+    assert "truncated" not in payload
+
+    calls.clear()
+    conflict = CliRunner().invoke(
+        cli_main,
+        ["hpc", "list", "--workspace", "cpu-room", "--all", "--limit", "3"],
+    )
+    assert conflict.exit_code != 0
+    assert "Use either --limit or --all, not both." in conflict.output
+    assert calls == []
 
 
 def test_hpc_instances_requires_workspace_and_uses_num(
@@ -519,6 +574,178 @@ def test_hpc_instances_requires_workspace_and_uses_num(
     assert captured["instances"]["limit"] == 42
     assert "HPC Instances" in result.output
     assert "launcher" in result.output
+
+
+def test_hpc_instances_default_budget_notifies_and_keeps_name_resolution_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.hpc import hpc_commands as hpc_cmd_module
+
+    captured: dict[str, Any] = {}
+    session = hpc_cmd_module.get_web_session()
+
+    monkeypatch.setattr(
+        hpc_cmd_module.browser_api_module,
+        "list_hpc_jobs",
+        lambda **kwargs: (
+            captured.update(kwargs)
+            or (
+                [
+                    HPCJobInfo(
+                        job_id="hpc-job-001",
+                        name="prep",
+                        status="RUNNING",
+                        entrypoint="srun python prep.py",
+                        created_at="1770000000",
+                        finished_at=None,
+                        created_by_name="tester",
+                        created_by_id="user-1",
+                        project_id="project-1",
+                        project_name="Project 1",
+                        compute_group_name="CPU资源-2",
+                        workspace_id=kwargs["workspace_id"],
+                    )
+                ],
+                1,
+            )
+        ),
+    )
+
+    def fake_list_hpc_job_instances(job_id, *, limit, session):  # noqa: ANN001
+        captured["instance_limit"] = limit
+        return (
+            [
+                {
+                    "name": f"worker-{index}",
+                    "status": "Running",
+                    "component": "worker",
+                }
+                for index in range(20)
+            ],
+            25,
+        )
+
+    monkeypatch.setattr(
+        hpc_cmd_module.browser_api_module,
+        "list_hpc_job_instances",
+        fake_list_hpc_job_instances,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["hpc", "instances", "prep", "--workspace", "cpu-room"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["page_size"] == 500
+    assert captured["instance_limit"] == 20
+    assert "Showing 20 of 25. Use --all for the full list." in result.output
+    assert session is not None
+
+    json_result = CliRunner().invoke(
+        cli_main,
+        ["--json", "hpc", "instances", "prep", "--workspace", "cpu-room"],
+    )
+    assert json_result.exit_code == 0, json_result.output
+    metadata = json.loads(json_result.output)["data"]
+    assert metadata["shown"] == 20
+    assert metadata["total"] == 25
+    assert metadata["truncated"] is True
+    assert metadata["limit"] == 20
+
+
+def test_hpc_instances_all_expands_and_json_conflict_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.hpc import hpc_commands as hpc_cmd_module
+
+    calls: list[int] = []
+    monkeypatch.setattr(
+        hpc_cmd_module.browser_api_module,
+        "list_hpc_jobs",
+        lambda **kwargs: (
+            [
+                HPCJobInfo(
+                    job_id="hpc-job-001",
+                    name="prep",
+                    status="RUNNING",
+                    entrypoint="srun python prep.py",
+                    created_at="1770000000",
+                    finished_at=None,
+                    created_by_name="tester",
+                    created_by_id="user-1",
+                    project_id="project-1",
+                    project_name="Project 1",
+                    compute_group_name="CPU资源-2",
+                    workspace_id=kwargs["workspace_id"],
+                )
+            ],
+            1,
+        ),
+    )
+
+    def fake_list_hpc_job_instances(job_id, *, limit, session):  # noqa: ANN001
+        calls.append(limit)
+        count = 25 if limit == 25 else 20
+        return (
+            [
+                {
+                    "instance_id": f"hpc-job-001-worker-{index}",
+                    "name": f"worker-{index}",
+                    "status": "Running",
+                }
+                for index in range(count)
+            ],
+            25,
+        )
+
+    monkeypatch.setattr(
+        hpc_cmd_module.browser_api_module,
+        "list_hpc_job_instances",
+        fake_list_hpc_job_instances,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "hpc",
+            "instances",
+            "prep",
+            "--workspace",
+            "cpu-room",
+            "--all",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["data"]
+    assert calls == [20, 25]
+    assert len(payload["instances"]) == 25
+    assert payload["total"] == 25
+    assert "truncated" not in payload
+    assert all("instance_id" not in item for item in payload["instances"])
+    assert "hpc-job-001-worker" not in result.output
+
+    conflict = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "hpc",
+            "instances",
+            "prep",
+            "--workspace",
+            "cpu-room",
+            "--all",
+            "--limit",
+            "3",
+        ],
+    )
+
+    assert conflict.exit_code != 0
+    assert "Use either --limit or --all, not both." in conflict.output
 
 
 def test_hpc_stop_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

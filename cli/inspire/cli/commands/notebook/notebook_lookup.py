@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
-import re
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import click
 
@@ -16,26 +15,25 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import is_partial_id
+from inspire.cli.utils.id_resolver import (
+    forget_resource_identity,
+    looks_like_platform_id,
+    run_with_stale_handle_retry,
+)
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.resource_index import (
     ResourceIdentity,
     ResourceIndex,
     ResourceScope,
+    StaleResourceIndexRefresh,
     scope_for_session,
 )
 from inspire.platform.web import session as web_session_module
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 _ZERO_WORKSPACE_ID = "ws-00000000-0000-0000-0000-000000000000"
-
-_NOTEBOOK_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    re.IGNORECASE,
-)
-_CURRENT_USER_LOOKUP_ERROR_ATTR = "_inspire_current_user_lookup_error"
-
 
 def _unique_workspace_ids(values: list[str]) -> list[str]:
     unique: list[str] = []
@@ -146,15 +144,7 @@ def _notebook_gpu_type(item: dict) -> str:
 
 
 def _looks_like_notebook_id(value: str) -> bool:
-    value = value.strip().lower()
-    if not value:
-        return False
-    # Keep this list in sync with ``_looks_like_platform_id`` in
-    # ``inspire.cli.utils.id_resolver`` — both abbreviations (``nb-``) and
-    # full prefixes (``notebook-``) round-trip through the platform.
-    if value.startswith("notebook-") or value.startswith("nb-"):
-        return True
-    return bool(_NOTEBOOK_UUID_RE.match(value))
+    return looks_like_platform_id(value)
 
 
 def _notebook_id_from_item(item: dict) -> str | None:
@@ -194,25 +184,10 @@ def _format_notebook_resource(item: dict) -> str:
     return "N/A"
 
 
-def _set_current_user_lookup_error(
-    session: web_session_module.WebSession,
-    message: str | None,
-) -> None:
-    try:
-        if message:
-            setattr(session, _CURRENT_USER_LOOKUP_ERROR_ATTR, message)
-        elif hasattr(session, _CURRENT_USER_LOOKUP_ERROR_ATTR):
-            delattr(session, _CURRENT_USER_LOOKUP_ERROR_ATTR)
-    except Exception:
-        pass
-
-
 def _current_user_lookup_failure_message(session: web_session_module.WebSession) -> str:
-    detail = str(getattr(session, _CURRENT_USER_LOOKUP_ERROR_ATTR, "") or "").strip()
-    if detail:
-        return detail
+    del session
     return (
-        "Cannot determine the current user from live /api/v1/user/detail. "
+        "Cannot determine the current platform account. "
         "Refresh the account session with `inspire account login`, then retry."
     )
 
@@ -222,7 +197,6 @@ def _try_get_current_user_ids(
     *,
     base_url: str,
 ) -> list[str]:
-    _set_current_user_lookup_error(session, None)
     endpoint = f"{base_url}/api/v1/user/detail"
     try:
         user_data = web_session_module.request_json(
@@ -241,23 +215,14 @@ def _try_get_current_user_ids(
         user_id = (data.get("id") or data.get("user_id")) if isinstance(data, dict) else None
         if user_id:
             return [str(user_id)]
-        _set_current_user_lookup_error(
-            session,
-            (
-                "Cannot determine the current user from live /api/v1/user/detail: "
-                "response did not include a user id. Refresh the account session "
-                "with `inspire account login`, then retry."
-            ),
+        logger.debug(
+            "Current platform account response omitted its internal identifier"
         )
-    except Exception as e:
-        _set_current_user_lookup_error(
-            session,
-            (
-                "Cannot determine the current user from live /api/v1/user/detail: "
-                f"{scrub_raw_ids(e)}. Refresh the account session with "
-                "`inspire account login`; if the message mentions browser runtime, "
-                "run `inspire update --cli-only`."
-            ),
+    except Exception:
+        logger.debug(
+            "Current platform account lookup failed at %s",
+            endpoint,
+            exc_info=True,
         )
     return []
 
@@ -559,7 +524,7 @@ def _resolve_notebook_id(
         )
 
     # Names are the CLI boundary. Reject copied platform values before lookup.
-    if _looks_like_notebook_id(identifier) or is_partial_id(identifier, prefix="notebook-"):
+    if _looks_like_notebook_id(identifier):
         _handle_error(
             ctx,
             "ValidationError",
@@ -637,6 +602,17 @@ def _resolve_notebook_id(
     # "Notebook not found". The retry exists for eventual consistency on
     # the *contents* of a successful response, not as a generic error loop.
     if not matches:
+        snapshot_tokens: dict[str, tuple[int, int]] = {}
+        if cache_index is not None:
+            for workspace_id, scope in cache_scopes.items():
+                try:
+                    snapshot_tokens[workspace_id] = cache_index.snapshot_token(scope)
+                except Exception:
+                    logger.debug(
+                        "Notebook identity cache revision read failed",
+                        exc_info=True,
+                    )
+
         user_ids = _try_get_current_user_ids(session, base_url=base_url)
         if not user_ids:
             _handle_error(
@@ -669,8 +645,13 @@ def _resolve_notebook_id(
                 _time.sleep(2 * (attempt + 1))
 
         if cache_index is not None and cache_scopes:
-            try:
-                for workspace_id, scope in cache_scopes.items():
+            stale_workspaces: set[str] = set()
+            current_matches: list[tuple[str, dict]] = []
+            for workspace_id, scope in cache_scopes.items():
+                token = snapshot_tokens.get(workspace_id)
+                if token is None:
+                    continue
+                try:
                     cache_index.replace_name(
                         scope,
                         identifier,
@@ -692,9 +673,46 @@ def _resolve_notebook_id(
                             for match_workspace_id, notebook_item in matches
                             if match_workspace_id == workspace_id
                         ],
+                        expected_generation=token[0],
+                        expected_revision=token[1],
                     )
-            except Exception:
-                logger.debug("Notebook identity cache refresh failed", exc_info=True)
+                except StaleResourceIndexRefresh:
+                    try:
+                        if cache_index.generation() != token[0]:
+                            continue
+                    except Exception:
+                        pass
+                    stale_workspaces.add(workspace_id)
+                    try:
+                        current_matches.extend(
+                            (
+                                workspace_id,
+                                {
+                                    "notebook_id": item.resource_id,
+                                    "name": item.name,
+                                    "status": item.status,
+                                    "created_at": item.created_at,
+                                },
+                            )
+                            for item in cache_index.lookup(scope, identifier)
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Notebook identity cache race recovery failed",
+                            exc_info=True,
+                        )
+                except Exception:
+                    logger.debug(
+                        "Notebook identity cache refresh failed",
+                        exc_info=True,
+                    )
+            if stale_workspaces:
+                matches = [
+                    match
+                    for match in matches
+                    if match[0] not in stale_workspaces
+                ]
+                matches.extend(current_matches)
 
     matches.sort(key=lambda m: str(m[1].get("created_at") or ""), reverse=True)
 
@@ -766,6 +784,61 @@ def _resolve_notebook_id(
     return notebook_id, ws_id
 
 
+def _run_notebook_operation_with_stale_handle_retry(
+    ctx: Context,
+    *,
+    session: web_session_module.WebSession,
+    config: Any,
+    base_url: str,
+    identifier: str,
+    json_output: bool,
+    workspace_ids: list[str] | None,
+    operation: Callable[[str], _T],
+    cache_index: ResourceIndex | None = None,
+) -> tuple[_T, str, str | None]:
+    """Run one notebook operation and recover once from an explicit stale handle."""
+    resolved: dict[str, str | None] = {"handle": None, "workspace_id": None}
+
+    def _resolve(*, require_live: bool) -> str:
+        handle, workspace_id = _resolve_notebook_id(
+            ctx,
+            session=session,
+            config=config,
+            base_url=base_url,
+            identifier=identifier,
+            json_output=json_output,
+            workspace_ids=workspace_ids,
+            require_live=require_live,
+            cache_index=cache_index,
+        )
+        resolved["handle"] = handle
+        resolved["workspace_id"] = workspace_id
+        return handle
+
+    def _invalidate(handle: str) -> None:
+        workspace_id = str(resolved.get("workspace_id") or "").strip()
+        candidate_workspace_ids = [workspace_id] if workspace_id else list(workspace_ids or [])
+        for candidate_workspace_id in candidate_workspace_ids:
+            forget_resource_identity(
+                session=session,
+                resource_type="notebook",
+                resource_id=handle,
+                workspace_id=candidate_workspace_id,
+                owner_scope="self",
+                cache_index=cache_index,
+            )
+
+    result = run_with_stale_handle_retry(
+        name=identifier,
+        resolve_cached=lambda: _resolve(require_live=False),
+        resolve_live=lambda _name: _resolve(require_live=True),
+        operation=operation,
+        invalidate=_invalidate,
+    )
+    handle = str(resolved.get("handle") or "")
+    return result, handle, resolved.get("workspace_id")
+
+
 __all__ = [
     "_ZERO_WORKSPACE_ID",
     "_collect_workspace_ids_for_lookup",
@@ -776,6 +849,7 @@ __all__ = [
     "_looks_like_notebook_id",
     "_notebook_id_from_item",
     "_resolve_notebook_id",
+    "_run_notebook_operation_with_stale_handle_retry",
     "_sort_notebook_items",
     "_try_get_current_user_ids",
     "_unique_workspace_ids",

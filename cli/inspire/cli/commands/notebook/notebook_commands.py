@@ -18,6 +18,7 @@ from .notebook_lookup import (
     _list_notebooks_for_workspace,
     _list_notebooks_for_workspaces,
     _resolve_notebook_id as _lookup_resolve_notebook_id,
+    _run_notebook_operation_with_stale_handle_retry as _lookup_run_stale_retry,
     _sort_notebook_items,
     _try_get_current_user_ids,
     _validate_notebook_account_access,
@@ -29,9 +30,15 @@ from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
     EXIT_CONFIG_ERROR,
+    EXIT_VALIDATION_ERROR,
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
+from inspire.cli.utils.collection_output import (
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import forget_resource_identity
 from inspire.cli.utils.notebook_cli import (
@@ -79,6 +86,7 @@ def _notebook_lookup_overrides() -> dict[str, object]:
         "_list_notebooks_for_workspaces": _list_notebooks_for_workspaces,
         "_try_get_current_user_ids": _try_get_current_user_ids,
         "_validate_notebook_account_access": _validate_notebook_account_access,
+        "_resolve_notebook_id": _resolve_notebook_id,
     }
 
 
@@ -115,6 +123,18 @@ def _resolve_notebook_id(*args, **kwargs):  # noqa: ANN002, ANN003
         notebook_lookup_module,
         _notebook_lookup_overrides(),
         _lookup_resolve_notebook_id,
+        *args,
+        **kwargs,
+    )
+
+
+def _run_notebook_operation_with_stale_handle_retry(
+    *args, **kwargs  # noqa: ANN002, ANN003
+):
+    return _call_with_module_overrides(
+        notebook_lookup_module,
+        _notebook_lookup_overrides(),
+        _lookup_run_stale_retry,
         *args,
         **kwargs,
     )
@@ -630,23 +650,24 @@ def notebook_status(
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
         return
-    notebook_id, _ = _resolve_notebook_id(
-        ctx,
-        session=session,
-        config=config,
-        base_url=base_url,
-        identifier=notebook,
-        json_output=ctx.json_output,
-        workspace_ids=workspace_ids,
-    )
-
     try:
-        data = web_session_module.request_json(
-            session,
-            "GET",
-            f"{base_url}/api/v1/notebook/{notebook_id}",
-            headers={"Accept": "application/json"},
-            timeout=30,
+        data, _notebook_id, _workspace_id = (
+            _run_notebook_operation_with_stale_handle_retry(
+                ctx,
+                session=session,
+                config=config,
+                base_url=base_url,
+                identifier=notebook,
+                json_output=ctx.json_output,
+                workspace_ids=workspace_ids,
+                operation=lambda notebook_id: web_session_module.request_json(
+                    session,
+                    "GET",
+                    f"{base_url}/api/v1/notebook/{notebook_id}",
+                    headers={"Accept": "application/json"},
+                    timeout=30,
+                ),
+            )
         )
     except ValueError as e:
         message = str(e)
@@ -693,8 +714,9 @@ def notebook_status(
     "-n",
     type=click.IntRange(1),
     default=None,
-    help="Maximum rows to display after querying all matching notebooks.",
+    help="Maximum rows to display (default: 20).",
 )
+@click.option("--all", "show_all", is_flag=True, help="Show every matching notebook.")
 @click.option(
     "--status",
     "-s",
@@ -712,6 +734,7 @@ def list_notebooks(
     ctx: Context,
     workspace: Optional[str],
     limit: Optional[int],
+    show_all: bool,
     status: tuple[str, ...],
     keyword: str,
 ) -> None:
@@ -728,6 +751,12 @@ def list_notebooks(
         inspire notebook list --workspace all
         inspire --json notebook list --workspace all
     """
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
     session = require_web_session(
         ctx,
         hint=WEB_AUTH_HINT,
@@ -808,9 +837,17 @@ def list_notebooks(
         )
         return
 
-    if limit is not None:
-        all_items = all_items[:limit]
-    _print_notebook_list(all_items, ctx.json_output)
+    page = bound_collection(all_items, limit=effective_limit)
+    _print_notebook_list(
+        page.items,
+        ctx.json_output,
+        total=page.total,
+        truncated=page.truncated,
+    )
+    if not ctx.json_output:
+        notice = truncation_notice(page)
+        if notice:
+            click.echo(notice)
 
 
 __all__ = [

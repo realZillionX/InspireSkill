@@ -86,19 +86,31 @@ def _print_notebook_detail(notebook: dict) -> None:
             click.echo(f"  {label:<15}: {scrub_raw_ids(value)}")
 
 
-def _print_notebook_list(items: list, json_output: bool) -> None:
+def _print_notebook_list(
+    items: list,
+    json_output: bool,
+    *,
+    total: int | None = None,
+    truncated: bool = False,
+) -> None:
     """Print notebook list in appropriate format.
 
     The CLI takes names only. JSON output follows the same boundary.
     """
     if json_output:
-        click.echo(
-            json_formatter.format_json(
+        payload: dict[str, object] = {
+            "items": [public_notebook(item) for item in items],
+            "total": max(len(items), int(total or 0)),
+        }
+        if truncated:
+            payload.update(
                 {
-                    "items": [public_notebook(item) for item in items],
-                    "total": len(items),
+                    "shown": len(items),
+                    "truncated": True,
                 }
             )
+        click.echo(
+            json_formatter.format_json(payload)
         )
         return
 

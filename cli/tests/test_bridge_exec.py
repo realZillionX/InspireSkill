@@ -512,14 +512,33 @@ def test_exec_json_reports_jupyter_transport(monkeypatch, tmp_path) -> None:  # 
     monkeypatch.setattr(
         exec_cmd_module.browser_api_module,
         "run_command_capture_in_notebook",
-        lambda **_k: SimpleNamespace(returncode=3, output="bad\n", completed=True, marker="m"),
+        lambda **_k: SimpleNamespace(
+            returncode=3,
+            output="bad token=secret /tmp/job?trace=1\n",
+            completed=True,
+            marker="m",
+        ),
     )
 
     result = CliRunner().invoke(cli_main, ["--json", "notebook", "exec", "gpu-box", "false"])
 
     assert result.exit_code == 3
     payload = json.loads(result.output)
-    assert payload["data"] == {"returncode": 3, "output": "bad\n"}
+    assert payload == {
+            "success": False,
+            "error": {
+                "type": "CommandFailed",
+                "code": 3,
+                "message": "Remote command failed",
+            },
+        "data": {
+            "returncode": 3,
+            "output": "bad token=secret /tmp/job?trace=1\n",
+        },
+    }
+    assert result.output.count("\n") == 1
+    assert "returncode" not in payload["error"]
+    assert "3" not in payload["error"]["message"]
     assert "method" not in payload["data"]
 
 
@@ -1177,6 +1196,55 @@ def test_bridge_exec_rebuilds_notebook_tunnel_before_command(
     assert result.exit_code == EXIT_SUCCESS
     assert calls["rebuild"] == 1
     assert calls["stream"] == 1
+    assert "rebuilding" not in result.output
+    assert "attempt" not in result.output
+
+
+def test_bridge_exec_debug_reports_automatic_tunnel_rebuild(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = make_sync_config(tmp_path)
+    config.tunnel_retries = 2
+    config.tunnel_retry_pause = 0.0
+    calls: Dict[str, int] = {"availability": 0}
+    tunnel_config = TunnelConfig()
+    tunnel_config.add_bridge(
+        BridgeProfile(
+            name="gpu-main",
+            proxy_url="https://proxy.example.com/proxy/31337/",
+            notebook_id="notebook-1",
+        )
+    )
+
+    monkeypatch.setattr(
+        Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=True: (config, {})),
+    )
+    monkeypatch.setattr(exec_cmd_module, "load_tunnel_config", lambda: tunnel_config)
+
+    def fake_is_tunnel_available(*args: Any, **kwargs: Any) -> bool:
+        calls["availability"] += 1
+        return calls["availability"] > 1
+
+    monkeypatch.setattr(exec_cmd_module, "is_tunnel_available", fake_is_tunnel_available)
+    monkeypatch.setattr(exec_cmd_module, "run_ssh_command_streaming", lambda **_kwargs: 0)
+    monkeypatch.setattr(exec_cmd_module, "require_web_session", lambda ctx, hint: object())
+    monkeypatch.setattr(exec_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
+    monkeypatch.setattr(
+        exec_cmd_module,
+        "rebuild_notebook_bridge_profile",
+        lambda *args, **kwargs: tunnel_config.bridges["gpu-main"],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--debug", "notebook", "exec", "gpu-main", "echo hi"],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert "Tunnel unavailable; rebuilding automatically (attempt 1/2)..." in result.output
 
 
 def test_bridge_exec_cross_account_rebuild_uses_target_account_session(
@@ -1310,6 +1378,8 @@ def test_bridge_exec_reconnects_after_disconnect(
     assert result.exit_code == EXIT_SUCCESS
     assert calls["rebuild"] == 1
     assert calls["stream"] == 2
+    assert "rebuilding" not in result.output
+    assert "attempt" not in result.output
 
 
 def test_bridge_exec_non_notebook_bridge_exit_255_is_not_retried(

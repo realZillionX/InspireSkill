@@ -12,10 +12,16 @@ from inspire.cli.context import (
     EXIT_API_ERROR,
     EXIT_AUTH_ERROR,
     EXIT_CONFIG_ERROR,
+    EXIT_VALIDATION_ERROR,
     pass_context,
 )
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.formatters.table import render_table
+from inspire.cli.utils.collection_output import (
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
@@ -418,8 +424,8 @@ def _list_accurate_resources(
             availability = [
                 a for a in availability if group_filter in str(a.group_name or "").lower()
             ]
-        if limit is not None:
-            availability = availability[:limit]
+        page = bound_collection(availability, limit=limit)
+        availability = page.items
         for entry in availability:
             if not entry.workspace_name:
                 entry.workspace_name = workspace_names.get(entry.workspace_id, entry.workspace_name)
@@ -433,9 +439,19 @@ def _list_accurate_resources(
 
         if ctx.json_output:
             output = [_public_availability_row(entry) for entry in availability]
-            click.echo(json_formatter.format_json({"availability": output}))
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "availability": output,
+                        **page.metadata(),
+                    }
+                )
+            )
         else:
             _format_accurate_availability_table(availability, include_cpu=include_cpu)
+            notice = truncation_notice(page)
+            if notice:
+                click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -540,7 +556,14 @@ def run_resources_list(
     is_flag=True,
     help="Include CPU-only compute groups with CPU and memory totals",
 )
-@click.option("--limit", "-n", type=click.IntRange(min=1), default=None, help="Maximum rows to show.")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Maximum rows to show (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every matching compute group.")
 @pass_context
 def availability_resources(
     ctx: Context,
@@ -549,6 +572,7 @@ def availability_resources(
     group: Optional[str],
     include_cpu: bool,
     limit: Optional[int],
+    show_all: bool,
 ) -> None:
     """List compute-group availability.
 
@@ -561,11 +585,17 @@ def availability_resources(
         inspire resources availability --workspace all --include-cpu
         inspire resources availability --workspace 分布式训练空间 --group H200
     """
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
     run_resources_list(
         ctx,
         no_cache=no_cache,
         workspace=workspace,
         group=group,
-        limit=limit,
+        limit=effective_limit,
         include_cpu=include_cpu,
     )

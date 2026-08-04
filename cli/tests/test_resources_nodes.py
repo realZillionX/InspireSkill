@@ -199,3 +199,59 @@ def test_resources_nodes_rejects_group_id_input(
     assert result.exit_code != 0
     assert "compute group name" in result.output
     assert raw_group_id not in result.output
+
+
+def test_resources_nodes_defaults_to_twenty_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_config(monkeypatch, tmp_path)
+
+    from inspire.cli.commands.resources import resources_nodes as nodes_module
+
+    monkeypatch.setattr(nodes_module, "get_web_session", lambda: _Session())
+    monkeypatch.setattr(
+        nodes_module.browser_api_module,
+        "get_accurate_resource_availability",
+        lambda **_: [
+            GPUAvailability(
+                group_id=f"cg-{index:08x}-1111-1111-1111-111111111111",
+                group_name=f"Group {index:02d}",
+                gpu_type="NVIDIA_H200",
+                total_gpus=64,
+                used_gpus=index,
+                available_gpus=64 - index,
+                low_priority_gpus=0,
+                workspace_id=_WS_DEFAULT,
+                workspace_name="Default WS",
+            )
+            for index in range(25)
+        ],
+    )
+    monkeypatch.setattr(
+        nodes_module.browser_api_module,
+        "get_full_free_node_counts",
+        lambda group_ids, gpu_per_node: [
+            FullFreeNodeCount(
+                group_id=group_id,
+                group_name=f"Group {index:02d}",
+                gpu_per_node=gpu_per_node,
+                total_nodes=8,
+                ready_nodes=8,
+                full_free_nodes=25 - index,
+            )
+            for index, group_id in enumerate(group_ids)
+        ],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "resources", "nodes", "--workspace", "Default WS"],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert len(data["groups"]) == 20
+    assert data["shown"] == 20
+    assert data["total"] == 25
+    assert data["truncated"] is True

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Optional
 
 from inspire.cli.context import Context
-from inspire.cli.utils.metrics_shared import build_metrics_command
+from inspire.cli.utils.metrics_shared import ResolvedMetricsTarget, build_metrics_command
 from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url, _request_json
 from inspire.platform.web.session import WebSession
 
@@ -34,7 +34,7 @@ def _resolve_hpc_lcg(task_id: str, session: WebSession) -> Optional[str]:
     return None
 
 
-def _hpc_name_to_id(ctx: Context, name: str) -> str:
+def _hpc_name_to_id(ctx: Context, name: str) -> ResolvedMetricsTarget:
     # Module-attribute lookup so pytest monkeypatches on the workspace-scoped
     # resolver in ``hpc_commands`` intercept at call time.
     from inspire.cli.commands.hpc import hpc_commands as _hpc
@@ -45,14 +45,19 @@ def _hpc_name_to_id(ctx: Context, name: str) -> str:
 
     config, _ = Config.from_files_and_env(require_credentials=False)
     session = get_web_session()
-    return _hpc._resolve_hpc_name_in_workspace(
+    task_id, lcg = _hpc._run_readonly_hpc_operation(
         ctx,
         config=config,
         session=session,
         name=name,
         workspace=str(getattr(ctx, "workspace", "") or ""),
         limit=10000,
+        operation=lambda resolved_id, live_session: (
+            resolved_id,
+            _resolve_hpc_lcg(resolved_id, live_session),
+        ),
     )
+    return ResolvedMetricsTarget(task_id=task_id, logic_compute_group_id=lcg)
 
 
 hpc_metrics = build_metrics_command(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,8 +27,20 @@ from inspire.cli.context import (
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.auth import AuthenticationError
+from inspire.cli.utils.collection_output import (
+    DEFAULT_COLLECTION_LIMIT,
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import is_full_uuid, is_partial_id
+from inspire.cli.utils.id_resolver import (
+    forget_resource_identity,
+    is_full_uuid,
+    looks_like_platform_id,
+    reject_id_at_boundary,
+    run_with_stale_handle_retry,
+)
 from inspire.cli.utils.job_shell import (
     JobShellError,
     normalize_job_instances,
@@ -39,12 +52,17 @@ from inspire.cli.utils.resource_index import (
     ResourceIdentity,
     ResourceIndex,
     ResourceScope,
+    StaleResourceIndexRefresh,
     scope_for_session,
 )
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_query_scope, select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_INSTANCE_SCAN_LIMIT = 500
 
 _STATUS_ALIAS_MAP = {
     "PENDING": {"PENDING", "job_pending", "job_creating"},
@@ -130,7 +148,11 @@ def _looks_like_workspace_id(value: str) -> bool:
 
 
 def _looks_like_job_id(value: str) -> bool:
-    return value.strip().lower().startswith("job-")
+    return looks_like_platform_id(value)
+
+
+def _job_not_found_message(job: str) -> str:
+    return f"Job not found: {scrub_raw_ids(job)}"
 
 
 def _close_web_client() -> None:
@@ -265,6 +287,103 @@ def _public_output(value: object) -> Any:
     if isinstance(value, str):
         return scrub_raw_ids(value)
     return value
+
+
+_INSTANCE_HANDLE_RE = re.compile(
+    r"^(?:pod|instance|inst)[-_](?:[0-9a-f]{4,}|[0-9a-f-]{8,})$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_instance_handle(value: str) -> bool:
+    """Return whether an instance selector looks like an internal handle."""
+    value = str(value or "").strip()
+    if not value:
+        return False
+    return (
+        looks_like_platform_id(value)
+        or is_full_uuid(value)
+        or bool(_INSTANCE_HANDLE_RE.fullmatch(value))
+    )
+
+
+def _reject_job_instance_name(ctx: Context, value: str) -> str:
+    """Enforce the Name-only boundary for pod/instance selectors."""
+    name = reject_id_at_boundary(
+        ctx,
+        value,
+        resource_type="job instance",
+        list_command="inspire job instances <job-name> --workspace <workspace>",
+    )
+    if _looks_like_instance_handle(name):
+        _handle_error(
+            ctx,
+            "ValidationError",
+            "CLI commands only accept a job instance name.",
+            EXIT_VALIDATION_ERROR,
+            hint="List instances with `inspire job instances <job-name> --workspace <workspace>`.",
+        )
+        return ""
+    return name
+
+
+def _instance_rank(item: dict, position: int) -> int:
+    for key in ("rank", "instance_rank", "global_rank", "index", "replica_index"):
+        value = item.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return position
+
+
+def _instance_name(item: dict) -> str:
+    for key in ("name", "instance_name", "pod_name", "podName"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _public_job_instances(instances: list[dict]) -> list[dict]:
+    """Normalize instance metadata without exposing an internal handle."""
+    public_instances: list[dict] = []
+    for position, item in enumerate(instances):
+        public = _public_output(item)
+        name = _instance_name(item)
+        for key in ("instance_name", "pod_name", "podName"):
+            public.pop(key, None)
+        if name and not _looks_like_instance_handle(name):
+            public["name"] = scrub_raw_ids(name)
+        else:
+            public.pop("name", None)
+            public["rank"] = _instance_rank(item, position)
+        public_instances.append(public)
+    return public_instances
+
+
+def _fetch_job_instances(
+    job_id: str,
+    *,
+    limit: int,
+    session,
+    show_all: bool,
+) -> tuple[list[dict], int]:
+    """Fetch the bounded instance page, expanding it only for explicit ``--all``."""
+    rows, total = browser_api_module.list_job_instances(
+        job_id,
+        limit=limit,
+        session=session,
+    )
+    if show_all and total > len(rows):
+        expanded_rows, expanded_total = browser_api_module.list_job_instances(
+            job_id,
+            limit=max(total, len(rows), 1),
+            session=session,
+        )
+        rows = expanded_rows
+        total = max(total, expanded_total, len(rows))
+    return rows, total
 
 
 def _job_list_page_size(limit: Optional[int]) -> int:
@@ -438,16 +557,22 @@ def _format_job_instances(instances: list[dict]) -> str:
     if not instances:
         return "No job instances found."
 
-    rendered = [
-        {
-            "name": scrub_raw_ids(i.get("name") or ""),
-            "status": scrub_raw_ids(i.get("instance_status") or ""),
-            "type": scrub_raw_ids(i.get("instance_type") or ""),
-            "node": scrub_raw_ids(i.get("node") or ""),
-            "created": human_formatter.format_epoch(i.get("created_at")),
-        }
-        for i in instances
-    ]
+    rendered = []
+    for position, item in enumerate(instances):
+        name = _instance_name(item)
+        rendered.append(
+            {
+                "name": (
+                    scrub_raw_ids(name)
+                    if name and not _looks_like_instance_handle(name)
+                    else f"rank={_instance_rank(item, position)}"
+                ),
+                "status": scrub_raw_ids(item.get("instance_status") or ""),
+                "type": scrub_raw_ids(item.get("instance_type") or ""),
+                "node": scrub_raw_ids(item.get("node") or ""),
+                "created": human_formatter.format_epoch(item.get("created_at")),
+            }
+        )
     name_w = max(len("Instance"), *(len(str(i["name"])) for i in rendered))
     status_w = max(len("Status"), *(len(str(i["status"])) for i in rendered))
     type_w = max(len("Type"), *(len(str(i["type"])) for i in rendered))
@@ -486,9 +611,7 @@ def _resolve_web_job_id(
     job = (job or "").strip()
     if not job:
         raise WebJobResolutionError("Job name cannot be empty")
-    if _looks_like_job_id(job) or is_full_uuid(job, prefix="job-") or is_partial_id(
-        job, prefix="job-"
-    ):
+    if _looks_like_job_id(job):
         raise WebJobValidationError(
             "CLI commands take a job name. "
             "Use `inspire job list --workspace <name|all>` to find the name."
@@ -520,6 +643,14 @@ def _resolve_web_job_id(
         cache_index = ResourceIndex.for_account() if cache_scopes else None
     except Exception:
         cache_index = None
+
+    snapshot_tokens: dict[str, tuple[int, int]] = {}
+    if cache_index is not None:
+        for workspace_id, scope in cache_scopes.items():
+            try:
+                snapshot_tokens[workspace_id] = cache_index.snapshot_token(scope)
+            except Exception:
+                continue
 
     if cache_index is not None and cache_scopes and not require_live:
         cached: list[tuple[str, ResourceIdentity]] = []
@@ -580,9 +711,13 @@ def _resolve_web_job_id(
         limit=limit,
     )
     exact = [row for row in rows if row.get("name") == job]
+    stale_workspaces: set[str] = set()
     if cache_index is not None and cache_scopes:
-        try:
-            for workspace_id, scope in cache_scopes.items():
+        for workspace_id, scope in cache_scopes.items():
+            token = snapshot_tokens.get(workspace_id)
+            if token is None:
+                continue
+            try:
                 cache_index.replace_name(
                     scope,
                     job,
@@ -597,11 +732,64 @@ def _resolve_web_job_id(
                         for row in exact
                         if str(row.get("workspace_id") or "") == workspace_id
                     ],
+                    expected_generation=token[0],
+                    expected_revision=token[1],
                 )
-        except Exception:
-            pass
+            except StaleResourceIndexRefresh:
+                try:
+                    if cache_index.generation() != token[0]:
+                        continue
+                except Exception:
+                    pass
+                stale_workspaces.add(workspace_id)
+            except Exception:
+                continue
+
+    if stale_workspaces:
+        # A create/delete/write-through won while the live list was in flight.
+        # Never let that older response resurrect the deleted handle.
+        exact = [
+            row
+            for row in exact
+            if str(row.get("workspace_id") or "") not in stale_workspaces
+        ]
+        current_rows: list[dict] = []
+        for workspace_id in stale_workspaces:
+            scope = cache_scopes.get(workspace_id)
+            if scope is None or cache_index is None:
+                continue
+            try:
+                current_rows.extend(
+                    {
+                        "job_id": item.resource_id,
+                        "name": item.name,
+                        "workspace_id": workspace_id,
+                        "workspace_name": _workspace_name(session, workspace_id),
+                        "status": item.status,
+                        "created_at": item.created_at,
+                        "created_by_id": item.owner_id,
+                    }
+                    for item in cache_index.lookup(
+                        scope,
+                        job,
+                        fresh_only=False,
+                    )
+                )
+            except Exception:
+                continue
+        exact = _dedupe_job_rows([*exact, *current_rows])
+
+    candidate_rows = (
+        [
+            row
+            for row in rows
+            if str(row.get("workspace_id") or "") not in stale_workspaces
+        ]
+        if stale_workspaces
+        else rows
+    )
     if pick is not None:
-        candidate_rows = exact if exact else rows
+        candidate_rows = exact if exact else candidate_rows
         if pick < 1 or pick > len(candidate_rows):
             raise WebJobResolutionError(
                 f"--pick {pick} out of range; {len(candidate_rows)} web jobs match "
@@ -616,10 +804,12 @@ def _resolve_web_job_id(
             f"Multiple web jobs share name {scrub_raw_ids(job)!r}; refine the name. "
             f"Candidates: {candidate_names}"
         )
-    if len(rows) == 1:
-        return str(rows[0]["job_id"])
-    if rows:
-        candidate_names = ", ".join(scrub_raw_ids(row.get("name") or "") for row in rows[:5])
+    if len(candidate_rows) == 1:
+        return str(candidate_rows[0]["job_id"])
+    if candidate_rows:
+        candidate_names = ", ".join(
+            scrub_raw_ids(row.get("name") or "") for row in candidate_rows[:5]
+        )
         raise WebJobResolutionError(
             f"Multiple web jobs match {scrub_raw_ids(job)!r}; pass the full job name. "
             f"Candidates: {candidate_names}"
@@ -629,6 +819,74 @@ def _resolve_web_job_id(
     raise WebJobResolutionError(
         f"No web job matching {scrub_raw_ids(job)!r} found. "
         f"Try `{hint}`."
+    )
+
+
+def _run_readonly_web_job_operation(
+    *,
+    config: Config,
+    job: str,
+    workspace: Optional[str],
+    all_workspaces: bool = False,
+    max_pages: int = 50,
+    scan_limit: Optional[int] = None,
+    pick: Optional[int] = None,
+    workspace_must_be_single: bool = False,
+    session_factory=None,
+    resolver=None,
+    operation,
+):
+    """Run a read-only job operation and recover one stale cache hit."""
+    active_session = None
+
+    def _session():
+        nonlocal active_session
+        if active_session is None:
+            active_session = (session_factory or get_web_session)()
+        return active_session
+
+    def _resolve(require_live: bool) -> str:
+        resolve_job = resolver or _resolve_web_job_id
+        return resolve_job(
+            config=config,
+            job=job,
+            workspace=workspace,
+            all_workspaces=all_workspaces,
+            max_pages=max_pages,
+            scan_limit=scan_limit,
+            pick=pick,
+            workspace_must_be_single=workspace_must_be_single,
+            require_live=require_live,
+        )
+
+    def _invalidate(job_id: str) -> None:
+        session = _session()
+        workspace_id = ""
+        workspace_names = getattr(session, "all_workspace_names", None)
+        if (
+            workspace
+            and workspace.strip().casefold() != "all"
+            and isinstance(workspace_names, dict)
+        ):
+            requested_workspace = workspace.strip().casefold()
+            for candidate_id, candidate_name in workspace_names.items():
+                if str(candidate_name or "").strip().casefold() == requested_workspace:
+                    workspace_id = str(candidate_id or "").strip()
+                    break
+        forget_resource_identity(
+            session=session,
+            resource_type="job",
+            resource_id=job_id,
+            workspace_id=workspace_id,
+            owner_scope="self",
+        )
+
+    return run_with_stale_handle_retry(
+        name=job,
+        resolve_cached=lambda: _resolve(False),
+        resolve_live=lambda _name: _resolve(True),
+        operation=lambda job_id: operation(job_id, _session()),
+        invalidate=_invalidate,
     )
 
 
@@ -850,7 +1108,7 @@ def _watch_jobs(
 
     try:
         while True:
-            jobs, _scanned = _list_web_jobs(
+            jobs, scanned = _list_web_jobs(
                 config=config,
                 workspace=workspace,
                 all_workspaces=all_workspaces,
@@ -864,6 +1122,12 @@ def _watch_jobs(
             )
             if exclude_statuses:
                 jobs = [j for j in jobs if j.get("status") not in exclude_statuses]
+            page = bound_collection(
+                jobs,
+                limit=limit,
+                total=sum(int(item.get("total") or 0) for item in scanned),
+            )
+            jobs = page.items
 
             for job_item in jobs:
                 jid = str(job_item.get("job_id") or "")
@@ -902,6 +1166,9 @@ def _watch_jobs(
                             f"{scrub_raw_ids(entry.get('name', 'N/A')):<32}  "
                             f"{emoji} {scrub_raw_ids(entry.get('status', 'N/A'))}"
                         )
+                notice = truncation_notice(page, full_option="--limit N")
+                if notice:
+                    click.echo(f"\n{notice}")
 
             time.sleep(interval)
 
@@ -917,11 +1184,9 @@ def _watch_jobs(
     "-n",
     type=click.IntRange(1),
     default=None,
-    help=(
-        "Maximum jobs per workspace to query and display. "
-        "If omitted, query all pages in each workspace."
-    ),
+    help="Maximum jobs to display across requested workspaces (default: 20).",
 )
+@click.option("--all", "show_all", is_flag=True, help="Show every matching job.")
 @click.option("--status", "-s", help="Filter by status (PENDING, RUNNING, SUCCEEDED, FAILED)")
 @click.option(
     "--active",
@@ -943,6 +1208,7 @@ def _watch_jobs(
 def list_jobs(
     ctx: Context,
     limit: Optional[int],
+    show_all: bool,
     status: Optional[str],
     active: bool,
     watch: bool,
@@ -965,6 +1231,30 @@ def list_jobs(
         inspire job list --workspace 分布式训练空间 --watch --active -n 20
     """
     try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    if watch and ctx.json_output:
+        _handle_error(
+            ctx,
+            "UsageError",
+            "--json --watch is not supported. Drop --json to watch, "
+            "or drop --watch for a one-shot JSON result.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+    if watch and show_all:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            "--watch --all is not supported. Use --limit with --watch.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+
+    try:
         config, _ = Config.from_files_and_env(require_credentials=False)
 
         if watch:
@@ -975,34 +1265,49 @@ def list_jobs(
                 all_workspaces=False,
                 status=status,
                 name=keyword,
-                page_size=_job_list_page_size(limit),
+                page_size=_job_list_page_size(effective_limit),
                 max_pages=50,
-                limit=limit,
+                limit=effective_limit,
                 interval=interval,
                 active=active,
             )
             return
 
-        rows, _scanned = _list_web_jobs(
+        rows, scanned = _list_web_jobs(
             config=config,
             workspace=workspace,
             all_workspaces=False,
             status=status,
             name=keyword,
             page_num=1,
-            page_size=_job_list_page_size(limit),
+            page_size=_job_list_page_size(effective_limit),
             max_pages=50,
-            limit=limit,
+            limit=effective_limit,
             api_statuses=_JOB_ACTIVE_API_STATUSES if active and not status else None,
         )
 
         if active:
             rows = [j for j in rows if j.get("status") in _JOB_ACTIVE_STATUSES]
 
+        page = bound_collection(
+            rows,
+            limit=effective_limit,
+            total=sum(int(item.get("total") or 0) for item in scanned),
+        )
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"jobs": _public_output(rows)}))
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "jobs": _public_output(page.items),
+                        **page.metadata(),
+                    }
+                )
+            )
         else:
-            click.echo(_format_job_list(rows))
+            click.echo(_format_job_list(page.items))
+            notice = truncation_notice(page)
+            if notice:
+                click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -1031,16 +1336,15 @@ def status(
     """
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        job_id = _resolve_web_job_id(
-            config=config,
-            job=job,
-            workspace=workspace,
-            all_workspaces=False,
-            max_pages=50,
-        )
         try:
-            session = get_web_session()
-            job_data = browser_api_module.get_job_detail_v2(job_id, session=session)
+            job_data = _run_readonly_web_job_operation(
+                config=config,
+                job=job,
+                workspace=workspace,
+                operation=lambda job_id, session: (
+                    browser_api_module.get_job_detail_v2(job_id, session=session)
+                ),
+            )
         finally:
             _close_web_client()
 
@@ -1062,7 +1366,13 @@ def status(
     except Exception as e:
         msg = str(e).lower()
         if "not found" in msg or "invalid job id" in msg:
-            _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
+            logger.debug("Job status used a stale internal handle", exc_info=True)
+            _handle_error(
+                ctx,
+                "JobNotFound",
+                _job_not_found_message(job),
+                EXIT_JOB_NOT_FOUND,
+            )
         else:
             _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
@@ -1078,46 +1388,70 @@ def status(
     "--limit",
     "-n",
     type=click.IntRange(1),
-    default=500,
-    show_default=True,
-    help="Maximum instances to query and display.",
+    default=None,
+    help="Maximum instances to display (default: 20).",
 )
+@click.option("--all", "show_all", is_flag=True, help="Show the complete instance list.")
 @pass_context
 def instances(
     ctx: Context,
     job: str,
     workspace: Optional[str],
-    limit: int,
+    limit: Optional[int],
+    show_all: bool,
 ) -> None:
     """List pod-level instances for a distributed-training job."""
     try:
+        output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    request_limit = (
+        output_limit if output_limit is not None else DEFAULT_COLLECTION_LIMIT
+    )
+    resolution_limit = (
+        limit if limit is not None else _DEFAULT_INSTANCE_SCAN_LIMIT
+    )
+
+    try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        job_id = _resolve_web_job_id(
-            config=config,
-            job=job,
-            workspace=workspace,
-            all_workspaces=False,
-            max_pages=1,
-            scan_limit=limit,
-        )
         try:
-            session = get_web_session()
-            rows, total = browser_api_module.list_job_instances(
-                job_id,
-                limit=limit,
-                session=session,
+            rows, total = _run_readonly_web_job_operation(
+                config=config,
+                job=job,
+                workspace=workspace,
+                scan_limit=resolution_limit,
+                operation=lambda job_id, session: (
+                    _fetch_job_instances(
+                        job_id,
+                        session=session,
+                        limit=request_limit,
+                        show_all=show_all,
+                    )
+                ),
             )
         finally:
             _close_web_client()
 
         if ctx.json_output:
+            page = bound_collection(rows, limit=output_limit, total=total)
+            payload: dict[str, Any] = {
+                "instances": _public_job_instances(page.items),
+                "total": page.total,
+            }
+            if page.truncated:
+                payload.update(page.metadata())
+                payload["limit"] = output_limit
             click.echo(
-                json_formatter.format_json(
-                    {"instances": _public_output(rows), "total": total}
-                )
+                json_formatter.format_json(payload)
             )
         else:
-            click.echo(_format_job_instances(rows))
+            page = bound_collection(rows, limit=output_limit, total=total)
+            click.echo(_format_job_instances(page.items))
+            notice = truncation_notice(page)
+            if notice:
+                click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -1173,7 +1507,13 @@ def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) 
     except Exception as e:
         msg = str(e).lower()
         if "not found" in msg or "invalid job id" in msg:
-            _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
+            logger.debug("Job stop used a stale internal handle", exc_info=True)
+            _handle_error(
+                ctx,
+                "JobNotFound",
+                _job_not_found_message(job),
+                EXIT_JOB_NOT_FOUND,
+            )
         else:
             _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
@@ -1260,7 +1600,13 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
     except Exception as e:
         msg = str(e).lower()
         if "not found" in msg or "invalid job id" in msg:
-            _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
+            logger.debug("Job delete used a stale internal handle", exc_info=True)
+            _handle_error(
+                ctx,
+                "JobNotFound",
+                _job_not_found_message(job),
+                EXIT_JOB_NOT_FOUND,
+            )
         else:
             _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
@@ -1299,13 +1645,21 @@ def wait(
     """
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        job_id = _resolve_web_job_id(
-            config=config,
-            job=job,
-            workspace=workspace,
-            all_workspaces=False,
-            max_pages=50,
-        )
+        try:
+            job_id, initial_job_data = _run_readonly_web_job_operation(
+                config=config,
+                job=job,
+                workspace=workspace,
+                operation=lambda resolved_id, session: (
+                    resolved_id,
+                    browser_api_module.get_job_detail_v2(
+                        resolved_id,
+                        session=session,
+                    ),
+                ),
+            )
+        finally:
+            _close_web_client()
 
         terminal_statuses = {
             "SUCCEEDED",
@@ -1317,6 +1671,7 @@ def wait(
         }
         start_time = time.time()
         last_status = None
+        pending_job_data: dict | None = initial_job_data
 
         while True:
             elapsed = time.time() - start_time
@@ -1326,17 +1681,29 @@ def wait(
                 return
 
             try:
-                try:
-                    session = get_web_session()
-                    job_data = browser_api_module.get_job_detail_v2(job_id, session=session)
-                finally:
-                    _close_web_client()
+                if pending_job_data is not None:
+                    job_data = pending_job_data
+                    pending_job_data = None
+                else:
+                    try:
+                        job_id, job_data = _run_readonly_web_job_operation(
+                            config=config,
+                            job=job,
+                            workspace=workspace,
+                            operation=lambda resolved_id, session: (
+                                resolved_id,
+                                browser_api_module.get_job_detail_v2(
+                                    resolved_id,
+                                    session=session,
+                                ),
+                            ),
+                        )
+                    finally:
+                        _close_web_client()
                 current_status = job_data.get("status", "UNKNOWN")
 
                 if current_status != last_status:
-                    if ctx.json_output:
-                        click.echo(json_formatter.format_json({"status": current_status}))
-                    else:
+                    if not ctx.json_output:
                         click.echo(f"Status: {scrub_raw_ids(current_status)}")
                     last_status = current_status
 
@@ -1382,16 +1749,18 @@ def show_command(
     """Show the training command used for a job."""
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        job_id = _resolve_web_job_id(
-            config=config,
-            job=job,
-            workspace=workspace,
-            all_workspaces=False,
-            max_pages=50,
-        )
         try:
-            session = get_web_session()
-            job_data = browser_api_module.get_job_detail_v2(job_id, session=session)
+            job_data = _run_readonly_web_job_operation(
+                config=config,
+                job=job,
+                workspace=workspace,
+                operation=lambda resolved_id, session: (
+                    browser_api_module.get_job_detail_v2(
+                        resolved_id,
+                        session=session,
+                    )
+                ),
+            )
         finally:
             _close_web_client()
         command_value = job_data.get("command")
@@ -1421,7 +1790,13 @@ def show_command(
     except Exception as e:
         msg = str(e).lower()
         if "not found" in msg or "invalid job id" in msg:
-            _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
+            logger.debug("Job command lookup used a stale internal handle", exc_info=True)
+            _handle_error(
+                ctx,
+                "JobNotFound",
+                _job_not_found_message(job),
+                EXIT_JOB_NOT_FOUND,
+            )
         else:
             _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
@@ -1429,7 +1804,12 @@ def show_command(
 @click.command("shell")
 @click.argument("job")
 @click.option("--rank", type=click.IntRange(0), default=None, help="Open the running instance with this rank")
-@click.option("--instance", "instance_name", default=None, help="Open this exact instance name")
+@click.option(
+    "--instance",
+    "instance_name",
+    default=None,
+    help="Open this exact instance name.",
+)
 @click.option(
     "--pick",
     type=click.IntRange(1),
@@ -1463,24 +1843,27 @@ def shell(
             EXIT_VALIDATION_ERROR,
         )
         return
+    if instance_name is not None:
+        instance_name = _reject_job_instance_name(ctx, instance_name)
 
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        job_id = _resolve_web_job_id(
-            config=config,
-            job=job,
-            workspace=workspace,
-            all_workspaces=False,
-            max_pages=50,
-            pick=pick,
-            workspace_must_be_single=True,
-        )
-        session = get_web_session()
         try:
-            raw_instances, _ = browser_api_module.list_job_instances(
-                job_id,
-                limit=200,
-                session=session,
+            job_id, session, raw_instances = _run_readonly_web_job_operation(
+                config=config,
+                job=job,
+                workspace=workspace,
+                pick=pick,
+                workspace_must_be_single=True,
+                operation=lambda resolved_id, live_session: (
+                    resolved_id,
+                    live_session,
+                    browser_api_module.list_job_instances(
+                        resolved_id,
+                        limit=200,
+                        session=live_session,
+                    )[0],
+                ),
             )
         finally:
             _close_web_client()

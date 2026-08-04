@@ -12,10 +12,16 @@ from inspire.cli.context import (
     EXIT_API_ERROR,
     EXIT_AUTH_ERROR,
     EXIT_CONFIG_ERROR,
+    EXIT_VALIDATION_ERROR,
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.table import render_table
+from inspire.cli.utils.collection_output import (
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
@@ -92,12 +98,22 @@ def _public_group(row: dict) -> dict[str, object]:
     ),
 )
 @click.option("--workspace", required=True, help="Workspace name or 'all'.")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum compute groups to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every matching compute group.")
 @pass_context
 def list_nodes(
     ctx: Context,
     group: str,
     min_full_free_nodes: int,
     workspace: str,
+    limit: int | None,
+    show_all: bool,
 ) -> None:
     """Show how many whole 8-GPU nodes are currently free per compute group.
 
@@ -110,6 +126,12 @@ def list_nodes(
         inspire resources nodes --workspace all --group H200
         inspire resources nodes --workspace 分布式训练空间 --min-nodes 2
     """
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
     try:
         if group:
             group = reject_id_at_boundary(
@@ -183,7 +205,9 @@ def list_nodes(
             reverse=True,
         )
         recommendation = filtered[0] if filtered else None
-        public_groups = [_public_group(row) for row in filtered]
+        page = bound_collection(filtered, limit=effective_limit)
+        shown_rows = page.items
+        public_groups = [_public_group(row) for row in shown_rows]
         public_recommendation = _public_group(recommendation) if recommendation else None
 
         if ctx.json_output:
@@ -195,6 +219,7 @@ def list_nodes(
                         "min_full_free_nodes": min_full_free_nodes,
                         "workspace_name": "all" if all_workspaces else workspace,
                         "total_full_free_nodes": sum(x["full_free_nodes"] for x in filtered),
+                        **page.metadata(),
                     }
                 )
             )
@@ -205,7 +230,7 @@ def list_nodes(
             return
 
         show_workspace = (
-            len({row["workspace_name"] for row in filtered if row["workspace_name"]}) > 1
+            len({row["workspace_name"] for row in shown_rows if row["workspace_name"]}) > 1
         )
         if show_workspace:
             headers: tuple[str, ...] = (
@@ -226,7 +251,7 @@ def list_nodes(
         total_full_free = 0
         total_free_gpus = 0
         table_rows: list[tuple[object, ...]] = []
-        for row in filtered:
+        for row in shown_rows:
             name = _display_name(row["group_name"])
             full_free = row["full_free_nodes"]
             ready = row["ready_nodes"]
@@ -269,6 +294,9 @@ def list_nodes(
                 f"{prefix}{group_name} "
                 f"({recommendation['full_free_nodes']} full-free node(s))"
             )
+        notice = truncation_notice(page)
+        if notice:
+            click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

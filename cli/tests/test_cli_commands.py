@@ -15,6 +15,7 @@ from inspire.cli.context import (
     EXIT_AUTH_ERROR,
     EXIT_TIMEOUT,
     EXIT_JOB_NOT_FOUND,
+    EXIT_VALIDATION_ERROR,
 )
 
 from inspire import config as config_module
@@ -30,23 +31,6 @@ TEST_JOB_ID = "job-12345678-1234-1234-1234-123456789abc"
 TEST_JOB_ID_2 = "job-abcdef12-3456-7890-abcd-ef1234567890"
 TEST_JOB_ID_3 = "job-11111111-2222-3333-4444-555555555555"
 TEST_DOCKER_REGISTRY = "registry.local"
-
-
-def _parse_json_stream(output: str) -> List[Dict[str, Any]]:
-    """Parse one or more JSON documents echoed sequentially."""
-    decoder = json.JSONDecoder()
-    payloads: List[Dict[str, Any]] = []
-    index = 0
-    length = len(output)
-    while index < length:
-        while index < length and output[index].isspace():
-            index += 1
-        if index >= length:
-            break
-        parsed, index = decoder.raw_decode(output, index)
-        payloads.append(parsed)
-    return payloads
-
 
 def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> config_module.Config:
     """Create a test Config object.
@@ -629,6 +613,59 @@ def test_job_status_not_found_sets_specific_exit_code(
     assert result.exit_code == EXIT_JOB_NOT_FOUND
 
 
+def test_job_stale_handle_errors_are_name_only_and_stable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.job import job_commands
+
+    error = RuntimeError("invalid job id deadbeef")
+    monkeypatch.setattr(
+        job_commands,
+        "_run_readonly_web_job_operation",
+        lambda **_kwargs: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(
+        job_commands,
+        "_resolve_web_job_id",
+        lambda **_kwargs: TEST_JOB_ID,
+    )
+    monkeypatch.setattr(
+        job_commands.browser_api_module,
+        "stop_training_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(
+        job_commands.browser_api_module,
+        "delete_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+
+    commands = (
+        ["job", "status", "train-a", "--workspace", "Test Workspace"],
+        ["job", "stop", "train-a", "--workspace", "Test Workspace"],
+        [
+            "job",
+            "delete",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+            "--yes",
+        ],
+        ["job", "command", "train-a", "--workspace", "Test Workspace"],
+    )
+    runner = CliRunner()
+    for json_args in ([], ["--json"]):
+        for command in commands:
+            result = runner.invoke(cli_main, [*json_args, *command])
+
+            assert result.exit_code == EXIT_JOB_NOT_FOUND
+            assert "train-a" in result.output
+            assert "deadbeef" not in result.output
+            assert "invalid job id" not in result.output.lower()
+
+
 def test_job_stop_with_force_and_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     patch_config_and_auth(monkeypatch, tmp_path)
     from inspire.cli.commands.job import job_commands
@@ -725,10 +762,84 @@ def test_job_wait_json_output_has_no_human_banner(
 
     assert result.exit_code == EXIT_SUCCESS
     assert "Waiting for job" not in result.output
-    payloads = _parse_json_stream(result.output)
-    assert payloads
-    for payload in payloads:
-        assert payload["success"] is True
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["data"]["name"] == "wait-job"
+    assert payload["data"]["status"] == "SUCCEEDED"
+
+
+def test_job_wait_json_suppresses_intermediate_status_documents(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.job import job_commands
+
+    monkeypatch.setattr(job_commands, "_resolve_web_job_id", lambda **kwargs: TEST_JOB_ID)
+    monkeypatch.setattr(job_commands, "get_web_session", web_session_module.get_web_session)
+    monkeypatch.setattr(job_commands.time, "sleep", lambda _seconds: None)
+    details = iter(
+        [
+            {"job_id": TEST_JOB_ID, "name": "wait-job", "status": "RUNNING"},
+            {"job_id": TEST_JOB_ID, "name": "wait-job", "status": "SUCCEEDED"},
+        ]
+    )
+    monkeypatch.setattr(
+        job_commands.browser_api_module,
+        "get_job_detail_v2",
+        lambda job_id, *, session: next(details),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "wait",
+            "wait-job",
+            "--workspace",
+            "Test Workspace",
+            "--timeout",
+            "60",
+            "--interval",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert result.output.count("\n") == 1
+    assert json.loads(result.output)["data"]["status"] == "SUCCEEDED"
+
+
+def test_job_list_watch_json_is_rejected_with_one_json_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "list",
+            "--workspace",
+            "Test Workspace",
+            "--watch",
+        ],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION_ERROR
+    assert result.output.count("\n") == 1
+    assert json.loads(result.output) == {
+        "success": False,
+        "error": {
+            "type": "UsageError",
+            "code": EXIT_VALIDATION_ERROR,
+            "message": (
+                "--json --watch is not supported. Drop --json to watch, "
+                "or drop --watch for a one-shot JSON result."
+            ),
+        },
+    }
 
 
 def test_job_wait_times_out(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -864,7 +975,7 @@ def test_job_list_web_name_search_scans_all_workspaces(
     assert {"ws-main", "ws-train"} <= scanned
 
 
-def test_job_list_without_keyword_fetches_all_pages(
+def test_job_list_defaults_to_compact_limit_and_all_fetches_all_pages(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     patch_config_and_auth(monkeypatch, tmp_path)
@@ -942,13 +1053,28 @@ def test_job_list_without_keyword_fetches_all_pages(
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
+    assert len(payload["data"]["jobs"]) == 20
+    assert payload["data"]["shown"] == 20
+    assert payload["data"]["total"] == 101
+    assert payload["data"]["truncated"] is True
+    assert [call["page_num"] for call in calls] == [1]
+    assert all(call["page_size"] == 20 for call in calls)
+
+    calls.clear()
+    result = runner.invoke(
+        cli_main,
+        ["--json", "job", "list", "--workspace", "Main Workspace", "--all"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
     assert len(payload["data"]["jobs"]) == 101
     assert {row["name"] for row in payload["data"]["jobs"]} >= {"train-101", "train-001"}
     assert [call["page_num"] for call in calls] == [1, 2]
     assert all(call["page_size"] == 100 for call in calls)
 
 
-def test_job_list_limit_applies_per_workspace(
+def test_job_list_limit_applies_across_requested_workspaces(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     patch_config_and_auth(monkeypatch, tmp_path)
@@ -1028,10 +1154,10 @@ def test_job_list_limit_applies_per_workspace(
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert {row["name"] for row in payload["data"]["jobs"]} == {
-        "ws-main-job-1",
-        "ws-train-job-1",
-    }
+    assert [row["name"] for row in payload["data"]["jobs"]] == ["ws-main-job-1"]
+    assert payload["data"]["shown"] == 1
+    assert payload["data"]["total"] == 4
+    assert payload["data"]["truncated"] is True
     assert [call["workspace_id"] for call in calls] == ["ws-main", "ws-train"]
     assert all(call["page_num"] == 1 for call in calls)
     assert all(call["page_size"] == 1 for call in calls)
@@ -1408,9 +1534,14 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     result = runner.invoke(cli_main, ["config", "check"])
 
     assert result.exit_code == EXIT_AUTH_ERROR
-    assert "Authentication failed" in result.output
-    assert "Effective runtime proxy" in result.output
-    assert "source=system_env" in result.output
+    assert "Authentication: FAILED" in result.output
+    assert "Effective runtime proxy" not in result.output
+    assert "source=system_env" not in result.output
+
+    detailed = runner.invoke(cli_main, ["config", "check", "--details"])
+    assert detailed.exit_code == EXIT_AUTH_ERROR
+    assert "Effective runtime proxy" in detailed.output
+    assert "source=system_env" in detailed.output
 
 
 def test_config_check_config_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -1422,7 +1553,7 @@ def test_config_check_config_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check"])
+    result = runner.invoke(cli_main, ["--json", "config", "check", "--details"])
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     payload = json.loads(result.output)
@@ -1492,7 +1623,7 @@ base_url = "https://my-inspire.internal"
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check"])
+    result = runner.invoke(cli_main, ["--json", "config", "check", "--details"])
 
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
@@ -1501,8 +1632,10 @@ base_url = "https://my-inspire.internal"
     assert resolution["source"] == config_module.SOURCE_PROJECT
     assert resolution["prefer_source"] == "toml"
     assert resolution["env_present"] is True
-    assert resolution["project_config_path"] == str(project_config)
-    assert resolution["global_config_path"] == str(global_config)
+    assert "project_config_path" not in resolution
+    assert "global_config_path" not in resolution
+    assert str(project_config) not in result.output
+    assert str(global_config) not in result.output
     assert payload["data"]["effective_proxy"] == effective_proxy
 
 
@@ -1540,8 +1673,10 @@ def test_config_check_accepts_local_json_alias(
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"]["auth_ok"] is True
-    assert "base_url_resolution" in payload["data"]
+    assert payload["data"] == {
+        "configured": True,
+        "authenticated": True,
+    }
 
 
 def test_config_check_rejects_placeholder_base_url(
@@ -1696,7 +1831,8 @@ def test_config_check_allows_path_default_for_browser_api_prefix(
     result = runner.invoke(cli_main, ["config", "check"])
 
     assert result.exit_code == EXIT_SUCCESS
-    assert "Configuration looks good" in result.output
+    assert "Configuration: OK" in result.output
+    assert "Authentication: OK" in result.output
 
 
 def test_init_json_global_contract_via_top_level_flag(
@@ -1722,10 +1858,8 @@ def test_init_json_global_contract_via_top_level_flag(
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"]["mode"] == "template"
-    assert payload["data"]["configs"] == [
-        str(tmp_path / ".inspire" / "accounts" / "default" / "config.toml")
-    ]
+    assert payload["data"] == {"status": "updated", "scope": "project"}
+    assert str(tmp_path) not in result.output
 
 
 def test_config_show_respects_global_json_flag(
@@ -1751,9 +1885,10 @@ def test_config_show_respects_global_json_flag(
 
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
-    assert "config_files" in payload
-    assert "values" in payload
-    assert "INSPIRE_USERNAME" in payload["values"]
+    assert payload["success"] is True
+    assert "config_files" not in payload["data"]
+    assert "INSPIRE_USERNAME" in payload["data"]["values"]
+    assert payload["data"]["values"]["INSPIRE_USERNAME"] == config.username
 
 
 def test_notebook_list_all_workspaces_combines_results(

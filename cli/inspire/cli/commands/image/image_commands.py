@@ -10,15 +10,22 @@ from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
     EXIT_CONFIG_ERROR,
+    EXIT_VALIDATION_ERROR,
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
+from inspire.cli.utils.collection_output import (
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import (
     forget_resource_identity,
     remember_resource_identity,
     resolve_by_name,
+    run_with_stale_handle_retry,
 )
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
@@ -49,10 +56,12 @@ def _resolve_image_name(
 
     def _lister():
         bucket = []
+        failures: list[tuple[str, Exception]] = []
         for source in ("private", "public", "official"):
             try:
                 imgs = browser_api_module.list_images_by_source(source=source, session=session)
-            except Exception:
+            except Exception as exc:
+                failures.append((source, exc))
                 continue
             for i in imgs:
                 full = f"{i.name}" if ":" in (i.name or "") else f"{i.name}:{i.version}" if i.version else i.name
@@ -63,6 +72,18 @@ def _resolve_image_name(
                         "status": i.status,
                     }
                 )
+        if failures and not any(candidate["name"] == name for candidate in bucket):
+            details = "; ".join(
+                f"{source}: {scrub_raw_ids(exc)}" for source, exc in failures
+            )
+            if len(failures) == 3:
+                message = f"all image catalogues failed ({details})"
+            else:
+                message = (
+                    f"image catalogue lookup was incomplete for "
+                    f"{scrub_raw_ids(name)!r} ({details})"
+                )
+            raise RuntimeError(message) from failures[0][1]
         return bucket
 
     return resolve_by_name(
@@ -208,10 +229,20 @@ def _dedupe_images_by_id(
     show_default=True,
     help="Image source filter",
 )
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum images to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every matching image.")
 @pass_context
 def list_images_cmd(
     ctx: Context,
     source: str,
+    limit: int | None,
+    show_all: bool,
 ) -> None:
     """List available Docker images.
 
@@ -223,6 +254,12 @@ def list_images_cmd(
         inspire image list --source official   # Official images
         inspire --json image list              # JSON output
     """
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
     session = require_web_session(
         ctx,
         hint=WEB_AUTH_HINT,
@@ -262,8 +299,12 @@ def list_images_cmd(
         return
 
     results = [_image_summary(image) for image in images]
+    page = bound_collection(results, limit=effective_limit)
     if ctx.json_output:
-        payload: dict[str, object] = {"images": results}
+        payload: dict[str, object] = {
+            "images": page.items,
+            **page.metadata(),
+        }
         if warnings:
             payload["warnings"] = warnings
         click.echo(json_formatter.format_json(payload))
@@ -272,7 +313,10 @@ def list_images_cmd(
     for warning in warnings:
         click.echo(f"Warning: {warning}", err=True)
 
-    click.echo(_format_image_list(results))
+    click.echo(_format_image_list(page.items))
+    notice = truncation_notice(page)
+    if notice:
+        click.echo(notice)
 
 
 # ---------------------------------------------------------------------------
@@ -301,10 +345,33 @@ def image_detail(
         hint=WEB_AUTH_HINT,
     )
 
-    image_id = _resolve_image_name(ctx, name, session=session)
-
     try:
-        image = browser_api_module.get_image_detail(image_id=image_id, session=session)
+        workspace_id = str(getattr(session, "workspace_id", "") or "")
+        image = run_with_stale_handle_retry(
+            name=name,
+            resolve_cached=lambda: _resolve_image_name(
+                ctx,
+                name,
+                session=session,
+            ),
+            resolve_live=lambda live_name: _resolve_image_name(
+                ctx,
+                live_name,
+                session=session,
+                require_live=True,
+            ),
+            operation=lambda image_id: browser_api_module.get_image_detail(
+                image_id=image_id,
+                session=session,
+            ),
+            invalidate=lambda image_id: forget_resource_identity(
+                session=session,
+                resource_type="image",
+                resource_id=image_id,
+                workspace_id=workspace_id,
+                owner_scope="self",
+            ),
+        )
     except Exception as e:
         _handle_error(
             ctx,
@@ -320,7 +387,7 @@ def image_detail(
         resource_type="image",
         resource_id=image.image_id,
         name=_image_label(image),
-        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        workspace_id=workspace_id,
         owner_scope="self",
         status=image.status,
         created_at=image.created_at,

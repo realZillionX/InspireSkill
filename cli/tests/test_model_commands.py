@@ -128,9 +128,11 @@ def test_model_list_json_is_compact_and_name_only(
                 "project": "模型项目",
                 "updated_at": "2026-08-01T12:00:00Z",
             }
-        ]
+        ],
+        "shown": 1,
+        "total": 900,
+        "truncated": True,
     }
-    assert "total" not in payload
     _assert_compact_public_payload(payload)
     for secret in (
         "model-secret-123",
@@ -142,7 +144,7 @@ def test_model_list_json_is_compact_and_name_only(
         assert secret not in result.output
 
 
-def test_model_list_human_has_no_registry_banner_or_totals(
+def test_model_list_human_has_compact_truncation_hint(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -174,9 +176,62 @@ def test_model_list_human_has_no_registry_banner_or_totals(
     assert "V3" in result.output
     assert "Model Registry" not in result.output
     assert "Total:" not in result.output
-    assert "Showing " not in result.output
+    assert "Showing 1 of 900" in result.output
+    assert "Use --all" in result.output
     assert "Owner" not in result.output
     assert "model-secret-123" not in result.output
+
+
+def test_model_list_all_expands_and_limit_conflict_is_pre_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_runtime(monkeypatch, tmp_path)
+    calls: list[int] = []
+
+    def fake_list_models(**kwargs):  # noqa: ANN001
+        calls.append(kwargs["page_size"])
+        count = kwargs["page_size"]
+        return (
+            [
+                browser_api_module.ModelInfo(
+                    model_id=f"model-{index}",
+                    name=f"model-{index}",
+                    status="2",
+                )
+                for index in range(count)
+            ],
+            25,
+        )
+
+    monkeypatch.setattr(browser_api_module, "list_models", fake_list_models)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "list", "--workspace", "训练空间", "--all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _json_data(result.output)
+    assert calls == [20, 25]
+    assert len(payload["models"]) == 25
+    assert "truncated" not in payload
+
+    calls.clear()
+    conflict = CliRunner().invoke(
+        cli_main,
+        [
+            "model",
+            "list",
+            "--workspace",
+            "训练空间",
+            "--all",
+            "--limit",
+            "3",
+        ],
+    )
+    assert conflict.exit_code != 0
+    assert "Use either --limit or --all, not both." in conflict.output
+    assert calls == []
 
 
 def test_model_status_json_removes_paths_ids_and_raw_records(
@@ -337,6 +392,101 @@ def test_model_versions_json_only_keeps_actionable_fields(
     assert "/internal/model" not in result.output
     assert "/internal/source" not in result.output
     assert "model-secret-789" not in result.output
+
+
+def test_model_status_retries_stale_cached_handle_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_runtime(monkeypatch, tmp_path)
+    resolve_calls: list[bool] = []
+    detail_calls: list[str] = []
+    invalidated: list[str] = []
+
+    def _resolve(
+        _ctx,
+        _name,
+        *,
+        require_live=False,
+        **_kwargs,
+    ):
+        resolve_calls.append(require_live)
+        return "model-new" if require_live else "model-old"
+
+    monkeypatch.setattr(model_commands_module, "_resolve_model_name", _resolve)
+    monkeypatch.setattr(
+        model_commands_module,
+        "forget_resource_identity",
+        lambda **kwargs: invalidated.append(kwargs["resource_id"]),
+    )
+
+    def _detail(**kwargs):
+        detail_calls.append(kwargs["model_id"])
+        if kwargs["model_id"] == "model-old":
+            raise RuntimeError("404 not found")
+        return {"model": {"name": "qwen-demo", "status": 2}}
+
+    monkeypatch.setattr(browser_api_module, "get_model_detail", _detail)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_model_version_records",
+        lambda **_kwargs: {"list": []},
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "status", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert resolve_calls == [False, True]
+    assert detail_calls == ["model-old", "model-new"]
+    assert invalidated == ["model-old"]
+
+
+def test_model_versions_retries_stale_cached_handle_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_runtime(monkeypatch, tmp_path)
+    resolve_calls: list[bool] = []
+    version_calls: list[str] = []
+    invalidated: list[str] = []
+
+    def _resolve(
+        _ctx,
+        _name,
+        *,
+        require_live=False,
+        **_kwargs,
+    ):
+        resolve_calls.append(require_live)
+        return "model-new" if require_live else "model-old"
+
+    monkeypatch.setattr(model_commands_module, "_resolve_model_name", _resolve)
+    monkeypatch.setattr(
+        model_commands_module,
+        "forget_resource_identity",
+        lambda **kwargs: invalidated.append(kwargs["resource_id"]),
+    )
+
+    def _versions(**kwargs):
+        version_calls.append(kwargs["model_id"])
+        if kwargs["model_id"] == "model-old":
+            raise RuntimeError("model not found")
+        return {"list": []}
+
+    monkeypatch.setattr(browser_api_module, "list_model_version_records", _versions)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "versions", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert resolve_calls == [False, True]
+    assert version_calls == ["model-old", "model-new"]
+    assert invalidated == ["model-old"]
 
 
 def test_model_register_resolves_alias_to_current_live_project_id(

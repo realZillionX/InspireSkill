@@ -18,12 +18,19 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils.auth import AuthenticationError
+from inspire.cli.utils.collection_output import (
+    DEFAULT_COLLECTION_LIMIT,
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import (
     forget_resource_identity,
     reject_id_at_boundary,
     remember_resource_identity,
     resolve_by_name,
+    run_with_stale_handle_retry,
 )
 from inspire.cli.utils.project_resolver import resolve_project_id as resolve_project_id_by_name
 from inspire.cli.utils.raw_ids import scrub_raw_ids
@@ -259,6 +266,9 @@ def _resolve_model_for_create(
         resource_type="model",
         list_candidates=lambda: candidates,
         json_output=ctx.json_output,
+        session=session,
+        workspace_id=str(workspace_id or ""),
+        owner_scope="self",
     )
     for item in items:
         if item.model_id == model_id:
@@ -401,6 +411,11 @@ def _format_auto_stop(rule: str) -> str:
 
 def _format_configs(data: dict[str, Any]) -> str:
     configs = data.get("configs") if isinstance(data, dict) else None
+    if configs is None and isinstance(data, dict) and isinstance(data.get("items"), list):
+        configs = {
+            "items": data.get("items"),
+            "enable_auto_stop": data.get("auto_stop"),
+        }
     if not configs:
         return "No inference-serving configs returned (workspace may be empty or not authorized)."
     items: list[Any]
@@ -427,7 +442,9 @@ def _format_configs(data: dict[str, Any]) -> str:
         bits = []
         if gpu_min is not None or gpu_max is not None:
             bits.append(f"gpu={gpu_min or '?'}-{gpu_max or '?'}")
-        rule = _format_auto_stop(str(item.get("auto_stop_ruleset") or ""))
+        rule = _format_auto_stop(
+            str(item.get("auto_stop_ruleset") or item.get("auto_stop_rules") or "")
+        )
         if rule != "-":
             bits.append(f"auto_stop={rule}")
         lines.append(", ".join(bits) if bits else _config_label(item, i))
@@ -443,10 +460,10 @@ def _format_configs(data: dict[str, Any]) -> str:
     "--limit",
     "-n",
     type=click.IntRange(1),
-    default=50,
-    show_default=True,
-    help="Maximum servings to query and display.",
+    default=None,
+    help="Maximum servings to display (default: 20).",
 )
+@click.option("--all", "show_all", is_flag=True, help="Show every serving.")
 @pass_context
 def list_serving(
     ctx: Context,
@@ -454,7 +471,8 @@ def list_serving(
     project: Optional[str],
     status_filter: Optional[str],
     keyword: Optional[str],
-    limit: int,
+    limit: Optional[int],
+    show_all: bool,
 ) -> None:
     """List the current user's inference servings.
 
@@ -463,6 +481,15 @@ def list_serving(
         inspire serving list --workspace 分布式训练空间 --project CI-情境智能
         inspire serving list --workspace 分布式训练空间 --keyword qwen --status RUNNING
     """
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    request_limit = (
+        effective_limit if effective_limit is not None else DEFAULT_COLLECTION_LIMIT
+    )
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         resolved_workspace = _resolve_workspace_id(config, workspace)
@@ -481,15 +508,27 @@ def list_serving(
             project_ids=[project_id] if project_id else None,
             statuses=[status_filter] if status_filter else None,
             page=1,
-            page_size=limit,
+            page_size=request_limit,
             session=session,
         )
+        if show_all and total > len(items):
+            items, expanded_total = browser_api_module.list_servings(
+                workspace_id=resolved_workspace,
+                keyword=keyword,
+                project_ids=[project_id] if project_id else None,
+                statuses=[status_filter] if status_filter else None,
+                page=1,
+                page_size=max(total, len(items), 1),
+                session=session,
+            )
+            total = max(total, expanded_total, len(items))
+        page = bound_collection(items, limit=effective_limit, total=total)
 
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
                     {
-                        "total": total,
+                        **page.metadata(),
                         "items": [
                             {
                                 key: value
@@ -510,7 +549,7 @@ def list_serving(
                                     "updated_at",
                                 }
                             }
-                            for s in items
+                            for s in page.items
                         ],
                     }
                 )
@@ -518,7 +557,7 @@ def list_serving(
             return
 
         rows = []
-        for serving in items:
+        for serving in page.items:
             projected = public_serving(
                 serving,
                 fallback_name=str(getattr(serving, "name", "") or ""),
@@ -544,6 +583,9 @@ def list_serving(
                 }
             )
         click.echo(_format_list_rows(rows, total=int(total) if total is not None else len(rows)))
+        notice = truncation_notice(page, full_option="--all")
+        if notice:
+            click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -573,15 +615,36 @@ def status_serving(
         config, _ = Config.from_files_and_env(require_credentials=False)
         workspace_id = _resolve_workspace_id(config, workspace)
         session = get_web_session()
-        inference_serving_id = _resolve_serving_name(
-            ctx,
-            name,
-            workspace_id=workspace_id,
-            pick=pick,
-        )
-        data = browser_api_module.get_serving_detail(
-            inference_serving_id=inference_serving_id,
-            session=session,
+        inference_serving_id, data = run_with_stale_handle_retry(
+            name=name,
+            resolve_cached=lambda: _resolve_serving_name(
+                ctx,
+                name,
+                workspace_id=workspace_id,
+                pick=pick,
+            ),
+            resolve_live=lambda live_name: _resolve_serving_name(
+                ctx,
+                live_name,
+                workspace_id=workspace_id,
+                pick=pick,
+                require_live=True,
+            ),
+            operation=lambda serving_id: (
+                serving_id,
+                browser_api_module.get_serving_detail(
+                    inference_serving_id=serving_id,
+                    session=session,
+                ),
+            ),
+            invalidate=lambda serving_id: forget_resource_identity(
+                session=session,
+                resource_type="serving",
+                resource_id=serving_id,
+                name=name,
+                workspace_id=str(workspace_id or ""),
+                owner_scope="self",
+            ),
         )
         remember_resource_identity(
             session=session,
@@ -753,10 +816,20 @@ def delete_serving(
 
 @click.command("configs")
 @click.option("--workspace", required=True, help="Workspace name")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum choices to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every available choice.")
 @pass_context
 def configs_serving(
     ctx: Context,
     workspace: Optional[str],
+    limit: int | None,
+    show_all: bool,
 ) -> None:
     """Show available inference-serving choices for a workspace.
 
@@ -765,6 +838,12 @@ def configs_serving(
     concrete `--quota gpu,cpu,mem` triple.
     """
     try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         resolved_workspace = _resolve_workspace_id(config, workspace)
 
@@ -772,12 +851,25 @@ def configs_serving(
         data = browser_api_module.get_serving_configs(
             workspace_id=resolved_workspace, session=session
         )
+        public_data = public_configs(data)
+        page = bound_collection(
+            public_data.get("items", []),
+            limit=effective_limit,
+        )
+        output = {
+            **({"auto_stop": public_data["auto_stop"]} if "auto_stop" in public_data else {}),
+            "items": page.items,
+            **page.metadata(),
+        }
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json(public_configs(data)))
+            click.echo(json_formatter.format_json(output))
             return
 
-        click.echo(_format_configs(data))
+        click.echo(_format_configs(output))
+        notice = truncation_notice(page)
+        if notice:
+            click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

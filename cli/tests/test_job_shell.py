@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 from click.testing import CliRunner
 
@@ -237,6 +240,43 @@ def test_job_shell_command_rejects_multiple_selectors() -> None:
     assert "Use only one of --rank or --instance" in result.output
 
 
+@pytest.mark.parametrize(
+    "instance_name",
+    [
+        "550e8400-e29b-41d4-a716-446655440000",
+        "pod-1234abcd",
+        "instance-1234abcd",
+    ],
+)
+def test_job_shell_rejects_instance_handles_before_api(
+    monkeypatch, instance_name: str
+) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        job_commands.Config,
+        "from_files_and_env",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("instance validation should run before config")
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "shell",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+            "--instance",
+            instance_name,
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "job instance name" in result.output
+    assert instance_name not in result.output
+
+
 def test_job_instances_requires_workspace_and_uses_limit(monkeypatch) -> None:  # noqa: ANN001
     captured = {}
 
@@ -293,6 +333,182 @@ def test_job_instances_requires_workspace_and_uses_limit(monkeypatch) -> None:  
     assert "worker-0" in result.output
 
 
+def test_job_instances_json_uses_rank_when_platform_only_returns_handle(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    monkeypatch.setattr(job_commands.Config, "from_files_and_env", lambda **kwargs: (object(), []))
+    monkeypatch.setattr(job_commands, "get_web_session", lambda: _FakeSession())
+    monkeypatch.setattr(job_commands, "_resolve_web_job_id", lambda **kwargs: "job-abc")
+    monkeypatch.setattr(
+        job_commands.browser_api_module,
+        "list_job_instances",
+        lambda *args, **kwargs: (
+            [
+                {
+                    "instance_id": "internal-instance-handle",
+                    "instance_type": "worker",
+                    "rank": 3,
+                }
+            ],
+            1,
+        ),
+    )
+    monkeypatch.setattr(job_commands, "_close_web_client", lambda: None)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "instances",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    instance = payload["data"]["instances"][0]
+    assert instance["rank"] == 3
+    assert "instance_id" not in instance
+    assert "internal-instance-handle" not in result.output
+
+
+def test_job_instances_default_budget_keeps_resolution_window_and_notifies(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    captured = {}
+
+    monkeypatch.setattr(job_commands.Config, "from_files_and_env", lambda **kwargs: (object(), []))
+    monkeypatch.setattr(job_commands, "get_web_session", lambda: _FakeSession())
+
+    def fake_resolve(**kwargs):  # noqa: ANN001
+        captured["resolve"] = kwargs
+        return "job-abc"
+
+    monkeypatch.setattr(
+        job_commands,
+        "_resolve_web_job_id",
+        fake_resolve,
+    )
+    monkeypatch.setattr(
+        job_commands.browser_api_module,
+        "list_job_instances",
+        lambda job_id, *, limit, session: (
+            captured.update({"job_id": job_id, "limit": limit, "session": session})
+            or (
+                [
+                    {
+                        "name": f"worker-{index}",
+                        "instance_status": "instance_running",
+                        "instance_type": "worker",
+                    }
+                    for index in range(20)
+                ],
+                25,
+            )
+        ),
+    )
+    monkeypatch.setattr(job_commands, "_close_web_client", lambda: None)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["job", "instances", "train-a", "--workspace", "Test Workspace"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["resolve"]["scan_limit"] == 500
+    assert captured["limit"] == 20
+    assert "Showing 20 of 25. Use --all for the full list." in result.output
+
+    json_result = CliRunner().invoke(
+        cli_main,
+        ["--json", "job", "instances", "train-a", "--workspace", "Test Workspace"],
+    )
+    assert json_result.exit_code == 0, json_result.output
+    metadata = json.loads(json_result.output)["data"]
+    assert metadata["shown"] == 20
+    assert metadata["total"] == 25
+    assert metadata["truncated"] is True
+    assert metadata["limit"] == 20
+
+
+def test_job_instances_all_expands_once_and_conflict_is_rejected(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    calls: list[int] = []
+
+    monkeypatch.setattr(job_commands.Config, "from_files_and_env", lambda **kwargs: (object(), []))
+    monkeypatch.setattr(job_commands, "get_web_session", lambda: _FakeSession())
+    monkeypatch.setattr(job_commands, "_resolve_web_job_id", lambda **kwargs: "job-abc")
+    monkeypatch.setattr(
+        job_commands.browser_api_module,
+        "list_job_instances",
+        lambda job_id, *, limit, session: (
+            calls.append(limit)
+            or (
+                [
+                    {
+                        "instance_id": f"job-abc-worker-{index}",
+                        "name": f"worker-{index}",
+                        "instance_status": "instance_running",
+                    }
+                    for index in range(25 if limit == 25 else 20)
+                ],
+                25,
+            )
+        ),
+    )
+    monkeypatch.setattr(job_commands, "_close_web_client", lambda: None)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "instances",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+            "--all",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["data"]
+    assert calls == [20, 25]
+    assert len(payload["instances"]) == 25
+    assert payload["total"] == 25
+    assert "truncated" not in payload
+    assert all("instance_id" not in item for item in payload["instances"])
+    assert "job-abc-worker" not in result.output
+
+    monkeypatch.setattr(
+        job_commands.Config,
+        "from_files_and_env",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("conflicting options must fail before config")
+        ),
+    )
+    conflict = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "instances",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+            "--all",
+            "--limit",
+            "3",
+        ],
+    )
+
+    assert conflict.exit_code != 0
+    assert "Use either --limit or --all, not both." in conflict.output
+
+
 def test_resolve_web_job_id_pick_selects_matching_job(monkeypatch) -> None:  # noqa: ANN001
     rows = [
         {"name": "train-a", "job_id": "job-1"},
@@ -317,6 +533,170 @@ def test_resolve_web_job_id_pick_selects_matching_job(monkeypatch) -> None:  # n
 
     assert job_id == "job-2"
     assert captured["limit"] == 0
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("job-smoke-20260507", False),
+        ("job-training-v2", False),
+        ("job-abc", True),
+        ("job-a1b2c3d4", True),
+        ("job-12345678-1234-1234-1234-123456789abc", True),
+        ("550e8400-e29b-41d4-a716-446655440000", True),
+    ],
+)
+def test_looks_like_job_id_uses_platform_handle_shape(
+    value: str,
+    expected: bool,
+) -> None:
+    assert job_commands._looks_like_job_id(value) is expected
+
+
+def test_resolve_web_job_id_allows_job_prefixed_human_name(monkeypatch) -> None:  # noqa: ANN001
+    job_name = "job-smoke-20260507"
+    captured = {}
+
+    def fake_list_web_jobs(**kwargs):  # noqa: ANN001
+        captured.update(kwargs)
+        return [{"name": job_name, "job_id": "job-a1b2c3d4"}], []
+
+    monkeypatch.setattr(job_commands, "_list_web_jobs", fake_list_web_jobs)
+
+    job_id = job_commands._resolve_web_job_id(
+        config=object(),
+        job=job_name,
+        workspace=None,
+        all_workspaces=True,
+        max_pages=50,
+    )
+
+    assert job_id == "job-a1b2c3d4"
+    assert captured["name"] == job_name
+
+
+def test_resolve_web_job_id_clear_during_live_lookup_does_not_repopulate_cache(
+    monkeypatch,
+    tmp_path,
+) -> None:  # noqa: ANN001
+    workspace_id = "ws-one"
+    session = SimpleNamespace(
+        base_url="https://inspire.example",
+        user_detail={"id": "user-one"},
+        all_workspace_names={workspace_id: "CPU"},
+    )
+    index = job_commands.ResourceIndex(tmp_path / "resource-index.sqlite3")
+    scope = job_commands.ResourceScope(
+        base_url="https://inspire.example",
+        subject_id="user-one",
+        resource_type="job",
+        workspace_id=workspace_id,
+        owner_scope="self",
+    )
+
+    monkeypatch.setattr(job_commands, "get_web_session", lambda: session)
+    monkeypatch.setattr(
+        job_commands,
+        "_list_workspace_ids",
+        lambda *_args, **_kwargs: [workspace_id],
+    )
+    monkeypatch.setattr(
+        job_commands.ResourceIndex,
+        "for_account",
+        classmethod(lambda cls, account=None: index),
+    )
+
+    def _live_jobs(**_kwargs):
+        index.clear()
+        return (
+            [
+                {
+                    "job_id": "job-live",
+                    "name": "train-a",
+                    "workspace_id": workspace_id,
+                    "workspace_name": "CPU",
+                }
+            ],
+            1,
+        )
+
+    monkeypatch.setattr(job_commands, "_list_web_jobs", _live_jobs)
+
+    job_id = job_commands._resolve_web_job_id(
+        config=object(),
+        job="train-a",
+        workspace="CPU",
+        all_workspaces=False,
+        max_pages=50,
+        require_live=True,
+    )
+
+    assert job_id == "job-live"
+    assert index.list_identities(scope, fresh_only=False) == []
+
+
+def test_resolve_web_job_id_snapshot_failure_skips_live_cache_write(
+    monkeypatch,
+    tmp_path,
+) -> None:  # noqa: ANN001
+    workspace_id = "ws-one"
+    session = SimpleNamespace(
+        base_url="https://inspire.example",
+        user_detail={"id": "user-one"},
+        all_workspace_names={workspace_id: "CPU"},
+    )
+    index = job_commands.ResourceIndex(tmp_path / "resource-index.sqlite3")
+    scope = job_commands.ResourceScope(
+        base_url="https://inspire.example",
+        subject_id="user-one",
+        resource_type="job",
+        workspace_id=workspace_id,
+        owner_scope="self",
+    )
+
+    monkeypatch.setattr(job_commands, "get_web_session", lambda: session)
+    monkeypatch.setattr(
+        job_commands,
+        "_list_workspace_ids",
+        lambda *_args, **_kwargs: [workspace_id],
+    )
+    monkeypatch.setattr(
+        job_commands.ResourceIndex,
+        "for_account",
+        classmethod(lambda cls, account=None: index),
+    )
+    monkeypatch.setattr(
+        index,
+        "snapshot_token",
+        lambda _scope: (_ for _ in ()).throw(OSError("cache unavailable")),
+    )
+    monkeypatch.setattr(
+        job_commands,
+        "_list_web_jobs",
+        lambda **_kwargs: (
+            [
+                {
+                    "job_id": "job-live",
+                    "name": "train-a",
+                    "workspace_id": workspace_id,
+                    "workspace_name": "CPU",
+                }
+            ],
+            1,
+        ),
+    )
+
+    job_id = job_commands._resolve_web_job_id(
+        config=object(),
+        job="train-a",
+        workspace="CPU",
+        all_workspaces=False,
+        max_pages=50,
+        require_live=True,
+    )
+
+    assert job_id == "job-live"
+    assert index.list_identities(scope, fresh_only=False) == []
 
 
 def test_job_shell_command_rejects_job_id_boundary(monkeypatch) -> None:  # noqa: ANN001

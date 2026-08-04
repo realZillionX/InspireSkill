@@ -5,11 +5,16 @@ from __future__ import annotations
 import click
 
 from inspire.accounts import AccountError, current_account, set_current_account
+from inspire.cli.context import Context, EXIT_VALIDATION_ERROR, pass_context
+from inspire.cli.formatters import json_formatter
+from inspire.cli.utils.errors import exit_with_error
+from inspire.cli.utils.output import emit_success
 
 
 @click.command("use")
 @click.argument("name")
-def use(name: str) -> None:
+@pass_context
+def use(ctx: Context, name: str) -> None:
     """Switch the active account.
 
     Updates ``~/.inspire/current`` so every subsequent ``inspire`` command
@@ -20,5 +25,13 @@ def use(name: str) -> None:
     try:
         set_current_account(name)
     except AccountError as err:
-        raise click.ClickException(str(err)) from err
-    click.echo(f"Active account: {current_account() or name.strip()}")
+        exit_with_error(ctx, "AccountError", str(err), EXIT_VALIDATION_ERROR)
+    active = current_account() or name.strip()
+    emit_success(
+        ctx,
+        payload={"name": active},
+        text=json_formatter.sanitize_text(
+            f"Active account: {active}",
+            redact_paths=True,
+        ),
+    )

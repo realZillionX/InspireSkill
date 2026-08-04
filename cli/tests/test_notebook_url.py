@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from types import SimpleNamespace
 
 from click.testing import CliRunner
 
 from inspire.cli.commands.notebook import url_cmd as url_cmd_mod
+from inspire.cli.commands.notebook import notebook_lookup as notebook_lookup_module
 from inspire.cli.commands.notebook.transport import NotebookTransportPolicy
+from inspire.cli.context import Context
 from inspire.cli.main import main as cli_main
 from inspire.platform.web import browser_api as browser_api_mod
 from inspire.platform.web.browser_api import playwright_notebooks as pw
@@ -23,6 +26,8 @@ _SUFFIX = (
 )
 _GATEWAY = "https://nat2-notebook-inspire.sii.edu.cn"
 _IDE_URL = f"{_GATEWAY}{_SUFFIX}"
+notebook_cli_module = importlib.import_module("inspire.cli.utils.notebook_cli")
+workspace_module = importlib.import_module("inspire.config.workspaces")
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +216,56 @@ def _patch_resolve(monkeypatch) -> list[str]:  # noqa: ANN001
     return opened
 
 
+def test_resolve_notebook_validates_cached_handle_through_stale_retry(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    session = SimpleNamespace(storage_state={})
+    seen: dict[str, object] = {}
+    detail_calls: list[str] = []
+
+    monkeypatch.setattr(
+        notebook_cli_module,
+        "require_web_session",
+        lambda *_args, **_kwargs: session,
+    )
+    monkeypatch.setattr(notebook_cli_module, "get_base_url", lambda: _BASE_URL)
+    monkeypatch.setattr(notebook_cli_module, "load_config", lambda _ctx: SimpleNamespace())
+    monkeypatch.setattr(
+        workspace_module,
+        "resolve_workspace_query_scope",
+        lambda *_args, **_kwargs: (["ws-live"], "ws-live"),
+    )
+
+    def fake_retry(*_args, operation, **kwargs):  # noqa: ANN001
+        seen.update(kwargs)
+        return operation("notebook-live"), "notebook-live", "ws-live"
+
+    monkeypatch.setattr(
+        notebook_lookup_module,
+        "_run_notebook_operation_with_stale_handle_retry",
+        fake_retry,
+    )
+    monkeypatch.setattr(
+        browser_api_mod,
+        "get_notebook_detail",
+        lambda *, notebook_id, session: detail_calls.append(notebook_id)
+        or {"name": "demo-notebook"},
+    )
+
+    resolved_session, base_url, notebook_id = url_cmd_mod._resolve_notebook(
+        Context(),
+        "demo-notebook",
+        "CPU资源空间",
+    )
+
+    assert resolved_session is session
+    assert base_url == _BASE_URL
+    assert notebook_id == "notebook-live"
+    assert seen["identifier"] == "demo-notebook"
+    assert seen["workspace_ids"] == ["ws-live"]
+    assert detail_calls == ["notebook-live"]
+
+
 def test_url_opens_entrance_link_without_printing_it(monkeypatch) -> None:  # noqa: ANN001
     opened = _patch_resolve(monkeypatch)
     result = CliRunner().invoke(cli_main, ["notebook", "url", "nb", "--workspace", "CPU资源空间"])
@@ -230,6 +285,40 @@ def test_url_json_is_name_only(monkeypatch) -> None:  # noqa: ANN001
     assert opened == [f"{_BASE_URL}/ide?notebook_id={_NOTEBOOK_ID}"]
     data = json.loads(result.output)["data"]
     assert data == {"name": "nb", "status": "opened"}
+    assert _BASE_URL not in result.output
+    assert _NOTEBOOK_ID not in result.output
+
+
+def test_url_rejects_notebook_handle_before_resolution(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        url_cmd_mod.webbrowser,
+        "open",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("browser must not open for ID-shaped input")
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["notebook", "url", "nb-12345678", "--workspace", "CPU资源空间"],
+    )
+
+    assert result.exit_code != 0
+    assert "only accept a notebook name" in result.output
+    assert "nb-12345678" not in result.output
+
+
+def test_url_browser_failure_does_not_print_resolved_url_or_handle(monkeypatch) -> None:  # noqa: ANN001
+    _patch_resolve(monkeypatch)
+    monkeypatch.setattr(url_cmd_mod.webbrowser, "open", lambda *_args, **_kwargs: False)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["notebook", "url", "nb", "--workspace", "CPU资源空间"],
+    )
+
+    assert result.exit_code != 0
+    assert "Could not open the web interface for notebook 'nb'" in result.output
     assert _BASE_URL not in result.output
     assert _NOTEBOOK_ID not in result.output
 

@@ -1,3 +1,4 @@
+import click
 from click.testing import CliRunner
 
 from inspire.cli.main import main as cli_main
@@ -5,6 +6,43 @@ from inspire.cli.main import main as cli_main
 
 def _one_line(value: str) -> str:
     return " ".join(value.split())
+
+
+def _public_command_paths() -> list[list[str]]:
+    paths: list[list[str]] = []
+
+    def visit(command: click.Command, path: list[str]) -> None:
+        paths.append(path)
+        if isinstance(command, click.Group):
+            for name, child in sorted(command.commands.items()):
+                if not child.hidden:
+                    visit(child, [*path, name])
+
+    visit(cli_main, [])
+    return paths
+
+
+def test_all_public_help_is_name_only() -> None:
+    forbidden = (
+        "--show-ids",
+        "name or id",
+        "id or name",
+        "direct-id",
+        "raw id",
+        "platform id",
+        "platform handle",
+        "partial handle",
+        "uuid",
+    )
+    runner = CliRunner()
+
+    for path in _public_command_paths():
+        result = runner.invoke(cli_main, [*path, "--help"] if path else ["--help"])
+        output = _one_line(result.output).lower()
+
+        assert result.exit_code == 0, " ".join(path)
+        for term in forbidden:
+            assert term not in output, f"{' '.join(path) or '<root>'}: {term}"
 
 
 def test_job_logs_help_positions_web_as_fallback() -> None:
@@ -24,6 +62,7 @@ def test_instances_help_uses_required_workspace_and_limit() -> None:
         assert result.exit_code == 0
         assert "--workspace TEXT" in result.output
         assert "--limit INTEGER" in result.output
+        assert "--all" in result.output
         assert "--num" not in result.output
         assert "--web" not in result.output
         assert "--all-workspaces" not in result.output
@@ -201,6 +240,50 @@ def test_root_profile_option_is_removed() -> None:
     assert "No such option: --profile" in result.output
 
 
+def test_parser_errors_scrub_id_shaped_values_before_root_callback() -> None:
+    for value in (
+        "job-123456",
+        "123e4567-e89b-12d3-a456-426614174000",
+        "deadbeef",
+    ):
+        result = CliRunner().invoke(
+            cli_main,
+            [
+                "job",
+                "logs",
+                "name",
+                "--workspace",
+                "CPU临时测试空间",
+                "--source",
+                value,
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert value not in result.output
+        assert "<redacted>" in result.output
+
+
+def test_parser_errors_scrub_path_values_before_root_callback() -> None:
+    value = "/Users/alice/private/missing.pub"
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "notebook",
+            "ssh-config",
+            "demo",
+            "--workspace",
+            "CPU临时测试空间",
+            "--pubkey",
+            value,
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert value not in result.output
+    assert "<redacted>" in result.output
+
+
 def test_top_level_batch_command_is_removed() -> None:
     result = CliRunner().invoke(cli_main, ["batch", "--help"])
 
@@ -293,7 +376,6 @@ def test_events_help_has_no_cache_mode() -> None:
         ["job", "events", "--help"],
         ["notebook", "events", "--help"],
         ["hpc", "events", "--help"],
-        ["ray", "events", "--help"],
     ):
         result = CliRunner().invoke(cli_main, args)
 
@@ -303,6 +385,15 @@ def test_events_help_has_no_cache_mode() -> None:
         assert "--watch" not in result.output
         assert "Alias for global --json" not in result.output
         assert "Equivalent to top-level" not in result.output
+        assert "latest 20 events by default" in result.output
+        assert "use --tail N to change the limit" in _one_line(result.output)
+
+    ray_result = CliRunner().invoke(cli_main, ["ray", "events", "--help"])
+    assert ray_result.exit_code == 0
+    assert "--from-cache" not in ray_result.output
+    assert "--follow" in ray_result.output
+    assert "Maximum recent events to display" in _one_line(ray_result.output)
+    assert "default: 20" in _one_line(ray_result.output)
 
     notebook_result = CliRunner().invoke(cli_main, ["notebook", "events", "--help"])
     assert notebook_result.exit_code == 0
@@ -320,11 +411,14 @@ def test_model_help_has_no_cross_user_filter() -> None:
 
 
 def test_serving_help_has_no_all_users_mode() -> None:
-    for subcommand in ("list", "status", "stop", "delete"):
+    for subcommand in ("status", "stop", "delete"):
         result = CliRunner().invoke(cli_main, ["serving", subcommand, "--help"])
 
         assert result.exit_code == 0
         assert "--all" not in result.output
+    result = CliRunner().invoke(cli_main, ["serving", "list", "--help"])
+    assert result.exit_code == 0
+    assert "--all" in result.output
 
 
 def test_ray_create_help_has_no_raw_json_body_escape_hatch() -> None:
@@ -417,6 +511,15 @@ def test_notebook_scp_help_is_ssh_only() -> None:
     assert "/inspire/" in result.output
     assert "WebDAV" not in result.output
     assert "JupyterTerminal" not in result.output
+
+
+def test_notebook_proxy_url_help_hides_internal_routing_terms() -> None:
+    result = CliRunner().invoke(cli_main, ["notebook", "proxy-url", "--help"])
+
+    assert result.exit_code == 0
+    assert "temporary routing information" in result.output
+    assert "handle" not in result.output.lower()
+    assert " id " not in f" {result.output.lower()} "
 
 
 def test_notebook_ssh_config_help_mentions_rsync_conversion() -> None:

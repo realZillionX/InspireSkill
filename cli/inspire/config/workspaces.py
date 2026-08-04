@@ -5,7 +5,12 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from inspire.cli.utils.resource_index import ResourceIdentity, ResourceIndex, scope_for_session
+from inspire.cli.utils.resource_index import (
+    ResourceIdentity,
+    ResourceIndex,
+    StaleResourceIndexRefresh,
+    scope_for_session,
+)
 from inspire.config import ConfigError
 
 _WORKSPACE_ID_RE = re.compile(
@@ -193,13 +198,24 @@ def select_workspace_id(
         except Exception:
             index = None
 
+    snapshot_generation: int | None = None
+    snapshot_revision: int | None = None
+    cache_snapshot_available = False
+    if index is not None and scope is not None:
+        try:
+            snapshot_generation, snapshot_revision = index.snapshot_token(scope)
+            cache_snapshot_available = True
+        except Exception:
+            snapshot_generation = None
+            snapshot_revision = None
+
     live_names = workspace_name_map(session)
     candidates = [
         (wid, name)
         for wid, name in live_names.items()
         if name.lower() == key.lower()
     ]
-    if index is not None and scope is not None:
+    if index is not None and scope is not None and cache_snapshot_available:
         try:
             index.replace_name(
                 scope,
@@ -208,14 +224,30 @@ def select_workspace_id(
                     ResourceIdentity(resource_id=workspace_id, name=name)
                     for workspace_id, name in candidates
                 ],
+                expected_generation=snapshot_generation,
+                expected_revision=snapshot_revision,
             )
+            after_replace_revision = index.scope_revision(scope)
             index.upsert(
                 scope,
                 [
                     ResourceIdentity(resource_id=workspace_id, name=name)
                     for workspace_id, name in live_names.items()
                 ],
+                expected_generation=snapshot_generation,
+                expected_revision=after_replace_revision,
             )
+        except StaleResourceIndexRefresh:
+            try:
+                current = index.lookup(
+                    scope,
+                    key,
+                    case_sensitive=False,
+                )
+            except Exception:
+                current = []
+            if current:
+                candidates = [(item.resource_id, item.name) for item in current]
         except Exception:
             pass
     if len(candidates) == 1:

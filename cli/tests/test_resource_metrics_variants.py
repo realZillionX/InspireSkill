@@ -101,9 +101,20 @@ def _patch_hpc_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(web_session_module, "get_web_session", lambda: session)
 
-    def _fake_resolve_hpc_name_in_workspace(ctx, *, config, session, name, workspace, limit, pick=None):  # noqa: ANN001
+    def _fake_resolve_hpc_name_in_workspace(
+        ctx,
+        *,
+        config,
+        session,
+        name,
+        workspace,
+        limit,
+        pick=None,
+        require_live=False,
+    ):  # noqa: ANN001
         assert name == "prep-a"
         assert workspace == "Training Workspace"
+        assert require_live is False
         return "hpc-job-xyz"
 
     monkeypatch.setattr(
@@ -119,11 +130,13 @@ def _patch_job_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
         password="pass",
         base_url="https://example.invalid",
     )
+    session = _FakeSession()
     monkeypatch.setattr(
         config_module.Config,
         "from_files_and_env",
         classmethod(lambda cls, require_credentials=False: (config, {})),
     )
+    monkeypatch.setattr(web_session_module, "get_web_session", lambda: session)
 
     def _fake_resolve_web_job_id(**kwargs: Any) -> str:
         assert kwargs["job"] == "train-job"
@@ -353,6 +366,94 @@ def test_serving_metrics_resolver_and_wiring(
     assert render_captures[0]["task_label"] == "Serving"
     expected = tmp_path / "serving-serving-a-1000000.png"
     assert render_captures[0]["out_path"] == expected
+
+
+def test_serving_metrics_retries_stale_cached_handle_by_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    capture: dict = {}
+    render_captures: list[dict] = []
+    _common_monkeypatch(
+        monkeypatch,
+        groups=[_minimal_group()],
+        now=1_000_000,
+        capture=capture,
+        render_captures=render_captures,
+        tmp_metrics_dir=str(tmp_path),
+    )
+
+    config = config_module.Config(
+        username="user",
+        password="pass",
+        base_url="https://example.invalid",
+    )
+    session = _FakeSession()
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=False: (config, {})),
+    )
+    monkeypatch.setattr(web_session_module, "get_web_session", lambda: session)
+    monkeypatch.setattr(
+        serving_commands_module,
+        "_resolve_workspace_id",
+        lambda *_args, **_kwargs: "ws-fake",
+    )
+
+    resolve_calls: list[bool] = []
+    invalidated: list[str] = []
+
+    def _resolve(
+        _ctx,
+        _name,
+        *,
+        workspace_id,
+        pick=None,
+        require_live=False,
+    ):
+        resolve_calls.append(require_live)
+        return "sv-new" if require_live else "sv-old"
+
+    monkeypatch.setattr(serving_commands_module, "_resolve_serving_name", _resolve)
+    monkeypatch.setattr(
+        serving_commands_module,
+        "forget_resource_identity",
+        lambda **kwargs: invalidated.append(kwargs["resource_id"]),
+    )
+
+    detail_calls: list[str] = []
+
+    class _FakeBrowserApi:
+        @staticmethod
+        def get_serving_detail(*, inference_serving_id: str, session):  # noqa: ANN001
+            detail_calls.append(inference_serving_id)
+            if inference_serving_id == "sv-old":
+                raise RuntimeError("not found")
+            return {"logic_compute_group_id": "lcg-serving-fresh"}
+
+    monkeypatch.setattr(serving_metrics_module, "browser_api_module", _FakeBrowserApi)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "serving",
+            "metrics",
+            "serving-a",
+            "--workspace",
+            "Training Workspace",
+            "--metric",
+            "gpu",
+            "--window",
+            "10m",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert resolve_calls == [False, True]
+    assert detail_calls == ["sv-old", "sv-new"]
+    assert invalidated == ["sv-old"]
+    assert capture["logic_compute_group_id"] == "lcg-serving-fresh"
 
 
 # ---------------------------------------------------------------------------

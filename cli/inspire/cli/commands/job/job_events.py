@@ -14,16 +14,20 @@ import click
 
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_JOB_NOT_FOUND, pass_context
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.events import run_events_command
+from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, run_events_command
 from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.jobs import (
     list_job_events,
     list_job_instance_events,
 )
-from inspire.platform.web.session import get_web_session
-
-from .job_commands import WebJobResolutionError, _close_web_client, _resolve_web_job_id
+from .job_commands import (
+    WebJobResolutionError,
+    _close_web_client,
+    _reject_job_instance_name,
+    _run_readonly_web_job_operation,
+    _resolve_web_job_id,
+)
 
 _JOB_INSTANCE_PAGE_SIZE = 200
 
@@ -73,11 +77,11 @@ def _list_all_job_instance_names(job_id: str, *, session) -> list[str]:  # noqa:
 )
 @click.option(
     "--instance",
-    "instance_ids",
+    "instance_names",
     multiple=True,
     help=(
         "Query per-pod events (scheduler view: `FailedScheduling` / `Scheduled` / "
-        "`Pulling` / `Started`) for the given pod name(s). Can be repeated. "
+        "`Pulling` / `Started`) for the given instance name(s). Can be repeated. "
         "Without this flag, job-level controller events are returned instead."
     ),
 )
@@ -89,7 +93,7 @@ def _list_all_job_instance_names(job_id: str, *, session) -> list[str]:  # noqa:
 @click.option(
     "--tail",
     type=click.IntRange(1),
-    help="Show only the last N events (applied after --type / --reason).",
+    help=f"Show the latest {DEFAULT_EVENT_TAIL} events by default; use --tail N to change the limit.",
 )
 @click.option("--follow", "-f", is_flag=True, help="Follow the event timeline and print new events.")
 @click.option(
@@ -106,7 +110,7 @@ def events(
     job: str,
     type_filter: Optional[str],
     reason_filter: Optional[str],
-    instance_ids: tuple[str, ...],
+    instance_names: tuple[str, ...],
     all_instances: bool,
     tail: Optional[int],
     follow: bool,
@@ -121,10 +125,15 @@ def events(
       inspire --json job events <job-name> --workspace 分布式训练空间
       inspire job events <job-name> --workspace 分布式训练空间 --type Warning
       inspire job events <job-name> --workspace 分布式训练空间 --reason Unschedulable
-      inspire job events <job-name> --workspace 分布式训练空间 --instance <pod-name>
+      inspire job events <job-name> --workspace 分布式训练空间 --instance <instance-name>
       inspire job events <job-name> --workspace 分布式训练空间 --follow
       inspire job events <job-name> --workspace all --all-instances
     """
+    pods = (
+        [_reject_job_instance_name(ctx, value) for value in instance_names]
+        if instance_names
+        else None
+    )
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         resolved_id = _resolve_web_job_id(
@@ -141,26 +150,40 @@ def events(
         _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
         return
 
-    pods = list(instance_ids) if instance_ids else None
     if all_instances:
-        event_scope_key = f"{resolved_id}__all_instances"
+        event_scope_key = f"{job}__all_instances"
     elif pods:
-        event_scope_key = f"{resolved_id}__{'_'.join(p.rsplit('/', 1)[-1] for p in pods)}"
+        event_scope_key = f"{job}__{'_'.join(p.rsplit('/', 1)[-1] for p in pods)}"
     else:
-        event_scope_key = resolved_id
+        event_scope_key = job
 
     def _fetch_web_events() -> list[dict]:
         try:
-            session = get_web_session()
-            if all_instances:
-                pod_names = _list_all_job_instance_names(
-                    resolved_id,
-                    session=session,
-                )
-                return list_job_instance_events(resolved_id, pod_names, session=session)
-            if pods:
-                return list_job_instance_events(resolved_id, pods, session=session)
-            return list_job_events(resolved_id, session=session)
+            def _fetch(resolved_id: str, session) -> list[dict]:  # noqa: ANN001
+                if all_instances:
+                    pod_names = _list_all_job_instance_names(
+                        resolved_id,
+                        session=session,
+                    )
+                    return list_job_instance_events(
+                        resolved_id,
+                        pod_names,
+                        session=session,
+                    )
+                if pods:
+                    return list_job_instance_events(
+                        resolved_id,
+                        pods,
+                        session=session,
+                    )
+                return list_job_events(resolved_id, session=session)
+
+            return _run_readonly_web_job_operation(
+                config=config,
+                job=job,
+                workspace=workspace,
+                operation=_fetch,
+            )
         finally:
             _close_web_client()
 
