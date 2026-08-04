@@ -216,7 +216,6 @@ class _CasLoginErrorParser(HTMLParser):
             "tag": lower_tag,
             "hidden": parent_hidden or self._is_hidden(attrs_dict),
             "ignored": parent_ignored or lower_tag in self._IGNORED_TAGS,
-            "container": False,
         }
 
         if (
@@ -225,7 +224,6 @@ class _CasLoginErrorParser(HTMLParser):
             and not node["ignored"]
             and self._is_error_container(lower_tag, attrs_dict)
         ):
-            node["container"] = True
             self._active_container = node
             self._parts = []
         elif (
