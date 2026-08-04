@@ -41,6 +41,7 @@ from .job_commands import (
     WebJobResolutionError,
     WebJobValidationError,
     _close_web_client,
+    _public_output,
     _resolve_web_job_id,
 )
 
@@ -164,10 +165,6 @@ def _follow_logs_via_web(
     seen: set[tuple[int, str, str, str]] = set()
     first_fetch = True
 
-    click.echo("Following web logs...")
-    click.echo(f"(showing last {tail_lines} lines, then polling new content)")
-    click.echo("Press Ctrl+C to stop\n")
-
     try:
         while True:
             end_ms = int(time.time() * 1000)
@@ -195,7 +192,7 @@ def _follow_logs_via_web(
 
             time.sleep(poll_interval)
     except KeyboardInterrupt:
-        click.echo("\nStopped following logs.")
+        return
 
 
 def _fetch_log_via_ssh(
@@ -251,11 +248,6 @@ def _follow_logs_via_ssh(
     status_check_interval = 5
 
     is_glob = "*" in remote_log_path
-    if is_glob:
-        click.echo(f"Log file pattern: {scrub_raw_ids(remote_log_path)}")
-    else:
-        click.echo(f"Log file: {scrub_raw_ids(remote_log_path)}")
-
     start_time = time.time()
     concrete_log_path: Optional[str] = None
 
@@ -279,8 +271,6 @@ def _follow_logs_via_ssh(
         except Exception:
             pass
 
-        elapsed = int(time.time() - start_time)
-        click.echo(f"\rWaiting for job to start... ({elapsed}s)", nl=False)
         time.sleep(5)
 
     if not concrete_log_path:
@@ -290,10 +280,6 @@ def _follow_logs_via_ssh(
 
     # Past the wait gate — switch to the concrete path for tail -f.
     remote_log_path = concrete_log_path
-
-    click.echo("\nJob started! Following logs...")
-    click.echo(f"(showing last {tail_lines} lines, then following new content)")
-    click.echo("Press Ctrl+C to stop\n")
 
     command = f"tail -n {tail_lines} -f '{remote_log_path}'"
     ssh_args = get_ssh_command_args(bridge_name=bridge_name, remote_command=command)
@@ -343,11 +329,8 @@ def _follow_logs_via_ssh(
                 except Exception:
                     pass
 
-        if final_status:
-            click.echo(f"\n\nJob completed with status: {scrub_raw_ids(final_status)}")
-
     except KeyboardInterrupt:
-        click.echo("\n\nStopped following logs.")
+        return final_status
     finally:
         if process is not None and process.poll() is None:
             process.terminate()
@@ -485,9 +468,7 @@ def _run_job_logs_single_job(
 
         if path:
             if ctx.json_output:
-                click.echo(
-                    json_formatter.format_json({"job_id": job_id, "log_path": remote_log_path})
-                )
+                click.echo(json_formatter.format_json({"log_path": scrub_raw_ids(remote_log_path)}))
             else:
                 click.echo(scrub_raw_ids(remote_log_path))
             sys.exit(EXIT_SUCCESS)
@@ -503,10 +484,6 @@ def _run_job_logs_single_job(
                 )
                 return
 
-            if not ctx.json_output:
-                label = f", bridge: {bridge_name}" if bridge_name else ""
-                click.echo(f"Using SSH tunnel (fast path{label})")
-
             final_status = _follow_logs_via_ssh(
                 job_id=job_id,
                 config=config,
@@ -521,10 +498,6 @@ def _run_job_logs_single_job(
             if final_status in {"FAILED", "CANCELLED", "job_failed", "job_cancelled"}:
                 sys.exit(EXIT_GENERAL_ERROR)
             sys.exit(EXIT_SUCCESS)
-
-        if not ctx.json_output:
-            label = f", bridge: {bridge_name}" if bridge_name else ""
-            click.echo(f"Using SSH tunnel (fast path{label})")
 
         try:
             content = _fetch_log_via_ssh(
@@ -552,19 +525,13 @@ def _run_job_logs_single_job(
             click.echo(
                 json_formatter.format_json(
                     {
-                        "job_id": job_id,
                         "log_path": remote_log_path,
-                        "content": content,
-                        "method": "ssh_tunnel",
+                        "content": scrub_raw_ids(content),
                     }
                 )
             )
             return
 
-        if tail:
-            click.echo(f"=== Last {tail} lines ===\n")
-        elif head:
-            click.echo(f"=== First {head} lines ===\n")
         click.echo(scrub_raw_ids(content))
 
     except TunnelNotAvailableError:
@@ -700,17 +667,8 @@ def _run_job_logs_web_single_job(
             click.echo(
                 json_formatter.format_json(
                     {
-                        "source": "web",
-                        "job_id": job_id,
-                        "instances": pod_names,
-                        "logs": shown,
+                        "logs": _public_output(shown),
                         "total": total,
-                        "returned": len(logs),
-                        "shown": len(shown),
-                        "time_range": {
-                            "start_timestamp_ms": str(start_ms),
-                            "end_timestamp_ms": str(end_ms),
-                        },
                     }
                 )
             )

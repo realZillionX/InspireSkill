@@ -47,7 +47,6 @@ def _job_name_to_id(ctx: Context, name: str) -> str:
         workspace=str(getattr(ctx, "workspace", "") or ""),
         all_workspaces=False,
         max_pages=50,
-        allow_raw_id=True,
     )
 
 

@@ -98,6 +98,44 @@ def _reject_ray_name_at_boundary(ctx: Context, name: str) -> str:
     )
 
 
+_OUTPUT_METADATA_KEYS = {
+    "debug",
+    "method",
+    "metadata",
+    "payload",
+    "progress",
+    "raw",
+    "request",
+    "requestpayload",
+    "response",
+    "responsemetadata",
+    "result",
+    "scanned",
+    "source",
+}
+
+
+def _is_output_id_key(key: object) -> bool:
+    normalized = str(key or "").replace("-", "_").lower()
+    return normalized in {"id", "ids"} or normalized.endswith("_id") or normalized.endswith("_ids")
+
+
+def _public_output(value: object) -> Any:
+    """Keep useful Ray results while hiding platform handles and metadata."""
+    if isinstance(value, dict):
+        return {
+            key: _public_output(child)
+            for key, child in value.items()
+            if str(key or "").replace("-", "_").lower() not in _OUTPUT_METADATA_KEYS
+            and not _is_output_id_key(key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_public_output(item) for item in value]
+    if isinstance(value, str):
+        return scrub_raw_ids(value)
+    return value
+
+
 # ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
@@ -132,7 +170,7 @@ def _format_ray_list_rows(rows: list[dict[str, str]]) -> str:
 
 
 def _ray_instance_name(inst: dict[str, Any], idx: int) -> str:
-    for key in ("name", "instance_name", "pod_name", "instance_id"):
+    for key in ("name", "instance_name", "pod_name"):
         value = str(inst.get(key) or "").strip()
         if value:
             return scrub_raw_ids(value)
@@ -224,22 +262,18 @@ def list_ray(
         )
         rows = [
             {
-                "ray_job_id": job.ray_job_id or "N/A",
                 "name": scrub_raw_ids(job.name or "N/A"),
                 "status": scrub_raw_ids(job.status or "N/A"),
                 "created_at": scrub_raw_ids(job.created_at or "N/A"),
                 "created_by_name": scrub_raw_ids(job.created_by_name or "N/A"),
-                "created_by_id": job.created_by_id or "",
                 "project_name": scrub_raw_ids(job.project_name or ""),
-                "project_id": job.project_id or "",
-                "workspace_id": job.workspace_id or "",
             }
             for job in jobs
         ]
 
         if ctx.json_output:
             click.echo(
-                json_formatter.format_json({"jobs": rows, "total": total}),
+                json_formatter.format_json({"jobs": _public_output(rows), "total": total}),
             )
             return
 
@@ -284,7 +318,7 @@ def status_ray(ctx: Context, name: str, workspace: str) -> None:
         data = browser_api_module.get_ray_job_detail(ray_job_id, session=session)
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json(data))
+            click.echo(json_formatter.format_json(_public_output(data)))
             return
 
         click.echo("Ray Job Status")
@@ -305,10 +339,6 @@ def status_ray(ctx: Context, name: str, workspace: str) -> None:
             click.echo(f"Created:    {scrub_raw_ids(data.get('created_at'))}")
         if data.get("finished_at"):
             click.echo(f"Finished:   {scrub_raw_ids(data.get('finished_at'))}")
-        click.echo(
-            "\nUse `inspire --json ray status <name>` to see full head / worker "
-            "spec and elastic instance ranges."
-        )
 
     except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
@@ -406,11 +436,11 @@ def _project_label(config: Config, project_id: str, requested: Optional[str]) ->
 
 
 def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
-    """Turn a visible image name or Docker image URL into a mirror_id.
+    """Turn a visible image name or Docker image URL into the internal mirror handle.
 
-    Ray's create body takes ``mirror_id`` (the platform's internal image id),
-    not the pullable Docker URL. We walk public + private + official image
-    catalogues looking for an exact URL/name match.
+    Ray's create body takes an internal mirror handle, not the pullable Docker
+    URL. We walk public + private + official image catalogues looking for an
+    exact URL/name match.
     """
     raw = (raw or "").strip()
     if not raw:
@@ -442,7 +472,7 @@ def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
 def _parse_worker_spec(raw: str) -> dict[str, Any]:
     """Parse a ``key=value;key=value`` worker spec into a dict.
 
-    Required keys: ``name``, ``image`` (URL or image_id), ``group`` (compute
+    Required keys: ``name``, ``image`` (visible image name or URL), ``group`` (compute
     group name), ``quota`` (``gpu,cpu,mem`` triple), ``min``, ``max``.
     Optional: ``image-type`` (default SOURCE_PUBLIC), ``shm-size`` (shm_gi).
 
@@ -655,7 +685,17 @@ def create_ray(
 
         if dry_run:
             if ctx.json_output:
-                click.echo(json_formatter.format_json({"dry_run": True, "payload": body}))
+                click.echo(
+                    json_formatter.format_json(
+                        {
+                            "dry_run": True,
+                            "name": body.get("name"),
+                            "description": body.get("description"),
+                            "entrypoint": body.get("entrypoint"),
+                            "worker_groups": _public_output(body.get("worker_groups") or []),
+                        }
+                    )
+                )
                 return
             click.echo("Ray create request preview")
             click.echo(f"Name:      {scrub_raw_ids(body.get('name'))}")
@@ -671,7 +711,7 @@ def create_ray(
         data = browser_api_module.create_ray_job(body, session=session)
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json(data))
+            click.echo(json_formatter.format_json(_public_output(data)))
             return
 
         click.echo(human_formatter.format_success(f"Ray job created: {body.get('name')}"))
@@ -682,9 +722,6 @@ def create_ray(
             f"Workspace: {scrub_raw_ids(workspace_label(session, body.get('workspace_id', ''), workspace))}"
         )
         click.echo(f"Workers:   {len(body.get('worker_groups') or [])} group(s)")
-        sub_msg = data.get("sub_msg") or ""
-        if sub_msg:
-            click.echo(f"Platform note: {scrub_raw_ids(sub_msg)}")
 
     except TaskPriorityError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
@@ -961,9 +998,7 @@ def instances_ray(ctx: Context, name: str, workspace: str, limit: int) -> None:
             click.echo(
                 json_formatter.format_json(
                     {
-                        "source": "web",
-                        "ray_job_id": ray_job_id,
-                        "instances": instances,
+                        "instances": _public_output(instances),
                         "total": total,
                     }
                 )

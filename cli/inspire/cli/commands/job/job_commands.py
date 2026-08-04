@@ -7,8 +7,7 @@ import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 import click
 
@@ -224,6 +223,44 @@ def _job_info_to_row(job, *, workspace_name: str = "") -> dict:  # noqa: ANN001
     }
 
 
+_OUTPUT_METADATA_KEYS = {
+    "debug",
+    "method",
+    "metadata",
+    "payload",
+    "progress",
+    "raw",
+    "request",
+    "requestpayload",
+    "response",
+    "responsemetadata",
+    "result",
+    "scanned",
+    "source",
+}
+
+
+def _is_output_id_key(key: object) -> bool:
+    normalized = str(key or "").replace("-", "_").lower()
+    return normalized in {"id", "ids"} or normalized.endswith("_id") or normalized.endswith("_ids")
+
+
+def _public_output(value: object) -> Any:
+    """Keep command results useful without exposing platform handles/metadata."""
+    if isinstance(value, dict):
+        return {
+            key: _public_output(child)
+            for key, child in value.items()
+            if str(key or "").replace("-", "_").lower() not in _OUTPUT_METADATA_KEYS
+            and not _is_output_id_key(key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_public_output(item) for item in value]
+    if isinstance(value, str):
+        return scrub_raw_ids(value)
+    return value
+
+
 def _job_list_page_size(limit: Optional[int]) -> int:
     if limit is not None and limit > 0:
         return min(limit, 100)
@@ -436,22 +473,14 @@ def _resolve_web_job_id(
     all_workspaces: bool,
     max_pages: int,
     pick: Optional[int] = None,
-    allow_raw_id: bool = False,
     scan_limit: Optional[int] = None,
     workspace_must_be_single: bool = False,
 ) -> str:
     job = (job or "").strip()
     if not job:
         raise WebJobResolutionError("Job name cannot be empty")
-    if _looks_like_job_id(job):
-        if allow_raw_id:
-            return job
-        raise WebJobValidationError(
-            "CLI commands take a job name. "
-            "Use `inspire job list --workspace <name|all>` to find the name."
-        )
-    if not allow_raw_id and (
-        is_full_uuid(job, prefix="job-") or is_partial_id(job, prefix="job-")
+    if _looks_like_job_id(job) or is_full_uuid(job, prefix="job-") or is_partial_id(
+        job, prefix="job-"
     ):
         raise WebJobValidationError(
             "CLI commands take a job name. "
@@ -725,7 +754,7 @@ def _watch_jobs(
 
     try:
         while True:
-            jobs, scanned = _list_web_jobs(
+            jobs, _scanned = _list_web_jobs(
                 config=config,
                 workspace=workspace,
                 all_workspaces=all_workspaces,
@@ -756,16 +785,11 @@ def _watch_jobs(
                     last_status_by_id[jid] = cur_status
 
             if ctx.json_output:
-                timestamp = datetime.now().strftime("%H:%M:%S")
                 click.echo(
                     json_formatter.format_json(
                         {
-                            "event": "refresh",
-                            "timestamp": timestamp,
-                            "source": "web",
-                            "jobs": jobs,
-                            "scanned": scanned,
-                            "completed_this_session": completed_this_session,
+                            "jobs": _public_output(jobs),
+                            "completed": _public_output(completed_this_session),
                         }
                     )
                 )
@@ -782,13 +806,10 @@ def _watch_jobs(
                             f"{scrub_raw_ids(entry.get('name', 'N/A')):<32}  "
                             f"{emoji} {scrub_raw_ids(entry.get('status', 'N/A'))}"
                         )
-                click.echo(f"\n(refreshing every {interval}s; Ctrl+C to stop)")
 
             time.sleep(interval)
 
     except KeyboardInterrupt:
-        if not ctx.json_output:
-            click.echo("\nStopped watching.")
         sys.exit(EXIT_SUCCESS)
     finally:
         api_logger.setLevel(original_level)
@@ -866,7 +887,7 @@ def list_jobs(
             )
             return
 
-        rows, scanned = _list_web_jobs(
+        rows, _scanned = _list_web_jobs(
             config=config,
             workspace=workspace,
             all_workspaces=False,
@@ -883,9 +904,7 @@ def list_jobs(
             rows = [j for j in rows if j.get("status") in _JOB_ACTIVE_STATUSES]
 
         if ctx.json_output:
-            click.echo(
-                json_formatter.format_json({"source": "web", "jobs": rows, "scanned": scanned})
-            )
+            click.echo(json_formatter.format_json({"jobs": _public_output(rows)}))
         else:
             click.echo(_format_job_list(rows))
 
@@ -895,49 +914,6 @@ def list_jobs(
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "Error", str(e), EXIT_GENERAL_ERROR)
-
-
-@click.command("id")
-@click.argument("job")
-@click.option("--workspace", required=True, help="Workspace name or 'all'.")
-@click.option(
-    "--pick",
-    type=click.IntRange(1),
-    default=None,
-    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
-)
-@pass_context
-def show_id(
-    ctx: Context,
-    job: str,
-    workspace: Optional[str],
-    pick: Optional[int],
-) -> None:
-    """Print the platform ID for a training job name."""
-    try:
-        config, _ = Config.from_files_and_env(require_credentials=False)
-        job_id = _resolve_web_job_id(
-            config=config,
-            job=job,
-            workspace=workspace,
-            all_workspaces=False,
-            max_pages=50,
-            pick=pick,
-        )
-        if ctx.json_output:
-            click.echo(json_formatter.format_json({"name": job, "id": job_id}, allow_ids=True))
-        else:
-            click.echo(job_id)
-    except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except WebJobValidationError as e:
-        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
-    except WebJobResolutionError as e:
-        _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
-    except (SessionExpiredError, ValueError) as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
-    except Exception as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @click.command("status")
@@ -973,7 +949,7 @@ def status(
             _close_web_client()
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"source": "web", "job": job_data}))
+            click.echo(json_formatter.format_json(_public_output(job_data)))
         else:
             click.echo(_format_web_job_status(job_data))
 
@@ -1041,7 +1017,7 @@ def instances(
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"source": "web", "job_id": job_id, "instances": rows, "total": total}
+                    {"instances": _public_output(rows), "total": total}
                 )
             )
         else:
@@ -1089,9 +1065,7 @@ def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) 
         browser_api_module.stop_training_job(job_id, session=session)
 
         if ctx.json_output:
-            click.echo(
-                json_formatter.format_json({"name": job, "job_id": job_id, "status": "stopped"})
-            )
+            click.echo(json_formatter.format_json({"name": job, "status": "stopped"}))
         else:
             click.echo(human_formatter.format_success(f"Job stopped: {job}"))
 
@@ -1160,14 +1134,10 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
 
     try:
         session = get_web_session()
-        result = browser_api_module.delete_job(job_id=job_id, session=session)
+        browser_api_module.delete_job(job_id=job_id, session=session)
 
         if ctx.json_output:
-            click.echo(
-                json_formatter.format_json(
-                    {"name": job, "job_id": job_id, "status": "deleted", "result": result}
-                )
-            )
+            click.echo(json_formatter.format_json({"name": job, "status": "deleted"}))
         else:
             click.echo(human_formatter.format_success(f"Job deleted: {job}"))
 
@@ -1236,11 +1206,6 @@ def wait(
         start_time = time.time()
         last_status = None
 
-        if not ctx.json_output:
-            click.echo(
-                f"Waiting for job {scrub_raw_ids(job)} (timeout: {timeout}s, interval: {interval}s)"
-            )
-
         while True:
             elapsed = time.time() - start_time
 
@@ -1258,33 +1223,15 @@ def wait(
 
                 if current_status != last_status:
                     if ctx.json_output:
-                        click.echo(
-                            json_formatter.format_json(
-                                {
-                                    "event": "status_change",
-                                    "status": current_status,
-                                    "elapsed_seconds": int(elapsed),
-                                }
-                            )
-                        )
+                        click.echo(json_formatter.format_json({"status": current_status}))
                     else:
-                        click.echo(f"\nStatus: {scrub_raw_ids(current_status)}")
+                        click.echo(f"Status: {scrub_raw_ids(current_status)}")
                     last_status = current_status
-                else:
-                    if not ctx.json_output:
-                        mins = int(elapsed // 60)
-                        secs = int(elapsed % 60)
-                        click.echo(
-                            f"\r[{mins:02d}:{secs:02d}] Waiting... "
-                            f"Status: {scrub_raw_ids(current_status)}",
-                            nl=False,
-                        )
 
                 if current_status in terminal_statuses:
                     if ctx.json_output:
-                        click.echo(json_formatter.format_json(job_data))
+                        click.echo(json_formatter.format_json(_public_output(job_data)))
                     else:
-                        click.echo("")
                         click.echo(human_formatter.format_job_status(job_data))
 
                     if current_status in {"SUCCEEDED", "job_succeeded"}:
@@ -1292,8 +1239,8 @@ def wait(
                     sys.exit(EXIT_GENERAL_ERROR)
 
             except Exception as e:
-                if not ctx.json_output:
-                    click.echo(f"\nWarning: Failed to get status: {scrub_raw_ids(e)}")
+                if ctx.debug:
+                    click.echo(f"status refresh failed: {scrub_raw_ids(e)}", err=True)
 
             time.sleep(interval)
 
@@ -1335,7 +1282,6 @@ def show_command(
             job_data = browser_api_module.get_job_detail_v2(job_id, session=session)
         finally:
             _close_web_client()
-        source = "web"
         command_value = job_data.get("command")
 
         if not command_value:
@@ -1348,11 +1294,7 @@ def show_command(
             return
 
         if ctx.json_output:
-            click.echo(
-                json_formatter.format_json(
-                    {"job_id": job_id, "command": command_value, "source": source}
-                )
-            )
+            click.echo(json_formatter.format_json({"command": scrub_raw_ids(command_value)}))
         else:
             click.echo(scrub_raw_ids(command_value))
 
@@ -1419,7 +1361,6 @@ def shell(
             all_workspaces=False,
             max_pages=50,
             pick=pick,
-            allow_raw_id=False,
             workspace_must_be_single=True,
         )
         session = get_web_session()
@@ -1472,7 +1413,6 @@ __all__ = [
     "list_jobs",
     "shell",
     "show_command",
-    "show_id",
     "status",
     "stop",
     "delete",

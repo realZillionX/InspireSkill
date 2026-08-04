@@ -120,7 +120,6 @@ def test_web_follow_polls_new_logs_and_scrubs_human_output(monkeypatch) -> None:
     assert "latest <job-id>" in result.output
     assert "new <job-id>" in result.output
     assert "job-12345678-1234-1234-1234-123456789abc" not in result.output
-    assert "Stopped following logs." in result.output
 
 
 def test_web_follow_accepts_explicit_instance_without_listing_instances(monkeypatch) -> None:  # noqa: ANN001

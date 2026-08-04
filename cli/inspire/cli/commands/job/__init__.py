@@ -14,7 +14,6 @@ from .job_commands import (
     list_jobs,
     shell,
     show_command,
-    show_id,
     status,
     stop,
     wait,
@@ -50,7 +49,6 @@ job.add_command(make_quota_command("job"))
 job.add_command(make_profile_command("job"))
 job.add_command(job_batch)
 job.add_command(status)
-job.add_command(show_id)
 job.add_command(logs)
 job.add_command(events)
 job.add_command(instances)

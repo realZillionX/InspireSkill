@@ -854,7 +854,8 @@ def test_job_list_web_name_search_scans_all_workspaces(
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"]["source"] == "web"
+    assert "source" not in payload["data"]
+    assert "scanned" not in payload["data"]
     assert "job_id" not in payload["data"]["jobs"][0]
     assert payload["data"]["jobs"][0]["name"] == "kchen-slime-code-qwen35-35b-a3b-6node"
     assert payload["data"]["jobs"][0]["workspace_name"] == "Training Workspace"

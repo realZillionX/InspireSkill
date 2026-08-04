@@ -149,14 +149,27 @@ def _hpc_plan_payload(
     workspace_label: str,
     compute_group_name: str,
 ) -> dict[str, Any]:
+    sbatch = create_kwargs.get("sbatch_script") or {}
+    cluster = create_kwargs.get("slurm_cluster_spec") or {}
     return {
         "dry_run": True,
-        "kind": "hpc",
         "name": name,
-        "create_kwargs": dict(create_kwargs),
         "project_name": project_label,
         "workspace_name": workspace_label,
         "compute_group_name": compute_group_name,
+        "image": cluster.get("image"),
+        "image_type": cluster.get("image_type"),
+        "instance_count": cluster.get("instance_count"),
+        "resource": {
+            "cpu": cluster.get("cpu"),
+            "memory_gib": cluster.get("mem_gi"),
+        },
+        "entrypoint": sbatch.get("entrypoint"),
+        "number_of_tasks": sbatch.get("number_of_tasks"),
+        "cpus_per_task": sbatch.get("cpus_per_task"),
+        "memory_per_cpu": sbatch.get("memory_per_cpu"),
+        "enable_hyper_threading": sbatch.get("enable_hyper_threading"),
+        "task_priority": create_kwargs.get("task_priority"),
     }
 
 
@@ -224,6 +237,44 @@ def _format_hpc_list_rows(rows: list[dict[str, str]]) -> str:
     ]
     lines.append(f"Total: {len(rows)}")
     return "\n".join(lines)
+
+
+_OUTPUT_METADATA_KEYS = {
+    "debug",
+    "method",
+    "metadata",
+    "payload",
+    "progress",
+    "raw",
+    "request",
+    "requestpayload",
+    "response",
+    "responsemetadata",
+    "result",
+    "scanned",
+    "source",
+}
+
+
+def _is_output_id_key(key: object) -> bool:
+    normalized = str(key or "").replace("-", "_").lower()
+    return normalized in {"id", "ids"} or normalized.endswith("_id") or normalized.endswith("_ids")
+
+
+def _public_output(value: object) -> Any:
+    """Keep useful HPC results while hiding platform handles and metadata."""
+    if isinstance(value, dict):
+        return {
+            key: _public_output(child)
+            for key, child in value.items()
+            if str(key or "").replace("-", "_").lower() not in _OUTPUT_METADATA_KEYS
+            and not _is_output_id_key(key)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_public_output(item) for item in value]
+    if isinstance(value, str):
+        return scrub_raw_ids(value)
+    return value
 
 
 def _hpc_instance_name(inst: dict[str, Any], idx: int) -> str:
@@ -319,20 +370,18 @@ def list_hpc(
         )
         rows = [
             {
-                "job_id": job.job_id or "N/A",
                 "name": scrub_raw_ids(job.name or "N/A"),
                 "status": scrub_raw_ids(job.status or "N/A"),
                 "created_at": scrub_raw_ids(job.created_at or "N/A"),
                 "entrypoint": scrub_raw_ids(job.entrypoint or ""),
                 "project_name": scrub_raw_ids(job.project_name or ""),
                 "compute_group_name": scrub_raw_ids(job.compute_group_name or ""),
-                "workspace_id": job.workspace_id or "",
             }
             for job in jobs
         ]
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"jobs": rows, "total": total}))
+            click.echo(json_formatter.format_json({"jobs": _public_output(rows), "total": total}))
             return
 
         click.echo(_format_hpc_list_rows(rows))
@@ -632,7 +681,7 @@ def create_hpc(
         )
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json(data))
+            click.echo(json_formatter.format_json(_public_output(data)))
             return
 
         click.echo(human_formatter.format_success(f"HPC job created: {name}"))
@@ -679,7 +728,7 @@ def status_hpc(ctx: Context, name: str, workspace: str) -> None:
         data = browser_api_module.get_hpc_job_detail(job_id, session=session)
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json(data))
+            click.echo(json_formatter.format_json(_public_output(data)))
             return
 
         click.echo("HPC Job Status")
@@ -745,7 +794,7 @@ def instances_hpc(ctx: Context, name: str, workspace: str, limit: int) -> None:
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"source": "web", "job_id": job_id, "instances": rows, "total": total}
+                    {"instances": _public_output(rows), "total": total}
                 )
             )
             return
@@ -756,44 +805,6 @@ def instances_hpc(ctx: Context, name: str, workspace: str, limit: int) -> None:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except (SessionExpiredError, ValueError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
-    except Exception as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
-
-
-@click.command("id")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name.")
-@click.option(
-    "--pick",
-    type=click.IntRange(1),
-    default=None,
-    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
-)
-@pass_context
-def hpc_id(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
-    """Print the platform ID for an HPC job name."""
-    try:
-        config, _ = Config.from_files_and_env(require_credentials=False)
-        session = get_web_session()
-        job_id = _resolve_hpc_name_in_workspace(
-            ctx,
-            config=config,
-            session=session,
-            name=name,
-            workspace=workspace,
-            limit=10000,
-            pick=pick,
-        )
-        if ctx.json_output:
-            click.echo(json_formatter.format_json({"name": name, "id": job_id}, allow_ids=True))
-            return
-        click.echo(job_id)
-    except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
-    except (SessionExpiredError, ValueError) as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
@@ -884,12 +895,10 @@ def delete_hpc(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
             limit=10000,
             pick=pick,
         )
-        result = browser_api_module.delete_hpc_job(job_id=job_id, session=session)
+        browser_api_module.delete_hpc_job(job_id=job_id, session=session)
 
         if ctx.json_output:
-            click.echo(
-                json_formatter.format_json({"name": name, "status": "deleted", "result": result})
-            )
+            click.echo(json_formatter.format_json({"name": name, "status": "deleted"}))
             return
         click.echo(human_formatter.format_success(f"HPC job deleted: {name}"))
 
@@ -908,7 +917,6 @@ __all__ = [
     "create_hpc",
     "status_hpc",
     "instances_hpc",
-    "hpc_id",
     "stop_hpc",
     "delete_hpc",
 ]

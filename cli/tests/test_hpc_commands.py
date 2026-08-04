@@ -154,6 +154,9 @@ def test_hpc_create_json_uses_alias_resolution(
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert payload["data"]["status"] == "QUEUING"
+    assert "job_id" not in payload["data"]
+    assert "source" not in payload["data"]
+    assert "result" not in payload["data"]
 
     call = api.calls["create_hpc_job"]
     assert call["job_name"] == "hpc-demo"
@@ -344,6 +347,7 @@ def test_hpc_status_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert payload["data"]["status"] == "RUNNING"
+    assert "job_id" not in payload["data"]
     assert api.calls["get_hpc_job_detail"] == "hpc-job-123"
 
 

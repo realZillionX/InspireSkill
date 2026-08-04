@@ -35,6 +35,8 @@ from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web.session import get_web_session
 from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
 
+from .job_commands import _public_output
+
 
 def run_job_create(
     ctx: Context,
@@ -166,7 +168,7 @@ def run_job_create(
             return
 
         try:
-            selected, fallback_msg = job_submit.select_project_for_workspace(
+            selected, _fallback_msg = job_submit.select_project_for_workspace(
                 config,
                 workspace_id=selected_workspace_id,
                 requested=project,
@@ -178,31 +180,11 @@ def run_job_create(
 
         selected_project_id = selected.project_id
         fair_scheduling = is_fair_scheduling_workspace(session, selected_workspace_id)
-        uncapped_priority = resolve_task_priority(priority, fair_scheduling=fair_scheduling)
         priority = resolve_task_priority(
             priority,
             fair_scheduling=fair_scheduling,
             project_limit=selected.priority_name,
         )
-        if priority != uncapped_priority and not ctx.json_output:
-            click.echo(
-                f"Capping priority {uncapped_priority} → {priority} "
-                f"(max for project '{scrub_raw_ids(selected.name)}')"
-            )
-
-        if not ctx.json_output:
-            if fallback_msg:
-                click.echo(scrub_raw_ids(fallback_msg))
-            click.echo(
-                f"Using project: {scrub_raw_ids(selected.name)}"
-                f"{scrub_raw_ids(selected.get_quota_status())}"
-            )
-            click.echo(
-                f"Using compute group: {scrub_raw_ids(resolved_quota.compute_group_name)} "
-                f"({resolved_quota.gpu_count}x{resolved_quota.gpu_type or 'CPU'}, "
-                f"{resolved_quota.cpu_count} CPU, {resolved_quota.memory_gib} GiB)"
-            )
-
         try:
             plan = job_submit.build_training_job_plan(
                 config=config,
@@ -231,7 +213,32 @@ def run_job_create(
 
         if dry_run:
             if ctx.json_output:
-                click.echo(json_formatter.format_json(job_submit.training_plan_payload(plan)))
+                click.echo(
+                    json_formatter.format_json(
+                        {
+                            "dry_run": True,
+                            "name": name,
+                            "project_name": selected.name,
+                            "workspace_name": workspace_label(
+                                session,
+                                selected_workspace_id,
+                                workspace,
+                            ),
+                            "compute_group_name": resolved_quota.compute_group_name,
+                            "quota": {
+                                "gpu_count": resolved_quota.gpu_count,
+                                "gpu_type": resolved_quota.gpu_type,
+                                "cpu_count": resolved_quota.cpu_count,
+                                "memory_gib": resolved_quota.memory_gib,
+                            },
+                            "priority": priority,
+                            "nodes": nodes,
+                            "image": scrub_raw_ids(image),
+                            "command": scrub_raw_ids(plan.wrapped_command),
+                            "shm_size_gib": plan.shm_size_gib,
+                        }
+                    )
+                )
                 return
             click.echo(human_formatter.format_success(f"Dry run: job create plan for {name}"))
             click.echo(f"Project: {scrub_raw_ids(selected.name)}")
@@ -252,8 +259,6 @@ def run_job_create(
                 click.echo(f"Exclude nodes: {scrub_raw_ids(', '.join(plan_exclude_nodes))}")
             click.echo(f"Image: {scrub_raw_ids(image)}")
             click.echo(f"Command: {scrub_raw_ids(plan.wrapped_command)}")
-            if plan.log_path:
-                click.echo(f"Log file: {scrub_raw_ids(plan.log_path)}")
             click.echo("No job was submitted.")
             return
 
@@ -279,14 +284,21 @@ def run_job_create(
         )
 
         wrapped_command = submission.wrapped_command
-        log_path = submission.log_path
         result = submission.result
 
         data = submission.data
         job_id = submission.job_id
 
         if ctx.json_output:
-            payload = dict(data if data else result)
+            raw_payload = data if data else result
+            if isinstance(raw_payload, dict) and isinstance(raw_payload.get("data"), dict):
+                payload = dict(raw_payload["data"])
+            elif isinstance(raw_payload, dict):
+                payload = dict(raw_payload)
+            else:
+                payload = {}
+            payload.pop("code", None)
+            payload = _public_output(payload)
             payload.setdefault("name", name)
             payload.setdefault("enable_notification", bool(enable_notification))
             if plan.shm_size_gib is not None:
@@ -317,8 +329,6 @@ def run_job_create(
                 display_cmd = wrapped_command
                 suffix = ""
             click.echo(f"Command:  {scrub_raw_ids(display_cmd)}{suffix}")
-            if log_path:
-                click.echo(f"Log file:  {scrub_raw_ids(log_path)}")
             click.echo(
                 "\nCheck status with: "
                 f"inspire job status {scrub_raw_ids(name)} --workspace {scrub_raw_ids(workspace)}"

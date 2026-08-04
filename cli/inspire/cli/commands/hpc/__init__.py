@@ -11,7 +11,6 @@ from inspire.cli.commands.workload_profile import make_profile_command
 from .hpc_commands import (
     create_hpc,
     delete_hpc,
-    hpc_id,
     instances_hpc,
     list_hpc,
     status_hpc,
@@ -47,7 +46,6 @@ hpc.add_command(make_profile_command("hpc"))
 hpc.add_command(hpc_batch)
 hpc.add_command(status_hpc)
 hpc.add_command(instances_hpc)
-hpc.add_command(hpc_id)
 hpc.add_command(stop_hpc)
 hpc.add_command(delete_hpc)
 hpc.add_command(events_hpc)
