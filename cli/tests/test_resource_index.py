@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
 
 import pytest
@@ -9,7 +10,9 @@ from inspire.accounts import create_account, set_current_account
 from inspire.cli.utils.resource_index import (
     ResourceIdentity,
     ResourceIndex,
+    ResourceIndexDatabaseError,
     ResourceScope,
+    StaleResourceIndexRefresh,
     candidates_from_dicts,
     resource_index_path,
     scope_for_session,
@@ -222,6 +225,47 @@ def test_full_reconcile_tombstones_unseen_rows(tmp_path) -> None:
     assert deleted.tombstoned_at == 200
 
 
+def test_old_full_refresh_cannot_resurrect_deleted_and_recreated_name(
+    tmp_path,
+) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope(resource_type="notebook")
+    index.upsert(scope, [_record("notebook-old", "A")], now=100)
+    refresh_revision = index.scope_revision(scope)
+
+    # A user action wins while the platform list used by the old refresh is
+    # still in flight.
+    index.mark_deleted(scope, resource_id="notebook-old", now=110)
+    index.upsert(scope, [_record("notebook-new", "A")], now=111)
+
+    with pytest.raises(StaleResourceIndexRefresh):
+        index.reconcile(
+            scope,
+            [_record("notebook-old", "A")],
+            now=112,
+            expected_revision=refresh_revision,
+        )
+
+    assert [
+        item.resource_id
+        for item in index.lookup(scope, "A", fresh_only=False, now=112)
+    ] == ["notebook-new"]
+    old = index.lookup_id(scope, "notebook-old", include_tombstoned=True)
+    assert old is not None
+    assert old.tombstoned_at == 110
+
+
+def test_scope_refresh_timestamps_never_move_backwards(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    index.reconcile(scope, [_record("job-a", "A")], now=200)
+    index.replace_name(scope, "A", [_record("job-a", "A")], now=100)
+
+    status = index.list_scope_status()[0]
+    assert status.last_refresh_at == 200
+    assert status.last_full_refresh_at == 200
+
+
 def test_refresh_error_preserves_last_successful_snapshot(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
     scope = _scope()
@@ -239,6 +283,65 @@ def test_refresh_error_preserves_last_successful_snapshot(tmp_path) -> None:
         item.resource_id
         for item in index.lookup(scope, "A", fresh_only=False, now=200)
     ] == ["job-a"]
+
+
+def test_older_refresh_error_cannot_overwrite_newer_success(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    index.reconcile(
+        scope,
+        [_record("job-a", "A")],
+        now=200,
+        attempted_at=200,
+    )
+
+    index.record_refresh_error(scope, "old failure", now=100)
+
+    status = index.list_scope_status()[0]
+    assert status.last_attempt_at == 200
+    assert status.last_error == ""
+
+
+def test_write_through_preserves_full_refresh_error_until_full_success(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    index.reconcile(scope, [_record("job-a", "A")], now=100)
+    index.record_refresh_error(scope, "full refresh failed", now=200)
+
+    index.upsert(scope, [_record("job-b", "B")], now=201)
+
+    status = index.list_scope_status()[0]
+    assert status.last_error == "full refresh failed"
+    index.reconcile(scope, [_record("job-b", "B")], now=202, attempted_at=202)
+    assert index.list_scope_status()[0].last_error == ""
+
+
+def test_scope_status_separates_fresh_expired_and_tombstoned_rows(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    index.reconcile(
+        scope,
+        [
+            _record("job-expired", "expired"),
+            _record("job-deleted", "deleted"),
+        ],
+        ttl_seconds=10,
+        now=100,
+    )
+    index.mark_deleted(scope, resource_id="job-deleted", now=105)
+    index.upsert(
+        scope,
+        [_record("job-fresh", "fresh")],
+        ttl_seconds=10,
+        now=105,
+    )
+
+    status = index.list_scope_status(now=111)[0]
+
+    assert status.active_count == 1
+    assert status.fresh_count == 1
+    assert status.expired_count == 1
+    assert status.tombstone_count == 1
 
 
 def test_duplicate_names_are_retained_for_ambiguity_detection(tmp_path) -> None:
@@ -276,6 +379,71 @@ def test_mark_deleted_scope_due_purge_and_clear(tmp_path) -> None:
     assert index.list_scope_status() == []
 
 
+def test_clear_generation_rejects_revision_zero_in_flight_refresh(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    generation, revision = index.snapshot_token(scope)
+
+    index.clear()
+
+    with pytest.raises(StaleResourceIndexRefresh):
+        index.reconcile(
+            scope,
+            [_record("job-old", "A")],
+            expected_generation=generation,
+            expected_revision=revision,
+        )
+
+
+def test_mark_scope_stale_is_transactional_and_makes_full_refresh_due(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    index.reconcile(scope, [_record("job-a", "A")], now=100)
+    generation, revision = index.snapshot_token(scope)
+
+    assert index.mark_scope_stale(scope) == 1
+
+    assert index.scope_due(
+        scope,
+        interval_seconds=60,
+        now=101,
+        require_full=True,
+    )
+    assert index.lookup(scope, "A", now=101) == []
+    with pytest.raises(StaleResourceIndexRefresh):
+        index.reconcile(
+            scope,
+            [_record("job-a", "A")],
+            expected_generation=generation,
+            expected_revision=revision,
+        )
+
+
+def test_prune_orphan_workspace_scopes_removes_only_invisible_workspaces(
+    tmp_path,
+) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    workspace_scope = _scope(resource_type="workspace", workspace_id="")
+    visible_scope = _scope(workspace_id="workspace-visible")
+    orphan_scope = _scope(workspace_id="workspace-removed")
+    index.reconcile(visible_scope, [_record("job-visible", "visible")], now=100)
+    index.reconcile(orphan_scope, [_record("job-old", "old")], now=100)
+
+    assert (
+        index.prune_orphan_workspace_scopes(
+            workspace_scope,
+            ["workspace-visible"],
+        )
+        == 1
+    )
+
+    assert index.lookup(visible_scope, "visible", fresh_only=False)
+    assert index.lookup(orphan_scope, "old", fresh_only=False) == []
+    assert {
+        status.workspace_id for status in index.list_scope_status()
+    } == {"workspace-visible"}
+
+
 def test_refresh_lease_is_single_flight_and_released(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
     scope = _scope()
@@ -287,6 +455,78 @@ def test_refresh_lease_is_single_flight_and_released(tmp_path) -> None:
 
     with index.refresh_lease(scope, holder="third", now=101) as third:
         assert third is True
+
+
+def test_refresh_lease_database_errors_are_best_effort(tmp_path, monkeypatch) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+
+    def _broken_connect():
+        raise sqlite3.OperationalError("database unavailable")
+
+    monkeypatch.setattr(index, "_connect", _broken_connect)
+    with index.refresh_lease(scope) as acquired:
+        assert acquired is False
+
+
+def test_refresh_lease_can_distinguish_database_error_from_contention(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+
+    def _broken_connect():
+        raise sqlite3.OperationalError("database unavailable")
+
+    monkeypatch.setattr(index, "_connect", _broken_connect)
+    with pytest.raises(ResourceIndexDatabaseError):
+        with index.refresh_lease(scope, raise_on_error=True):
+            pass
+
+
+def test_refresh_lease_release_database_error_does_not_escape(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+
+    with index.refresh_lease(scope, holder="first", now=100) as acquired:
+        assert acquired is True
+
+        def _broken_connect():
+            raise sqlite3.OperationalError("database unavailable")
+
+        monkeypatch.setattr(index, "_connect", _broken_connect)
+
+
+def test_refresh_error_and_purge_database_errors_preserve_snapshot(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    index.reconcile(
+        scope,
+        [_record("job-live", "live"), _record("job-deleted", "deleted")],
+        now=100,
+    )
+    index.mark_deleted(scope, resource_id="job-deleted", now=100)
+
+    def _broken_connect():
+        raise sqlite3.OperationalError("database unavailable")
+
+    monkeypatch.setattr(index, "_connect", _broken_connect)
+    index.record_refresh_error(scope, "temporary failure")
+    assert index.purge_tombstones(now=100) == 0
+
+    restored = ResourceIndex(tmp_path / "index.sqlite3")
+    live = restored.lookup(scope, "live", fresh_only=False, now=100)
+    assert [item.resource_id for item in live] == ["job-live"]
+    deleted = restored.lookup_id(scope, "job-deleted", include_tombstoned=True)
+    assert deleted is not None
+    assert deleted.tombstoned_at == 100
 
 
 def test_refresh_lease_renews_during_a_long_scan(tmp_path) -> None:
@@ -302,6 +542,30 @@ def test_refresh_lease_renews_during_a_long_scan(tmp_path) -> None:
             lease_seconds=1,
         ) as second:
             assert second is False
+
+
+def test_corrupt_database_is_quarantined_and_rebuilt(tmp_path) -> None:
+    path = tmp_path / "index.sqlite3"
+    path.write_bytes(b"not a sqlite database")
+
+    index = ResourceIndex(path)
+
+    assert index.list_scope_status() == []
+    quarantined = list(tmp_path.glob("index.sqlite3.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == b"not a sqlite database"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "database is locked",
+        "attempt to write a readonly database",
+        "disk I/O error",
+    ],
+)
+def test_non_corruption_database_errors_are_not_quarantined(message: str) -> None:
+    assert ResourceIndex._is_corruption_error(sqlite3.OperationalError(message)) is False
 
 
 def test_candidates_from_dicts_keeps_only_minimal_identity_fields() -> None:

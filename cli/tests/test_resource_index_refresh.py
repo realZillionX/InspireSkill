@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 from importlib import import_module
 
+import pytest
 from click.testing import CliRunner
 
 from inspire.accounts import create_account, set_current_account
+from inspire.cli.context import EXIT_API_ERROR
 from inspire.cli.utils.resource_index import (
     ResourceIdentity,
     ResourceIndex,
@@ -15,6 +18,8 @@ from inspire.cli.utils.resource_index import (
 )
 from inspire.cli.utils.resource_index_refresh import (
     FetchResult,
+    RefreshResult,
+    RefreshSummary,
     maybe_spawn_periodic_refresh,
     periodic_refresh_stamp_path,
     refresh_resource_index,
@@ -89,6 +94,7 @@ def test_full_refresh_populates_scoped_name_map(tmp_path) -> None:
 
 def test_due_refresh_skips_fresh_scope_without_calling_fetcher(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
+    workspace_calls: list[str] = []
     index.reconcile(
         _scope("job", "workspace-one"),
         [ResourceIdentity(resource_id="job-one", name="train")],
@@ -106,10 +112,38 @@ def test_due_refresh_skips_fresh_scope_without_calling_fetcher(tmp_path) -> None
         index=index,
         resource_types=("job",),
         force=False,
-        fetchers={"workspace": _workspace_fetch, "job": _unexpected_fetch},
+        fetchers={
+            "workspace": lambda *_args: (
+                workspace_calls.append("workspace") or _workspace_fetch(*_args)
+            ),
+            "job": _unexpected_fetch,
+        },
     )
 
     assert summary.skipped_count == 1
+    assert summary.error_count == 0
+    assert workspace_calls == []
+
+
+def test_ssh_key_refresh_never_fetches_workspaces(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("ssh-key",),
+        force=True,
+        fetchers={
+            "workspace": lambda *_args: (_ for _ in ()).throw(
+                AssertionError("ssh-key refresh must not fetch workspaces")
+            ),
+            "ssh-key": lambda *_args: FetchResult(
+                [ResourceIdentity(resource_id="key-one", name="laptop")]
+            ),
+        },
+    )
+
+    assert summary.refreshed_count == 1
     assert summary.error_count == 0
 
 
@@ -137,12 +171,55 @@ def test_exact_refresh_replaces_recreated_resource(tmp_path) -> None:
     )
 
     assert summary.error_count == 0
-    assert [item.resource_id for item in index.lookup(scope, "A")] == [
+    assert [
+        item.resource_id
+        for item in index.lookup(scope, "A", fresh_only=False, now=112)
+    ] == [
         "notebook-new"
     ]
     old = index.lookup_id(scope, "notebook-old", include_tombstoned=True)
     assert old is not None
     assert old.tombstoned_at is not None
+
+
+def test_refresh_does_not_overwrite_newer_write_through(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope("notebook", "workspace-one")
+    index.upsert(
+        scope,
+        [ResourceIdentity(resource_id="notebook-old", name="A")],
+    )
+
+    def _notebook_fetch(_session: object, _workspace: str, _name: str) -> FetchResult:
+        index.mark_deleted(scope, resource_id="notebook-old", now=110)
+        index.upsert(
+            scope,
+            [ResourceIdentity(resource_id="notebook-new", name="A")],
+            now=111,
+        )
+        return FetchResult(
+            [ResourceIdentity(resource_id="notebook-old", name="A")]
+        )
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("notebook",),
+        workspace_names=("Training Space",),
+        exact_name="A",
+        force=True,
+        fetchers={
+            "workspace": _workspace_fetch,
+            "notebook": _notebook_fetch,
+        },
+    )
+
+    assert summary.stale_count == 1
+    assert summary.error_count == 0
+    assert [
+        item.resource_id
+        for item in index.lookup(scope, "A", fresh_only=False, now=112)
+    ] == ["notebook-new"]
 
 
 def test_failed_refresh_preserves_existing_rows(tmp_path) -> None:
@@ -168,6 +245,81 @@ def test_failed_refresh_preserves_existing_rows(tmp_path) -> None:
     assert index.list_scope_status()[0].last_error == "temporary API failure"
 
 
+def test_refresh_continues_when_error_recording_fails(tmp_path, monkeypatch) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+
+    def _fail(_session: object, _workspace: str, _name: str) -> FetchResult:
+        raise RuntimeError("temporary API failure")
+
+    monkeypatch.setattr(
+        index,
+        "record_refresh_error",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database unavailable")
+        ),
+    )
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("job",),
+        force=True,
+        fetchers={"workspace": _workspace_fetch, "job": _fail},
+    )
+
+    assert summary.error_count == 1
+    assert summary.results[0].error == "temporary API failure"
+
+
+def test_refresh_continues_when_tombstone_purge_fails(tmp_path, monkeypatch) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+
+    monkeypatch.setattr(
+        index,
+        "purge_tombstones",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database unavailable")
+        ),
+    )
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("workspace",),
+        force=True,
+        fetchers={"workspace": _workspace_fetch},
+    )
+
+    assert summary.error_count == 0
+    assert summary.refreshed_count == 1
+
+
+def test_refresh_reports_database_error_when_lease_acquisition_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+
+    def _broken_connect():
+        raise sqlite3.OperationalError("database unavailable")
+
+    monkeypatch.setattr(index, "_connect", _broken_connect)
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("job",),
+        force=True,
+        fetchers={
+            "workspace": _workspace_fetch,
+            "job": lambda *_args: (_ for _ in ()).throw(
+                AssertionError("cache failure should not call the fetcher")
+            ),
+        },
+    )
+
+    assert summary.error_count == 1
+    assert summary.busy_count == 0
+    assert summary.results[0].error == "The local resource name cache is unavailable."
+
+
 def test_cache_status_is_stale_at_the_ttl_boundary(tmp_path, monkeypatch) -> None:
     cache_commands = import_module("inspire.cli.commands.cache")
     index = ResourceIndex(tmp_path / "index.sqlite3")
@@ -184,6 +336,48 @@ def test_cache_status_is_stale_at_the_ttl_boundary(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(cache_commands.time, "time", lambda: 160)
     stale = cache_commands._status_payload(index)
     assert stale["resources"][0]["state"] == "stale"
+    assert stale["resources"][0]["items"] == 0
+
+
+def test_cache_status_marks_targeted_only_scope_partial(tmp_path, monkeypatch) -> None:
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    index.replace_name(
+        _scope("job", "workspace-one"),
+        "train",
+        [ResourceIdentity(resource_id="job-one", name="train")],
+        now=100,
+    )
+
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 101)
+    payload = cache_commands._status_payload(index)
+
+    assert payload["resources"][0]["state"] == "partial"
+
+
+def test_cache_status_stays_ready_after_targeted_refresh_of_full_scope(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope("job", "workspace-one")
+    index.reconcile(
+        scope,
+        [ResourceIdentity(resource_id="job-one", name="train")],
+        now=100,
+    )
+    index.replace_name(
+        scope,
+        "train",
+        [ResourceIdentity(resource_id="job-one", name="train")],
+        now=110,
+    )
+
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 111)
+    payload = cache_commands._status_payload(index)
+
+    assert payload["resources"][0]["state"] == "ready"
 
 
 def test_incomplete_workspace_snapshot_never_tombstones_unseen_rows(tmp_path) -> None:
@@ -288,6 +482,63 @@ def test_workspace_failure_preserves_last_successful_snapshot(
     assert [
         item.resource_id for item in index.lookup(scope, "Old", fresh_only=False)
     ] == ["workspace-old"]
+
+
+def test_workspace_failure_is_preserved_for_workspace_bound_refresh(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("job",),
+        force=True,
+        fetchers={
+            "workspace": lambda *_args: (_ for _ in ()).throw(
+                RuntimeError("workspace backend down")
+            ),
+            "job": lambda *_args: FetchResult([]),
+        },
+    )
+
+    assert summary.error_count == 1
+    assert summary.results[0].error == "workspace backend down"
+
+
+def test_complete_workspace_refresh_prunes_removed_workspace_scopes(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    old_job_scope = _scope("job", "workspace-old")
+    index.reconcile(
+        _scope("workspace"),
+        [ResourceIdentity(resource_id="workspace-old", name="Old")],
+        now=100,
+    )
+    index.reconcile(
+        old_job_scope,
+        [ResourceIdentity(resource_id="job-old", name="train")],
+        now=100,
+    )
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("workspace", "job"),
+        force=True,
+        fetchers={
+            "workspace": lambda *_args: FetchResult(
+                [ResourceIdentity(resource_id="workspace-new", name="New")],
+                complete=True,
+            ),
+            "job": lambda _session, workspace_id, _name: FetchResult(
+                [ResourceIdentity(resource_id=f"job-{workspace_id}", name="train")]
+            ),
+        },
+    )
+
+    assert summary.error_count == 0
+    assert index.lookup(old_job_scope, "train", fresh_only=False) == []
+    assert "workspace-old" not in {
+        status.workspace_id for status in index.list_scope_status()
+    }
 
 
 def test_empty_workspace_snapshot_is_distinct_from_failure(tmp_path) -> None:
@@ -395,6 +646,62 @@ def test_cache_status_and_clear_never_expose_workspace_handle(
     assert index.list_scope_status() == []
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["cache", "status"],
+        ["cache", "clear", "--yes"],
+        ["cache", "refresh"],
+    ],
+)
+def test_cache_commands_normalize_database_errors(
+    command,
+    monkeypatch,
+) -> None:
+    from inspire.cli.main import main
+
+    cache_commands = import_module("inspire.cli.commands.cache")
+
+    def _fail_for_account(_cls, account=None):  # noqa: ANN001
+        del account
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(
+        cache_commands.ResourceIndex,
+        "for_account",
+        classmethod(_fail_for_account),
+    )
+    result = CliRunner().invoke(main, ["--json", *command])
+
+    assert result.exit_code == EXIT_API_ERROR
+    assert "CacheError" in result.output
+    assert "database is locked" not in result.output
+
+
+def test_quiet_refresh_preserves_failure_exit_code(tmp_path, monkeypatch) -> None:
+    from inspire.cli.main import main
+
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    monkeypatch.setattr(cache_commands, "_index_or_exit", lambda *_args: index)
+    monkeypatch.setattr(cache_commands, "require_web_session", lambda *_args, **_kwargs: _Session())
+    monkeypatch.setattr(
+        cache_commands,
+        "refresh_resource_index",
+        lambda **_kwargs: RefreshSummary(
+            [RefreshResult("job", "Training Space", 0, "error", "API unavailable")]
+        ),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["cache", "refresh", "--due", "--quiet"],
+    )
+
+    assert result.exit_code == EXIT_API_ERROR
+    assert result.output == ""
+
+
 def test_periodic_refresh_is_throttled_and_quiet(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
@@ -431,9 +738,11 @@ def test_periodic_refresh_is_throttled_and_quiet(tmp_path, monkeypatch) -> None:
         "--due",
         "--quiet",
     ]
+    assert calls[0]["env"]["INSPIRE_RESOURCE_INDEX_REFRESH_ACCOUNT"] == "alpha"
     stamp = periodic_refresh_stamp_path()
     assert stamp is not None
     assert stamp.exists()
 
     os.utime(stamp, (time.time() - 3600, time.time() - 3600))
-    assert maybe_spawn_periodic_refresh(interval_seconds=300) is False
+    assert maybe_spawn_periodic_refresh(interval_seconds=7200) is True
+    assert len(calls) == 2

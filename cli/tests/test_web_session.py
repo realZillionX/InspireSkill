@@ -262,18 +262,151 @@ def test_extract_cas_rsa_key_from_login_js() -> None:
     assert ws_auth._extract_cas_rsa_key(text) == (CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
 
 
-def test_extract_login_failure_hint_prefers_actionable_text() -> None:
+def test_extract_login_failure_hint_ignores_benign_login_page_copy() -> None:
     html = """
     <html><body>
-      <script>var noisy = "ignore me";</script>
-      <div class="error">账号或密码错误，请重新输入</div>
+      <li class="auth_ul_li2"><h3>验证码登录</h3></li>
+      <input class="auth_input paw_input" type="text" placeholder="验证码">
+      <img src="https://example.test/validateimage">
+      <!-- 验证码登录 -->
+      <span class="sendMsg">发送验证码</span>
+      <input type="text" class="auth_input" placeholder="动态验证码">
+      <div class="form-error"><span class="form-tab-nav"></div>
+      <div class="form-error"><span class="form-tab-nav"></span></div>
+      <div class="form-error-message">需要输入验证码</div>
     </body></html>
     """
 
-    assert "账号或密码错误" in ws_auth._extract_login_failure_hint(html)
+    assert ws_auth._extract_login_failure_hint(html) == ""
 
 
-def test_login_not_complete_message_includes_diagnostics() -> None:
+@pytest.mark.parametrize(
+    "message",
+    [
+        "账号或密码错误，请重新输入",
+        "验证码信息无效。",
+        "账号已被锁定，请 30 分钟后重试",
+    ],
+)
+def test_extract_login_failure_hint_preserves_explicit_error(message: str) -> None:
+    html = f'<div class="form-error">{message}</div>'
+
+    assert ws_auth._extract_login_failure_hint(html) == message
+
+
+def test_extract_login_failure_hint_handles_nested_markup() -> None:
+    html = """
+    <div class="form-error"><span class="form-tab-nav"></div>
+    <div class='field form-error visible'>
+      <script>var password = "secret";</script>
+      <span>登录过于频繁</span><br>请稍后 &amp; 再试
+    </div>
+    """
+
+    assert ws_auth._extract_login_failure_hint(html) == "登录过于频繁 请稍后 & 再试"
+
+
+def test_extract_login_failure_hint_ignores_hidden_and_inert_descendants() -> None:
+    html = """
+    <div class="form-error">
+      账号或密码错误
+      <span hidden>验证码错误</span>
+      <span inert>用户名错误</span>
+      <span aria-hidden="true">密码错误</span>
+      <span class="d-none">账号错误</span>
+    </div>
+    """
+
+    assert ws_auth._extract_login_failure_hint(html) == "账号或密码错误"
+
+
+@pytest.mark.parametrize(
+    "opening_tag",
+    [
+        '<div class="form-error" hidden>',
+        '<div class="form-error" inert>',
+        '<div class="form-error" aria-hidden="true">',
+        '<div class="form-error" style="display: none">',
+        '<div class="form-error" style="visibility: hidden">',
+        '<div class="form-error" style="opacity: 0">',
+        '<div class="form-error hidden">',
+        '<div class="form-error Hidden">',
+    ],
+)
+def test_extract_login_failure_hint_ignores_hidden_error_containers(opening_tag: str) -> None:
+    html = (
+        f'{opening_tag}验证码信息无效</div><div class="form-error">账号已被锁定，请稍后重试</div>'
+    )
+
+    assert ws_auth._extract_login_failure_hint(html) == "账号已被锁定，请稍后重试"
+
+
+@pytest.mark.parametrize(
+    "opening_tag",
+    [
+        "<section hidden>",
+        "<section inert>",
+        '<section aria-hidden="true">',
+        '<section style="display: none">',
+    ],
+)
+def test_extract_login_failure_hint_ignores_hidden_ancestors(opening_tag: str) -> None:
+    html = (
+        f'{opening_tag}<section><div class="form-error">验证码信息无效</div></section></section>'
+        '<div class="form-error">账号已被锁定，请稍后重试</div>'
+    )
+
+    assert ws_auth._extract_login_failure_hint(html) == "账号已被锁定，请稍后重试"
+
+
+def test_extract_login_failure_hint_ignores_inert_markup() -> None:
+    html = """
+    <template><div class="form-error">验证码信息无效</div></template>
+    <noscript><div class="form-error">用户名或密码错误</div></noscript>
+    <div class="form-error">登录过于频繁，请稍后再试</div>
+    """
+
+    assert ws_auth._extract_login_failure_hint(html) == "登录过于频繁，请稍后再试"
+
+
+def test_extract_login_failure_hint_handles_truncated_error_container() -> None:
+    html = '<div class="form-error"><span>账号已被锁定'
+
+    assert ws_auth._extract_login_failure_hint(html) == "账号已被锁定"
+    assert ws_auth._extract_login_failure_hint('<input class="form-error">验证码登录') == ""
+
+
+def test_extract_login_failure_hint_applies_length_limit() -> None:
+    html = '<div class="form-error">账号已被锁定，请稍后重试</div>'
+
+    assert ws_auth._extract_login_failure_hint(html, limit=6) == "账号已被锁定"
+    assert ws_auth._extract_login_failure_hint(html, limit=0) == ""
+
+
+def test_extract_page_login_failure_hint_uses_structured_html() -> None:
+    class Page:
+        def __init__(self) -> None:
+            self.content_calls = 0
+
+        def content(self) -> str:
+            self.content_calls += 1
+            return '<div class="form-error">账号或密码错误</div>'
+
+    page = Page()
+
+    assert ws_auth._extract_page_login_failure_hint(page) == "账号或密码错误"
+    assert page.content_calls == 1
+
+
+def test_extract_page_login_failure_hint_tolerates_closed_page() -> None:
+    class ClosedPage:
+        def content(self) -> str:
+            raise RuntimeError("page closed")
+
+    assert ws_auth._extract_page_login_failure_hint(ClosedPage()) == ""
+
+
+def test_login_not_complete_message_prioritizes_platform_error() -> None:
     message = ws_auth._login_not_complete_message(
         status=401,
         current_url="https://cas.sii.edu.cn/login",
@@ -283,14 +416,39 @@ def test_login_not_complete_message_includes_diagnostics() -> None:
     )
 
     assert "Login did not complete." in message
-    assert "platform login ID" in message
-    assert "*.sii.edu.cn" in message
+    assert "Platform reported: 账号或密码错误" in message
+    assert "platform login ID" not in message
+    assert "CAPTCHA" not in message
     assert "inspire config show --compact" in message
     assert "last auth check status=401" in message
-    assert "page_hint=账号或密码错误" in message
     assert "Shell HTTP_PROXY/HTTPS_PROXY/ALL_PROXY is configured" in message
     assert "CAS/Keycloak redirects may match NO_PROXY differently" in message
     assert "proxy_source=requests:system_env, base_route=proxy" in message
+
+
+def test_login_not_complete_message_uses_general_advice_without_platform_error() -> None:
+    message = ws_auth._login_not_complete_message(status=401)
+
+    assert "Platform reported:" not in message
+    assert "platform login ID" in message
+    assert "*.sii.edu.cn" in message
+    assert "CAPTCHA" in message
+
+
+def test_explicit_cas_failure_is_not_hidden_by_playwright_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_requests_login(*_args, **_kwargs):  # noqa: ANN001
+        raise ws_auth._CasLoginFailure("Platform reported: 账号或密码错误")
+
+    monkeypatch.setattr(ws_auth, "_login_with_cas_requests", fail_requests_login)
+
+    with pytest.raises(ws_auth._CasLoginFailure, match="账号或密码错误"):
+        ws_auth.login_with_playwright(
+            "user",
+            "password",
+            base_url="https://qz.sii.edu.cn",
+        )
 
 
 def test_describe_proxy_config_redacts_credentials() -> None:

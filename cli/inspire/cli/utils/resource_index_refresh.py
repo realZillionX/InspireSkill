@@ -7,6 +7,7 @@ normal list/status commands continue to use live APIs as their source of truth.
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -20,6 +21,9 @@ from inspire.cli.utils.resource_index import (
     DEFAULT_TTL_SECONDS,
     ResourceIdentity,
     ResourceIndex,
+    ResourceIndexDatabaseError,
+    ResourceScope,
+    StaleResourceIndexRefresh,
     scope_for_session,
 )
 
@@ -43,8 +47,12 @@ WORKSPACE_RESOURCE_TYPES = tuple(
     if resource_type not in GLOBAL_RESOURCE_TYPES
 )
 
-PERIODIC_REFRESH_INTERVAL_SECONDS = 5 * 60
+# The scheduler must wake no slower than the shortest resource TTL.  Otherwise
+# a five-minute stamp interval would leave dynamic workload mappings cold for
+# several minutes after their one-minute TTL expires.
+PERIODIC_REFRESH_INTERVAL_SECONDS = min(DEFAULT_TTL_SECONDS.values())
 PERIODIC_REFRESH_STAMP = "resource-index-refresh.stamp"
+PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS = 30 * 60
 
 
 @dataclass(frozen=True)
@@ -95,6 +103,10 @@ class RefreshSummary:
         return sum(result.outcome == "error" for result in self.results)
 
     @property
+    def stale_count(self) -> int:
+        return sum(result.outcome == "stale" for result in self.results)
+
+    @property
     def item_count(self) -> int:
         return sum(
             result.item_count
@@ -106,6 +118,7 @@ class RefreshSummary:
         return {
             "refreshed": self.refreshed_count,
             "fresh": self.skipped_count,
+            "stale": self.stale_count,
             "busy": self.busy_count,
             "errors": self.error_count,
             "items": self.item_count,
@@ -114,6 +127,20 @@ class RefreshSummary:
 
 
 Fetcher = Callable[[object, str, str], FetchResult]
+
+
+def _record_refresh_error(
+    index: ResourceIndex,
+    scope: ResourceScope,
+    error: str,
+    *,
+    attempted_at: float,
+) -> None:
+    """Record diagnostics without allowing a disposable cache to fail open."""
+    try:
+        index.record_refresh_error(scope, error, now=attempted_at)
+    except (OSError, sqlite3.Error):
+        pass
 
 
 def _dedupe_records(records: Iterable[ResourceIdentity]) -> list[ResourceIdentity]:
@@ -270,7 +297,7 @@ def _current_user_id(session: object) -> str:
         raise ValueError("Cannot determine the current account user.")
     try:
         setattr(session, "user_detail", detail)
-        session.save()  # type: ignore[attr-defined]
+        session.save(account=getattr(session, "account", None))  # type: ignore[attr-defined]
     except Exception:
         pass
     return str(value).strip()
@@ -415,7 +442,22 @@ def _notebook_fetch(session: object, workspace_id: str, exact_name: str) -> Fetc
     base_url = str(getattr(session, "base_url", None) or "").strip().rstrip("/")
     if not base_url:
         raise ValueError("The current account session has no platform URL.")
-    user_ids = _try_get_current_user_ids(session, base_url=base_url)  # type: ignore[arg-type]
+    original_save = getattr(session, "save", None)
+    account = str(getattr(session, "account", None) or "").strip() or None
+    if callable(original_save) and account:
+        def _save_to_refresh_account(*args: object, **kwargs: object) -> object:
+            kwargs.setdefault("account", account)
+            return original_save(*args, **kwargs)
+
+        setattr(session, "save", _save_to_refresh_account)
+    try:
+        user_ids = _try_get_current_user_ids(
+            session,  # type: ignore[arg-type]
+            base_url=base_url,
+        )
+    finally:
+        if callable(original_save) and account:
+            setattr(session, "save", original_save)
     if not user_ids:
         raise ValueError("Cannot determine the current account user.")
     items = _list_notebooks_for_workspace(
@@ -504,6 +546,79 @@ def _workspace_names(
     return names
 
 
+def _cached_workspace_names(
+    session: object,
+    *,
+    index: ResourceIndex,
+    workspace_scope: ResourceScope | None,
+) -> dict[str, str]:
+    names: dict[str, str] = {}
+    if workspace_scope is not None:
+        try:
+            names.update(
+                {
+                    item.resource_id: item.name
+                    for item in index.list_identities(workspace_scope)
+                    if item.resource_id and item.name
+                }
+            )
+        except (OSError, sqlite3.Error):
+            pass
+    cached = getattr(session, "all_workspace_names", None)
+    if isinstance(cached, dict):
+        for workspace_id, name in cached.items():
+            if workspace_id and name:
+                names.setdefault(str(workspace_id), str(name))
+    return names
+
+
+def _workspace_bound_scope(
+    session: object,
+    *,
+    resource_type: str,
+    workspace_id: str,
+) -> ResourceScope | None:
+    return scope_for_session(
+        session,
+        resource_type=resource_type,
+        workspace_id=workspace_id,
+        owner_scope=(
+            "self"
+            if resource_type not in {"workspace", "project", "compute-group"}
+            else ""
+        ),
+    )
+
+
+def _all_selected_scopes_fresh(
+    *,
+    session: object,
+    index: ResourceIndex,
+    resource_types: Sequence[str],
+    workspace_ids: Sequence[str],
+) -> bool:
+    if not resource_types or not workspace_ids:
+        return False
+    try:
+        for resource_type in resource_types:
+            interval = DEFAULT_TTL_SECONDS.get(resource_type, 300)
+            for workspace_id in workspace_ids:
+                scope = _workspace_bound_scope(
+                    session,
+                    resource_type=resource_type,
+                    workspace_id=workspace_id,
+                )
+                if scope is None or index.scope_due(
+                    scope,
+                    interval_seconds=interval,
+                    require_full=True,
+                ):
+                    return False
+    except (OSError, sqlite3.Error):
+        return False
+    return True
+
+
 def _select_workspace_ids(
     workspace_names: Mapping[str, str],
     requested: Sequence[str] | None,
@@ -538,6 +653,10 @@ def _refresh_one(
     exact_name: str,
     force: bool,
     fetcher: Fetcher,
+    prefetched: FetchResult | None = None,
+    prefetched_revision: int | None = None,
+    prefetched_generation: int | None = None,
+    prefetched_attempted_at: float | None = None,
 ) -> RefreshResult:
     scope = scope_for_session(
         session,
@@ -555,52 +674,105 @@ def _refresh_one(
         )
 
     interval = DEFAULT_TTL_SECONDS.get(resource_type, 300)
-    if (
-        not force
-        and not exact_name
-        and not index.scope_due(
-            scope,
-            interval_seconds=interval,
-            require_full=True,
-        )
-    ):
-        return RefreshResult(resource_type, workspace_name, 0, "fresh")
-
-    with index.refresh_lease(scope) as acquired:
-        if not acquired:
-            return RefreshResult(resource_type, workspace_name, 0, "busy")
+    if not force and not exact_name:
         try:
-            fetched = fetcher(session, workspace_id, exact_name)
-            records = _dedupe_records(fetched.records)
-            if exact_name:
-                count = index.replace_name(
-                    scope,
-                    exact_name,
-                    records,
-                    ttl_seconds=interval,
-                )
-            elif fetched.complete:
-                count = index.reconcile(
-                    scope,
-                    records,
-                    ttl_seconds=interval,
-                )
-            else:
-                count = index.upsert(
-                    scope,
-                    records,
-                    ttl_seconds=interval,
-                )
-            return RefreshResult(resource_type, workspace_name, count, "refreshed")
-        except Exception as exc:  # noqa: BLE001 - aggregate all scopes
-            index.record_refresh_error(scope, str(exc))
-            return RefreshResult(
-                resource_type,
-                workspace_name,
-                0,
-                "error",
-                scrub_raw_ids(str(exc) or type(exc).__name__),
+            due = index.scope_due(
+                scope,
+                interval_seconds=interval,
+                require_full=True,
             )
+        except (OSError, sqlite3.Error):
+            due = True
+        if not due:
+            return RefreshResult(resource_type, workspace_name, 0, "fresh")
+
+    try:
+        lease = index.refresh_lease(scope, raise_on_error=True)
+        with lease as acquired:
+            if not acquired:
+                return RefreshResult(resource_type, workspace_name, 0, "busy")
+            try:
+                attempted_at = (
+                    float(prefetched_attempted_at)
+                    if prefetched is not None and prefetched_attempted_at is not None
+                    else time.time()
+                )
+                if (
+                    prefetched is not None
+                    and prefetched_revision is not None
+                    and prefetched_generation is not None
+                ):
+                    expected_generation = prefetched_generation
+                    expected_revision = prefetched_revision
+                else:
+                    expected_generation, expected_revision = index.snapshot_token(scope)
+                fetched = (
+                    prefetched
+                    if prefetched is not None
+                    else fetcher(session, workspace_id, exact_name)
+                )
+                records = _dedupe_records(fetched.records)
+                if exact_name:
+                    count = index.replace_name(
+                        scope,
+                        exact_name,
+                        records,
+                        ttl_seconds=interval,
+                        expected_revision=expected_revision,
+                        expected_generation=expected_generation,
+                        attempted_at=attempted_at,
+                    )
+                elif fetched.complete:
+                    count = index.reconcile(
+                        scope,
+                        records,
+                        ttl_seconds=interval,
+                        expected_revision=expected_revision,
+                        expected_generation=expected_generation,
+                        attempted_at=attempted_at,
+                    )
+                else:
+                    count = index.upsert(
+                        scope,
+                        records,
+                        ttl_seconds=interval,
+                        expected_revision=expected_revision,
+                        expected_generation=expected_generation,
+                        attempted_at=attempted_at,
+                    )
+                return RefreshResult(resource_type, workspace_name, count, "refreshed")
+            except StaleResourceIndexRefresh:
+                return RefreshResult(resource_type, workspace_name, 0, "stale")
+            except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
+                return RefreshResult(
+                    resource_type,
+                    workspace_name,
+                    0,
+                    "error",
+                    "The local resource name cache is unavailable.",
+                )
+            except Exception as exc:  # noqa: BLE001 - aggregate all scopes
+                _record_refresh_error(
+                    index,
+                    scope,
+                    str(exc),
+                    attempted_at=attempted_at,
+                )
+                return RefreshResult(
+                    resource_type,
+                    workspace_name,
+                    0,
+                    "error",
+                    scrub_raw_ids(str(exc) or type(exc).__name__),
+                )
+    except ResourceIndexDatabaseError:
+        return RefreshResult(
+            resource_type,
+            workspace_name,
+            0,
+            "error",
+            "The local resource name cache is unavailable.",
+        )
 
 
 def refresh_resource_index(
@@ -623,17 +795,83 @@ def refresh_resource_index(
 
     registry = fetchers or RESOURCE_FETCHERS
     workspace_fetcher = registry["workspace"]
+    workspace_scope = scope_for_session(session, resource_type="workspace")
+    workspace_types = tuple(
+        resource_type
+        for resource_type in selected_types
+        if resource_type in WORKSPACE_RESOURCE_TYPES
+    )
+    cached_names = _cached_workspace_names(
+        session,
+        index=index,
+        workspace_scope=workspace_scope,
+    )
     try:
-        workspace_snapshot = workspace_fetcher(
-            session,
-            "",
-            exact_name if selected_types == ("workspace",) else "",
+        cached_workspace_ids = _select_workspace_ids(cached_names, workspace_names)
+    except ValueError:
+        cached_workspace_ids = []
+
+    workspace_due = True
+    if workspace_scope is not None:
+        try:
+            workspace_due = index.scope_due(
+                workspace_scope,
+                interval_seconds=DEFAULT_TTL_SECONDS["workspace"],
+                require_full=True,
+            )
+        except (OSError, sqlite3.Error):
+            workspace_due = True
+
+    selected_workspace_is_fresh = (
+        not force
+        and not exact_name
+        and "workspace" not in selected_types
+        and bool(cached_workspace_ids)
+        and _all_selected_scopes_fresh(
+            session=session,
+            index=index,
+            resource_types=workspace_types,
+            workspace_ids=cached_workspace_ids,
         )
-    except Exception as exc:
-        workspace_snapshot = FetchResult([])
-        workspace_error = str(exc)
-    else:
-        workspace_error = ""
+    )
+    needs_workspace_fetch = (
+        ("workspace" in selected_types and (force or exact_name or workspace_due))
+        or (
+            bool(workspace_types)
+            and not selected_workspace_is_fresh
+            and (force or workspace_due or not cached_workspace_ids)
+        )
+    )
+
+    workspace_snapshot = FetchResult(
+        [
+            ResourceIdentity(resource_id=workspace_id, name=name)
+            for workspace_id, name in cached_names.items()
+        ],
+        complete=False,
+    )
+    workspace_revision: int | None = None
+    workspace_generation: int | None = None
+    workspace_attempted_at = time.time()
+    workspace_error = ""
+    workspace_fetched = False
+    if needs_workspace_fetch:
+        try:
+            if workspace_scope is not None:
+                workspace_generation, workspace_revision = index.snapshot_token(
+                    workspace_scope
+                )
+            workspace_attempted_at = time.time()
+            workspace_snapshot = workspace_fetcher(
+                session,
+                "",
+                exact_name if selected_types == ("workspace",) else "",
+            )
+            workspace_fetched = True
+        except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
+            workspace_error = "The local resource name cache is unavailable."
+        except Exception as exc:
+            workspace_error = str(exc) or type(exc).__name__
 
     names_by_id = (
         {}
@@ -651,9 +889,13 @@ def refresh_resource_index(
         fetcher = registry[resource_type]
         if resource_type == "workspace":
             if workspace_error:
-                scope = scope_for_session(session, resource_type="workspace")
-                if scope is not None:
-                    index.record_refresh_error(scope, workspace_error)
+                if workspace_scope is not None:
+                    _record_refresh_error(
+                        index,
+                        workspace_scope,
+                        workspace_error,
+                        attempted_at=workspace_attempted_at,
+                    )
                 results.append(
                     RefreshResult(
                         "workspace",
@@ -664,18 +906,41 @@ def refresh_resource_index(
                     )
                 )
                 continue
-            results.append(
-                _refresh_one(
-                    index=index,
-                    session=session,
-                    resource_type="workspace",
-                    workspace_id="",
-                    workspace_name="",
-                    exact_name=exact_name,
-                    force=force,
-                    fetcher=lambda _session, _workspace, _name: workspace_snapshot,
-                )
+            workspace_result = _refresh_one(
+                index=index,
+                session=session,
+                resource_type="workspace",
+                workspace_id="",
+                workspace_name="",
+                exact_name=exact_name,
+                force=force,
+                fetcher=workspace_fetcher,
+                prefetched=workspace_snapshot if workspace_fetched else None,
+                prefetched_revision=workspace_revision,
+                prefetched_generation=workspace_generation,
+                prefetched_attempted_at=workspace_attempted_at,
             )
+            if (
+                workspace_result.outcome == "refreshed"
+                and workspace_fetched
+                and workspace_snapshot.complete
+                and not exact_name
+                and workspace_scope is not None
+            ):
+                try:
+                    index.prune_orphan_workspace_scopes(
+                        workspace_scope,
+                        names_by_id,
+                    )
+                except (OSError, sqlite3.Error):
+                    workspace_result = RefreshResult(
+                        "workspace",
+                        "",
+                        workspace_result.item_count,
+                        "error",
+                        "The local resource name cache is unavailable.",
+                    )
+            results.append(workspace_result)
             continue
 
         if resource_type == "ssh-key":
@@ -689,6 +954,18 @@ def refresh_resource_index(
                     exact_name=exact_name,
                     force=force,
                     fetcher=fetcher,
+                )
+            )
+            continue
+
+        if workspace_error:
+            results.append(
+                RefreshResult(
+                    resource_type,
+                    "",
+                    0,
+                    "error",
+                    scrub_raw_ids(workspace_error),
                 )
             )
             continue
@@ -718,7 +995,10 @@ def refresh_resource_index(
                 )
             )
 
-    index.purge_tombstones()
+    try:
+        index.purge_tombstones()
+    except (OSError, sqlite3.Error):
+        pass
     return RefreshSummary(results)
 
 
@@ -766,9 +1046,14 @@ def maybe_spawn_periodic_refresh(
                     stamp.chmod(0o600)
                     contents = stamp.read_text(encoding="ascii").strip()
                     pid = int(contents)
+                    stamp_age = max(0.0, now - stamp.stat().st_mtime)
                 except (OSError, ValueError):
                     pid = 0
-                if pid:
+                    try:
+                        stamp_age = max(0.0, now - stamp.stat().st_mtime)
+                    except OSError:
+                        stamp_age = 0.0
+                if pid and stamp_age < PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS:
                     try:
                         os.kill(pid, 0)
                     except ProcessLookupError:
@@ -780,7 +1065,10 @@ def maybe_spawn_periodic_refresh(
                     else:
                         return False
                 try:
-                    if now - stamp.stat().st_mtime < max(30, interval_seconds):
+                    if (
+                        stamp_age < PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS
+                        and stamp_age < max(30, interval_seconds)
+                    ):
                         return False
                     stamp.unlink()
                 except FileNotFoundError:
@@ -800,6 +1088,7 @@ def maybe_spawn_periodic_refresh(
     env = os.environ.copy()
     env["INSPIRE_RESOURCE_INDEX_REFRESH_CHILD"] = "1"
     env["INSPIRE_SKIP_UPDATE_CHECK"] = "1"
+    env["INSPIRE_RESOURCE_INDEX_REFRESH_ACCOUNT"] = account
     try:
         process = subprocess.Popen(
             [
@@ -837,6 +1126,7 @@ def maybe_spawn_periodic_refresh(
 __all__ = [
     "GLOBAL_RESOURCE_TYPES",
     "PERIODIC_REFRESH_INTERVAL_SECONDS",
+    "PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS",
     "RESOURCE_FETCHERS",
     "RESOURCE_TYPES",
     "WORKSPACE_RESOURCE_TYPES",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sqlite3
 import time
 from typing import Sequence
 
@@ -20,7 +22,11 @@ from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
 from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.resource_index import DEFAULT_TTL_SECONDS, ResourceIndex
+from inspire.cli.utils.resource_index import (
+    DEFAULT_TTL_SECONDS,
+    ResourceIndex,
+    ResourceIndexDatabaseError,
+)
 from inspire.cli.utils.resource_index_refresh import (
     RESOURCE_TYPES,
     RefreshResult,
@@ -29,8 +35,12 @@ from inspire.cli.utils.resource_index_refresh import (
 from inspire.platform.web.session.models import WebSession
 
 
-def _index_or_exit(ctx: Context) -> ResourceIndex:
-    index = ResourceIndex.for_account()
+def _index_or_exit(ctx: Context, account: str | None = None) -> ResourceIndex:
+    try:
+        index = ResourceIndex.for_account(account)
+    except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
+        _exit_cache_database_error(ctx)
+        raise RuntimeError("unreachable")
     if index is None:
         exit_with_error(
             ctx,
@@ -41,6 +51,16 @@ def _index_or_exit(ctx: Context) -> ResourceIndex:
         )
         raise RuntimeError("unreachable")
     return index
+
+
+def _exit_cache_database_error(ctx: Context) -> None:
+    exit_with_error(
+        ctx,
+        "CacheError",
+        "The local resource name cache is unavailable.",
+        EXIT_API_ERROR,
+        hint="Retry after other Inspire commands finish. Corrupt cache files are rebuilt automatically.",
+    )
 
 
 def _age(value: float, *, now: float | None = None) -> str:
@@ -77,7 +97,7 @@ def _status_payload(index: ResourceIndex, *, debug: bool = False) -> dict[str, o
         row: dict[str, object] = {
             "resource": status.resource_type,
             "items": status.active_count,
-            "updated": _age(status.last_refresh_at, now=now),
+            "updated": _age(status.last_full_refresh_at, now=now),
         }
         workspace_name = names.get(status.workspace_id, "")
         if workspace_name:
@@ -85,9 +105,11 @@ def _status_payload(index: ResourceIndex, *, debug: bool = False) -> dict[str, o
         if status.last_error:
             row["state"] = "error"
             row["error"] = scrub_raw_ids(status.last_error)
-        elif status.last_refresh_at <= 0:
+        elif status.last_full_refresh_at <= 0 and status.last_refresh_at > 0:
+            row["state"] = "partial"
+        elif status.last_full_refresh_at <= 0:
             row["state"] = "empty"
-        elif now - status.last_refresh_at >= DEFAULT_TTL_SECONDS.get(
+        elif now - status.last_full_refresh_at >= DEFAULT_TTL_SECONDS.get(
             status.resource_type, 300
         ):
             row["state"] = "stale"
@@ -99,7 +121,7 @@ def _status_payload(index: ResourceIndex, *, debug: bool = False) -> dict[str, o
     for row in scopes:
         by_resource.setdefault(str(row["resource"]), []).append(row)
 
-    state_rank = {"ready": 0, "empty": 1, "stale": 2, "error": 3}
+    state_rank = {"ready": 0, "empty": 1, "partial": 2, "stale": 3, "error": 4}
     resources: list[dict[str, object]] = []
     for resource, rows in sorted(by_resource.items()):
         state = max(
@@ -107,9 +129,9 @@ def _status_payload(index: ResourceIndex, *, debug: bool = False) -> dict[str, o
             key=lambda value: state_rank.get(value, 1),
         )
         refresh_times = [
-            status.last_refresh_at
+            status.last_full_refresh_at
             for status in statuses
-            if status.resource_type == resource and status.last_refresh_at > 0
+            if status.resource_type == resource and status.last_full_refresh_at > 0
         ]
         item_counts = [
             value
@@ -152,6 +174,7 @@ def _refresh_payload(
     payload: dict[str, object] = {
         "refreshed": sum(result.outcome == "refreshed" for result in results),
         "fresh": sum(result.outcome == "fresh" for result in results),
+        "stale": sum(result.outcome == "stale" for result in results),
         "busy": sum(result.outcome == "busy" for result in results),
         "errors": sum(result.outcome == "error" for result in results),
         "items": sum(
@@ -196,6 +219,7 @@ def cache() -> None:
 )
 @click.option("--due", is_flag=True, hidden=True)
 @click.option("--quiet", is_flag=True, hidden=True)
+@click.option("--account", hidden=True)
 @pass_context
 def refresh_cache(
     ctx: Context,
@@ -205,8 +229,14 @@ def refresh_cache(
     full: bool,
     due: bool,
     quiet: bool,
+    account: str | None,
 ) -> None:
     """Refresh stale mappings, or force selected mappings with --full."""
+    account = (
+        str(account or "").strip()
+        or os.environ.get("INSPIRE_RESOURCE_INDEX_REFRESH_ACCOUNT", "").strip()
+        or None
+    )
     selected = tuple(resource.lower() for resource in resources) or RESOURCE_TYPES
     exact_name = str(name or "").strip()
     if exact_name:
@@ -224,8 +254,8 @@ def refresh_cache(
             list_command=f"inspire {selected[0]} list",
         )
 
-    index = _index_or_exit(ctx)
-    session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+    index = _index_or_exit(ctx, account)
+    session = require_web_session(ctx, hint=WEB_AUTH_HINT, account=account)
     force = bool(full or exact_name or resources or workspaces) and not due
     try:
         summary = refresh_resource_index(
@@ -236,6 +266,9 @@ def refresh_cache(
             exact_name=exact_name,
             force=force,
         )
+    except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
+        _exit_cache_database_error(ctx)
+        raise RuntimeError("unreachable")
     except ValueError as exc:
         exit_with_error(
             ctx,
@@ -245,6 +278,8 @@ def refresh_cache(
         )
 
     if quiet:
+        if summary.error_count:
+            raise SystemExit(EXIT_API_ERROR)
         return
 
     payload = _refresh_payload(summary.results, debug=ctx.debug)
@@ -255,6 +290,7 @@ def refresh_cache(
             "Resource names: "
             f"{payload['refreshed']} refreshed, "
             f"{payload['fresh']} fresh, "
+            f"{payload['stale']} changed during refresh, "
             f"{payload['items']} indexed"
             + (f", {payload['errors']} errors" if payload["errors"] else "")
             + "."
@@ -275,7 +311,11 @@ def refresh_cache(
 @pass_context
 def cache_status(ctx: Context) -> None:
     """Show compact cache freshness and item counts."""
-    payload = _status_payload(_index_or_exit(ctx), debug=ctx.debug)
+    try:
+        payload = _status_payload(_index_or_exit(ctx), debug=ctx.debug)
+    except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
+        _exit_cache_database_error(ctx)
+        raise RuntimeError("unreachable")
     if ctx.json_output:
         click.echo(json_formatter.format_json(payload))
         return
@@ -303,7 +343,11 @@ def clear_cache(ctx: Context, yes: bool) -> None:
     index = _index_or_exit(ctx)
     if not yes and not click.confirm("Clear the local resource name cache?"):
         return
-    index.clear()
+    try:
+        index.clear()
+    except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
+        _exit_cache_database_error(ctx)
+        raise RuntimeError("unreachable")
     payload = {"cleared": True, "account": current_account() or ""}
     if ctx.json_output:
         click.echo(json_formatter.format_json(payload))

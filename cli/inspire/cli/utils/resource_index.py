@@ -19,7 +19,7 @@ from typing import Iterable, Iterator, Mapping, Sequence
 
 from inspire.accounts import account_dir, current_account
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 RESOURCE_INDEX_FILENAME = "resource-index.sqlite3"
 
 DEFAULT_TTL_SECONDS: dict[str, int] = {
@@ -39,6 +39,18 @@ DEFAULT_TTL_SECONDS: dict[str, int] = {
 CASE_INSENSITIVE_RESOURCE_TYPES = frozenset(
     {"workspace", "project", "compute-group"}
 )
+
+
+class StaleResourceIndexRefresh(RuntimeError):
+    """Raised when a refresh snapshot lost a race with a newer cache mutation."""
+
+
+class ResourceIndexDatabaseError(RuntimeError):
+    """Raised when the disposable SQLite index is unavailable."""
+
+
+class _CorruptResourceIndexError(sqlite3.DatabaseError):
+    """Internal marker for a failed SQLite integrity check."""
 
 
 @dataclass(frozen=True)
@@ -113,6 +125,12 @@ class ScopeStatus:
     last_full_refresh_at: float
     refresh_complete: bool
     last_error: str
+    expired_count: int = 0
+
+    @property
+    def fresh_count(self) -> int:
+        """Compatibility alias for the available, non-expired item count."""
+        return self.active_count
 
 
 def resource_index_path(account: str | None = None) -> Path | None:
@@ -173,7 +191,13 @@ class ResourceIndex:
             self.path.parent.chmod(0o700)
         except OSError:
             pass
-        self._initialize()
+        try:
+            self._initialize()
+        except sqlite3.DatabaseError as exc:
+            if not self._is_corruption_error(exc):
+                raise
+            self._quarantine_corrupt_database()
+            self._initialize()
 
     @classmethod
     def for_account(cls, account: str | None = None) -> "ResourceIndex | None":
@@ -246,6 +270,7 @@ class ResourceIndex:
                     last_scan_id TEXT,
                     refresh_complete INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT NOT NULL DEFAULT '',
+                    mutation_revision INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (
                         base_url,
                         subject_id,
@@ -273,6 +298,13 @@ class ResourceIndex:
                     ADD COLUMN last_attempt_at REAL NOT NULL DEFAULT 0
                     """
                 )
+            if "mutation_revision" not in scope_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE resource_scope
+                    ADD COLUMN mutation_revision INTEGER NOT NULL DEFAULT 0
+                    """
+                )
             connection.execute(
                 """
                 INSERT INTO metadata(key, value) VALUES('schema_version', ?)
@@ -280,10 +312,61 @@ class ResourceIndex:
                 """,
                 (str(SCHEMA_VERSION),),
             )
+            connection.execute(
+                """
+                INSERT INTO metadata(key, value) VALUES('cache_generation', '0')
+                ON CONFLICT(key) DO NOTHING
+                """
+            )
+            integrity = connection.execute("PRAGMA quick_check(1)").fetchone()
+            if integrity is None or str(integrity[0] or "").strip().lower() != "ok":
+                detail = str(integrity[0] if integrity is not None else "unknown error")
+                raise _CorruptResourceIndexError(detail)
         try:
             os.chmod(self.path, 0o600)
         except OSError:
             pass
+
+    @staticmethod
+    def _is_corruption_error(error: BaseException) -> bool:
+        code = getattr(error, "sqlite_errorcode", None)
+        if isinstance(code, int):
+            primary_code = code & 0xFF
+            corruption_codes = {
+                value
+                for value in (
+                    getattr(sqlite3, "SQLITE_CORRUPT", None),
+                    getattr(sqlite3, "SQLITE_NOTADB", None),
+                )
+                if isinstance(value, int)
+            }
+            if primary_code in corruption_codes:
+                return True
+        message = str(error).casefold()
+        return any(
+            marker in message
+            for marker in (
+                "database disk image is malformed",
+                "file is not a database",
+                "malformed database schema",
+            )
+        )
+
+    def _quarantine_corrupt_database(self) -> None:
+        suffix = f".corrupt-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+        moved = False
+        for source in (
+            self.path,
+            Path(f"{self.path}-wal"),
+            Path(f"{self.path}-shm"),
+        ):
+            if not source.exists():
+                continue
+            target = source.with_name(source.name + suffix)
+            os.replace(source, target)
+            moved = True
+        if not moved and self.path.exists():
+            raise OSError(f"Could not quarantine corrupt resource index: {self.path}")
 
     @staticmethod
     def _scope_values(scope: ResourceScope) -> tuple[str, str, str, str, str]:
@@ -381,6 +464,34 @@ class ResourceIndex:
             ).fetchone()
         return self._row_identity(row) if row is not None else None
 
+    def list_identities(
+        self,
+        scope: ResourceScope,
+        *,
+        fresh_only: bool = True,
+        now: float | None = None,
+    ) -> list[ResourceIdentity]:
+        """Return active identities in one scope without exposing them in CLI output."""
+        timestamp = float(time.time() if now is None else now)
+        sql = (
+            """
+            SELECT resource_id, name, owner_id, status, created_at,
+                   observed_at, expires_at, tombstoned_at
+            FROM resource_identity
+            WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+              AND workspace_id = ? AND owner_scope = ?
+              AND tombstoned_at IS NULL
+            """
+        )
+        params: list[object] = [*self._scope_values(scope)]
+        if fresh_only:
+            sql += " AND expires_at > ?"
+            params.append(timestamp)
+        sql += " ORDER BY name, resource_id"
+        with self._connect() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return [self._row_identity(row) for row in rows]
+
     @staticmethod
     def _valid_records(records: Iterable[ResourceIdentity]) -> list[ResourceIdentity]:
         return [
@@ -388,6 +499,109 @@ class ResourceIndex:
             for record in records
             if str(record.resource_id or "").strip() and str(record.name or "").strip()
         ]
+
+    def _scope_revision_from_connection(
+        self,
+        connection: sqlite3.Connection,
+        scope: ResourceScope,
+    ) -> int:
+        row = connection.execute(
+            """
+            SELECT mutation_revision
+            FROM resource_scope
+            WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+              AND workspace_id = ? AND owner_scope = ?
+            """,
+            self._scope_values(scope),
+        ).fetchone()
+        return int(row["mutation_revision"] or 0) if row is not None else 0
+
+    @staticmethod
+    def _generation_from_connection(connection: sqlite3.Connection) -> int:
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key = 'cache_generation'"
+        ).fetchone()
+        return int(row["value"] or 0) if row is not None else 0
+
+    def generation(self) -> int:
+        """Return the account index generation used to invalidate in-flight work."""
+        with self._connect() as connection:
+            return self._generation_from_connection(connection)
+
+    def scope_revision(self, scope: ResourceScope) -> int:
+        """Return the current mutation revision for a cache scope."""
+        scope = scope.validate()
+        with self._connect() as connection:
+            return self._scope_revision_from_connection(connection, scope)
+
+    def snapshot_token(self, scope: ResourceScope) -> tuple[int, int]:
+        """Capture generation and scope revision atomically before a live fetch."""
+        scope = scope.validate()
+        with self._connect() as connection:
+            return (
+                self._generation_from_connection(connection),
+                self._scope_revision_from_connection(connection, scope),
+            )
+
+    def _begin_mutation(
+        self,
+        connection: sqlite3.Connection,
+        scope: ResourceScope,
+        *,
+        expected_revision: int | None,
+        expected_generation: int | None,
+    ) -> int:
+        """Serialize a cache mutation and reject stale refresh snapshots."""
+        connection.execute("BEGIN IMMEDIATE")
+        current_generation = self._generation_from_connection(connection)
+        if (
+            expected_generation is not None
+            and current_generation != int(expected_generation)
+        ):
+            raise StaleResourceIndexRefresh(
+                f"cache was cleared during refresh (expected generation "
+                f"{expected_generation}, found {current_generation})"
+            )
+        current_revision = self._scope_revision_from_connection(connection, scope)
+        if (
+            expected_revision is not None
+            and current_revision != int(expected_revision)
+        ):
+            raise StaleResourceIndexRefresh(
+                f"cache scope changed during refresh (expected revision "
+                f"{expected_revision}, found {current_revision})"
+            )
+        return current_revision
+
+    def _bump_scope_revision(
+        self,
+        connection: sqlite3.Connection,
+        scope: ResourceScope,
+    ) -> int:
+        """Increment the mutation revision after a committed identity change."""
+        values = self._scope_values(scope)
+        connection.execute(
+            """
+            INSERT INTO resource_scope(
+                base_url, subject_id, resource_type, workspace_id, owner_scope
+            )
+            VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(
+                base_url, subject_id, resource_type, workspace_id, owner_scope
+            ) DO NOTHING
+            """,
+            values,
+        )
+        connection.execute(
+            """
+            UPDATE resource_scope
+            SET mutation_revision = mutation_revision + 1
+            WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+              AND workspace_id = ? AND owner_scope = ?
+            """,
+            self._scope_values(scope),
+        )
+        return self._scope_revision_from_connection(connection, scope)
 
     @staticmethod
     def _case_sensitive_for(
@@ -460,17 +674,29 @@ class ResourceIndex:
         *,
         ttl_seconds: int | None = None,
         now: float | None = None,
+        expected_revision: int | None = None,
+        expected_generation: int | None = None,
+        attempted_at: float | None = None,
     ) -> int:
         """Insert observations without inferring that unseen records disappeared."""
         scope = scope.validate()
         items = self._valid_records(records)
         observed_at = float(time.time() if now is None else now)
+        attempt_timestamp = float(
+            observed_at if attempted_at is None else attempted_at
+        )
         ttl = (
             DEFAULT_TTL_SECONDS.get(scope.resource_type, 60)
             if ttl_seconds is None
             else int(ttl_seconds)
         )
         with self._connect() as connection:
+            self._begin_mutation(
+                connection,
+                scope,
+                expected_revision=expected_revision,
+                expected_generation=expected_generation,
+            )
             self._upsert_records(
                 connection,
                 scope,
@@ -483,10 +709,12 @@ class ResourceIndex:
                 connection,
                 scope,
                 refreshed_at=observed_at,
+                attempted_at=attempt_timestamp,
                 full=False,
                 scan_id=None,
                 error="",
             )
+            self._bump_scope_revision(connection, scope)
         return len(items)
 
     def replace_name(
@@ -498,6 +726,9 @@ class ResourceIndex:
         ttl_seconds: int | None = None,
         case_sensitive: bool | None = None,
         now: float | None = None,
+        expected_revision: int | None = None,
+        expected_generation: int | None = None,
+        attempted_at: float | None = None,
     ) -> int:
         """Reconcile one exact name after a complete targeted lookup."""
         scope = scope.validate()
@@ -515,6 +746,9 @@ class ResourceIndex:
             )
         ]
         observed_at = float(time.time() if now is None else now)
+        attempt_timestamp = float(
+            observed_at if attempted_at is None else attempted_at
+        )
         ttl = (
             DEFAULT_TTL_SECONDS.get(scope.resource_type, 60)
             if ttl_seconds is None
@@ -522,6 +756,12 @@ class ResourceIndex:
         )
         ids = [str(item.resource_id).strip() for item in items]
         with self._connect() as connection:
+            self._begin_mutation(
+                connection,
+                scope,
+                expected_revision=expected_revision,
+                expected_generation=expected_generation,
+            )
             self._upsert_records(
                 connection,
                 scope,
@@ -547,10 +787,12 @@ class ResourceIndex:
                 connection,
                 scope,
                 refreshed_at=observed_at,
+                attempted_at=attempt_timestamp,
                 full=False,
                 scan_id=None,
                 error="",
             )
+            self._bump_scope_revision(connection, scope)
         return len(items)
 
     def reconcile(
@@ -560,11 +802,17 @@ class ResourceIndex:
         *,
         ttl_seconds: int | None = None,
         now: float | None = None,
+        expected_revision: int | None = None,
+        expected_generation: int | None = None,
+        attempted_at: float | None = None,
     ) -> int:
         """Commit one complete scope scan and tombstone every unseen old row."""
         scope = scope.validate()
         items = self._valid_records(records)
         observed_at = float(time.time() if now is None else now)
+        attempt_timestamp = float(
+            observed_at if attempted_at is None else attempted_at
+        )
         ttl = (
             DEFAULT_TTL_SECONDS.get(scope.resource_type, 60)
             if ttl_seconds is None
@@ -572,6 +820,12 @@ class ResourceIndex:
         )
         scan_id = uuid.uuid4().hex
         with self._connect() as connection:
+            self._begin_mutation(
+                connection,
+                scope,
+                expected_revision=expected_revision,
+                expected_generation=expected_generation,
+            )
             self._upsert_records(
                 connection,
                 scope,
@@ -595,10 +849,12 @@ class ResourceIndex:
                 connection,
                 scope,
                 refreshed_at=observed_at,
+                attempted_at=attempt_timestamp,
                 full=True,
                 scan_id=scan_id,
                 error="",
             )
+            self._bump_scope_revision(connection, scope)
         return len(items)
 
     def _write_scope_refresh(
@@ -607,6 +863,7 @@ class ResourceIndex:
         scope: ResourceScope,
         *,
         refreshed_at: float,
+        attempted_at: float,
         full: bool,
         scan_id: str | None,
         error: str,
@@ -617,33 +874,54 @@ class ResourceIndex:
             INSERT INTO resource_scope(
                 base_url, subject_id, resource_type, workspace_id, owner_scope,
                 last_attempt_at, last_refresh_at, last_full_refresh_at, last_scan_id,
-                refresh_complete, last_error
+                refresh_complete, last_error, mutation_revision
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             ON CONFLICT(
                 base_url, subject_id, resource_type, workspace_id, owner_scope
             ) DO UPDATE SET
-                last_attempt_at=excluded.last_attempt_at,
-                last_refresh_at=excluded.last_refresh_at,
+                last_attempt_at=MAX(
+                    resource_scope.last_attempt_at,
+                    excluded.last_attempt_at
+                ),
+                last_refresh_at=MAX(
+                    resource_scope.last_refresh_at,
+                    excluded.last_refresh_at
+                ),
                 last_full_refresh_at=CASE
                     WHEN excluded.refresh_complete = 1
+                     AND excluded.last_attempt_at >= resource_scope.last_attempt_at
+                     AND excluded.last_full_refresh_at >= resource_scope.last_full_refresh_at
                     THEN excluded.last_full_refresh_at
                     ELSE resource_scope.last_full_refresh_at
                 END,
                 last_scan_id=CASE
                     WHEN excluded.refresh_complete = 1
+                     AND excluded.last_attempt_at >= resource_scope.last_attempt_at
+                     AND excluded.last_full_refresh_at >= resource_scope.last_full_refresh_at
                     THEN excluded.last_scan_id
                     ELSE resource_scope.last_scan_id
                 END,
                 refresh_complete=CASE
-                    WHEN excluded.refresh_complete = 1 THEN 1
+                    WHEN excluded.refresh_complete = 1
+                     AND excluded.last_attempt_at >= resource_scope.last_attempt_at
+                     AND excluded.last_full_refresh_at >= resource_scope.last_full_refresh_at
+                    THEN 1
                     ELSE resource_scope.refresh_complete
                 END,
-                last_error=excluded.last_error
+                last_error=CASE
+                    WHEN excluded.last_attempt_at < resource_scope.last_attempt_at
+                    THEN resource_scope.last_error
+                    WHEN excluded.refresh_complete = 1
+                     AND excluded.last_attempt_at >= resource_scope.last_attempt_at
+                     AND excluded.last_full_refresh_at >= resource_scope.last_full_refresh_at
+                    THEN excluded.last_error
+                    ELSE resource_scope.last_error
+                END
             """,
             (
                 *values,
-                refreshed_at,
+                attempted_at,
                 refreshed_at,
                 refreshed_at if full else 0,
                 scan_id,
@@ -661,23 +939,35 @@ class ResourceIndex:
     ) -> None:
         timestamp = float(time.time() if now is None else now)
         scope = scope.validate()
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO resource_scope(
-                    base_url, subject_id, resource_type, workspace_id, owner_scope,
-                    last_attempt_at, last_refresh_at, last_full_refresh_at,
-                    last_scan_id, refresh_complete, last_error
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO resource_scope(
+                        base_url, subject_id, resource_type, workspace_id, owner_scope,
+                        last_attempt_at, last_refresh_at, last_full_refresh_at,
+                        last_scan_id, refresh_complete, last_error, mutation_revision
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, 0, 0, NULL, 0, ?, 0)
+                    ON CONFLICT(
+                        base_url, subject_id, resource_type, workspace_id, owner_scope
+                    ) DO UPDATE SET
+                        last_attempt_at=MAX(
+                            resource_scope.last_attempt_at,
+                            excluded.last_attempt_at
+                        ),
+                        last_error=CASE
+                            WHEN excluded.last_attempt_at >= resource_scope.last_attempt_at
+                            THEN excluded.last_error
+                            ELSE resource_scope.last_error
+                        END
+                    """,
+                    (*self._scope_values(scope), timestamp, str(error or "")),
                 )
-                VALUES(?, ?, ?, ?, ?, ?, 0, 0, NULL, 0, ?)
-                ON CONFLICT(
-                    base_url, subject_id, resource_type, workspace_id, owner_scope
-                ) DO UPDATE SET
-                    last_attempt_at=excluded.last_attempt_at,
-                    last_error=excluded.last_error
-                """,
-                (*self._scope_values(scope), timestamp, str(error or "")),
-            )
+        except (OSError, sqlite3.Error):
+            # Refresh diagnostics are best effort and must not replace a
+            # usable snapshot with a database error.
+            pass
 
     def mark_deleted(
         self,
@@ -703,8 +993,16 @@ class ResourceIndex:
         values = self._scope_values(scope)
         match_case = self._case_sensitive_for(scope.resource_type, None)
         with self._connect() as connection:
+            self._begin_mutation(
+                connection,
+                scope,
+                expected_revision=None,
+                expected_generation=None,
+            )
+            changed = 0
+            known_id = False
             if target_id:
-                known_id = connection.execute(
+                known_id_row = connection.execute(
                     """
                     SELECT 1
                     FROM resource_identity
@@ -714,7 +1012,8 @@ class ResourceIndex:
                     """,
                     (*values, target_id),
                 ).fetchone()
-                if known_id is not None:
+                known_id = known_id_row is not None
+                if known_id:
                     cursor = connection.execute(
                         """
                         UPDATE resource_identity
@@ -725,25 +1024,38 @@ class ResourceIndex:
                         """,
                         (timestamp, timestamp, *values, target_id),
                     )
-                    return int(cursor.rowcount)
+                    changed = int(cursor.rowcount)
 
-            if not target_name:
-                return 0
-            name_match = "" if match_case else "COLLATE NOCASE"
-            cursor = connection.execute(
-                f"""
-                UPDATE resource_identity
-                SET tombstoned_at = ?, expires_at = ?
-                WHERE base_url = ? AND subject_id = ? AND resource_type = ?
-                  AND workspace_id = ? AND owner_scope = ?
-                  AND name = ? {name_match} AND tombstoned_at IS NULL
-                """,
-                (timestamp, timestamp, *values, target_name),
-            )
-            return int(cursor.rowcount)
+            if changed == 0 and target_name and (not target_id or not known_id):
+                name_match = "" if match_case else "COLLATE NOCASE"
+                cursor = connection.execute(
+                    f"""
+                    UPDATE resource_identity
+                    SET tombstoned_at = ?, expires_at = ?
+                    WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+                      AND workspace_id = ? AND owner_scope = ?
+                      AND name = ? {name_match} AND tombstoned_at IS NULL
+                    """,
+                    (timestamp, timestamp, *values, target_name),
+                )
+                changed = int(cursor.rowcount)
+
+            # Even when the row was not indexed yet, a delete response is a
+            # mutation boundary.  Bumping the revision prevents an older
+            # in-flight refresh from resurrecting the deleted handle.
+            self._bump_scope_revision(connection, scope)
+            return changed
 
     def mark_scope_stale(self, scope: ResourceScope) -> int:
+        """Expire one scope and invalidate its full-refresh freshness."""
+        scope = scope.validate()
         with self._connect() as connection:
+            self._begin_mutation(
+                connection,
+                scope,
+                expected_revision=None,
+                expected_generation=None,
+            )
             cursor = connection.execute(
                 """
                 UPDATE resource_identity
@@ -751,6 +1063,17 @@ class ResourceIndex:
                 WHERE base_url = ? AND subject_id = ? AND resource_type = ?
                   AND workspace_id = ? AND owner_scope = ?
                   AND tombstoned_at IS NULL
+                """,
+                self._scope_values(scope),
+            )
+            self._bump_scope_revision(connection, scope)
+            connection.execute(
+                """
+                UPDATE resource_scope
+                SET last_full_refresh_at = 0,
+                    refresh_complete = 0
+                WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+                  AND workspace_id = ? AND owner_scope = ?
                 """,
                 self._scope_values(scope),
             )
@@ -780,7 +1103,8 @@ class ResourceIndex:
         last = float(row["last_full_refresh_at"] if require_full else row["last_refresh_at"])
         return last <= 0 or timestamp - last >= max(0, int(interval_seconds))
 
-    def list_scope_status(self) -> list[ScopeStatus]:
+    def list_scope_status(self, *, now: float | None = None) -> list[ScopeStatus]:
+        timestamp = float(time.time() if now is None else now)
         with self._connect() as connection:
             rows = connection.execute(
                 """
@@ -799,10 +1123,25 @@ class ResourceIndex:
                         CASE
                             WHEN r.resource_id IS NOT NULL
                              AND r.tombstoned_at IS NULL
+                             AND r.expires_at > ?
                             THEN 1 ELSE 0
                         END
                     ) active_count,
-                    SUM(CASE WHEN r.tombstoned_at IS NOT NULL THEN 1 ELSE 0 END) tombstone_count
+                    SUM(
+                        CASE
+                            WHEN r.resource_id IS NOT NULL
+                             AND r.tombstoned_at IS NULL
+                             AND r.expires_at <= ?
+                            THEN 1 ELSE 0
+                        END
+                    ) expired_count,
+                    SUM(
+                        CASE
+                            WHEN r.resource_id IS NOT NULL
+                             AND r.tombstoned_at IS NOT NULL
+                            THEN 1 ELSE 0
+                        END
+                    ) tombstone_count
                 FROM resource_scope s
                 LEFT JOIN resource_identity r
                   ON r.base_url=s.base_url
@@ -814,7 +1153,8 @@ class ResourceIndex:
                     s.base_url, s.subject_id, s.resource_type,
                     s.workspace_id, s.owner_scope
                 ORDER BY s.resource_type, s.workspace_id, s.owner_scope
-                """
+                """,
+                (timestamp, timestamp),
             ).fetchall()
         return [
             ScopeStatus(
@@ -828,9 +1168,76 @@ class ResourceIndex:
                 last_full_refresh_at=float(row["last_full_refresh_at"] or 0),
                 refresh_complete=bool(row["refresh_complete"]),
                 last_error=str(row["last_error"] or ""),
+                expired_count=int(row["expired_count"] or 0),
             )
             for row in rows
         ]
+
+    def prune_orphan_workspace_scopes(
+        self,
+        workspace_scope: ResourceScope,
+        visible_workspace_ids: Iterable[str],
+    ) -> int:
+        """Remove workspace-bound scopes no longer visible in a complete workspace scan."""
+        workspace_scope = workspace_scope.validate()
+        visible = {
+            str(workspace_id or "").strip()
+            for workspace_id in visible_workspace_ids
+            if str(workspace_id or "").strip()
+        }
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT resource_type, workspace_id, owner_scope
+                FROM resource_scope
+                WHERE base_url = ? AND subject_id = ? AND workspace_id <> ''
+                """,
+                (workspace_scope.base_url, workspace_scope.subject_id),
+            ).fetchall()
+            orphan_scopes = [
+                ResourceScope(
+                    base_url=workspace_scope.base_url,
+                    subject_id=workspace_scope.subject_id,
+                    resource_type=str(row["resource_type"]),
+                    workspace_id=str(row["workspace_id"]),
+                    owner_scope=str(row["owner_scope"] or ""),
+                )
+                for row in rows
+                if str(row["workspace_id"]) not in visible
+            ]
+            for scope in orphan_scopes:
+                values = self._scope_values(scope)
+                connection.execute(
+                    """
+                    DELETE FROM resource_identity
+                    WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+                      AND workspace_id = ? AND owner_scope = ?
+                    """,
+                    values,
+                )
+                connection.execute(
+                    """
+                    DELETE FROM resource_scope
+                    WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+                      AND workspace_id = ? AND owner_scope = ?
+                    """,
+                    values,
+                )
+                connection.execute(
+                    "DELETE FROM refresh_lease WHERE lease_key = ?",
+                    (scope.lease_key(),),
+                )
+            if orphan_scopes:
+                generation = self._generation_from_connection(connection) + 1
+                connection.execute(
+                    """
+                    INSERT INTO metadata(key, value) VALUES('cache_generation', ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    """,
+                    (str(generation),),
+                )
+            return len(orphan_scopes)
 
     def purge_tombstones(
         self,
@@ -841,15 +1248,20 @@ class ResourceIndex:
         threshold = float(time.time() if now is None else now) - max(
             0, int(older_than_seconds)
         )
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                DELETE FROM resource_identity
-                WHERE tombstoned_at IS NOT NULL AND tombstoned_at < ?
-                """,
-                (threshold,),
-            )
-            return int(cursor.rowcount)
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    """
+                    DELETE FROM resource_identity
+                    WHERE tombstoned_at IS NOT NULL AND tombstoned_at < ?
+                    """,
+                    (threshold,),
+                )
+                return int(cursor.rowcount)
+        except (OSError, sqlite3.Error):
+            # Tombstone cleanup is disposable maintenance.  A cache failure
+            # must not affect the last successful identity snapshot.
+            return 0
 
     @contextlib.contextmanager
     def refresh_lease(
@@ -859,29 +1271,37 @@ class ResourceIndex:
         lease_seconds: int = 120,
         holder: str | None = None,
         now: float | None = None,
+        raise_on_error: bool = False,
     ) -> Iterator[bool]:
         """Acquire a per-scope single-flight lease and renew it while held."""
         timestamp = float(time.time() if now is None else now)
         lease_key = scope.lease_key()
         owner = holder or f"{os.getpid()}:{uuid.uuid4().hex}"
         acquired = False
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                "DELETE FROM refresh_lease WHERE lease_key = ? AND expires_at <= ?",
-                (lease_key, timestamp),
-            )
-            try:
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
                 connection.execute(
-                    """
-                    INSERT INTO refresh_lease(lease_key, holder, expires_at)
-                    VALUES(?, ?, ?)
-                    """,
-                    (lease_key, owner, timestamp + max(1, int(lease_seconds))),
+                    "DELETE FROM refresh_lease WHERE lease_key = ? AND expires_at <= ?",
+                    (lease_key, timestamp),
                 )
-                acquired = True
-            except sqlite3.IntegrityError:
-                acquired = False
+                try:
+                    connection.execute(
+                        """
+                        INSERT INTO refresh_lease(lease_key, holder, expires_at)
+                        VALUES(?, ?, ?)
+                        """,
+                        (lease_key, owner, timestamp + max(1, int(lease_seconds))),
+                    )
+                    acquired = True
+                except sqlite3.IntegrityError:
+                    acquired = False
+        except (OSError, sqlite3.Error) as exc:
+            if raise_on_error:
+                raise ResourceIndexDatabaseError(
+                    "The local resource name cache is unavailable."
+                ) from exc
+            acquired = False
         stop_heartbeat = threading.Event()
         heartbeat: threading.Thread | None = None
         if acquired:
@@ -922,18 +1342,32 @@ class ResourceIndex:
                 if heartbeat is not None:
                     heartbeat.join(timeout=1.0)
             if acquired:
-                with self._connect() as connection:
-                    connection.execute(
-                        "DELETE FROM refresh_lease WHERE lease_key = ? AND holder = ?",
-                        (lease_key, owner),
-                    )
+                try:
+                    with self._connect() as connection:
+                        connection.execute(
+                            "DELETE FROM refresh_lease WHERE lease_key = ? AND holder = ?",
+                            (lease_key, owner),
+                        )
+                except (OSError, sqlite3.Error):
+                    # A failed release is safe: the lease has a finite TTL,
+                    # and cleanup must never mask the command result.
+                    pass
 
     def clear(self) -> None:
         """Delete all cached identity and refresh metadata."""
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            generation = self._generation_from_connection(connection) + 1
             connection.execute("DELETE FROM resource_identity")
             connection.execute("DELETE FROM resource_scope")
             connection.execute("DELETE FROM refresh_lease")
+            connection.execute(
+                """
+                INSERT INTO metadata(key, value) VALUES('cache_generation', ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                """,
+                (str(generation),),
+            )
 
 
 def candidates_from_dicts(
@@ -971,8 +1405,10 @@ __all__ = [
     "RESOURCE_INDEX_FILENAME",
     "ResourceIdentity",
     "ResourceIndex",
+    "ResourceIndexDatabaseError",
     "ResourceScope",
     "ScopeStatus",
+    "StaleResourceIndexRefresh",
     "candidates_from_dicts",
     "resource_index_path",
     "scope_for_session",

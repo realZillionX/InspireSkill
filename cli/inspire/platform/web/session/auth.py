@@ -37,22 +37,10 @@ _CAS_RSA_KEY_RE = re.compile(
     r"RSAUtils\.getKeyPair\(\s*['\"]([0-9a-fA-F]+)['\"]\s*,\s*['\"][^'\"]*['\"]\s*,"
     r"\s*['\"]([0-9a-fA-F]+)['\"]"
 )
-_LOGIN_HINT_KEYWORDS = (
-    "captcha",
-    "verify",
-    "verification",
-    "invalid",
-    "incorrect",
-    "error",
-    "验证码",
-    "校验",
-    "验证",
-    "密码",
-    "账号",
-    "用户名",
-    "错误",
-    "失败",
-)
+
+
+class _CasLoginFailure(ValueError):
+    """An explicit CAS authentication failure that should not trigger a fallback."""
 
 
 def _load_runtime_config(account: Optional[str] = None) -> Config:
@@ -135,30 +123,188 @@ def _raise_browser_closed_error(exc: BaseException) -> None:
     ) from exc
 
 
-def _extract_login_failure_hint(text: str, *, limit: int = 180) -> str:
-    """Return a compact user-facing hint from a login page or response body."""
-    if not text:
-        return ""
-    cleaned = re.sub(r"(?is)<(script|style).*?</\1>", " ", text)
-    cleaned = re.sub(r"(?s)<[^>]+>", " ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    if not cleaned:
+class _CasLoginErrorParser(HTMLParser):
+    """Extract text from the first explicit, visible CAS error container."""
+
+    _ERROR_CLASS = "form-error"
+    _BREAK_TAGS = frozenset({"br", "div", "li", "p"})
+    _IGNORED_TAGS = frozenset({"noscript", "script", "style", "template"})
+    _HIDDEN_CLASS_NAMES = frozenset({"d-none", "hidden", "invisible", "visually-hidden"})
+    _VOID_TAGS = frozenset(
+        {
+            "area",
+            "base",
+            "br",
+            "col",
+            "embed",
+            "hr",
+            "img",
+            "input",
+            "link",
+            "meta",
+            "param",
+            "source",
+            "track",
+            "wbr",
+        }
+    )
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.messages: list[str] = []
+        self._stack: list[dict[str, Any]] = []
+        self._active_container: dict[str, Any] | None = None
+        self._parts: list[str] = []
+
+    @staticmethod
+    def _attributes(attrs: list[tuple[str, str | None]]) -> dict[str, str]:
+        return {key.lower(): value or "" for key, value in attrs}
+
+    @classmethod
+    def _is_hidden(cls, attrs: dict[str, str]) -> bool:
+        if "hidden" in attrs or "inert" in attrs:
+            return True
+
+        classes = {item.lower() for item in attrs.get("class", "").split()}
+        if classes & cls._HIDDEN_CLASS_NAMES:
+            return True
+
+        if attrs.get("aria-hidden", "").strip().lower() == "true":
+            return True
+
+        for declaration in attrs.get("style", "").split(";"):
+            property_name, separator, raw_value = declaration.partition(":")
+            if not separator:
+                continue
+            value = re.sub(r"\s+", "", raw_value.lower()).replace("!important", "")
+            property_name = property_name.strip().lower()
+            if property_name == "display" and value == "none":
+                return True
+            if property_name == "visibility" and value in {"hidden", "collapse"}:
+                return True
+            if property_name == "content-visibility" and value == "hidden":
+                return True
+            if property_name == "opacity":
+                try:
+                    if float(value) == 0:
+                        return True
+                except ValueError:
+                    pass
+        return False
+
+    @classmethod
+    def _is_error_container(cls, tag: str, attrs: dict[str, str]) -> bool:
+        classes = attrs.get("class", "").split()
+        return tag == "div" and cls._ERROR_CLASS in classes
+
+    def _is_suppressed(self) -> bool:
+        return any(node["hidden"] or node["ignored"] for node in self._stack)
+
+    def _finish_container(self) -> None:
+        message = " ".join("".join(self._parts).split())
+        if message:
+            self.messages.append(message)
+        self._active_container = None
+        self._parts = []
+
+    def _start_tag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        lower_tag = tag.lower()
+        attrs_dict = self._attributes(attrs)
+        parent_hidden = any(node["hidden"] for node in self._stack)
+        parent_ignored = any(node["ignored"] for node in self._stack)
+        node = {
+            "tag": lower_tag,
+            "hidden": parent_hidden or self._is_hidden(attrs_dict),
+            "ignored": parent_ignored or lower_tag in self._IGNORED_TAGS,
+            "container": False,
+        }
+
+        if (
+            self._active_container is None
+            and not node["hidden"]
+            and not node["ignored"]
+            and self._is_error_container(lower_tag, attrs_dict)
+        ):
+            node["container"] = True
+            self._active_container = node
+            self._parts = []
+        elif (
+            self._active_container is not None
+            and not node["hidden"]
+            and not node["ignored"]
+            and lower_tag in self._BREAK_TAGS
+        ):
+            self._parts.append(" ")
+
+        if lower_tag not in self._VOID_TAGS:
+            self._stack.append(node)
+
+    def _end_tag(self, tag: str) -> None:
+        lower_tag = tag.lower()
+        match_index = next(
+            (
+                index
+                for index in range(len(self._stack) - 1, -1, -1)
+                if self._stack[index]["tag"] == lower_tag
+            ),
+            None,
+        )
+        if match_index is None:
+            return
+
+        for _ in range(len(self._stack) - match_index):
+            node = self._stack.pop()
+            if self._active_container is None:
+                continue
+            if node is self._active_container:
+                self._finish_container()
+                continue
+            if not node["hidden"] and not node["ignored"] and node["tag"] in self._BREAK_TAGS:
+                self._parts.append(" ")
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._start_tag(tag, attrs)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        lower_tag = tag.lower()
+        self._start_tag(tag, attrs)
+        if lower_tag not in self._VOID_TAGS:
+            self._end_tag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        self._end_tag(tag)
+
+    def handle_data(self, data: str) -> None:
+        if self._active_container is not None and not self._is_suppressed():
+            self._parts.append(data)
+
+    def close(self) -> None:
+        super().close()
+        if self._active_container is not None:
+            self._finish_container()
+
+
+def _extract_login_failure_hint(html: str, *, limit: int = 180) -> str:
+    """Return text from the first non-empty visible CAS login error container."""
+    if not html or limit <= 0:
         return ""
 
-    lower = cleaned.lower()
-    for keyword in _LOGIN_HINT_KEYWORDS:
-        index = lower.find(keyword.lower())
-        if index < 0:
-            continue
-        start = max(0, index - 60)
-        end = min(len(cleaned), index + 120)
-        snippet = cleaned[start:end].strip(" .:-")
-        if start:
-            snippet = f"...{snippet}"
-        if end < len(cleaned):
-            snippet = f"{snippet}..."
-        return snippet[:limit]
-    return cleaned[:limit]
+    parser = _CasLoginErrorParser()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        return parser.messages[0][:limit] if parser.messages else ""
+    return parser.messages[0][:limit] if parser.messages else ""
+
+
+def _extract_page_login_failure_hint(page: Any, *, limit: int = 180) -> str:
+    """Extract a structured login error from a Playwright page."""
+    try:
+        html = page.content()
+    except Exception:
+        return ""
+    return _extract_login_failure_hint(html, limit=limit)
 
 
 def _login_not_complete_message(
@@ -169,16 +315,23 @@ def _login_not_complete_message(
     proxy_source: str | None = None,
     base_proxy_route: str | None = None,
 ) -> str:
-    lines = [
-        "Login did not complete.",
-        "Check that the password is correct and `auth.username` is the platform login ID "
-        "(phone, student ID, or email), not the display name.",
-        "If those are correct, verify that the configured proxy can reach both the public "
-        "internet and *.sii.edu.cn, and whether the platform login page is asking for "
-        "CAPTCHA, MFA, or another manual verification step.",
+    lines = ["Login did not complete."]
+    if page_hint:
+        lines.append(f"Platform reported: {page_hint}")
+    else:
+        lines.extend(
+            [
+                "Check that the password is correct and `auth.username` is the platform login "
+                "ID (phone, student ID, or email), not the display name.",
+                "If those are correct, verify that the configured proxy can reach both the "
+                "public internet and *.sii.edu.cn, and whether the platform login page is "
+                "asking for CAPTCHA, MFA, or another manual verification step.",
+            ]
+        )
+    lines.append(
         "Run `inspire config show --compact` to confirm the active account, base URL, and "
-        "proxy settings. Re-run with `inspire --debug init` if you need a debug report.",
-    ]
+        "proxy settings. Re-run with `inspire --debug init` if you need a debug report."
+    )
     if proxy_source and "system_env" in proxy_source:
         lines.append(
             "Shell HTTP_PROXY/HTTPS_PROXY/ALL_PROXY is configured for this login (including "
@@ -191,8 +344,6 @@ def _login_not_complete_message(
         details.append(f"last auth check status={status}")
     if current_url:
         details.append(f"current_url={current_url}")
-    if page_hint:
-        details.append(f"page_hint={page_hint}")
     if proxy_source:
         proxy_detail = f"proxy_source={proxy_source}"
         if base_proxy_route:
@@ -452,7 +603,16 @@ def _login_with_cas_requests(
         timeout=30,
         allow_redirects=True,
     )
-    auth_resp.raise_for_status()
+    if auth_resp.status_code >= 400:
+        error = _login_not_complete_message(
+            status=auth_resp.status_code,
+            current_url=str(getattr(auth_resp, "url", "") or ""),
+            page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
+            proxy_source=proxy_source,
+        )
+        if auth_resp.status_code < 500:
+            raise _CasLoginFailure(error)
+        raise ValueError(error)
 
     api_headers = {"Accept": "application/json", "Referer": f"{base_url.rstrip('/')}/login"}
     user_detail: dict | None = None
@@ -462,13 +622,15 @@ def _login_with_cas_requests(
         timeout=15,
     )
     if user_detail_resp.status_code != 200:
-        raise ValueError(
-            _login_not_complete_message(
-                status=user_detail_resp.status_code,
-                current_url=str(getattr(auth_resp, "url", "") or ""),
-                page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
-            )
+        error = _login_not_complete_message(
+            status=user_detail_resp.status_code,
+            current_url=str(getattr(auth_resp, "url", "") or ""),
+            page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
+            proxy_source=proxy_source,
         )
+        if 400 <= user_detail_resp.status_code < 500:
+            raise _CasLoginFailure(error)
+        raise ValueError(error)
     payload = user_detail_resp.json()
     data = payload.get("data")
     if isinstance(data, dict):
@@ -568,6 +730,8 @@ def login_with_playwright(
             base_url=base_url,
             account=account,
         )
+    except _CasLoginFailure:
+        raise
     except Exception:
         logger.debug("CAS requests login failed; falling back to Playwright.", exc_info=True)
 
@@ -689,12 +853,7 @@ def login_with_playwright(
                 current_url = page.url
             except Exception:
                 current_url = ""
-            try:
-                page_hint = _extract_login_failure_hint(
-                    page.locator("body").inner_text(timeout=1000)
-                )
-            except Exception:
-                page_hint = ""
+            page_hint = _extract_page_login_failure_hint(page)
             raise ValueError(
                 _login_not_complete_message(
                     status=last_status,
