@@ -19,6 +19,10 @@ def test_sanitizer_removes_handles_and_engineering_metadata_recursively() -> Non
             "object_uuid": "uuid-secret",
             "ownerUid": "user-secret",
             "source": "web",
+            "backend": "browser",
+            "endpoint": "/api/jobs/list",
+            "attempts": 3,
+            "timing": {"lookup_ms": 42},
             "result": {"id": "nested-secret", "status": "ok"},
             "items": [
                 {
@@ -60,6 +64,21 @@ def test_success_json_is_compact_and_keeps_stable_envelope() -> None:
     }
 
 
+def test_sanitizer_keeps_actionable_empty_business_values() -> None:
+    assert sanitize_json_data(
+        {
+            "name": "train",
+            "events": [],
+            "message": None,
+            "metadata": {},
+        }
+    ) == {
+        "name": "train",
+        "events": [],
+        "message": None,
+    }
+
+
 def test_error_json_is_compact_and_scrubs_platform_handles() -> None:
     rendered = format_json_error(
         "NotFound",
@@ -75,7 +94,7 @@ def test_error_json_is_compact_and_scrubs_platform_handles() -> None:
         "error": {
             "type": "NotFound",
             "code": 12,
-            "message": "Missing <job-id>",
+            "message": "Missing <redacted>",
             "hint": "List by name.",
         },
     }
@@ -84,5 +103,5 @@ def test_error_json_is_compact_and_scrubs_platform_handles() -> None:
 def test_final_output_guard_scrubs_text_and_bytes() -> None:
     raw = "job-12345678-1234-1234-1234-123456789abc"
 
-    assert sanitize_output_message(raw) == "<job-id>"
-    assert sanitize_output_message(raw.encode()) == b"<job-id>"
+    assert sanitize_output_message(raw) == "<redacted>"
+    assert sanitize_output_message(raw.encode()) == b"<redacted>"

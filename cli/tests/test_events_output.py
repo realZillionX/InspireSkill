@@ -7,7 +7,8 @@ import json
 import click
 from click.testing import CliRunner
 
-from inspire.cli.utils.events import emit_events, render_events_table
+from inspire.cli.context import Context, EXIT_API_ERROR
+from inspire.cli.utils.events import emit_events, render_events_table, run_events_command
 
 _RAW_JOB_ID = "job-12345678-1234-1234-1234-123456789abc"
 
@@ -45,15 +46,13 @@ def test_events_json_projects_only_public_diagnostics() -> None:
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["data"] == {
-        "resource": "job",
         "name": "train",
-        "count": 1,
         "events": [
             {
                 "time": "recent",
                 "type": "Warning",
                 "reason": "FailedScheduling",
-                "message": "Could not schedule <job-id>",
+                "message": "Could not schedule <redacted>",
                 "count": 3,
             }
         ],
@@ -80,3 +79,46 @@ def test_events_human_output_is_compact_and_scrubs_ids() -> None:
     assert "scheduler" not in result.output
     assert _RAW_JOB_ID not in result.output
     assert "object_id" not in result.output
+
+
+def test_empty_events_output_has_no_platform_lifecycle_explanation() -> None:
+    @click.command()
+    def command() -> None:
+        render_events_table([])
+
+    result = CliRunner().invoke(command)
+
+    assert result.exit_code == 0
+    assert result.output == "(no events)\n"
+
+
+def test_events_json_fetch_failure_is_one_actionable_error() -> None:
+    @click.command()
+    def command() -> None:
+        ctx = Context()
+        ctx.json_output = True
+        run_events_command(
+            ctx,
+            resource_id="internal",
+            resource_type="job",
+            resource_name="train",
+            fetch=lambda: (_ for _ in ()).throw(
+                RuntimeError("request failed for job-12345678-1234-1234-1234-123456789abc")
+            ),
+            json_output_local=False,
+            type_filter=None,
+            reason_filter=None,
+        )
+
+    result = CliRunner().invoke(command)
+
+    assert result.exit_code == EXIT_API_ERROR
+    assert result.output.count("\n") == 1
+    assert json.loads(result.output) == {
+        "success": False,
+        "error": {
+            "type": "APIError",
+            "code": EXIT_API_ERROR,
+            "message": "Could not fetch events: request failed for <redacted>",
+        },
+    }

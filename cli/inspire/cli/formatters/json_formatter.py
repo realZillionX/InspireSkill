@@ -17,11 +17,19 @@ _CAMEL_ID_RE = re.compile(
     r"Handle$|Handles$)"
 )
 _ENGINEERING_KEYS = {
+    "attempt",
+    "attempts",
+    "backend",
     "debug",
+    "endpoint",
+    "http_method",
     "internal",
     "metadata",
     "method",
+    "operation",
     "payload",
+    "poll",
+    "poll_interval",
     "progress",
     "raw",
     "request",
@@ -31,11 +39,16 @@ _ENGINEERING_KEYS = {
     "response_metadata",
     "responsemetadata",
     "result",
+    "retries",
+    "retry",
     "scan",
     "scanned",
     "stack",
+    "timing",
+    "timings",
     "trace",
     "traceback",
+    "verbose",
 }
 _ENGINEERING_SOURCE_VALUES = {"api", "browser", "cache", "live", "web"}
 

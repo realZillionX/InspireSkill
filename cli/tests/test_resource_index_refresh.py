@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import time
+from importlib import import_module
 
 from click.testing import CliRunner
 
@@ -166,6 +168,24 @@ def test_failed_refresh_preserves_existing_rows(tmp_path) -> None:
     assert index.list_scope_status()[0].last_error == "temporary API failure"
 
 
+def test_cache_status_is_stale_at_the_ttl_boundary(tmp_path, monkeypatch) -> None:
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    index.reconcile(
+        _scope("job", "workspace-one"),
+        [ResourceIdentity(resource_id="job-one", name="train")],
+        now=100,
+    )
+
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 159)
+    ready = cache_commands._status_payload(index)
+    assert ready["resources"][0]["state"] == "ready"
+
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 160)
+    stale = cache_commands._status_payload(index)
+    assert stale["resources"][0]["state"] == "stale"
+
+
 def test_incomplete_workspace_snapshot_never_tombstones_unseen_rows(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
     scope = _scope("workspace")
@@ -286,3 +306,6 @@ def test_periodic_refresh_is_throttled_and_quiet(tmp_path, monkeypatch) -> None:
     stamp = periodic_refresh_stamp_path()
     assert stamp is not None
     assert stamp.exists()
+
+    os.utime(stamp, (time.time() - 3600, time.time() - 3600))
+    assert maybe_spawn_periodic_refresh(interval_seconds=300) is False

@@ -263,7 +263,7 @@ def list_images_cmd(
 
     results = [_image_summary(image) for image in images]
     if ctx.json_output:
-        payload = {"images": results}
+        payload: dict[str, object] = {"images": results}
         if warnings:
             payload["warnings"] = warnings
         click.echo(json_formatter.format_json(payload))
@@ -582,6 +582,7 @@ def save_image_cmd(
         identifier=notebook,
         json_output=ctx.json_output,
         workspace_ids=[workspace_id],
+        require_live=True,
     )
 
     requested_visibility = _parse_visibility_value(visibility)

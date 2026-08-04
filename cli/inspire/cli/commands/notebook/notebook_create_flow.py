@@ -18,6 +18,7 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import reject_id_at_boundary, remember_resource_identity
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
     get_base_url,
@@ -226,8 +227,17 @@ def resolve_notebook_project(
     workspace_id: str | None = None,
     session: WebSession | None = None,
 ) -> Any | None:
-    project_value = project
-    if project_value and not project_value.startswith("project-"):
+    project_value = (
+        reject_id_at_boundary(
+            ctx,
+            project,
+            resource_type="project",
+            list_command="inspire project list",
+        )
+        if project
+        else project
+    )
+    if project_value:
         for alias, project_id in (config.projects or {}).items():
             if alias.lower() == project_value.lower():
                 project_value = project_id
@@ -281,7 +291,6 @@ def _find_image_match(images: list[Any], image: str) -> Any | None:
         if (
             image_lower in img.name.lower()
             or image_lower in img.url.lower()
-            or img.image_id == image
         ):
             return img
     return None
@@ -414,6 +423,14 @@ def create_notebook_and_report(
                 ),
             )
             return None
+        remember_resource_identity(
+            session=session,
+            resource_type="notebook",
+            resource_id=notebook_id,
+            name=name,
+            workspace_id=workspace_id,
+            owner_scope="self",
+        )
 
         if json_output:
             workspace_name = (getattr(session, "all_workspace_names", None) or {}).get(

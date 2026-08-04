@@ -18,8 +18,10 @@ from typing import Any, Callable, Optional
 
 import click
 
+from inspire.cli.context import EXIT_API_ERROR
 from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
+from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 
@@ -99,7 +101,7 @@ def public_event(event: dict) -> dict[str, Any]:
 def render_events_table(events: list[dict]) -> None:
     """Print compact event diagnostics to stdout."""
     if not events:
-        click.echo("(no events — platform GCs events for long-completed jobs)")
+        click.echo("(no events)")
         return
 
     def row(event: dict) -> tuple[str, str, str, str, str]:
@@ -142,14 +144,13 @@ def emit_events(
     events: list[dict],
 ) -> None:
     """Render events for stdout according to JSON vs human preference."""
+    del resource_type
     if ctx_json or local_json:
         public_events = [public_event(event) for event in events]
         click.echo(
             json_formatter.format_json(
                 {
-                    "resource": resource_type,
                     "name": resource_name,
-                    "count": len(public_events),
                     "events": public_events,
                 }
             )
@@ -181,11 +182,7 @@ def _fetch_filtered_events(
     reason_filter: Optional[str],
     keyword_filter: Optional[str] = None,
 ) -> list[dict]:
-    try:
-        events = fetch()
-    except Exception as e:  # defensive: helpers already swallow, but belt-and-suspenders
-        click.secho(f"events fetch failed: {scrub_raw_ids(e)}", fg="red", err=True)
-        events = []
+    events = fetch()
     return filter_events(
         events,
         type_filter=type_filter,
@@ -222,12 +219,21 @@ def run_events_command(
             "or drop --follow for a one-shot JSON fetch."
         )
 
-    filtered = _fetch_filtered_events(
-        fetch=fetch,
-        type_filter=type_filter,
-        reason_filter=reason_filter,
-        keyword_filter=keyword_filter,
-    )
+    try:
+        filtered = _fetch_filtered_events(
+            fetch=fetch,
+            type_filter=type_filter,
+            reason_filter=reason_filter,
+            keyword_filter=keyword_filter,
+        )
+    except Exception as e:
+        exit_with_error(
+            ctx,
+            "APIError",
+            f"Could not fetch events: {scrub_raw_ids(e)}",
+            EXIT_API_ERROR,
+        )
+        return
     initial = filtered[-tail:] if tail and tail > 0 else filtered
 
     if follow:
@@ -239,12 +245,21 @@ def run_events_command(
             except KeyboardInterrupt:
                 click.echo()
                 return
-            current = _fetch_filtered_events(
-                fetch=fetch,
-                type_filter=type_filter,
-                reason_filter=reason_filter,
-                keyword_filter=keyword_filter,
-            )
+            try:
+                current = _fetch_filtered_events(
+                    fetch=fetch,
+                    type_filter=type_filter,
+                    reason_filter=reason_filter,
+                    keyword_filter=keyword_filter,
+                )
+            except Exception as e:
+                exit_with_error(
+                    ctx,
+                    "APIError",
+                    f"Could not fetch events: {scrub_raw_ids(e)}",
+                    EXIT_API_ERROR,
+                )
+                return
             fresh = []
             for event in current:
                 key = _event_key(event)

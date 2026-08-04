@@ -19,6 +19,7 @@ from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import (
+    looks_like_platform_id,
     remember_resource_identity,
     resolve_by_name,
 )
@@ -44,11 +45,8 @@ def _resolve_project_id(
 ) -> Optional[str]:
     if not requested:
         return None
-    if requested.startswith("project-"):
-        raise ConfigError(
-            "--project takes a project name. "
-            "See `inspire project list` or `inspire config context`."
-        )
+    if looks_like_platform_id(requested):
+        raise ConfigError("--project takes a project name.")
 
     requested_names = [requested]
     configured = str(config.projects.get(requested) or "").strip()

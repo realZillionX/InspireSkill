@@ -19,6 +19,7 @@ from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.events import run_events_command
 from inspire.cli.utils.id_resolver import (
     forget_resource_identity,
+    looks_like_platform_id,
     reject_id_at_boundary,
     remember_resource_identity,
     resolve_by_name,
@@ -423,14 +424,23 @@ def stop_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> No
 # ---------------------------------------------------------------------------
 
 
-def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
+def _resolve_project_id(
+    config: Config,
+    requested: Optional[str],
+    *,
+    ctx: Context | None = None,
+) -> str:
     """Resolve a project name to the underlying project_id."""
     if requested:
-        if requested.startswith("project-"):
-            raise ConfigError(
-                "--project takes a project name. "
-                "See `inspire config context` for available names."
+        if ctx is not None:
+            requested = reject_id_at_boundary(
+                ctx,
+                requested,
+                resource_type="project",
+                list_command="inspire project list",
             )
+        elif looks_like_platform_id(requested):
+            raise ConfigError("--project takes a project name.")
         if requested in config.projects:
             return config.projects[requested]
         for project_id, metadata in config.project_catalog.items():
@@ -827,7 +837,7 @@ def _assemble_create_body(
             "'name=<g>;image=<u>;group=<g>;quota=<gpu,cpu,mem>;min=<n>;max=<n>'"
         )
 
-    resolved_project_id = _resolve_project_id(config, project)
+    resolved_project_id = _resolve_project_id(config, project, ctx=ctx)
     resolved_workspace_id = select_workspace_id(
         config,
         explicit_workspace_name=workspace,

@@ -54,7 +54,7 @@ from inspire.cli.env_bootstrap import bootstrap_env_file
 @click.option(
     "--debug",
     is_flag=True,
-    help="Enable debug logging",
+    help="Write diagnostic details to the debug log.",
 )
 @click.option(
     "--env-file",
@@ -75,33 +75,17 @@ def main(
     env_file: Path | None,
     no_env_file: bool,
 ) -> None:
-    """Inspire Training Platform CLI.
-
-    Use Inspire from the local terminal: configure accounts, inspect live
-    resources, create notebooks, submit GPU jobs / CPU HPC / Ray workloads,
-    manage images and models, deploy servings, and observe events, logs,
-    metrics, and status.
+    """Manage Inspire resources by name.
 
     \b
     Normal workflow:
-        1. `inspire config context` lists usable names for workspaces,
-           projects, and compute groups.
-        2. `inspire <kind> quota --workspace <name|all>` shows valid
-           `--quota gpu,cpu,mem` triples for the workload family.
-        3. `inspire <kind> create ...` submits the workload using visible
-           names, or `inspire <kind> profile set ...` stores reusable
-           workspace/project/group/quota/image conditions.
-        4. `events`, `logs`, `metrics`, `status`, and `instances` diagnose
-           scheduling, startup, runtime progress, and cleanup decisions.
+        1. `inspire config context` lists usable resource names.
+        2. `inspire <kind> quota --workspace <name|all>` lists valid quotas.
+        3. `inspire <kind> create ...` creates a workload.
+        4. `status`, `events`, `logs`, and `metrics` inspect it.
 
     \b
     Output:
-        Default output is name-first.
-        Default human output is the interactive observation surface.
-        JSON output is for scripts and structured automation.
-
-    \b
-    Global options:
         --json prints structured script output.
 
     \b
@@ -124,14 +108,12 @@ def main(
     else:
         clear_debug_logging()
 
-    # Opportunistic update check: prints a one-line notice to stderr if the
-    # on-disk cache says a newer version exists, and fires a detached
-    # background check when the cache is stale. Never raises, never blocks.
-    # Skipped for `inspire update ...` (handled inside that command itself)
-    # and when INSPIRE_SKIP_UPDATE_CHECK=1.
+    # Keep the background update check detached and silent. An interactive
+    # notice is opt-in and is never allowed to contaminate JSON output.
     if not (len(sys.argv) > 1 and sys.argv[1] == "update"):
         try:
-            maybe_notify_update()
+            if not json_output:
+                maybe_notify_update()
             maybe_spawn_check()
         except Exception:
             pass
@@ -211,9 +193,21 @@ def cli() -> None:
         # exceptions. The full traceback still lands in the debug log
         # (configured by `--debug`), which is where it belongs.
         logging.getLogger(__name__).exception("Unhandled exception in inspire CLI")
-        from inspire.cli.formatters import human_formatter
+        if "--json" in sys.argv[1:]:
+            from inspire.cli.formatters import json_formatter
 
-        click.echo(human_formatter.format_error(str(e) or type(e).__name__), err=True)
+            click.echo(
+                json_formatter.format_json_error(
+                    "Error",
+                    str(e) or type(e).__name__,
+                    EXIT_GENERAL_ERROR,
+                ),
+                err=True,
+            )
+        else:
+            from inspire.cli.formatters import human_formatter
+
+            click.echo(human_formatter.format_error(str(e) or type(e).__name__), err=True)
         sys.exit(EXIT_GENERAL_ERROR)
 
 

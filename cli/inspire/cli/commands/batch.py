@@ -26,7 +26,7 @@ from inspire.cli.formatters import json_formatter
 from inspire.cli.utils import job_submit
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.id_resolver import looks_like_platform_id, reject_id_at_boundary
 from inspire.cli.utils.quota_resolver import (
     QuotaMatchError,
     QuotaParseError,
@@ -607,11 +607,8 @@ def _prepare_hpc_item(
     )
 
 def _project_request_value(config: Config, requested: str) -> str:
-    if requested.startswith("project-"):
-        raise ConfigError(
-            "Batch item field project takes a project name. "
-            "See `inspire config context` for available names."
-        )
+    if looks_like_platform_id(requested):
+        raise ConfigError("Batch item field project takes a project name.")
     for alias, project_id in (config.projects or {}).items():
         if alias.lower() == requested.lower():
             return project_id
@@ -936,6 +933,7 @@ def _prepare_serving_item(
     if not workspace_id:
         raise ConfigError("Batch serving item requires workspace resolution.")
     project_id = _resolve_serving_project_id(
+        ctx=ctx,
         workspace_id=workspace_id,
         session=session,
         config=config,

@@ -518,7 +518,9 @@ def test_exec_json_reports_jupyter_transport(monkeypatch, tmp_path) -> None:  # 
     result = CliRunner().invoke(cli_main, ["--json", "notebook", "exec", "gpu-box", "false"])
 
     assert result.exit_code == 3
-    assert '"method": "jupyter_terminal"' in result.output
+    payload = json.loads(result.output)
+    assert payload["data"] == {"returncode": 3, "output": "bad\n"}
+    assert "method" not in payload["data"]
 
 
 def test_bridge_exec_supports_command_after_double_dash(
@@ -659,7 +661,7 @@ def test_bridge_exec_ssh_json_uses_buffered(
     # Verify JSON output
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"]["method"] == "ssh_tunnel"
+    assert "method" not in payload["data"]
     assert payload["data"]["output"] == "buffered output"
 
 
@@ -700,7 +702,7 @@ def test_bridge_exec_ssh_json_stdin_uses_buffered_with_pass_stdin(
     assert "&& bash -s" in captured["command"]
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"]["method"] == "ssh_tunnel"
+    assert "method" not in payload["data"]
     assert payload["data"]["output"] == "buffered output"
 
 

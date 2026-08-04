@@ -12,6 +12,7 @@ from typing import Any, Iterable, Optional
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.browser_api import ProjectInfo
+from inspire.cli.utils.id_resolver import _looks_like_platform_id
 from inspire.config import Config, ConfigError, build_env_exports, default_remote_cwd
 from inspire.cli.utils.quota_resolver import ResolvedQuota, build_resource_spec_price
 
@@ -140,6 +141,14 @@ def select_project_for_workspace(
     requested: str | None,
 ) -> tuple[ProjectInfo, str | None]:
     """Select a project for the given workspace, with quota-aware fallback."""
+    requested_name = (requested or "").strip()
+    if not requested_name:
+        raise ConfigError("--project is required.")
+    if _looks_like_platform_id(requested_name):
+        raise ConfigError(
+            "--project takes a project name, not a platform handle or partial handle."
+        )
+
     try:
         session = web_session_module.get_web_session()
     except ValueError as e:
@@ -149,25 +158,23 @@ def select_project_for_workspace(
     if not projects:
         raise ConfigError("No projects available")
 
+    name_matches = [
+        project for project in projects if project.name.casefold() == requested_name.casefold()
+    ]
+    if not name_matches:
+        raise ValueError(f"Project name '{requested_name}' not found")
+    if len(name_matches) > 1:
+        raise ValueError(f"Project name '{requested_name}' is ambiguous")
+
     congested = browser_api_module.check_scheduling_health(
         workspace_id=workspace_id,
         project_ids={p.project_id for p in projects},
         session=session,
     )
 
-    requested_value = requested
-    if not requested_value:
-        raise ConfigError("--project is required.")
-    if requested_value and not requested_value.startswith("project-"):
-        alias_map = config.projects or {}
-        for alias, project_id in alias_map.items():
-            if alias.lower() == requested_value.lower():
-                requested_value = project_id
-                break
-
     return browser_api_module.select_project(
         projects,
-        requested_value,
+        name_matches[0].name,
         project_order=config.project_order or None,
         congested_projects=congested or None,
     )

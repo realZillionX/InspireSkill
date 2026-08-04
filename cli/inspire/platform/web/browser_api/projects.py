@@ -466,7 +466,7 @@ def select_project(
 
         fallback_msg = (
             f"Project '{target.name}' is over quota; using '{fallback.name}'. "
-            "Hint: pass --project <name-or-id> to override."
+            "Hint: pass --project <name> to override."
         )
         return (fallback, fallback_msg)
 

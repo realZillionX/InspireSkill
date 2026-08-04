@@ -250,7 +250,10 @@ def test_send_command_via_terminal_ws_cleans_up_terminal(monkeypatch) -> None:  
     assert events[1] == ("delete", "https://nb.example.com/lab|term-1")
 
 
-def test_run_command_in_notebook_sync_falls_back_to_browser_terminal(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_run_command_in_notebook_sync_falls_back_to_browser_terminal(
+    monkeypatch,
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
     waits: list[int] = []
 
     class _LoadingLocator:
@@ -360,3 +363,4 @@ def test_run_command_in_notebook_sync_falls_back_to_browser_terminal(monkeypatch
     assert waits == [250]
     assert context.closed is True
     assert browser.closed is True
+    assert capsys.readouterr().err == ""

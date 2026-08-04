@@ -58,7 +58,9 @@ def _format_budget(value: object) -> str:
     if value is None:
         return "-"
     try:
-        return f"{float(value):,.0f}"
+        if isinstance(value, (int, float, str)):
+            return f"{float(value):,.0f}"
+        return str(value)
     except (TypeError, ValueError):
         return str(value)
 
@@ -120,7 +122,8 @@ def _format_project_list(projects: list[dict]) -> str:
 
 
 def _project_detail_view(data: dict) -> dict[str, object]:
-    owner = data.get("creator") if isinstance(data.get("creator"), dict) else {}
+    owner_value = data.get("creator")
+    owner: dict[str, object] = owner_value if isinstance(owner_value, dict) else {}
     view: dict[str, object] = {
         "name": _public_text(data.get("name") or data.get("en_name")),
         "english_name": _public_text(data.get("en_name")),

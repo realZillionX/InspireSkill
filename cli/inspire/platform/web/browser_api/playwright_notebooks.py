@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import time
@@ -22,6 +23,7 @@ from inspire.platform.web.browser_api.core import (
 from inspire.platform.web.session import WebSession, build_requests_session, get_web_session
 
 COMMAND_COMPLETION_MARKER_PREFIX = "INSPIRE_NOTEBOOK_COMMAND_DONE_"
+_log = logging.getLogger("inspire.platform.web.browser_api.playwright_notebooks")
 
 
 # ---------------------------------------------------------------------------
@@ -806,8 +808,6 @@ def _run_command_in_notebook_sync(
     completion_marker: str | None = None,
 ) -> bool:
     """Sync implementation for run_command_in_notebook."""
-    import sys as _sys
-
     from playwright.sync_api import sync_playwright
 
     from inspire.platform.web.browser_api.rtunnel import (
@@ -823,8 +823,7 @@ def _run_command_in_notebook_sync(
         command if completion_marker else _wrap_command_for_completion(command, effective_marker)
     )
 
-    _sys.stderr.write("Running command in notebook terminal...\n")
-    _sys.stderr.flush()
+    _log.debug("Running command in notebook terminal")
 
     with sync_playwright() as p:
         browser = _launch_browser(p, headless=headless)

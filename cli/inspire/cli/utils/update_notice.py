@@ -2,9 +2,8 @@
 
 The startup hook in `inspire.cli.main` calls `maybe_notify_update()` and
 `maybe_spawn_check()` on every invocation. Both must be cheap and
-completely side-effect-free on failure — they never raise, never block
-meaningful latency, and never write to stdout unless a newer version
-is actually available.
+completely side-effect-free on failure. Automatic checks stay silent;
+the optional notice is only enabled with ``INSPIRE_SHOW_UPDATE_NOTICE=1``.
 
 Cache file: ~/.inspire/update-status.json
 Source of truth: cli/pyproject.toml on `main` (parsed via raw.githubusercontent.com).
@@ -42,6 +41,7 @@ FETCH_TIMEOUT = 6  # seconds — foreground check is bounded
 
 _VERSION_RE = re.compile(r'^\s*version\s*=\s*"([^"]+)"', re.MULTILINE)
 _SKIP_ENV = "INSPIRE_SKIP_UPDATE_CHECK"
+_SHOW_NOTICE_ENV = "INSPIRE_SHOW_UPDATE_NOTICE"
 
 
 def _now_iso() -> str:
@@ -160,11 +160,12 @@ def run_check(write: bool = True, *, current_version: str | None = None) -> dict
 
 
 def maybe_notify_update() -> None:
-    """Print a one-line upgrade reminder to stderr if the cache says a newer version exists.
+    """Optionally print a one-line upgrade reminder for interactive users.
 
-    Silent if no cache, parse fails, or we're already on the latest version.
+    Startup output is silent by default so update metadata never contaminates
+    command output. Set ``INSPIRE_SHOW_UPDATE_NOTICE=1`` to opt in.
     """
-    if os.environ.get(_SKIP_ENV) == "1":
+    if os.environ.get(_SKIP_ENV) == "1" or os.environ.get(_SHOW_NOTICE_ENV) != "1":
         return
     cache = _read_cache()
     if not cache:

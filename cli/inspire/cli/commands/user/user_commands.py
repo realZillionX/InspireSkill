@@ -90,7 +90,8 @@ def _public_value(value: Any) -> Any:
 
 
 def _current_user_summary(info: dict[str, Any]) -> dict[str, str]:
-    extra = info.get("extra_info") if isinstance(info.get("extra_info"), dict) else {}
+    extra_value = info.get("extra_info")
+    extra: dict[str, Any] = extra_value if isinstance(extra_value, dict) else {}
     fields = {
         "name": info.get("name") or info.get("username"),
         "login": extra.get("login_name") or info.get("login_name"),

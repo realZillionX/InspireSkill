@@ -234,7 +234,7 @@ def patch_config_and_auth(
 
     test_project = browser_api_module.ProjectInfo(
         project_id="project-test-123",
-        name="Test Project",
+        name="proj",
         workspace_id="ws-test-workspace",
         member_gpu_limit=True,
         member_remain_gpu_hours=100.0,
@@ -1349,7 +1349,7 @@ def test_resources_list_all_workspaces_and_cpu_json(
     assert captured["include_cpu"] is True
     assert {row["resource_kind"] for row in rows} == {"gpu", "cpu"}
     assert any(row["workspace_name"] == "分布式训练空间" for row in rows)
-    assert any(row["cpu_total"] == 1200 for row in rows)
+    assert any(row.get("cpu_total") == 1200 for row in rows)
     gpu_row = next(row for row in rows if row["resource_kind"] == "gpu")
     assert gpu_row["high_priority_available_gpus"] == 72
 
@@ -1723,7 +1723,7 @@ def test_init_json_global_contract_via_top_level_flag(
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert payload["data"]["mode"] == "template"
-    assert payload["data"]["files_written"] == [
+    assert payload["data"]["configs"] == [
         str(tmp_path / ".inspire" / "accounts" / "default" / "config.toml")
     ]
 
@@ -2663,5 +2663,4 @@ def test_run_notebook_ssh_reports_when_tunnel_not_ready(
     assert exc.value.code == EXIT_API_ERROR
     assert captured["type"] == "APIError"
     assert "SSH preflight failed" in captured["message"]
-    assert "Proxy readiness report:" in captured["hint"]
     assert "allow_ssh=false" in captured["hint"]

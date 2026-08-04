@@ -135,7 +135,7 @@ def format_job_status(job_data: Dict[str, Any]) -> str:
         Formatted string with job status
     """
     status = str(job_data.get("status", "UNKNOWN"))
-    lines = ["Job Status"]
+    lines: list[str] = []
 
     # Core fields. Raw job_id intentionally omitted; names are the CLI boundary.
     fields = [
@@ -190,19 +190,14 @@ def format_job_list(jobs: List[Dict[str, Any]]) -> str:
         _column_width("Created", created_strings, max_width=19),
     ]
     table_rows = list(zip(name_strings, status_strings, created_strings))
-    lines = [
-        "Jobs",
-        *render_table(
+    return "\n".join(
+        render_table(
             ("Name", "Status", "Created"),
             table_rows,
             widths,
             line_char="─",
-        ),
-    ]
-
-    lines.append(f"Total: {len(jobs)} job(s)")
-
-    return "\n".join(lines)
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +215,7 @@ def format_resources(specs: List[Dict[str, Any]], groups: List[Dict[str, Any]]) 
     Returns:
         Formatted string with resources
     """
-    lines = ["Available resources", "GPU configurations:"]
+    lines = ["GPU configurations:"]
 
     for spec in specs:
         desc = spec.get("description", f"{spec.get('gpu_count', '?')}x GPU")
@@ -238,17 +233,6 @@ def format_resources(specs: List[Dict[str, Any]], groups: List[Dict[str, Any]]) 
         location = scrub_raw_ids(group.get("location", ""))
         lines.append(f"- {name}" + (f" ({location})" if location else ""))
 
-    lines.extend(
-        [
-            "",
-            "Usage:",
-            "- --quota '1,20,200' -> 1 GPU + 20 CPU + 200 GiB",
-            "- --quota '4,80,800' -> 4 GPUs + 80 CPU + 800 GiB",
-            "- --quota '0,4,32'   -> CPU-only (4 CPU + 32 GiB)",
-            "  See '<workload> quota' for valid triples; add --group <keyword> to disambiguate.",
-        ]
-    )
-
     return "\n".join(lines)
 
 
@@ -265,29 +249,33 @@ def format_nodes(nodes: List[Dict[str, Any]], total: int = 0) -> str:
     if not nodes:
         return "No nodes found."
 
-    lines = [
-        "Cluster nodes",
-        f"{'Node':<40} {'Pool':<12} {'Status':<12} {'GPUs':<8}",
-        "-" * 80,
-    ]
+    rows: list[tuple[str, str, str, str]] = []
 
     for node in nodes:
         node_label = scrub_raw_ids(
-            node.get("name") or node.get("node_name") or node.get("node_id") or "N/A"
+            node.get("name") or node.get("node_name") or "-"
         )[:38]
         pool = scrub_raw_ids(node.get("resource_pool", "unknown"))
         status = scrub_raw_ids(node.get("status", "unknown"))
         gpus = str(node.get("gpu_count", "?"))
+        rows.append((node_label, pool, status, gpus))
 
-        lines.append(f"{node_label:<40} {pool:<12} {status:<12} {gpus:<8}")
-
-    lines.append("-" * 80)
-    if total:
-        lines.append(f"Showing {len(nodes)} of {total} nodes")
-    else:
-        lines.append(f"Total: {len(nodes)} node(s)")
-
-    return "\n".join(lines)
+    del total
+    widths = [
+        _column_width("Node", [row[0] for row in rows], max_width=40),
+        _column_width("Pool", [row[1] for row in rows], max_width=20),
+        _column_width("Status", [row[2] for row in rows], max_width=16),
+        _column_width("GPUs", [row[3] for row in rows], max_width=8),
+    ]
+    return "\n".join(
+        render_table(
+            ("Node", "Pool", "Status", "GPUs"),
+            rows,
+            widths,
+            aligns=["left", "left", "left", "right"],
+            line_char="─",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -338,15 +326,14 @@ def format_image_list(images: List[Dict[str, Any]]) -> str:
         _column_width("Status", [row[3] for row in table_rows], max_width=18),
         _column_width("Framework", [row[4] for row in table_rows], max_width=24),
     ]
-    lines = render_table(
-        ("Name", "Version", "Source", "Status", "Framework"),
-        table_rows,
-        widths,
-        line_char="─",
+    return "\n".join(
+        render_table(
+            ("Name", "Version", "Source", "Status", "Framework"),
+            table_rows,
+            widths,
+            line_char="─",
+        )
     )
-    lines.append(f"Total: {len(images)} image(s)")
-
-    return "\n".join(lines)
 
 
 def format_project_list(projects: List[Dict[str, Any]]) -> str:
@@ -390,19 +377,15 @@ def format_project_list(projects: List[Dict[str, Any]]) -> str:
         _column_width("Budget remain", [r["budget"] for r in rendered], max_width=16),
     ]
     rows = [(r["name"], r["workspace"], r["priority"], r["budget"]) for r in rendered]
-    lines = [
-        "Projects",
-        *render_table(
+    return "\n".join(
+        render_table(
             ("Name", "Workspace", "Priority", "Budget remain"),
             rows,
             widths,
             aligns=["left", "left", "left", "right"],
             line_char="─",
-        ),
-    ]
-    lines.append(f"Total: {len(projects)} project(s)")
-
-    return "\n".join(lines)
+        )
+    )
 
 
 def format_image_detail(image_data: Dict[str, Any]) -> str:
@@ -414,7 +397,7 @@ def format_image_detail(image_data: Dict[str, Any]) -> str:
     Returns:
         Formatted string with image details
     """
-    lines = ["Image Detail"]
+    lines: list[str] = []
 
     # Human-readable source labels
     source_labels = {

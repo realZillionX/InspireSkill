@@ -31,7 +31,7 @@ from inspire.platform.web.resources import (
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 _REDACTED_ID_RE = re.compile(
-    r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?<[^<>]+-id>"
+    r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)"
 )
 
 

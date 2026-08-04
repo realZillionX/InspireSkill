@@ -33,6 +33,7 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import forget_resource_identity
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
     get_base_url,
@@ -346,6 +347,7 @@ def stop_notebook_cmd(
         identifier=notebook,
         json_output=ctx.json_output,
         workspace_ids=[workspace_id],
+        require_live=True,
     )
 
     try:
@@ -418,6 +420,7 @@ def delete_notebook_cmd(
         identifier=notebook,
         json_output=ctx.json_output,
         workspace_ids=[workspace_id],
+        require_live=True,
     )
 
     if not yes and not ctx.json_output:
@@ -433,6 +436,14 @@ def delete_notebook_cmd(
             ctx, "APIError", f"Failed to delete notebook: {scrub_raw_ids(e)}", EXIT_API_ERROR
         )
         return
+    forget_resource_identity(
+        session=session,
+        resource_type="notebook",
+        resource_id=notebook_id,
+        name=notebook,
+        workspace_id=workspace_id,
+        owner_scope="self",
+    )
 
     if ctx.json_output:
         click.echo(
@@ -521,6 +532,7 @@ def start_notebook_cmd(
         identifier=notebook,
         json_output=ctx.json_output,
         workspace_ids=[workspace_id],
+        require_live=True,
     )
 
     try:

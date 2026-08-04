@@ -9,8 +9,8 @@ def test_root_help_keeps_json_as_script_interface() -> None:
     result = runner.invoke(cli_main, ["--help"])
 
     assert result.exit_code == 0
-    assert "Default output is name-first." in result.output
-    assert "JSON output is for scripts and structured automation." in result.output
+    assert "Manage Inspire resources by name." in result.output
+    assert "--json prints structured script output." in result.output
 
 
 def test_job_status_formatter_shows_platform_priority_fields() -> None:

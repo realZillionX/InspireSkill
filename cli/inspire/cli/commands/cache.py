@@ -87,7 +87,7 @@ def _status_payload(index: ResourceIndex, *, debug: bool = False) -> dict[str, o
             row["error"] = scrub_raw_ids(status.last_error)
         elif status.last_refresh_at <= 0:
             row["state"] = "empty"
-        elif now - status.last_refresh_at > DEFAULT_TTL_SECONDS.get(
+        elif now - status.last_refresh_at >= DEFAULT_TTL_SECONDS.get(
             status.resource_type, 300
         ):
             row["state"] = "stale"

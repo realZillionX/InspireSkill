@@ -18,6 +18,12 @@ from inspire.cli.context import (
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import is_partial_id
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.resource_index import (
+    ResourceIdentity,
+    ResourceIndex,
+    ResourceScope,
+    scope_for_session,
+)
 from inspire.platform.web import session as web_session_module
 
 logger = logging.getLogger(__name__)
@@ -540,6 +546,8 @@ def _resolve_notebook_id(
     identifier: str,
     json_output: bool,
     workspace_ids: list[str] | None = None,
+    require_live: bool = False,
+    cache_index: ResourceIndex | None = None,
 ) -> tuple[str, str | None]:
     identifier = identifier.strip()
     if not identifier:
@@ -577,14 +585,43 @@ def _resolve_notebook_id(
             ),
         )
 
-    user_ids = _try_get_current_user_ids(session, base_url=base_url)
-    if not user_ids:
-        _handle_error(
-            ctx,
-            "AuthenticationError",
-            _current_user_lookup_failure_message(session),
-            EXIT_API_ERROR,
+    cache_scopes: dict[str, ResourceScope] = {}
+    for workspace_id in workspace_ids:
+        scope = scope_for_session(
+            session,
+            resource_type="notebook",
+            workspace_id=workspace_id,
+            owner_scope="self",
+            base_url=base_url,
         )
+        if scope is not None:
+            cache_scopes[workspace_id] = scope
+    if cache_index is None and cache_scopes:
+        try:
+            cache_index = ResourceIndex.for_account()
+        except Exception:
+            logger.debug("Notebook identity cache initialization failed", exc_info=True)
+            cache_index = None
+
+    matches: list[tuple[str, dict]] = []
+    if cache_index is not None and cache_scopes and not require_live:
+        try:
+            for workspace_id, scope in cache_scopes.items():
+                for cached_item in cache_index.lookup(scope, identifier):
+                    matches.append(
+                        (
+                            workspace_id,
+                            {
+                                "notebook_id": cached_item.resource_id,
+                                "name": cached_item.name,
+                                "status": cached_item.status,
+                                "created_at": cached_item.created_at,
+                            },
+                        )
+                    )
+        except Exception:
+            logger.debug("Notebook identity cache lookup failed", exc_info=True)
+            matches = []
 
     # Retry the listing a few times when the name doesn't show up: the
     # platform list API has a small eventual-consistency window after a
@@ -599,28 +636,65 @@ def _resolve_notebook_id(
     # a transient real failure into a misleading 12-second wall ending in
     # "Notebook not found". The retry exists for eventual consistency on
     # the *contents* of a successful response, not as a generic error loop.
-    import time as _time
+    if not matches:
+        user_ids = _try_get_current_user_ids(session, base_url=base_url)
+        if not user_ids:
+            _handle_error(
+                ctx,
+                "AuthenticationError",
+                _current_user_lookup_failure_message(session),
+                EXIT_API_ERROR,
+            )
 
-    matches: list[tuple[str, dict]] = []
-    attempts = 4  # 0s, 2s, 4s, 6s — covers ~12s of eventual consistency
-    for attempt in range(attempts):
-        workspace_items = _list_notebooks_for_workspaces(
-            session,
-            base_url=base_url,
-            workspace_ids=workspace_ids,
-            user_ids=user_ids,
-            keyword=identifier,
-        )
-        matches = []
-        for ws_id in workspace_ids:
-            for item in workspace_items.get(ws_id, []):
-                if str(item.get("name") or "") == identifier:
-                    matches.append((ws_id, item))
+        import time as _time
 
-        if matches:
-            break
-        if attempt < attempts - 1:
-            _time.sleep(2 * (attempt + 1))
+        attempts = 4  # 0s, 2s, 4s, 6s — covers ~12s of eventual consistency
+        for attempt in range(attempts):
+            workspace_items = _list_notebooks_for_workspaces(
+                session,
+                base_url=base_url,
+                workspace_ids=workspace_ids,
+                user_ids=user_ids,
+                keyword=identifier,
+            )
+            matches = []
+            for ws_id in workspace_ids:
+                for notebook_item in workspace_items.get(ws_id, []):
+                    if str(notebook_item.get("name") or "") == identifier:
+                        matches.append((ws_id, notebook_item))
+
+            if matches:
+                break
+            if attempt < attempts - 1:
+                _time.sleep(2 * (attempt + 1))
+
+        if cache_index is not None and cache_scopes:
+            try:
+                for workspace_id, scope in cache_scopes.items():
+                    cache_index.replace_name(
+                        scope,
+                        identifier,
+                        [
+                            ResourceIdentity(
+                                resource_id=str(
+                                    _notebook_id_from_item(notebook_item) or ""
+                                ),
+                                name=identifier,
+                                owner_id=str(
+                                    notebook_item.get("user_id")
+                                    or notebook_item.get("owner_id")
+                                    or notebook_item.get("creator_id")
+                                    or ""
+                                ),
+                                status=str(notebook_item.get("status") or ""),
+                                created_at=str(notebook_item.get("created_at") or ""),
+                            )
+                            for match_workspace_id, notebook_item in matches
+                            if match_workspace_id == workspace_id
+                        ],
+                    )
+            except Exception:
+                logger.debug("Notebook identity cache refresh failed", exc_info=True)
 
     matches.sort(key=lambda m: str(m[1].get("created_at") or ""), reverse=True)
 

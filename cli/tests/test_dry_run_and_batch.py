@@ -87,7 +87,7 @@ def _patch_submit_deps(
         "job": {
             "h200": {
                 "workspace": "cpu",
-                "project": "proj",
+                "project": "Project One",
                 "group": "H200 Room",
                 "quota": "1,20,200",
                 "image": "registry.local/train:latest",
@@ -203,7 +203,7 @@ def test_job_create_dry_run_resolves_plan_without_create_api(
             "--workspace",
             "cpu",
             "--project",
-            "proj",
+            "Project One",
             "--group",
             "H200 Room",
             "--image",
@@ -224,15 +224,14 @@ def test_job_create_dry_run_resolves_plan_without_create_api(
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert payload["data"]["dry_run"] is True
-    assert payload["data"]["create_kwargs"]["name"] == "dry-job"
-    assert payload["data"]["create_kwargs"]["enable_notification"] is False
-    assert payload["data"]["create_kwargs"]["exclude_nodes"] == [
+    assert payload["data"]["name"] == "dry-job"
+    assert payload["data"]["enable_notification"] is False
+    assert payload["data"]["exclude_nodes"] == [
         "qb-prod-gpu1736",
         "qb-prod-gpu1737",
     ]
-    assert "exclude_nodes" not in payload["data"]["create_kwargs"]["framework_config"][0]
     assert payload["data"]["project_name"] == "Project One"
-    assert "project_id" not in payload["data"]["create_kwargs"]
+    _assert_public_batch_output(payload["data"])
     assert api.training_calls == []
 
 
@@ -279,9 +278,7 @@ def test_job_create_notification_precedence_controls_top_level_payload(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    create_kwargs = payload["data"]["create_kwargs"]
-    assert create_kwargs["enable_notification"] is expected
-    assert "enable_notification" not in create_kwargs["framework_config"][0]
+    assert payload["data"]["enable_notification"] is expected
     assert api.training_calls == []
 
 
@@ -371,7 +368,7 @@ def test_hpc_dry_run_human_scrubs_raw_ids(
     assert result.exit_code == 0, result.output
     assert "No HPC job was submitted." in result.output
     assert "lcg-12345678-1234-1234-1234-123456789abc" not in result.output
-    assert "<compute-group-id>" in result.output
+    assert "<redacted>" in result.output
     assert api.hpc_calls == []
 
 
@@ -399,11 +396,10 @@ def test_job_create_profile_fills_condition_fields(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    create_kwargs = payload["data"]["create_kwargs"]
-    assert create_kwargs["name"] == "profile-job"
-    assert create_kwargs["framework_config"][0]["image"] == "registry.local/train:latest"
+    assert payload["data"]["name"] == "profile-job"
+    assert payload["data"]["image"] == "registry.local/train:latest"
     assert payload["data"]["project_name"] == "Project One"
-    assert "project_id" not in create_kwargs
+    _assert_public_batch_output(payload["data"])
     assert api.training_calls == []
 
 
@@ -433,8 +429,6 @@ def test_job_create_shm_size_overrides_config_default(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    framework_config = payload["data"]["create_kwargs"]["framework_config"][0]
-    assert framework_config["shm_gi"] == 64
     assert payload["data"]["shm_size_gib"] == 64
     assert api.training_calls == []
 
@@ -463,8 +457,6 @@ def test_job_create_uses_config_shm_size_when_flag_absent(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    framework_config = payload["data"]["create_kwargs"]["framework_config"][0]
-    assert framework_config["shm_gi"] == 48
     assert payload["data"]["shm_size_gib"] == 48
     assert api.training_calls == []
 
@@ -599,7 +591,7 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
                         "h200": {
                             "quota": "1,20,200",
                             "workspace": "cpu",
-                            "project": "proj",
+                            "project": "Project One",
                             "group": "H200 Room",
                             "image": "registry.batch/train:latest",
                         }
@@ -670,7 +662,7 @@ def test_batch_notification_item_overrides_config_default(
                         "h200": {
                             "quota": "1,20,200",
                             "workspace": "cpu",
-                            "project": "proj",
+                            "project": "Project One",
                             "group": "H200 Room",
                             "image": "registry.batch/train:latest",
                         }
@@ -725,7 +717,7 @@ def test_batch_rejects_shm_size_above_quota_memory(
                         "h200": {
                             "quota": "1,20,200",
                             "workspace": "cpu",
-                            "project": "proj",
+                            "project": "Project One",
                             "group": "H200 Room",
                             "image": "registry.batch/train:latest",
                         }
@@ -832,7 +824,7 @@ def test_batch_matrix_submit_calls_create_for_each_item(
 [profiles.job.h200]
 quota = "1,20,200"
 workspace = "cpu"
-project = "proj"
+project = "Project One"
 group = "H200 Room"
 image = "registry.batch/train:latest"
 
@@ -894,7 +886,7 @@ def test_batch_does_not_fall_back_to_config_job_defaults(
                         "h200": {
                             "quota": "1,20,200",
                             "workspace": "cpu",
-                            "project": "proj",
+                            "project": "Project One",
                             "group": "H200 Room",
                         }
                     }
@@ -938,7 +930,7 @@ def test_batch_rejects_profile_merged_with_condition_override(
                         "h200": {
                             "quota": "1,20,200",
                             "workspace": "cpu",
-                            "project": "proj",
+                            "project": "Project One",
                             "group": "H200 Room",
                             "image": "registry.batch/default:latest",
                         }
@@ -1050,7 +1042,7 @@ def test_batch_requires_training_fields_after_expansion(
                         "h200": {
                             "quota": "1,20,200",
                             "workspace": "cpu",
-                            "project": "proj",
+                            "project": "Project One",
                             "group": "H200 Room",
                             "image": "registry.batch/train:latest",
                         }

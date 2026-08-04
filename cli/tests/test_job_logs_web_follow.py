@@ -117,8 +117,8 @@ def test_web_follow_polls_new_logs_and_scrubs_human_output(monkeypatch) -> None:
     assert calls[0]["job_id"] == "job-abc"
     assert calls[0]["pod_names"] == ["worker-0"]
     assert "old" not in result.output
-    assert "latest <job-id>" in result.output
-    assert "new <job-id>" in result.output
+    assert "latest <redacted>" in result.output
+    assert "new <redacted>" in result.output
     assert "job-12345678-1234-1234-1234-123456789abc" not in result.output
 
 

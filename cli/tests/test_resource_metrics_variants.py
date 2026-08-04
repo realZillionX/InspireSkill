@@ -38,6 +38,10 @@ serving_metrics_module = importlib.import_module(
 hpc_commands_module = importlib.import_module(
     "inspire.cli.commands.hpc.hpc_commands"
 )
+job_commands_module = importlib.import_module("inspire.cli.commands.job.job_commands")
+serving_commands_module = importlib.import_module(
+    "inspire.cli.commands.serving.serving_commands"
+)
 config_module = importlib.import_module("inspire.config")
 web_session_module = importlib.import_module("inspire.platform.web.session")
 
@@ -99,13 +103,64 @@ def _patch_hpc_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def _fake_resolve_hpc_name_in_workspace(ctx, *, config, session, name, workspace, limit, pick=None):  # noqa: ANN001
         assert name == "prep-a"
-        assert workspace == "all"
+        assert workspace == "Training Workspace"
         return "hpc-job-xyz"
 
     monkeypatch.setattr(
         hpc_commands_module,
         "_resolve_hpc_name_in_workspace",
         _fake_resolve_hpc_name_in_workspace,
+    )
+
+
+def _patch_job_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = config_module.Config(
+        username="user",
+        password="pass",
+        base_url="https://example.invalid",
+    )
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=False: (config, {})),
+    )
+
+    def _fake_resolve_web_job_id(**kwargs: Any) -> str:
+        assert kwargs["job"] == "train-job"
+        assert kwargs["workspace"] == "Training Workspace"
+        return "job-abc123"
+
+    monkeypatch.setattr(job_commands_module, "_resolve_web_job_id", _fake_resolve_web_job_id)
+
+
+def _patch_serving_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = config_module.Config(
+        username="user",
+        password="pass",
+        base_url="https://example.invalid",
+    )
+    session = _FakeSession()
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=False: (config, {})),
+    )
+    monkeypatch.setattr(web_session_module, "get_web_session", lambda: session)
+    monkeypatch.setattr(
+        serving_commands_module,
+        "_resolve_workspace_id",
+        lambda *_args, **_kwargs: "ws-fake",
+    )
+
+    def _fake_resolve_serving_name(ctx, name, *, workspace_id):  # noqa: ANN001
+        assert name == "serving-a"
+        assert workspace_id == "ws-fake"
+        return "sv-abc"
+
+    monkeypatch.setattr(
+        serving_commands_module,
+        "_resolve_serving_name",
+        _fake_resolve_serving_name,
     )
 
 
@@ -128,6 +183,7 @@ def test_job_metrics_resolver_and_wiring(
         render_captures=render_captures,
         tmp_metrics_dir=str(tmp_path),
     )
+    _patch_job_metrics_name_resolver(monkeypatch)
 
     def _fake_request(session, method, path, *, referer=None, body=None, timeout=30):
         resolver_calls.append({"method": method, "path": path, "referer": referer, "body": body})
@@ -138,7 +194,17 @@ def test_job_metrics_resolver_and_wiring(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["job", "metrics", "job-abc123", "--workspace", "all", "--metric", "gpu", "--window", "30m"],
+        [
+            "job",
+            "metrics",
+            "train-job",
+            "--workspace",
+            "Training Workspace",
+            "--metric",
+            "gpu",
+            "--window",
+            "30m",
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -156,7 +222,7 @@ def test_job_metrics_resolver_and_wiring(
 
     # Default path + PNG title label match the train-job resource identity.
     assert render_captures[0]["task_label"] == "Train Job"
-    expected = tmp_path / "job-job-abc123-1000000.png"
+    expected = tmp_path / "job-train-job-1000000.png"
     assert render_captures[0]["out_path"] == expected
 
 
@@ -190,7 +256,17 @@ def test_hpc_metrics_resolver_and_wiring(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["hpc", "metrics", "prep-a", "--workspace", "all", "--metric", "gpu", "--window", "15m"],
+        [
+            "hpc",
+            "metrics",
+            "prep-a",
+            "--workspace",
+            "Training Workspace",
+            "--metric",
+            "gpu",
+            "--window",
+            "15m",
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -244,6 +320,7 @@ def test_serving_metrics_resolver_and_wiring(
         render_captures=render_captures,
         tmp_metrics_dir=str(tmp_path),
     )
+    _patch_serving_metrics_name_resolver(monkeypatch)
 
     class _FakeBrowserApi:
         @staticmethod
@@ -256,7 +333,17 @@ def test_serving_metrics_resolver_and_wiring(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["serving", "metrics", "sv-abc", "--workspace", "all", "--metric", "gpu", "--window", "10m"],
+        [
+            "serving",
+            "metrics",
+            "serving-a",
+            "--workspace",
+            "Training Workspace",
+            "--metric",
+            "gpu",
+            "--window",
+            "10m",
+        ],
     )
     assert result.exit_code == 0, result.output
 
@@ -264,7 +351,7 @@ def test_serving_metrics_resolver_and_wiring(
     assert capture["task_type"] == "inference_serving"
     assert capture["logic_compute_group_id"] == "lcg-serving-3"
     assert render_captures[0]["task_label"] == "Serving"
-    expected = tmp_path / "serving-sv-abc-1000000.png"
+    expected = tmp_path / "serving-serving-a-1000000.png"
     assert render_captures[0]["out_path"] == expected
 
 
@@ -274,22 +361,43 @@ def test_serving_metrics_resolver_and_wiring(
 
 
 @pytest.mark.parametrize(
-    "resource,args,task_type",
+    "resource,args",
     [
         (
             "job",
-            ["job", "metrics", "job-abc", "--workspace", "all", "--metric", "gpu"],
-            "distributed_training",
+            [
+                "job",
+                "metrics",
+                "train-job",
+                "--workspace",
+                "Training Workspace",
+                "--metric",
+                "gpu",
+            ],
         ),
         (
             "hpc",
-            ["hpc", "metrics", "prep-a", "--workspace", "all", "--metric", "gpu"],
-            "hpc_job",
+            [
+                "hpc",
+                "metrics",
+                "prep-a",
+                "--workspace",
+                "Training Workspace",
+                "--metric",
+                "gpu",
+            ],
         ),
         (
             "serving",
-            ["serving", "metrics", "sv-abc", "--workspace", "all", "--metric", "gpu"],
-            "inference_serving",
+            [
+                "serving",
+                "metrics",
+                "serving-a",
+                "--workspace",
+                "Training Workspace",
+                "--metric",
+                "gpu",
+            ],
         ),
     ],
 )
@@ -298,7 +406,6 @@ def test_variants_emit_resource_tagged_json(
     tmp_path,
     resource: str,
     args: list[str],
-    task_type: str,
 ) -> None:
     capture: dict = {}
     render_captures: list[dict] = []
@@ -323,6 +430,10 @@ def test_variants_emit_resource_tagged_json(
     )
     if resource == "hpc":
         _patch_hpc_metrics_name_resolver(monkeypatch)
+    elif resource == "job":
+        _patch_job_metrics_name_resolver(monkeypatch)
+    elif resource == "serving":
+        _patch_serving_metrics_name_resolver(monkeypatch)
 
     class _FakeServingApi:
         @staticmethod
@@ -338,7 +449,8 @@ def test_variants_emit_resource_tagged_json(
     envelope = json.loads(result.output)
     payload = envelope["data"]
     assert payload["resource"] == resource
-    assert payload["task_type"] == task_type
+    assert "task_type" not in payload
+    assert payload["name"] in {"train-job", "prep-a", "serving-a"}
     assert f"{resource}_id" not in payload
     # --json branch must skip PNG rendering.
     assert render_captures == []

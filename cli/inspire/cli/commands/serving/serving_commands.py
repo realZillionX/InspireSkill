@@ -19,7 +19,12 @@ from inspire.cli.context import (
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import reject_id_at_boundary, resolve_by_name
+from inspire.cli.utils.id_resolver import (
+    forget_resource_identity,
+    reject_id_at_boundary,
+    remember_resource_identity,
+    resolve_by_name,
+)
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
@@ -50,6 +55,7 @@ def _resolve_serving_name(
     *,
     workspace_id: Optional[str] = None,
     pick: Optional[int] = None,
+    require_live: bool = False,
 ) -> str:
     """Resolve a serving name to its platform id (``sv-<uuid>``).
 
@@ -62,8 +68,9 @@ def _resolve_serving_name(
         list_command="inspire serving list",
     )
 
+    session = get_web_session()
+
     def _lister():
-        session = get_web_session()
         items, _ = browser_api_module.list_servings(
             workspace_id=workspace_id,
             session=session,
@@ -88,6 +95,11 @@ def _resolve_serving_name(
         list_candidates=_lister,
         json_output=ctx.json_output,
         pick_index=pick,
+        session=session,
+        workspace_id=str(workspace_id or ""),
+        owner_scope="self",
+        require_live=require_live,
+        list_command="inspire serving list --workspace <workspace>",
     )
 
 
@@ -95,6 +107,20 @@ def _resolve_workspace_id(config: Config, workspace: Optional[str], *, session=N
     if workspace is None:
         return None
     return select_workspace_id(config, explicit_workspace_name=workspace, session=session)
+
+
+def _created_serving_id(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("inference_serving_id", "serving_id", "id"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    for key in ("inference_serving", "serving", "data", "result"):
+        value = _created_serving_id(payload.get(key))
+        if value:
+            return value
+    return ""
 
 
 def _validate_custom_domain(_ctx: click.Context, _param: click.Parameter, value: Optional[str]) -> Optional[str]:
@@ -555,6 +581,16 @@ def status_serving(
             inference_serving_id=inference_serving_id,
             session=session,
         )
+        remember_resource_identity(
+            session=session,
+            resource_type="serving",
+            resource_id=inference_serving_id,
+            name=name,
+            workspace_id=str(workspace_id or ""),
+            owner_scope="self",
+            status=str(data.get("status") or ""),
+            created_at=str(data.get("created_at") or ""),
+        )
 
         if ctx.json_output:
             detail = public_serving(data, fallback_name=name)
@@ -623,6 +659,7 @@ def stop_serving(
             name,
             workspace_id=workspace_id,
             pick=pick,
+            require_live=True,
         )
         browser_api_module.stop_serving(
             inference_serving_id=inference_serving_id,
@@ -676,6 +713,7 @@ def delete_serving(
             name,
             workspace_id=workspace_id,
             pick=pick,
+            require_live=True,
         )
         if not yes and not ctx.json_output:
             click.confirm(
@@ -685,6 +723,14 @@ def delete_serving(
         browser_api_module.delete_serving(
             inference_serving_id=inference_serving_id,
             session=session,
+        )
+        forget_resource_identity(
+            session=session,
+            resource_type="serving",
+            resource_id=inference_serving_id,
+            name=name,
+            workspace_id=str(workspace_id or ""),
+            owner_scope="self",
         )
 
         if ctx.json_output:
@@ -1000,7 +1046,7 @@ def create_serving(
                 click.echo("No serving was created.")
             return
 
-        browser_api_module.create_serving(
+        result = browser_api_module.create_serving(
             workspace_id=workspace_id,
             project_id=project_id,
             name=name,
@@ -1019,6 +1065,18 @@ def create_serving(
             resource_spec_price=resource_spec_price,
             session=session,
         )
+        serving_id = _created_serving_id(result)
+        if serving_id:
+            remember_resource_identity(
+                session=session,
+                resource_type="serving",
+                resource_id=serving_id,
+                name=name,
+                workspace_id=workspace_id,
+                owner_scope="self",
+                status=str(result.get("status") or ""),
+                created_at=str(result.get("created_at") or ""),
+            )
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(

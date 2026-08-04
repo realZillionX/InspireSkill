@@ -1101,7 +1101,7 @@ class TestInitCommand:
         result = runner.invoke(init, ["--no-discover", "--scope", "project", "--force"])
 
         assert result.exit_code == 0
-        assert "No environment variables detected. Creating template config" in result.output
+        assert "Created " in result.output
         config_file = self._project_config_path(tmp_path)
         assert config_file.exists()
         content = config_file.read_text()
@@ -1176,7 +1176,7 @@ class TestInitCommand:
         result = runner.invoke(init, ["--template", "--scope", "project"])
 
         assert result.exit_code == 0
-        assert "Creating template config" in result.output
+        assert "Created " in result.output
         config_file = self._project_config_path(tmp_path)
         assert config_file.exists()
         content = config_file.read_text()
@@ -1201,9 +1201,8 @@ class TestInitCommand:
         payload = json.loads(result.output)
         assert payload["success"] is True
         assert payload["data"]["mode"] == "template"
-        assert payload["data"]["files_written"] == [str(self._project_config_path(tmp_path))]
-        assert payload["data"]["detected_env_count"] == 0
-        assert payload["data"]["secret_env_count"] == 0
+        assert payload["data"]["configs"] == [str(self._project_config_path(tmp_path))]
+        assert payload["data"]["status"] == "updated"
 
     def test_init_json_fails_when_overwrite_prompt_would_be_needed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1643,11 +1642,9 @@ class TestInitCommand:
         result = runner.invoke(init, ["--force"])
 
         assert result.exit_code == 0, result.output
-        assert "Discovering account catalog" in result.output
-        assert "Discovering projects across accessible workspaces" in result.output
-        assert "Preparing account catalog update" in result.output
-        assert "Discovering compute groups across 1 workspace(s)" in result.output
-        assert "Writing configuration files" in result.output
+        assert "Initialized: " in result.output
+        assert "Discovering account catalog" not in result.output
+        assert "Writing configuration files" not in result.output
         assert "Workspace:" not in result.output
         assert "CPU临时测试空间" not in result.output
         account_config = self._account_config_path()
@@ -1670,7 +1667,8 @@ class TestInitCommand:
         result = CliRunner().invoke(init, ["--force"])
 
         assert result.exit_code == 0, result.output
-        assert "Account: cached-user" in result.output
+        assert "Initialized: " in result.output
+        assert "Account: cached-user" not in result.output
         account_content = self._account_config_path().read_text(encoding="utf-8")
         assert 'username = "cached-user"' in account_content
         assert 'base_url = "https://qz.sii.edu.cn"' in account_content

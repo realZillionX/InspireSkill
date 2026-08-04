@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import os
 import sqlite3
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -34,6 +35,10 @@ DEFAULT_TTL_SECONDS: dict[str, int] = {
     "notebook": 60,
     "ssh-key": 5 * 60,
 }
+
+CASE_INSENSITIVE_RESOURCE_TYPES = frozenset(
+    {"workspace", "project", "compute-group"}
+)
 
 
 @dataclass(frozen=True)
@@ -93,7 +98,7 @@ class ResourceIdentity:
 
     @property
     def fresh(self) -> bool:
-        return self.tombstoned_at is None and self.expires_at >= time.time()
+        return self.tombstoned_at is None and self.expires_at > time.time()
 
 
 @dataclass(frozen=True)
@@ -164,6 +169,10 @@ class ResourceIndex:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.path.parent.chmod(0o700)
+        except OSError:
+            pass
         self._initialize()
 
     @classmethod
@@ -380,6 +389,15 @@ class ResourceIndex:
             if str(record.resource_id or "").strip() and str(record.name or "").strip()
         ]
 
+    @staticmethod
+    def _case_sensitive_for(
+        resource_type: str,
+        case_sensitive: bool | None,
+    ) -> bool:
+        if case_sensitive is not None:
+            return case_sensitive
+        return resource_type not in CASE_INSENSITIVE_RESOURCE_TYPES
+
     def _upsert_records(
         self,
         connection: sqlite3.Connection,
@@ -478,6 +496,7 @@ class ResourceIndex:
         records: Iterable[ResourceIdentity],
         *,
         ttl_seconds: int | None = None,
+        case_sensitive: bool | None = None,
         now: float | None = None,
     ) -> int:
         """Reconcile one exact name after a complete targeted lookup."""
@@ -485,10 +504,15 @@ class ResourceIndex:
         exact_name = str(name or "").strip()
         if not exact_name:
             raise ValueError("resource name cannot be empty")
+        match_case = self._case_sensitive_for(scope.resource_type, case_sensitive)
         items = [
             item
             for item in self._valid_records(records)
-            if str(item.name or "").strip() == exact_name
+            if (
+                str(item.name or "").strip() == exact_name
+                if match_case
+                else str(item.name or "").strip().casefold() == exact_name.casefold()
+            )
         ]
         observed_at = float(time.time() if now is None else now)
         ttl = (
@@ -506,15 +530,14 @@ class ResourceIndex:
                 observed_at=observed_at,
                 scan_id=None,
             )
-            sql = (
-                """
+            name_match = "" if match_case else "COLLATE NOCASE"
+            sql = f"""
                 UPDATE resource_identity
                 SET tombstoned_at = ?, expires_at = ?
                 WHERE base_url = ? AND subject_id = ? AND resource_type = ?
                   AND workspace_id = ? AND owner_scope = ?
-                  AND name = ? AND tombstoned_at IS NULL
+                  AND name = ? {name_match} AND tombstoned_at IS NULL
                 """
-            )
             params: list[object] = [observed_at, observed_at, *self._scope_values(scope), exact_name]
             if ids:
                 sql += f" AND resource_id NOT IN ({','.join('?' for _ in ids)})"
@@ -664,28 +687,59 @@ class ResourceIndex:
         name: str = "",
         now: float | None = None,
     ) -> int:
-        """Tombstone an exact ID or all current candidates for one name."""
-        if not resource_id and not name:
+        """Tombstone by ID, falling back to name when the ID is unknown.
+
+        The ID is authoritative when it is present in the cache. A name is
+        only used as a fallback for an ID that was never indexed, avoiding a
+        fragile ``id AND name`` match without deleting a newly-recreated
+        same-name resource when an old ID is already known.
+        """
+        target_id = str(resource_id or "").strip()
+        target_name = str(name or "").strip()
+        if not target_id and not target_name:
             return 0
         timestamp = float(time.time() if now is None else now)
-        sql = (
-            """
-            UPDATE resource_identity
-            SET tombstoned_at = ?, expires_at = ?
-            WHERE base_url = ? AND subject_id = ? AND resource_type = ?
-              AND workspace_id = ? AND owner_scope = ?
-              AND tombstoned_at IS NULL
-            """
-        )
-        params: list[object] = [timestamp, timestamp, *self._scope_values(scope)]
-        if resource_id:
-            sql += " AND resource_id = ?"
-            params.append(str(resource_id).strip())
-        if name:
-            sql += " AND name = ?"
-            params.append(str(name).strip())
+        scope = scope.validate()
+        values = self._scope_values(scope)
+        match_case = self._case_sensitive_for(scope.resource_type, None)
         with self._connect() as connection:
-            cursor = connection.execute(sql, params)
+            if target_id:
+                known_id = connection.execute(
+                    """
+                    SELECT 1
+                    FROM resource_identity
+                    WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+                      AND workspace_id = ? AND owner_scope = ? AND resource_id = ?
+                    LIMIT 1
+                    """,
+                    (*values, target_id),
+                ).fetchone()
+                if known_id is not None:
+                    cursor = connection.execute(
+                        """
+                        UPDATE resource_identity
+                        SET tombstoned_at = ?, expires_at = ?
+                        WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+                          AND workspace_id = ? AND owner_scope = ?
+                          AND resource_id = ? AND tombstoned_at IS NULL
+                        """,
+                        (timestamp, timestamp, *values, target_id),
+                    )
+                    return int(cursor.rowcount)
+
+            if not target_name:
+                return 0
+            name_match = "" if match_case else "COLLATE NOCASE"
+            cursor = connection.execute(
+                f"""
+                UPDATE resource_identity
+                SET tombstoned_at = ?, expires_at = ?
+                WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+                  AND workspace_id = ? AND owner_scope = ?
+                  AND name = ? {name_match} AND tombstoned_at IS NULL
+                """,
+                (timestamp, timestamp, *values, target_name),
+            )
             return int(cursor.rowcount)
 
     def mark_scope_stale(self, scope: ResourceScope) -> int:
@@ -741,7 +795,13 @@ class ResourceIndex:
                     s.last_full_refresh_at,
                     s.refresh_complete,
                     s.last_error,
-                    SUM(CASE WHEN r.tombstoned_at IS NULL THEN 1 ELSE 0 END) active_count,
+                    SUM(
+                        CASE
+                            WHEN r.resource_id IS NOT NULL
+                             AND r.tombstoned_at IS NULL
+                            THEN 1 ELSE 0
+                        END
+                    ) active_count,
                     SUM(CASE WHEN r.tombstoned_at IS NOT NULL THEN 1 ELSE 0 END) tombstone_count
                 FROM resource_scope s
                 LEFT JOIN resource_identity r
@@ -800,7 +860,7 @@ class ResourceIndex:
         holder: str | None = None,
         now: float | None = None,
     ) -> Iterator[bool]:
-        """Acquire a short per-scope single-flight lease."""
+        """Acquire a per-scope single-flight lease and renew it while held."""
         timestamp = float(time.time() if now is None else now)
         lease_key = scope.lease_key()
         owner = holder or f"{os.getpid()}:{uuid.uuid4().hex}"
@@ -822,9 +882,45 @@ class ResourceIndex:
                 acquired = True
             except sqlite3.IntegrityError:
                 acquired = False
+        stop_heartbeat = threading.Event()
+        heartbeat: threading.Thread | None = None
+        if acquired:
+            heartbeat_interval = max(0.5, min(float(lease_seconds) / 3.0, 30.0))
+
+            def _heartbeat() -> None:
+                while not stop_heartbeat.wait(heartbeat_interval):
+                    try:
+                        with self._connect() as connection:
+                            connection.execute(
+                                """
+                                UPDATE refresh_lease
+                                SET expires_at = ?
+                                WHERE lease_key = ? AND holder = ?
+                                """,
+                                (
+                                    time.time() + max(1, int(lease_seconds)),
+                                    lease_key,
+                                    owner,
+                                ),
+                            )
+                    except (OSError, sqlite3.Error):
+                        # If the database is unavailable, allowing this lease
+                        # to expire is safer than blocking future refreshes.
+                        return
+
+            heartbeat = threading.Thread(
+                target=_heartbeat,
+                name="inspire-resource-index-lease",
+                daemon=True,
+            )
+            heartbeat.start()
         try:
             yield acquired
         finally:
+            if acquired:
+                stop_heartbeat.set()
+                if heartbeat is not None:
+                    heartbeat.join(timeout=1.0)
             if acquired:
                 with self._connect() as connection:
                     connection.execute(

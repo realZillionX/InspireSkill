@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 from inspire.task_priority import is_low_task_priority
 
 from .models import WebSession
+
+logger = logging.getLogger(__name__)
 
 
 def fetch_node_specs(
@@ -160,9 +163,8 @@ def fetch_gpu_availability(
                 )
             )
 
-        except Exception as e:
-            # Skip groups that fail
-            print(f"Warning: Failed to fetch {group_id}: {e}")
+        except Exception:
+            logger.debug("Failed to fetch compute-group availability", exc_info=True)
             continue
 
     return results

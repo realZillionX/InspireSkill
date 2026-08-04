@@ -16,7 +16,7 @@ from inspire.cli.context import (
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils import job_submit
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import remember_resource_identity
+from inspire.cli.utils.id_resolver import reject_id_at_boundary, remember_resource_identity
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
@@ -130,6 +130,12 @@ def run_job_create(
                 EXIT_CONFIG_ERROR,
             )
             return
+        project = reject_id_at_boundary(
+            ctx,
+            project,
+            resource_type="project",
+            list_command="inspire project list",
+        )
         if nodes is None:
             nodes = 1
 
@@ -214,32 +220,34 @@ def run_job_create(
 
         if dry_run:
             if ctx.json_output:
-                click.echo(
-                    json_formatter.format_json(
-                        {
-                            "dry_run": True,
-                            "name": name,
-                            "project_name": selected.name,
-                            "workspace_name": workspace_label(
-                                session,
-                                selected_workspace_id,
-                                workspace,
-                            ),
-                            "compute_group_name": resolved_quota.compute_group_name,
-                            "quota": {
-                                "gpu_count": resolved_quota.gpu_count,
-                                "gpu_type": resolved_quota.gpu_type,
-                                "cpu_count": resolved_quota.cpu_count,
-                                "memory_gib": resolved_quota.memory_gib,
-                            },
-                            "priority": priority,
-                            "nodes": nodes,
-                            "image": scrub_raw_ids(image),
-                            "command": scrub_raw_ids(plan.wrapped_command),
-                            "shm_size_gib": plan.shm_size_gib,
-                        }
-                    )
-                )
+                dry_run_payload: dict[str, object] = {
+                    "dry_run": True,
+                    "name": name,
+                    "project_name": selected.name,
+                    "workspace_name": workspace_label(
+                        session,
+                        selected_workspace_id,
+                        workspace,
+                    ),
+                    "compute_group_name": resolved_quota.compute_group_name,
+                    "quota": {
+                        "gpu_count": resolved_quota.gpu_count,
+                        "gpu_type": resolved_quota.gpu_type,
+                        "cpu_count": resolved_quota.cpu_count,
+                        "memory_gib": resolved_quota.memory_gib,
+                    },
+                    "priority": priority,
+                    "nodes": nodes,
+                    "enable_notification": bool(enable_notification),
+                    "image": scrub_raw_ids(image),
+                    "command": scrub_raw_ids(plan.wrapped_command),
+                    "shm_size_gib": plan.shm_size_gib,
+                }
+                if plan_exclude_nodes:
+                    dry_run_payload["exclude_nodes"] = [
+                        scrub_raw_ids(node) for node in plan_exclude_nodes
+                    ]
+                click.echo(json_formatter.format_json(dry_run_payload))
                 return
             click.echo(human_formatter.format_success(f"Dry run: job create plan for {name}"))
             click.echo(f"Project: {scrub_raw_ids(selected.name)}")

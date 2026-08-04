@@ -475,6 +475,11 @@ def _looks_like_platform_id(value: str) -> bool:
     return bool(_FULL_UUID_RE.match(v))
 
 
+def looks_like_platform_id(value: str) -> bool:
+    """Return whether a user-supplied value has the shape of a platform handle."""
+    return _looks_like_platform_id(value)
+
+
 def reject_id_at_boundary(
     ctx: Context,
     value: str,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
@@ -114,6 +115,79 @@ def test_replace_name_with_no_results_tombstones_only_that_name(tmp_path) -> Non
     ] == ["job-b"]
 
 
+def test_mark_deleted_with_stale_name_uses_known_id(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    index.upsert(scope, [_record("job-a", "renamed")], now=100)
+
+    assert (
+        index.mark_deleted(
+            scope,
+            resource_id="job-a",
+            name="old-name",
+            now=200,
+        )
+        == 1
+    )
+    deleted = index.lookup_id(scope, "job-a", include_tombstoned=True)
+    assert deleted is not None
+    assert deleted.tombstoned_at == 200
+
+
+def test_mark_deleted_does_not_fallback_to_same_name_for_known_tombstoned_id(
+    tmp_path,
+) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    index.upsert(
+        scope,
+        [_record("job-old", "A"), _record("job-new", "A")],
+        now=100,
+    )
+    index.mark_deleted(scope, resource_id="job-old", now=150)
+
+    assert (
+        index.mark_deleted(
+            scope,
+            resource_id="job-old",
+            name="A",
+            now=200,
+        )
+        == 0
+    )
+    replacement = index.lookup_id(scope, "job-new")
+    assert replacement is not None
+
+
+@pytest.mark.parametrize("resource_type", ["workspace", "project", "compute-group"])
+def test_replace_name_is_case_insensitive_for_case_insensitive_resources(
+    tmp_path,
+    resource_type: str,
+) -> None:
+    index = ResourceIndex(tmp_path / f"{resource_type}.sqlite3")
+    scope = _scope(resource_type=resource_type, workspace_id="")
+    index.upsert(scope, [_record("old-id", "Training Space")], now=100)
+
+    index.replace_name(
+        scope,
+        "training space",
+        [_record("new-id", "TRAINING SPACE")],
+        now=200,
+    )
+
+    active = index.lookup(
+        scope,
+        "Training Space",
+        fresh_only=False,
+        now=200,
+        case_sensitive=False,
+    )
+    assert [item.resource_id for item in active] == ["new-id"]
+    old = index.lookup_id(scope, "old-id", include_tombstoned=True)
+    assert old is not None
+    assert old.tombstoned_at == 200
+
+
 def test_partial_upsert_never_tombstones_unseen_rows(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
     scope = _scope()
@@ -215,6 +289,21 @@ def test_refresh_lease_is_single_flight_and_released(tmp_path) -> None:
         assert third is True
 
 
+def test_refresh_lease_renews_during_a_long_scan(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+
+    with index.refresh_lease(scope, holder="first", lease_seconds=1) as first:
+        assert first is True
+        time.sleep(0.75)
+        with index.refresh_lease(
+            scope,
+            holder="second",
+            lease_seconds=1,
+        ) as second:
+            assert second is False
+
+
 def test_candidates_from_dicts_keeps_only_minimal_identity_fields() -> None:
     records = candidates_from_dicts(
         [
@@ -285,6 +374,7 @@ def test_account_indexes_are_isolated_and_private(tmp_path, monkeypatch) -> None
 
     if os.name != "nt":
         assert alpha_path.stat().st_mode & 0o777 == 0o600
+        assert alpha_path.parent.stat().st_mode & 0o777 == 0o700
 
 
 def test_empty_targeted_name_is_rejected(tmp_path) -> None:

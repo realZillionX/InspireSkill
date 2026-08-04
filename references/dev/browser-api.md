@@ -3,6 +3,8 @@
 > **文档类型**：开发者手册。仅用于维护 InspireSkill CLI 封装、排查 Browser API 变更或对照平台前端流量；日常平台使用不要加载本文档。
 >
 > **状态**：非官方、无公开合约、平台侧可随时变更。本文档基于 InspireSkill CLI 侧 [`cli/inspire/platform/web/browser_api/`](../../cli/inspire/platform/web/browser_api/) 的封装、受控 live smoke、前端抓包和 SPA bundle 检查整理。任何变动以当前前端真实请求和 `inspire --debug <cmd>` 观察到的实际流量为准。
+>
+> **CLI 边界**：本文档中的平台 ID、Handle、`*_id` 参数和响应字段只描述内部 Browser API 合同。它们不得出现在 CLI 参数、帮助、错误、human 输出或 JSON 输出中；CLI 通过 Name/Alias 和本地可刷新索引完成解析。
 
 ## 为什么以 Browser API 为事实源？
 

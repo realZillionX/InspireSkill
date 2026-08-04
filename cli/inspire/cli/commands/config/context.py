@@ -3,11 +3,8 @@
 Structured pieces of the loaded config (active account, projects,
 workspaces, compute groups) aren't reachable through ``inspire config
 show``, which is focused on the flat env-var-backed options. This command
-    fills that gap with a **name-only** view: every workspace, project, and
-    compute group is shown by its platform name (``CI-情境智能``,
-    ``H200-3号机房``), not by a short alias or copied platform value. Agents feed
-those names straight back into ``--workspace`` / ``--project`` / ``--group``
-flags without ever needing to touch config.toml.
+fills that gap with a compact name-only view. The displayed names can be
+passed directly to ``--workspace`` / ``--project`` / ``--group``.
 """
 
 from __future__ import annotations
@@ -120,15 +117,17 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
 
 def _render_human(data: dict[str, Any]) -> None:
     active = data["active"]
-    click.echo(click.style("Active", bold=True))
-    click.echo(f"  account    {active['account'] or '(not set)'}")
-    click.echo(f"  project    {active['project'] or '(not set)'}")
-    click.echo(f"  workspace  {active['workspace'] or '(not set)'}")
+    click.echo(
+        "Active  "
+        f"account    {active['account'] or '-'}  "
+        f"project    {active['project'] or '-'}  "
+        f"workspace  {active['workspace'] or '-'}"
+    )
     click.echo()
 
     projects: list[dict[str, str]] = data["projects"]
     if projects:
-        click.echo(click.style(f"Projects ({len(projects)})", bold=True))
+        click.echo(click.style("Projects", bold=True))
         project_rows = [(entry["name"], entry.get("path") or "-") for entry in projects]
         click.echo(
             "\n".join(
@@ -147,7 +146,7 @@ def _render_human(data: dict[str, Any]) -> None:
 
     workspaces: list[str] = data["workspaces"]
     if workspaces:
-        click.echo(click.style(f"Workspaces ({len(workspaces)})", bold=True))
+        click.echo(click.style("Workspaces", bold=True))
         workspace_rows = [(name,) for name in workspaces]
         click.echo(
             "\n".join(
@@ -163,7 +162,7 @@ def _render_human(data: dict[str, Any]) -> None:
 
     compute_groups: list[dict[str, Any]] = data["compute_groups"]
     if compute_groups:
-        click.echo(click.style(f"Compute groups ({len(compute_groups)})", bold=True))
+        click.echo(click.style("Compute groups", bold=True))
         group_rows: list[tuple[str, str, str]] = []
         for group in compute_groups:
             gpu = group.get("gpu_type")
@@ -197,7 +196,7 @@ def _render_human(data: dict[str, Any]) -> None:
 
     accounts: list[str] = data["accounts"]
     if accounts:
-        click.echo(click.style(f"Accounts ({len(accounts)})", bold=True))
+        click.echo(click.style("Accounts", bold=True))
         account_rows = [(name,) for name in accounts]
         click.echo(
             "\n".join(
@@ -214,12 +213,10 @@ def _render_human(data: dict[str, Any]) -> None:
 @click.command("context")
 @pass_context
 def show_context(ctx: Context) -> None:
-    """Display the active account's projects / workspaces / compute groups.
+    """List names available to the active account.
 
-    All identifiers are platform names (e.g. ``CI-情境智能``, ``H200-3号机房``)
-    — never a raw ``ws-…`` / ``project-…`` / ``lcg-…`` ID and never an
-    alias. Feed these names straight into ``--workspace`` / ``--project``
-    / ``--group`` flags on other commands.
+    Pass the displayed names to ``--workspace``, ``--project``, and
+    ``--group`` on other commands.
 
     \b
     Examples:

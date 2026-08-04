@@ -16,5 +16,5 @@ def test_render_table_scrubs_raw_ids_by_default() -> None:
     )
 
     output = "\n".join(lines)
-    assert "<workspace-id>" in output
+    assert "<redacted>" in output
     assert "ws-12345678-1234-1234-1234-123456789abc" not in output

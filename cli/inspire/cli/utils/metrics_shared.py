@@ -34,8 +34,10 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import resolve_by_name
 from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.config import ConfigError
+from inspire.config import Config, ConfigError
+from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web.browser_api.metrics import (
     INTERVAL_CHOICES,
     METRIC_TYPES,
@@ -341,6 +343,55 @@ def _open_file(path: Path) -> None:
 LcgResolver = Callable[[str, WebSession], Optional[str]]
 
 
+def _resolve_compute_group_name(
+    ctx: Context,
+    *,
+    session: WebSession,
+    workspace: str,
+    name: str,
+) -> str:
+    from inspire.platform.web.browser_api.availability.api import list_compute_groups
+
+    config, _ = Config.from_files_and_env(require_credentials=False)
+    workspace_id = select_workspace_id(
+        config,
+        explicit_workspace_name=workspace,
+        session=session,
+    )
+    if workspace_id is None:
+        raise ConfigError(f"Unknown workspace name: {workspace!r}.")
+
+    def _candidates() -> list[dict[str, str]]:
+        return [
+            {
+                "name": str(
+                    group.get("name")
+                    or group.get("logic_compute_group_name")
+                    or group.get("compute_group_name")
+                    or ""
+                ),
+                "id": str(
+                    group.get("logic_compute_group_id") or group.get("id") or ""
+                ),
+            }
+            for group in list_compute_groups(
+                workspace_id=workspace_id,
+                session=session,
+            )
+        ]
+
+    return resolve_by_name(
+        ctx,
+        name=name,
+        resource_type="compute-group",
+        list_candidates=_candidates,
+        json_output=ctx.json_output,
+        session=session,
+        workspace_id=workspace_id,
+        list_command=f"inspire resources availability --workspace {workspace}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Command factory
 # ---------------------------------------------------------------------------
@@ -356,8 +407,7 @@ def build_metrics_command(
     """Return a Click command that queries metrics for one task type.
 
     Each resource module (notebook / job / hpc / serving) calls this with
-    its own ``name_resolver`` (name → platform id, v2 contract) and
-    ``lcg_resolver`` (id → logic_compute_group_id), and registers the
+    its own internal target resolver and compute-group inference function, and registers the
     returned command under its own group as `metrics`.
     """
 
@@ -400,10 +450,10 @@ def build_metrics_command(
         help="Sample interval (matches UI selector options).",
     )
     @click.option(
-        "--lcg",
-        "logic_compute_group_id",
+        "--group",
+        "compute_group_name",
         default=None,
-        help="Advanced: override the compute group when automatic lookup is ambiguous.",
+        help="Compute group name override when automatic lookup is unavailable.",
     )
     @click.option(
         "--plot",
@@ -442,7 +492,7 @@ def build_metrics_command(
         start: Optional[str],
         end: Optional[str],
         interval: str,
-        logic_compute_group_id: Optional[str],
+        compute_group_name: Optional[str],
         plot_path: Optional[str],
         no_plot: bool,
         sparkline: bool,
@@ -492,8 +542,17 @@ def build_metrics_command(
         try:
             session = get_web_session()
 
-            lcg = logic_compute_group_id
-            if not lcg:
+            lcg = (
+                _resolve_compute_group_name(
+                    ctx,
+                    session=session,
+                    workspace=workspace,
+                    name=compute_group_name,
+                )
+                if compute_group_name
+                else None
+            )
+            if lcg is None:
                 lcg = lcg_resolver(task_id, session)
             if not lcg:
                 _handle_error(
@@ -503,8 +562,7 @@ def build_metrics_command(
                     EXIT_CONFIG_ERROR,
                     hint=(
                         "Make sure the resource exists, you have access, and the command "
-                        "can infer its compute group; otherwise pass --lcg as an advanced "
-                        "override."
+                        "can infer its compute group; otherwise pass --group <name>."
                     ),
                 )
                 return
@@ -532,27 +590,26 @@ def build_metrics_command(
         if json_output:
             payload = {
                 "resource": resource_name,
-                f"{resource_name}_id": task_id,
-                "logic_compute_group_id": lcg,
-                "task_type": task_type,
-                "metric_types": metrics,
+                "name": name,
+                "metrics": metrics,
                 "time_range": {
-                    "start_timestamp": start_ts,
-                    "end_timestamp": end_ts,
-                    "interval_second": interval_s,
+                    "start": start_ts,
+                    "end": end_ts,
+                    "interval": interval,
                 },
-                "groups": [
+                "series": [
                     {
-                        "group_name": g.group_name,
-                        "metric_type": g.metric_type,
-                        "resource_name": g.resource_name,
-                        "time_series": [
+                        "unit": _short_pod(g.group_name),
+                        "metric": g.metric_type,
+                        "samples": [
                             {"timestamp": s.timestamp, "value": s.value} for s in g.samples
                         ],
                     }
                     for g in groups
                 ],
             }
+            if compute_group_name:
+                payload["group"] = compute_group_name
             click.echo(json_formatter.format_json(payload))
             return
 

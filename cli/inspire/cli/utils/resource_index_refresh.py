@@ -133,10 +133,18 @@ def _dedupe_records(records: Iterable[ResourceIdentity]) -> list[ResourceIdentit
     return list(by_id.values())
 
 
-def _filter_exact(records: Iterable[ResourceIdentity], exact_name: str) -> list[ResourceIdentity]:
+def _filter_exact(
+    records: Iterable[ResourceIdentity],
+    exact_name: str,
+    *,
+    case_sensitive: bool = True,
+) -> list[ResourceIdentity]:
     if not exact_name:
         return list(records)
-    return [record for record in records if record.name == exact_name]
+    if case_sensitive:
+        return [record for record in records if record.name == exact_name]
+    needle = exact_name.casefold()
+    return [record for record in records if record.name.casefold() == needle]
 
 
 def _workspace_fetch(session: object, _workspace_id: str, exact_name: str) -> FetchResult:
@@ -152,7 +160,14 @@ def _workspace_fetch(session: object, _workspace_id: str, exact_name: str) -> Fe
             for item in live_items
             if isinstance(item, dict)
         ]
-        return FetchResult(_filter_exact(_dedupe_records(records), exact_name), complete=True)
+        return FetchResult(
+            _filter_exact(
+                _dedupe_records(records),
+                exact_name,
+                case_sensitive=False,
+            ),
+            complete=True,
+        )
 
     # A cached session map is useful for warm-up, but it is not a complete live
     # scan and therefore must never tombstone an unseen workspace.
@@ -163,7 +178,14 @@ def _workspace_fetch(session: object, _workspace_id: str, exact_name: str) -> Fe
         for workspace_id, name in names.items()
         if workspace_id and name
     ]
-    return FetchResult(_filter_exact(_dedupe_records(records), exact_name), complete=False)
+    return FetchResult(
+        _filter_exact(
+            _dedupe_records(records),
+            exact_name,
+            case_sensitive=False,
+        ),
+        complete=False,
+    )
 
 
 def _project_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
@@ -177,7 +199,9 @@ def _project_fetch(session: object, workspace_id: str, exact_name: str) -> Fetch
         )
         for item in items
     ]
-    return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
+    return FetchResult(
+        _filter_exact(_dedupe_records(records), exact_name, case_sensitive=False)
+    )
 
 
 def _compute_group_fetch(
@@ -200,7 +224,9 @@ def _compute_group_fetch(
             or ""
         ).strip()
         records.append(ResourceIdentity(resource_id=resource_id, name=name))
-    return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
+    return FetchResult(
+        _filter_exact(_dedupe_records(records), exact_name, case_sensitive=False)
+    )
 
 
 def _image_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
@@ -738,11 +764,47 @@ def maybe_spawn_periodic_refresh(
 
     now = time.time()
     try:
-        if stamp.exists() and now - stamp.stat().st_mtime < max(30, interval_seconds):
-            return False
         stamp.parent.mkdir(parents=True, exist_ok=True)
-        stamp.touch()
-        os.chmod(stamp, 0o600)
+        for _ in range(2):
+            try:
+                fd = os.open(
+                    stamp,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o600,
+                )
+            except FileExistsError:
+                try:
+                    stamp.chmod(0o600)
+                    contents = stamp.read_text(encoding="ascii").strip()
+                    pid = int(contents)
+                except (OSError, ValueError):
+                    pid = 0
+                if pid:
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError:
+                        return False
+                    except OSError:
+                        return False
+                    else:
+                        return False
+                try:
+                    if now - stamp.stat().st_mtime < max(30, interval_seconds):
+                        return False
+                    stamp.unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    return False
+                continue
+            else:
+                with os.fdopen(fd, "w", encoding="ascii") as handle:
+                    handle.write(str(os.getpid()))
+                break
+        else:
+            return False
     except OSError:
         return False
 
@@ -750,7 +812,7 @@ def maybe_spawn_periodic_refresh(
     env["INSPIRE_RESOURCE_INDEX_REFRESH_CHILD"] = "1"
     env["INSPIRE_SKIP_UPDATE_CHECK"] = "1"
     try:
-        subprocess.Popen(
+        process = subprocess.Popen(
             [
                 sys.executable,
                 "-m",
@@ -767,6 +829,13 @@ def maybe_spawn_periodic_refresh(
             start_new_session=True,
             close_fds=True,
         )
+        child_pid = getattr(process, "pid", None)
+        if isinstance(child_pid, int) and child_pid > 0:
+            try:
+                stamp.write_text(str(child_pid), encoding="ascii")
+                stamp.chmod(0o600)
+            except OSError:
+                pass
     except OSError:
         try:
             stamp.unlink()

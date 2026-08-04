@@ -196,7 +196,6 @@ def _target_entry_matches(
             identifier,
             str(entry.get("bridge_name") or "").strip(),
             str(entry.get("notebook_name") or "").strip(),
-            str(entry.get("notebook_id") or "").strip(),
         }
         if requested_notebook not in notebook_values:
             return False
@@ -206,7 +205,6 @@ def _target_entry_matches(
         workspace_values = {
             workspace_key,
             str(entry.get("workspace_name") or "").strip(),
-            str(entry.get("workspace_id") or "").strip(),
         }
         if requested_workspace not in workspace_values:
             return False
@@ -287,10 +285,7 @@ def _matches_workspace(bridge: BridgeProfile, workspace: str | None) -> bool:
     requested = str(workspace or "").strip()
     if not requested or requested.lower() == "all":
         return True
-    return requested in {
-        str(bridge.workspace_name or "").strip(),
-        str(bridge.workspace_id or "").strip(),
-    }
+    return requested == str(bridge.workspace_name or "").strip()
 
 
 def _matches_notebook(bridge: BridgeProfile, notebook: str) -> bool:
@@ -300,7 +295,6 @@ def _matches_notebook(bridge: BridgeProfile, notebook: str) -> bool:
     return requested in {
         str(bridge.name or "").strip(),
         str(bridge.notebook_name or "").strip(),
-        str(bridge.notebook_id or "").strip(),
     }
 
 
@@ -514,6 +508,13 @@ def resolve_cached_notebook_target(
         resource_type="notebook",
         list_command="inspire notebook list",
     )
+    if workspace:
+        workspace = reject_id_at_boundary(
+            ctx,
+            workspace,
+            resource_type="workspace",
+            list_command="inspire config context",
+        )
 
     selector = str(account or "").strip()
     if selector and selector.lower() != "all":

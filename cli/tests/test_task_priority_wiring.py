@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -241,7 +242,7 @@ def test_ray_create_reports_project_lookup_value_error_as_api_error(
     )
 
     assert result.exit_code == EXIT_API_ERROR
-    assert '"type": "APIError"' in result.output
+    assert json.loads(result.output)["error"]["type"] == "APIError"
     assert "AuthenticationError" not in result.output
 
 

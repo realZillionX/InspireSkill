@@ -28,6 +28,7 @@ from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.cli.utils.id_resolver import (
     forget_resource_identity,
+    looks_like_platform_id,
     reject_id_at_boundary,
     remember_resource_identity,
     resolve_by_name,
@@ -122,14 +123,23 @@ def _reject_hpc_name_at_boundary(ctx: Context, name: str) -> str:
     )
 
 
-def _resolve_project_id(config: Config, requested: Optional[str]) -> str:
+def _resolve_project_id(
+    config: Config,
+    requested: Optional[str],
+    *,
+    ctx: Context | None = None,
+) -> str:
     """Resolve a project name to the underlying project_id."""
     if requested:
-        if requested.startswith("project-"):
-            raise ConfigError(
-                "--project takes a project name. "
-                "See `inspire config context` for available names."
+        if ctx is not None:
+            requested = reject_id_at_boundary(
+                ctx,
+                requested,
+                resource_type="project",
+                list_command="inspire project list",
             )
+        elif looks_like_platform_id(requested):
+            raise ConfigError("--project takes a project name.")
         if requested in config.projects:
             return config.projects[requested]
         for project_id, metadata in config.project_catalog.items():
@@ -601,7 +611,7 @@ def create_hpc(
         image = cast(str, image)
         quota = cast(str, quota)
 
-        resolved_project_id = _resolve_project_id(config, project)
+        resolved_project_id = _resolve_project_id(config, project, ctx=ctx)
         session = get_web_session()
         resolved_workspace_id = select_workspace_id(
             config,

@@ -608,7 +608,7 @@ def _load_projects_for_discovery(
     # on names only; copied platform values are not part of the CLI boundary.
     if requested_project:
         rq = requested_project.strip()
-        if rq.startswith("project-"):
+        if _looks_like_project_handle(rq):
             click.echo(
                 click.style(
                     "--select-project takes a project name.",

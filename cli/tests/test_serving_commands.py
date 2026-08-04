@@ -164,7 +164,7 @@ def _patch_delete_deps(monkeypatch) -> dict[str, Any]:  # noqa: ANN001
     monkeypatch.setattr(
         serving_commands_module,
         "_resolve_serving_name",
-        lambda ctx, name, workspace_id=None, pick=None: "sv-1",
+        lambda ctx, name, workspace_id=None, pick=None, require_live=False: "sv-1",
     )
 
     def fake_delete_serving(*, inference_serving_id: str, session=None) -> dict[str, Any]:

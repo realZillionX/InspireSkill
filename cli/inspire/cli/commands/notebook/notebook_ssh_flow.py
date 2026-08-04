@@ -6,6 +6,7 @@ import re
 import shlex
 import subprocess
 import time
+import logging
 from pathlib import Path
 from typing import Optional
 from urllib import error as urllib_error
@@ -50,6 +51,8 @@ from .target_resolver import (
     remember_notebook_target_aliases,
     resolve_cached_notebook_target,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _describe_proxy_http_status(proxy_url: str, timeout_s: float = 4.0) -> str:
@@ -850,7 +853,7 @@ def run_notebook_ssh(
             stopped_name = (
                 str(e.detail.get("name") or "").strip()
                 or str(requested_identifier or "").strip()
-                or str(notebook_id)
+                or "the requested notebook"
             )
             stopped_workspace = _workspace_name_for_hint(
                 session=session,

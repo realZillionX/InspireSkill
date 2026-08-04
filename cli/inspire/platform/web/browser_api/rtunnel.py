@@ -625,11 +625,8 @@ def wait_for_rtunnel_reachable(
     page: Any,
 ) -> None:
     """Wait until rtunnel becomes reachable via the notebook proxy URL, or raise ValueError."""
-    import sys as _sys
-
     display_url = redact_proxy_url(proxy_url)
-    _sys.stderr.write(f"  Polling proxy URL: {display_url}\n")
-    _sys.stderr.flush()
+    _log.debug("Polling proxy URL: %s", display_url)
 
     start = time.time()
     last_status = None
@@ -640,8 +637,7 @@ def wait_for_rtunnel_reachable(
         attempt += 1
         elapsed = time.time() - start
         if time.time() - last_progress_time >= 30:
-            _sys.stderr.write(f"  Waiting for rtunnel... ({int(elapsed)}s elapsed)\n")
-            _sys.stderr.flush()
+            _log.debug("Waiting for rtunnel (%ss elapsed)", int(elapsed))
             last_progress_time = time.time()
         try:
             resp = context.request.get(proxy_url, timeout=5000)
@@ -651,8 +647,7 @@ def wait_for_rtunnel_reachable(
                 body = ""
             last_status = _redact_token_like_text(f"{resp.status} {body[:200].strip()}")
             if attempt <= 3 and not _is_plain_text_404_response(status=resp.status, body=body):
-                _sys.stderr.write(f"  Attempt {attempt}: {last_status}\n")
-                _sys.stderr.flush()
+                _log.debug("Proxy probe attempt %s: %s", attempt, last_status)
             if _is_rtunnel_proxy_ready(status=resp.status, body=body):
                 return
             # Track consecutive plain-text 404 responses.  Both the
@@ -673,8 +668,7 @@ def wait_for_rtunnel_reachable(
         ) as e:
             last_status = _summarize_request_error(e)
             if attempt <= 3:
-                _sys.stderr.write(f"  Attempt {attempt}: {last_status}\n")
-                _sys.stderr.flush()
+                _log.debug("Proxy probe attempt %s: %s", attempt, last_status)
 
         # Early-exit check is outside the try/except so the ValueError
         # propagates to the caller instead of being swallowed.
@@ -1715,10 +1709,7 @@ def _focus_terminal_input(
 
 
 def _log_terminal_status(message: str) -> None:
-    import sys as _sys
-
-    _sys.stderr.write(message + "\n")
-    _sys.stderr.flush()
+    _log.debug("%s", message.strip())
 
 
 def _wait_for_api_terminal_surface(
@@ -2019,17 +2010,15 @@ def _ensure_proxy_readiness_with_fallback(
     context,  # noqa: ANN001
     page,  # noqa: ANN001
 ) -> tuple[str, list[str]]:
-    import sys as _sys
-
     diagnostics: list[str] = []
     primary_verify_timeout_s = max(20, min(timeout, 60))
 
     derived_vscode_url = _derive_vscode_proxy_url(proxy_url)
     if derived_vscode_url and derived_vscode_url != proxy_url:
-        _sys.stderr.write(
-            f"  Probing VSCode proxy URL first: {redact_proxy_url(derived_vscode_url)}\n"
+        _log.debug(
+            "Probing VSCode proxy URL first: %s",
+            redact_proxy_url(derived_vscode_url),
         )
-        _sys.stderr.flush()
         try:
             # Short timeout: the vscode path is speculative (derived by
             # replacing /jupyter/ → /vscode/).  If it exists, the proxy
@@ -2086,18 +2075,12 @@ def _ensure_proxy_readiness_with_fallback(
 
     if not fallback_proxy_url or fallback_proxy_url == proxy_url:
         if _all_inconclusive_http_probe_diagnostics(diagnostics):
-            _sys.stderr.write(
-                "  HTTP readiness probe was inconclusive; continuing with SSH preflight.\n"
-            )
+            _log.debug("HTTP readiness probe was inconclusive; continuing with SSH preflight")
         else:
-            _sys.stderr.write(
-                "  Proxy did not pass HTTP readiness; continuing with SSH preflight.\n"
-            )
-        _sys.stderr.flush()
+            _log.debug("Proxy did not pass HTTP readiness; continuing with SSH preflight")
         return best_for_ssh, diagnostics
 
-    _sys.stderr.write(f"  Trying alternate proxy URL: {redact_proxy_url(fallback_proxy_url)}\n")
-    _sys.stderr.flush()
+    _log.debug("Trying alternate proxy URL: %s", redact_proxy_url(fallback_proxy_url))
     try:
         wait_for_rtunnel_reachable(
             proxy_url=fallback_proxy_url,
@@ -2116,14 +2099,13 @@ def _ensure_proxy_readiness_with_fallback(
     ) as fallback_error:
         diagnostics.append(f"fallback={_extract_probe_error_summary(fallback_error)}")
         if _all_inconclusive_http_probe_diagnostics(diagnostics):
-            _sys.stderr.write(
-                "  HTTP readiness probe remained inconclusive; continuing with SSH preflight.\n"
+            _log.debug(
+                "HTTP readiness probe remained inconclusive; continuing with SSH preflight"
             )
         else:
-            _sys.stderr.write(
-                "  Fallback proxy did not pass HTTP readiness; continuing with SSH preflight.\n"
+            _log.debug(
+                "Fallback proxy did not pass HTTP readiness; continuing with SSH preflight"
             )
-        _sys.stderr.flush()
         return best_for_ssh, diagnostics
 
 
@@ -2135,8 +2117,6 @@ def _send_rtunnel_setup_script(
     batch_cmd: str,
     timer: "_StepTimer",
 ) -> _SetupScriptSendResult:
-    import sys as _sys
-
     setup_sent_via_ws = False
     try:
         setup_sent_via_ws = _send_setup_command_via_terminal_ws(
@@ -2148,15 +2128,13 @@ def _send_rtunnel_setup_script(
         setup_sent_via_ws = False
 
     if setup_sent_via_ws:
-        _sys.stderr.write("  Sent setup script via Jupyter terminal WebSocket.\n")
-        _sys.stderr.flush()
+        _log.debug("Sent setup script via Jupyter terminal WebSocket")
         timer.mark("open_terminal")
         timer.mark("focus_xterm")
         timer.mark("build_and_send_cmd")
         return _SetupScriptSendResult(sent_via_ws=True)
 
-    _sys.stderr.write("  WebSocket terminal setup unavailable, using browser automation.\n")
-    _sys.stderr.flush()
+    _log.debug("WebSocket terminal setup unavailable; using browser automation")
 
     browser_term_name: str | None = None
     browser_term_lab_url = str(getattr(lab_frame, "url", "") or "")
@@ -2179,10 +2157,7 @@ def _send_rtunnel_setup_script(
                 lab_frame=lab_frame,
                 batch_cmd=batch_cmd,
             ):
-                _sys.stderr.write(
-                    "  Recovered by dispatching setup script via terminal WebSocket.\n"
-                )
-                _sys.stderr.flush()
+                _log.debug("Recovered by dispatching setup script via terminal WebSocket")
                 timer.mark("open_terminal")
                 timer.mark("focus_xterm")
                 timer.mark("build_and_send_cmd")
@@ -2201,10 +2176,9 @@ def _send_rtunnel_setup_script(
                     lab_frame=lab_frame,
                     batch_cmd=batch_cmd,
                 ):
-                    _sys.stderr.write(
-                        "  xterm surface absent; dispatched setup via terminal WebSocket.\n"
+                    _log.debug(
+                        "xterm surface absent; dispatched setup via terminal WebSocket"
                     )
-                    _sys.stderr.flush()
                     timer.mark("focus_xterm")
                     timer.mark("build_and_send_cmd")
                     return _SetupScriptSendResult(
@@ -2218,10 +2192,9 @@ def _send_rtunnel_setup_script(
                     lab_frame=lab_frame,
                     batch_cmd=batch_cmd,
                 ):
-                    _sys.stderr.write(
-                        "  xterm focus failed; dispatched setup via terminal WebSocket.\n"
+                    _log.debug(
+                        "xterm focus failed; dispatched setup via terminal WebSocket"
                     )
-                    _sys.stderr.flush()
                     timer.mark("focus_xterm")
                     timer.mark("build_and_send_cmd")
                     return _SetupScriptSendResult(
@@ -2231,10 +2204,7 @@ def _send_rtunnel_setup_script(
                 raise ValueError("Failed to focus Jupyter terminal input")
         timer.mark("focus_xterm")
 
-        _sys.stderr.write(
-            f"  Executing setup script ({len(batch_cmd)} chars) in notebook terminal...\n"
-        )
-        _sys.stderr.flush()
+        _log.debug("Executing setup script (%s chars) in notebook terminal", len(batch_cmd))
         page.keyboard.insert_text(batch_cmd)
         page.keyboard.press("Enter")
         timer.mark("build_and_send_cmd")
@@ -2286,12 +2256,10 @@ def _verify_and_cache_rtunnel_proxy(
     account: str | None,
     timer: "_StepTimer",
 ) -> str:
-    import sys as _sys
-
-    _sys.stderr.write(
-        f"  Verifying rtunnel is reachable at: {redact_proxy_url(jupyter_proxy_url)}\n"
+    _log.debug(
+        "Verifying rtunnel at %s",
+        redact_proxy_url(jupyter_proxy_url),
     )
-    _sys.stderr.flush()
     proxy_url, probe_diagnostics = _ensure_proxy_readiness_with_fallback(
         proxy_url=jupyter_proxy_url,
         port=port,
@@ -2303,8 +2271,7 @@ def _verify_and_cache_rtunnel_proxy(
         if _all_inconclusive_http_probe_diagnostics(probe_diagnostics):
             _log.debug("HTTP readiness diagnostics: %s", " | ".join(probe_diagnostics))
         else:
-            _sys.stderr.write("  Proxy readiness summary: " + " | ".join(probe_diagnostics) + "\n")
-        _sys.stderr.flush()
+            _log.debug("Proxy readiness diagnostics: %s", " | ".join(probe_diagnostics))
     timer.mark("verify_proxy")
 
     try:
@@ -2332,8 +2299,6 @@ def _setup_notebook_rtunnel_sync(
     timeout: int = 120,
 ) -> str:
     """Sync implementation for setup_notebook_rtunnel."""
-    import sys as _sys
-
     from playwright.sync_api import sync_playwright
 
     from inspire.platform.web.browser_api.playwright_notebooks import (
@@ -2363,13 +2328,11 @@ def _setup_notebook_rtunnel_sync(
     if existing:
         timer.mark("probe_existing")
         timer.summary()
-        _sys.stderr.write("Using existing rtunnel connection (fast path).\n")
-        _sys.stderr.flush()
+        _log.debug("Using existing rtunnel connection")
         return existing
 
     timer.mark("probe_existing")
-    _sys.stderr.write("Setting up rtunnel tunnel via browser automation...\n")
-    _sys.stderr.flush()
+    _log.debug("Setting up rtunnel via browser automation")
 
     with sync_playwright() as p:
         browser = _launch_browser(p, headless=headless)

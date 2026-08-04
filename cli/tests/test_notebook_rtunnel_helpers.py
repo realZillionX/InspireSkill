@@ -472,6 +472,7 @@ def test_send_setup_command_via_terminal_ws_returns_false_when_terminal_create_f
 
 def test_send_rtunnel_setup_script_defers_browser_terminal_cleanup(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     events: list[str] = []
 
@@ -528,6 +529,7 @@ def test_send_rtunnel_setup_script_defers_browser_terminal_cleanup(
     assert "press:Enter" in events
     assert not any(event.startswith("delete:") for event in events)
     assert result.cleanup is not None
+    assert capsys.readouterr().err == ""
 
     result.cleanup()
     assert events[-1] == "delete:https://nb.example.com/lab|browser-term"

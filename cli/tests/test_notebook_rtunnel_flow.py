@@ -191,5 +191,4 @@ def test_ensure_proxy_readiness_reports_inconclusive_http_probe(
     captured = capsys.readouterr()
     assert resolved == primary_url
     assert len(diagnostics) == 2
-    assert "HTTP readiness probe was inconclusive" in captured.err
-    assert "Proxy did not pass HTTP readiness" not in captured.err
+    assert captured.err == ""

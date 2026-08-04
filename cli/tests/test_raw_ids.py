@@ -23,7 +23,7 @@ def test_scrub_raw_ids_scrubs_compact_platform_handles() -> None:
 
     assert (
         scrub_raw_ids(text)
-        == "<ray-job-id> <ray-job-id> <hpc-job-id> <image-id> <image-id>"
+        == "<redacted> <redacted> <redacted> <redacted> <redacted>"
     )
 
 
@@ -34,4 +34,4 @@ def test_scrub_raw_ids_scrubs_platform_prefixed_ids() -> None:
         "sv-ca9ed4f5-9533-4241-9c59-984831007296"
     )
 
-    assert scrub_raw_ids(text) == "<model-id> <image-id> <serving-id>"
+    assert scrub_raw_ids(text) == "<redacted> <redacted> <redacted>"

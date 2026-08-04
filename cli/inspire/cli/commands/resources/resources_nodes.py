@@ -25,7 +25,7 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 _REDACTED_ID_RE = re.compile(
-    r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?<[^<>]+-id>"
+    r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)"
 )
 
 

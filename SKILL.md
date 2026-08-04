@@ -20,7 +20,7 @@ description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire C
 
 创建 Workload 时显式绑定 `workspace`、`project`、`group`、`quota` 和 `image`，或引用保存这五项的 Workload Profile；这些调度字段没有隐式默认值。选择资源时从同一条 Live Quota Row 复制完整 `group` 和 `quota`。GPU Job Shared Memory 是实例级资源，不能超过所选 Quota 的实例内存；细节见 [`references/compute-workloads.md`](references/compute-workloads.md)。Workload Profile 保存调度条件，Path Alias 保存远端路径，两者不能互相替代。
 
-Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和资源可用性的事实源；本地缓存只用于连接与解析复用。普通输入输出保持 Name-Only：使用名称、Alias、可读状态和短表格；平台 Handle 只经专门 `id` 命令或内部 Resolver 处理。
+Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和资源可用性的事实源；本地缓存只用于连接与解析复用。普通输入输出严格保持 Name-Only：使用名称、Alias、可读状态和短表格。平台 Handle 只能存在于 CLI 内部 Resolver 和 Browser API 请求中；CLI 没有接受或输出平台 Handle 的命令。
 
 日常 Workspace 选择通常很直接：
 

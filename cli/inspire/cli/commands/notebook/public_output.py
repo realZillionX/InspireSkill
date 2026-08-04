@@ -15,7 +15,10 @@ from typing import Any
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 _URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s\"'<>]+", re.IGNORECASE)
-_ID_MARKER_RE = re.compile(r"<(?:raw|[a-z][a-z-]*)-id>", re.IGNORECASE)
+_REDACTION_MARKER_RE = re.compile(
+    r"<redacted>|<(?:raw|[a-z][a-z-]*)-id>",
+    re.IGNORECASE,
+)
 
 _DROP_KEYS = {
     "debug",
@@ -64,7 +67,7 @@ def sanitize_public_text(value: object, *, omit_urls: bool = False) -> str:
     text = scrub_raw_ids(value)
     if omit_urls:
         text = _URL_RE.sub("", text)
-    text = _ID_MARKER_RE.sub("", text)
+    text = _REDACTION_MARKER_RE.sub("", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\s+([,;:.])", r"\1", text)
@@ -119,7 +122,8 @@ def _compact_mapping(values: dict[str, Any]) -> dict[str, Any]:
 
 def public_notebook(item: dict[str, Any]) -> dict[str, Any]:
     """Project a notebook list/detail object onto its user-facing fields."""
-    quota = item.get("quota") if isinstance(item.get("quota"), dict) else {}
+    quota_value = item.get("quota")
+    quota: dict[str, Any] = quota_value if isinstance(quota_value, dict) else {}
     resource = _compact_mapping(
         {
             "gpu_count": quota.get("gpu_count"),
