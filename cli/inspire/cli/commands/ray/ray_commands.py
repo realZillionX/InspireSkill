@@ -905,6 +905,23 @@ def _assemble_create_body(
     return body
 
 
+_RAY_EVENT_NAME_SCAN_LIMIT = 500
+_RAY_EVENT_PAGE_SIZE = 200
+_RAY_EVENT_MAX_PAGES = 5
+
+
+def _fetch_recent_ray_events(ray_job_id: str, *, session) -> list[dict]:  # noqa: ANN001
+    """Fetch a bounded newest-first window and restore chronological output."""
+    events = browser_api_module.list_ray_job_events(
+        ray_job_id,
+        page_size=_RAY_EVENT_PAGE_SIZE,
+        max_pages=_RAY_EVENT_MAX_PAGES,
+        sort_ascending=False,
+        session=session,
+    )
+    return list(reversed(events))
+
+
 @click.command("events")
 @click.argument("name")
 @click.option("--workspace", required=True, help="Workspace name.")
@@ -970,14 +987,14 @@ def events_ray(
             session=session,
             name=name,
             workspace=workspace,
-            limit=10000,
+            limit=_RAY_EVENT_NAME_SCAN_LIMIT,
         )
         run_events_command(
             ctx,
             resource_id=ray_job_id,
             resource_type="ray",
             resource_name=name,
-            fetch=lambda: browser_api_module.list_ray_job_events(ray_job_id, session=session),
+            fetch=lambda: _fetch_recent_ray_events(ray_job_id, session=session),
             json_output_local=False,
             type_filter=type_filter,
             reason_filter=reason,

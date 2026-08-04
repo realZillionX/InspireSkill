@@ -264,6 +264,7 @@ def list_job_instances(
     job_id: str,
     *,
     limit: int = 500,
+    page_num: int = 1,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict], int]:
     """Fetch pod-level instances for a distributed-training job."""
@@ -272,6 +273,8 @@ def list_job_instances(
         raise ValueError("job_id is required")
     if limit < 1:
         raise ValueError("limit must be positive")
+    if page_num < 1:
+        raise ValueError("page_num must be positive")
 
     if session is None:
         session = get_web_session()
@@ -281,7 +284,7 @@ def list_job_instances(
         "POST",
         "/api/v2/train?Action=ListJobInstances",
         referer=f"{_get_base_url()}/jobs/distributedTrainingDetail/{job_id}",
-        body={"job_id": job_id, "page_num": 1, "page_size": limit},
+        body={"job_id": job_id, "page_num": page_num, "page_size": limit},
         timeout=30,
     )
 
@@ -397,6 +400,9 @@ def list_job_instance_events(
     job_id: str,
     pod_names: list[str],
     session: Optional[WebSession] = None,
+    *,
+    page_size: int = 200,
+    max_pages: int | None = None,
 ) -> list[dict]:
     """List per-pod K8s events for a training job.
 
@@ -409,39 +415,73 @@ def list_job_instance_events(
     `job_id` is only used for the Referer header; the filter keys off
     `pod_names` exclusively. Best-effort: returns ``[]`` on any error.
     """
-    if not pod_names:
+    clean_pods = list(
+        dict.fromkeys(
+            str(name or "").strip()
+            for name in pod_names
+            if str(name or "").strip()
+        )
+    )
+    if not clean_pods:
         return []
+    if page_size < 1:
+        raise ValueError("page_size must be positive")
+    if max_pages is not None and max_pages < 1:
+        raise ValueError("max_pages must be positive")
     try:
         if session is None:
             session = get_web_session()
 
-        data = _request_json(
-            session,
-            "POST",
-            _browser_api_path("/train_job/events/list"),
-            referer=f"{_get_base_url()}/jobs/distributedTrainingDetail/{job_id}",
-            body={
-                "page_num": 1,
-                "page_size": 200,
-                "filter": {
-                    "object_type": "instance",
-                    "object_ids": list(pod_names),
-                },
-            },
-            timeout=30,
-        )
+        all_events: list[dict] = []
+        for offset in range(0, len(clean_pods), 200):
+            pod_chunk = clean_pods[offset : offset + 200]
+            page_num = 1
+            chunk_events: list[dict] = []
+            while max_pages is None or page_num <= max_pages:
+                data = _request_json(
+                    session,
+                    "POST",
+                    _browser_api_path("/train_job/events/list"),
+                    referer=f"{_get_base_url()}/jobs/distributedTrainingDetail/{job_id}",
+                    body={
+                        "page_num": page_num,
+                        "page_size": page_size,
+                        "filter": {
+                            "object_type": "instance",
+                            "object_ids": pod_chunk,
+                        },
+                    },
+                    timeout=30,
+                )
+                if data.get("code") != 0:
+                    return []
 
-        if data.get("code") != 0:
-            return []
+                payload = data.get("data") if isinstance(data, dict) else None
+                if not isinstance(payload, dict):
+                    return []
+                page_events: list[dict] = []
+                for key in ("events", "items", "list"):
+                    value = payload.get(key)
+                    if isinstance(value, list):
+                        page_events = value
+                        break
+                chunk_events.extend(page_events)
 
-        payload = data.get("data") if isinstance(data, dict) else None
-        if not isinstance(payload, dict):
-            return []
-        for key in ("events", "items", "list"):
-            events = payload.get(key)
-            if isinstance(events, list):
-                return events
-        return []
+                raw_total = payload.get("total")
+                total: int | None
+                try:
+                    total = int(raw_total) if raw_total is not None else None
+                except (TypeError, ValueError):
+                    total = None
+                if (
+                    not page_events
+                    or len(page_events) < page_size
+                    or (total is not None and len(chunk_events) >= total)
+                ):
+                    break
+                page_num += 1
+            all_events.extend(chunk_events)
+        return all_events
     except Exception:
         return []
 

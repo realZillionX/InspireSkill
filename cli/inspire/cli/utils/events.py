@@ -13,6 +13,7 @@ source of truth for user-visible diagnostics.
 from __future__ import annotations
 
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
@@ -23,6 +24,8 @@ from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+
+FOLLOW_EVENT_KEY_LIMIT = 2048
 
 
 def _fmt_timestamp(raw: Any) -> str:
@@ -175,6 +178,31 @@ def _event_key(event: dict) -> tuple[str, ...]:
     )
 
 
+class _RecentEventKeys:
+    """Bound duplicate suppression for long-running event followers."""
+
+    def __init__(self, limit: int = FOLLOW_EVENT_KEY_LIMIT) -> None:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        self._limit = limit
+        self._keys: set[tuple[str, ...]] = set()
+        self._order: deque[tuple[str, ...]] = deque()
+
+    def remember(self, event: dict) -> bool:
+        """Return true when the event was not present in the recent window."""
+        key = _event_key(event)
+        if key in self._keys:
+            return False
+        self._keys.add(key)
+        self._order.append(key)
+        if len(self._order) > self._limit:
+            self._keys.discard(self._order.popleft())
+        return True
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+
 def _fetch_filtered_events(
     *,
     fetch: Callable[[], list[dict]],
@@ -237,7 +265,9 @@ def run_events_command(
     initial = filtered[-tail:] if tail and tail > 0 else filtered
 
     if follow:
-        seen = {_event_key(event) for event in filtered}
+        seen = _RecentEventKeys()
+        for event in filtered:
+            seen.remember(event)
         render_events_table(initial)
         while True:
             try:
@@ -262,10 +292,8 @@ def run_events_command(
                 return
             fresh = []
             for event in current:
-                key = _event_key(event)
-                if key not in seen:
+                if seen.remember(event):
                     fresh.append(event)
-                seen.add(key)
             if not fresh:
                 continue
             render_events_table(fresh)

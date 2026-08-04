@@ -439,7 +439,7 @@ def test_list_ray_job_events_posts_top_level_ray_job_id(monkeypatch) -> None:
     assert record["body"] == {
         "ray_job_id": "rj-abc",
         "page_num": 1,
-        "page_size": -1,
+        "page_size": 200,
         "sorter": [{"field": "last_timestamp", "sort": "ascend"}],
     }
 

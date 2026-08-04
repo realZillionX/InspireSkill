@@ -359,7 +359,8 @@ def list_ray_job_events(
     ray_job_id: str,
     *,
     page_num: int = 1,
-    page_size: int = -1,
+    page_size: int = 200,
+    max_pages: int = 1,
     sort_ascending: bool = True,
     session: Optional[WebSession] = None,
 ) -> list[dict]:
@@ -380,29 +381,55 @@ def list_ray_job_events(
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
         raise ValueError("ray_job_id is required")
+    if page_num < 1:
+        raise ValueError("page_num must be positive")
+    if page_size < 1:
+        raise ValueError("page_size must be positive")
+    if max_pages < 1:
+        raise ValueError("max_pages must be positive")
 
     if session is None:
         session = get_web_session()
 
     sort = "ascend" if sort_ascending else "descend"
-    data = _assert_ok(
-        _request_json(
-            session,
-            "POST",
-            _browser_api_path("/ray_job/events/list"),
-            referer=_ray_referer(),
-            body={
-                "ray_job_id": ray_job_id,
-                "page_num": page_num,
-                "page_size": page_size,
-                "sorter": [{"field": "last_timestamp", "sort": sort}],
-            },
-            timeout=30,
-        ),
-        context="events",
-    )
-    payload = data.get("data") or {}
-    return payload.get("items") or payload.get("list") or []
+    events: list[dict] = []
+    for current_page in range(page_num, page_num + max_pages):
+        data = _assert_ok(
+            _request_json(
+                session,
+                "POST",
+                _browser_api_path("/ray_job/events/list"),
+                referer=_ray_referer(),
+                body={
+                    "ray_job_id": ray_job_id,
+                    "page_num": current_page,
+                    "page_size": page_size,
+                    "sorter": [{"field": "last_timestamp", "sort": sort}],
+                },
+                timeout=30,
+            ),
+            context="events",
+        )
+        payload = data.get("data") or {}
+        page_events = payload.get("items") or payload.get("list") or []
+        if not isinstance(page_events, list):
+            page_events = []
+        events.extend(page_events)
+        raw_total = payload.get("total")
+        if raw_total is None:
+            total = None
+        else:
+            try:
+                total = int(str(raw_total))
+            except ValueError:
+                total = None
+        if (
+            not page_events
+            or len(page_events) < page_size
+            or (total is not None and len(events) >= total)
+        ):
+            break
+    return events
 
 
 def list_ray_job_instances(

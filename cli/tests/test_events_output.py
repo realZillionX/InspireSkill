@@ -8,7 +8,12 @@ import click
 from click.testing import CliRunner
 
 from inspire.cli.context import Context, EXIT_API_ERROR
-from inspire.cli.utils.events import emit_events, render_events_table, run_events_command
+from inspire.cli.utils.events import (
+    _RecentEventKeys,
+    emit_events,
+    render_events_table,
+    run_events_command,
+)
 
 _RAW_JOB_ID = "job-12345678-1234-1234-1234-123456789abc"
 
@@ -122,3 +127,18 @@ def test_events_json_fetch_failure_is_one_actionable_error() -> None:
             "message": "Could not fetch events: request failed for <redacted>",
         },
     }
+
+
+def test_follow_event_deduplication_window_is_bounded() -> None:
+    seen = _RecentEventKeys(limit=2)
+    first = {"message": "first"}
+    second = {"message": "second"}
+    third = {"message": "third"}
+
+    assert seen.remember(first) is True
+    assert seen.remember(second) is True
+    assert seen.remember(second) is False
+    assert seen.remember(third) is True
+    assert len(seen) == 2
+    assert seen.remember(first) is True
+    assert len(seen) == 2

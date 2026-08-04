@@ -491,9 +491,24 @@ def detail_project_cmd(ctx: Context, project: str, workspace: str) -> None:
 
 
 @click.command("owners")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum owners to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every project owner.")
 @pass_context
-def owners_project_cmd(ctx: Context) -> None:
+def owners_project_cmd(
+    ctx: Context,
+    limit: int | None,
+    show_all: bool,
+) -> None:
     """List candidate project owners."""
+    if show_all and limit is not None:
+        raise click.UsageError("Use either --limit or --all, not both.")
+
     session = require_web_session(ctx, hint="inspire project owners requires a logged-in web session")
     try:
         items = browser_api_module.list_project_owners(session=session)
@@ -502,15 +517,28 @@ def owners_project_cmd(ctx: Context) -> None:
         return
 
     owners = _owner_views(items)
+    total = len(owners)
+    effective_limit = None if show_all else (limit or 20)
+    shown_owners = owners if effective_limit is None else owners[:effective_limit]
+    truncated = len(shown_owners) < total
     if ctx.json_output:
-        click.echo(json_formatter.format_json({"owners": owners}))
+        payload: dict[str, object] = {"owners": shown_owners}
+        if truncated:
+            payload.update(
+                {
+                    "shown": len(shown_owners),
+                    "total": total,
+                    "truncated": True,
+                }
+            )
+        click.echo(json_formatter.format_json(payload))
         return
 
-    if not owners:
+    if not shown_owners:
         click.echo("No project owners returned.")
         return
 
-    rows = [(owner["name"], owner.get("login", "")) for owner in owners]
+    rows = [(owner["name"], owner.get("login", "")) for owner in shown_owners]
     widths = [
         column_width("Name", [row[0] for row in rows], max_width=48),
         column_width("Login", [row[1] for row in rows], max_width=32),
@@ -518,3 +546,5 @@ def owners_project_cmd(ctx: Context) -> None:
     click.echo(
         "\n".join(render_table(("Name", "Login"), rows, widths, line_char="─"))
     )
+    if truncated:
+        click.echo(f"Showing {len(shown_owners)} of {total}. Use --all for the full list.")

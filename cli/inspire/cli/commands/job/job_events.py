@@ -25,6 +25,38 @@ from inspire.platform.web.session import get_web_session
 
 from .job_commands import WebJobResolutionError, _close_web_client, _resolve_web_job_id
 
+_JOB_INSTANCE_PAGE_SIZE = 200
+
+
+def _list_all_job_instance_names(job_id: str, *, session) -> list[str]:  # noqa: ANN001
+    """Page through every instance or fail instead of returning a partial scope."""
+    names: list[str] = []
+    seen: set[str] = set()
+    page_num = 1
+    while True:
+        instances, total = browser_api_module.list_job_instances(
+            job_id,
+            limit=_JOB_INSTANCE_PAGE_SIZE,
+            page_num=page_num,
+            session=session,
+        )
+        added = 0
+        for item in instances:
+            name = str(item.get("name") or "").strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+                added += 1
+        if not instances or added == 0:
+            if len(names) >= total:
+                return names
+            raise RuntimeError("Could not retrieve the complete job instance list.")
+        if len(instances) < _JOB_INSTANCE_PAGE_SIZE:
+            if len(names) >= total:
+                return names
+            raise RuntimeError("Could not retrieve the complete job instance list.")
+        page_num += 1
+
 
 @click.command("events")
 @click.argument("job")
@@ -121,16 +153,10 @@ def events(
         try:
             session = get_web_session()
             if all_instances:
-                instances, _ = browser_api_module.list_job_instances(
+                pod_names = _list_all_job_instance_names(
                     resolved_id,
-                    limit=200,
                     session=session,
                 )
-                pod_names = [
-                    str(item.get("name") or "").strip()
-                    for item in instances
-                    if str(item.get("name") or "").strip()
-                ]
                 return list_job_instance_events(resolved_id, pod_names, session=session)
             if pods:
                 return list_job_instance_events(resolved_id, pods, session=session)
