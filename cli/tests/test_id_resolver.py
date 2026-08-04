@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
-import click
 import pytest
 
 from inspire.cli.utils.id_resolver import (
+    forget_resource_identity,
     is_full_uuid,
     is_partial_id,
-    normalize_partial,
-    resolve_partial_id,
+    remember_resource_identity,
     resolve_by_name,
 )
+from inspire.cli.utils.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
 
 
 # ---------------------------------------------------------------------------
@@ -90,85 +88,11 @@ class TestIsPartialId:
         assert is_partial_id("c4eb3ac36d83405caa29059bc945c4bf") is True
 
 
-# ---------------------------------------------------------------------------
-# normalize_partial
-# ---------------------------------------------------------------------------
-
-
-class TestNormalizePartial:
-    def test_lowercase(self):
-        assert normalize_partial("ABCD1234") == "abcd1234"
-
-    def test_strip_prefix(self):
-        assert normalize_partial("job-c4eb3ac3", prefix="job-") == "c4eb3ac3"
-
-    def test_prefix_case_insensitive(self):
-        assert normalize_partial("JOB-C4EB3AC3", prefix="job-") == "c4eb3ac3"
-
-    def test_no_prefix(self):
-        assert normalize_partial("c4eb3ac3") == "c4eb3ac3"
-
-    def test_whitespace(self):
-        assert normalize_partial("  ABCD  ") == "abcd"
-
-
-# ---------------------------------------------------------------------------
-# resolve_partial_id
-# ---------------------------------------------------------------------------
-
-
 class _FakeContext:
     """Minimal stand-in for Context."""
 
     def __init__(self, json_output: bool = False):
         self.json_output = json_output
-
-
-class TestResolvePartialId:
-    def test_single_match(self):
-        ctx = _FakeContext()
-        result = resolve_partial_id(
-            ctx,
-            "c4eb",
-            "job",
-            [("job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf", "my-job")],
-            json_output=False,
-        )
-        assert result == "job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf"
-
-    def test_no_matches_exits(self):
-        ctx = _FakeContext()
-        with pytest.raises(SystemExit):
-            resolve_partial_id(ctx, "zzzz", "job", [], json_output=False)
-
-    def test_multiple_matches_json_exits(self):
-        ctx = _FakeContext(json_output=True)
-        matches = [
-            ("job-aaaa1111-0000-0000-0000-000000000001", "job-a"),
-            ("job-aaaa2222-0000-0000-0000-000000000002", "job-b"),
-        ]
-        with pytest.raises(SystemExit):
-            resolve_partial_id(ctx, "aaaa", "job", matches, json_output=True)
-
-    def test_multiple_matches_interactive_prompts(self):
-        ctx = _FakeContext()
-        matches = [
-            ("job-aaaa1111-0000-0000-0000-000000000001", "job-a"),
-            ("job-aaaa2222-0000-0000-0000-000000000002", "job-b"),
-        ]
-        with patch.object(click, "prompt", return_value=2):
-            result = resolve_partial_id(ctx, "aaaa", "job", matches, json_output=False)
-        assert result == "job-aaaa2222-0000-0000-0000-000000000002"
-
-    def test_interactive_default_first(self):
-        ctx = _FakeContext()
-        matches = [
-            ("id-1", "first"),
-            ("id-2", "second"),
-        ]
-        with patch.object(click, "prompt", return_value=1):
-            result = resolve_partial_id(ctx, "id", "resource", matches, json_output=False)
-        assert result == "id-1"
 
 
 class TestResolveByName:
@@ -187,21 +111,6 @@ class TestResolveByName:
         captured = capsys.readouterr()
         assert "inspire image list" in captured.err
         assert "dedicated `id` command" not in captured.err
-
-    def test_handle_shaped_error_uses_custom_id_hint(self, capsys):
-        ctx = _FakeContext(json_output=True)
-
-        with pytest.raises(SystemExit):
-            resolve_by_name(
-                ctx,
-                name="hpc-job-c4eb3ac3-6d83-405c-aa29-059bc945c4bf",
-                resource_type="hpc",
-                list_candidates=lambda: [],
-                json_output=True,
-                id_lookup_hint="Use `inspire hpc id <name>` for explicit platform-handle lookup.",
-            )
-
-        assert "inspire hpc id <name>" in capsys.readouterr().err
 
     def test_date_suffixed_names_are_not_treated_as_handles(self):
         ctx = _FakeContext(json_output=True)
@@ -247,3 +156,126 @@ class TestResolveByName:
             )
 
         assert f"{resource_type} name" in capsys.readouterr().err
+
+    def test_fresh_cache_hit_skips_live_listing(self, tmp_path):
+        ctx = _FakeContext(json_output=True)
+        index = ResourceIndex(tmp_path / "index.sqlite3")
+        scope = ResourceScope(
+            base_url="https://inspire.example",
+            subject_id="user-one",
+            resource_type="job",
+            workspace_id="workspace-one",
+        )
+        index.upsert(
+            scope,
+            [ResourceIdentity(resource_id="job-cached", name="train")],
+        )
+
+        result = resolve_by_name(
+            ctx,
+            name="train",
+            resource_type="job",
+            list_candidates=lambda: pytest.fail("fresh cache should avoid a live list"),
+            cache_index=index,
+            cache_scope=scope,
+        )
+
+        assert result == "job-cached"
+
+    def test_require_live_replaces_deleted_and_recreated_resource(self, tmp_path):
+        ctx = _FakeContext(json_output=True)
+        index = ResourceIndex(tmp_path / "index.sqlite3")
+        scope = ResourceScope(
+            base_url="https://inspire.example",
+            subject_id="user-one",
+            resource_type="notebook",
+            workspace_id="workspace-one",
+        )
+        index.upsert(
+            scope,
+            [ResourceIdentity(resource_id="notebook-old", name="A")],
+        )
+
+        result = resolve_by_name(
+            ctx,
+            name="A",
+            resource_type="notebook",
+            list_candidates=lambda: [{"name": "A", "id": "notebook-new"}],
+            cache_index=index,
+            cache_scope=scope,
+            require_live=True,
+        )
+
+        assert result == "notebook-new"
+        assert [item.resource_id for item in index.lookup(scope, "A")] == [
+            "notebook-new"
+        ]
+        old = index.lookup_id(scope, "notebook-old", include_tombstoned=True)
+        assert old is not None
+        assert old.tombstoned_at is not None
+
+    def test_complete_scope_refresh_tombstones_unseen_names(self, tmp_path):
+        ctx = _FakeContext(json_output=True)
+        index = ResourceIndex(tmp_path / "index.sqlite3")
+        scope = ResourceScope(
+            base_url="https://inspire.example",
+            subject_id="user-one",
+            resource_type="project",
+            workspace_id="workspace-one",
+        )
+        index.reconcile(
+            scope,
+            [
+                ResourceIdentity(resource_id="project-a", name="A"),
+                ResourceIdentity(resource_id="project-b", name="B"),
+            ],
+        )
+
+        result = resolve_by_name(
+            ctx,
+            name="A",
+            resource_type="project",
+            list_candidates=lambda: [{"name": "A", "id": "project-a"}],
+            cache_index=index,
+            cache_scope=scope,
+            require_live=True,
+            reconcile_scope=True,
+        )
+
+        assert result == "project-a"
+        assert index.lookup(scope, "B", fresh_only=False) == []
+
+
+def test_write_through_helpers_update_and_tombstone(tmp_path) -> None:
+    class Session:
+        base_url = "https://inspire.example"
+        user_detail = {"id": "user-one"}
+        login_username = "alice"
+
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = ResourceScope(
+        base_url="https://inspire.example",
+        subject_id="user-one",
+        resource_type="model",
+        workspace_id="workspace-one",
+    )
+
+    remember_resource_identity(
+        session=Session(),
+        resource_type="model",
+        resource_id="model-one",
+        name="demo",
+        workspace_id="workspace-one",
+        cache_index=index,
+    )
+    assert [item.resource_id for item in index.lookup(scope, "demo")] == ["model-one"]
+
+    forget_resource_identity(
+        session=Session(),
+        resource_type="model",
+        resource_id="model-one",
+        name="demo",
+        workspace_id="workspace-one",
+        cache_index=index,
+    )
+    assert index.lookup(scope, "demo", fresh_only=False) == []

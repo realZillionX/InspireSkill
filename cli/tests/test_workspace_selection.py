@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from inspire.accounts import create_account, set_current_account
+from inspire.cli.utils.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id, workspace_required_hint
 
@@ -46,6 +48,45 @@ def test_explicit_workspace_name_uses_session_workspace_names() -> None:
     session = SimpleNamespace(all_workspace_names={WS_SPECIAL: "special"})
     assert (
         select_workspace_id(cfg, explicit_workspace_name="special", session=session)
+        == WS_SPECIAL
+    )
+
+
+def test_explicit_workspace_name_uses_fresh_local_index(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    create_account("alpha", "[inspire]\n")
+    set_current_account("alpha")
+    index = ResourceIndex.for_account()
+    assert index is not None
+    scope = ResourceScope(
+        base_url="https://inspire.example",
+        subject_id="user-one",
+        resource_type="workspace",
+    )
+    index.upsert(
+        scope,
+        [ResourceIdentity(resource_id=WS_SPECIAL, name="special")],
+    )
+    session = SimpleNamespace(
+        base_url="https://inspire.example",
+        user_detail={"id": "user-one"},
+        login_username="alice",
+        all_workspace_names=None,
+    )
+    monkeypatch.setattr(
+        "inspire.config.workspaces.workspace_name_map",
+        lambda _session: pytest.fail("fresh cache should avoid live workspace discovery"),
+    )
+
+    assert (
+        select_workspace_id(
+            _cfg(),
+            explicit_workspace_name="SPECIAL",
+            session=session,
+        )
         == WS_SPECIAL
     )
 

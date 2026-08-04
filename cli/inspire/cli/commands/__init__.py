@@ -1,6 +1,7 @@
 """CLI command modules."""
 
 from inspire.cli.commands.account import account
+from inspire.cli.commands.cache import cache
 from inspire.cli.commands.job import job
 from inspire.cli.commands.resources import resources
 from inspire.cli.commands.config import config
@@ -17,6 +18,7 @@ from inspire.cli.commands.user import user
 
 __all__ = [
     "account",
+    "cache",
     "job",
     "resources",
     "config",

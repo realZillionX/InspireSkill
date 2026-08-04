@@ -23,6 +23,7 @@ from inspire.cli.context import (
 )
 from inspire.cli.commands import (
     account,
+    cache,
     job,
     resources,
     config,
@@ -38,6 +39,7 @@ from inspire.cli.commands import (
     user,
 )
 from inspire.cli.utils.update_notice import maybe_notify_update, maybe_spawn_check
+from inspire.cli.utils.output_guard import install_output_guard
 from inspire.cli.env_bootstrap import bootstrap_env_file
 
 
@@ -113,6 +115,7 @@ def main(
     """
     ctx.json_output = json_output
     ctx.debug = debug
+    install_output_guard()
 
     bootstrap_env_file(env_file=env_file, disabled=no_env_file)
 
@@ -130,6 +133,16 @@ def main(
         try:
             maybe_notify_update()
             maybe_spawn_check()
+        except Exception:
+            pass
+
+    if not (len(sys.argv) > 1 and sys.argv[1] in {"account", "cache", "update"}):
+        try:
+            from inspire.cli.utils.resource_index_refresh import (
+                maybe_spawn_periodic_refresh,
+            )
+
+            maybe_spawn_periodic_refresh()
         except Exception:
             pass
 
@@ -169,6 +182,7 @@ def post_update(
 
 # Register command groups
 main.add_command(account)
+main.add_command(cache)
 main.add_command(job)
 main.add_command(resources)
 main.add_command(config)

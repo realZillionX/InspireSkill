@@ -12,17 +12,77 @@ from typing import Any, Dict, Optional
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 
-_CAMEL_ID_RE = re.compile(r"(^id$|Id$|Ids$|ID$|IDs$)")
+_CAMEL_ID_RE = re.compile(
+    r"(^id$|Id$|Ids$|ID$|IDs$|Uuid$|Uuids$|UUID$|UUIDs$|Uid$|Uids$|"
+    r"Handle$|Handles$)"
+)
+_ENGINEERING_KEYS = {
+    "debug",
+    "internal",
+    "metadata",
+    "method",
+    "payload",
+    "progress",
+    "raw",
+    "request",
+    "request_payload",
+    "request_preview",
+    "response",
+    "response_metadata",
+    "responsemetadata",
+    "result",
+    "scan",
+    "scanned",
+    "stack",
+    "trace",
+    "traceback",
+}
+_ENGINEERING_SOURCE_VALUES = {"api", "browser", "cache", "live", "web"}
 
 
 def _is_id_key(key: object) -> bool:
     key_text = str(key or "")
     normalized = key_text.replace("-", "_").lower()
-    if normalized in {"id", "ids"}:
+    if normalized in {
+        "handle",
+        "handles",
+        "id",
+        "ids",
+        "uid",
+        "uids",
+        "uuid",
+        "uuids",
+    }:
         return True
-    if normalized.endswith("_id") or normalized.endswith("_ids"):
+    if normalized.endswith(
+        (
+            "_handle",
+            "_handles",
+            "_id",
+            "_ids",
+            "_uid",
+            "_uids",
+            "_uuid",
+            "_uuids",
+        )
+    ):
         return True
     return bool(_CAMEL_ID_RE.search(key_text))
+
+
+def _normalized_key(key: object) -> str:
+    return str(key or "").replace("-", "_").strip().lower()
+
+
+def _is_engineering_field(key: object, value: Any) -> bool:
+    normalized = _normalized_key(key)
+    if normalized in _ENGINEERING_KEYS:
+        return True
+    return (
+        normalized == "source"
+        and isinstance(value, str)
+        and value.strip().lower() in _ENGINEERING_SOURCE_VALUES
+    )
 
 
 def _sanitize_json_value(value: Any) -> Any:
@@ -30,7 +90,7 @@ def _sanitize_json_value(value: Any) -> Any:
         return {
             key: _sanitize_json_value(child)
             for key, child in value.items()
-            if not _is_id_key(key)
+            if not _is_id_key(key) and not _is_engineering_field(key, child)
         }
     if isinstance(value, list):
         return [_sanitize_json_value(item) for item in value]
@@ -46,7 +106,7 @@ def sanitize_json_data(data: Any) -> Any:
     return _sanitize_json_value(data)
 
 
-def format_json(data: Any, success: bool = True, *, allow_ids: bool = False) -> str:
+def format_json(data: Any, success: bool = True) -> str:
     """Format data as JSON output.
 
     Args:
@@ -56,8 +116,8 @@ def format_json(data: Any, success: bool = True, *, allow_ids: bool = False) -> 
     Returns:
         JSON string with standard wrapper
     """
-    output = {"success": success, "data": data if allow_ids else sanitize_json_data(data)}
-    return json.dumps(output, indent=2, ensure_ascii=False)
+    output = {"success": success, "data": sanitize_json_data(data)}
+    return json.dumps(output, ensure_ascii=False, separators=(",", ":"))
 
 
 def format_json_error(
@@ -83,4 +143,4 @@ def format_json_error(
         error_data["hint"] = scrub_raw_ids(hint)
 
     output = {"success": False, "error": error_data}
-    return json.dumps(output, indent=2, ensure_ascii=False)
+    return json.dumps(output, ensure_ascii=False, separators=(",", ":"))

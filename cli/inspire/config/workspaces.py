@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from inspire.cli.utils.resource_index import ResourceIdentity, ResourceIndex, scope_for_session
 from inspire.config import ConfigError
 
 _WORKSPACE_ID_RE = re.compile(
@@ -172,18 +173,58 @@ def select_workspace_id(
 
         session = get_web_session()
 
+    index: ResourceIndex | None = None
+    scope = scope_for_session(session, resource_type="workspace")
+    if scope is not None:
+        try:
+            index = ResourceIndex.for_account()
+            if index is not None:
+                cached = index.lookup(
+                    scope,
+                    key,
+                    case_sensitive=False,
+                )
+                if len(cached) == 1:
+                    return cached[0].resource_id
+                if len(cached) > 1:
+                    raise ConfigError(f"Workspace name {key!r} is ambiguous.")
+        except ConfigError:
+            raise
+        except Exception:
+            index = None
+
+    live_names = workspace_name_map(session)
     candidates = [
         (wid, name)
-        for wid, name in workspace_name_map(session).items()
+        for wid, name in live_names.items()
         if name.lower() == key.lower()
     ]
+    if index is not None and scope is not None:
+        try:
+            index.replace_name(
+                scope,
+                key,
+                [
+                    ResourceIdentity(resource_id=workspace_id, name=name)
+                    for workspace_id, name in candidates
+                ],
+            )
+            index.upsert(
+                scope,
+                [
+                    ResourceIdentity(resource_id=workspace_id, name=name)
+                    for workspace_id, name in live_names.items()
+                ],
+            )
+        except Exception:
+            pass
     if len(candidates) == 1:
         return candidates[0][0]
     if len(candidates) > 1:
         names = ", ".join(name for _wid, name in candidates[:5])
         raise ConfigError(f"Workspace name {key!r} is ambiguous. Candidates: {names}")
 
-    available = sorted(set(workspace_name_map(session).values()))
+    available = sorted(set(live_names.values()))
     available_hint = ", ".join(available) if available else "(no workspace names available)"
     raise ConfigError(f"Unknown workspace name: {explicit_workspace_name!r}. Available: {available_hint}")
 
