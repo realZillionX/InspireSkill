@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +15,6 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import (
     Config,
     ConfigError,
@@ -64,6 +62,8 @@ def _get_field_value(cfg: Config, option: ConfigOption) -> tuple[str | None, boo
 
     if option.secret and value:
         return "********", is_set
+    if option.category == "Paths" and is_set:
+        return "<configured>", True
     if option.category == "Proxy" and value:
         return redact_proxy_url(value), is_set
     if value is None:
@@ -78,6 +78,15 @@ def _get_source_for_option(sources: dict[str, str], option: ConfigOption) -> str
     return sources.get(field_name, SOURCE_DEFAULT) if field_name else SOURCE_DEFAULT
 
 
+def _is_explicitly_configured(
+    cfg: Config,
+    sources: dict[str, str],
+    option: ConfigOption,
+) -> bool:
+    _value, is_set = _get_field_value(cfg, option)
+    return is_set and _get_source_for_option(sources, option) != SOURCE_DEFAULT
+
+
 def _show_table(
     cfg: Config,
     sources: dict[str, str],
@@ -86,54 +95,20 @@ def _show_table(
     compact: bool,
     filter_category: str | None,
     effective_proxy: dict[str, Any] | None,
+    details: bool,
 ) -> None:
-    click.echo(click.style("Configuration Overview", bold=True))
-    click.echo()
-
-    click.echo("Config files:")
-    if global_path:
-        click.echo(f"  Global:  {global_path} " + click.style("(found)", fg="green"))
-    else:
+    click.echo(click.style("Configuration", bold=True))
+    if details:
         click.echo(
-            "  Global:  ~/.config/inspire/config.toml " + click.style("(not found)", fg="white")
+            "Files: "
+            f"global={'yes' if global_path else 'no'} "
+            f"project={'yes' if project_path else 'no'}"
         )
-    if project_path:
-        click.echo(f"  Project: {project_path} " + click.style("(found)", fg="green"))
-    else:
-        from inspire.config.toml import _project_config_write_path
-
-        click.echo(
-            f"  Project: {_project_config_write_path()} " + click.style("(not found)", fg="white")
+        prefer_source = getattr(cfg, "prefer_source", "env")
+        precedence = (
+            "project TOML wins" if prefer_source == "toml" else "environment wins"
         )
-    shared_project_path = getattr(cfg, "_shared_project_config_path", None)
-    account_project_path = getattr(cfg, "_account_project_config_path", None)
-    if shared_project_path:
-        click.echo(
-            f"  Project shared:  {shared_project_path} "
-            + click.style("(found)", fg="green")
-        )
-    if account_project_path:
-        click.echo(
-            f"  Project account: {account_project_path} "
-            + click.style("(found)", fg="green")
-        )
-    try:
-        from inspire.cli.env_bootstrap import loaded_env_file_path
-
-        env_file = loaded_env_file_path()
-    except Exception:
-        env_file = None
-    if env_file:
-        click.echo(f"  Env file: {env_file} " + click.style("(loaded)", fg="magenta"))
-
-    prefer_source = getattr(cfg, "prefer_source", "env")
-    if prefer_source == "toml":
-        click.echo("  Precedence: " + click.style("project TOML wins", fg="green") + " on conflict")
-    else:
-        click.echo(
-            "  Precedence: " + click.style("env vars win", fg="yellow") + " on conflict (default)"
-        )
-
+        click.echo(f"Precedence: {precedence}")
     click.echo()
 
     categories = get_categories()
@@ -152,7 +127,13 @@ def _show_table(
         if not options:
             continue
 
-        if compact:
+        if not details:
+            options = [
+                opt for opt in options if _is_explicitly_configured(cfg, sources, opt)
+            ]
+            if not options:
+                continue
+        elif compact:
             options = [opt for opt in options if _get_field_value(cfg, opt)[1]]
             if not options:
                 continue
@@ -162,7 +143,10 @@ def _show_table(
             value_str, _is_set = _get_field_value(cfg, option)
             source = _get_source_for_option(sources, option)
             source_label, source_color = SOURCE_LABELS.get(source, ("?", "white"))
-            value_display = scrub_raw_ids(value_str or "(not set)")
+            value_display = json_formatter.sanitize_text(
+                value_str or "(not set)",
+                redact_paths=True,
+            )
             max_value_len = max(max_value_len, len(value_display))
             category_items.append((option, value_display, source_label, source_color))
 
@@ -173,10 +157,12 @@ def _show_table(
 
         for option, value_display, source_label, source_color in items:
             key_display = option.env_var.ljust(30)
-            value_padded = value_display.ljust(max_value_len)
-            source_display = click.style(f"[{source_label}]", fg=source_color)
-
-            click.echo(f"  {key_display} {value_padded} {source_display}")
+            if details:
+                value_padded = value_display.ljust(max_value_len)
+                source_display = click.style(f"[{source_label}]", fg=source_color)
+                click.echo(f"  {key_display} {value_padded} {source_display}")
+            else:
+                click.echo(f"  {key_display} {value_display}")
 
         click.echo()
 
@@ -185,11 +171,12 @@ def _show_table(
             click.echo(line)
         click.echo()
 
-    click.echo(click.style("Legend:", dim=True))
-    legend_parts = []
-    for _source, (label, color) in SOURCE_LABELS.items():
-        legend_parts.append(click.style(f"[{label}]", fg=color))
-    click.echo("  " + " ".join(legend_parts))
+    if details:
+        click.echo(click.style("Legend:", dim=True))
+        legend_parts = []
+        for _source, (label, color) in SOURCE_LABELS.items():
+            legend_parts.append(click.style(f"[{label}]", fg=color))
+        click.echo("  " + " ".join(legend_parts))
 
 
 def _show_json(
@@ -200,34 +187,39 @@ def _show_json(
     compact: bool,
     filter_category: str | None,
     effective_proxy: dict[str, Any] | None,
+    details: bool,
 ) -> None:
-    result: dict[str, Any] = {
-        "config_files": {
-            "global": str(global_path) if global_path else None,
-            "project": str(project_path) if project_path else None,
-            "project_shared": (
-                str(getattr(cfg, "_shared_project_config_path", None))
-                if getattr(cfg, "_shared_project_config_path", None)
-                else None
-            ),
-            "project_account": (
-                str(getattr(cfg, "_account_project_config_path", None))
-                if getattr(cfg, "_account_project_config_path", None)
-                else None
-            ),
-        },
-        "prefer_source": getattr(cfg, "prefer_source", "env"),
-        "values": {},
-    }
+    result: dict[str, Any] = {"values": {}}
+    if details:
+        result.update(
+            {
+                "config_files": {
+                    "global": str(global_path) if global_path else None,
+                    "project": str(project_path) if project_path else None,
+                    "project_shared": (
+                        str(getattr(cfg, "_shared_project_config_path", None))
+                        if getattr(cfg, "_shared_project_config_path", None)
+                        else None
+                    ),
+                    "project_account": (
+                        str(getattr(cfg, "_account_project_config_path", None))
+                        if getattr(cfg, "_account_project_config_path", None)
+                        else None
+                    ),
+                },
+                "prefer_source": getattr(cfg, "prefer_source", "env"),
+            }
+        )
     if effective_proxy is not None:
         result["effective_proxy"] = effective_proxy
-    try:
-        from inspire.cli.env_bootstrap import loaded_env_file_path
+    if details:
+        try:
+            from inspire.cli.env_bootstrap import loaded_env_file_path
 
-        env_file = loaded_env_file_path()
-    except Exception:
-        env_file = None
-    result["env_file"] = str(env_file) if env_file else None
+            env_file = loaded_env_file_path()
+        except Exception:
+            env_file = None
+        result["env_file"] = str(env_file) if env_file else None
 
     categories = get_categories()
     if filter_category:
@@ -241,22 +233,28 @@ def _show_json(
 
         for option in options:
             value_str, is_set = _get_field_value(cfg, option)
-            if compact and not is_set:
+            if not details and not _is_explicitly_configured(cfg, sources, option):
+                continue
+            if details and compact and not is_set:
                 continue
 
             source = _get_source_for_option(sources, option)
-            result["values"][option.env_var] = {
-                "value": (
-                    value_str
-                    if not option.secret
-                    else ("********" if value_str != "(not set)" else None)
-                ),
-                "source": source,
-                "toml_key": option.toml_key,
-                "description": option.description,
-            }
+            public_value = (
+                value_str
+                if not option.secret
+                else ("********" if value_str != "(not set)" else None)
+            )
+            if details:
+                result["values"][option.env_var] = {
+                    "value": public_value,
+                    "source": source,
+                    "toml_key": option.toml_key,
+                    "description": option.description,
+                }
+            else:
+                result["values"][option.env_var] = public_value
 
-    click.echo(json.dumps(json_formatter.sanitize_json_data(result), indent=2))
+    click.echo(json_formatter.format_json(result))
 
 
 def _show_env(cfg: Config, compact: bool, filter_category: str | None) -> None:
@@ -324,22 +322,24 @@ def _filter_includes_proxy(filter_category: str | None) -> bool:
     "filter_category",
     help="Filter by category (e.g., 'API', 'GitHub')",
 )
+@click.option(
+    "--details",
+    is_flag=True,
+    help="Include config-file presence, precedence, value sources, and descriptions.",
+)
 @pass_context
 def show_config(
     ctx: Context,
     output_format: str,
     compact: bool,
     filter_category: str | None,
+    details: bool,
 ) -> None:
-    """Display merged configuration with value sources.
+    """Display effective configuration.
 
-    Shows configuration values from all sources (defaults, global config,
-    project config, environment variables) with clear indication of where
-    each value comes from. Table and JSON output also include a redacted
-    effective runtime proxy summary.
-
-    By default, all options are shown including unset ones. Use --compact
-    to hide unset options.
+    The default output contains only explicitly configured values. Use
+    --details to include defaults, sources, descriptions, config-file
+    presence, precedence, and the effective runtime proxy summary.
 
     \b
     Examples:
@@ -360,8 +360,13 @@ def show_config(
         if effective_json:
             output_format = "json"
 
+        show_details = details
         effective_proxy = None
-        if output_format in {"table", "json"} and _filter_includes_proxy(filter_category):
+        if (
+            output_format in {"table", "json"}
+            and _filter_includes_proxy(filter_category)
+            and (show_details or filter_category is not None)
+        ):
             effective_proxy = describe_effective_proxy_config(base_url=cfg.base_url)
 
         if output_format == "json":
@@ -373,6 +378,7 @@ def show_config(
                 compact,
                 filter_category,
                 effective_proxy,
+                show_details,
             )
         elif output_format == "env":
             _show_env(cfg, compact, filter_category)
@@ -385,6 +391,7 @@ def show_config(
                 compact,
                 filter_category,
                 effective_proxy,
+                show_details,
             )
 
     except ConfigError as e:

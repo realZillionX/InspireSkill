@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 
 import click
@@ -22,6 +23,8 @@ from .transport import (
     emit_ssh_policy_error,
     preflight_notebook_transport_policy,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _load_proxy_target(
@@ -226,8 +229,9 @@ def ssh_proxy_cmd(
             target_port=ssh_port,
             quiet=quiet,
         )
-    except Exception as exc:  # noqa: BLE001
-        click.echo(f"Notebook ssh proxy failed: {exc}", err=True)
+    except Exception:  # noqa: BLE001
+        logger.debug("Notebook SSH proxy failed", exc_info=True)
+        click.echo("Notebook SSH proxy failed.", err=True)
         sys.exit(EXIT_GENERAL_ERROR)
 
 

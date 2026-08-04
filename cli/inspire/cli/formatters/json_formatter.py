@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
@@ -20,8 +21,13 @@ _ENGINEERING_KEYS = {
     "attempt",
     "attempts",
     "backend",
+    "config_file",
+    "config_files",
+    "config_path",
     "debug",
     "endpoint",
+    "env_file",
+    "global_config_path",
     "http_method",
     "internal",
     "metadata",
@@ -31,6 +37,9 @@ _ENGINEERING_KEYS = {
     "poll",
     "poll_interval",
     "progress",
+    "project_account",
+    "project_config_path",
+    "project_shared",
     "raw",
     "request",
     "request_payload",
@@ -51,6 +60,48 @@ _ENGINEERING_KEYS = {
     "verbose",
 }
 _ENGINEERING_SOURCE_VALUES = {"api", "browser", "cache", "live", "web"}
+_SENSITIVE_KEYS = {
+    "access_token",
+    "api_key",
+    "api_token",
+    "auth_token",
+    "client_secret",
+    "password",
+    "passwd",
+    "refresh_token",
+    "secret",
+    "token",
+}
+_RAW_CONTENT_KEYS = {
+    "command_output",
+    "content",
+    "log_content",
+    "output",
+    "stderr",
+    "stdout",
+}
+_INTERNAL_PATH_KEYS = {
+    "backend_path",
+    "debug_report",
+    "debug_report_path",
+    "executable_path",
+    "internal_path",
+    "internal_paths",
+    "log_path",
+    "runtime_path",
+}
+_URL_RE = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(access[_-]?token|api[_-]?key|password|passwd|refresh[_-]?token|token)"
+    r"\s*[:=]\s*[^\s,;&]+"
+)
+_UNIX_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![\w:/])/(?!inspire(?:/|$)|shared(?:/|$)|workspace(?:/|$)|mnt(?:/|$)|data(?:/|$))"
+    r"(?:[^/\s=:;,)\]}'\"]+/)*[^/\s=:;,)\]}'\"]+"
+)
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(
+    r"(?i)(?<![\w])(?:[a-z]:\\)(?:[^\\\s=:;,)\]}'\"]+\\)+[^\\\s=:;,)\]}'\"]+"
+)
 
 
 def _is_id_key(key: object) -> bool:
@@ -87,6 +138,28 @@ def _normalized_key(key: object) -> str:
     return str(key or "").replace("-", "_").strip().lower()
 
 
+def _is_sensitive_field(key: object) -> bool:
+    normalized = _normalized_key(key)
+    compact = re.sub(r"[^a-z0-9]", "", str(key or "").lower())
+    return (
+        normalized in _SENSITIVE_KEYS
+        or normalized.endswith("_token")
+        or compact
+        in {
+            "accesstoken",
+            "apikey",
+            "apitoken",
+            "authtoken",
+            "clientsecret",
+            "password",
+            "passwd",
+            "refreshtoken",
+            "secret",
+            "token",
+        }
+    )
+
+
 def _is_engineering_field(key: object, value: Any) -> bool:
     normalized = _normalized_key(key)
     if normalized in _ENGINEERING_KEYS:
@@ -98,28 +171,125 @@ def _is_engineering_field(key: object, value: Any) -> bool:
     )
 
 
-def _sanitize_json_value(value: Any) -> Any:
+def _sanitize_url(raw_url: str) -> str:
+    trailing = ""
+    while raw_url and raw_url[-1] in ".,;!?)]}":
+        trailing = raw_url[-1] + trailing
+        raw_url = raw_url[:-1]
+    try:
+        parsed = urlsplit(raw_url)
+        hostname = parsed.hostname
+        if not hostname:
+            return raw_url + trailing
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        netloc = f"{hostname}:{port}" if port is not None else hostname
+        clean = urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+        return clean + trailing
+    except ValueError:
+        return "<redacted>" + trailing
+
+
+def _sanitize_public_text(value: str, *, redact_paths: bool = False) -> str:
+    sanitized = scrub_raw_ids(value)
+    sanitized = _URL_RE.sub(lambda match: _sanitize_url(match.group(0)), sanitized)
+    sanitized = _SECRET_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group(1)}=<redacted>",
+        sanitized,
+    )
+    if not redact_paths:
+        return sanitized
+    sanitized = _WINDOWS_ABSOLUTE_PATH_RE.sub("<redacted>", sanitized)
+    return _UNIX_ABSOLUTE_PATH_RE.sub("<redacted>", sanitized)
+
+
+def sanitize_text(value: object, *, redact_paths: bool = False) -> str:
+    """Sanitize human-facing text with the same rules as JSON errors."""
+    return _sanitize_public_text(str(value or ""), redact_paths=redact_paths)
+
+
+def _is_internal_path_field(key: object) -> bool:
+    normalized = _normalized_key(key)
+    return (
+        normalized in _INTERNAL_PATH_KEYS
+        or normalized.endswith("_internal_path")
+        or normalized.endswith("_log_path")
+        or normalized.endswith("_report_path")
+    )
+
+
+def _sanitize_json_value(
+    value: Any,
+    *,
+    parent_key: object = "",
+    preserve_path_keys: frozenset[str] = frozenset(),
+) -> Any:
     if isinstance(value, dict):
         return {
-            key: _sanitize_json_value(child)
+            key: _sanitize_json_value(
+                child,
+                parent_key=key,
+                preserve_path_keys=preserve_path_keys,
+            )
             for key, child in value.items()
-            if not _is_id_key(key) and not _is_engineering_field(key, child)
+            if not _is_id_key(key)
+            and not _is_sensitive_field(key)
+            and not _is_engineering_field(key, child)
         }
     if isinstance(value, list):
-        return [_sanitize_json_value(item) for item in value]
+        return [
+            _sanitize_json_value(
+                item,
+                parent_key=parent_key,
+                preserve_path_keys=preserve_path_keys,
+            )
+            for item in value
+        ]
     if isinstance(value, tuple):
-        return [_sanitize_json_value(item) for item in value]
+        return [
+            _sanitize_json_value(
+                item,
+                parent_key=parent_key,
+                preserve_path_keys=preserve_path_keys,
+            )
+            for item in value
+        ]
     if isinstance(value, str):
-        return scrub_raw_ids(value)
+        if _normalized_key(parent_key) in _RAW_CONTENT_KEYS:
+            return scrub_raw_ids(value)
+        preserve_path = _normalized_key(parent_key) in preserve_path_keys
+        if (
+            not preserve_path
+            and _is_internal_path_field(parent_key)
+            and (value.startswith("/") or _WINDOWS_ABSOLUTE_PATH_RE.match(value))
+        ):
+            return "<redacted>"
+        return _sanitize_public_text(value, redact_paths=not preserve_path)
     return value
 
 
-def sanitize_json_data(data: Any) -> Any:
+def sanitize_json_data(
+    data: Any,
+    *,
+    preserve_paths: set[str] | frozenset[str] | None = None,
+) -> Any:
     """Return a CLI-safe JSON payload with platform handle fields removed."""
-    return _sanitize_json_value(data)
+    normalized_paths = frozenset(
+        _normalized_key(key) for key in (preserve_paths or ())
+    )
+    return _sanitize_json_value(data, preserve_path_keys=normalized_paths)
 
 
-def format_json(data: Any, success: bool = True) -> str:
+def format_json(
+    data: Any,
+    success: bool = True,
+    *,
+    preserve_paths: set[str] | frozenset[str] | None = None,
+) -> str:
     """Format data as JSON output.
 
     Args:
@@ -129,12 +299,19 @@ def format_json(data: Any, success: bool = True) -> str:
     Returns:
         JSON string with standard wrapper
     """
-    output = {"success": success, "data": sanitize_json_data(data)}
+    output = {
+        "success": success,
+        "data": sanitize_json_data(data, preserve_paths=preserve_paths),
+    }
     return json.dumps(output, ensure_ascii=False, separators=(",", ":"))
 
 
 def format_json_error(
-    error_type: str, message: str, code: int = 1, hint: Optional[str] = None
+    error_type: str,
+    message: str,
+    code: int = 1,
+    hint: Optional[str] = None,
+    data: Any = None,
 ) -> str:
     """Format an error as JSON output.
 
@@ -150,10 +327,12 @@ def format_json_error(
     error_data: Dict[str, Any] = {
         "type": error_type,
         "code": code,
-        "message": scrub_raw_ids(message),
+        "message": _sanitize_public_text(message, redact_paths=True),
     }
     if hint:
-        error_data["hint"] = scrub_raw_ids(hint)
+        error_data["hint"] = _sanitize_public_text(hint, redact_paths=True)
 
     output = {"success": False, "error": error_data}
+    if data is not None:
+        output["data"] = sanitize_json_data(data)
     return json.dumps(output, ensure_ascii=False, separators=(",", ":"))

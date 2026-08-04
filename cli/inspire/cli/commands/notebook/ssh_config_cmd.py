@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shutil
 import shlex
 import sys
 from pathlib import Path
@@ -27,11 +26,18 @@ def _default_host_alias(notebook: str) -> str:
     return f"inspire-{slug or 'notebook'}"
 
 
-def _resolve_inspire_executable() -> str:
-    executable = shutil.which("inspire")
-    if not executable:
-        return "inspire"
-    return str(Path(executable).expanduser().resolve())
+def _public_identity_file(identity_file: str | None) -> str | None:
+    if not identity_file:
+        return None
+
+    path = Path(identity_file).expanduser()
+    if not path.is_absolute():
+        return str(path)
+    try:
+        relative = path.relative_to(Path.home())
+    except ValueError:
+        return None
+    return f"~/{relative.as_posix()}"
 
 
 def _load_cached_target(
@@ -79,7 +85,7 @@ def _format_ssh_config(
     account: str | None,
 ) -> str:
     proxy_parts = [
-        _resolve_inspire_executable(),
+        "inspire",
         "notebook",
         "ssh-proxy",
         "%h",
@@ -100,8 +106,9 @@ def _format_ssh_config(
         f"  ProxyCommand {proxy_command}",
         "  StrictHostKeyChecking accept-new",
     ]
-    if bridge.identity_file:
-        lines.insert(5, f"  IdentityFile {bridge.identity_file}")
+    identity_file = _public_identity_file(bridge.identity_file)
+    if identity_file:
+        lines.insert(5, f"  IdentityFile {shlex.quote(identity_file)}")
     return "\n".join(lines) + "\n"
 
 
@@ -228,38 +235,19 @@ def ssh_config_cmd(
         )
 
     host = host_alias or _default_host_alias(notebook)
+    config_text = _format_ssh_config(
+        host=host,
+        notebook_name=notebook,
+        bridge=bridge,
+        account=target.account,
+    )
     if ctx.json_output:
-        click.echo(
-            json_formatter.format_json(
-                {
-                    "host": host,
-                    "name": sanitize_public_text(notebook, omit_urls=True),
-                    "account": sanitize_public_text(target.account, omit_urls=True),
-                    "workspace": sanitize_public_text(bridge.workspace_name, omit_urls=True),
-                    "config": _format_ssh_config(
-                        host=host,
-                        notebook_name=notebook,
-                        bridge=bridge,
-                        account=target.account,
-                    ),
-                }
-            )
-        )
+        click.echo(json_formatter.format_json(config_text))
         return
 
-    click.echo(
-        _format_ssh_config(
-            host=host,
-            notebook_name=notebook,
-            bridge=bridge,
-            account=target.account,
-        ),
-        nl=False,
-    )
-    click.echo(
-        f"# Add this to ~/.ssh/config, then run: ssh {scrub_raw_ids(host)}",
-        err=True,
-    )
+    click.echo(config_text, nl=False)
+    if ctx.debug:
+        click.echo(f"SSH config ready for {scrub_raw_ids(host)}.", err=True)
 
 
 __all__ = ["ssh_config_cmd"]

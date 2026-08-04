@@ -1971,6 +1971,32 @@ class TestConfigShowCommand:
         # Other categories should not appear
         assert "GitHub" not in result.output
 
+    def test_config_show_hides_local_paths_in_all_formats(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        local_path = str(tmp_path / "private" / "logs")
+        monkeypatch.setenv("INSP_LOG_CACHE_DIR", local_path)
+        monkeypatch.chdir(tmp_path)
+
+        runner = CliRunner()
+        table = runner.invoke(config_command, ["show", "--filter", "Paths"])
+        json_result = runner.invoke(
+            config_command,
+            ["show", "--filter", "Paths", "--format", "json"],
+        )
+        env = runner.invoke(
+            config_command,
+            ["show", "--filter", "Paths", "--format", "env", "--compact"],
+        )
+
+        for result in (table, json_result, env):
+            assert result.exit_code == 0, result.output
+            assert local_path not in result.output
+            assert str(tmp_path) not in result.output
+            assert "<configured>" in result.output
+
     def test_config_show_compact_displays_effective_shell_proxy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2160,6 +2186,8 @@ class TestConfigEnvCommand:
         assert output_file.exists()
         content = output_file.read_text()
         assert "INSPIRE_USERNAME" in content
+        assert result.output == "Created dotenv template.\n"
+        assert str(output_file) not in result.output
 
     def test_config_env_use_writes_shared_project_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2172,6 +2200,8 @@ class TestConfigEnvCommand:
         shared_config = tmp_path / ".inspire" / "config.toml"
         assert shared_config.exists()
         assert '[cli]\nenv_file = ".env"' in shared_config.read_text(encoding="utf-8")
+        assert result.output == "Registered project env file.\n"
+        assert str(tmp_path) not in result.output
 
     def test_cli_loads_project_env_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2198,7 +2228,8 @@ class TestConfigEnvCommand:
 
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)["data"]
-        assert data["env_file"] == str(tmp_path / ".env")
+        assert "env_file" not in data
+        assert str(tmp_path / ".env") not in result.output
         assert data["values"]["INSP_GITHUB_REPO"]["value"] == "owner/from-dotenv"
         assert data["values"]["INSP_GITHUB_REPO"]["source"] == SOURCE_ENV_FILE
         assert data["values"]["INSPIRE_TIMEOUT"]["value"] == "123"

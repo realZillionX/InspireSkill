@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -78,6 +79,28 @@ def test_notebook_ssh_default_route_runs_notebook_command(monkeypatch) -> None: 
     ]
 
 
+def test_run_notebook_ssh_rejects_handle_before_cached_target_lookup(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        flow_module,
+        "resolve_cached_notebook_target",
+        lambda *_args, **_kwargs: pytest.fail("ID-shaped input must be rejected before cache lookup"),
+    )
+
+    with pytest.raises(SystemExit):
+        flow_module.run_notebook_ssh(
+            Context(),
+            notebook_id="nb-12345678",
+            workspace="CPU资源空间",
+            wait=True,
+            pubkey=None,
+            port=31337,
+            ssh_port=22222,
+            command=None,
+            debug_playwright=False,
+            setup_timeout=60,
+        )
+
+
 def test_notebook_help_exposes_connection_and_openssh_commands() -> None:
     result = CliRunner().invoke(cli_main, ["notebook", "--help"])
 
@@ -116,6 +139,7 @@ def test_legacy_ssh_subcommands_are_removed() -> None:
 
 
 def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(Path, "home", lambda: Path("/home/me"))
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(
         BridgeProfile(
@@ -128,12 +152,6 @@ def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  
     )
 
     monkeypatch.setattr(ssh_config_module, "load_tunnel_config", lambda: tunnel_config)
-    monkeypatch.setattr(
-        ssh_config_module.shutil,
-        "which",
-        lambda command: "/Users/me/.local/bin/inspire" if command == "inspire" else None,
-    )
-
     result = CliRunner().invoke(
         cli_main,
         ["notebook", "ssh-config", "demo-box", "--host", "inspire-demo"],
@@ -142,12 +160,15 @@ def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert "Host inspire-demo" in result.output
     assert "HostName demo-box" in result.output
-    assert "IdentityFile /home/me/.ssh/id_ed25519" in result.output
+    assert "IdentityFile '~/.ssh/id_ed25519'" in result.output
     assert (
-        "ProxyCommand /Users/me/.local/bin/inspire notebook ssh-proxy %h "
+        "ProxyCommand inspire notebook ssh-proxy %h "
         "--workspace 'CPU资源空间' --port %p --quiet"
     ) in result.output
+    assert "/home/me" not in result.output
+    assert "/Users/me" not in result.output
     assert "proxy.invalid" not in result.output
+    assert result.stderr == ""
 
 
 def test_ssh_config_uses_cli_name_when_cached_bridge_key_is_internal(monkeypatch) -> None:  # noqa: ANN001
@@ -169,10 +190,33 @@ def test_ssh_config_uses_cli_name_when_cached_bridge_key_is_internal(monkeypatch
     )
 
     assert result.exit_code == EXIT_SUCCESS, result.output
-    payload = json.loads(result.output)["data"]
-    assert payload["name"] == "demo-box"
-    assert "HostName demo-box" in payload["config"]
+    config_text = json.loads(result.output)["data"]
+    assert isinstance(config_text, str)
+    assert "HostName demo-box" in config_text
     assert "notebook-12345678" not in result.output
+
+
+def test_ssh_config_debug_emits_only_compact_stderr_hint(monkeypatch) -> None:  # noqa: ANN001
+    bridge = BridgeProfile(
+        name="demo-box",
+        proxy_url="https://proxy.invalid/proxy/31337/",
+        notebook_name="demo-box",
+        workspace_name="CPU资源空间",
+    )
+    monkeypatch.setattr(
+        ssh_config_module,
+        "_load_cached_target",
+        lambda *_args, **_kwargs: SimpleNamespace(account=None, bridge=bridge),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--debug", "notebook", "ssh-config", "demo-box", "--host", "inspire-demo"],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert result.stdout.startswith("Host inspire-demo\n")
+    assert result.stderr == "SSH config ready for inspire-demo.\n"
 
 
 def test_ssh_config_rejects_raw_notebook_handle(monkeypatch) -> None:  # noqa: ANN001
@@ -188,7 +232,8 @@ def test_ssh_config_rejects_raw_notebook_handle(monkeypatch) -> None:  # noqa: A
     )
 
     assert result.exit_code != EXIT_SUCCESS
-    assert "platform handle" in result.output
+    assert "only accept a notebook name" in result.output
+    assert "handle" not in result.output.lower()
 
 
 def test_ssh_proxy_rejects_raw_notebook_handle(monkeypatch) -> None:  # noqa: ANN001
@@ -204,7 +249,8 @@ def test_ssh_proxy_rejects_raw_notebook_handle(monkeypatch) -> None:  # noqa: AN
     )
 
     assert result.exit_code != EXIT_SUCCESS
-    assert "platform handle" in result.output
+    assert "only accept a notebook name" in result.output
+    assert "handle" not in result.output.lower()
 
 
 def test_connection_list_json_omits_proxy_url(monkeypatch) -> None:  # noqa: ANN001
@@ -324,6 +370,34 @@ def test_ssh_proxy_verbose_keeps_rtunnel_logs(monkeypatch) -> None:  # noqa: ANN
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert calls[0][1]["quiet"] is False
+
+
+def test_ssh_proxy_hides_transport_exception_details(monkeypatch) -> None:  # noqa: ANN001
+    tunnel_config = TunnelConfig()
+    bridge = BridgeProfile(
+        name="demo-box",
+        proxy_url="https://proxy.invalid/proxy/31337/",
+        workspace_name="CPU资源空间",
+    )
+    tunnel_config.add_bridge(bridge)
+
+    monkeypatch.setattr(ssh_proxy_module, "load_tunnel_config", lambda: tunnel_config)
+    monkeypatch.setattr(ssh_proxy_module, "is_tunnel_available", lambda **_kwargs: True)
+
+    def fail_proxy(*_args, **_kwargs) -> None:  # noqa: ANN001
+        raise RuntimeError(
+            "failed https://user:secret@proxy.invalid/run?token=abc "
+            "at /Users/alice/.inspire/socket"
+        )
+
+    monkeypatch.setattr(ssh_proxy_module, "exec_rtunnel_proxy", fail_proxy)
+
+    result = CliRunner().invoke(cli_main, ["notebook", "ssh-proxy", "demo-box"])
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert result.output == "Notebook SSH proxy failed.\n"
+    for secret in ("user:secret", "token=abc", "/Users/alice", "proxy.invalid"):
+        assert secret not in result.output
 
 
 def test_notebook_ssh_explicit_account_bootstraps_without_switching_active(

@@ -94,7 +94,7 @@ def generate_env(click_ctx: click.Context, template: str, output_file: str | Non
     if output_file:
         output_path = Path(output_file)
         output_path.write_text(content, encoding="utf-8")
-        click.echo(click.style(f"Created {output_path}", fg="green"))
+        click.echo(click.style("Created dotenv template.", fg="green"))
     else:
         click.echo(content)
 
@@ -103,6 +103,5 @@ def generate_env(click_ctx: click.Context, template: str, output_file: str | Non
 @click.argument("env_file")
 def use_env_file(env_file: str) -> None:
     """Register a repo-wide dotenv file in shared project config."""
-    config_path = write_shared_project_env_file(env_file)
-    click.echo(click.style(f"Updated {config_path}", fg="green"))
-    click.echo(f"Registered project env file: {env_file}")
+    write_shared_project_env_file(env_file)
+    click.echo(click.style("Registered project env file.", fg="green"))
