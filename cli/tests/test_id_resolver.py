@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
+from inspire.cli.context import Context
 from inspire.cli.utils.id_resolver import (
     forget_resource_identity,
     is_full_uuid,
+    is_stale_handle_error,
     is_partial_id,
     remember_resource_identity,
     resolve_by_name,
+    run_with_stale_handle_retry,
 )
 from inspire.cli.utils.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
 
@@ -93,6 +98,15 @@ class _FakeContext:
 
     def __init__(self, json_output: bool = False):
         self.json_output = json_output
+
+
+def _scope() -> ResourceScope:
+    return ResourceScope(
+        base_url="https://inspire.example",
+        subject_id="user-one",
+        resource_type="job",
+        workspace_id="workspace-one",
+    )
 
 
 class TestResolveByName:
@@ -245,6 +259,106 @@ class TestResolveByName:
         assert result == "project-a"
         assert index.lookup(scope, "B", fresh_only=False) == []
 
+    def test_clear_during_live_lookup_does_not_repopulate_cache(self, tmp_path):
+        ctx = _FakeContext(json_output=True)
+        index = ResourceIndex(tmp_path / "index.sqlite3")
+        scope = _scope()
+
+        def _live_candidates():
+            index.clear()
+            return [{"name": "train", "id": "job-live"}]
+
+        result = resolve_by_name(
+            ctx,
+            name="train",
+            resource_type="job",
+            list_candidates=_live_candidates,
+            cache_index=index,
+            cache_scope=scope,
+            require_live=True,
+        )
+
+        assert result == "job-live"
+        assert index.list_identities(scope, fresh_only=False) == []
+
+    def test_clear_during_live_reconcile_does_not_repopulate_cache(self, tmp_path):
+        ctx = _FakeContext(json_output=True)
+        index = ResourceIndex(tmp_path / "index.sqlite3")
+        scope = ResourceScope(
+            base_url="https://inspire.example",
+            subject_id="user-one",
+            resource_type="project",
+            workspace_id="workspace-one",
+        )
+
+        def _live_candidates():
+            index.clear()
+            return [{"name": "A", "id": "project-live"}]
+
+        result = resolve_by_name(
+            ctx,
+            name="A",
+            resource_type="project",
+            list_candidates=_live_candidates,
+            cache_index=index,
+            cache_scope=scope,
+            require_live=True,
+            reconcile_scope=True,
+        )
+
+        assert result == "project-live"
+        assert index.list_identities(scope, fresh_only=False) == []
+
+    def test_snapshot_failure_skips_live_cache_write(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        ctx = _FakeContext(json_output=True)
+        index = ResourceIndex(tmp_path / "index.sqlite3")
+        scope = _scope()
+        monkeypatch.setattr(
+            index,
+            "snapshot_token",
+            lambda _scope: (_ for _ in ()).throw(OSError("cache unavailable")),
+        )
+
+        result = resolve_by_name(
+            ctx,
+            name="train",
+            resource_type="job",
+            list_candidates=lambda: [{"name": "train", "id": "job-live"}],
+            cache_index=index,
+            cache_scope=scope,
+            require_live=True,
+        )
+
+        assert result == "job-live"
+        assert index.list_identities(scope, fresh_only=False) == []
+
+    def test_corrupt_cache_falls_back_to_live_lookup(self):
+        ctx = _FakeContext(json_output=True)
+        scope = _scope()
+
+        class CorruptCache:
+            def lookup(self, *_args, **_kwargs):
+                raise sqlite3.DatabaseError("database disk image is malformed")
+
+            def snapshot_token(self, *_args, **_kwargs):
+                raise sqlite3.DatabaseError("database disk image is malformed")
+
+        result = resolve_by_name(
+            ctx,
+            name="train",
+            resource_type="job",
+            list_candidates=lambda: [{"name": "train", "id": "job-live"}],
+            cache_index=CorruptCache(),  # type: ignore[arg-type]
+            cache_scope=scope,
+            require_live=True,
+        )
+
+        assert result == "job-live"
+
 
 def test_write_through_helpers_update_and_tombstone(tmp_path) -> None:
     class Session:
@@ -279,3 +393,234 @@ def test_write_through_helpers_update_and_tombstone(tmp_path) -> None:
         cache_index=index,
     )
     assert index.lookup(scope, "demo", fresh_only=False) == []
+
+
+def test_live_name_snapshot_cannot_overwrite_newer_write_through(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    index.upsert(
+        scope,
+        [ResourceIdentity(resource_id="job-old", name="demo")],
+    )
+
+    def _stale_live_list():
+        index.mark_deleted(scope, resource_id="job-old")
+        index.upsert(
+            scope,
+            [ResourceIdentity(resource_id="job-new", name="demo")],
+        )
+        return [{"id": "job-old", "name": "demo"}]
+
+    resolved = resolve_by_name(
+        Context(),
+        name="demo",
+        resource_type="job",
+        list_candidates=_stale_live_list,
+        cache_index=index,
+        cache_scope=scope,
+        require_live=True,
+    )
+
+    assert resolved == "job-new"
+    assert [
+        item.resource_id
+        for item in index.lookup(scope, "demo", fresh_only=False)
+    ] == ["job-new"]
+
+
+def test_is_stale_handle_error_accepts_explicit_not_found_signals() -> None:
+    class NotFoundResponseError(Exception):
+        status_code = 404
+
+    assert is_stale_handle_error(NotFoundResponseError("request failed")) is True
+    assert is_stale_handle_error(RuntimeError("resource not found")) is True
+    assert is_stale_handle_error(RuntimeError("invalid resource id")) is True
+    assert is_stale_handle_error(RuntimeError("invalid-job-id")) is True
+
+
+def test_is_stale_handle_error_rejects_auth_status_even_with_not_found_text() -> None:
+    class UnauthorizedResponseError(Exception):
+        status_code = 401
+
+    assert is_stale_handle_error(
+        UnauthorizedResponseError("resource not found")
+    ) is False
+
+
+def test_is_stale_handle_error_rejects_auth_named_404_errors() -> None:
+    class AuthenticationError(Exception):
+        status_code = 404
+
+    assert is_stale_handle_error(AuthenticationError("resource not found")) is False
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        TimeoutError("resource not found after timeout"),
+        RuntimeError("HTTP 503: service unavailable"),
+        RuntimeError("authentication failed: token expired"),
+        RuntimeError("invalid credentials; resource not found"),
+    ),
+)
+def test_is_stale_handle_error_rejects_transient_and_auth_failures(error: Exception) -> None:
+    assert is_stale_handle_error(error) is False
+
+
+def test_stale_handle_retry_invalidates_exact_old_handle_and_resolves_live() -> None:
+    calls: list[object] = []
+    operations = {"old-handle": 0, "new-handle": 0}
+
+    def resolve_cached() -> str:
+        calls.append("resolve_cached")
+        return "old-handle"
+
+    def resolve_live(name: str) -> str:
+        calls.append(("resolve_live", name))
+        return "new-handle"
+
+    def operation(handle: str) -> str:
+        calls.append(("operation", handle))
+        operations[handle] += 1
+        if handle == "old-handle":
+            raise RuntimeError("404 resource not found")
+        return "deleted"
+
+    def invalidate(handle: str) -> None:
+        calls.append(("invalidate", handle))
+
+    result = run_with_stale_handle_retry(
+        name="demo",
+        resolve_cached=resolve_cached,
+        resolve_live=resolve_live,
+        operation=operation,
+        invalidate=invalidate,
+    )
+
+    assert result == "deleted"
+    assert calls == [
+        "resolve_cached",
+        ("operation", "old-handle"),
+        ("invalidate", "old-handle"),
+        ("resolve_live", "demo"),
+        ("operation", "new-handle"),
+    ]
+    assert operations == {"old-handle": 1, "new-handle": 1}
+
+
+def test_stale_handle_invalidation_does_not_fallback_after_clear_recreate(
+    tmp_path,
+) -> None:
+    class Session:
+        base_url = "https://inspire.example"
+        user_detail = {"id": "user-one"}
+
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = ResourceScope(
+        base_url="https://inspire.example",
+        subject_id="user-one",
+        resource_type="model",
+        workspace_id="workspace-one",
+    )
+    index.upsert(scope, [ResourceIdentity("model-old", "demo")])
+    index.clear()
+    index.upsert(scope, [ResourceIdentity("model-new", "demo")])
+
+    def operation(handle: str) -> str:
+        if handle == "model-old":
+            raise RuntimeError("404 resource not found")
+        return "ok"
+
+    result = run_with_stale_handle_retry(
+        name="demo",
+        resolve_cached=lambda: "model-old",
+        resolve_live=lambda _name: "model-new",
+        operation=operation,
+        invalidate=lambda handle: forget_resource_identity(
+            session=Session(),
+            resource_type="model",
+            resource_id=handle,
+            name="demo",
+            workspace_id="workspace-one",
+            cache_index=index,
+        ),
+    )
+
+    assert result == "ok"
+    replacement = index.lookup_id(scope, "model-new")
+    assert replacement is not None
+    assert replacement.tombstoned_at is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        TimeoutError("request timed out"),
+        RuntimeError("HTTP 500 server error"),
+        RuntimeError("authentication failed"),
+    ),
+)
+def test_stale_handle_retry_does_not_repeat_non_stale_failures(error: Exception) -> None:
+    calls: list[object] = []
+
+    def operation(handle: str) -> None:
+        calls.append(handle)
+        raise error
+
+    with pytest.raises(type(error), match=str(error)):
+        run_with_stale_handle_retry(
+            name="demo",
+            resolve_cached=lambda: "cached-handle",
+            resolve_live=lambda _name: pytest.fail("non-stale error must not resolve live"),
+            operation=operation,
+            invalidate=lambda _handle: pytest.fail("non-stale error must not invalidate"),
+        )
+
+    assert calls == ["cached-handle"]
+
+
+def test_stale_handle_retry_does_not_retry_a_second_stale_failure() -> None:
+    calls: list[object] = []
+
+    def operation(handle: str) -> None:
+        calls.append(handle)
+        raise RuntimeError("not found")
+
+    with pytest.raises(RuntimeError, match="not found"):
+        run_with_stale_handle_retry(
+            name="demo",
+            resolve_cached=lambda: "old-handle",
+            resolve_live=lambda name: "new-handle",
+            operation=operation,
+            invalidate=lambda handle: calls.append(("invalidate", handle)),
+        )
+
+    assert calls == [
+        "old-handle",
+        ("invalidate", "old-handle"),
+        "new-handle",
+    ]
+
+
+def test_stale_handle_retry_survives_cache_invalidation_failure() -> None:
+    calls: list[str] = []
+
+    def operation(handle: str) -> str:
+        calls.append(handle)
+        if handle == "old-handle":
+            raise RuntimeError("404 resource not found")
+        return "ok"
+
+    assert (
+        run_with_stale_handle_retry(
+            name="demo",
+            resolve_cached=lambda: "old-handle",
+            resolve_live=lambda _name: "new-handle",
+            operation=operation,
+            invalidate=lambda _handle: (_ for _ in ()).throw(
+                OSError("cache unavailable")
+            ),
+        )
+        == "ok"
+    )
+    assert calls == ["old-handle", "new-handle"]

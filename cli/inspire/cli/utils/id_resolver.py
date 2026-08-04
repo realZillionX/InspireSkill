@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 import logging
 import re
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, TypeVar
 
 from inspire.cli.context import Context, EXIT_VALIDATION_ERROR
 from inspire.cli.utils.errors import exit_with_error
@@ -13,10 +14,16 @@ from inspire.cli.utils.resource_index import (
     ResourceIdentity,
     ResourceIndex,
     ResourceScope,
+    StaleResourceIndexRefresh,
     scope_for_session,
 )
 
 logger = logging.getLogger(__name__)
+
+_STALE_HANDLE_INVALIDATION: ContextVar[bool] = ContextVar(
+    "inspire_stale_handle_invalidation",
+    default=False,
+)
 
 
 _FULL_UUID_RE = re.compile(
@@ -28,6 +35,46 @@ _HEX_RE = re.compile(r"^[0-9a-f]+$", re.IGNORECASE)
 _HEX_CHUNKS_RE = re.compile(r"^[0-9a-f]+(?:-[0-9a-f]+)*$", re.IGNORECASE)
 
 _MIN_PARTIAL_LEN = 4
+_T = TypeVar("_T")
+
+_STALE_HANDLE_MESSAGE_RE = re.compile(
+    r"(?:"
+    r"\b404\b"
+    r"|\bnot\s+found\b"
+    r"|\bdoes\s+not\s+exist\b"
+    r"|\binvalid(?:\s+[a-z0-9]+){0,4}\s+(?:resource|id|handle)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_AUTH_ERROR_NAMES = frozenset(
+    {
+        "AuthenticationError",
+        "AuthError",
+        "ForbiddenError",
+        "PermissionError",
+        "SessionExpiredError",
+        "UnauthorizedError",
+    }
+)
+
+_AUTH_ERROR_MARKERS = (
+    "authentication",
+    "unauthorized",
+    "forbidden",
+    "login required",
+    "token expired",
+    "invalid credentials",
+)
+
+_TIMEOUT_ERROR_NAMES = frozenset(
+    {
+        "ConnectTimeout",
+        "ReadTimeout",
+        "TimeoutError",
+        "TimeoutExpired",
+    }
+)
 
 
 def is_full_uuid(value: str, prefix: str | None = None) -> bool:
@@ -116,8 +163,7 @@ def resolve_by_name(
         exit_with_error(
             ctx,
             "ValidationError",
-            f"CLI commands take a {resource_type} name, not a platform handle "
-            "or partial handle.",
+            f"CLI commands only accept a {resource_type} name.",
             EXIT_VALIDATION_ERROR,
             hint=f"Find the name with `{list_command or f'inspire {resource_type} list'}`.",
         )
@@ -158,6 +204,16 @@ def resolve_by_name(
                 pick_index=pick_index,
             )
 
+    snapshot_generation: int | None = None
+    snapshot_revision: int | None = None
+    cache_snapshot_available = False
+    if index is not None and scope is not None:
+        try:
+            snapshot_generation, snapshot_revision = index.snapshot_token(scope)
+            cache_snapshot_available = True
+        except Exception:  # noqa: BLE001 - cache revision checks are best effort
+            logger.debug("Resource identity cache revision read failed", exc_info=True)
+
     try:
         candidates = list(list_candidates())
     except (KeyboardInterrupt, SystemExit):
@@ -187,7 +243,7 @@ def resolve_by_name(
         id_key=id_key,
     )
 
-    if index is not None and scope is not None:
+    if index is not None and scope is not None and cache_snapshot_available:
         records = _candidate_identities(
             candidates if reconcile_scope else matches,
             name_key=name_key,
@@ -195,14 +251,41 @@ def resolve_by_name(
         )
         try:
             if reconcile_scope:
-                index.reconcile(scope, records, ttl_seconds=cache_ttl_seconds)
+                index.reconcile(
+                    scope,
+                    records,
+                    ttl_seconds=cache_ttl_seconds,
+                    expected_generation=snapshot_generation,
+                    expected_revision=snapshot_revision,
+                )
             else:
                 index.replace_name(
                     scope,
                     name,
                     records,
                     ttl_seconds=cache_ttl_seconds,
+                    expected_generation=snapshot_generation,
+                    expected_revision=snapshot_revision,
                 )
+        except StaleResourceIndexRefresh:
+            # A create/delete/write-through won while the live list request
+            # was in flight. Prefer that newer cache identity over this older
+            # snapshot instead of resurrecting a deleted handle.
+            try:
+                current = index.lookup(scope, name)
+            except Exception:  # noqa: BLE001
+                current = []
+            if current:
+                matches = [
+                    {
+                        id_key: item.resource_id,
+                        name_key: item.name,
+                        "owner_id": item.owner_id,
+                        "status": item.status,
+                        "created_at": item.created_at,
+                    }
+                    for item in current
+                ]
         except Exception:  # noqa: BLE001
             logger.debug("Resource identity cache refresh failed", exc_info=True)
 
@@ -425,9 +508,92 @@ def forget_resource_identity(
             scope,
             resource_id=str(resource_id or "").strip(),
             name=str(name or "").strip(),
+            allow_name_fallback=not _STALE_HANDLE_INVALIDATION.get(),
         )
     except Exception:  # noqa: BLE001
         logger.debug("Resource identity cache tombstone failed", exc_info=True)
+
+
+def _status_code_from_error(error: BaseException) -> int | None:
+    for candidate in (error, getattr(error, "response", None)):
+        if candidate is None:
+            continue
+        for attribute in ("status_code", "status", "http_status", "code"):
+            value = getattr(candidate, attribute, None)
+            if value is None:
+                continue
+            try:
+                status = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 100 <= status <= 599:
+                return status
+    return None
+
+
+def is_stale_handle_error(error: BaseException) -> bool:
+    """Return whether *error* explicitly identifies a stale platform handle.
+
+    Only explicit not-found signals are retryable. Authentication failures,
+    timeouts, and server-side failures are deliberately excluded even when
+    their text contains words such as ``invalid`` or ``not found``.
+    """
+    error_name = type(error).__name__
+    if error_name in _AUTH_ERROR_NAMES or error_name in _TIMEOUT_ERROR_NAMES:
+        return False
+
+    message = re.sub(r"[-_]+", " ", str(error or "")).lower()
+    if any(marker in message for marker in _AUTH_ERROR_MARKERS):
+        return False
+    if "timed out" in message or "timeout" in message:
+        return False
+    if re.search(r"\b5\d{2}\b", message):
+        return False
+
+    status = _status_code_from_error(error)
+    if status is not None:
+        if status in {401, 403} or status >= 500:
+            return False
+        if status == 404:
+            return True
+    return bool(_STALE_HANDLE_MESSAGE_RE.search(message))
+
+
+def run_with_stale_handle_retry(
+    *,
+    name: str,
+    resolve_cached: Callable[[], str],
+    resolve_live: Callable[[str], str],
+    operation: Callable[[str], _T],
+    invalidate: Callable[[str], object],
+) -> _T:
+    """Run one handle operation and recover once from an explicit stale handle.
+
+    ``resolve_cached`` supplies the fast cached handle. If ``operation`` fails
+    with a precise 404/not-found/invalid-resource error, the old handle is
+    tombstoned through ``invalidate`` before ``resolve_live(name)`` obtains a
+    fresh handle for exactly one retry. All other failures, including timeout,
+    5xx, and authentication errors, propagate without repeating the operation.
+    A second stale-handle failure from the live handle also propagates.
+    """
+    handle = resolve_cached()
+    try:
+        return operation(handle)
+    except Exception as error:
+        if not is_stale_handle_error(error):
+            raise
+        invalidation_token = _STALE_HANDLE_INVALIDATION.set(True)
+        try:
+            try:
+                invalidate(handle)
+            except Exception:  # noqa: BLE001 - cache invalidation is best effort
+                logger.debug(
+                    "Stale resource identity invalidation failed", exc_info=True
+                )
+        finally:
+            _STALE_HANDLE_INVALIDATION.reset(invalidation_token)
+        fresh_handle = resolve_live(name)
+        return operation(fresh_handle)
 
 
 def _looks_like_platform_id(value: str) -> bool:
@@ -510,8 +676,7 @@ def reject_id_at_boundary(
         exit_with_error(
             ctx,
             "ValidationError",
-            f"CLI commands take a {resource_type} name, not a platform handle "
-            "or partial handle.",
+            f"CLI commands only accept a {resource_type} name.",
             EXIT_VALIDATION_ERROR,
             hint=f"Find the name with `{list_command}` and pass that.",
         )

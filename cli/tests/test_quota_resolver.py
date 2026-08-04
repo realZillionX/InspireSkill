@@ -12,6 +12,13 @@ from inspire.cli.utils.quota_resolver import (
     qz_scheduling_zone_hint_for_group_names,
     resolve_quota,
 )
+from inspire.cli.utils.resource_index import (
+    ResourceIdentity,
+    ResourceIndex,
+    ResourceScope,
+    scope_for_session,
+)
+from inspire.platform.web.session import WebSession
 
 
 def test_parse_quota_basic() -> None:
@@ -71,6 +78,39 @@ def _make_price(
         "gpu_info": gpu_info,
         "cpu_info": {"cpu_type": cpu_type},
     }
+
+
+def _cached_group_session() -> WebSession:
+    return WebSession(
+        storage_state={},
+        created_at=0,
+        base_url="https://inspire.example",
+        user_detail={"id": "user-1"},
+    )
+
+
+def _seed_group_cache(
+    tmp_path,
+    session: WebSession,
+    *,
+    workspace_id: str = "ws-1",
+    group_id: str = "lcg-old",
+    group_name: str = "H200 Group",
+    ttl_seconds: int = 300,
+) -> tuple[ResourceIndex, ResourceScope]:
+    index = ResourceIndex(tmp_path / "resource-index.sqlite3")
+    scope = scope_for_session(
+        session,
+        resource_type="compute-group",
+        workspace_id=workspace_id,
+    )
+    assert scope is not None
+    index.upsert(
+        scope,
+        [ResourceIdentity(resource_id=group_id, name=group_name)],
+        ttl_seconds=ttl_seconds,
+    )
+    return index, scope
 
 
 def test_resolve_quota_unique_match() -> None:
@@ -190,6 +230,511 @@ def test_resolve_quota_group_override_no_match() -> None:
             group_override="nonsense",
         )
     assert "No compute group name exactly matches --group" in str(exc.value)
+
+
+def test_explicit_group_uses_fresh_cache_without_listing_groups(tmp_path) -> None:
+    session = _cached_group_session()
+    index, _ = _seed_group_cache(tmp_path, session)
+    group_list_calls = 0
+
+    def groups_loader() -> list[dict]:
+        nonlocal group_list_calls
+        group_list_calls += 1
+        raise AssertionError("fresh compute-group cache should avoid list API")
+
+    result = resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        session=session,
+        cache_index=index,
+        group_override="H200 Group",
+        groups_loader=groups_loader,
+        prices_loader=lambda group_id: [
+            _make_price(
+                quota_id="q-1",
+                gpu=1,
+                cpu=20,
+                mem=200,
+                gpu_type="H200",
+            )
+        ]
+        if group_id == "lcg-old"
+        else [],
+    )
+
+    assert result.logic_compute_group_id == "lcg-old"
+    assert group_list_calls == 0
+
+
+def test_explicit_group_cache_lookup_is_case_insensitive(tmp_path) -> None:
+    session = _cached_group_session()
+    index, _ = _seed_group_cache(
+        tmp_path,
+        session,
+        group_name="h200 group",
+    )
+
+    result = resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        session=session,
+        cache_index=index,
+        group_override="H200 GROUP",
+        prices_loader=lambda _group_id: [
+            _make_price(
+                quota_id="q-1",
+                gpu=1,
+                cpu=20,
+                mem=200,
+                gpu_type="H200",
+            )
+        ],
+    )
+
+    assert result.logic_compute_group_id == "lcg-old"
+
+
+def test_explicit_group_cache_miss_live_fallback_replaces_old_same_name(
+    tmp_path,
+) -> None:
+    session = _cached_group_session()
+    index, scope = _seed_group_cache(
+        tmp_path,
+        session,
+        group_id="lcg-old",
+        group_name="H200 Group",
+        ttl_seconds=0,
+    )
+    group_list_calls = 0
+
+    def groups_loader() -> list[dict]:
+        nonlocal group_list_calls
+        group_list_calls += 1
+        return [_make_group("lcg-new", "H200 Group")]
+
+    result = resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        session=session,
+        cache_index=index,
+        group_override="H200 Group",
+        groups_loader=groups_loader,
+        prices_loader=lambda group_id: [
+            _make_price(
+                quota_id="q-new",
+                gpu=1,
+                cpu=20,
+                mem=200,
+                gpu_type="H200",
+            )
+        ]
+        if group_id == "lcg-new"
+        else [],
+    )
+
+    assert result.logic_compute_group_id == "lcg-new"
+    assert group_list_calls == 1
+    cached = index.lookup(scope, "H200 Group")
+    assert len(cached) == 1
+    assert cached[0].resource_id == "lcg-new"
+    old = index.lookup_id(scope, "lcg-old", include_tombstoned=True)
+    assert old is not None and old.tombstoned_at is not None
+
+
+def test_live_group_snapshot_cannot_overwrite_newer_write_through(
+    tmp_path,
+) -> None:
+    session = _cached_group_session()
+    index, scope = _seed_group_cache(
+        tmp_path,
+        session,
+        group_id="lcg-old",
+        group_name="H200 Group",
+        ttl_seconds=0,
+    )
+
+    def groups_loader() -> list[dict]:
+        index.mark_deleted(scope, resource_id="lcg-old")
+        index.upsert(
+            scope,
+            [ResourceIdentity(resource_id="lcg-new", name="H200 Group")],
+        )
+        return [_make_group("lcg-old", "H200 Group")]
+
+    result = resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        session=session,
+        cache_index=index,
+        group_override="H200 Group",
+        groups_loader=groups_loader,
+        prices_loader=lambda group_id: [
+            _make_price(
+                quota_id="q-new",
+                gpu=1,
+                cpu=20,
+                mem=200,
+                gpu_type="H200",
+            )
+        ]
+        if group_id == "lcg-new"
+        else [],
+    )
+
+    assert result.logic_compute_group_id == "lcg-new"
+    assert [
+        item.resource_id
+        for item in index.lookup(scope, "H200 Group", fresh_only=False)
+    ] == ["lcg-new"]
+
+
+def test_clear_during_live_group_lookup_does_not_repopulate_cache(
+    tmp_path,
+) -> None:
+    session = _cached_group_session()
+    index = ResourceIndex(tmp_path / "resource-index.sqlite3")
+    scope = scope_for_session(
+        session,
+        resource_type="compute-group",
+        workspace_id="ws-1",
+    )
+    assert scope is not None
+
+    def groups_loader() -> list[dict]:
+        index.clear()
+        return [_make_group("lcg-live", "H200 Group")]
+
+    result = resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        session=session,
+        cache_index=index,
+        group_override="H200 Group",
+        groups_loader=groups_loader,
+        prices_loader=lambda group_id: [
+            _make_price(
+                quota_id="q-live",
+                gpu=1,
+                cpu=20,
+                mem=200,
+                gpu_type="H200",
+            )
+        ]
+        if group_id == "lcg-live"
+        else [],
+    )
+
+    assert result.logic_compute_group_id == "lcg-live"
+    assert index.list_identities(scope, fresh_only=False) == []
+
+
+def test_clear_during_implicit_group_refresh_does_not_repopulate_cache(
+    tmp_path,
+) -> None:
+    session = _cached_group_session()
+    index = ResourceIndex(tmp_path / "resource-index.sqlite3")
+    scope = scope_for_session(
+        session,
+        resource_type="compute-group",
+        workspace_id="ws-1",
+    )
+    assert scope is not None
+
+    def groups_loader() -> list[dict]:
+        index.clear()
+        return [_make_group("lcg-live", "H200 Group")]
+
+    result = resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        session=session,
+        cache_index=index,
+        groups_loader=groups_loader,
+        prices_loader=lambda group_id: [
+            _make_price(
+                quota_id="q-live",
+                gpu=1,
+                cpu=20,
+                mem=200,
+                gpu_type="H200",
+            )
+        ]
+        if group_id == "lcg-live"
+        else [],
+    )
+
+    assert result.logic_compute_group_id == "lcg-live"
+    assert index.list_identities(scope, fresh_only=False) == []
+
+
+def test_stale_group_preclean_guard_preserves_clear_recreated_group(
+    tmp_path,
+) -> None:
+    session = _cached_group_session()
+    index, scope = _seed_group_cache(tmp_path, session)
+    price_calls: list[str] = []
+
+    def groups_loader() -> list[dict]:
+        return [_make_group("lcg-new", "H200 Group")]
+
+    def prices_loader(group_id: str) -> list[dict]:
+        price_calls.append(group_id)
+        if group_id == "lcg-old":
+            index.clear()
+            index.upsert(
+                scope,
+                [ResourceIdentity(resource_id="lcg-new", name="H200 Group")],
+            )
+            raise ValueError("API returned 404: compute group not found")
+        return [
+            _make_price(
+                quota_id="q-new",
+                gpu=1,
+                cpu=20,
+                mem=200,
+                gpu_type="H200",
+            )
+        ]
+
+    result = resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        session=session,
+        cache_index=index,
+        group_override="H200 Group",
+        groups_loader=groups_loader,
+        prices_loader=prices_loader,
+    )
+
+    assert result.logic_compute_group_id == "lcg-new"
+    assert price_calls == ["lcg-old", "lcg-new"]
+    replacement = index.lookup_id(scope, "lcg-new")
+    assert replacement is not None
+    assert replacement.tombstoned_at is None
+
+
+def test_group_snapshot_failure_skips_live_cache_write(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    session = _cached_group_session()
+    index = ResourceIndex(tmp_path / "resource-index.sqlite3")
+    scope = scope_for_session(
+        session,
+        resource_type="compute-group",
+        workspace_id="ws-1",
+    )
+    assert scope is not None
+    monkeypatch.setattr(
+        index,
+        "snapshot_token",
+        lambda _scope: (_ for _ in ()).throw(OSError("cache unavailable")),
+    )
+
+    result = resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        session=session,
+        cache_index=index,
+        group_override="H200 Group",
+        groups_loader=lambda: [_make_group("lcg-live", "H200 Group")],
+        prices_loader=lambda _group_id: [
+            _make_price(
+                quota_id="q-live",
+                gpu=1,
+                cpu=20,
+                mem=200,
+                gpu_type="H200",
+            )
+        ],
+    )
+
+    assert result.logic_compute_group_id == "lcg-live"
+    assert index.list_identities(scope, fresh_only=False) == []
+
+
+def test_explicit_group_stale_cached_handle_re_resolves_after_not_found(
+    tmp_path,
+) -> None:
+    session = _cached_group_session()
+    index, scope = _seed_group_cache(tmp_path, session)
+    group_list_calls = 0
+    price_calls: list[str] = []
+
+    def groups_loader() -> list[dict]:
+        nonlocal group_list_calls
+        group_list_calls += 1
+        return [_make_group("lcg-new", "H200 Group")]
+
+    def prices_loader(group_id: str) -> list[dict]:
+        price_calls.append(group_id)
+        if group_id == "lcg-old":
+            raise ValueError("API returned 404: compute group not found")
+        return [
+            _make_price(
+                quota_id="q-new",
+                gpu=1,
+                cpu=20,
+                mem=200,
+                gpu_type="H200",
+            )
+        ]
+
+    result = resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        session=session,
+        cache_index=index,
+        group_override="H200 Group",
+        groups_loader=groups_loader,
+        prices_loader=prices_loader,
+    )
+
+    assert result.logic_compute_group_id == "lcg-new"
+    assert price_calls == ["lcg-old", "lcg-new"]
+    assert group_list_calls == 1
+    old = index.lookup_id(scope, "lcg-old", include_tombstoned=True)
+    assert old is not None and old.tombstoned_at is not None
+
+
+def test_cached_group_network_error_does_not_trigger_live_retry(tmp_path) -> None:
+    session = _cached_group_session()
+    index, _ = _seed_group_cache(tmp_path, session)
+    group_list_calls = 0
+
+    def groups_loader() -> list[dict]:
+        nonlocal group_list_calls
+        group_list_calls += 1
+        raise AssertionError("network errors must not trigger a blind group retry")
+
+    with pytest.raises(QuotaMatchError):
+        resolve_quota(
+            spec=QuotaSpec(1, 20, 200),
+            workspace_id="ws-1",
+            session=session,
+            cache_index=index,
+            group_override="H200 Group",
+            groups_loader=groups_loader,
+            prices_loader=lambda _group_id: (_ for _ in ()).throw(
+                TimeoutError("temporary network failure")
+            ),
+        )
+
+    assert group_list_calls == 0
+
+
+def test_cached_group_auth_error_does_not_trigger_live_retry(tmp_path) -> None:
+    session = _cached_group_session()
+    index, _ = _seed_group_cache(tmp_path, session)
+    group_list_calls = 0
+
+    class ForbiddenResponseError(Exception):
+        status_code = 403
+
+    def groups_loader() -> list[dict]:
+        nonlocal group_list_calls
+        group_list_calls += 1
+        raise AssertionError("auth errors must not trigger a blind group retry")
+
+    with pytest.raises(QuotaMatchError):
+        resolve_quota(
+            spec=QuotaSpec(1, 20, 200),
+            workspace_id="ws-1",
+            session=session,
+            cache_index=index,
+            group_override="H200 Group",
+            groups_loader=groups_loader,
+            prices_loader=lambda _group_id: (_ for _ in ()).throw(
+                ForbiddenResponseError("compute group not found")
+            ),
+        )
+
+    assert group_list_calls == 0
+
+
+def test_cache_failure_does_not_block_live_group_resolution(tmp_path) -> None:
+    session = _cached_group_session()
+    group_list_calls = 0
+
+    class BrokenCache:
+        def lookup(self, *_args, **_kwargs):
+            raise OSError("cache unavailable")
+
+        def replace_name(self, *_args, **_kwargs):
+            raise OSError("cache unavailable")
+
+    def groups_loader() -> list[dict]:
+        nonlocal group_list_calls
+        group_list_calls += 1
+        return [_make_group("lcg-live", "H200 Group")]
+
+    result = resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        session=session,
+        cache_index=BrokenCache(),  # type: ignore[arg-type]
+        group_override="H200 Group",
+        groups_loader=groups_loader,
+        prices_loader=lambda _group_id: [
+            _make_price(
+                quota_id="q-live",
+                gpu=1,
+                cpu=20,
+                mem=200,
+                gpu_type="H200",
+            )
+        ],
+    )
+
+    assert result.logic_compute_group_id == "lcg-live"
+    assert group_list_calls == 1
+
+
+def test_implicit_group_resolution_stays_live_and_reconciles_full_scope(
+    tmp_path,
+) -> None:
+    session = _cached_group_session()
+    index, scope = _seed_group_cache(
+        tmp_path,
+        session,
+        group_id="lcg-old",
+        group_name="H200 Group",
+    )
+    index.upsert(
+        scope,
+        [ResourceIdentity(resource_id="lcg-removed", name="Removed Group")],
+    )
+    group_list_calls = 0
+
+    def groups_loader() -> list[dict]:
+        nonlocal group_list_calls
+        group_list_calls += 1
+        return [_make_group("lcg-new", "H200 Group")]
+
+    result = resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        session=session,
+        cache_index=index,
+        groups_loader=groups_loader,
+        prices_loader=lambda group_id: [
+            _make_price(
+                quota_id="q-new",
+                gpu=1,
+                cpu=20,
+                mem=200,
+                gpu_type="H200",
+            )
+        ]
+        if group_id == "lcg-new"
+        else [],
+    )
+
+    assert result.logic_compute_group_id == "lcg-new"
+    assert group_list_calls == 1
+    assert index.lookup(scope, "H200 Group")[0].resource_id == "lcg-new"
+    removed = index.lookup_id(scope, "lcg-removed", include_tombstoned=True)
+    assert removed is not None and removed.tombstoned_at is not None
 
 
 def test_resolve_quota_cpu_only() -> None:

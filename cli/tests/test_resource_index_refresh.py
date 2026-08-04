@@ -222,6 +222,34 @@ def test_refresh_does_not_overwrite_newer_write_through(tmp_path) -> None:
     ] == ["notebook-new"]
 
 
+def test_refresh_does_not_repopulate_cache_after_clear(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope("notebook", "workspace-one")
+
+    def _notebook_fetch(_session: object, _workspace: str, _name: str) -> FetchResult:
+        index.clear()
+        return FetchResult(
+            [ResourceIdentity(resource_id="notebook-old", name="A")]
+        )
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("notebook",),
+        workspace_names=("Training Space",),
+        exact_name="A",
+        force=True,
+        fetchers={
+            "workspace": _workspace_fetch,
+            "notebook": _notebook_fetch,
+        },
+    )
+
+    assert summary.stale_count == 1
+    assert summary.error_count == 0
+    assert index.list_identities(scope, fresh_only=False) == []
+
+
 def test_failed_refresh_preserves_existing_rows(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
     scope = _scope("job", "workspace-one")

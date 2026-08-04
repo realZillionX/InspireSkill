@@ -543,6 +543,37 @@ class ResourceIndex:
                 self._scope_revision_from_connection(connection, scope),
             )
 
+    def snapshot_workspace_refresh(
+        self,
+        workspace_scope: ResourceScope,
+    ) -> tuple[int, int, dict[ResourceScope, int]]:
+        """Capture the workspace scope and all child-scope revisions atomically."""
+        workspace_scope = workspace_scope.validate()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT resource_type, workspace_id, owner_scope, mutation_revision
+                FROM resource_scope
+                WHERE base_url = ? AND subject_id = ? AND workspace_id <> ''
+                """,
+                (workspace_scope.base_url, workspace_scope.subject_id),
+            ).fetchall()
+            child_revisions = {
+                ResourceScope(
+                    base_url=workspace_scope.base_url,
+                    subject_id=workspace_scope.subject_id,
+                    resource_type=str(row["resource_type"]),
+                    workspace_id=str(row["workspace_id"]),
+                    owner_scope=str(row["owner_scope"] or ""),
+                ): int(row["mutation_revision"] or 0)
+                for row in rows
+            }
+            return (
+                self._generation_from_connection(connection),
+                self._scope_revision_from_connection(connection, workspace_scope),
+                child_revisions,
+            )
+
     def _begin_mutation(
         self,
         connection: sqlite3.Connection,
@@ -975,6 +1006,7 @@ class ResourceIndex:
         *,
         resource_id: str = "",
         name: str = "",
+        allow_name_fallback: bool = True,
         now: float | None = None,
     ) -> int:
         """Tombstone by ID, falling back to name when the ID is unknown.
@@ -982,7 +1014,9 @@ class ResourceIndex:
         The ID is authoritative when it is present in the cache. A name is
         only used as a fallback for an ID that was never indexed, avoiding a
         fragile ``id AND name`` match without deleting a newly-recreated
-        same-name resource when an old ID is already known.
+        same-name resource when an old ID is already known. Callers handling
+        a stale platform handle can disable that fallback because a clear
+        may have removed the old ID before a same-name replacement was cached.
         """
         target_id = str(resource_id or "").strip()
         target_name = str(name or "").strip()
@@ -1026,7 +1060,12 @@ class ResourceIndex:
                     )
                     changed = int(cursor.rowcount)
 
-            if changed == 0 and target_name and (not target_id or not known_id):
+            if (
+                allow_name_fallback
+                and changed == 0
+                and target_name
+                and (not target_id or not known_id)
+            ):
                 name_match = "" if match_case else "COLLATE NOCASE"
                 cursor = connection.execute(
                     f"""
@@ -1177,6 +1216,10 @@ class ResourceIndex:
         self,
         workspace_scope: ResourceScope,
         visible_workspace_ids: Iterable[str],
+        *,
+        expected_generation: int,
+        expected_workspace_revision: int,
+        expected_child_revisions: Mapping[ResourceScope, int],
     ) -> int:
         """Remove workspace-bound scopes no longer visible in a complete workspace scan."""
         workspace_scope = workspace_scope.validate()
@@ -1186,10 +1229,15 @@ class ResourceIndex:
             if str(workspace_id or "").strip()
         }
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            self._begin_mutation(
+                connection,
+                workspace_scope,
+                expected_revision=expected_workspace_revision,
+                expected_generation=expected_generation,
+            )
             rows = connection.execute(
                 """
-                SELECT resource_type, workspace_id, owner_scope
+                SELECT resource_type, workspace_id, owner_scope, mutation_revision
                 FROM resource_scope
                 WHERE base_url = ? AND subject_id = ? AND workspace_id <> ''
                 """,
@@ -1205,6 +1253,16 @@ class ResourceIndex:
                 )
                 for row in rows
                 if str(row["workspace_id"]) not in visible
+                and expected_child_revisions.get(
+                    ResourceScope(
+                        base_url=workspace_scope.base_url,
+                        subject_id=workspace_scope.subject_id,
+                        resource_type=str(row["resource_type"]),
+                        workspace_id=str(row["workspace_id"]),
+                        owner_scope=str(row["owner_scope"] or ""),
+                    )
+                )
+                == int(row["mutation_revision"] or 0)
             ]
             for scope in orphan_scopes:
                 values = self._scope_values(scope)

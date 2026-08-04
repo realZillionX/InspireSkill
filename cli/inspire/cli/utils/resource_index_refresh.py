@@ -852,15 +852,18 @@ def refresh_resource_index(
     )
     workspace_revision: int | None = None
     workspace_generation: int | None = None
+    workspace_child_revisions: dict[ResourceScope, int] = {}
     workspace_attempted_at = time.time()
     workspace_error = ""
     workspace_fetched = False
     if needs_workspace_fetch:
         try:
             if workspace_scope is not None:
-                workspace_generation, workspace_revision = index.snapshot_token(
-                    workspace_scope
-                )
+                (
+                    workspace_generation,
+                    workspace_revision,
+                    workspace_child_revisions,
+                ) = index.snapshot_workspace_refresh(workspace_scope)
             workspace_attempted_at = time.time()
             workspace_snapshot = workspace_fetcher(
                 session,
@@ -926,11 +929,23 @@ def refresh_resource_index(
                 and workspace_snapshot.complete
                 and not exact_name
                 and workspace_scope is not None
+                and workspace_generation is not None
+                and workspace_revision is not None
             ):
                 try:
                     index.prune_orphan_workspace_scopes(
                         workspace_scope,
                         names_by_id,
+                        expected_generation=workspace_generation,
+                        expected_workspace_revision=workspace_revision + 1,
+                        expected_child_revisions=workspace_child_revisions,
+                    )
+                except StaleResourceIndexRefresh:
+                    workspace_result = RefreshResult(
+                        "workspace",
+                        "",
+                        workspace_result.item_count,
+                        "stale",
                     )
                 except (OSError, sqlite3.Error):
                     workspace_result = RefreshResult(

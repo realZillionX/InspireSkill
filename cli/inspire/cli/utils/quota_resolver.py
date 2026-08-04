@@ -16,12 +16,22 @@ filters upstream, but this resolver is used by create/profile paths.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Optional
 
-from inspire.cli.utils.id_resolver import is_full_uuid
+from inspire.cli.utils.id_resolver import is_full_uuid, is_stale_handle_error
+from inspire.cli.utils.resource_index import (
+    ResourceIdentity,
+    ResourceIndex,
+    ResourceScope,
+    StaleResourceIndexRefresh,
+    scope_for_session,
+)
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import WebSession
+
+logger = logging.getLogger(__name__)
 
 SCHEDULE_TYPE_DSW = "SCHEDULE_CONFIG_TYPE_DSW"
 SCHEDULE_TYPE_HPC = "SCHEDULE_CONFIG_TYPE_HPC"
@@ -146,9 +156,7 @@ def validate_compute_group_name(value: str) -> str:
     if not name:
         raise QuotaMatchError("--group value cannot be empty")
     if name.casefold().startswith("lcg-") or is_full_uuid(name):
-        raise QuotaMatchError(
-            "--group takes a compute group name, not a platform handle."
-        )
+        raise QuotaMatchError("--group takes a compute group name.")
     return name
 
 
@@ -178,6 +186,173 @@ def _default_prices_loader(
     return loader
 
 
+def _compute_group_cache_context(
+    *,
+    session: WebSession | None,
+    workspace_id: str,
+    cache_index: ResourceIndex | None,
+) -> tuple[ResourceIndex | None, ResourceScope | None]:
+    if session is None:
+        return None, None
+    try:
+        scope = scope_for_session(
+            session,
+            resource_type="compute-group",
+            workspace_id=workspace_id,
+        )
+    except Exception:  # noqa: BLE001 - the cache is disposable
+        logger.debug("Compute-group cache scope initialization failed", exc_info=True)
+        return None, None
+    if scope is None:
+        return None, None
+    if cache_index is not None:
+        return cache_index, scope
+    try:
+        return ResourceIndex.for_account(), scope
+    except Exception:  # noqa: BLE001 - the cache must never block live resolution
+        logger.debug("Compute-group cache initialization failed", exc_info=True)
+        return None, scope
+
+
+def _groups_from_cache(
+    *,
+    index: ResourceIndex | None,
+    scope: ResourceScope | None,
+    name: str,
+) -> list[dict]:
+    if index is None or scope is None:
+        return []
+    try:
+        return [
+            {
+                "logic_compute_group_id": item.resource_id,
+                "name": item.name,
+            }
+            for item in index.lookup(scope, name, case_sensitive=False)
+        ]
+    except Exception:  # noqa: BLE001 - live API remains authoritative
+        logger.debug("Compute-group cache lookup failed", exc_info=True)
+        return []
+
+
+def _cache_group_name(
+    *,
+    index: ResourceIndex | None,
+    scope: ResourceScope | None,
+    name: str,
+    groups: Iterable[dict],
+    full_scope: bool = False,
+    expected_generation: int | None = None,
+    expected_revision: int | None = None,
+) -> bool:
+    if index is None or scope is None:
+        return True
+    records = [
+        ResourceIdentity(
+            resource_id=_group_id(group),
+            name=_group_name(group),
+        )
+        for group in groups
+        if _group_id(group) and _group_name(group)
+    ]
+    try:
+        if full_scope:
+            index.reconcile(
+                scope,
+                records,
+                expected_generation=expected_generation,
+                expected_revision=expected_revision,
+            )
+        else:
+            index.replace_name(
+                scope,
+                name,
+                records,
+                case_sensitive=False,
+                expected_generation=expected_generation,
+                expected_revision=expected_revision,
+            )
+        return True
+    except StaleResourceIndexRefresh:
+        return False
+    except Exception:  # noqa: BLE001 - the cache is only an optimization
+        logger.debug("Compute-group cache update failed", exc_info=True)
+        return True
+
+
+def _is_stale_compute_group_error(exc: BaseException) -> bool:
+    if is_stale_handle_error(exc):
+        return True
+    for candidate in (exc, getattr(exc, "response", None)):
+        for attribute in ("status_code", "status", "http_status", "code"):
+            value = getattr(candidate, attribute, None)
+            try:
+                status = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 100 <= status <= 599:
+                if status in {401, 403} or status >= 500:
+                    return False
+                break
+    message = str(exc).casefold()
+    if any(
+        marker in message
+        for marker in (
+            "authentication",
+            "unauthorized",
+            "forbidden",
+            "login required",
+            "token expired",
+            "invalid credentials",
+            "timeout",
+            "timed out",
+        )
+    ) or any(f"{status}" in message for status in range(500, 600)):
+        return False
+    return any(
+        marker in message
+        for marker in (
+            "invalid compute group",
+            "unknown compute group",
+            "compute group not found",
+            "compute group does not exist",
+            "不存在",
+        )
+    )
+
+
+def _same_compute_group_name(left: object, right: object) -> bool:
+    return str(left or "").strip().casefold() == str(right or "").strip().casefold()
+
+
+def _load_price_rows(
+    *,
+    groups: Iterable[dict],
+    prices_loader: PricesLoader,
+    cached_only: bool,
+) -> tuple[list[tuple[dict, dict]], bool]:
+    rows: list[tuple[dict, dict]] = []
+    saw_empty_or_stale_cached_group = False
+    for group in groups:
+        lcg_id = _group_id(group)
+        if not lcg_id or not _group_name(group):
+            continue
+        prices: list[dict] = []
+        try:
+            prices = prices_loader(lcg_id)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:  # noqa: BLE001 - preserve existing quota semantics
+            if cached_only and _is_stale_compute_group_error(exc):
+                saw_empty_or_stale_cached_group = True
+        else:
+            if cached_only and not prices:
+                saw_empty_or_stale_cached_group = True
+        for price in prices or []:
+            rows.append((group, price))
+    return rows, cached_only and saw_empty_or_stale_cached_group and not rows
+
+
 def resolve_quota(
     *,
     spec: QuotaSpec,
@@ -188,6 +363,7 @@ def resolve_quota(
     groups: Optional[Iterable[dict]] = None,
     groups_loader: Optional[GroupsLoader] = None,
     prices_loader: Optional[PricesLoader] = None,
+    cache_index: ResourceIndex | None = None,
 ) -> ResolvedQuota:
     """Resolve ``spec`` to a unique ``ResolvedQuota`` in ``workspace_id``.
 
@@ -195,8 +371,64 @@ def resolve_quota(
     data (used in tests and to share one prefetched group list between
     multiple calls).
     """
+    target = (
+        validate_compute_group_name(group_override)
+        if group_override is not None
+        else None
+    )
+    cache, cache_scope = _compute_group_cache_context(
+        session=session,
+        workspace_id=workspace_id,
+        cache_index=cache_index,
+    )
+    snapshot_generation: int | None = None
+    snapshot_revision: int | None = None
+    cache_snapshot_available = False
+    if cache is not None and cache_scope is not None:
+        try:
+            snapshot_generation, snapshot_revision = cache.snapshot_token(cache_scope)
+            cache_snapshot_available = True
+        except Exception:  # noqa: BLE001
+            snapshot_generation = None
+            snapshot_revision = None
+    cached_only = False
+
     if groups is not None:
         group_list = list(groups)
+    elif target is not None:
+        group_list = _groups_from_cache(
+            index=cache,
+            scope=cache_scope,
+            name=target,
+        )
+        if group_list:
+            cached_only = True
+        else:
+            loader = groups_loader
+            if loader is None:
+                if session is None:
+                    raise ValueError("resolve_quota needs a session or groups/groups_loader")
+                loader = _default_groups_loader(
+                    workspace_id=workspace_id, session=session
+                )
+            group_list = list(loader())
+            committed = _cache_group_name(
+                index=cache if cache_snapshot_available else None,
+                scope=cache_scope,
+                name=target,
+                groups=group_list,
+                expected_generation=snapshot_generation,
+                expected_revision=snapshot_revision,
+            )
+            if not committed:
+                current_groups = _groups_from_cache(
+                    index=cache,
+                    scope=cache_scope,
+                    name=target,
+                )
+                if current_groups:
+                    group_list = current_groups
+                    cached_only = True
     else:
         loader = groups_loader
         if loader is None:
@@ -206,10 +438,22 @@ def resolve_quota(
                 workspace_id=workspace_id, session=session
             )
         group_list = list(loader())
+        _cache_group_name(
+            index=cache if cache_snapshot_available else None,
+            scope=cache_scope,
+            name="",
+            groups=group_list,
+            full_scope=True,
+            expected_generation=snapshot_generation,
+            expected_revision=snapshot_revision,
+        )
 
-    if group_override is not None:
-        target = validate_compute_group_name(group_override)
-        filtered = [group for group in group_list if _group_name(group) == target]
+    if target is not None:
+        filtered = [
+            group
+            for group in group_list
+            if _same_compute_group_name(_group_name(group), target)
+        ]
         if not filtered:
             available = sorted({
                 _group_name(g) for g in group_list if _group_name(g)
@@ -234,17 +478,67 @@ def resolve_quota(
             schedule_config_type=schedule_config_type,
         )
 
-    all_rows: list[tuple[dict, dict]] = []
-    for group in group_list:
-        lcg_id = _group_id(group)
-        if not lcg_id or not _group_name(group):
-            continue
-        try:
-            prices = prices_loader(lcg_id)
-        except Exception:
-            prices = []
-        for price in prices or []:
-            all_rows.append((group, price))
+    all_rows, cached_group_stale = _load_price_rows(
+        groups=group_list,
+        prices_loader=prices_loader,
+        cached_only=cached_only,
+    )
+    if cached_group_stale and target is not None:
+        # A cached handle can outlive a deleted/recreated group. Only retry the
+        # non-destructive name lookup after an empty/not-found price response;
+        # network errors raised by a custom loader do not trigger blind retry.
+        _cache_group_name(
+            index=cache if cache_snapshot_available else None,
+            scope=cache_scope,
+            name=target,
+            groups=[],
+            expected_generation=snapshot_generation,
+            expected_revision=snapshot_revision,
+        )
+        loader = groups_loader
+        if loader is None:
+            if session is None:
+                raise ValueError("resolve_quota needs a session or groups/groups_loader")
+            loader = _default_groups_loader(
+                workspace_id=workspace_id, session=session
+            )
+        retry_generation: int | None = None
+        retry_revision: int | None = None
+        retry_snapshot_available = False
+        if cache is not None and cache_scope is not None:
+            try:
+                retry_generation, retry_revision = cache.snapshot_token(cache_scope)
+                retry_snapshot_available = True
+            except Exception:  # noqa: BLE001
+                retry_generation = None
+                retry_revision = None
+        group_list = list(loader())
+        committed = _cache_group_name(
+            index=cache if retry_snapshot_available else None,
+            scope=cache_scope,
+            name=target,
+            groups=group_list,
+            expected_generation=retry_generation,
+            expected_revision=retry_revision,
+        )
+        if not committed:
+            current_groups = _groups_from_cache(
+                index=cache,
+                scope=cache_scope,
+                name=target,
+            )
+            if current_groups:
+                group_list = current_groups
+        group_list = [
+            group
+            for group in group_list
+            if _same_compute_group_name(_group_name(group), target)
+        ]
+        all_rows, _ = _load_price_rows(
+            groups=group_list,
+            prices_loader=prices_loader,
+            cached_only=False,
+        )
 
     matches: list[ResolvedQuota] = []
     for group, price in all_rows:

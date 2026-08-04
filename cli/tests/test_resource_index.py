@@ -162,6 +162,30 @@ def test_mark_deleted_does_not_fallback_to_same_name_for_known_tombstoned_id(
     assert replacement is not None
 
 
+def test_mark_deleted_exact_id_does_not_tombstone_same_name_replacement(
+    tmp_path,
+) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    index.upsert(scope, [_record("job-old", "A")])
+
+    index.clear()
+    index.upsert(scope, [_record("job-new", "A")])
+
+    assert (
+        index.mark_deleted(
+            scope,
+            resource_id="job-old",
+            name="A",
+            allow_name_fallback=False,
+        )
+        == 0
+    )
+    replacement = index.lookup_id(scope, "job-new")
+    assert replacement is not None
+    assert replacement.tombstoned_at is None
+
+
 @pytest.mark.parametrize("resource_type", ["workspace", "project", "compute-group"])
 def test_replace_name_is_case_insensitive_for_case_insensitive_resources(
     tmp_path,
@@ -428,11 +452,17 @@ def test_prune_orphan_workspace_scopes_removes_only_invisible_workspaces(
     orphan_scope = _scope(workspace_id="workspace-removed")
     index.reconcile(visible_scope, [_record("job-visible", "visible")], now=100)
     index.reconcile(orphan_scope, [_record("job-old", "old")], now=100)
+    generation, workspace_revision, child_revisions = (
+        index.snapshot_workspace_refresh(workspace_scope)
+    )
 
     assert (
         index.prune_orphan_workspace_scopes(
             workspace_scope,
             ["workspace-visible"],
+            expected_generation=generation,
+            expected_workspace_revision=workspace_revision,
+            expected_child_revisions=child_revisions,
         )
         == 1
     )
@@ -442,6 +472,57 @@ def test_prune_orphan_workspace_scopes_removes_only_invisible_workspaces(
     assert {
         status.workspace_id for status in index.list_scope_status()
     } == {"workspace-visible"}
+
+
+def test_prune_orphan_workspace_scopes_preserves_concurrently_changed_scope(
+    tmp_path,
+) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    workspace_scope = _scope(resource_type="workspace", workspace_id="")
+    orphan_scope = _scope(workspace_id="workspace-new")
+    index.reconcile(orphan_scope, [_record("job-old", "old")], now=100)
+    generation, workspace_revision, child_revisions = (
+        index.snapshot_workspace_refresh(workspace_scope)
+    )
+
+    index.upsert(orphan_scope, [_record("job-new", "new")], now=101)
+
+    assert (
+        index.prune_orphan_workspace_scopes(
+            workspace_scope,
+            [],
+            expected_generation=generation,
+            expected_workspace_revision=workspace_revision,
+            expected_child_revisions=child_revisions,
+        )
+        == 0
+    )
+    assert index.lookup(orphan_scope, "new", fresh_only=False)
+
+
+def test_prune_orphan_workspace_scopes_rejects_pre_clear_snapshot(
+    tmp_path,
+) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    workspace_scope = _scope(resource_type="workspace", workspace_id="")
+    orphan_scope = _scope(workspace_id="workspace-old")
+    index.reconcile(orphan_scope, [_record("job-old", "old")], now=100)
+    generation, workspace_revision, child_revisions = (
+        index.snapshot_workspace_refresh(workspace_scope)
+    )
+
+    index.clear()
+    index.upsert(orphan_scope, [_record("job-new", "new")], now=101)
+
+    with pytest.raises(StaleResourceIndexRefresh):
+        index.prune_orphan_workspace_scopes(
+            workspace_scope,
+            [],
+            expected_generation=generation,
+            expected_workspace_revision=workspace_revision,
+            expected_child_revisions=child_revisions,
+        )
+    assert index.lookup(orphan_scope, "new", fresh_only=False)
 
 
 def test_refresh_lease_is_single_flight_and_released(tmp_path) -> None:
@@ -639,6 +720,54 @@ def test_account_indexes_are_isolated_and_private(tmp_path, monkeypatch) -> None
     if os.name != "nt":
         assert alpha_path.stat().st_mode & 0o777 == 0o600
         assert alpha_path.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_scope_isolates_base_url_subject_workspace_and_owner(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scopes = [
+        ResourceScope(
+            base_url="https://inspire.example",
+            subject_id="user-one",
+            resource_type="job",
+            workspace_id="workspace-one",
+            owner_scope="self",
+        ),
+        ResourceScope(
+            base_url="https://other.example",
+            subject_id="user-one",
+            resource_type="job",
+            workspace_id="workspace-one",
+            owner_scope="self",
+        ),
+        ResourceScope(
+            base_url="https://inspire.example",
+            subject_id="user-two",
+            resource_type="job",
+            workspace_id="workspace-one",
+            owner_scope="self",
+        ),
+        ResourceScope(
+            base_url="https://inspire.example",
+            subject_id="user-one",
+            resource_type="job",
+            workspace_id="workspace-two",
+            owner_scope="self",
+        ),
+        ResourceScope(
+            base_url="https://inspire.example",
+            subject_id="user-one",
+            resource_type="job",
+            workspace_id="workspace-one",
+            owner_scope="team",
+        ),
+    ]
+    for number, scope in enumerate(scopes):
+        index.upsert(scope, [_record(f"job-{number}", "train")])
+
+    for number, scope in enumerate(scopes):
+        assert [item.resource_id for item in index.lookup(scope, "train")] == [
+            f"job-{number}"
+        ]
 
 
 def test_empty_targeted_name_is_rejected(tmp_path) -> None:
