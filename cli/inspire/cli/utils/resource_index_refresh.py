@@ -151,32 +151,13 @@ def _workspace_fetch(session: object, _workspace_id: str, exact_name: str) -> Fe
     from inspire.platform.web.browser_api.workspaces import try_enumerate_workspaces
 
     live_items = try_enumerate_workspaces(session)  # type: ignore[arg-type]
-    if live_items:
-        records = [
-            ResourceIdentity(
-                resource_id=str(item.get("id") or "").strip(),
-                name=str(item.get("name") or "").strip(),
-            )
-            for item in live_items
-            if isinstance(item, dict)
-        ]
-        return FetchResult(
-            _filter_exact(
-                _dedupe_records(records),
-                exact_name,
-                case_sensitive=False,
-            ),
-            complete=True,
-        )
-
-    # A cached session map is useful for warm-up, but it is not a complete live
-    # scan and therefore must never tombstone an unseen workspace.
-    cached = getattr(session, "all_workspace_names", None)
-    names = cached if isinstance(cached, dict) else {}
     records = [
-        ResourceIdentity(resource_id=str(workspace_id), name=str(name))
-        for workspace_id, name in names.items()
-        if workspace_id and name
+        ResourceIdentity(
+            resource_id=str(item.get("id") or "").strip(),
+            name=str(item.get("name") or "").strip(),
+        )
+        for item in live_items
+        if isinstance(item, dict)
     ]
     return FetchResult(
         _filter_exact(
@@ -184,7 +165,7 @@ def _workspace_fetch(session: object, _workspace_id: str, exact_name: str) -> Fe
             exact_name,
             case_sensitive=False,
         ),
-        complete=False,
+        complete=True,
     )
 
 
@@ -516,7 +497,7 @@ def _workspace_names(
         if record.resource_id and record.name
     }
     cached = getattr(session, "all_workspace_names", None)
-    if isinstance(cached, dict):
+    if not workspace_fetch.complete and isinstance(cached, dict):
         for workspace_id, name in cached.items():
             if workspace_id and name:
                 names.setdefault(str(workspace_id), str(name))
@@ -654,8 +635,16 @@ def refresh_resource_index(
     else:
         workspace_error = ""
 
-    names_by_id = _workspace_names(session, workspace_fetch=workspace_snapshot)
-    selected_workspace_ids = _select_workspace_ids(names_by_id, workspace_names)
+    names_by_id = (
+        {}
+        if workspace_error
+        else _workspace_names(session, workspace_fetch=workspace_snapshot)
+    )
+    selected_workspace_ids = (
+        []
+        if workspace_error
+        else _select_workspace_ids(names_by_id, workspace_names)
+    )
 
     results: list[RefreshResult] = []
     for resource_type in selected_types:

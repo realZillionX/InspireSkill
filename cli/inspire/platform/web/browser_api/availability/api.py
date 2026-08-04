@@ -34,6 +34,9 @@ def list_compute_groups(
         body=body,
         timeout=30,
     )
+    code = data.get("code")
+    if code not in (None, 0):
+        raise ValueError(f"API error: {data.get('message') or code}")
     return data.get("data", {}).get("logic_compute_groups", [])
 
 

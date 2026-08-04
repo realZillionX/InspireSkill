@@ -16,6 +16,10 @@ class WorkspaceCapabilityError(RuntimeError):
     """Raised when a write path cannot resolve workspace scheduling policy."""
 
 
+class WorkspaceEnumerationError(RuntimeError):
+    """Raised when the live workspace enumeration request fails."""
+
+
 def _workspace_route_entries(
     session: WebSession,
     *,
@@ -38,6 +42,9 @@ def _workspace_route_entries(
         referer=referer,
         timeout=15,
     )
+    code = resp.get("code")
+    if code not in (None, 0):
+        raise ValueError(f"API error: {resp.get('message') or code}")
     results: dict[str, dict[str, Any]] = {}
     for route_group in (resp.get("data") or {}).get("routes") or []:
         if not isinstance(route_group, dict) or route_group.get("name") != "userWorkspaceList":
@@ -76,7 +83,9 @@ def try_enumerate_workspaces(
     can access.
 
     Returns workspace id, name, and fair-scheduling capability dictionaries.
-    Gracefully returns an empty list on any failure.
+    Returns an empty list only when the live API successfully reports no
+    accessible workspaces. Request and API failures are raised so callers can
+    preserve their last successful snapshot.
     """
     try:
         results = _workspace_route_entries(
@@ -84,8 +93,10 @@ def try_enumerate_workspaces(
             base_url=base_url,
             workspace_id=workspace_id,
         )
-    except Exception:
-        return []
+    except Exception as exc:
+        raise WorkspaceEnumerationError(
+            "Could not enumerate accessible workspaces."
+        ) from exc
 
     _cache_fair_scheduling(session, results)
     return list(results.values())
@@ -120,6 +131,7 @@ def is_fair_scheduling_workspace(session: WebSession, workspace_id: str) -> bool
 
 __all__ = [
     "WorkspaceCapabilityError",
+    "WorkspaceEnumerationError",
     "is_fair_scheduling_workspace",
     "try_enumerate_workspaces",
 ]

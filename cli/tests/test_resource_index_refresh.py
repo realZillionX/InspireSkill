@@ -217,6 +217,134 @@ def test_incomplete_workspace_snapshot_never_tombstones_unseen_rows(tmp_path) ->
     ] == ["workspace-two"]
 
 
+def test_complete_workspace_snapshot_does_not_merge_session_rows(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from inspire.cli.utils import resource_index_refresh as refresh_module
+    from inspire.platform.web.browser_api import workspaces
+
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    calls: list[str] = []
+    session = _Session()
+    session.all_workspace_names = {
+        "workspace-live": "Live",
+        "workspace-old": "Old",
+    }
+
+    monkeypatch.setattr(
+        workspaces,
+        "try_enumerate_workspaces",
+        lambda _session: [{"id": "workspace-live", "name": "Live"}],
+    )
+
+    def _job_fetch(_session: object, workspace_id: str, _name: str) -> FetchResult:
+        calls.append(workspace_id)
+        return FetchResult([])
+
+    summary = refresh_resource_index(
+        session=session,
+        index=index,
+        resource_types=("workspace", "job"),
+        force=True,
+        fetchers={
+            "workspace": refresh_module._workspace_fetch,
+            "job": _job_fetch,
+        },
+    )
+
+    assert summary.error_count == 0
+    assert calls == ["workspace-live"]
+
+
+def test_workspace_failure_preserves_last_successful_snapshot(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from inspire.cli.utils import resource_index_refresh as refresh_module
+    from inspire.platform.web.browser_api import workspaces
+
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope("workspace")
+    index.reconcile(
+        scope,
+        [ResourceIdentity(resource_id="workspace-old", name="Old")],
+    )
+
+    def _fail(_session: object) -> list[dict]:
+        raise RuntimeError("temporary workspace API failure")
+
+    monkeypatch.setattr(workspaces, "try_enumerate_workspaces", _fail)
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("workspace",),
+        force=True,
+        fetchers={"workspace": refresh_module._workspace_fetch},
+    )
+
+    assert summary.error_count == 1
+    assert [
+        item.resource_id for item in index.lookup(scope, "Old", fresh_only=False)
+    ] == ["workspace-old"]
+
+
+def test_empty_workspace_snapshot_is_distinct_from_failure(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope("workspace")
+    index.reconcile(
+        scope,
+        [ResourceIdentity(resource_id="workspace-old", name="Old")],
+    )
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("workspace",),
+        force=True,
+        fetchers={"workspace": lambda *_args: FetchResult([], complete=True)},
+    )
+
+    assert summary.error_count == 0
+    assert index.lookup(scope, "Old", fresh_only=False) == []
+
+
+def test_compute_group_failure_preserves_last_successful_rows(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from inspire.cli.utils import resource_index_refresh as refresh_module
+    from inspire.platform.web.browser_api.availability import api
+
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope("compute-group", "workspace-one")
+    index.reconcile(
+        scope,
+        [ResourceIdentity(resource_id="group-old", name="GPU")],
+    )
+
+    def _fail(*_args: object, **_kwargs: object) -> list[dict]:
+        raise RuntimeError("temporary compute-group API failure")
+
+    monkeypatch.setattr(api, "list_compute_groups", _fail)
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("compute-group",),
+        force=True,
+        fetchers={
+            "workspace": _workspace_fetch,
+            "compute-group": refresh_module._compute_group_fetch,
+        },
+    )
+
+    assert summary.error_count == 1
+    assert [
+        item.resource_id for item in index.lookup(scope, "GPU", fresh_only=False)
+    ] == ["group-old"]
+
+
 def test_cache_status_and_clear_never_expose_workspace_handle(
     tmp_path,
     monkeypatch,
