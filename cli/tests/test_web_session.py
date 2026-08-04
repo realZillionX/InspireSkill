@@ -1293,6 +1293,100 @@ def test_save_writes_to_account_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert target.exists()
 
 
+def test_save_prefers_bound_account_over_current_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    import inspire.accounts as accounts_mod
+
+    monkeypatch.setattr(accounts_mod, "current_account", lambda: "beta")
+
+    session = WebSession(
+        storage_state={"cookies": []},
+        created_at=time.time(),
+        login_username="alpha-user",
+        account="alpha",
+    )
+    session.save()
+
+    alpha_cache = (
+        fake_home / ".inspire" / "accounts" / "alpha" / "web_session.json"
+    )
+    beta_cache = fake_home / ".inspire" / "accounts" / "beta" / "web_session.json"
+    assert json.loads(alpha_cache.read_text())["account"] == "alpha"
+    assert not beta_cache.exists()
+
+
+def test_loaded_session_stays_bound_after_current_account_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    import inspire.accounts as accounts_mod
+
+    active_account = {"name": "alpha"}
+    monkeypatch.setattr(
+        accounts_mod,
+        "current_account",
+        lambda: active_account["name"],
+    )
+
+    alpha_cache = (
+        fake_home / ".inspire" / "accounts" / "alpha" / "web_session.json"
+    )
+    alpha_cache.parent.mkdir(parents=True)
+    original = WebSession(
+        storage_state={"cookies": []},
+        created_at=time.time(),
+        login_username="before",
+        account="alpha",
+    )
+    alpha_cache.write_text(json.dumps(original.to_dict()))
+
+    loaded = WebSession.load()
+    assert loaded is not None
+    assert loaded.account == "alpha"
+
+    active_account["name"] = "beta"
+    loaded.login_username = "after"
+    loaded.save()
+
+    beta_cache = fake_home / ".inspire" / "accounts" / "beta" / "web_session.json"
+    assert json.loads(alpha_cache.read_text())["login_username"] == "after"
+    assert not beta_cache.exists()
+
+
+def test_save_explicit_account_overrides_bound_and_current_accounts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    import inspire.accounts as accounts_mod
+
+    monkeypatch.setattr(accounts_mod, "current_account", lambda: "beta")
+
+    session = WebSession(
+        storage_state={"cookies": []},
+        created_at=time.time(),
+        account="alpha",
+    )
+    session.save(account="gamma")
+
+    accounts_root = fake_home / ".inspire" / "accounts"
+    gamma_cache = accounts_root / "gamma" / "web_session.json"
+    assert json.loads(gamma_cache.read_text())["account"] == "gamma"
+    assert session.account == "gamma"
+    assert not (accounts_root / "alpha" / "web_session.json").exists()
+    assert not (accounts_root / "beta" / "web_session.json").exists()
+
+
 def test_load_env_vars_do_not_influence_account_resolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

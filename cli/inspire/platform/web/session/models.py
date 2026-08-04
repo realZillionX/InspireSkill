@@ -4,15 +4,15 @@ Storage: ``~/.inspire/accounts/<active>/web_session.json``, colocated with
 the account's ``config.toml`` and ``bridges.json``. Switching account
 switches session cache in lockstep.
 
-No legacy fallback: the CLI requires an active account, and the session
-cache keys off whatever ``inspire.accounts.current_account()`` returns
-at call time. An explicit ``account=`` override is still accepted for
-the rare callsite that knows better.
+No legacy fallback: the CLI requires an active account. Session saves
+prefer an explicit ``account=`` override, then the account already bound
+to the session, and only then ``inspire.accounts.current_account()``.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -54,6 +54,118 @@ def get_session_cache_file(account: Optional[str] = None) -> Optional[Path]:
     if not name:
         return None
     return Path.home() / ".inspire" / "accounts" / name / "web_session.json"
+
+
+def _is_finite_number(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except (OverflowError, TypeError):
+        return False
+
+
+def _is_string_list(value: object) -> bool:
+    return value is None or (
+        isinstance(value, list) and all(isinstance(item, str) for item in value)
+    )
+
+
+def _is_string_mapping(value: object) -> bool:
+    return value is None or (
+        isinstance(value, dict)
+        and all(isinstance(key, str) and isinstance(item, str) for key, item in value.items())
+    )
+
+
+def _is_bool_mapping(value: object) -> bool:
+    return value is None or (
+        isinstance(value, dict)
+        and all(isinstance(key, str) and isinstance(item, bool) for key, item in value.items())
+    )
+
+
+def _is_valid_storage_cookie(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if not isinstance(value.get("name"), str) or not value["name"]:
+        return False
+    if not isinstance(value.get("value"), str):
+        return False
+
+    for field in ("domain", "path"):
+        if field in value and not isinstance(value[field], str):
+            return False
+    if "expires" in value and value["expires"] is not None and not _is_finite_number(
+        value["expires"]
+    ):
+        return False
+    for field in ("httpOnly", "secure"):
+        if field in value and not isinstance(value[field], bool):
+            return False
+    if "sameSite" in value and value["sameSite"] not in {"Strict", "Lax", "None"}:
+        return False
+    return True
+
+
+def _is_valid_storage_origin(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    origin = value.get("origin")
+    if not isinstance(origin, str) or not origin:
+        return False
+    local_storage = value.get("localStorage", [])
+    if not isinstance(local_storage, list):
+        return False
+    return all(
+        isinstance(item, dict)
+        and isinstance(item.get("name"), str)
+        and isinstance(item.get("value"), str)
+        for item in local_storage
+    )
+
+
+def _is_valid_storage_state(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if "cookies" in value:
+        cookies = value["cookies"]
+        if not isinstance(cookies, list) or not all(
+            _is_valid_storage_cookie(cookie) for cookie in cookies
+        ):
+            return False
+    if "origins" in value:
+        origins = value["origins"]
+        if not isinstance(origins, list) or not all(
+            _is_valid_storage_origin(origin) for origin in origins
+        ):
+            return False
+    return True
+
+
+def _is_valid_session_cache_payload(data: object) -> bool:
+    """Return whether a decoded cache has the shape required by its consumers."""
+    if not isinstance(data, dict):
+        return False
+    if not _is_finite_number(data.get("created_at")):
+        return False
+
+    storage_state = data.get("storage_state")
+    if storage_state is not None and not _is_valid_storage_state(storage_state):
+        return False
+    if not _is_string_mapping(data.get("cookies")):
+        return False
+
+    for field in ("workspace_id", "login_username", "base_url", "account"):
+        if data.get(field) is not None and not isinstance(data[field], str):
+            return False
+    if data.get("user_detail") is not None and not isinstance(data["user_detail"], dict):
+        return False
+    if not _is_string_list(data.get("all_workspace_ids")):
+        return False
+    if not _is_string_mapping(data.get("all_workspace_names")):
+        return False
+    return _is_bool_mapping(data.get("all_workspace_fair_scheduling"))
 
 
 @dataclass
@@ -105,6 +217,12 @@ class WebSession:
         cookies = data.get("cookies")
         if storage_state is None:
             storage_state = {"cookies": [], "origins": []}
+        elif isinstance(storage_state, dict):
+            storage_state = dict(storage_state)
+            storage_state.setdefault("cookies", [])
+            storage_state.setdefault("origins", [])
+        else:
+            raise ValueError("Invalid session storage state.")
         return cls(
             storage_state=storage_state,
             cookies=cookies,
@@ -120,11 +238,16 @@ class WebSession:
         )
 
     def save(self, account: Optional[str] = None) -> None:
-        """Save session under the account's directory. No-op without an account."""
-        cache_file = get_session_cache_file(account)
-        if cache_file is None:
+        """Save under the explicit, bound, or current account, in that order."""
+        resolved_account = _resolve_account_for_storage(
+            account if account is not None else self.account
+        )
+        if not resolved_account:
             return
-        self.account = _resolve_account_for_storage(account)
+        cache_file = get_session_cache_file(resolved_account)
+        if cache_file is None:  # pragma: no cover - resolved account is explicit
+            return
+        self.account = resolved_account
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         # Restrict permissions: session contains sensitive cookies/tokens.
         tmp_path = cache_file.with_suffix(".tmp")
@@ -152,11 +275,13 @@ class WebSession:
         if cache_file is None or not cache_file.exists():
             return None
         try:
-            with open(cache_file) as f:
+            with open(cache_file, encoding="utf-8") as f:
                 data = json.load(f)
-            session = cls.from_dict(data)
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return None
+        if not _is_valid_session_cache_payload(data):
+            return None
+        session = cls.from_dict(data)
         session.account = _resolve_account_for_storage(account)
         if allow_expired or session.is_valid():
             return session
