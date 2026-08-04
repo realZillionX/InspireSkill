@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from click.testing import CliRunner
 
 from inspire.cli.commands.notebook import remote_shell as shell_module
@@ -75,11 +77,10 @@ def test_shell_check_uses_jupyter_probe_when_policy_blocks_ssh(monkeypatch) -> N
     result = CliRunner().invoke(cli_main, ["notebook", "shell", "gpu-box", "--check"])
 
     assert result.exit_code == 0
-    assert "Shell transport: jupyter_terminal" in result.output
-    assert "OK" in result.output
+    assert result.output == "OK\n"
 
 
-def test_shell_check_json_reports_transport(monkeypatch) -> None:  # noqa: ANN001
+def test_shell_check_json_is_compact(monkeypatch) -> None:  # noqa: ANN001
     config = Config(username="", password="")
 
     monkeypatch.setattr(
@@ -113,8 +114,12 @@ def test_shell_check_json_reports_transport(monkeypatch) -> None:  # noqa: ANN00
     result = CliRunner().invoke(cli_main, ["--json", "notebook", "shell", "gpu-box", "--check"])
 
     assert result.exit_code == 0
-    assert '"transport": "jupyter_terminal"' in result.output
-    assert '"status": "success"' in result.output
+    assert json.loads(result.output)["data"] == {
+        "status": "success",
+        "returncode": 0,
+    }
+    assert "transport" not in result.output
+    assert "nb-123" not in result.output
 
 
 def test_shell_check_uses_ssh_noninteractive_transport(monkeypatch) -> None:  # noqa: ANN001
@@ -186,8 +191,7 @@ def test_shell_check_uses_ssh_noninteractive_transport(monkeypatch) -> None:  # 
     result = CliRunner().invoke(cli_main, ["notebook", "shell", "cpu-box", "--check"])
 
     assert result.exit_code == 0
-    assert "Shell transport: ssh" in result.output
-    assert "OK" in result.output
+    assert result.output == "OK\n"
     assert "shell-check-ok" not in result.output
     assert captured["capture_output"] is True
     assert "shell-check-ok" in str(captured["remote_command"])

@@ -559,7 +559,7 @@ def _resolve_notebook_id(
             EXIT_VALIDATION_ERROR,
             hint=(
                 "Use `inspire notebook list --workspace <workspace|all>` to find the name. "
-                "Use `inspire notebook id <name>` only for explicit platform lookup."
+                "Normal notebook commands resolve the name internally."
             ),
         )
 

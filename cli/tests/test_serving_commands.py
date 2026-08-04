@@ -11,6 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from click.testing import CliRunner
 
 from inspire import config as config_module
@@ -25,6 +26,8 @@ from inspire.cli.commands.serving.serving_commands import (
 )
 from inspire.cli.main import main as cli_main
 from inspire.platform.web import browser_api as browser_api_module
+
+_REAL_RESOLVE_SERVING_NAME = serving_commands_module._resolve_serving_name
 
 
 def _rows(n: int) -> list[dict[str, str]]:
@@ -46,31 +49,30 @@ def test_format_list_rows_empty_message() -> None:
     assert _format_list_rows([], total=0) == "No inference servings found."
 
 
-def test_format_list_rows_full_page_uses_total_line() -> None:
+def test_format_list_rows_is_compact_and_handle_free() -> None:
     out = _format_list_rows(_rows(3), total=3)
-    # Header present, sep present, all 3 rows, Total: 3 footer.
-    assert "Inference Servings" in out
-    # Platform handles are intentionally hidden in human format; row presence
-    # is asserted via the names themselves.
+    assert "Inference Servings" not in out
+    assert "Total:" not in out
+    assert "Showing" not in out
+    assert "---" not in out
     assert "sv-" not in out
     for i in range(3):
         assert f"demo-{i}" in out
-    assert "Total: 3" in out
-    assert "Showing" not in out
 
 
-def test_format_list_rows_paginated_uses_showing_line() -> None:
-    # 5 visible rows but server reports 230 total -> "Showing 5 of 230".
+def test_format_list_rows_does_not_emit_pagination_footer() -> None:
     out = _format_list_rows(_rows(5), total=230)
-    assert "Showing 5 of 230" in out
+    assert "demo-0" in out
     assert "Total:" not in out
-
-
-def test_format_list_rows_total_matches_len_falls_back_to_total_line() -> None:
-    """Edge: when total exactly matches len(rows), prefer the shorter Total line."""
-    out = _format_list_rows(_rows(10), total=10)
-    assert "Total: 10" in out
     assert "Showing" not in out
+
+
+def test_format_list_rows_ignores_server_total() -> None:
+    out = _format_list_rows(_rows(10), total=10)
+    assert "demo-9" in out
+    assert "Inference Servings" not in out
+    assert "Showing" not in out
+    assert "Total:" not in out
 
 
 def test_format_configs_renders_nested_config_shape() -> None:
@@ -91,7 +93,7 @@ def test_format_configs_renders_nested_config_shape() -> None:
         }
     )
 
-    assert "Auto-stop: enabled" in out
+    assert "auto-stop=enabled" in out
     assert "gpu=8-16" in out
     assert "GPU<20% for 5h" in out
 
@@ -171,6 +173,39 @@ def _patch_delete_deps(monkeypatch) -> dict[str, Any]:  # noqa: ANN001
 
     monkeypatch.setattr(browser_api_module, "delete_serving", fake_delete_serving)
     return calls
+
+
+def test_serving_raw_handle_is_rejected_before_detail_api(monkeypatch) -> None:  # noqa: ANN001
+    config = config_module.Config(username="user", password="pass")
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=True: (config, {})),
+    )
+    monkeypatch.setattr(serving_commands_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        serving_commands_module,
+        "_resolve_workspace_id",
+        lambda _config, _workspace: "ws-1",
+    )
+    monkeypatch.setattr(
+        serving_commands_module,
+        "_resolve_serving_name",
+        _REAL_RESOLVE_SERVING_NAME,
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_serving_detail",
+        lambda **_kwargs: pytest.fail("raw handle must be rejected before API lookup"),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["serving", "status", "sv-12345678", "--workspace", "Test Workspace"],
+    )
+
+    assert result.exit_code != 0
+    assert "platform handle" in result.output
 
 
 def test_serving_delete_prompts_by_default(monkeypatch) -> None:  # noqa: ANN001

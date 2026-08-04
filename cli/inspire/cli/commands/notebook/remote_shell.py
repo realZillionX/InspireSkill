@@ -69,17 +69,15 @@ def _emit_shell_check_success(
     returncode: int,
     output: str,
 ) -> None:
+    del transport, output
     emit_output_success(
         ctx,
         payload={
             "status": "success",
-            "transport": transport,
             "returncode": returncode,
-            "output": output,
         },
     )
     if not ctx.json_output:
-        click.echo(f"Shell transport: {transport}")
         click.echo("OK")
 
 
@@ -178,11 +176,7 @@ def bridge_ssh(
                 hint=result.output.strip() or None,
             )
         if not ctx.json_output:
-            click.echo("Opening JupyterTerminal shell...")
-            click.echo(f"Notebook: {scrub_raw_ids(notebook)}")
-            click.echo(f"Working directory: {scrub_raw_ids(remote_cwd or '$HOME')}")
-            click.echo("Press Ctrl-] to disconnect")
-            click.echo("")
+            click.echo(f"Opening shell for '{scrub_raw_ids(notebook)}'.")
         code = browser_api_module.open_jupyter_terminal_shell(
             notebook_id=policy.notebook_id,
             session=policy.session,
@@ -424,11 +418,7 @@ def bridge_ssh(
             sys.exit(returncode if returncode is not None else EXIT_GENERAL_ERROR)
 
         if not opened_once and not ctx.json_output:
-            click.echo("Opening SSH connection...")
-            click.echo(f"Notebook: {scrub_raw_ids(bridge_name)}")
-            click.echo(f"Working directory: {scrub_raw_ids(remote_cwd or '$HOME')}")
-            click.echo("Press Ctrl+D or type 'exit' to disconnect")
-            click.echo("")
+            click.echo(f"Opening shell for '{scrub_raw_ids(notebook)}'.")
             opened_once = True
 
         try:

@@ -7,6 +7,7 @@ import shlex
 import click
 
 from inspire.cli.context import Context, pass_context
+from inspire.cli.utils.id_resolver import reject_id_at_boundary
 
 from .notebook_ssh_flow import run_notebook_ssh
 from .transport import emit_ssh_policy_error, preflight_notebook_transport_policy
@@ -104,6 +105,12 @@ def _ssh_open(
     setup_timeout: int,
 ) -> None:
     """Open an SSH shell or run a command on a notebook."""
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list",
+    )
     command = shlex.join(command_parts) if command_parts else None
     if workspace:
         policy = preflight_notebook_transport_policy(

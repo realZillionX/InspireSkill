@@ -23,6 +23,7 @@ from .notebook_lookup import (
     _validate_notebook_account_access,
 )
 from .notebook_presenters import _print_notebook_detail, _print_notebook_list
+from .public_output import public_notebook, public_operation
 from .notebook_ssh_flow import load_ssh_public_key
 from inspire.cli.context import (
     Context,
@@ -348,7 +349,7 @@ def stop_notebook_cmd(
     )
 
     try:
-        result = browser_api_module.stop_notebook(notebook_id=notebook_id, session=session)
+        browser_api_module.stop_notebook(notebook_id=notebook_id, session=session)
     except Exception as e:
         _handle_error(ctx, "APIError", f"Failed to stop notebook: {scrub_raw_ids(e)}", EXIT_API_ERROR)
         return
@@ -356,21 +357,12 @@ def stop_notebook_cmd(
     if ctx.json_output:
         click.echo(
             json_formatter.format_json(
-                {
-                    "notebook_id": notebook_id,
-                    "status": "stopping",
-                    "result": result,
-                }
+                public_operation(notebook, "stopping")
             )
         )
         return
 
-    click.echo(f"Notebook '{scrub_raw_ids(notebook)}' is being stopped.")
-    click.echo(
-        "Use "
-        f"`inspire notebook status {scrub_raw_ids(notebook)} --workspace {scrub_raw_ids(workspace)}` "
-        "to check status."
-    )
+    click.echo(f"Stopping notebook '{scrub_raw_ids(notebook)}'.")
 
 
 @click.command("delete")
@@ -435,7 +427,7 @@ def delete_notebook_cmd(
         )
 
     try:
-        result = browser_api_module.delete_notebook(notebook_id=notebook_id, session=session)
+        browser_api_module.delete_notebook(notebook_id=notebook_id, session=session)
     except Exception as e:
         _handle_error(
             ctx, "APIError", f"Failed to delete notebook: {scrub_raw_ids(e)}", EXIT_API_ERROR
@@ -445,11 +437,7 @@ def delete_notebook_cmd(
     if ctx.json_output:
         click.echo(
             json_formatter.format_json(
-                {
-                    "notebook_id": notebook_id,
-                    "status": "deleted",
-                    "result": result,
-                }
+                public_operation(notebook, "deleted")
             )
         )
         return
@@ -536,7 +524,7 @@ def start_notebook_cmd(
     )
 
     try:
-        result = browser_api_module.start_notebook(notebook_id=notebook_id, session=session)
+        browser_api_module.start_notebook(notebook_id=notebook_id, session=session)
     except Exception as e:
         _handle_error(
             ctx, "APIError", f"Failed to start notebook: {scrub_raw_ids(e)}", EXIT_API_ERROR
@@ -544,7 +532,7 @@ def start_notebook_cmd(
         return
 
     if not ctx.json_output:
-        click.echo(f"Notebook '{scrub_raw_ids(notebook)}' is being started.")
+        click.echo(f"Starting notebook '{scrub_raw_ids(notebook)}'.")
 
     notebook_detail = None
     if wait or post_start_spec is not None:
@@ -593,21 +581,10 @@ def start_notebook_cmd(
     if ctx.json_output:
         click.echo(
             json_formatter.format_json(
-                {
-                    "notebook_id": notebook_id,
-                    "status": "starting",
-                    "result": result,
-                }
+                public_operation(notebook, "starting")
             )
         )
         return
-
-    click.echo(
-        "Use "
-        f"`inspire notebook status {scrub_raw_ids(notebook)} --workspace {scrub_raw_ids(workspace)}` "
-        "to check status."
-    )
-
 
 @click.command("status")
 @click.argument("notebook")
@@ -679,7 +656,7 @@ def notebook_status(
         notebook_payload = data.get("data", {})
         notebook_detail = notebook_payload if isinstance(notebook_payload, dict) else {}
         if ctx.json_output:
-            click.echo(json_formatter.format_json(notebook_detail))
+            click.echo(json_formatter.format_json(public_notebook(notebook_detail)))
         else:
             _print_notebook_detail(notebook_detail)
         return
@@ -691,46 +668,6 @@ def notebook_status(
         EXIT_API_ERROR,
     )
     return
-
-
-@click.command("id")
-@click.argument("notebook")
-@click.option("--workspace", required=True, help="Workspace name or 'all'.")
-@pass_context
-def notebook_id_cmd(
-    ctx: Context,
-    notebook: str,
-    workspace: str,
-) -> None:
-    """Print the platform ID for a notebook name."""
-    session = require_web_session(ctx, hint=WEB_AUTH_HINT)
-    base_url = get_base_url()
-    config = load_config(ctx)
-    try:
-        workspace_ids, _ = resolve_workspace_query_scope(
-            config,
-            workspace=workspace,
-            session=session,
-        )
-    except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-        return
-    notebook_id, _ = _resolve_notebook_id(
-        ctx,
-        session=session,
-        config=config,
-        base_url=base_url,
-        identifier=notebook,
-        json_output=ctx.json_output,
-        workspace_ids=workspace_ids,
-    )
-
-    if ctx.json_output:
-        click.echo(
-            json_formatter.format_json({"name": notebook, "id": notebook_id}, allow_ids=True)
-        )
-    else:
-        click.echo(notebook_id)
 
 
 @click.command("list")

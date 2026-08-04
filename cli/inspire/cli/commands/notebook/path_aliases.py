@@ -40,22 +40,19 @@ def path_aliases_cmd() -> None:
 def list_path_aliases(ctx: Context) -> None:
     """List project-level remote path aliases."""
     try:
-        config_path, aliases = load_project_path_aliases()
+        _config_path, aliases = load_project_path_aliases()
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"config_path": str(config_path), "aliases": dict(sorted(aliases.items()))}
+                    {"aliases": dict(sorted(aliases.items()))}
                 )
             )
             return
         if not aliases:
             click.echo("No project path aliases found.")
-            click.echo(f"Path: {config_path}")
             return
-        click.echo("Project path aliases")
         for alias, remote_path in sorted(aliases.items()):
             click.echo(f"  {scrub_raw_ids(alias)}  {scrub_raw_ids(remote_path)}")
-        click.echo(f"Path: {config_path}")
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 
@@ -66,18 +63,17 @@ def list_path_aliases(ctx: Context) -> None:
 def show_path_alias(ctx: Context, alias: str) -> None:
     """Show one project-level remote path alias."""
     try:
-        config_path, aliases = load_project_path_aliases()
+        _config_path, aliases = load_project_path_aliases()
         resolved_alias, remote_path = _resolve_alias(alias, aliases)
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"alias": resolved_alias, "path": remote_path, "config_path": str(config_path)}
+                    {"alias": resolved_alias, "path": remote_path}
                 )
             )
             return
         click.echo(f"Path alias: {scrub_raw_ids(resolved_alias)}")
         click.echo(f"  path: {scrub_raw_ids(remote_path)}")
-        click.echo(f"Path: {config_path}")
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 
@@ -89,16 +85,15 @@ def show_path_alias(ctx: Context, alias: str) -> None:
 def set_path_alias(ctx: Context, alias: str, remote_path: str) -> None:
     """Create or replace a project-level remote path alias."""
     try:
-        config_path = write_project_path_alias(alias=alias, remote_path=remote_path)
+        write_project_path_alias(alias=alias, remote_path=remote_path)
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"alias": alias, "path": remote_path, "config_path": str(config_path)}
+                    {"alias": alias, "path": remote_path, "status": "saved"}
                 )
             )
             return
         click.echo(f"Path alias '{scrub_raw_ids(alias)}' = {scrub_raw_ids(remote_path)}")
-        click.echo(f"Path: {config_path}")
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 
@@ -112,16 +107,15 @@ def delete_path_alias(ctx: Context, alias: str, yes: bool) -> None:
     try:
         if not yes and not ctx.json_output:
             click.confirm(f"Delete path alias '{scrub_raw_ids(alias)}'?", abort=True)
-        config_path = delete_project_path_alias(alias)
+        delete_project_path_alias(alias)
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"alias": alias, "deleted": True, "config_path": str(config_path)}
+                    {"alias": alias, "status": "deleted"}
                 )
             )
             return
         click.echo(f"Deleted path alias: {scrub_raw_ids(alias)}")
-        click.echo(f"Path: {config_path}")
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 

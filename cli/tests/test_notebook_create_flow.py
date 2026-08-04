@@ -386,14 +386,7 @@ def test_create_notebook_and_report_accepts_id_response_without_human_raw_id(
         "logic_compute_group_id": "lcg-test",
         "quota_id": "quota-h200",
     }
-    assert "Notebook created successfully!" in out
-    assert "Name: fresh-notebook" in out
-    assert "Workspace: gpu" in out
-    assert "Compute group: H200 Group" in out
-    assert "inspire notebook events fresh-notebook" in out
-    assert "inspire notebook ssh fresh-notebook --workspace gpu" in out
-    assert 'inspire notebook exec fresh-notebook "pwd"' in out
-    assert "inspire notebook delete fresh-notebook --workspace gpu --yes" in out
+    assert out == "Created notebook 'fresh-notebook'.\n"
     assert "nb-secret-1111" not in out
     assert "ID:" not in out
 
@@ -482,8 +475,8 @@ def test_wait_failure_reports_events_and_suppresses_raw_notebook_id(
     assert "terminal status: FAILED" in err
     assert "sub-status: GPU_ALLOC_ERROR" in err
     assert "Platform events:" in err
-    assert "FailedScheduling: notebook <notebook-id> cannot allocate GPU" in err
-    assert "NodeName: node-a" in err
+    assert "FailedScheduling: notebook cannot allocate GPU" in err
+    assert "NodeName: node-a" not in err
     assert "nb-secret-2222" not in err
 
 

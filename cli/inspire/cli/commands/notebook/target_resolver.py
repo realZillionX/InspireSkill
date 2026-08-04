@@ -17,7 +17,10 @@ from inspire.bridge import tunnel as tunnel_module
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR
 from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+
+from .public_output import sanitize_public_text
 
 CACHE_VERSION = 1
 TARGET_CACHE_FILENAME = "notebook-targets.json"
@@ -154,20 +157,19 @@ def list_notebook_targets() -> list[dict[str, Any]]:
     for key, raw_entry in sorted(targets.items()):
         if not isinstance(raw_entry, dict):
             continue
-        identifier, workspace_key = _split_target_cache_key(str(key))
-        notebook_id = str(raw_entry.get("notebook_id") or "")
+        identifier, _workspace_key = _split_target_cache_key(str(key))
+        name = sanitize_public_text(
+            raw_entry.get("notebook_name") or identifier,
+            omit_urls=True,
+        ) or "(unknown)"
         rows.append(
             {
-                "key": key,
-                "identifier": identifier,
-                "workspace_key": workspace_key,
-                "account": raw_entry.get("account"),
-                "bridge_name": raw_entry.get("bridge_name"),
-                "notebook_name": raw_entry.get("notebook_name"),
-                "has_notebook_id": bool(notebook_id),
-                "notebook_id_prefix": notebook_id[:8] if notebook_id else None,
-                "workspace_name": raw_entry.get("workspace_name"),
-                "workspace_id": raw_entry.get("workspace_id"),
+                "name": name,
+                "account": sanitize_public_text(raw_entry.get("account"), omit_urls=True),
+                "workspace": sanitize_public_text(
+                    raw_entry.get("workspace_name"),
+                    omit_urls=True,
+                ),
                 "updated_at": raw_entry.get("updated_at"),
             }
         )
@@ -374,15 +376,13 @@ def _candidate_label(candidate: NotebookTargetCandidate, index: int | None = Non
         parts.append(f"[{index}]")
     parts.extend(
         [
-            f"account={candidate.account or '(none)'}",
-            f"notebook={bridge.notebook_name or bridge.name}",
-            f"workspace={bridge.workspace_name or bridge.workspace_id or '(unknown)'}",
-            f"bridge={bridge.name}",
+            f"account={sanitize_public_text(candidate.account, omit_urls=True) or '(none)'}",
+            "notebook="
+            f"{sanitize_public_text(bridge.notebook_name, omit_urls=True) or '(unknown)'}",
+            f"workspace={sanitize_public_text(bridge.workspace_name, omit_urls=True) or '(unknown)'}",
         ]
     )
-    if bridge.notebook_id:
-        parts.append(f"id={bridge.notebook_id}")
-    return "  ".join(scrub_raw_ids(part) for part in parts)
+    return "  ".join(parts)
 
 
 def _candidate_hint(candidates: list[NotebookTargetCandidate]) -> str:
@@ -508,9 +508,12 @@ def resolve_cached_notebook_target(
     Returns ``None`` when no matching cached bridge exists. Ambiguous matches
     either prompt or exit with a candidate list.
     """
-    notebook = str(notebook or "").strip()
-    if not notebook:
-        return None
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list",
+    )
 
     selector = str(account or "").strip()
     if selector and selector.lower() != "all":

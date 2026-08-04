@@ -393,7 +393,6 @@ def try_exec_via_ssh_tunnel(
                         ctx,
                         payload={
                             "status": "success",
-                            "method": "ssh_tunnel",
                             "returncode": returncode,
                             "output": stdout + stderr,
                         },
@@ -507,7 +506,6 @@ def try_exec_via_jupyter_terminal(
                 ctx,
                 payload={
                     "status": "success",
-                    "method": "jupyter_terminal",
                     "returncode": result.returncode,
                     "output": result.output,
                 },
@@ -523,7 +521,6 @@ def try_exec_via_jupyter_terminal(
                         "message": f"Command failed with exit code {result.returncode}",
                     },
                     "data": {
-                        "method": "jupyter_terminal",
                         "returncode": result.returncode,
                         "output": result.output,
                     },
@@ -612,10 +609,8 @@ def exec_via_workflow(
             ctx,
             payload={
                 "status": "triggered",
-                "request_id": request_id,
-                "command": command,
             },
-            text="Triggered bridge exec request",
+            text="Triggered.",
         )
         return EXIT_SUCCESS
 
@@ -667,16 +662,12 @@ def exec_via_workflow(
             click.echo(scrub_raw_ids(output_log))
 
     if result.get("conclusion") != "success":
-        hint = result.get("html_url") or None
         emit_output_error(
             ctx,
             error_type="BridgeActionFailed",
             message=f"Action failed: {result.get('conclusion')}",
             exit_code=EXIT_GENERAL_ERROR,
-            hint=hint,
-            human_lines=[
-                f"Action failed: {result.get('conclusion')} (see {result.get('html_url', '')})"
-            ],
+            human_lines=[f"Action failed: {result.get('conclusion')}"],
         )
         return EXIT_GENERAL_ERROR
 
@@ -697,8 +688,6 @@ def exec_via_workflow(
 
     if _verbose_output(ctx):
         click.echo("OK Action completed successfully")
-        if result.get("html_url"):
-            click.echo(f"Workflow: {result.get('html_url')}")
         if download:
             click.echo("Artifacts downloaded")
     else:
@@ -706,7 +695,6 @@ def exec_via_workflow(
             ctx,
             payload={
                 "status": "success",
-                "request_id": request_id,
                 "artifact_downloaded": bool(download),
                 "output": output_log,
             },

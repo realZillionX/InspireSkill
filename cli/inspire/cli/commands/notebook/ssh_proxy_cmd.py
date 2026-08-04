@@ -12,6 +12,7 @@ from inspire.bridge.tunnel import (
     load_tunnel_config,
 )
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, pass_context
+from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 from .notebook_ssh_flow import run_notebook_ssh
@@ -122,6 +123,12 @@ def ssh_proxy_cmd(
     traffic on stdin/stdout. Bootstrap diagnostics are written to stderr;
     rtunnel's own lifecycle logs are suppressed by default.
     """
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list",
+    )
     target = _load_proxy_target(
         ctx,
         notebook=notebook,

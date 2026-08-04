@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from click.testing import CliRunner
 
@@ -181,11 +182,16 @@ def test_resolve_returns_none_when_browser_fails(monkeypatch) -> None:  # noqa: 
 # ---------------------------------------------------------------------------
 
 
-def _patch_resolve(monkeypatch) -> None:  # noqa: ANN001
+def _patch_resolve(monkeypatch) -> list[str]:  # noqa: ANN001
+    opened: list[str] = []
     monkeypatch.setattr(
         url_cmd_mod,
         "_resolve_notebook",
-        lambda ctx, notebook, workspace: (object(), _BASE_URL, _NOTEBOOK_ID),
+        lambda ctx, notebook, workspace: (
+            SimpleNamespace(storage_state={}),
+            _BASE_URL,
+            _NOTEBOOK_ID,
+        ),
     )
     monkeypatch.setattr(
         url_cmd_mod,
@@ -197,67 +203,71 @@ def _patch_resolve(monkeypatch) -> None:  # noqa: ANN001
             reason="test",
         ),
     )
+    monkeypatch.setattr(
+        url_cmd_mod.webbrowser,
+        "open",
+        lambda url, **_kwargs: opened.append(url) or True,
+    )
+    return opened
 
 
-def test_url_prints_entrance_link(monkeypatch) -> None:  # noqa: ANN001
-    _patch_resolve(monkeypatch)
+def test_url_opens_entrance_link_without_printing_it(monkeypatch) -> None:  # noqa: ANN001
+    opened = _patch_resolve(monkeypatch)
     result = CliRunner().invoke(cli_main, ["notebook", "url", "nb", "--workspace", "CPU资源空间"])
     assert result.exit_code == 0
-    assert result.output.strip() == f"{_BASE_URL}/ide?notebook_id={_NOTEBOOK_ID}"
+    assert opened == [f"{_BASE_URL}/ide?notebook_id={_NOTEBOOK_ID}"]
+    assert result.output == "Opened notebook 'nb'.\n"
+    assert _BASE_URL not in result.output
+    assert _NOTEBOOK_ID not in result.output
 
 
-def test_url_json(monkeypatch) -> None:  # noqa: ANN001
-    _patch_resolve(monkeypatch)
+def test_url_json_is_name_only(monkeypatch) -> None:  # noqa: ANN001
+    opened = _patch_resolve(monkeypatch)
     result = CliRunner().invoke(
         cli_main, ["--json", "notebook", "url", "nb", "--workspace", "CPU资源空间"]
     )
     assert result.exit_code == 0
+    assert opened == [f"{_BASE_URL}/ide?notebook_id={_NOTEBOOK_ID}"]
     data = json.loads(result.output)["data"]
-    assert data == {
-        "name": "nb",
-        "url": f"{_BASE_URL}/ide?notebook_id={_NOTEBOOK_ID}",
-    }
+    assert data == {"name": "nb", "status": "opened"}
+    assert _BASE_URL not in result.output
+    assert _NOTEBOOK_ID not in result.output
 
 
-def test_vscode_proxy_suffix_prints_path(monkeypatch) -> None:  # noqa: ANN001
-    _patch_resolve(monkeypatch)
+def test_vscode_proxy_suffix_opens_ide_without_printing_path(monkeypatch) -> None:  # noqa: ANN001
+    opened = _patch_resolve(monkeypatch)
     monkeypatch.setattr(
-        browser_api_mod, "resolve_notebook_vscode_proxy_suffix", lambda *a, **k: _SUFFIX
+        browser_api_mod, "resolve_notebook_vscode_ide_url", lambda *a, **k: _IDE_URL
     )
     result = CliRunner().invoke(
         cli_main, ["notebook", "vscode-proxy-suffix", "nb", "--workspace", "CPU资源空间"]
     )
     assert result.exit_code == 0
-    assert result.output.strip() == _SUFFIX
+    assert opened == [_IDE_URL]
+    assert result.output == "Opened notebook 'nb'.\n"
+    assert _SUFFIX not in result.output
+    assert _NOTEBOOK_ID not in result.output
 
 
-def test_vscode_proxy_suffix_json(monkeypatch) -> None:  # noqa: ANN001
-    _patch_resolve(monkeypatch)
+def test_vscode_proxy_suffix_json_is_name_only(monkeypatch) -> None:  # noqa: ANN001
+    opened = _patch_resolve(monkeypatch)
     monkeypatch.setattr(
-        browser_api_mod, "resolve_notebook_vscode_proxy_suffix", lambda *a, **k: _SUFFIX
+        browser_api_mod, "resolve_notebook_vscode_ide_url", lambda *a, **k: _IDE_URL
     )
     result = CliRunner().invoke(
         cli_main,
         ["--json", "notebook", "vscode-proxy-suffix", "nb", "--workspace", "CPU资源空间"],
     )
     assert result.exit_code == 0
+    assert opened == [_IDE_URL]
     data = json.loads(result.output)["data"]
-    assert data == {"name": "nb", "vscode_proxy_suffix": _SUFFIX}
+    assert data == {"name": "nb", "status": "opened"}
+    assert _SUFFIX not in result.output
+    assert _NOTEBOOK_ID not in result.output
 
 
-def test_build_proxy_url_appends_port_path_and_queries() -> None:
-    out = url_cmd_mod._build_proxy_url(
-        "https://gw/ws-a/project-b/user-c/vscode/run?token=secret",
-        port=30000,
-        service_path="/v1/models?limit=1",
-    )
-    assert out == (
-        "https://gw/ws-a/project-b/user-c/vscode/run/proxy/30000/v1/models?token=secret&limit=1"
-    )
-
-
-def test_proxy_url_prints_full_service_url(monkeypatch) -> None:  # noqa: ANN001
-    _patch_resolve(monkeypatch)
+def test_proxy_url_opens_service_without_printing_url(monkeypatch) -> None:  # noqa: ANN001
+    opened = _patch_resolve(monkeypatch)
     monkeypatch.setattr(
         browser_api_mod,
         "resolve_notebook_port_forward_url",
@@ -278,11 +288,14 @@ def test_proxy_url_prints_full_service_url(monkeypatch) -> None:  # noqa: ANN001
         ],
     )
     assert result.exit_code == 0
-    assert result.output.strip() == f"{_IDE_URL}/proxy/30000/v1"
+    assert opened == [f"{_IDE_URL}/proxy/30000/v1"]
+    assert result.output == "Opened notebook 'nb'.\n"
+    assert _IDE_URL not in result.output
+    assert _NOTEBOOK_ID not in result.output
 
 
-def test_proxy_url_json(monkeypatch) -> None:  # noqa: ANN001
-    _patch_resolve(monkeypatch)
+def test_proxy_url_json_is_name_only(monkeypatch) -> None:  # noqa: ANN001
+    opened = _patch_resolve(monkeypatch)
     monkeypatch.setattr(
         browser_api_mod,
         "resolve_notebook_port_forward_url",
@@ -304,39 +317,43 @@ def test_proxy_url_json(monkeypatch) -> None:  # noqa: ANN001
         ],
     )
     assert result.exit_code == 0
+    assert opened == [f"{_IDE_URL}/proxy/30000/v1"]
     data = json.loads(result.output)["data"]
-    assert data == {
-        "name": "nb",
-        "port": 30000,
-        "path": "/v1",
-        "url": f"{_IDE_URL}/proxy/30000/v1",
-    }
+    assert data == {"name": "nb", "status": "opened"}
+    assert _IDE_URL not in result.output
+    assert _NOTEBOOK_ID not in result.output
 
 
 def test_vscode_proxy_suffix_refresh_passes_through(monkeypatch) -> None:  # noqa: ANN001
-    _patch_resolve(monkeypatch)
+    opened = _patch_resolve(monkeypatch)
     seen: dict[str, object] = {}
 
     def _capture(notebook_id, **kwargs):  # noqa: ANN001,ANN003
+        seen["notebook_id"] = notebook_id
         seen.update(kwargs)
-        return _SUFFIX
+        return _IDE_URL
 
-    monkeypatch.setattr(browser_api_mod, "resolve_notebook_vscode_proxy_suffix", _capture)
+    monkeypatch.setattr(browser_api_mod, "resolve_notebook_vscode_ide_url", _capture)
     result = CliRunner().invoke(
         cli_main,
         ["notebook", "vscode-proxy-suffix", "nb", "--workspace", "CPU资源空间", "--refresh"],
     )
     assert result.exit_code == 0
+    assert opened == [_IDE_URL]
+    assert seen["notebook_id"] == _NOTEBOOK_ID
     assert seen.get("refresh") is True
+    assert _NOTEBOOK_ID not in result.output
 
 
 def test_vscode_proxy_suffix_failure_errors(monkeypatch) -> None:  # noqa: ANN001
-    _patch_resolve(monkeypatch)
+    opened = _patch_resolve(monkeypatch)
     monkeypatch.setattr(
-        browser_api_mod, "resolve_notebook_vscode_proxy_suffix", lambda *a, **k: None
+        browser_api_mod, "resolve_notebook_vscode_ide_url", lambda *a, **k: None
     )
     result = CliRunner().invoke(
         cli_main, ["notebook", "vscode-proxy-suffix", "nb", "--workspace", "CPU资源空间"]
     )
     assert result.exit_code != 0
     assert "RUNNING" in result.stderr
+    assert opened == []
+    assert _NOTEBOOK_ID not in result.stderr

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Optional, cast
 
@@ -16,10 +17,9 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import human_formatter, json_formatter
-from inspire.cli.formatters.human_formatter import format_epoch
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import resolve_by_name
+from inspire.cli.utils.id_resolver import reject_id_at_boundary, resolve_by_name
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
@@ -32,7 +32,16 @@ from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import get_web_session
 
+from .public_output import (
+    public_configs,
+    public_operation,
+    public_serving,
+    sanitize_public_data,
+    sanitize_public_text,
+)
+
 _CUSTOM_DOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+logger = logging.getLogger(__name__)
 
 
 def _resolve_serving_name(
@@ -46,6 +55,12 @@ def _resolve_serving_name(
 
     Scope: ``my_serving=True`` (default) × explicit workspace, full page.
     """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list",
+    )
 
     def _lister():
         session = get_web_session()
@@ -97,21 +112,20 @@ def _validate_custom_domain(_ctx: click.Context, _param: click.Parameter, value:
 
 def _resolve_project_id(
     *,
+    ctx: Context,
     workspace_id: Optional[str],
     session,
     config: Config,
     requested: Optional[str],
-    allow_config_raw_id: bool = False,
 ) -> Optional[str]:
     if not requested:
         return None
-    if requested.startswith("project-"):
-        if allow_config_raw_id:
-            return requested
-        raise ConfigError(
-            "--project takes a project name. "
-            "See `inspire project list` or `inspire config context`."
-        )
+    requested = reject_id_at_boundary(
+        ctx,
+        requested,
+        resource_type="project",
+        list_command="inspire project list",
+    )
     if requested in config.projects:
         return config.projects[requested]
     for project_id, metadata in config.project_catalog.items():
@@ -138,8 +152,7 @@ def _resolve_image_for_create(raw: str, *, session, ctx: Context) -> tuple[str, 
         try:
             images = browser_api_module.list_images_by_source(source=source, session=session)
         except Exception as e:  # noqa: BLE001
-            if ctx.debug:
-                click.echo(f"  image lookup via {source} failed: {e}", err=True)
+            logger.debug("Image lookup failed for source %s: %s", source, e)
             continue
         for img in images:
             labels = {
@@ -247,7 +260,7 @@ def _serving_model_label(data: dict[str, Any]) -> str:
             or data.get("model_version")
         )
     else:
-        name = data.get("model_name") or model_payload or data.get("model_display_name")
+        name = data.get("model_name") or data.get("model_display_name")
         version = data.get("model_version")
     if not name:
         return ""
@@ -259,11 +272,13 @@ def _serving_image_label(data: dict[str, Any]) -> str:
     if isinstance(mirror_payload, dict):
         name = mirror_payload.get("name") or mirror_payload.get("image_name")
         version = mirror_payload.get("version")
-        url = mirror_payload.get("address") or mirror_payload.get("url")
         if name and version:
             return f"{name}:{version}"
-        return str(name or url or "")
-    return str(data.get("image") or data.get("mirror_url") or data.get("image_url") or "")
+        return str(name or "")
+    image = str(data.get("image") or data.get("image_name") or "").strip()
+    if image.lower().startswith(("http://", "https://", "docker://")):
+        return ""
+    return image
 
 
 def _serving_resource_label(data: dict[str, Any]) -> str:
@@ -298,43 +313,18 @@ def _serving_resource_label(data: dict[str, Any]) -> str:
 
 
 def _format_list_rows(rows: list[dict[str, str]], total: int) -> str:
-    """Render an inference-serving list.
-
-    ``total`` is the server-reported total across all pages; it may be larger
-    than ``len(rows)`` when the caller is paginating. The footer prints
-    ``Showing X of Y`` in that case so users are not misled into thinking
-    they have a complete view.
-    """
+    """Render a compact, handle-free inference-serving list."""
+    del total
     if not rows:
         return "No inference servings found."
-    widths = {
-        col: max(len(col.title().replace("_", " ")), *(len(r[col]) for r in rows))
-        for col in ("name", "status", "model", "replicas", "project", "updated_at")
-    }
-    header = (
-        f"{'Name':<{widths['name']}}  "
-        f"{'Status':<{widths['status']}}  "
-        f"{'Model':<{widths['model']}}  "
-        f"{'Replicas':<{widths['replicas']}}  "
-        f"{'Project':<{widths['project']}}  "
-        f"{'Updated':<{widths['updated_at']}}"
-    )
-    sep = "-" * len(header)
-    lines = ["Inference Servings", header, sep]
-    for r in rows:
-        lines.append(
-            f"{r['name']:<{widths['name']}}  "
-            f"{r['status']:<{widths['status']}}  "
-            f"{r['model']:<{widths['model']}}  "
-            f"{r['replicas']:<{widths['replicas']}}  "
-            f"{r['project']:<{widths['project']}}  "
-            f"{r['updated_at']:<{widths['updated_at']}}"
-        )
-    lines.append(sep)
-    if total > len(rows):
-        lines.append(f"Showing {len(rows)} of {total}")
-    else:
-        lines.append(f"Total: {len(rows)}")
+    lines: list[str] = []
+    for row in rows:
+        parts = [row["name"], row["status"]]
+        for key in ("model", "replicas", "project", "updated_at"):
+            value = row.get(key) or "-"
+            if value != "-":
+                parts.append(f"{key}={value}")
+        lines.append("  ".join(parts))
     return "\n".join(lines)
 
 
@@ -364,7 +354,7 @@ def _format_auto_stop(rule: str) -> str:
 
         parsed = json.loads(rule)
     except Exception:
-        return scrub_raw_ids(rule)
+        return "-"
     conds = []
 
     def walk(node: Any) -> None:
@@ -378,7 +368,7 @@ def _format_auto_stop(rule: str) -> str:
             walk(child)
 
     walk(parsed)
-    return ", ".join(conds) if conds else scrub_raw_ids(rule)
+    return ", ".join(conds) if conds else "-"
 
 
 def _format_configs(data: dict[str, Any]) -> str:
@@ -397,12 +387,12 @@ def _format_configs(data: dict[str, Any]) -> str:
         return f"{len(configs) if isinstance(configs, dict) else 1} config section(s) available."
     if not items:
         return "No inference-serving config items returned."
-    lines = ["Available Inference Serving Configs"]
+    lines: list[str] = []
     if enable_auto_stop is not None:
-        lines.append(f"Auto-stop: {'enabled' if enable_auto_stop else 'disabled'}")
+        lines.append(f"auto-stop={'enabled' if enable_auto_stop else 'disabled'}")
     for i, item in enumerate(items, 1):
         if not isinstance(item, dict):
-            lines.append(f"[{i}] {scrub_raw_ids(item)}")
+            lines.append(f"config-{i}")
             continue
         gpu_min = item.get("gpu_count_min")
         gpu_max = item.get("gpu_count_max")
@@ -412,7 +402,7 @@ def _format_configs(data: dict[str, Any]) -> str:
         rule = _format_auto_stop(str(item.get("auto_stop_ruleset") or ""))
         if rule != "-":
             bits.append(f"auto_stop={rule}")
-        lines.append(f"[{i}] " + (", ".join(bits) if bits else _config_label(item, i)))
+        lines.append(", ".join(bits) if bits else _config_label(item, i))
     return "\n".join(lines)
 
 
@@ -451,6 +441,7 @@ def list_serving(
 
         session = get_web_session()
         project_id = _resolve_project_id(
+            ctx=ctx,
             workspace_id=resolved_workspace,
             session=session,
             config=config,
@@ -471,32 +462,59 @@ def list_serving(
                 json_formatter.format_json(
                     {
                         "total": total,
-                        "items": [s.raw if s.raw else s.__dict__ for s in items],
+                        "items": [
+                            {
+                                key: value
+                                for key, value in public_serving(s).items()
+                                if key
+                                in {
+                                    "name",
+                                    "status",
+                                    "model",
+                                    "image",
+                                    "project",
+                                    "workspace",
+                                    "resource",
+                                    "replicas",
+                                    "nodes_per_replica",
+                                    "priority",
+                                    "created_at",
+                                    "updated_at",
+                                }
+                            }
+                            for s in items
+                        ],
                     }
                 )
             )
             return
 
-        rows = [
-            {
-                "id": s.inference_serving_id or "-",
-                "name": scrub_raw_ids(s.name or "-"),
-                "status": scrub_raw_ids(s.status or "-"),
-                "model": scrub_raw_ids(
-                    f"{s.model_name} v{s.model_version}".strip()
-                    if s.model_name
-                    else "-"
-                ),
-                "replicas": (
-                    f"{s.replicas}x{s.node_num_per_replica}"
-                    if s.node_num_per_replica
-                    else str(s.replicas or "-")
-                ),
-                "project": scrub_raw_ids(s.project_name or "-"),
-                "updated_at": scrub_raw_ids(s.updated_at or s.created_at or "-"),
-            }
-            for s in items
-        ]
+        rows = []
+        for serving in items:
+            projected = public_serving(
+                serving,
+                fallback_name=str(getattr(serving, "name", "") or ""),
+            )
+            replicas = projected.get("replicas")
+            nodes_per_replica = projected.get("nodes_per_replica")
+            rows.append(
+                {
+                    "name": str(projected.get("name") or "-"),
+                    "status": str(projected.get("status") or "-"),
+                    "model": str(projected.get("model") or "-"),
+                    "replicas": (
+                        f"{replicas}x{nodes_per_replica}"
+                        if nodes_per_replica not in (None, "")
+                        else str(replicas or "-")
+                    ),
+                    "project": str(projected.get("project") or "-"),
+                    "updated_at": str(
+                        projected.get("updated_at")
+                        or projected.get("created_at")
+                        or "-"
+                    ),
+                }
+            )
         click.echo(_format_list_rows(rows, total=int(total) if total is not None else len(rows)))
 
     except ConfigError as e:
@@ -539,45 +557,37 @@ def status_serving(
         )
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json(data))
+            detail = public_serving(data, fallback_name=name)
+            resource_label = _serving_resource_label(data)
+            if resource_label:
+                detail["resource"] = resource_label
+            click.echo(json_formatter.format_json(detail))
             return
 
-        click.echo("Inference Serving Status")
-        click.echo(f"Name:     {scrub_raw_ids(data.get('name', 'N/A'))}")
-        click.echo(f"Status:   {scrub_raw_ids(data.get('status', 'N/A'))}")
-        if data.get("inference_serving_type"):
-            click.echo(f"Type:     {scrub_raw_ids(data.get('inference_serving_type'))}")
-        project_payload = data.get("project")
-        project_name = (
-            project_payload.get("name")
-            if isinstance(project_payload, dict)
-            else data.get("project_name")
-        )
-        if project_name:
-            click.echo(f"Project:  {scrub_raw_ids(project_name)}")
-        if data.get("replicas") is not None:
-            click.echo(f"Replicas: {data.get('replicas')}")
-        if data.get("node_num_per_replica") is not None:
-            click.echo(f"Nodes/rep: {data.get('node_num_per_replica')}")
-        if data.get("task_priority") not in (None, ""):
-            click.echo(f"Priority: {data.get('task_priority')}")
-        image_label = _serving_image_label(data)
-        if image_label:
-            click.echo(f"Image:    {scrub_raw_ids(image_label)}")
-        model_label = _serving_model_label(data)
-        if model_label:
-            click.echo(f"Model:    {scrub_raw_ids(model_label)}")
-        resource_label = _serving_resource_label(data)
-        if resource_label:
-            click.echo(f"Resource: {scrub_raw_ids(resource_label)}")
-        if data.get("command"):
-            click.echo(f"Command:  {scrub_raw_ids(data.get('command'))}")
-        if data.get("port") not in (None, ""):
-            click.echo(f"Port:     {data.get('port')}")
-        if data.get("created_at"):
-            click.echo(f"Created:  {scrub_raw_ids(format_epoch(data.get('created_at')))}")
-        if data.get("updated_at"):
-            click.echo(f"Updated:  {scrub_raw_ids(format_epoch(data.get('updated_at')))}")
+        detail = public_serving(data, fallback_name=name)
+        lines = [
+            f"Name: {detail.get('name') or name}",
+            f"Status: {detail.get('status') or 'N/A'}",
+        ]
+        for key, label in (
+            ("type", "Type"),
+            ("project", "Project"),
+            ("workspace", "Workspace"),
+            ("replicas", "Replicas"),
+            ("nodes_per_replica", "Nodes/rep"),
+            ("priority", "Priority"),
+            ("image", "Image"),
+            ("model", "Model"),
+            ("resource", "Resource"),
+            ("command", "Command"),
+            ("port", "Port"),
+            ("created_at", "Created"),
+            ("updated_at", "Updated"),
+        ):
+            value = detail.get(key)
+            if value not in (None, ""):
+                lines.append(f"{label}: {value}")
+        click.echo("\n".join(lines))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -614,13 +624,13 @@ def stop_serving(
             workspace_id=workspace_id,
             pick=pick,
         )
-        data = browser_api_module.stop_serving(
+        browser_api_module.stop_serving(
             inference_serving_id=inference_serving_id,
             session=session,
         )
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"name": name, "stopped": True, **data}))
+            click.echo(json_formatter.format_json(public_operation(name, "stopped")))
             return
 
         click.echo(human_formatter.format_success(f"Inference serving stopped: {name}"))
@@ -672,13 +682,13 @@ def delete_serving(
                 f"Permanently delete inference serving '{scrub_raw_ids(name)}'? This cannot be undone.",
                 abort=True,
             )
-        data = browser_api_module.delete_serving(
+        browser_api_module.delete_serving(
             inference_serving_id=inference_serving_id,
             session=session,
         )
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"name": name, "deleted": True, **data}))
+            click.echo(json_formatter.format_json(public_operation(name, "deleted")))
             return
 
         click.echo(human_formatter.format_success(f"Inference serving deleted: {name}"))
@@ -716,7 +726,7 @@ def configs_serving(
         )
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json(data))
+            click.echo(json_formatter.format_json(public_configs(data)))
             return
 
         click.echo(_format_configs(data))
@@ -869,6 +879,7 @@ def create_serving(
         if not workspace_id:
             raise ConfigError(profile_required_message("serving", "workspace"))
         project_id = _resolve_project_id(
+            ctx=ctx,
             workspace_id=workspace_id,
             session=session,
             config=config,
@@ -936,49 +947,60 @@ def create_serving(
             payload["custom_domain"] = custom_domain
 
         if dry_run:
-            plan = {
-                "dry_run": True,
-                "kind": "serving",
-                "name": name,
-                "workspace_name": workspace,
-                "project_name": project,
-                "compute_group_name": resolved.compute_group_name,
-                "image_name": image_label,
-                "model_name": model_label,
-                "model_version": final_model_version,
-                "resource": spec.display(),
-                "command": command,
-                "description": description,
-                "port": port,
-                "replicas": replicas,
-                "nodes_per_replica": nodes_per_replica,
-                "shm_gib": shm_gib,
-                "priority": final_priority,
-                "custom_domain": custom_domain,
-            }
+            plan = sanitize_public_data(
+                {
+                    "dry_run": True,
+                    "kind": "serving",
+                    "name": name,
+                    "workspace_name": workspace,
+                    "project_name": project,
+                    "compute_group_name": resolved.compute_group_name,
+                    "image_name": image_label,
+                    "model_name": model_label,
+                    "model_version": final_model_version,
+                    "resource": spec.display(),
+                    "command": command,
+                    "description": description,
+                    "port": port,
+                    "replicas": replicas,
+                    "nodes_per_replica": nodes_per_replica,
+                    "shm_gib": shm_gib,
+                    "priority": final_priority,
+                    "custom_domain": custom_domain,
+                },
+                omit_urls=True,
+            )
             if ctx.json_output:
                 click.echo(json_formatter.format_json(plan))
             else:
                 click.echo("Inference Serving Create Plan")
-                click.echo(f"Name:      {scrub_raw_ids(name)}")
-                click.echo(f"Project:   {scrub_raw_ids(project)}")
-                click.echo(f"Workspace: {scrub_raw_ids(workspace)}")
-                click.echo(f"Compute:   {scrub_raw_ids(resolved.compute_group_name)}")
+                click.echo(f"Name:      {sanitize_public_text(name, omit_urls=True)}")
+                click.echo(f"Project:   {sanitize_public_text(project, omit_urls=True)}")
+                click.echo(f"Workspace: {sanitize_public_text(workspace, omit_urls=True)}")
+                click.echo(
+                    "Compute:   "
+                    f"{sanitize_public_text(resolved.compute_group_name, omit_urls=True)}"
+                )
                 click.echo(f"Resource:  {spec.display()}")
-                click.echo(f"Image:     {scrub_raw_ids(image_label)}")
-                click.echo(f"Model:     {scrub_raw_ids(model_label)} v{final_model_version}")
-                click.echo(f"Command:   {scrub_raw_ids(command)}")
+                click.echo(f"Image:     {sanitize_public_text(image_label, omit_urls=True)}")
+                click.echo(
+                    f"Model:     {sanitize_public_text(model_label, omit_urls=True)} "
+                    f"v{final_model_version}"
+                )
+                click.echo(f"Command:   {sanitize_public_text(command, omit_urls=True)}")
                 click.echo(f"Port:      {port}")
                 click.echo(f"Replicas:  {replicas} x {nodes_per_replica} node(s)")
                 if shm_gib is not None:
                     click.echo(f"SHM:       {shm_gib} GiB")
                 click.echo(f"Priority:  {final_priority}")
                 if custom_domain:
-                    click.echo(f"Domain:    {scrub_raw_ids(custom_domain)}")
+                    click.echo(
+                        f"Domain:    {sanitize_public_text(custom_domain, omit_urls=True)}"
+                    )
                 click.echo("No serving was created.")
             return
 
-        data = browser_api_module.create_serving(
+        browser_api_module.create_serving(
             workspace_id=workspace_id,
             project_id=project_id,
             name=name,
@@ -998,7 +1020,16 @@ def create_serving(
             session=session,
         )
         if ctx.json_output:
-            click.echo(json_formatter.format_json(data))
+            click.echo(
+                json_formatter.format_json(
+                    public_operation(
+                        name,
+                        "created",
+                        model=model_label,
+                        model_version=final_model_version,
+                    )
+                )
+            )
             return
         click.echo(human_formatter.format_success(f"Inference serving created: {name}"))
 

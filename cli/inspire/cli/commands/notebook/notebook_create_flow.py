@@ -58,6 +58,7 @@ from .notebook_lookup import (
     _sort_notebook_items,
     _try_get_current_user_ids,
 )
+from .public_output import public_operation
 
 
 @dataclass(frozen=True)
@@ -134,7 +135,8 @@ def _format_create_diagnostics(
 def _sanitize_notebook_id(text: str, notebook_id: str) -> str:
     if not notebook_id:
         return text
-    return scrub_raw_ids(text.replace(notebook_id, "<notebook-id>"))
+    sanitized = scrub_raw_ids(text.replace(notebook_id, ""))
+    return " ".join(sanitized.split())
 
 
 def _event_message(event: dict) -> str:
@@ -419,35 +421,19 @@ def create_notebook_and_report(
             )
             click.echo(
                 json_formatter.format_json(
-                    {
-                        "notebook_id": notebook_id,
-                        "name": name,
-                        "resource": resource_display,
-                        "quota_id": quota.quota_id,
-                        "project": selected_project.name,
-                        "image": selected_image.name,
-                        "logic_compute_group_id": quota.logic_compute_group_id,
-                        "compute_group_name": quota.compute_group_name,
-                        "workspace_id": workspace_id,
-                        "workspace_name": workspace_name,
-                    }
+                    public_operation(
+                        name,
+                        "created",
+                        resource=resource_display,
+                        project=selected_project.name,
+                        image=selected_image.name,
+                        compute_group=quota.compute_group_name,
+                        workspace=workspace_name,
+                    )
                 )
             )
         else:
-            click.echo("\nNotebook created successfully!")
-            click.echo(f"  Name: {name}")
-            click.echo(f"  Workspace: {diagnostics.workspace}")
-            click.echo(f"  Project: {selected_project.name}")
-            click.echo(f"  Resource: {resource_display}")
-            click.echo(f"  Compute group: {quota.compute_group_name}")
-            click.echo(f"  Image: {selected_image.name}")
-            quoted_name = shlex.quote(name)
-            quoted_workspace = shlex.quote(str(diagnostics.workspace or workspace_id or ""))
-            click.echo("  Next:")
-            click.echo(f"    inspire notebook events {quoted_name} --workspace {quoted_workspace}")
-            click.echo(f"    inspire notebook ssh {quoted_name} --workspace {quoted_workspace}")
-            click.echo(f"    inspire notebook exec {quoted_name} \"pwd\"")
-            click.echo(f"    inspire notebook delete {quoted_name} --workspace {quoted_workspace} --yes")
+            click.echo(f"Created notebook '{scrub_raw_ids(name)}'.")
 
         return notebook_id
 
@@ -508,10 +494,6 @@ def maybe_wait_for_running(
             )
             if fetched_events:
                 hint_parts.append(fetched_events)
-        extra = detail.get("extra_info") or {}
-        for key in ("NodeName", "HostIP"):
-            if extra.get(key):
-                hint_parts.append(f"{key}: {extra[key]}")
         events_hint = "\n".join(hint_parts)
         _handle_error(
             ctx,
@@ -675,7 +657,7 @@ def _fetch_notebook_images(
                     workspace_id=workspace_id, source=source, session=session
                 )
                 if extra_images:
-                    if not json_output:
+                    if ctx.debug and not json_output:
                         click.echo(f"Searching {source.lower().replace('source_', '')} images...")
                     images = images + extra_images
                     if _find_image_match(images, image):
@@ -869,7 +851,7 @@ def run_notebook_create(
         return
 
     resource_display = format_quota_display(resolved_quota)
-    if not json_output:
+    if ctx.debug and not json_output:
         node_note = f", pinned to node {scrub_raw_ids(node)}" if node else ""
         click.echo(
             f"Creating notebook with {scrub_raw_ids(resource_display)} on "
@@ -911,7 +893,7 @@ def run_notebook_create(
         fair_scheduling=fair_scheduling,
         project_limit=selected_project.priority_name,
     )
-    if task_priority != uncapped_priority and not json_output:
+    if task_priority != uncapped_priority and ctx.debug and not json_output:
         click.echo(
             f"Capping priority {uncapped_priority} -> {task_priority} "
             f"(max for project '{scrub_raw_ids(selected_project.name)}')"
@@ -936,7 +918,7 @@ def run_notebook_create(
     if not selected_image:
         return
 
-    if not json_output:
+    if ctx.debug and not json_output:
         click.echo(f"Using image: {scrub_raw_ids(selected_image.name)}")
 
     name = _resolve_notebook_name(name, json_output=json_output)
@@ -995,12 +977,6 @@ def run_notebook_create(
         json_output=json_output,
     )
 
-    if not json_output:
-        click.echo(
-            "\nUse "
-            f"`inspire notebook status {scrub_raw_ids(name)} --workspace {scrub_raw_ids(workspace_label)}` "
-            "to check status."
-        )
 
 
 __all__ = ["run_notebook_create", "maybe_run_post_start", "format_quota_display"]

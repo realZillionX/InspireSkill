@@ -2133,10 +2133,12 @@ def test_run_notebook_ssh_reports_when_tunnel_not_ready(
     assert exc.value.code == EXIT_API_ERROR
     assert captured["type"] == "APIError"
     assert "SSH preflight failed" in captured["message"]
-    assert "Proxy readiness report:" in captured["hint"]
+    assert "Proxy readiness:" in captured["hint"]
+    assert "proxy.example" not in captured["hint"]
+    assert "notebook-12345678" not in captured["hint"]
 
 
-def test_notebook_connection_status_json_exposes_proxy_url_without_notebook_id(
+def test_notebook_connection_status_json_is_name_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tunnel_config = tunnel_module.TunnelConfig()
@@ -2164,10 +2166,14 @@ def test_notebook_connection_status_json_exposes_proxy_url_without_notebook_id(
 
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
-    bridge = payload["data"]["bridge"]
-    assert bridge["proxy_url"] == "https://proxy.example/proxy/31337/"
-    assert bridge["rtunnel_port"] == 31337
-    assert "notebook_id" not in bridge
+    data = payload["data"]
+    assert data["name"] == "gpu-main"
+    assert data["status"] == "connected"
+    assert isinstance(data["elapsed_ms"], int)
+    assert "bridge" not in data
+    assert "proxy.example" not in result.output
+    assert "31337" not in result.output
+    assert "notebook-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" not in result.output
 
 
 def test_notebook_path_commands_manage_project_path_alias(
@@ -2203,7 +2209,7 @@ def test_notebook_path_commands_manage_project_path_alias(
 
     list_result = runner.invoke(cli_main, ["notebook", "path", "list"])
     assert list_result.exit_code == EXIT_SUCCESS
-    assert "Project path aliases" in list_result.output
+    assert "Project path aliases" not in list_result.output
     assert "me" in list_result.output
     assert "/inspire/ssd/project/topic/alice/" in list_result.output
 
@@ -2398,4 +2404,4 @@ def test_notebook_shell_without_default_path_alias_uses_login_home(
     assert result.exit_code == EXIT_SUCCESS
     assert captured["bridge_name"] == "gpu-main"
     assert captured["remote_command"] is None
-    assert "Working directory: $HOME" in result.output
+    assert result.output == "Opening shell for 'gpu-main'.\n"

@@ -4,6 +4,7 @@ import importlib
 import json
 from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
@@ -85,6 +86,16 @@ def test_notebook_help_exposes_connection_and_openssh_commands() -> None:
         assert f"\n  {command} " in result.output
 
 
+def test_notebook_id_command_is_removed() -> None:
+    result = CliRunner().invoke(
+        cli_main,
+        ["notebook", "id", "demo-box", "--workspace", "CPU资源空间"],
+    )
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "No such command 'id'" in result.output
+
+
 def test_notebook_ssh_help_omits_legacy_commands() -> None:
     result = CliRunner().invoke(cli_main, ["notebook", "ssh", "--help"])
 
@@ -139,7 +150,64 @@ def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  
     assert "proxy.invalid" not in result.output
 
 
-def test_connection_list_json_keeps_proxy_url(monkeypatch) -> None:  # noqa: ANN001
+def test_ssh_config_uses_cli_name_when_cached_bridge_key_is_internal(monkeypatch) -> None:  # noqa: ANN001
+    bridge = BridgeProfile(
+        name="notebook-12345678",
+        proxy_url="https://proxy.invalid/proxy/31337/",
+        notebook_name=None,
+        workspace_name="CPU资源空间",
+    )
+    monkeypatch.setattr(
+        ssh_config_module,
+        "_load_cached_target",
+        lambda *_args, **_kwargs: SimpleNamespace(account=None, bridge=bridge),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "notebook", "ssh-config", "demo-box"],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    payload = json.loads(result.output)["data"]
+    assert payload["name"] == "demo-box"
+    assert "HostName demo-box" in payload["config"]
+    assert "notebook-12345678" not in result.output
+
+
+def test_ssh_config_rejects_raw_notebook_handle(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        ssh_config_module,
+        "_load_cached_target",
+        lambda *_args, **_kwargs: pytest.fail("raw handle must be rejected first"),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["notebook", "ssh-config", "nb-12345678"],
+    )
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "platform handle" in result.output
+
+
+def test_ssh_proxy_rejects_raw_notebook_handle(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        ssh_proxy_module,
+        "_load_proxy_target",
+        lambda *_args, **_kwargs: pytest.fail("raw handle must be rejected first"),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["notebook", "ssh-proxy", "nb-12345678"],
+    )
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert "platform handle" in result.output
+
+
+def test_connection_list_json_omits_proxy_url(monkeypatch) -> None:  # noqa: ANN001
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(
         BridgeProfile(
@@ -155,7 +223,15 @@ def test_connection_list_json_keeps_proxy_url(monkeypatch) -> None:  # noqa: ANN
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     payload = json.loads(result.output)
-    assert payload["data"]["connections"][0]["proxy_url"] == ("https://proxy.invalid/proxy/31337/")
+    assert payload["data"]["connections"] == [
+        {
+            "name": "demo-box",
+            "workspace": "CPU资源空间",
+            "public_internet": True,
+        }
+    ]
+    assert "proxy.invalid" not in result.output
+    assert "31337" not in result.output
 
 
 def test_connection_forget_removes_cache_and_target_entries(monkeypatch) -> None:  # noqa: ANN001

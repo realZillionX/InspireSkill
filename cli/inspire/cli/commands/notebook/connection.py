@@ -17,40 +17,48 @@ from inspire.bridge.tunnel import (
 )
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, pass_context
 from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 from .notebook_ssh_flow import run_notebook_ssh
+from .public_output import public_operation, sanitize_public_text
 from .target_resolver import forget_notebook_targets, list_notebook_targets
 from .transport import emit_ssh_policy_error, preflight_notebook_transport_policy
 
 
+def _safe_bridge_name(bridge: BridgeProfile) -> str:
+    for candidate in (bridge.notebook_name, bridge.name):
+        name = sanitize_public_text(candidate, omit_urls=True)
+        if name:
+            return name
+    return "(unknown)"
+
+
 def _bridge_payload(bridge: BridgeProfile, *, healthy: bool | None = None) -> dict[str, object]:
     payload: dict[str, object] = {
-        "name": bridge.name,
-        "proxy_url": bridge.proxy_url,
-        "ssh_user": bridge.ssh_user,
-        "ssh_port": bridge.ssh_port,
-        "has_internet": bridge.has_internet,
+        "name": _safe_bridge_name(bridge),
     }
-    if bridge.notebook_name:
-        payload["notebook_name"] = bridge.notebook_name
     if bridge.workspace_name:
-        payload["workspace_name"] = bridge.workspace_name
-    if bridge.identity_file:
-        payload["identity_file"] = bridge.identity_file
-    if bridge.rtunnel_port is not None:
-        payload["rtunnel_port"] = bridge.rtunnel_port
+        payload["workspace"] = sanitize_public_text(bridge.workspace_name, omit_urls=True)
+    if bridge.has_internet is not None:
+        payload["public_internet"] = bridge.has_internet
     if healthy is not None:
-        payload["healthy"] = healthy
+        payload["connected"] = healthy
     return payload
 
 
 def _load_bridge_or_exit(ctx: Context, notebook: str) -> tuple[TunnelConfig, BridgeProfile]:
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list",
+    )
     config = load_tunnel_config()
     bridge = config.get_bridge(notebook)
     if bridge is not None:
         return config, bridge
-    message = f"No cached notebook connection for '{notebook}'"
+    message = f"No cached notebook connection for '{scrub_raw_ids(notebook)}'"
     if ctx.json_output:
         click.echo(
             json_formatter.format_json_error("NotFound", message, EXIT_CONFIG_ERROR),
@@ -85,13 +93,12 @@ def connection_target_list(ctx: Context) -> None:
         return
 
     for row in rows:
-        key = str(row.get("key") or "")
+        name = str(row.get("name") or "(unknown)")
         account = str(row.get("account") or "(none)")
-        bridge_name = str(row.get("bridge_name") or "(unknown)")
-        workspace = str(row.get("workspace_name") or row.get("workspace_key") or "(any)")
+        workspace = str(row.get("workspace") or "(any)")
         click.echo(
-            f"{scrub_raw_ids(key)}  account={scrub_raw_ids(account)}  "
-            f"bridge={scrub_raw_ids(bridge_name)}  workspace={scrub_raw_ids(workspace)}"
+            f"{scrub_raw_ids(name)}  account={scrub_raw_ids(account)}  "
+            f"workspace={scrub_raw_ids(workspace)}"
         )
 
 
@@ -107,6 +114,12 @@ def connection_target_forget(
     account: str | None,
 ) -> None:
     """Forget remembered target selections without removing SSH connections."""
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list",
+    )
     removed = forget_notebook_targets(
         notebook=notebook,
         workspace=workspace,
@@ -117,8 +130,8 @@ def connection_target_forget(
             json_formatter.format_json(
                 {
                     "status": "removed" if removed else "not_found",
-                    "notebook": notebook,
-                    "removed": removed,
+                    "name": notebook,
+                    "removed_count": len(removed),
                 }
             )
         )
@@ -166,7 +179,11 @@ def connection_list(ctx: Context, verify: bool) -> None:
         return
 
     for bridge in config.list_bridges():
-        workspace = bridge.workspace_name or "(workspace unknown)"
+        name = _safe_bridge_name(bridge)
+        workspace = (
+            sanitize_public_text(bridge.workspace_name, omit_urls=True)
+            or "(workspace unknown)"
+        )
         status = ""
         if verify:
             healthy = is_tunnel_available(
@@ -176,10 +193,9 @@ def connection_list(ctx: Context, verify: bool) -> None:
                 retry_pause=0.0,
                 progressive=False,
             )
-            status = "  healthy=yes" if healthy else "  healthy=no"
+            status = "  connected=yes" if healthy else "  connected=no"
         click.echo(
-            f"{scrub_raw_ids(bridge.name)}  workspace={scrub_raw_ids(workspace)}  "
-            f"ssh={scrub_raw_ids(bridge.ssh_user)}:{bridge.ssh_port}{status}"
+            f"{name}  workspace={workspace}{status}"
         )
 
 
@@ -201,25 +217,28 @@ def connection_status(ctx: Context, notebook: str, workspace: str | None) -> Non
     except Exception as exc:  # noqa: BLE001
         if ctx.json_output:
             click.echo(
-                json_formatter.format_json_error("TunnelError", str(exc), EXIT_GENERAL_ERROR),
+                json_formatter.format_json_error(
+                    "TunnelError", scrub_raw_ids(exc), EXIT_GENERAL_ERROR
+                ),
                 err=True,
             )
         else:
-            click.echo(human_formatter.format_error(f"Connection failed: {exc}"), err=True)
+            click.echo(
+                human_formatter.format_error(f"Connection failed: {scrub_raw_ids(exc)}"),
+                err=True,
+            )
         sys.exit(EXIT_GENERAL_ERROR)
 
     elapsed_ms = int((time.time() - start) * 1000)
     ok = result.returncode == 0
-    hostname = (result.stdout or "").strip()
     if ctx.json_output:
         if ok:
             click.echo(
                 json_formatter.format_json(
                     {
-                        "notebook": bridge.name,
-                        "hostname": hostname,
+                        "name": sanitize_public_text(notebook, omit_urls=True),
+                        "status": "connected",
                         "elapsed_ms": elapsed_ms,
-                        "bridge": _bridge_payload(bridge, healthy=True),
                     }
                 )
             )
@@ -227,7 +246,7 @@ def connection_status(ctx: Context, notebook: str, workspace: str | None) -> Non
             click.echo(
                 json_formatter.format_json_error(
                     "TunnelError",
-                    result.stderr or "Connection failed",
+                    scrub_raw_ids(result.stderr or "Connection failed"),
                     EXIT_GENERAL_ERROR,
                 ),
                 err=True,
@@ -236,18 +255,27 @@ def connection_status(ctx: Context, notebook: str, workspace: str | None) -> Non
         return
 
     if ok:
-        click.echo(human_formatter.format_success(f"Notebook '{bridge.name}': connected"))
+        display_name = sanitize_public_text(notebook, omit_urls=True)
+        click.echo(
+            human_formatter.format_success(
+                f"Notebook '{scrub_raw_ids(display_name)}': connected"
+            )
+        )
         if bridge.has_internet is False:
             click.echo(
                 "Warning: cached connection is marked as no-public-internet; "
                 "do not refresh SSH/rtunnel for this notebook.",
                 err=True,
             )
-        click.echo(f"Hostname: {scrub_raw_ids(hostname)}")
         click.echo(f"Response time: {elapsed_ms}ms")
         return
 
-    click.echo(human_formatter.format_error(f"Connection failed: {result.stderr}"), err=True)
+    click.echo(
+        human_formatter.format_error(
+            f"Connection failed: {scrub_raw_ids(result.stderr)}"
+        ),
+        err=True,
+    )
     sys.exit(EXIT_GENERAL_ERROR)
 
 
@@ -296,6 +324,12 @@ def connection_refresh(
     setup_timeout: int,
 ) -> None:
     """Create or refresh SSH/rtunnel cache for public-internet notebooks."""
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list",
+    )
     policy = preflight_notebook_transport_policy(
         ctx,
         notebook=notebook,
@@ -318,7 +352,9 @@ def connection_refresh(
         setup_timeout=setup_timeout,
         setup_only=True,
     )
-    if not ctx.json_output:
+    if ctx.json_output:
+        click.echo(json_formatter.format_json(public_operation(notebook, "refreshed")))
+    else:
         click.echo(f"Refreshed cached notebook connection: {scrub_raw_ids(notebook)}")
 
 
@@ -343,7 +379,6 @@ def connection_forget(ctx: Context, notebook: str, workspace: str | None) -> Non
             click.echo(human_formatter.format_error(message), err=True)
         sys.exit(EXIT_CONFIG_ERROR)
 
-    was_default = notebook == config.default_bridge
     removed_targets = forget_notebook_targets(
         notebook=notebook,
         workspace=workspace,
@@ -358,9 +393,8 @@ def connection_forget(ctx: Context, notebook: str, workspace: str | None) -> Non
             json_formatter.format_json(
                 {
                     "status": "removed",
-                    "notebook": notebook,
-                    "new_default": config.default_bridge,
-                    "target_cache_removed": removed_targets,
+                    "name": notebook,
+                    "target_cache_removed_count": len(removed_targets),
                 }
             )
         )
@@ -369,8 +403,6 @@ def connection_forget(ctx: Context, notebook: str, workspace: str | None) -> Non
     if removed_targets:
         click.echo(f"Removed remembered notebook target entries: {len(removed_targets)}")
     click.echo("OpenSSH config was not modified.")
-    if was_default and config.default_bridge:
-        click.echo(f"New default: {scrub_raw_ids(config.default_bridge)}")
 
 
 @notebook_connection.command("prune")
@@ -390,7 +422,7 @@ def connection_prune(ctx: Context, dry_run: bool) -> None:
             progressive=False,
         )
         if not healthy:
-            stale.append(bridge.name)
+            stale.append(_safe_bridge_name(bridge))
             if not dry_run:
                 removed_targets.extend(
                     forget_notebook_targets(
@@ -408,9 +440,9 @@ def connection_prune(ctx: Context, dry_run: bool) -> None:
         click.echo(
             json_formatter.format_json(
                 {
-                    "stale": stale,
-                    "removed": [] if dry_run else stale,
-                    "target_cache_removed": [] if dry_run else removed_targets,
+                    "status": "would_remove" if dry_run else "removed",
+                    "count": len(stale),
+                    "target_cache_removed_count": 0 if dry_run else len(removed_targets),
                     "dry_run": dry_run,
                 }
             )

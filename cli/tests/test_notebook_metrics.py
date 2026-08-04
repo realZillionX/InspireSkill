@@ -112,7 +112,7 @@ def _sample_groups() -> list[MetricGroup]:
     ]
 
 
-def test_metrics_json_output_is_raw_time_series_and_skips_plot(
+def test_metrics_json_output_is_compact_name_only_series_and_skips_plot(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     capture: dict = {}
@@ -149,15 +149,33 @@ def test_metrics_json_output_is_raw_time_series_and_skips_plot(
     assert envelope["success"] is True
     payload = envelope["data"]
     assert payload["resource"] == "notebook"
+    assert payload["name"] == _NOTEBOOK_NAME
+    assert payload["metrics"] == ["gpu_usage_rate", "cpu_usage_rate"]
     assert "notebook_id" not in payload
     assert "logic_compute_group_id" not in payload
-    assert payload["task_type"] == "interactive_modeling"
-    assert payload["metric_types"] == ["gpu_usage_rate", "cpu_usage_rate"]
-    assert payload["time_range"]["interval_second"] == 60
-    assert payload["time_range"]["end_timestamp"] == 1_000_000
-    assert payload["time_range"]["start_timestamp"] == 1_000_000 - 30 * 60
-    assert len(payload["groups"]) == 2
-    assert payload["groups"][0]["time_series"][1] == {"timestamp": 160, "value": 0.8}
+    assert "task_type" not in payload
+    assert "metric_types" not in payload
+    assert "groups" not in payload
+    assert "time_series" not in payload
+    assert payload["time_range"] == {
+        "start": 1_000_000 - 30 * 60,
+        "end": 1_000_000,
+        "interval": "1m",
+    }
+    assert payload["series"][0] == {
+        "unit": "pod-1",
+        "metric": "gpu_usage_rate",
+        "samples": [
+            {"timestamp": 100, "value": 0.1},
+            {"timestamp": 160, "value": 0.8},
+            {"timestamp": 220, "value": 0.5},
+        ],
+    }
+    assert payload["series"][1] == {
+        "unit": "pod-1",
+        "metric": "cpu_usage_rate",
+        "samples": [{"timestamp": 100, "value": 0.02}],
+    }
 
     assert capture["task_type"] == "interactive_modeling"
     assert capture["logic_compute_group_id"] == "lcg-abc"
@@ -297,7 +315,9 @@ def test_metrics_errors_when_lcg_unresolvable(monkeypatch: pytest.MonkeyPatch) -
     assert "logic_compute_group_id" not in result.output
 
 
-def test_metrics_cli_honors_explicit_lcg(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_metrics_cli_resolves_explicit_group_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     capture: dict = {}
     _install_common_fakes(
         monkeypatch,
@@ -305,6 +325,15 @@ def test_metrics_cli_honors_explicit_lcg(monkeypatch: pytest.MonkeyPatch) -> Non
         groups=[],
         capture=capture,
     )
+    group_calls: dict[str, str] = {}
+
+    def _resolve_group(ctx, *, session, workspace, name):  # noqa: ANN001
+        del ctx, session
+        group_calls["workspace"] = workspace
+        group_calls["name"] = name
+        return "lcg-explicit"
+
+    monkeypatch.setattr(metrics_shared, "_resolve_compute_group_name", _resolve_group)
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
@@ -313,15 +342,16 @@ def test_metrics_cli_honors_explicit_lcg(monkeypatch: pytest.MonkeyPatch) -> Non
             "notebook",
             "metrics",
             _NOTEBOOK_NAME,
-                "--workspace",
-                "all",
-            "--lcg",
-            "lcg-explicit",
+            "--workspace",
+            "all",
+            "--group",
+            "H200-2号机房",
             "--metric",
             "gpu",
         ],
     )
     assert result.exit_code == 0, result.output
+    assert group_calls == {"workspace": "all", "name": "H200-2号机房"}
     assert capture["logic_compute_group_id"] == "lcg-explicit"
 
 

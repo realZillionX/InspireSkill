@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from click.testing import CliRunner
@@ -57,4 +58,11 @@ def test_net_test_json(monkeypatch) -> None:  # noqa: ANN001
     )
 
     assert result.exit_code == 0
-    assert '"public_internet": true' in result.output
+    payload = json.loads(result.output)["data"]
+    assert payload == {
+        "notebook": "gpu-box",
+        "public_internet": True,
+        "public_successes": ["www.baidu.com:443"],
+        "public_failures": [],
+    }
+    assert "nb-123" not in result.output

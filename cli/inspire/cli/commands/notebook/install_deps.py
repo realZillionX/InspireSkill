@@ -35,10 +35,12 @@ from inspire.bridge.tunnel import (
     run_ssh_command_streaming,
 )
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, pass_context
+from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.platform.web import browser_api as browser_api_module
 
 from .transport import preflight_notebook_transport_policy
+from .public_output import sanitize_public_text
 
 DEFAULT_RAY_VERSION = "2.55.1"
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -211,21 +213,27 @@ def _run_step(
     notebook_id: str,
     use_jupyter: bool,
     timeout: int,
+    show_output: bool,
 ) -> int:
-    click.echo(f"=== install-deps: {label} ===")
+    del label
     if use_jupyter:
         result = browser_api_module.run_command_capture_in_notebook(
             notebook_id=notebook_id,
             command=command,
             timeout=timeout,
         )
-        if result.output:
-            click.echo(result.output, nl=False)
+        if show_output and result.output:
+            click.echo(sanitize_public_text(result.output, omit_urls=True), nl=False)
         return result.returncode
     return run_ssh_command_streaming(
         command=command,
         bridge_name=notebook,
         timeout=timeout,
+        output_callback=(
+            (lambda line: click.echo(sanitize_public_text(line, omit_urls=True), nl=False))
+            if show_output
+            else (lambda _line: None)
+        ),
     )
 
 
@@ -309,6 +317,14 @@ def install_deps_cmd(
     container first and skips itself if the requested runtime is already
     in place — hitting this command twice is safe.
     """
+    from inspire.cli.utils.id_resolver import reject_id_at_boundary
+
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list",
+    )
     if not (slurm or ray):
         raise click.UsageError("Pass at least one of --slurm / --ray.")
 
@@ -341,7 +357,10 @@ def install_deps_cmd(
             )
         )
 
+    completed: list[str] = []
     for label, command in steps:
+        if not ctx.json_output:
+            click.echo(f"Installing {label}...")
         exit_code = _run_step(
             label,
             command,
@@ -349,6 +368,7 @@ def install_deps_cmd(
             notebook_id=policy.notebook_id,
             use_jupyter=use_jupyter,
             timeout=timeout,
+            show_output=ctx.debug and not ctx.json_output,
         )
         if exit_code != 0:
             _handle_error(
@@ -364,8 +384,22 @@ def install_deps_cmd(
                 ),
             )
             return
+        completed.append(label)
+        if not ctx.json_output:
+            click.echo(f"{label}: completed")
 
-    click.echo("install-deps complete.")
+    if ctx.json_output:
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "name": notebook,
+                    "status": "completed",
+                    "components": completed,
+                }
+            )
+        )
+    else:
+        click.echo("install-deps complete.")
 
 
 __all__ = ["install_deps_cmd", "DEFAULT_RAY_VERSION", "SUPPORTED_DISTROS"]

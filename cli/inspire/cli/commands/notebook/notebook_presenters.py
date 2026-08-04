@@ -9,6 +9,7 @@ from inspire.cli.formatters.human_formatter import format_epoch
 from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from .notebook_lookup import _format_notebook_cpu, _format_notebook_gpu, _notebook_gpu_type, _positive_int
+from .public_output import public_notebook
 
 
 def _nested_name(item: dict, key: str, *fallback_keys: str) -> str:
@@ -35,14 +36,9 @@ def _format_notebook_workspace(item: dict) -> str:
 
 def _print_notebook_detail(notebook: dict) -> None:
     """Print detailed notebook information."""
-    click.echo(f"\n{'='*60}")
-    click.echo(f"Notebook: {scrub_raw_ids(notebook.get('name', 'N/A'))}")
-    click.echo(f"{'='*60}")
-
     project = notebook.get("project") or {}
     quota = notebook.get("quota") or {}
     compute_group = notebook.get("logic_compute_group") or {}
-    extra = notebook.get("extra_info") or {}
     image = notebook.get("image") or {}
     start_cfg = notebook.get("start_config") or {}
     workspace = notebook.get("workspace") or {}
@@ -80,8 +76,6 @@ def _print_notebook_detail(notebook: dict) -> None:
         ("CPU", quota.get("cpu_count")),
         ("Memory", f"{quota['memory_size']} GiB" if quota.get("memory_size") else None),
         ("SHM", f"{shm} GiB" if shm else None),
-        ("Node", extra.get("NodeName") or None),
-        ("Host IP", extra.get("HostIP") or None),
         ("Uptime", uptime or None),
         ("Workspace", workspace.get("name")),
         ("Created", notebook.get("created_at")),
@@ -91,17 +85,21 @@ def _print_notebook_detail(notebook: dict) -> None:
         if value:
             click.echo(f"  {label:<15}: {scrub_raw_ids(value)}")
 
-    click.echo(f"{'='*60}\n")
-
 
 def _print_notebook_list(items: list, json_output: bool) -> None:
     """Print notebook list in appropriate format.
 
-    The CLI takes names only. JSON output follows the same boundary; use
-    `inspire notebook id <name>` when a platform lookup is explicitly needed.
+    The CLI takes names only. JSON output follows the same boundary.
     """
     if json_output:
-        click.echo(json_formatter.format_json({"items": items, "total": len(items)}))
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "items": [public_notebook(item) for item in items],
+                    "total": len(items),
+                }
+            )
+        )
         return
 
     if not items:
@@ -142,8 +140,6 @@ def _print_notebook_list(items: list, json_output: bool) -> None:
         widths,
         line_char="─",
     )
-    lines.append("")
-    lines.append(f"Showing {len(items)} notebook(s)")
     click.echo("\n".join(lines))
 
 

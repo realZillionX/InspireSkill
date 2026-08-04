@@ -13,9 +13,11 @@ import click
 from inspire.bridge.tunnel import BridgeProfile, load_tunnel_config
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, pass_context
 from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 from .notebook_ssh_flow import run_notebook_ssh
+from .public_output import sanitize_public_text
 from .target_resolver import NotebookConnectionTarget, resolve_cached_notebook_target
 from .transport import emit_ssh_policy_error, preflight_notebook_transport_policy
 
@@ -69,7 +71,13 @@ def _load_cached_target(
     )
 
 
-def _format_ssh_config(*, host: str, bridge: BridgeProfile, account: str | None) -> str:
+def _format_ssh_config(
+    *,
+    host: str,
+    notebook_name: str,
+    bridge: BridgeProfile,
+    account: str | None,
+) -> str:
     proxy_parts = [
         _resolve_inspire_executable(),
         "notebook",
@@ -86,8 +94,8 @@ def _format_ssh_config(*, host: str, bridge: BridgeProfile, account: str | None)
 
     lines = [
         f"Host {host}",
-        f"  HostName {bridge.notebook_name or bridge.name}",
-        f"  User {bridge.ssh_user}",
+        f"  HostName {sanitize_public_text(notebook_name, omit_urls=True)}",
+        f"  User {sanitize_public_text(bridge.ssh_user, omit_urls=True)}",
         f"  Port {bridge.ssh_port}",
         f"  ProxyCommand {proxy_command}",
         "  StrictHostKeyChecking accept-new",
@@ -153,6 +161,12 @@ def ssh_config_cmd(
     against /inspire/... shared paths. For restricted notebooks, use a
     public-internet notebook's config entry and keep the same /inspire/... path.
     """
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list",
+    )
     target = _load_cached_target(
         ctx,
         notebook=notebook,
@@ -219,11 +233,12 @@ def ssh_config_cmd(
             json_formatter.format_json(
                 {
                     "host": host,
-                    "notebook": bridge.name,
-                    "account": target.account,
-                    "workspace": bridge.workspace_name,
+                    "name": sanitize_public_text(notebook, omit_urls=True),
+                    "account": sanitize_public_text(target.account, omit_urls=True),
+                    "workspace": sanitize_public_text(bridge.workspace_name, omit_urls=True),
                     "config": _format_ssh_config(
                         host=host,
+                        notebook_name=notebook,
                         bridge=bridge,
                         account=target.account,
                     ),
@@ -232,7 +247,15 @@ def ssh_config_cmd(
         )
         return
 
-    click.echo(_format_ssh_config(host=host, bridge=bridge, account=target.account), nl=False)
+    click.echo(
+        _format_ssh_config(
+            host=host,
+            notebook_name=notebook,
+            bridge=bridge,
+            account=target.account,
+        ),
+        nl=False,
+    )
     click.echo(
         f"# Add this to ~/.ssh/config, then run: ssh {scrub_raw_ids(host)}",
         err=True,

@@ -23,6 +23,8 @@ from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.platform.web.browser_api.notebooks import list_notebook_runs
 
+from .public_output import public_runs
+
 
 def _format_duration(start: str, end: str) -> str:
     """Return a short human string like `2h 14m` or `-` if unparseable."""
@@ -72,7 +74,9 @@ def lifecycle(ctx: Context, name: str) -> None:
 
     if ctx.json_output:
         click.echo(
-            json_formatter.format_json({"notebook_id": notebook_id, "runs": runs})
+            json_formatter.format_json(
+                {"name": name, "runs": public_runs(runs)}
+            )
         )
         return
 
@@ -85,9 +89,7 @@ def lifecycle(ctx: Context, name: str) -> None:
 
     runs_sorted = sorted(runs, key=lambda r: r.get("index", 0))
     header = f"{'#':>3}  {'Start':<19}  {'End':<19}  {'Duration':<9}"
-    click.echo(f"Notebook runs ({len(runs_sorted)})")
     click.echo(header)
-    click.echo("-" * len(header))
     for r in runs_sorted:
         idx = r.get("index", "?")
         # Platform may drift the field types; coerce to str defensively so

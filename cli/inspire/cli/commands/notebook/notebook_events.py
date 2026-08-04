@@ -12,9 +12,12 @@ from typing import Optional
 
 import click
 
-from inspire.cli.context import Context, pass_context
-from inspire.cli.utils.events import run_events_command
+from inspire.cli.context import Context, EXIT_API_ERROR, pass_context
+from inspire.cli.formatters import json_formatter
+from inspire.cli.utils.events import filter_events, run_events_command
 from inspire.platform.web.browser_api.notebooks import list_notebook_events
+
+from .public_output import public_events
 
 
 @click.command("events")
@@ -84,12 +87,39 @@ def events(
         json_output=getattr(ctx, "json_output", False),
         workspace_ids=workspace_ids,
     )
+    def fetch_raw() -> list[dict]:
+        return list_notebook_events(notebook_id, session=session)
+
+    if ctx.json_output:
+        if follow:
+            raise click.UsageError(
+                "--json --follow is not supported for notebook events."
+            )
+        try:
+            filtered_events = filter_events(
+                fetch_raw(),
+                keyword_filter=keyword_filter,
+                tail=tail,
+            )
+        except Exception as e:  # noqa: BLE001
+            _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+            return
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "name": name,
+                    "events": public_events(filtered_events),
+                }
+            )
+        )
+        return
+
     run_events_command(
         ctx,
         resource_id=notebook_id,
         resource_type="notebook",
         resource_name=name,
-        fetch=lambda: list_notebook_events(notebook_id, session=session),
+        fetch=lambda: public_events(fetch_raw()),
         json_output_local=False,
         type_filter=None,
         reason_filter=None,

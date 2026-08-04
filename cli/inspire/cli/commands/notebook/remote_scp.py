@@ -245,11 +245,9 @@ def bridge_scp(
             click.echo(
                 json_formatter.format_json(
                     {
+                        "name": notebook,
                         "status": "success",
                         "direction": direction,
-                        "source": source,
-                        "destination": destination,
-                        "recursive": recursive,
                     }
                 )
             )
