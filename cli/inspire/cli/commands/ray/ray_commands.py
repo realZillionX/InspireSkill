@@ -17,7 +17,12 @@ from inspire.cli.context import (
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.events import run_events_command
-from inspire.cli.utils.id_resolver import reject_id_at_boundary, resolve_by_name
+from inspire.cli.utils.id_resolver import (
+    forget_resource_identity,
+    reject_id_at_boundary,
+    remember_resource_identity,
+    resolve_by_name,
+)
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
@@ -41,6 +46,20 @@ def _current_user_id(session) -> str:  # noqa: ANN001
     return user_id
 
 
+def _created_ray_job_id(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("ray_job_id", "job_id", "id"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    for key in ("ray_job", "job", "data", "result"):
+        value = _created_ray_job_id(payload.get(key))
+        if value:
+            return value
+    return ""
+
+
 def _resolve_ray_name_in_workspace(
     ctx: Context,
     *,
@@ -50,6 +69,7 @@ def _resolve_ray_name_in_workspace(
     workspace: str,
     limit: int,
     pick: Optional[int] = None,
+    require_live: bool = False,
 ) -> str:
     workspace_id = select_workspace_id(
         config,
@@ -86,6 +106,11 @@ def _resolve_ray_name_in_workspace(
         list_candidates=_lister,
         json_output=ctx.json_output,
         pick_index=pick,
+        session=session,
+        workspace_id=workspace_id,
+        owner_scope="self",
+        require_live=require_live,
+        list_command=f"inspire ray list --workspace {workspace}",
     )
 
 
@@ -376,6 +401,7 @@ def stop_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> No
             workspace=workspace,
             limit=10000,
             pick=pick,
+            require_live=True,
         )
         browser_api_module.stop_ray_job(ray_job_id, session=session)
 
@@ -709,6 +735,17 @@ def create_ray(
             return
 
         data = browser_api_module.create_ray_job(body, session=session)
+        created_id = _created_ray_job_id(data)
+        if created_id:
+            remember_resource_identity(
+                session=session,
+                resource_type="ray",
+                resource_id=created_id,
+                name=str(body.get("name") or ""),
+                workspace_id=str(body.get("workspace_id") or ""),
+                owner_scope="self",
+                status=str(data.get("status") or ""),
+            )
 
         if ctx.json_output:
             click.echo(json_formatter.format_json(_public_output(data)))
@@ -1062,8 +1099,23 @@ def delete_ray(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
             workspace=workspace,
             limit=10000,
             pick=pick,
+            require_live=True,
         )
         browser_api_module.delete_ray_job(ray_job_id, session=session)
+        workspace_id = select_workspace_id(
+            config,
+            explicit_workspace_name=workspace,
+            session=session,
+        )
+        if workspace_id:
+            forget_resource_identity(
+                session=session,
+                resource_type="ray",
+                resource_id=ray_job_id,
+                name=name,
+                workspace_id=workspace_id,
+                owner_scope="self",
+            )
 
         if ctx.json_output:
             click.echo(

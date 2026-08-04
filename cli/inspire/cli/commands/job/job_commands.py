@@ -35,6 +35,12 @@ from inspire.cli.utils.job_shell import (
     select_job_instance,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.resource_index import (
+    ResourceIdentity,
+    ResourceIndex,
+    ResourceScope,
+    scope_for_session,
+)
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_query_scope, select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
@@ -475,6 +481,7 @@ def _resolve_web_job_id(
     pick: Optional[int] = None,
     scan_limit: Optional[int] = None,
     workspace_must_be_single: bool = False,
+    require_live: bool = False,
 ) -> str:
     job = (job or "").strip()
     if not job:
@@ -488,6 +495,75 @@ def _resolve_web_job_id(
         )
     if workspace_must_be_single and (workspace or "").strip().lower() == "all":
         raise ConfigError("--workspace must be a workspace name for this command.")
+
+    session = get_web_session()
+    workspace_ids = (
+        _list_workspace_ids(
+            config,
+            session,
+            workspace=workspace,
+        )
+        if (workspace or "").strip() or not all_workspaces
+        else []
+    )
+    cache_scopes: dict[str, ResourceScope] = {}
+    for workspace_id in workspace_ids:
+        scope = scope_for_session(
+            session,
+            resource_type="job",
+            workspace_id=workspace_id,
+            owner_scope="self",
+        )
+        if scope is not None:
+            cache_scopes[workspace_id] = scope
+    try:
+        cache_index = ResourceIndex.for_account() if cache_scopes else None
+    except Exception:
+        cache_index = None
+
+    if cache_index is not None and cache_scopes and not require_live:
+        cached: list[tuple[str, ResourceIdentity]] = []
+        try:
+            for workspace_id, scope in cache_scopes.items():
+                cached.extend(
+                    (workspace_id, item)
+                    for item in cache_index.lookup(scope, job)
+                )
+        except Exception:
+            cached = []
+        if cached:
+            cached.sort(
+                key=lambda item: (
+                    item[1].created_at,
+                    item[1].observed_at,
+                    item[1].resource_id,
+                ),
+                reverse=True,
+            )
+            if pick is not None:
+                if pick < 1 or pick > len(cached):
+                    raise WebJobResolutionError(
+                        f"--pick {pick} out of range; {len(cached)} web jobs share "
+                        f"name {scrub_raw_ids(job)!r}."
+                    )
+                return cached[pick - 1][1].resource_id
+            if len(cached) == 1:
+                return cached[0][1].resource_id
+            candidates = []
+            for workspace_id, item in cached[:10]:
+                bits = [
+                    _workspace_name(session, workspace_id),
+                    item.status,
+                    item.created_at,
+                ]
+                label = " / ".join(
+                    scrub_raw_ids(bit) for bit in bits if str(bit or "").strip()
+                )
+                candidates.append(label or scrub_raw_ids(item.name))
+            raise WebJobResolutionError(
+                f"Multiple web jobs share name {scrub_raw_ids(job)!r}: "
+                + ", ".join(candidates)
+            )
 
     limit = 0 if pick is not None else 2
     page_size = max(1, int(scan_limit)) if scan_limit is not None else 100
@@ -504,6 +580,26 @@ def _resolve_web_job_id(
         limit=limit,
     )
     exact = [row for row in rows if row.get("name") == job]
+    if cache_index is not None and cache_scopes:
+        try:
+            for workspace_id, scope in cache_scopes.items():
+                cache_index.replace_name(
+                    scope,
+                    job,
+                    [
+                        ResourceIdentity(
+                            resource_id=str(row.get("job_id") or ""),
+                            name=job,
+                            owner_id=str(row.get("created_by_id") or ""),
+                            status=str(row.get("status") or ""),
+                            created_at=str(row.get("created_at") or ""),
+                        )
+                        for row in exact
+                        if str(row.get("workspace_id") or "") == workspace_id
+                    ],
+                )
+        except Exception:
+            pass
     if pick is not None:
         candidate_rows = exact if exact else rows
         if pick < 1 or pick > len(candidate_rows):
@@ -1060,6 +1156,7 @@ def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) 
             max_pages=50,
             pick=pick,
             workspace_must_be_single=True,
+            require_live=True,
         )
         session = get_web_session()
         browser_api_module.stop_training_job(job_id, session=session)
@@ -1118,6 +1215,7 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
             max_pages=50,
             pick=pick,
             workspace_must_be_single=True,
+            require_live=True,
         )
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -1135,6 +1233,20 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
     try:
         session = get_web_session()
         browser_api_module.delete_job(job_id=job_id, session=session)
+        workspace_id = _resolve_explicit_workspace(config, workspace, session)
+        if workspace_id:
+            try:
+                index = ResourceIndex.for_account()
+                scope = scope_for_session(
+                    session,
+                    resource_type="job",
+                    workspace_id=workspace_id,
+                    owner_scope="self",
+                )
+                if index is not None and scope is not None:
+                    index.mark_deleted(scope, resource_id=job_id, name=job)
+            except Exception:
+                pass
 
         if ctx.json_output:
             click.echo(json_formatter.format_json({"name": job, "status": "deleted"}))

@@ -16,6 +16,7 @@ from inspire.cli.context import (
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils import job_submit
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import remember_resource_identity
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
@@ -288,6 +289,16 @@ def run_job_create(
 
         data = submission.data
         job_id = submission.job_id
+        if job_id:
+            remember_resource_identity(
+                session=session,
+                resource_type="job",
+                resource_id=job_id,
+                name=name,
+                workspace_id=selected_workspace_id,
+                owner_scope="self",
+                status=str(data.get("status") or "") if isinstance(data, dict) else "",
+            )
 
         if ctx.json_output:
             raw_payload = data if data else result

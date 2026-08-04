@@ -26,7 +26,12 @@ from inspire.cli.utils.task_priority import (
 )
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
-from inspire.cli.utils.id_resolver import reject_id_at_boundary, resolve_by_name
+from inspire.cli.utils.id_resolver import (
+    forget_resource_identity,
+    reject_id_at_boundary,
+    remember_resource_identity,
+    resolve_by_name,
+)
 from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
@@ -40,6 +45,20 @@ def _current_user_id(session) -> str:  # noqa: ANN001
     return user_id
 
 
+def _created_hpc_job_id(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("job_id", "id"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    for key in ("job", "data", "result"):
+        value = _created_hpc_job_id(payload.get(key))
+        if value:
+            return value
+    return ""
+
+
 def _resolve_hpc_name_in_workspace(
     ctx: Context,
     *,
@@ -49,6 +68,7 @@ def _resolve_hpc_name_in_workspace(
     workspace: str,
     limit: int,
     pick: Optional[int] = None,
+    require_live: bool = False,
 ) -> str:
     workspace_id = select_workspace_id(
         config,
@@ -85,6 +105,11 @@ def _resolve_hpc_name_in_workspace(
         list_candidates=_lister,
         json_output=ctx.json_output,
         pick_index=pick,
+        session=session,
+        workspace_id=workspace_id,
+        owner_scope="self",
+        require_live=require_live,
+        list_command=f"inspire hpc list --workspace {workspace}",
     )
 
 
@@ -679,6 +704,17 @@ def create_hpc(
             payload=create_kwargs,
             session=session,
         )
+        created_id = _created_hpc_job_id(data)
+        if created_id:
+            remember_resource_identity(
+                session=session,
+                resource_type="hpc",
+                resource_id=created_id,
+                name=name,
+                workspace_id=resolved_workspace_id,
+                owner_scope="self",
+                status=str(data.get("status") or ""),
+            )
 
         if ctx.json_output:
             click.echo(json_formatter.format_json(_public_output(data)))
@@ -833,6 +869,7 @@ def stop_hpc(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> No
             workspace=workspace,
             limit=10000,
             pick=pick,
+            require_live=True,
         )
         browser_api_module.stop_hpc_job(job_id, session=session)
 
@@ -894,8 +931,23 @@ def delete_hpc(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
             workspace=workspace,
             limit=10000,
             pick=pick,
+            require_live=True,
         )
         browser_api_module.delete_hpc_job(job_id=job_id, session=session)
+        workspace_id = select_workspace_id(
+            config,
+            explicit_workspace_name=workspace,
+            session=session,
+        )
+        if workspace_id:
+            forget_resource_identity(
+                session=session,
+                resource_type="hpc",
+                resource_id=job_id,
+                name=name,
+                workspace_id=workspace_id,
+                owner_scope="self",
+            )
 
         if ctx.json_output:
             click.echo(json_formatter.format_json({"name": name, "status": "deleted"}))
