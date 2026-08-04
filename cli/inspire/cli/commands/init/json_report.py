@@ -39,18 +39,6 @@ def resolve_write_state(
     return written, skipped
 
 
-def build_next_steps(mode: str) -> list[str]:
-    """Build mode-specific suggested next steps for JSON payloads."""
-    if mode == "discover":
-        return [
-            "Run: inspire config show",
-        ]
-    return [
-        "Run: inspire account add <name>  # if you have not configured credentials",
-        "Run: inspire config show",
-    ]
-
-
 def emit_init_json(
     *,
     mode: str,
@@ -61,34 +49,23 @@ def emit_init_json(
     effective_json: bool,
     discover: dict[str, object] | None = None,
 ) -> None:
-    """Emit machine-readable init summary when JSON output is enabled."""
+    """Emit a compact machine-readable init result."""
     if not effective_json:
         return
 
     files_written: list[str] = []
-    files_skipped: list[str] = []
     for path in target_paths:
-        written, skipped = resolve_write_state(before, path)
+        written, _ = resolve_write_state(before, path)
         if written:
             files_written.append(str(path))
-        elif skipped:
-            files_skipped.append(str(path))
-
-    secret_count = 0
-    for option, _ in detected:
-        if getattr(option, "secret", False):
-            secret_count += 1
 
     payload: dict[str, object] = {
         "mode": mode,
-        "files_written": files_written,
-        "files_skipped": files_skipped,
-        "detected_env_count": len(detected),
-        "secret_env_count": secret_count,
-        "warnings": warnings,
-        "next_steps": build_next_steps(mode),
+        "status": "updated" if files_written else "unchanged",
+        "configs": files_written,
     }
-    if discover is not None:
-        payload["discover"] = discover
+    if warnings:
+        payload["warnings"] = warnings
 
-    click.echo(json_formatter.format_json(payload, success=True))
+    del detected, discover
+    click.echo(json_formatter.format_json(payload))

@@ -15,9 +15,13 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.human_formatter import format_epoch
+from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import resolve_by_name
+from inspire.cli.utils.id_resolver import (
+    remember_resource_identity,
+    resolve_by_name,
+)
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id
@@ -45,17 +49,41 @@ def _resolve_project_id(
             "--project takes a project name. "
             "See `inspire project list` or `inspire config context`."
         )
-    if requested in config.projects:
-        return config.projects[requested]
-    for project_id, metadata in config.project_catalog.items():
-        if metadata.get("name") == requested:
-            return project_id
-    for project in browser_api_module.list_projects(
+
+    requested_names = [requested]
+    configured = str(config.projects.get(requested) or "").strip()
+    if configured:
+        if configured.startswith("project-"):
+            metadata = config.project_catalog.get(configured)
+            if isinstance(metadata, dict):
+                configured_name = str(metadata.get("name") or "").strip()
+                if configured_name:
+                    requested_names.insert(0, configured_name)
+        else:
+            requested_names.insert(0, configured)
+
+    catalog_entry = config.project_catalog.get(requested)
+    if isinstance(catalog_entry, dict):
+        catalog_name = str(catalog_entry.get("name") or "").strip()
+        if catalog_name:
+            requested_names.insert(0, catalog_name)
+
+    projects = browser_api_module.list_projects(
         workspace_id=workspace_id, session=session
-    ):
-        if project.name == requested:
-            return project.project_id
-    raise ConfigError(f"Unknown project: {requested!r}.")
+    )
+    targets = {name.casefold() for name in requested_names if name}
+    matches = [project for project in projects if project.name.casefold() in targets]
+    if len(matches) == 1:
+        return matches[0].project_id
+    if len(matches) > 1:
+        raise ConfigError(
+            f"Project name {requested!r} is ambiguous in the selected workspace."
+        )
+
+    available = ", ".join(sorted({project.name for project in projects if project.name}))
+    raise ConfigError(
+        f"Unknown project name {requested!r}. Available: {available or '(none)'}."
+    )
 
 
 def _current_user_id(session) -> str:  # noqa: ANN001
@@ -80,12 +108,6 @@ def _status_label(value: Any) -> str:
     return mapping.get(raw, raw or "-")
 
 
-def _join_values(values: Any) -> str:
-    if isinstance(values, (list, tuple)):
-        return ", ".join(str(v) for v in values if str(v).strip())
-    return str(values or "")
-
-
 def _format_size_gi(value: Any) -> str:
     try:
         number = float(value)
@@ -98,44 +120,230 @@ def _format_size_gi(value: Any) -> str:
     return f"{number:.2f} GiB"
 
 
-def _format_model_rows(rows: list[dict[str, str]], total: int) -> str:
-    """Render a model-registry list.
+def _version_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return f"V{text[1:]}" if text[:1].casefold() == "v" else f"V{text}"
 
-    ``total`` is the server-reported total across pages; the footer prints
-    ``Showing X of Y`` when ``len(rows) < total`` so paginating users don't
-    confuse the visible page with the full registry.
-    """
+
+def _created_model_id(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    for key in ("model_id", "id"):
+        candidate = str(value.get(key) or "").strip()
+        if candidate:
+            return candidate
+    for key in ("model", "data", "result"):
+        candidate = _created_model_id(value.get(key))
+        if candidate:
+            return candidate
+    return ""
+
+
+def _string_values(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [
+            scrub_raw_ids(item)
+            for item in value
+            if str(item or "").strip()
+        ]
+    text = scrub_raw_ids(value).strip()
+    return [text] if text else []
+
+
+def _format_model_rows(rows: list[dict[str, str]]) -> str:
+    """Render a compact model-registry list."""
     if not rows:
         return "No models found."
-    widths = {
-        col: max(len(col.title().replace("_", " ")), *(len(r[col]) for r in rows))
-        for col in ("name", "version", "status", "project", "owner", "updated_at")
-    }
-    header = (
-        f"{'Name':<{widths['name']}}  "
-        f"{'Version':<{widths['version']}}  "
-        f"{'Status':<{widths['status']}}  "
-        f"{'Project':<{widths['project']}}  "
-        f"{'Owner':<{widths['owner']}}  "
-        f"{'Updated':<{widths['updated_at']}}"
-    )
-    sep = "-" * len(header)
-    lines = ["Model Registry", header, sep]
-    for r in rows:
-        lines.append(
-            f"{r['name']:<{widths['name']}}  "
-            f"{r['version']:<{widths['version']}}  "
-            f"{r['status']:<{widths['status']}}  "
-            f"{r['project']:<{widths['project']}}  "
-            f"{r['owner']:<{widths['owner']}}  "
-            f"{r['updated_at']:<{widths['updated_at']}}"
+    values = [
+        (
+            row["name"],
+            row["version"],
+            row["status"],
+            row["project"],
+            row["updated_at"],
         )
-    lines.append(sep)
-    if total > len(rows):
-        lines.append(f"Showing {len(rows)} of {total}")
-    else:
-        lines.append(f"Total: {len(rows)}")
+        for row in rows
+    ]
+    widths = [
+        column_width("Name", [row[0] for row in values], max_width=48),
+        column_width("Version", [row[1] for row in values], max_width=12),
+        column_width("Status", [row[2] for row in values], max_width=16),
+        column_width("Project", [row[3] for row in values], max_width=36),
+        column_width("Updated", [row[4] for row in values], max_width=20),
+    ]
+    return "\n".join(
+        render_table(
+            ("Name", "Version", "Status", "Project", "Updated"),
+            values,
+            widths,
+            line_char="─",
+        )
+    )
+
+
+def _model_list_view(model: browser_api_module.ModelInfo) -> dict[str, str]:
+    view = {
+        "name": scrub_raw_ids(model.name),
+        "version": scrub_raw_ids(_version_label(model.latest_version)),
+        "status": scrub_raw_ids(_status_label(model.status)),
+        "project": scrub_raw_ids(model.project_name),
+        "updated_at": scrub_raw_ids(
+            format_epoch(model.updated_at) if model.updated_at else ""
+        ),
+    }
+    return {key: value for key, value in view.items() if value and value != "-"}
+
+
+def _version_inner(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    model_payload = item.get("model")
+    return model_payload if isinstance(model_payload, dict) else item
+
+
+def _version_items(data: Any) -> list[dict[str, Any]]:
+    items = data.get("list") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _latest_version(data: Any) -> dict[str, Any]:
+    def _key(item: dict[str, Any]) -> int:
+        inner = _version_inner(item)
+        try:
+            return int(inner.get("version") or inner.get("model_version") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    latest = max(_version_items(data), key=_key, default={})
+    return _version_inner(latest)
+
+
+def _model_detail_view(
+    name: str,
+    data: dict[str, Any],
+    version_data: dict[str, Any],
+) -> dict[str, Any]:
+    model_payload = data.get("model")
+    inner: dict[str, Any] = model_payload if isinstance(model_payload, dict) else data
+    latest = _latest_version(version_data)
+    version = latest.get("version") or inner.get("version")
+    view: dict[str, Any] = {
+        "name": scrub_raw_ids(inner.get("name") or name),
+        "status": scrub_raw_ids(
+            _status_label(latest.get("status", inner.get("status")))
+        ),
+        "version": _version_label(version),
+        "description": scrub_raw_ids(inner.get("description") or ""),
+        "type": _string_values(inner.get("model_type")),
+        "tags": _string_values(inner.get("tags")),
+        "vllm_ready": bool(
+            latest.get("is_vllm_compatible", inner.get("is_vllm_compatible"))
+        ),
+        "published": bool(inner.get("has_published")),
+        "project": scrub_raw_ids(data.get("project_name") or ""),
+        "owner": scrub_raw_ids(data.get("user_name") or ""),
+        "created_at": (
+            format_epoch(inner.get("created_at")) if inner.get("created_at") else ""
+        ),
+        "updated_at": (
+            format_epoch(inner.get("updated_at")) if inner.get("updated_at") else ""
+        ),
+    }
+    return {
+        key: value
+        for key, value in view.items()
+        if value not in ("", None, []) or key in {"vllm_ready", "published"}
+    }
+
+
+def _model_version_views(data: dict[str, Any]) -> list[dict[str, Any]]:
+    views: list[dict[str, Any]] = []
+    for item in _version_items(data):
+        inner = _version_inner(item)
+        version = inner.get("version") or inner.get("model_version")
+        view: dict[str, Any] = {
+            "version": _version_label(version),
+            "status": scrub_raw_ids(_status_label(inner.get("status") or item.get("status"))),
+            "size": _format_size_gi(
+                inner.get("model_size_gi")
+                or inner.get("model_size_gb")
+                or inner.get("size")
+            ),
+            "vllm_ready": bool(inner.get("is_vllm_compatible")),
+        }
+        running = item.get("running_infrence_serving")
+        if running not in (None, ""):
+            view["running_servings"] = running
+        views.append(
+            {
+                key: value
+                for key, value in view.items()
+                if value not in ("", None, "-") or key == "vllm_ready"
+            }
+        )
+    return views
+
+
+def _format_model_detail(view: dict[str, Any]) -> str:
+    labels = (
+        ("Name", "name"),
+        ("Status", "status"),
+        ("Version", "version"),
+        ("Description", "description"),
+        ("Type", "type"),
+        ("Tags", "tags"),
+        ("vLLM-ready", "vllm_ready"),
+        ("Published", "published"),
+        ("Project", "project"),
+        ("Owner", "owner"),
+        ("Created", "created_at"),
+        ("Updated", "updated_at"),
+    )
+    lines: list[str] = []
+    for label, key in labels:
+        if key not in view:
+            continue
+        value = view[key]
+        if isinstance(value, list):
+            value = ", ".join(str(item) for item in value)
+        elif isinstance(value, bool):
+            value = "yes" if value else "no"
+        lines.append(f"{label}: {value}")
     return "\n".join(lines)
+
+
+def _format_model_versions(versions: list[dict[str, Any]]) -> str:
+    if not versions:
+        return ""
+    rows = [
+        (
+            str(version.get("version") or ""),
+            str(version.get("status") or ""),
+            str(version.get("size") or ""),
+            "yes" if version.get("vllm_ready") else "no",
+            str(version.get("running_servings") or ""),
+        )
+        for version in versions
+    ]
+    widths = [
+        column_width("Version", [row[0] for row in rows], max_width=12),
+        column_width("Status", [row[1] for row in rows], max_width=16),
+        column_width("Size", [row[2] for row in rows], max_width=14),
+        column_width("vLLM", [row[3] for row in rows], max_width=6),
+        column_width("Servings", [row[4] for row in rows], max_width=10),
+    ]
+    return "\n".join(
+        render_table(
+            ("Version", "Status", "Size", "vLLM", "Servings"),
+            rows,
+            widths,
+            line_char="─",
+        )
+    )
 
 
 def _resolve_model_name(
@@ -146,9 +354,12 @@ def _resolve_model_name(
     project_id: Optional[str] = None,
     user_id: Optional[str] = None,
     pick: Optional[int] = None,
+    session=None,  # noqa: ANN001
+    require_live: bool = False,
 ) -> str:
+    live_session = session or get_web_session()
+
     def _lister():
-        session = get_web_session()
         items, _ = browser_api_module.list_models(
             workspace_id=workspace_id,
             page=1,
@@ -156,7 +367,7 @@ def _resolve_model_name(
             keyword=name,
             project_ids=[project_id] if project_id else None,
             user_id=user_id,
-            session=session,
+            session=live_session,
         )
         return [
             {
@@ -176,6 +387,11 @@ def _resolve_model_name(
         list_candidates=_lister,
         json_output=ctx.json_output,
         pick_index=pick,
+        session=live_session,
+        workspace_id=str(workspace_id or ""),
+        owner_scope="self",
+        require_live=require_live,
+        list_command="inspire model list --workspace <workspace>",
     )
 
 
@@ -207,13 +423,13 @@ def list_model(
     """
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        resolved_workspace = _resolve_workspace_id(config, workspace)
         session = get_web_session()
+        resolved_workspace = _resolve_workspace_id(config, workspace, session=session)
         project_id = _resolve_project_id(
             config, project, workspace_id=resolved_workspace, session=session
         )
         user_id = _current_user_id(session)
-        items, total = browser_api_module.list_models(
+        items, _ = browser_api_module.list_models(
             workspace_id=resolved_workspace,
             page=1,
             page_size=limit,
@@ -223,33 +439,40 @@ def list_model(
             session=session,
         )
 
-        if ctx.json_output:
-            click.echo(
-                json_formatter.format_json(
-                    {"total": total, "items": [m.raw if m.raw else m.__dict__ for m in items]}
-                )
+        views = [_model_list_view(model) for model in items]
+        for model in items:
+            remember_resource_identity(
+                session=session,
+                resource_type="model",
+                resource_id=model.model_id,
+                name=model.name,
+                workspace_id=str(resolved_workspace or ""),
+                owner_scope="self",
+                status=model.status,
+                created_at=model.created_at,
             )
+        if ctx.json_output:
+            click.echo(json_formatter.format_json({"models": views}))
             return
 
         rows = [
             {
-                "name": scrub_raw_ids(m.name or "-"),
-                "version": scrub_raw_ids(f"V{m.latest_version}" if m.latest_version else "-"),
-                "status": scrub_raw_ids(_status_label(m.status)),
-                "project": scrub_raw_ids(m.project_name or "-"),
-                "owner": scrub_raw_ids(m.user_name or "-"),
-                "updated_at": scrub_raw_ids(format_epoch(m.updated_at) if m.updated_at else "-"),
+                "name": view.get("name", "-"),
+                "version": view.get("version", "-"),
+                "status": view.get("status", "-"),
+                "project": view.get("project", "-"),
+                "updated_at": view.get("updated_at", "-"),
             }
-            for m in items
+            for view in views
         ]
-        click.echo(_format_model_rows(rows, total=int(total) if total is not None else len(rows)))
+        click.echo(_format_model_rows(rows))
 
     except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
     except AuthenticationError as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
     except Exception as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
 
 @click.command("status")
@@ -267,13 +490,13 @@ def status_model(
 ) -> None:
     """Show detail of one registered model by name.
 
-    Includes latest version status, tags, model type, storage path, vLLM
-    readiness, publication flag, owner, project, and timestamps when present.
+    Includes latest version status, tags, model type, vLLM readiness,
+    publication flag, owner, project, and timestamps when present.
     """
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_id = _resolve_workspace_id(config, workspace)
+        workspace_id = _resolve_workspace_id(config, workspace, session=session)
         project_id = _resolve_project_id(
             config, project, workspace_id=workspace_id, session=session
         )
@@ -285,6 +508,7 @@ def status_model(
             project_id=project_id,
             user_id=user_id,
             pick=pick,
+            session=session,
         )
         data = browser_api_module.get_model_detail(
             model_id=model_id, session=session, workspace_id=workspace_id
@@ -292,68 +516,28 @@ def status_model(
         version_data = browser_api_module.list_model_version_records(
             model_id=model_id, session=session, workspace_id=workspace_id
         )
+        remember_resource_identity(
+            session=session,
+            resource_type="model",
+            resource_id=model_id,
+            name=name,
+            workspace_id=str(workspace_id or ""),
+            owner_scope="self",
+        )
 
+        view = _model_detail_view(name, data, version_data)
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"detail": data, "versions": version_data}))
+            click.echo(json_formatter.format_json(view))
             return
 
-        model_payload = data.get("model")
-        inner: dict[str, Any] = model_payload if isinstance(model_payload, dict) else data
-        version_items = version_data.get("list") if isinstance(version_data, dict) else []
-        latest_version: dict[str, Any] = {}
-        if isinstance(version_items, list) and version_items:
-            def _version_key(item: dict[str, Any]) -> int:
-                model_obj = item.get("model")
-                inner_obj: dict[str, Any] = (
-                    model_obj if isinstance(model_obj, dict) else item
-                )
-                try:
-                    return int(inner_obj.get("version") or 0)
-                except (TypeError, ValueError):
-                    return 0
-
-            latest_item = max(
-                [item for item in version_items if isinstance(item, dict)],
-                key=_version_key,
-                default={},
-            )
-            payload = latest_item.get("model") if isinstance(latest_item, dict) else None
-            latest_version = payload if isinstance(payload, dict) else latest_item
-        click.echo("Model")
-        click.echo(f"Name:        {scrub_raw_ids(inner.get('name', 'N/A'))}")
-        click.echo(
-            f"Status:      {scrub_raw_ids(_status_label(latest_version.get('status', inner.get('status'))))}"
-        )
-        version_value = latest_version.get("version") or inner.get("version")
-        if version_value:
-            click.echo(f"Version:     V{version_value}")
-        click.echo(f"Description: {scrub_raw_ids(inner.get('description', '') or '(none)')}")
-        if inner.get("model_type"):
-            click.echo(f"Type:        {scrub_raw_ids(_join_values(inner.get('model_type')))}")
-        if inner.get("tags"):
-            click.echo(f"Tags:        {scrub_raw_ids(_join_values(inner.get('tags')))}")
-        vllm_ready = latest_version.get("is_vllm_compatible", inner.get("is_vllm_compatible"))
-        click.echo(f"vLLM-ready:  {'yes' if vllm_ready else 'no'}")
-        click.echo(f"Published:   {'yes' if inner.get('has_published') else 'no'}")
-        if latest_version.get("model_path"):
-            click.echo(f"Path:        {scrub_raw_ids(latest_version.get('model_path'))}")
-        if latest_version.get("model_source_path"):
-            click.echo(f"Source:      {scrub_raw_ids(latest_version.get('model_source_path'))}")
-        if data.get("project_name"):
-            click.echo(f"Project:     {scrub_raw_ids(data.get('project_name'))}")
-        if data.get("user_name"):
-            click.echo(f"Owner:       {scrub_raw_ids(data.get('user_name'))}")
-        if inner.get("created_at"):
-            click.echo(f"Created:     {format_epoch(inner.get('created_at'))}")
-        if inner.get("updated_at"):
-            click.echo(f"Updated:     {format_epoch(inner.get('updated_at'))}")
+        click.echo(_format_model_detail(view))
 
     except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
     except AuthenticationError as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
     except Exception as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
 
 @click.command("versions")
@@ -378,7 +562,7 @@ def versions_model(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_id = _resolve_workspace_id(config, workspace)
+        workspace_id = _resolve_workspace_id(config, workspace, session=session)
         project_id = _resolve_project_id(
             config, project, workspace_id=workspace_id, session=session
         )
@@ -390,60 +574,41 @@ def versions_model(
             project_id=project_id,
             user_id=user_id,
             pick=pick,
+            session=session,
         )
         data = browser_api_module.list_model_version_records(
             model_id=model_id, session=session, workspace_id=workspace_id
         )
+        remember_resource_identity(
+            session=session,
+            resource_type="model",
+            resource_id=model_id,
+            name=name,
+            workspace_id=str(workspace_id or ""),
+            owner_scope="self",
+        )
 
+        versions = _model_version_views(data)
         if ctx.json_output:
-            click.echo(json_formatter.format_json(data))
+            click.echo(
+                json_formatter.format_json(
+                    {"name": scrub_raw_ids(name), "versions": versions}
+                )
+            )
             return
 
-        items = data.get("list") if isinstance(data, dict) else None
-        if not items:
+        if not versions:
             click.echo(f"No versions for model {scrub_raw_ids(name)}.")
             return
 
-        click.echo(
-            f"Versions for {scrub_raw_ids(name)}  (total={data.get('total', len(items))}, "
-            f"next={scrub_raw_ids(data.get('next_version', '?'))})"
-        )
-        for i, item in enumerate(items, 1):
-            model_payload = item.get("model") if isinstance(item, dict) else None
-            inner = model_payload if isinstance(model_payload, dict) else item
-            version = inner.get("version") or inner.get("model_version") or "?"
-            size = (
-                inner.get("model_size_gi")
-                or inner.get("model_size_gb")
-                or inner.get("size")
-                or ""
-            )
-            path = inner.get("model_path") or ""
-            source_path = inner.get("model_source_path") or ""
-            vllm = "vLLM" if inner.get("is_vllm_compatible") else ""
-            status = _status_label(inner.get("status") or item.get("status"))
-            bits = [f"v{version}"]
-            if size:
-                bits.append(_format_size_gi(size))
-            if status and status != "-":
-                bits.append(status)
-            if vllm:
-                bits.append(vllm)
-            running = item.get("running_infrence_serving")
-            if running not in (None, ""):
-                bits.append(f"running_servings={running}")
-            if path:
-                bits.append(f"path={scrub_raw_ids(path)}")
-            if source_path:
-                bits.append(f"source={scrub_raw_ids(source_path)}")
-            click.echo(f"  [{i}] " + "  ".join(scrub_raw_ids(b) for b in bits))
+        click.echo(_format_model_versions(versions))
 
     except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
     except AuthenticationError as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
     except Exception as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
 
 @click.command("register")
@@ -498,7 +663,7 @@ def register_model(
         if not project_id:
             raise ConfigError("--project is required.")
 
-        data = browser_api_module.create_model(
+        result = browser_api_module.create_model(
             name=name,
             project_id=project_id,
             workspace_id=workspace_id,
@@ -509,19 +674,37 @@ def register_model(
             model_source_type=1,
             session=session,
         )
+        model_id = _created_model_id(result)
+        remember_resource_identity(
+            session=session,
+            resource_type="model",
+            resource_id=model_id,
+            name=name,
+            workspace_id=str(workspace_id or ""),
+            owner_scope="self",
+        )
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json(data))
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "name": scrub_raw_ids(name),
+                        "status": "registered",
+                        "project": scrub_raw_ids(project or ""),
+                        "workspace": scrub_raw_ids(workspace),
+                    }
+                )
+            )
             return
 
-        click.echo(f"OK Model registered: {scrub_raw_ids(name)}")
+        click.echo(f"Model registered: {scrub_raw_ids(name)}")
 
     except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
     except AuthenticationError as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
     except Exception as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
 
 __all__ = ["list_model", "register_model", "status_model", "versions_model"]

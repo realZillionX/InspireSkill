@@ -13,7 +13,7 @@ from inspire.config import (
 )
 from inspire.config.toml import _project_config_write_path
 
-from .env_detect import _format_preview_by_scope, _generate_toml_content
+from .env_detect import _generate_toml_content
 
 
 def _atomic_write_text(target: Path, content: str) -> None:
@@ -196,29 +196,6 @@ def _init_template_mode(global_flag: bool, project_flag: bool, force: bool) -> N
 
     click.echo(click.style(f"Created {config_path}", fg="green"))
 
-    click.echo("\nNext steps:")
-    if is_global:
-        click.echo(f"  1. Edit {config_path} with your account-level settings")
-        click.echo("  2. Run 'inspire init' to discover catalogs and default path aliases")
-        click.echo("  3. Run 'inspire init --scope project' in a repo for overrides")
-        click.echo("  4. Run 'inspire config show' to verify your configuration")
-    else:
-        click.echo(f"  1. Edit {config_path} with your project-level settings")
-        click.echo("  2. Run 'inspire account add <name>' if you have not configured credentials")
-        click.echo("  3. Run 'inspire config show' to verify your configuration")
-
-
-def _show_next_steps(detected: list[tuple[ConfigOption, str]]) -> None:
-    secrets = [opt for opt, _ in detected if opt.secret]
-
-    click.echo(click.style("Next steps:", bold=True))
-    step = 1
-    if secrets:
-        secret_vars = ", ".join(opt.env_var for opt in secrets)
-        click.echo(f"  {step}. Keep {secret_vars} as env var(s) (not written for security)")
-        step += 1
-    click.echo(f"  {step}. Verify with: inspire config show")
-
 
 def _write_single_file(
     detected: list[tuple[ConfigOption, str]],
@@ -238,9 +215,6 @@ def _write_single_file(
 
     _atomic_write_text(output_path, toml_content)
     click.echo(click.style(f"Created {output_path}", fg="green"))
-    click.echo()
-
-    _show_next_steps(detected)
 
 
 def _write_auto_split(
@@ -288,8 +262,6 @@ def _write_auto_split(
         color = "cyan" if scope == "global" else "green"
         click.echo(click.style(f"Created {path}", fg=color))
 
-    click.echo()
-    _show_next_steps(detected)
 
 
 def _init_smart_mode(
@@ -299,21 +271,14 @@ def _init_smart_mode(
     force: bool,
 ) -> None:
     """Initialize config using detected env vars (smart mode)."""
-    _format_preview_by_scope(detected)
-
     secrets = [opt for opt, _ in detected if opt.secret]
-    non_secrets = [(opt, val) for opt, val in detected if not opt.secret]
     global_opts = [(opt, val) for opt, val in detected if opt.scope == "global"]
     project_opts = [(opt, val) for opt, val in detected if opt.scope == "project"]
 
-    click.echo(f"Found {len(detected)} environment variable(s):")
-    click.echo(f"  - {len(non_secrets)} regular value(s)")
+    summary = f"Detected {len(detected)} configuration value(s)"
     if secrets:
-        click.echo(f"  - {len(secrets)} secret(s) (excluded)")
-    if not global_flag and not project_flag:
-        click.echo(f"  - {len(global_opts)} global-scope option(s)")
-        click.echo(f"  - {len(project_opts)} project-scope option(s)")
-    click.echo()
+        summary += f"; {len(secrets)} secret(s) excluded"
+    click.echo(summary + ".")
 
     global_path = _require_writable_global_path()
     project_path = _project_config_write_path()

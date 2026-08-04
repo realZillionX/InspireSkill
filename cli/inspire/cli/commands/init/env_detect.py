@@ -5,10 +5,7 @@ from __future__ import annotations
 import os
 import re
 
-import click
-
 from inspire.config import (
-    CATEGORY_ORDER,
     CONFIG_OPTIONS,
     ConfigOption,
     parse_value,
@@ -106,60 +103,3 @@ def _generate_toml_content(
         lines.append("")
 
     return "\n".join(lines)
-
-
-def _format_preview_by_scope(detected: list[tuple[ConfigOption, str]]) -> None:
-    """Display migration preview grouped by destination (global/project)."""
-    click.echo(click.style("Detected environment variables (grouped by destination):", bold=True))
-    click.echo()
-
-    global_opts = [(opt, val) for opt, val in detected if opt.scope == "global"]
-    project_opts = [(opt, val) for opt, val in detected if opt.scope == "project"]
-
-    if global_opts:
-        click.echo(
-            click.style(
-                "Account config (~/.inspire/accounts/<name>/config.toml):",
-                fg="cyan",
-                bold=True,
-            )
-        )
-
-        by_category: dict[str, list[tuple[ConfigOption, str]]] = {}
-        for option, value in global_opts:
-            by_category.setdefault(option.category, []).append((option, value))
-
-        for category in CATEGORY_ORDER:
-            if category not in by_category:
-                continue
-
-            click.echo(click.style(f"  {category}", fg="blue"))
-            for option, value in by_category[category]:
-                env_display = option.env_var.ljust(32)
-                if option.secret:
-                    value_display = click.style("(excluded - use env var)", fg="white", dim=True)
-                else:
-                    value_display = value[:40] + "..." if len(value) > 40 else value
-                click.echo(f"    {env_display} {value_display}")
-        click.echo()
-
-    if project_opts:
-        click.echo(click.style("Project config (repo + active account):", fg="green", bold=True))
-
-        by_category = {}
-        for option, value in project_opts:
-            by_category.setdefault(option.category, []).append((option, value))
-
-        for category in CATEGORY_ORDER:
-            if category not in by_category:
-                continue
-
-            click.echo(click.style(f"  {category}", fg="blue"))
-            for option, value in by_category[category]:
-                env_display = option.env_var.ljust(32)
-                if option.secret:
-                    value_display = click.style("(excluded - use env var)", fg="white", dim=True)
-                else:
-                    value_display = value[:40] + "..." if len(value) > 40 else value
-                click.echo(f"    {env_display} {value_display}")
-            click.echo()

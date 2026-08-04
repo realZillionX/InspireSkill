@@ -11,6 +11,7 @@ from typing import Any
 
 import click
 
+from inspire.cli.utils.id_resolver import is_full_uuid, is_partial_id
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config
 from inspire.config.toml import _project_config_write_path
@@ -28,6 +29,14 @@ _CATALOG_DROP_FIELDS = frozenset(
 )
 _USERNAME_PLACEHOLDERS = frozenset({"your_username"})
 _BASE_URL_PLACEHOLDER = "https://api.example.com"
+_PROJECT_HANDLE_PREFIXES = (
+    "compute-group-",
+    "workspace-",
+    "project-",
+    "proj-",
+    "lcg-",
+    "ws-",
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +51,12 @@ class _DiscoveryPersistRequest:
     projects: list[Any]
     selected_project: Any
     prompted_credentials: tuple[str, str, str] | None
+    verbose: bool = False
+
+
+def _progress(verbose: bool, message: str) -> None:
+    if verbose:
+        click.echo(message)
 
 
 def _slugify_alias(value: str) -> str:
@@ -238,107 +253,148 @@ def _usable_base_url(value: object) -> str:
     return text
 
 
-def _merge_alias_map(
+def _looks_like_project_handle(value: object) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if is_full_uuid(text) or is_partial_id(text):
+        return True
+
+    lowered = text.casefold()
+    for prefix in _PROJECT_HANDLE_PREFIXES:
+        if not lowered.startswith(prefix):
+            continue
+        body = text[len(prefix) :]
+        return bool(
+            body
+            and (
+                is_full_uuid(body)
+                or is_partial_id(body)
+                or any(character.isdigit() for character in body)
+            )
+        )
+    return False
+
+
+def _catalog_project_name(
+    catalog: dict[str, Any],
     *,
-    existing: dict[str, str],
-    discovered: dict[str, str],
-) -> dict[str, str]:
-    merged = dict(existing)
-    existing_ids = {v for v in existing.values() if isinstance(v, str) and v}
-    used_aliases = set(existing.keys())
-
-    alias_for_id: dict[str, str] = {}
-    for alias, project_id in existing.items():
-        if isinstance(project_id, str) and project_id and project_id not in alias_for_id:
-            alias_for_id[project_id] = alias
-
-    for alias, project_id in discovered.items():
-        if not isinstance(project_id, str) or not project_id:
+    alias: str,
+    value: str,
+) -> str:
+    for key in (value, alias):
+        entry = catalog.get(key)
+        if not isinstance(entry, dict):
             continue
-        if project_id in existing_ids:
-            continue
-        candidate = alias
-        if not candidate:
-            candidate = project_id
-        candidate = _make_unique_alias(candidate, used_aliases)
-        merged[candidate] = project_id
-
-    return merged
+        name = str(entry.get("name") or "").strip()
+        if name:
+            return name
+    return ""
 
 
 def _build_project_aliases(
     projects: list[Any],
     *,
     existing: dict[str, str] | None = None,
+    existing_catalog: dict[str, Any] | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Build the ``[projects]`` table keyed by the platform's real project name.
+    """Build a durable alias-to-project-name table.
 
-    Keys are the project names returned by the platform (``"CI-情境智能"`` etc.),
-    not short slugs. Agents that read ``inspire --json config context`` see
-    meaningful identifiers, not random 2-letter aliases.
+    Legacy alias-to-ID entries are migrated in memory, but only names are
+    returned for persistence. The second result is an internal ID-to-alias map
+    used during this discovery run and is never written to config.
     """
     existing_map = existing or {}
-    alias_for_id: dict[str, str] = {}
-    for alias, project_id in existing_map.items():
-        if isinstance(project_id, str) and project_id and project_id not in alias_for_id:
-            alias_for_id[project_id] = alias
-
-    discovered_map: dict[str, str] = {}
-    discovered_alias_for_id: dict[str, str] = {}
-
+    catalog = existing_catalog or {}
+    projects_by_id: dict[str, Any] = {}
+    projects_by_name: dict[str, Any] = {}
     for project in projects:
         project_id = str(getattr(project, "project_id", "") or "").strip()
         name = str(getattr(project, "name", "") or "").strip()
-        if not project_id:
+        if project_id and name:
+            projects_by_id[project_id] = project
+            projects_by_name.setdefault(name.casefold(), project)
+
+    merged: dict[str, str] = {}
+    alias_for_id: dict[str, str] = {}
+    used_aliases: set[str] = set()
+    for raw_alias, raw_value in existing_map.items():
+        alias = str(raw_alias or "").strip()
+        value = str(raw_value or "").strip()
+        if not alias or not value:
             continue
+        project = projects_by_id.get(value) or projects_by_name.get(value.casefold())
+        catalog_name = _catalog_project_name(catalog, alias=alias, value=value)
+        if project is None and catalog_name:
+            project = projects_by_name.get(catalog_name.casefold())
+        if project is None:
+            durable_name = catalog_name or value
+            if _looks_like_project_handle(durable_name):
+                continue
+            durable_alias = durable_name if _looks_like_project_handle(alias) else alias
+            durable_alias = _make_unique_alias(durable_alias, used_aliases)
+            merged[durable_alias] = durable_name
+            continue
+        project_id = str(getattr(project, "project_id", "") or "").strip()
+        name = str(getattr(project, "name", "") or "").strip()
+        durable_alias = name if _looks_like_project_handle(alias) else alias
+        durable_alias = _make_unique_alias(durable_alias, used_aliases)
+        merged[durable_alias] = name
+        alias_for_id.setdefault(project_id, durable_alias)
+
+    for project_id, project in projects_by_id.items():
         if project_id in alias_for_id:
-            discovered_alias_for_id[project_id] = alias_for_id[project_id]
             continue
+        name = str(getattr(project, "name", "") or "").strip()
+        alias = name if name not in used_aliases else _make_unique_alias(name, used_aliases)
+        if alias == name:
+            used_aliases.add(alias)
+        merged[alias] = name
+        alias_for_id[project_id] = alias
 
-        # Use the platform name directly — no slugify / no short raw-ID alias.
-        key = name or _make_unique_alias("project", set(discovered_map))
-        discovered_map[key] = project_id
-        discovered_alias_for_id[project_id] = key
-
-    merged = _merge_alias_map(existing=existing_map, discovered=discovered_map)
-    discovered_alias_for_id.update(
-        {v: k for k, v in merged.items() if v not in discovered_alias_for_id}
-    )
-    return merged, discovered_alias_for_id
+    return merged, alias_for_id
 
 
 def _merge_compute_groups(
     existing: list[dict[str, Any]] | None,
     discovered: list[dict[str, Any]],
+    *,
+    workspace_names_by_id: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    by_id: dict[str, dict[str, Any]] = {}
-    for item in existing or []:
-        if not isinstance(item, dict):
-            continue
-        group_id = str(item.get("id") or "").strip()
-        if not group_id:
-            continue
-        by_id[group_id] = dict(item)
+    """Merge compute-group metadata without persisting platform handles."""
+    by_name: dict[tuple[str, str, str], dict[str, Any]] = {}
+    workspace_names_by_id = workspace_names_by_id or {}
 
-    for item in discovered:
+    for item in [*(existing or []), *discovered]:
         if not isinstance(item, dict):
             continue
-        group_id = str(item.get("id") or "").strip()
-        if not group_id:
+        name = str(item.get("name") or item.get("logic_compute_group_name") or "").strip()
+        if not name:
             continue
-        merged = dict(by_id.get(group_id, {}))
-        existing_ws = set(merged.get("workspace_ids") or [])
-        new_ws = set(item.get("workspace_ids") or [])
-        merged.update({k: v for k, v in item.items() if v is not None and v != ""})
-        combined = sorted(existing_ws | new_ws)
+        gpu_type = str(item.get("gpu_type") or "").strip()
+        location = str(item.get("location") or "").strip()
+        key = (name.casefold(), gpu_type.casefold(), location.casefold())
+        merged = by_name.setdefault(key, {"name": name})
+        if gpu_type:
+            merged["gpu_type"] = gpu_type
+        if location:
+            merged["location"] = location
+
+        workspace_names = {
+            str(value).strip()
+            for value in (item.get("workspace_names") or [])
+            if str(value or "").strip()
+        }
+        for workspace_id in item.get("workspace_ids") or []:
+            workspace_name = workspace_names_by_id.get(str(workspace_id))
+            if workspace_name:
+                workspace_names.add(str(workspace_name).strip())
+        existing_names = set(merged.get("workspace_names") or [])
+        combined = sorted(existing_names | workspace_names)
         if combined:
-            merged["workspace_ids"] = combined
-        by_id[group_id] = merged
+            merged["workspace_names"] = combined
 
-    merged_list = list(by_id.values())
-    for entry in merged_list:
-        for k in [k for k, v in entry.items() if v == ""]:
-            del entry[k]
+    merged_list = list(by_name.values())
     merged_list.sort(
         key=lambda entry: (str(entry.get("gpu_type") or ""), str(entry.get("name") or "").lower())
     )
@@ -352,6 +408,7 @@ def _resolve_discover_runtime(
     default_workspace_id: str,
     cli_username: str | None,
     cli_base_url: str | None,
+    verbose: bool = False,
 ) -> tuple[object, tuple[str, str, str] | None, str, str]:
     # When the caller explicitly provides credentials via CLI flags, skip the
     # cached-session fast path so we honour the override instead of silently
@@ -367,13 +424,13 @@ def _resolve_discover_runtime(
             allow_config_password=True,
         )
         prompted_credentials = (username, password, base_url)
-        click.echo("Logging in...")
+        _progress(verbose, "Logging in...")
         session = web_session_module.login_with_playwright(
             username,
             password,
             base_url=base_url,
         )
-        click.echo("Logged in.")
+        _progress(verbose, "Logged in.")
     else:
         try:
             session = web_session_module.get_web_session(require_workspace=True)
@@ -396,13 +453,13 @@ def _resolve_discover_runtime(
                     confirm_config_username=True,
                 )
                 prompted_credentials = (username, password, base_url)
-                click.echo("Logging in...")
+                _progress(verbose, "Logging in...")
                 session = web_session_module.login_with_playwright(
                     username,
                     password,
                     base_url=base_url,
                 )
-                click.echo("Logged in.")
+                _progress(verbose, "Logged in.")
 
     if prompted_credentials:
         account_key = _usable_username(prompted_credentials[0])
@@ -430,7 +487,7 @@ def _resolve_discover_runtime(
     if not workspace_id or workspace_id == default_workspace_id:
         click.echo(
             click.style(
-                "Could not detect a real workspace_id from the authenticated session. "
+                "Could not detect an accessible workspace from the authenticated session. "
                 "Re-run `inspire init` after signing into an account that "
                 "can see at least one workspace.",
                 fg="red",
@@ -601,25 +658,10 @@ def _load_projects_for_discovery(
             show_default=True,
         )
     else:
-        # Multi-project case: the platform heuristic (budget / priority /
-        # alphabetical) has nothing to do with the current repo, so never
-        # let Enter accept it. Force the user to pick a number explicitly.
         click.echo(
             click.style(
                 "Multiple projects available — no project is selected implicitly. "
                 "Pick the one your current work belongs to.",
-                fg="yellow",
-            )
-        )
-        hint_idx = next(
-            (i for i, p in enumerate(projects, start=1)
-             if p.project_id == heuristic_pick.project_id),
-            1,
-        )
-        click.echo(
-            click.style(
-                f"(Platform heuristic suggests #{hint_idx} {heuristic_pick.name} — "
-                "based on budget / priority only, not on your repo.)",
                 fg="yellow",
             )
         )
@@ -751,31 +793,55 @@ def _resolve_project_catalog_aliases(
         existing_projects = project_account_section.get("projects")
     if not isinstance(existing_projects, dict):
         existing_projects = {}
-    merged_projects, alias_for_id = _build_project_aliases(projects, existing=existing_projects)
-    global_data["projects"] = merged_projects
-    global_account_section.pop("projects", None)
-    project_data.pop("projects", None)
-    project_account_section.pop("projects", None)
 
     project_catalog = global_data.get("project_catalog")
     if not isinstance(project_catalog, dict):
         project_catalog = global_account_section.get("project_catalog")
     if not isinstance(project_catalog, dict):
+        project_catalog = project_data.get("project_catalog")
+    if not isinstance(project_catalog, dict):
         project_catalog = project_account_section.get("project_catalog")
     if not isinstance(project_catalog, dict):
         project_catalog = {}
 
+    merged_projects, alias_for_id = _build_project_aliases(
+        projects,
+        existing=existing_projects,
+        existing_catalog=project_catalog,
+    )
+    global_data["projects"] = merged_projects
+    global_account_section.pop("projects", None)
+    project_data.pop("projects", None)
+    project_account_section.pop("projects", None)
+
     typed_catalog: dict[str, dict[str, Any]] = {}
-    for project_id, entry in project_catalog.items():
-        if not isinstance(project_id, str):
+    aliases_by_name: dict[str, str] = {}
+    for alias, project_name in merged_projects.items():
+        aliases_by_name.setdefault(str(project_name).casefold(), str(alias))
+
+    for raw_key, entry in project_catalog.items():
+        if not isinstance(raw_key, str):
             continue
+        key = raw_key
+        if raw_key in alias_for_id:
+            key = alias_for_id[raw_key]
+        elif _looks_like_project_handle(raw_key):
+            entry_name = (
+                str(entry.get("name") or "").strip()
+                if isinstance(entry, dict)
+                else ""
+            )
+            key = aliases_by_name.get(entry_name.casefold(), "")
+            if not key:
+                continue
         if isinstance(entry, dict):
-            typed_catalog[project_id] = entry
+            typed_catalog.setdefault(key, {}).update(entry)
         else:
-            typed_catalog[project_id] = {}
+            typed_catalog.setdefault(key, {})
 
     global_data["project_catalog"] = typed_catalog
     global_account_section.pop("project_catalog", None)
+    project_data.pop("project_catalog", None)
     project_account_section.pop("project_catalog", None)
     return alias_for_id, typed_catalog
 
@@ -789,6 +855,7 @@ def _populate_project_catalog(
     workspace_id: str,
     account_key: str,
     force: bool,
+    alias_for_id: dict[str, str] | None = None,
 ) -> None:
     """Populate per-project metadata kept at account level.
 
@@ -830,7 +897,16 @@ def _populate_project_catalog(
         if not project_id:
             continue
 
-        entry = project_catalog.setdefault(project_id, {})
+        catalog_key = (
+            alias_for_id.get(project_id)
+            if alias_for_id is not None
+            else project_id
+        )
+        if not catalog_key:
+            catalog_key = str(getattr(project, "name", "") or "").strip()
+        if not catalog_key:
+            continue
+        entry = project_catalog.setdefault(catalog_key, {})
         name = str(getattr(project, "name", "") or "").strip()
         if name:
             entry["name"] = name
@@ -969,49 +1045,53 @@ def _discover_compute_groups(
     workspace_id: str,
 ) -> list[dict[str, Any]]:
     compute_groups: list[dict[str, Any]] = []
+    raw_groups = browser_api_module.list_compute_groups(
+        workspace_id=workspace_id, session=session
+    )
+    gpu_types: dict[str, str] = {}
     try:
-        raw_groups = browser_api_module.list_compute_groups(
+        availability = browser_api_module.get_accurate_gpu_availability(
             workspace_id=workspace_id, session=session
         )
-        gpu_types: dict[str, str] = {}
-        try:
-            availability = browser_api_module.get_accurate_gpu_availability(
-                workspace_id=workspace_id, session=session
-            )
-            gpu_types = {
-                str(item.group_id): str(item.gpu_type)
-                for item in availability
-                if getattr(item, "group_id", None)
-            }
-        except Exception:
-            gpu_types = {}
-
-        for group in raw_groups:
-            if not isinstance(group, dict):
-                continue
-            group_id = str(group.get("logic_compute_group_id") or group.get("id") or "").strip()
-            name = str(group.get("name") or "").strip()
-            if not group_id or not name:
-                continue
-
-            location = str(
-                group.get("location")
-                or group.get("location_name")
-                or group.get("cluster_name")
-                or ""
-            ).strip()
-            if not location and "(" in name and name.endswith(")"):
-                location = name.rsplit("(", 1)[-1].rstrip(")").strip()
-
-            cg_entry: dict[str, Any] = {"name": name, "id": group_id}
-            gpu_type = str(gpu_types.get(group_id, "") or "").strip()
-            if gpu_type:
-                cg_entry["gpu_type"] = gpu_type
-            if location:
-                cg_entry["location"] = location
-            compute_groups.append(cg_entry)
+        gpu_types = {
+            str(item.group_id): str(item.gpu_type)
+            for item in availability
+            if getattr(item, "group_id", None)
+        }
     except Exception:
-        return []
+        gpu_types = {}
+
+    workspace_names = getattr(session, "all_workspace_names", None)
+    workspace_name = ""
+    if isinstance(workspace_names, dict):
+        workspace_name = str(workspace_names.get(workspace_id) or "").strip()
+
+    for group in raw_groups:
+        if not isinstance(group, dict):
+            continue
+        group_id = str(group.get("logic_compute_group_id") or group.get("id") or "").strip()
+        name = str(group.get("name") or "").strip()
+        if not group_id or not name:
+            continue
+
+        location = str(
+            group.get("location")
+            or group.get("location_name")
+            or group.get("cluster_name")
+            or ""
+        ).strip()
+        if not location and "(" in name and name.endswith(")"):
+            location = name.rsplit("(", 1)[-1].rstrip(")").strip()
+
+        cg_entry: dict[str, Any] = {"name": name}
+        gpu_type = str(gpu_types.get(group_id, "") or "").strip()
+        if gpu_type:
+            cg_entry["gpu_type"] = gpu_type
+        if location:
+            cg_entry["location"] = location
+        if workspace_name:
+            cg_entry["workspace_names"] = [workspace_name]
+        compute_groups.append(cg_entry)
     return compute_groups
 
 
@@ -1022,6 +1102,8 @@ def _persist_compute_groups(
     global_data: dict[str, Any],
     global_account_section: dict[str, Any],
     compute_groups: list[dict[str, Any]],
+    workspace_names_by_id: dict[str, str] | None = None,
+    failed_workspace_names: set[str] | None = None,
 ) -> None:
     existing_compute_groups = project_data.get("compute_groups")
     if not isinstance(existing_compute_groups, list):
@@ -1032,25 +1114,29 @@ def _persist_compute_groups(
         existing_compute_groups = global_account_section.get("compute_groups")
     if not isinstance(existing_compute_groups, list):
         existing_compute_groups = []
-    if compute_groups:
-        project_data["compute_groups"] = _merge_compute_groups(
-            existing_compute_groups, compute_groups
-        )
+    normalized_existing = _merge_compute_groups(
+        [],
+        existing_compute_groups,
+        workspace_names_by_id=workspace_names_by_id,
+    )
+    failed_workspace_names = failed_workspace_names or set()
+    preserved = [
+        item
+        for item in normalized_existing
+        if failed_workspace_names.intersection(item.get("workspace_names") or [])
+    ]
+    merged = _merge_compute_groups(
+        preserved,
+        compute_groups,
+        workspace_names_by_id=workspace_names_by_id,
+    )
+    if merged:
+        project_data["compute_groups"] = merged
+    else:
+        project_data.pop("compute_groups", None)
+    global_data.pop("compute_groups", None)
+    global_account_section.pop("compute_groups", None)
     project_account_section.pop("compute_groups", None)
-
-
-def _extract_workspace_ids_from_compute_groups(
-    compute_groups: list[dict[str, Any]] | None,
-) -> set[str]:
-    workspace_ids: set[str] = set()
-    for item in compute_groups or []:
-        if not isinstance(item, dict):
-            continue
-        for ws_id in item.get("workspace_ids") or []:
-            value = str(ws_id or "").strip()
-            if value:
-                workspace_ids.add(value)
-    return workspace_ids
 
 
 def _cleanup_global_discovery_metadata(
@@ -1230,7 +1316,20 @@ def _persist_default_path_aliases(
     force: bool,
 ) -> None:
     project_id = str(getattr(selected_project, "project_id", "") or "").strip()
+    project_name = str(getattr(selected_project, "name", "") or "").strip()
     entry = project_catalog.get(project_id, {})
+    if not entry and project_name:
+        entry = project_catalog.get(project_name, {})
+    if not entry and project_name:
+        entry = next(
+            (
+                candidate
+                for candidate in project_catalog.values()
+                if isinstance(candidate, dict)
+                and str(candidate.get("name") or "").strip() == project_name
+            ),
+            {},
+        )
     project_topic = str(entry.get("path") or "").strip()
     path_user = str(entry.get("path_user") or "").strip()
     if not project_topic:
@@ -1433,23 +1532,12 @@ def _print_discover_completion(
     project_path: Path | None,
     prompted_credentials: tuple[str, str, str] | None,
 ) -> None:
-    click.echo()
-    click.echo(click.style("Wrote configuration:", bold=True))
-    click.echo(f"  - {global_path}")
+    paths = [str(global_path)]
     if project_path is not None:
-        click.echo(f"  - {project_path}")
-    click.echo()
+        paths.append(str(project_path))
+    click.echo("Initialized: " + ", ".join(paths))
     if prompted_credentials:
-        click.echo("Note: prompted account password was stored in global config for this account.")
-        click.echo(f"  Location: {global_path}")
-        click.echo()
-        click.echo("Ready to use:")
-        click.echo("  inspire config show     # Verify configuration")
-        click.echo("  inspire resources availability --workspace <workspace>  # View available GPUs")
-        click.echo("  inspire notebook list --workspace <workspace>           # List notebooks")
-        return
-    click.echo("Next steps:")
-    click.echo("  Run: inspire config show")
+        click.echo(f"Password saved in account config: {global_path}")
 
 
 def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
@@ -1463,6 +1551,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
     projects = request.projects
     selected_project = request.selected_project
     prompted_credentials = request.prompted_credentials
+    verbose = request.verbose
     global_path = Config.writable_config_path()
     if global_path is None:
         raise click.ClickException("No active account configured. Run `inspire account add` first.")
@@ -1475,7 +1564,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
     ):
         return
 
-    click.echo("Preparing account catalog update...")
+    _progress(verbose, "Preparing account catalog update...")
     global_data, account_section = _load_discovery_global_state(
         global_path=global_path,
         account_key=account_key,
@@ -1501,7 +1590,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         project_account_section=project_account_section,
         projects=projects,
     )
-    click.echo(f"Discovering storage paths for {len(projects)} project(s)...")
+    _progress(verbose, f"Discovering storage paths for {len(projects)} project(s)...")
     _populate_project_catalog(
         project_catalog=project_catalog,
         projects=projects,
@@ -1510,6 +1599,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         workspace_id=workspace_id,
         account_key=account_key,
         force=force,
+        alias_for_id=alias_for_id,
     )
     account_section.pop("projects", None)
     account_section.pop("project_catalog", None)
@@ -1519,7 +1609,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         config=config,
         session=session,
     )
-    click.echo("Discovering container image registry...")
+    _progress(verbose, "Discovering container image registry...")
     _discover_docker_registry(
         global_data=global_data,
         browser_api_module=browser_api_module,
@@ -1532,23 +1622,15 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         if ws_str:
             all_ws_ids.add(ws_str)
 
-    existing_project_compute_groups = project_data.get("compute_groups")
-    if not isinstance(existing_project_compute_groups, list):
-        existing_project_compute_groups = []
-
-    known_workspace_ids = _extract_workspace_ids_from_compute_groups(
-        existing_project_compute_groups
-    )
-    missing_workspace_ids = sorted(
-        ws_id for ws_id in all_ws_ids if ws_id not in known_workspace_ids
-    )
-
-    compute_groups: list[dict[str, Any]] = list(existing_project_compute_groups)
-    if missing_workspace_ids:
-        click.echo(
-            f"Discovering compute groups across {len(missing_workspace_ids)} workspace(s)..."
+    workspace_ids = sorted(all_ws_ids)
+    compute_groups: list[dict[str, Any]] = []
+    failed_workspace_ids: set[str] = set()
+    if workspace_ids:
+        _progress(
+            verbose,
+            f"Discovering compute groups across {len(workspace_ids)} workspace(s)..."
         )
-        max_workers = min(len(missing_workspace_ids), 6)
+        max_workers = min(len(workspace_ids), 6)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             future_map = {
                 pool.submit(
@@ -1557,7 +1639,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
                     session=session,
                     workspace_id=ws_id,
                 ): ws_id
-                for ws_id in missing_workspace_ids
+                for ws_id in workspace_ids
             }
             workspace_results: dict[str, list[dict[str, Any]]] = {}
             for future in concurrent.futures.as_completed(future_map):
@@ -1566,19 +1648,25 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
                     workspace_results[ws_id] = future.result()
                 except Exception:
                     workspace_results[ws_id] = []
+                    failed_workspace_ids.add(ws_id)
 
-        for ws_id in missing_workspace_ids:
-            for cg in workspace_results.get(ws_id, []):
-                cg.setdefault("workspace_ids", [])
-                if ws_id not in cg["workspace_ids"]:
-                    cg["workspace_ids"].append(ws_id)
-                compute_groups.append(cg)
+        for ws_id in workspace_ids:
+            compute_groups.extend(workspace_results.get(ws_id, []))
+    workspace_names_by_id = dict(
+        getattr(session, "all_workspace_names", None) or {}
+    )
     _persist_compute_groups(
         project_data=project_data,
         project_account_section=project_account_section,
         global_data=global_data,
         global_account_section=account_section,
         compute_groups=compute_groups,
+        workspace_names_by_id=workspace_names_by_id,
+        failed_workspace_names={
+            workspace_names_by_id[workspace_id]
+            for workspace_id in failed_workspace_ids
+            if workspace_id in workspace_names_by_id
+        },
     )
 
     _drop_catalog_runtime_fields(project_catalog)
@@ -1606,6 +1694,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
     )
     _promote_account_section_to_toplevel(global_data, account_key)
     global_data.pop("account", None)
+    global_data.pop("workspaces", None)
     catalog = global_data.get("project_catalog")
     if isinstance(catalog, dict):
         for project_id, entry in list(catalog.items()):
@@ -1620,7 +1709,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         if not catalog:
             global_data.pop("project_catalog", None)
 
-    click.echo("Preparing default remote path aliases...")
+    _progress(verbose, "Preparing default remote path aliases...")
     selected_tier = _select_default_path_alias_tier(force=force)
     _persist_default_path_aliases(
         project_data=global_data,
@@ -1631,7 +1720,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         selected_tier=selected_tier,
     )
 
-    click.echo("Writing configuration files...")
+    _progress(verbose, "Writing configuration files...")
     global_path.parent.mkdir(parents=True, exist_ok=True)
     # Always UTF-8 — see project_path.write_text above for the Windows
     # GBK story.
@@ -1675,6 +1764,7 @@ def _init_discover_mode(
     cli_username: str | None = None,
     cli_base_url: str | None = None,
     cli_select_project: str | None = None,
+    verbose: bool = False,
 ) -> None:
     """Initialize per-account catalogs by discovering projects and compute groups."""
     from inspire.platform.web import browser_api as browser_api_module
@@ -1689,11 +1779,12 @@ def _init_discover_mode(
         default_workspace_id=DEFAULT_WORKSPACE_ID,
         cli_username=cli_username,
         cli_base_url=cli_base_url,
+        verbose=verbose,
     )
 
-    click.echo(click.style("Discovering account catalog...", bold=True))
-    click.echo(f"Account: {account_key}")
-    click.echo("Discovering projects across accessible workspaces...")
+    _progress(verbose, "Discovering account catalog...")
+    _progress(verbose, f"Account: {account_key}")
+    _progress(verbose, "Discovering projects across accessible workspaces...")
     projects, selected_project = _load_projects_for_discovery(
         config=config,
         browser_api_module=browser_api_module,
@@ -1702,7 +1793,7 @@ def _init_discover_mode(
         force=force,
         requested_project=cli_select_project,
     )
-    click.echo(f"Discovered {len(projects)} project(s).")
+    _progress(verbose, f"Discovered {len(projects)} project(s).")
     try:
         _persist_discovery_catalog(
             _DiscoveryPersistRequest(
@@ -1716,6 +1807,7 @@ def _init_discover_mode(
                 projects=projects,
                 selected_project=selected_project,
                 prompted_credentials=prompted_credentials,
+                verbose=verbose,
             )
         )
     finally:

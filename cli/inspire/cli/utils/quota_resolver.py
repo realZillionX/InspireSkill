@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Optional
 
+from inspire.cli.utils.id_resolver import is_full_uuid
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import WebSession
 
@@ -139,6 +140,18 @@ def qz_scheduling_zone_hint_for_group_names(group_names: Iterable[object]) -> st
     return None
 
 
+def validate_compute_group_name(value: str) -> str:
+    """Reject platform handles while preserving a user-facing group name."""
+    name = str(value or "").strip()
+    if not name:
+        raise QuotaMatchError("--group value cannot be empty")
+    if name.casefold().startswith("lcg-") or is_full_uuid(name):
+        raise QuotaMatchError(
+            "--group takes a compute group name, not a platform handle."
+        )
+    return name
+
+
 def _default_groups_loader(
     *, workspace_id: str, session: WebSession
 ) -> GroupsLoader:
@@ -195,9 +208,7 @@ def resolve_quota(
         group_list = list(loader())
 
     if group_override is not None:
-        target = group_override.strip()
-        if not target:
-            raise QuotaMatchError("--group value cannot be empty")
+        target = validate_compute_group_name(group_override)
         filtered = [group for group in group_list if _group_name(group) == target]
         if not filtered:
             available = sorted({
@@ -226,7 +237,7 @@ def resolve_quota(
     all_rows: list[tuple[dict, dict]] = []
     for group in group_list:
         lcg_id = _group_id(group)
-        if not lcg_id:
+        if not lcg_id or not _group_name(group):
             continue
         try:
             prices = prices_loader(lcg_id)
@@ -254,7 +265,7 @@ def resolve_quota(
             ResolvedQuota(
                 quota_id=quota_id,
                 logic_compute_group_id=lcg_id,
-                compute_group_name=_group_name(group, fallback=lcg_id),
+                compute_group_name=_group_name(group),
                 gpu_count=gpu_count,
                 cpu_count=cpu_count,
                 memory_gib=memory_gib,
@@ -265,7 +276,7 @@ def resolve_quota(
 
     if not matches:
         qz_hint = qz_scheduling_zone_hint_for_group_names(
-            _group_name(group, fallback=_group_id(group)) for group in group_list
+            _group_name(group) for group in group_list
         )
         raise QuotaMatchError(
             f"--quota {spec.display()} matches no quota row in the selected workspace."
@@ -301,7 +312,9 @@ def _format_row_catalog(rows: list[tuple[dict, dict]]) -> str:
         cpu_count = int(price.get("cpu_count") or 0)
         memory_gib = _extract_memory_gib(price)
         gpu_type = _extract_gpu_type(price) or "CPU"
-        group_name = _group_name(group, fallback=_group_id(group))
+        group_name = _group_name(group)
+        if not group_name:
+            continue
         lines.append(
             f"  {gpu_count},{cpu_count},{memory_gib}  ({gpu_type}, {group_name})"
         )
@@ -357,4 +370,5 @@ __all__ = [
     "parse_quota",
     "qz_scheduling_zone_hint_for_group_names",
     "resolve_quota",
+    "validate_compute_group_name",
 ]

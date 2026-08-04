@@ -10,6 +10,36 @@ from inspire import config as config_module
 from inspire.cli.main import main as cli_main
 
 
+_FORBIDDEN_PUBLIC_KEYS = {
+    "id",
+    "workspace_id",
+    "logic_compute_group_id",
+    "quota_id",
+    "raw",
+    "payload",
+    "result",
+    "scanned",
+    "source",
+}
+
+
+def _json_data(output: str):  # type: ignore[no-untyped-def]
+    parsed = json.loads(output)
+    return parsed.get("data", parsed)
+
+
+def _assert_compact_public_payload(value):  # type: ignore[no-untyped-def]
+    if isinstance(value, dict):
+        for key, child in value.items():
+            assert key not in _FORBIDDEN_PUBLIC_KEYS
+            assert not key.endswith("_id")
+            assert not key.endswith("_ids")
+            _assert_compact_public_payload(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_compact_public_payload(child)
+
+
 def _patch_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = config_module.Config(
         username="user",
@@ -86,8 +116,12 @@ def test_job_quota_workspace_all_sweeps_visible_workspaces(
 
     result = CliRunner().invoke(cli_main, ["--json", "job", "quota", "--workspace", "all"])
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["data"]["workload"] == "job"
+    payload = _json_data(result.output)
+    assert payload == {"quotas": []}
+    assert "workload" not in payload
+    assert "total" not in payload
+    assert "workspace_names" not in payload
+    _assert_compact_public_payload(payload)
     assert sorted(queried_workspaces) == sorted([_WS_DEFAULT, _WS_CPU, _WS_TRAIN])
 
 
@@ -142,20 +176,19 @@ def test_quota_json_rows_carry_quota_and_no_ids(
         cli_main, ["--json", "notebook", "quota", "--workspace", "CPU资源空间"]
     )
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    row = payload["data"]["quotas"][0]
+    payload = _json_data(result.output)
+    row = payload["quotas"][0]
     assert row.keys() == {
-        "workspace_name",
-        "compute_group_name",
-        "cpu_count",
-        "memory_size_gib",
-        "gpu_count",
+        "workspace",
+        "group",
         "gpu_type",
         "quota",
     }
+    assert row["workspace"] == "CPU资源空间"
+    assert row["group"] == "CPU资源-2"
     assert row["quota"] == "0,4,16"
-    assert "workspace_id" not in payload["data"]
-    assert "logic_compute_group_id" not in row
+    assert "total" not in payload
+    _assert_compact_public_payload(payload)
     assert "lcg-secret" not in result.output
     assert "q-1" not in result.output
 
@@ -229,18 +262,16 @@ def test_qz_quota_hint_is_human_only(
     )
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    row = payload["data"]["quotas"][0]
+    payload = _json_data(result.output)
+    row = payload["quotas"][0]
     assert row.keys() == {
-        "workspace_name",
-        "compute_group_name",
-        "cpu_count",
-        "memory_size_gib",
-        "gpu_count",
+        "workspace",
+        "group",
         "gpu_type",
         "quota",
     }
     assert "QZ scheduling zones" not in result.output
+    _assert_compact_public_payload(payload)
 
 
 def test_non_qz_quota_human_output_has_no_card_area_hint(
@@ -288,6 +319,50 @@ def test_group_keyword_filter_skips_non_matching_compute_groups(
     )
     assert result.exit_code == 0, result.output
     assert queried_groups == ["lcg-hpc-2"]
+
+
+@pytest.mark.parametrize(
+    "group_handle",
+    [
+        "lcg-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    ],
+)
+def test_group_filter_rejects_platform_handles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    group_handle: str,
+) -> None:
+    _patch_config(monkeypatch, tmp_path)
+    _stub_quota_browser(
+        monkeypatch,
+        groups_by_ws={
+            _WS_CPU: [
+                {
+                    "logic_compute_group_id": "lcg-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "name": "CPU资源-2",
+                }
+            ]
+        },
+        prices_fn=lambda **_: [_make_price(qid="q-1", gpu=0, cpu=4, mem=16)],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "quota",
+            "--workspace",
+            "CPU资源空间",
+            "--group",
+            group_handle,
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "takes a compute group name" in result.output
+    assert group_handle not in result.output
 
 
 def test_quota_help_explains_group_keyword() -> None:

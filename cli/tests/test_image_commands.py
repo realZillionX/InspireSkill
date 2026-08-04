@@ -7,11 +7,10 @@ from typing import Any, Optional
 import pytest
 from click.testing import CliRunner
 
-from inspire.cli.main import main as cli_main
-from inspire.cli.formatters.human_formatter import format_image_list, format_image_detail
 from inspire import config as config_module
 from inspire.cli.commands.image import image_commands as image_commands_module
 from inspire.cli.commands.notebook import notebook_lookup as notebook_lookup_module
+from inspire.cli.main import main as cli_main
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.browser_api.images import (
@@ -19,6 +18,34 @@ from inspire.platform.web.browser_api.images import (
     _image_from_api,
     list_images_by_source,
 )
+
+
+_FORBIDDEN_PUBLIC_KEYS = {
+    "id",
+    "image_id",
+    "raw",
+    "payload",
+    "result",
+    "scanned",
+    "source",
+}
+
+
+def _json_data(output: str) -> Any:
+    parsed = json.loads(output)
+    return parsed.get("data", parsed)
+
+
+def _assert_compact_public_payload(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            assert key not in _FORBIDDEN_PUBLIC_KEYS
+            assert not key.endswith("_id")
+            assert not key.endswith("_ids")
+            _assert_compact_public_payload(child)
+    elif isinstance(value, list):
+        for child in value:
+            _assert_compact_public_payload(child)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +115,13 @@ def _patch_image_candidates(
 def _patch_image_name_resolver(
     monkeypatch: pytest.MonkeyPatch, mapping: dict[str, str]
 ) -> None:
-    def _fake_resolve(ctx, name: str, *, pick: Optional[int] = None) -> str:  # noqa: ANN001
+    def _fake_resolve(
+        ctx,
+        name: str,
+        *,
+        pick: Optional[int] = None,
+        **_kwargs,
+    ) -> str:  # noqa: ANN001
         del ctx, pick
         return mapping[name]
 
@@ -317,7 +350,9 @@ def test_image_list_human_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     assert "2.0" in result.output
     assert "official" in result.output
     assert "READY" in result.output
-    assert "Total: 2 image(s)" in result.output
+    assert "Total:" not in result.output
+    assert "img-001" not in result.output
+    assert "img-pub-001" not in result.output
 
 
 def test_image_list_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -345,11 +380,17 @@ def test_image_list_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     result = runner.invoke(cli_main, ["--json", "image", "list"])
     assert result.exit_code == 0
 
-    payload = json.loads(result.output)
-    assert payload["success"] is True
-    assert payload["data"]["total"] == 1
-    assert payload["data"]["images"][0]["name"] == "pytorch"
-    assert payload["data"]["images"][0]["source"] == "SOURCE_OFFICIAL"
+    payload = _json_data(result.output)
+    assert len(payload["images"]) == 1
+    assert payload["images"][0] == {
+        "name": "pytorch:2.0",
+        "status": "READY",
+        "framework": "PyTorch",
+        "visibility": "official",
+    }
+    assert "total" not in payload
+    _assert_compact_public_payload(payload)
+    assert "img-001" not in result.output
 
 
 def test_image_list_private_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -377,10 +418,11 @@ def test_image_list_private_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     result = runner.invoke(cli_main, ["--json", "image", "list", "--source", "private"])
     assert result.exit_code == 0
 
-    payload = json.loads(result.output)
-    assert payload["data"]["total"] == 1
-    assert payload["data"]["images"][0]["name"] == "personal-visible-img"
-    assert payload["data"]["images"][0]["source"] == "SOURCE_PUBLIC"
+    payload = _json_data(result.output)
+    assert len(payload["images"]) == 1
+    assert payload["images"][0]["name"] == "personal-visible-img:2.1"
+    assert payload["images"][0]["visibility"] == "public"
+    _assert_compact_public_payload(payload)
 
 
 def test_image_list_all_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -441,13 +483,15 @@ def test_image_list_all_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     result = runner.invoke(cli_main, ["--json", "image", "list", "--source", "all"])
     assert result.exit_code == 0
 
-    payload = json.loads(result.output)
+    payload = _json_data(result.output)
     # official + public + private
-    assert payload["data"]["total"] == 3
-    names = [img["name"] for img in payload["data"]["images"]]
-    assert "official-img" in names
-    assert "public-img" in names
-    assert "personal-visible-img" in names
+    assert len(payload["images"]) == 3
+    names = [img["name"] for img in payload["images"]]
+    assert "official-img:1.0" in names
+    assert "public-img:1.9" in names
+    assert "personal-visible-img:2.0" in names
+    assert "total" not in payload
+    _assert_compact_public_payload(payload)
 
 
 def test_image_list_all_sources_partial_failure(
@@ -494,10 +538,11 @@ def test_image_list_all_sources_partial_failure(
     result = runner.invoke(cli_main, ["--json", "image", "list", "--source", "all"])
     assert result.exit_code == 0
 
-    payload = json.loads(result.output)
-    assert payload["data"]["total"] == 2
-    assert len(payload["data"]["warnings"]) == 1
-    assert payload["data"]["warnings"][0].startswith("public:")
+    payload = _json_data(result.output)
+    assert len(payload["images"]) == 2
+    assert len(payload["warnings"]) == 1
+    assert payload["warnings"][0].startswith("public image catalog unavailable:")
+    _assert_compact_public_payload(payload)
 
 
 def test_image_list_all_sources_all_fail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -538,9 +583,11 @@ def test_image_detail_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     result = runner.invoke(cli_main, ["--json", "image", "detail", "detail-img:2.0"])
     assert result.exit_code == 0
 
-    payload = json.loads(result.output)
-    assert "image_id" not in payload["data"]
-    assert payload["data"]["name"] == "detail-img"
+    payload = _json_data(result.output)
+    assert payload["name"] == "detail-img:2.0"
+    assert payload["visibility"] == "private"
+    _assert_compact_public_payload(payload)
+    assert "img-123" not in result.output
 
 
 def test_image_detail_human(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -566,8 +613,9 @@ def test_image_detail_human(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["image", "detail", "detail-img:2.0"])
     assert result.exit_code == 0
-    assert "Image Detail" in result.output
-    assert "detail-img" in result.output
+    assert result.output.startswith("Name: detail-img:2.0\n")
+    assert "Image Detail" not in result.output
+    assert "Source:" not in result.output
     assert "img-123" not in result.output
 
 
@@ -604,8 +652,14 @@ def test_image_register_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     )
     assert result.exit_code == 0
 
-    payload = json.loads(result.output)
-    assert "image_id" not in payload["data"]
+    payload = _json_data(result.output)
+    assert payload == {
+        "name": "my-img:v1.0",
+        "status": "registered",
+        "visibility": "private",
+    }
+    _assert_compact_public_payload(payload)
+    assert "img-new-001" not in result.output
     assert captured["name"] == "my-img"
     assert captured["version"] == "v1.0"
     assert captured["add_method"] == 2
@@ -662,8 +716,10 @@ def test_image_save_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     )
     assert result.exit_code == 0
 
-    payload = json.loads(result.output)
-    assert "image_id" not in payload["data"]
+    payload = _json_data(result.output)
+    assert payload == {"name": "saved-img:v1", "status": "saving"}
+    _assert_compact_public_payload(payload)
+    assert "img-saved-001" not in result.output
     assert captured["notebook_id"] == "notebook-abc"
 
 
@@ -846,7 +902,7 @@ def test_image_save_fallback_resolves_image_id_via_list(
     )
 
     assert result.exit_code == 0
-    assert "Notebook saved as image: saved-img:v1" in result.output
+    assert result.output == "Image saving: saved-img:v1\n"
     assert "img-newest" not in result.output
 
 
@@ -881,7 +937,7 @@ def test_image_save_unknown_when_fallback_fails(
     )
 
     assert result.exit_code == 0
-    assert "Notebook saved as image: saved-img:v1" in result.output
+    assert result.output == "Image saving: saved-img:v1\n"
     assert "unknown" not in result.output
 
 
@@ -919,10 +975,11 @@ def test_image_delete_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     result = runner.invoke(cli_main, ["--json", "image", "delete", "stale-image:v2", "--yes"])
     assert result.exit_code == 0
 
-    payload = json.loads(result.output)
+    payload = _json_data(result.output)
     # v2: delete output carries the user-facing name, not the internal image_id.
-    assert payload["data"]["name"] == "stale-image:v2"
-    assert payload["data"]["status"] == "deleted"
+    assert payload["name"] == "stale-image:v2"
+    assert payload["status"] == "deleted"
+    _assert_compact_public_payload(payload)
 
 
 def test_image_delete_prompts_without_yes(
@@ -1073,33 +1130,31 @@ def test_wait_for_image_ready_times_out(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_format_image_list_empty():
-    result = format_image_list([])
+    result = image_commands_module._format_image_list([])
     assert "No images found" in result
 
 
 def test_format_image_list_with_items():
     images = [
         {
-            "name": "pytorch",
+            "name": "pytorch:2.0",
             "framework": "PyTorch",
-            "version": "2.0",
-            "source": "SOURCE_OFFICIAL",
+            "visibility": "official",
             "status": "READY",
         },
         {
-            "name": "custom",
+            "name": "custom:1.5",
             "framework": "PT",
-            "version": "1.5",
-            "source": "SOURCE_PRIVATE",
+            "visibility": "private",
             "status": "BUILDING",
         },
     ]
-    result = format_image_list(images)
+    result = image_commands_module._format_image_list(images)
     assert "pytorch" in result
     assert "custom" in result
-    assert "Total: 2 image(s)" in result
-    # Columns should include Version, human-readable source labels
-    assert "Version" in result
+    assert "Total:" not in result
+    assert "Visibility" in result
+    assert "Source" not in result
     assert "official" in result
     assert "private" in result
     assert "READY" in result
@@ -1108,19 +1163,18 @@ def test_format_image_list_with_items():
 
 def test_format_image_detail():
     data = {
-        "image_id": "img-123",
-        "name": "my-image",
+        "name": "my-image:2.0",
         "framework": "pytorch",
-        "version": "2.0",
-        "source": "SOURCE_PRIVATE",
+        "visibility": "private",
         "status": "READY",
-        "url": "registry/my-image:v1",
+        "registry": "registry/my-image:v1",
         "description": "Test image",
         "created_at": "2026-01-15",
     }
-    result = format_image_detail(data)
-    assert "Image Detail" in result
+    result = image_commands_module._format_image_detail(data)
+    assert "Image Detail" not in result
     assert "my-image" in result
     assert "img-123" not in result
-    assert "private" in result  # human-readable source label
+    assert "private" in result
+    assert "Source" not in result
     assert "READY" in result

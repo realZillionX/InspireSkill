@@ -12,8 +12,9 @@ from inspire.cli.context import (
     EXIT_CONFIG_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.human_formatter import format_epoch
+from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import resolve_by_name
 from inspire.cli.utils.raw_ids import scrub_raw_ids
@@ -36,12 +37,38 @@ _PROJECT_LIST_WORKSPACE_FANOUT_LIMIT = 6
 # ---------------------------------------------------------------------------
 
 
+def _public_text(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return scrub_raw_ids(value).strip()
+
+
+def _public_number(value: object) -> int | float | str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        text = scrub_raw_ids(value).strip()
+        return text or None
+    return None
+
+
+def _format_budget(value: object) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value):,.0f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _project_to_dict(
     proj: browser_api_module.ProjectInfo,
     *,
     workspace_names_by_id: dict[str, str] | None = None,
 ) -> dict:
-    """Convert a ProjectInfo to a plain dict for JSON output."""
+    """Convert a ProjectInfo to the compact, name-only CLI representation."""
     workspace_names = list(proj.workspace_names)
     if not workspace_names and workspace_names_by_id:
         workspace_ids = list(proj.workspace_ids) or [proj.workspace_id]
@@ -50,23 +77,112 @@ def _project_to_dict(
             if workspace_name and workspace_name not in workspace_names:
                 workspace_names.append(workspace_name)
 
+    view: dict[str, object] = {
+        "name": scrub_raw_ids(proj.name),
+        "workspaces": [scrub_raw_ids(name) for name in workspace_names],
+        "priority": scrub_raw_ids(proj.priority_level or proj.priority_name),
+        "remaining_budget": _public_number(proj.member_remain_budget),
+    }
     return {
-        "project_id": proj.project_id,
-        "name": proj.name,
-        "workspace_id": proj.workspace_id,
-        "workspace_ids": list(proj.workspace_ids),
-        "workspace_names": workspace_names,
-        "budget": proj.budget,
-        "remain_budget": proj.remain_budget,
-        "member_remain_budget": proj.member_remain_budget,
-        "gpu_limit": proj.gpu_limit,
-        "member_gpu_limit": proj.member_gpu_limit,
-        "priority_level": proj.priority_level,
-        "priority_name": proj.priority_name,
+        key: value
+        for key, value in view.items()
+        if value not in ("", None, [])
     }
 
 
+def _format_project_list(projects: list[dict]) -> str:
+    if not projects:
+        return "No projects found."
+    rows = [
+        (
+            str(project.get("name") or ""),
+            ", ".join(str(name) for name in project.get("workspaces") or []) or "-",
+            str(project.get("priority") or "-"),
+            _format_budget(project.get("remaining_budget")),
+        )
+        for project in projects
+    ]
+    widths = [
+        column_width("Name", [row[0] for row in rows], max_width=48),
+        column_width("Workspace", [row[1] for row in rows], max_width=32),
+        column_width("Priority", [row[2] for row in rows], max_width=12),
+        column_width("Budget", [row[3] for row in rows], max_width=16),
+    ]
+    return "\n".join(
+        render_table(
+            ("Name", "Workspace", "Priority", "Budget"),
+            rows,
+            widths,
+            aligns=["left", "left", "left", "right"],
+            line_char="─",
+        )
+    )
+
+
+def _project_detail_view(data: dict) -> dict[str, object]:
+    owner = data.get("creator") if isinstance(data.get("creator"), dict) else {}
+    view: dict[str, object] = {
+        "name": _public_text(data.get("name") or data.get("en_name")),
+        "english_name": _public_text(data.get("en_name")),
+        "description": _public_text(data.get("description")),
+        "budget": _public_number(data.get("budget")),
+        "remaining_budget": _public_number(data.get("remain_budget")),
+        "priority": _public_text(
+            data.get("priority_name") or data.get("priority_level")
+        ),
+        "created_at": format_epoch(data.get("created_at")) if data.get("created_at") else "",
+        "creator": _public_text(owner.get("name")),
+    }
+    if view["english_name"] == view["name"]:
+        view["english_name"] = ""
+    return {
+        key: value
+        for key, value in view.items()
+        if value not in ("", None)
+    }
+
+
+def _format_project_detail(project: dict[str, object]) -> str:
+    labels = (
+        ("Name", "name"),
+        ("English name", "english_name"),
+        ("Description", "description"),
+        ("Budget", "budget"),
+        ("Remaining budget", "remaining_budget"),
+        ("Priority", "priority"),
+        ("Created", "created_at"),
+        ("Creator", "creator"),
+    )
+    return "\n".join(
+        f"{label}: {project[key]}"
+        for label, key in labels
+        if key in project
+    )
+
+
+def _owner_views(items: list[dict]) -> list[dict[str, str]]:
+    owners: list[dict[str, str]] = []
+    for item in items:
+        name = _public_text(item.get("name"))
+        if not name:
+            continue
+        login = ""
+        extra = item.get("extra_info")
+        if isinstance(extra, dict):
+            login = _public_text(extra.get("login_name"))
+        owner = {"name": name}
+        if login:
+            owner["login"] = login
+        owners.append(owner)
+    return owners
+
+
 def _resolve_project_name(ctx: Context, name: str, *, session, workspace_id: str) -> str:  # noqa: ANN001
+    workspace_name = str(
+        (getattr(session, "all_workspace_names", None) or {}).get(workspace_id)
+        or "the selected workspace"
+    ).strip()
+
     def _lister():
         projects = browser_api_module.list_projects(workspace_id=workspace_id, session=session)
         return [
@@ -85,6 +201,9 @@ def _resolve_project_name(ctx: Context, name: str, *, session, workspace_id: str
         resource_type="project",
         list_candidates=_lister,
         json_output=ctx.json_output,
+        session=session,
+        workspace_id=workspace_id,
+        list_command=f"inspire project list --workspace {workspace_name}",
     )
 
 
@@ -299,8 +418,13 @@ def list_projects_cmd(
                 session=session,
             )
         if not projects and workspace_errors:
+            workspace_names = dict(
+                getattr(session, "all_workspace_names", None) or {}
+            )
             error_samples = ", ".join(
-                f"{ws_id}: {message}" for ws_id, message in workspace_errors[:3]
+                f"{scrub_raw_ids(workspace_names.get(ws_id) or '(workspace)')}: "
+                f"{scrub_raw_ids(message)}"
+                for ws_id, message in workspace_errors[:3]
             )
             if len(workspace_errors) > 3:
                 error_samples += ", ..."
@@ -309,20 +433,25 @@ def list_projects_cmd(
                 f"({len(workspace_errors)} failed: {error_samples})"
             )
     except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
         return
     except Exception as e:
-        _handle_error(ctx, "APIError", f"Failed to list projects: {e}", EXIT_API_ERROR)
+        _handle_error(
+            ctx,
+            "APIError",
+            f"Failed to list projects: {scrub_raw_ids(e)}",
+            EXIT_API_ERROR,
+        )
         return
 
     session_workspace_names = dict(getattr(session, "all_workspace_names", None) or {})
     results = [_project_to_dict(p, workspace_names_by_id=session_workspace_names) for p in projects]
 
     if json_output:
-        click.echo(json_formatter.format_json({"projects": results, "total": len(results)}))
+        click.echo(json_formatter.format_json({"projects": results}))
         return
 
-    click.echo(human_formatter.format_project_list(results))
+    click.echo(_format_project_list(results))
 
 
 @click.command("detail")
@@ -344,36 +473,18 @@ def detail_project_cmd(ctx: Context, project: str, workspace: str) -> None:
         project_id = _resolve_project_name(ctx, project, session=session, workspace_id=workspace_ids[0])
         data = browser_api_module.get_project_detail(project_id, session=session)
     except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
         return
     except Exception as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
         return
 
+    view = _project_detail_view(data)
     if ctx.json_output:
-        click.echo(json_formatter.format_json(data))
+        click.echo(json_formatter.format_json(view))
         return
 
-    click.echo("Project")
-    click.echo(f"  Name:          {scrub_raw_ids(data.get('name') or data.get('en_name') or 'N/A')}")
-    if data.get("en_name") and data.get("en_name") != data.get("name"):
-        click.echo(f"  English name:  {scrub_raw_ids(data.get('en_name'))}")
-    if data.get("description"):
-        click.echo(f"  Description:   {scrub_raw_ids(data.get('description'))}")
-    if data.get("budget"):
-        click.echo(f"  Budget:        {data.get('budget')}")
-    if data.get("children_budget"):
-        click.echo(f"  Children bgt:  {data.get('children_budget')}")
-    if data.get("priority_name"):
-        click.echo(
-            f"  Priority:      {scrub_raw_ids(data.get('priority_name'))} "
-            f"({scrub_raw_ids(data.get('priority_level', '?'))})"
-        )
-    if data.get("created_at"):
-        click.echo(f"  Created:       {format_epoch(data.get('created_at'))}")
-    owner = data.get("creator") if isinstance(data.get("creator"), dict) else None
-    if owner:
-        click.echo(f"  Creator:       {scrub_raw_ids(owner.get('name') or '?')}")
+    click.echo(_format_project_detail(view))
 
 
 @click.command("owners")
@@ -384,20 +495,23 @@ def owners_project_cmd(ctx: Context) -> None:
     try:
         items = browser_api_module.list_project_owners(session=session)
     except Exception as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
         return
 
+    owners = _owner_views(items)
     if ctx.json_output:
-        click.echo(json_formatter.format_json({"total": len(items), "items": items}))
+        click.echo(json_formatter.format_json({"owners": owners}))
         return
 
-    if not items:
+    if not owners:
         click.echo("No project owners returned.")
         return
 
-    click.echo(f"Project Owners ({len(items)})")
-    for i, it in enumerate(items, 1):
-        name = it.get("name") or it.get("id") or "?"
-        login = (it.get("extra_info") or {}).get("login_name", "")
-        extra = f" ({login})" if login else ""
-        click.echo(f"  [{i}] {name}{extra}")
+    rows = [(owner["name"], owner.get("login", "")) for owner in owners]
+    widths = [
+        column_width("Name", [row[0] for row in rows], max_width=48),
+        column_width("Login", [row[1] for row in rows], max_width=32),
+    ]
+    click.echo(
+        "\n".join(render_table(("Name", "Login"), rows, widths, line_char="─"))
+    )

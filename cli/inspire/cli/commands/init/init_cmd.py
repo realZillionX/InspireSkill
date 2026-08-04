@@ -328,6 +328,7 @@ def init(
                 cli_username=username,
                 cli_base_url=base_url,
                 cli_select_project=select_project_name,
+                verbose=ctx.debug,
             )
             env_file_config_path = _register_env_file()
             if env_file_config_path is not None and env_file_config_path not in discover_target_paths:
@@ -354,9 +355,6 @@ def init(
                     raise ValueError(
                         "JSON mode is non-interactive for overwrites; rerun with --force."
                     )
-            else:
-                click.echo("Creating template config with placeholders.\n")
-
             run_init_action(_init_template_mode, effective_json, global_flag, project_flag, force)
             env_file_config_path = _register_env_file()
             target_paths = [global_path] if global_flag else [project_path]
@@ -428,9 +426,6 @@ def init(
             target_path = global_path if global_flag else project_path
             if target_path.exists() and not force:
                 raise ValueError("JSON mode is non-interactive for overwrites; rerun with --force.")
-        else:
-            click.echo("No environment variables detected. Creating template config.\n")
-
         run_init_action(_init_template_mode, effective_json, global_flag, project_flag, force)
         env_file_config_path = _register_env_file()
         target_paths = [global_path] if global_flag else [project_path]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -8,6 +10,7 @@ from click.testing import CliRunner
 from inspire.cli.context import EXIT_GENERAL_ERROR, EXIT_SUCCESS
 from inspire.cli.commands.init import discover as discover_module
 from inspire.cli.commands.init import init_cmd as init_cmd_module
+from inspire.cli.commands.init import json_report as json_report_module
 from inspire.cli.main import main as cli_main
 from inspire.config import Config
 
@@ -107,6 +110,7 @@ def test_init_defaults_to_discover_mode_with_active_account(
     assert calls["func"] is init_cmd_module._init_discover_mode
     assert calls["force"] is True
     assert calls["kwargs"]["scope"] == "global"
+    assert calls["kwargs"]["verbose"] is False
 
 
 def test_init_bootstraps_first_account_before_discover(
@@ -350,3 +354,263 @@ def test_persist_prompted_credentials_updates_auth_username() -> None:
     assert global_data["auth"]["password"] == "new-secret"
     assert global_data["api"]["base_url"] == "https://qz.sii.edu.cn"
     assert "password" not in account_section
+
+
+def test_build_project_aliases_migrates_legacy_id_to_live_name() -> None:
+    projects = [
+        SimpleNamespace(
+            project_id="project-new-456",
+            name="模型项目",
+        )
+    ]
+
+    aliases, alias_for_id = discover_module._build_project_aliases(
+        projects,
+        existing={"production": "project-old-123"},
+    )
+
+    assert aliases == {"模型项目": "模型项目"}
+    assert alias_for_id == {"project-new-456": "模型项目"}
+    assert "project-old-123" not in json.dumps(aliases, ensure_ascii=False)
+    assert "project-new-456" not in json.dumps(aliases, ensure_ascii=False)
+
+
+def test_build_project_aliases_preserves_legacy_alias_when_catalog_name_is_live() -> None:
+    projects = [
+        SimpleNamespace(
+            project_id="project-new-456",
+            name="模型项目",
+        )
+    ]
+
+    aliases, alias_for_id = discover_module._build_project_aliases(
+        projects,
+        existing={"production": "模型项目"},
+    )
+
+    assert aliases == {"production": "模型项目"}
+    assert alias_for_id == {"project-new-456": "production"}
+
+
+def test_build_project_aliases_uses_legacy_catalog_to_migrate_stale_id() -> None:
+    projects = [
+        SimpleNamespace(
+            project_id="project-new-456",
+            name="模型项目",
+        )
+    ]
+
+    aliases, alias_for_id = discover_module._build_project_aliases(
+        projects,
+        existing={"production": "project-old-123"},
+        existing_catalog={"project-old-123": {"name": "模型项目"}},
+    )
+
+    assert aliases == {"production": "模型项目"}
+    assert alias_for_id == {"project-new-456": "production"}
+    serialized = json.dumps(aliases, ensure_ascii=False)
+    assert "project-old-123" not in serialized
+    assert "project-new-456" not in serialized
+
+
+def test_build_project_aliases_replaces_handle_shaped_alias_with_name() -> None:
+    projects = [
+        SimpleNamespace(
+            project_id="project-new-456",
+            name="模型项目",
+        )
+    ]
+
+    aliases, alias_for_id = discover_module._build_project_aliases(
+        projects,
+        existing={"project-old-123": "模型项目"},
+    )
+
+    assert aliases == {"模型项目": "模型项目"}
+    assert alias_for_id == {"project-new-456": "模型项目"}
+
+
+def test_merge_compute_groups_strips_ids_and_persists_workspace_names() -> None:
+    merged = discover_module._merge_compute_groups(
+        [
+            {
+                "id": "lcg-old-123",
+                "name": "H100开发区",
+                "gpu_type": "H100",
+                "workspace_ids": ["ws-old-123"],
+            }
+        ],
+        [
+            {
+                "name": "H100开发区",
+                "gpu_type": "H100",
+                "workspace_names": ["训练空间"],
+            },
+            {
+                "name": "CPU资源-2",
+                "gpu_type": "CPU",
+                "workspace_names": ["CPU空间"],
+            },
+        ],
+        workspace_names_by_id={"ws-old-123": "训练空间"},
+    )
+
+    assert merged == [
+        {
+            "name": "CPU资源-2",
+            "gpu_type": "CPU",
+            "workspace_names": ["CPU空间"],
+        },
+        {
+            "name": "H100开发区",
+            "gpu_type": "H100",
+            "workspace_names": ["训练空间"],
+        },
+    ]
+    serialized = json.dumps(merged, ensure_ascii=False)
+    assert "lcg-old-123" not in serialized
+    assert "ws-old-123" not in serialized
+    assert '"id"' not in serialized
+    assert "workspace_ids" not in serialized
+
+
+def test_persist_compute_groups_refreshes_successful_workspaces_and_preserves_failed() -> None:
+    project_data = {
+        "compute_groups": [
+            {
+                "name": "已删除资源组",
+                "gpu_type": "H100",
+                "workspace_names": ["训练空间"],
+            },
+            {
+                "name": "暂时不可查询资源组",
+                "gpu_type": "H200",
+                "workspace_names": ["容灾空间"],
+            },
+        ]
+    }
+    global_data = {
+        "compute_groups": [
+            {
+                "id": "lcg-global-old",
+                "name": "旧全局资源组",
+                "workspace_ids": ["ws-global-old"],
+            }
+        ]
+    }
+
+    discover_module._persist_compute_groups(
+        project_data=project_data,
+        project_account_section={},
+        global_data=global_data,
+        global_account_section={},
+        compute_groups=[
+            {
+                "name": "新资源组",
+                "gpu_type": "H100",
+                "workspace_names": ["训练空间"],
+            }
+        ],
+        workspace_names_by_id={"ws-global-old": "旧空间"},
+        failed_workspace_names={"容灾空间"},
+    )
+
+    assert project_data["compute_groups"] == [
+        {
+            "name": "新资源组",
+            "gpu_type": "H100",
+            "workspace_names": ["训练空间"],
+        },
+        {
+            "name": "暂时不可查询资源组",
+            "gpu_type": "H200",
+            "workspace_names": ["容灾空间"],
+        },
+    ]
+    assert "compute_groups" not in global_data
+    serialized = json.dumps(project_data, ensure_ascii=False)
+    assert "已删除资源组" not in serialized
+    assert "lcg-global-old" not in serialized
+    assert "ws-global-old" not in serialized
+
+
+def test_discover_compute_groups_returns_name_only_records() -> None:
+    class _BrowserAPI:
+        @staticmethod
+        def list_compute_groups(*, workspace_id, session):  # noqa: ANN001
+            return [
+                {
+                    "logic_compute_group_id": "lcg-secret-123",
+                    "name": "H100开发区",
+                    "location": "A区",
+                    "payload": {"trace": "secret"},
+                }
+            ]
+
+        @staticmethod
+        def get_accurate_gpu_availability(*, workspace_id, session):  # noqa: ANN001
+            return [
+                SimpleNamespace(
+                    group_id="lcg-secret-123",
+                    gpu_type="H100",
+                )
+            ]
+
+    session = SimpleNamespace(
+        all_workspace_names={"ws-secret-123": "训练空间"},
+    )
+
+    groups = discover_module._discover_compute_groups(
+        browser_api_module=_BrowserAPI,
+        session=session,
+        workspace_id="ws-secret-123",
+    )
+
+    assert groups == [
+        {
+            "name": "H100开发区",
+            "gpu_type": "H100",
+            "location": "A区",
+            "workspace_names": ["训练空间"],
+        }
+    ]
+    serialized = json.dumps(groups, ensure_ascii=False)
+    assert "lcg-secret-123" not in serialized
+    assert "ws-secret-123" not in serialized
+    assert "payload" not in serialized
+
+
+def test_init_json_report_only_emits_result_and_changed_configs(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "config.toml"
+    before = json_report_module.snapshot_paths(config_path, tmp_path / "project.toml")
+    config_path.write_text("[projects]\nproduction = \"模型项目\"\n", encoding="utf-8")
+
+    json_report_module.emit_init_json(
+        mode="discover",
+        target_paths=[config_path],
+        before=before,
+        detected=[(SimpleNamespace(secret=True), "secret")],
+        warnings=[],
+        effective_json=True,
+        discover={
+            "bootstrapped_account": True,
+            "scope": "global",
+            "scanned": 999,
+        },
+    )
+
+    parsed = json.loads(capsys.readouterr().out)
+    payload = parsed.get("data", parsed)
+    assert payload == {
+        "mode": "discover",
+        "status": "updated",
+        "configs": [str(config_path)],
+    }
+    assert "detected_env_count" not in payload
+    assert "secret_env_count" not in payload
+    assert "next_steps" not in payload
+    assert "discover" not in payload
+    assert "scanned" not in payload

@@ -11,16 +11,22 @@ from inspire.cli.context import (
     EXIT_API_ERROR,
     EXIT_AUTH_ERROR,
     EXIT_CONFIG_ERROR,
+    EXIT_VALIDATION_ERROR,
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.table import render_table
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_query_scope, workspace_name_map
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
-from inspire.cli.utils.quota_resolver import qz_scheduling_zone_hint_for_group_names
+from inspire.cli.utils.quota_resolver import (
+    QuotaMatchError,
+    qz_scheduling_zone_hint_for_group_names,
+    validate_compute_group_name,
+)
 
 
 _SCHEDULE_TYPE_BY_WORKLOAD = {
@@ -83,7 +89,9 @@ def _query_workspace_quotas(
         logic_compute_group_id = _group_id(item)
         if not logic_compute_group_id:
             continue
-        compute_group_name = _group_name(item, fallback=logic_compute_group_id)
+        compute_group_name = _group_name(item, fallback="")
+        if not compute_group_name:
+            continue
         if group_filter and group_filter not in compute_group_name.lower():
             continue
 
@@ -97,11 +105,8 @@ def _query_workspace_quotas(
             if include_empty:
                 rows.append(
                     {
-                        "workspace_name": workspace_name,
-                        "compute_group_name": compute_group_name,
-                        "gpu_count": 0,
-                        "cpu_count": 0,
-                        "memory_size_gib": 0,
+                        "workspace": workspace_name,
+                        "group": compute_group_name,
                         "gpu_type": "",
                         "quota": "",
                     }
@@ -119,11 +124,8 @@ def _query_workspace_quotas(
             seen_rows.add(key)
             rows.append(
                 {
-                    "workspace_name": workspace_name,
-                    "compute_group_name": compute_group_name,
-                    "gpu_count": gpu_count,
-                    "cpu_count": cpu_count,
-                    "memory_size_gib": memory_size_gib,
+                    "workspace": workspace_name,
+                    "group": compute_group_name,
                     "gpu_type": gpu_type,
                     "quota": f"{gpu_count},{cpu_count},{memory_size_gib}",
                 }
@@ -134,11 +136,10 @@ def _query_workspace_quotas(
 def _sort_rows(rows: list[dict[str, Any]]) -> None:
     rows.sort(
         key=lambda r: (
-            str(r.get("workspace_name", "")),
-            str(r.get("compute_group_name", "")),
-            -int(r.get("gpu_count", 0)),
-            -int(r.get("cpu_count", 0)),
-            -int(r.get("memory_size_gib", 0)),
+            str(r.get("workspace", "")),
+            str(r.get("group", "")),
+            str(r.get("gpu_type", "")),
+            str(r.get("quota", "")),
         )
     )
 
@@ -192,9 +193,14 @@ def make_quota_command(workload: str) -> click.Command:
             )
             workspace_names = workspace_name_map(session)
 
-            group_filter = (group or "").strip().lower()
+            group_filter = (
+                validate_compute_group_name(group).casefold() if group is not None else ""
+            )
             rows: list[dict[str, Any]] = []
-            display_names = [workspace_names.get(wid) or wid for wid in workspace_ids]
+            display_names = [
+                workspace_names.get(wid) or "(workspace name unavailable)"
+                for wid in workspace_ids
+            ]
             for workspace_id, workspace_name in zip(workspace_ids, display_names):
                 rows.extend(
                     _query_workspace_quotas(
@@ -211,23 +217,14 @@ def make_quota_command(workload: str) -> click.Command:
                 rows = rows[:limit]
 
             if ctx.json_output:
-                click.echo(
-                    json_formatter.format_json(
-                        {
-                            "workspace_names": display_names,
-                            "workload": workload,
-                            "quotas": rows,
-                            "total": len(rows),
-                        }
-                    )
-                )
+                click.echo(json_formatter.format_json({"quotas": rows}))
                 return
 
             if not rows:
                 click.echo("No quota rows found.")
                 return
 
-            multi_ws = len({r.get("workspace_name") for r in rows}) > 1
+            multi_ws = len({r.get("workspace") for r in rows}) > 1
             table_rows: list[tuple[Any, ...]]
             if multi_ws:
                 headers: tuple[str, ...] = (
@@ -239,8 +236,8 @@ def make_quota_command(workload: str) -> click.Command:
                 widths = [18, 28, 14, 14]
                 table_rows = [
                     (
-                        row["workspace_name"],
-                        row["compute_group_name"],
+                        row["workspace"],
+                        row["group"],
                         row["gpu_type"] or "CPU",
                         row["quota"] or "-",
                     )
@@ -251,29 +248,29 @@ def make_quota_command(workload: str) -> click.Command:
                 widths = [28, 14, 14]
                 table_rows = [
                     (
-                        row["compute_group_name"],
+                        row["group"],
                         row["gpu_type"] or "CPU",
                         row["quota"] or "-",
                     )
                     for row in rows
                 ]
 
-            click.echo("")
-            click.echo(f"{workload.title()} Quotas (valid --quota gpu,cpu,mem triples)")
             click.echo("\n".join(render_table(headers, table_rows, widths)))
-            click.echo(f"Total quotas: {len(rows)}")
             qz_hint = qz_scheduling_zone_hint_for_group_names(
-                row.get("compute_group_name") for row in rows
+                row.get("group") for row in rows
             )
             if qz_hint:
                 click.echo(qz_hint)
-            click.echo("")
         except ConfigError as e:
-            _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-        except (SessionExpiredError, ValueError) as e:
-            _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+            _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+        except QuotaMatchError as e:
+            _handle_error(ctx, "ValidationError", scrub_raw_ids(e), EXIT_VALIDATION_ERROR)
+        except SessionExpiredError as e:
+            _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+        except ValueError as e:
+            _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
         except Exception as e:
-            _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+            _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
     return quota_cmd
 

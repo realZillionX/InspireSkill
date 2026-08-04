@@ -12,9 +12,14 @@ from inspire.cli.context import (
     EXIT_CONFIG_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import json_formatter
+from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import resolve_by_name
+from inspire.cli.utils.id_resolver import (
+    forget_resource_identity,
+    remember_resource_identity,
+    resolve_by_name,
+)
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
     require_web_session,
@@ -25,15 +30,24 @@ from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
 
 
-def _resolve_image_name(ctx: Context, name: str, *, pick: Optional[int] = None) -> str:
+def _resolve_image_name(
+    ctx: Context,
+    name: str,
+    *,
+    pick: Optional[int] = None,
+    session=None,  # noqa: ANN001
+    require_live: bool = False,
+) -> str:
     """Resolve a custom-image name (``<name>:<version>`` or bare ``<name>``) to image_id.
 
     Custom images are identified by ``name:version`` on the platform; a plain
     name without ``:`` matches any version but can be ambiguous and will
     fall through to the shared ambiguity UI.
     """
-    def _lister():
+    if session is None:
         session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+
+    def _lister():
         bucket = []
         for source in ("private", "public", "official"):
             try:
@@ -47,7 +61,6 @@ def _resolve_image_name(ctx: Context, name: str, *, pick: Optional[int] = None) 
                         "name": full,
                         "id": i.image_id,
                         "status": i.status,
-                        "source": i.source,
                     }
                 )
         return bucket
@@ -59,6 +72,11 @@ def _resolve_image_name(ctx: Context, name: str, *, pick: Optional[int] = None) 
         list_candidates=_lister,
         json_output=ctx.json_output,
         pick_index=pick,
+        session=session,
+        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        owner_scope="self",
+        require_live=require_live,
+        list_command="inspire image list",
     )
 
 
@@ -78,27 +96,94 @@ def _parse_source_value(_ctx: click.Context, _param: click.Parameter, value: str
     raise click.BadParameter(f"invalid source '{value}'. Choose one of: {allowed}")
 
 
-def _image_to_dict(img: browser_api_module.CustomImageInfo) -> dict:
-    """Convert a CustomImageInfo to a plain dict for JSON output."""
+def _image_label(img: browser_api_module.CustomImageInfo) -> str:
+    name = str(img.name or "").strip()
+    version = str(img.version or "").strip()
+    if version and ":" not in name:
+        return f"{name}:{version}"
+    return name
+
+
+def _image_visibility(source: str) -> str:
     return {
-        "image_id": img.image_id,
-        "url": img.url,
-        "name": img.name,
-        "framework": img.framework,
-        "version": img.version,
-        "source": img.source,
-        "status": img.status,
-        "description": img.description,
-        "created_at": img.created_at,
+        "SOURCE_OFFICIAL": "official",
+        "SOURCE_PUBLIC": "public",
+        "SOURCE_PRIVATE": "private",
+    }.get(str(source or "").strip(), "")
+
+
+def _image_summary(img: browser_api_module.CustomImageInfo) -> dict[str, str]:
+    """Return the compact, name-only image representation exposed by the CLI."""
+    return {
+        "name": scrub_raw_ids(_image_label(img)),
+        "status": scrub_raw_ids(img.status),
+        "framework": scrub_raw_ids(img.framework),
+        "visibility": _image_visibility(img.source),
     }
 
 
-def _dedupe_images_by_id(images: list[dict]) -> list[dict]:
-    """Deduplicate image dictionaries by image_id while preserving order."""
-    deduped: list[dict] = []
+def _image_detail_view(img: browser_api_module.CustomImageInfo) -> dict[str, str]:
+    view = _image_summary(img)
+    optional = {
+        "registry": scrub_raw_ids(img.url),
+        "description": scrub_raw_ids(img.description),
+        "created_at": scrub_raw_ids(img.created_at),
+    }
+    view.update({key: value for key, value in optional.items() if value})
+    return view
+
+
+def _format_image_list(images: list[dict[str, str]]) -> str:
+    if not images:
+        return "No images found."
+    rows = [
+        (
+            image.get("name", ""),
+            image.get("status", ""),
+            image.get("framework", ""),
+            image.get("visibility", ""),
+        )
+        for image in images
+    ]
+    widths = [
+        column_width("Name", [row[0] for row in rows], max_width=64),
+        column_width("Status", [row[1] for row in rows], max_width=18),
+        column_width("Framework", [row[2] for row in rows], max_width=24),
+        column_width("Visibility", [row[3] for row in rows], max_width=12),
+    ]
+    return "\n".join(
+        render_table(
+            ("Name", "Status", "Framework", "Visibility"),
+            rows,
+            widths,
+            line_char="─",
+        )
+    )
+
+
+def _format_image_detail(image: dict[str, str]) -> str:
+    labels = (
+        ("Name", "name"),
+        ("Status", "status"),
+        ("Framework", "framework"),
+        ("Visibility", "visibility"),
+        ("Registry", "registry"),
+        ("Description", "description"),
+        ("Created", "created_at"),
+    )
+    return "\n".join(
+        f"{label}: {image[key]}" for label, key in labels if image.get(key)
+    )
+
+
+def _dedupe_images_by_id(
+    images: list[browser_api_module.CustomImageInfo],
+) -> list[browser_api_module.CustomImageInfo]:
+    """Deduplicate internal image records while preserving platform order."""
+    deduped: list[browser_api_module.CustomImageInfo] = []
     seen_ids: set[str] = set()
     for image in images:
-        image_id = str(image.get("image_id", "")).strip()
+        image_id = str(image.image_id or "").strip()
         if image_id:
             if image_id in seen_ids:
                 continue
@@ -143,7 +228,7 @@ def list_images_cmd(
         hint=WEB_AUTH_HINT,
     )
 
-    results: list[dict] = []
+    images: list[browser_api_module.CustomImageInfo] = []
     warnings: list[str] = []
 
     try:
@@ -154,32 +239,40 @@ def list_images_cmd(
                         source=src_key, session=session
                     )
                 except Exception as e:
-                    warnings.append(f"{src_key}: {e}")
+                    warnings.append(
+                        f"{src_key} image catalog unavailable: {scrub_raw_ids(e)}"
+                    )
                     continue
-                results.extend(_image_to_dict(img) for img in items)
+                images.extend(items)
 
-            results = _dedupe_images_by_id(results)
+            images = _dedupe_images_by_id(images)
 
-            if not results and warnings:
+            if not images and warnings:
                 raise ValueError("; ".join(warnings))
         else:
             items = browser_api_module.list_images_by_source(source=source, session=session)
-            results.extend(_image_to_dict(img) for img in items)
+            images.extend(items)
     except Exception as e:
-        _handle_error(ctx, "APIError", f"Failed to list images: {e}", EXIT_API_ERROR)
+        _handle_error(
+            ctx,
+            "APIError",
+            f"Failed to list images: {scrub_raw_ids(e)}",
+            EXIT_API_ERROR,
+        )
         return
 
+    results = [_image_summary(image) for image in images]
     if ctx.json_output:
-        payload = {"images": results, "total": len(results)}
+        payload = {"images": results}
         if warnings:
             payload["warnings"] = warnings
         click.echo(json_formatter.format_json(payload))
         return
 
     for warning in warnings:
-        click.echo(f"Warning: failed to list images from {warning}", err=True)
+        click.echo(f"Warning: {warning}", err=True)
 
-    click.echo(human_formatter.format_image_list(results))
+    click.echo(_format_image_list(results))
 
 
 # ---------------------------------------------------------------------------
@@ -208,19 +301,35 @@ def image_detail(
         hint=WEB_AUTH_HINT,
     )
 
-    image_id = _resolve_image_name(ctx, name)
+    image_id = _resolve_image_name(ctx, name, session=session)
 
     try:
         image = browser_api_module.get_image_detail(image_id=image_id, session=session)
     except Exception as e:
-        _handle_error(ctx, "APIError", f"Failed to get image detail: {e}", EXIT_API_ERROR)
+        _handle_error(
+            ctx,
+            "APIError",
+            f"Failed to get image detail: {scrub_raw_ids(e)}",
+            EXIT_API_ERROR,
+        )
         return
 
+    view = _image_detail_view(image)
+    remember_resource_identity(
+        session=session,
+        resource_type="image",
+        resource_id=image.image_id,
+        name=_image_label(image),
+        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        owner_scope="self",
+        status=image.status,
+        created_at=image.created_at,
+    )
     if ctx.json_output:
-        click.echo(json_formatter.format_json(_image_to_dict(image)))
+        click.echo(json_formatter.format_json(view))
         return
 
-    click.echo(human_formatter.format_image_detail(_image_to_dict(image)))
+    click.echo(_format_image_detail(view))
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +429,12 @@ def register_image_cmd(
             session=session,
         )
     except Exception as e:
-        _handle_error(ctx, "APIError", f"Failed to register image: {e}", EXIT_API_ERROR)
+        _handle_error(
+            ctx,
+            "APIError",
+            f"Failed to register image: {scrub_raw_ids(e)}",
+            EXIT_API_ERROR,
+        )
         return
 
     image_data = result.get("image", {})
@@ -328,29 +442,40 @@ def register_image_cmd(
     registry_url = image_data.get("address", "") or result.get("address", "")
     image_label = scrub_raw_ids(f"{name}:{version}")
 
+    remember_resource_identity(
+        session=session,
+        resource_type="image",
+        resource_id=image_id,
+        name=image_label,
+        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        owner_scope="self",
+    )
+
+    ready = False
     if wait and image_id:
-        if not ctx.json_output:
-            click.echo(f"Image '{image_label}' registered. Waiting for READY status...")
         try:
             browser_api_module.wait_for_image_ready(image_id=image_id, session=session)
-            if not ctx.json_output:
-                click.echo(f"Image '{image_label}' is now READY.")
+            ready = True
         except (TimeoutError, ValueError) as e:
-            _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+            _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
             return
 
     if ctx.json_output:
-        click.echo(json_formatter.format_json({"image_id": image_id, "result": result}))
+        payload = {
+            "name": image_label,
+            "status": "ready" if ready else "registered",
+            "visibility": visibility.lower(),
+        }
+        if registry_url and method.lower() == "push":
+            payload["registry"] = scrub_raw_ids(registry_url)
+        click.echo(json_formatter.format_json(payload))
         return
 
-    click.echo(f"Image registered: {image_label}")
+    click.echo(f"Image {'ready' if ready else 'registered'}: {image_label}")
     if registry_url and method.lower() == "push":
-        click.echo("\nTo push your image:")
         safe_registry_url = scrub_raw_ids(registry_url)
-        click.echo(f"  docker tag <local-image> {safe_registry_url}")
-        click.echo(f"  docker push {safe_registry_url}")
-    if not wait and image_id:
-        click.echo(f"\nUse `inspire image detail {image_label}` to check status.")
+        click.echo(f"docker tag <local-image> {safe_registry_url}")
+        click.echo(f"docker push {safe_registry_url}")
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +595,12 @@ def save_image_cmd(
             session=session,
         )
     except Exception as e:
-        _handle_error(ctx, "APIError", f"Failed to save notebook as image: {e}", EXIT_API_ERROR)
+        _handle_error(
+            ctx,
+            "APIError",
+            f"Failed to save notebook as image: {scrub_raw_ids(e)}",
+            EXIT_API_ERROR,
+        )
         return
 
     image_id = result.get("image", {}).get("image_id", "") or result.get("image_id", "")
@@ -501,6 +631,15 @@ def save_image_cmd(
         except Exception:
             pass
 
+    remember_resource_identity(
+        session=session,
+        resource_type="image",
+        resource_id=image_id,
+        name=image_label,
+        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        owner_scope="self",
+    )
+
     visibility_applied = requested_visibility is None
     if requested_visibility and image_id:
         try:
@@ -514,56 +653,43 @@ def save_image_cmd(
             visibility_applied = False
             if not ctx.json_output:
                 click.echo(
-                    "Warning: could not force "
-                    f"visibility={requested_visibility} via /image/update: {scrub_raw_ids(e)}",
+                    f"Warning: could not set image visibility: {scrub_raw_ids(e)}",
                     err=True,
                 )
     elif requested_visibility and not image_id:
         visibility_applied = False
         if not ctx.json_output:
             click.echo(
-                "Warning: save returned no image reference and list fallback didn't find the image; "
-                f"visibility not applied. Re-run 'inspire image set-visibility {image_label} "
-                "--visibility <private|public>' after confirming the image via "
-                "'inspire image list --source private'.",
+                "Warning: image visibility was not applied. "
+                f"After the image appears, run 'inspire image set-visibility {image_label} "
+                "--visibility <private|public>'.",
                 err=True,
             )
 
+    ready = False
     if wait and image_id:
-        if not ctx.json_output:
-            click.echo(f"Image '{image_label}' is being saved. Waiting for READY status...")
         try:
             browser_api_module.wait_for_image_ready(image_id=image_id, session=session)
-            if not ctx.json_output:
-                click.echo(f"Image '{image_label}' is now READY.")
+            ready = True
         except (TimeoutError, ValueError) as e:
-            _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+            _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
             return
 
     if ctx.json_output:
-        click.echo(
-            json_formatter.format_json(
-                {
-                    "image_id": image_id,
-                    "visibility_requested": requested_visibility,
-                    "visibility_applied": visibility_applied,
-                    "result": result,
-                }
-            )
-        )
+        payload: dict[str, object] = {
+            "name": image_label,
+            "status": "ready" if ready else "saving",
+        }
+        if visibility:
+            payload["visibility"] = visibility.lower()
+            payload["visibility_applied"] = visibility_applied
+        click.echo(json_formatter.format_json(payload))
         return
 
-    click.echo(f"Notebook saved as image: {image_label}")
-    click.echo(
-        "Note: image save starts a medium-length saving process. The notebook "
-        "cannot be operated while saving is in progress; after saving completes, "
-        "the notebook is not stopped and can be used again."
-    )
+    click.echo(f"Image {'ready' if ready else 'saving'}: {image_label}")
     if requested_visibility and image_id:
         label = "public" if requested_visibility == _VISIBILITY_PUBLIC else "private"
         click.echo(f"Visibility: {label}")
-    if not wait and image_id:
-        click.echo(f"Use `inspire image detail {image_label}` to check build status.")
 
 
 # ---------------------------------------------------------------------------
@@ -598,25 +724,43 @@ def set_image_visibility_cmd(
         hint=WEB_AUTH_HINT,
     )
 
-    image_id = _resolve_image_name(ctx, name)
+    image_id = _resolve_image_name(
+        ctx,
+        name,
+        session=session,
+        require_live=True,
+    )
     visibility_value = _parse_visibility_value(visibility)
     assert visibility_value is not None
 
     try:
-        result = browser_api_module.update_image(
+        browser_api_module.update_image(
             image_id=image_id,
             visibility=visibility_value,
             session=session,
         )
     except Exception as e:
-        _handle_error(ctx, "APIError", f"Failed to update image visibility: {e}", EXIT_API_ERROR)
+        _handle_error(
+            ctx,
+            "APIError",
+            f"Failed to update image visibility: {scrub_raw_ids(e)}",
+            EXIT_API_ERROR,
+        )
         return
 
     label = "public" if visibility_value == _VISIBILITY_PUBLIC else "private"
+    remember_resource_identity(
+        session=session,
+        resource_type="image",
+        resource_id=image_id,
+        name=name,
+        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        owner_scope="self",
+    )
     if ctx.json_output:
         click.echo(
             json_formatter.format_json(
-                {"name": name, "visibility": visibility_value, "result": result}
+                {"name": scrub_raw_ids(name), "visibility": label}
             )
         )
         return
@@ -662,7 +806,13 @@ def delete_image_cmd(
         hint=WEB_AUTH_HINT,
     )
 
-    image_id = _resolve_image_name(ctx, name, pick=pick)
+    image_id = _resolve_image_name(
+        ctx,
+        name,
+        pick=pick,
+        session=session,
+        require_live=True,
+    )
 
     if not yes and not ctx.json_output:
         if not click.confirm(f"Delete image '{scrub_raw_ids(name)}'?"):
@@ -670,15 +820,29 @@ def delete_image_cmd(
             return
 
     try:
-        result = browser_api_module.delete_image(image_id=image_id, session=session)
+        browser_api_module.delete_image(image_id=image_id, session=session)
     except Exception as e:
-        _handle_error(ctx, "APIError", f"Failed to delete image: {e}", EXIT_API_ERROR)
+        _handle_error(
+            ctx,
+            "APIError",
+            f"Failed to delete image: {scrub_raw_ids(e)}",
+            EXIT_API_ERROR,
+        )
         return
+
+    forget_resource_identity(
+        session=session,
+        resource_type="image",
+        resource_id=image_id,
+        name=name,
+        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        owner_scope="self",
+    )
 
     if ctx.json_output:
         click.echo(
             json_formatter.format_json(
-                {"name": name, "status": "deleted", "result": result}
+                {"name": scrub_raw_ids(name), "status": "deleted"}
             )
         )
         return
