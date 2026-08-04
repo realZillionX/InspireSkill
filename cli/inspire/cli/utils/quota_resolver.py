@@ -286,8 +286,10 @@ def _is_stale_compute_group_error(exc: BaseException) -> bool:
     for candidate in (exc, getattr(exc, "response", None)):
         for attribute in ("status_code", "status", "http_status", "code"):
             value = getattr(candidate, attribute, None)
+            if value is None:
+                continue
             try:
-                status = int(value)
+                status = int(str(value))
             except (TypeError, ValueError):
                 continue
             if 100 <= status <= 599:
