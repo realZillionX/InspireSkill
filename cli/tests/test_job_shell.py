@@ -537,6 +537,13 @@ def test_resolve_web_job_id_pick_selects_matching_job(monkeypatch) -> None:  # n
         captured.update(kwargs)
         return rows, []
 
+    monkeypatch.setattr(
+        job_commands,
+        "get_web_session",
+        lambda: pytest.fail(
+            "all-workspace live resolution must let _list_web_jobs acquire the session"
+        ),
+    )
     monkeypatch.setattr(job_commands, "_list_web_jobs", fake_list_web_jobs)
 
     job_id = job_commands._resolve_web_job_id(

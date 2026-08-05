@@ -594,25 +594,25 @@ def _resolve_web_job_id(
     if workspace_must_be_single and (workspace or "").strip().lower() == "all":
         raise ConfigError("--workspace must be a workspace name for this command.")
 
-    session = get_web_session()
-    workspace_ids = (
-        _list_workspace_ids(
+    session = None
+    workspace_ids: list[str] = []
+    if (workspace or "").strip() or not all_workspaces:
+        session = get_web_session()
+        workspace_ids = _list_workspace_ids(
             session,
             workspace=workspace,
         )
-        if (workspace or "").strip() or not all_workspaces
-        else []
-    )
     cache_scopes: dict[str, ResourceScope] = {}
-    for workspace_id in workspace_ids:
-        scope = scope_for_session(
-            session,
-            resource_type="job",
-            workspace_id=workspace_id,
-            owner_scope="self",
-        )
-        if scope is not None:
-            cache_scopes[workspace_id] = scope
+    if session is not None:
+        for workspace_id in workspace_ids:
+            scope = scope_for_session(
+                session,
+                resource_type="job",
+                workspace_id=workspace_id,
+                owner_scope="self",
+            )
+            if scope is not None:
+                cache_scopes[workspace_id] = scope
     try:
         cache_index = ResourceIndex.for_account() if cache_scopes else None
     except Exception:
@@ -637,6 +637,7 @@ def _resolve_web_job_id(
         except Exception:
             cached = []
         if cached:
+            assert session is not None
             cached.sort(
                 key=lambda item: (
                     item[1].created_at,
@@ -718,6 +719,7 @@ def _resolve_web_job_id(
                 continue
 
     if stale_workspaces:
+        assert session is not None
         # A create/delete/write-through won while the live list was in flight.
         # Never let that older response resurrect the deleted handle.
         exact = [
