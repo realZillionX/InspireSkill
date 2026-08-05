@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### 新增
+
+- `inspire ray metrics` 补齐 Ray 的指标观察，与 job / hpc / serving metrics 同接口。
+- `inspire serving events|instances|start` 补齐 Serving 的观察与启动入口。
+
+### 破坏性变更
+
+- 移除 `inspire job id`、`inspire hpc id`、`inspire notebook id`。CLI 不再有任何
+  Handle 输出入口，用 `list` 拿 Name 即可。
+- `inspire notebook ssh open <name>` 改为 `inspire notebook ssh <name>`；
+  `inspire notebook vscode-proxy-suffix` 改为 `inspire notebook vscode`。
+- `job|hpc|notebook|serving metrics` 的 `--lcg` 改名为 `--group`，与创建命令一致。
+- `serving create --shm-gib` 改名为 `--shm-size`，与 job / notebook / ray 一致。
+- `resources nodes` 只保留 `--min-nodes`，去掉同义别名 `--min-free` 与
+  `--min-full-free-nodes`（三者本就是同一个选项）。
+- 移除 `resources availability --no-cache`：它绕过的可用性缓存已整体删除，该命令现在
+  始终读取 Live 数据。
+- 移除 `notebook exec` 的 `--artifact-path` / `--download` / `--no-wait` /
+  `--denylist`，以及它们背后的 GitHub Actions bridge action 执行后端和整个
+  `INSP_GITHUB_*` 配置类别。这条路径需要自建 Actions Runner 挂载集群共享文件系统、
+  在用户仓库里安装 workflow，并把产物经 orphan 分支中转；参考文档从未描述过它，随附
+  示例 workflow 引用的 `inspire bridge exec` 也早已不存在。拉取远端产物请用
+  `notebook scp -d ... -r`（直连 SSH/SCP，无需绕行 GitHub）；无 tunnel 时的命令执行
+  仍由 Jupyter terminal transport 承担。残留的 `[github]` 配置段会被静默忽略，不影响
+  现有配置加载。
+- 移除从 `INSPIRE_USERNAME` / `INSPIRE_PASSWORD` 环境变量读取平台凭据的兜底路径；
+  账号是唯一受支持的凭据来源，用 `inspire account add <name>` 配置。其余
+  `INSPIRE_*` 配置项（如 `INSPIRE_SHM_SIZE`、`INSPIRE_JOB_ENABLE_NOTIFICATION`）不受影响。
+- `inspire update` 不再抓取并打印 GitHub Release 正文。
+
 ### 变更
 
 - 新增按账号隔离、可定时刷新且支持手动管理的本地 Name 解析索引；`inspire cache
@@ -27,6 +57,14 @@
 - `notebook ssh-proxy` 重新接受并忽略 `--quiet`；`notebook ssh-config` 生成的
   ProxyCommand 恢复使用 `inspire` 的绝对路径（OpenSSH 经 `/bin/sh` 执行，PATH 与交互
   Shell 不同），且 `$HOME` 之外的 IdentityFile 不再被静默丢弃。
+
+### 维护
+
+- 开发依赖只保留 `[dependency-groups] dev`，移除 `[project.optional-dependencies] dev`
+  与 black 配置：用 `uv sync --dev` 装开发环境，`pip install -e ".[dev]"` 不再可用。
+- 移除 commitizen 配置。发版时需手动同步 `cli/inspire/__init__.py` 的 `__version__`
+  与 `cli/pyproject.toml` 的 `version`，并打 `v<version>` tag 触发 publish workflow ——
+  原先由 `[tool.commitizen] version_files` 保证的两处一致性现在没有工具兜底。
 
 ## v6.2.0
 
