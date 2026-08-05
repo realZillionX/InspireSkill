@@ -1,4 +1,4 @@
-"""Safe byte-stream helpers for interactive terminal commands."""
+"""Byte-stream helpers for interactive terminal commands."""
 
 from __future__ import annotations
 
@@ -17,29 +17,18 @@ from collections.abc import Sequence
 from types import TracebackType
 from typing import BinaryIO
 
-from inspire.cli.utils.raw_ids import RawIdStreamScrubber
 
+def write_stream_output(stream: BinaryIO, payload: bytes | str) -> None:
+    """Write one stream chunk through to the terminal verbatim.
 
-def write_scrubbed_output(
-    stream: BinaryIO,
-    scrubber: RawIdStreamScrubber,
-    payload: bytes | str,
-) -> None:
-    """Write one sanitized stream chunk without breaking ANSI sequences."""
-    safe_payload = scrubber.feed(payload)
-    if safe_payload:
-        stream.write(safe_payload)
-        stream.flush()
-
-
-def flush_scrubbed_output(
-    stream: BinaryIO,
-    scrubber: RawIdStreamScrubber,
-) -> None:
-    """Write any sanitized suffix retained across stream chunks."""
-    safe_payload = scrubber.flush()
-    if safe_payload:
-        stream.write(safe_payload)
+    Interactive streams are passed through byte for byte. Rewriting them
+    costs a working terminal: withholding a chunk tail to wait for a possible
+    identifier suppresses keystroke echo in raw mode, truncates shell
+    prompts, and leaves full-screen programs half-painted.
+    """
+    data = payload.encode("utf-8") if isinstance(payload, str) else payload
+    if data:
+        stream.write(data)
         stream.flush()
 
 
@@ -88,13 +77,13 @@ def _wait_pty_child(pid: int, *, terminate: bool) -> int:
     return status
 
 
-def run_scrubbed_pty(
+def run_interactive_pty(
     argv: Sequence[str],
     *,
     stdin=None,  # noqa: ANN001
     stdout=None,  # noqa: ANN001
 ) -> int:
-    """Run an interactive command in a PTY while sanitizing child output."""
+    """Run an interactive command in a PTY, proxying stdio verbatim."""
     if not argv:
         raise ValueError("Interactive command cannot be empty.")
 
@@ -109,7 +98,6 @@ def run_scrubbed_pty(
         os.execvp(argv[0], list(argv))
         raise RuntimeError("unreachable")
 
-    scrubber = RawIdStreamScrubber()
     old_term = None
     previous_winch = None
     failure: tuple[BaseException, TracebackType | None] | None = None
@@ -143,7 +131,7 @@ def run_scrubbed_pty(
                     payload = b""
                 if not payload:
                     break
-                write_scrubbed_output(stdout_buffer, scrubber, payload)
+                write_stream_output(stdout_buffer, payload)
 
             if stdin_fd in ready:
                 payload = os.read(stdin_fd, 4096)
@@ -155,7 +143,6 @@ def run_scrubbed_pty(
         failure = (exc, exc.__traceback__)
     finally:
         for cleanup in (
-            lambda: flush_scrubbed_output(stdout_buffer, scrubber),
             lambda: (
                 termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_term)
                 if raw_mode and old_term is not None
@@ -186,7 +173,6 @@ def run_scrubbed_pty(
 
 
 __all__ = [
-    "flush_scrubbed_output",
-    "run_scrubbed_pty",
-    "write_scrubbed_output",
+    "run_interactive_pty",
+    "write_stream_output",
 ]

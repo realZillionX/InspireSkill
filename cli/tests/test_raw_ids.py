@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from inspire.cli.utils.raw_ids import RawIdStreamScrubber, scrub_raw_ids
+from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 
 def test_scrub_raw_ids_keeps_human_path_segments_with_model_word() -> None:
@@ -43,62 +43,49 @@ def test_scrub_raw_ids_scrubs_ray_instance_handles() -> None:
     assert scrub_raw_ids(text) == "<redacted> <redacted>"
 
 
-def test_scrub_raw_ids_scrubs_compute_group_and_workspace_handles() -> None:
-    text = (
-        "cg-abcdef12 group-123456 compute-group-abc123 "
-        "workspace-abcdef proj-123456"
-    )
-
-    assert scrub_raw_ids(text) == "<redacted> <redacted> <redacted> <redacted> <redacted>"
-
-
-def test_scrub_raw_ids_scrubs_short_numeric_platform_handles() -> None:
-    text = "lcg-1 cg-1 ws-1 (lcg-12, cg-123; ws-456)"
-
-    assert scrub_raw_ids(text) == (
-        "<redacted> <redacted> <redacted> "
-        "(<redacted>, <redacted>; <redacted>)"
-    )
-
-
 def test_scrub_raw_ids_keeps_name_like_prefixed_values() -> None:
     text = "group-a cg-alpha workspace-1-name"
 
     assert scrub_raw_ids(text) == text
 
 
-def test_stream_scrubber_redacts_ids_split_across_chunks() -> None:
-    scrubber = RawIdStreamScrubber()
+def test_scrub_raw_ids_keeps_everyday_words_the_platform_never_mints() -> None:
+    """``node``/``task``/``pod``/``container`` are names, not handle prefixes.
 
-    output = b"".join(
-        [
-            scrubber.feed(b"job jo"),
-            scrubber.feed(b"b-1234abcd uuid 550e8400"),
-            scrubber.feed(b"-e29b-41d4-a716-446655440000 done\n"),
-            scrubber.flush(),
-        ]
+    Hex digits are also letters, so treating these as handle prefixes redacts
+    ordinary log lines — and any resource actually named this way, which a
+    name-only CLI then cannot address at all.
+    """
+    text = (
+        "node-001 task-abc pod-123 container-cafe instance-0012 "
+        "group-123456 cg-abcdef12 compute-group-abc123 workspace-abcdef "
+        "proj-123456 lcg-12"
     )
 
-    assert output.decode() == "job <redacted> uuid <redacted> done\n"
+    assert scrub_raw_ids(text) == text
 
 
-def test_stream_scrubber_preserves_ansi_and_utf8_boundaries() -> None:
-    scrubber = RawIdStreamScrubber()
-    encoded = "\x1b[32m完成\x1b[0m name\n".encode()
+def test_scrub_raw_ids_keeps_ordinary_log_lines_intact() -> None:
+    line = "Epoch 3 | rank 0 on node-001 | step 42 | loss 0.31"
 
-    output = b"".join(
-        [
-            scrubber.feed(encoded[:8]),
-            scrubber.feed(encoded[8:]),
-            scrubber.flush(),
-        ]
+    assert scrub_raw_ids(line) == line
+
+
+def test_scrub_raw_ids_still_redacts_names_under_a_real_handle_prefix() -> None:
+    """Known limitation, unchanged since before the name-only refactor.
+
+    ``job``/``ws``/``model`` are prefixes the platform really does mint, so a
+    resource named ``job-1234`` is indistinguishable from a handle by shape
+    alone and stays redacted here and rejected at the input boundary. Telling
+    the two apart needs the resolver, not a regex.
+    """
+    assert scrub_raw_ids("job-1234 ws-2024 model-face") == (
+        "<redacted> <redacted> <redacted>"
     )
 
-    assert output.decode() == "\x1b[32m完成\x1b[0m name\n"
 
+def test_scrub_raw_ids_redacts_a_labelled_uuid_whole() -> None:
+    """The labelled-hex rule must not bite the first group off a UUID."""
+    text = "wandb: run id 3f2504e0-4f89-11d3-9a0c-0305e82c3301 synced"
 
-def test_stream_scrubber_flushes_an_ordinary_trailing_name() -> None:
-    scrubber = RawIdStreamScrubber()
-
-    assert scrubber.feed("notebook demo-box") == b"notebook "
-    assert scrubber.flush() == b"demo-box"
+    assert scrub_raw_ids(text) == "wandb: run id <redacted> synced"

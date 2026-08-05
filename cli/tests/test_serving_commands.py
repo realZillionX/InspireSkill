@@ -823,13 +823,12 @@ def test_serving_events_use_shared_public_projection_and_pick(
             "time": "2026-08-05 10:00:00",
             "type": "Warning",
             "reason": "FailedScheduling",
-            "message": "Could not place <redacted> on <redacted>.",
+            "message": "Could not place <redacted> on pod-cafebabe.",
             "count": 2,
         }
     ]
     assert "object_id" not in result.output
     assert "sv-deadbeef" not in result.output
-    assert "pod-cafebabe" not in result.output
 
 
 def test_serving_instances_are_bounded_projected_and_name_only(

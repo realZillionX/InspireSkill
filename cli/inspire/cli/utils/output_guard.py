@@ -1,4 +1,10 @@
-"""Final stdout/stderr firewall for platform handles."""
+"""Redaction for Click's own parser diagnostics.
+
+Command output is sanitized by the formatters that build it — they know
+which field is a name, which is a log line, and which is a message we wrote
+ourselves. Click's parser errors are the one surface with no formatter in
+front of them, so they get their own narrow pass here.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +15,6 @@ import click
 
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
-_ORIGINAL_ECHO = click.echo
-_ORIGINAL_SECHO = click.secho
-_INSTALLED = False
 _PARSER_REDACTIONS: tuple[re.Pattern[str], ...] = ()
 
 
@@ -97,26 +100,8 @@ def parser_echo(message: Any = None, *args: Any, **kwargs: Any) -> None:
     click.echo(sanitize_parser_message(message), *args, **kwargs)
 
 
-def install_output_guard() -> None:
-    """Make every subsequent ``click.echo`` / ``click.secho`` Name-only."""
-    global _INSTALLED
-    if _INSTALLED:
-        return
-
-    def _echo(message: Any = None, *args: Any, **kwargs: Any) -> None:
-        _ORIGINAL_ECHO(sanitize_output_message(message), *args, **kwargs)
-
-    def _secho(message: Any = None, *args: Any, **kwargs: Any) -> None:
-        _ORIGINAL_SECHO(sanitize_output_message(message), *args, **kwargs)
-
-    click.echo = _echo
-    click.secho = _secho
-    _INSTALLED = True
-
-
 __all__ = [
     "clear_parser_redactions",
-    "install_output_guard",
     "parser_echo",
     "sanitize_output_message",
     "sanitize_parser_message",

@@ -11,7 +11,7 @@ from typing import Any
 
 import click
 
-from inspire.cli.utils.id_resolver import is_full_uuid, looks_like_platform_id
+from inspire.cli.utils.id_resolver import is_full_uuid, is_partial_id
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config
 from inspire.config.toml import _project_config_write_path
@@ -60,6 +60,12 @@ _PROJECT_HANDLE_PREFIXES = (
     "lcg-",
     "ws-",
 )
+
+_HANDLE_BODY_RE = re.compile(r"^[0-9a-f]+(?:-[0-9a-f]+)*$", re.IGNORECASE)
+
+
+def _is_handle_shaped_body(body: str) -> bool:
+    return len(body.replace("-", "")) >= 3 and bool(_HANDLE_BODY_RE.match(body))
 
 
 @dataclass(frozen=True)
@@ -298,6 +304,13 @@ def _usable_base_url(value: object) -> str:
 
 
 def _looks_like_project_handle(value: object) -> bool:
+    """Whether a discovered value is a handle rather than a usable name.
+
+    This screens values the platform hands back during ``init`` discovery, so
+    it carries its own prefix list. The CLI's input boundary deliberately
+    accepts ``proj-``/``workspace-`` as ordinary names; here the only cost of
+    a wider net is declining to record one discovered alias.
+    """
     text = str(value or "").strip()
     if not text:
         return False
@@ -305,9 +318,12 @@ def _looks_like_project_handle(value: object) -> bool:
         return True
 
     lowered = text.casefold()
-    return any(
-        lowered.startswith(prefix) for prefix in _PROJECT_HANDLE_PREFIXES
-    ) and looks_like_platform_id(text)
+    for prefix in _PROJECT_HANDLE_PREFIXES:
+        if not lowered.startswith(prefix):
+            continue
+        body = lowered[len(prefix) :]
+        return is_full_uuid(body) or is_partial_id(body) or _is_handle_shaped_body(body)
+    return False
 
 
 def _build_project_aliases(

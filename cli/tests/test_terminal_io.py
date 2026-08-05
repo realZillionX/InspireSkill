@@ -6,7 +6,7 @@ import os
 import pytest
 
 from inspire.cli.utils import terminal_io
-from inspire.cli.utils.terminal_io import run_scrubbed_pty
+from inspire.cli.utils.terminal_io import run_interactive_pty
 
 
 class _PipeInput:
@@ -21,12 +21,12 @@ class _PipeInput:
         return False
 
 
-def test_run_scrubbed_pty_preserves_terminal_output_without_handles() -> None:
+def test_run_interactive_pty_passes_child_output_through_verbatim() -> None:
     read_fd, write_fd = os.pipe()
     os.close(write_fd)
     stdout = io.BytesIO()
     try:
-        returncode = run_scrubbed_pty(
+        returncode = run_interactive_pty(
             [
                 "/bin/sh",
                 "-c",
@@ -39,10 +39,31 @@ def test_run_scrubbed_pty_preserves_terminal_output_without_handles() -> None:
         os.close(read_fd)
 
     assert returncode == 7
-    assert stdout.getvalue() == b"\x1b[32mok\x1b[0m <redacted>\r\n"
+    assert stdout.getvalue() == b"\x1b[32mok\x1b[0m job-1234abcd\r\n"
 
 
-def test_run_scrubbed_pty_terminates_and_reaps_child_on_output_failure(
+def test_run_interactive_pty_emits_a_partial_line_without_waiting() -> None:
+    """A prompt with no trailing newline has to reach the terminal now.
+
+    Holding the tail of a chunk back to inspect it for identifiers is what
+    swallows keystroke echo in raw mode and leaves prompts half-written.
+    """
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    stdout = io.BytesIO()
+    try:
+        run_interactive_pty(
+            ["/bin/sh", "-c", "printf 'root@trainer:~/work'"],
+            stdin=_PipeInput(read_fd),
+            stdout=stdout,
+        )
+    finally:
+        os.close(read_fd)
+
+    assert stdout.getvalue() == b"root@trainer:~/work"
+
+
+def test_run_interactive_pty_terminates_and_reaps_child_on_output_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tracked: dict[str, int] = {}
@@ -58,13 +79,13 @@ def test_run_scrubbed_pty_terminates_and_reaps_child_on_output_failure(
         raise RuntimeError("output failed")
 
     monkeypatch.setattr(terminal_io.pty, "fork", tracked_fork)
-    monkeypatch.setattr(terminal_io, "write_scrubbed_output", fail_output)
+    monkeypatch.setattr(terminal_io, "write_stream_output", fail_output)
 
     read_fd, write_fd = os.pipe()
     os.close(write_fd)
     try:
         with pytest.raises(RuntimeError, match="output failed"):
-            run_scrubbed_pty(
+            run_interactive_pty(
                 ["/bin/sh", "-c", "printf boom; sleep 10"],
                 stdin=_PipeInput(read_fd),
                 stdout=io.BytesIO(),

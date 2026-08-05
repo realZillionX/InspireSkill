@@ -606,6 +606,12 @@ def _looks_like_platform_id(value: str) -> bool:
     valid user namespace, so values such as ``2026`` or ``cafe`` must still
     be resolvable by name.  The platform's externally copyable handles use a
     recognizable prefix or a full UUID at the CLI boundary.
+
+    Only prefixes the platform actually mints are listed.  Everyday words
+    such as ``node``/``task``/``pod``/``container``/``group`` are excluded on
+    purpose: a job legitimately named ``node-001`` has to stay addressable,
+    and rejecting it here would leave no way to reference it at all now that
+    names are the CLI's only handle.
     """
     v = value.strip().lower()
     if not v:
@@ -624,23 +630,12 @@ def _looks_like_platform_id(value: str) -> bool:
         "notebook-",
         "nb-",
         "project-",
-        "proj-",
         "ws-",
-        "workspace-",
         "lcg-",
-        "cg-",
-        "group-",
-        "compute-group-",
         "quota-",
         "ssh-",
         "spec-",
         "user-",
-        "pod-",
-        "instance-",
-        "inst-",
-        "node-",
-        "task-",
-        "container-",
     )
     for prefix in sorted(id_prefixes, key=len, reverse=True):
         if not v.startswith(prefix):
@@ -650,26 +645,6 @@ def _looks_like_platform_id(value: str) -> bool:
             is_full_uuid(body)
             or is_partial_id(body)
             or _is_compact_prefixed_platform_id_body(body)
-            or (
-                prefix
-                in {
-                    "ws-",
-                    "cg-",
-                    "lcg-",
-                    "group-",
-                    "compute-group-",
-                    "workspace-",
-                    "proj-",
-                    "pod-",
-                    "instance-",
-                    "inst-",
-                    "node-",
-                    "task-",
-                    "container-",
-                }
-                and bool(body)
-                and bool(_HEX_CHUNKS_RE.fullmatch(body))
-            )
         )
     # Bare UUID — stripping only colons/underscores would be wrong, just match
     # exactly.  Do not treat bare partial hex as an ID: it may be a name.

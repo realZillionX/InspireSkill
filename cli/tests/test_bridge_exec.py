@@ -1472,7 +1472,7 @@ def test_bridge_ssh_uses_requested_bridge(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     monkeypatch.setattr(ssh_cmd_module, "is_tunnel_available", fake_is_tunnel_available)
     monkeypatch.setattr(ssh_cmd_module, "get_ssh_command_args", fake_get_ssh_command_args)
-    monkeypatch.setattr(ssh_cmd_module, "run_scrubbed_pty", fake_pty)
+    monkeypatch.setattr(ssh_cmd_module, "run_interactive_pty", fake_pty)
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
@@ -1527,7 +1527,7 @@ def test_bridge_ssh_rebuilds_notebook_tunnel_before_connect(
 
     monkeypatch.setattr(ssh_cmd_module, "is_tunnel_available", fake_is_tunnel_available)
     monkeypatch.setattr(ssh_cmd_module, "get_ssh_command_args", fake_get_ssh_command_args)
-    monkeypatch.setattr(ssh_cmd_module, "run_scrubbed_pty", fake_pty)
+    monkeypatch.setattr(ssh_cmd_module, "run_interactive_pty", fake_pty)
     monkeypatch.setattr(ssh_cmd_module, "require_web_session", lambda ctx, hint: object())
     monkeypatch.setattr(ssh_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
     monkeypatch.setattr(ssh_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
@@ -1672,7 +1672,7 @@ def test_bridge_ssh_reconnects_after_disconnect(
     )
 
     ssh_return_codes = iter([255, 0])
-    monkeypatch.setattr(ssh_cmd_module, "run_scrubbed_pty", lambda args: next(ssh_return_codes))
+    monkeypatch.setattr(ssh_cmd_module, "run_interactive_pty", lambda args: next(ssh_return_codes))
     monkeypatch.setattr(ssh_cmd_module, "require_web_session", lambda ctx, hint: object())
     monkeypatch.setattr(ssh_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
 

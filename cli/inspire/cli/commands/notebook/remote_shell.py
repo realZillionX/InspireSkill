@@ -28,7 +28,7 @@ from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
 from inspire.cli.utils.output import emit_success as emit_output_success
 from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.terminal_io import run_scrubbed_pty
+from inspire.cli.utils.terminal_io import run_interactive_pty
 from inspire.cli.utils.tunnel_reconnect import (
     load_ssh_public_key_material,
     rebuild_notebook_bridge_profile,
@@ -431,7 +431,7 @@ def bridge_ssh(
             sys.exit(returncode if returncode is not None else EXIT_GENERAL_ERROR)
 
         try:
-            returncode = run_scrubbed_pty(ssh_args)
+            returncode = run_interactive_pty(ssh_args)
         except KeyboardInterrupt:
             logger.debug("Notebook shell interrupted")
             raise SystemExit(130) from None

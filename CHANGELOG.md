@@ -12,6 +12,22 @@
   `--limit/-n` / `--all` 主动调整集合输出。
 - 同类 workload 命令统一使用相同的 Name、Workspace、分页、确认、截断和 JSON 语义。
 
+### 修复
+
+- Handle 识别只覆盖平台真正会签发的前缀。`node-`、`task-`、`pod-`、`instance-`、
+  `container-`、`group-`、`cg-`、`compute-group-`、`proj-`、`workspace-` 以及
+  `lcg-1` 这类短数字后缀恢复为普通 Name：此前它们在 list / JSON 输出里显示为
+  `<redacted>`，同时在输入侧被拒绝，导致这样命名的资源在 Name-only CLI 中完全无法访问。
+- 交互式与远端字节流不再改写。`job shell`、`notebook shell`、`notebook exec` 和
+  Jupyter 终端此前会扣住每个 chunk 结尾的疑似 Handle 片段，造成 raw 模式下无按键回显、
+  提示符残缺、全屏程序刷新不全。日志正文同样按原样输出。
+- 带标签的 UUID 完整打码，不再只截掉首段而留下其余部分。
+- `_post-update` 重新接受并忽略 `--previous-version`：v6.2.0 及更早版本在自更新时
+  一定会传该参数，缺少它会让升级在交接处失败，跳过 Skill 刷新与运行时安装。
+- `notebook ssh-proxy` 重新接受并忽略 `--quiet`；`notebook ssh-config` 生成的
+  ProxyCommand 恢复使用 `inspire` 的绝对路径（OpenSSH 经 `/bin/sh` 执行，PATH 与交互
+  Shell 不同），且 `$HOME` 之外的 IdentityFile 不再被静默丢弃。
+
 ## v6.2.0
 
 ### 新增

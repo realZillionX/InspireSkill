@@ -102,17 +102,37 @@ def test_bare_hex_names_are_not_rejected_as_platform_ids(name: str) -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        "ws-1",
-        "cg-1",
-        "lcg-1",
-        "group-123456",
-        "compute-group-abcdef",
-        "workspace-abcdef",
-        "proj-123456",
+        "ws-abcdef",
+        "lcg-123456",
+        "project-a1b2c3d4",
     ],
 )
 def test_compute_and_workspace_handles_are_rejected(value: str) -> None:
     assert looks_like_platform_id(value) is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "node-001",
+        "task-abc",
+        "pod-123",
+        "container-cafe",
+        "instance-0012",
+        "group-123456",
+        "cg-abcdef12",
+        "compute-group-abc123",
+        "workspace-abcdef",
+        "proj-123456",
+    ],
+)
+def test_everyday_prefixes_stay_addressable_as_names(value: str) -> None:
+    """The platform never mints these; users do name resources this way.
+
+    Rejecting them here would leave such a resource unreachable, because a
+    name is the only handle this CLI accepts.
+    """
+    assert looks_like_platform_id(value) is False
 
 
 class _FakeContext:

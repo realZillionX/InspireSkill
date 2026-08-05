@@ -121,6 +121,12 @@ def _load_proxy_target(
     show_default=True,
     help="Timeout in seconds for notebook connection setup.",
 )
+@click.option(
+    "--quiet",
+    is_flag=True,
+    hidden=True,
+    help="Accepted for compatibility with pre-6.3 ssh_config entries; ignored.",
+)
 @pass_context
 def ssh_proxy_cmd(
     ctx: Context,
@@ -133,13 +139,19 @@ def ssh_proxy_cmd(
     connection_port: int,
     pubkey: str | None,
     setup_timeout: int,
+    quiet: bool,
 ) -> None:
     """Connect OpenSSH to a notebook SSH server through Inspire's tunnel.
 
     This command is intended for OpenSSH ProxyCommand. It streams raw SSH
     traffic on stdin/stdout. Bootstrap diagnostics are written to stderr;
     rtunnel's own lifecycle logs are suppressed by default.
+
+    ``--quiet`` is now the only behaviour, but ProxyCommand lines written by
+    ``ssh-config`` at or below v6.2.0 still pass it. Those live in users'
+    ``~/.ssh/config`` and are never rewritten, so the flag stays accepted.
     """
+    del quiet
     if ctx.json_output:
         _handle_error(
             ctx,

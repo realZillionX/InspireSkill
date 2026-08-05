@@ -347,11 +347,14 @@ def test_ssh_config_proxy_command_pins_resolved_account(
         {"alice": _config("alice", _bridge("dev-box", workspace="CPU资源空间"))},
     )
 
+    monkeypatch.setattr(
+        ssh_config_module.shutil, "which", lambda name: "/opt/tools/bin/inspire"
+    )
     result = CliRunner().invoke(cli_main, ["notebook", "ssh-config", "dev-box"])
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert (
-        "ProxyCommand inspire notebook ssh-proxy %h --account alice"
+        "ProxyCommand /opt/tools/bin/inspire notebook ssh-proxy %h --account alice"
     ) in result.output
     assert "/Users/me" not in result.output
 

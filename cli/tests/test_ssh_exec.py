@@ -268,7 +268,7 @@ def test_run_ssh_command_streaming_pass_stdin_does_not_write_script(
     assert captured["kwargs"]["stdin"] is None
 
 
-def test_run_ssh_command_streaming_default_output_scrubs_handles(
+def test_run_ssh_command_streaming_passes_remote_output_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import click
@@ -325,9 +325,9 @@ def test_run_ssh_command_streaming_default_output_scrubs_handles(
     )
 
     assert run_ssh_command_streaming("echo hello") == 0
-    output = "".join(emitted)
-    assert output == "ok <redacted>\ndone\n"
-    assert "job-1234abcd" not in output
+    # Remote command output is the user's own data, not a CLI-composed
+    # message, so it reaches the terminal exactly as the remote wrote it.
+    assert "".join(emitted) == "ok job-1234abcd\ndone\n"
 
 
 def test_remote_cwd_resolves_path_alias() -> None:

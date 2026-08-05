@@ -15,11 +15,7 @@ from dataclasses import dataclass
 from typing import Protocol, Optional
 from urllib.parse import urlsplit
 
-from inspire.cli.utils.raw_ids import RawIdStreamScrubber
-from inspire.cli.utils.terminal_io import (
-    flush_scrubbed_output,
-    write_scrubbed_output,
-)
+from inspire.cli.utils.terminal_io import write_stream_output
 from inspire.platform.web.browser_api import rtunnel as rtunnel_module
 from inspire.platform.web.browser_api.core import (
     _in_asyncio_loop,
@@ -458,7 +454,6 @@ def _run_jupyter_terminal_shell(
     headers = _jupyter_ws_headers(session, ws_url)
     old_term = None
     raw_mode = bool(getattr(stdin, "isatty", lambda: False)())
-    scrubber = RawIdStreamScrubber()
 
     with _WebSocketClient(ws_url, headers) as ws:
         _send_jupyter_stdin(ws, bootstrap)
@@ -499,12 +494,11 @@ def _run_jupyter_terminal_shell(
                         try:
                             msg = json.loads(text)
                         except json.JSONDecodeError:
-                            write_scrubbed_output(stdout_buffer, scrubber, payload)
+                            write_stream_output(stdout_buffer, payload)
                             continue
                         if isinstance(msg, list) and len(msg) >= 2 and msg[0] == "stdout":
-                            write_scrubbed_output(
+                            write_stream_output(
                                 stdout_buffer,
-                                scrubber,
                                 str(msg[1] or "").encode(),
                             )
                 if stdin in ready:
@@ -516,7 +510,6 @@ def _run_jupyter_terminal_shell(
                         return 0
                     _send_jupyter_stdin(ws, data.decode("utf-8", errors="ignore"))
         finally:
-            flush_scrubbed_output(stdout_buffer, scrubber)
             if raw_mode and old_term is not None:
                 termios.tcsetattr(stdin.fileno(), termios.TCSADRAIN, old_term)
                 if previous_winch is not None:

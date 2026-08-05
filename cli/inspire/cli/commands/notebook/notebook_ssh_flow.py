@@ -27,7 +27,7 @@ from inspire.cli.utils.notebook_cli import (
 )
 from inspire.cli.utils.output import emit_success as emit_output_success
 from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.terminal_io import run_scrubbed_pty
+from inspire.cli.utils.terminal_io import run_interactive_pty
 from inspire.cli.utils.tunnel_reconnect import (
     NotebookBridgeReconnectState,
     NotebookBridgeReconnectStatus,
@@ -492,7 +492,7 @@ def _run_interactive_notebook_ssh_with_reconnect(
 
         args = get_ssh_command_args(bridge_name=profile_name, config=tunnel_config)
         try:
-            returncode = run_scrubbed_pty(args)
+            returncode = run_interactive_pty(args)
         except KeyboardInterrupt:
             raise SystemExit(130) from None
 

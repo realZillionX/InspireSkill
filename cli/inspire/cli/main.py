@@ -48,7 +48,6 @@ from inspire.cli.commands.serving.serving_commands import (
 from inspire.cli.utils.update_notice import maybe_notify_update, maybe_spawn_check
 from inspire.cli.utils.output_guard import (
     clear_parser_redactions,
-    install_output_guard,
     parser_echo,
     set_parser_redactions,
 )
@@ -60,9 +59,8 @@ _PARSER_GUARD_INSTALLED = False
 
 
 def _install_pre_parse_output_guard(args: list[str] | tuple[str, ...]) -> None:
-    """Install the output firewall before Click renders parser errors."""
+    """Install the parser-diagnostic redactions before Click renders errors."""
     global _PARSER_GUARD_INSTALLED
-    install_output_guard()
     set_parser_redactions(args)
     if _PARSER_GUARD_INSTALLED:
         return
@@ -142,7 +140,6 @@ def main(
     """
     ctx.json_output = json_output
     ctx.debug = debug
-    install_output_guard()
 
     try:
         bootstrap_env_file(env_file=env_file, disabled=no_env_file)
@@ -189,12 +186,27 @@ def ensure_playwright_runtime(silent: bool) -> None:
 @click.option("--expected-version", required=True, help="Expected installed version.")
 @click.option("--cli-only", is_flag=True, help="Skip skill refresh.")
 @click.option("--silent", is_flag=True, help="Suppress post-update output.")
+@click.option(
+    "--previous-version",
+    default=None,
+    hidden=True,
+    help="Accepted for compatibility with pre-6.3 callers; ignored.",
+)
 def post_update(
     expected_version: str,
     cli_only: bool,
     silent: bool,
+    previous_version: str | None,
 ) -> None:
-    """Internal hook run from the newly installed CLI after self-update."""
+    """Internal hook run from the newly installed CLI after self-update.
+
+    ``--previous-version`` is dead weight here, but CLIs at or below v6.2.0
+    always pass it when they hand off to the version they just installed.
+    Dropping the option would make every upgrade from a released build fail
+    at the handoff with ``No such option``, so it stays accepted (and
+    ignored) until those versions are no longer in the field.
+    """
+    del previous_version
     from inspire.cli.commands.update import _run_post_update_tasks
 
     if not _run_post_update_tasks(

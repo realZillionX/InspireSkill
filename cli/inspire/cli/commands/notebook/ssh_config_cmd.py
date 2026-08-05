@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
 import sys
 from pathlib import Path
 
@@ -31,7 +32,27 @@ def _default_host_alias(notebook: str) -> str:
     return f"inspire-{slug or 'notebook'}"
 
 
+def _resolve_inspire_executable() -> str:
+    """Return an absolute ``inspire`` path for use inside ProxyCommand.
+
+    OpenSSH runs ProxyCommand through ``/bin/sh``, whose PATH is not the
+    interactive shell's. A bare ``inspire`` resolves for the person running
+    ``ssh-config`` and then fails at connect time for anyone whose install
+    lives in a uv/pipx venv that a non-login shell does not pick up.
+    """
+    executable = shutil.which("inspire")
+    if not executable:
+        return "inspire"
+    return str(Path(executable).expanduser().resolve())
+
+
 def _public_identity_file(identity_file: str | None) -> str | None:
+    """Return the IdentityFile value, shortened to ``~/`` where possible.
+
+    A key outside ``$HOME`` is emitted as its absolute path. This file is a
+    working OpenSSH config, so dropping the line to avoid printing a local
+    path would just hand back a config that cannot authenticate.
+    """
     if not identity_file:
         return None
 
@@ -41,7 +62,7 @@ def _public_identity_file(identity_file: str | None) -> str | None:
     try:
         relative = path.relative_to(Path.home())
     except ValueError:
-        return None
+        return str(path)
     return f"~/{relative.as_posix()}"
 
 
@@ -93,7 +114,7 @@ def _format_ssh_config(
     pick: int | None,
 ) -> str:
     proxy_parts = [
-        "inspire",
+        _resolve_inspire_executable(),
         "notebook",
         "ssh-proxy",
         "%h",

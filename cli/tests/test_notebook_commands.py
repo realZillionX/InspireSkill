@@ -1997,7 +1997,7 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
         lambda bridge_name, config, retries=0, retry_pause=0.0, progressive=True: True,
     )
 
-    monkeypatch.setattr(ssh_flow_module, "run_scrubbed_pty", lambda args: 0)
+    monkeypatch.setattr(ssh_flow_module, "run_interactive_pty", lambda args: 0)
 
     ssh_flow_module.run_notebook_ssh(
         Context(),
@@ -2180,7 +2180,7 @@ def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
         lambda bridge_name, config, remote_command=None: ["ssh", "root@localhost"],
     )
 
-    monkeypatch.setattr(ssh_flow_module, "run_scrubbed_pty", lambda args: 0)
+    monkeypatch.setattr(ssh_flow_module, "run_interactive_pty", lambda args: 0)
 
     ssh_flow_module.run_notebook_ssh(
         Context(),
@@ -2288,7 +2288,7 @@ def test_run_notebook_ssh_interactive_reconnects_after_drop(
     )
 
     ssh_rc = iter([255, 0])
-    monkeypatch.setattr(ssh_flow_module, "run_scrubbed_pty", lambda args: next(ssh_rc))
+    monkeypatch.setattr(ssh_flow_module, "run_interactive_pty", lambda args: next(ssh_rc))
 
     def fake_rebuild(*args: Any, **kwargs: Any) -> object:
         reconnect_calls["rebuild"] += 1
@@ -2809,7 +2809,7 @@ def test_notebook_shell_cwd_uses_path_alias(
         return ["ssh", "root@localhost"]
 
     monkeypatch.setattr(remote_shell_module, "get_ssh_command_args", fake_get_ssh_command_args)
-    monkeypatch.setattr(remote_shell_module, "run_scrubbed_pty", lambda args: 0)
+    monkeypatch.setattr(remote_shell_module, "run_interactive_pty", lambda args: 0)
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main", "--cwd", "me:repo"])
@@ -2850,7 +2850,7 @@ def test_notebook_shell_without_default_path_alias_uses_login_home(
         return ["ssh", "root@localhost"]
 
     monkeypatch.setattr(remote_shell_module, "get_ssh_command_args", fake_get_ssh_command_args)
-    monkeypatch.setattr(remote_shell_module, "run_scrubbed_pty", lambda args: 0)
+    monkeypatch.setattr(remote_shell_module, "run_interactive_pty", lambda args: 0)
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
