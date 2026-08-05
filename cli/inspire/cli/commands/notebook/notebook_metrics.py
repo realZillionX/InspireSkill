@@ -33,19 +33,21 @@ def _resolve_notebook_lcg(task_id: str, session: WebSession) -> Optional[str]:
     return _notebook_lcg_from_detail(detail)
 
 
-def _notebook_name_to_id(ctx: Context, name: str) -> ResolvedMetricsTarget:
+def _notebook_name_to_id(
+    ctx: Context,
+    name: str,
+    pick: int | None = None,
+) -> ResolvedMetricsTarget:
     from inspire.cli.commands.notebook import notebook_lookup as _nb
-    from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, get_base_url, load_config, require_web_session
-    from inspire.config.workspaces import resolve_workspace_query_scope
+    from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, get_base_url, require_web_session
+    from inspire.config.workspaces import resolve_workspace_operation_scope
 
     session = require_web_session(
         ctx,
         hint=WEB_AUTH_HINT,
     )
-    config = load_config(ctx)
     base_url = get_base_url()
-    workspace_ids, _ = resolve_workspace_query_scope(
-        config,
+    workspace_id = resolve_workspace_operation_scope(
         workspace=str(getattr(ctx, "workspace", "") or ""),
         session=session,
     )
@@ -53,11 +55,11 @@ def _notebook_name_to_id(ctx: Context, name: str) -> ResolvedMetricsTarget:
         _nb._run_notebook_operation_with_stale_handle_retry(
             ctx,
             session=session,
-            config=config,
             base_url=base_url,
             identifier=name,
             json_output=getattr(ctx, "json_output", False),
-            workspace_ids=workspace_ids,
+            workspace_ids=[workspace_id],
+            pick=pick,
             operation=lambda notebook_id: browser_api_module.get_notebook_detail(
                 notebook_id=notebook_id,
                 session=session,

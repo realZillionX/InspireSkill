@@ -1,7 +1,7 @@
 """Notebook rtunnel setup: commands, state, probe, verify, and flow.
 
-Merged from the rtunnel subpackage. The public entry point is
-``setup_notebook_rtunnel`` (async-safe wrapper around the sync flow).
+The public entry point is ``setup_notebook_rtunnel`` (async-safe wrapper
+around the sync flow).
 """
 
 from __future__ import annotations
@@ -54,21 +54,16 @@ RTUNNEL_MISSING_MARKER = "INSPIRE_RTUNNEL_MISSING_IN_BOOTSTRAP"
 OPENSSH_INSTALL_FAILED_MARKER = "INSPIRE_OPENSSH_INSTALL_FAILED"
 OPENSSH_INSTALL_FAILED_FILE = "/tmp/.inspire_openssh_install_failed"
 OPENSSH_INSTALL_LOG = "/tmp/inspire-openssh-install.log"
-OPENSSH_JAMMY_INSTALL_FAILED_MARKER = OPENSSH_INSTALL_FAILED_MARKER
-OPENSSH_JAMMY_INSTALL_FAILED_FILE = OPENSSH_INSTALL_FAILED_FILE
-OPENSSH_JAMMY_INSTALL_LOG = OPENSSH_INSTALL_LOG
 SII_UBUNTU_APT_MIRROR = "http://nexus.sii.shaipower.online/repository/ubuntu"
 
 # Canonical path of the InspireSkill offline SSH-bootstrap kit on the Inspire
 # platform's global_public fileset — mounted read-only in every notebook
-# container. Layout (see the kit's MANIFEST.txt):
+# container:
 #   <root>/rtunnel/linux-{amd64,arm64}/rtunnel   (static Go binary)
-#   <root>/sshd-debs/*.deb                        (legacy, no longer used here)
 #
 # This is the canonical offline source for rtunnel. OpenSSH is installed or
 # corrected through the SII internal Ubuntu apt mirror selected from the
-# container's /etc/os-release codename; the old kit sshd-debs path is no
-# longer used by the bootstrap script.
+# container's /etc/os-release codename.
 INSPIRE_BOOTSTRAP_ROOT = "/inspire/hdd/global_public/inspire-skill-bootstrap/v1"
 
 
@@ -164,8 +159,7 @@ def build_rtunnel_setup_commands(
     # sshd:
     #   - Ubuntu containers are matched to their own codename at runtime.
     #   - Missing or mismatched OpenSSH is installed/corrected from SII apt.
-    #   - Non-Ubuntu containers may reuse an existing sshd, but bootstrap will
-    #     not install OpenSSH from the old kit debs path.
+    #   - Non-Ubuntu containers must already provide sshd.
     cmd_lines.append(
         'rm -f "$OPENSSH_INSTALL_FAILED_FILE"; '
         'if [ "$_OS_ID" = "ubuntu" ] && [ -n "$_OS_CODENAME" ]; then '
@@ -262,8 +256,7 @@ def build_rtunnel_setup_commands(
         'else rm -f "$BOOTSTRAP_SENTINEL"; fi'
     )
 
-    # These follow-ups keep sshd start robust across bare images and images
-    # left behind by older bootstrap attempts:
+    # These follow-ups keep sshd start robust across bare images:
     #   (a) the privilege-separation user `sshd` must exist; without it sshd dies with
     #       "Privilege separation user sshd does not exist".
     #   (b) sshd insists on opening /etc/ssh/sshd_config. We write a minimal
@@ -573,7 +566,7 @@ def _is_rtunnel_proxy_ready(*, status: int, body: str) -> bool:
     # returning "route not found" for a non-existent /vscode/ path, or
     # an rtunnel WebSocket server replying to an HTTP GET.  Treating it
     # as ready caused false positives when the derived vscode URL didn't
-    # exist, so we no longer accept 404 as "reachable" during polling.
+    # A missing proxy route is not reachable during polling.
     return False
 
 
@@ -592,8 +585,7 @@ def _redact_token_like_text(text: str) -> str:
         return value
 
     value = _TOKEN_QUERY_RE.sub(r"\1<redacted>", value)
-    value = _TOKEN_PATH_RE.sub(r"\1<redacted>\3", value)
-    return value
+    return _TOKEN_PATH_RE.sub(r"\1<redacted>\3", value)
 
 
 def _summarize_request_error(error: Exception) -> str:
@@ -735,7 +727,7 @@ def _is_reachable_proxy_response(*, status_code: int, body: str) -> bool:
     # returning "route not found" for a non-existent proxy path, or
     # an rtunnel WebSocket server replying to an HTTP GET.  The false
     # positives from gateway 404s cause broken proxy URLs to be cached
-    # and reused, so we no longer accept 404 as "reachable".
+    # A missing proxy route is not reachable.
     return False
 
 
@@ -962,62 +954,6 @@ def probe_existing_rtunnel_proxy_url(
 # ============================================================================
 # Flow
 # ============================================================================
-
-
-def _timing_enabled() -> bool:
-    value = os.environ.get("INSPIRE_RTUNNEL_TIMING", "")
-    return value.strip().lower() in {"1", "true", "yes"}
-
-
-class _StepTimer:
-    """Lightweight per-step timing collector for the rtunnel setup flow.
-
-    When *enabled* is ``False`` every method is a no-op (zero overhead).
-    """
-
-    def __init__(self, *, enabled: bool = False) -> None:
-        self._enabled = enabled
-        self._steps: list[tuple[str, float]] = []  # (label, elapsed_s)
-        self._last = time.monotonic() if enabled else 0.0
-
-    def mark(self, label: str) -> float:
-        """Record elapsed time since the previous mark.
-
-        Returns the step duration in seconds (0.0 when disabled).
-        """
-        if not self._enabled:
-            return 0.0
-        import sys as _sys
-
-        now = time.monotonic()
-        elapsed = now - self._last
-        self._last = now
-        self._steps.append((label, elapsed))
-        _sys.stderr.write(f"  [timing] {label}: {elapsed:.3f}s\n")
-        _sys.stderr.flush()
-        return elapsed
-
-    def summary(self) -> None:
-        """Print a visual summary table to stderr."""
-        if not self._enabled or not self._steps:
-            return
-        import sys as _sys
-
-        total = sum(s for _, s in self._steps)
-        if total <= 0:
-            return
-
-        max_label = max(len(label) for label, _ in self._steps)
-        bar_width = 30
-
-        _sys.stderr.write("\n  ── rtunnel timing summary ──\n")
-        for label, elapsed in self._steps:
-            pct = elapsed / total * 100
-            bar_len = int(round(pct / 100 * bar_width))
-            bar = "#" * bar_len
-            _sys.stderr.write(f"  {label:<{max_label}}  {elapsed:6.2f}s  {pct:5.1f}%  {bar}\n")
-        _sys.stderr.write(f"  {'TOTAL':<{max_label}}  {total:6.2f}s\n")
-        _sys.stderr.flush()
 
 
 def _jupyter_server_base(lab_url: str) -> str:
@@ -1306,18 +1242,11 @@ def _send_setup_command_via_terminal_ws(
 
 
 class RtunnelMissingInContainerError(RuntimeError):
-    """Raised when the bootstrap script finishes but rtunnel is still absent.
-
-    rtunnel may be copied to ``/tmp/rtunnel`` by older bootstrap paths, or run
-    directly from the global_public kit by the current zero-copy path.
-    """
+    """Raised when the global_public rtunnel executable is unavailable."""
 
 
 class OpenSSHInternalInstallError(RuntimeError):
     """Raised when OpenSSH install/correction through the internal apt mirror failed."""
-
-
-OpenSSHJammyInstallError = OpenSSHInternalInstallError
 
 
 def _probe_terminal_command_markers_via_ws(
@@ -1470,9 +1399,6 @@ def _check_openssh_install_failed_via_ws(
     )
 
 
-_check_openssh_jammy_install_failed_via_ws = _check_openssh_install_failed_via_ws
-
-
 def _build_batch_setup_script(cmd_lines: list[str]) -> str:
     """Encode setup commands as a single base64-wrapped bash line.
 
@@ -1506,7 +1432,6 @@ _API_TERMINAL_PROGRESSIVE_WAIT_MS = 1800
 _API_TERMINAL_RECOVERY_WAIT_MS = 900
 _API_TERMINAL_POLL_MS = 220
 _API_TERMINAL_TAB_POKE_INTERVAL_MS = 1200
-_FOCUS_INPUT_WAIT_TIMEOUT_MS = 900
 _FOCUS_INPUT_CLICK_TIMEOUT_MS = 500
 _FOCUS_TAB_CLICK_TIMEOUT_MS = 450
 _FOCUS_TEXTAREA_ATTACH_TIMEOUT_MS = 3000
@@ -2115,7 +2040,6 @@ def _send_rtunnel_setup_script(
     page: Any,
     lab_frame: Any,
     batch_cmd: str,
-    timer: "_StepTimer",
 ) -> _SetupScriptSendResult:
     setup_sent_via_ws = False
     try:
@@ -2129,9 +2053,6 @@ def _send_rtunnel_setup_script(
 
     if setup_sent_via_ws:
         _log.debug("Sent setup script via Jupyter terminal WebSocket")
-        timer.mark("open_terminal")
-        timer.mark("focus_xterm")
-        timer.mark("build_and_send_cmd")
         return _SetupScriptSendResult(sent_via_ws=True)
 
     _log.debug("WebSocket terminal setup unavailable; using browser automation")
@@ -2158,16 +2079,11 @@ def _send_rtunnel_setup_script(
                 batch_cmd=batch_cmd,
             ):
                 _log.debug("Recovered by dispatching setup script via terminal WebSocket")
-                timer.mark("open_terminal")
-                timer.mark("focus_xterm")
-                timer.mark("build_and_send_cmd")
                 return _SetupScriptSendResult(
                     sent_via_ws=True,
                     cleanup=_cleanup_browser_terminal,
                 )
             raise ValueError("Failed to open Jupyter terminal")
-        timer.mark("open_terminal")
-
         if not _focus_terminal_input(lab_frame, page):
             page.wait_for_timeout(350)
             if not _wait_for_terminal_surface(lab_frame, timeout_ms=2000):
@@ -2179,8 +2095,6 @@ def _send_rtunnel_setup_script(
                     _log.debug(
                         "xterm surface absent; dispatched setup via terminal WebSocket"
                     )
-                    timer.mark("focus_xterm")
-                    timer.mark("build_and_send_cmd")
                     return _SetupScriptSendResult(
                         sent_via_ws=True,
                         cleanup=_cleanup_browser_terminal,
@@ -2195,19 +2109,14 @@ def _send_rtunnel_setup_script(
                     _log.debug(
                         "xterm focus failed; dispatched setup via terminal WebSocket"
                     )
-                    timer.mark("focus_xterm")
-                    timer.mark("build_and_send_cmd")
                     return _SetupScriptSendResult(
                         sent_via_ws=True,
                         cleanup=_cleanup_browser_terminal,
                     )
                 raise ValueError("Failed to focus Jupyter terminal input")
-        timer.mark("focus_xterm")
-
         _log.debug("Executing setup script (%s chars) in notebook terminal", len(batch_cmd))
         page.keyboard.insert_text(batch_cmd)
         page.keyboard.press("Enter")
-        timer.mark("build_and_send_cmd")
         return _SetupScriptSendResult(
             sent_via_ws=False,
             cleanup=_cleanup_browser_terminal,
@@ -2221,7 +2130,6 @@ def _wait_for_setup_completion(
     *,
     page: Any,
     setup_sent_via_ws: bool,
-    timer: "_StepTimer",
 ) -> None:
     # Both WS and Playwright paths need time for the setup commands to execute
     # (dpkg install, dropbear keygen/start, rtunnel start).  The WS path sends
@@ -2233,15 +2141,13 @@ def _wait_for_setup_completion(
     else:
         # WS path waits for SETUP_DONE_MARKER, so only a short settle is needed.
         page.wait_for_timeout(500)
-    timer.mark("wait_marker")
 
 
-def _capture_terminal_debug_artifact(*, page: Any, timer: "_StepTimer") -> None:
+def _capture_terminal_debug_artifact(*, page: Any) -> None:
     try:
         page.screenshot(path="/tmp/notebook_terminal_debug.png")
     except (PlaywrightError, OSError, RuntimeError, TimeoutError, ValueError, TypeError):
         pass
-    timer.mark("screenshot")
 
 
 def _verify_and_cache_rtunnel_proxy(
@@ -2254,7 +2160,6 @@ def _verify_and_cache_rtunnel_proxy(
     context: Any,
     page: Any,
     account: str | None,
-    timer: "_StepTimer",
 ) -> str:
     _log.debug(
         "Verifying rtunnel at %s",
@@ -2272,8 +2177,6 @@ def _verify_and_cache_rtunnel_proxy(
             _log.debug("HTTP readiness diagnostics: %s", " | ".join(probe_diagnostics))
         else:
             _log.debug("Proxy readiness diagnostics: %s", " | ".join(probe_diagnostics))
-    timer.mark("verify_proxy")
-
     try:
         save_rtunnel_proxy_state(
             notebook_id=notebook_id,
@@ -2285,7 +2188,6 @@ def _verify_and_cache_rtunnel_proxy(
         )
     except OSError:
         pass
-    timer.mark("save_state")
     return proxy_url
 
 
@@ -2306,13 +2208,9 @@ def _setup_notebook_rtunnel_sync(
         open_notebook_lab,
     )
 
-    timing = _timing_enabled()
-    timer = _StepTimer(enabled=timing)
-
     if session is None:
         session = get_web_session()
     account = _resolve_rtunnel_account(explicit=None, session=session)
-    timer.mark("session_init")
 
     existing = probe_existing_rtunnel_proxy_url(
         notebook_id=notebook_id,
@@ -2326,20 +2224,15 @@ def _setup_notebook_rtunnel_sync(
         ssh_public_key=ssh_public_key,
     )
     if existing:
-        timer.mark("probe_existing")
-        timer.summary()
         _log.debug("Using existing rtunnel connection")
         return existing
 
-    timer.mark("probe_existing")
     _log.debug("Setting up rtunnel via browser automation")
 
     with sync_playwright() as p:
         browser = _launch_browser(p, headless=headless)
-        timer.mark("playwright_launch")
         context = _new_context(browser, storage_state=session.storage_state)
         page = context.new_page()
-        timer.mark("context_and_page")
         setup_terminal_cleanup: Callable[[], None] | None = None
 
         try:
@@ -2349,15 +2242,12 @@ def _setup_notebook_rtunnel_sync(
                 timeout=max(60000, int(timeout) * 1000),
                 session=session,
             )
-            timer.mark("open_lab")
             jupyter_proxy_url = build_jupyter_proxy_url(lab_frame.url, port=port)
-            timer.mark("build_proxy_url")
 
             try:
                 lab_frame.locator("text=加载中").first.wait_for(state="hidden", timeout=30000)
             except (PlaywrightError, TimeoutError, RuntimeError, AttributeError, ValueError):
                 pass
-            timer.mark("wait_spinner")
 
             cmd_lines = build_rtunnel_setup_commands(
                 port=port,
@@ -2371,7 +2261,6 @@ def _setup_notebook_rtunnel_sync(
                 page=page,
                 lab_frame=lab_frame,
                 batch_cmd=batch_cmd,
-                timer=timer,
             )
             setup_sent_via_ws = setup_send_result.sent_via_ws
             setup_terminal_cleanup = setup_send_result.cleanup
@@ -2379,13 +2268,11 @@ def _setup_notebook_rtunnel_sync(
             _wait_for_setup_completion(
                 page=page,
                 setup_sent_via_ws=setup_sent_via_ws,
-                timer=timer,
             )
             openssh_install_failed = _check_openssh_install_failed_via_ws(
                 context=context,
                 lab_frame=lab_frame,
             )
-            timer.mark("check_openssh_install")
             _log.debug("openssh_install_failed=%s", openssh_install_failed)
             if openssh_install_failed is True:
                 raise OpenSSHInternalInstallError(
@@ -2401,14 +2288,13 @@ def _setup_notebook_rtunnel_sync(
                 context=context,
                 lab_frame=lab_frame,
             )
-            timer.mark("check_rtunnel_present")
             _log.debug("rtunnel_present=%s", rtunnel_present)
             if rtunnel_present is False:
                 raise RtunnelMissingInContainerError(
                     "rtunnel binary missing inside the notebook container, "
                     "and bootstrap could not fetch one (no public network)."
                 )
-            _capture_terminal_debug_artifact(page=page, timer=timer)
+            _capture_terminal_debug_artifact(page=page)
             return _verify_and_cache_rtunnel_proxy(
                 notebook_id=notebook_id,
                 jupyter_proxy_url=jupyter_proxy_url,
@@ -2418,13 +2304,11 @@ def _setup_notebook_rtunnel_sync(
                 context=context,
                 page=page,
                 account=account,
-                timer=timer,
             )
 
         finally:
             if setup_terminal_cleanup is not None:
                 setup_terminal_cleanup()
-            timer.summary()
             # Rely on sync_playwright() shutdown to terminate browser processes.
             # Explicit context/browser close can hang on some deployments.
 
@@ -2468,11 +2352,9 @@ def setup_notebook_rtunnel(
 
 __all__ = [
     "OpenSSHInternalInstallError",
-    "OpenSSHJammyInstallError",
     "OPENSSH_INSTALL_FAILED_MARKER",
     "OPENSSH_INSTALL_FAILED_FILE",
     "OPENSSH_INSTALL_LOG",
-    "OPENSSH_JAMMY_INSTALL_LOG",
     "RtunnelMissingInContainerError",
     "SII_UBUNTU_APT_MIRROR",
     "setup_notebook_rtunnel",

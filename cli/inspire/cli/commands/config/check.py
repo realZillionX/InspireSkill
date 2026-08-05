@@ -18,7 +18,6 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import (
     Config,
     ConfigError,
@@ -28,7 +27,10 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 from inspire.platform.web.session.proxy import describe_effective_proxy_config
 
-from .proxy_output import format_effective_proxy_lines
+from .proxy_output import (
+    format_effective_proxy_lines,
+    public_effective_proxy_summary,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -47,8 +49,6 @@ _PLACEHOLDER_HOST_SUFFIXES = (
 )
 _HOST_VALIDATION_FIELDS = (
     ("base_url", "INSPIRE_BASE_URL"),
-    ("github_server", "INSP_GITHUB_SERVER"),
-    ("docker_registry", "INSPIRE_DOCKER_REGISTRY"),
 )
 
 # ---------------------------------------------------------------------------
@@ -96,18 +96,9 @@ def _is_placeholder_host(host: str) -> bool:
     return any(host.endswith(suffix) for suffix in _PLACEHOLDER_HOST_SUFFIXES)
 
 
-def _should_validate_host_field(cfg: Config, field_name: str) -> bool:
-    if field_name == "github_server":
-        return bool(cfg.github_repo or cfg.github_token)
-    return True
-
-
 def _find_placeholder_host_issues(cfg: Config, sources: dict[str, str]) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     for field_name, env_var in _HOST_VALIDATION_FIELDS:
-        if not _should_validate_host_field(cfg, field_name):
-            continue
-
         raw_value = getattr(cfg, field_name, None)
         if raw_value in (None, ""):
             continue
@@ -152,16 +143,6 @@ def _validate_required_credentials(cfg: Config) -> None:
         )
 
 
-def _validate_required_registry(cfg: Config) -> None:
-    if not cfg.docker_registry:
-        raise ConfigError(
-            "Missing docker registry configuration.\n"
-            "Set INSPIRE_DOCKER_REGISTRY env var or add to config.toml:\n"
-            "  [api]\n"
-            "  docker_registry = 'your-registry.example.com'"
-        )
-
-
 def _validate_project_base_url_shape(project_path: Path | None) -> None:
     if not project_path or not project_path.exists():
         return
@@ -189,13 +170,13 @@ def _build_base_url_resolution(
 ) -> dict[str, object]:
     env_base_url = os.environ.get("INSPIRE_BASE_URL")
     return {
-        "value": cfg.base_url,
+        "configured": bool(str(cfg.base_url or "").strip()),
         "source": sources.get("base_url", SOURCE_DEFAULT),
         "prefer_source": getattr(cfg, "prefer_source", "env"),
         "precedence": _describe_precedence(getattr(cfg, "prefer_source", "env")),
         "env_present": bool(env_base_url),
-        "global_config_path": str(global_path) if global_path else None,
-        "project_config_path": str(project_path) if project_path else None,
+        "global_config_present": bool(global_path),
+        "project_config_present": bool(project_path),
     }
 
 
@@ -208,7 +189,7 @@ def _build_base_url_resolution(
 @click.option(
     "--details",
     is_flag=True,
-    help="Show endpoint, source precedence, retry, proxy, and config-file details.",
+    help="Show source precedence, proxy routing, and config-file presence.",
 )
 @pass_context
 def check_config(ctx: Context, details: bool) -> None:
@@ -232,9 +213,10 @@ def check_config(ctx: Context, details: bool) -> None:
             raise ConfigError(_format_placeholder_issue_message(placeholder_issues))
 
         _validate_required_credentials(cfg)
-        _validate_required_registry(cfg)
         effective_proxy = (
-            describe_effective_proxy_config(base_url=cfg.base_url)
+            public_effective_proxy_summary(
+                describe_effective_proxy_config(base_url=cfg.base_url)
+            )
             if show_details
             else None
         )
@@ -264,12 +246,6 @@ def check_config(ctx: Context, details: bool) -> None:
         if show_details:
             result.update(
                 {
-                    "endpoint": cfg.base_url,
-                    "request": {
-                        "timeout_seconds": cfg.timeout,
-                        "max_retries": cfg.max_retries,
-                        "retry_delay_seconds": cfg.retry_delay,
-                    },
                     "base_url_resolution": base_url_resolution,
                     "effective_proxy": effective_proxy,
                 }
@@ -277,7 +253,12 @@ def check_config(ctx: Context, details: bool) -> None:
             if default_base_url_hint:
                 result["note"] = default_base_url_hint
             if auth_error:
-                result["authentication_error"] = auth_error
+                result["authentication_error"] = json_formatter.sanitize_text(
+                    auth_error,
+                    redact_paths=True,
+                    redact_urls=True,
+                    redact_platform_paths=True,
+                )
 
         if effective_json:
             click.echo(json_formatter.format_json(result, success=auth_ok))
@@ -289,12 +270,6 @@ def check_config(ctx: Context, details: bool) -> None:
                 click.echo(human_formatter.format_error("Authentication: FAILED"))
 
             if show_details:
-                click.echo(f"Endpoint: {cfg.base_url}")
-                click.echo(
-                    "Request: "
-                    f"timeout={cfg.timeout}s retries={cfg.max_retries} "
-                    f"delay={cfg.retry_delay}s"
-                )
                 click.echo(
                     "Source: "
                     f"{base_url_resolution['source']} "
@@ -311,7 +286,15 @@ def check_config(ctx: Context, details: bool) -> None:
                     for line in format_effective_proxy_lines(effective_proxy):
                         click.echo(line)
                 if auth_error:
-                    click.echo(f"Authentication error: {scrub_raw_ids(auth_error)}")
+                    click.echo(
+                        "Authentication error: "
+                        + json_formatter.sanitize_text(
+                            auth_error,
+                            redact_paths=True,
+                            redact_urls=True,
+                            redact_platform_paths=True,
+                        )
+                    )
 
         if not auth_ok:
             sys.exit(EXIT_AUTH_ERROR)

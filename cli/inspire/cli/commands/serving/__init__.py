@@ -49,7 +49,7 @@ serving.add_command(status_serving)
 serving.add_command(stop_serving)
 serving.add_command(delete_serving)
 serving.add_command(configs_serving)
-serving.add_command(serving_metrics)  # metrics (资源视图 time-series; per-replica pods)
+serving.add_command(serving_metrics)
 
 
 __all__ = ["serving"]

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from inspire.cli.utils.notebook_post_start import (
     POST_START_LOG,
     POST_START_STARTED_MARKER,
@@ -71,21 +69,3 @@ def test_resolve_notebook_post_start_spec_builds_script_from_file(tmp_path: Path
     assert spec.label.endswith(f"({script_path.name})")
     assert "base64 -d" in spec.command
     assert spec.log_path == POST_START_LOG
-
-
-def test_resolve_notebook_post_start_spec_rejects_removed_keepalive_cli_value() -> None:
-    with pytest.raises(ValueError, match="keepalive"):
-        resolve_notebook_post_start_spec(
-            config=_config(),
-            post_start="keepalive",
-            post_start_script=None,
-        )
-
-
-def test_resolve_notebook_post_start_spec_rejects_removed_keepalive_config_value() -> None:
-    with pytest.raises(ValueError, match="keepalive"):
-        resolve_notebook_post_start_spec(
-            config=_config(post_start="keepalive"),
-            post_start=None,
-            post_start_script=None,
-        )

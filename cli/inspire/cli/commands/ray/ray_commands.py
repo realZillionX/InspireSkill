@@ -16,15 +16,20 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.collection_output import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.events import run_events_command
+from inspire.cli.utils.errors import (
+    exit_with_error as _handle_error,
+    require_confirmation,
+)
+from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, run_events_command
 from inspire.cli.utils.id_resolver import (
+    NAME_PICK_HELP,
     forget_resource_identity,
     looks_like_platform_id,
     reject_id_at_boundary,
@@ -44,9 +49,20 @@ from inspire.cli.utils.task_priority import (
 )
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
-from inspire.config.workspaces import select_workspace_id, workspace_label
+from inspire.config.workspaces import (
+    resolve_workspace_query_scope,
+    select_workspace_id,
+    workspace_label,
+    workspace_name_map,
+)
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+
+from .public_output import (
+    format_ray_status,
+    public_ray_list_item,
+    public_ray_status,
+)
 
 _DEFAULT_INSTANCE_SCAN_LIMIT = 500
 logger = logging.getLogger(__name__)
@@ -79,7 +95,6 @@ def _created_ray_job_id(payload: object) -> str:
 def _resolve_ray_name_in_workspace(
     ctx: Context,
     *,
-    config: Config,
     session,
     name: str,
     workspace: str,
@@ -88,7 +103,6 @@ def _resolve_ray_name_in_workspace(
     require_live: bool = False,
 ) -> str:
     workspace_id = select_workspace_id(
-        config,
         explicit_workspace_name=workspace,
         session=session,
     )
@@ -120,7 +134,6 @@ def _resolve_ray_name_in_workspace(
         name=name,
         resource_type="ray",
         list_candidates=_lister,
-        json_output=ctx.json_output,
         pick_index=pick,
         session=session,
         workspace_id=workspace_id,
@@ -142,28 +155,27 @@ def _reject_ray_name_at_boundary(ctx: Context, name: str) -> str:
 def _run_readonly_ray_operation(
     ctx: Context,
     *,
-    config: Config,
     session,
     name: str,
     workspace: str,
     limit: int,
+    pick: Optional[int] = None,
     operation,
 ):
     """Run a read-only Ray operation and recover one stale cache hit."""
     def _resolve(require_live: bool) -> str:
         return _resolve_ray_name_in_workspace(
             ctx,
-            config=config,
             session=session,
             name=name,
             workspace=workspace,
             limit=limit,
+            pick=pick,
             require_live=require_live,
         )
 
     def _invalidate(job_id: str) -> None:
         workspace_id = select_workspace_id(
-            config,
             explicit_workspace_name=workspace,
             session=session,
         )
@@ -186,44 +198,6 @@ def _run_readonly_ray_operation(
     )
 
 
-_OUTPUT_METADATA_KEYS = {
-    "debug",
-    "method",
-    "metadata",
-    "payload",
-    "progress",
-    "raw",
-    "request",
-    "requestpayload",
-    "response",
-    "responsemetadata",
-    "result",
-    "scanned",
-    "source",
-}
-
-
-def _is_output_id_key(key: object) -> bool:
-    normalized = str(key or "").replace("-", "_").lower()
-    return normalized in {"id", "ids"} or normalized.endswith("_id") or normalized.endswith("_ids")
-
-
-def _public_output(value: object) -> Any:
-    """Keep useful Ray results while hiding platform handles and metadata."""
-    if isinstance(value, dict):
-        return {
-            key: _public_output(child)
-            for key, child in value.items()
-            if str(key or "").replace("-", "_").lower() not in _OUTPUT_METADATA_KEYS
-            and not _is_output_id_key(key)
-        }
-    if isinstance(value, (list, tuple)):
-        return [_public_output(item) for item in value]
-    if isinstance(value, str):
-        return scrub_raw_ids(value)
-    return value
-
-
 # ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
@@ -233,80 +207,150 @@ def _format_ray_list_rows(rows: list[dict[str, str]]) -> str:
     if not rows:
         return "No Ray jobs found."
 
-    name_w = max(len("Name"), *(len(r["name"]) for r in rows))
-    status_w = max(len("Status"), *(len(r["status"]) for r in rows))
-    created_w = max(len("Created"), *(len(r["created_at"]) for r in rows))
-    user_w = max(len("Created By"), *(len(r["created_by_name"]) for r in rows))
-
-    header = (
-        f"{'Name':<{name_w}}  "
-        f"{'Status':<{status_w}}  {'Created':<{created_w}}  "
-        f"{'Created By':<{user_w}}"
-    )
-    sep = "-" * len(header)
-    lines = ["Ray Jobs (弹性计算)", header, sep]
-    for row in rows:
-        lines.append(
-            f"{row['name']:<{name_w}}  "
-            f"{row['status']:<{status_w}}  "
-            f"{row['created_at']:<{created_w}}  "
-            f"{row['created_by_name']:<{user_w}}"
+    show_workspace = any(row.get("workspace") for row in rows)
+    headers = ["Name", "Status"]
+    if show_workspace:
+        headers.append("Workspace")
+    headers.extend(("Created", "Created By"))
+    table_rows = [
+        (
+            row["name"],
+            row["status"],
+            *([row.get("workspace", "")] if show_workspace else []),
+            row["created_at"],
+            row["created_by_name"],
         )
-    lines.append(sep)
-    lines.append(f"Total: {len(rows)}")
-    return "\n".join(lines)
+        for row in rows
+    ]
+    widths = [
+        column_width(header, [row[index] for row in table_rows], max_width=64)
+        for index, header in enumerate(headers)
+    ]
+    rendered = render_table(headers, table_rows, widths, line_char="─")
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
 
-def _ray_instance_name(inst: dict[str, Any], idx: int) -> str:
-    for key in ("name", "instance_name", "pod_name"):
-        value = str(inst.get(key) or "").strip()
-        if value:
-            return scrub_raw_ids(value)
-    return f"#{idx}"
+def _public_ray_instance_text(inst: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = inst.get(key)
+        if value in (None, "") or isinstance(value, (dict, list, tuple, set)):
+            continue
+        text = scrub_raw_ids(value).strip()
+        if text and "<redacted>" not in text:
+            return text
+    return ""
+
+
+def _ray_instance_rank(inst: dict[str, Any], position: int) -> int:
+    for key in ("rank", "instance_rank", "global_rank", "index", "replica_index"):
+        value = inst.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if text.isdigit():
+                return int(text)
+    return position
+
+
+def _ray_instance_resource(inst: dict[str, Any]) -> str:
+    direct = _public_ray_instance_text(inst, "resource")
+    if direct:
+        return direct
+
+    spec = inst
+    for key in ("resource_spec", "resource_spec_price", "quota"):
+        candidate = inst.get(key)
+        if isinstance(candidate, dict):
+            spec = candidate
+            break
+
+    values = (
+        ("CPU", _public_ray_instance_text(spec, "cpu_count", "cpu")),
+        (
+            "GiB",
+            _public_ray_instance_text(
+                spec,
+                "memory_size_gib",
+                "memory_gib",
+                "memory_size",
+                "memory",
+            ),
+        ),
+        ("GPU", _public_ray_instance_text(spec, "gpu_count", "gpu")),
+    )
+    return ", ".join(f"{value} {unit}" for unit, value in values if value)
+
+
+def _public_ray_instances(
+    instances: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    for position, inst in enumerate(instances):
+        item: dict[str, Any] = {}
+        name = _public_ray_instance_text(
+            inst,
+            "name",
+            "instance_name",
+            "display_name",
+        )
+        if name and not looks_like_platform_id(name):
+            item["name"] = name
+
+        for key, candidates in (
+            ("status", ("status", "instance_status", "phase", "state")),
+            ("role", ("role", "worker_group_name", "component")),
+            ("type", ("type", "instance_type")),
+        ):
+            value = _public_ray_instance_text(inst, *candidates)
+            if value:
+                item[key] = value
+
+        resource = _ray_instance_resource(inst)
+        if resource:
+            item["resource"] = resource
+        item["rank"] = _ray_instance_rank(inst, position)
+        projected.append(item)
+    return projected
 
 
 def _format_ray_instances(instances: list[dict[str, Any]]) -> str:
     if not instances:
         return "No Ray instances found."
 
-    rendered = []
-    for idx, inst in enumerate(instances, start=1):
-        cpu = inst.get("cpu_count") or 0
-        gpu = inst.get("gpu_count") or 0
-        mem = inst.get("memory_size") or inst.get("memory_size_gib") or 0
-        rendered.append(
-            {
-                "name": _ray_instance_name(inst, idx),
-                "status": scrub_raw_ids(inst.get("status") or inst.get("instance_status") or ""),
-                "type": scrub_raw_ids(inst.get("instance_type") or ""),
-                "group": scrub_raw_ids(inst.get("worker_group_name") or ""),
-                "resource": f"{cpu}C/{gpu}G/{mem}GiB",
-                "created": human_formatter.format_epoch(inst.get("created_at")),
-            }
+    columns = [("name", "Name"), ("status", "Status")]
+    columns.extend(
+        (key, label)
+        for key, label in (
+            ("role", "Role"),
+            ("type", "Type"),
+            ("resource", "Resource"),
+            ("rank", "Rank"),
         )
-
-    name_w = max(len("Instance"), *(len(row["name"]) for row in rendered))
-    status_w = max(len("Status"), *(len(row["status"]) for row in rendered))
-    type_w = max(len("Type"), *(len(row["type"]) for row in rendered))
-    group_w = max(len("Group"), *(len(row["group"]) for row in rendered))
-    header = (
-        f"{'Instance':<{name_w}} {'Status':<{status_w}} "
-        f"{'Type':<{type_w}} {'Group':<{group_w}} {'Resource':<14} Created"
+        if any(item.get(key) not in (None, "") for item in instances)
     )
-    sep = "-" * len(header)
-    lines = ["Ray Instances", header, sep]
-    for row in rendered:
-        lines.append(
-            f"{row['name']:<{name_w}} "
-            f"{row['status']:<{status_w}} "
-            f"{row['type']:<{type_w}} "
-            f"{row['group']:<{group_w}} "
-            f"{row['resource']:<14} "
-            f"{row['created']}"
+    table_rows = [
+        tuple(
+            (
+                item.get("name")
+                or f"rank={item.get('rank')}"
+                if key == "name"
+                else item.get(key, "-")
+            )
+            for key, _ in columns
         )
-    lines.append(sep)
-    lines.append(f"Total: {len(instances)} instance(s)")
-    return "\n".join(lines)
+        for item in instances
+    ]
+    widths = [
+        column_width(label, [row[index] for row in table_rows], max_width=48)
+        for index, (_, label) in enumerate(columns)
+    ]
+    rendered = render_table(
+        tuple(label for _, label in columns),
+        table_rows,
+        widths,
+    )
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
 
 def _fetch_ray_instances(
@@ -333,8 +377,57 @@ def _fetch_ray_instances(
     return rows, total
 
 
+def _ray_matches_list_filters(
+    job: Any,
+    *,
+    status: Optional[str],
+    keyword: Optional[str],
+    workspace_name: str = "",
+) -> bool:
+    """Apply the public Ray list filters to readable job fields."""
+    if (
+        status
+        and str(getattr(job, "status", "") or "").strip().casefold()
+        != status.strip().casefold()
+    ):
+        return False
+    if not keyword:
+        return True
+
+    needle = keyword.strip().casefold()
+    if not needle:
+        return True
+    fields = (
+        getattr(job, "name", ""),
+        getattr(job, "status", ""),
+        getattr(job, "project_name", ""),
+        getattr(job, "created_by_name", ""),
+        workspace_name,
+    )
+    return any(needle in str(field or "").casefold() for field in fields)
+
+
 @click.command("list")
-@click.option("--workspace", required=True, help="Workspace name")
+@click.option(
+    "--workspace",
+    required=True,
+    metavar="NAME|all",
+    help="Workspace name or 'all'.",
+)
+@click.option(
+    "--status",
+    "-s",
+    "status_filter",
+    default=None,
+    metavar="STATUS",
+    help="Case-insensitive status filter.",
+)
+@click.option(
+    "--keyword",
+    default=None,
+    metavar="KEYWORD",
+    help="Case-insensitive keyword filter for job name and readable fields.",
+)
 @click.option(
     "--limit",
     "-n",
@@ -347,10 +440,12 @@ def _fetch_ray_instances(
 def list_ray(
     ctx: Context,
     workspace: Optional[str],
+    status_filter: Optional[str],
+    keyword: Optional[str],
     limit: Optional[int],
     show_all: bool,
 ) -> None:
-    """List Ray (弹性计算) jobs in a workspace."""
+    """List Ray (弹性计算) jobs in one or every visible workspace."""
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
     except ValueError as e:
@@ -363,51 +458,95 @@ def list_ray(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        resolved_workspace_id = select_workspace_id(
-            config,
-            explicit_workspace_name=workspace,
+        workspace_ids, all_workspaces = resolve_workspace_query_scope(
+            workspace=workspace,
             session=session,
         )
 
-        me = browser_api_module.get_current_user(session=session)
-        current_user_id = str(me.get("id") or me.get("user_id") or "").strip()
-        if not current_user_id:
-            raise ValueError("Cannot determine the current user from the live web session.")
-        user_ids: Optional[list[str]] = [current_user_id]
-
-        jobs, total = browser_api_module.list_ray_jobs(
-            workspace_id=resolved_workspace_id,
-            user_ids=user_ids,
-            page_num=1,
-            page_size=request_limit,
-            session=session,
+        user_ids: Optional[list[str]] = [_current_user_id(session)]
+        workspace_names = workspace_name_map(session)
+        local_filter = bool(
+            (status_filter and status_filter.strip())
+            or (keyword and keyword.strip())
         )
-        if show_all and total > len(jobs):
-            jobs, expanded_total = browser_api_module.list_ray_jobs(
-                workspace_id=resolved_workspace_id,
+
+        jobs: list[Any] = []
+        total = 0
+        for workspace_id in workspace_ids:
+            workspace_jobs, workspace_total = browser_api_module.list_ray_jobs(
+                workspace_id=workspace_id,
                 user_ids=user_ids,
                 page_num=1,
-                page_size=max(total, len(jobs), 1),
+                page_size=request_limit,
                 session=session,
             )
-            total = max(total, expanded_total, len(jobs))
-        page = bound_collection(jobs, limit=effective_limit, total=total)
-        rows = [
-            {
+            if (show_all or local_filter) and workspace_total > len(workspace_jobs):
+                workspace_jobs, expanded_total = browser_api_module.list_ray_jobs(
+                    workspace_id=workspace_id,
+                    user_ids=user_ids,
+                    page_num=1,
+                    page_size=max(workspace_total, len(workspace_jobs), 1),
+                    session=session,
+                )
+                workspace_total = max(
+                    workspace_total,
+                    expanded_total,
+                    len(workspace_jobs),
+                )
+            jobs.extend(workspace_jobs)
+            total += max(workspace_total, len(workspace_jobs))
+        if all_workspaces:
+            jobs.sort(key=lambda item: str(item.created_at or ""), reverse=True)
+
+        filtered_jobs = [
+            job
+            for job in jobs
+            if _ray_matches_list_filters(
+                job,
+                status=status_filter,
+                keyword=keyword,
+                workspace_name=workspace_names.get(job.workspace_id, ""),
+            )
+        ]
+        if local_filter:
+            total = len(filtered_jobs)
+
+        page = bound_collection(filtered_jobs, limit=effective_limit, total=total)
+        public_items = [
+            public_ray_list_item(
+                job,
+                workspace=(
+                    workspace_names.get(job.workspace_id)
+                    or (
+                        str(workspace or "")
+                        if not all_workspaces
+                        else "(workspace name unavailable)"
+                    )
+                ),
+            )
+            for job in page.items
+        ]
+        rows: list[dict[str, str]] = []
+        for job in page.items:
+            row = {
                 "name": scrub_raw_ids(job.name or "N/A"),
                 "status": scrub_raw_ids(job.status or "N/A"),
                 "created_at": scrub_raw_ids(job.created_at or "N/A"),
                 "created_by_name": scrub_raw_ids(job.created_by_name or "N/A"),
                 "project_name": scrub_raw_ids(job.project_name or ""),
             }
-            for job in page.items
-        ]
+            if all_workspaces:
+                row["workspace"] = scrub_raw_ids(
+                    workspace_names.get(job.workspace_id)
+                    or "(workspace name unavailable)"
+                )
+            rows.append(row)
 
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
                     {
-                        "jobs": _public_output(rows),
+                        "items": public_items,
                         **page.metadata(),
                     }
                 ),
@@ -433,15 +572,21 @@ def list_ray(
 
 
 @click.command("status")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @pass_context
-def status_ray(ctx: Context, name: str, workspace: str) -> None:
+def status_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
     """Show details for a Ray (弹性计算) job.
 
     NAME is the Ray job name shown in `inspire ray list`. Plain output shows
-    the top-level status fields; use ``--json`` only when a script needs the
-    full structured response.
+    the compact public status view; ``--json`` returns the same stable fields
+    in machine-readable form.
     """
     name = _reject_ray_name_at_boundary(ctx, name)
     try:
@@ -449,11 +594,11 @@ def status_ray(ctx: Context, name: str, workspace: str) -> None:
         session = get_web_session()
         data = _run_readonly_ray_operation(
             ctx,
-            config=config,
             session=session,
             name=name,
             workspace=workspace,
             limit=10000,
+            pick=pick,
             operation=lambda ray_job_id, live_session: (
                 browser_api_module.get_ray_job_detail(
                     ray_job_id,
@@ -462,28 +607,12 @@ def status_ray(ctx: Context, name: str, workspace: str) -> None:
             ),
         )
 
+        detail = public_ray_status(data, fallback_name=name)
         if ctx.json_output:
-            click.echo(json_formatter.format_json(_public_output(data)))
+            click.echo(json_formatter.format_json(detail))
             return
 
-        click.echo("Ray Job Status")
-        click.echo(f"Name:       {scrub_raw_ids(data.get('name', 'N/A'))}")
-        click.echo(f"Status:     {scrub_raw_ids(data.get('status', 'N/A'))}")
-        if data.get("sub_status"):
-            click.echo(f"Sub:        {scrub_raw_ids(data.get('sub_status'))}")
-        if data.get("priority") is not None:
-            click.echo(f"Priority:   {data.get('priority')}")
-        if data.get("priority_level"):
-            click.echo(f"Priority Level: {scrub_raw_ids(data.get('priority_level'))}")
-        created_by = data.get("created_by") or {}
-        if created_by.get("name"):
-            click.echo(f"Created By: {scrub_raw_ids(created_by.get('name'))}")
-        if data.get("project_name"):
-            click.echo(f"Project:    {scrub_raw_ids(data.get('project_name'))}")
-        if data.get("created_at"):
-            click.echo(f"Created:    {scrub_raw_ids(data.get('created_at'))}")
-        if data.get("finished_at"):
-            click.echo(f"Finished:   {scrub_raw_ids(data.get('finished_at'))}")
+        click.echo(format_ray_status(detail))
 
     except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
@@ -497,14 +626,13 @@ def status_ray(ctx: Context, name: str, workspace: str) -> None:
 
 
 @click.command("stop")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--pick",
     type=click.IntRange(1),
     default=None,
-    help="Pick the Nth candidate (1-indexed) when the name is ambiguous — "
-    "matches the list order in the AmbiguousName error.",
+    help=NAME_PICK_HELP,
 )
 @pass_context
 def stop_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
@@ -515,7 +643,6 @@ def stop_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> No
         session = get_web_session()
         ray_job_id = _resolve_ray_name_in_workspace(
             ctx,
-            config=config,
             session=session,
             name=name,
             workspace=workspace,
@@ -527,10 +654,12 @@ def stop_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> No
 
         if ctx.json_output:
             click.echo(
-                json_formatter.format_json({"name": name, "stopped": True}),
+                json_formatter.format_json(
+                    {"name": name, "status": "stopped"}
+                ),
             )
             return
-        click.echo(human_formatter.format_success(f"Ray job stopped: {name}"))
+        click.echo(human_formatter.format_mutation_success("Ray", "stopped", name))
 
     except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
@@ -572,7 +701,7 @@ def _resolve_project_id(
     return resolve_project_id_by_name(config, requested, projects)
 
 
-def _project_label(config: Config, project_id: str, requested: Optional[str]) -> str:
+def _project_label(config: Config, requested: Optional[str]) -> str:
     if requested:
         return project_display_name(config, requested)
     return "(project name unavailable)"
@@ -679,42 +808,28 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
 
 
 @click.command("create")
-@click.option("--name", "-n", required=True, help="Ray job name")
+@click.option("--name", "-n", required=True, metavar="NAME", help="Ray job name")
 @click.option(
     "--command",
     "-c",
     required=True,
     help="Driver startup command. The Ray job stays alive while this command keeps running.",
 )
-@click.option("--description", default="", help="Free-form description")
+@click.option(
+    "--workspace",
+    metavar="NAME",
+    help="Workspace name. Required unless supplied by --profile.",
+)
 @click.option(
     "--project",
     "-p",
+    metavar="NAME",
     help="Project name. Required unless supplied by --profile.",
-)
-@click.option("--workspace", help="Workspace name. Required unless supplied by --profile.")
-@click.option(
-    "--profile",
-    "profile_name",
-    default=None,
-    help="Ray condition profile for workspace/project/group/quota/image.",
-)
-@task_priority_option()
-@click.option(
-    "--image",
-    default=None,
-    help="Head node image name or Docker URL. Required unless supplied by --profile.",
-)
-@click.option(
-    "--image-type",
-    type=click.Choice(IMAGE_TYPE_CHOICES),
-    default="SOURCE_PUBLIC",
-    show_default=True,
-    help="Head node image source type.",
 )
 @click.option(
     "--group",
     default=None,
+    metavar="NAME",
     help=(
         "Full compute group name copied from the same quota row as --quota. "
         "Required unless supplied by --profile."
@@ -722,11 +837,36 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
 )
 @click.option(
     "--quota",
+    "-q",
     default=None,
+    metavar="SPEC",
     help=(
         "Head node resource quota as 'gpu,cpu,mem' (mem in GiB). "
         "CLI resolves the triple against 'inspire ray quota --workspace <name>'."
     ),
+)
+@click.option(
+    "--image",
+    "-i",
+    default=None,
+    metavar="NAME|URL",
+    help="Head node image name or Docker URL. Required unless supplied by --profile.",
+)
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    metavar="NAME",
+    help="Ray condition profile for workspace/project/group/quota/image.",
+)
+@click.option("--description", default="", help="Free-form description")
+@task_priority_option()
+@click.option(
+    "--image-type",
+    type=click.Choice(IMAGE_TYPE_CHOICES),
+    default="SOURCE_PUBLIC",
+    show_default=True,
+    help="Head node image source type.",
 )
 @click.option(
     "--shm-size",
@@ -738,6 +878,7 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
     "--worker",
     "workers",
     multiple=True,
+    metavar="SPEC",
     help=(
         "Worker group spec (repeatable). Format (note ';' separator): "
         "'name=<grp>;image=<url-or-name>;group=<full-group-name>;quota=<gpu,cpu,mem>;"
@@ -827,28 +968,78 @@ def create_ray(
         )
 
         if dry_run:
+            from inspire.cli.utils.quota_resolver import parse_quota
+
+            head_spec = parse_quota(cast(str, quota))
+            worker_plans: list[dict[str, Any]] = []
+            for raw_worker in workers:
+                worker = _parse_worker_spec(raw_worker)
+                worker_spec = worker["quota_spec"]
+                worker_plan: dict[str, Any] = {
+                    "name": worker["name"],
+                    "compute_group": worker["group"],
+                    "resource": {
+                        "gpu": worker_spec.gpu_count,
+                        "cpu": worker_spec.cpu_count,
+                        "memory_gib": worker_spec.memory_gib,
+                    },
+                    "image": worker["image"],
+                    "min_replicas": worker["min"],
+                    "max_replicas": worker["max"],
+                }
+                if worker.get("shm_size") is not None:
+                    worker_plan["shared_memory_gib"] = worker["shm_size"]
+                worker_plans.append(worker_plan)
+            plan: dict[str, Any] = {
+                "dry_run": True,
+                "name": body.get("name"),
+                "workspace": workspace_label(
+                    session,
+                    str(body.get("workspace_id") or ""),
+                    workspace,
+                ),
+                "project": _project_label(config, project),
+                "compute_group": group,
+                "resource": {
+                    "gpu": head_spec.gpu_count,
+                    "cpu": head_spec.cpu_count,
+                    "memory_gib": head_spec.memory_gib,
+                },
+                "image": image,
+                "command": body.get("entrypoint"),
+                "priority": body.get("task_priority"),
+                "workers": worker_plans,
+            }
+            if description:
+                plan["description"] = description
+            if shm_size is not None:
+                plan["shared_memory_gib"] = shm_size
             if ctx.json_output:
-                click.echo(
-                    json_formatter.format_json(
-                        {
-                            "dry_run": True,
-                            "name": body.get("name"),
-                            "description": body.get("description"),
-                            "entrypoint": body.get("entrypoint"),
-                            "worker_groups": _public_output(body.get("worker_groups") or []),
-                        }
-                    )
-                )
+                click.echo(json_formatter.format_json(plan))
                 return
-            click.echo("Ray create request preview")
-            click.echo(f"Name:      {scrub_raw_ids(body.get('name'))}")
-            click.echo(
-                f"Project:   {scrub_raw_ids(_project_label(config, body.get('project_id', ''), project))}"
-            )
-            click.echo(
-                f"Workspace: {scrub_raw_ids(workspace_label(session, body.get('workspace_id', ''), workspace))}"
-            )
-            click.echo(f"Workers:   {len(body.get('worker_groups') or [])} group(s)")
+            click.echo(f"Create plan: {scrub_raw_ids(plan['name'])}")
+            click.echo(f"Project: {scrub_raw_ids(plan['project'])}")
+            click.echo(f"Workspace: {scrub_raw_ids(plan['workspace'])}")
+            click.echo(f"Compute: {scrub_raw_ids(plan['compute_group'])}")
+            click.echo(f"Resource: {head_spec.display()}")
+            if body.get("task_priority") is not None:
+                click.echo(f"Priority: {body['task_priority']}")
+            if shm_size is not None:
+                click.echo(f"Shared memory: {shm_size} GiB")
+            click.echo(f"Image: {scrub_raw_ids(image)}")
+            click.echo(f"Command: {scrub_raw_ids(body.get('entrypoint'))}")
+            click.echo(f"Workers: {len(worker_plans)}")
+            for worker in worker_plans:
+                worker_resource = worker["resource"]
+                assert isinstance(worker_resource, dict)
+                click.echo(
+                    "  "
+                    f"{scrub_raw_ids(worker['name'])}: "
+                    f"{worker_resource['gpu']},{worker_resource['cpu']},"
+                    f"{worker_resource['memory_gib']} "
+                    f"on {scrub_raw_ids(worker['compute_group'])} "
+                    f"({worker['min_replicas']}-{worker['max_replicas']} replicas)"
+                )
             return
 
         data = browser_api_module.create_ray_job(body, session=session)
@@ -865,17 +1056,23 @@ def create_ray(
             )
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json(_public_output(data)))
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "name": str(body.get("name") or name or ""),
+                        "status": "created",
+                    }
+                )
+            )
             return
 
-        click.echo(human_formatter.format_success(f"Ray job created: {body.get('name')}"))
         click.echo(
-            f"Project:   {scrub_raw_ids(_project_label(config, body.get('project_id', ''), project))}"
+            human_formatter.format_mutation_success(
+                "Ray",
+                "created",
+                body.get("name") or name or "",
+            )
         )
-        click.echo(
-            f"Workspace: {scrub_raw_ids(workspace_label(session, body.get('workspace_id', ''), workspace))}"
-        )
-        click.echo(f"Workers:   {len(body.get('worker_groups') or [])} group(s)")
 
     except TaskPriorityError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
@@ -945,7 +1142,6 @@ def _assemble_create_body(
         )
 
     resolved_workspace_id = select_workspace_id(
-        config,
         explicit_workspace_name=workspace,
         session=session,
     )
@@ -1038,19 +1234,13 @@ def _fetch_recent_ray_events(ray_job_id: str, *, session) -> list[dict]:  # noqa
 
 
 @click.command("events")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
-    "--tail",
+    "--pick",
     type=click.IntRange(1),
-    default=20,
-    show_default=True,
-    help="Maximum recent events to display.",
-)
-@click.option(
-    "--reason",
     default=None,
-    help="Filter by event reason (e.g. FailedScheduling, CreatedRayCluster).",
+    help=NAME_PICK_HELP,
 )
 @click.option(
     "--type",
@@ -1058,6 +1248,19 @@ def _fetch_recent_ray_events(ray_job_id: str, *, session) -> list[dict]:  # noqa
     type=click.Choice(["Normal", "Warning"], case_sensitive=False),
     default=None,
     help="Filter by event type.",
+)
+@click.option(
+    "--reason",
+    default=None,
+    metavar="REASON",
+    help="Filter by event reason (e.g. FailedScheduling, CreatedRayCluster).",
+)
+@click.option(
+    "--tail",
+    type=click.IntRange(1),
+    default=DEFAULT_EVENT_TAIL,
+    show_default=True,
+    help="Maximum recent events to display.",
 )
 @click.option("--follow", "-f", is_flag=True, help="Follow the event timeline and print new events.")
 @click.option(
@@ -1072,9 +1275,10 @@ def events_ray(
     ctx: Context,
     name: str,
     workspace: str,
-    tail: Optional[int],
+    pick: Optional[int],
     reason: Optional[str],
     type_filter: Optional[str],
+    tail: int,
     follow: bool,
     interval: int,
 ) -> None:
@@ -1087,11 +1291,11 @@ def events_ray(
 
     \b
     Examples:
-        inspire ray events <ray-name> --workspace CPU资源空间
-        inspire ray events <ray-name> --workspace CPU资源空间 --reason FailedScheduling
-        inspire ray events <ray-name> --workspace CPU资源空间 --type Warning --tail 10
-        inspire ray events <ray-name> --workspace CPU资源空间 --follow
-        inspire --json ray events <ray-name> --workspace CPU资源空间
+        inspire ray events pipeline --workspace CPU资源空间
+        inspire ray events pipeline --workspace CPU资源空间 --reason FailedScheduling
+        inspire ray events pipeline --workspace CPU资源空间 --type Warning --tail 10
+        inspire ray events pipeline --workspace CPU资源空间 --follow
+        inspire --json ray events pipeline --workspace CPU资源空间
     """
     name = _reject_ray_name_at_boundary(ctx, name)
     try:
@@ -1099,16 +1303,13 @@ def events_ray(
         config, _ = Config.from_files_and_env(require_credentials=False)
         run_events_command(
             ctx,
-            resource_id=name,
-            resource_type="ray",
-            resource_name=name,
             fetch=lambda: _run_readonly_ray_operation(
                 ctx,
-                config=config,
                 session=session,
                 name=name,
                 workspace=workspace,
                 limit=_RAY_EVENT_NAME_SCAN_LIMIT,
+                pick=pick,
                 operation=lambda ray_job_id, live_session: (
                     _fetch_recent_ray_events(
                         ray_job_id,
@@ -1116,7 +1317,6 @@ def events_ray(
                     )
                 ),
             ),
-            json_output_local=False,
             type_filter=type_filter,
             reason_filter=reason,
             tail=tail,
@@ -1136,11 +1336,18 @@ def events_ray(
 
 
 @click.command("instances")
-@click.argument("name")
+@click.argument("name", metavar="NAME")
 @click.option(
     "--workspace",
     required=True,
+    metavar="NAME",
     help="Workspace name.",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
 )
 @click.option(
     "--limit",
@@ -1160,6 +1367,7 @@ def instances_ray(
     ctx: Context,
     name: str,
     workspace: str,
+    pick: Optional[int],
     limit: Optional[int],
     show_all: bool,
 ) -> None:
@@ -1189,11 +1397,11 @@ def instances_ray(
         session = get_web_session()
         instances, total = _run_readonly_ray_operation(
             ctx,
-            config=config,
             session=session,
             name=name,
             workspace=workspace,
             limit=resolution_limit,
+            pick=pick,
             operation=lambda ray_job_id, live_session: _fetch_ray_instances(
                 ray_job_id,
                 limit=request_limit,
@@ -1202,21 +1410,18 @@ def instances_ray(
             ),
         )
         page = bound_collection(instances, limit=output_limit, total=total)
+        public_items = _public_ray_instances(page.items)
 
         if ctx.json_output:
             payload: dict[str, Any] = {
-                "instances": _public_output(page.items),
-                "total": page.total,
+                "name": scrub_raw_ids(name),
+                "items": public_items,
+                **page.metadata(),
             }
-            if page.truncated:
-                payload.update(page.metadata())
-                payload["limit"] = output_limit
-            click.echo(
-                json_formatter.format_json(payload)
-            )
+            click.echo(json_formatter.format_json(payload))
             return
 
-        click.echo(_format_ray_instances(page.items))
+        click.echo(_format_ray_instances(public_items))
         notice = truncation_notice(page)
         if notice:
             click.echo(notice)
@@ -1235,8 +1440,8 @@ def instances_ray(
 
 
 @click.command("delete")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--yes",
     "-y",
@@ -1247,7 +1452,7 @@ def instances_ray(
     "--pick",
     type=click.IntRange(1),
     default=None,
-    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+    help=NAME_PICK_HELP,
 )
 @pass_context
 def delete_ray(ctx: Context, name: str, workspace: str, yes: bool, pick: Optional[int]) -> None:
@@ -1259,18 +1464,21 @@ def delete_ray(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
     reserved capacity cleanly.
     """
     name = _reject_ray_name_at_boundary(ctx, name)
-    if not yes and not ctx.json_output:
-        click.confirm(
-            f"Permanently delete Ray job '{scrub_raw_ids(name)}'? This cannot be undone.",
-            abort=True,
-        )
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt=(
+            f"Permanently delete Ray job '{scrub_raw_ids(name)}'? "
+            "This cannot be undone."
+        ),
+        message="Ray job deletion requires confirmation.",
+    )
 
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
         ray_job_id = _resolve_ray_name_in_workspace(
             ctx,
-            config=config,
             session=session,
             name=name,
             workspace=workspace,
@@ -1280,7 +1488,6 @@ def delete_ray(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
         )
         browser_api_module.delete_ray_job(ray_job_id, session=session)
         workspace_id = select_workspace_id(
-            config,
             explicit_workspace_name=workspace,
             session=session,
         )
@@ -1299,7 +1506,7 @@ def delete_ray(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
                 json_formatter.format_json({"name": name, "status": "deleted"}),
             )
             return
-        click.echo(human_formatter.format_success(f"Ray job deleted: {name}"))
+        click.echo(human_formatter.format_mutation_success("Ray", "deleted", name))
 
     except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)

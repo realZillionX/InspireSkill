@@ -89,7 +89,7 @@ _RECENT = time.time()
             id="non-boolean-workspace-capability",
         ),
         pytest.param(
-            {"created_at": _RECENT, "cookies": {"session": 1}}, id="non-string-legacy-cookie"
+            {"created_at": _RECENT, "cookies": {"session": 1}}, id="unsupported-top-level-cookies"
         ),
     ],
 )
@@ -145,21 +145,18 @@ def test_load_accepts_valid_payload_and_normalizes_optional_storage_fields(
     assert session.account == "alice"
     assert session.workspace_id == "ws-test"
     assert session.storage_state["origins"] == []
+    assert session.cookies == {"session": "secret"}
     assert session.all_workspace_fair_scheduling == {"ws-test": True}
 
 
-def test_load_preserves_legacy_cookie_cache(session_cache_file: Path) -> None:
+def test_load_rejects_cookie_only_cache(session_cache_file: Path) -> None:
     payload = {
         "created_at": time.time(),
         "cookies": {"session": "secret"},
     }
     session_cache_file.write_text(json.dumps(payload), encoding="utf-8")
 
-    session = WebSession.load(account="alice")
-
-    assert session is not None
-    assert session.cookies == {"session": "secret"}
-    assert session.storage_state == {"cookies": [], "origins": []}
+    assert WebSession.load(account="alice") is None
 
 
 def test_load_preserves_expired_cache_behavior(session_cache_file: Path) -> None:

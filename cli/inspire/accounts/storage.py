@@ -57,23 +57,9 @@ def _clear_process_account_caches() -> None:
     process-local state that would otherwise keep using the previous account.
     """
     try:
-        from inspire.cli.utils.auth import AuthManager
-
-        AuthManager.clear_cache()
-    except Exception:
-        pass
-
-    try:
         from inspire.platform.web.browser_api.core import clear_browser_api_runtime_cache
 
         clear_browser_api_runtime_cache()
-    except Exception:
-        pass
-
-    try:
-        from inspire.platform.web.resources import clear_availability_cache
-
-        clear_availability_cache()
     except Exception:
         pass
 

@@ -63,8 +63,8 @@ def test_list_hpc_job_instances_posts_job_id_body(monkeypatch: pytest.MonkeyPatc
     }
 
 
-def test_list_hpc_job_instances_rejects_empty_id() -> None:
-    with pytest.raises(ValueError, match="job_id is required"):
+def test_list_hpc_job_instances_requires_job_selection() -> None:
+    with pytest.raises(ValueError, match="Job selection is required\\."):
         list_hpc_job_instances("", session=_FakeSession())
 
 

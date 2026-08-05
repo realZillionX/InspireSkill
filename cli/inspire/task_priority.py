@@ -81,7 +81,7 @@ def resolve_task_priority(
 
 
 def is_low_task_priority(value: Any) -> bool:
-    """Classify task values while retaining support for historical 0/2/3 rows."""
+    """Return whether a platform task value is below the high-priority level."""
     try:
         priority = int(value)
     except (TypeError, ValueError):

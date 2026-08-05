@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -75,6 +76,7 @@ def test_notebook_ssh_default_route_runs_notebook_command(monkeypatch) -> None: 
             "setup_timeout": 300,
             "account": None,
             "ignore_target_cache": False,
+            "pick": None,
         }
     ]
 
@@ -101,6 +103,54 @@ def test_run_notebook_ssh_rejects_handle_before_cached_target_lookup(monkeypatch
         )
 
 
+def test_run_notebook_ssh_cached_debug_uses_log_without_cli_noise(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:  # noqa: ANN001
+    bridge = BridgeProfile(
+        name="notebook-12345678",
+        notebook_name="demo-box",
+        proxy_url="https://proxy.invalid/proxy/31337/",
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "resolve_cached_notebook_target",
+        lambda *_args, **_kwargs: SimpleNamespace(account="alice", bridge=bridge),
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "_load_config_for_account",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            tunnel_retries=0,
+            tunnel_retry_pause=0.0,
+        ),
+    )
+
+    ctx = Context()
+    ctx.debug = True
+    with caplog.at_level(logging.DEBUG, logger=flow_module.__name__):
+        flow_module.run_notebook_ssh(
+            ctx,
+            notebook_id="demo-box",
+            workspace=None,
+            wait=True,
+            pubkey=None,
+            port=31337,
+            ssh_port=22222,
+            command=None,
+            debug_playwright=False,
+            setup_timeout=60,
+            setup_only=True,
+        )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert "Using cached notebook SSH connection" in caplog.text
+    assert "notebook-12345678" not in caplog.text
+
+
 def test_notebook_help_exposes_connection_and_openssh_commands() -> None:
     result = CliRunner().invoke(cli_main, ["notebook", "--help"])
 
@@ -109,33 +159,15 @@ def test_notebook_help_exposes_connection_and_openssh_commands() -> None:
         assert f"\n  {command} " in result.output
 
 
-def test_notebook_id_command_is_removed() -> None:
-    result = CliRunner().invoke(
-        cli_main,
-        ["notebook", "id", "demo-box", "--workspace", "CPU资源空间"],
-    )
-
-    assert result.exit_code != EXIT_SUCCESS
-    assert "No such command 'id'" in result.output
-
-
-def test_notebook_ssh_help_omits_legacy_commands() -> None:
+def test_notebook_ssh_help_describes_direct_name_command() -> None:
     result = CliRunner().invoke(cli_main, ["notebook", "ssh", "--help"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert "OpenSSH access for public-internet notebooks" in result.output
-    for subcommand in ("connect", "refresh", "forget", "test"):
-        assert f"\n  {subcommand} " not in result.output
-
-
-def test_legacy_ssh_subcommands_are_removed() -> None:
-    runner = CliRunner()
-
-    for subcommand in ("connect", "refresh", "forget", "test"):
-        result = runner.invoke(cli_main, ["notebook", "ssh", subcommand, "--help"])
-
-        assert result.exit_code != EXIT_SUCCESS
-        assert f"`inspire notebook ssh {subcommand}` has been removed" in result.output
+    assert "NAME" in result.output
+    assert "--workspace NAME" in result.output
+    assert "--wait / --no-wait" in result.output
+    assert "Commands:" not in result.output
 
 
 def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  # noqa: ANN001
@@ -163,7 +195,7 @@ def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  
     assert "IdentityFile '~/.ssh/id_ed25519'" in result.output
     assert (
         "ProxyCommand inspire notebook ssh-proxy %h "
-        "--workspace 'CPU资源空间' --port %p --quiet"
+        "--workspace 'CPU资源空间' --port %p"
     ) in result.output
     assert "/home/me" not in result.output
     assert "/Users/me" not in result.output
@@ -232,7 +264,7 @@ def test_ssh_config_rejects_raw_notebook_handle(monkeypatch) -> None:  # noqa: A
     )
 
     assert result.exit_code != EXIT_SUCCESS
-    assert "only accept a notebook name" in result.output
+    assert "only accept notebook names" in result.output
     assert "handle" not in result.output.lower()
 
 
@@ -249,8 +281,22 @@ def test_ssh_proxy_rejects_raw_notebook_handle(monkeypatch) -> None:  # noqa: AN
     )
 
     assert result.exit_code != EXIT_SUCCESS
-    assert "only accept a notebook name" in result.output
+    assert "only accept notebook names" in result.output
     assert "handle" not in result.output.lower()
+
+
+def test_ssh_proxy_rejects_json_output() -> None:
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "notebook", "ssh-proxy", "demo-box"],
+    )
+
+    assert result.exit_code == EXIT_CONFIG_ERROR
+    assert result.stdout == ""
+    payload = json.loads(result.stderr)
+    assert payload["success"] is False
+    assert payload["error"]["type"] == "UnsupportedOutput"
+    assert "does not support JSON output" in payload["error"]["message"]
 
 
 def test_connection_list_json_omits_proxy_url(monkeypatch) -> None:  # noqa: ANN001
@@ -269,7 +315,7 @@ def test_connection_list_json_omits_proxy_url(monkeypatch) -> None:  # noqa: ANN
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     payload = json.loads(result.output)
-    assert payload["data"]["connections"] == [
+    assert payload["data"]["items"] == [
         {
             "name": "demo-box",
             "workspace": "CPU资源空间",
@@ -278,6 +324,32 @@ def test_connection_list_json_omits_proxy_url(monkeypatch) -> None:  # noqa: ANN
     ]
     assert "proxy.invalid" not in result.output
     assert "31337" not in result.output
+
+
+def test_connection_refresh_uses_mutation_success_contract(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        connection_module,
+        "preflight_notebook_transport_policy",
+        lambda *_args, **_kwargs: NotebookTransportPolicy(
+            notebook="demo-box",
+            notebook_id="nb-public",
+            public_internet=True,
+            reason="test",
+        ),
+    )
+    monkeypatch.setattr(
+        connection_module,
+        "run_notebook_ssh",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["notebook", "connection", "refresh", "demo-box", "--no-wait"],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert result.output == "OK Notebook connection refreshed: demo-box\n"
 
 
 def test_connection_forget_removes_cache_and_target_entries(monkeypatch) -> None:  # noqa: ANN001
@@ -300,10 +372,17 @@ def test_connection_forget_removes_cache_and_target_entries(monkeypatch) -> None
         lambda **kwargs: removed_targets.append(kwargs) or ["demo-box|workspace="],
     )
 
-    result = CliRunner().invoke(cli_main, ["notebook", "connection", "forget", "demo-box"])
+    result = CliRunner().invoke(
+        cli_main,
+        ["notebook", "connection", "forget", "demo-box", "--yes"],
+    )
 
     assert result.exit_code == EXIT_SUCCESS, result.output
-    assert "OpenSSH config was not modified" in result.output
+    assert result.output == (
+        "OK Notebook connection removed: demo-box\n"
+        "Removed remembered notebook target entries: 1\n"
+    )
+    assert "OpenSSH config was not modified" not in result.output
     assert saved == [tunnel_config]
     assert "demo-box" not in tunnel_config.bridges
     assert removed_targets == [
@@ -347,29 +426,6 @@ def test_ssh_proxy_suppresses_rtunnel_logs_by_default(monkeypatch) -> None:  # n
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert calls[0][1]["quiet"] is True
-
-
-def test_ssh_proxy_verbose_keeps_rtunnel_logs(monkeypatch) -> None:  # noqa: ANN001
-    tunnel_config = TunnelConfig()
-    bridge = BridgeProfile(
-        name="demo-box",
-        proxy_url="https://proxy.invalid/proxy/31337/",
-        workspace_name="CPU资源空间",
-    )
-    tunnel_config.add_bridge(bridge)
-    calls = []
-
-    def fake_exec_rtunnel_proxy(*args, **kwargs):  # noqa: ANN001
-        calls.append((args, kwargs))
-
-    monkeypatch.setattr(ssh_proxy_module, "load_tunnel_config", lambda: tunnel_config)
-    monkeypatch.setattr(ssh_proxy_module, "is_tunnel_available", lambda **_kwargs: True)
-    monkeypatch.setattr(ssh_proxy_module, "exec_rtunnel_proxy", fake_exec_rtunnel_proxy)
-
-    result = CliRunner().invoke(cli_main, ["notebook", "ssh-proxy", "demo-box", "--verbose"])
-
-    assert result.exit_code == EXIT_SUCCESS, result.output
-    assert calls[0][1]["quiet"] is False
 
 
 def test_ssh_proxy_hides_transport_exception_details(monkeypatch) -> None:  # noqa: ANN001

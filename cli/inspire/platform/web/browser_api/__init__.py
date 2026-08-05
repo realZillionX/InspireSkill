@@ -1,15 +1,10 @@
-"""Browser (web-session) API façade.
-
-Historically all SSO-only endpoints lived in one large module. The implementation is now split
-into smaller domain modules, and this file re-exports the public API to keep import paths stable.
-"""
+"""Browser API façade for the domain-specific SSO endpoint modules."""
 
 from __future__ import annotations
 
 from .availability import (
     FullFreeNodeCount,
     GPUAvailability,
-    find_best_compute_group_accurate,
     get_accurate_resource_availability,
     get_accurate_gpu_availability,
     get_full_free_node_counts,
@@ -20,22 +15,28 @@ from .jobs import (
     create_training_job,
     delete_job,
     get_current_user,
-    get_job_detail,
     get_job_detail_v2,
-    get_train_job_workdir,
     list_job_events,
     list_job_instances,
     list_job_instance_events,
-    list_job_users,
     list_jobs,
     list_train_job_logs,
     stop_training_job,
 )
+from .projects import (
+    ProjectInfo,
+    check_scheduling_health,
+    get_project_detail,
+    list_all_projects,
+    list_project_owners,
+    list_project_page_records,
+    list_projects,
+    list_projects_v2,
+    select_project,
+)
 from .files import (
     FileDirectoryInfo,
     SystemStorageInfo,
-    WebDAVConnectionInfo,
-    get_sftpgo_connection_info,
     list_file_directories,
     list_project_file_directories,
     list_system_storage_types,
@@ -77,7 +78,6 @@ from .notebooks import (
     create_notebook,
     delete_notebook,
     get_notebook_detail,
-    get_notebook_schedule,
     get_resource_prices,
     list_images,
     list_notebook_compute_groups,
@@ -92,7 +92,6 @@ from .notebooks import (
 from .playwright_notebooks import (
     resolve_notebook_port_forward_url,
     resolve_notebook_vscode_ide_url,
-    resolve_notebook_vscode_proxy_suffix,
     run_command_in_notebook,
 )
 from .jupyter_terminal import (
@@ -123,23 +122,10 @@ from .images import (
 )
 from .rtunnel import (
     OpenSSHInternalInstallError,
-    OpenSSHJammyInstallError,
     OPENSSH_INSTALL_LOG,
-    OPENSSH_JAMMY_INSTALL_LOG,
     RtunnelMissingInContainerError,
     SII_UBUNTU_APT_MIRROR,
     setup_notebook_rtunnel,
-)
-from .projects import (
-    ProjectInfo,
-    check_scheduling_health,
-    get_project_detail,
-    list_all_projects,
-    list_project_owners,
-    list_project_page_records,
-    list_projects,
-    list_projects_v2,
-    select_project,
 )
 from .models import (
     ModelInfo,
@@ -192,21 +178,16 @@ __all__ = [
     "create_training_job",
     "delete_job",
     "get_current_user",
-    "get_job_detail",
     "get_job_detail_v2",
-    "get_train_job_workdir",
     "list_job_events",
     "list_job_instances",
     "list_job_instance_events",
-    "list_job_users",
     "list_jobs",
     "list_train_job_logs",
     "stop_training_job",
     # Files
     "FileDirectoryInfo",
     "SystemStorageInfo",
-    "WebDAVConnectionInfo",
-    "get_sftpgo_connection_info",
     "list_file_directories",
     "list_project_file_directories",
     "list_system_storage_types",
@@ -241,7 +222,6 @@ __all__ = [
     # Availability
     "FullFreeNodeCount",
     "GPUAvailability",
-    "find_best_compute_group_accurate",
     "get_accurate_resource_availability",
     "get_accurate_gpu_availability",
     "get_full_free_node_counts",
@@ -271,7 +251,6 @@ __all__ = [
     "create_notebook",
     "delete_notebook",
     "get_notebook_detail",
-    "get_notebook_schedule",
     "get_resource_prices",
     "list_images",
     "list_notebook_compute_groups",
@@ -281,7 +260,6 @@ __all__ = [
     "list_notebook_users",
     "resolve_notebook_port_forward_url",
     "resolve_notebook_vscode_ide_url",
-    "resolve_notebook_vscode_proxy_suffix",
     "run_command_in_notebook",
     "JupyterCommandResult",
     "NetworkEndpointResult",
@@ -298,9 +276,7 @@ __all__ = [
     "run_command_capture_in_existing_lab",
     "run_command_capture_in_notebook",
     "OpenSSHInternalInstallError",
-    "OpenSSHJammyInstallError",
     "OPENSSH_INSTALL_LOG",
-    "OPENSSH_JAMMY_INSTALL_LOG",
     "RtunnelMissingInContainerError",
     "SII_UBUNTU_APT_MIRROR",
     "setup_notebook_rtunnel",

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
-import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -16,7 +16,7 @@ from inspire.cli.context import (
     EXIT_CONFIG_ERROR,
     EXIT_VALIDATION_ERROR,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary, remember_resource_identity
 from inspire.cli.utils.project_resolver import resolve_project
@@ -61,6 +61,8 @@ from .notebook_lookup import (
     _try_get_current_user_ids,
 )
 from .public_output import public_operation
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -222,7 +224,6 @@ def resolve_notebook_project(
     projects: list,
     config: Config,
     project: str | None,
-    allow_requested_over_quota: bool,
     needs_gpu_quota: bool,
     json_output: bool,
     workspace_id: str | None = None,
@@ -257,18 +258,17 @@ def resolve_notebook_project(
                 or None
             )
 
-        selected_project, fallback_msg = browser_api_module.select_project(
+        selected_project, selection_message = browser_api_module.select_project(
             projects,
             project_value,
-            allow_requested_over_quota=allow_requested_over_quota,
             needs_gpu_quota=needs_gpu_quota,
             project_order=config.project_order or None,
             congested_projects=congested,
         )
 
         if not json_output:
-            if fallback_msg:
-                click.echo(fallback_msg)
+            if selection_message:
+                click.echo(selection_message)
             click.echo(
                 "Using project: "
                 f"{selected_project.name}{selected_project.get_quota_status(needs_gpu=needs_gpu_quota)}"
@@ -281,7 +281,7 @@ def resolve_notebook_project(
                 hint = "Available projects:\n" + "\n".join(f"  - {p.name}" for p in projects)
             _handle_error(ctx, "ValidationError", error_msg, EXIT_CONFIG_ERROR, hint=hint)
             return None
-        _handle_error(ctx, "QuotaExceeded", error_msg, EXIT_CONFIG_ERROR)
+        _handle_error(ctx, "ValidationError", error_msg, EXIT_CONFIG_ERROR)
         return None
 
     return selected_project
@@ -367,7 +367,6 @@ def create_notebook_and_report(
     ctx: Context,
     *,
     name: str,
-    resource_display: str,
     diagnostics: NotebookCreateDiagnostics,
     selected_project,
     selected_image,
@@ -381,10 +380,7 @@ def create_notebook_and_report(
     node_id: Optional[str] = None,
 ) -> str | None:
     try:
-        resource_spec_price = build_resource_spec_price(
-            quota=quota,
-            shared_memory_size=shm_size,
-        )
+        resource_spec_price = build_resource_spec_price(quota=quota)
         result = browser_api_module.create_notebook(
             name=name,
             project_id=selected_project.project_id,
@@ -393,7 +389,6 @@ def create_notebook_and_report(
             image_url=selected_image.url,
             logic_compute_group_id=quota.logic_compute_group_id,
             quota_id=quota.quota_id,
-            gpu_type=quota.gpu_type,
             gpu_count=quota.gpu_count,
             cpu_count=quota.cpu_count,
             memory_size=quota.memory_gib,
@@ -435,24 +430,9 @@ def create_notebook_and_report(
         )
 
         if json_output:
-            workspace_name = (getattr(session, "all_workspace_names", None) or {}).get(
-                workspace_id, ""
-            )
-            click.echo(
-                json_formatter.format_json(
-                    public_operation(
-                        name,
-                        "created",
-                        resource=resource_display,
-                        project=selected_project.name,
-                        image=selected_image.name,
-                        compute_group=quota.compute_group_name,
-                        workspace=workspace_name,
-                    )
-                )
-            )
+            click.echo(json_formatter.format_json(public_operation(name, "created")))
         else:
-            click.echo(f"Created notebook '{scrub_raw_ids(name)}'.")
+            click.echo(human_formatter.format_mutation_success("Notebook", "created", name))
 
         return notebook_id
 
@@ -547,7 +527,6 @@ def maybe_wait_for_running(
 
 
 def maybe_run_post_start(
-    ctx: Context,
     *,
     notebook_id: str,
     diagnostics: NotebookCreateDiagnostics | None = None,
@@ -561,9 +540,6 @@ def maybe_run_post_start(
     if post_start_spec.requires_gpu and gpu_count <= 0:
         return
 
-    if not json_output:
-        click.echo(f"Starting {scrub_raw_ids(post_start_spec.label)}...")
-
     try:
         started = browser_api_module.run_command_in_notebook(
             notebook_id=notebook_id,
@@ -573,46 +549,37 @@ def maybe_run_post_start(
             completion_marker=post_start_spec.completion_marker,
         )
         if not json_output and started:
-            click.echo(
-                f"{scrub_raw_ids(post_start_spec.label)} started "
-                f"(log: {scrub_raw_ids(post_start_spec.log_path)})"
-            )
             if diagnostics is not None:
-                quoted_name = shlex.quote(diagnostics.name)
                 click.echo(
-                    "  To stop: inspire notebook exec "
-                    f'{quoted_name} "kill $(cat {scrub_raw_ids(post_start_spec.pid_file)})"'
+                    human_formatter.format_mutation_success(
+                        "Notebook post-start",
+                        "started",
+                        diagnostics.name,
+                    )
                 )
             else:
-                click.echo(
-                    '  To stop: inspire notebook exec '
-                    f'"kill $(cat {scrub_raw_ids(post_start_spec.pid_file)})"'
-                )
+                click.echo(human_formatter.format_success("Notebook post-start started"))
         if not json_output and not started:
+            subject = (
+                f" for '{scrub_raw_ids(diagnostics.name)}'"
+                if diagnostics is not None
+                else ""
+            )
             click.echo(
-                f"Warning: Failed to confirm {post_start_spec.label.lower()} startup; check "
-                f"{scrub_raw_ids(post_start_spec.log_path)} inside the notebook.",
+                f"Warning: Could not confirm notebook post-start{subject}.",
                 err=True,
             )
-    except Exception as e:
+    except Exception:
         if not json_output:
+            subject = (
+                f" for '{scrub_raw_ids(diagnostics.name)}'"
+                if diagnostics is not None
+                else ""
+            )
             click.echo(
-                "Warning: Failed to start "
-                f"{scrub_raw_ids(post_start_spec.label.lower())}: {scrub_raw_ids(e)}",
+                f"Warning: Notebook post-start failed{subject}.",
                 err=True,
             )
-            if diagnostics is not None:
-                click.echo(
-                    _format_create_diagnostics(
-                        diagnostics,
-                        reason=f"post-start failed: {e}",
-                        events=_sanitize_notebook_id(
-                            _fetch_event_preview(notebook_id, session),
-                            notebook_id,
-                        ),
-                    ),
-                    err=True,
-                )
 
 
 def _resolve_create_inputs(
@@ -644,8 +611,9 @@ def _fetch_workspace_projects(
 ) -> list[Any] | None:
     try:
         projects = browser_api_module.list_projects(workspace_id=workspace_id, session=session)
-    except Exception as e:
-        _handle_error(ctx, "APIError", f"Failed to fetch projects: {e}", EXIT_API_ERROR)
+    except Exception:
+        logger.debug("Failed to fetch notebook projects", exc_info=True)
+        _handle_error(ctx, "APIError", "Could not load notebook projects.", EXIT_API_ERROR)
         return None
 
     if projects:
@@ -665,8 +633,9 @@ def _fetch_notebook_images(
 ) -> list | None:
     try:
         images = browser_api_module.list_images(workspace_id=workspace_id, session=session)
-    except Exception as e:
-        _handle_error(ctx, "APIError", f"Failed to fetch images: {scrub_raw_ids(e)}", EXIT_API_ERROR)
+    except Exception:
+        logger.debug("Failed to fetch notebook images", exc_info=True)
+        _handle_error(ctx, "APIError", "Could not load notebook images.", EXIT_API_ERROR)
         return None
 
     if image and not _find_image_match(images, image):
@@ -712,7 +681,6 @@ def _resolve_workspace_id(
         return workspace_id
     try:
         resolved = select_workspace_id(
-            config,
             explicit_workspace_name=workspace,
             session=session,
         )
@@ -898,7 +866,6 @@ def run_notebook_create(
         projects=projects,
         config=config,
         project=project,
-        allow_requested_over_quota=False,
         needs_gpu_quota=(resolved_quota.gpu_count > 0),
         json_output=json_output,
         workspace_id=workspace_id,
@@ -958,7 +925,6 @@ def run_notebook_create(
     notebook_id = create_notebook_and_report(
         ctx,
         name=name,
-        resource_display=resource_display,
         diagnostics=diagnostics,
         selected_project=selected_project,
         selected_image=selected_image,
@@ -987,7 +953,6 @@ def run_notebook_create(
         return
 
     maybe_run_post_start(
-        ctx,
         notebook_id=notebook_id,
         diagnostics=diagnostics,
         session=session,

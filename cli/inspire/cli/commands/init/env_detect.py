@@ -3,30 +3,12 @@
 from __future__ import annotations
 
 import os
-import re
 
 from inspire.config import (
     CONFIG_OPTIONS,
     ConfigOption,
     parse_value,
 )
-
-
-def _redact_token_like_text(text: str) -> str:
-    """Best-effort redaction for rtunnel/Jupyter tokens in logs/config."""
-    text = str(text or "")
-    if not text:
-        return text
-
-    # token=<value>
-    text = re.sub(r"(token=)[^\s&'\"]+", r"\1<redacted>", text)
-    # /jupyter/<nb>/<token>/proxy/... and /vscode/<nb>/<token>/proxy/...
-    text = re.sub(
-        r"(/(?:jupyter|vscode)/[^/]+/)([^/]+)(/proxy/)",
-        r"\1<redacted>\3",
-        text,
-    )
-    return text
 
 
 def _detect_env_vars() -> list[tuple[ConfigOption, str]]:
@@ -63,16 +45,10 @@ def _generate_toml_content(
     section_order = [
         "auth",
         "api",
-        "paths",
-        "github",
-        "sync",
-        "bridge",
+        "proxy",
         "job",
         "notebook",
-        "ssh",
         "tunnel",
-        "mirrors",
-        "other",
     ]
 
     for section in section_order:

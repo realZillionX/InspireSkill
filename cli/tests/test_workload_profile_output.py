@@ -42,7 +42,43 @@ def test_profile_set_human_output_hides_config_path(monkeypatch, tmp_path) -> No
     result = CliRunner().invoke(cli_main, _set_args())
 
     assert result.exit_code == 0, result.output
-    assert result.output == "Saved job profile: train\n"
+    assert result.output == "OK Job profile saved: train\n"
+    assert str(tmp_path) not in result.output
+
+
+def test_profile_delete_human_output_uses_mutation_contract(
+    monkeypatch,
+    tmp_path,
+) -> None:  # noqa: ANN001
+    config_path = tmp_path / ".inspire" / "config.toml"
+    monkeypatch.setattr(
+        workload_profile,
+        "load_project_profile_data",
+        lambda: (
+            config_path,
+            {
+                "profiles": {
+                    "job": {
+                        "train": {
+                            "workspace": "GPU Workspace",
+                            "project": "Research",
+                            "group": "H200 Group",
+                            "quota": "1,20,200",
+                            "image": "train:v1",
+                        }
+                    }
+                }
+            },
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["job", "profile", "delete", "train", "--yes"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output == "OK Job profile deleted: train\n"
     assert str(tmp_path) not in result.output
 
 
@@ -55,6 +91,7 @@ def test_profile_set_json_output_hides_config_path(monkeypatch, tmp_path) -> Non
     payload = json.loads(result.output)
     assert payload["data"] == {
         "name": "train",
+        "status": "saved",
         "profile": {
             "workspace": "GPU Workspace",
             "project": "Research",
@@ -64,6 +101,15 @@ def test_profile_set_json_output_hides_config_path(monkeypatch, tmp_path) -> Non
         },
     }
     assert str(tmp_path) not in result.output
+
+
+def test_profile_set_workspace_metavar_is_name_only() -> None:
+    result = CliRunner().invoke(cli_main, ["job", "profile", "set", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--workspace NAME" in result.output
+    assert "--workspace NAME|all" not in result.output
+    assert "--workspace TEXT" not in result.output
 
 
 @pytest.mark.parametrize(
@@ -90,7 +136,7 @@ def test_profile_set_rejects_id_shaped_references(
     result = CliRunner().invoke(cli_main, args)
 
     assert result.exit_code == 12, result.output
-    assert f"only accept a {resource_name} name" in result.output
+    assert f"only accept {resource_name} names" in result.output
     assert "handle" not in result.output.lower()
     assert value not in result.output
     assert not (tmp_path / ".inspire" / "config.toml").exists()

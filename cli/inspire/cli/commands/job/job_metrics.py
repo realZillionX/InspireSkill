@@ -36,16 +36,19 @@ def _resolve_job_lcg(task_id: str, session: WebSession) -> Optional[str]:
     return None
 
 
-def _job_name_to_id(ctx: Context, name: str) -> ResolvedMetricsTarget:
+def _job_name_to_id(
+    ctx: Context,
+    name: str,
+    pick: int | None = None,
+) -> ResolvedMetricsTarget:
     from inspire.cli.commands.job import job_commands as _job
-    from inspire.config import Config
     from inspire.platform.web.session import get_web_session
 
-    config, _ = Config.from_files_and_env(require_credentials=False)
     task_id, lcg = _job._run_readonly_web_job_operation(
-        config=config,
         job=name,
         workspace=str(getattr(ctx, "workspace", "") or ""),
+        pick=pick,
+        workspace_must_be_single=True,
         session_factory=get_web_session,
         operation=lambda resolved_id, session: (
             resolved_id,

@@ -49,7 +49,7 @@ hpc.add_command(instances_hpc)
 hpc.add_command(stop_hpc)
 hpc.add_command(delete_hpc)
 hpc.add_command(events_hpc)
-hpc.add_command(hpc_metrics)  # metrics (资源视图 time-series; per-task slurm pods)
+hpc.add_command(hpc_metrics)
 
 
 __all__ = ["hpc"]

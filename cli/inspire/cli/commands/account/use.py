@@ -1,4 +1,4 @@
-"""``inspire account use <name>`` — switch the active account."""
+"""Set the active account."""
 
 from __future__ import annotations
 
@@ -12,16 +12,10 @@ from inspire.cli.utils.output import emit_success
 
 
 @click.command("use")
-@click.argument("name")
+@click.argument("name", metavar="NAME")
 @pass_context
 def use(ctx: Context, name: str) -> None:
-    """Switch the active account.
-
-    Updates ``~/.inspire/current`` so every subsequent ``inspire`` command
-    resolves its config, cached notebook SSH entries, rtunnel proxy state,
-    and login cache under ``~/.inspire/accounts/<name>/``. The switched-away
-    account's files are preserved for quick switch-back.
-    """
+    """Set the active account for subsequent commands."""
     try:
         set_current_account(name)
     except AccountError as err:
@@ -29,7 +23,7 @@ def use(ctx: Context, name: str) -> None:
     active = current_account() or name.strip()
     emit_success(
         ctx,
-        payload={"name": active},
+        payload={"name": active, "status": "selected"},
         text=json_formatter.sanitize_text(
             f"Active account: {active}",
             redact_paths=True,

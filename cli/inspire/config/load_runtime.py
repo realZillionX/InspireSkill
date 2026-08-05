@@ -8,9 +8,6 @@ from typing import Any
 from inspire.config.models import SOURCE_ENV, SOURCE_ENV_FILE, SOURCE_PROJECT, ConfigError
 from inspire.config.schema import CONFIG_OPTIONS
 
-from .load_common import REMOVED_TASK_PRIORITY_ENV_VAR
-
-
 def _env_source_for(key: str) -> str:
     try:
         from inspire.cli.env_bootstrap import is_env_file_key
@@ -26,12 +23,6 @@ def _apply_env_layer(
     sources: dict[str, str],
     prefer_source: str,
 ) -> str | None:
-    if os.getenv(REMOVED_TASK_PRIORITY_ENV_VAR) is not None:
-        raise ConfigError(
-            f"{REMOVED_TASK_PRIORITY_ENV_VAR} was removed. Unset it and use --priority "
-            "(or a batch item priority) when needed; otherwise the CLI derives the "
-            "default from the live workspace policy."
-        )
     env_password = os.getenv("INSPIRE_PASSWORD")
 
     for option in CONFIG_OPTIONS:
@@ -40,9 +31,6 @@ def _apply_env_layer(
 
         source_key = option.env_var
         value = os.getenv(option.env_var)
-        if value is None and option.env_var == "INSP_LOG_CACHE_DIR":
-            value = os.getenv("INSPIRE_LOG_CACHE_DIR")
-            source_key = "INSPIRE_LOG_CACHE_DIR"
         if value is None:
             continue
 
@@ -68,13 +56,13 @@ def _apply_env_layer(
     return env_password
 
 
-def _apply_password_and_token_fallbacks(
+def _apply_password_fallback(
     *,
     config_dict: dict[str, Any],
     sources: dict[str, str],
     env_password: str | None,
 ) -> None:
-    """Apply env-var fallbacks for password and github_token.
+    """Apply the environment fallback for the password.
 
     The account-layer file is the primary source of ``password``; this
     stage only handles the env-var overrides that CI / scripts rely on.
@@ -82,12 +70,6 @@ def _apply_password_and_token_fallbacks(
     if not config_dict.get("password") and env_password:
         config_dict["password"] = env_password
         sources["password"] = _env_source_for("INSPIRE_PASSWORD")
-
-    if not config_dict.get("github_token"):
-        github_token_fallback = os.getenv("GITHUB_TOKEN")
-        if github_token_fallback:
-            config_dict["github_token"] = github_token_fallback
-            sources["github_token"] = _env_source_for("GITHUB_TOKEN")
 
 
 def _validate_required_config(
@@ -105,6 +87,6 @@ def _validate_required_config(
 
 __all__ = [
     "_apply_env_layer",
-    "_apply_password_and_token_fallbacks",
+    "_apply_password_fallback",
     "_validate_required_config",
 ]

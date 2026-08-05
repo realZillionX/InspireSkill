@@ -185,41 +185,6 @@ def list_images(
 # ---------------------------------------------------------------------------
 
 
-def get_notebook_schedule(
-    workspace_id: Optional[str] = None,
-    session: Optional[WebSession] = None,
-) -> dict:
-    """Get notebook schedule configuration including resource specs.
-
-    Tries path-parameter format first (the format the UI uses), then falls
-    back to query-parameter format.  Returns an empty schedule when neither
-    endpoint is available.
-    """
-    session, workspace_id = _get_session_and_workspace_id(
-        workspace_id=workspace_id, session=session
-    )
-
-    # Try both endpoint formats — the UI uses path param, older deployments
-    # may use query param.
-    for endpoint in [
-        f"/notebook/schedule/{workspace_id}",
-        f"/notebook/schedule?workspace_id={workspace_id}",
-    ]:
-        try:
-            return _request_notebooks_data(
-                session,
-                "GET",
-                endpoint,
-                timeout=30,
-                default_data={},
-            )
-        except ValueError:
-            continue
-
-    # Neither endpoint worked — return empty schedule.
-    return {}
-
-
 def get_resource_prices(
     workspace_id: Optional[str] = None,
     logic_compute_group_id: str = "",
@@ -237,7 +202,7 @@ def get_resource_prices(
     - SCHEDULE_CONFIG_TYPE_HPC: HPC/Slurm predef_node_specs
     - SCHEDULE_CONFIG_TYPE_TRAIN: training-job framework specs
     - SCHEDULE_CONFIG_TYPE_RAY_JOB: Ray head / worker quotas
-      (consumed by `inspire ray create --head-spec / --worker spec=`)
+      (consumed by `inspire ray create --group/--quota` and worker specs)
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
@@ -275,10 +240,9 @@ def list_notebook_compute_groups(
 ) -> list[dict]:
     """List compute groups available for notebook creation.
 
-    The notebook-specific `POST /notebook/compute_groups` endpoint was removed
-    from the platform in 2026-04; this now uses the workspace-wide
-    `logic_compute_groups/list` endpoint as the source of truth, with an
-    InspireSkill-config-based fallback for offline / misconfigured environments.
+    Use the workspace-wide ``logic_compute_groups/list`` endpoint as the
+    source of truth, with an InspireSkill-config-based fallback for offline
+    or misconfigured environments.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
@@ -302,8 +266,7 @@ def list_notebook_compute_groups(
         _log.warning(
             "list_notebook_compute_groups: %s for workspace %s — "
             "falling back to %d compute_groups defined in config.toml. "
-            "The returned list may be stale; re-run `inspire init` "
-            "to refresh.",
+            "The returned list may be stale; prefer a live refresh when available.",
             reason,
             workspace_id,
             len(fallback),
@@ -399,7 +362,6 @@ def create_notebook(
     image_url: str,
     logic_compute_group_id: str,
     quota_id: str,
-    gpu_type: str,
     gpu_count: int,
     cpu_count: int,
     memory_size: int,
@@ -569,11 +531,10 @@ def list_notebook_events(
     fetch_all: bool = True,
     session: Optional[WebSession] = None,
 ) -> list[dict]:
-    """Fetch lifecycle events for a notebook via `POST /api/v1/notebook/events`.
+    """Fetch lifecycle events for a notebook.
 
-    Replaces the `GET /notebook/{id}/events` and `GET /notebook/event/{id}`
-    paths that went 404 in the 2026-04 platform update. Body:
-    ``{notebook_id, page, page_size}``; response data ``{list, total}``.
+    The request body is ``{notebook_id, page, page_size}``; response data uses
+    ``{list, total}``.
 
     Events are returned oldest-first. The platform caps per-page size; by
     default this function auto-paginates from `page` until all `total`
@@ -582,15 +543,14 @@ def list_notebook_events(
     low). Pass ``fetch_all=False`` to stop after the first page.
 
     Each raw event carries `content` (free-form message), `created_at`
-    (epoch-ms string), `event_id`, `id`, `notebook_id`. For compatibility
-    with the shared renderer in `cli.utils.events`, this wrapper also
-    synthesizes the common K8s-ish field names:
+    (epoch-ms string), `event_id`, `id`, and `notebook_id`. The shared
+    renderer in `cli.utils.events` consumes the synthesized common fields:
 
     - ``message`` ← ``content``
     - ``last_timestamp`` ← ``created_at`` (same for ``first_timestamp``)
 
-    Raw fields are preserved alongside, so ``--json`` still surfaces
-    everything the platform returned.
+    Raw fields remain available to internal callers. Public CLI renderers
+    project them onto the compact event schema before emitting text or JSON.
 
     Raises on transport / business errors. Diagnostic callers that need
     silent degradation should wrap this with their own try/except — see
@@ -817,7 +777,6 @@ __all__ = [
     "NotebookFailedError",
     "create_notebook",
     "get_notebook_detail",
-    "get_notebook_schedule",
     "get_resource_prices",
     "list_images",
     "list_notebook_compute_groups",

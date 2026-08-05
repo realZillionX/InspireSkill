@@ -14,8 +14,6 @@ def _project(
     name: str,
     *,
     gpu_limit: bool = False,
-    member_gpu_limit: bool = False,
-    member_remain_gpu_hours: float = 0.0,
     priority_name: str = "0",
 ) -> ProjectInfo:
     return ProjectInfo(
@@ -23,43 +21,8 @@ def _project(
         name=name,
         workspace_id="ws-test",
         gpu_limit=gpu_limit,
-        member_gpu_limit=member_gpu_limit,
-        member_remain_gpu_hours=member_remain_gpu_hours,
         priority_name=priority_name,
     )
-
-
-# ---------------------------------------------------------------------------
-# has_quota() — always True (scheduler enforces limits, not the CLI)
-# ---------------------------------------------------------------------------
-
-
-def test_has_quota_always_true_even_with_gpu_limit() -> None:
-    """has_quota() returns True regardless of gpu_limit — CLI doesn't filter."""
-    proj = _project(
-        "p1",
-        "Test",
-        gpu_limit=True,
-        member_gpu_limit=True,
-        member_remain_gpu_hours=-9520985.6,
-        priority_name="10",
-    )
-    assert proj.has_quota(needs_gpu=True) is True
-
-
-def test_has_quota_true_without_gpu_limit() -> None:
-    proj = _project("p1", "Test", member_gpu_limit=False, member_remain_gpu_hours=0.0)
-    assert proj.has_quota(needs_gpu=True) is True
-
-
-def test_has_quota_true_for_cpu_only() -> None:
-    proj = _project(
-        "p1",
-        "Test",
-        member_gpu_limit=True,
-        member_remain_gpu_hours=-100.0,
-    )
-    assert proj.has_quota(needs_gpu=False) is True
 
 
 # ---------------------------------------------------------------------------
@@ -69,29 +32,23 @@ def test_has_quota_true_for_cpu_only() -> None:
 
 def test_auto_select_prefers_high_priority_among_unlimited() -> None:
     """Among unlimited projects, higher priority wins."""
-    high_negative = _project(
+    high = _project(
         "p-high",
         "CI-高优先级",
-        member_gpu_limit=True,
-        member_remain_gpu_hours=-490226.4,
         priority_name="10",  # HIGH
     )
-    low_huge = _project(
+    low = _project(
         "p-low",
         "项目兜底任务",
-        member_gpu_limit=True,
-        member_remain_gpu_hours=2399383493.5,
         priority_name="2",  # LOW
     )
-    normal_zero = _project(
+    normal = _project(
         "p-normal",
         "分布式测试",
-        member_gpu_limit=False,
-        member_remain_gpu_hours=0.0,
         priority_name="4",  # NORMAL
     )
 
-    selected, message = select_project([low_huge, normal_zero, high_negative])
+    selected, message = select_project([low, normal, high])
 
     assert selected.project_id == "p-high"
     assert message is None
@@ -117,28 +74,12 @@ def test_auto_select_prefers_unlimited_over_capped() -> None:
 
 
 def test_auto_select_breaks_tie_by_name() -> None:
-    """Same priority and hours → alphabetical name."""
+    """Same priority uses alphabetical name as the final tiebreaker."""
     a = _project("p-a", "Alpha", priority_name="10")
     b = _project("p-b", "Beta", priority_name="10")
 
     selected, _ = select_project([b, a])
     assert selected.project_id == "p-a"
-
-
-def test_auto_select_negative_gpu_hours_selectable() -> None:
-    """Projects with negative member_remain_gpu_hours are still selectable."""
-    proj = _project(
-        "p1",
-        "Only Project",
-        member_gpu_limit=True,
-        member_remain_gpu_hours=-186350.6,
-        priority_name="10",
-    )
-
-    selected, message = select_project([proj])
-
-    assert selected.project_id == "p1"
-    assert message is None
 
 
 # ---------------------------------------------------------------------------
@@ -147,19 +88,15 @@ def test_auto_select_negative_gpu_hours_selectable() -> None:
 
 
 def test_select_project_requested_returns_directly() -> None:
-    """Requested project is returned directly — no fallback needed."""
+    """Requested project is returned directly."""
     requested = _project(
         "project-requested",
         "Requested Project",
-        member_gpu_limit=True,
-        member_remain_gpu_hours=-10.0,
         priority_name="10",
     )
     other = _project(
         "project-other",
         "Other Project",
-        member_gpu_limit=False,
-        member_remain_gpu_hours=0.0,
         priority_name="4",
     )
 
@@ -172,19 +109,15 @@ def test_select_project_requested_returns_directly() -> None:
     assert message is None
 
 
-def test_select_project_requested_over_quota_allowed_for_cpu() -> None:
+def test_select_project_requested_for_cpu() -> None:
     requested = _project(
         "project-requested",
         "Requested Project",
-        member_gpu_limit=True,
-        member_remain_gpu_hours=-10.0,
         priority_name="10",
     )
     fallback = _project(
         "project-fallback",
         "Fallback Project",
-        member_gpu_limit=False,
-        member_remain_gpu_hours=0.0,
         priority_name="4",
     )
 
@@ -210,12 +143,10 @@ def test_select_project_requested_not_found_raises() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_notebook_project_passes_quota_settings(monkeypatch) -> None:
+def test_resolve_notebook_project_passes_selection_settings(monkeypatch) -> None:
     requested = _project(
         "project-requested",
         "Requested Project",
-        member_gpu_limit=True,
-        member_remain_gpu_hours=-10.0,
         priority_name="10",
     )
     called: dict[str, object] = {}
@@ -224,13 +155,11 @@ def test_resolve_notebook_project_passes_quota_settings(monkeypatch) -> None:
         projects,
         requested_value=None,
         *,
-        allow_requested_over_quota=False,
         needs_gpu_quota=True,
         project_order=None,
         congested_projects=None,
     ):
         called["requested"] = requested_value
-        called["allow_requested_over_quota"] = allow_requested_over_quota
         called["needs_gpu_quota"] = needs_gpu_quota
         called["project_order"] = project_order
         called["congested_projects"] = congested_projects
@@ -247,14 +176,12 @@ def test_resolve_notebook_project_passes_quota_settings(monkeypatch) -> None:
         projects=[requested],
         config=config,
         project="Requested Project",
-        allow_requested_over_quota=True,
         needs_gpu_quota=False,
         json_output=True,
     )
 
     assert resolved is requested
     assert called["requested"] == "Requested Project"
-    assert called["allow_requested_over_quota"] is True
     assert called["needs_gpu_quota"] is False
 
 
@@ -442,7 +369,6 @@ def test_cpu_notebook_skips_health_check(monkeypatch) -> None:
         projects,
         requested_value=None,
         *,
-        allow_requested_over_quota=False,
         needs_gpu_quota=True,
         project_order=None,
         congested_projects=None,
@@ -475,7 +401,6 @@ def test_cpu_notebook_skips_health_check(monkeypatch) -> None:
         projects=[proj],
         config=config,
         project=None,
-        allow_requested_over_quota=False,
         needs_gpu_quota=False,
         json_output=True,
         workspace_id="ws-test",

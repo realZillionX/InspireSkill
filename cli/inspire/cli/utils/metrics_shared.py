@@ -35,9 +35,13 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import resolve_by_name
+from inspire.cli.utils.id_resolver import (
+    NAME_PICK_HELP,
+    reject_id_at_boundary,
+    resolve_by_name,
+)
 from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.config import Config, ConfigError
+from inspire.config import ConfigError
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web.browser_api.metrics import (
     INTERVAL_CHOICES,
@@ -424,9 +428,7 @@ def _resolve_compute_group_name(
 ) -> str:
     from inspire.platform.web.browser_api.availability.api import list_compute_groups
 
-    config, _ = Config.from_files_and_env(require_credentials=False)
     workspace_id = select_workspace_id(
-        config,
         explicit_workspace_name=workspace,
         session=session,
     )
@@ -457,7 +459,6 @@ def _resolve_compute_group_name(
         name=name,
         resource_type="compute-group",
         list_candidates=_candidates,
-        json_output=ctx.json_output,
         session=session,
         workspace_id=workspace_id,
         list_command=f"inspire resources availability --workspace {workspace}",
@@ -473,7 +474,7 @@ def build_metrics_command(
     *,
     resource_name: str,
     resource_label: str,
-    name_resolver: Callable[[Any, str], str | ResolvedMetricsTarget],
+    name_resolver: Callable[[Any, str, Optional[int]], str | ResolvedMetricsTarget],
     lcg_resolver: LcgResolver,
 ) -> click.Command:
     """Return a Click command that queries metrics for one task type.
@@ -486,8 +487,14 @@ def build_metrics_command(
     task_type = TASK_TYPE_BY_RESOURCE[resource_name]
 
     @click.command("metrics")
-    @click.argument("name")
-    @click.option("--workspace", required=True, help="Workspace name.")
+    @click.argument("name", metavar="NAME")
+    @click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+    @click.option(
+        "--pick",
+        type=click.IntRange(1),
+        default=None,
+        help=NAME_PICK_HELP,
+    )
     @click.option(
         "--metric",
         "metric_selector",
@@ -525,6 +532,7 @@ def build_metrics_command(
         "--group",
         "compute_group_name",
         default=None,
+        metavar="NAME",
         help="Compute group name override when automatic lookup is unavailable.",
     )
     @click.option(
@@ -578,6 +586,7 @@ def build_metrics_command(
         ctx: Context,
         name: str,
         workspace: str,
+        pick: Optional[int],
         metric_selector: Optional[str],
         window: str,
         start: Optional[str],
@@ -599,6 +608,12 @@ def build_metrics_command(
         the PNG chart and summarized in the terminal output.
         """
         setattr(ctx, "workspace", workspace)
+        name = reject_id_at_boundary(
+            ctx,
+            name,
+            resource_type=resource_name,
+            list_command=f"inspire {resource_name} list --workspace <workspace>",
+        )
 
         json_output = ctx.json_output
 
@@ -632,7 +647,7 @@ def build_metrics_command(
         interval_s = INTERVAL_CHOICES[interval]
 
         try:
-            resolved_target = name_resolver(ctx, name)
+            resolved_target = name_resolver(ctx, name, pick)
             if isinstance(resolved_target, ResolvedMetricsTarget):
                 task_id = resolved_target.task_id
                 detail_lcg = resolved_target.logic_compute_group_id

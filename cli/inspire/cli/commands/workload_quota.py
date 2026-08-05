@@ -85,6 +85,7 @@ def _query_workspace_quotas(
     rows: list[dict[str, Any]] = []
     seen_rows: set[tuple[str, int, int, int, str]] = set()
     schedule_config_type = _SCHEDULE_TYPE_BY_WORKLOAD[workload]
+    public_workspace_name = scrub_raw_ids(workspace_name)
     groups = browser_api_module.list_notebook_compute_groups(
         workspace_id=workspace_id,
         session=session,
@@ -110,8 +111,8 @@ def _query_workspace_quotas(
             if include_empty:
                 rows.append(
                     {
-                        "workspace": workspace_name,
-                        "group": compute_group_name,
+                        "workspace": public_workspace_name,
+                        "compute_group": scrub_raw_ids(compute_group_name),
                         "gpu_type": "",
                         "quota": "",
                     }
@@ -129,9 +130,9 @@ def _query_workspace_quotas(
             seen_rows.add(key)
             rows.append(
                 {
-                    "workspace": workspace_name,
-                    "group": compute_group_name,
-                    "gpu_type": gpu_type,
+                    "workspace": public_workspace_name,
+                    "compute_group": scrub_raw_ids(compute_group_name),
+                    "gpu_type": scrub_raw_ids(gpu_type),
                     "quota": f"{gpu_count},{cpu_count},{memory_size_gib}",
                 }
             )
@@ -142,7 +143,7 @@ def _sort_rows(rows: list[dict[str, Any]]) -> None:
     rows.sort(
         key=lambda r: (
             str(r.get("workspace", "")),
-            str(r.get("group", "")),
+            str(r.get("compute_group", "")),
             str(r.get("gpu_type", "")),
             str(r.get("quota", "")),
         )
@@ -156,11 +157,13 @@ def make_quota_command(workload: str) -> click.Command:
     @click.option(
         "--workspace",
         required=True,
-        help="Workspace name, or 'all' to query every visible workspace.",
+        metavar="NAME|all",
+        help="Workspace name or 'all'.",
     )
     @click.option(
         "--group",
         default=None,
+        metavar="NAME",
         help=(
             "Filter by compute group name keyword/substring; full name is not "
             "required. Use this to find the exact compute group name required by "
@@ -177,7 +180,7 @@ def make_quota_command(workload: str) -> click.Command:
         "-n",
         type=click.IntRange(min=1),
         default=None,
-        help="Maximum rows to show (default: 20).",
+        help="Maximum quota rows to display (default: 20).",
     )
     @click.option("--all", "show_all", is_flag=True, help="Show every matching quota row.")
     @pass_context
@@ -200,7 +203,6 @@ def make_quota_command(workload: str) -> click.Command:
             config, _ = Config.from_files_and_env(require_credentials=False)
             session = get_web_session()
             workspace_ids, _ = resolve_workspace_query_scope(
-                config,
                 workspace=workspace,
                 session=session,
             )
@@ -233,7 +235,7 @@ def make_quota_command(workload: str) -> click.Command:
                 click.echo(
                     json_formatter.format_json(
                         {
-                            "quotas": rows,
+                            "items": rows,
                             **page.metadata(),
                         }
                     )
@@ -257,7 +259,7 @@ def make_quota_command(workload: str) -> click.Command:
                 table_rows = [
                     (
                         row["workspace"],
-                        row["group"],
+                        row["compute_group"],
                         row["gpu_type"] or "CPU",
                         row["quota"] or "-",
                     )
@@ -268,7 +270,7 @@ def make_quota_command(workload: str) -> click.Command:
                 widths = [28, 14, 14]
                 table_rows = [
                     (
-                        row["group"],
+                        row["compute_group"],
                         row["gpu_type"] or "CPU",
                         row["quota"] or "-",
                     )
@@ -280,7 +282,7 @@ def make_quota_command(workload: str) -> click.Command:
             if notice:
                 click.echo(notice)
             qz_hint = qz_scheduling_zone_hint_for_group_names(
-                row.get("group") for row in rows
+                row.get("compute_group") for row in rows
             )
             if qz_hint:
                 click.echo(qz_hint)

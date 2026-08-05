@@ -8,14 +8,12 @@ import shlex
 import subprocess
 import sys
 import time
-from pathlib import Path
 from typing import Callable, Optional
 
 import click
 
 from inspire.cli.context import (
     Context,
-    EXIT_GENERAL_ERROR,
     EXIT_CONFIG_ERROR,
     EXIT_SUCCESS,
     EXIT_TIMEOUT,
@@ -23,14 +21,6 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import json_formatter
 from inspire.config import Config, ConfigError, build_env_exports, resolve_remote_cwd
-from inspire.bridge.forge import (
-    ForgeAuthError,
-    ForgeError,
-    trigger_bridge_action_workflow,
-    wait_for_bridge_action_completion,
-    download_bridge_artifact,
-    fetch_bridge_output_log,
-)
 from inspire.bridge.tunnel import (
     BridgeProfile,
     TunnelConfig,
@@ -41,11 +31,9 @@ from inspire.bridge.tunnel import (
     load_tunnel_config,
 )
 from inspire.cli.utils.errors import emit_error as _emit_error
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
-from inspire.cli.utils.output import (
-    emit_error as emit_output_error,
-    emit_success as emit_output_success,
-)
+from inspire.cli.utils.output import emit_success as emit_output_success
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.tunnel_reconnect import (
     NotebookBridgeReconnectState,
@@ -58,21 +46,16 @@ from inspire.cli.utils.tunnel_reconnect import (
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import WebSession
 
-from .target_resolver import resolve_cached_notebook_target
+from .target_resolver import (
+    NOTEBOOK_TARGET_WORKSPACE_HELP,
+    resolve_cached_notebook_target,
+    validate_specific_workspace,
+)
 from .transport import preflight_notebook_transport_policy
 
 logger = logging.getLogger(__name__)
 _RUNNING_NOTEBOOK_STATUS = "RUNNING"
-
-
-def split_denylist(items: tuple[str, ...]) -> list[str]:
-    parts: list[str] = []
-    for raw in items:
-        for chunk in raw.replace("\r", "").replace("\n", ",").split(","):
-            item = chunk.strip()
-            if item:
-                parts.append(item)
-    return parts
+_DEFAULT_EXEC_TIMEOUT = 600
 
 
 def _build_remote_command(*, command: str, remote_cwd: Optional[str], env_exports: str) -> str:
@@ -113,10 +96,6 @@ def _should_auto_passthrough_stdin() -> bool:
     return _stat.S_ISFIFO(mode) or _stat.S_ISREG(mode)
 
 
-def _verbose_output(ctx: Context) -> bool:
-    return not ctx.json_output and ctx.debug
-
-
 def _emit_command_failed(ctx: Context, *, returncode: int) -> int:
     return _emit_error(ctx, "CommandFailed", f"Command failed with exit code {returncode}")
 
@@ -139,13 +118,8 @@ def try_exec_via_ssh_tunnel(
     is_tunnel_available_fn: Callable[..., bool],
     run_ssh_command_fn: Callable[..., object],
     run_ssh_command_streaming_fn: Callable[..., int],
-) -> Optional[int]:
-    """Attempt the fast-path SSH tunnel execution.
-
-    Returns:
-        Exit code if the SSH path handled the request (success/failure/timeout),
-        otherwise None to fall back to workflow execution.
-    """
+) -> int:
+    """Execute the command through the cached SSH tunnel."""
     reconnect_limit = max(0, int(getattr(config, "tunnel_retries", 0)))
     reconnect_pause = float(getattr(config, "tunnel_retry_pause", 0.0) or 0.0)
     reconnect_state = NotebookBridgeReconnectState(
@@ -154,7 +128,6 @@ def try_exec_via_ssh_tunnel(
     )
     resolved_bridge_name = bridge_name
     force_rebuild = False
-    opened_once = False
     ssh_execution_started = False
     full_command = _build_remote_command(
         command=command,
@@ -233,20 +206,16 @@ def try_exec_via_ssh_tunnel(
                     )
             except Exception as status_error:  # noqa: BLE001
                 logger.debug(
-                    "Skipping notebook status preflight bridge=%s notebook_id=%s error=%s",
-                    bridge.name,
-                    notebook_id,
-                    status_error,
+                    "Notebook status preflight skipped error=%s",
+                    scrub_raw_ids(status_error),
                 )
 
-        if _verbose_output(ctx):
-            click.echo(
-                (
-                    f"{reason} "
-                    f"(attempt {reconnect_state.reconnect_attempt + 1}/{reconnect_limit})..."
-                ),
-                err=True,
-            )
+        logger.debug(
+            "Notebook SSH tunnel rebuild scheduled reason=%s attempt=%s/%s",
+            reason,
+            reconnect_state.reconnect_attempt + 1,
+            reconnect_limit,
+        )
 
         result = attempt_notebook_bridge_rebuild(
             state=reconnect_state,
@@ -323,7 +292,10 @@ def try_exec_via_ssh_tunnel(
                 progressive=False,
             )
         except Exception as probe_error:  # noqa: BLE001
-            logger.debug("Skipping auto-retry after SSH 255: tunnel probe failed: %s", probe_error)
+            logger.debug(
+                "Skipping auto-retry after SSH 255: tunnel probe failed: %s",
+                scrub_raw_ids(probe_error),
+            )
             return False
 
         return not tunnel_still_ready
@@ -409,16 +381,10 @@ def try_exec_via_ssh_tunnel(
 
                 return _emit_command_failed(ctx, returncode=returncode)
 
-            if _verbose_output(ctx) and not opened_once:
-                click.echo("Using SSH tunnel (fast path)")
-                click.echo(f"Notebook: {scrub_raw_ids(resolved_bridge_name)}")
-                click.echo(f"Command: {scrub_raw_ids(command)}")
-                click.echo(f"Working dir: {scrub_raw_ids(remote_cwd or '$HOME')}")
-                if stdin_mode:
-                    click.echo("Stdin: passthrough")
-                click.echo("--- Command Output ---")
-                opened_once = True
-
+            logger.debug(
+                "Notebook SSH command started stdin_passthrough=%s",
+                stdin_mode,
+            )
             ssh_execution_started = True
             stream_kwargs: dict[str, object] = {
                 "command": full_command,
@@ -428,8 +394,7 @@ def try_exec_via_ssh_tunnel(
             if stdin_mode:
                 stream_kwargs["pass_stdin"] = True
             exit_code = run_ssh_command_streaming_fn(**stream_kwargs)
-            if _verbose_output(ctx):
-                click.echo("--- End Output ---")
+            logger.debug("Notebook SSH command finished returncode=%s", exit_code)
 
             if exit_code == 0:
                 click.echo("OK")
@@ -455,11 +420,11 @@ def try_exec_via_ssh_tunnel(
             force_rebuild = True
             continue
         except subprocess.TimeoutExpired:
-            emit_output_error(
+            _emit_error(
                 ctx,
-                error_type="Timeout",
-                message=f"Command timed out after {timeout_s}s",
-                exit_code=EXIT_TIMEOUT,
+                "Timeout",
+                f"Command timed out after {timeout_s}s",
+                EXIT_TIMEOUT,
                 human_lines=[f"Command timed out after {timeout_s}s"],
             )
             return EXIT_TIMEOUT
@@ -483,12 +448,10 @@ def try_exec_via_jupyter_terminal(
     notebook_id: str,
     command: str,
     session: WebSession | None,
-    config: Config,
     remote_cwd: Optional[str],
     env_exports: str,
     timeout_s: int,
 ) -> int:
-    del config
     full_command = _build_remote_command(
         command=command,
         remote_cwd=remote_cwd,
@@ -532,205 +495,41 @@ def try_exec_via_jupyter_terminal(
     return _emit_command_failed(ctx, returncode=result.returncode)
 
 
-def exec_via_workflow(
-    ctx: Context,
-    *,
-    command: str,
-    env_exports: str,
-    denylist: tuple[str, ...],
-    artifact_path: tuple[str, ...],
-    download: Optional[str],
-    wait: bool,
-    timeout_s: int,
-    config: Config,
-    remote_cwd: Optional[str],
-    trigger_bridge_action_workflow_fn: Callable[..., None],
-    wait_for_bridge_action_completion_fn: Callable[..., dict],
-    fetch_bridge_output_log_fn: Callable[..., Optional[str]],
-    download_bridge_artifact_fn: Callable[..., None],
-) -> int:
-    workflow_command = f"{env_exports}{command}" if env_exports else command
-
-    merged_denylist: list[str] = []
-    if config.bridge_action_denylist:
-        merged_denylist.extend(config.bridge_action_denylist)
-    merged_denylist.extend(split_denylist(denylist))
-
-    if not merged_denylist and _verbose_output(ctx):
-        click.echo("Warning: no denylist provided; proceeding", err=True)
-
-    request_id = f"{int(time.time())}-{os.getpid()}"
-    artifact_paths_list = list(artifact_path)
-
-    if _verbose_output(ctx):
-        click.echo("Triggering bridge exec")
-        click.echo(f"Command: {scrub_raw_ids(command)}")
-        click.echo(f"Working dir: {scrub_raw_ids(remote_cwd or '$HOME')}")
-        if merged_denylist:
-            click.echo(f"Denylist: {scrub_raw_ids(merged_denylist)}")
-        if artifact_paths_list:
-            click.echo(f"Artifact paths: {scrub_raw_ids(artifact_paths_list)}")
-
-    try:
-        logger.debug(
-            "bridge_exec workflow trigger request_id=%s wait=%s timeout=%s command=%s",
-            request_id,
-            wait,
-            timeout_s,
-            command,
-        )
-        trigger_bridge_action_workflow_fn(
-            config=config,
-            raw_command=workflow_command,
-            remote_cwd=remote_cwd,
-            artifact_paths=artifact_paths_list,
-            request_id=request_id,
-            denylist=merged_denylist,
-        )
-    except (ForgeError, ForgeAuthError) as e:
-        emit_output_error(
-            ctx,
-            error_type="ForgeError",
-            message=str(e),
-            exit_code=EXIT_GENERAL_ERROR,
-            human_lines=[f"Error: {e}"],
-        )
-        return EXIT_GENERAL_ERROR
-
-    if not wait:
-        emit_output_success(
-            ctx,
-            payload={
-                "status": "triggered",
-            },
-            text="Triggered.",
-        )
-        return EXIT_SUCCESS
-
-    if _verbose_output(ctx):
-        click.echo(f"Waiting for completion (timeout {timeout_s}s)...")
-
-    try:
-        result = wait_for_bridge_action_completion_fn(
-            config=config,
-            request_id=request_id,
-            timeout=timeout_s,
-        )
-        logger.debug("bridge_exec workflow result request_id=%s result=%s", request_id, result)
-    except TimeoutError as e:
-        emit_output_error(
-            ctx,
-            error_type="Timeout",
-            message=str(e),
-            exit_code=EXIT_TIMEOUT,
-            human_lines=[f"Timeout: {e}"],
-        )
-        return EXIT_TIMEOUT
-    except ForgeError as e:
-        emit_output_error(
-            ctx,
-            error_type="ForgeError",
-            message=str(e),
-            exit_code=EXIT_GENERAL_ERROR,
-            human_lines=[f"Error: {e}"],
-        )
-        return EXIT_GENERAL_ERROR
-
-    output_log: Optional[str] = None
-    try:
-        output_log = fetch_bridge_output_log_fn(config, request_id)
-    except ForgeError:
-        pass
-    if output_log:
-        logger.debug("bridge_exec workflow output request_id=%s\n%s", request_id, output_log)
-
-    if output_log and not ctx.json_output:
-        if _verbose_output(ctx):
-            click.echo("")
-            click.echo("--- Command Output ---")
-            click.echo(scrub_raw_ids(output_log))
-            click.echo("--- End Output ---")
-            click.echo("")
-        else:
-            click.echo(scrub_raw_ids(output_log))
-
-    if result.get("conclusion") != "success":
-        emit_output_error(
-            ctx,
-            error_type="BridgeActionFailed",
-            message=f"Action failed: {result.get('conclusion')}",
-            exit_code=EXIT_GENERAL_ERROR,
-            human_lines=[f"Action failed: {result.get('conclusion')}"],
-        )
-        return EXIT_GENERAL_ERROR
-
-    if download:
-        if _verbose_output(ctx):
-            click.echo(f"Downloading artifact to {scrub_raw_ids(download)}...")
-        try:
-            download_bridge_artifact_fn(config, request_id, Path(download))
-        except ForgeError as e:
-            emit_output_error(
-                ctx,
-                error_type="ArtifactError",
-                message=f"Artifact download failed: {e}",
-                exit_code=EXIT_GENERAL_ERROR,
-                human_lines=[f"Warning: artifact download failed: {e}"],
-            )
-            return EXIT_GENERAL_ERROR
-
-    if _verbose_output(ctx):
-        click.echo("OK Action completed successfully")
-        if download:
-            click.echo("Artifacts downloaded")
-    else:
-        emit_output_success(
-            ctx,
-            payload={
-                "status": "success",
-                "artifact_downloaded": bool(download),
-                "output": output_log,
-            },
-            text="OK (artifacts downloaded)" if download else "OK",
-        )
-
-    return EXIT_SUCCESS
-
-
 @click.command("exec")
-@click.argument("notebook")
-@click.argument("command_parts", nargs=-1, type=click.UNPROCESSED, required=True)
-@click.option("--account", required=False, help="Account name for this notebook target.")
+@click.argument("notebook", metavar="NAME")
+@click.argument(
+    "command_parts",
+    metavar="COMMAND...",
+    nargs=-1,
+    type=click.UNPROCESSED,
+    required=True,
+)
+@click.option(
+    "--workspace",
+    required=False,
+    metavar="NAME",
+    callback=validate_specific_workspace,
+    help=NOTEBOOK_TARGET_WORKSPACE_HELP,
+)
+@click.option(
+    "--account",
+    required=False,
+    metavar="NAME",
+    help="Account name for this notebook target.",
+)
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
     help="Ignore the remembered notebook target and resolve candidates again.",
 )
 @click.option(
-    "denylist",
-    "--denylist",
-    multiple=True,
-    help="Denylist pattern to block (repeatable or comma-separated)",
-)
-@click.option(
-    "artifact_path",
-    "--artifact-path",
-    multiple=True,
-    help="Path relative to the remote working directory selected by --cwd or the 'me' path alias",
-)
-@click.option(
-    "download",
-    "--download",
-    type=click.Path(),
-    help="Local directory to download artifact contents",
-)
-@click.option("wait", "--wait/--no-wait", default=True, help="Wait for completion (default: wait)")
-@click.option(
     "timeout",
     "--timeout",
     type=click.IntRange(1),
-    default=None,
-    help="Timeout in seconds (default: config value)",
+    default=_DEFAULT_EXEC_TIMEOUT,
+    show_default=True,
+    help="Command timeout in seconds",
 )
 @click.option(
     "--cwd",
@@ -749,13 +548,11 @@ def exec_command(
     ctx: Context,
     notebook: str,
     command_parts: tuple[str, ...],
+    workspace: str | None,
     account: str | None,
+    pick: int | None,
     ignore_target_cache: bool,
-    denylist: tuple[str, ...],
-    artifact_path: tuple[str, ...],
-    download: Optional[str],
-    wait: bool,
-    timeout: Optional[int],
+    timeout: int,
     cwd: Optional[str],
     stdin_mode: bool,
 ) -> None:
@@ -767,7 +564,6 @@ def exec_command(
 
     COMMAND is the shell command to run remotely (in --cwd, the `me` path alias, or $HOME).
     Command output (stdout/stderr) is automatically displayed after completion.
-    Artifact options can fetch generated paths after the command finishes.
 
     \b
     Examples:
@@ -775,9 +571,6 @@ def exec_command(
         inspire notebook exec my-notebook --cwd me "pwd"
         inspire notebook exec my-notebook --cwd me:repo "pip install torch" --timeout 600
         inspire notebook exec my-notebook --stdin -- bash -s < scripts/setup.sh
-        inspire notebook exec my-notebook --cwd me:repo "uv venv .venv" \\
-            --artifact-path .venv --download ./local
-        inspire notebook exec my-notebook --cwd me:repo "python train.py" --no-wait
         inspire notebook exec my-notebook "hostname"
     """
     from inspire.cli.utils.id_resolver import reject_id_at_boundary
@@ -794,11 +587,11 @@ def exec_command(
         config, _ = Config.from_files_and_env(require_credentials=False)
         remote_cwd = _resolve_exec_remote_cwd(cwd=cwd, config=config)
     except ConfigError as e:
-        emit_output_error(
+        _emit_error(
             ctx,
-            error_type="ConfigError",
-            message=str(e),
-            exit_code=EXIT_CONFIG_ERROR,
+            "ConfigError",
+            str(e),
+            EXIT_CONFIG_ERROR,
             human_lines=[f"Configuration error: {e}"],
         )
         sys.exit(EXIT_CONFIG_ERROR)
@@ -806,75 +599,61 @@ def exec_command(
     try:
         env_exports = build_env_exports(config.remote_env)
     except ConfigError as e:
-        emit_output_error(
+        _emit_error(
             ctx,
-            error_type="ConfigError",
-            message=str(e),
-            exit_code=EXIT_CONFIG_ERROR,
+            "ConfigError",
+            str(e),
+            EXIT_CONFIG_ERROR,
             human_lines=[f"Configuration error: {e}"],
         )
         sys.exit(EXIT_CONFIG_ERROR)
 
-    action_timeout = int(timeout) if timeout is not None else int(config.bridge_action_timeout)
-
-    if stdin_mode and (artifact_path or download):
-        emit_output_error(
-            ctx,
-            error_type="UsageError",
-            message="--stdin/--bash-stdin is only supported for SSH execution (no artifacts).",
-            exit_code=EXIT_GENERAL_ERROR,
-            human_lines=[
-                "--stdin/--bash-stdin cannot be combined with --artifact-path/--download."
-            ],
-        )
-        sys.exit(EXIT_GENERAL_ERROR)
-
     policy = preflight_notebook_transport_policy(
         ctx,
         notebook=notebook,
-        workspace=None,
+        workspace=workspace,
         account=account,
-        timeout=min(action_timeout, 30),
+        timeout=min(timeout, 30),
+        pick=pick,
     )
 
-    # SSH tunnel is the default command transport when artifacts are not requested.
-    if not artifact_path and not download:
-        if policy.exec_transport == "jupyter":
-            sys.exit(
-                try_exec_via_jupyter_terminal(
-                    ctx,
-                    notebook_id=policy.notebook_id,
-                    command=command,
-                    session=policy.session,
-                    config=config,
-                    remote_cwd=remote_cwd,
-                    env_exports=env_exports,
-                    timeout_s=action_timeout,
-                )
+    if policy.exec_transport == "jupyter":
+        sys.exit(
+            try_exec_via_jupyter_terminal(
+                ctx,
+                notebook_id=policy.notebook_id,
+                command=command,
+                session=policy.session,
+                remote_cwd=remote_cwd,
+                env_exports=env_exports,
+                timeout_s=timeout,
             )
-        target = resolve_cached_notebook_target(
-            ctx,
-            notebook=notebook,
-            workspace=None,
-            account=account,
-            ignore_target_cache=ignore_target_cache,
-            verify_target_cache=True,
-            allow_prompt=not ctx.json_output,
         )
-        if target is None:
-            explicit_account = (
-                str(account or "").strip()
-                if str(account or "").strip() and str(account or "").strip().lower() != "all"
-                else None
-            )
-            bridge = notebook
-            tunnel_account = explicit_account
-        else:
-            bridge = target.bridge.name
-            tunnel_account = target.account
+    target = resolve_cached_notebook_target(
+        ctx,
+        notebook=notebook,
+        workspace=workspace,
+        account=account,
+        ignore_target_cache=ignore_target_cache,
+        verify_target_cache=True,
+        allow_prompt=not ctx.json_output,
+        pick=pick,
+    )
+    if target is None:
+        explicit_account = (
+            str(account or "").strip()
+            if str(account or "").strip() and str(account or "").strip().lower() != "all"
+            else None
+        )
+        bridge = notebook
+        tunnel_account = explicit_account
+    else:
+        bridge = target.bridge.name
+        tunnel_account = target.account
 
-        effective_stdin_mode = stdin_mode or _should_auto_passthrough_stdin()
-        ssh_exit_code = try_exec_via_ssh_tunnel(
+    effective_stdin_mode = stdin_mode or _should_auto_passthrough_stdin()
+    sys.exit(
+        try_exec_via_ssh_tunnel(
             ctx,
             command=command,
             bridge_name=bridge,
@@ -883,50 +662,9 @@ def exec_command(
             config=config,
             remote_cwd=remote_cwd,
             env_exports=env_exports,
-            timeout_s=action_timeout,
+            timeout_s=timeout,
             is_tunnel_available_fn=is_tunnel_available,
             run_ssh_command_fn=run_ssh_command,
             run_ssh_command_streaming_fn=run_ssh_command_streaming,
         )
-        sys.exit(ssh_exit_code if ssh_exit_code is not None else EXIT_GENERAL_ERROR)
-
-    if not policy.allow_ssh:
-        emit_output_error(
-            ctx,
-            error_type="RestrictedArtifactTransport",
-            message=(
-                "Artifact download for restricted notebooks requires shared paths. "
-                "Write artifacts under `/inspire/<storage>/...`, then download them "
-                "through a public-internet notebook with "
-                "`inspire notebook scp <public-notebook> -d /inspire/<storage>/... <local-path>`."
-            ),
-            exit_code=EXIT_GENERAL_ERROR,
-            human_lines=[
-                "Artifact download for restricted notebooks requires shared paths.",
-                (
-                    "Write artifacts under `/inspire/<storage>/...`, then download them "
-                    "through a public-internet notebook with "
-                    "`inspire notebook scp <public-notebook> -d /inspire/<storage>/... "
-                    "<local-path>`."
-                ),
-            ],
-        )
-        sys.exit(EXIT_GENERAL_ERROR)
-
-    workflow_exit_code = exec_via_workflow(
-        ctx,
-        command=command,
-        env_exports=env_exports,
-        denylist=denylist,
-        artifact_path=artifact_path,
-        download=download,
-        wait=wait,
-        timeout_s=action_timeout,
-        config=config,
-        remote_cwd=remote_cwd,
-        trigger_bridge_action_workflow_fn=trigger_bridge_action_workflow,
-        wait_for_bridge_action_completion_fn=wait_for_bridge_action_completion,
-        fetch_bridge_output_log_fn=fetch_bridge_output_log,
-        download_bridge_artifact_fn=download_bridge_artifact,
     )
-    sys.exit(workflow_exit_code)

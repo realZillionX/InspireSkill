@@ -15,7 +15,7 @@ import click
 
 from inspire.cli.context import Context, pass_context
 from inspire.cli.formatters import json_formatter
-from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 from .public_output import public_operation
@@ -25,7 +25,13 @@ if TYPE_CHECKING:
     from inspire.platform.web.session import WebSession
 
 
-def _resolve_notebook(ctx: Context, notebook: str, workspace: str) -> tuple[WebSession, str, str]:
+def _resolve_notebook(
+    ctx: Context,
+    notebook: str,
+    workspace: str,
+    *,
+    pick: int | None = None,
+) -> tuple[WebSession, str, str]:
     """Resolve a notebook name to ``(session, base_url, notebook_id)``."""
     notebook = reject_id_at_boundary(
         ctx,
@@ -39,19 +45,16 @@ def _resolve_notebook(ctx: Context, notebook: str, workspace: str) -> tuple[WebS
     from inspire.cli.utils.notebook_cli import (
         WEB_AUTH_HINT,
         get_base_url,
-        load_config,
         require_web_session,
     )
     from inspire.config import ConfigError
-    from inspire.config.workspaces import resolve_workspace_query_scope
+    from inspire.config.workspaces import resolve_workspace_operation_scope
     from inspire.platform.web import browser_api as browser_api_module
 
     session = require_web_session(ctx, hint=WEB_AUTH_HINT)
     base_url = get_base_url()
-    config = load_config(ctx)
     try:
-        workspace_ids, _ = resolve_workspace_query_scope(
-            config,
+        workspace_id = resolve_workspace_operation_scope(
             workspace=workspace,
             session=session,
         )
@@ -63,11 +66,11 @@ def _resolve_notebook(ctx: Context, notebook: str, workspace: str) -> tuple[WebS
         _nb._run_notebook_operation_with_stale_handle_retry(
             ctx,
             session=session,
-            config=config,
             base_url=base_url,
             identifier=notebook,
             json_output=ctx.json_output,
-            workspace_ids=workspace_ids,
+            workspace_ids=[workspace_id],
+            pick=pick,
             operation=lambda resolved_id: browser_api_module.get_notebook_detail(
                 notebook_id=resolved_id,
                 session=session,
@@ -112,12 +115,28 @@ def _open_resolved_url(
 
 
 @click.command("url")
-@click.argument("notebook")
-@click.option("--workspace", required=True, help="Workspace name or 'all'.")
+@click.argument("notebook", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @pass_context
-def notebook_url(ctx: Context, notebook: str, workspace: str) -> None:
+def notebook_url(
+    ctx: Context,
+    notebook: str,
+    workspace: str,
+    pick: int | None,
+) -> None:
     """Open a notebook's web IDE in the system browser."""
-    _session, base_url, notebook_id = _resolve_notebook(ctx, notebook, workspace)
+    _session, base_url, notebook_id = _resolve_notebook(
+        ctx,
+        notebook,
+        workspace,
+        pick=pick,
+    )
     _open_resolved_url(
         ctx,
         notebook=notebook,
@@ -126,9 +145,15 @@ def notebook_url(ctx: Context, notebook: str, workspace: str) -> None:
     )
 
 
-@click.command("vscode-proxy-suffix")
-@click.argument("notebook")
-@click.option("--workspace", required=True, help="Workspace name or 'all'.")
+@click.command("vscode")
+@click.argument("notebook", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @click.option(
     "--timeout",
     type=click.IntRange(10),
@@ -142,21 +167,26 @@ def notebook_url(ctx: Context, notebook: str, workspace: str) -> None:
     help="Skip the cached IDE route and resolve a fresh route.",
 )
 @pass_context
-def notebook_vscode_proxy_suffix(
+def notebook_vscode(
     ctx: Context,
     notebook: str,
     workspace: str,
+    pick: int | None,
     timeout: int,
     refresh: bool,
 ) -> None:
     """Open the notebook's VS Code web IDE.
 
-    The historical command name is retained for compatibility, but the
-    runtime/token suffix is now an internal implementation detail.
+    The runtime/token suffix is an internal implementation detail.
     """
     from inspire.platform.web.browser_api import resolve_notebook_vscode_ide_url
 
-    session, _base_url, notebook_id = _resolve_notebook(ctx, notebook, workspace)
+    session, _base_url, notebook_id = _resolve_notebook(
+        ctx,
+        notebook,
+        workspace,
+        pick=pick,
+    )
     ide_url = resolve_notebook_vscode_ide_url(
         notebook_id,
         session=session,
@@ -213,8 +243,14 @@ def _check_proxy_url(session: WebSession, url: str) -> str:
 
 
 @click.command("proxy-url")
-@click.argument("notebook")
-@click.option("--workspace", required=True, help="Workspace name or 'all'.")
+@click.argument("notebook", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @click.option(
     "--port",
     required=True,
@@ -254,6 +290,7 @@ def notebook_proxy_url(
     ctx: Context,
     notebook: str,
     workspace: str,
+    pick: int | None,
     port: int,
     service_path: str,
     timeout: int,
@@ -270,12 +307,18 @@ def notebook_proxy_url(
     from inspire.cli.utils.errors import exit_with_error as _handle_error
     from inspire.platform.web.browser_api import resolve_notebook_port_forward_url
 
-    session, _base_url, notebook_id = _resolve_notebook(ctx, notebook, workspace)
+    session, _base_url, notebook_id = _resolve_notebook(
+        ctx,
+        notebook,
+        workspace,
+        pick=pick,
+    )
     policy = preflight_notebook_transport_policy(
         ctx,
         notebook=notebook,
         workspace=workspace,
         timeout=min(timeout, 30),
+        pick=pick,
     )
     if not policy.allow_proxy_url and not allow_restricted:
         _handle_error(
@@ -319,4 +362,4 @@ def notebook_proxy_url(
         click.echo(f"Service check: {check_status}")
 
 
-__all__ = ["notebook_proxy_url", "notebook_url", "notebook_vscode_proxy_suffix"]
+__all__ = ["notebook_proxy_url", "notebook_url", "notebook_vscode"]

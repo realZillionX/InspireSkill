@@ -2,12 +2,22 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from inspire.platform.web.browser_api import jobs as jobs_module
 
 
 class _FakeSession:
     workspace_id = "ws-default"
     storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
+
+
+def test_job_api_validation_uses_visible_selection_terms() -> None:
+    with pytest.raises(ValueError, match="Job selection is required\\."):
+        jobs_module.get_job_detail_v2("", session=_FakeSession())
+
+    with pytest.raises(ValueError, match="Workspace selection is required\\."):
+        jobs_module.list_jobs(created_by="current-user", session=_FakeSession())
 
 
 def test_list_train_job_logs_uses_string_epoch_ms(monkeypatch) -> None:  # noqa: ANN001

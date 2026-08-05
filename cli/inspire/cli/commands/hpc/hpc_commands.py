@@ -16,14 +16,16 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.collection_output import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.errors import (
+    exit_with_error as _handle_error,
+    require_confirmation,
+)
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
@@ -33,6 +35,7 @@ from inspire.cli.utils.task_priority import (
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.cli.utils.id_resolver import (
+    NAME_PICK_HELP,
     forget_resource_identity,
     looks_like_platform_id,
     reject_id_at_boundary,
@@ -44,9 +47,20 @@ from inspire.cli.utils.project_resolver import (
     project_display_name,
     resolve_project_id as resolve_project_id_by_name,
 )
-from inspire.config.workspaces import select_workspace_id, workspace_label
+from inspire.config.workspaces import (
+    resolve_workspace_query_scope,
+    select_workspace_id,
+    workspace_label,
+    workspace_name_map,
+)
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+
+from .public_output import (
+    format_hpc_status,
+    public_hpc_list_item,
+    public_hpc_status,
+)
 
 _DEFAULT_INSTANCE_SCAN_LIMIT = 500
 
@@ -76,7 +90,6 @@ def _created_hpc_job_id(payload: object) -> str:
 def _resolve_hpc_name_in_workspace(
     ctx: Context,
     *,
-    config: Config,
     session,
     name: str,
     workspace: str,
@@ -85,7 +98,6 @@ def _resolve_hpc_name_in_workspace(
     require_live: bool = False,
 ) -> str:
     workspace_id = select_workspace_id(
-        config,
         explicit_workspace_name=workspace,
         session=session,
     )
@@ -117,7 +129,6 @@ def _resolve_hpc_name_in_workspace(
         name=name,
         resource_type="hpc",
         list_candidates=_lister,
-        json_output=ctx.json_output,
         pick_index=pick,
         session=session,
         workspace_id=workspace_id,
@@ -139,28 +150,27 @@ def _reject_hpc_name_at_boundary(ctx: Context, name: str) -> str:
 def _run_readonly_hpc_operation(
     ctx: Context,
     *,
-    config: Config,
     session,
     name: str,
     workspace: str,
     limit: int,
+    pick: Optional[int] = None,
     operation,
 ):
     """Run a read-only HPC operation and recover one stale cache hit."""
     def _resolve(require_live: bool) -> str:
         return _resolve_hpc_name_in_workspace(
             ctx,
-            config=config,
             session=session,
             name=name,
             workspace=workspace,
             limit=limit,
+            pick=pick,
             require_live=require_live,
         )
 
     def _invalidate(job_id: str) -> None:
         workspace_id = select_workspace_id(
-            config,
             explicit_workspace_name=workspace,
             session=session,
         )
@@ -212,7 +222,7 @@ def _resolve_project_id(
     return resolve_project_id_by_name(config, requested, projects)
 
 
-def _project_label(config: Config, project_id: str, requested: Optional[str]) -> str:
+def _project_label(config: Config, requested: Optional[str]) -> str:
     if requested:
         return project_display_name(config, requested)
     return "(project name unavailable)"
@@ -236,22 +246,22 @@ def _hpc_plan_payload(
     return {
         "dry_run": True,
         "name": name,
-        "project_name": project_label,
-        "workspace_name": workspace_label,
-        "compute_group_name": compute_group_name,
+        "workspace": workspace_label,
+        "project": project_label,
+        "compute_group": compute_group_name,
         "image": cluster.get("image"),
         "image_type": cluster.get("image_type"),
-        "instance_count": cluster.get("instance_count"),
+        "nodes": cluster.get("instance_count"),
         "resource": {
             "cpu": cluster.get("cpu"),
             "memory_gib": cluster.get("mem_gi"),
         },
-        "entrypoint": sbatch.get("entrypoint"),
+        "command": sbatch.get("entrypoint"),
         "number_of_tasks": sbatch.get("number_of_tasks"),
         "cpus_per_task": sbatch.get("cpus_per_task"),
         "memory_per_cpu": sbatch.get("memory_per_cpu"),
         "enable_hyper_threading": sbatch.get("enable_hyper_threading"),
-        "task_priority": create_kwargs.get("task_priority"),
+        "priority": create_kwargs.get("task_priority"),
     }
 
 
@@ -307,105 +317,158 @@ def _format_hpc_list_rows(rows: list[dict[str, str]]) -> str:
     if not rows:
         return "No HPC jobs found."
 
-    table_rows = [(row["name"], row["status"], row["created_at"]) for row in rows]
+    show_workspace = any(row.get("workspace") for row in rows)
+    table_rows = [
+        (
+            row["name"],
+            row["status"],
+            *([row.get("workspace", "")] if show_workspace else []),
+            row["created_at"],
+        )
+        for row in rows
+    ]
+    headers = ("Name", "Status", "Workspace", "Created") if show_workspace else (
+        "Name",
+        "Status",
+        "Created",
+    )
     widths = [
-        column_width("Name", [row[0] for row in table_rows], max_width=80),
+        column_width("Name", [row[0] for row in table_rows], max_width=64),
         column_width("Status", [row[1] for row in table_rows], max_width=18),
-        column_width("Created", [row[2] for row in table_rows], max_width=19),
     ]
-    lines = [
-        "HPC Jobs",
-        *render_table(("Name", "Status", "Created"), table_rows, widths, line_char="─"),
-    ]
-    lines.append(f"Total: {len(rows)}")
-    return "\n".join(lines)
+    if show_workspace:
+        widths.append(
+            column_width("Workspace", [row[2] for row in table_rows], max_width=32)
+        )
+    widths.append(
+        column_width("Created", [row[-1] for row in table_rows], max_width=19)
+    )
+    rendered = render_table(headers, table_rows, widths, line_char="─")
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
 
-_OUTPUT_METADATA_KEYS = {
-    "debug",
-    "method",
-    "metadata",
-    "payload",
-    "progress",
-    "raw",
-    "request",
-    "requestpayload",
-    "response",
-    "responsemetadata",
-    "result",
-    "scanned",
-    "source",
-}
+def _public_hpc_instance_text(inst: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = inst.get(key)
+        if value in (None, "") or isinstance(value, (dict, list, tuple, set)):
+            continue
+        text = scrub_raw_ids(value).strip()
+        if text and "<redacted>" not in text:
+            return text
+    return ""
 
 
-def _is_output_id_key(key: object) -> bool:
-    normalized = str(key or "").replace("-", "_").lower()
-    return normalized in {"id", "ids"} or normalized.endswith("_id") or normalized.endswith("_ids")
+def _hpc_instance_rank(inst: dict[str, Any], position: int) -> int:
+    for key in ("rank", "instance_rank", "global_rank", "index", "replica_index"):
+        value = inst.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if text.isdigit():
+                return int(text)
+    return position
 
 
-def _public_output(value: object) -> Any:
-    """Keep useful HPC results while hiding platform handles and metadata."""
-    if isinstance(value, dict):
-        return {
-            key: _public_output(child)
-            for key, child in value.items()
-            if str(key or "").replace("-", "_").lower() not in _OUTPUT_METADATA_KEYS
-            and not _is_output_id_key(key)
-        }
-    if isinstance(value, (list, tuple)):
-        return [_public_output(item) for item in value]
-    if isinstance(value, str):
-        return scrub_raw_ids(value)
-    return value
+def _hpc_instance_resource(inst: dict[str, Any]) -> str:
+    direct = _public_hpc_instance_text(inst, "resource")
+    if direct:
+        return direct
+
+    spec = inst
+    for key in ("resource_spec", "resource_spec_price", "quota"):
+        candidate = inst.get(key)
+        if isinstance(candidate, dict):
+            spec = candidate
+            break
+
+    values = (
+        ("CPU", _public_hpc_instance_text(spec, "cpu_count", "cpu")),
+        (
+            "GiB",
+            _public_hpc_instance_text(
+                spec,
+                "memory_size_gib",
+                "memory_gib",
+                "memory_size",
+                "memory",
+            ),
+        ),
+        ("GPU", _public_hpc_instance_text(spec, "gpu_count", "gpu")),
+    )
+    return ", ".join(f"{value} {unit}" for unit, value in values if value)
 
 
-def _hpc_instance_name(inst: dict[str, Any], idx: int) -> str:
-    for key in ("name", "instance_name", "pod_name", "component"):
-        value = str(inst.get(key) or "").strip()
-        if value:
-            return scrub_raw_ids(value)
-    return f"#{idx}"
+def _public_hpc_instances(
+    instances: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    for position, inst in enumerate(instances):
+        item: dict[str, Any] = {}
+        name = _public_hpc_instance_text(
+            inst,
+            "name",
+            "instance_name",
+            "display_name",
+        )
+        if name and not looks_like_platform_id(name):
+            item["name"] = name
+
+        for key, candidates in (
+            ("status", ("status", "instance_status", "phase", "state")),
+            ("role", ("role", "component", "worker_group_name")),
+            ("type", ("type", "instance_type")),
+        ):
+            value = _public_hpc_instance_text(inst, *candidates)
+            if value:
+                item[key] = value
+
+        resource = _hpc_instance_resource(inst)
+        if resource:
+            item["resource"] = resource
+        item["rank"] = _hpc_instance_rank(inst, position)
+        projected.append(item)
+    return projected
 
 
 def _format_hpc_instances(instances: list[dict[str, Any]]) -> str:
-    """Format HPC pod/component instances as name-first rows."""
+    """Format projected HPC instances as a compact table."""
     if not instances:
         return "No HPC instances found."
 
-    rendered = []
-    for idx, inst in enumerate(instances, start=1):
-        rendered.append(
-            {
-                "name": _hpc_instance_name(inst, idx),
-                "status": scrub_raw_ids(inst.get("status") or inst.get("instance_status") or ""),
-                "component": scrub_raw_ids(inst.get("component") or inst.get("type") or ""),
-                "node": scrub_raw_ids(inst.get("node") or inst.get("node_name") or ""),
-                "created": human_formatter.format_epoch(inst.get("created_at")),
-            }
+    columns = [("name", "Name"), ("status", "Status")]
+    columns.extend(
+        (key, label)
+        for key, label in (
+            ("role", "Role"),
+            ("type", "Type"),
+            ("resource", "Resource"),
+            ("rank", "Rank"),
         )
-
+        if any(item.get(key) not in (None, "") for item in instances)
+    )
     table_rows = [
-        (row["name"], row["status"], row["component"], row["node"], row["created"])
-        for row in rendered
+        tuple(
+            (
+                item.get("name")
+                or f"rank={item.get('rank')}"
+                if key == "name"
+                else item.get(key, "-")
+            )
+            for key, _ in columns
+        )
+        for item in instances
     ]
     widths = [
-        column_width("Instance", [row[0] for row in table_rows], max_width=64),
-        column_width("Status", [row[1] for row in table_rows], max_width=18),
-        column_width("Component", [row[2] for row in table_rows], max_width=18),
-        column_width("Node", [row[3] for row in table_rows], max_width=32),
-        column_width("Created", [row[4] for row in table_rows], max_width=19),
+        column_width(label, [row[index] for row in table_rows], max_width=48)
+        for index, (_, label) in enumerate(columns)
     ]
-    lines = [
-        "HPC Instances",
-        *render_table(
-            ("Instance", "Status", "Component", "Node", "Created"),
-            table_rows,
-            widths,
-            line_char="─",
-        ),
-    ]
-    lines.append(f"Total: {len(instances)} instance(s)")
-    return "\n".join(lines)
+    rendered = render_table(
+        tuple(label for _, label in columns),
+        table_rows,
+        widths,
+    )
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
 
 def _fetch_hpc_instances(
@@ -432,9 +495,59 @@ def _fetch_hpc_instances(
     return rows, total
 
 
+def _hpc_matches_list_filters(
+    job: Any,
+    *,
+    status: Optional[str],
+    keyword: Optional[str],
+    workspace_name: str = "",
+) -> bool:
+    """Apply the public HPC list filters to readable job fields."""
+    if (
+        status
+        and str(getattr(job, "status", "") or "").strip().casefold()
+        != status.strip().casefold()
+    ):
+        return False
+    if not keyword:
+        return True
+
+    needle = keyword.strip().casefold()
+    if not needle:
+        return True
+    fields = (
+        getattr(job, "name", ""),
+        getattr(job, "status", ""),
+        getattr(job, "entrypoint", ""),
+        getattr(job, "project_name", ""),
+        getattr(job, "compute_group_name", ""),
+        getattr(job, "created_by_name", ""),
+        workspace_name,
+    )
+    return any(needle in str(field or "").casefold() for field in fields)
+
+
 @click.command("list")
-@click.option("--workspace", required=True, help="Workspace name")
-@click.option("--status", "status_filter", default=None, help="Filter by HPC job status")
+@click.option(
+    "--workspace",
+    required=True,
+    metavar="NAME|all",
+    help="Workspace name or 'all'.",
+)
+@click.option(
+    "--status",
+    "-s",
+    "status_filter",
+    default=None,
+    metavar="STATUS",
+    help="Filter by HPC job status.",
+)
+@click.option(
+    "--keyword",
+    default=None,
+    metavar="KEYWORD",
+    help="Case-insensitive keyword filter for job name/command and readable fields.",
+)
 @click.option(
     "--limit",
     "-n",
@@ -448,6 +561,7 @@ def list_hpc(
     ctx: Context,
     workspace: Optional[str],
     status_filter: Optional[str],
+    keyword: Optional[str],
     limit: Optional[int],
     show_all: bool,
 ) -> None:
@@ -456,6 +570,8 @@ def list_hpc(
     \b
     Examples:
         inspire hpc list --workspace CPU资源空间 --status RUNNING
+        inspire hpc list --workspace CPU资源空间 --keyword train
+        inspire hpc list --workspace all
     """
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
@@ -469,34 +585,76 @@ def list_hpc(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        resolved_workspace_id = select_workspace_id(
-            config,
-            explicit_workspace_name=workspace,
+        workspace_ids, all_workspaces = resolve_workspace_query_scope(
+            workspace=workspace,
             session=session,
         )
         created_by = _current_user_id(session)
+        workspace_names = workspace_name_map(session)
+        status_query = status_filter.strip().upper() if status_filter else None
+        local_filter = bool(keyword and keyword.strip())
 
-        jobs, total = browser_api_module.list_hpc_jobs(
-            workspace_id=resolved_workspace_id,
-            created_by=created_by,
-            status=status_filter,
-            page_num=1,
-            page_size=request_limit,
-            session=session,
-        )
-        if show_all and total > len(jobs):
-            jobs, expanded_total = browser_api_module.list_hpc_jobs(
-                workspace_id=resolved_workspace_id,
+        jobs: list[Any] = []
+        total = 0
+        for workspace_id in workspace_ids:
+            workspace_jobs, workspace_total = browser_api_module.list_hpc_jobs(
+                workspace_id=workspace_id,
                 created_by=created_by,
-                status=status_filter,
+                status=status_query,
                 page_num=1,
-                page_size=max(total, len(jobs), 1),
+                page_size=request_limit,
                 session=session,
             )
-            total = max(total, expanded_total, len(jobs))
-        page = bound_collection(jobs, limit=effective_limit, total=total)
-        rows = [
-            {
+            if (show_all or local_filter) and workspace_total > len(workspace_jobs):
+                workspace_jobs, expanded_total = browser_api_module.list_hpc_jobs(
+                    workspace_id=workspace_id,
+                    created_by=created_by,
+                    status=status_query,
+                    page_num=1,
+                    page_size=max(workspace_total, len(workspace_jobs), 1),
+                    session=session,
+                )
+                workspace_total = max(
+                    workspace_total,
+                    expanded_total,
+                    len(workspace_jobs),
+                )
+            jobs.extend(workspace_jobs)
+            total += max(workspace_total, len(workspace_jobs))
+        if all_workspaces:
+            jobs.sort(key=lambda item: str(item.created_at or ""), reverse=True)
+
+        filtered_jobs = [
+            job
+            for job in jobs
+            if _hpc_matches_list_filters(
+                job,
+                status=status_query,
+                keyword=keyword,
+                workspace_name=workspace_names.get(job.workspace_id, ""),
+            )
+        ]
+        if local_filter:
+            total = len(filtered_jobs)
+
+        page = bound_collection(filtered_jobs, limit=effective_limit, total=total)
+        public_items = [
+            public_hpc_list_item(
+                job,
+                workspace=(
+                    workspace_names.get(job.workspace_id)
+                    or (
+                        str(workspace or "")
+                        if not all_workspaces
+                        else "(workspace name unavailable)"
+                    )
+                ),
+            )
+            for job in page.items
+        ]
+        rows: list[dict[str, str]] = []
+        for job in page.items:
+            row = {
                 "name": scrub_raw_ids(job.name or "N/A"),
                 "status": scrub_raw_ids(job.status or "N/A"),
                 "created_at": scrub_raw_ids(job.created_at or "N/A"),
@@ -504,14 +662,18 @@ def list_hpc(
                 "project_name": scrub_raw_ids(job.project_name or ""),
                 "compute_group_name": scrub_raw_ids(job.compute_group_name or ""),
             }
-            for job in page.items
-        ]
+            if all_workspaces:
+                row["workspace"] = scrub_raw_ids(
+                    workspace_names.get(job.workspace_id)
+                    or "(workspace name unavailable)"
+                )
+            rows.append(row)
 
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
                     {
-                        "jobs": _public_output(rows),
+                        "items": public_items,
                         **page.metadata(),
                     }
                 )
@@ -532,7 +694,7 @@ def list_hpc(
 
 
 @click.command("create")
-@click.option("--name", "-n", required=True, help="HPC job name")
+@click.option("--name", "-n", required=True, metavar="NAME", help="HPC job name")
 @click.option(
     "--entrypoint",
     "-c",
@@ -540,8 +702,20 @@ def list_hpc(
     help="Slurm script body (omit #SBATCH headers; use srun to launch the program)",
 )
 @click.option(
+    "--workspace",
+    metavar="NAME",
+    help="Workspace name. Required unless supplied by --profile.",
+)
+@click.option(
+    "--project",
+    "-p",
+    metavar="NAME",
+    help="Project name. Required unless supplied by --profile.",
+)
+@click.option(
     "--group",
     "compute_group",
+    metavar="NAME",
     help=(
         "Full compute group name copied from the same quota row as --quota. "
         "Required unless supplied by --profile "
@@ -551,6 +725,7 @@ def list_hpc(
 @click.option(
     "--quota",
     "-q",
+    metavar="SPEC",
     help=(
         "Node resource as 'gpu,cpu,mem' (mem in GiB). The triple chooses "
         "CPU/memory/GPU available per node. Use 'inspire hpc quota "
@@ -560,20 +735,17 @@ def list_hpc(
     ),
 )
 @click.option(
-    "--project",
-    "-p",
-    help="Project name. Required unless supplied by --profile.",
+    "--image",
+    "-i",
+    metavar="NAME|URL",
+    help="Docker image URL or visible image name. Required unless supplied by --profile.",
 )
-@click.option("--workspace", help="Workspace name. Required unless supplied by --profile.")
 @click.option(
     "--profile",
     "profile_name",
     default=None,
+    metavar="NAME",
     help="HPC condition profile providing workspace/project/group/quota/image.",
-)
-@click.option(
-    "--image",
-    help="Docker image URL or visible image name. Required unless supplied by --profile.",
 )
 @click.option(
     "--image-type",
@@ -715,7 +887,6 @@ def create_hpc(
 
         session = get_web_session()
         resolved_workspace_id = select_workspace_id(
-            config,
             explicit_workspace_name=workspace,
             session=session,
         )
@@ -793,7 +964,7 @@ def create_hpc(
             resource_spec_price=resource_spec_price,
         )
 
-        project_text = _project_label(config, resolved_project_id, project)
+        project_text = _project_label(config, project)
         workspace_text = workspace_label(session, resolved_workspace_id, workspace)
 
         if dry_run:
@@ -807,15 +978,16 @@ def create_hpc(
             if ctx.json_output:
                 click.echo(json_formatter.format_json(payload))
                 return
-            click.echo(human_formatter.format_success(f"Dry run: HPC create plan for {name}"))
-            click.echo(f"Project:   {scrub_raw_ids(project_text)}")
+            click.echo(f"Create plan: {scrub_raw_ids(name)}")
+            click.echo(f"Project: {scrub_raw_ids(project_text)}")
             click.echo(f"Workspace: {scrub_raw_ids(workspace_text)}")
-            click.echo(f"Resource:  {quota_spec.display()}")
-            click.echo(f"Compute:   {scrub_raw_ids(resolved_quota.compute_group_name)}")
+            click.echo(f"Compute: {scrub_raw_ids(resolved_quota.compute_group_name)}")
+            click.echo(f"Resource: {quota_spec.display()}")
             if final_priority is not None:
-                click.echo(f"Requested Priority: {final_priority}")
-            click.echo(f"Entry:     {scrub_raw_ids(entrypoint)}")
-            click.echo("No HPC job was submitted.")
+                click.echo(f"Priority: {final_priority}")
+            if instance_count > 1:
+                click.echo(f"Nodes: {instance_count}")
+            click.echo(f"Command: {scrub_raw_ids(entrypoint)}")
             return
 
         data = browser_api_module.create_hpc_job(
@@ -835,49 +1007,48 @@ def create_hpc(
             )
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json(_public_output(data)))
+            click.echo(
+                json_formatter.format_json(
+                    {"name": name, "status": "created"}
+                )
+            )
             return
 
-        click.echo(human_formatter.format_success(f"HPC job created: {name}"))
-        click.echo(
-            f"Project:   {scrub_raw_ids(project_text)}"
-        )
-        click.echo(
-            f"Workspace: {scrub_raw_ids(workspace_text)}"
-        )
-        click.echo(f"Resource:  {quota_spec.display()}")
-        click.echo(f"Compute:   {scrub_raw_ids(resolved_quota.compute_group_name)}")
-        if final_priority is not None:
-            click.echo(f"Requested Priority: {final_priority}")
-        click.echo(f"Entry:     {scrub_raw_ids(entrypoint)}")
+        click.echo(human_formatter.format_mutation_success("HPC", "created", name))
 
     except TaskPriorityError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @click.command("status")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @pass_context
-def status_hpc(ctx: Context, name: str, workspace: str) -> None:
-    """Get status/details of an HPC job (pass the job name)."""
+def status_hpc(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
+    """Show the compact public status view for an HPC job name."""
     name = _reject_hpc_name_at_boundary(ctx, name)
     try:
         config, _ = Config.from_files_and_env()
         session = get_web_session()
         data = _run_readonly_hpc_operation(
             ctx,
-            config=config,
             session=session,
             name=name,
             workspace=workspace,
             limit=10000,
+            pick=pick,
             operation=lambda job_id, live_session: (
                 browser_api_module.get_hpc_job_detail(
                     job_id,
@@ -886,40 +1057,34 @@ def status_hpc(ctx: Context, name: str, workspace: str) -> None:
             ),
         )
 
+        detail = public_hpc_status(data, fallback_name=name)
         if ctx.json_output:
-            click.echo(json_formatter.format_json(_public_output(data)))
+            click.echo(json_formatter.format_json(detail))
             return
 
-        click.echo("HPC Job Status")
-        click.echo(f"Name:   {scrub_raw_ids(data.get('name', 'N/A'))}")
-        click.echo(f"Status: {scrub_raw_ids(data.get('status', 'N/A'))}")
-        if data.get("priority") is not None:
-            click.echo(f"Requested Priority: {data.get('priority')}")
-        if data.get("priority_name"):
-            click.echo(f"Priority Name: {scrub_raw_ids(data.get('priority_name'))}")
-        if data.get("priority_level"):
-            click.echo(f"Priority Level: {scrub_raw_ids(data.get('priority_level'))}")
-        if data.get("sub_status"):
-            click.echo(f"Sub:    {scrub_raw_ids(data.get('sub_status'))}")
-        if data.get("created_at"):
-            click.echo(f"Created: {scrub_raw_ids(data.get('created_at'))}")
-        if data.get("updated_at"):
-            click.echo(f"Updated: {scrub_raw_ids(data.get('updated_at'))}")
+        click.echo(format_hpc_status(detail))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @click.command("instances")
-@click.argument("name")
+@click.argument("name", metavar="NAME")
 @click.option(
     "--workspace",
     required=True,
+    metavar="NAME",
     help="Workspace name.",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
 )
 @click.option(
     "--limit",
@@ -939,6 +1104,7 @@ def instances_hpc(
     ctx: Context,
     name: str,
     workspace: str,
+    pick: Optional[int],
     limit: Optional[int],
     show_all: bool,
 ) -> None:
@@ -962,11 +1128,11 @@ def instances_hpc(
         session = get_web_session()
         rows, total = _run_readonly_hpc_operation(
             ctx,
-            config=config,
             session=session,
             name=name,
             workspace=workspace,
             limit=resolution_limit,
+            pick=pick,
             operation=lambda job_id, live_session: _fetch_hpc_instances(
                 job_id,
                 limit=request_limit,
@@ -975,19 +1141,18 @@ def instances_hpc(
             ),
         )
         page = bound_collection(rows, limit=output_limit, total=total)
+        public_items = _public_hpc_instances(page.items)
 
         if ctx.json_output:
             payload: dict[str, Any] = {
-                "instances": _public_output(page.items),
-                "total": page.total,
+                "name": scrub_raw_ids(name),
+                "items": public_items,
+                **page.metadata(),
             }
-            if page.truncated:
-                payload.update(page.metadata())
-                payload["limit"] = output_limit
             click.echo(json_formatter.format_json(payload))
             return
 
-        click.echo(_format_hpc_instances(page.items))
+        click.echo(_format_hpc_instances(public_items))
         notice = truncation_notice(page)
         if notice:
             click.echo(notice)
@@ -1001,13 +1166,13 @@ def instances_hpc(
 
 
 @click.command("stop")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--pick",
     type=click.IntRange(1),
     default=None,
-    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+    help=NAME_PICK_HELP,
 )
 @pass_context
 def stop_hpc(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
@@ -1018,7 +1183,6 @@ def stop_hpc(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> No
         session = get_web_session()
         job_id = _resolve_hpc_name_in_workspace(
             ctx,
-            config=config,
             session=session,
             name=name,
             workspace=workspace,
@@ -1029,21 +1193,25 @@ def stop_hpc(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> No
         browser_api_module.stop_hpc_job(job_id, session=session)
 
         if ctx.json_output:
-            click.echo(json_formatter.format_json({"name": name, "stopped": True}))
+            click.echo(
+                json_formatter.format_json(
+                    {"name": name, "status": "stopped"}
+                )
+            )
             return
-        click.echo(human_formatter.format_success(f"HPC job stopped: {name}"))
+        click.echo(human_formatter.format_mutation_success("HPC", "stopped", name))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @click.command("delete")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--yes",
     "-y",
@@ -1054,7 +1222,7 @@ def stop_hpc(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> No
     "--pick",
     type=click.IntRange(1),
     default=None,
-    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+    help=NAME_PICK_HELP,
 )
 @pass_context
 def delete_hpc(ctx: Context, name: str, workspace: str, yes: bool, pick: Optional[int]) -> None:
@@ -1069,18 +1237,21 @@ def delete_hpc(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
         inspire hpc delete my-hpc-run --workspace CPU资源空间
     """
     name = _reject_hpc_name_at_boundary(ctx, name)
-    if not yes and not ctx.json_output:
-        click.confirm(
-            f"Permanently delete HPC job '{scrub_raw_ids(name)}'? This cannot be undone.",
-            abort=True,
-        )
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt=(
+            f"Permanently delete HPC job '{scrub_raw_ids(name)}'? "
+            "This cannot be undone."
+        ),
+        message="HPC job deletion requires confirmation.",
+    )
 
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
         job_id = _resolve_hpc_name_in_workspace(
             ctx,
-            config=config,
             session=session,
             name=name,
             workspace=workspace,
@@ -1090,7 +1261,6 @@ def delete_hpc(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
         )
         browser_api_module.delete_hpc_job(job_id=job_id, session=session)
         workspace_id = select_workspace_id(
-            config,
             explicit_workspace_name=workspace,
             session=session,
         )
@@ -1107,14 +1277,12 @@ def delete_hpc(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
         if ctx.json_output:
             click.echo(json_formatter.format_json({"name": name, "status": "deleted"}))
             return
-        click.echo(human_formatter.format_success(f"HPC job deleted: {name}"))
+        click.echo(human_formatter.format_mutation_success("HPC", "deleted", name))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except SessionExpiredError as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 

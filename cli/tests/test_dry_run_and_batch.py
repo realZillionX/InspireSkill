@@ -247,14 +247,21 @@ def test_job_create_dry_run_resolves_plan_without_create_api(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"]["dry_run"] is True
     assert payload["data"]["name"] == "dry-job"
+    assert payload["data"]["workspace"] == "cpu"
+    assert payload["data"]["project"] == "Project One"
+    assert payload["data"]["compute_group"] == "H200 Room"
+    assert payload["data"]["resource"] == {
+        "gpu": 1,
+        "cpu": 20,
+        "memory_gib": 200,
+        "gpu_type": "H200",
+    }
     assert payload["data"]["enable_notification"] is False
     assert payload["data"]["exclude_nodes"] == [
         "qb-prod-gpu1736",
         "qb-prod-gpu1737",
     ]
-    assert payload["data"]["project_name"] == "Project One"
     _assert_public_batch_output(payload["data"])
     assert api.training_calls == []
 
@@ -329,7 +336,10 @@ def test_job_create_notification_reaches_live_create_payload(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["data"]["enable_notification"] is True
+    assert payload["data"] == {
+        "name": "notify-job",
+        "status": "created",
+    }
     assert api.training_calls[0]["enable_notification"] is True
     assert "enable_notification" not in api.training_calls[0]["framework_config"][0]
 
@@ -338,7 +348,7 @@ def test_training_plan_exclude_nodes_reads_top_level_payload() -> None:
     plan = job_submit.JobSubmissionPlan(
         create_kwargs={
             "exclude_nodes": ["qb-prod-gpu1736"],
-            "framework_config": [{"exclude_nodes": ["legacy-nested-node"]}],
+            "framework_config": [{"exclude_nodes": ["nested-node"]}],
         },
         log_path=None,
         wrapped_command="bash -c 'echo hi'",
@@ -390,7 +400,8 @@ def test_hpc_dry_run_human_scrubs_raw_ids(
     )
 
     assert result.exit_code == 0, result.output
-    assert "No HPC job was submitted." in result.output
+    assert result.output.startswith("Create plan: hpc-dry\n")
+    assert "No HPC job was submitted." not in result.output
     assert "lcg-12345678-1234-1234-1234-123456789abc" not in result.output
     assert "<redacted>" in result.output
     assert api.hpc_calls == []
@@ -422,7 +433,7 @@ def test_job_create_profile_fills_condition_fields(
     payload = json.loads(result.output)
     assert payload["data"]["name"] == "profile-job"
     assert payload["data"]["image"] == "registry.local/train:latest"
-    assert payload["data"]["project_name"] == "Project One"
+    assert payload["data"]["project"] == "Project One"
     _assert_public_batch_output(payload["data"])
     assert api.training_calls == []
 
@@ -453,7 +464,7 @@ def test_job_create_shm_size_overrides_config_default(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["data"]["shm_size_gib"] == 64
+    assert payload["data"]["shared_memory_gib"] == 64
     assert api.training_calls == []
 
 
@@ -481,7 +492,7 @@ def test_job_create_uses_config_shm_size_when_flag_absent(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["data"]["shm_size_gib"] == 48
+    assert payload["data"]["shared_memory_gib"] == 48
     assert api.training_calls == []
 
 
@@ -655,7 +666,6 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     payload = json.loads(result.output)
     items = payload["data"]["items"]
     assert [item["name"] for item in items] == ["train-s1", "train-s2"]
-    assert items[0]["kind"] == "job"
     assert items[0]["workspace"] == "cpu"
     assert items[0]["project"] == "Project One"
     assert items[0]["compute_group"] == "H200 Room"
@@ -667,8 +677,7 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert items[1]["shared_memory_gib"] == 96
     assert items[0]["priority"] == 7
     assert items[0]["notifications"] is True
-    assert items[0]["matrix"] == {"seed": 1}
-    assert set(payload["data"]) == {"dry_run", "items"}
+    assert set(payload["data"]) == {"items"}
     _assert_public_batch_output(payload["data"])
     assert api.training_calls == []
 
@@ -682,12 +691,12 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
             {"shown": 20, "total": 25, "truncated": True},
         ),
         (
-            ("--all-results",),
+            ("--all",),
             25,
             {},
         ),
         (
-            ("--result-limit", "7"),
+            ("--limit", "7"),
             7,
             {"shown": 7, "total": 25, "truncated": True},
         ),
@@ -712,17 +721,16 @@ def test_job_batch_result_output_budget_does_not_limit_execution(
     assert result.exit_code == 0, result.output
     assert len(api.training_calls) == 25
     payload = json.loads(result.output)["data"]
-    assert payload["dry_run"] is False
     assert [item["name"] for item in payload["items"]] == [
         f"train-{index}" for index in range(expected_shown)
     ]
-    assert set(payload) == {"dry_run", "items", *expected_metadata}
+    assert set(payload) == {"items", *expected_metadata}
     for key, value in expected_metadata.items():
         assert payload[key] == value
     _assert_public_batch_output(payload)
 
 
-def test_job_batch_rejects_result_limit_with_all_results_before_loading_batch(
+def test_job_batch_rejects_limit_with_all_before_loading_batch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -748,8 +756,8 @@ def test_job_batch_rejects_result_limit_with_all_results_before_loading_batch(
             "job",
             "batch",
             str(batch_path),
-            "--all-results",
-            "--result-limit",
+            "--all",
+            "--limit",
             "3",
         ],
     )
@@ -760,7 +768,7 @@ def test_job_batch_rejects_result_limit_with_all_results_before_loading_batch(
     assert payload["error"]["type"] == "ValidationError"
     assert (
         payload["error"]["message"]
-        == "Use either --result-limit or --all-results, not both."
+        == "Use either --limit or --all, not both."
     )
 
 
@@ -973,10 +981,9 @@ command = "python train.py --lr {lr}"
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["data"] == {
-        "dry_run": False,
         "items": [
-            {"kind": "job", "name": "train-1e-4"},
-            {"kind": "job", "name": "train-2e-4"},
+            {"name": "train-1e-4"},
+            {"name": "train-2e-4"},
         ],
     }
     _assert_public_batch_output(payload["data"])
@@ -1134,13 +1141,11 @@ def test_notebook_batch_matrix_dry_run_expands_json_without_submit(
     payload = json.loads(result.output)
     items = payload["data"]["items"]
     assert [item["name"] for item in items] == ["nb-s1", "nb-s2"]
-    assert items[0]["kind"] == "notebook"
     assert items[0]["workspace"] == "cpu"
     assert items[0]["project"] == "Project One"
     assert items[0]["compute_group"] == "H200 Room"
     assert items[0]["image"] == "registry.batch/notebook:latest"
     assert items[0]["shared_memory_gib"] == 32
-    assert items[0]["matrix"] == {"seed": 1}
     _assert_public_batch_output(payload["data"])
 
 

@@ -45,7 +45,6 @@ def _patch_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         username="user",
         password="pass",
         base_url="https://qz.sii.edu.cn",
-        log_cache_dir=str(tmp_path / "logs"),
     )
     monkeypatch.setattr(
         config_module.Config,
@@ -117,7 +116,7 @@ def test_job_quota_workspace_all_sweeps_visible_workspaces(
     result = CliRunner().invoke(cli_main, ["--json", "job", "quota", "--workspace", "all"])
     assert result.exit_code == 0, result.output
     payload = _json_data(result.output)
-    assert payload == {"quotas": []}
+    assert payload == {"items": []}
     assert "workload" not in payload
     assert "total" not in payload
     assert "workspace_names" not in payload
@@ -177,15 +176,15 @@ def test_quota_json_rows_carry_quota_and_no_ids(
     )
     assert result.exit_code == 0, result.output
     payload = _json_data(result.output)
-    row = payload["quotas"][0]
+    row = payload["items"][0]
     assert row.keys() == {
         "workspace",
-        "group",
+        "compute_group",
         "gpu_type",
         "quota",
     }
     assert row["workspace"] == "CPU资源空间"
-    assert row["group"] == "CPU资源-2"
+    assert row["compute_group"] == "CPU资源-2"
     assert row["quota"] == "0,4,16"
     assert "total" not in payload
     _assert_compact_public_payload(payload)
@@ -263,10 +262,10 @@ def test_qz_quota_hint_is_human_only(
 
     assert result.exit_code == 0, result.output
     payload = _json_data(result.output)
-    row = payload["quotas"][0]
+    row = payload["items"][0]
     assert row.keys() == {
         "workspace",
-        "group",
+        "compute_group",
         "gpu_type",
         "quota",
     }
@@ -369,16 +368,32 @@ def test_quota_help_explains_group_keyword() -> None:
     result = CliRunner().invoke(cli_main, ["job", "quota", "--help"])
     output = " ".join(result.output.split())
     assert result.exit_code == 0
-    assert "--workspace TEXT" in result.output
-    assert "--usage" not in result.output
+    assert "--workspace NAME|all" in result.output
     assert "compute group name keyword/substring" in output
     assert "full name is not required" in output
 
 
-def test_resources_specs_command_is_removed() -> None:
-    result = CliRunner().invoke(cli_main, ["resources", "specs", "--help"])
-    assert result.exit_code != 0
-    assert "No such command 'specs'" in result.output
+@pytest.mark.parametrize(
+    "workload",
+    ("notebook", "job", "hpc", "ray", "serving"),
+)
+def test_each_workload_quota_uses_workspace_name_or_all_metavar(
+    workload: str,
+) -> None:
+    result = CliRunner().invoke(cli_main, [workload, "quota", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--workspace NAME|all" in result.output
+    assert "--workspace TEXT" not in result.output
+
+
+@pytest.mark.parametrize("command", ("availability", "nodes"))
+def test_resource_queries_use_workspace_name_or_all_metavar(command: str) -> None:
+    result = CliRunner().invoke(cli_main, ["resources", command, "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--workspace NAME|all" in result.output
+    assert "--workspace TEXT" not in result.output
 
 
 def test_resources_availability_human_hides_raw_group_ids(
@@ -417,6 +432,22 @@ def test_resources_availability_human_hides_raw_group_ids(
     assert "Usage:" not in result.output
     assert "Legend:" not in result.output
     assert "lcg-secret-raw-id" not in result.output
+
+    json_result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "resources",
+            "availability",
+            "--workspace",
+            "CPU资源空间",
+        ],
+    )
+    assert json_result.exit_code == 0, json_result.output
+    row = _json_data(json_result.output)["items"][0]
+    assert row["compute_group"] == "中文资源组"
+    assert "group" not in row
+    _assert_compact_public_payload(row)
 
 
 def test_availability_prefers_cluster_basic_info_and_node_dimension(

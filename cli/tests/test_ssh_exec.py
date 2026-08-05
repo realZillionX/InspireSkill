@@ -268,6 +268,68 @@ def test_run_ssh_command_streaming_pass_stdin_does_not_write_script(
     assert captured["kwargs"]["stdin"] is None
 
 
+def test_run_ssh_command_streaming_default_output_scrubs_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import click
+    import inspire.bridge.tunnel.ssh_exec as ssh_exec_module
+
+    monkeypatch.setattr(ssh_exec_module, "_resolve_bridge_and_proxy", _stub_resolve)
+
+    class FakeStdin:
+        def write(self, text: str) -> None:
+            del text
+
+        def close(self) -> None:
+            return None
+
+    class FakeStdout:
+        def __init__(self) -> None:
+            self.lines = iter(["ok job-1234abcd\n", "done\n"])
+
+        def readline(self) -> str:
+            return next(self.lines, "")
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdin = FakeStdin()
+            self.stdout = FakeStdout()
+            self.returncode = 0
+            self.poll_calls = 0
+
+        def poll(self) -> int | None:
+            self.poll_calls += 1
+            return None if self.poll_calls < 3 else self.returncode
+
+        def terminate(self) -> None:
+            return None
+
+        def wait(self) -> int:
+            return self.returncode
+
+    monkeypatch.setattr(
+        ssh_exec_module.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProcess(),
+    )
+    monkeypatch.setattr(
+        ssh_exec_module.select,
+        "select",
+        lambda read, write, error, timeout: (read, write, error),
+    )
+    emitted: list[str] = []
+    monkeypatch.setattr(
+        click,
+        "echo",
+        lambda message="", **kwargs: emitted.append(str(message)),
+    )
+
+    assert run_ssh_command_streaming("echo hello") == 0
+    output = "".join(emitted)
+    assert output == "ok <redacted>\ndone\n"
+    assert "job-1234abcd" not in output
+
+
 def test_remote_cwd_resolves_path_alias() -> None:
     cwd = resolve_remote_cwd(
         cwd="me:repo",

@@ -10,9 +10,6 @@ def test_cli_help_includes_top_level_groups() -> None:
     assert result.exit_code == 0
     for group in ("job", "notebook", "image", "resources", "hpc"):
         assert group in result.output, f"missing: {group}\n{result.output}"
-    # bridge / tunnel were merged into notebook
-    assert "bridge" not in result.output
-    assert "tunnel" not in result.output
 
 
 def test_job_help_includes_key_subcommands() -> None:
@@ -40,26 +37,20 @@ def test_notebook_help_includes_key_subcommands() -> None:
         "lifecycle",
     ):
         assert sub in result.output, f"missing: {sub}\n{result.output}"
-    for removed in ("connections", "refresh", "forget", "test", "top"):
-        assert f"\n  {removed} " not in result.output
-    removed_default_cmd = "set" + "-default"
-    assert removed_default_cmd not in result.output
+    assert "connection" in result.output
 
 
-def test_notebook_ssh_help_is_human_ssh_entrypoint_without_compat_commands() -> None:
+def test_notebook_ssh_help_is_human_ssh_entrypoint() -> None:
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "ssh", "--help"])
     assert result.exit_code == 0
     assert "OpenSSH access for public-internet notebooks." in result.output
-    for subcommand in ("connect", "refresh", "forget", "test"):
-        assert f"\n  {subcommand} " not in result.output
-    for removed in ("list", "status", "exec", "shell", "scp", "install-deps"):
-        assert f"\n  {removed} " not in result.output
+    assert "NAME" in result.output
+    assert "--workspace NAME" in result.output
+    assert "--wait / --no-wait" in result.output
     assert "bootstrap" not in result.output.lower()
     assert "rtunnel" not in result.output.lower()
     assert "sshd" not in result.output.lower()
-    assert "--save-as" not in result.output
-    assert "--alias" not in result.output
 
 
 def test_hpc_help_includes_key_subcommands() -> None:

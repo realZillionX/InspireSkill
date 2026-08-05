@@ -17,11 +17,11 @@
 
 | 目标 | 路径 | 判断 |
 | --- | --- | --- |
-| 使用官方或已有自定义镜像 | list / detail | 镜像存在、状态可调度、权限可见 |
-| 固化运行中的 Notebook | `save` | 依赖是在平台 Notebook 里装好的 |
-| 纳入外部 Docker 镜像 | `register` | 镜像在本地、CI 或外部 Registry 构建完成 |
-| 调整共享范围 | set visibility | 协作者需要复用，或实验镜像应收回私有 |
-| 删除镜像 | delete | 确认没有活跃 workload 或协作者依赖 |
+| 使用官方或已有自定义镜像 | `image list` / `image detail` | 镜像存在、状态可调度、权限可见 |
+| 固化运行中的 Notebook | `image save` | 依赖是在平台 Notebook 里装好的 |
+| 纳入外部 Docker 镜像 | `image register` | 镜像在本地、CI 或外部 Registry 构建完成 |
+| 调整共享范围 | `image set-visibility` | 协作者需要复用，或实验镜像应收回私有 |
+| 删除镜像 | `image delete` | 确认没有活跃 Workload 或协作者依赖 |
 
 镜像刚保存或刚注册时，不要只看创建命令成功；必须等到 `READY` 后再用于调度。
 

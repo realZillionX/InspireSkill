@@ -20,6 +20,8 @@ from inspire.cli.utils.resource_index import (
 
 logger = logging.getLogger(__name__)
 
+NAME_PICK_HELP = "Pick the Nth candidate (1-indexed) when the name is ambiguous."
+
 _STALE_HANDLE_INVALIDATION: ContextVar[bool] = ContextVar(
     "inspire_stale_handle_invalidation",
     default=False,
@@ -115,7 +117,6 @@ def resolve_by_name(
     name: str,
     resource_type: str,
     list_candidates: Callable[[], Iterable[dict[str, Any]]],
-    json_output: bool = False,
     name_key: str = "name",
     id_key: str = "id",
     label_fn: Optional[Callable[[dict[str, Any]], str]] = None,
@@ -146,7 +147,7 @@ def resolve_by_name(
     per-account SQLite identity-index hit avoids the live list request.
     Destructive commands pass ``require_live=True``. Successful live lookups
     reconcile the exact name so a deleted-and-recreated resource immediately
-    replaces its old internal handle. ``reconcile_scope=True`` is reserved for
+    replaces its previous internal handle. ``reconcile_scope=True`` is reserved for
     callers that fetched a complete, unfiltered scope.
     """
     name = (name or "").strip()
@@ -163,7 +164,7 @@ def resolve_by_name(
         exit_with_error(
             ctx,
             "ValidationError",
-            f"CLI commands only accept a {resource_type} name.",
+            f"CLI commands only accept {resource_type} names.",
             EXIT_VALIDATION_ERROR,
             hint=f"Find the name with `{list_command or f'inspire {resource_type} list'}`.",
         )
@@ -397,8 +398,7 @@ def _select_name_match(
     if len(matches) == 1:
         return str(matches[0].get(id_key) or "")
 
-    # Ambiguity escape hatch for destructive cleanup: --pick <N> picks the
-    # Nth candidate (1-indexed, matching the ambiguity-error list order).
+    # --pick <N> selects the Nth candidate in the displayed order.
     if pick_index is not None:
         if pick_index < 1 or pick_index > len(matches):
             exit_with_error(
@@ -435,9 +435,9 @@ def _select_name_match(
         f"{len(matches)} {resource_type}s share the name {name!r}:\n" + "\n".join(lines),
         EXIT_VALIDATION_ERROR,
         hint=(
-            "For destructive cleanup (stop / delete) you can pass `--pick <N>` "
-            "to select one of the candidates above (1-indexed). For read-only "
-            "queries (status / events / instances) rename one of the duplicates."
+            "Where supported, pass `--pick <N>` to select one of the candidates "
+            "above (1-indexed). Otherwise narrow the workspace scope or rename "
+            "one of the duplicates."
         ),
     )
     return ""  # unreachable
@@ -570,7 +570,7 @@ def run_with_stale_handle_retry(
     """Run one handle operation and recover once from an explicit stale handle.
 
     ``resolve_cached`` supplies the fast cached handle. If ``operation`` fails
-    with a precise 404/not-found/invalid-resource error, the old handle is
+    with a precise 404/not-found/invalid-resource error, the previous handle is
     tombstoned through ``invalidate`` before ``resolve_live(name)`` obtains a
     fresh handle for exactly one retry. All other failures, including timeout,
     5xx, and authentication errors, propagate without repeating the operation.
@@ -711,7 +711,7 @@ def reject_id_at_boundary(
         exit_with_error(
             ctx,
             "ValidationError",
-            f"CLI commands only accept a {resource_type} name.",
+            f"CLI commands only accept {resource_type} names.",
             EXIT_VALIDATION_ERROR,
             hint=f"Find the name with `{list_command}` and pass that.",
         )

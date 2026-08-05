@@ -21,13 +21,11 @@ from .rtunnel import (
     DEFAULT_RTUNNEL_DOWNLOAD_URL,
     _ensure_rtunnel_binary,
     _get_rtunnel_download_url,
-    get_rtunnel_path,
 )
 from .ssh import (
     _get_proxy_command,
     _test_ssh_connection,
     exec_rtunnel_proxy,
-    get_tunnel_status,
     is_tunnel_available,
 )
 from .scp import run_scp_transfer
@@ -54,13 +52,11 @@ __all__ = [
     "DEFAULT_RTUNNEL_DOWNLOAD_URL",
     "_ensure_rtunnel_binary",
     "_get_rtunnel_download_url",
-    "get_rtunnel_path",
     # SSH helpers
     "_get_proxy_command",
     "_test_ssh_connection",
     "exec_rtunnel_proxy",
     "get_ssh_command_args",
-    "get_tunnel_status",
     "is_tunnel_available",
     "run_scp_transfer",
     "run_ssh_command",

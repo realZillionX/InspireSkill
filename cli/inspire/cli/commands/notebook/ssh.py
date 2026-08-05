@@ -1,4 +1,4 @@
-"""SSH-related notebook command group."""
+"""Notebook SSH command."""
 
 from __future__ import annotations
 
@@ -7,47 +7,38 @@ import shlex
 import click
 
 from inspire.cli.context import Context, pass_context
-from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 
 from .notebook_ssh_flow import run_notebook_ssh
+from .target_resolver import NOTEBOOK_TARGET_WORKSPACE_HELP, validate_specific_workspace
 from .transport import emit_ssh_policy_error, preflight_notebook_transport_policy
 
 
-_LEGACY_SSH_SUBCOMMANDS = {
-    "connect": "Use `inspire notebook ssh <name> --workspace <workspace>` to open SSH, "
-    "or `inspire notebook connection refresh <name> --workspace <workspace>` to "
-    "refresh the cache.",
-    "test": "Use `inspire notebook connection status <name>`.",
-    "refresh": "Use `inspire notebook connection refresh <name> --workspace <workspace>`.",
-    "forget": "Use `inspire notebook connection forget <name>`.",
-}
-
-
-class NotebookSSHGroup(click.Group):
-    """Click group that treats unknown first tokens as notebook names."""
-
-    def resolve_command(self, ctx: click.Context, args: list[str]):
-        if args and args[0] in _LEGACY_SSH_SUBCOMMANDS:
-            hint = _LEGACY_SSH_SUBCOMMANDS[args[0]]
-            raise click.UsageError(
-                f"`inspire notebook ssh {args[0]}` has been removed. {hint} "
-                f"If a notebook is literally named '{args[0]}', run "
-                f"`inspire notebook ssh open {args[0]}`."
-            )
-        if args and args[0] not in self.commands and not args[0].startswith("-"):
-            return "open", self.commands["open"], args
-        return super().resolve_command(ctx, args)
-
-
 @click.command(
-    "open",
-    hidden=True,
+    "ssh",
     context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
 )
-@click.argument("notebook")
-@click.argument("command_parts", nargs=-1, type=click.UNPROCESSED)
-@click.option("--workspace", required=False, help="Workspace name.")
-@click.option("--account", required=False, help="Account name for this notebook target.")
+@click.argument("notebook", metavar="NAME")
+@click.argument(
+    "command_parts",
+    metavar="COMMAND...",
+    nargs=-1,
+    type=click.UNPROCESSED,
+)
+@click.option(
+    "--workspace",
+    required=False,
+    metavar="NAME",
+    callback=validate_specific_workspace,
+    help=NOTEBOOK_TARGET_WORKSPACE_HELP,
+)
+@click.option(
+    "--account",
+    required=False,
+    metavar="NAME",
+    help="Account name for this notebook target.",
+)
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
@@ -89,12 +80,13 @@ class NotebookSSHGroup(click.Group):
     help="Timeout in seconds for notebook connection setup",
 )
 @pass_context
-def _ssh_open(
+def notebook_ssh(
     ctx: Context,
     notebook: str,
     command_parts: tuple[str, ...],
     workspace: str | None,
     account: str | None,
+    pick: int | None,
     ignore_target_cache: bool,
     wait: bool,
     pubkey: str | None,
@@ -104,7 +96,13 @@ def _ssh_open(
     debug_playwright: bool,
     setup_timeout: int,
 ) -> None:
-    """Open an SSH shell or run a command on a notebook."""
+    """OpenSSH access for public-internet notebooks.
+
+    Use `inspire notebook ssh <notebook>` for an interactive shell, or
+    `inspire notebook ssh <notebook> -- <command>` for a one-shot command.
+    Restricted notebooks use `inspire notebook shell` instead.
+    Cached connection management is available through `inspire notebook connection`.
+    """
     notebook = reject_id_at_boundary(
         ctx,
         notebook,
@@ -119,6 +117,7 @@ def _ssh_open(
             workspace=workspace,
             account=account,
             timeout=min(setup_timeout, 30),
+            pick=pick,
         )
         if not policy.allow_ssh:
             raise SystemExit(emit_ssh_policy_error(ctx, policy))
@@ -136,21 +135,5 @@ def _ssh_open(
         setup_timeout=setup_timeout,
         account=account,
         ignore_target_cache=ignore_target_cache,
+        pick=pick,
     )
-
-
-@click.group("ssh", cls=NotebookSSHGroup)
-def notebook_ssh() -> None:
-    """OpenSSH access for public-internet notebooks.
-
-    Use `inspire notebook ssh <notebook>` for an interactive shell, or
-    `inspire notebook ssh <notebook> -- <command>` for a one-shot command.
-    Restricted notebooks use `inspire notebook shell` instead.
-    Cached connection management is available through `inspire notebook connection`.
-    """
-
-
-notebook_ssh.add_command(_ssh_open, name="open")
-
-
-__all__ = ["notebook_ssh"]

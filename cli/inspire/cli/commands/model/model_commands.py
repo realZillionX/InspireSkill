@@ -15,9 +15,11 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
-from inspire.cli.formatters.human_formatter import format_epoch
+from inspire.cli.formatters.human_formatter import (
+    format_epoch,
+    format_mutation_success,
+)
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.collection_output import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
@@ -26,7 +28,9 @@ from inspire.cli.utils.collection_output import (
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import (
+    NAME_PICK_HELP,
     forget_resource_identity,
+    reject_id_at_boundary,
     remember_resource_identity,
     resolve_by_name,
     run_with_stale_handle_retry,
@@ -34,15 +38,19 @@ from inspire.cli.utils.id_resolver import (
 from inspire.cli.utils.project_resolver import resolve_project_id as resolve_project_id_by_name
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
-from inspire.config.workspaces import select_workspace_id
+from inspire.config.workspaces import (
+    resolve_workspace_query_scope,
+    select_workspace_id,
+    workspace_name_map,
+)
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import get_web_session
+from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 
-def _resolve_workspace_id(config: Config, workspace: Optional[str], *, session=None) -> Optional[str]:
+def _resolve_workspace_id(workspace: Optional[str], *, session=None) -> Optional[str]:
     if workspace is None:
         return None
-    return select_workspace_id(config, explicit_workspace_name=workspace, session=session)
+    return select_workspace_id(explicit_workspace_name=workspace, session=session)
 
 
 def _resolve_project_id(
@@ -130,30 +138,69 @@ def _string_values(value: Any) -> list[str]:
     return [text] if text else []
 
 
+_IDENTITY_NAME_KEYS = (
+    "created_by_name",
+    "creator_name",
+    "owner_name",
+)
+_IDENTITY_OBJECT_KEYS = (
+    "created_by",
+    "creator",
+    "owner",
+    "user",
+)
+
+
+def _explicit_identity_name(*payloads: Any) -> str:
+    """Return only an explicitly projected display name from API payloads.
+
+    The model API also exposes login-oriented scalar fields such as
+    ``user_name``/``username``/``login_name``.  Those are identifiers, not
+    display-name projections, so they must never be used as CLI owner text.
+    Likewise, scalar ``owner``/``creator``/``created_by`` values are ignored.
+    """
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        for key in _IDENTITY_NAME_KEYS:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return scrub_raw_ids(value).strip()
+        for key in _IDENTITY_OBJECT_KEYS:
+            identity = payload.get(key)
+            if not isinstance(identity, dict):
+                continue
+            for name_key in ("name", "display_name"):
+                value = identity.get(name_key)
+                if isinstance(value, str) and value.strip():
+                    return scrub_raw_ids(value).strip()
+    return ""
+
+
 def _format_model_rows(rows: list[dict[str, str]]) -> str:
     """Render a compact model-registry list."""
     if not rows:
         return "No models found."
-    values = [
-        (
-            row["name"],
-            row["version"],
-            row["status"],
-            row["project"],
-            row["updated_at"],
-        )
-        for row in rows
-    ]
+    include_workspace = any(row.get("workspace") for row in rows)
+    fields = ["name", "version", "status", "project"]
+    headers = ["Name", "Version", "Status", "Project"]
+    max_widths = [48, 12, 16, 36]
+    if include_workspace:
+        fields.append("workspace")
+        headers.append("Workspace")
+        max_widths.append(32)
+    fields.append("updated_at")
+    headers.append("Updated")
+    max_widths.append(20)
+
+    values = [tuple(row.get(field, "-") for field in fields) for row in rows]
     widths = [
-        column_width("Name", [row[0] for row in values], max_width=48),
-        column_width("Version", [row[1] for row in values], max_width=12),
-        column_width("Status", [row[2] for row in values], max_width=16),
-        column_width("Project", [row[3] for row in values], max_width=36),
-        column_width("Updated", [row[4] for row in values], max_width=20),
+        column_width(header, [row[index] for row in values], max_width=max_width)
+        for index, (header, max_width) in enumerate(zip(headers, max_widths))
     ]
     return "\n".join(
         render_table(
-            ("Name", "Version", "Status", "Project", "Updated"),
+            tuple(headers),
             values,
             widths,
             line_char="─",
@@ -161,16 +208,27 @@ def _format_model_rows(rows: list[dict[str, str]]) -> str:
     )
 
 
-def _model_list_view(model: browser_api_module.ModelInfo) -> dict[str, str]:
+def _model_list_view(
+    model: browser_api_module.ModelInfo,
+    *,
+    workspace: str,
+) -> dict[str, str]:
+    raw = model.raw if isinstance(model.raw, dict) else {}
+    model_payload = raw.get("model")
+    inner = model_payload if isinstance(model_payload, dict) else {}
+    created_by = _explicit_identity_name(raw, inner)
     view = {
         "name": scrub_raw_ids(model.name),
-        "version": scrub_raw_ids(_version_label(model.latest_version)),
         "status": scrub_raw_ids(_status_label(model.status)),
         "project": scrub_raw_ids(model.project_name),
+        "workspace": scrub_raw_ids(workspace),
+        "version": scrub_raw_ids(_version_label(model.latest_version)),
         "updated_at": scrub_raw_ids(
             format_epoch(model.updated_at) if model.updated_at else ""
         ),
     }
+    if created_by:
+        view["created_by"] = created_by
     return {key: value for key, value in view.items() if value and value != "-"}
 
 
@@ -223,7 +281,7 @@ def _model_detail_view(
         ),
         "published": bool(inner.get("has_published")),
         "project": scrub_raw_ids(data.get("project_name") or ""),
-        "owner": scrub_raw_ids(data.get("user_name") or ""),
+        "owner": _explicit_identity_name(data, inner),
         "created_at": (
             format_epoch(inner.get("created_at")) if inner.get("created_at") else ""
         ),
@@ -335,6 +393,12 @@ def _resolve_model_name(
     session=None,  # noqa: ANN001
     require_live: bool = False,
 ) -> str:
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="model",
+        list_command="inspire model list --workspace <workspace>",
+    )
     live_session = session or get_web_session()
 
     def _lister():
@@ -363,7 +427,6 @@ def _resolve_model_name(
         name=name,
         resource_type="model",
         list_candidates=_lister,
-        json_output=ctx.json_output,
         pick_index=pick,
         session=live_session,
         workspace_id=str(workspace_id or ""),
@@ -374,9 +437,19 @@ def _resolve_model_name(
 
 
 @click.command("list")
-@click.option("--workspace", required=True, help="Workspace name")
-@click.option("--project", default=None, help="Project name filter")
-@click.option("--keyword", default=None, help="Server-side model name/description search")
+@click.option(
+    "--workspace",
+    required=True,
+    metavar="NAME|all",
+    help="Workspace name or 'all'.",
+)
+@click.option("--project", default=None, metavar="NAME", help="Project name filter")
+@click.option(
+    "--keyword",
+    default=None,
+    metavar="KEYWORD",
+    help="Server-side model name/description search",
+)
 @click.option(
     "--limit",
     "-n",
@@ -412,41 +485,75 @@ def list_model(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        resolved_workspace = _resolve_workspace_id(config, workspace, session=session)
-        project_id = _resolve_project_id(
-            config, project, workspace_id=resolved_workspace, session=session
-        )
-        user_id = _current_user_id(session)
-        items, total = browser_api_module.list_models(
-            workspace_id=resolved_workspace,
-            page=1,
-            page_size=request_limit,
-            keyword=keyword,
-            project_ids=[project_id] if project_id else None,
-            user_id=user_id,
+        workspace_ids, all_workspaces = resolve_workspace_query_scope(
+            workspace=workspace,
             session=session,
         )
-        if show_all and total > len(items):
-            items, expanded_total = browser_api_module.list_models(
-                workspace_id=resolved_workspace,
+        workspace_names = workspace_name_map(session)
+        user_id = _current_user_id(session)
+        items: list[tuple[browser_api_module.ModelInfo, str, str]] = []
+        total = 0
+        matched_project_scope = project is None
+        for workspace_id in workspace_ids:
+            try:
+                project_id = _resolve_project_id(
+                    config,
+                    project,
+                    workspace_id=workspace_id,
+                    session=session,
+                )
+            except ConfigError as e:
+                if all_workspaces and str(e).startswith("Unknown project name "):
+                    continue
+                raise
+            matched_project_scope = True
+            workspace_items, workspace_total = browser_api_module.list_models(
+                workspace_id=workspace_id,
                 page=1,
-                page_size=max(total, len(items), 1),
+                page_size=request_limit,
                 keyword=keyword,
                 project_ids=[project_id] if project_id else None,
                 user_id=user_id,
                 session=session,
             )
-            total = max(total, expanded_total, len(items))
+            if show_all and workspace_total > len(workspace_items):
+                workspace_items, expanded_total = browser_api_module.list_models(
+                    workspace_id=workspace_id,
+                    page=1,
+                    page_size=max(workspace_total, len(workspace_items), 1),
+                    keyword=keyword,
+                    project_ids=[project_id] if project_id else None,
+                    user_id=user_id,
+                    session=session,
+                )
+                workspace_total = max(
+                    workspace_total,
+                    expanded_total,
+                    len(workspace_items),
+                )
+            workspace_name = workspace_names.get(workspace_id) or ("(workspace name unavailable)")
+            items.extend((model, workspace_name, workspace_id) for model in workspace_items)
+            total += max(workspace_total, len(workspace_items))
+        if not matched_project_scope:
+            raise ConfigError(f"Unknown project name {project!r} in the requested workspaces.")
+        if all_workspaces:
+            items.sort(
+                key=lambda item: str(item[0].updated_at or item[0].created_at or ""),
+                reverse=True,
+            )
 
-        views = [_model_list_view(model) for model in items]
+        views: list[dict[str, str]] = []
+        for model, workspace_name, _workspace_id in items:
+            view = _model_list_view(model, workspace=workspace_name)
+            views.append(view)
         page = bound_collection(views, limit=effective_limit, total=total)
-        for model in items:
+        for model, _workspace_name, workspace_id in items:
             remember_resource_identity(
                 session=session,
                 resource_type="model",
                 resource_id=model.model_id,
                 name=model.name,
-                workspace_id=str(resolved_workspace or ""),
+                workspace_id=workspace_id,
                 owner_scope="self",
                 status=model.status,
                 created_at=model.created_at,
@@ -455,7 +562,7 @@ def list_model(
             click.echo(
                 json_formatter.format_json(
                     {
-                        "models": page.items,
+                        "items": page.items,
                         **page.metadata(),
                     }
                 )
@@ -472,6 +579,9 @@ def list_model(
             }
             for view in page.items
         ]
+        if all_workspaces:
+            for row, view in zip(rows, page.items):
+                row["workspace"] = view.get("workspace", "-")
         click.echo(_format_model_rows(rows))
         notice = truncation_notice(page, full_option="--all")
         if notice:
@@ -479,17 +589,22 @@ def list_model(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
 
 @click.command("status")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name")
-@click.option("--project", default=None, help="Project name filter")
-@click.option("--pick", type=click.IntRange(1), default=None, help="Pick Nth duplicate name (1-indexed)")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--project", default=None, metavar="NAME", help="Project name filter")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @pass_context
 def status_model(
     ctx: Context,
@@ -503,10 +618,16 @@ def status_model(
     Includes latest version status, tags, model type, vLLM readiness,
     publication flag, owner, project, and timestamps when present.
     """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="model",
+        list_command="inspire model list --workspace <workspace>",
+    )
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_id = _resolve_workspace_id(config, workspace, session=session)
+        workspace_id = _resolve_workspace_id(workspace, session=session)
         project_id = _resolve_project_id(
             config, project, workspace_id=workspace_id, session=session
         )
@@ -572,17 +693,22 @@ def status_model(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
 
 @click.command("versions")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name")
-@click.option("--project", default=None, help="Project name filter")
-@click.option("--pick", type=click.IntRange(1), default=None, help="Pick Nth duplicate name (1-indexed)")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--project", default=None, metavar="NAME", help="Project name filter")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @click.option(
     "--limit",
     "-n",
@@ -607,6 +733,12 @@ def versions_model(
     `--model-version`; omit the version on serving create to use the latest
     version shown by model listing.
     """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="model",
+        list_command="inspire model list --workspace <workspace>",
+    )
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
     except ValueError as e:
@@ -616,7 +748,7 @@ def versions_model(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_id = _resolve_workspace_id(config, workspace, session=session)
+        workspace_id = _resolve_workspace_id(workspace, session=session)
         project_id = _resolve_project_id(
             config, project, workspace_id=workspace_id, session=session
         )
@@ -675,7 +807,7 @@ def versions_model(
                 json_formatter.format_json(
                     {
                         "name": scrub_raw_ids(name),
-                        "versions": page.items,
+                        "items": page.items,
                         **page.metadata(),
                     }
                 )
@@ -693,30 +825,42 @@ def versions_model(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
 
 @click.command("register")
-@click.option("--name", "-n", required=True, help="Model name")
-@click.option("--source-path", required=True, help="Platform-visible model directory on shared storage")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.option("--name", "-n", required=True, metavar="NAME", help="Model name")
+@click.option(
+    "--source-path",
+    required=True,
+    metavar="PATH",
+    help="Platform-visible model directory on shared storage",
+)
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--project",
     "-p",
     required=True,
+    metavar="NAME",
     help="Project name.",
 )
 @click.option(
     "--type",
     "model_type",
     multiple=True,
+    metavar="TYPE",
     help="Model type segment; pass twice for category + task",
 )
-@click.option("--tag", "tags", multiple=True, help="Custom model tag")
-@click.option("--description", default="", help="Model description")
+@click.option("--tag", "tags", multiple=True, metavar="TAG", help="Custom model tag")
+@click.option(
+    "--description",
+    default="",
+    metavar="DESCRIPTION",
+    help="Model description",
+)
 @pass_context
 def register_model(
     ctx: Context,
@@ -737,7 +881,7 @@ def register_model(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_id = _resolve_workspace_id(config, workspace, session=session)
+        workspace_id = _resolve_workspace_id(workspace, session=session)
         if not workspace_id:
             raise ConfigError("Missing workspace.")
         requested_project = project
@@ -785,11 +929,11 @@ def register_model(
             )
             return
 
-        click.echo(f"Model registered: {scrub_raw_ids(name)}")
+        click.echo(format_mutation_success("Model", "registered", name))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)

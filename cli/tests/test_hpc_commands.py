@@ -20,7 +20,13 @@ class DummyHPCAPI:
     ) -> dict[str, Any]:
         del session
         self.calls["create_hpc_job"] = payload
-        return {"job_id": "hpc-job-123", "status": "QUEUING"}
+        return {
+            "job_id": "hpc-job-123",
+            "name": "backend-name",
+            "status": "QUEUING",
+            "message": "backend message",
+            "request": {"trace_id": "trace-internal"},
+        }
 
     def get_hpc_job_detail(self, job_id: str, session: object | None = None) -> dict[str, Any]:
         del session
@@ -38,7 +44,6 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        log_cache_dir=str(tmp_path / "logs"),
     )
     config.projects = {"alias-project": "Project"}
     config.compute_groups = [{"id": "lcg-123", "name": "CG-123"}]
@@ -124,6 +129,31 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     return api
 
 
+@pytest.mark.parametrize(
+    ("command", "metavar"),
+    [
+        ("list", "NAME|all"),
+        ("create", "NAME"),
+        ("quota", "NAME|all"),
+        ("status", "NAME"),
+        ("instances", "NAME"),
+        ("stop", "NAME"),
+        ("delete", "NAME"),
+        ("events", "NAME"),
+        ("metrics", "NAME"),
+    ],
+)
+def test_hpc_workspace_help_uses_name_metavars(
+    command: str,
+    metavar: str,
+) -> None:
+    result = CliRunner().invoke(cli_main, ["hpc", command, "--help"])
+
+    assert result.exit_code == 0
+    assert f"--workspace {metavar}" in result.output
+    assert "--workspace TEXT" not in result.output
+
+
 def test_hpc_create_json_uses_alias_resolution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -160,10 +190,15 @@ def test_hpc_create_json_uses_alias_resolution(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"]["status"] == "QUEUING"
-    assert "job_id" not in payload["data"]
-    assert "source" not in payload["data"]
-    assert "result" not in payload["data"]
+    assert payload["data"] == {
+        "name": "hpc-demo",
+        "status": "created",
+    }
+    assert "hpc-job-123" not in result.output
+    assert "backend-name" not in result.output
+    assert "QUEUING" not in result.output
+    assert "backend message" not in result.output
+    assert "trace-internal" not in result.output
 
     call = api.calls["create_hpc_job"]
     assert call["job_name"] == "hpc-demo"
@@ -225,7 +260,7 @@ def test_hpc_create_help_highlights_slurm_body() -> None:
     assert "gpu,cpu,mem" in result.output
 
 
-def test_hpc_create_human_output_includes_priority(
+def test_hpc_create_human_output_is_compact(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     patch_hpc_config_and_auth(monkeypatch, tmp_path)
@@ -256,8 +291,7 @@ def test_hpc_create_human_output_includes_priority(
     )
 
     assert result.exit_code == 0, result.output
-    assert "Requested Priority: 7" in result.output
-    assert "Entry:     srun python train.py" in result.output
+    assert result.output == "OK HPC created: hpc-demo\n"
 
 
 def test_hpc_create_rejects_priority_11() -> None:
@@ -316,7 +350,7 @@ def test_hpc_create_rejects_full_slurm_script(
     assert "HPC entrypoint must be the Slurm body" in result.output
 
 
-def test_hpc_status_human_output_shows_priority_fields(
+def test_hpc_status_human_output_is_compact_and_name_only(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     api = patch_hpc_config_and_auth(monkeypatch, tmp_path)
@@ -327,25 +361,79 @@ def test_hpc_status_human_output_shows_priority_fields(
         "job_id": job_id,
         "name": "hpc-demo",
         "status": "RUNNING",
+        "project_name": "Project",
+        "logic_compute_group_name": "CPU Group",
+        "resource_spec_price": {
+            "cpu_count": 32,
+            "memory_size_gib": 256,
+            "gpu_count": 0,
+            "quota_id": "quota-hidden",
+        },
         "priority": 7,
         "priority_name": "7",
         "priority_level": "HIGH",
+        "created_at": "1770000000",
+        "updated_at": "1770000100",
+        "request_id": "trace-hidden",
+        "internal_path": "/internal/hpc-job-123",
     }
     runner = CliRunner()
 
     result = runner.invoke(cli_main, ["hpc", "status", "hpc-demo", "--workspace", "cpu-room"])
 
     assert result.exit_code == 0
-    assert "Requested Priority: 7" in result.output
-    assert "Priority Name: 7" in result.output
+    assert "HPC Job Status" not in result.output
+    assert "Name: hpc-demo" in result.output
+    assert "Status: RUNNING" in result.output
+    assert "Project: Project" in result.output
+    assert "Compute Group: CPU Group" in result.output
+    assert "Resource: 32 CPU, 256 GiB, 0 GPU" in result.output
+    assert "Created: 1770000000" in result.output
+    assert "Updated: 1770000100" in result.output
+    assert "hpc-job-123" not in result.output
+    assert "quota-hidden" not in result.output
+    assert "trace-hidden" not in result.output
+    assert "/internal/hpc-job-123" not in result.output
+    assert "Priority: 7" in result.output
     assert "Priority Level: HIGH" in result.output
+    assert "Priority Name:" not in result.output
 
 
-def test_hpc_status_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    api = patch_hpc_config_and_auth(monkeypatch, tmp_path)
+def test_hpc_status_json_uses_stable_public_projection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
     from inspire.cli.commands.hpc import hpc_commands as hpc_mod
 
     monkeypatch.setattr(hpc_mod, "_resolve_hpc_name_in_workspace", lambda *a, **kw: "hpc-job-123")
+    detail_calls: list[str] = []
+
+    def _detail(job_id: str, session: object | None = None) -> dict[str, Any]:
+        del session
+        detail_calls.append(job_id)
+        return {
+            "job_id": job_id,
+            "name": "hpc-demo",
+            "status": "RUNNING",
+            "project_name": "Project",
+            "resource": {
+                "cpu_count": 32,
+                "memory_size_gib": 256,
+                "gpu_count": 1,
+                "gpu_info": {
+                    "gpu_type_display": "NVIDIA H200",
+                    "gpu_type": "NVIDIA_H200_INTERNAL",
+                },
+            },
+            "created_at": "1770000000",
+            "updated_at": "1770000100",
+            "finished_at": None,
+            "payload": {"request_id": "trace-hidden"},
+            "workspace_id": "ws-hidden",
+            "logic_compute_group_id": "lcg-hidden",
+        }
+
+    monkeypatch.setattr(hpc_mod.browser_api_module, "get_hpc_job_detail", _detail)
     runner = CliRunner()
 
     result = runner.invoke(cli_main, ["--json", "hpc", "status", "hpc-demo", "--workspace", "cpu-room"])
@@ -353,9 +441,24 @@ def test_hpc_status_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"]["status"] == "RUNNING"
+    assert payload["data"] == {
+        "name": "hpc-demo",
+        "status": "RUNNING",
+        "project": "Project",
+        "resource": {
+            "cpu": 32,
+            "memory_gib": 256,
+            "gpu": 1,
+            "gpu_type": "NVIDIA H200",
+        },
+        "created_at": "1770000000",
+        "updated_at": "1770000100",
+    }
     assert "job_id" not in payload["data"]
-    assert api.calls["get_hpc_job_detail"] == "hpc-job-123"
+    assert "workspace_id" not in payload["data"]
+    assert "logic_compute_group_id" not in payload["data"]
+    assert "trace-hidden" not in result.output
+    assert detail_calls == ["hpc-job-123"]
 
 
 @pytest.mark.parametrize("command", ["status", "events", "instances", "stop", "delete"])
@@ -443,9 +546,109 @@ def test_hpc_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert "total" not in payload["data"]
-    assert payload["data"]["jobs"][0]["name"] == "prep"
-    assert "job_id" not in payload["data"]["jobs"][0]
-    assert "workspace_id" not in payload["data"]["jobs"][0]
+    row = payload["data"]["items"][0]
+    assert row == {
+        "name": "prep",
+        "status": "RUNNING",
+        "project": "Project 1",
+        "workspace": "cpu-room",
+        "compute_group": "CPU资源-2",
+        "created_by": "tester",
+    }
+    assert "job_id" not in row
+    assert "workspace_id" not in row
+
+
+def test_hpc_list_keyword_filters_readable_fields_locally(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.hpc import hpc_commands as hpc_cmd_module
+
+    class _DummySession:
+        all_workspace_names = {"ws-session-default": "cpu-room"}
+        all_workspace_ids = ["ws-session-default"]
+
+    monkeypatch.setattr(hpc_cmd_module, "get_web_session", lambda: _DummySession())
+
+    def fake_list_hpc_jobs(**kwargs):  # noqa: ANN001
+        jobs = [
+            HPCJobInfo(
+                job_id="hpc-hidden-1",
+                name="unrelated",
+                status="RUNNING",
+                entrypoint="python train_model.py",
+                created_at="1770000002",
+                finished_at=None,
+                created_by_name="tester",
+                created_by_id="user-1",
+                project_id="project-1",
+                project_name="Project",
+                compute_group_name="CPU",
+                workspace_id=kwargs["workspace_id"],
+            ),
+            HPCJobInfo(
+                job_id="hpc-hidden-2",
+                name="other",
+                status="FAILED",
+                entrypoint="python eval.py",
+                created_at="1770000001",
+                finished_at=None,
+                created_by_name="tester",
+                created_by_id="user-1",
+                project_id="project-1",
+                project_name="Project",
+                compute_group_name="CPU",
+                workspace_id=kwargs["workspace_id"],
+            ),
+        ]
+        return jobs[: kwargs["page_size"]], len(jobs)
+
+    monkeypatch.setattr(
+        hpc_cmd_module.browser_api_module,
+        "list_hpc_jobs",
+        fake_list_hpc_jobs,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "hpc",
+            "list",
+            "--workspace",
+            "cpu-room",
+            "--status",
+            "running",
+            "--keyword",
+            "TRAIN_MODEL",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["data"]
+    assert [item["name"] for item in payload["items"]] == ["unrelated"]
+    assert "hpc-hidden-1" not in result.output
+    assert "hpc-hidden-2" not in result.output
+
+
+def test_hpc_list_human_renderer_is_name_first_and_footer_free() -> None:
+    from inspire.cli.commands.hpc.hpc_commands import _format_hpc_list_rows
+
+    output = _format_hpc_list_rows(
+        [
+            {
+                "name": "prep",
+                "status": "RUNNING",
+                "created_at": "2026-08-05 12:00:00",
+            }
+        ]
+    )
+
+    assert output.splitlines()[0].startswith("Name")
+    assert "HPC Jobs" not in output
+    assert "Total:" not in output
 
 
 def test_hpc_list_all_expands_and_limit_conflict_is_pre_api(
@@ -490,7 +693,7 @@ def test_hpc_list_all_expands_and_limit_conflict_is_pre_api(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)["data"]
     assert calls == [20, 25]
-    assert len(payload["jobs"]) == 25
+    assert len(payload["items"]) == 25
     assert "truncated" not in payload
 
     calls.clear()
@@ -501,6 +704,77 @@ def test_hpc_list_all_expands_and_limit_conflict_is_pre_api(
     assert conflict.exit_code != 0
     assert "Use either --limit or --all, not both." in conflict.output
     assert calls == []
+
+
+def test_hpc_list_workspace_all_fans_out_and_uses_visible_names(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.hpc import hpc_commands as hpc_cmd_module
+
+    class _AllWorkspaceSession:
+        all_workspace_ids = ["ws-a", "ws-b"]
+        all_workspace_names = {"ws-a": "CPU East", "ws-b": "CPU West"}
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        hpc_cmd_module,
+        "get_web_session",
+        lambda: _AllWorkspaceSession(),
+    )
+
+    def fake_list_hpc_jobs(**kwargs):  # noqa: ANN001
+        workspace_id = kwargs["workspace_id"]
+        calls.append(workspace_id)
+        return (
+            [
+                HPCJobInfo(
+                    job_id=f"hpc-{workspace_id}",
+                    name=f"job-{workspace_id[-1]}",
+                    status="RUNNING",
+                    entrypoint="bash run.sh",
+                    created_at="1770000000",
+                    finished_at=None,
+                    created_by_name="tester",
+                    created_by_id="user-1",
+                    project_id="project-1",
+                    project_name="Project",
+                    compute_group_name="CPU",
+                    workspace_id=workspace_id,
+                )
+            ],
+            1,
+        )
+
+    monkeypatch.setattr(
+        hpc_cmd_module.browser_api_module,
+        "list_hpc_jobs",
+        fake_list_hpc_jobs,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "hpc", "list", "--workspace", "all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)["data"]["items"]
+    assert calls == ["ws-a", "ws-b"]
+    assert {row["workspace"] for row in rows} == {"CPU East", "CPU West"}
+    assert all(
+        set(row)
+        == {
+            "name",
+            "status",
+            "project",
+            "workspace",
+            "compute_group",
+            "created_by",
+        }
+        for row in rows
+    )
+    assert "workspace_id" not in result.output
 
 
 def test_hpc_instances_requires_workspace_and_uses_num(
@@ -539,11 +813,19 @@ def test_hpc_instances_requires_workspace_and_uses_num(
         return (
             [
                 {
+                    "instance_id": "hpc-job-001-launcher-deadbeef",
                     "name": "launcher",
                     "component": "launcher",
+                    "instance_type": "pod",
                     "status": "Running",
                     "node": "cpu-node-a",
                     "created_at": 1770000000,
+                    "resource_spec": {
+                        "cpu_count": 8,
+                        "memory_size_gib": 64,
+                        "gpu_count": 0,
+                    },
+                    "backend": "browser",
                 }
             ],
             1,
@@ -572,8 +854,42 @@ def test_hpc_instances_requires_workspace_and_uses_num(
     assert captured["resolve"]["page_size"] == 42
     assert captured["instances"]["job_id"] == "hpc-job-001"
     assert captured["instances"]["limit"] == 42
-    assert "HPC Instances" in result.output
+    assert result.output.splitlines()[0].lstrip().startswith("Name")
     assert "launcher" in result.output
+    assert "8 CPU, 64 GiB, 0 GPU" in result.output
+    assert "HPC Instances" not in result.output
+    assert "Total:" not in result.output
+    assert "hpc-job-001-launcher-deadbeef" not in result.output
+    assert "cpu-node-a" not in result.output
+    assert "backend" not in result.output
+
+    json_result = runner.invoke(
+        cli_main,
+        [
+            "--json",
+            "hpc",
+            "instances",
+            "prep",
+            "--workspace",
+            "cpu-room",
+            "--limit",
+            "42",
+        ],
+    )
+    assert json_result.exit_code == 0, json_result.output
+    assert json.loads(json_result.output)["data"] == {
+        "name": "prep",
+        "items": [
+            {
+                "name": "launcher",
+                "status": "Running",
+                "role": "launcher",
+                "type": "pod",
+                "resource": "8 CPU, 64 GiB, 0 GPU",
+                "rank": 0,
+            }
+        ],
+    }
 
 
 def test_hpc_instances_default_budget_notifies_and_keeps_name_resolution_window(
@@ -649,10 +965,12 @@ def test_hpc_instances_default_budget_notifies_and_keeps_name_resolution_window(
     )
     assert json_result.exit_code == 0, json_result.output
     metadata = json.loads(json_result.output)["data"]
+    assert metadata["name"] == "prep"
+    assert len(metadata["items"]) == 20
     assert metadata["shown"] == 20
     assert metadata["total"] == 25
     assert metadata["truncated"] is True
-    assert metadata["limit"] == 20
+    assert "limit" not in metadata
 
 
 def test_hpc_instances_all_expands_and_json_conflict_is_rejected(
@@ -723,10 +1041,13 @@ def test_hpc_instances_all_expands_and_json_conflict_is_rejected(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)["data"]
     assert calls == [20, 25]
-    assert len(payload["instances"]) == 25
-    assert payload["total"] == 25
-    assert "truncated" not in payload
-    assert all("instance_id" not in item for item in payload["instances"])
+    assert set(payload) == {"name", "items"}
+    assert payload["name"] == "prep"
+    assert len(payload["items"]) == 25
+    assert all(
+        set(item) <= {"name", "status", "role", "type", "resource", "rank"}
+        for item in payload["items"]
+    )
     assert "hpc-job-001-worker" not in result.output
 
     conflict = CliRunner().invoke(
@@ -760,5 +1081,9 @@ def test_hpc_stop_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"]["stopped"] is True
+    assert payload["data"] == {
+        "name": "hpc-demo",
+        "status": "stopped",
+    }
+    assert "stopped" not in payload["data"]
     assert api.calls["stop_hpc_job"] == "hpc-job-999"

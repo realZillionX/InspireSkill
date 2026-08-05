@@ -1,6 +1,7 @@
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict
 
 import pytest
@@ -10,6 +11,7 @@ from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
 from inspire.bridge.tunnel.scp import _build_scp_base_args
 from inspire.cli.main import main as cli_main
 from inspire.cli.context import EXIT_GENERAL_ERROR, EXIT_SUCCESS, EXIT_TIMEOUT
+from inspire.cli.logging_setup import clear_debug_logging
 from inspire.config import Config
 from inspire.cli.commands.notebook.transport import NotebookTransportPolicy
 
@@ -100,6 +102,80 @@ def test_bridge_scp_upload_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     assert result.exit_code == EXIT_SUCCESS
     assert result.output.strip() == "OK"
+
+
+def test_bridge_scp_forwards_workspace_account_and_pick(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    local_file = tmp_path / "test.txt"
+    local_file.write_text("hello")
+    tunnel_config = TunnelConfig(account="alice")
+    bridge = BridgeProfile(
+        name="gpu-box",
+        notebook_name="gpu-box",
+        workspace_name="CPU资源空间",
+        proxy_url="https://proxy.example.com",
+    )
+    tunnel_config.add_bridge(bridge)
+    policy_calls: dict[str, Any] = {}
+    target_calls: dict[str, Any] = {}
+    transfer_calls: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        scp_cmd_module,
+        "preflight_notebook_transport_policy",
+        lambda _ctx, **kwargs: (
+            policy_calls.update(kwargs)
+            or NotebookTransportPolicy(
+                notebook="gpu-box",
+                notebook_id="nb-123",
+                public_internet=True,
+                reason="test",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        scp_cmd_module,
+        "resolve_cached_notebook_target",
+        lambda _ctx, **kwargs: (
+            target_calls.update(kwargs)
+            or SimpleNamespace(config=tunnel_config, bridge=bridge)
+        ),
+    )
+    monkeypatch.setattr(scp_cmd_module, "is_tunnel_available", lambda **kwargs: True)
+    monkeypatch.setattr(
+        scp_cmd_module,
+        "run_scp_transfer",
+        lambda **kwargs: transfer_calls.update(kwargs) or SimpleNamespace(returncode=0),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "notebook",
+            "scp",
+            "gpu-box",
+            "--workspace",
+            "CPU资源空间",
+            "--account",
+            "alice",
+            "--pick",
+            "2",
+            str(local_file),
+            "/tmp/test.txt",
+        ],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert policy_calls["workspace"] == "CPU资源空间"
+    assert policy_calls["account"] == "alice"
+    assert policy_calls["pick"] == 2
+    assert target_calls["workspace"] == "CPU资源空间"
+    assert target_calls["account"] == "alice"
+    assert target_calls["pick"] == 2
+    assert transfer_calls["config"] is tunnel_config
+    assert transfer_calls["bridge_name"] == "gpu-box"
 
 
 def test_bridge_scp_reads_active_account_notebook_cache(
@@ -284,12 +360,23 @@ def test_bridge_scp_recursive_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     # Create a directory so upload path validation passes
     src_dir = tmp_path / "mydir"
     src_dir.mkdir()
+    log_dir = tmp_path / "debug-logs"
+    monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "scp", "default", "-r", str(src_dir), "/tmp/mydir"])
+    result = runner.invoke(
+        cli_main,
+        ["--debug", "notebook", "scp", "default", "-r", str(src_dir), "/tmp/mydir"],
+    )
+    clear_debug_logging()
 
     assert result.exit_code == EXIT_SUCCESS
+    assert result.output == "OK\n"
     assert captured["recursive"] is True
+    for noise in ("SCP upload:", "Notebook:", "Remote path:", "Mode: recursive"):
+        assert noise not in result.output
+    [log_path] = list(log_dir.glob("inspire-debug-*.log"))
+    assert "Notebook SCP transfer started" in log_path.read_text(encoding="utf-8")
 
 
 def test_bridge_scp_auto_recursive_for_directory(

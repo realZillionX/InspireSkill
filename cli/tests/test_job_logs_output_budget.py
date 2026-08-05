@@ -94,6 +94,9 @@ def test_help_documents_default_budgets_and_explicit_all() -> None:
 
     assert result.exit_code == 0, result.output
     assert "--all" in output
+    assert "--tail INTEGER" in output
+    assert "-n, --limit INTEGER" in output
+    assert "without printing the remote path" in output
     assert f"Default one-shot output uses {job_logs.DEFAULT_SSH_TAIL_LINES}" in output
     assert f"{job_logs.DEFAULT_LOG_CHARACTER_LIMIT}-character limit" in output
     assert f"default: {job_logs.DEFAULT_PLATFORM_LOG_RECORDS}" in output
@@ -152,8 +155,44 @@ def test_ssh_default_uses_bounded_tail_and_json_metadata(
     assert data["limit"] == job_logs.DEFAULT_SSH_TAIL_LINES
     assert data["character_limit"] == job_logs.DEFAULT_LOG_CHARACTER_LIMIT
     assert len(data["content"]) <= job_logs.DEFAULT_LOG_CHARACTER_LIMIT
+    assert "log_path" not in data
+    assert "/logs/train.log" not in result.output
     assert "line-100" in data["content"]
     assert raw_id not in result.output
+
+
+def test_ssh_path_mode_reports_resolution_without_remote_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_path = "/inspire/private/project/training_master_train-a.log"
+    _patch_ssh(monkeypatch, stdout="")
+    args = [
+        "job",
+        "logs",
+        "train-a",
+        "--workspace",
+        "Test Workspace",
+        "--source",
+        "ssh",
+        "--remote-log-path",
+        secret_path,
+        "--path",
+    ]
+
+    human = CliRunner().invoke(cli_main, args)
+    json_result = CliRunner().invoke(cli_main, ["--json", *args])
+
+    assert human.exit_code == 0, human.output
+    assert human.output == "Log location selected for train-a.\n"
+    assert json_result.exit_code == 0, json_result.output
+    assert json.loads(json_result.output)["data"] == {
+        "name": "train-a",
+        "status": "log-location-selected",
+    }
+    assert secret_path not in human.output
+    assert secret_path not in json_result.output
+    assert "/inspire/private" not in human.output
+    assert "/inspire/private" not in json_result.output
 
 
 def test_ssh_human_output_has_short_truncation_hint(

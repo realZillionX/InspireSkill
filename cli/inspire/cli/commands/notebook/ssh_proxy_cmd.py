@@ -13,11 +13,17 @@ from inspire.bridge.tunnel import (
     load_tunnel_config,
 )
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, pass_context
-from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 from .notebook_ssh_flow import run_notebook_ssh
-from .target_resolver import NotebookConnectionTarget, resolve_cached_notebook_target
+from .target_resolver import (
+    NOTEBOOK_TARGET_WORKSPACE_HELP,
+    NotebookConnectionTarget,
+    resolve_cached_notebook_target,
+    validate_specific_workspace,
+)
 from .transport import (
     NotebookTransportPolicy,
     emit_ssh_policy_error,
@@ -34,6 +40,7 @@ def _load_proxy_target(
     workspace: str | None,
     account: str | None,
     ignore_target_cache: bool,
+    pick: int | None,
 ) -> NotebookConnectionTarget | None:
     target = resolve_cached_notebook_target(
         ctx,
@@ -43,6 +50,7 @@ def _load_proxy_target(
         ignore_target_cache=ignore_target_cache,
         verify_target_cache=False,
         allow_prompt=False,
+        pick=pick,
     )
     if target is not None:
         return target
@@ -65,9 +73,21 @@ def _load_proxy_target(
 
 
 @click.command("ssh-proxy")
-@click.argument("notebook")
-@click.option("--workspace", required=False, help="Workspace name.")
-@click.option("--account", required=False, help="Account name for this notebook target.")
+@click.argument("notebook", metavar="NAME")
+@click.option(
+    "--workspace",
+    required=False,
+    metavar="NAME",
+    callback=validate_specific_workspace,
+    help=NOTEBOOK_TARGET_WORKSPACE_HELP,
+)
+@click.option(
+    "--account",
+    required=False,
+    metavar="NAME",
+    help="Account name for this notebook target.",
+)
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
@@ -101,24 +121,18 @@ def _load_proxy_target(
     show_default=True,
     help="Timeout in seconds for notebook connection setup.",
 )
-@click.option(
-    "--quiet/--verbose",
-    default=True,
-    show_default=True,
-    help="Suppress rtunnel client lifecycle logs after the proxy starts.",
-)
 @pass_context
 def ssh_proxy_cmd(
     ctx: Context,
     notebook: str,
     workspace: str | None,
     account: str | None,
+    pick: int | None,
     ignore_target_cache: bool,
     ssh_port: int,
     connection_port: int,
     pubkey: str | None,
     setup_timeout: int,
-    quiet: bool,
 ) -> None:
     """Connect OpenSSH to a notebook SSH server through Inspire's tunnel.
 
@@ -126,6 +140,15 @@ def ssh_proxy_cmd(
     traffic on stdin/stdout. Bootstrap diagnostics are written to stderr;
     rtunnel's own lifecycle logs are suppressed by default.
     """
+    if ctx.json_output:
+        _handle_error(
+            ctx,
+            "UnsupportedOutput",
+            "notebook ssh-proxy does not support JSON output.",
+            EXIT_CONFIG_ERROR,
+        )
+        return
+
     notebook = reject_id_at_boundary(
         ctx,
         notebook,
@@ -138,6 +161,7 @@ def ssh_proxy_cmd(
         workspace=workspace,
         account=account,
         ignore_target_cache=ignore_target_cache,
+        pick=pick,
     )
     config = target.config if target else None
     bridge = target.bridge if target else None
@@ -185,6 +209,7 @@ def ssh_proxy_cmd(
             workspace=bootstrap_workspace,
             account=account,
             timeout=min(setup_timeout, 30),
+            pick=pick,
         )
         if not policy.allow_ssh:
             raise SystemExit(emit_ssh_policy_error(ctx, policy))
@@ -203,6 +228,7 @@ def ssh_proxy_cmd(
             setup_only=True,
             account=account,
             ignore_target_cache=ignore_target_cache,
+            pick=pick,
         )
         target = _load_proxy_target(
             ctx,
@@ -210,6 +236,7 @@ def ssh_proxy_cmd(
             workspace=bootstrap_workspace,
             account=account,
             ignore_target_cache=True,
+            pick=pick,
         )
         config = target.config if target else None
         bridge = target.bridge if target else None
@@ -227,7 +254,7 @@ def ssh_proxy_cmd(
             config,
             target_host="localhost",
             target_port=ssh_port,
-            quiet=quiet,
+            quiet=True,
         )
     except Exception:  # noqa: BLE001
         logger.debug("Notebook SSH proxy failed", exc_info=True)

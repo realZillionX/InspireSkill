@@ -71,19 +71,17 @@ class TestCreateListCurrent:
         storage.create_account("alice", "y = 2\n", overwrite=True)
         assert storage.account_config_path("alice").read_text() == "y = 2\n"
 
-    def test_create_overwrite_clears_old_account_cache_files(self, home: Path) -> None:
+    def test_create_overwrite_replaces_all_account_local_state(self, home: Path) -> None:
         storage.create_account("alice", "x = 1\n")
         account_dir = storage.account_dir("alice")
-        (account_dir / "web_session.json").write_text("{}")
-        (account_dir / "bridges.json").write_text("{}")
-        (account_dir / "rtunnel-proxy-state.json").write_text("{}")
+        for name in ("web_session.json", "bridges.json", "rtunnel-proxy-state.json"):
+            (account_dir / name).write_text("state\n")
 
         storage.create_account("alice", "y = 2\n", overwrite=True)
 
         assert storage.account_config_path("alice").read_text() == "y = 2\n"
-        assert not (account_dir / "web_session.json").exists()
-        assert not (account_dir / "bridges.json").exists()
-        assert not (account_dir / "rtunnel-proxy-state.json").exists()
+        for name in ("web_session.json", "bridges.json", "rtunnel-proxy-state.json"):
+            assert not (account_dir / name).exists()
 
     def test_set_and_get_current(self, home: Path) -> None:
         storage.create_account("alice", "x = 1\n")
@@ -392,12 +390,27 @@ class TestAccountListCommand:
         result = runner.invoke(account, ["list"])
         assert result.exit_code == 0
         lines = [line for line in result.output.splitlines() if line.strip()]
-        assert lines == [" * bob", "   alice".replace("   ", "   ")] or lines == [
-            "   alice",
-            " * bob",
-        ]
-        # Sorted output, so alice comes first:
         assert lines == ["   alice", " * bob"]
+
+    def test_list_is_bounded_and_supports_all(self, home: Path, runner: CliRunner) -> None:
+        for index in range(22):
+            storage.create_account(f"account-{index:02d}", "x = 1\n")
+        storage.set_current_account("account-21")
+
+        bounded = runner.invoke(account, ["list"])
+        assert bounded.exit_code == 0, bounded.output
+        assert "account-19" in bounded.output
+        assert "account-20" not in bounded.output
+        assert "Showing 20 of 22. Use --all for the full list." in bounded.output
+
+        complete = runner.invoke(account, ["list", "--all"])
+        assert complete.exit_code == 0, complete.output
+        assert " * account-21" in complete.output
+        assert "Showing " not in complete.output
+
+        conflict = runner.invoke(account, ["list", "--limit", "1", "--all"])
+        assert conflict.exit_code != 0
+        assert "Use either --limit or --all, not both." in conflict.output
 
 
 class TestAccountUseCommand:
@@ -445,35 +458,25 @@ class TestAccountUseCommand:
         assert cfg.username == "bob"
         assert browser_core._get_base_url() == "https://bob.example"
 
-    def test_use_clears_process_local_caches(self, home: Path, runner: CliRunner) -> None:
-        from inspire.cli.utils.auth import AuthManager
-        from inspire.platform.web import resources
+    def test_use_clears_browser_api_runtime_cache(
+        self, home: Path, runner: CliRunner
+    ) -> None:
         from inspire.platform.web.browser_api import core as browser_core
 
         storage.create_account("alice", "x = 1\n")
         storage.create_account("bob", "x = 1\n")
         storage.set_current_account("alice")
 
-        AuthManager._token = "stale-token"  # type: ignore[attr-defined]
-        AuthManager._expires_at = 9999999999  # type: ignore[attr-defined]
-        AuthManager._api = object()  # type: ignore[assignment]
-        AuthManager._cache_key = ("alice",)
         browser_core._cached_base_url = "https://alice.example"  # type: ignore[attr-defined]
         browser_core._cached_base_url_key = ("alice", None)  # type: ignore[attr-defined]
         browser_core._cached_browser_api_prefix = "/alice"  # type: ignore[attr-defined]
         browser_core._cached_browser_api_prefix_key = ("alice", None)  # type: ignore[attr-defined]
-        resources._availability_cache = {"all": ["stale"]}  # type: ignore[attr-defined]
-        resources._cache_time = 9999999999  # type: ignore[attr-defined]
 
         result = runner.invoke(account, ["use", "bob"])
 
         assert result.exit_code == 0, result.output
-        assert AuthManager._api is None
-        assert AuthManager._token is None
-        assert AuthManager._cache_key is None
         assert browser_core._cached_base_url is None
         assert browser_core._cached_browser_api_prefix is None
-        assert resources._availability_cache is None
 
     def test_use_preserves_switched_away_account_disk_caches(
         self, home: Path, runner: CliRunner
@@ -493,21 +496,6 @@ class TestAccountUseCommand:
         for name in ("web_session.json", "bridges.json", "rtunnel-proxy-state.json"):
             assert (alice_dir / name).read_text() == f"alice:{name}\n"
             assert (bob_dir / name).read_text() == f"bob:{name}\n"
-
-    def test_token_api_getter_is_removed(self, home: Path) -> None:
-        from inspire.cli.utils.auth import AuthManager, AuthenticationError
-        from inspire.config import Config
-
-        storage.create_account(
-            "alice",
-            '[auth]\nusername = "alice-user"\npassword = "alice-pw"\n'
-            '[api]\nbase_url = "https://alice.example"\n',
-        )
-        storage.set_current_account("alice")
-        cfg, _ = Config.from_files_and_env(require_credentials=True)
-
-        with pytest.raises(AuthenticationError, match="Browser API helpers"):
-            AuthManager.get_api(cfg)
 
     def test_rtunnel_state_cache_lives_under_active_account(
         self, home: Path
@@ -573,8 +561,7 @@ class TestAccountRenameCommand:
         result = runner.invoke(account, ["rename", "old", "new"])
 
         assert result.exit_code == 0, result.output
-        assert "Renamed account: old -> new" in result.output
-        assert result.output.strip() == "Renamed account: old -> new (active)"
+        assert result.output == "Account renamed: new (active)\n"
         assert storage.current_account() == "new"
         assert storage.list_accounts() == ["new"]
         assert 'username = "platform-user"' in storage.account_config_path("new").read_text()
@@ -587,8 +574,7 @@ class TestAccountRenameCommand:
         result = runner.invoke(account, ["rename", "bob", "charlie"])
 
         assert result.exit_code == 0, result.output
-        assert "Renamed account: bob -> charlie" in result.output
-        assert "Active account:" not in result.output
+        assert result.output == "Account renamed: charlie\n"
         assert storage.current_account() == "alice"
         assert storage.list_accounts() == ["alice", "charlie"]
 
@@ -676,7 +662,7 @@ class TestAccountJsonOutput:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         def noisy_normalize(**_kwargs):
-            print(home / ".inspire" / "legacy-config.toml")
+            print(home / ".inspire" / "diagnostic-config.toml")
             print(home / ".cache" / "playwright-install.log", file=sys.stderr)
             return None
 
@@ -688,7 +674,7 @@ class TestAccountJsonOutput:
         assert str(home) not in added.output
         assert json.loads(added.output) == {
             "success": True,
-            "data": {"name": "alice", "active": True},
+            "data": {"name": "alice", "status": "created", "active": True},
         }
 
         second = self._invoke(
@@ -702,7 +688,7 @@ class TestAccountJsonOutput:
         assert second.exit_code == 0, second.output
         assert json.loads(second.output) == {
             "success": True,
-            "data": {"name": "bob", "active": False},
+            "data": {"name": "bob", "status": "created", "active": False},
         }
 
         listed = self._invoke(runner, "list")
@@ -710,7 +696,7 @@ class TestAccountJsonOutput:
         assert json.loads(listed.output) == {
             "success": True,
             "data": {
-                "accounts": [
+                "items": [
                     {"name": "alice", "active": True},
                     {"name": "bob", "active": False},
                 ]
@@ -728,7 +714,7 @@ class TestAccountJsonOutput:
         assert used.exit_code == 0, used.output
         assert json.loads(used.output) == {
             "success": True,
-            "data": {"name": "bob"},
+            "data": {"name": "bob", "status": "selected"},
         }
 
         renamed = self._invoke(runner, "rename", "bob", "primary")
@@ -736,8 +722,8 @@ class TestAccountJsonOutput:
         assert json.loads(renamed.output) == {
             "success": True,
             "data": {
-                "old_name": "bob",
                 "name": "primary",
+                "status": "renamed",
                 "active": True,
             },
         }
@@ -746,7 +732,7 @@ class TestAccountJsonOutput:
         assert removed.exit_code == 0, removed.output
         assert json.loads(removed.output) == {
             "success": True,
-            "data": {"name": "primary"},
+            "data": {"name": "primary", "status": "deleted"},
         }
         assert str(home) not in removed.output
 

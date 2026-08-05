@@ -1,16 +1,19 @@
-"""Coverage for ``inspire job / hpc / serving metrics`` variants.
+"""Coverage for the resource-specific ``inspire * metrics`` variants.
 
 Each resource wrapper just contributes a ``lcg_resolver``; the rest of the
 flow lives in the shared factory. These tests pin the wiring:
 
 - the Browser-API detail call the resolver makes goes to the right path and
   body shape (train_job POST with ``job_id``; hpc_jobs REST-style GET;
-  inference_servings GET via the existing helper)
+  inference_servings GET via the existing helper; Ray detail via its
+  read-only name resolver)
 - ``task_type`` forwarded to the metrics wrapper matches the backend enum
 - default-plot filename uses the resource name (``job-…``, ``hpc-…``,
-  ``serving-…``) so the same base dir disambiguates
+  ``serving-…``, ``ray-…``) so the same base dir disambiguates
 - PNG title label is the human-readable form ("Train Job" / "HPC Job" /
-  "Serving")
+  "Serving" / "Ray")
+- every metrics command exposes and forwards the same name-disambiguation
+  ``--pick`` option
 """
 
 from __future__ import annotations
@@ -41,6 +44,12 @@ hpc_commands_module = importlib.import_module(
 job_commands_module = importlib.import_module("inspire.cli.commands.job.job_commands")
 serving_commands_module = importlib.import_module(
     "inspire.cli.commands.serving.serving_commands"
+)
+ray_metrics_module = importlib.import_module(
+    "inspire.cli.commands.ray.ray_metrics"
+)
+ray_commands_module = importlib.import_module(
+    "inspire.cli.commands.ray.ray_commands"
 )
 config_module = importlib.import_module("inspire.config")
 web_session_module = importlib.import_module("inspire.platform.web.session")
@@ -86,7 +95,11 @@ def _minimal_group() -> MetricGroup:
     )
 
 
-def _patch_hpc_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_hpc_metrics_name_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    expected_pick: int | None = None,
+) -> None:
     config = config_module.Config(
         username="user",
         password="pass",
@@ -104,7 +117,6 @@ def _patch_hpc_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_resolve_hpc_name_in_workspace(
         ctx,
         *,
-        config,
         session,
         name,
         workspace,
@@ -114,6 +126,7 @@ def _patch_hpc_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
     ):  # noqa: ANN001
         assert name == "prep-a"
         assert workspace == "Training Workspace"
+        assert pick == expected_pick
         assert require_live is False
         return "hpc-job-xyz"
 
@@ -124,7 +137,11 @@ def _patch_hpc_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _patch_job_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_job_metrics_name_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    expected_pick: int | None = None,
+) -> None:
     config = config_module.Config(
         username="user",
         password="pass",
@@ -141,12 +158,18 @@ def _patch_job_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_resolve_web_job_id(**kwargs: Any) -> str:
         assert kwargs["job"] == "train-job"
         assert kwargs["workspace"] == "Training Workspace"
+        assert kwargs["pick"] == expected_pick
+        assert kwargs["workspace_must_be_single"] is True
         return "job-abc123"
 
     monkeypatch.setattr(job_commands_module, "_resolve_web_job_id", _fake_resolve_web_job_id)
 
 
-def _patch_serving_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+def _patch_serving_metrics_name_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    expected_pick: int | None = None,
+) -> None:
     config = config_module.Config(
         username="user",
         password="pass",
@@ -165,9 +188,18 @@ def _patch_serving_metrics_name_resolver(monkeypatch: pytest.MonkeyPatch) -> Non
         lambda *_args, **_kwargs: "ws-fake",
     )
 
-    def _fake_resolve_serving_name(ctx, name, *, workspace_id):  # noqa: ANN001
+    def _fake_resolve_serving_name(
+        ctx,
+        name,
+        *,
+        workspace_id,
+        pick=None,
+        require_live=False,
+    ):  # noqa: ANN001
         assert name == "serving-a"
         assert workspace_id == "ws-fake"
+        assert pick == expected_pick
+        assert require_live is False
         return "sv-abc"
 
     monkeypatch.setattr(
@@ -196,7 +228,7 @@ def test_job_metrics_resolver_and_wiring(
         render_captures=render_captures,
         tmp_metrics_dir=str(tmp_path),
     )
-    _patch_job_metrics_name_resolver(monkeypatch)
+    _patch_job_metrics_name_resolver(monkeypatch, expected_pick=2)
 
     def _fake_request(session, method, path, *, referer=None, body=None, timeout=30):
         resolver_calls.append({"method": method, "path": path, "referer": referer, "body": body})
@@ -213,6 +245,8 @@ def test_job_metrics_resolver_and_wiring(
             "train-job",
             "--workspace",
             "Training Workspace",
+            "--pick",
+            "2",
             "--metric",
             "gpu",
             "--window",
@@ -264,7 +298,7 @@ def test_hpc_metrics_resolver_and_wiring(
         return {"code": 0, "data": {"logic_compute_group_id": "lcg-hpc-9"}}
 
     monkeypatch.setattr(hpc_metrics_module, "_request_json", _fake_request)
-    _patch_hpc_metrics_name_resolver(monkeypatch)
+    _patch_hpc_metrics_name_resolver(monkeypatch, expected_pick=2)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -275,6 +309,8 @@ def test_hpc_metrics_resolver_and_wiring(
             "prep-a",
             "--workspace",
             "Training Workspace",
+            "--pick",
+            "2",
             "--metric",
             "gpu",
             "--window",
@@ -306,7 +342,16 @@ def test_hpc_metrics_rejects_platform_handle_before_web_session(
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "hpc", "metrics", "hpc-job-123", "--workspace", "all", "--metric", "gpu"],
+        [
+            "--json",
+            "hpc",
+            "metrics",
+            "hpc-job-123",
+            "--workspace",
+            "Training Workspace",
+            "--metric",
+            "gpu",
+        ],
     )
 
     assert result.exit_code != 0
@@ -333,7 +378,7 @@ def test_serving_metrics_resolver_and_wiring(
         render_captures=render_captures,
         tmp_metrics_dir=str(tmp_path),
     )
-    _patch_serving_metrics_name_resolver(monkeypatch)
+    _patch_serving_metrics_name_resolver(monkeypatch, expected_pick=2)
 
     class _FakeBrowserApi:
         @staticmethod
@@ -352,6 +397,8 @@ def test_serving_metrics_resolver_and_wiring(
             "serving-a",
             "--workspace",
             "Training Workspace",
+            "--pick",
+            "2",
             "--metric",
             "gpu",
             "--window",
@@ -454,6 +501,157 @@ def test_serving_metrics_retries_stale_cached_handle_by_name(
     assert detail_calls == ["sv-old", "sv-new"]
     assert invalidated == ["sv-old"]
     assert capture["logic_compute_group_id"] == "lcg-serving-fresh"
+
+
+# ---------------------------------------------------------------------------
+# Ray
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("detail", "expected"),
+    [
+        ({"logic_compute_group_id": " lcg-direct "}, "lcg-direct"),
+        ({"compute_group_id": " lcg-generic "}, "lcg-generic"),
+        (
+            {
+                "head_node": {
+                    "resource": {
+                        "compute_group_id": "lcg-nested",
+                    }
+                }
+            },
+            "lcg-nested",
+        ),
+        ({"head_node": {"resource": {"compute_group_id": "  "}}}, None),
+        ([], None),
+    ],
+)
+def test_ray_lcg_from_detail_handles_direct_and_nested_shapes(
+    detail: object,
+    expected: str | None,
+) -> None:
+    assert ray_metrics_module._ray_lcg_from_detail(detail) == expected
+
+
+def test_ray_metrics_resolver_and_wiring(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    capture: dict = {}
+    render_captures: list[dict] = []
+    _common_monkeypatch(
+        monkeypatch,
+        groups=[_minimal_group()],
+        now=1_000_000,
+        capture=capture,
+        render_captures=render_captures,
+        tmp_metrics_dir=str(tmp_path),
+    )
+
+    config = config_module.Config(
+        username="user",
+        password="pass",
+        base_url="https://example.invalid",
+    )
+    session = _FakeSession()
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=False: (config, {})),
+    )
+    monkeypatch.setattr(web_session_module, "get_web_session", lambda: session)
+
+    operation_calls: list[dict[str, Any]] = []
+    detail_calls: list[str] = []
+
+    def _fake_run_readonly_ray_operation(ctx, **kwargs: Any) -> Any:  # noqa: ANN001
+        operation_calls.append(
+            {
+                key: value
+                for key, value in kwargs.items()
+                if key != "operation"
+            }
+        )
+        return kwargs["operation"]("ray-job-internal", kwargs["session"])
+
+    monkeypatch.setattr(
+        ray_commands_module,
+        "_run_readonly_ray_operation",
+        _fake_run_readonly_ray_operation,
+    )
+
+    class _FakeBrowserApi:
+        @staticmethod
+        def get_ray_job_detail(ray_job_id: str, *, session) -> dict[str, Any]:  # noqa: ANN001
+            detail_calls.append(ray_job_id)
+            return {
+                "name": "ray-demo",
+                "head_node": {
+                    "resource": {
+                        "logic_compute_group_id": "lcg-ray-42",
+                    }
+                },
+            }
+
+    monkeypatch.setattr(ray_metrics_module, "browser_api_module", _FakeBrowserApi)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "ray",
+            "metrics",
+            "ray-demo",
+            "--workspace",
+            "Training Workspace",
+            "--pick",
+            "2",
+            "--metric",
+            "gpu",
+            "--window",
+            "30m",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    assert len(operation_calls) == 1
+    assert operation_calls[0]["name"] == "ray-demo"
+    assert operation_calls[0]["workspace"] == "Training Workspace"
+    assert operation_calls[0]["limit"] == 10_000
+    assert operation_calls[0]["pick"] == 2
+    assert detail_calls == ["ray-job-internal"]
+
+    assert capture["task_id"] == "ray-job-internal"
+    assert capture["task_type"] == "ray_job"
+    assert capture["logic_compute_group_id"] == "lcg-ray-42"
+
+    assert render_captures[0]["task_id"] == "ray-demo"
+    assert render_captures[0]["task_label"] == "Ray"
+    expected = tmp_path / "ray-ray-demo-1000000.png"
+    assert render_captures[0]["out_path"] == expected
+
+    # Internal handles are transport details, not part of the CLI output.
+    assert "ray-job-internal" not in result.output
+    assert "lcg-ray-42" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Shared metrics option surface
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("resource", ("notebook", "job", "hpc", "serving", "ray"))
+def test_all_metrics_commands_share_pick_help(resource: str) -> None:
+    result = CliRunner().invoke(cli_main, [resource, "metrics", "--help"])
+
+    assert result.exit_code == 0, result.output
+    normalized = " ".join(result.output.split())
+    assert "[OPTIONS] NAME" in normalized
+    assert "--pick INTEGER" in normalized
+    assert (
+        "Pick the Nth candidate (1-indexed) when the name is ambiguous."
+        in normalized
+    )
 
 
 # ---------------------------------------------------------------------------

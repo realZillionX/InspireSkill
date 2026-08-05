@@ -27,12 +27,12 @@ from inspire.config import (
     get_categories,
     get_options_by_category,
 )
-from inspire.platform.web.session.proxy import (
-    describe_effective_proxy_config,
-    redact_proxy_url,
-)
+from inspire.platform.web.session.proxy import describe_effective_proxy_config
 
-from .proxy_output import format_effective_proxy_lines
+from .proxy_output import (
+    format_effective_proxy_lines,
+    public_effective_proxy_summary,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -45,6 +45,7 @@ SOURCE_LABELS: dict[str, tuple[str, str]] = {
     SOURCE_ENV: ("env", "yellow"),
     SOURCE_ENV_FILE: ("env-file", "magenta"),
 }
+_PRESENCE_ONLY_CATEGORIES = {"API", "Authentication", "Proxy"}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,15 +63,23 @@ def _get_field_value(cfg: Config, option: ConfigOption) -> tuple[str | None, boo
 
     if option.secret and value:
         return "********", is_set
-    if option.category == "Paths" and is_set:
-        return "<configured>", True
-    if option.category == "Proxy" and value:
-        return redact_proxy_url(value), is_set
     if value is None:
         return "(not set)", False
+    if option.category in _PRESENCE_ONLY_CATEGORIES and is_set:
+        return "<configured>", True
     if isinstance(value, list):
-        return ", ".join(value) if value else "(empty)", is_set
-    return str(value), is_set
+        raw_value = ", ".join(str(item) for item in value) if value else "(empty)"
+    else:
+        raw_value = str(value)
+    return (
+        json_formatter.sanitize_text(
+            raw_value,
+            redact_paths=True,
+            redact_urls=True,
+            redact_platform_paths=True,
+        ),
+        is_set,
+    )
 
 
 def _get_source_for_option(sources: dict[str, str], option: ConfigOption) -> str:
@@ -146,6 +155,8 @@ def _show_table(
             value_display = json_formatter.sanitize_text(
                 value_str or "(not set)",
                 redact_paths=True,
+                redact_urls=True,
+                redact_platform_paths=True,
             )
             max_value_len = max(max_value_len, len(value_display))
             category_items.append((option, value_display, source_label, source_color))
@@ -239,11 +250,7 @@ def _show_json(
                 continue
 
             source = _get_source_for_option(sources, option)
-            public_value = (
-                value_str
-                if not option.secret
-                else ("********" if value_str != "(not set)" else None)
-            )
+            public_value = value_str if is_set else None
             if details:
                 result["values"][option.env_var] = {
                     "value": public_value,
@@ -278,7 +285,7 @@ def _show_env(cfg: Config, compact: bool, filter_category: str | None) -> None:
             value_str, is_set = _get_field_value(cfg, option)
             if option.secret:
                 click.echo(f"# {option.env_var}=<secret>")
-            elif option.category == "Proxy" and is_set:
+            elif option.category in _PRESENCE_ONLY_CATEGORIES and is_set:
                 click.echo(f"# {option.env_var}=<configured; redacted>")
             elif value_str and value_str != "(not set)":
                 if " " in value_str or "," in value_str:
@@ -306,9 +313,9 @@ def _filter_includes_proxy(filter_category: str | None) -> bool:
     "--format",
     "-f",
     "output_format",
-    type=click.Choice(["table", "json", "env"]),
+    type=click.Choice(["table", "env"]),
     default="table",
-    help="Output format (table, json, env)",
+    help="Output format (table or env). Use the root --json flag for JSON.",
 )
 @click.option(
     "--compact",
@@ -320,7 +327,8 @@ def _filter_includes_proxy(filter_category: str | None) -> bool:
     "--filter",
     "-F",
     "filter_category",
-    help="Filter by category (e.g., 'API', 'GitHub')",
+    metavar="CATEGORY",
+    help="Filter by category (e.g., 'API', 'Proxy')",
 )
 @click.option(
     "--details",
@@ -345,7 +353,6 @@ def show_config(
     Examples:
         inspire config show
         inspire --json config show
-        inspire config show --format json
         inspire config show --filter API
         inspire config show --compact
     """
@@ -367,7 +374,9 @@ def show_config(
             and _filter_includes_proxy(filter_category)
             and (show_details or filter_category is not None)
         ):
-            effective_proxy = describe_effective_proxy_config(base_url=cfg.base_url)
+            effective_proxy = public_effective_proxy_summary(
+                describe_effective_proxy_config(base_url=cfg.base_url)
+            )
 
         if output_format == "json":
             _show_json(

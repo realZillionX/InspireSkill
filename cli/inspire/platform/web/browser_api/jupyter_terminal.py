@@ -15,6 +15,11 @@ from dataclasses import dataclass
 from typing import Protocol, Optional
 from urllib.parse import urlsplit
 
+from inspire.cli.utils.raw_ids import RawIdStreamScrubber
+from inspire.cli.utils.terminal_io import (
+    flush_scrubbed_output,
+    write_scrubbed_output,
+)
 from inspire.platform.web.browser_api import rtunnel as rtunnel_module
 from inspire.platform.web.browser_api.core import (
     _in_asyncio_loop,
@@ -32,7 +37,7 @@ _ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class _Evaluatable(Protocol):
-    def evaluate(self, expression: str, arg: object | None = None) -> object: ...
+    def evaluate(self, _expression: str, arg: object | None = None) -> object: ...
 
 
 class _LabFrameLike(_Evaluatable, Protocol):
@@ -445,7 +450,6 @@ def _run_jupyter_terminal_shell(
         CTRL_RIGHT_BRACKET,
         _WebSocketClient,
         _stty_command,
-        _write_stdout,
     )
 
     stdin = stdin or sys.stdin
@@ -454,6 +458,7 @@ def _run_jupyter_terminal_shell(
     headers = _jupyter_ws_headers(session, ws_url)
     old_term = None
     raw_mode = bool(getattr(stdin, "isatty", lambda: False)())
+    scrubber = RawIdStreamScrubber()
 
     with _WebSocketClient(ws_url, headers) as ws:
         _send_jupyter_stdin(ws, bootstrap)
@@ -494,10 +499,14 @@ def _run_jupyter_terminal_shell(
                         try:
                             msg = json.loads(text)
                         except json.JSONDecodeError:
-                            _write_stdout(stdout_buffer, payload)
+                            write_scrubbed_output(stdout_buffer, scrubber, payload)
                             continue
                         if isinstance(msg, list) and len(msg) >= 2 and msg[0] == "stdout":
-                            _write_stdout(stdout_buffer, str(msg[1] or "").encode())
+                            write_scrubbed_output(
+                                stdout_buffer,
+                                scrubber,
+                                str(msg[1] or "").encode(),
+                            )
                 if stdin in ready:
                     data = os.read(stdin.fileno(), 4096)
                     if not data:
@@ -507,6 +516,7 @@ def _run_jupyter_terminal_shell(
                         return 0
                     _send_jupyter_stdin(ws, data.decode("utf-8", errors="ignore"))
         finally:
+            flush_scrubbed_output(stdout_buffer, scrubber)
             if raw_mode and old_term is not None:
                 termios.tcsetattr(stdin.fileno(), termios.TCSADRAIN, old_term)
                 if previous_winch is not None:

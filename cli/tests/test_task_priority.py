@@ -86,7 +86,7 @@ def test_invalid_requested_priority_is_rejected(
 
 
 @pytest.mark.parametrize("priority", [0, 1, 2, 3])
-def test_historical_low_priorities_remain_low(priority: int) -> None:
+def test_platform_values_below_high_are_low(priority: int) -> None:
     assert is_low_task_priority(priority) is True
 
 

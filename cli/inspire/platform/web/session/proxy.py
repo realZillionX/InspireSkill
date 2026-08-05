@@ -10,8 +10,7 @@ from inspire.config import Config
 
 
 def _normalize_proxy(value: object) -> str:
-    text = str(value or "").strip()
-    return text
+    return str(value or "").strip()
 
 
 def redact_proxy_url(value: object) -> str:

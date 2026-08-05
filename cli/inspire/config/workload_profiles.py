@@ -121,10 +121,6 @@ def apply_workload_profile(
     return merged
 
 
-def missing_profile_fields(values: dict[str, Any]) -> list[str]:
-    return [field for field in PROFILE_FIELDS if _clean_text(values.get(field)) is None]
-
-
 def profile_required_message(kind: str, field: str, *, batch: bool = False) -> str:
     flag = f"--{field}"
     if batch:
@@ -145,7 +141,6 @@ __all__ = [
     "get_workload_profile",
     "load_project_profile_data",
     "merge_workload_profiles",
-    "missing_profile_fields",
     "normalize_workload_profiles",
     "profile_required_message",
     "project_profile_config_path",

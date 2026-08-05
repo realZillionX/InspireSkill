@@ -7,7 +7,6 @@ Identity and account-wide settings live at::
 Sections: ``[auth]``, ``[api]``, ``[proxy]``, ``[ssh]``, ``[projects]``,
 ``[defaults]``, ``[[compute_groups]]``, ``[remote_env]``, ``[path_aliases]``.
 
-**No ``[accounts."<user>"]`` nesting, no ``[context].account`` pointer.**
 One account = one file. Without an active account
 (``~/.inspire/current`` absent or pointing at a missing directory),
 this layer is a no-op and the caller is free to continue — callers that
@@ -23,23 +22,16 @@ from typing import Any
 from inspire.config.models import SOURCE_GLOBAL, ConfigError
 from inspire.config.toml import _flatten_toml, _load_toml, _toml_key_to_field
 
-from .load_common import (
-    _apply_defaults_overrides,
-    _normalize_project_catalog,
-    _parse_alias_map,
-    _reject_removed_task_priority_settings,
-)
+from .load_common import _apply_defaults_overrides, _normalize_project_catalog, _parse_alias_map
 from .path_aliases import normalize_path_alias_map
 
 # Keys whose *value* must differ per repository — a single account is used
-# across many repos, each with its own Inspire project / GitHub repo binding.
+# across many repos, each with its own Inspire project and workload profiles.
 # Putting these at account level silently shadows the correct project-level
 # value, so we reject them outright. Remote path aliases are allowed as account
 # defaults and are overridden by project config when present.
 ACCOUNT_LAYER_DISALLOWED_KEYS = frozenset(
     {
-        "paths.log_pattern",
-        "github.repo",
         "profiles",
         "notebook.quota",
         "notebook.post_start",
@@ -75,24 +67,14 @@ def _apply_account_layer(
     """Apply the selected account's ``config.toml``.
 
     Returns the path that was read, or ``None`` if no account config applies.
-    The source label is ``SOURCE_GLOBAL`` — this layer occupies the slot
-    that the legacy global config used to fill; callers that inspect
-    ``sources`` do not need to learn a new source label.
+    The source label is ``SOURCE_GLOBAL`` because this is the account-wide
+    configuration layer.
     """
     account_path = _resolve_account_config_path(account)
     if account_path is None:
         return None
 
     raw = _load_toml(account_path)
-    _reject_removed_task_priority_settings(raw, source=f"Account config at {account_path}")
-
-    # Guard against stray legacy sections copied into a per-account file.
-    # ``[accounts."<user>"]`` and ``[context]`` have no meaning in the new
-    # layout (one account = one file), so drop them rather than let the
-    # legacy parsers surface confusing behaviour.
-    raw.pop("accounts", None)
-    raw.pop("context", None)
-
     # Reject per-repository keys anywhere in the file. A single account
     # spans many repos; these values must live in the repo's account-scoped
     # project config or come from env vars.
@@ -109,8 +91,6 @@ def _apply_account_layer(
         defaults = raw_defaults
 
     projects = _parse_alias_map(raw.pop("projects", {}))
-    raw.pop("workspaces", None)
-
     flat = _flatten_toml(raw)
     for toml_key, value in flat.items():
         field_name = _toml_key_to_field(toml_key)
@@ -157,8 +137,8 @@ def _reject_per_repo_keys(raw: dict[str, Any], account_path: Path) -> None:
         f"{', '.join(offending)}. These must live in this repo's "
         "account-scoped project config (run 'inspire init --scope project' "
         "from inside the repo), not at the account level — a single account usually has "
-        "many repos with different Inspire projects / GitHub bindings / "
-        "workload profiles, and placing per-repo values here silently shadows "
+        "many repos with different Inspire projects / workload profiles, "
+        "and placing per-repo values here silently shadows "
         "the correct ones. Remote path aliases may live here as account defaults "
         "and be overridden by a repo config."
     )

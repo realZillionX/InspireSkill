@@ -23,9 +23,9 @@ _PLACEHOLDER_WORKSPACE_ID = "ws-00000000-0000-0000-0000-000000000000"
 
 def _validate_workspace_id(value: str) -> None:
     if value == _PLACEHOLDER_WORKSPACE_ID:
-        raise ConfigError("workspace_id is the placeholder. Pass a real workspace name.")
+        raise ConfigError("Workspace selection is invalid. Pass a visible workspace name.")
     if not _WORKSPACE_ID_RE.match(value):
-        raise ConfigError(f"Invalid workspace_id format: {value!r}")
+        raise ConfigError("Workspace selection is invalid. Pass a visible workspace name.")
 
 
 def _session_workspace_names(session: Any) -> dict[str, str]:
@@ -80,7 +80,6 @@ def _visible_workspace_ids(session: Any) -> list[str]:
 
 
 def resolve_workspace_query_scope(
-    config: Any,
     *,
     workspace: Optional[str],
     session: Any,
@@ -94,14 +93,13 @@ def resolve_workspace_query_scope(
     if not raw:
         raise ConfigError("Workspace is required. Pass --workspace <workspace-name|all>.")
     if raw.lower() == "current":
-        raise ConfigError("--workspace current is not supported. Pass a workspace name or 'all'.")
+        raise ConfigError("--workspace requires a workspace name or 'all'.")
     if raw.lower() == "all":
         workspace_ids = _visible_workspace_ids(session)
         if not workspace_ids:
             raise ConfigError("No visible workspaces found in the live web session.")
         return workspace_ids, True
     resolved = select_workspace_id(
-        config,
         explicit_workspace_name=raw,
         session=session,
     )
@@ -111,7 +109,6 @@ def resolve_workspace_query_scope(
 
 
 def resolve_workspace_operation_scope(
-    config: Any,
     *,
     workspace: Optional[str],
     session: Any,
@@ -119,7 +116,6 @@ def resolve_workspace_operation_scope(
     """Resolve a required single workspace name for write-like commands."""
     raw = validate_workspace_operation_name(workspace)
     resolved = select_workspace_id(
-        config,
         explicit_workspace_name=raw,
         session=session,
     )
@@ -132,20 +128,16 @@ def validate_workspace_operation_name(workspace: Optional[str]) -> str:
     """Validate the visible workspace name shape for write-like commands."""
     raw = (workspace or "").strip()
     if not raw:
-        raise ConfigError("Workspace is required. Pass --workspace <workspace-name>.")
+        raise ConfigError("Workspace selection is required. Pass --workspace <workspace-name>.")
     if raw.lower() in {"all", "current"}:
-        raise ConfigError("--workspace must be a workspace name for this command.")
+        raise ConfigError("--workspace requires one workspace name for this command.")
     if _WORKSPACE_ID_RE.match(raw):
-        raise ConfigError("--workspace takes a workspace name, not a raw workspace ID.")
+        raise ConfigError("Workspace selection is invalid. Pass a visible workspace name.")
     return raw
 
 
 def select_workspace_id(
-    config: Any,
     *,
-    gpu_type: Optional[str] = None,
-    cpu_only: Optional[bool] = None,
-    prefer_internet: bool = False,
     explicit_workspace_id: Optional[str] = None,
     explicit_workspace_name: Optional[str] = None,
     session: Any | None = None,
@@ -156,8 +148,6 @@ def select_workspace_id(
     only accepted through ``explicit_workspace_id`` for internal call sites that
     already obtained ids from the live session.
     """
-    del config, gpu_type, cpu_only, prefer_internet
-
     if explicit_workspace_id:
         _validate_workspace_id(explicit_workspace_id)
         return explicit_workspace_id
@@ -167,11 +157,11 @@ def select_workspace_id(
 
     key = explicit_workspace_name.strip()
     if not key:
-        raise ConfigError("Workspace name cannot be empty")
+        raise ConfigError("Workspace selection is required.")
     if key.lower() in {"all", "current"}:
-        raise ConfigError("--workspace takes a workspace name, not 'all' or 'current'.")
+        raise ConfigError("--workspace requires one workspace name for this command.")
     if _WORKSPACE_ID_RE.match(key):
-        raise ConfigError("--workspace takes a workspace name, not a raw workspace ID.")
+        raise ConfigError("Workspace selection is invalid. Pass a visible workspace name.")
 
     if session is None:
         from inspire.platform.web.session import get_web_session

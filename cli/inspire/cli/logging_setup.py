@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Iterable, Sequence, cast
 
 from inspire import __version__
+from inspire.cli.formatters import json_formatter
+from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 DEFAULT_DEBUG_LOG_LIMIT = 20
 DEFAULT_DEBUG_LOG_DIR = Path.home() / ".cache" / "inspire-skill" / "logs"
@@ -33,7 +35,9 @@ _SENSITIVE_FIELD_RE = re.compile(
         [\"']?
         (?:
             password|passwd|token|access[_-]?token|refresh[_-]?token|
-            secret|api[_-]?key|authorization|cookie|set-cookie
+            secret|api[_-]?key|authorization|cookie|set-cookie|
+            username|login(?:[_-]?(?:id|name|username))?|
+            account[_-]?id|user[_-]?id|student[_-]?(?:id|number)
         )
         [\"']?
         \s*[:=]\s*
@@ -46,6 +50,23 @@ _SENSITIVE_FIELD_RE = re.compile(
 _QUERY_TOKEN_RE = re.compile(r"(?i)([?&](?:token|access_token|refresh_token)=)([^&\s]+)")
 _PATH_TOKEN_RE = re.compile(r"(/(?:jupyter|vscode)/[^/]+/)([^/]+)(/proxy/)")
 _AUTH_BEARER_RE = re.compile(r"(?i)(authorization\s*[:=]\s*)(bearer|token)\s+([^\s,]+)")
+_SENSITIVE_ARG_OPTIONS = frozenset(
+    {
+        "--access-token",
+        "--api-key",
+        "--apikey",
+        "--authorization",
+        "--cookie",
+        "--passwd",
+        "--password",
+        "--refresh-token",
+        "--secret",
+        "--set-cookie",
+        "--token",
+        "--username",
+        "-u",
+    }
+)
 
 
 def redact_text(text: str) -> str:
@@ -57,8 +78,30 @@ def redact_text(text: str) -> str:
     value = _AUTH_BEARER_RE.sub(r"\1\2 <redacted>", value)
     value = _SENSITIVE_FIELD_RE.sub(r"\1<redacted>", value)
     value = _QUERY_TOKEN_RE.sub(r"\1<redacted>", value)
-    value = _PATH_TOKEN_RE.sub(r"\1<redacted>\3", value)
-    return value
+    return _PATH_TOKEN_RE.sub(r"\1<redacted>\3", value)
+
+
+def _redact_argv(argv: Sequence[str]) -> list[str]:
+    redacted: list[str] = []
+    hide_next = False
+    for raw_arg in argv:
+        arg = str(raw_arg)
+        if hide_next:
+            redacted.append("<redacted>")
+            hide_next = False
+            continue
+
+        option, separator, _value = arg.partition("=")
+        normalized = option.casefold().replace("_", "-")
+        if normalized not in _SENSITIVE_ARG_OPTIONS:
+            redacted.append(arg)
+            continue
+        if separator:
+            redacted.append(f"{option}=<redacted>")
+        else:
+            redacted.append(arg)
+            hide_next = True
+    return redacted
 
 
 class _RedactingFormatter(logging.Formatter):
@@ -66,7 +109,10 @@ class _RedactingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         rendered = super().format(record)
-        return redact_text(rendered)
+        return json_formatter.sanitize_text(
+            scrub_raw_ids(redact_text(rendered)),
+            redact_paths=True,
+        )
 
 
 def _resolve_debug_log_dir() -> Path:
@@ -140,12 +186,11 @@ def _build_debug_log_path(log_dir: Path) -> Path:
 
 
 def _session_header(argv: Sequence[str] | None = None) -> Iterable[str]:
-    run_argv = list(argv) if argv is not None else list(sys.argv)
+    run_argv = _redact_argv(list(argv) if argv is not None else list(sys.argv))
     yield "Debug session started"
     yield f"version={__version__}"
     yield f"python={sys.version.split()[0]}"
     yield f"platform={platform.platform()}"
-    yield f"cwd={Path.cwd()}"
     yield f"argv={run_argv}"
     yield f"utc={datetime.now(timezone.utc).isoformat()}"
 
@@ -187,7 +232,6 @@ def configure_debug_logging(
         header_logger = logging.getLogger("inspire.cli.debug")
         for line in _session_header(argv):
             header_logger.debug(line)
-        header_logger.debug("debug_report=%s", log_path)
         _prune_old_debug_logs(log_dir, keep=keep_logs, preserve=log_path)
         return str(log_path)
     except Exception:

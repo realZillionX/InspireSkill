@@ -2,13 +2,11 @@
 
 感谢您改进 InspireSkill。这个仓库的命令和手册要适合 Agent 阅读与执行，因此每个变更都要尽量保持命令行为可复现、输出语义清晰、文档与 CLI help 一致。
 
-`CODE_OF_CONDUCT.md` 通常表示社区行为准则，不适合承载开发规范；本仓库的贡献流程、开发原则和交付要求统一维护在本文档中。
-
 ## 项目定位
 
 InspireSkill 的核心价值是让本地 CLI、Agent 手册和启智平台真实行为保持零漂移。它不是一份静态命令说明，也不是平台接口的薄包装；它要把平台调度、资源、镜像、路径、日志、事件和指标转化成可复现、可执行、适合 Agent 使用的工作流。
 
-同一份文档只服务 Agent。适合快速判断的表达，也应该适合稳定执行；不要按操作者身份维护两套互相分叉的原则。
+同一份文档只服务 Agent。适合快速判断的表达，也应该适合稳定执行。
 
 ## 开发环境
 
@@ -34,19 +32,19 @@ uv run pre-commit run --config ../.pre-commit-config.yaml --all-files
 
 ## 事实来源
 
-命令表面以 CLI help 为准。新增、删除或修改命令时，`inspire --help`、`inspire <command-group> --help` 和 `inspire <command-group> <subcommand> --help` 必须反映真实 Agent 入口；日常文档不要重新维护完整命令表。
+命令表面以 CLI help 为准。新增、删除或修改命令时，`inspire --help`、`inspire <command-group> --help` 和 `inspire <command-group> <subcommand> --help` 必须反映真实 Agent 入口；日常文档引用 CLI Help，不复制完整命令表。
 
-平台事实以 live 查询为准。`list`、`status`、`events`、`metrics`、资源规格、资源可用量、项目和账号视图不能依赖本地缓存、旧截图、旧文档或历史推测。缓存只用于 Web session / auth、Name 解析、连接复用、日志传输等性能场景，不能作为 Agent 可见事实来源。
+平台事实以 live 查询为准。`list`、`status`、`events`、`metrics`、资源规格、资源可用量、项目和账号视图都从当前平台读取。缓存只用于 Web session / auth、Name 解析、连接复用、日志传输等性能场景，不作为 Agent 可见事实来源。
 
-Browser API 文档只收录已经闭合的合同。没有验证请求体、响应形状、Referer、权限边界和 destructive 语义的端点，留在抓包输出或任务记录里，不写进正式 reference。
+Browser API 文档只收录已经闭合的合同。请求体、响应形状、Referer、权限边界和 destructive 语义需要能由当前代码、测试、live smoke、DevTools 或 SPA bundle 复现。
 
 ## Agent 合同
 
-普通 CLI 输入输出坚持 Name-only。Agent 应该使用名称、alias、可读状态和短表格理解对象；平台 handle 只能停留在 resolver、API payload 和 debug 日志里，不能成为任何 CLI 命令的输入或输出。
+普通 CLI 输入输出坚持 Name-only。Agent 应该使用名称、alias、可读状态和短表格理解对象；平台 handle 只能停留在 resolver 和 API payload 中，不能成为任何 CLI 命令、错误信息、JSON 或本地 debug report 的输入输出。
 
 默认文本输出面向 Agent，要求短、清楚、能操作。脚本接口使用 `--json`，但 `--json` 也不应默认泄露低价值平台 handle。错误、hint 和歧义列表不要把 raw ID 当作解决方案暴露给 Agent。
 
-集合和日志输出必须有显式预算。发现类集合默认最多 20 项，Job 日志默认最多 100 行 / 条目和 16,000 个字符，Batch 结果默认最多展示 20 项；提供 `--limit` / `--all` 或 `--result-limit` / `--all-results` 作为明确的上下文开销选择。截断元数据只保留 `shown`、`total`、`truncated` 等能帮助 Agent 决策的字段。
+集合和日志输出必须有显式预算。发现类集合和 Batch 结果默认最多展示 20 项，统一提供 `--limit/-n` 和 `--all` 作为明确的上下文开销选择；Job 日志默认最多 100 行 / 条目和 16,000 个字符。截断元数据只保留 `shown`、`total`、`truncated` 等能帮助 Agent 决策的字段。
 
 中文输出和文档要照顾宽度、标点和中英混排。表格需要中文宽度 aware；中文与 English / 数字 / 命令名相邻时保留半角空格；中文标点使用全角。
 
@@ -68,11 +66,11 @@ Path alias 只表示远端路径。`me`、`public`、`global-me` 和存储池前
 
 ## 文档边界
 
-文档只保留能帮助执行的内容。没用的入口不要在文档里声明“没用”；如果确实需要告诉 Agent 某个命令已删除、已迁移或不再推荐，这类边界应优先固化在 CLI help、测试和 release notes 里。
+文档只描述当前可执行的命令、平台语义和工作流。命令语法回到 CLI Help，版本变化留在 release notes。
 
 使用手册和开发者参考分开。`SKILL.md` 和 `references/` 的日常手册只讲黑盒用法、平台语义和工作流；`references/dev/` 只在维护 CLI 封装、排查接口合同或 Agent 明确要求看接口时加载。
 
-上下文要节制。内部源地址这类必要事实要集中在专门 reference 里，不要在多份文档反复复写；历史兼容故事、旧命令列表、无关接口细节或“为了说明它没用而提到它”的内容不要放进 Agent 文档。重要的是已经整理过的结论和可执行步骤。
+上下文要节制。内部源地址等必要事实集中在专门 reference 里；Agent 文档只保留已经整理过的结论、可执行步骤、复现证据和未解决 TODO。
 
 `INSPIRE.md` 不是仓库级必备元数据，只属于某个具体使用启智平台的科研或工程项目工作区，用于维护稳定平台拓扑、Canonical Remote Paths、永久基础设施和资产生命周期。InspireSkill 本身是 CLI、Skill 与文档的通用工具源仓库，不对应业务项目资产，因此根目录不应存在 `INSPIRE.md`。通用文档只说明该合同的边界，不复制任何具体项目的路径、资产 ID 或运行状态。
 
@@ -80,7 +78,7 @@ Path alias 只表示远端路径。`me`、`public`、`global-me` 和存储池前
 
 优先沿用仓库已有模式。新增抽象必须降低真实复杂度、减少实际重复或匹配现有边界；不要为了局部方便引入新的风格、新依赖或平行体系。
 
-保持变更范围小而完整。改命令行为时同步更新 resolver、formatter、help、tests 和文档；改平台 API wrapper 时同步更新测试、开发参考和已知端点记录。不要做无关格式化或跨模块清理。
+保持变更范围小而完整。改命令行为时同步更新 resolver、formatter、help、tests 和文档；改平台 API wrapper 时同步更新测试和开发参考。不要做无关格式化或跨模块清理。
 
 对 destructive 操作保持证据闭环。创建、停止、删除、保存、发布等操作必须有受控 live smoke、前端 bundle payload 或等价证据支撑；live smoke 创建的对象必须清理，并在结果里说明残留风险。
 

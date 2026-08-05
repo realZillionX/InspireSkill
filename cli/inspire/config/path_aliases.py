@@ -91,7 +91,7 @@ def resolve_remote_path_alias(
     """Resolve exact, ``alias:child`` or ``alias/child`` remote path aliases.
 
     Returns ``(resolved_path, used_alias)``. Unknown relative values are
-    preserved for SCP compatibility unless ``require_absolute_or_alias`` is set.
+    preserved for SCP path handling unless ``require_absolute_or_alias`` is set.
     """
     text = str(value or "").strip()
     alias_map = aliases or {}

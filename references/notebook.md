@@ -25,9 +25,9 @@ Notebook 是交互工作台，不只是“开一个终端”。
 3. 确认 Project 是目标项目名，Image 已 `READY`。
 4. 需要复用同一调度条件时写 Workload Profile；远端目录仍用 Path Alias。
 
-`--auto-stop` 只表达空闲自动停止请求，不覆盖平台管理员设置的自动回收规则或 Workspace 生命周期上限。`分布式训练空间` 的交互式建模实例启动 18 小时后会被自动回收，不受 GPU 利用率等指标影响；长时间训练、批量推理或守护任务应改用 Job、Ray 或 Serving 这类匹配的 Workload。需要在 Notebook 中验证长任务入口时，只跑短 probe，并把正式命令迁移到后台 Workload。
+`--auto-stop` 只表达空闲自动停止请求，不覆盖平台管理员设置的自动回收规则或 Workspace 生命周期上限。长时间训练、批量推理或守护任务应改用 Job、Ray 或 Serving 这类匹配的 Workload。需要在 Notebook 中验证长任务入口时，只跑短 Probe，并把正式命令迁移到后台 Workload。
 
-手动 Pin 节点只用于排查坏节点、复现实验或平台同学明确指定节点。节点名是 Compute Group 里的节点名，不是平台 Handle；节点必须属于所选 Group。
+手动 Pin 节点只用于排查坏节点、复现实验或平台同学明确指定节点；传入所选 Compute Group 中显示的节点名。
 
 ## 3. 连接方式
 
@@ -35,32 +35,35 @@ Notebook 是交互工作台，不只是“开一个终端”。
 | --- | --- | --- |
 | `exec` | 一次性独立命令 | 自动走 JupyterTerminal |
 | `shell` | 持久交互会话 | 自动走 JupyterTerminal |
-| `scp` | SSH/SCP 文件复制 | 禁止；把同一个 `/inspire/...` 路径改由可上网 Notebook 执行 |
-| `ssh` | OpenSSH 交互 | 禁止 |
-| `ssh-config` | 给 OpenSSH、`scp`、`rsync`、VS Code Remote SSH 使用 | 禁止；`rsync` 改用可上网 Notebook 的 SSH Config Entry 与同一个 `/inspire/...` 路径 |
-| `connection refresh` | 创建/刷新 SSH/Rtunnel Cache | 禁止 |
-| `ssh-proxy` | OpenSSH ProxyCommand | 禁止 |
-| `proxy-url` | 暴露容器 HTTP 端口 | 默认禁止 |
+| `scp` | SSH/SCP 文件复制 | 受限 Notebook 不使用；改走可上网 Notebook 与 `/inspire/...` 共享路径 |
+| `ssh` | OpenSSH 交互 | 受限 Notebook 不使用 |
+| `ssh-config` | 给 OpenSSH、`scp`、`rsync`、VS Code Remote SSH 使用 | 受限 Notebook 不生成；联网 Notebook 可生成 |
+| `connection refresh` | 创建/刷新 SSH/Rtunnel Cache | 仅对支持 SSH 的联网 Notebook 建立连接 |
+| `ssh-proxy` | OpenSSH ProxyCommand | 受限 Notebook 不使用 |
+| `proxy-url` | 暴露容器 HTTP 端口 | 仍须遵守网络策略和应用自身鉴权 |
 | `url` | Notebook Web IDE 入口 | 允许 |
+| `vscode` | VS Code Web IDE 入口 | 允许 |
 | `net-test` | JupyterTerminal 网络探测 | 允许 |
 
 `--workspace` 主要用于首次解析或同名 Notebook 消歧；连接缓存建立后，后续命令通常可按名称使用。缓存是性能和连接复用工具，不是平台事实来源。
 
-连接方式只解决 Transport，不提供外部服务的合规授权。即使 Notebook 可上网并允许 SSH，也仍要按实际接入端点、服务地域、使用条款和项目政策判断模型 API 或 AI 编程服务是否可用；不可上网区不得自建反向隧道、代理、VPN 或中继绕过限制。完整边界见 [`network-and-sources.md`](network-and-sources.md)。
+Transport 不代表外部服务授权；完整合规边界见 [`network-and-sources.md`](network-and-sources.md)。
 
-受限 Notebook 的 `exec` 每次仍使用独立临时 Jupyter Terminal，命令结束后立即回收，不共享 `cwd`、环境变量或 Shell 状态。对 H100 / H200 等平台已明确不可上网的类型，CLI 会直接选择 JupyterTerminal，不会先重复执行公网探测；真正执行时优先直达 Notebook Lab 代理，只有直接入口不可用时才回退到完整 IDE 页面发现。
+受限 Notebook 的 `exec` 每次使用独立临时 Jupyter Terminal，命令结束后立即回收，不共享 `cwd`、环境变量或 Shell 状态。平台策略明确受限时，CLI 直接选择 JupyterTerminal；网络类型未知时用 `net-test` 同款探测决定 Transport。
 
 ### 跨账号 Notebook 连接
 
 Notebook 连接类命令包括 `ssh`、`exec`、`shell`、`scp`、`ssh-config` 和 `ssh-proxy`。它们的 `--account <name>` 参数使用本地 Account Alias，也就是 `~/.inspire/accounts/<name>/` 的目录名，不是平台登录 Username。`all` 是跨账号扫描 Selector。
 
-不传 `--account` 时，CLI 会先查 Remembered Target Cache；如果没有可用记录，再扫描所有账号下已有的 Cached Bridge。唯一匹配会自动使用；多匹配时会列出候选，交互环境会 Prompt 选择并把选择写入 Target Cache。需要忽略 Remembered Target 时传 `--ignore-target-cache`。
+不传 `--account` 时，CLI 会先查 Remembered Target Cache；如果没有可用记录，再扫描所有账号下已有的 Cached Connection。唯一匹配会自动使用；多匹配时会列出候选，交互环境会 Prompt 选择并把选择写入 Target Cache。需要忽略 Remembered Target 时传 `--ignore-target-cache`。
 
-已缓存的联网 Notebook Connection 不要求当前 Active Account 是 Notebook 所属账号。SSH Tunnel 不可用、需要 Rebuild 时，CLI 会自动用目标 Account Alias 对应的 Web Session、账号配置、Playwright Proxy 和 Rtunnel State 重建；用户不需要先 `inspire account use <name>`。受限 Notebook 不刷新 SSH / Rtunnel Connection，命令执行走 JupyterTerminal。
+已缓存的联网 Notebook Connection 不要求当前 Active Account 是 Notebook 所属账号。连接不可用时，CLI 会用目标 Account Alias 对应的 Web Session 和账号配置重建；用户不需要先 `inspire account use <name>`。受限 Notebook 不建立 SSH Connection，命令执行走 JupyterTerminal。
 
 受限 Notebook 的 JupyterTerminal 执行同样复用目标 Account Alias 对应的 Web Session 和代理；显式 `--account <name>` 时不会退回当前 Active Account 的登录态。
 
 没有任何 Cached Connection 时，联网 Notebook 的首次 Bootstrap 仍需要能解析 Notebook 的上下文：通常传 `--workspace <workspace>`，必要时再传 `--account <alias>` 指定所属账号。`ssh-config` 生成的 OpenSSH `ProxyCommand` 会固化解析出的 Account Alias，后续 VS Code Remote SSH / 原生 OpenSSH 连接也按该账号路径执行。
+
+连接缓存由 `notebook connection list/status/refresh/forget/prune` 管理；跨账号 Remembered Target 由 `notebook connection target list/forget` 管理。具体参数以对应 Help 为准。
 
 `exec` 超过 20 分钟时，把任务写成远端后台进程和 Sentinel 文件，再从本机轮询，不要让本机同步等待。
 
@@ -102,6 +105,12 @@ rsync -av ./dataset/ cpu-box:/inspire/hdd/project/topic/user/dataset/
 
 Notebook Web IDE URL 是浏览器入口，受启智登录态和项目权限约束，不是 SDK base URL。
 
+VS Code Web IDE 使用最终公开命令：
+
+```bash
+inspire notebook vscode <name> --workspace <workspace>
+```
+
 容器内 HTTP 服务用 Notebook Proxy 暴露。Proxy 只提供网络通路，不替代应用自己的鉴权；Gradio、FastAPI、LLM API 仍要有自己的登录或 API Key。发布给协作者前做无 Key / 有 Key 对照，确认未授权请求会被拒绝。
 
 不要用本机临时 gateway 绑定 `0.0.0.0` 对外分享，这会绕开启智访问控制。
@@ -119,12 +128,11 @@ Notebook Web IDE URL 是浏览器入口，受启智登录态和项目权限约�
 | 工具 | 主要回答 |
 | --- | --- |
 | `events` | 平台为什么还没调度、为什么启动失败、生命周期走到哪 |
+| `lifecycle` | 每次启动到停止的运行周期 |
 | `metrics` | GPU / CPU / 内存 / I/O 是否真的在工作 |
 | `exec` / `shell` | 进容器查进程、文件、日志和应用状态 |
 
 Notebook 卡在 `PENDING`、`CREATING` 或启动失败时先看 Events；显示 `RUNNING` 但业务不推进时看 Metrics，再回到应用日志和产物路径。
-
-终态且不再需要的 Notebook 要清理。Running Notebook 先 `stop`，再 `delete`；不确定是否仍有人使用时跳过。
 
 ## 8. 大文件操作
 

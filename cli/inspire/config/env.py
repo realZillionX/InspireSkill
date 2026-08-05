@@ -5,36 +5,8 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from typing import Optional
 
 from inspire.config.models import ConfigError
-
-
-def _parse_remote_timeout(value: str) -> int:
-    """Parse INSP_REMOTE_TIMEOUT environment variable."""
-    try:
-        timeout = int(value)
-        if timeout < 5:
-            # Warn but allow small values for testing
-            pass
-        return timeout
-    except ValueError as e:
-        raise ConfigError(
-            "Invalid INSP_REMOTE_TIMEOUT value. It must be an integer number of seconds."
-        ) from e
-
-
-def _parse_denylist(value: Optional[str]) -> list[str]:
-    """Parse denylist from env (comma or newline separated)."""
-    if not value:
-        return []
-    parts: list[str] = []
-    for raw in value.replace("\r", "").split("\n"):
-        for chunk in raw.split(","):
-            item = chunk.strip()
-            if item:
-                parts.append(item)
-    return parts
 
 
 def build_env_exports(env_dict: dict[str, str]) -> str:

@@ -15,7 +15,7 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.table import render_table
 from inspire.cli.utils.collection_output import (
     bound_collection,
@@ -25,44 +25,14 @@ from inspire.cli.utils.collection_output import (
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.compute_groups import compute_group_name_map, load_compute_groups_from_config
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_query_scope
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.resources import (
-    KNOWN_COMPUTE_GROUPS,
-    clear_availability_cache,
-    fetch_resource_availability,
-)
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 _REDACTED_ID_RE = re.compile(
     r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)"
 )
-
-
-def _known_compute_groups_from_config(*, show_all: bool) -> dict[str, str]:
-    known_groups = KNOWN_COMPUTE_GROUPS
-    if show_all:
-        return known_groups
-
-    try:
-        config, _ = Config.from_files_and_env(require_credentials=False)
-        if config.compute_groups:
-            groups_tuple = load_compute_groups_from_config(config.compute_groups)
-            return compute_group_name_map(groups_tuple)
-    except Exception:
-        return known_groups
-    return known_groups
-
-
-def _workspace_name_map(
-    *,
-    config: Optional[Config],
-    session,
-) -> dict[str, str]:
-    del config
-    return dict(session.all_workspace_names or {})
 
 
 def _resolve_workspace_scope(
@@ -71,11 +41,10 @@ def _resolve_workspace_scope(
     session,
     workspace: Optional[str],
 ) -> tuple[list[str], dict[str, str], bool]:
-    workspace_names = _workspace_name_map(config=config, session=session)
+    workspace_names = dict(session.all_workspace_names or {})
     if config is None:
         raise ConfigError("Workspace selection requires a loaded config.")
     workspace_ids, all_workspaces = resolve_workspace_query_scope(
-        config,
         workspace=workspace,
         session=session,
     )
@@ -96,14 +65,14 @@ def _display_name(value: object, *, fallback: str = "-") -> str:
 
 def _public_availability_row(availability) -> dict[str, object]:  # noqa: ANN001
     row: dict[str, object] = {
-        "workspace_name": _display_name(
+        "workspace": _display_name(
             getattr(availability, "workspace_name", ""),
             fallback="",
         ),
-        "group_name": _display_name(getattr(availability, "group_name", "")),
-        "resource_kind": getattr(availability, "resource_kind", "gpu") or "gpu",
+        "compute_group": _display_name(getattr(availability, "group_name", "")),
+        "kind": getattr(availability, "resource_kind", "gpu") or "gpu",
     }
-    if row["resource_kind"] == "cpu":
+    if row["kind"] == "cpu":
         row.update(
             {
                 "cpu_total": availability.cpu_total,
@@ -131,33 +100,6 @@ def _public_availability_row(availability) -> dict[str, object]:  # noqa: ANN001
         }
     )
     return row
-
-
-def _format_availability_table(availability, workspace_mode: bool = False) -> None:
-    del workspace_mode
-    rows: list[tuple[object, ...]] = []
-    for a in availability:
-        rows.append(
-            (
-                _display_name(a.group_name),
-                _display_name(a.gpu_type),
-                a.ready_nodes,
-                a.free_nodes,
-                a.free_gpus,
-            )
-        )
-
-    click.echo(
-        "\n".join(
-            render_table(
-                ("Compute Group", "GPU", "Ready Nodes", "Free Nodes", "Free GPUs"),
-                rows,
-                [25, 16, 12, 12, 10],
-                aligns=["left", "left", "right", "right", "right"],
-                line_char="─",
-            )
-        )
-    )
 
 
 def _format_accurate_availability_table(availability, *, include_cpu: bool) -> None:
@@ -215,12 +157,6 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
             key=lambda x: (x.available_gpus, x.high_priority_available_gpus),
             reverse=True,
         )
-        total_available = 0
-        total_high_priority_available = 0
-        total_used = 0
-        total_gpus = 0
-        total_free_nodes = 0
-
         for row in sorted_gpu_rows:
             if show_workspace:
                 gpu_table_rows.append(
@@ -247,38 +183,6 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
                         row.free_nodes,
                     )
                 )
-
-            total_available += row.available_gpus
-            total_high_priority_available += row.high_priority_available_gpus
-            total_used += row.used_gpus
-            total_gpus += row.total_gpus
-            total_free_nodes += row.free_nodes
-
-        if show_workspace:
-            gpu_table_rows.append(
-                (
-                    "TOTAL",
-                    "",
-                    "",
-                    total_available,
-                    total_high_priority_available,
-                    total_used,
-                    total_gpus,
-                    total_free_nodes,
-                )
-            )
-        else:
-            gpu_table_rows.append(
-                (
-                    "TOTAL",
-                    "",
-                    total_available,
-                    total_high_priority_available,
-                    total_used,
-                    total_gpus,
-                    total_free_nodes,
-                )
-            )
         sections.append(
             "\n".join(
                 render_table(
@@ -325,14 +229,6 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
             else ["left", "right", "right", "right", "right", "right", "right"]
         )
         cpu_table_rows: list[tuple[object, ...]] = []
-        totals = {
-            "cpu_available": 0.0,
-            "cpu_used": 0.0,
-            "cpu_total": 0.0,
-            "memory_available": 0.0,
-            "memory_used": 0.0,
-            "memory_total": 0.0,
-        }
 
         for row in sorted(cpu_rows, key=lambda item: item.cpu_available, reverse=True):
             values = (
@@ -350,27 +246,6 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
                 )
             else:
                 cpu_table_rows.append(values)
-
-            totals["cpu_available"] += row.cpu_available
-            totals["cpu_used"] += row.cpu_used
-            totals["cpu_total"] += row.cpu_total
-            totals["memory_available"] += row.memory_available_gib
-            totals["memory_used"] += row.memory_used_gib
-            totals["memory_total"] += row.memory_total_gib
-
-        total_values: tuple[object, ...] = (
-            "TOTAL",
-            _format_metric(totals["cpu_available"]),
-            _format_metric(totals["cpu_used"]),
-            _format_metric(totals["cpu_total"]),
-            f"{_format_metric(totals['memory_available'])} GiB",
-            f"{_format_metric(totals['memory_used'])} GiB",
-            f"{_format_metric(totals['memory_total'])} GiB",
-        )
-        if show_workspace:
-            cpu_table_rows.append(("TOTAL", "", *total_values[1:]))
-        else:
-            cpu_table_rows.append(total_values)
         sections.append(
             "\n".join(
                 render_table(
@@ -432,9 +307,9 @@ def _list_accurate_resources(
 
         if not availability:
             if ctx.json_output:
-                click.echo(json_formatter.format_json({"availability": []}))
+                click.echo(json_formatter.format_json({"items": []}))
             else:
-                click.echo(human_formatter.format_error("No compute resources found"))
+                click.echo("No compute resources found.")
             return
 
         if ctx.json_output:
@@ -442,7 +317,7 @@ def _list_accurate_resources(
             click.echo(
                 json_formatter.format_json(
                     {
-                        "availability": output,
+                        "items": output,
                         **page.metadata(),
                     }
                 )
@@ -461,55 +336,9 @@ def _list_accurate_resources(
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
-def _list_workspace_resources(ctx: Context, show_all: bool, no_cache: bool) -> None:
-    """List workspace-specific GPU availability using browser API."""
-    try:
-        if no_cache:
-            clear_availability_cache()
-
-        config = None
-        try:
-            config, _ = Config.from_files_and_env(require_credentials=False)
-        except Exception:
-            pass
-
-        availability = fetch_resource_availability(
-            config=config,
-            known_only=not show_all,
-        )
-
-        if not availability:
-            click.echo(human_formatter.format_error("No GPU resources found in your workspace"))
-            return
-
-        if ctx.json_output:
-            output = [
-                {
-                    "group_name": _display_name(a.group_name),
-                    "gpu_type": _display_name(a.gpu_type),
-                    "gpus_per_node": a.gpu_per_node,
-                    "total_nodes": a.total_nodes,
-                    "ready_nodes": a.ready_nodes,
-                    "free_nodes": a.free_nodes,
-                    "free_gpus": a.free_gpus,
-                }
-                for a in availability
-            ]
-            click.echo(json_formatter.format_json({"availability": output}))
-            return
-
-        _format_availability_table(availability, workspace_mode=True)
-
-    except (SessionExpiredError, ValueError) as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
-    except Exception as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
-
-
 def run_resources_list(
     ctx: Context,
     *,
-    no_cache: bool,
     workspace: str,
     group: Optional[str],
     limit: Optional[int],
@@ -533,18 +362,15 @@ def run_resources_list(
 
 @click.command("availability")
 @click.option(
-    "--no-cache",
-    is_flag=True,
-    help="Clear optional workspace availability metadata cache before loading",
-)
-@click.option(
     "--workspace",
     required=True,
+    metavar="NAME|all",
     help="Workspace name or 'all'.",
 )
 @click.option(
     "--group",
     default=None,
+    metavar="NAME",
     help=(
         "Filter by compute group name keyword/substring; full name is not "
         "required. Use this to find the exact compute group name required by "
@@ -561,13 +387,12 @@ def run_resources_list(
     "-n",
     type=click.IntRange(min=1),
     default=None,
-    help="Maximum rows to show (default: 20).",
+    help="Maximum compute groups to display (default: 20).",
 )
 @click.option("--all", "show_all", is_flag=True, help="Show every matching compute group.")
 @pass_context
 def availability_resources(
     ctx: Context,
-    no_cache: bool,
     workspace: str,
     group: Optional[str],
     include_cpu: bool,
@@ -593,7 +418,6 @@ def availability_resources(
 
     run_resources_list(
         ctx,
-        no_cache=no_cache,
         workspace=workspace,
         group=group,
         limit=effective_limit,

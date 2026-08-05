@@ -35,7 +35,7 @@ from .ssh_proxy_cmd import ssh_proxy_cmd
 from .notebook_events import events as notebook_events
 from .notebook_lifecycle import lifecycle as notebook_lifecycle
 from .notebook_metrics import notebook_metrics
-from .url_cmd import notebook_proxy_url, notebook_url, notebook_vscode_proxy_suffix
+from .url_cmd import notebook_proxy_url, notebook_url, notebook_vscode
 from .net_test import notebook_net_test
 
 # Remote operations on a cached notebook connection.
@@ -75,7 +75,7 @@ notebook.add_command(list_notebooks)            # list
 notebook.add_command(notebook_status)           # status
 notebook.add_command(notebook_url)              # url (web IDE entrance link)
 notebook.add_command(notebook_proxy_url)        # proxy-url (container HTTP service URL)
-notebook.add_command(notebook_vscode_proxy_suffix)  # vscode-proxy-suffix (resolved /ws-.../vscode/... path)
+notebook.add_command(notebook_vscode)            # vscode (VS Code web IDE)
 notebook.add_command(create_notebook_cmd)       # create
 notebook.add_command(make_quota_command("notebook"))  # quota
 notebook.add_command(make_profile_command("notebook"))  # profile

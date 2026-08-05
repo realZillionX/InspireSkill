@@ -38,12 +38,8 @@ class ProjectInfo:
     workspace_id: str
     en_name: str = ""
     # Quota fields
-    budget: float = 0.0  # Total budget allocated
-    remain_budget: float = 0.0  # Remaining budget
     member_remain_budget: float = 0.0  # Remaining budget for current user
-    member_remain_gpu_hours: float = 0.0  # Member-level remaining GPU hours (informational)
     gpu_limit: bool = False  # Whether project-level GPU-hour limits are enforced
-    member_gpu_limit: bool = False  # Whether member GPU limits are enforced (informational)
     priority_level: str = ""  # Priority level (HIGH, NORMAL, etc.)
     priority_name: str = ""  # Priority name (numeric string like "10", "4")
     workspace_ids: tuple[str, ...] = ()
@@ -53,24 +49,11 @@ class ProjectInfo:
     def gpu_unlimited(self) -> bool:
         """True when the project has no project-level GPU-hour cap.
 
-        Projects with ``gpu_limit=False`` never block job scheduling
-        regardless of ``member_remain_gpu_hours``.  Projects with
-        ``gpu_limit=True`` may queue indefinitely when their cumulative
-        GPU-hour budget is exhausted.
+        Projects with ``gpu_limit=False`` never block job scheduling.
+        Projects with ``gpu_limit=True`` may queue indefinitely when their
+        cumulative GPU-hour budget is exhausted.
         """
         return not self.gpu_limit
-
-    def has_quota(self, *, needs_gpu: bool = True) -> bool:
-        """Check if the project is safe to submit GPU work to.
-
-        Returns ``True`` for projects without a GPU-hour cap
-        (``gpu_limit=False``).  For capped projects (``gpu_limit=True``)
-        we cannot reliably determine remaining quota from the API, so
-        this also returns ``True`` — the scheduler will queue the job if
-        the cap is hit.  Use :attr:`gpu_unlimited` to prefer uncapped
-        projects in sorting.
-        """
-        return True
 
     def get_quota_status(self, *, needs_gpu: bool = True) -> str:
         """Get formatted quota status string for display."""
@@ -123,12 +106,8 @@ def _project_info_from_item(item: dict[str, Any], *, workspace_id: str = "") -> 
         name=item.get("name", ""),
         workspace_id=resolved_workspace_id,
         en_name=item.get("en_name", ""),
-        budget=_parse_float(item.get("budget")),
-        remain_budget=remain_budget,
         member_remain_budget=member_remain_budget,
-        member_remain_gpu_hours=_parse_float(item.get("member_remain_gpu_hours")),
         gpu_limit=bool(item.get("gpu_limit", False)),
-        member_gpu_limit=bool(item.get("member_gpu_limit", False)),
         priority_level=item.get("priority_level", ""),
         priority_name=item.get("priority_name", ""),
         workspace_ids=tuple(workspace_ids),
@@ -191,7 +170,7 @@ def list_projects(
         session = get_web_session()
 
     if workspace_id is None:
-        raise ValueError("workspace_id is required")
+        raise ValueError("Workspace selection is required.")
 
     items = _list_project_items(
         session=session,
@@ -243,7 +222,7 @@ def list_projects_v2(
     if session is None:
         session = get_web_session()
     if workspace_id is None:
-        raise ValueError("workspace_id is required")
+        raise ValueError("Workspace selection is required.")
 
     filter_body: dict[str, Any] = {"workspace_id": workspace_id}
     if check_admin is not None:
@@ -349,12 +328,11 @@ def select_project(
     projects: list[ProjectInfo],
     requested: Optional[str] = None,
     *,
-    allow_requested_over_quota: bool = False,
     needs_gpu_quota: bool = True,
     project_order: list[str] | None = None,
     congested_projects: set[str] | None = None,
 ) -> tuple[ProjectInfo, Optional[str]]:
-    """Select a project, with auto-fallback if over quota.
+    """Select a project by explicit name or scheduling preference.
 
     Sorting priority (when auto-selecting):
       - GPU workloads (``needs_gpu_quota=True``):
@@ -402,31 +380,10 @@ def select_project(
             project.name.lower(),
         )
 
-    def _quota_candidates(items: list[ProjectInfo]) -> list[ProjectInfo]:
-        return [p for p in items if p.has_quota(needs_gpu=needs_gpu_quota)]
-
-    def _best_by_quota(items: list[ProjectInfo]) -> ProjectInfo | None:
+    def _best_project(items: list[ProjectInfo]) -> ProjectInfo | None:
         if not items:
             return None
         return sorted(items, key=_sort_key)[0]
-
-    def _format_candidates(items: list[ProjectInfo]) -> str:
-        ordered = sorted(
-            items,
-            key=lambda p: (
-                not p.has_quota(needs_gpu=needs_gpu_quota),
-                _sort_key(p),
-            ),
-        )
-        lines = [
-            "Candidates:",
-            *(
-                f"  - {p.name}{p.get_quota_status(needs_gpu=needs_gpu_quota)}"
-                for p in ordered
-                if p.name
-            ),
-        ]
-        return "\n".join(lines)
 
     if requested:
         target = None
@@ -438,47 +395,23 @@ def select_project(
         if not target:
             raise ValueError("Project name not found")
 
-        if target.has_quota(needs_gpu=needs_gpu_quota):
-            msg = None
-            if congested_projects and target.project_id in congested_projects:
-                msg = (
-                    f"Warning: project '{target.name}' has jobs stuck as Unschedulable "
-                    "— GPUs may not be available."
-                )
-            return (target, msg)
-
-        if allow_requested_over_quota:
-            proceed_msg = (
-                f"Project '{target.name}' is over quota, but continuing with the explicitly "
-                "requested project."
+        msg = None
+        if congested_projects and target.project_id in congested_projects:
+            msg = (
+                f"Warning: project '{target.name}' has jobs stuck as Unschedulable "
+                "— GPUs may not be available."
             )
-            return (target, proceed_msg)
+        return (target, msg)
 
-        fallback_candidates = [
-            p for p in projects if p is not target and p.has_quota(needs_gpu=needs_gpu_quota)
-        ]
-
-        fallback = _best_by_quota(fallback_candidates)
-        if fallback is None:
-            raise ValueError(
-                "All projects are over quota\n" + _format_candidates(projects)
-            )
-
-        fallback_msg = (
-            f"Project '{target.name}' is over quota; using '{fallback.name}'. "
-            "Hint: pass --project <name> to override."
-        )
-        return (fallback, fallback_msg)
-
-    candidates = _quota_candidates(projects)
+    candidates = projects
     if congested_projects:
         healthy = [p for p in candidates if p.project_id not in congested_projects]
         if healthy:
             candidates = healthy
 
-    selected = _best_by_quota(candidates)
+    selected = _best_project(candidates)
     if selected is None:
-        raise ValueError("All projects are over quota\n" + _format_candidates(projects))
+        raise ValueError("No projects available")
 
     return (selected, None)
 

@@ -84,8 +84,16 @@ def test_ray_list_all_expands_and_limit_conflict_is_pre_api(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)["data"]
     assert calls == [20, 25]
-    assert len(payload["jobs"]) == 25
+    assert len(payload["items"]) == 25
     assert "truncated" not in payload
+    assert payload["items"][0] == {
+        "name": "job-0",
+        "status": "RUNNING",
+        "project": "Project",
+        "workspace": "Ray资源空间",
+        "compute_group": "",
+        "created_by": "tester",
+    }
 
     calls.clear()
     conflict = CliRunner().invoke(
@@ -103,6 +111,80 @@ def test_ray_list_all_expands_and_limit_conflict_is_pre_api(
     assert conflict.exit_code != 0
     assert "Use either --limit or --all, not both." in conflict.output
     assert calls == []
+
+
+def test_ray_list_workspace_all_fans_out_and_uses_visible_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_config(monkeypatch)
+
+    class _AllWorkspaceSession:
+        all_workspace_ids = ["ws-a", "ws-b"]
+        all_workspace_names = {"ws-a": "Ray East", "ws-b": "Ray West"}
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        ray_commands,
+        "get_web_session",
+        lambda: _AllWorkspaceSession(),
+    )
+    monkeypatch.setattr(
+        ray_commands.browser_api_module,
+        "get_current_user",
+        lambda session=None: {"id": "user-1"},
+    )
+
+    def fake_list_ray_jobs(**kwargs):  # noqa: ANN001
+        workspace_id = kwargs["workspace_id"]
+        calls.append(workspace_id)
+        return (
+            [
+                RayJobInfo(
+                    ray_job_id=f"ray-{workspace_id}",
+                    name=f"job-{workspace_id[-1]}",
+                    status="RUNNING",
+                    workspace_id=workspace_id,
+                    project_id="project-1",
+                    project_name="Project",
+                    created_at="1770000000",
+                    finished_at=None,
+                    created_by_id="user-1",
+                    created_by_name="tester",
+                    priority=1,
+                    raw={},
+                )
+            ],
+            1,
+        )
+
+    monkeypatch.setattr(
+        ray_commands.browser_api_module,
+        "list_ray_jobs",
+        fake_list_ray_jobs,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "ray", "list", "--workspace", "all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)["data"]["items"]
+    assert calls == ["ws-a", "ws-b"]
+    assert {row["workspace"] for row in rows} == {"Ray East", "Ray West"}
+    assert all(
+        set(row)
+        == {
+            "name",
+            "status",
+            "project",
+            "workspace",
+            "compute_group",
+            "created_by",
+        }
+        for row in rows
+    )
+    assert "workspace_id" not in result.output
 
 
 def test_ray_instances_requires_workspace_and_uses_num(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,12 +227,15 @@ def test_ray_instances_requires_workspace_and_uses_num(monkeypatch: pytest.Monke
             [
                 {
                     "instance_id": "rj-abc-head-1",
+                    "name": "head-0",
                     "instance_type": "head",
                     "status": "running",
                     "cpu_count": 2,
                     "gpu_count": 0,
                     "memory_size": 8,
                     "created_at": 1770000000,
+                    "node": "ray-node-a",
+                    "backend": "browser",
                 }
             ],
             1,
@@ -180,8 +265,14 @@ def test_ray_instances_requires_workspace_and_uses_num(monkeypatch: pytest.Monke
     assert captured["instances"]["ray_job_id"] == "rj-abc"
     assert captured["instances"]["limit"] == 42
     assert captured["instances"]["session"] is session
-    assert "Ray Instances" in result.output
+    assert result.output.splitlines()[0].lstrip().startswith("Name")
     assert "head" in result.output
+    assert "2 CPU, 8 GiB, 0 GPU" in result.output
+    assert "Ray Instances" not in result.output
+    assert "Total:" not in result.output
+    assert "rj-abc-head-1" not in result.output
+    assert "ray-node-a" not in result.output
+    assert "backend" not in result.output
 
 
 def test_ray_instances_json_omits_platform_handle(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -230,10 +321,12 @@ def test_ray_instances_json_omits_platform_handle(monkeypatch: pytest.MonkeyPatc
     )
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["success"] is True
-    assert "ray_job_id" not in payload["data"]
-    assert "instance_id" not in payload["data"]["instances"][0]
+    payload = json.loads(result.output)["data"]
+    assert payload == {
+        "name": "elastic-a",
+        "items": [{"type": "head", "rank": 0}],
+    }
+    assert "rj-abc-head-1" not in result.output
 
 
 def test_ray_instances_default_budget_notifies_and_keeps_resolution_window(
@@ -309,10 +402,12 @@ def test_ray_instances_default_budget_notifies_and_keeps_resolution_window(
     )
     assert json_result.exit_code == 0, json_result.output
     metadata = json.loads(json_result.output)["data"]
+    assert metadata["name"] == "elastic-a"
+    assert len(metadata["items"]) == 20
     assert metadata["shown"] == 20
     assert metadata["total"] == 25
     assert metadata["truncated"] is True
-    assert metadata["limit"] == 20
+    assert "limit" not in metadata
 
 
 def test_ray_instances_all_expands_and_json_conflict_is_rejected(
@@ -388,10 +483,13 @@ def test_ray_instances_all_expands_and_json_conflict_is_rejected(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)["data"]
     assert calls == [20, 25]
-    assert len(payload["instances"]) == 25
-    assert payload["total"] == 25
-    assert "truncated" not in payload
-    assert all("instance_id" not in item for item in payload["instances"])
+    assert set(payload) == {"name", "items"}
+    assert payload["name"] == "elastic-a"
+    assert len(payload["items"]) == 25
+    assert all(
+        set(item) <= {"name", "status", "role", "type", "resource", "rank"}
+        for item in payload["items"]
+    )
     assert "rj-abc-worker" not in result.output
 
     conflict = CliRunner().invoke(

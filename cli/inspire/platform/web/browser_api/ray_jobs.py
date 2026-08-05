@@ -123,7 +123,7 @@ def list_ray_jobs(
         session = get_web_session()
 
     if workspace_id is None:
-        raise ValueError("workspace_id is required")
+        raise ValueError("Workspace selection is required.")
     if not user_ids:
         user_data = _request_json(
             session,
@@ -138,7 +138,7 @@ def list_ray_jobs(
             current_user.get("id") or current_user.get("user_id") or ""
         ).strip()
         if not current_user_id:
-            raise ValueError("current user is required for Ray listing")
+            raise ValueError("Current user could not be resolved for Ray listing.")
         user_ids = [current_user_id]
 
     body: dict[str, Any] = {
@@ -183,7 +183,7 @@ def list_ray_job_users(
         session = get_web_session()
 
     if workspace_id is None:
-        raise ValueError("workspace_id is required")
+        raise ValueError("Workspace selection is required.")
 
     data = _assert_ok(
         _request_json(
@@ -214,7 +214,7 @@ def get_ray_job_detail(
     """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
-        raise ValueError("ray_job_id is required")
+        raise ValueError("Ray job selection is required.")
 
     if session is None:
         session = get_web_session()
@@ -241,7 +241,7 @@ def stop_ray_job(
     """Stop a running Ray job (does not remove the record)."""
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
-        raise ValueError("ray_job_id is required")
+        raise ValueError("Ray job selection is required.")
 
     if session is None:
         session = get_web_session()
@@ -272,7 +272,7 @@ def delete_ray_job(
     """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
-        raise ValueError("ray_job_id is required")
+        raise ValueError("Ray job selection is required.")
 
     if session is None:
         session = get_web_session()
@@ -380,7 +380,7 @@ def list_ray_job_events(
     """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
-        raise ValueError("ray_job_id is required")
+        raise ValueError("Ray job selection is required.")
     if page_num < 1:
         raise ValueError("page_num must be positive")
     if page_size < 1:
@@ -449,7 +449,7 @@ def list_ray_job_instances(
     """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
-        raise ValueError("ray_job_id is required")
+        raise ValueError("Ray job selection is required.")
     if limit < 1:
         raise ValueError("limit must be positive")
 
@@ -501,7 +501,7 @@ def list_ray_job_scaling_histories(
     """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
-        raise ValueError("ray_job_id is required")
+        raise ValueError("Ray job selection is required.")
 
     if session is None:
         session = get_web_session()

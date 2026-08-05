@@ -51,6 +51,96 @@ def test_configure_debug_logging_creates_report_and_prunes(monkeypatch, tmp_path
     assert len(remaining) <= 3
 
 
+def test_debug_report_redacts_platform_handles(monkeypatch, tmp_path: Path) -> None:
+    log_dir = tmp_path / "debug-logs"
+    monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
+
+    report_path = configure_debug_logging(
+        argv=[
+            "inspire",
+            "--debug",
+            "job",
+            "status",
+            "job-1234abcd",
+        ]
+    )
+    assert report_path is not None
+    logging.getLogger("inspire.test").debug(
+        "resolved job-1234abcd as 550e8400-e29b-41d4-a716-446655440000"
+    )
+    clear_debug_logging()
+
+    content = Path(report_path).read_text(encoding="utf-8")
+    assert "job-1234abcd" not in content
+    assert "550e8400-e29b-41d4-a716-446655440000" not in content
+    assert "<redacted>" in content
+
+
+def test_debug_report_omits_absolute_paths_and_report_location(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    log_dir = tmp_path / "debug-logs"
+    monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
+
+    report_path = configure_debug_logging(argv=["inspire", "--debug"])
+    assert report_path is not None
+    logging.getLogger("inspire.test").exception(
+        "failed at /Users/alice/private/project/run.py"
+    )
+    clear_debug_logging()
+
+    content = Path(report_path).read_text(encoding="utf-8")
+    assert "/Users/alice/private/project/run.py" not in content
+    assert str(Path.cwd()) not in content
+    assert str(report_path) not in content
+
+
+def test_debug_report_redacts_separate_and_inline_secret_arguments(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    log_dir = tmp_path / "debug-logs"
+    monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
+
+    report_path = configure_debug_logging(
+        argv=[
+            "inspire",
+            "account",
+            "add",
+            "primary",
+            "--password",
+            "plain-secret",
+            "--api-key=inline-secret",
+            "--authorization",
+            "Bearer auth-secret",
+            "--cookie",
+            "session=cookie-secret",
+            "--username=253108120116",
+            "-u",
+            "student-42",
+        ]
+    )
+    logging.getLogger("inspire.test").debug(
+        "username=253108120116 login_name=student-42 user_id=user-hidden"
+    )
+    clear_debug_logging()
+
+    assert report_path is not None
+    content = Path(report_path).read_text(encoding="utf-8")
+    for secret in (
+        "plain-secret",
+        "inline-secret",
+        "auth-secret",
+        "cookie-secret",
+        "253108120116",
+        "student-42",
+        "user-hidden",
+    ):
+        assert secret not in content
+    assert content.count("<redacted>") >= 7
+
+
 def test_configure_debug_logging_uses_unique_report_paths(monkeypatch, tmp_path: Path) -> None:
     log_dir = tmp_path / "debug-logs"
     monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
@@ -184,7 +274,8 @@ def test_debug_does_not_expand_config_show_output(
     assert json.loads(debug_json.output) == json.loads(plain_json.output)
     data = json.loads(debug_json.output)["data"]
     assert set(data) == {"values"}
-    assert data["values"]["INSPIRE_USERNAME"] == "alice"
+    assert data["values"]["INSPIRE_USERNAME"] == "<configured>"
+    assert "alice" not in debug_json.output
 
 
 def test_debug_does_not_expand_config_check_output(
@@ -199,7 +290,6 @@ def test_debug_does_not_expand_config_check_output(
         username="alice",
         password="secret",
         base_url="https://inspire.example",
-        docker_registry="registry.example",
     )
     monkeypatch.setattr(
         Config,

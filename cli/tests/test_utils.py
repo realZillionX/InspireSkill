@@ -7,8 +7,6 @@ import pytest
 from inspire.config import (
     Config,
     ConfigError,
-    _parse_denylist,
-    _parse_remote_timeout,
     build_env_exports,
 )
 from inspire.bridge.tunnel import (
@@ -26,105 +24,8 @@ from inspire.bridge.tunnel import (
 # ===========================================================================
 
 
-class TestConfig:
-    """Tests for Config class and helper functions."""
-
-    def test_from_env_with_required_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test loading config from environment variables."""
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
-        monkeypatch.delenv("INSPIRE_BASE_URL", raising=False)
-
-        config = Config.from_env()
-
-        assert config.username == "testuser"
-        assert config.password == "testpass"
-        assert config.base_url == "https://api.example.com"
-
-    def test_from_env_missing_username(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """v4.0.0 collapses identity-error wording into a single account-add prompt."""
-        monkeypatch.delenv("INSPIRE_USERNAME", raising=False)
-        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
-
-        with pytest.raises(ConfigError, match="Missing platform credentials"):
-            Config.from_env()
-
-    def test_from_env_missing_password(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """v4.0.0 collapses identity-error wording into a single account-add prompt."""
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.delenv("INSPIRE_PASSWORD", raising=False)
-
-        with pytest.raises(ConfigError, match="Missing platform credentials"):
-            Config.from_env()
-
-    def test_from_env_with_api_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test loading config with custom API settings."""
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
-        monkeypatch.setenv("INSPIRE_TIMEOUT", "60")
-        monkeypatch.setenv("INSPIRE_MAX_RETRIES", "5")
-        monkeypatch.setenv("INSPIRE_RETRY_DELAY", "2.5")
-
-        config = Config.from_env()
-
-        assert config.timeout == 60
-        assert config.max_retries == 5
-        assert config.retry_delay == 2.5
-
-    def test_from_env_loads_job_notification_default(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
-        monkeypatch.setenv("INSPIRE_JOB_ENABLE_NOTIFICATION", "true")
-
-        config = Config.from_env()
-
-        assert config.job_enable_notification is True
-
-    def test_from_env_invalid_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test error with invalid timeout value."""
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
-        monkeypatch.setenv("INSPIRE_TIMEOUT", "not-a-number")
-
-        with pytest.raises(ConfigError, match="Invalid INSPIRE_TIMEOUT"):
-            Config.from_env()
-
-
 class TestConfigHelpers:
     """Tests for config helper functions."""
-
-    def test_parse_remote_timeout_valid(self) -> None:
-        """Test parsing valid timeout values."""
-        assert _parse_remote_timeout("90") == 90
-        assert _parse_remote_timeout("300") == 300
-        assert _parse_remote_timeout("5") == 5
-
-    def test_parse_remote_timeout_invalid(self) -> None:
-        """Test parsing invalid timeout values."""
-        with pytest.raises(ConfigError, match="Invalid INSP_REMOTE_TIMEOUT"):
-            _parse_remote_timeout("not-a-number")
-
-    def test_parse_denylist_empty(self) -> None:
-        """Test parsing empty denylist."""
-        assert _parse_denylist(None) == []
-        assert _parse_denylist("") == []
-
-    def test_parse_denylist_comma_separated(self) -> None:
-        """Test parsing comma-separated denylist."""
-        result = _parse_denylist("*.pyc, *.pyo, __pycache__")
-        assert result == ["*.pyc", "*.pyo", "__pycache__"]
-
-    def test_parse_denylist_newline_separated(self) -> None:
-        """Test parsing newline-separated denylist."""
-        result = _parse_denylist("*.pyc\n*.pyo\n__pycache__")
-        assert result == ["*.pyc", "*.pyo", "__pycache__"]
-
-    def test_parse_denylist_mixed(self) -> None:
-        """Test parsing mixed separator denylist."""
-        result = _parse_denylist("*.pyc, *.pyo\n__pycache__")
-        assert result == ["*.pyc", "*.pyo", "__pycache__"]
 
     def test_build_env_exports_empty(self) -> None:
         """Test building env exports with empty dict."""
@@ -308,13 +209,12 @@ class TestBridgeProfile:
         profile = BridgeProfile.from_dict(d)
         assert profile.has_internet is False
 
-        # Test backward compatibility - missing has_internet defaults to True
-        d_legacy = {
-            "name": "legacy",
+        d_defaulted = {
+            "name": "defaulted",
             "proxy_url": "https://proxy.example.com",
         }
-        profile_legacy = BridgeProfile.from_dict(d_legacy)
-        assert profile_legacy.has_internet is True
+        profile_defaulted = BridgeProfile.from_dict(d_defaulted)
+        assert profile_defaulted.has_internet is True
 
 
 class TestTunnelConfig:
@@ -390,63 +290,6 @@ class TestTunnelConfig:
         names = {b.name for b in bridges}
         assert names == {"bridge1", "bridge2"}
 
-    def test_get_bridge_with_internet_prefers_default(self) -> None:
-        """Test get_bridge_with_internet prefers the default bridge."""
-        config = TunnelConfig()
-        # Add bridge1 as default (first added)
-        config.add_bridge(
-            BridgeProfile(name="bridge1", proxy_url="https://p1.example.com", has_internet=True)
-        )
-        config.add_bridge(
-            BridgeProfile(name="bridge2", proxy_url="https://p2.example.com", has_internet=True)
-        )
-
-        result = config.get_bridge_with_internet()
-
-        assert result is not None
-        assert result.name == "bridge1"  # Default bridge
-
-    def test_get_bridge_with_internet_skips_no_internet_default(self) -> None:
-        """Test get_bridge_with_internet skips default if it has no internet."""
-        config = TunnelConfig()
-        config.add_bridge(
-            BridgeProfile(
-                name="gpu-bridge", proxy_url="https://gpu.example.com", has_internet=False
-            )
-        )
-        config.add_bridge(
-            BridgeProfile(name="cpu-bridge", proxy_url="https://cpu.example.com", has_internet=True)
-        )
-        # gpu-bridge is default (first added)
-        assert config.default_bridge == "gpu-bridge"
-
-        result = config.get_bridge_with_internet()
-
-        assert result is not None
-        assert result.name == "cpu-bridge"  # Falls back to bridge with internet
-
-    def test_get_bridge_with_internet_returns_none_when_all_no_internet(self) -> None:
-        """Test get_bridge_with_internet returns None when no bridge has internet."""
-        config = TunnelConfig()
-        config.add_bridge(
-            BridgeProfile(name="bridge1", proxy_url="https://p1.example.com", has_internet=False)
-        )
-        config.add_bridge(
-            BridgeProfile(name="bridge2", proxy_url="https://p2.example.com", has_internet=False)
-        )
-
-        result = config.get_bridge_with_internet()
-
-        assert result is None
-
-    def test_get_bridge_with_internet_empty_config(self) -> None:
-        """Test get_bridge_with_internet returns None for empty config."""
-        config = TunnelConfig()
-
-        result = config.get_bridge_with_internet()
-
-        assert result is None
-
 
 class TestTunnelConfigPersistence:
     """Tests for tunnel config save/load."""
@@ -490,8 +333,6 @@ class TestTunnelConfigPersistence:
         save_tunnel_config(config)
 
         assert (tmp_path / "accounts" / "alice" / "bridges.json").exists()
-        # No legacy-style sibling file.
-        assert not (tmp_path / "bridges-alice.json").exists()
 
     def test_explicit_account_param_overrides_current_pointer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -545,29 +386,6 @@ class TestTunnelConfigPersistence:
         loaded = load_tunnel_config(tmp_path)
         assert loaded.account is None
         assert "u" in loaded.bridges
-
-    def test_env_var_chains_are_not_consulted(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """INSPIRE_ACCOUNT / INSPIRE_BRIDGE_ACCOUNT / INSPIRE_USERNAME used
-        to flow into tunnel account resolution. They no longer do."""
-        import inspire.accounts as accounts_mod
-
-        monkeypatch.setattr(accounts_mod, "current_account", lambda: None)
-        monkeypatch.setenv("INSPIRE_ACCOUNT", "ghost")
-        monkeypatch.setenv("INSPIRE_BRIDGE_ACCOUNT", "ghost")
-        monkeypatch.setenv("INSPIRE_USERNAME", "ghost")
-
-        (tmp_path / "bridges-ghost.json").write_text(
-            '{"default": "g", "bridges": [{"name": "g", "proxy_url": "https://g.example.com"}]}'
-        )
-
-        loaded = load_tunnel_config(tmp_path)
-        # No account was resolved from the env vars, and the unscoped
-        # bridges.json does not exist either — nothing should load.
-        assert loaded.account is None
-        assert loaded.bridges == {}
-
 
 class TestProxyCommand:
     """Tests for SSH proxy command building."""

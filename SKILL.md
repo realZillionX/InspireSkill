@@ -16,13 +16,13 @@ description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire C
 | 调度条件 | `workspace`、`project`、`group`、`quota`、GPU/CPU/内存/Shared Memory 和 `image`，决定任务在哪里、以什么规格运行。 |
 | 远端文件 | 代码、数据、权重、Checkpoint 和产物的共享盘路径；Path Alias 只描述文件在哪里。 |
 | 工作负载 | 交互调试用 Notebook；固定 GPU 后台任务用 Job；CPU Slurm 批处理用 HPC；弹性 Worker、常驻或流式任务用 Ray；模型 HTTP 服务用 Serving。 |
-| 观察收尾 | Events 看调度，Logs 看程序，Metrics / Instances 看实际工作单元，Status 看平台状态；最后核验业务健康和产物，再清理资源。 |
+| 观察收尾 | Events 看调度，Job Logs 看程序，Metrics / Instances 看实际工作单元，Status 看平台状态；其它 Workload 的应用日志按对应 Help 和共享盘约定处理。最后核验业务健康和产物，再清理资源。 |
 
 创建 Workload 时显式绑定 `workspace`、`project`、`group`、`quota` 和 `image`，或引用保存这五项的 Workload Profile；这些调度字段没有隐式默认值。选择资源时从同一条 Live Quota Row 复制完整 `group` 和 `quota`。GPU Job Shared Memory 是实例级资源，不能超过所选 Quota 的实例内存；细节见 [`references/compute-workloads.md`](references/compute-workloads.md)。Workload Profile 保存调度条件，Path Alias 保存远端路径，两者不能互相替代。
 
-Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和资源可用性的事实源；按账号隔离的本地缓存只用于连接与 Name 解析复用，可通过 `inspire cache status|refresh|clear` 管理。普通输入输出严格保持 Name-Only：使用名称、Alias、可读状态和短表格。平台 Handle 只能存在于 CLI 内部 Resolver 和 Browser API 请求中；CLI 没有接受或输出平台 Handle 的命令。
+Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和资源可用性的事实源；按账号隔离的本地缓存只用于连接与 Name 解析复用，可通过 `inspire cache status|refresh|clear` 管理。CLI 对 Agent 的稳定资源身份只有 Name 和 Alias；同名对象用 Workspace、可读候选和 `--pick` 消歧，内部解析对 Agent 透明。
 
-默认输出也有明确预算：发现类列表最多展示 20 项，使用命令自身的 `--limit` 收窄或 `--all` 显式展开；Batch 结果默认最多展示 20 项，使用 `--result-limit` 或 `--all-results` 控制；Job 日志默认限制为 100 行 / 条目和 16,000 个字符。截断时只给出已展示数量和继续获取完整结果的选项。`--json` 保持单一 JSON 文档，不混入进度、请求包装、绝对本地路径或调试日志。
+默认输出也有明确预算：发现类列表和 Batch 结果最多展示 20 项，使用命令自身的 `--limit/-n` 收窄或 `--all` 显式展开；Job 日志默认限制为 100 行 / 条目和 16,000 个字符。截断时只给出已展示数量和继续获取完整结果的选项。根级 `inspire --json ...` 保持单一 JSON 文档，不混入进度、请求包装、绝对本地路径或调试日志。
 
 日常 Workspace 选择通常很直接：
 
@@ -43,7 +43,7 @@ Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和�
 3. 用 Live 查询确认账号、Workspace、Project、Compute Group、Quota、Image 和资源可用性。
 4. 准备共享路径、代码和环境；复杂条件先 `dry-run` 或运行短 Probe。
 5. 提交匹配的 Workload。
-6. 依次观察 Events、Logs、Metrics、Instances 和 Status。
+6. 按当前 Workload 的 Help 依次观察可用的 Events、Logs、Metrics、Instances 和 Status。
 7. 核验业务健康与产物完整性。
 8. 运行中的对象先 `stop`，再 `delete`；终态且不再需要的对象直接 `delete`，仍有当前或声明的未来消费者时保留。
 
@@ -69,7 +69,7 @@ Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和�
 
 ### CLI 开发
 
-仅在维护 CLI Browser API 封装、核对前端请求合同、执行 Reverse Capture，或用户明确要求接口细节时加载 [`references/dev/browser-api.md`](references/dev/browser-api.md)。
+仅在维护 CLI Browser API 封装、核对前端请求合同，或用户明确要求接口细节时加载 [`references/dev/browser-api.md`](references/dev/browser-api.md)。
 
 ## 具体项目的资产合同
 

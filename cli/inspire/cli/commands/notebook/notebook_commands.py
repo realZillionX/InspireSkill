@@ -2,30 +2,23 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-import subprocess
 from typing import Optional
 
 import click
 
-from . import notebook_lookup as notebook_lookup_module
-from . import notebook_ssh_flow as notebook_ssh_flow_module
 from .notebook_create_flow import maybe_run_post_start, run_notebook_create
 from .notebook_lookup import (
-    _collect_workspace_ids_for_lookup,
     _current_user_lookup_failure_message,
-    _get_current_user_detail,
-    _list_notebooks_for_workspace,
     _list_notebooks_for_workspaces,
-    _resolve_notebook_id as _lookup_resolve_notebook_id,
-    _run_notebook_operation_with_stale_handle_retry as _lookup_run_stale_retry,
+    _resolve_notebook_id,
+    _run_notebook_operation_with_stale_handle_retry,
     _sort_notebook_items,
     _try_get_current_user_ids,
-    _validate_notebook_account_access,
 )
 from .notebook_presenters import _print_notebook_detail, _print_notebook_list
 from .public_output import public_notebook, public_operation
-from .notebook_ssh_flow import load_ssh_public_key
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -33,14 +26,21 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils.collection_output import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import forget_resource_identity
+from inspire.cli.utils.errors import (
+    exit_with_error as _handle_error,
+    require_confirmation,
+)
+from inspire.cli.utils.id_resolver import (
+    NAME_PICK_HELP,
+    forget_resource_identity,
+    reject_id_at_boundary,
+)
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
     get_base_url,
@@ -53,7 +53,6 @@ from inspire.cli.utils.notebook_post_start import (
     NO_WAIT_POST_START_WARNING,
     resolve_notebook_post_start_spec,
 )
-from inspire.cli.utils.tunnel_reconnect import rebuild_notebook_bridge_profile
 from inspire.config import ConfigError
 from inspire.config.workspaces import (
     resolve_workspace_operation_scope,
@@ -63,45 +62,7 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.browser_api import NotebookFailedError
 
-
-def _call_with_module_overrides(
-    module, overrides: dict[str, object], func, *args, **kwargs
-):  # noqa: ANN001, ANN002, ANN003
-    original = {name: getattr(module, name) for name in overrides}
-    for name, value in overrides.items():
-        setattr(module, name, value)
-    try:
-        return func(*args, **kwargs)
-    finally:
-        for name, value in original.items():
-            setattr(module, name, value)
-
-
-def _notebook_lookup_overrides() -> dict[str, object]:
-    return {
-        "_handle_error": _handle_error,
-        "_collect_workspace_ids_for_lookup": _collect_workspace_ids_for_lookup,
-        "_get_current_user_detail": _get_current_user_detail,
-        "_list_notebooks_for_workspace": _list_notebooks_for_workspace,
-        "_list_notebooks_for_workspaces": _list_notebooks_for_workspaces,
-        "_try_get_current_user_ids": _try_get_current_user_ids,
-        "_validate_notebook_account_access": _validate_notebook_account_access,
-        "_resolve_notebook_id": _resolve_notebook_id,
-    }
-
-
-def _notebook_ssh_overrides() -> dict[str, object]:
-    return {
-        "_handle_error": _handle_error,
-        "require_web_session": require_web_session,
-        "load_config": load_config,
-        "_resolve_notebook_id": _resolve_notebook_id,
-        "_get_current_user_detail": _get_current_user_detail,
-        "_validate_notebook_account_access": _validate_notebook_account_access,
-        "load_ssh_public_key": load_ssh_public_key,
-        "rebuild_notebook_bridge_profile": rebuild_notebook_bridge_profile,
-        "subprocess": subprocess,
-    }
+logger = logging.getLogger(__name__)
 
 
 def _print_notebook_wait_progress(notebook: dict, status: str, events: str) -> None:
@@ -116,38 +77,6 @@ def _print_notebook_wait_progress(notebook: dict, status: str, events: str) -> N
     )
     if latest_event:
         click.echo(f"Latest event: {scrub_raw_ids(latest_event)}")
-
-
-def _resolve_notebook_id(*args, **kwargs):  # noqa: ANN002, ANN003
-    return _call_with_module_overrides(
-        notebook_lookup_module,
-        _notebook_lookup_overrides(),
-        _lookup_resolve_notebook_id,
-        *args,
-        **kwargs,
-    )
-
-
-def _run_notebook_operation_with_stale_handle_retry(
-    *args, **kwargs  # noqa: ANN002, ANN003
-):
-    return _call_with_module_overrides(
-        notebook_lookup_module,
-        _notebook_lookup_overrides(),
-        _lookup_run_stale_retry,
-        *args,
-        **kwargs,
-    )
-
-
-def run_notebook_ssh(*args, **kwargs):  # noqa: ANN002, ANN003
-    return _call_with_module_overrides(
-        notebook_ssh_flow_module,
-        _notebook_ssh_overrides(),
-        notebook_ssh_flow_module.run_notebook_ssh,
-        *args,
-        **kwargs,
-    )
 
 
 def _workspace_display(session, workspace_id: str) -> str:  # noqa: ANN001
@@ -179,16 +108,35 @@ def _with_workspace_display_name(item: dict, workspace_name: str) -> dict:
     "--name",
     "-n",
     required=True,
+    metavar="NAME",
     help="Notebook name",
 )
 @click.option(
     "--workspace",
+    metavar="NAME",
     help="Workspace name. Required unless supplied by --profile.",
+)
+@click.option(
+    "--project",
+    "-p",
+    metavar="NAME",
+    help="Project name. Required unless supplied by --profile.",
+)
+@click.option(
+    "--group",
+    "group",
+    metavar="NAME",
+    help=(
+        "Full compute group name copied from the same quota row as --quota. "
+        "Required unless supplied by --profile. "
+        "Partial matches are not accepted."
+    ),
 )
 @click.option(
     "--quota",
     "-q",
     default=None,
+    metavar="SPEC",
     help=(
         "Resource quota as 'gpu,cpu,mem' (mem in GiB). "
         "Example: '1,20,200' for 1 GPU + 20 CPU + 200 GiB. "
@@ -199,14 +147,17 @@ def _with_workspace_display_name(item: dict, workspace_name: str) -> dict:
     ),
 )
 @click.option(
-    "--project",
-    "-p",
-    help="Project name. Required unless supplied by --profile.",
-)
-@click.option(
     "--image",
     "-i",
+    metavar="NAME|URL",
     help="Image name or URL. Required unless supplied by --profile.",
+)
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    metavar="NAME",
+    help="Notebook condition profile providing workspace/project/group/quota/image.",
 )
 @click.option(
     "--shm-size",
@@ -244,29 +195,15 @@ def _with_workspace_display_name(item: dict, workspace_name: str) -> dict:
 )
 @task_priority_option()
 @click.option(
-    "--group",
-    "group",
-    help=(
-        "Full compute group name copied from the same quota row as --quota. "
-        "Required unless supplied by --profile. "
-        "Partial matches are not accepted."
-    ),
-)
-@click.option(
     "--node",
     "node",
     default=None,
+    metavar="NAME",
     help=(
         "Pin the notebook to a specific cluster node by name (e.g. qb-prod-gpu1736). "
         "The node must belong to the selected compute group; the platform rejects "
         "a mismatch. Omit to let the scheduler place it."
     ),
-)
-@click.option(
-    "--profile",
-    "profile_name",
-    default=None,
-    help="Notebook condition profile providing workspace/project/group/quota/image.",
 )
 @pass_context
 def create_notebook_cmd(
@@ -329,13 +266,20 @@ def create_notebook_cmd(
 
 
 @click.command("stop")
-@click.argument("notebook")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("notebook", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @pass_context
 def stop_notebook_cmd(
     ctx: Context,
     notebook: str,
     workspace: str,
+    pick: Optional[int],
 ) -> None:
     """Stop a running notebook instance.
 
@@ -343,16 +287,20 @@ def stop_notebook_cmd(
     Examples:
         inspire notebook stop my-notebook --workspace 分布式训练空间
     """
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list --workspace <workspace|all>",
+    )
     session = require_web_session(
         ctx,
         hint=WEB_AUTH_HINT,
     )
 
     base_url = get_base_url()
-    config = load_config(ctx)
     try:
         workspace_id = resolve_workspace_operation_scope(
-            config,
             workspace=workspace,
             session=session,
         )
@@ -362,11 +310,11 @@ def stop_notebook_cmd(
     notebook_id, _ = _resolve_notebook_id(
         ctx,
         session=session,
-        config=config,
         base_url=base_url,
         identifier=notebook,
         json_output=ctx.json_output,
         workspace_ids=[workspace_id],
+        pick=pick,
         require_live=True,
     )
 
@@ -379,22 +327,28 @@ def stop_notebook_cmd(
     if ctx.json_output:
         click.echo(
             json_formatter.format_json(
-                public_operation(notebook, "stopping")
+                public_operation(notebook, "stopped")
             )
         )
         return
 
-    click.echo(f"Stopping notebook '{scrub_raw_ids(notebook)}'.")
+    click.echo(human_formatter.format_mutation_success("Notebook", "stopped", notebook))
 
 
 @click.command("delete")
-@click.argument("notebook")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("notebook", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--yes",
     "-y",
     is_flag=True,
     help="Skip the interactive confirmation prompt.",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
 )
 @pass_context
 def delete_notebook_cmd(
@@ -402,6 +356,7 @@ def delete_notebook_cmd(
     notebook: str,
     workspace: str,
     yes: bool,
+    pick: Optional[int],
 ) -> None:
     """Permanently delete a notebook instance.
 
@@ -416,16 +371,29 @@ def delete_notebook_cmd(
         inspire notebook delete my-notebook --workspace 分布式训练空间
         inspire notebook delete my-notebook --workspace 分布式训练空间 --yes
     """
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list --workspace <workspace|all>",
+    )
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt=(
+            f"Permanently delete notebook '{scrub_raw_ids(notebook)}'? "
+            "This cannot be undone."
+        ),
+        message="Notebook deletion requires confirmation.",
+    )
     session = require_web_session(
         ctx,
         hint=WEB_AUTH_HINT,
     )
 
     base_url = get_base_url()
-    config = load_config(ctx)
     try:
         workspace_id = resolve_workspace_operation_scope(
-            config,
             workspace=workspace,
             session=session,
         )
@@ -435,19 +403,13 @@ def delete_notebook_cmd(
     notebook_id, _ = _resolve_notebook_id(
         ctx,
         session=session,
-        config=config,
         base_url=base_url,
         identifier=notebook,
         json_output=ctx.json_output,
         workspace_ids=[workspace_id],
+        pick=pick,
         require_live=True,
     )
-
-    if not yes and not ctx.json_output:
-        click.confirm(
-            f"Permanently delete notebook '{scrub_raw_ids(notebook)}'? This cannot be undone.",
-            abort=True,
-        )
 
     try:
         browser_api_module.delete_notebook(notebook_id=notebook_id, session=session)
@@ -473,12 +435,18 @@ def delete_notebook_cmd(
         )
         return
 
-    click.echo(f"Notebook '{scrub_raw_ids(notebook)}' deleted.")
+    click.echo(human_formatter.format_mutation_success("Notebook", "deleted", notebook))
 
 
 @click.command("start")
-@click.argument("notebook")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("notebook", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @click.option(
     "--wait/--no-wait",
     default=False,
@@ -501,6 +469,7 @@ def start_notebook_cmd(
     ctx: Context,
     notebook: str,
     workspace: str,
+    pick: Optional[int],
     wait: bool,
     post_start: Optional[str],
     post_start_script: Optional[Path],
@@ -515,6 +484,12 @@ def start_notebook_cmd(
         inspire notebook start ring-8h100-test --workspace 分布式训练空间 --post-start-script scripts/notebook_setup.sh
         inspire notebook start ring-8h100-test --workspace 分布式训练空间 --post-start none
     """
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list --workspace <workspace|all>",
+    )
     if post_start and post_start_script:
         raise click.UsageError("Use either --post-start or --post-start-script, not both.")
 
@@ -537,7 +512,6 @@ def start_notebook_cmd(
 
     try:
         workspace_id = resolve_workspace_operation_scope(
-            config,
             workspace=workspace,
             session=session,
         )
@@ -547,11 +521,11 @@ def start_notebook_cmd(
     notebook_id, _ = _resolve_notebook_id(
         ctx,
         session=session,
-        config=config,
         base_url=base_url,
         identifier=notebook,
         json_output=ctx.json_output,
         workspace_ids=[workspace_id],
+        pick=pick,
         require_live=True,
     )
 
@@ -564,7 +538,7 @@ def start_notebook_cmd(
         return
 
     if not ctx.json_output:
-        click.echo(f"Starting notebook '{scrub_raw_ids(notebook)}'.")
+        click.echo(human_formatter.format_mutation_success("Notebook", "started", notebook))
 
     notebook_detail = None
     if wait or post_start_spec is not None:
@@ -602,7 +576,6 @@ def start_notebook_cmd(
         quota = notebook_detail.get("quota") or {}
         gpu_count = quota.get("gpu_count", 0) or 0
         maybe_run_post_start(
-            ctx,
             notebook_id=notebook_id,
             session=session,
             post_start_spec=post_start_spec,
@@ -613,19 +586,26 @@ def start_notebook_cmd(
     if ctx.json_output:
         click.echo(
             json_formatter.format_json(
-                public_operation(notebook, "starting")
+                public_operation(notebook, "started")
             )
         )
         return
 
 @click.command("status")
-@click.argument("notebook")
-@click.option("--workspace", required=True, help="Workspace name or 'all'.")
+@click.argument("notebook", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @pass_context
 def notebook_status(
     ctx: Context,
     notebook: str,
     workspace: str,
+    pick: Optional[int],
 ) -> None:
     """Get status of a notebook instance.
 
@@ -633,6 +613,12 @@ def notebook_status(
     Examples:
         inspire notebook status my-notebook --workspace 分布式训练空间
     """
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list --workspace <workspace|all>",
+    )
     session = require_web_session(
         ctx,
         hint=WEB_AUTH_HINT,
@@ -640,10 +626,8 @@ def notebook_status(
 
     base_url = get_base_url()
 
-    config = load_config(ctx)
     try:
-        workspace_ids, _ = resolve_workspace_query_scope(
-            config,
+        workspace_id = resolve_workspace_operation_scope(
             workspace=workspace,
             session=session,
         )
@@ -655,11 +639,11 @@ def notebook_status(
             _run_notebook_operation_with_stale_handle_retry(
                 ctx,
                 session=session,
-                config=config,
                 base_url=base_url,
                 identifier=notebook,
                 json_output=ctx.json_output,
-                workspace_ids=workspace_ids,
+                workspace_ids=[workspace_id],
+                pick=pick,
                 operation=lambda notebook_id: web_session_module.request_json(
                     session,
                     "GET",
@@ -688,10 +672,14 @@ def notebook_status(
     if data.get("code") == 0:
         notebook_payload = data.get("data", {})
         notebook_detail = notebook_payload if isinstance(notebook_payload, dict) else {}
+        public_detail = public_notebook(
+            _with_workspace_display_name(notebook_detail, workspace),
+            fallback_name=notebook,
+        )
         if ctx.json_output:
-            click.echo(json_formatter.format_json(public_notebook(notebook_detail)))
+            click.echo(json_formatter.format_json(public_detail))
         else:
-            _print_notebook_detail(notebook_detail)
+            _print_notebook_detail(public_detail)
         return
 
     _handle_error(
@@ -707,36 +695,39 @@ def notebook_status(
 @click.option(
     "--workspace",
     required=True,
+    metavar="NAME|all",
     help="Workspace name or 'all'.",
 )
-@click.option(
-    "--limit",
-    "-n",
-    type=click.IntRange(1),
-    default=None,
-    help="Maximum rows to display (default: 20).",
-)
-@click.option("--all", "show_all", is_flag=True, help="Show every matching notebook.")
 @click.option(
     "--status",
     "-s",
     multiple=True,
+    metavar="STATUS",
     help="Filter by status (e.g. RUNNING, STOPPED). Repeatable.",
 )
 @click.option(
     "--keyword",
     "keyword",
     default="",
+    metavar="KEYWORD",
     help="Filter by notebook name (keyword search)",
 )
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum notebooks to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every matching notebook.")
 @pass_context
 def list_notebooks(
     ctx: Context,
     workspace: Optional[str],
-    limit: Optional[int],
-    show_all: bool,
     status: tuple[str, ...],
     keyword: str,
+    limit: Optional[int],
+    show_all: bool,
 ) -> None:
     """List notebook/interactive instances.
 
@@ -761,11 +752,8 @@ def list_notebooks(
         ctx,
         hint=WEB_AUTH_HINT,
     )
-    config = load_config(ctx)
-
     try:
         workspace_ids, _ = resolve_workspace_query_scope(
-            config,
             workspace=workspace,
             session=session,
         )
@@ -799,17 +787,19 @@ def list_notebooks(
             status=status_filter,
             errors=workspace_errors,
         )
-    except ValueError as e:
+    except ValueError:
+        logger.debug("Notebook list validation/API response failed", exc_info=True)
         _handle_error(
             ctx,
             "APIError",
-            str(e),
+            "Could not list notebooks.",
             EXIT_API_ERROR,
             hint="Check auth and proxy configuration.",
         )
         return
-    except Exception as e:
-        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+    except Exception:
+        logger.debug("Notebook list failed", exc_info=True)
+        _handle_error(ctx, "APIError", "Could not list notebooks.", EXIT_API_ERROR)
         return
 
     all_items: list[dict] = []
@@ -823,8 +813,14 @@ def list_notebooks(
 
     if workspace_errors and not ctx.json_output:
         for ws_id, error in workspace_errors.items():
+            workspace_name = _workspace_display(session, ws_id)
+            logger.debug(
+                "Notebook list failed for workspace %s: %s",
+                ws_id,
+                error,
+            )
             click.echo(
-                f"Warning: workspace {_workspace_display(session, ws_id)} failed: {scrub_raw_ids(error)}",
+                f"Warning: workspace {scrub_raw_ids(workspace_name)} unavailable.",
                 err=True,
             )
 

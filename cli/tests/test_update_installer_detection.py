@@ -1,23 +1,8 @@
-"""Regression test for `inspire update` installer detection.
+"""Tests for detecting supported global installer layouts.
 
-Background: a v3.0.1 user reported that `inspire update` refused to
-auto-upgrade with "this build isn't managed by uv tool / pipx", even
-though their install was a textbook `uv tool install` at
-``~/.local/share/uv/tools/inspire-skill/``.
-
-Root cause: the detector previously did
-``Path(sys.executable).resolve()``. The ``.resolve()`` follows the
-venv's ``bin/python`` symlink through to the underlying interpreter
-binary — for uv tool installs that lives at
-``~/.local/share/uv/python/cpython-3.x.x-.../bin/python3``, which has
-"uv" in its parts but **not** "tools". Detection fell to None, the
-auto-upgrade refused, the user had to reinstall manually.
-
-Fix: probe ``sys.prefix`` (the venv root) directly. Don't resolve.
-
-These tests pin the detector against the literal layouts that uv tool
-and pipx use, so any future regression that re-introduces resolve() or
-otherwise scrubs the venv segment will fail here.
+The detector must inspect the virtual-environment root directly so that
+``uv tool`` and ``pipx`` installations remain distinguishable from local
+virtual environments and system Python.
 """
 
 from __future__ import annotations
@@ -31,17 +16,13 @@ from pathlib import Path
 import pytest
 
 from inspire.cli.commands.update import (
-    _clean_legacy_skill_targets,
     _detect_installer,
     _ensure_global_playwright_runtime,
     _ensure_playwright_runtime,
     _kimi_code_home,
     _kimi_desktop_root,
-    _release_entries_between,
     _is_local_requirement,
     _parse_uv_tool_list,
-    ReleaseEntry,
-    _scan_stale_skill_patterns,
     _upgrade_cli,
 )
 
@@ -459,35 +440,6 @@ def test_global_runtime_setup_uses_global_inspire_executable(
     ]
 
 
-def test_global_runtime_setup_falls_back_when_hidden_hook_is_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fallback_calls: list[tuple[str, bool]] = []
-    monkeypatch.setattr(
-        update_module,
-        "_uv_tool_info",
-        lambda: update_module.UvToolInfo(executable_path="/Users/zillionx/.local/bin/inspire"),
-    )
-
-    def fake_run(cmd, check, env, text, stdout, stderr):
-        return subprocess.CompletedProcess(
-            cmd,
-            2,
-            stdout="",
-            stderr="Error: No such command '_ensure-playwright-runtime'.\n",
-        )
-
-    monkeypatch.setattr(update_module.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        update_module,
-        "_ensure_playwright_runtime_with_wrapper_python",
-        lambda executable, silent: fallback_calls.append((executable, silent)) or True,
-    )
-
-    assert _ensure_global_playwright_runtime(silent=True) is True
-    assert fallback_calls == [("/Users/zillionx/.local/bin/inspire", True)]
-
-
 def test_global_runtime_setup_does_not_forward_child_output(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -530,7 +482,7 @@ def test_update_runs_global_runtime_setup_after_cli_upgrade(
     monkeypatch.setattr(
         update_module,
         "_refresh_skill_files",
-        lambda silent, latest_version=None: calls.append("skills") or True,
+        lambda silent: calls.append("skills") or True,
     )
     monkeypatch.setattr(
         update_module,
@@ -542,11 +494,6 @@ def test_update_runs_global_runtime_setup_after_cli_upgrade(
         "_ensure_global_playwright_runtime",
         lambda silent: calls.append("runtime") or True,
     )
-    monkeypatch.setattr(
-        "inspire.accounts.normalize_environment",
-        lambda **_kwargs: calls.append("normalize"),
-    )
-
     update_module.update.callback(
         check_only=False,
         silent=True,
@@ -554,7 +501,7 @@ def test_update_runs_global_runtime_setup_after_cli_upgrade(
         skill_only=False,
     )
 
-    assert calls == ["cli:4.1.1", "skills", "audit", "runtime", "normalize"]
+    assert calls == ["cli:4.1.1", "skills", "audit", "runtime"]
 
 
 def test_update_delegates_post_upgrade_work_to_new_executable(
@@ -576,10 +523,7 @@ def test_update_delegates_post_upgrade_work_to_new_executable(
     monkeypatch.setattr(
         update_module,
         "_run_post_update_command",
-        lambda **kwargs: calls.append(
-            f"post:{kwargs['previous_version']}->{kwargs['expected_version']}"
-        )
-        or True,
+        lambda **kwargs: calls.append(f"post:{kwargs['expected_version']}") or True,
     )
     monkeypatch.setattr(
         update_module,
@@ -594,75 +538,35 @@ def test_update_delegates_post_upgrade_work_to_new_executable(
         skill_only=False,
     )
 
-    assert calls == ["cli:5.2.3", "post:5.2.2->5.2.3"]
+    assert calls == ["cli:5.2.3", "post:5.2.3"]
 
 
-def test_clean_legacy_skill_targets_removes_old_antigravity_path(
-    tmp_path: Path,
+def test_download_tarball_uses_only_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    legacy = tmp_path / ".gemini" / "skills" / "inspire"
-    legacy.mkdir(parents=True)
-    (legacy / "SKILL.md").write_text("# stale\n", encoding="utf-8")
-    monkeypatch.setattr(update_module, "HARNESS_LEGACY_SKILL_DIRS", {"antigravity": [legacy]})
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
 
-    assert _clean_legacy_skill_targets("antigravity", silent=True) is True
-    assert not legacy.exists()
+        def __exit__(self, *_args: object) -> None:
+            return None
 
+        def read(self) -> bytes:
+            return b"tarball"
 
-def test_release_entries_between_includes_versions_between_old_and_new() -> None:
-    entries = _release_entries_between(
-        [
-            ReleaseEntry(tag="v5.2.3", body="## 更新内容\n\n### 新增\n\n- C"),
-            ReleaseEntry(tag="v5.2.2", body="## 更新内容\n\n### 新增\n\n- B"),
-            ReleaseEntry(tag="v5.2.1", body="## 更新内容\n\n### 修复\n\n- A"),
-        ],
-        previous_version="5.2.1",
-        new_version="5.2.3",
-    )
-
-    assert [(entry.tag, entry.body.strip()) for entry in entries] == [
-        ("v5.2.3", "## 更新内容\n\n### 新增\n\n- C"),
-        ("v5.2.2", "## 更新内容\n\n### 新增\n\n- B"),
-    ]
-
-
-def test_release_entries_from_changelog_text_parses_release_sections() -> None:
-    entries = update_module._release_entries_from_changelog_text(
-        "# Changelog\n\n"
-        "本文件同步 GitHub Releases 正文格式。\n\n"
-        "# v5.2.3\n\n"
-        "## 更新内容\n\n"
-        "### 修复\n\n"
-        "- 修复摘要兜底。\n\n"
-        "# v5.2.2\n\n"
-        "## 更新内容\n\n"
-        "### 新增\n\n"
-        "- 新增 Cursor。\n"
-    )
-
-    assert [(entry.tag, entry.body.strip()) for entry in entries] == [
-        ("v5.2.3", "## 更新内容\n\n### 修复\n\n- 修复摘要兜底。"),
-        ("v5.2.2", "## 更新内容\n\n### 新增\n\n- 新增 Cursor。"),
-    ]
-
-
-def test_fetch_release_entries_falls_back_to_changelog_when_github_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fallback_entries = [ReleaseEntry(tag="v5.2.3", body="## 更新内容\n\n- 兜底摘要。")]
-
-    monkeypatch.setattr(update_module, "_fetch_release_entries_from_github", lambda timeout=10: [])
+    calls: list[tuple[object, int]] = []
     monkeypatch.setattr(
-        update_module,
-        "_fetch_release_entries_from_changelog",
-        lambda timeout=10: fallback_entries,
+        update_module.urllib.request,
+        "urlopen",
+        lambda request, *, timeout: calls.append((request, timeout)) or _Response(),
     )
 
-    assert update_module._fetch_release_entries() == fallback_entries
+    assert update_module._download_tarball(timeout=7) == b"tarball"
+    assert len(calls) == 1
+    assert calls[0][1] == 7
 
 
-def test_update_prints_release_summary_after_successful_cli_upgrade(
+def test_update_prints_one_compact_success_message(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -680,17 +584,6 @@ def test_update_prints_release_summary_after_successful_cli_upgrade(
     monkeypatch.setattr(update_module, "_refresh_skill_files", lambda *args, **_kwargs: True)
     monkeypatch.setattr(update_module, "_audit_update_state", lambda **_kwargs: (True, "5.2.3"))
     monkeypatch.setattr(update_module, "_ensure_global_playwright_runtime", lambda silent: True)
-    monkeypatch.setattr(
-        update_module,
-        "_fetch_release_entries",
-        lambda: [
-            ReleaseEntry(tag="v5.2.3", body="## 更新内容\n\n### 新增\n\n- 新增 Cursor Harness 支持。"),
-            ReleaseEntry(tag="v5.2.2", body="## 更新内容\n\n### 修复\n\n- 修复 Antigravity 安装目录。"),
-            ReleaseEntry(tag="v5.2.1", body="## 更新内容\n\n### 新增\n\n- Qoder。"),
-        ],
-    )
-    monkeypatch.setattr("inspire.accounts.normalize_environment", lambda **_kwargs: None)
-
     update_module.update.callback(
         check_only=False,
         silent=False,
@@ -699,52 +592,7 @@ def test_update_prints_release_summary_after_successful_cli_upgrade(
     )
 
     output = capsys.readouterr().out
-    assert "What's new (v5.2.1 → v5.2.3):" in output
-    assert "- v5.2.3: 新增 Cursor Harness 支持。" in output
-    assert "- v5.2.2: 修复 Antigravity 安装目录。" in output
-    assert "## 更新内容" not in output
-    assert "### 新增" not in output
-
-
-def test_release_summary_is_bounded_and_removes_engineering_details(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    long_item = "A" * 300
-    monkeypatch.setattr(
-        update_module,
-        "_fetch_release_entries",
-        lambda: [
-            ReleaseEntry(
-                tag="v5.2.4",
-                body=(
-                    "## 更新内容\n\n"
-                    "- 用户可见改进 https://example.com/details?token=secret\n"
-                    "- 修复 /Users/alice/private/config.toml 的兼容性\n"
-                    "- uv tool install --force --refresh inspire-skill\n"
-                    f"- {long_item}\n"
-                    "- 第五项\n"
-                    "- 第六项\n"
-                    "- 第七项\n"
-                ),
-            ),
-            ReleaseEntry(tag="v5.2.3", body="- 不应超过总上限\n"),
-            ReleaseEntry(tag="v5.2.2", body="- 旧版本摘要\n"),
-            ReleaseEntry(tag="v5.2.1", body="- 不应读取第四个 release\n"),
-        ],
-    )
-
-    update_module._print_release_summary("5.2.0", "5.2.4", silent=False)
-
-    output = capsys.readouterr().out
-    summary_items = [line for line in output.splitlines() if line.startswith("- v")]
-    assert len(summary_items) <= update_module._RELEASE_SUMMARY_MAX_ITEMS
-    assert "https://" not in output
-    assert "/Users/alice" not in output
-    assert "uv tool install" not in output
-    assert "A" * update_module._RELEASE_SUMMARY_ITEM_MAX_CHARS not in output
-    assert "…" in output
-    assert "不应读取第四个 release" not in output
+    assert output.splitlines() == ["InspireSkill updated to v5.2.3."]
 
 
 def test_update_failure_output_is_one_compact_actionable_hint(
@@ -791,8 +639,6 @@ def test_update_silent_mode_is_fully_quiet(
     monkeypatch.setattr(update_module, "_refresh_skill_files", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(update_module, "_audit_update_state", lambda **_kwargs: (True, "5.2.1"))
     monkeypatch.setattr(update_module, "_ensure_global_playwright_runtime", lambda _silent: True)
-    monkeypatch.setattr(update_module, "_normalize_after_success", lambda _silent: None)
-
     update_module.update.callback(
         check_only=False,
         silent=True,
@@ -818,31 +664,6 @@ def test_parse_uv_tool_list_captures_local_source_and_executable() -> None:
     assert info.env_path == "/Users/zillionx/.local/share/uv/tools/inspire-skill"
     assert info.executable_path == "/Users/zillionx/.local/bin/inspire"
     assert _is_local_requirement(info.required)
-
-
-def test_stale_skill_patterns_detect_legacy_target_dir(tmp_path: Path) -> None:
-    (tmp_path / "SKILL.md").write_text(
-        "Run INSPIRE_TARGET_DIR=/root/labwork inspire notebook exec ...\n",
-        encoding="utf-8",
-    )
-
-    errors = _scan_stale_skill_patterns(tmp_path)
-
-    assert errors
-    assert "INSPIRE_TARGET_DIR" in errors[0]
-
-
-def test_stale_skill_patterns_detect_low_level_playwright_repair(tmp_path: Path) -> None:
-    (tmp_path / "references").mkdir()
-    (tmp_path / "references" / "setup.md").write_text(
-        "Repair with uvx --from inspire-skill playwright install chromium.\n",
-        encoding="utf-8",
-    )
-
-    errors = _scan_stale_skill_patterns(tmp_path)
-
-    assert errors
-    assert "uvx --from inspire-skill playwright" in errors[0]
 
 
 def test_global_audit_prefers_uv_tool_executable_over_repo_venv_path(

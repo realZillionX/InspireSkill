@@ -79,12 +79,11 @@ def test_net_test_probe_runs_through_stale_retry(monkeypatch) -> None:  # noqa: 
         "require_web_session",
         lambda *_args, **_kwargs: session,
     )
-    monkeypatch.setattr(net_test_module, "load_config", lambda _ctx: SimpleNamespace())
     monkeypatch.setattr(net_test_module, "get_base_url", lambda: "https://example.invalid")
     monkeypatch.setattr(
         workspace_module,
-        "resolve_workspace_query_scope",
-        lambda *_args, **_kwargs: (["ws-live"], "ws-live"),
+        "resolve_workspace_operation_scope",
+        lambda *_args, **_kwargs: "ws-live",
     )
 
     def fake_retry(*_args, operation, **kwargs):  # noqa: ANN001
@@ -117,12 +116,14 @@ def test_net_test_probe_runs_through_stale_retry(monkeypatch) -> None:  # noqa: 
         notebook="gpu-box",
         workspace="CPU资源空间",
         timeout=17,
+        pick=2,
     )
 
     assert result.public_internet is False
     assert notebook_name == "gpu-box"
     assert seen["identifier"] == "gpu-box"
     assert seen["workspace_ids"] == ["ws-live"]
+    assert seen["pick"] == 2
     assert probe_calls == [
         {
             "notebook_id": "notebook-live",

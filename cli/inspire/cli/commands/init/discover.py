@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-from copy import deepcopy
 import logging
 import re
 from dataclasses import dataclass
@@ -23,15 +22,36 @@ from inspire.platform.web.browser_api.core import _set_base_url
 
 logger = logging.getLogger(__name__)
 
-_CATALOG_DROP_FIELDS = frozenset(
-    {
-        "id",
-        "alias",
-        "workspace_id",
-    }
-)
 _USERNAME_PLACEHOLDERS = frozenset({"your_username"})
 _BASE_URL_PLACEHOLDER = "https://api.example.com"
+_ACCOUNT_CONFIG_KEYS = frozenset(
+    {
+        "auth",
+        "api",
+        "proxy",
+        "paths",
+        "tunnel",
+        "remote_env",
+        "path_aliases",
+        "projects",
+        "project_catalog",
+        "compute_groups",
+        "defaults",
+    }
+)
+_PROJECT_CONFIG_KEYS = frozenset(
+    {
+        "context",
+        "paths",
+        "job",
+        "notebook",
+        "profiles",
+        "remote_env",
+        "path_aliases",
+        "cli",
+        "defaults",
+    }
+)
 _PROJECT_HANDLE_PREFIXES = (
     "compute-group-",
     "workspace-",
@@ -49,7 +69,6 @@ class _DiscoveryPersistRequest:
     config: Config
     browser_api_module: Any
     session: Any
-    account_key: str
     workspace_id: str
     projects: list[Any]
     selected_project: Any
@@ -68,11 +87,10 @@ def _slugify_alias(value: str) -> str:
     if not text:
         return ""
     text = re.sub(r"[^a-z0-9]+", "-", text)
-    text = text.strip("-")
-    return text
+    return text.strip("-")
 
 
-def _workspace_label_for_output(config: Config, session: Any, workspace_id: str) -> str:
+def _workspace_label_for_output(session: Any, workspace_id: str) -> str:
     value = str(workspace_id or "").strip()
     if not value:
         return "(workspace name unavailable)"
@@ -85,13 +103,12 @@ def _workspace_label_for_output(config: Config, session: Any, workspace_id: str)
 
 
 def _workspace_error_sample(
-    config: Config,
     session: Any,
     workspace_errors: list[tuple[str, str]],
 ) -> str:
     sample = ", ".join(
-        f"{_workspace_label_for_output(config, session, ws)}: {scrub_raw_ids(msg)}"
-        for ws, msg in workspace_errors[:3]
+        f"{_workspace_label_for_output(session, ws)}: unavailable"
+        for ws, _msg in workspace_errors[:3]
     )
     if len(workspace_errors) > 3:
         sample += ", ..."
@@ -190,7 +207,7 @@ def _resolve_credentials_interactive(
         cfg_username = _usable_username(getattr(config, "username", ""))
         if cfg_username and confirm_config_username and not non_interactive:
             username = click.prompt(
-                "Platform login username (login ID, not display name)",
+                "Platform login name (not display name)",
                 default=cfg_username,
                 type=str,
             ).strip()
@@ -200,7 +217,7 @@ def _resolve_credentials_interactive(
         if non_interactive:
             raise ValueError("Username is required for non-interactive init.")
         username = click.prompt(
-            "Platform login username (login ID, not display name)",
+            "Platform login name (not display name)",
             type=str,
         ).strip()
     if not username:
@@ -210,8 +227,8 @@ def _resolve_credentials_interactive(
     # --- password ---
     # When the caller explicitly provided credentials (allow_config_password=True),
     # the config/env password is likely valid — use it to support non-interactive
-    # --force mode.  In the session-failed fallback path the old password may be
-    # stale, so always prompt for a fresh one.
+    # --force mode.  A cached password may be stale after a failed session, so
+    # always prompt for a fresh one.
     password = ""
     if allow_config_password or non_interactive:
         password = str(getattr(config, "password", "") or "").strip()
@@ -293,83 +310,56 @@ def _looks_like_project_handle(value: object) -> bool:
     ) and looks_like_platform_id(text)
 
 
-def _catalog_project_name(
-    catalog: dict[str, Any],
-    *,
-    alias: str,
-    value: str,
-) -> str:
-    for key in (value, alias):
-        entry = catalog.get(key)
-        if not isinstance(entry, dict):
-            continue
-        name = str(entry.get("name") or "").strip()
-        if name:
-            return name
-    return ""
-
-
 def _build_project_aliases(
     projects: list[Any],
     *,
     existing: dict[str, str] | None = None,
-    existing_catalog: dict[str, Any] | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Build a durable alias-to-project-name table.
+    """Build aliases and a transient live-project lookup index.
 
-    Legacy alias-to-ID entries are migrated in memory, but only names are
-    returned for persistence. The second result is an internal ID-to-alias map
-    used during this discovery run and is never written to config.
+    The returned platform-ID index is used only while processing live API
+    objects and is never written to configuration.
     """
     existing_map = existing or {}
-    catalog = existing_catalog or {}
-    projects_by_id: dict[str, Any] = {}
+    projects_by_platform_id: dict[str, Any] = {}
     projects_by_name: dict[str, Any] = {}
     for project in projects:
         project_id = str(getattr(project, "project_id", "") or "").strip()
         name = str(getattr(project, "name", "") or "").strip()
         if project_id and name:
-            projects_by_id[project_id] = project
+            projects_by_platform_id[project_id] = project
             projects_by_name.setdefault(name.casefold(), project)
 
     merged: dict[str, str] = {}
-    alias_for_id: dict[str, str] = {}
+    project_alias_by_platform_id: dict[str, str] = {}
     used_aliases: set[str] = set()
     for raw_alias, raw_value in existing_map.items():
         alias = str(raw_alias or "").strip()
         value = str(raw_value or "").strip()
         if not alias or not value:
             continue
-        project = projects_by_id.get(value) or projects_by_name.get(value.casefold())
-        catalog_name = _catalog_project_name(catalog, alias=alias, value=value)
-        if project is None and catalog_name:
-            project = projects_by_name.get(catalog_name.casefold())
+        project = projects_by_name.get(value.casefold())
         if project is None:
-            durable_name = catalog_name or value
-            if _looks_like_project_handle(durable_name):
-                continue
-            durable_alias = durable_name if _looks_like_project_handle(alias) else alias
-            durable_alias = _make_unique_alias(durable_alias, used_aliases)
-            merged[durable_alias] = durable_name
             continue
         project_id = str(getattr(project, "project_id", "") or "").strip()
         name = str(getattr(project, "name", "") or "").strip()
-        durable_alias = name if _looks_like_project_handle(alias) else alias
-        durable_alias = _make_unique_alias(durable_alias, used_aliases)
+        if not project_id or not name:
+            continue
+        durable_alias = _make_unique_alias(alias, used_aliases)
         merged[durable_alias] = name
-        alias_for_id.setdefault(project_id, durable_alias)
+        project_alias_by_platform_id.setdefault(project_id, durable_alias)
 
-    for project_id, project in projects_by_id.items():
-        if project_id in alias_for_id:
+    for project_id, project in projects_by_platform_id.items():
+        if project_id in project_alias_by_platform_id:
             continue
         name = str(getattr(project, "name", "") or "").strip()
         alias = name if name not in used_aliases else _make_unique_alias(name, used_aliases)
         if alias == name:
             used_aliases.add(alias)
         merged[alias] = name
-        alias_for_id[project_id] = alias
+        project_alias_by_platform_id[project_id] = alias
 
-    return merged, alias_for_id
+    return merged, project_alias_by_platform_id
 
 
 def _merge_compute_groups(
@@ -563,7 +553,7 @@ def _collect_discovery_projects(
 
     discovered: list[Any] = []
     errors: list[tuple[str, str]] = []
-    seen_project_ids: set[str] = set()
+    seen_platform_project_ids: set[str] = set()
 
     for ws_id in workspace_ids:
         try:
@@ -576,9 +566,9 @@ def _collect_discovery_projects(
             project_id = str(getattr(project, "project_id", "") or "").strip()
             if not project_id:
                 continue
-            if project_id in seen_project_ids:
+            if project_id in seen_platform_project_ids:
                 continue
-            seen_project_ids.add(project_id)
+            seen_platform_project_ids.add(project_id)
             discovered.append(project)
 
     return discovered, errors
@@ -586,7 +576,6 @@ def _collect_discovery_projects(
 
 def _load_projects_for_discovery(
     *,
-    config: Config,
     browser_api_module,  # noqa: ANN001
     session,  # noqa: ANN001
     workspace_id: str,
@@ -602,7 +591,7 @@ def _load_projects_for_discovery(
 
     if not projects:
         if workspace_errors:
-            sample = _workspace_error_sample(config, session, workspace_errors)
+            sample = _workspace_error_sample(session, workspace_errors)
             click.echo(
                 click.style(
                     f"Failed to list projects across discovered workspaces "
@@ -615,7 +604,7 @@ def _load_projects_for_discovery(
         raise SystemExit(1)
 
     if workspace_errors and not force:
-        sample = _workspace_error_sample(config, session, workspace_errors)
+        sample = _workspace_error_sample(session, workspace_errors)
         click.echo(
             click.style(
                 f"Warning: some workspaces failed during project discovery "
@@ -701,22 +690,17 @@ def _confirm_discovery_writes(
     global_path: Path,
     project_path: Path,
     non_interactive: bool,
-    verbose: bool,
 ) -> bool:
     if global_path.exists() and not force:
         if non_interactive:
             raise ValueError(
                 "Account configuration already exists; rerun non-interactive init with --force."
             )
-        click.echo()
         message = "Account configuration already exists."
-        if verbose:
-            logger.debug("Existing account configuration path: %s", global_path)
         click.echo(click.style(message, fg="yellow"))
         if not click.confirm(
             "Update it with discovered catalogs? (will rewrite file)", default=True
         ):
-            click.echo("Aborted.")
             return False
 
     if scope == "project" and project_path.exists() and not force:
@@ -724,15 +708,11 @@ def _confirm_discovery_writes(
             raise ValueError(
                 "Project configuration already exists; rerun non-interactive init with --force."
             )
-        click.echo()
         message = "Project configuration already exists."
-        if verbose:
-            logger.debug("Existing project configuration path: %s", project_path)
         click.echo(click.style(message, fg="yellow"))
         if not click.confirm(
             "Update it with discovered context/defaults? (will rewrite file)", default=True
         ):
-            click.echo("Aborted.")
             return False
     return True
 
@@ -740,147 +720,54 @@ def _confirm_discovery_writes(
 def _load_discovery_global_state(
     *,
     global_path: Path,
-    account_key: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    global_data: dict[str, Any] = {}
+) -> dict[str, Any]:
+    raw_data: dict[str, Any] = {}
     if global_path.exists():
-        global_data = Config._load_toml(global_path)
-
-    accounts = global_data.setdefault("accounts", {})
-    if not isinstance(accounts, dict):
-        accounts = {}
-        global_data["accounts"] = accounts
-
-    account_section = accounts.get(account_key)
-    if not isinstance(account_section, dict):
-        account_section = {}
-        accounts[account_key] = account_section
-
-    return global_data, account_section
+        raw_data = Config._load_toml(global_path)
+    return {
+        key: value for key, value in raw_data.items() if key in _ACCOUNT_CONFIG_KEYS
+    }
 
 
 def _load_discovery_project_state(
     *,
     project_path: Path,
-    account_key: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    project_data: dict[str, Any] = {}
+) -> dict[str, Any]:
+    raw_data: dict[str, Any] = {}
     if project_path.exists():
-        project_data = Config._load_toml(project_path)
-
-    accounts = project_data.get("accounts")
-    if not isinstance(accounts, dict):
-        accounts = {}
-        project_data["accounts"] = accounts
-
-    account_section = accounts.get(account_key)
-    if not isinstance(account_section, dict):
-        account_section = {}
-        accounts[account_key] = account_section
-
-    return project_data, account_section
-
-
-def _seed_project_discovery_metadata(
-    *,
-    project_data: dict[str, Any],
-    project_account_section: dict[str, Any],
-    global_data: dict[str, Any],
-    global_account_section: dict[str, Any],
-) -> None:
-    if not isinstance(project_data.get("projects"), dict):
-        global_projects = global_account_section.get("projects")
-        if isinstance(global_projects, dict) and global_projects:
-            project_data["projects"] = dict(global_projects)
-
-    if not isinstance(project_data.get("compute_groups"), list):
-        global_compute_groups = global_data.get("compute_groups")
-        if not isinstance(global_compute_groups, list):
-            global_compute_groups = global_account_section.get("compute_groups")
-        if isinstance(global_compute_groups, list) and global_compute_groups:
-            project_data["compute_groups"] = deepcopy(global_compute_groups)
-
-    if not isinstance(project_account_section.get("project_catalog"), dict):
-        global_catalog = global_account_section.get("project_catalog")
-        if isinstance(global_catalog, dict) and global_catalog:
-            project_account_section["project_catalog"] = deepcopy(global_catalog)
-
-    for key in ("train_job_workdir",):
-        if str(project_account_section.get(key) or "").strip():
-            continue
-        value = str(global_account_section.get(key) or "").strip()
-        if value:
-            project_account_section[key] = value
+        raw_data = Config._load_toml(project_path)
+    return {
+        key: value for key, value in raw_data.items() if key in _PROJECT_CONFIG_KEYS
+    }
 
 
 def _resolve_project_catalog_aliases(
     *,
     global_data: dict[str, Any],
-    global_account_section: dict[str, Any],
-    project_data: dict[str, Any],
-    project_account_section: dict[str, Any],
     projects: list[Any],
 ) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
     existing_projects = global_data.get("projects")
-    if not isinstance(existing_projects, dict):
-        existing_projects = global_account_section.get("projects")
-    if not isinstance(existing_projects, dict):
-        existing_projects = project_data.get("projects")
-    if not isinstance(existing_projects, dict):
-        existing_projects = project_account_section.get("projects")
     if not isinstance(existing_projects, dict):
         existing_projects = {}
 
     project_catalog = global_data.get("project_catalog")
     if not isinstance(project_catalog, dict):
-        project_catalog = global_account_section.get("project_catalog")
-    if not isinstance(project_catalog, dict):
-        project_catalog = project_data.get("project_catalog")
-    if not isinstance(project_catalog, dict):
-        project_catalog = project_account_section.get("project_catalog")
-    if not isinstance(project_catalog, dict):
         project_catalog = {}
 
-    merged_projects, alias_for_id = _build_project_aliases(
+    merged_projects, project_alias_by_platform_id = _build_project_aliases(
         projects,
         existing=existing_projects,
-        existing_catalog=project_catalog,
     )
     global_data["projects"] = merged_projects
-    global_account_section.pop("projects", None)
-    project_data.pop("projects", None)
-    project_account_section.pop("projects", None)
 
     typed_catalog: dict[str, dict[str, Any]] = {}
-    aliases_by_name: dict[str, str] = {}
-    for alias, project_name in merged_projects.items():
-        aliases_by_name.setdefault(str(project_name).casefold(), str(alias))
-
-    for raw_key, entry in project_catalog.items():
-        if not isinstance(raw_key, str):
-            continue
-        key = raw_key
-        if raw_key in alias_for_id:
-            key = alias_for_id[raw_key]
-        elif _looks_like_project_handle(raw_key):
-            entry_name = (
-                str(entry.get("name") or "").strip()
-                if isinstance(entry, dict)
-                else ""
-            )
-            key = aliases_by_name.get(entry_name.casefold(), "")
-            if not key:
-                continue
+    for alias in merged_projects:
+        entry = project_catalog.get(alias)
         if isinstance(entry, dict):
-            typed_catalog.setdefault(key, {}).update(entry)
-        else:
-            typed_catalog.setdefault(key, {})
+            typed_catalog[alias] = dict(entry)
 
     global_data["project_catalog"] = typed_catalog
-    global_account_section.pop("project_catalog", None)
-    project_data.pop("project_catalog", None)
-    project_account_section.pop("project_catalog", None)
-    return alias_for_id, typed_catalog
+    return project_alias_by_platform_id, typed_catalog
 
 
 def _populate_project_catalog(
@@ -890,9 +777,8 @@ def _populate_project_catalog(
     browser_api_module,  # noqa: ANN001
     session,  # noqa: ANN001
     workspace_id: str,
-    account_key: str,
     force: bool,
-    alias_for_id: dict[str, str] | None = None,
+    project_alias_by_platform_id: dict[str, str],
 ) -> None:
     """Populate per-project metadata kept at account level.
 
@@ -912,7 +798,6 @@ def _populate_project_catalog(
     the storage tier + ``path_user``, and caching it made the account config
     noisy.
     """
-    _ = account_key
     directory_cache: dict[str, list[Any]] = {}
 
     def _directories_for_workspace(project_workspace_id: str) -> list[Any]:
@@ -934,16 +819,10 @@ def _populate_project_catalog(
         if not project_id:
             continue
 
-        catalog_key = (
-            alias_for_id.get(project_id)
-            if alias_for_id is not None
-            else project_id
-        )
-        if not catalog_key:
-            catalog_key = str(getattr(project, "name", "") or "").strip()
-        if not catalog_key:
+        alias = project_alias_by_platform_id.get(project_id)
+        if not alias:
             continue
-        entry = project_catalog.setdefault(catalog_key, {})
+        entry = project_catalog.setdefault(alias, {})
         name = str(getattr(project, "name", "") or "").strip()
         if name:
             entry["name"] = name
@@ -1024,7 +903,6 @@ def _parse_project_workdir(workdir: str) -> tuple[str | None, str | None]:
 def _persist_api_base_url(
     *,
     global_data: dict[str, Any],
-    account_section: dict[str, Any],
     config: Config,
     session: Any | None = None,
 ) -> None:
@@ -1038,41 +916,6 @@ def _persist_api_base_url(
             global_data["api"] = api_section
         if not _usable_base_url(api_section.get("base_url")):
             api_section["base_url"] = base_url
-    account_section.pop("api", None)
-
-
-def _discover_docker_registry(
-    *,
-    global_data: dict[str, Any],
-    browser_api_module,  # noqa: ANN001
-    session,  # noqa: ANN001
-    workspace_id: str,
-) -> None:
-    """Auto-detect docker_registry from image URLs returned by the platform."""
-    api_section = global_data.get("api")
-    if isinstance(api_section, dict) and api_section.get("docker_registry"):
-        return  # already set
-
-    try:
-        images = browser_api_module.list_images(
-            workspace_id=workspace_id, source="SOURCE_OFFICIAL", session=session
-        )
-    except Exception:
-        return
-
-    for img in images:
-        url = str(getattr(img, "url", "") or "").strip()
-        if not url:
-            continue
-        # Image URLs look like "registry.host/path/image:tag" — extract hostname.
-        url = url.split("://", 1)[-1]  # strip scheme if present
-        host = url.split("/", 1)[0]
-        if host and "." in host:
-            if not isinstance(api_section, dict):
-                api_section = {}
-                global_data["api"] = api_section
-            api_section["docker_registry"] = host
-            return
 
 
 def _discover_compute_groups(
@@ -1134,21 +977,12 @@ def _discover_compute_groups(
 
 def _persist_compute_groups(
     *,
-    project_data: dict[str, Any],
-    project_account_section: dict[str, Any],
     global_data: dict[str, Any],
-    global_account_section: dict[str, Any],
     compute_groups: list[dict[str, Any]],
     workspace_names_by_id: dict[str, str] | None = None,
     failed_workspace_names: set[str] | None = None,
 ) -> None:
-    existing_compute_groups = project_data.get("compute_groups")
-    if not isinstance(existing_compute_groups, list):
-        existing_compute_groups = project_account_section.get("compute_groups")
-    if not isinstance(existing_compute_groups, list):
-        existing_compute_groups = global_data.get("compute_groups")
-    if not isinstance(existing_compute_groups, list):
-        existing_compute_groups = global_account_section.get("compute_groups")
+    existing_compute_groups = global_data.get("compute_groups")
     if not isinstance(existing_compute_groups, list):
         existing_compute_groups = []
     normalized_existing = _merge_compute_groups(
@@ -1168,75 +1002,14 @@ def _persist_compute_groups(
         workspace_names_by_id=workspace_names_by_id,
     )
     if merged:
-        project_data["compute_groups"] = merged
+        global_data["compute_groups"] = merged
     else:
-        project_data.pop("compute_groups", None)
-    global_data.pop("compute_groups", None)
-    global_account_section.pop("compute_groups", None)
-    project_account_section.pop("compute_groups", None)
-
-
-def _cleanup_global_discovery_metadata(
-    *,
-    global_data: dict[str, Any],
-    account_key: str,
-) -> None:
-    """Prune the empty ``[accounts.<user>]`` nesting after promotion.
-
-    The persister helpers historically fan writes into both the project
-    config and a legacy ``[accounts.<user>]`` subtable; by the time this
-    runs, :func:`_promote_account_section_to_toplevel` has already lifted
-    the useful parts to the top of ``global_data``, so all that's left
-    to do is drop the now-empty skeleton.
-    """
-    accounts = global_data.get("accounts")
-    if not isinstance(accounts, dict):
-        return
-
-    account_section = accounts.get(account_key)
-    if not isinstance(account_section, dict):
-        if not accounts:
-            global_data.pop("accounts", None)
-        return
-
-    if not account_section:
-        accounts.pop(account_key, None)
-    if not accounts:
-        global_data.pop("accounts", None)
-
-
-def _copy_account_level_from_project(
-    *, project_data: dict[str, Any], global_data: dict[str, Any]
-) -> None:
-    """Hoist account-level catalogs that the persisters wrote into
-    ``project_data`` up to ``global_data``.
-
-    Older helpers put account-wide catalogs on the project side so a single-repo
-    user could operate from one file. Under the per-account layout those are
-    account-wide state, so copy them here before the project-config stripper
-    removes them.
-    """
-    compute_groups = project_data.get("compute_groups")
-    if isinstance(compute_groups, list) and compute_groups:
-        global_data["compute_groups"] = compute_groups
-
-    projects = project_data.get("projects")
-    if isinstance(projects, dict) and projects:
-        merged_proj = dict(global_data.get("projects") or {})
-        merged_proj.update({str(k): str(v) for k, v in projects.items()})
-        global_data["projects"] = merged_proj
-
-
-def _drop_catalog_runtime_fields(project_catalog: dict[str, dict[str, Any]]) -> None:
-    for entry in project_catalog.values():
-        for field in _CATALOG_DROP_FIELDS:
-            entry.pop(field, None)
+        global_data.pop("compute_groups", None)
 
 
 def _persist_prompted_credentials(
     *,
     global_data: dict[str, Any],
-    account_section: dict[str, Any],
     prompted_credentials: tuple[str, str, str] | None,
 ) -> None:
     if not prompted_credentials:
@@ -1248,7 +1021,6 @@ def _persist_prompted_credentials(
         global_data["auth"] = auth
     auth["username"] = prompted_username
     auth["password"] = prompted_password
-    account_section.pop("password", None)
     api = global_data.get("api")
     if not isinstance(api, dict):
         api = {}
@@ -1311,12 +1083,10 @@ def _detect_storage_tier(path: str) -> str | None:
 
 def _default_path_aliases(
     *,
-    account_key: str,
     project_topic: str,
     selected_tier: str,
     path_user: str | None = None,
 ) -> dict[str, str]:
-    _ = account_key  # Account identity is not a shared-storage path component.
     user = str(path_user or "").strip().strip("/")
     topic = str(project_topic or "").strip().strip("/")
     if not topic:
@@ -1346,34 +1116,18 @@ def _default_path_aliases(
 def _persist_default_path_aliases(
     *,
     project_data: dict[str, Any],
-    account_key: str,
-    selected_project: Any,
+    selected_alias: str,
     project_catalog: dict[str, dict[str, Any]],
     selected_tier: str,
     force: bool,
 ) -> None:
-    project_id = str(getattr(selected_project, "project_id", "") or "").strip()
-    project_name = str(getattr(selected_project, "name", "") or "").strip()
-    entry = project_catalog.get(project_id, {})
-    if not entry and project_name:
-        entry = project_catalog.get(project_name, {})
-    if not entry and project_name:
-        entry = next(
-            (
-                candidate
-                for candidate in project_catalog.values()
-                if isinstance(candidate, dict)
-                and str(candidate.get("name") or "").strip() == project_name
-            ),
-            {},
-        )
+    entry = project_catalog.get(selected_alias, {})
     project_topic = str(entry.get("path") or "").strip()
     path_user = str(entry.get("path_user") or "").strip()
     if not project_topic:
         return
 
     defaults = _default_path_aliases(
-        account_key=account_key,
         project_topic=project_topic,
         selected_tier=selected_tier,
         path_user=path_user,
@@ -1431,104 +1185,11 @@ def _select_default_path_alias_tier(*, force: bool, non_interactive: bool = Fals
     return _prompt_storage_tier("")
 
 
-_PROJECT_CONFIG_DISALLOWED_SECTIONS = (
-    "accounts",  # legacy catalog nesting
-    "auth",  # identity — belongs to account layer
-    "api",  # account-wide
-    "proxy",  # account-wide
-    "workspaces",
-    "projects",  # account-wide alias map
-    "project_catalog",  # account-wide per-project metadata
-    "account",  # account-level workdir
-    "compute_groups",  # account-wide (array of tables)
-)
-
-
-def _strip_account_level_from_project(project_data: dict[str, Any]) -> None:
-    """Enforce the project-config contract for per-repository sections.
-
-    Removes every section listed in :data:`_PROJECT_CONFIG_DISALLOWED_SECTIONS`
-    and the legacy ``[context].account`` key, which the per-account loader
-    ignores anyway.
-    """
-    for key in _PROJECT_CONFIG_DISALLOWED_SECTIONS:
-        project_data.pop(key, None)
-    context = project_data.get("context")
-    if isinstance(context, dict):
-        context.pop("account", None)
-
-
-def _promote_account_section_to_toplevel(
-    global_data: dict[str, Any], account_key: str
-) -> None:
-    """Move ``[accounts."<user>"]`` contents to top level on account config.
-
-    The discover helpers still populate legacy-style nesting; under the new
-    account-per-directory layout this nesting is explicitly disallowed by
-    the loader. Promoting keeps the rest of the persisters intact while
-    making the resulting file match the loader's contract.
-    """
-    accounts = global_data.get("accounts")
-    if not isinstance(accounts, dict):
-        return
-    section = accounts.get(account_key)
-    if not isinstance(section, dict):
-        return
-
-    section.pop("workspaces", None)
-
-    # Array-of-tables and dict sections move verbatim to the top level.
-    for key in ("projects", "project_catalog", "compute_groups"):
-        if key in section:
-            global_data[key] = section.pop(key)
-
-    # Passwords live in [auth] at the top level.
-    password = section.pop("password", None)
-    if password:
-        auth_section = global_data.setdefault("auth", {})
-        if isinstance(auth_section, dict):
-            auth_section["password"] = password
-
-    # Account-level train_job_workdir remains under [account].
-    for key in ("train_job_workdir",):
-        value = section.pop(key, None)
-        if value:
-            account_block = global_data.setdefault("account", {})
-            if isinstance(account_block, dict):
-                account_block[key] = value
-
-    # Sub-tables like [accounts."<u>".api] / .ssh → top-level [api] / [ssh]
-    # merge keys (account-specific values win over discovery defaults).
-    for sub_key in ("api", "ssh"):
-        sub = section.pop(sub_key, None)
-        if isinstance(sub, dict) and sub:
-            top = global_data.setdefault(sub_key, {})
-            if isinstance(top, dict):
-                top.update(sub)
-
-    # Drop any remaining scalar overrides (they map to top-level schema keys).
-    for field_name, value in list(section.items()):
-        if isinstance(value, (dict, list)):
-            continue
-        section.pop(field_name, None)
-        if value not in (None, ""):
-            global_data[field_name] = value
-
-    # Remove the now-empty nesting.
-    if not section:
-        accounts.pop(account_key, None)
-    if not accounts:
-        global_data.pop("accounts", None)
-
-
 def _write_discovered_project_config(
     *,
     project_path: Path,
     project_data: dict[str, Any],
-    config: Config,
-    account_key: str,
     selected_alias: str,
-    selected_project: Any,
     project_catalog: dict[str, dict[str, Any]],
     force: bool,
     selected_tier: str,
@@ -1540,21 +1201,11 @@ def _write_discovered_project_config(
     context["project"] = selected_alias
     _persist_default_path_aliases(
         project_data=project_data,
-        account_key=account_key,
-        selected_project=selected_project,
+        selected_alias=selected_alias,
         project_catalog=project_catalog,
         selected_tier=selected_tier,
         force=force,
     )
-
-    # Strip everything that isn't per-repo state — a single account may use
-    # many repos, and every one duplicating the workspace/compute_groups
-    # catalog is both noisy and divergent-on-refresh.
-    _strip_account_level_from_project(project_data)
-
-    project_data.pop("defaults", None)
-    for sub_key in ("job", "notebook"):
-        project_data.pop(sub_key, None)
 
     project_path.parent.mkdir(parents=True, exist_ok=True)
     # Always UTF-8: TOML spec mandates UTF-8, and on Windows the default
@@ -1563,29 +1214,12 @@ def _write_discovered_project_config(
     project_path.write_text(_toml_dumps(project_data), encoding="utf-8")
 
 
-def _print_discover_completion(
-    *,
-    global_path: Path,
-    project_path: Path | None,
-    prompted_credentials: tuple[str, str, str] | None,
-    verbose: bool,
-) -> None:
-    if not verbose:
-        return
-    logger.debug("Initialization completed; account config: %s", global_path)
-    if project_path is not None:
-        logger.debug("Initialization completed; project config: %s", project_path)
-    if prompted_credentials:
-        logger.debug("Prompted credentials saved in account configuration.")
-
-
 def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
     force = request.force
     scope = request.scope
     config = request.config
     browser_api_module = request.browser_api_module
     session = request.session
-    account_key = request.account_key
     workspace_id = request.workspace_id
     projects = request.projects
     selected_project = request.selected_project
@@ -1602,34 +1236,21 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         global_path=global_path,
         project_path=project_path,
         non_interactive=non_interactive,
-        verbose=verbose,
     ):
         return
 
     _progress(verbose, "Preparing account catalog update...")
-    global_data, account_section = _load_discovery_global_state(
+    global_data = _load_discovery_global_state(
         global_path=global_path,
-        account_key=account_key,
     )
     if scope == "project":
-        project_data, project_account_section = _load_discovery_project_state(
+        project_data = _load_discovery_project_state(
             project_path=project_path,
-            account_key=account_key,
-        )
-        _seed_project_discovery_metadata(
-            project_data=project_data,
-            project_account_section=project_account_section,
-            global_data=global_data,
-            global_account_section=account_section,
         )
     else:
         project_data = {}
-        project_account_section = {}
-    alias_for_id, project_catalog = _resolve_project_catalog_aliases(
+    project_alias_by_platform_id, project_catalog = _resolve_project_catalog_aliases(
         global_data=global_data,
-        global_account_section=account_section,
-        project_data=project_data,
-        project_account_section=project_account_section,
         projects=projects,
     )
     _progress(verbose, f"Discovering storage paths for {len(projects)} project(s)...")
@@ -1639,24 +1260,13 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         browser_api_module=browser_api_module,
         session=session,
         workspace_id=workspace_id,
-        account_key=account_key,
         force=force,
-        alias_for_id=alias_for_id,
+        project_alias_by_platform_id=project_alias_by_platform_id,
     )
-    account_section.pop("projects", None)
-    account_section.pop("project_catalog", None)
     _persist_api_base_url(
         global_data=global_data,
-        account_section=account_section,
         config=config,
         session=session,
-    )
-    _progress(verbose, "Discovering container image registry...")
-    _discover_docker_registry(
-        global_data=global_data,
-        browser_api_module=browser_api_module,
-        session=session,
-        workspace_id=workspace_id,
     )
     all_ws_ids: set[str] = {workspace_id}
     for ws_id in list(session.all_workspace_ids or []):
@@ -1698,10 +1308,7 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         getattr(session, "all_workspace_names", None) or {}
     )
     _persist_compute_groups(
-        project_data=project_data,
-        project_account_section=project_account_section,
         global_data=global_data,
-        global_account_section=account_section,
         compute_groups=compute_groups,
         workspace_names_by_id=workspace_names_by_id,
         failed_workspace_names={
@@ -1711,10 +1318,8 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         },
     )
 
-    _drop_catalog_runtime_fields(project_catalog)
     _persist_prompted_credentials(
         global_data=global_data,
-        account_section=account_section,
         prompted_credentials=prompted_credentials,
     )
     if not prompted_credentials:
@@ -1722,32 +1327,17 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
             global_data=global_data,
             session=session,
         )
-    _cleanup_global_discovery_metadata(
-        global_data=global_data,
-        account_key=account_key,
-    )
-
-    # Final step before writing: lift account-wide data the persisters parked
-    # on the project side, promote anything still under [accounts."<user>"]
-    # nesting, and prune the empty legacy skeleton. The per-project catalog
-    # keeps only ``{name, path}`` (see ``_populate_project_catalog``).
-    _copy_account_level_from_project(
-        project_data=project_data, global_data=global_data
-    )
-    _promote_account_section_to_toplevel(global_data, account_key)
-    global_data.pop("account", None)
-    global_data.pop("workspaces", None)
     catalog = global_data.get("project_catalog")
     if isinstance(catalog, dict):
-        for project_id, entry in list(catalog.items()):
+        for alias, entry in list(catalog.items()):
             if not isinstance(entry, dict):
-                catalog.pop(project_id, None)
+                catalog.pop(alias, None)
                 continue
             for key in list(entry.keys()):
                 if key not in {"name", "path", "path_user"}:
                     entry.pop(key, None)
             if not entry:
-                catalog.pop(project_id, None)
+                catalog.pop(alias, None)
         if not catalog:
             global_data.pop("project_catalog", None)
 
@@ -1756,10 +1346,16 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         force=force,
         non_interactive=non_interactive,
     )
+    selected_alias = project_alias_by_platform_id.get(
+        str(getattr(selected_project, "project_id", "") or "").strip()
+    )
+    if not selected_alias:
+        selected_alias = _slugify_alias(
+            str(getattr(selected_project, "name", "") or "")
+        ) or "default"
     _persist_default_path_aliases(
         project_data=global_data,
-        account_key=account_key,
-        selected_project=selected_project,
+        selected_alias=selected_alias,
         project_catalog=project_catalog,
         force=force,
         selected_tier=selected_tier,
@@ -1776,31 +1372,17 @@ def _persist_discovery_catalog(request: _DiscoveryPersistRequest) -> None:
         except OSError:
             pass
 
-    wrote_project_path: Path | None = None
     if scope == "project":
-        selected_alias = alias_for_id.get(selected_project.project_id)
-        if not selected_alias:
-            selected_alias = _slugify_alias(selected_project.name) or "default"
         _write_discovered_project_config(
             project_path=project_path,
             project_data=project_data,
-            config=config,
-            account_key=account_key,
             selected_alias=selected_alias,
-            selected_project=selected_project,
             project_catalog=project_catalog,
             force=force,
             selected_tier=selected_tier,
         )
-        wrote_project_path = project_path
 
     _ensure_ssh_key(non_interactive=non_interactive)
-    _print_discover_completion(
-        global_path=global_path,
-        project_path=wrote_project_path,
-        prompted_credentials=prompted_credentials,
-        verbose=verbose,
-    )
 
 
 def _init_discover_mode(
@@ -1834,7 +1416,6 @@ def _init_discover_mode(
     _progress(verbose, f"Account: {account_key}")
     _progress(verbose, "Discovering projects across accessible workspaces...")
     projects, selected_project = _load_projects_for_discovery(
-        config=config,
         browser_api_module=browser_api_module,
         session=session,
         workspace_id=workspace_id,
@@ -1851,7 +1432,6 @@ def _init_discover_mode(
                 config=config,
                 browser_api_module=browser_api_module,
                 session=session,
-                account_key=account_key,
                 workspace_id=workspace_id,
                 projects=projects,
                 selected_project=selected_project,

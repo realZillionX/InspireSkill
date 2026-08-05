@@ -32,15 +32,16 @@ def _resolve_serving_lcg(task_id: str, session: WebSession) -> Optional[str]:
     return _serving_lcg_from_detail(detail)
 
 
-def _serving_name_to_id(ctx: Context, name: str) -> ResolvedMetricsTarget:
+def _serving_name_to_id(
+    ctx: Context,
+    name: str,
+    pick: int | None = None,
+) -> ResolvedMetricsTarget:
     from inspire.cli.commands.serving import serving_commands as _sv
-    from inspire.config import Config
     from inspire.platform.web.session import get_web_session
 
-    config, _ = Config.from_files_and_env(require_credentials=False)
     session = get_web_session()
     workspace_id = _sv._resolve_workspace_id(
-        config,
         str(getattr(ctx, "workspace", "") or ""),
         session=session,
     )
@@ -50,11 +51,13 @@ def _serving_name_to_id(ctx: Context, name: str) -> ResolvedMetricsTarget:
             ctx,
             name,
             workspace_id=workspace_id,
+            pick=pick,
         ),
         resolve_live=lambda live_name: _sv._resolve_serving_name(
             ctx,
             live_name,
             workspace_id=workspace_id,
+            pick=pick,
             require_live=True,
         ),
         operation=lambda resolved_id: (

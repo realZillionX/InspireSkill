@@ -10,8 +10,6 @@ def test_installer_uses_installed_inspire_for_browser_runtime_setup() -> None:
     text = installer.read_text(encoding="utf-8")
 
     assert '"$INSPIRE_BIN" _ensure-playwright-runtime' in text
-    assert 'uvx --from "$SPEC" playwright' not in text
-    assert "Manual repair command" not in text
 
 
 def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> None:
@@ -36,9 +34,6 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
     (home / ".qoderwork").mkdir()
     (home / ".kimi-code").mkdir()
     kimi_desktop_root.mkdir(parents=True)
-    legacy_gemini_skill = home / ".gemini" / "skills" / "inspire"
-    legacy_gemini_skill.mkdir(parents=True)
-    (legacy_gemini_skill / "SKILL.md").write_text("# stale\n", encoding="utf-8")
     (bin_dir / "uv").write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
@@ -111,7 +106,6 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
         in codex_metadata
     )
     assert (home / ".gemini" / "config" / "skills" / "inspire" / "SKILL.md").exists()
-    assert not (home / ".gemini" / "skills" / "inspire").exists()
     assert (home / ".cursor" / "skills" / "inspire" / "SKILL.md").exists()
     assert (home / ".qoder" / "skills" / "inspire" / "SKILL.md").exists()
     assert (home / ".qoderwork" / "skills" / "inspire" / "SKILL.md").exists()
@@ -120,7 +114,7 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
     assert not (home / ".kimi-code" / "skills" / "inspire" / "SKILL.md").exists()
 
 
-def test_installer_advertises_antigravity_not_gemini_cli() -> None:
+def test_installer_advertises_supported_harnesses() -> None:
     installer = Path(__file__).resolve().parents[1].parent / "scripts" / "install.sh"
     text = installer.read_text(encoding="utf-8")
 
@@ -129,6 +123,3 @@ def test_installer_advertises_antigravity_not_gemini_cli() -> None:
     assert "qoder-work" in text
     assert "kimi-code" in text
     assert "kimi-desktop" in text
-    assert "gemini)" not in text
-    assert 'legacy_target="$HOME/.gemini/skills/inspire"' in text
-    assert '  target="$HOME/.gemini/skills/inspire"' not in text

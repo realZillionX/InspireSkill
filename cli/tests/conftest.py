@@ -23,12 +23,11 @@ def _silence_normalize_environment(monkeypatch):  # noqa: ANN001
     """Stub `normalize_environment` to a no-op for the whole suite.
 
     `inspire account add` and `inspire notebook ssh` call
-    `inspire.accounts.normalize_environment()` to quarantine pre-v3 unscoped
-    files and check Playwright. In tests that path would touch the real
-    `~/.inspire/` directory of whoever runs pytest. Tests that need to
-    exercise the normalization itself (`test_account_normalize.py`)
-    isolate `Path.home` and call `normalize_environment` directly,
-    bypassing this stub.
+    `inspire.accounts.normalize_environment()` to check the local runtime.
+    In tests that path would touch the real `~/.inspire/` directory of
+    whoever runs pytest. Tests that need to exercise normalization itself
+    (`test_account_normalize.py`) isolate `Path.home` and call
+    `normalize_environment` directly, bypassing this stub.
     """
     from inspire.accounts import normalize as _normalize_module
 

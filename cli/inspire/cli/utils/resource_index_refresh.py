@@ -69,61 +69,14 @@ class RefreshResult:
     outcome: str
     error: str = ""
 
-    def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "resource": self.resource_type,
-            "items": self.item_count,
-            "outcome": self.outcome,
-        }
-        if self.workspace_name:
-            payload["workspace"] = self.workspace_name
-        if self.error:
-            payload["error"] = scrub_raw_ids(self.error)
-        return payload
-
 
 @dataclass(frozen=True)
 class RefreshSummary:
     results: list[RefreshResult]
 
     @property
-    def refreshed_count(self) -> int:
-        return sum(result.outcome == "refreshed" for result in self.results)
-
-    @property
-    def skipped_count(self) -> int:
-        return sum(result.outcome == "fresh" for result in self.results)
-
-    @property
-    def busy_count(self) -> int:
-        return sum(result.outcome == "busy" for result in self.results)
-
-    @property
     def error_count(self) -> int:
         return sum(result.outcome == "error" for result in self.results)
-
-    @property
-    def stale_count(self) -> int:
-        return sum(result.outcome == "stale" for result in self.results)
-
-    @property
-    def item_count(self) -> int:
-        return sum(
-            result.item_count
-            for result in self.results
-            if result.outcome == "refreshed"
-        )
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "refreshed": self.refreshed_count,
-            "fresh": self.skipped_count,
-            "stale": self.stale_count,
-            "busy": self.busy_count,
-            "errors": self.error_count,
-            "items": self.item_count,
-            "scopes": [result.to_payload() for result in self.results],
-        }
 
 
 Fetcher = Callable[[object, str, str], FetchResult]

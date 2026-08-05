@@ -103,7 +103,15 @@ def test_list_models_posts_current_filter_shape_and_parses_response(monkeypatch)
     assert item.user_name == "Alice"
     assert item.model_type == ["NaturalLanguageProcessing", "TextGeneration"]
     assert item.tags == ["demo"]
-    assert item.model_size_gi == 12.5
+    assert {
+        "has_published",
+        "is_vllm_compatible",
+        "model_path",
+        "model_size_gi",
+        "version_description",
+        "fail_reason",
+        "plaza_publish_status",
+    }.isdisjoint(item.__dataclass_fields__)
     assert record["method"] == "POST"
     assert record["url"].endswith("/model/list")
     assert record["body"] == {

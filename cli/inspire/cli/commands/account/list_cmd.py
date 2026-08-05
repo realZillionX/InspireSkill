@@ -7,18 +7,38 @@ import click
 from inspire.accounts import current_account, list_accounts
 from inspire.cli.context import Context, pass_context
 from inspire.cli.formatters import json_formatter
+from inspire.cli.utils.collection_output import (
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.output import emit_success
 
 
 @click.command("list")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum accounts to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every configured account.")
 @pass_context
-def list_cmd(ctx: Context) -> None:
+def list_cmd(ctx: Context, limit: int | None, show_all: bool) -> None:
     """List all configured accounts. Active account is marked with ``*``."""
+    try:
+        output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
     names = list_accounts()
     active = current_account()
-    payload = {
-        "accounts": [{"name": name, "active": name == active} for name in names]
-    }
+    page = bound_collection(
+        [{"name": name, "active": name == active} for name in names],
+        limit=output_limit,
+    )
+    payload = {"items": page.items, **page.metadata()}
     if not names:
         emit_success(
             ctx,
@@ -27,9 +47,12 @@ def list_cmd(ctx: Context) -> None:
         )
         return
     lines = [
-        f" {'*' if name == active else ' '} {name}"
-        for name in names
+        f" {'*' if item['active'] else ' '} {item['name']}"
+        for item in page.items
     ]
+    notice = truncation_notice(page)
+    if notice:
+        lines.append(notice)
     emit_success(
         ctx,
         payload=payload,

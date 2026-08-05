@@ -53,7 +53,9 @@ def _resolve_bridge_and_proxy(
         if bridge_name:
             raise BridgeNotFoundError(f"Bridge '{bridge_name}' not found")
         raise TunnelNotAvailableError(
-            "No bridge configured. Run 'inspire tunnel add <name> <url>' first."
+            "No notebook connection is cached. Run "
+            "'inspire notebook connection refresh <notebook> "
+            "--workspace <workspace>' first."
         )
 
     _ensure_rtunnel_binary(config)
@@ -224,11 +226,16 @@ def run_ssh_command_streaming(
         command,
     )
 
-    # Default callback: print to stdout
+    default_scrubber = None
     if output_callback is None:
+        from inspire.cli.utils.raw_ids import RawIdStreamScrubber
+
+        default_scrubber = RawIdStreamScrubber()
 
         def _default_output_callback(line: str) -> None:
-            click.echo(line, nl=False)
+            safe_line = default_scrubber.feed(line)
+            if safe_line:
+                click.echo(safe_line.decode("utf-8", errors="replace"), nl=False)
 
         output_callback = _default_output_callback
 
@@ -305,6 +312,10 @@ def run_ssh_command_streaming(
         if process.poll() is None:
             process.terminate()
             process.wait()
+        if default_scrubber is not None:
+            safe_suffix = default_scrubber.flush()
+            if safe_suffix:
+                click.echo(safe_suffix.decode("utf-8", errors="replace"), nl=False)
 
 
 __all__ = [

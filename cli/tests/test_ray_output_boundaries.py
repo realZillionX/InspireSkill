@@ -78,8 +78,12 @@ def test_ray_events_default_to_twenty_compact_records(
     )
 
     assert result.exit_code == 0, result.output
-    events = json.loads(result.output)["data"]["events"]
+    data = json.loads(result.output)["data"]
+    events = data["items"]
     assert len(events) == 20
     assert events[0]["message"] == "event-15"
     assert events[-1]["message"] == "event-34"
+    assert data["shown"] == 20
+    assert data["total"] == 35
+    assert data["truncated"] is True
     assert all(set(event) <= {"time", "type", "reason", "message", "count"} for event in events)

@@ -126,8 +126,8 @@ def test_list_ray_jobs_without_user_filter_uses_current_user(monkeypatch) -> Non
     assert records[-1]["body"]["filter_by"] == {"user_id": ["user-current"]}
 
 
-def test_list_ray_jobs_requires_workspace_id() -> None:
-    with pytest.raises(ValueError, match="workspace_id is required"):
+def test_list_ray_jobs_requires_workspace_selection() -> None:
+    with pytest.raises(ValueError, match="Workspace selection is required\\."):
         list_ray_jobs(user_ids=["user-1"], session=_FakeSession(workspace_id="ws-from-session"))
 
 
@@ -163,8 +163,8 @@ def test_get_ray_job_detail_requires_ray_job_id_field(monkeypatch) -> None:
     assert record["body"] == {"ray_job_id": "ray-1"}
 
 
-def test_get_ray_job_detail_rejects_empty_id() -> None:
-    with pytest.raises(ValueError, match="ray_job_id is required"):
+def test_get_ray_job_detail_requires_ray_job_selection() -> None:
+    with pytest.raises(ValueError, match="Ray job selection is required\\."):
         get_ray_job_detail("  ", session=_FakeSession())
 
 
@@ -188,13 +188,13 @@ def test_delete_ray_job_posts_expected_body(monkeypatch) -> None:
     assert record["body"] == {"ray_job_id": "ray-42"}
 
 
-def test_stop_ray_job_rejects_empty_id() -> None:
-    with pytest.raises(ValueError, match="ray_job_id is required"):
+def test_stop_ray_job_requires_ray_job_selection() -> None:
+    with pytest.raises(ValueError, match="Ray job selection is required\\."):
         stop_ray_job("", session=_FakeSession())
 
 
-def test_delete_ray_job_rejects_empty_id() -> None:
-    with pytest.raises(ValueError, match="ray_job_id is required"):
+def test_delete_ray_job_requires_ray_job_selection() -> None:
+    with pytest.raises(ValueError, match="Ray job selection is required\\."):
         delete_ray_job(None, session=_FakeSession())  # type: ignore[arg-type]
 
 
@@ -249,12 +249,11 @@ def test_ray_job_info_handles_missing_fields_gracefully() -> None:
     assert info.created_by_name == ""
 
 
-def test_ray_job_info_accepts_alternate_id_field() -> None:
-    # Some list payloads return the id under `id` rather than `ray_job_id`
-    # when the frontend serialisers are stale; the wrapper should still
-    # surface a usable id so downstream `detail`/`stop` calls succeed.
-    info = RayJobInfo.from_api_response({"id": "ray-legacy"})
-    assert info.ray_job_id == "ray-legacy"
+def test_ray_job_info_accepts_generic_id_field_from_list_response() -> None:
+    # Some list responses use the generic `id` field; normalize it so
+    # downstream detail/stop calls receive the platform handle they need.
+    info = RayJobInfo.from_api_response({"id": "ray-from-list"})
+    assert info.ray_job_id == "ray-from-list"
 
 
 def test_ray_job_info_coerces_priority_string_to_int() -> None:
@@ -386,8 +385,8 @@ def test_list_ray_job_scaling_histories_posts_expected_body(monkeypatch) -> None
     }
 
 
-def test_list_ray_job_scaling_histories_rejects_empty_id() -> None:
-    with pytest.raises(ValueError, match="ray_job_id is required"):
+def test_list_ray_job_scaling_histories_requires_ray_job_selection() -> None:
+    with pytest.raises(ValueError, match="Ray job selection is required\\."):
         list_ray_job_scaling_histories("", session=_FakeSession())
 
 
@@ -451,8 +450,8 @@ def test_list_ray_job_events_sort_descending(monkeypatch) -> None:
     assert record["body"]["sorter"] == [{"field": "last_timestamp", "sort": "descend"}]
 
 
-def test_list_ray_job_events_rejects_empty_id() -> None:
-    with pytest.raises(ValueError, match="ray_job_id is required"):
+def test_list_ray_job_events_requires_ray_job_selection() -> None:
+    with pytest.raises(ValueError, match="Ray job selection is required\\."):
         list_ray_job_events("", session=_FakeSession())
 
 
@@ -502,8 +501,8 @@ def test_list_ray_job_instances_posts_expected_body(monkeypatch) -> None:
     }
 
 
-def test_list_ray_job_instances_rejects_empty_id() -> None:
-    with pytest.raises(ValueError, match="ray_job_id is required"):
+def test_list_ray_job_instances_requires_ray_job_selection() -> None:
+    with pytest.raises(ValueError, match="Ray job selection is required\\."):
         list_ray_job_instances("", session=_FakeSession())
 
 

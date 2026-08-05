@@ -25,7 +25,6 @@ def _patch_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         username="user",
         password="pass",
         base_url="https://qz.sii.edu.cn",
-        log_cache_dir=str(tmp_path / "logs"),
     )
     monkeypatch.setattr(
         config_module.Config,
@@ -34,7 +33,7 @@ def _patch_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     )
 
 
-def test_resources_nodes_filters_and_returns_json_recommendation(
+def test_resources_nodes_filters_and_returns_compact_json(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _patch_config(monkeypatch, tmp_path)
@@ -101,7 +100,7 @@ def test_resources_nodes_filters_and_returns_json_recommendation(
             "nodes",
             "--workspace",
             "Default WS",
-            "--min-full-free-nodes",
+            "--min-nodes",
             "2",
         ],
     )
@@ -109,11 +108,10 @@ def test_resources_nodes_filters_and_returns_json_recommendation(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     data = payload["data"]
-    assert [row["group_name"] for row in data["groups"]] == ["H200-2号机房"]
-    assert data["recommendation"]["group_name"] == "H200-2号机房"
-    assert data["recommendation"]["full_free_nodes"] == 6
-    assert data["min_full_free_nodes"] == 2
-    assert data["workspace_name"] == "Default WS"
+    assert [row["compute_group"] for row in data["items"]] == ["H200-2号机房"]
+    assert data["items"][0]["workspace"] == "Default WS"
+    assert "group" not in data["items"][0]
+    assert set(data) == {"items"}
     assert "group_id" not in result.output
     assert "workspace_id" not in result.output
     assert "cg-11111111" not in result.output
@@ -162,7 +160,7 @@ def test_resources_nodes_human_scrubs_raw_ids(
 
     result = CliRunner().invoke(
         cli_main,
-        ["resources", "nodes", "--workspace", "Default WS", "--min-full-free-nodes", "2"],
+        ["resources", "nodes", "--workspace", "Default WS", "--min-nodes", "2"],
     )
 
     assert result.exit_code == 0, result.output
@@ -170,7 +168,7 @@ def test_resources_nodes_human_scrubs_raw_ids(
     assert "<raw-id>" not in result.output
     assert "cg-" not in result.output
     assert "H200" in result.output
-    assert "Recommended:" in result.output
+    assert "Recommended:" not in result.output
 
 
 def test_resources_nodes_rejects_group_id_input(
@@ -251,7 +249,7 @@ def test_resources_nodes_defaults_to_twenty_rows(
 
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)["data"]
-    assert len(data["groups"]) == 20
+    assert len(data["items"]) == 20
     assert data["shown"] == 20
     assert data["total"] == 25
     assert data["truncated"] is True

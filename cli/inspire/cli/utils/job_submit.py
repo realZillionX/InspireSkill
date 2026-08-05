@@ -178,12 +178,6 @@ def select_project_for_workspace(
     )
 
 
-def _quota_display(quota: ResolvedQuota) -> str:
-    if quota.gpu_count > 0:
-        return f"{quota.gpu_count}x{quota.gpu_type or 'GPU'}"
-    return f"{quota.cpu_count}xCPU"
-
-
 def normalize_exclude_nodes(exclude_nodes: Iterable[str] | None) -> list[str]:
     """Normalize the Web UI's exclude_nodes create option."""
     normalized: list[str] = []
@@ -320,30 +314,6 @@ def build_training_job_plan(
     )
 
 
-def training_plan_payload(plan: JobSubmissionPlan) -> dict[str, Any]:
-    """Return a JSON-friendly dry-run payload for scripts."""
-    return {
-        "dry_run": True,
-        "kind": "training",
-        "create_kwargs": dict(plan.create_kwargs),
-        "project_name": plan.project_name,
-        "workspace_id": plan.workspace_id,
-        "quota": {
-            "quota_id": plan.quota.quota_id,
-            "logic_compute_group_id": plan.quota.logic_compute_group_id,
-            "compute_group_name": plan.quota.compute_group_name,
-            "gpu_count": plan.quota.gpu_count,
-            "gpu_type": plan.quota.gpu_type,
-            "cpu_count": plan.quota.cpu_count,
-            "memory_gib": plan.quota.memory_gib,
-        },
-        "shm_size_gib": plan.shm_size_gib,
-        "wrapped_command": plan.wrapped_command,
-        "log_path": plan.log_path,
-        "max_time_ms": plan.max_time_ms,
-    }
-
-
 def submit_training_job(
     *,
     session: Any,
@@ -413,6 +383,5 @@ __all__ = [
     "select_project_for_workspace",
     "submit_training_job",
     "training_plan_exclude_nodes",
-    "training_plan_payload",
     "wrap_in_bash",
 ]

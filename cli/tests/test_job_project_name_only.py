@@ -37,7 +37,7 @@ def test_job_create_rejects_project_id_before_platform_lookup(
     )
 
     def _unexpected_session() -> object:
-        raise AssertionError("platform lookup must not run for a project ID")
+        raise AssertionError("ID-shaped project input was not rejected before lookup")
 
     monkeypatch.setattr(job_create, "get_web_session", _unexpected_session)
 
@@ -75,7 +75,7 @@ def test_job_project_selector_rejects_project_id_before_session_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _unexpected_session() -> object:
-        raise AssertionError("session lookup must not run for a project ID")
+        raise AssertionError("ID-shaped project input was not rejected before lookup")
 
     monkeypatch.setattr(job_submit.web_session_module, "get_web_session", _unexpected_session)
 
@@ -87,7 +87,7 @@ def test_job_project_selector_rejects_project_id_before_session_lookup(
         )
 
 
-def test_job_project_selector_uses_live_name_not_legacy_alias_id(
+def test_job_project_selector_uses_live_name_from_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = object()
@@ -96,7 +96,7 @@ def test_job_project_selector_uses_live_name_not_legacy_alias_id(
     config = Config(
         username="user",
         password="pass",
-        projects={"Project One": OTHER_PROJECT_ID},
+        projects={"Project One": "Project One"},
     )
 
     monkeypatch.setattr(job_submit.web_session_module, "get_web_session", lambda: session)

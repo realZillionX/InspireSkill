@@ -41,7 +41,7 @@ def test_profile_list_defaults_to_twenty(monkeypatch) -> None:  # noqa: ANN001
     result = CliRunner().invoke(cli_main, ["--json", "job", "profile", "list"])
 
     assert result.exit_code == 0, result.output
-    _assert_default_page(json.loads(result.output)["data"], "profiles")
+    _assert_default_page(json.loads(result.output)["data"], "items")
 
 
 def test_path_alias_list_supports_explicit_all(monkeypatch) -> None:  # noqa: ANN001
@@ -65,10 +65,15 @@ def test_path_alias_list_supports_explicit_all(monkeypatch) -> None:  # noqa: AN
     )
 
     assert default_result.exit_code == 0, default_result.output
-    _assert_default_page(json.loads(default_result.output)["data"], "aliases")
+    default_data = json.loads(default_result.output)["data"]
+    _assert_default_page(default_data, "items")
+    assert all(set(item) == {"name"} for item in default_data["items"])
+    assert "/inspire/" not in default_result.output
     assert all_result.exit_code == 0, all_result.output
     all_data = json.loads(all_result.output)["data"]
-    assert len(all_data["aliases"]) == 25
+    assert len(all_data["items"]) == 25
+    assert all(set(item) == {"name"} for item in all_data["items"])
+    assert "/inspire/" not in all_result.output
     assert "truncated" not in all_data
 
 
@@ -97,7 +102,7 @@ def test_connection_list_verifies_only_visible_page(monkeypatch) -> None:  # noq
     )
 
     assert result.exit_code == 0, result.output
-    _assert_default_page(json.loads(result.output)["data"], "connections")
+    _assert_default_page(json.loads(result.output)["data"], "items")
     assert len(verified) == 20
 
 
@@ -121,18 +126,22 @@ def test_connection_target_list_defaults_to_twenty(monkeypatch) -> None:  # noqa
     )
 
     assert result.exit_code == 0, result.output
-    _assert_default_page(json.loads(result.output)["data"], "targets")
+    _assert_default_page(json.loads(result.output)["data"], "items")
 
 
 def test_serving_configs_defaults_to_twenty(monkeypatch) -> None:  # noqa: ANN001
     config = Config(username="", password="")
+
+    class _ServingSession:
+        all_workspace_ids = ["workspace"]
+        all_workspace_names = {"workspace": "GPU Workspace"}
+
     monkeypatch.setattr(
         serving_module.Config,
         "from_files_and_env",
         classmethod(lambda cls, **_kwargs: (config, {})),
     )
-    monkeypatch.setattr(serving_module, "_resolve_workspace_id", lambda *_args: "workspace")
-    monkeypatch.setattr(serving_module, "get_web_session", lambda: object())
+    monkeypatch.setattr(serving_module, "get_web_session", _ServingSession)
     monkeypatch.setattr(
         serving_module.browser_api_module,
         "get_serving_configs",
@@ -159,4 +168,5 @@ def test_serving_configs_defaults_to_twenty(monkeypatch) -> None:  # noqa: ANN00
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)["data"]
     _assert_default_page(data, "items")
-    assert data["auto_stop"] is True
+    assert "auto_stop" not in data
+    assert all(item["auto_stop"] is True for item in data["items"])

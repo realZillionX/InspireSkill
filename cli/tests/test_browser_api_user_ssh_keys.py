@@ -19,6 +19,14 @@ class _FakeSession:
     workspace_id = "ws-default"
 
 
+def test_user_api_validation_uses_visible_selection_terms() -> None:
+    with pytest.raises(ValueError, match="User selection is required\\."):
+        get_user_detail("", session=_FakeSession())
+
+    with pytest.raises(ValueError, match="SSH key selection is required\\."):
+        delete_user_ssh_key("", session=_FakeSession())
+
+
 def _install_fake_request(
     monkeypatch: pytest.MonkeyPatch, response: dict, record: dict[str, Any]
 ) -> None:

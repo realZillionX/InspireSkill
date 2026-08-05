@@ -82,8 +82,7 @@ def _find_project_configs(account: str | None = None) -> tuple[Path | None, Path
 def _find_project_config(account: str | None = None) -> Path | None:
     """Return the most specific project config path, falling back to shared.
 
-    This keeps the historical single-path helper useful while the loader can
-    now read both layers: ``./.inspire/config.toml`` first and then
+    The loader reads ``./.inspire/config.toml`` first and then applies
     ``./.inspire/accounts/<account>/config.toml`` as an override.
     """
     shared_path, account_path = _find_project_configs(account)

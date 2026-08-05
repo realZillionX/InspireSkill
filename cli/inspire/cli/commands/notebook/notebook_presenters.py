@@ -8,8 +8,8 @@ from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.human_formatter import format_epoch
 from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.raw_ids import scrub_raw_ids
-from .notebook_lookup import _format_notebook_cpu, _format_notebook_gpu, _notebook_gpu_type, _positive_int
-from .public_output import public_notebook
+from .notebook_lookup import _format_notebook_cpu, _format_notebook_gpu
+from .public_output import public_notebook_list_item
 
 
 def _nested_name(item: dict, key: str, *fallback_keys: str) -> str:
@@ -34,56 +34,73 @@ def _format_notebook_workspace(item: dict) -> str:
     return _nested_name(item, "workspace", "workspace_name", "workspaceName")
 
 
+def _format_public_resource(resource: object) -> str:
+    if isinstance(resource, str):
+        return resource
+    if not isinstance(resource, dict):
+        return ""
+    parts: list[str] = []
+    gpu_count = resource.get("gpu_count")
+    if gpu_count not in (None, "", 0):
+        gpu_type = str(resource.get("gpu_type") or "GPU")
+        parts.append(f"{gpu_count}x {gpu_type}")
+    cpu_count = resource.get("cpu_count")
+    if cpu_count not in (None, ""):
+        parts.append(f"{cpu_count} CPU")
+    memory_gib = resource.get("memory_gib")
+    if memory_gib not in (None, ""):
+        parts.append(f"{memory_gib} GiB")
+    return ", ".join(parts)
+
+
+def _format_uptime(seconds: object) -> str:
+    if not isinstance(seconds, (int, float, str)):
+        return ""
+    try:
+        live_seconds = int(seconds)
+    except (TypeError, ValueError):
+        return ""
+    if live_seconds <= 0:
+        return ""
+    hours, rem = divmod(live_seconds, 3600)
+    minutes = rem // 60
+    parts = []
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    return " ".join(parts) or "< 1m"
+
+
 def _print_notebook_detail(notebook: dict) -> None:
-    """Print detailed notebook information."""
-    project = notebook.get("project") or {}
-    quota = notebook.get("quota") or {}
-    compute_group = notebook.get("logic_compute_group") or {}
-    image = notebook.get("image") or {}
-    start_cfg = notebook.get("start_config") or {}
-    workspace = notebook.get("workspace") or {}
-
-    gpu_type = _notebook_gpu_type(notebook)
-    gpu_count = _positive_int(quota.get("gpu_count"))
-    gpu_str = f"{gpu_count}x {gpu_type}" if gpu_type and gpu_count else str(gpu_count or "N/A")
-
-    img_name = image.get("name", "")
-    img_ver = image.get("version", "")
-    img_str = f"{img_name}:{img_ver}" if img_name and img_ver else img_name or "N/A"
-
-    live_seconds = int(notebook.get("live_time") or 0)
-    uptime = ""
-    if live_seconds > 0:
-        hours, rem = divmod(live_seconds, 3600)
-        minutes = rem // 60
-        parts = []
-        if hours:
-            parts.append(f"{hours}h")
-        if minutes:
-            parts.append(f"{minutes}m")
-        uptime = " ".join(parts) or "< 1m"
-
-    shm = start_cfg.get("shared_memory_size", 0) or 0
-
-    # Raw notebook_id intentionally omitted — names are the CLI boundary.
+    """Print one already-projected notebook detail."""
     fields = [
-        ("Status", notebook.get("status")),
-        ("Project", project.get("name") or notebook.get("project_name")),
-        ("Priority", project.get("priority_name")),
-        ("Compute Group", compute_group.get("name")),
-        ("Image", img_str),
-        ("GPU", gpu_str),
-        ("CPU", quota.get("cpu_count")),
-        ("Memory", f"{quota['memory_size']} GiB" if quota.get("memory_size") else None),
-        ("SHM", f"{shm} GiB" if shm else None),
-        ("Uptime", uptime or None),
-        ("Workspace", workspace.get("name")),
+        ("Name", notebook.get("name") or "N/A"),
+        ("Status", notebook.get("status") or "N/A"),
+        ("Project", notebook.get("project")),
+        ("Workspace", notebook.get("workspace")),
+        ("Compute Group", notebook.get("compute_group")),
+        ("Created By", notebook.get("created_by")),
+        ("Image", notebook.get("image")),
+        ("Resource", _format_public_resource(notebook.get("resource"))),
+        ("Priority", notebook.get("priority")),
+        ("Priority Level", notebook.get("priority_level")),
+        (
+            "Shared Memory",
+            (
+                f"{notebook['shared_memory_gib']} GiB"
+                if notebook.get("shared_memory_gib") not in (None, "")
+                else None
+            ),
+        ),
+        ("Uptime", _format_uptime(notebook.get("uptime_seconds"))),
         ("Created", notebook.get("created_at")),
+        ("Updated", notebook.get("updated_at")),
     ]
 
     for label, value in fields:
-        if value:
-            click.echo(f"  {label:<15}: {scrub_raw_ids(value)}")
+        if value not in (None, ""):
+            click.echo(f"{label}: {scrub_raw_ids(value)}")
 
 
 def _print_notebook_list(
@@ -99,19 +116,17 @@ def _print_notebook_list(
     """
     if json_output:
         payload: dict[str, object] = {
-            "items": [public_notebook(item) for item in items],
-            "total": max(len(items), int(total or 0)),
+            "items": [public_notebook_list_item(item) for item in items],
         }
         if truncated:
             payload.update(
                 {
                     "shown": len(items),
+                    "total": max(len(items), int(total or 0)),
                     "truncated": True,
                 }
             )
-        click.echo(
-            json_formatter.format_json(payload)
-        )
+        click.echo(json_formatter.format_json(payload))
         return
 
     if not items:
@@ -152,7 +167,7 @@ def _print_notebook_list(
         widths,
         line_char="─",
     )
-    click.echo("\n".join(lines))
+    click.echo("\n".join([lines[1], lines[2], *lines[3:-1]]))
 
 
 __all__ = ["_print_notebook_detail", "_print_notebook_list"]

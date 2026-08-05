@@ -5,29 +5,25 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from typing import TYPE_CHECKING, Optional, cast
+from typing import Any, Optional, cast
 from weakref import WeakSet
 
 from .models import SessionExpiredError, WebSession
 from .browser_launch import chromium_launch_kwargs
 from .proxy import get_playwright_proxy
 
-if TYPE_CHECKING:
-    from playwright.sync_api import ProxySettings, StorageState
-
-
 class _BrowserRequestClient:
     def __init__(self, session: WebSession) -> None:
         from playwright.sync_api import sync_playwright
 
-        proxy = cast("ProxySettings | None", get_playwright_proxy(account=session.account))
+        proxy = cast(Any, get_playwright_proxy(account=session.account))
         self._closed = False
         self._playwright = sync_playwright().start()
         self._browser = self._playwright.chromium.launch(
             **chromium_launch_kwargs(headless=True, proxy=proxy)
         )
         self._context = self._browser.new_context(
-            storage_state=cast("StorageState", session.storage_state),
+            storage_state=cast(Any, session.storage_state),
             proxy=proxy,
             ignore_https_errors=True,
         )

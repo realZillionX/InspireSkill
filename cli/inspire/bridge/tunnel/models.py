@@ -127,7 +127,7 @@ class BridgeProfile:
             proxy_url=proxy_url,
             ssh_user=data.get("ssh_user", DEFAULT_SSH_USER),
             ssh_port=data.get("ssh_port", DEFAULT_SSH_PORT),
-            has_internet=data.get("has_internet", True),  # Default True for backward compat
+            has_internet=data.get("has_internet", True),
             notebook_id=data.get("notebook_id"),
             notebook_name=data.get("notebook_name"),
             workspace_id=data.get("workspace_id"),
@@ -162,9 +162,9 @@ class TunnelConfig:
         """Get a bridge profile by name, or the default if name is None."""
         if name:
             return self.bridges.get(name)
-        elif self.default_bridge:
+        if self.default_bridge:
             return self.bridges.get(self.default_bridge)
-        elif len(self.bridges) == 1:
+        if len(self.bridges) == 1:
             # If only one bridge, use it as default
             return next(iter(self.bridges.values()))
         return None
@@ -189,23 +189,3 @@ class TunnelConfig:
     def list_bridges(self) -> list[BridgeProfile]:
         """List all bridge profiles."""
         return list(self.bridges.values())
-
-    def get_bridge_with_internet(self) -> Optional[BridgeProfile]:
-        """Get a bridge with internet access.
-
-        Prefers the default bridge if it has internet access.
-        Otherwise returns the first bridge with internet access.
-
-        Returns:
-            BridgeProfile with internet, or None if no such bridge exists
-        """
-        # Prefer default bridge if it has internet
-        if self.default_bridge:
-            default = self.bridges.get(self.default_bridge)
-            if default and default.has_internet:
-                return default
-        # Otherwise, find any bridge with internet
-        for bridge in self.bridges.values():
-            if bridge.has_internet:
-                return bridge
-        return None

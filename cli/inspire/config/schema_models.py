@@ -19,7 +19,6 @@ class ConfigOption:
         category: Configuration category for grouping
         secret: If True, value should be hidden in output
         parser: Optional function to parse string value to correct type
-        validator: Optional function to validate the value
         scope: Configuration scope - "global" for user/machine-specific settings,
                "project" for per-codebase settings
     """
@@ -32,7 +31,6 @@ class ConfigOption:
     category: str
     secret: bool = False
     parser: Callable[[str], Any] | None = None
-    validator: Callable[[Any], bool] | None = None
     scope: str = "project"
 
 
@@ -49,19 +47,6 @@ def _parse_float(value: str) -> float:
 def _parse_bool(value: str) -> bool:
     """Parse string to boolean."""
     return value.lower() in ("1", "true", "yes", "on")
-
-
-def _parse_list(value: str) -> list[str]:
-    """Parse comma or newline separated list."""
-    if not value:
-        return []
-    parts = []
-    for raw in value.replace("\r", "").split("\n"):
-        for chunk in raw.split(","):
-            item = chunk.strip()
-            if item:
-                parts.append(item)
-    return parts
 
 
 def parse_value(option: ConfigOption, value: str) -> Any:

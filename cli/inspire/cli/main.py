@@ -40,6 +40,11 @@ from inspire.cli.commands import (
     update,
     user,
 )
+from inspire.cli.commands.serving.serving_commands import (
+    events_serving,
+    instances_serving,
+    start_serving,
+)
 from inspire.cli.utils.update_notice import maybe_notify_update, maybe_spawn_check
 from inspire.cli.utils.output_guard import (
     clear_parser_redactions,
@@ -181,12 +186,10 @@ def ensure_playwright_runtime(silent: bool) -> None:
 
 
 @click.command("_post-update", hidden=True)
-@click.option("--previous-version", required=True, help="Version before the outer update.")
 @click.option("--expected-version", required=True, help="Expected installed version.")
 @click.option("--cli-only", is_flag=True, help="Skip skill refresh.")
 @click.option("--silent", is_flag=True, help="Suppress post-update output.")
 def post_update(
-    previous_version: str,
     expected_version: str,
     cli_only: bool,
     silent: bool,
@@ -196,7 +199,6 @@ def post_update(
 
     if not _run_post_update_tasks(
         expected_version=expected_version,
-        previous_version=previous_version,
         cli_only=cli_only,
         silent=silent,
     ):
@@ -204,6 +206,9 @@ def post_update(
 
 
 # Register command groups
+serving.add_command(start_serving)
+serving.add_command(events_serving)
+serving.add_command(instances_serving)
 main.add_command(account)
 main.add_command(cache)
 main.add_command(job)
@@ -234,21 +239,25 @@ def cli() -> None:
         # exceptions. The full traceback still lands in the debug log
         # (configured by `--debug`), which is where it belongs.
         logging.getLogger(__name__).exception("Unhandled exception in inspire CLI")
-        if "--json" in sys.argv[1:]:
-            from inspire.cli.formatters import json_formatter
+        from inspire.cli.formatters import human_formatter, json_formatter
 
+        public_message = json_formatter.sanitize_text(
+            str(e) or type(e).__name__,
+            redact_paths=True,
+            redact_urls=True,
+            redact_platform_paths=True,
+        )
+        if "--json" in sys.argv[1:]:
             click.echo(
                 json_formatter.format_json_error(
                     "Error",
-                    str(e) or type(e).__name__,
+                    public_message,
                     EXIT_GENERAL_ERROR,
                 ),
                 err=True,
             )
         else:
-            from inspire.cli.formatters import human_formatter
-
-            click.echo(human_formatter.format_error(str(e) or type(e).__name__), err=True)
+            click.echo(human_formatter.format_error(public_message), err=True)
         sys.exit(EXIT_GENERAL_ERROR)
 
 

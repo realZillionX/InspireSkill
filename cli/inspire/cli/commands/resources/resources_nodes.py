@@ -40,15 +40,6 @@ def _display_name(value: object, *, fallback: str = "-") -> str:
     return " ".join(text.split()) or fallback
 
 
-def _workspace_name_map(
-    *,
-    config: Optional[Config],
-    session,
-) -> dict[str, str]:
-    del config
-    return dict(session.all_workspace_names or {})
-
-
 def _resolve_workspace_scope(
     *,
     config: Optional[Config],
@@ -58,7 +49,6 @@ def _resolve_workspace_scope(
     if config is None:
         raise ConfigError("Workspace selection requires a loaded config.")
     workspace_ids, all_workspaces = resolve_workspace_query_scope(
-        config,
         workspace=workspace,
         session=session,
     )
@@ -67,8 +57,8 @@ def _resolve_workspace_scope(
 
 def _public_group(row: dict) -> dict[str, object]:
     return {
-        "group_name": _display_name(row.get("group_name")),
-        "workspace_name": _display_name(row.get("workspace_name"), fallback=""),
+        "compute_group": _display_name(row.get("group_name")),
+        "workspace": _display_name(row.get("workspace_name"), fallback=""),
         "gpus_per_node": row["gpu_per_node"],
         "total_nodes": row["total_nodes"],
         "ready_nodes": row["ready_nodes"],
@@ -79,15 +69,20 @@ def _public_group(row: dict) -> dict[str, object]:
 
 @click.command("nodes")
 @click.option(
+    "--workspace",
+    required=True,
+    metavar="NAME|all",
+    help="Workspace name or 'all'.",
+)
+@click.option(
     "--group",
+    metavar="NAME",
     help=(
         "Filter by compute group name keyword/substring; "
         "full name is not required."
     ),
 )
 @click.option(
-    "--min-full-free-nodes",
-    "--min-free",
     "--min-nodes",
     type=click.IntRange(min=0),
     default=0,
@@ -97,7 +92,6 @@ def _public_group(row: dict) -> dict[str, object]:
         "Use before multi-node jobs that need whole nodes, not scattered GPUs."
     ),
 )
-@click.option("--workspace", required=True, help="Workspace name or 'all'.")
 @click.option(
     "--limit",
     "-n",
@@ -110,7 +104,7 @@ def _public_group(row: dict) -> dict[str, object]:
 def list_nodes(
     ctx: Context,
     group: str,
-    min_full_free_nodes: int,
+    min_nodes: int,
     workspace: str,
     limit: int | None,
     show_all: bool,
@@ -153,7 +147,7 @@ def list_nodes(
             session=session,
             workspace=workspace,
         )
-        workspace_names = _workspace_name_map(config=config, session=session)
+        workspace_names = dict(session.all_workspace_names or {})
 
         accurate_availability = browser_api_module.get_accurate_resource_availability(
             workspace_id=workspace_id,
@@ -178,7 +172,7 @@ def list_nodes(
             name = c.group_name or name_map.get(c.group_id, "") or "Unknown"
             if group_lower and group_lower not in name.lower():
                 continue
-            if c.full_free_nodes < min_full_free_nodes:
+            if c.full_free_nodes < min_nodes:
                 continue
             # Use accurate available GPUs if available, otherwise fall back to computed
             free_gpus = accurate_map.get(c.group_id, c.full_free_nodes * c.gpu_per_node)
@@ -204,21 +198,15 @@ def list_nodes(
             ),
             reverse=True,
         )
-        recommendation = filtered[0] if filtered else None
         page = bound_collection(filtered, limit=effective_limit)
         shown_rows = page.items
         public_groups = [_public_group(row) for row in shown_rows]
-        public_recommendation = _public_group(recommendation) if recommendation else None
 
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
                     {
-                        "groups": public_groups,
-                        "recommendation": public_recommendation,
-                        "min_full_free_nodes": min_full_free_nodes,
-                        "workspace_name": "all" if all_workspaces else workspace,
-                        "total_full_free_nodes": sum(x["full_free_nodes"] for x in filtered),
+                        "items": public_groups,
                         **page.metadata(),
                     }
                 )
@@ -248,8 +236,6 @@ def list_nodes(
             widths = [25, 10, 8, 8, 10]
             aligns = ["left", "right", "right", "right", "right"]
 
-        total_full_free = 0
-        total_free_gpus = 0
         table_rows: list[tuple[object, ...]] = []
         for row in shown_rows:
             name = _display_name(row["group_name"])
@@ -257,9 +243,6 @@ def list_nodes(
             ready = row["ready_nodes"]
             total = row["total_nodes"]
             free_gpus = row["full_free_gpus"]
-
-            total_full_free += full_free
-            total_free_gpus += free_gpus
 
             if show_workspace:
                 table_rows.append(
@@ -274,26 +257,9 @@ def list_nodes(
                 )
             else:
                 table_rows.append((name, full_free, ready, total, free_gpus))
-
-        if show_workspace:
-            table_rows.append(("TOTAL", "", total_full_free, "", "", total_free_gpus))
-        else:
-            table_rows.append(("TOTAL", total_full_free, "", "", total_free_gpus))
         click.echo(
             "\n".join(render_table(headers, table_rows, widths, aligns=aligns, line_char="─"))
         )
-        if recommendation is not None:
-            workspace_name = _display_name(
-                recommendation.get("workspace_name"),
-                fallback="",
-            )
-            group_name = _display_name(recommendation.get("group_name"), fallback="Unknown")
-            prefix = f"{workspace_name} / " if show_workspace and workspace_name else ""
-            click.echo(
-                "Recommended: "
-                f"{prefix}{group_name} "
-                f"({recommendation['full_free_nodes']} full-free node(s))"
-            )
         notice = truncation_notice(page)
         if notice:
             click.echo(notice)

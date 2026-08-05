@@ -6,6 +6,7 @@ from inspire.cli.commands.project import project_commands as project_cmd_module
 from inspire.cli.main import main as cli_main
 from inspire.cli.utils import notebook_cli as notebook_cli_module
 from inspire.platform.web import browser_api as browser_api_module
+from inspire.platform.web.browser_api import projects as projects_module
 
 
 _FORBIDDEN_PUBLIC_KEYS = {
@@ -62,6 +63,22 @@ def _project(project_id: str, name: str, workspace_id: str) -> browser_api_modul
     )
 
 
+def test_project_info_keeps_member_budget_fallback_and_consumed_fields() -> None:
+    project = projects_module._project_info_from_item(
+        {
+            "id": "project-internal",
+            "name": "Demo",
+            "en_name": "demo",
+            "budget": "20",
+            "remain_budget": "12.5",
+        }
+    )
+
+    assert project.en_name == "demo"
+    assert project.member_remain_budget == 12.5
+    assert {"budget", "remain_budget"}.isdisjoint(project.__dataclass_fields__)
+
+
 def test_project_list_all_uses_single_project_query(monkeypatch):
     session_obj = FakeSession(
         all_workspace_ids=[WS_CPU, WS_GPU, WS_INET, WS_EXTRA],
@@ -113,7 +130,8 @@ def test_project_list_all_uses_single_project_query(monkeypatch):
 
     assert result.exit_code == 0
     payload = _json_data(result.output)
-    assert len(payload["projects"]) == 3
+    assert len(payload["items"]) == 3
+    assert "projects" not in payload
     assert "total" not in payload
     _assert_compact_public_payload(payload)
     assert "project-cpu" not in result.output
@@ -151,8 +169,8 @@ def test_project_list_all_fans_out_when_single_query_lacks_workspace_binding(mon
 
     assert result.exit_code == 0
     payload = _json_data(result.output)
-    assert len(payload["projects"]) == 1
-    assert payload["projects"][0]["workspaces"] == ["CPU资源空间", "分布式训练空间"]
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["workspace"] == "CPU资源空间, 分布式训练空间"
     _assert_compact_public_payload(payload)
     assert calls == ["all", WS_CPU, WS_GPU]
 
@@ -190,9 +208,9 @@ def test_project_list_tolerates_workspace_specific_failure(monkeypatch):
 
     assert result.exit_code == 0
     payload = _json_data(result.output)
-    assert len(payload["projects"]) == 1
-    assert "project_id" not in payload["projects"][0]
-    assert payload["projects"][0]["name"] == "Good"
+    assert len(payload["items"]) == 1
+    assert "project_id" not in payload["items"][0]
+    assert payload["items"][0]["name"] == "Good"
     _assert_compact_public_payload(payload)
     assert calls == [WS_BAD, WS_GOOD]
 
@@ -257,7 +275,8 @@ def test_project_list_specific_workspace_uses_workspace_query(monkeypatch):
 
     assert result.exit_code == 0
     payload = _json_data(result.output)
-    assert len(payload["projects"]) == 1
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["workspace"] == "good"
     assert "total" not in payload
     _assert_compact_public_payload(payload)
     assert calls == [WS_GOOD]
@@ -341,7 +360,7 @@ def test_project_list_all_fallback_bypasses_fanout_limit(monkeypatch):
 
     assert result.exit_code == 0
     payload = _json_data(result.output)
-    assert len(payload["projects"]) == 4
+    assert len(payload["items"]) == 4
     assert "total" not in payload
     _assert_compact_public_payload(payload)
     assert calls == [WS_BAD, WS_GOOD, WS_CPU, WS_GPU]
@@ -375,13 +394,26 @@ def test_project_list_refreshes_platform_for_all_workspaces(monkeypatch):
     assert second.exit_code == 0
     first_payload = _json_data(first.output)
     second_payload = _json_data(second.output)
-    assert len(first_payload["projects"]) == 1
-    assert len(second_payload["projects"]) == 1
+    assert len(first_payload["items"]) == 1
+    assert len(second_payload["items"]) == 1
     assert "total" not in first_payload
     assert "total" not in second_payload
     _assert_compact_public_payload(first_payload)
     _assert_compact_public_payload(second_payload)
     assert calls == ["all", "all"]
+
+
+def test_project_workspace_metavars_are_name_only() -> None:
+    list_help = CliRunner().invoke(cli_main, ["project", "list", "--help"])
+    detail_help = CliRunner().invoke(cli_main, ["project", "detail", "--help"])
+
+    assert list_help.exit_code == 0, list_help.output
+    assert "--workspace NAME|all" in list_help.output
+    assert "--workspace TEXT" not in list_help.output
+    assert detail_help.exit_code == 0, detail_help.output
+    assert "--workspace NAME" in detail_help.output
+    assert "--workspace NAME|all" not in detail_help.output
+    assert "--workspace TEXT" not in detail_help.output
 
 
 def test_project_detail_json_is_name_only_and_compact(monkeypatch):
@@ -574,7 +606,12 @@ def test_project_owners_json_drops_raw_owner_metadata(monkeypatch):
 
     assert result.exit_code == 0, result.output
     payload = _json_data(result.output)
-    assert payload == {"owners": [{"name": "Alice", "login": "alice"}]}
+    assert payload == {"items": [{"name": "Alice"}]}
     _assert_compact_public_payload(payload)
     assert "user-secret-456" not in result.output
     assert WS_GOOD not in result.output
+
+    human = CliRunner().invoke(cli_main, ["project", "owners"])
+    assert human.exit_code == 0, human.output
+    assert "Alice" in human.output
+    assert "Login" not in human.output

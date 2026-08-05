@@ -6,10 +6,11 @@ Centralizes JSON vs human formatting and consistent exit codes across commands.
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterable
 
 import click
 
-from inspire.cli.context import EXIT_GENERAL_ERROR, Context
+from inspire.cli.context import EXIT_GENERAL_ERROR, EXIT_VALIDATION_ERROR, Context
 from inspire.cli.formatters import human_formatter, json_formatter
 
 
@@ -29,6 +30,7 @@ def emit_error(
     exit_code: int = EXIT_GENERAL_ERROR,
     *,
     hint: str | None = None,
+    human_lines: Iterable[str] | None = None,
 ) -> int:
     """Emit a formatted error without exiting. Returns exit_code."""
     if ctx.json_output:
@@ -36,19 +38,41 @@ def emit_error(
             json_formatter.format_json_error(error_type, message, exit_code, hint=hint),
             err=True,
         )
-    else:
-        click.echo(
-            human_formatter.format_error(
-                json_formatter.sanitize_text(message, redact_paths=True),
-                hint=(
-                    json_formatter.sanitize_text(hint, redact_paths=True)
-                    if hint
-                    else None
+        return exit_code
+
+    if human_lines is not None:
+        for line in human_lines:
+            click.echo(
+                json_formatter.sanitize_text(
+                    line,
+                    redact_paths=True,
+                    redact_urls=True,
                 ),
-            ),
-            err=True,
-        )
+                err=True,
+            )
         _emit_debug_report_hint(ctx)
+        return exit_code
+
+    click.echo(
+        human_formatter.format_error(
+            json_formatter.sanitize_text(
+                message,
+                redact_paths=True,
+                redact_urls=True,
+            ),
+            hint=(
+                json_formatter.sanitize_text(
+                    hint,
+                    redact_paths=True,
+                    redact_urls=True,
+                )
+                if hint
+                else None
+            ),
+        ),
+        err=True,
+    )
+    _emit_debug_report_hint(ctx)
     return exit_code
 
 
@@ -63,3 +87,25 @@ def exit_with_error(
     """Print a formatted error and exit with the given code."""
     emit_error(ctx, error_type, message, exit_code, hint=hint)
     sys.exit(exit_code)
+
+
+def require_confirmation(
+    ctx: Context,
+    *,
+    yes: bool,
+    prompt: str,
+    message: str,
+    hint: str = "Pass --yes to confirm.",
+) -> None:
+    """Require ``--yes`` for JSON and an explicit prompt for human output."""
+    if yes:
+        return
+    if ctx.json_output:
+        exit_with_error(
+            ctx,
+            "ConfirmationRequired",
+            message,
+            EXIT_VALIDATION_ERROR,
+            hint=hint,
+        )
+    click.confirm(prompt, default=False, abort=True)

@@ -6,43 +6,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from inspire.config.models import SOURCE_DEFAULT, ConfigError
-
-REMOVED_TASK_PRIORITY_ENV_VAR = "INSP_PRIORITY"
+from inspire.config.models import SOURCE_DEFAULT
 
 _DEFAULTS_FIELD_MAP = {
     "notebook_post_start": "notebook_post_start",
     "shm_size": "shm_size",
-    "log_pattern": "log_pattern",
     "project_order": "project_order",
 }
 
 
-def _reject_removed_task_priority_settings(
-    raw: dict[str, Any],
-    *,
-    source: str,
-) -> None:
-    removed: list[str] = []
-    job_section = raw.get("job")
-    if isinstance(job_section, dict) and "priority" in job_section:
-        removed.append("job.priority")
-    defaults_section = raw.get("defaults")
-    if isinstance(defaults_section, dict) and "priority" in defaults_section:
-        removed.append("defaults.priority")
-    if not removed:
-        return
-    raise ConfigError(
-        f"{source} contains removed static task-priority settings: {', '.join(removed)}. "
-        "Remove them and use --priority (or a batch item priority) when needed; "
-        "otherwise the CLI derives the default from the live workspace policy."
-    )
-
-
 @dataclass
 class _ProjectLayerState:
-    project_config_path: Path | None
-    project_projects: dict[str, str]
     project_defaults: dict[str, Any]
     project_context: dict[str, Any]
     prefer_source: str = "env"
@@ -56,24 +30,7 @@ def _default_config_values() -> dict[str, Any]:
         "username": "",
         "password": "",
         "base_url": "https://api.example.com",
-        "log_pattern": "training_master_*.log",
-        "timeout": 30,
-        "max_retries": 3,
-        "retry_delay": 1.0,
-        "github_repo": None,
-        "github_token": None,
-        "github_server": "https://github.com",
-        "github_sync_workflow": "sync_code.yml",
-        "github_bridge_workflow": "run_bridge_action.yml",
-        "log_cache_dir": "~/.inspire/logs",
-        "remote_timeout": 90,
-        "default_remote": "origin",
-        "bridge_action_timeout": 600,
-        "bridge_action_denylist": [],
-        "skip_ssl_verify": False,
-        "force_proxy": False,
         "browser_api_prefix": None,
-        "docker_registry": None,
         "requests_http_proxy": None,
         "requests_https_proxy": None,
         "playwright_proxy": None,
@@ -83,8 +40,6 @@ def _default_config_values() -> dict[str, Any]:
         "job_enable_notification": False,
         "projects": {},
         "project_catalog": {},
-        "project_workdirs": {},
-        "account_train_job_workdir": None,
         "notebook_post_start": None,
         "tunnel_retries": 3,
         "tunnel_retry_pause": 2.0,
@@ -138,48 +93,19 @@ def _parse_alias_map(raw_value: Any) -> dict[str, str]:
     return result
 
 
-def _normalize_compute_groups(raw_value: Any) -> list[dict]:
-    if not isinstance(raw_value, list):
-        return []
-
-    normalized: list[dict] = []
-    for raw_item in raw_value:
-        if not isinstance(raw_item, dict):
-            continue
-
-        raw_ws = raw_item.get("workspace_ids", [])
-        if isinstance(raw_ws, str):
-            workspace_ids = [raw_ws] if raw_ws else []
-        elif isinstance(raw_ws, list):
-            workspace_ids = [str(w) for w in raw_ws if isinstance(w, str) and w]
-        else:
-            workspace_ids = []
-
-        normalized.append(
-            {
-                "id": str(raw_item.get("id", "")).strip(),
-                "name": str(raw_item.get("name", "")).strip(),
-                "gpu_type": str(raw_item.get("gpu_type", "")).strip(),
-                "location": str(raw_item.get("location", "")).strip(),
-                "workspace_ids": workspace_ids,
-            }
-        )
-    return [item for item in normalized if item["id"] or item["name"]]
-
-
 def _normalize_project_catalog(raw_value: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(raw_value, dict):
         return {}
 
     normalized: dict[str, dict[str, Any]] = {}
-    for raw_project_id, raw_entry in raw_value.items():
-        project_id = str(raw_project_id).strip()
-        if not project_id or not isinstance(raw_entry, dict):
+    for raw_alias, raw_entry in raw_value.items():
+        alias = str(raw_alias).strip()
+        if not alias or not isinstance(raw_entry, dict):
             continue
 
         entry: dict[str, Any] = {}
-        # ``name``, ``path`` and ``path_user`` are the name-only metadata agents consume
-        # via ``inspire config context``.
+        # ``name``, ``path`` and ``path_user`` are the metadata consumed by
+        # name-only commands and remote path helpers.
         for key in ("name", "path", "path_user"):
             value = raw_entry.get(key)
             if isinstance(value, str):
@@ -187,38 +113,14 @@ def _normalize_project_catalog(raw_value: Any) -> dict[str, dict[str, Any]]:
             if not value:
                 continue
             entry[key] = value
-        normalized[project_id] = entry
+        normalized[alias] = entry
     return normalized
-
-
-def _resolve_alias(value: Any, mapping: dict[str, str], *, id_prefix: str) -> str | None:
-    """Resolve a project alias against an account-scoped mapping.
-
-    v4.0.0 made this strict: when *value* is neither a known alias under
-    *mapping* nor an explicit platform id (``id_prefix`` like
-    ``project-`` / ``ws-``), return ``None`` instead of pretending the raw
-    text is itself a usable id. The previous lax behavior let
-    ``[context].project = "foo"`` silently flow downstream as
-    ``project_id="foo"`` after switching to an account where ``foo``
-    wasn't a known alias, which then 404'd at the platform.
-    """
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if text in mapping:
-        return mapping[text]
-    for key, mapped in mapping.items():
-        if key.lower() == text.lower():
-            return mapped
-    if text.startswith(id_prefix):
-        return text
-    return None
 
 
 def _coerce_project_default(field_name: str, raw_value: Any) -> Any:
     if field_name == "shm_size":
         return int(raw_value)
-    if field_name in {"notebook_post_start", "log_pattern"}:
+    if field_name == "notebook_post_start":
         return str(raw_value)
     if field_name == "project_order":
         if isinstance(raw_value, list):
@@ -228,16 +130,12 @@ def _coerce_project_default(field_name: str, raw_value: Any) -> Any:
 
 
 __all__ = [
-    "REMOVED_TASK_PRIORITY_ENV_VAR",
     "_DEFAULTS_FIELD_MAP",
     "_ProjectLayerState",
     "_apply_defaults_overrides",
     "_coerce_project_default",
     "_default_config_values",
     "_initialize_sources",
-    "_normalize_compute_groups",
     "_normalize_project_catalog",
     "_parse_alias_map",
-    "_reject_removed_task_priority_settings",
-    "_resolve_alias",
 ]

@@ -18,7 +18,7 @@ def list_compute_groups(
         session = get_web_session()
 
     if workspace_id is None:
-        raise ValueError("workspace_id is required")
+        raise ValueError("Workspace selection is required.")
 
     body = {
         "page_size": -1,
@@ -94,7 +94,7 @@ def cluster_basic_info(
     if session is None:
         session = get_web_session()
     if workspace_id is None:
-        raise ValueError("workspace_id is required")
+        raise ValueError("Workspace selection is required.")
 
     body = {"workspace_id": workspace_id, "filter": {"workspace_id": workspace_id}}
     attempts = (
@@ -151,7 +151,7 @@ def list_node_dimension(
     if session is None:
         session = get_web_session()
     if workspace_id is None:
-        raise ValueError("workspace_id is required")
+        raise ValueError("Workspace selection is required.")
 
     body = {
         "workspace_id": workspace_id,
@@ -266,7 +266,7 @@ def _resolve_workspace_targets(
         if ordered:
             return ordered
 
-    raise ValueError("workspace_id is required unless all_workspaces=True")
+    raise ValueError("Workspace selection is required unless all workspaces are selected.")
 
 
 def get_accurate_resource_availability(
@@ -371,7 +371,6 @@ def get_accurate_resource_availability(
                         ready_nodes=node_summary["ready_nodes"],
                         free_nodes=node_summary["free_nodes"],
                         gpu_per_node=node_summary["gpu_per_node"],
-                        selection_source="cluster_basic_info+availability",
                         workspace_id=wid,
                         workspace_name=workspace_name,
                         cpu_total=cpu_total,

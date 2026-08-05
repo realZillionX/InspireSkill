@@ -9,7 +9,6 @@ from inspire.cli.utils.errors import emit_error
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
     get_base_url,
-    load_config,
     require_web_session,
 )
 from inspire.platform.web import browser_api as browser_api_module
@@ -70,6 +69,7 @@ def preflight_notebook_transport_policy(
     workspace: str | None,
     account: str | None = None,
     timeout: int = 30,
+    pick: int | None = None,
 ) -> NotebookTransportPolicy:
     from inspire.config.workspaces import resolve_workspace_query_scope
 
@@ -78,10 +78,8 @@ def preflight_notebook_transport_policy(
         if account
         else require_web_session(ctx, hint=WEB_AUTH_HINT)
     )
-    config = load_config(ctx, account=account)
     if workspace:
         workspace_ids, _ = resolve_workspace_query_scope(
-            config,
             workspace=workspace,
             session=session,
         )
@@ -90,11 +88,11 @@ def preflight_notebook_transport_policy(
     notebook_id, _workspace_id = _resolve_notebook_id(
         ctx,
         session=session,
-        config=config,
         base_url=get_base_url(account=account),
         identifier=notebook,
         json_output=ctx.json_output,
         workspace_ids=workspace_ids,
+        pick=pick,
     )
     detail = browser_api_module.get_notebook_detail(notebook_id=notebook_id, session=session)
     gpu_type = _notebook_gpu_type(detail)

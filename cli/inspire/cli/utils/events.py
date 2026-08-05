@@ -1,10 +1,10 @@
-"""Shared helpers for `inspire job events` / `inspire hpc events`.
+"""Shared helpers for workload event commands.
 
 Platform event records share most fields — `reason`, `message`, `from`,
 `first_timestamp`, `last_timestamp`, `age`, `object_id`, `object_type` —
-but not all. Train jobs carry a Kubernetes-style `type` (`Normal` /
-`Warning`), HPC jobs don't. Both sets are lossy after GC (returning `[]`
-for long-completed jobs is the steady state).
+but not all. Some workload kinds carry a Kubernetes-style `type` (`Normal` /
+`Warning`); others do not. Event history can be lossy after GC, so `[]` is a
+normal steady state for long-completed workloads.
 
 Events are always fetched from the live platform API. Local caches are not a
 source of truth for user-visible diagnostics.
@@ -19,9 +19,10 @@ from typing import Any, Callable, Optional
 
 import click
 
-from inspire.cli.context import EXIT_API_ERROR
+from inspire.cli.context import Context, EXIT_API_ERROR
 from inspire.cli.formatters import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
+from inspire.cli.utils.collection_output import BoundedCollection, truncation_notice
 from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
@@ -48,15 +49,14 @@ def _fmt_timestamp(raw: Any) -> str:
     return s
 
 
-def filter_events(
+def _matching_events(
     events: list[dict],
     *,
     type_filter: Optional[str] = None,
     reason_filter: Optional[str] = None,
     keyword_filter: Optional[str] = None,
-    tail: Optional[int] = None,
 ) -> list[dict]:
-    """Apply optional filters and return a bounded event window."""
+    """Apply event filters without imposing an output window."""
     out = events
     if type_filter:
         needle = type_filter.lower()
@@ -74,10 +74,52 @@ def filter_events(
                 for key in ("reason", "message", "from", "type", "content")
             )
         ]
+    return out
+
+
+def _event_window(
+    events: list[dict],
+    *,
+    type_filter: Optional[str] = None,
+    reason_filter: Optional[str] = None,
+    keyword_filter: Optional[str] = None,
+    tail: Optional[int] = None,
+) -> BoundedCollection[dict]:
+    matching = _matching_events(
+        events,
+        type_filter=type_filter,
+        reason_filter=reason_filter,
+        keyword_filter=keyword_filter,
+    )
     effective_tail = DEFAULT_EVENT_TAIL if tail is None else tail
     if effective_tail > 0:
-        out = out[-effective_tail:]
-    return out
+        visible = matching[-effective_tail:]
+    else:
+        visible = matching
+    return BoundedCollection(
+        items=visible,
+        shown=len(visible),
+        total=len(matching),
+        truncated=len(visible) < len(matching),
+    )
+
+
+def filter_events(
+    events: list[dict],
+    *,
+    type_filter: Optional[str] = None,
+    reason_filter: Optional[str] = None,
+    keyword_filter: Optional[str] = None,
+    tail: Optional[int] = None,
+) -> list[dict]:
+    """Apply optional filters and return a bounded event window."""
+    return _event_window(
+        events,
+        type_filter=type_filter,
+        reason_filter=reason_filter,
+        keyword_filter=keyword_filter,
+        tail=tail,
+    ).items
 
 
 def public_event(event: dict) -> dict[str, Any]:
@@ -146,26 +188,36 @@ def render_events_table(events: list[dict]) -> None:
 
 
 def emit_events(
-    ctx_json: bool,
-    local_json: bool,
-    resource_type: str,
-    resource_name: str,
+    ctx: Context,
     events: list[dict],
+    *,
+    total: int | None = None,
 ) -> None:
     """Render events for stdout according to JSON vs human preference."""
-    del resource_type
-    if ctx_json or local_json:
+    page = BoundedCollection(
+        items=events,
+        shown=len(events),
+        total=max(len(events), total or 0),
+        truncated=total is not None and total > len(events),
+    )
+    if ctx.json_output:
         public_events = [public_event(event) for event in events]
         click.echo(
             json_formatter.format_json(
                 {
-                    "name": resource_name,
-                    "events": public_events,
+                    "items": public_events,
+                    **page.metadata(),
                 }
             )
         )
     else:
         render_events_table(events)
+        notice = truncation_notice(
+            page,
+            full_option=f"--tail {page.total}",
+        )
+        if notice:
+            click.echo(notice)
 
 
 def _event_key(event: dict) -> tuple[str, ...]:
@@ -216,9 +268,9 @@ def _fetch_filtered_events(
     reason_filter: Optional[str],
     keyword_filter: Optional[str] = None,
     tail: Optional[int] = None,
-) -> list[dict]:
+) -> BoundedCollection[dict]:
     events = fetch()
-    return filter_events(
+    return _event_window(
         events,
         type_filter=type_filter,
         reason_filter=reason_filter,
@@ -228,13 +280,9 @@ def _fetch_filtered_events(
 
 
 def run_events_command(
-    ctx,
+    ctx: Context,
     *,
-    resource_id: str,
-    resource_type: str,
-    resource_name: str,
     fetch: Callable[[], list[dict]],
-    json_output_local: bool,
     type_filter: Optional[str],
     reason_filter: Optional[str],
     keyword_filter: Optional[str] = None,
@@ -246,16 +294,14 @@ def run_events_command(
 
     `fetch` is the per-job-kind platform call returning a list[dict].
     """
-    del resource_id
-    json_mode = bool(getattr(ctx, "json_output", False)) or json_output_local
-    if follow and json_mode:
+    if follow and ctx.json_output:
         raise click.UsageError(
             "--json --follow is not supported for events. Drop --json to follow, "
             "or drop --follow for a one-shot JSON fetch."
         )
 
     try:
-        filtered = _fetch_filtered_events(
+        page = _fetch_filtered_events(
             fetch=fetch,
             type_filter=type_filter,
             reason_filter=reason_filter,
@@ -272,9 +318,9 @@ def run_events_command(
         return
     if follow:
         seen = _RecentEventKeys()
-        for event in filtered:
+        for event in page.items:
             seen.remember(event)
-        render_events_table(filtered)
+        render_events_table(page.items)
         while True:
             try:
                 time.sleep(interval)
@@ -298,18 +344,15 @@ def run_events_command(
                 )
                 return
             fresh = []
-            for event in current:
+            for event in current.items:
                 if seen.remember(event):
                     fresh.append(event)
             if not fresh:
                 continue
             render_events_table(fresh)
-        return
 
     emit_events(
-        ctx_json=bool(getattr(ctx, "json_output", False)),
-        local_json=json_output_local,
-        resource_type=resource_type,
-        resource_name=resource_name,
-        events=filtered,
+        ctx=ctx,
+        events=page.items,
+        total=page.total,
     )

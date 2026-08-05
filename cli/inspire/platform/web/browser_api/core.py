@@ -16,8 +16,6 @@ from inspire.platform.web.session import WebSession, get_playwright_proxy, reque
 from inspire.platform.web.session.browser_launch import chromium_launch_kwargs
 
 DEFAULT_BASE_URL = "https://api.example.com"
-# Backward-compatible constant (legacy imports). Prefer _get_base_url() for runtime use.
-BASE_URL = DEFAULT_BASE_URL
 
 # Default browser API prefix (fallback if not configured)
 DEFAULT_BROWSER_API_PREFIX = "/api/v1"
@@ -50,13 +48,12 @@ def _browser_api_prefix_cache_key() -> tuple[str | None, str | None]:
 def clear_browser_api_runtime_cache() -> None:
     """Clear account-sensitive browser API runtime caches."""
     global _cached_base_url, _cached_base_url_key
-    global _cached_browser_api_prefix, _cached_browser_api_prefix_key, BASE_URL
+    global _cached_browser_api_prefix, _cached_browser_api_prefix_key
 
     _cached_base_url = None
     _cached_base_url_key = None
     _cached_browser_api_prefix = None
     _cached_browser_api_prefix_key = None
-    BASE_URL = DEFAULT_BASE_URL
 
 
 def _get_base_url() -> str:
@@ -90,11 +87,10 @@ def _set_base_url(url: str) -> None:
     ``--base-url`` into the module-level cache so that all subsequent
     browser-API calls resolve to the correct host.
     """
-    global _cached_base_url, _cached_base_url_key, BASE_URL
+    global _cached_base_url, _cached_base_url_key
 
     _cached_base_url = url.rstrip("/")
     _cached_base_url_key = _base_url_cache_key()
-    BASE_URL = _cached_base_url
 
 
 def _get_browser_api_prefix() -> str:
@@ -210,7 +206,3 @@ def _new_context(browser, *, storage_state=None, account: str | None = None):  #
             storage_state=storage_state, proxy=proxy, ignore_https_errors=True
         )
     return browser.new_context(proxy=proxy, ignore_https_errors=True)
-
-
-# Keep BASE_URL in sync for legacy imports.
-BASE_URL = _get_base_url()

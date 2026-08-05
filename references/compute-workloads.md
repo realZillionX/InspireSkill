@@ -2,8 +2,6 @@
 
 在 GPU Job、CPU HPC、Ray 和 Serving 之间选型，或提交后观察 Events / Logs / Metrics / Instances / Status 时看本页。资源目录和 Profile 看 [`resources-and-paths.md`](resources-and-paths.md)，镜像看 [`image-management.md`](image-management.md)，模型仓库看 [`model.md`](model.md)。命令语法和参数以 CLI Help 为准。
 
-所有 CLI 资源参数都使用资源名称或本地 Alias。平台内部 Handle 只在 Resolver 和 Browser API 请求中传递，不是 CLI 输入或输出合同；同名资源由 workspace、状态等可读信息消歧，不能要求 Agent 提供 Handle。
-
 ## 1. 先选工作负载类型
 
 | 目标 | 入口 | 适用边界 |
@@ -35,7 +33,7 @@ Job 的关键边界：
 
 - 日志和工作目录依赖共享盘约定；训练 Repo 建议在 `me:<repo>`，启动命令里使用相对共享盘路径或让脚本自己切目录。
 - Shared Memory 是每个 Job Instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader Workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置；也可用 `INSPIRE_SHM_SIZE` 或 `[job] shm_size` 作为默认值，命令行参数优先。提交前用 `job create --dry-run` 看解析后的 Shared Memory；提交后用 `job list/status` 确认平台返回的 Per-Instance SHM。
-- 需要平台在任务状态变化时通知当前用户，可在 `job create` 使用 `--enable-notification`；平台收件人来自当前用户绑定的飞书账号，CLI 不接受任意收件人 ID。持久默认值用 `[job].enable_notification` 或 `INSPIRE_JOB_ENABLE_NOTIFICATION`，显式 `--enable-notification/--no-enable-notification` 优先。`job batch` 在 item 未设置时继承该默认值，item 内布尔值优先。
+- 需要平台在任务状态变化时通知当前用户，可在 `job create` 使用 `--enable-notification`；平台收件人固定为当前用户绑定的飞书账号。持久默认值用 `[job].enable_notification` 或 `INSPIRE_JOB_ENABLE_NOTIFICATION`，显式 `--enable-notification/--no-enable-notification` 优先。`job batch` 在 item 未设置时继承该默认值，item 内布尔值优先。
 - 自动容错默认值用 `[job].auto_fault_tolerance` / `[job].fault_tolerance_max_retry` 或对应环境变量管理；CLI 显式参数和 Batch item 仍优先。通知与自动容错默认都保持关闭，除非明确启用；提交前用 `job create --dry-run` 或 `job batch --dry-run` 检查最终 Payload。
 - 多节点训练要关注每个 Pod 的 GPU、显存、CPU 和网络曲线是否同步；某个 Worker 长期低负载通常比日志更早暴露问题。
 - 排除坏节点是“不要调度到这些 Ready 节点”，不是固定节点；候选节点来自所选 Compute Group。
@@ -72,6 +70,8 @@ Ray 特有风险：
 - Worker 的 `min` / `max` 决定资源占用上限；长守护任务要接受手动 stop 的运维模型。
 - 如果只是固定规模训练或固定 CPU 批处理，回到 Job / HPC。
 
+创建后用 `ray events` 看调度、`ray instances` 看 Head 与实际 Worker、`ray metrics` 看各组负载；结束后先 `ray stop`，确认不再需要再 `ray delete`。重复配置用 `ray profile`，矩阵提交用 `ray batch`。
+
 ## 6. Serving
 
 Serving 面向模型部署服务。通常先用 Model Registry 找到模型和版本，再创建自定义部署。
@@ -86,6 +86,8 @@ Serving 面向模型部署服务。通常先用 Model Registry 找到模型和�
 
 LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类型；普通 Custom Serving 不要推导它们的字段。
 
+当前 Custom Serving 生命周期是：`serving configs` / `serving quota` 选配置，`serving create` 或 `serving batch` 创建，`serving list/status/events/instances/metrics` 观察，`serving stop` / `serving start` 控制，最后 `serving delete` 清理。重复调度条件用 `serving profile`。
+
 ## 7. 观察闭环
 
 | 工具 | 主要回答 |
@@ -98,7 +100,7 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 卡住或失败先看 Events；已启动但健康度不明看 Metrics；程序行为看 Logs；产物完整性回到共享盘文件和 Fingerprint。
 
-终态且不再需要的 Job、HPC、Ray 或 Serving 要清理。Running 资源先 `stop`，再 `delete`；不确定是否仍有人使用时跳过。
+当前公共聚合日志命令只在 Job 下提供。HPC、Ray 和 Serving 应使用各自的 Events、Instances、Metrics、Status，以及应用自身写入共享盘或服务端的日志。
 
 ## 8. 异常判断
 

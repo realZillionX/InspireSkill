@@ -36,6 +36,32 @@ def test_emit_error_human_mode_with_hint(capsys: pytest.CaptureFixture[str]) -> 
     assert "Check your TOML" in captured.err
 
 
+def test_emit_error_human_mode_with_custom_lines(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ctx = Context()
+    code = emit_error(
+        ctx,
+        "TestError",
+        "structured message",
+        human_lines=["Short public message."],
+    )
+
+    assert code == EXIT_GENERAL_ERROR
+    captured = capsys.readouterr()
+    assert captured.err == "Short public message.\n"
+    assert "structured message" not in captured.err
+
+
+def test_emit_error_human_mode_redacts_urls(capsys: pytest.CaptureFixture[str]) -> None:
+    ctx = Context()
+    emit_error(ctx, "TestError", "request failed at https://internal.example/api")
+
+    captured = capsys.readouterr()
+    assert "internal.example" not in captured.err
+    assert "https://<redacted>" not in captured.err
+
+
 def test_emit_error_json_mode(capsys: pytest.CaptureFixture[str]) -> None:
     ctx = Context()
     ctx.json_output = True

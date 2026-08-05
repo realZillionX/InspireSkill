@@ -141,7 +141,6 @@ class TestResolveByName:
                 name="image-c4eb3ac3-6d83-405c-aa29-059bc945c4bf",
                 resource_type="image",
                 list_candidates=lambda: [],
-                json_output=True,
             )
 
         captured = capsys.readouterr()
@@ -156,7 +155,6 @@ class TestResolveByName:
             name="job-smoke-20260507",
             resource_type="job",
             list_candidates=lambda: [{"name": "job-smoke-20260507", "id": "job-id"}],
-            json_output=True,
         )
 
         assert result == "job-id"
@@ -188,7 +186,6 @@ class TestResolveByName:
                 name=name,
                 resource_type=resource_type,
                 list_candidates=_fail_lister,
-                json_output=True,
             )
 
         assert f"{resource_type} name" in capsys.readouterr().err

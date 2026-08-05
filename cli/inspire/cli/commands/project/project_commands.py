@@ -23,14 +23,15 @@ from inspire.cli.utils.collection_output import (
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import (
+    NAME_PICK_HELP,
     forget_resource_identity,
+    reject_id_at_boundary,
     resolve_by_name,
     run_with_stale_handle_retry,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
-    load_config,
     require_web_session,
 )
 from inspire.config import ConfigError
@@ -91,7 +92,7 @@ def _project_to_dict(
 
     view: dict[str, object] = {
         "name": scrub_raw_ids(proj.name),
-        "workspaces": [scrub_raw_ids(name) for name in workspace_names],
+        "workspace": ", ".join(scrub_raw_ids(name) for name in workspace_names),
         "priority": scrub_raw_ids(proj.priority_level or proj.priority_name),
         "remaining_budget": _public_number(proj.member_remain_budget),
     }
@@ -108,7 +109,7 @@ def _format_project_list(projects: list[dict]) -> str:
     rows = [
         (
             str(project.get("name") or ""),
-            ", ".join(str(name) for name in project.get("workspaces") or []) or "-",
+            str(project.get("workspace") or "-"),
             str(project.get("priority") or "-"),
             _format_budget(project.get("remaining_budget")),
         )
@@ -179,14 +180,7 @@ def _owner_views(items: list[dict]) -> list[dict[str, str]]:
         name = _public_text(item.get("name"))
         if not name:
             continue
-        login = ""
-        extra = item.get("extra_info")
-        if isinstance(extra, dict):
-            login = _public_text(extra.get("login_name"))
-        owner = {"name": name}
-        if login:
-            owner["login"] = login
-        owners.append(owner)
+        owners.append({"name": name})
     return owners
 
 
@@ -196,6 +190,7 @@ def _resolve_project_name(
     *,
     session,
     workspace_id: str,
+    pick: int | None = None,
     require_live: bool = False,
 ) -> str:  # noqa: ANN001
     workspace_name = str(
@@ -220,7 +215,7 @@ def _resolve_project_name(
         name=name,
         resource_type="project",
         list_candidates=_lister,
-        json_output=ctx.json_output,
+        pick_index=pick,
         session=session,
         workspace_id=workspace_id,
         require_live=require_live,
@@ -395,6 +390,7 @@ def _select_workspace_ids_for_listing(
 @click.option(
     "--workspace",
     required=True,
+    metavar="NAME|all",
     help="Workspace name or 'all'.",
 )
 @click.option(
@@ -430,11 +426,8 @@ def list_projects_cmd(
         ctx,
         hint=WEB_AUTH_HINT,
     )
-    config = load_config(ctx)
-
     try:
         workspace_ids, all_workspaces = resolve_workspace_query_scope(
-            config,
             workspace=workspace,
             session=session,
         )
@@ -488,7 +481,7 @@ def list_projects_cmd(
         click.echo(
             json_formatter.format_json(
                 {
-                    "projects": page.items,
+                    "items": page.items,
                     **page.metadata(),
                 }
             )
@@ -502,16 +495,31 @@ def list_projects_cmd(
 
 
 @click.command("detail")
-@click.argument("project")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("project", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @pass_context
-def detail_project_cmd(ctx: Context, project: str, workspace: str) -> None:
+def detail_project_cmd(
+    ctx: Context,
+    project: str,
+    workspace: str,
+    pick: int | None,
+) -> None:
     """Show detail for a single project by name."""
+    project = reject_id_at_boundary(
+        ctx,
+        project,
+        resource_type="project",
+        list_command="inspire project list --workspace <workspace>",
+    )
     session = require_web_session(ctx, hint="inspire project detail requires a logged-in web session")
-    config = load_config(ctx)
     try:
         workspace_ids, is_all = resolve_workspace_query_scope(
-            config,
             workspace=workspace,
             session=session,
         )
@@ -524,12 +532,14 @@ def detail_project_cmd(ctx: Context, project: str, workspace: str) -> None:
                 project,
                 session=session,
                 workspace_id=workspace_ids[0],
+                pick=pick,
             ),
             resolve_live=lambda live_name: _resolve_project_name(
                 ctx,
                 live_name,
                 session=session,
                 workspace_id=workspace_ids[0],
+                pick=pick,
                 require_live=True,
             ),
             operation=lambda resolved_project_id: (
@@ -578,8 +588,11 @@ def owners_project_cmd(
     show_all: bool,
 ) -> None:
     """List candidate project owners."""
-    if show_all and limit is not None:
-        raise click.UsageError("Use either --limit or --all, not both.")
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
 
     session = require_web_session(ctx, hint="inspire project owners requires a logged-in web session")
     try:
@@ -589,34 +602,19 @@ def owners_project_cmd(
         return
 
     owners = _owner_views(items)
-    total = len(owners)
-    effective_limit = None if show_all else (limit or 20)
-    shown_owners = owners if effective_limit is None else owners[:effective_limit]
-    truncated = len(shown_owners) < total
+    page = bound_collection(owners, limit=effective_limit)
     if ctx.json_output:
-        payload: dict[str, object] = {"owners": shown_owners}
-        if truncated:
-            payload.update(
-                {
-                    "shown": len(shown_owners),
-                    "total": total,
-                    "truncated": True,
-                }
-            )
+        payload: dict[str, object] = {"items": page.items, **page.metadata()}
         click.echo(json_formatter.format_json(payload))
         return
 
-    if not shown_owners:
+    if not page.items:
         click.echo("No project owners returned.")
         return
 
-    rows = [(owner["name"], owner.get("login", "")) for owner in shown_owners]
-    widths = [
-        column_width("Name", [row[0] for row in rows], max_width=48),
-        column_width("Login", [row[1] for row in rows], max_width=32),
-    ]
-    click.echo(
-        "\n".join(render_table(("Name", "Login"), rows, widths, line_char="─"))
-    )
-    if truncated:
-        click.echo(f"Showing {len(shown_owners)} of {total}. Use --all for the full list.")
+    rows = [(owner["name"],) for owner in page.items]
+    widths = [column_width("Name", [row[0] for row in rows], max_width=48)]
+    click.echo("\n".join(render_table(("Name",), rows, widths, line_char="─")))
+    notice = truncation_notice(page)
+    if notice:
+        click.echo(notice)

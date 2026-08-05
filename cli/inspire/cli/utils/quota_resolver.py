@@ -617,11 +617,8 @@ def _format_row_catalog(rows: list[tuple[dict, dict]]) -> str:
     return "\n".join(lines)
 
 
-def build_resource_spec_price(
-    *, quota: ResolvedQuota, shared_memory_size: Optional[int] = None
-) -> dict[str, Any]:
+def build_resource_spec_price(*, quota: ResolvedQuota) -> dict[str, Any]:
     """Build the ``resource_spec_price`` dict the notebook create call expects."""
-    del shared_memory_size  # kept for symmetry; backend reads shared_memory_size elsewhere
     price = quota.raw_price if isinstance(quota.raw_price, dict) else {}
     cpu_info_payload = price.get("cpu_info")
     cpu_info: dict[str, Any] = cpu_info_payload if isinstance(cpu_info_payload, dict) else {}

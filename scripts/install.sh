@@ -96,37 +96,6 @@ need curl
 need tar
 need mktemp
 
-installed_inspire_python() {
-  local shebang py
-  IFS= read -r shebang < "$INSPIRE_BIN" || return 1
-  [[ "$shebang" == "#!"* ]] || return 1
-  py="${shebang#\#!}"
-  [[ -x "$py" ]] || return 1
-  printf '%s\n' "$py"
-}
-
-playwright_install_args() {
-  if [[ "$(uname -s)" == "Linux" ]] && [[ "$(id -u)" == "0" ]] && command -v apt-get >/dev/null 2>&1; then
-    printf '%s\n' install --with-deps chromium
-  else
-    printf '%s\n' install chromium
-  fi
-}
-
-legacy_playwright_runtime_setup() {
-  local py
-  py="$(installed_inspire_python)" || return 1
-  "$py" -m playwright $(playwright_install_args) || return 1
-  "$py" - <<'PY'
-from inspire.platform.web.session.browser_launch import chromium_launch_kwargs
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as p:
-    browser = p.chromium.launch(**chromium_launch_kwargs(headless=True))
-    browser.close()
-PY
-}
-
 # ---- install CLI via uv tool / pipx ----------------------------------------
 # Install from PyPI, so the user path stays on published releases.
 SPEC="$PACKAGE"
@@ -150,10 +119,6 @@ if (( INSTALL_CLI )); then
   else
     die "need uv or pipx. Install uv:  curl -LsSf https://astral.sh/uv/install.sh | sh"
   fi
-
-  # Clean up stale shims from earlier installer paths.
-  [[ -L "$HOME/.local/bin/inspire-update" ]] && rm -f "$HOME/.local/bin/inspire-update" \
-    && ok "removed legacy shim $(dim "$HOME/.local/bin/inspire-update")"
 
   # Make sure ~/.local/bin is on PATH so the user can run `inspire` immediately
   # in the *next* shell. Both uv and pipx put binaries there but neither edits
@@ -195,14 +160,9 @@ if (( INSTALL_CLI )); then
   fi
 
   log "preparing Playwright Chromium runtime"
-  if INSPIRE_SKIP_UPDATE_CHECK=1 "$INSPIRE_BIN" _ensure-playwright-runtime; then
-    ok "Playwright Chromium runtime ready"
-  else
-    warn "installed CLI has no runtime setup hook yet; using installer-managed setup"
-    legacy_playwright_runtime_setup \
-      || die "Playwright Chromium runtime setup failed — check network and local browser support, then rerun this installer."
-    ok "Playwright Chromium runtime ready"
-  fi
+  INSPIRE_SKIP_UPDATE_CHECK=1 "$INSPIRE_BIN" _ensure-playwright-runtime \
+    || die "Playwright Chromium runtime setup failed — check network and local browser support, then rerun this installer."
+  ok "Playwright Chromium runtime ready"
 fi
 
 # ---- fetch SKILL.md + references/ ------------------------------------------
@@ -222,13 +182,11 @@ TOP="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -n1)"
 install_skill() {
   local harness="$1"
   local target
-  local legacy_target=""
   case "$harness" in
     claude)   target="$HOME/.claude/skills/inspire"                                    ;;
     codex)    target="$HOME/.codex/skills/inspire"                                     ;;
     antigravity)
       target="$HOME/.gemini/config/skills/inspire"
-      legacy_target="$HOME/.gemini/skills/inspire"
       ;;
     cursor)   target="$HOME/.cursor/skills/inspire"                                    ;;
     openclaw) target="$HOME/.openclaw/skills/inspire"                                  ;;
@@ -238,11 +196,6 @@ install_skill() {
     kimi-code) target="$KIMI_CODE_HOME_DIR/skills/inspire"                             ;;
     kimi-desktop) target="$KIMI_DESKTOP_ROOT/skills/inspire"                           ;;
   esac
-
-  if [[ -n "$legacy_target" && "$legacy_target" != "$target" && ( -L "$legacy_target" || -e "$legacy_target" ) ]]; then
-    rm -rf "$legacy_target"
-    ok "removed legacy skill path → $(dim "$legacy_target")"
-  fi
 
   # Wipe prior install (handles real dirs and stale symlink layouts).
   if [[ -L "$target" || -e "$target" ]]; then

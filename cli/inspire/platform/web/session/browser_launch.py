@@ -43,7 +43,7 @@ def playwright_install_args(*, include_system_deps: bool | None = None) -> list[
     return args
 
 
-def playwright_install_hint(*, include_system_deps: bool | None = None) -> str:
+def playwright_install_hint() -> str:
     """Return an install command suitable for user-facing diagnostics."""
     return "inspire update --cli-only"
 
@@ -67,8 +67,7 @@ def chromium_launch_kwargs(*, headless: bool = True, proxy: Any = None) -> dict[
     """Return Chromium launch kwargs that also work in Inspire containers.
 
     Inspire notebooks commonly run as root inside containers with a small
-    ``/dev/shm``. Chromium can start successfully and then close the page
-    process on first navigation unless these compatibility flags are present.
+    ``/dev/shm``. These flags keep Chromium stable during navigation there.
     """
     kwargs: dict[str, Any] = {
         "headless": headless,

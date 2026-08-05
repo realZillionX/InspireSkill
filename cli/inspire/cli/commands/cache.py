@@ -1,4 +1,4 @@
-"""Commands for the disposable local resource-name index."""
+"""Cached resource-name mapping commands."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from typing import Sequence
 
 import click
 
-from inspire.accounts import current_account
 from inspire.cli.context import (
     EXIT_API_ERROR,
     EXIT_CONFIG_ERROR,
@@ -18,7 +17,7 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
-from inspire.cli.utils.errors import exit_with_error
+from inspire.cli.utils.errors import exit_with_error, require_confirmation
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
 from inspire.cli.utils.raw_ids import scrub_raw_ids
@@ -59,7 +58,7 @@ def _exit_cache_database_error(ctx: Context) -> None:
         "CacheError",
         "The local resource name cache is unavailable.",
         EXIT_API_ERROR,
-        hint="Retry after other Inspire commands finish. Corrupt cache files are rebuilt automatically.",
+        hint="Retry after other Inspire commands finish.",
     )
 
 
@@ -82,13 +81,17 @@ def _workspace_name_map() -> dict[str, str]:
     if not isinstance(names, dict):
         return {}
     return {
-        str(workspace_id): str(name)
+        str(workspace_id): scrub_raw_ids(str(name))
         for workspace_id, name in names.items()
         if workspace_id and name
     }
 
 
-def _status_payload(index: ResourceIndex, *, debug: bool = False) -> dict[str, object]:
+def _public_error(value: object) -> str:
+    return json_formatter.sanitize_text(value, redact_paths=True)
+
+
+def _status_payload(index: ResourceIndex) -> dict[str, object]:
     names = _workspace_name_map()
     now = time.time()
     scopes: list[dict[str, object]] = []
@@ -96,7 +99,7 @@ def _status_payload(index: ResourceIndex, *, debug: bool = False) -> dict[str, o
     for status in statuses:
         row: dict[str, object] = {
             "resource": status.resource_type,
-            "items": status.active_count,
+            "cached_names": status.active_count,
             "updated": _age(status.last_full_refresh_at, now=now),
         }
         workspace_name = names.get(status.workspace_id, "")
@@ -104,7 +107,7 @@ def _status_payload(index: ResourceIndex, *, debug: bool = False) -> dict[str, o
             row["workspace"] = workspace_name
         if status.last_error:
             row["state"] = "error"
-            row["error"] = scrub_raw_ids(status.last_error)
+            row["error"] = _public_error(status.last_error)
         elif status.last_full_refresh_at <= 0 and status.last_refresh_at > 0:
             row["state"] = "partial"
         elif status.last_full_refresh_at <= 0:
@@ -136,11 +139,11 @@ def _status_payload(index: ResourceIndex, *, debug: bool = False) -> dict[str, o
         item_counts = [
             value
             for row in rows
-            if isinstance((value := row.get("items")), int)
+            if isinstance((value := row.get("cached_names")), int)
         ]
         summary: dict[str, object] = {
             "resource": resource,
-            "items": sum(item_counts),
+            "cached_names": sum(item_counts),
             "state": state,
             "updated": _age(min(refresh_times), now=now) if refresh_times else "never",
         }
@@ -150,26 +153,24 @@ def _status_payload(index: ResourceIndex, *, debug: bool = False) -> dict[str, o
         error_count = sum(bool(row.get("error")) for row in rows)
         if error_count:
             summary["errors"] = error_count
+            failures: list[dict[str, str]] = []
+            for row in rows:
+                error = str(row.get("error") or "")
+                if not error:
+                    continue
+                failure = {"error": error}
+                workspace = str(row.get("workspace") or "")
+                if workspace:
+                    failure["workspace"] = workspace
+                failures.append(failure)
+            summary["failures"] = failures
         resources.append(summary)
 
-    payload: dict[str, object] = {
-        "account": current_account() or "",
-        "resources": resources,
-        "items": sum(
-            value
-            for scope in scopes
-            if isinstance((value := scope.get("items")), int)
-        ),
-    }
-    if debug:
-        payload["scopes"] = scopes
-    return payload
+    return {"items": resources}
 
 
 def _refresh_payload(
     results: Sequence[RefreshResult],
-    *,
-    debug: bool,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "refreshed": sum(result.outcome == "refreshed" for result in results),
@@ -177,23 +178,27 @@ def _refresh_payload(
         "stale": sum(result.outcome == "stale" for result in results),
         "busy": sum(result.outcome == "busy" for result in results),
         "errors": sum(result.outcome == "error" for result in results),
-        "items": sum(
+        "names_cached": sum(
             result.item_count for result in results if result.outcome == "refreshed"
         ),
     }
     failures = [
-        result.to_payload() for result in results if result.outcome == "error"
+        {
+            **({"workspace": scrub_raw_ids(result.workspace_name)} if result.workspace_name else {}),
+            "resource": result.resource_type,
+            "error": _public_error(result.error),
+        }
+        for result in results
+        if result.outcome == "error"
     ]
     if failures:
         payload["failures"] = failures
-    if debug:
-        payload["scopes"] = [result.to_payload() for result in results]
     return payload
 
 
 @click.group("cache")
 def cache() -> None:
-    """Manage the local resource-name acceleration index."""
+    """Manage cached resource-name mappings."""
 
 
 @cache.command("refresh")
@@ -202,16 +207,17 @@ def cache() -> None:
     "resources",
     type=click.Choice(RESOURCE_TYPES, case_sensitive=False),
     multiple=True,
+    metavar="RESOURCE",
     help="Refresh only this resource kind. Repeat to select several.",
 )
 @click.option(
     "--workspace",
     "workspaces",
     multiple=True,
-    metavar="NAME",
+    metavar="NAME|all",
     help="Refresh only this workspace name. Repeat or use 'all'.",
 )
-@click.option("--name", default="", help="Refresh one exact resource name.")
+@click.option("--name", default="", metavar="NAME", help="Refresh one exact resource name.")
 @click.option(
     "--full",
     is_flag=True,
@@ -219,7 +225,7 @@ def cache() -> None:
 )
 @click.option("--due", is_flag=True, hidden=True)
 @click.option("--quiet", is_flag=True, hidden=True)
-@click.option("--account", hidden=True)
+@click.option("--account", hidden=True, metavar="ACCOUNT")
 @pass_context
 def refresh_cache(
     ctx: Context,
@@ -231,7 +237,7 @@ def refresh_cache(
     quiet: bool,
     account: str | None,
 ) -> None:
-    """Refresh stale mappings, or force selected mappings with --full."""
+    """Refresh cached name mappings."""
     account = (
         str(account or "").strip()
         or os.environ.get("INSPIRE_RESOURCE_INDEX_REFRESH_ACCOUNT", "").strip()
@@ -291,26 +297,35 @@ def refresh_cache(
             raise SystemExit(EXIT_API_ERROR)
         return
 
-    payload = _refresh_payload(summary.results, debug=ctx.debug)
+    payload = _refresh_payload(summary.results)
     if ctx.json_output:
-        click.echo(json_formatter.format_json(payload))
-    else:
         click.echo(
-            "Resource names: "
-            f"{payload['refreshed']} refreshed, "
-            f"{payload['fresh']} fresh, "
-            f"{payload['stale']} changed during refresh, "
-            f"{payload['items']} indexed"
-            + (f", {payload['errors']} errors" if payload["errors"] else "")
-            + "."
+            json_formatter.format_json(
+                payload,
+                success=not bool(summary.error_count),
+            )
         )
+    else:
+        parts = [
+            f"{payload['refreshed']} refreshed",
+            f"{payload['names_cached']} names cached",
+        ]
+        for key, label in (
+            ("fresh", "fresh"),
+            ("stale", "superseded"),
+            ("busy", "busy"),
+            ("errors", "errors"),
+        ):
+            if payload[key]:
+                parts.append(f"{payload[key]} {label}")
+        click.echo(", ".join(parts) + ".")
         for result in summary.results:
             if result.outcome != "error":
                 continue
             label = result.resource_type
             if result.workspace_name:
                 label += f" @ {scrub_raw_ids(result.workspace_name)}"
-            click.echo(f"Error: {label}: {scrub_raw_ids(result.error)}", err=True)
+            click.echo(f"Error: {label}: {_public_error(result.error)}", err=True)
 
     if summary.error_count:
         raise SystemExit(EXIT_API_ERROR)
@@ -319,9 +334,9 @@ def refresh_cache(
 @cache.command("status")
 @pass_context
 def cache_status(ctx: Context) -> None:
-    """Show compact cache freshness and item counts."""
+    """Show cache freshness and name counts."""
     try:
-        payload = _status_payload(_index_or_exit(ctx), debug=ctx.debug)
+        payload = _status_payload(_index_or_exit(ctx))
     except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
         _exit_cache_database_error(ctx)
         raise RuntimeError("unreachable")
@@ -329,7 +344,7 @@ def cache_status(ctx: Context) -> None:
         click.echo(json_formatter.format_json(payload))
         return
 
-    resources = payload["resources"]
+    resources = payload["items"]
     if not isinstance(resources, list) or not resources:
         click.echo("Resource name cache is empty.")
         return
@@ -340,24 +355,46 @@ def cache_status(ctx: Context) -> None:
         if row.get("workspaces"):
             label += f" ({row['workspaces']} workspaces)"
         click.echo(
-            f"{label}: {row['items']} names, {row['state']}, {row['updated']}"
+            f"{label}: {row['cached_names']} names, {row['state']}, {row['updated']}"
         )
+        failures = row.get("failures")
+        if not isinstance(failures, list):
+            continue
+        for failure in failures:
+            if not isinstance(failure, dict):
+                continue
+            workspace = str(failure.get("workspace") or "")
+            suffix = f" @ {workspace}" if workspace else ""
+            click.echo(
+                f"Error{suffix}: {_public_error(failure.get('error'))}",
+                err=True,
+            )
 
 
 @cache.command("clear")
-@click.option("--yes", is_flag=True, help="Clear without prompting.")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
 @pass_context
 def clear_cache(ctx: Context, yes: bool) -> None:
-    """Clear the disposable local resource-name index."""
+    """Clear cached resource-name mappings."""
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt="Clear the local resource name cache?",
+        message="Cache clearing requires confirmation.",
+        hint="Pass --yes to confirm clearing the cache.",
+    )
     index = _index_or_exit(ctx)
-    if not yes and not click.confirm("Clear the local resource name cache?"):
-        return
     try:
         index.clear()
     except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
         _exit_cache_database_error(ctx)
         raise RuntimeError("unreachable")
-    payload = {"cleared": True, "account": current_account() or ""}
+    payload = {"status": "cleared"}
     if ctx.json_output:
         click.echo(json_formatter.format_json(payload))
     else:

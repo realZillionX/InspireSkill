@@ -33,6 +33,7 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.cli.utils.job_submit import derive_remote_log_glob
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
@@ -43,8 +44,8 @@ from .job_commands import (
     WebJobResolutionError,
     WebJobValidationError,
     _close_web_client,
+    _reject_web_job_name_at_boundary,
     _reject_job_instance_name,
-    _public_output,
     _resolve_web_job_id,
     _run_readonly_web_job_operation,
 )
@@ -225,7 +226,7 @@ def _format_web_logs(logs: list[dict]) -> str:
 
 
 def _public_web_logs(logs: list[dict]) -> list[dict[str, Any]]:
-    public = _public_output(logs)
+    public = json_formatter.sanitize_json_data(logs)
     if not isinstance(public, list):
         return []
     return [dict(item) for item in public if isinstance(item, dict)]
@@ -505,7 +506,6 @@ def _fetch_log_via_ssh(
 
 def _follow_logs_via_ssh(
     job_id: str,
-    config: Config,
     remote_log_path: str,
     tail_lines: int = 50,
     wait_timeout: int = 300,
@@ -748,18 +748,13 @@ def _run_job_logs_single_job(
         )
         bridge_name_for_checks = effective_bridge_name or bridge_name
 
-        try:
-            tunnel_ok = is_tunnel_available(
-                bridge_name=bridge_name_for_checks,
-                config=tunnel_config,
-                retries=0,
-                retry_pause=0.0,
-                progressive=False,
-            )
-        except TypeError:
-            # Backward-compatible test doubles may still expose the old no-arg signature.
-            tunnel_ok = is_tunnel_available()
-
+        tunnel_ok = is_tunnel_available(
+            bridge_name=bridge_name_for_checks,
+            config=tunnel_config,
+            retries=0,
+            retry_pause=0.0,
+            progressive=False,
+        )
         if not tunnel_ok:
             if bridge_name and tunnel_config is not None and not bridge_configured:
                 _handle_error(
@@ -776,12 +771,14 @@ def _run_job_logs_single_job(
             if ctx.json_output:
                 click.echo(
                     json_formatter.format_json(
-                        {"log_path": scrub_raw_ids(remote_log_path)},
-                        preserve_paths={"log_path"},
+                        {
+                            "name": scrub_raw_ids(job),
+                            "status": "log-location-selected",
+                        }
                     )
                 )
             else:
-                click.echo(scrub_raw_ids(remote_log_path))
+                click.echo(f"Log location selected for {scrub_raw_ids(job)}.")
             sys.exit(EXIT_SUCCESS)
 
         if follow:
@@ -797,7 +794,6 @@ def _run_job_logs_single_job(
 
             final_status = _follow_logs_via_ssh(
                 job_id=job_id,
-                config=config,
                 remote_log_path=remote_log_path,
                 tail_lines=tail or DEFAULT_SSH_TAIL_LINES,
                 bridge_name=bridge_name,
@@ -838,7 +834,6 @@ def _run_job_logs_single_job(
             click.echo(
                 json_formatter.format_json(
                     {
-                        "log_path": remote_log_path,
                         "content": selection.content,
                         "truncated": selection.truncated,
                         "shown": selection.shown,
@@ -879,6 +874,7 @@ def _run_job_logs_web_single_job(
     workspace: Optional[str],
     all_workspaces: bool,
     max_pages: int,
+    pick: int | None,
     instance_names: tuple[str, ...],
     since_minutes: int | None,
     web_page_size: int,
@@ -963,11 +959,12 @@ def _run_job_logs_web_single_job(
 
         try:
             job_id, session, pod_names, start_ms, logs, total = _run_readonly_web_job_operation(
-                config=config,
                 job=job,
                 workspace=workspace,
                 all_workspaces=all_workspaces,
                 max_pages=max_pages,
+                pick=pick,
+                workspace_must_be_single=True,
                 session_factory=get_web_session,
                 resolver=_resolve_web_job_id,
                 operation=_load_logs,
@@ -1046,10 +1043,16 @@ def _run_job_logs_web_single_job(
 
 
 @click.command("logs")
-@click.argument("job")
+@click.argument("job", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @click.option(
     "--tail",
-    "-n",
     type=click.IntRange(1),
     help=(
         f"Show the last N lines or platform records. "
@@ -1067,7 +1070,11 @@ def _run_job_logs_web_single_job(
         "Cannot be combined with --tail, --head, --limit, --follow, or --path."
     ),
 )
-@click.option("--path", is_flag=True, help="Just print log path, don't read content")
+@click.option(
+    "--path",
+    is_flag=True,
+    help="Confirm the selected SSH log location without printing the remote path.",
+)
 @click.option(
     "--follow",
     "-f",
@@ -1080,6 +1087,7 @@ def _run_job_logs_web_single_job(
 @click.option(
     "--remote-log-path",
     default=None,
+    metavar="PATH",
     help=(
         "Explicit remote log file path. Overrides the default project log path. "
         "Useful for jobs created outside the CLI where the path was set by the platform."
@@ -1087,11 +1095,11 @@ def _run_job_logs_web_single_job(
 )
 @click.option(
     "--notebook",
+    metavar="NAME",
     help=(
         "Notebook name whose cached SSH connection should be used. Required when more "
         "than one is cached and the default connection is ambiguous. "
-        "Run `inspire notebook connection refresh <notebook-name> --workspace <workspace>` first. "
-        "No short alias — `-n` is reserved for --tail."
+        "Run `inspire notebook connection refresh <notebook-name> --workspace <workspace>` first."
     ),
 )
 @click.option(
@@ -1104,11 +1112,11 @@ def _run_job_logs_web_single_job(
         "CLI-managed remote log files."
     ),
 )
-@click.option("--workspace", required=True, help="Workspace name or 'all'.")
 @click.option(
     "--instance",
     "instance_names",
     multiple=True,
+    metavar="NAME",
     help="Instance name to query. Repeat for multiple instances.",
 )
 @click.option(
@@ -1118,6 +1126,7 @@ def _run_job_logs_web_single_job(
 )
 @click.option(
     "--limit",
+    "-n",
     type=click.IntRange(1),
     default=None,
     help=(
@@ -1138,6 +1147,7 @@ def logs(
     notebook: Optional[str],
     source: str,
     workspace: Optional[str],
+    pick: int | None,
     instance_names: tuple[str, ...],
     window: str | None,
     limit: int | None,
@@ -1158,6 +1168,7 @@ def logs(
         inspire job logs my-training-run --workspace 分布式训练空间 --all
         inspire job logs my-training-run --workspace 分布式训练空间 --source ssh --notebook my-cpu-box
     """
+    job = _reject_web_job_name_at_boundary(ctx, job)
     if tail is not None and head is not None:
         _handle_error(
             ctx,
@@ -1245,6 +1256,7 @@ def logs(
             workspace=workspace,
             all_workspaces=False,
             max_pages=50,
+            pick=pick,
             instance_names=instance_names,
             since_minutes=since_minutes,
             web_page_size=effective_limit,
@@ -1256,9 +1268,10 @@ def logs(
         if follow:
             try:
                 job_id = _run_readonly_web_job_operation(
-                    config=config,
                     job=job,
                     workspace=workspace,
+                    pick=pick,
+                    workspace_must_be_single=True,
                     session_factory=get_web_session,
                     resolver=_resolve_web_job_id,
                     operation=lambda resolved_id, session: (
@@ -1273,11 +1286,12 @@ def logs(
                 _close_web_client()
         else:
             job_id = _resolve_web_job_id(
-                config=config,
                 job=job,
                 workspace=workspace,
                 all_workspaces=False,
                 max_pages=50,
+                pick=pick,
+                workspace_must_be_single=True,
             )
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

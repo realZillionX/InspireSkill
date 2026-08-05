@@ -13,12 +13,16 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
+from inspire.cli.formatters.human_formatter import format_mutation_success
 from inspire.cli.utils.collection_output import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.errors import (
+    exit_with_error as _handle_error,
+    require_confirmation,
+)
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
@@ -30,7 +34,23 @@ from inspire.config.workload_profiles import (
 
 
 def _field_values(profile: dict[str, str]) -> dict[str, str]:
-    return {field: profile[field] for field in PROFILE_FIELDS if profile.get(field)}
+    return {
+        field: scrub_raw_ids(str(profile[field]))
+        for field in PROFILE_FIELDS
+        if profile.get(field)
+    }
+
+
+def _public_profile(profile: dict[str, Any]) -> dict[str, str]:
+    return {
+        field: scrub_raw_ids(str(profile[field]))
+        for field in PROFILE_FIELDS
+        if profile.get(field)
+    }
+
+
+def _profile_resource_label(kind: str) -> str:
+    return f"{'HPC' if kind == 'hpc' else kind.title()} profile"
 
 
 def _write_project_profiles(data: dict[str, Any], path) -> None:  # noqa: ANN001
@@ -51,7 +71,7 @@ def _validate_profile_fields(
     image: str,
 ) -> dict[str, str]:
     """Reject platform handles before persisting reusable profile values."""
-    values = {
+    return {
         "workspace": reject_id_at_boundary(
             ctx,
             workspace,
@@ -83,7 +103,6 @@ def _validate_profile_fields(
             list_command="inspire image list --workspace <name>",
         ),
     }
-    return values
 
 
 def make_profile_command(kind: str) -> click.Group:
@@ -125,31 +144,37 @@ def make_profile_command(kind: str) -> click.Group:
         try:
             config, _ = Config.from_files_and_env(require_credentials=False)
             profiles = getattr(config, "profiles", {}).get(kind, {})
-            page = bound_collection(
-                sorted(profiles.items()),
-                limit=effective_limit,
-            )
-            shown_profiles = dict(page.items)
+            profile_items = [
+                {
+                    "name": scrub_raw_ids(str(name)),
+                    **_public_profile(profile),
+                }
+                for name, profile in sorted(profiles.items())
+                if isinstance(profile, dict)
+            ]
+            page = bound_collection(profile_items, limit=effective_limit)
             if ctx.json_output:
                 click.echo(
                     json_formatter.format_json(
                         {
-                            "profiles": shown_profiles,
+                            "items": page.items,
                             **page.metadata(),
                         }
                     )
                 )
                 return
-            if not shown_profiles:
+            if not page.items:
                 click.echo(f"No {kind} profiles found.")
                 return
-            click.echo(f"{kind} profiles")
-            for name, profile in page.items:
+            for item in page.items:
+                name = str(item.get("name") or "")
                 fields = ", ".join(
-                    f"{key}={scrub_raw_ids(value)}"
-                    for key, value in profile.items()
+                    f"{field}={scrub_raw_ids(str(item[field]))}"
+                    for field in PROFILE_FIELDS
+                    if item.get(field)
                 )
-                click.echo(f"  {scrub_raw_ids(name)}  {fields}")
+                suffix = f" {fields}" if fields else ""
+                click.echo(f"{scrub_raw_ids(name)}{suffix}")
             notice = truncation_notice(page)
             if notice:
                 click.echo(notice)
@@ -157,7 +182,7 @@ def make_profile_command(kind: str) -> click.Group:
             _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 
     @click.command("show")
-    @click.argument("name")
+    @click.argument("name", metavar="NAME")
     @pass_context
     def show_profile(ctx: Context, name: str) -> None:
         """Show a condition profile."""
@@ -174,26 +199,38 @@ def make_profile_command(kind: str) -> click.Group:
             if profile is None:
                 available = ", ".join(sorted(profiles)) or "(none)"
                 raise ConfigError(f"Unknown {kind} profile: {name!r}. Available: {available}")
+            public_profile = _public_profile(profile)
             if ctx.json_output:
-                click.echo(json_formatter.format_json({"name": name, "profile": profile}))
+                click.echo(
+                    json_formatter.format_json(
+                        {"name": scrub_raw_ids(name), "profile": public_profile}
+                    )
+                )
                 return
-            click.echo(f"{kind} profile: {scrub_raw_ids(name)}")
             for field in PROFILE_FIELDS:
-                click.echo(f"  {field}: {scrub_raw_ids(profile.get(field, ''))}")
+                if value := public_profile.get(field):
+                    click.echo(f"{field}={value}")
         except ConfigError as e:
             _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 
     @click.command("set")
-    @click.argument("name")
-    @click.option("--workspace", required=True, help="Workspace name")
-    @click.option("--project", required=True, help="Project name")
+    @click.argument("name", metavar="NAME")
+    @click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+    @click.option("--project", required=True, metavar="NAME", help="Project name.")
     @click.option(
         "--group",
         required=True,
-        help="Full compute group name copied from the same quota row as --quota",
+        metavar="NAME",
+        help="Full compute group name copied from the same quota row as --quota.",
     )
-    @click.option("--quota", "-q", required=True, help="Resource quota as gpu,cpu,mem")
-    @click.option("--image", required=True, help="Image name or URL")
+    @click.option(
+        "--quota",
+        "-q",
+        required=True,
+        metavar="SPEC",
+        help="Resource quota as gpu,cpu,mem.",
+    )
+    @click.option("--image", required=True, metavar="NAME|URL", help="Image name or URL.")
     @pass_context
     def set_profile(
         ctx: Context,
@@ -229,28 +266,47 @@ def make_profile_command(kind: str) -> click.Group:
             if ctx.json_output:
                 click.echo(
                     json_formatter.format_json(
-                        {"name": name, "profile": kind_profiles[name]}
+                        {
+                            "name": scrub_raw_ids(name),
+                            "status": "saved",
+                            "profile": kind_profiles[name],
+                        }
                     )
                 )
                 return
-            click.echo(f"Saved {kind} profile: {scrub_raw_ids(name)}")
+            click.echo(
+                format_mutation_success(
+                    _profile_resource_label(kind),
+                    "saved",
+                    name,
+                )
+            )
         except ConfigError as e:
             _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 
     @click.command("delete")
-    @click.argument("name")
-    @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+    @click.argument("name", metavar="NAME")
+    @click.option(
+        "--yes",
+        "-y",
+        is_flag=True,
+        help="Skip the interactive confirmation prompt.",
+    )
     @pass_context
     def delete_profile(ctx: Context, name: str, yes: bool) -> None:
         """Delete a condition profile from project config."""
         try:
+            require_confirmation(
+                ctx,
+                yes=yes,
+                prompt=f"Delete {kind} profile '{scrub_raw_ids(name)}'?",
+                message=f"{kind.title()} profile deletion requires confirmation.",
+            )
             path, data = load_project_profile_data()
             profiles = normalize_workload_profiles(data.get("profiles", {}))
             if name not in profiles.get(kind, {}):
                 available = ", ".join(sorted(profiles.get(kind, {}))) or "(none)"
                 raise ConfigError(f"Unknown {kind} profile: {name!r}. Available: {available}")
-            if not yes and not ctx.json_output:
-                click.confirm(f"Delete {kind} profile '{scrub_raw_ids(name)}'?", abort=True)
             raw_profiles = data.get("profiles")
             if isinstance(raw_profiles, dict):
                 raw_kind = raw_profiles.get(kind)
@@ -262,9 +318,19 @@ def make_profile_command(kind: str) -> click.Group:
                     data.pop("profiles", None)
             _write_project_profiles(data, path)
             if ctx.json_output:
-                click.echo(json_formatter.format_json({"name": name, "deleted": True}))
+                click.echo(
+                    json_formatter.format_json(
+                        {"name": scrub_raw_ids(name), "status": "deleted"}
+                    )
+                )
                 return
-            click.echo(f"Deleted {kind} profile: {scrub_raw_ids(name)}")
+            click.echo(
+                format_mutation_success(
+                    _profile_resource_label(kind),
+                    "deleted",
+                    name,
+                )
+            )
         except ConfigError as e:
             _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 

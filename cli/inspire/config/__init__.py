@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from inspire.config.env import _parse_denylist, _parse_remote_timeout, build_env_exports
+from inspire.config.env import build_env_exports
 from inspire.config.load import config_from_files_and_env, get_config_paths
-from inspire.config.load_env import config_from_env
 from inspire.config.models import (
     CONFIG_FILENAME,
     PROJECT_ACCOUNT_CONFIG_DIR,
@@ -34,15 +33,12 @@ from inspire.config.schema import (  # noqa: F401
     get_option_by_toml,
     get_options_by_category,
     get_options_by_scope,
-    get_required_options,
-    get_secret_options,
 )
 from inspire.config.schema_models import (  # noqa: F401
     ConfigOption,
     _parse_bool,
     _parse_float,
     _parse_int,
-    _parse_list,
     parse_value,
 )
 
@@ -62,13 +58,9 @@ __all__ = [
     "ConfigError",
     "ConfigOption",
     "_parse_bool",
-    "_parse_denylist",
     "_parse_float",
     "_parse_int",
-    "_parse_list",
-    "_parse_remote_timeout",
     "build_env_exports",
-    "config_from_env",
     "config_from_files_and_env",
     "default_remote_cwd",
     "delete_project_path_alias",
@@ -78,8 +70,6 @@ __all__ = [
     "get_option_by_toml",
     "get_options_by_category",
     "get_options_by_scope",
-    "get_required_options",
-    "get_secret_options",
     "load_project_path_aliases",
     "parse_value",
     "resolve_remote_cwd",

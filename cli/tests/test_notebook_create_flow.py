@@ -298,6 +298,101 @@ def test_run_notebook_create_skips_post_start_when_wait_fails(
     assert "post_start_called" not in calls
 
 
+def _post_start_spec() -> flow_module.NotebookPostStartSpec:
+    return flow_module.NotebookPostStartSpec(
+        label="notebook post-start command",
+        command="internal-command --state /tmp/internal-state",
+        log_path="/tmp/private-post-start.log",
+        pid_file="/tmp/private-post-start.pid",
+        completion_marker="STARTED",
+    )
+
+
+def test_post_start_success_output_hides_engineering_details(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_command(**kwargs):  # noqa: ANN001
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        flow_module.browser_api_module,
+        "run_command_in_notebook",
+        fake_run_command,
+    )
+
+    flow_module.maybe_run_post_start(
+        notebook_id="nb-internal",
+        diagnostics=_make_diagnostics(),
+        session=object(),
+        post_start_spec=_post_start_spec(),
+        gpu_count=1,
+        json_output=False,
+    )
+
+    output = capsys.readouterr()
+    assert output.out == "OK Notebook post-start started: fresh-notebook\n"
+    assert output.err == ""
+    assert captured["command"] == "internal-command --state /tmp/internal-state"
+    assert captured["notebook_id"] == "nb-internal"
+    assert "/tmp/" not in output.out
+    assert "pid" not in output.out.lower()
+    assert "To stop" not in output.out
+    assert "Starting " not in output.out
+
+
+@pytest.mark.parametrize("mode", ["unconfirmed", "error"])
+def test_post_start_failure_output_hides_logs_and_internal_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
+) -> None:
+    if mode == "unconfirmed":
+        monkeypatch.setattr(
+            flow_module.browser_api_module,
+            "run_command_in_notebook",
+            lambda **_kwargs: False,
+        )
+    else:
+
+        def raise_internal_error(**_kwargs):  # noqa: ANN001
+            raise RuntimeError("command failed; inspect /tmp/private-post-start.log")
+
+        monkeypatch.setattr(
+            flow_module.browser_api_module,
+            "run_command_in_notebook",
+            raise_internal_error,
+        )
+
+    monkeypatch.setattr(
+        flow_module,
+        "_fetch_event_preview",
+        lambda *_args, **_kwargs: pytest.fail(
+            "post-start output must not fetch engineering logs"
+        ),
+    )
+
+    flow_module.maybe_run_post_start(
+        notebook_id="nb-internal",
+        diagnostics=_make_diagnostics(),
+        session=object(),
+        post_start_spec=_post_start_spec(),
+        gpu_count=1,
+        json_output=False,
+    )
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "fresh-notebook" in output.err
+    assert "/tmp/" not in output.err
+    assert "pid" not in output.err.lower()
+    assert "To stop" not in output.err
+    assert "command failed" not in output.err
+
+
 def test_run_notebook_create_honors_cpu_only_quota(monkeypatch: pytest.MonkeyPatch) -> None:
     cpu_quota = _make_resolved_quota(gpu_count=0, cpu_count=4, memory_gib=32, gpu_type="")
     ctx, calls = _configure_create_happy_path(
@@ -356,7 +451,6 @@ def test_create_notebook_and_report_accepts_id_response_without_human_raw_id(
     notebook_id = flow_module.create_notebook_and_report(
         ctx,
         name="fresh-notebook",
-        resource_display="1xH200 + 20CPU + 200GiB",
         diagnostics=_make_diagnostics(),
         selected_project=selected_project,
         selected_image=selected_image,
@@ -386,7 +480,7 @@ def test_create_notebook_and_report_accepts_id_response_without_human_raw_id(
         "logic_compute_group_id": "lcg-test",
         "quota_id": "quota-h200",
     }
-    assert out == "Created notebook 'fresh-notebook'.\n"
+    assert out == "OK Notebook created: fresh-notebook\n"
     assert "nb-secret-1111" not in out
     assert "ID:" not in out
 
@@ -411,7 +505,6 @@ def test_create_notebook_and_report_missing_id_reports_create_context(
         flow_module.create_notebook_and_report(
             ctx,
             name="fresh-notebook",
-            resource_display="1xH200 + 20CPU + 200GiB",
             diagnostics=_make_diagnostics(),
             selected_project=selected_project,
             selected_image=selected_image,
@@ -556,7 +649,6 @@ def test_create_notebook_payload_includes_node_id_when_pinned(
         image_url="docker://image",
         logic_compute_group_id="lcg-1",
         quota_id="quota-1",
-        gpu_type="H200",
         gpu_count=1,
         cpu_count=20,
         memory_size=200,
@@ -591,7 +683,6 @@ def test_create_notebook_payload_omits_node_id_when_absent(
         image_url="docker://image",
         logic_compute_group_id="lcg-1",
         quota_id="quota-1",
-        gpu_type="H200",
         gpu_count=1,
         cpu_count=20,
         memory_size=200,

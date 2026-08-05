@@ -139,7 +139,7 @@ def test_get_resource_metrics_fans_out_one_request_per_metric(
 def test_get_resource_metrics_accepts_fixed_spelling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If upstream ever fixes the typo to ``time_series_metric_groups``, we stay compatible."""
+    """Accept both the current response key and its corrected spelling."""
     calls: list[dict] = []
     _install_fake_request(
         monkeypatch,

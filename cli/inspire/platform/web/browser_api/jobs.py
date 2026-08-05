@@ -17,14 +17,11 @@ __all__ = [
     "create_training_job",
     "delete_job",
     "get_current_user",
-    "get_job_detail",
     "get_job_detail_v2",
-    "get_train_job_workdir",
     "list_job_instances",
     "list_job_events",
     "list_job_instance_events",
     "list_train_job_logs",
-    "list_job_users",
     "list_jobs",
     "stop_training_job",
 ]
@@ -97,9 +94,9 @@ def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(payload, dict):
         return payload
     if payload is None:
-        legacy_payload = data.get("data")
-        if isinstance(legacy_payload, dict):
-            return legacy_payload
+        nested_payload = data.get("data")
+        if isinstance(nested_payload, dict):
+            return nested_payload
     return {}
 
 
@@ -130,7 +127,7 @@ def stop_training_job(
     """Stop a distributed-training job via the current Web UI v2 Action API."""
     job_id = str(job_id or "").strip()
     if not job_id:
-        raise ValueError("job_id is required")
+        raise ValueError("Job selection is required.")
     if session is None:
         session = get_web_session()
 
@@ -152,7 +149,7 @@ def get_job_detail_v2(
     """Fetch a distributed-training job via the current Web UI v2 Action API."""
     job_id = str(job_id or "").strip()
     if not job_id:
-        raise ValueError("job_id is required")
+        raise ValueError("Job selection is required.")
     if session is None:
         session = get_web_session()
 
@@ -181,12 +178,12 @@ def list_jobs(
         session = get_web_session()
 
     if workspace_id is None:
-        raise ValueError("workspace_id is required")
+        raise ValueError("Workspace selection is required.")
     if created_by is None:
         current_user = get_current_user(session=session)
         created_by = str(current_user.get("id") or current_user.get("user_id") or "").strip()
         if not created_by:
-            raise ValueError("current user is required for job listing")
+            raise ValueError("Current user could not be resolved for job listing.")
 
     body: dict[str, Any] = {
         "workspace_id": workspace_id,
@@ -232,34 +229,6 @@ def get_current_user(session: Optional[WebSession] = None) -> dict:
     return data.get("data", {})
 
 
-def get_job_detail(
-    job_id: str,
-    session: Optional[WebSession] = None,
-) -> dict:
-    """Fetch full detail for a distributed-training job from the web UI API."""
-    job_id = str(job_id or "").strip()
-    if not job_id:
-        raise ValueError("job_id is required")
-
-    if session is None:
-        session = get_web_session()
-
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/train_job/detail"),
-        referer=f"{_get_base_url()}/jobs/distributedTrainingDetail/{job_id}",
-        body={"job_id": job_id},
-        timeout=30,
-    )
-
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("data")
-    return payload if isinstance(payload, dict) else {}
-
-
 def list_job_instances(
     job_id: str,
     *,
@@ -270,7 +239,7 @@ def list_job_instances(
     """Fetch pod-level instances for a distributed-training job."""
     job_id = str(job_id or "").strip()
     if not job_id:
-        raise ValueError("job_id is required")
+        raise ValueError("Job selection is required.")
     if limit < 1:
         raise ValueError("limit must be positive")
     if page_num < 1:
@@ -294,68 +263,6 @@ def list_job_instances(
     items = payload.get("items") or []
     total = payload.get("total") or len(items)
     return (items if isinstance(items, list) else []), int(total)
-
-
-def list_job_users(
-    workspace_id: Optional[str] = None,
-    session: Optional[WebSession] = None,
-) -> list[dict]:
-    """List users who have created jobs."""
-    if session is None:
-        session = get_web_session()
-
-    if workspace_id is None:
-        raise ValueError("workspace_id is required")
-
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/train_job/users"),
-        referer=f"{_get_base_url()}/jobs/distributedTraining",
-        body={"workspace_id": workspace_id},
-        timeout=30,
-    )
-    return data.get("data", {}).get("items", [])
-
-
-def get_train_job_workdir(
-    *,
-    project_id: str,
-    workspace_id: str,
-    session: Optional[WebSession] = None,
-) -> str | None:
-    """Fetch the training job workdir for a project within a workspace."""
-    if session is None:
-        session = get_web_session()
-
-    project_id = str(project_id or "").strip()
-    workspace_id = str(workspace_id or "").strip()
-    if not project_id or not workspace_id:
-        raise ValueError("project_id and workspace_id are required")
-
-    body = {
-        "project_id": project_id,
-        "workspace_id": workspace_id,
-    }
-
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/train_job/workdir"),
-        referer=f"{_get_base_url()}/jobs/distributedTraining",
-        body=body,
-        timeout=30,
-    )
-
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("data")
-    if isinstance(payload, str):
-        value = payload.strip()
-        return value or None
-
-    return None
 
 
 def list_job_events(

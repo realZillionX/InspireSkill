@@ -7,13 +7,7 @@ CATEGORY_ORDER = [
     "Authentication",
     "API",
     "Proxy",
-    "Paths",
-    "GitHub",
-    "Sync",
-    "Bridge",
-    "Workspaces",
     "Job",
     "Notebook",
-    "SSH",
     "Tunnel",
 ]

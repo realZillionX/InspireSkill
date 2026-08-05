@@ -1,11 +1,4 @@
-"""``inspire config context`` — name-first view of the active account.
-
-Structured pieces of the loaded config (active account, projects,
-workspaces, compute groups) aren't reachable through ``inspire config
-show``, which is focused on the flat env-var-backed options. This command
-fills that gap with a compact name-only view. The displayed names can be
-passed directly to ``--workspace`` / ``--project`` / ``--group``.
-"""
+"""Name-only view of the active account context."""
 
 from __future__ import annotations
 
@@ -21,7 +14,6 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
-from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.collection_output import (
     bound_collection,
     resolve_collection_limit,
@@ -41,7 +33,8 @@ _CONTEXT_COLLECTION_KEYS = (
 def _collect_context(cfg: Config) -> dict[str, Any]:
     from inspire.accounts import current_account, list_accounts
 
-    active_account = scrub_raw_ids(current_account() or cfg.username or "") or None
+    warnings: list[str] = []
+    active_account = scrub_raw_ids(current_account() or "") or None
 
     active_project_name = scrub_raw_ids(cfg.context_project or "") or None
     active_workspace_name = scrub_raw_ids(cfg.context_workspace or "") or None
@@ -51,23 +44,12 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
     project_names: set[str] = set()
     for name in (cfg.projects or {}):
         project_names.add(scrub_raw_ids(name))
-    for project_id, entry in (cfg.project_catalog or {}).items():
+    for entry in (cfg.project_catalog or {}).values():
         if not isinstance(entry, dict):
             continue
         catalog_name = entry.get("name")
-        if not isinstance(catalog_name, str) or not catalog_name.strip():
-            # Fall back to reverse lookup from the projects map.
-            catalog_name = next(
-                (
-                    name
-                    for name, pid in (cfg.projects or {}).items()
-                    if pid == project_id
-                ),
-                None,
-            )
-        if not catalog_name:
-            continue
-        project_names.add(scrub_raw_ids(catalog_name))
+        if isinstance(catalog_name, str) and catalog_name.strip():
+            project_names.add(scrub_raw_ids(catalog_name))
     projects_view = [{"name": name} for name in sorted(project_names)]
 
     # Workspaces: live names from the web session when available.
@@ -82,6 +64,9 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
         }
     except Exception:
         ws_name_for_id = {}
+        warnings.append(
+            "Workspace names are unavailable. Run `inspire config check` and retry."
+        )
     workspaces_view = sorted(set(ws_name_for_id.values()))
 
     # Compute groups: name + workspace name only. GPU and platform metadata are
@@ -114,7 +99,7 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
         )
     )
 
-    return {
+    data: dict[str, Any] = {
         "active": {
             "account": active_account,
             "project": active_project_name,
@@ -125,6 +110,9 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
         "compute_groups": compute_groups_view,
         "accounts": sorted(scrub_raw_ids(account) for account in list_accounts()),
     }
+    if warnings:
+        data["warnings"] = warnings
+    return data
 
 
 def _bound_context(data: dict[str, Any], limit: int | None) -> dict[str, Any]:
@@ -142,99 +130,42 @@ def _bound_context(data: dict[str, Any], limit: int | None) -> dict[str, Any]:
 
     if truncation:
         bounded["truncated"] = truncation
+    warnings = data.get("warnings")
+    if isinstance(warnings, list) and warnings:
+        bounded["warnings"] = warnings
     return bounded
 
 
 def _render_human(data: dict[str, Any]) -> None:
     active = data["active"]
     click.echo(
-        "Active  "
-        f"account    {active['account'] or '-'}  "
-        f"project    {active['project'] or '-'}  "
-        f"workspace  {active['workspace'] or '-'}"
+        "active "
+        f"account={active['account'] or '-'} "
+        f"project={active['project'] or '-'} "
+        f"workspace={active['workspace'] or '-'}"
     )
-    click.echo()
 
     projects: list[dict[str, str]] = data["projects"]
-    if projects:
-        click.echo(click.style("Projects", bold=True))
-        project_rows = [(entry["name"],) for entry in projects]
-        click.echo(
-            "\n".join(
-                render_table(
-                    ("Name",),
-                    project_rows,
-                    [
-                        column_width("Name", [row[0] for row in project_rows], max_width=48),
-                    ],
-                    line_char="─",
-                )
-            )
-        )
-        click.echo()
+    for entry in projects:
+        click.echo(f"project {entry['name']}")
 
     workspaces: list[str] = data["workspaces"]
-    if workspaces:
-        click.echo(click.style("Workspaces", bold=True))
-        workspace_rows = [(name,) for name in workspaces]
-        click.echo(
-            "\n".join(
-                render_table(
-                    ("Name",),
-                    workspace_rows,
-                    [column_width("Name", workspaces, max_width=48)],
-                    line_char="─",
-                )
-            )
-        )
-        click.echo()
+    for name in workspaces:
+        click.echo(f"workspace {name}")
 
     compute_groups: list[dict[str, Any]] = data["compute_groups"]
-    if compute_groups:
-        click.echo(click.style("Compute groups", bold=True))
-        group_rows: list[tuple[str, str]] = []
-        for group in compute_groups:
-            workspace = group.get("workspace")
-            workspace_text = ""
-            if workspace:
-                if isinstance(workspace, list):
-                    workspace_text = ", ".join(workspace)
-                else:
-                    workspace_text = str(workspace)
-            group_rows.append((str(group["name"]), workspace_text or "-"))
-        click.echo(
-            "\n".join(
-                render_table(
-                    ("Name", "Workspace"),
-                    group_rows,
-                    [
-                        column_width("Name", [row[0] for row in group_rows], max_width=48),
-                        column_width(
-                            "Workspace",
-                            [row[1] for row in group_rows],
-                            max_width=48,
-                        ),
-                    ],
-                    line_char="─",
-                )
-            )
-        )
-        click.echo()
+    for group in compute_groups:
+        workspace = group.get("workspace")
+        if isinstance(workspace, list):
+            workspace_text = ",".join(str(name) for name in workspace)
+        else:
+            workspace_text = str(workspace or "")
+        suffix = f" workspace={workspace_text}" if workspace_text else ""
+        click.echo(f"compute-group {group['name']}{suffix}")
 
     accounts: list[str] = data["accounts"]
-    if accounts:
-        click.echo(click.style("Accounts", bold=True))
-        account_rows = [(name,) for name in accounts]
-        click.echo(
-            "\n".join(
-                render_table(
-                    ("Name",),
-                    account_rows,
-                    [column_width("Name", accounts, max_width=48)],
-                    line_char="─",
-                )
-            )
-        )
+    for name in accounts:
+        click.echo(f"account {name}")
 
     truncation = data.get("truncated")
     if isinstance(truncation, dict) and truncation:
@@ -244,8 +175,12 @@ def _render_human(data: dict[str, Any]) -> None:
             if isinstance(entry, dict)
         ]
         if parts:
-            click.echo()
             click.echo(f"Showing {', '.join(parts)}. Use --all for full lists.")
+
+    warnings = data.get("warnings")
+    if isinstance(warnings, list):
+        for warning in warnings:
+            click.echo(f"Warning: {warning}", err=True)
 
 
 @click.command("context")
@@ -271,8 +206,6 @@ def show_context(ctx: Context, limit: int | None, show_all: bool) -> None:
         inspire config context --all
         inspire --json config context
     """
-    effective_json = ctx.json_output
-
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
     except ValueError as e:
@@ -280,7 +213,7 @@ def show_context(ctx: Context, limit: int | None, show_all: bool) -> None:
         return
 
     try:
-        cfg, _sources = Config.from_files_and_env(
+        cfg, _ = Config.from_files_and_env(
             require_credentials=False,
         )
     except ConfigError as e:
@@ -292,7 +225,7 @@ def show_context(ctx: Context, limit: int | None, show_all: bool) -> None:
 
     data = _bound_context(_collect_context(cfg), effective_limit)
 
-    if effective_json:
+    if ctx.json_output:
         click.echo(json_formatter.format_json(data))
         return
 

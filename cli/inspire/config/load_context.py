@@ -1,11 +1,4 @@
-"""Project ``[context]`` + ``[defaults]`` application.
-
-Named ``load_accounts`` for history — older revisions merged a legacy
-``[accounts."<user>"]`` catalog here, but that entire mechanism is gone.
-The only piece still needed is ``_apply_project_context_and_defaults``,
-which resolves project-level bindings from the project TOML's
-``[context]`` / ``[defaults]`` sections.
-"""
+"""Apply project context and defaults from the current project file."""
 
 from __future__ import annotations
 

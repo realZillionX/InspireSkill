@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
 
@@ -28,14 +29,21 @@ from inspire.cli.utils.collection_output import (
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.errors import (
+    exit_with_error as _handle_error,
+    require_confirmation,
+)
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.config import ConfigError
+from inspire.config.workspaces import validate_workspace_operation_name
 
 from .notebook_ssh_flow import run_notebook_ssh
 from .public_output import public_operation, sanitize_public_text
 from .target_resolver import forget_notebook_targets, list_notebook_targets
 from .transport import emit_ssh_policy_error, preflight_notebook_transport_policy
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_bridge_name(bridge: BridgeProfile) -> str:
@@ -47,14 +55,19 @@ def _safe_bridge_name(bridge: BridgeProfile) -> str:
 
 
 def _validate_workspace_selector(ctx: Context, workspace: str | None) -> str | None:
-    if workspace is None:
+    if workspace is None or not workspace.strip():
         return None
-    return reject_id_at_boundary(
+    workspace = reject_id_at_boundary(
         ctx,
         workspace,
         resource_type="workspace",
         list_command="inspire config context",
     )
+    try:
+        return validate_workspace_operation_name(workspace)
+    except ConfigError as exc:
+        _handle_error(ctx, "ValidationError", str(exc), EXIT_VALIDATION_ERROR)
+        raise RuntimeError("unreachable")
 
 
 def _bridge_payload(bridge: BridgeProfile, *, healthy: bool | None = None) -> dict[str, object]:
@@ -92,6 +105,26 @@ def _load_bridge_or_exit(ctx: Context, notebook: str) -> tuple[TunnelConfig, Bri
     sys.exit(EXIT_CONFIG_ERROR)
 
 
+def _validate_cached_workspace(
+    ctx: Context,
+    *,
+    notebook: str,
+    requested: str | None,
+    bridge: BridgeProfile,
+) -> None:
+    if not requested or not bridge.workspace_name or bridge.workspace_name == requested:
+        return
+    _handle_error(
+        ctx,
+        "ValidationError",
+        (
+            f"Cached notebook '{notebook}' belongs to workspace "
+            f"'{bridge.workspace_name}', not '{requested}'."
+        ),
+        EXIT_CONFIG_ERROR,
+    )
+
+
 @click.group("connection")
 def notebook_connection() -> None:
     """Inspect and manage cached notebook SSH connections."""
@@ -126,7 +159,7 @@ def connection_target_list(ctx: Context, limit: int | None, show_all: bool) -> N
         click.echo(
             json_formatter.format_json(
                 {
-                    "targets": page.items,
+                    "items": page.items,
                     **page.metadata(),
                 }
             )
@@ -151,15 +184,32 @@ def connection_target_list(ctx: Context, limit: int | None, show_all: bool) -> N
 
 
 @connection_target.command("forget")
-@click.argument("notebook")
-@click.option("--workspace", required=False, help="Workspace selector to narrow the deletion.")
-@click.option("--account", required=False, help="Account selector to narrow the deletion.")
+@click.argument("notebook", metavar="NAME")
+@click.option(
+    "--workspace",
+    required=False,
+    metavar="NAME",
+    help="Workspace selector to narrow the deletion.",
+)
+@click.option(
+    "--account",
+    required=False,
+    metavar="NAME",
+    help="Account selector to narrow the deletion.",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
 @pass_context
 def connection_target_forget(
     ctx: Context,
     notebook: str,
     workspace: str | None,
     account: str | None,
+    yes: bool,
 ) -> None:
     """Forget remembered target selections without removing SSH connections."""
     workspace = _validate_workspace_selector(ctx, workspace)
@@ -168,6 +218,12 @@ def connection_target_forget(
         notebook,
         resource_type="notebook",
         list_command="inspire notebook list",
+    )
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt=f"Forget remembered notebook target '{scrub_raw_ids(notebook)}'?",
+        message="Notebook target removal requires confirmation.",
     )
     removed = forget_notebook_targets(
         notebook=notebook,
@@ -246,7 +302,7 @@ def connection_list(
         click.echo(
             json_formatter.format_json(
                 {
-                    "connections": rows,
+                    "items": rows,
                     **bridge_page.metadata(),
                 }
             )
@@ -269,38 +325,44 @@ def connection_list(
 
 
 @notebook_connection.command("status")
-@click.argument("notebook")
+@click.argument("notebook", metavar="NAME")
 @click.option(
     "--workspace",
     required=False,
-    help="Workspace name. Used only when a refresh is needed later.",
+    metavar="NAME",
+    help="Workspace name used to validate the cached connection.",
 )
 @pass_context
 def connection_status(ctx: Context, notebook: str, workspace: str | None) -> None:
     """Test a cached notebook connection."""
     workspace = _validate_workspace_selector(ctx, workspace)
-    del workspace
     config, bridge = _load_bridge_or_exit(ctx, notebook)
-    start = time.time()
+    _validate_cached_workspace(
+        ctx,
+        notebook=notebook,
+        requested=workspace,
+        bridge=bridge,
+    )
+    start = time.monotonic()
     try:
         result = run_ssh_command("hostname", bridge_name=bridge.name, config=config, timeout=30)
-    except Exception as exc:  # noqa: BLE001
-        if ctx.json_output:
-            click.echo(
-                json_formatter.format_json_error(
-                    "TunnelError", scrub_raw_ids(exc), EXIT_GENERAL_ERROR
-                ),
-                err=True,
-            )
-        else:
-            click.echo(
-                human_formatter.format_error(f"Connection failed: {scrub_raw_ids(exc)}"),
-                err=True,
-            )
-        sys.exit(EXIT_GENERAL_ERROR)
+    except Exception:  # noqa: BLE001
+        logger.debug("Notebook connection health check failed", exc_info=True)
+        _handle_error(
+            ctx,
+            "TunnelError",
+            "Could not check notebook connection.",
+            EXIT_GENERAL_ERROR,
+        )
+        return
 
-    elapsed_ms = int((time.time() - start) * 1000)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
     ok = result.returncode == 0
+    logger.debug(
+        "Notebook connection health check completed connected=%s elapsed_ms=%s",
+        ok,
+        elapsed_ms,
+    )
     if ctx.json_output:
         if ok:
             click.echo(
@@ -308,16 +370,13 @@ def connection_status(ctx: Context, notebook: str, workspace: str | None) -> Non
                     {
                         "name": sanitize_public_text(notebook, omit_urls=True),
                         "status": "connected",
-                        "elapsed_ms": elapsed_ms,
                     }
                 )
             )
         else:
             click.echo(
                 json_formatter.format_json_error(
-                    "TunnelError",
-                    scrub_raw_ids(result.stderr or "Connection failed"),
-                    EXIT_GENERAL_ERROR,
+                    "TunnelError", "Could not connect notebook.", EXIT_GENERAL_ERROR
                 ),
                 err=True,
             )
@@ -337,12 +396,11 @@ def connection_status(ctx: Context, notebook: str, workspace: str | None) -> Non
                 "do not refresh SSH/rtunnel for this notebook.",
                 err=True,
             )
-        click.echo(f"Response time: {elapsed_ms}ms")
         return
 
     click.echo(
         human_formatter.format_error(
-            f"Connection failed: {scrub_raw_ids(result.stderr)}"
+            "Could not connect notebook."
         ),
         err=True,
     )
@@ -350,12 +408,14 @@ def connection_status(ctx: Context, notebook: str, workspace: str | None) -> Non
 
 
 @notebook_connection.command("refresh")
-@click.argument("notebook")
-@click.option("--workspace", required=False, help="Workspace name.")
+@click.argument("notebook", metavar="NAME")
+@click.option("--workspace", required=False, metavar="NAME", help="Workspace name.")
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
 @click.option("--wait/--no-wait", default=True, help="Wait for notebook to reach RUNNING status")
 @click.option(
     "--pubkey",
     type=click.Path(exists=True, dir_okay=False, path_type=str),
+    metavar="PATH",
     help="SSH public key path to authorize",
 )
 @click.option(
@@ -386,6 +446,7 @@ def connection_refresh(
     ctx: Context,
     notebook: str,
     workspace: str | None,
+    pick: int | None,
     wait: bool,
     pubkey: str | None,
     port: int,
@@ -406,6 +467,7 @@ def connection_refresh(
         notebook=notebook,
         workspace=workspace,
         timeout=min(setup_timeout, 30),
+        pick=pick,
     )
     if not policy.allow_ssh:
         raise SystemExit(emit_ssh_policy_error(ctx, policy))
@@ -422,34 +484,56 @@ def connection_refresh(
         debug_playwright=debug_playwright,
         setup_timeout=setup_timeout,
         setup_only=True,
+        pick=pick,
     )
     if ctx.json_output:
         click.echo(json_formatter.format_json(public_operation(notebook, "refreshed")))
     else:
-        click.echo(f"Refreshed cached notebook connection: {scrub_raw_ids(notebook)}")
+        click.echo(
+            human_formatter.format_mutation_success(
+                "Notebook connection",
+                "refreshed",
+                notebook,
+            )
+        )
 
 
 @notebook_connection.command("forget")
-@click.argument("notebook")
-@click.option("--workspace", required=False, help="Workspace name used to disambiguate metadata.")
+@click.argument("notebook", metavar="NAME")
+@click.option(
+    "--workspace",
+    required=False,
+    metavar="NAME",
+    help="Workspace name used to disambiguate metadata.",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
 @pass_context
-def connection_forget(ctx: Context, notebook: str, workspace: str | None) -> None:
+def connection_forget(
+    ctx: Context,
+    notebook: str,
+    workspace: str | None,
+    yes: bool,
+) -> None:
     """Forget a cached notebook connection."""
     workspace = _validate_workspace_selector(ctx, workspace)
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt=f"Forget cached notebook connection '{scrub_raw_ids(notebook)}'?",
+        message="Notebook connection removal requires confirmation.",
+    )
     config, bridge = _load_bridge_or_exit(ctx, notebook)
-    if workspace and bridge.workspace_name and bridge.workspace_name != workspace:
-        message = (
-            f"Cached notebook '{notebook}' belongs to workspace "
-            f"'{bridge.workspace_name}', not '{workspace}'."
-        )
-        if ctx.json_output:
-            click.echo(
-                json_formatter.format_json_error("ValidationError", message, EXIT_CONFIG_ERROR),
-                err=True,
-            )
-        else:
-            click.echo(human_formatter.format_error(message), err=True)
-        sys.exit(EXIT_CONFIG_ERROR)
+    _validate_cached_workspace(
+        ctx,
+        notebook=notebook,
+        requested=workspace,
+        bridge=bridge,
+    )
 
     removed_targets = forget_notebook_targets(
         notebook=notebook,
@@ -471,17 +555,35 @@ def connection_forget(ctx: Context, notebook: str, workspace: str | None) -> Non
             )
         )
         return
-    click.echo(f"Removed cached notebook connection: {scrub_raw_ids(notebook)}")
+    click.echo(
+        human_formatter.format_mutation_success(
+            "Notebook connection",
+            "removed",
+            notebook,
+        )
+    )
     if removed_targets:
         click.echo(f"Removed remembered notebook target entries: {len(removed_targets)}")
-    click.echo("OpenSSH config was not modified.")
 
 
 @notebook_connection.command("prune")
 @click.option("--dry-run", is_flag=True, help="Show stale entries without removing them.")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
 @pass_context
-def connection_prune(ctx: Context, dry_run: bool) -> None:
+def connection_prune(ctx: Context, dry_run: bool, yes: bool) -> None:
     """Remove cached connections that fail a lightweight SSH check."""
+    if not dry_run:
+        require_confirmation(
+            ctx,
+            yes=yes,
+            prompt="Prune every stale cached notebook connection?",
+            message="Notebook connection pruning requires confirmation.",
+        )
     config = load_tunnel_config()
     stale: list[str] = []
     removed_targets: list[str] = []

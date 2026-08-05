@@ -8,9 +8,7 @@ from click.testing import CliRunner
 
 from inspire.cli.main import main as cli_main
 from inspire.cli.context import (
-    Context,
     EXIT_SUCCESS,
-    EXIT_API_ERROR,
     EXIT_CONFIG_ERROR,
     EXIT_AUTH_ERROR,
     EXIT_TIMEOUT,
@@ -19,18 +17,14 @@ from inspire.cli.context import (
 )
 
 from inspire import config as config_module
-from inspire.bridge import tunnel as tunnel_module
 from inspire.cli.commands.notebook import notebook_commands as notebook_cmd_module
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 from inspire.config import ConfigError
 from inspire.cli.utils.quota_resolver import ResolvedQuota
 
-# Valid test job IDs (must match the format: job-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+# Valid internal test handle.
 TEST_JOB_ID = "job-12345678-1234-1234-1234-123456789abc"
-TEST_JOB_ID_2 = "job-abcdef12-3456-7890-abcd-ef1234567890"
-TEST_JOB_ID_3 = "job-11111111-2222-3333-4444-555555555555"
-TEST_DOCKER_REGISTRY = "registry.local"
 
 def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> config_module.Config:
     """Create a test Config object.
@@ -44,10 +38,6 @@ def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> co
         password="pass",
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
-        log_cache_dir=str(tmp_path / "log_cache"),
-        timeout=5,
-        max_retries=0,
-        retry_delay=0.0,
     )
     # Add test compute groups if requested
     if include_compute_groups:
@@ -72,17 +62,6 @@ class DummyAPI:
         self.calls["create_training_job"] = {"payload": payload, "session": session}
         return {"job_id": TEST_JOB_ID, "name": payload.get("name", "test-job")}
 
-    def get_job_detail(self, job_id: str) -> Dict[str, Any]:
-        self.calls.setdefault("get_job_detail", []).append(job_id)
-        return {
-            "data": {
-                "job_id": job_id,
-                "name": "test-job",
-                "status": "SUCCEEDED",
-                "running_time_ms": "1000",
-            }
-        }
-
     def get_job_detail_v2(
         self, job_id: str, session: object | None = None
     ) -> Dict[str, Any]:
@@ -96,32 +75,6 @@ class DummyAPI:
 
     def stop_training_job(self, job_id: str, session: object | None = None) -> None:
         self.calls.setdefault("stop_training_job", []).append({"job_id": job_id, "session": session})
-
-    # Resource / nodes ----------------------------------------------------
-    def list_cluster_nodes(
-        self,
-        page_num: int,
-        page_size: int,
-        resource_pool: Optional[str],
-    ) -> Dict[str, Any]:
-        self.calls["list_cluster_nodes"] = {
-            "page_num": page_num,
-            "page_size": page_size,
-            "resource_pool": resource_pool,
-        }
-        return {
-            "data": {
-                "nodes": [
-                    {
-                        "node_id": "node-1",
-                        "resource_pool": resource_pool or "online",
-                        "status": "ready",
-                        "gpu_count": 4,
-                    }
-                ],
-                "total": 1,
-            }
-        }
 
 
 def patch_config_and_auth(
@@ -137,13 +90,9 @@ def patch_config_and_auth(
     config = make_test_config(tmp_path, include_compute_groups=include_compute_groups)
     Path(config.path_aliases["me"]).mkdir(parents=True, exist_ok=True)
 
-    def fake_from_env(cls) -> config_module.Config:  # type: ignore[override]
-        return config
-
     def fake_from_files_and_env(cls, require_credentials: bool = True) -> tuple:  # type: ignore[override]
         return config, {}
 
-    monkeypatch.setattr(config_module.Config, "from_env", classmethod(fake_from_env))
     monkeypatch.setattr(
         config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
     )
@@ -220,8 +169,6 @@ def patch_config_and_auth(
         project_id="project-test-123",
         name="proj",
         workspace_id="ws-test-workspace",
-        member_gpu_limit=True,
-        member_remain_gpu_hours=100.0,
     )
 
     monkeypatch.setattr(
@@ -284,9 +231,8 @@ def test_global_json_flag_with_resources_list(monkeypatch: pytest.MonkeyPatch, t
 
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert "availability" in payload["data"]
-    assert "group_id" not in payload["data"]["availability"][0]
-    assert payload["data"]["availability"][0]["high_priority_available_gpus"] == 104
+    assert "group_id" not in payload["data"]["items"][0]
+    assert payload["data"]["items"][0]["high_priority_available_gpus"] == 104
 
 
 def test_global_debug_flag_runs_subcommand(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -317,17 +263,38 @@ def test_job_help_smoke(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     assert "Manage GPU batch jobs and distributed-training workloads" in result.output
 
 
-def test_job_list_help_uses_workspace_name_not_raw_id_hint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("command", "metavar"),
+    [
+        ("create", "NAME"),
+        ("quota", "NAME|all"),
+        ("status", "NAME"),
+        ("logs", "NAME"),
+        ("events", "NAME"),
+        ("instances", "NAME"),
+        ("list", "NAME|all"),
+        ("shell", "NAME"),
+        ("stop", "NAME"),
+        ("delete", "NAME"),
+        ("wait", "NAME"),
+        ("command", "NAME"),
+        ("metrics", "NAME"),
+    ],
+)
+def test_job_workspace_help_uses_name_metavars(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+    metavar: str,
 ) -> None:
     patch_config_and_auth(monkeypatch, tmp_path)
     runner = CliRunner()
 
-    result = runner.invoke(cli_main, ["job", "list", "--help"])
+    result = runner.invoke(cli_main, ["job", command, "--help"])
 
     assert result.exit_code == 0
-    assert "Workspace name" in result.output
-    assert "ws-... id" not in result.output
+    assert f"--workspace {metavar}" in result.output
+    assert "--workspace TEXT" not in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -533,12 +500,10 @@ def test_build_remote_logged_command_without_default_path_alias_keeps_existing_b
     assert log_path is None
 
 
-def test_job_status_human_output_uses_name(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Human ``job status`` shows the name, never the platform handle.
-
-    Name-only boundary: surfacing platform handles in the human view tempts
-    callers to round-trip them and then hit ``reject_id_at_boundary``.
-    """
+def test_job_status_human_output_is_compact_and_name_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     patch_config_and_auth(monkeypatch, tmp_path)
     from inspire.cli.commands.job import job_commands
 
@@ -549,9 +514,34 @@ def test_job_status_human_output_uses_name(monkeypatch: pytest.MonkeyPatch, tmp_
         "get_job_detail_v2",
         lambda job_id, *, session: {
             "job_id": job_id,
-            "name": "test-job",
             "status": "SUCCEEDED",
-            "created_at": "1770000000000",
+            "sub_status": "READY",
+            "project": {"id": "project-internal", "name": "Project"},
+            "workspace_name": "Test Workspace",
+            "logic_compute_group_name": "H200 Group",
+            "framework_config": [
+                {
+                    "instance_count": 2,
+                    "gpu_count": 8,
+                    "cpu": 80,
+                    "mem_gi": 800,
+                    "shm_gi": 64,
+                    "image": "internal.registry/train:latest",
+                    "instance_spec_price_info": {
+                        "quota_id": "quota-internal",
+                        "gpu_info": {
+                            "gpu_type_display": "NVIDIA H200",
+                            "gpu_type": "NVIDIA_H200_INTERNAL",
+                        },
+                    },
+                }
+            ],
+            "priority": 5,
+            "priority_level": "HIGH",
+            "created_at": "1770000000",
+            "updated_at": "1770000100",
+            "request": {"request_id": "trace-internal"},
+            "internal_path": "/internal/job-detail",
         },
     )
     runner = CliRunner()
@@ -561,29 +551,109 @@ def test_job_status_human_output_uses_name(monkeypatch: pytest.MonkeyPatch, tmp_
         ["job", "status", "test-job", "--workspace", "Test Workspace"],
     )
     assert result.exit_code == 0
-    assert "Web Job Status" in result.output
-    assert "Name: test-job" in result.output
-    assert TEST_JOB_ID not in result.output  # platform handle stays out of human output
+    lines = result.output.splitlines()
+    assert lines[:2] == ["Name: test-job", "Status: SUCCEEDED"]
+    assert "Web Job Status" not in result.output
+    assert "Project: Project" in result.output
+    assert "Workspace: Test Workspace" in result.output
+    assert "Compute Group: H200 Group" in result.output
+    assert (
+        "Resource: 80 CPU, 800 GiB, 8 GPU, 2 nodes, "
+        "64 GiB shared memory, NVIDIA H200"
+    ) in result.output
+    assert "Priority: 5" in result.output
+    assert "Priority Level: HIGH" in result.output
+    assert "Sub-status: READY" in result.output
+    assert "Created: 1770000000" in result.output
+    assert "Updated: 1770000100" in result.output
+    assert TEST_JOB_ID not in result.output
+    assert "project-internal" not in result.output
+    assert "quota-internal" not in result.output
+    assert "trace-internal" not in result.output
+    assert "/internal/job-detail" not in result.output
+    assert "framework_config" not in result.output
+    assert "internal.registry" not in result.output
 
 
-def test_legacy_human_job_list_formatter_is_name_only() -> None:
-    from inspire.cli.formatters.human_formatter import format_job_list
+def test_job_status_json_uses_stable_public_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    patch_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.job import job_commands
 
-    output = format_job_list(
-        [
-            {
-                "job_id": TEST_JOB_ID,
-                "name": "visible-name",
-                "status": "RUNNING",
-                "created_at": "2026-05-06T14:48:50",
-            }
-        ]
+    monkeypatch.setattr(job_commands, "_resolve_web_job_id", lambda **kwargs: TEST_JOB_ID)
+    monkeypatch.setattr(job_commands, "get_web_session", web_session_module.get_web_session)
+    monkeypatch.setattr(
+        job_commands.browser_api_module,
+        "get_job_detail_v2",
+        lambda job_id, *, session: {
+            "job_id": job_id,
+            "status": "RUNNING",
+            "project_name": "Project",
+            "workspace": {"id": "workspace-internal", "name": "Test Workspace"},
+            "logic_compute_group": {
+                "id": "compute-internal",
+                "name": "H200 Group",
+            },
+            "framework_config": [
+                {
+                    "instance_count": 2,
+                    "gpu_count": 8,
+                    "cpu": 80,
+                    "mem_gi": 800,
+                    "shm_gi": 64,
+                    "instance_spec_price_info": {
+                        "quota_id": "quota-internal",
+                        "gpu_info": {"gpu_type_display": "NVIDIA H200"},
+                    },
+                }
+            ],
+            "priority": 5,
+            "priority_level": "HIGH",
+            "created_at": "1770000000",
+            "request": {"request_id": "trace-internal"},
+        },
     )
 
-    assert "visible-name" in output
-    assert "Job ID" not in output
-    assert TEST_JOB_ID not in output
-    assert format_job_list([]) == "No jobs found."
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "status",
+            "test-job",
+            "--workspace",
+            "Test Workspace",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["data"] == {
+        "name": "test-job",
+        "status": "RUNNING",
+        "project": "Project",
+        "workspace": "Test Workspace",
+        "compute_group": "H200 Group",
+        "resource": {
+            "cpu": 80,
+            "memory_gib": 800,
+            "gpu": 8,
+            "nodes": 2,
+            "shared_memory_gib": 64,
+            "gpu_type": "NVIDIA H200",
+        },
+        "priority": 5,
+        "priority_level": "HIGH",
+        "created_at": "1770000000",
+    }
+    assert TEST_JOB_ID not in result.output
+    assert "workspace-internal" not in result.output
+    assert "compute-internal" not in result.output
+    assert "quota-internal" not in result.output
+    assert "trace-internal" not in result.output
 
 
 def test_job_status_not_found_sets_specific_exit_code(
@@ -700,6 +770,8 @@ def test_job_wait_succeeds_and_exits_zero(monkeypatch: pytest.MonkeyPatch, tmp_p
             "name": "wait-job",
             "status": "SUCCEEDED",
             "running_time_ms": "1000",
+            "workspace_id": "ws-deadbeef",
+            "backend": "browser",
         }
 
     monkeypatch.setattr(job_commands.browser_api_module, "get_job_detail_v2", get_job_detail_v2)
@@ -721,6 +793,9 @@ def test_job_wait_succeeds_and_exits_zero(monkeypatch: pytest.MonkeyPatch, tmp_p
     )
     assert result.exit_code == EXIT_SUCCESS
     assert "SUCCEEDED" in result.output
+    assert "job-" not in result.output
+    assert "ws-deadbeef" not in result.output
+    assert "backend" not in result.output
 
 
 def test_job_wait_json_output_has_no_human_banner(
@@ -739,6 +814,11 @@ def test_job_wait_json_output_has_no_human_banner(
             "name": "wait-job",
             "status": "SUCCEEDED",
             "running_time_ms": "1000",
+            "workspace_id": "ws-deadbeef",
+            "internal": {
+                "request_id": "req-cafebabe",
+                "backend": "browser",
+            },
         }
 
     monkeypatch.setattr(job_commands.browser_api_module, "get_job_detail_v2", get_job_detail_v2)
@@ -764,8 +844,14 @@ def test_job_wait_json_output_has_no_human_banner(
     assert "Waiting for job" not in result.output
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"]["name"] == "wait-job"
-    assert payload["data"]["status"] == "SUCCEEDED"
+    assert payload["data"] == {
+        "name": "wait-job",
+        "status": "SUCCEEDED",
+    }
+    assert "job-" not in result.output
+    assert "ws-deadbeef" not in result.output
+    assert "req-cafebabe" not in result.output
+    assert "backend" not in result.output
 
 
 def test_job_wait_json_suppresses_intermediate_status_documents(
@@ -967,9 +1053,24 @@ def test_job_list_web_name_search_scans_all_workspaces(
     assert payload["success"] is True
     assert "source" not in payload["data"]
     assert "scanned" not in payload["data"]
-    assert "job_id" not in payload["data"]["jobs"][0]
-    assert payload["data"]["jobs"][0]["name"] == "kchen-slime-code-qwen35-35b-a3b-6node"
-    assert payload["data"]["jobs"][0]["workspace_name"] == "Training Workspace"
+    row = payload["data"]["items"][0]
+    assert set(row) == {
+        "name",
+        "status",
+        "project",
+        "workspace",
+        "compute_group",
+        "created_by",
+    }
+    assert "job_id" not in row
+    assert row == {
+        "name": "kchen-slime-code-qwen35-35b-a3b-6node",
+        "status": "job_queuing",
+        "project": "CQ Project",
+        "workspace": "Training Workspace",
+        "compute_group": "H200-3",
+        "created_by": "Chen Ke",
+    }
     assert calls[0]["created_by"] == "user-me"
     scanned = {call["workspace_id"] for call in calls}
     assert {"ws-main", "ws-train"} <= scanned
@@ -1053,7 +1154,7 @@ def test_job_list_defaults_to_compact_limit_and_all_fetches_all_pages(
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert len(payload["data"]["jobs"]) == 20
+    assert len(payload["data"]["items"]) == 20
     assert payload["data"]["shown"] == 20
     assert payload["data"]["total"] == 101
     assert payload["data"]["truncated"] is True
@@ -1068,8 +1169,14 @@ def test_job_list_defaults_to_compact_limit_and_all_fetches_all_pages(
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert len(payload["data"]["jobs"]) == 101
-    assert {row["name"] for row in payload["data"]["jobs"]} >= {"train-101", "train-001"}
+    assert len(payload["data"]["items"]) == 101
+    assert {row["name"] for row in payload["data"]["items"]} >= {
+        "train-101",
+        "train-001",
+    }
+    assert "shown" not in payload["data"]
+    assert "total" not in payload["data"]
+    assert "truncated" not in payload["data"]
     assert [call["page_num"] for call in calls] == [1, 2]
     assert all(call["page_size"] == 100 for call in calls)
 
@@ -1154,7 +1261,7 @@ def test_job_list_limit_applies_across_requested_workspaces(
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert [row["name"] for row in payload["data"]["jobs"]] == ["ws-main-job-1"]
+    assert [row["name"] for row in payload["data"]["items"]] == ["ws-main-job-1"]
     assert payload["data"]["shown"] == 1
     assert payload["data"]["total"] == 4
     assert payload["data"]["truncated"] is True
@@ -1252,7 +1359,7 @@ def test_job_list_active_queries_only_active_platform_statuses(
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    names = {row["name"] for row in payload["data"]["jobs"]}
+    names = {row["name"] for row in payload["data"]["items"]}
     assert names == {"running-job", "queued-job"}
     queried_statuses = {call["status"] for call in calls}
     assert queried_statuses == {
@@ -1341,6 +1448,9 @@ def test_job_list_human_output_hides_raw_ids_and_name_search_ignores_job_id(
     )
 
     assert human_result.exit_code == 0
+    assert human_result.output.splitlines()[0].startswith("Name")
+    assert "Jobs" not in human_result.output
+    assert "Total:" not in human_result.output
     assert "kchen-slime-code-qwen35-35b-a3b-6node" in human_result.output
     assert "Training Workspace" in human_result.output
     assert "8xH200 80C 800G shm64G" in human_result.output
@@ -1405,8 +1515,19 @@ def test_nodes_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     assert result.exit_code == 0
 
     data = json.loads(result.output)
-    assert data["data"]["groups"]
-    assert data["data"]["total_full_free_nodes"] == 3
+    assert data["data"] == {
+        "items": [
+            {
+                "compute_group": "H200 TestRoom",
+                "workspace": "",
+                "gpus_per_node": 8,
+                "total_nodes": 10,
+                "ready_nodes": 8,
+                "full_free_nodes": 3,
+                "full_free_gpus": 12,
+            }
+        ]
+    }
 
 
 def test_resources_list_all_workspaces_and_cpu_json(
@@ -1469,28 +1590,23 @@ def test_resources_list_all_workspaces_and_cpu_json(
     assert result.exit_code == 0
 
     payload = json.loads(result.output)
-    rows = payload["data"]["availability"]
+    rows = payload["data"]["items"]
     assert payload["success"] is True
     assert captured["all_workspaces"] is True
     assert captured["include_cpu"] is True
-    assert {row["resource_kind"] for row in rows} == {"gpu", "cpu"}
-    assert any(row["workspace_name"] == "分布式训练空间" for row in rows)
+    assert {row["kind"] for row in rows} == {"gpu", "cpu"}
+    assert any(row["workspace"] == "分布式训练空间" for row in rows)
     assert any(row.get("cpu_total") == 1200 for row in rows)
-    gpu_row = next(row for row in rows if row["resource_kind"] == "gpu")
+    gpu_row = next(row for row in rows if row["kind"] == "gpu")
     assert gpu_row["high_priority_available_gpus"] == 72
 
 
 def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     config = make_test_config(tmp_path)
-    config.docker_registry = TEST_DOCKER_REGISTRY
-
-    def fake_from_env(cls) -> config_module.Config:  # type: ignore[override]
-        return config
 
     def fake_from_files_and_env(cls, require_credentials: bool = True) -> tuple:  # type: ignore[override]
         return config, {}
 
-    monkeypatch.setattr(config_module.Config, "from_env", classmethod(fake_from_env))
     monkeypatch.setattr(
         config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
     )
@@ -1527,7 +1643,12 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     monkeypatch.setattr(
         config_check_module.browser_api_module,
         "get_current_user",
-        lambda session=None: (_ for _ in ()).throw(ValueError("bad credentials")),
+        lambda session=None: (_ for _ in ()).throw(
+            ValueError(
+                "request https://auth.internal/session failed at "
+                "/inspire/private/session.json login_name=alice"
+            )
+        ),
     )
 
     runner = CliRunner()
@@ -1542,6 +1663,27 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert detailed.exit_code == EXIT_AUTH_ERROR
     assert "Effective runtime proxy" in detailed.output
     assert "source=system_env" in detailed.output
+    assert "my-inspire.internal" not in detailed.output
+    assert "proxy.internal" not in detailed.output
+    assert "8080" not in detailed.output
+    assert "auth.internal" not in detailed.output
+    assert "/inspire/private/session.json" not in detailed.output
+    assert "alice" not in detailed.output
+
+    detailed_json = runner.invoke(
+        cli_main,
+        ["--json", "config", "check", "--details"],
+    )
+    assert detailed_json.exit_code == EXIT_AUTH_ERROR
+    payload = json.loads(detailed_json.output)
+    assert payload["data"]["authentication_error"] == (
+        "request <redacted> failed at <redacted> login_name=<redacted>"
+    )
+    assert "my-inspire.internal" not in detailed_json.output
+    assert "proxy.internal" not in detailed_json.output
+    assert "auth.internal" not in detailed_json.output
+    assert "/inspire/private/session.json" not in detailed_json.output
+    assert "alice" not in detailed_json.output
 
 
 def test_config_check_config_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -1567,7 +1709,6 @@ def test_config_check_json_includes_base_url_resolution(
     config = make_test_config(tmp_path)
     config.prefer_source = "toml"
     config.base_url = "https://my-inspire.internal"
-    config.docker_registry = TEST_DOCKER_REGISTRY
 
     project_dir = tmp_path / ".inspire"
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -1628,15 +1769,32 @@ base_url = "https://my-inspire.internal"
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
     resolution = payload["data"]["base_url_resolution"]
-    assert resolution["value"] == "https://my-inspire.internal"
+    assert resolution["configured"] is True
     assert resolution["source"] == config_module.SOURCE_PROJECT
     assert resolution["prefer_source"] == "toml"
     assert resolution["env_present"] is True
-    assert "project_config_path" not in resolution
-    assert "global_config_path" not in resolution
+    assert resolution["project_config_present"] is True
+    assert resolution["global_config_present"] is True
+    assert "value" not in resolution
     assert str(project_config) not in result.output
     assert str(global_config) not in result.output
-    assert payload["data"]["effective_proxy"] == effective_proxy
+    assert "my-inspire.internal" not in result.output
+    assert payload["data"]["effective_proxy"] == {
+        "requests": {
+            "source": "none",
+            "route": "direct",
+            "no_proxy": "not_applicable",
+        },
+        "playwright": {
+            "source": "none",
+            "route": "direct",
+            "no_proxy": "not_applicable",
+        },
+        "rtunnel": {
+            "source": "none",
+            "route": "direct",
+        },
+    }
 
 
 def test_config_check_accepts_local_json_alias(
@@ -1644,7 +1802,6 @@ def test_config_check_accepts_local_json_alias(
 ) -> None:
     config = make_test_config(tmp_path)
     config.base_url = "https://my-inspire.internal"
-    config.docker_registry = TEST_DOCKER_REGISTRY
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
         return config, {"base_url": config_module.SOURCE_ENV}
@@ -1716,47 +1873,6 @@ def test_config_check_rejects_placeholder_base_url(
     assert "INSPIRE_BASE_URL" in payload["error"]["message"]
 
 
-def test_config_check_requires_docker_registry(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    config = make_test_config(tmp_path)
-    config.base_url = "https://my-inspire.internal"
-    config.docker_registry = None
-
-    def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
-        return config, {
-            "base_url": config_module.SOURCE_ENV,
-            "docker_registry": config_module.SOURCE_DEFAULT,
-        }
-
-    def fake_get_config_paths(cls):  # type: ignore[override]
-        return None, None
-
-    monkeypatch.setattr(
-        config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
-    )
-    monkeypatch.setattr(
-        config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
-    )
-    from inspire.cli.commands.config import check as config_check_module
-
-    monkeypatch.setattr(
-        config_check_module,
-        "get_web_session",
-        lambda: pytest.fail("should not auth"),
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check"])
-
-    assert result.exit_code == EXIT_CONFIG_ERROR
-    payload = json.loads(result.output)
-    assert payload["success"] is False
-    assert payload["error"]["type"] == "ConfigError"
-    assert "Missing docker registry configuration" in payload["error"]["message"]
-    assert "INSPIRE_DOCKER_REGISTRY" in payload["error"]["message"]
-
-
 def test_config_check_rejects_top_level_project_base_url_key(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1803,7 +1919,6 @@ def test_config_check_allows_path_default_for_browser_api_prefix(
 ) -> None:
     config = make_test_config(tmp_path)
     config.base_url = "https://my-inspire.internal"
-    config.docker_registry = TEST_DOCKER_REGISTRY
     config.browser_api_prefix = "/api/v1"
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
@@ -1858,7 +1973,7 @@ def test_init_json_global_contract_via_top_level_flag(
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
     assert payload["success"] is True
-    assert payload["data"] == {"status": "updated", "scope": "project"}
+    assert payload["data"] == {"status": "updated"}
     assert str(tmp_path) not in result.output
 
 
@@ -1888,7 +2003,8 @@ def test_config_show_respects_global_json_flag(
     assert payload["success"] is True
     assert "config_files" not in payload["data"]
     assert "INSPIRE_USERNAME" in payload["data"]["values"]
-    assert payload["data"]["values"]["INSPIRE_USERNAME"] == config.username
+    assert payload["data"]["values"]["INSPIRE_USERNAME"] == "<configured>"
+    assert config.username not in result.output
 
 
 def test_notebook_list_all_workspaces_combines_results(
@@ -1902,10 +2018,6 @@ def test_notebook_list_all_workspaces_combines_results(
         password="pass",
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
-        log_cache_dir=str(tmp_path / "log_cache"),
-        timeout=5,
-        max_retries=0,
-        retry_delay=0.0,
     )
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
@@ -1984,818 +2096,3 @@ def test_notebook_list_all_workspaces_combines_results(
     assert [item["name"] for item in items] == ["cpu-notebook", "gpu-notebook"]
     assert all("id" not in item for item in items)
     assert calls == [ws_cpu, ws_gpu]
-
-
-def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    ws_cpu = "ws-6e6ba362-e98e-45b2-9c5a-311998e93d65"
-    ws_gpu = "ws-9dcc0e1f-80a4-4af2-bc2f-0e352e7b17e6"
-
-    config = config_module.Config(
-        username="user",
-        password="pass",
-        base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
-        log_cache_dir=str(tmp_path / "log_cache"),
-        timeout=5,
-        max_retries=0,
-        retry_delay=0.0,
-    )
-
-    def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
-        return config, {}
-
-    monkeypatch.setattr(
-        config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
-    )
-
-    class FakeSession:
-        workspace_id = ws_cpu
-        storage_state = {}
-        all_workspace_ids = [ws_cpu, ws_gpu]
-        all_workspace_names = {ws_cpu: "a", ws_gpu: "b"}
-
-    monkeypatch.setattr(web_session_module, "get_web_session", lambda: FakeSession())
-
-    item = {
-        "id": "78822a57-3830-44e7-8d45-e8b0d674fc44",
-        "name": "ring-8h100-test",
-        "status": "STOPPED",
-        "created_at": "2026-02-01T10:00:00Z",
-        "quota": {"cpu_count": 8, "gpu_count": 8},
-    }
-
-    def fake_request_json(
-        session,
-        method: str,
-        url: str,
-        *,
-        headers: Optional[dict[str, str]] = None,
-        body: Optional[dict] = None,
-        timeout: int = 30,
-        _retry_count: int = 0,
-    ) -> dict:
-        assert timeout
-        assert _retry_count >= 0
-
-        if method.upper() == "GET" and url.endswith("/api/v1/user/detail"):
-            return {"data": {"id": "user-1"}}
-
-        assert method.upper() == "POST"
-        assert url.endswith("/api/v1/notebook/list")
-        assert body and "workspace_id" in body
-        assert (body.get("filter_by") or {}).get("keyword") == "ring-8h100-test"
-
-        ws_id = str(body["workspace_id"])
-        if ws_id == ws_cpu:
-            return {"code": 0, "data": {"list": [item]}}
-        if ws_id == ws_gpu:
-            return {"code": 0, "data": {"list": []}}
-        return {"code": 0, "data": {"list": []}}
-
-    monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
-
-    started: dict[str, str] = {}
-
-    def fake_start_notebook(notebook_id: str, session=None) -> dict:  # type: ignore[no-untyped-def]
-        started["notebook_id"] = notebook_id
-        return {"ok": True}
-
-    monkeypatch.setattr(browser_api_module, "start_notebook", fake_start_notebook)
-
-    def fake_wait_for_notebook_running(
-        notebook_id: str, session=None, timeout: int = 600, poll_interval: int = 5
-    ) -> dict:
-        return {"status": "RUNNING", "notebook_id": notebook_id, "quota": {"gpu_count": 8}}
-
-    monkeypatch.setattr(
-        browser_api_module, "wait_for_notebook_running", fake_wait_for_notebook_running
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli_main,
-        ["notebook", "start", "ring-8h100-test", "--workspace", "a"],
-    )
-
-    assert result.exit_code == EXIT_SUCCESS
-    assert started["notebook_id"] == item["id"]
-
-
-def test_notebook_start_name_conflict_prompts_selection(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    ws_cpu = "ws-6e6ba362-e98e-45b2-9c5a-311998e93d65"
-    ws_gpu = "ws-9dcc0e1f-80a4-4af2-bc2f-0e352e7b17e6"
-
-    config = config_module.Config(
-        username="user",
-        password="pass",
-        base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
-        log_cache_dir=str(tmp_path / "log_cache"),
-        timeout=5,
-        max_retries=0,
-        retry_delay=0.0,
-    )
-
-    def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
-        return config, {}
-
-    monkeypatch.setattr(
-        config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
-    )
-
-    class FakeSession:
-        workspace_id = ws_cpu
-        storage_state = {}
-        all_workspace_ids = [ws_cpu, ws_gpu]
-        all_workspace_names = {ws_cpu: "a", ws_gpu: "b"}
-
-    monkeypatch.setattr(web_session_module, "get_web_session", lambda: FakeSession())
-
-    cpu_item = {
-        "id": "nb-cpu",
-        "name": "ring-8h100-test",
-        "status": "STOPPED",
-        "created_at": "2026-02-02T10:00:00Z",
-        "quota": {"cpu_count": 8, "gpu_count": 8},
-    }
-    gpu_item = {
-        "id": "nb-gpu",
-        "name": "ring-8h100-test",
-        "status": "STOPPED",
-        "created_at": "2026-02-01T10:00:00Z",
-        "quota": {"cpu_count": 8, "gpu_count": 8},
-    }
-
-    def fake_request_json(
-        session,
-        method: str,
-        url: str,
-        *,
-        headers: Optional[dict[str, str]] = None,
-        body: Optional[dict] = None,
-        timeout: int = 30,
-        _retry_count: int = 0,
-    ) -> dict:
-        assert timeout
-        assert _retry_count >= 0
-
-        if method.upper() == "GET" and url.endswith("/api/v1/user/detail"):
-            return {"data": {"id": "user-1"}}
-
-        assert method.upper() == "POST"
-        assert url.endswith("/api/v1/notebook/list")
-        assert body and "workspace_id" in body
-        assert (body.get("filter_by") or {}).get("keyword") == "ring-8h100-test"
-
-        ws_id = str(body["workspace_id"])
-        if ws_id == ws_cpu:
-            return {"code": 0, "data": {"list": [cpu_item]}}
-        if ws_id == ws_gpu:
-            return {"code": 0, "data": {"list": [gpu_item]}}
-        return {"code": 0, "data": {"list": []}}
-
-    monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
-
-    started: dict[str, str] = {}
-
-    def fake_start_notebook(notebook_id: str, session=None) -> dict:  # type: ignore[no-untyped-def]
-        started["notebook_id"] = notebook_id
-        return {"ok": True}
-
-    monkeypatch.setattr(browser_api_module, "start_notebook", fake_start_notebook)
-
-    def fake_wait_for_notebook_running(
-        notebook_id: str, session=None, timeout: int = 600, poll_interval: int = 5
-    ) -> dict:
-        return {"status": "RUNNING", "notebook_id": notebook_id, "quota": {"gpu_count": 8}}
-
-    monkeypatch.setattr(
-        browser_api_module, "wait_for_notebook_running", fake_wait_for_notebook_running
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli_main,
-        ["notebook", "start", "ring-8h100-test", "--workspace", "b"],
-    )
-
-    assert result.exit_code == EXIT_SUCCESS
-    assert started["notebook_id"] == "nb-gpu"
-
-
-def test_run_notebook_ssh_validates_dropbear_setup_script(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """setup_script is now optional — built-in bootstrap handles dropbear.
-
-    This test verifies that *no* ConfigError is raised when dropbear_deb_dir
-    is set without a setup_script.  The code should proceed to the rtunnel
-    setup phase (mocked here to raise so we can verify it was reached).
-    """
-
-    class FakeSession:
-        workspace_id = "ws-test"
-        all_workspace_ids = ["ws-test"]
-        all_workspace_names = {"ws-test": "Test Workspace"}
-        storage_state = {}
-
-    class FakeTunnelConfig:
-        def __init__(self) -> None:
-            self.bridges: dict[str, object] = {}
-            self.default_bridge = None
-
-        def add_bridge(self, profile: object) -> None:
-            name = str(getattr(profile, "name", "default"))
-            self.bridges[name] = profile
-            if self.default_bridge is None:
-                self.default_bridge = name
-
-        def get_bridge(self, name: Optional[str] = None) -> object | None:
-            if name:
-                return self.bridges.get(name)
-            if self.default_bridge:
-                return self.bridges.get(self.default_bridge)
-            return None
-
-    captured: dict[str, str] = {}
-
-    def fake_handle_error(
-        ctx: Context,
-        error_type: str,
-        message: str,
-        exit_code: int,
-        *,
-        hint: Optional[str] = None,
-    ) -> None:
-        assert ctx is not None
-        captured["type"] = error_type
-        captured["message"] = message
-        captured["hint"] = hint or ""
-        raise SystemExit(exit_code)
-
-    monkeypatch.setattr(notebook_cmd_module, "_handle_error", fake_handle_error)
-    monkeypatch.setattr(notebook_cmd_module, "require_web_session", lambda ctx, hint: FakeSession())
-    monkeypatch.setattr(notebook_cmd_module, "load_config", lambda ctx: make_test_config(tmp_path))
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_resolve_notebook_id",
-        lambda *args, **kwargs: ("notebook-12345678", None),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "wait_for_notebook_running",
-        lambda notebook_id, session=None: {
-            "name": "test-nb",
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "H200"}},
-        },
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_get_current_user_detail",
-        lambda session, base_url: {"id": "user-1", "username": "user"},
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_validate_notebook_account_access",
-        lambda current_user, notebook_detail: (True, ""),
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module, "load_ssh_public_key", lambda pubkey: "ssh-ed25519 AAA"
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "setup_notebook_rtunnel",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
-    )
-
-    fake_tunnel_config = FakeTunnelConfig()
-    monkeypatch.setattr(
-        tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
-    )
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: False)
-
-    with pytest.raises(SystemExit) as exc:
-        notebook_cmd_module.run_notebook_ssh(
-            Context(),
-            notebook_id="nb-name",
-            workspace="Test Workspace",
-            wait=True,
-            pubkey=None,
-            port=31337,
-            ssh_port=22222,
-            command=None,
-            debug_playwright=False,
-            setup_timeout=60,
-        )
-
-    # No longer a ConfigError — the code now proceeds to rtunnel setup
-    # which is mocked to raise AssertionError ("should not be called" was
-    # correct when the validation blocked it; now we expect it to be called).
-    assert exc.value.code != EXIT_CONFIG_ERROR
-
-
-def test_run_notebook_ssh_fails_fast_on_account_mismatch(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeSession:
-        workspace_id = "ws-test"
-        all_workspace_ids = ["ws-test"]
-        all_workspace_names = {"ws-test": "Test Workspace"}
-        storage_state = {}
-
-    captured: dict[str, str] = {}
-
-    def fake_handle_error(
-        ctx: Context,
-        error_type: str,
-        message: str,
-        exit_code: int,
-        *,
-        hint: Optional[str] = None,
-    ) -> None:
-        assert ctx is not None
-        captured["type"] = error_type
-        captured["message"] = message
-        captured["hint"] = hint or ""
-        raise SystemExit(exit_code)
-
-    monkeypatch.setattr(notebook_cmd_module, "_handle_error", fake_handle_error)
-    monkeypatch.setattr(notebook_cmd_module, "require_web_session", lambda ctx, hint: FakeSession())
-    monkeypatch.setattr(notebook_cmd_module, "load_config", lambda ctx: make_test_config(tmp_path))
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_resolve_notebook_id",
-        lambda *args, **kwargs: ("notebook-12345678", None),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "wait_for_notebook_running",
-        lambda notebook_id, session=None: {
-            "name": "test-nb",
-            "user_id": "other-user",
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "H200"}},
-        },
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_get_current_user_detail",
-        lambda session, base_url: {"id": "current-user", "username": "current"},
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "setup_notebook_rtunnel",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        notebook_cmd_module.run_notebook_ssh(
-            Context(),
-            notebook_id="nb-name",
-            workspace="Test Workspace",
-            wait=True,
-            pubkey=None,
-            port=31337,
-            ssh_port=22222,
-            command=None,
-            debug_playwright=False,
-            setup_timeout=60,
-        )
-
-    assert exc.value.code == EXIT_CONFIG_ERROR
-    assert captured["type"] == "ConfigError"
-    assert "Notebook/account mismatch" in captured["message"]
-
-
-def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeSession:
-        workspace_id = "ws-test"
-        all_workspace_ids = ["ws-test"]
-        all_workspace_names = {"ws-test": "Test Workspace"}
-        storage_state = {}
-
-    class FakeTunnelConfig:
-        def __init__(self) -> None:
-            self.bridges: dict[str, object] = {}
-            self.default_bridge = None
-
-        def add_bridge(self, profile: object) -> None:
-            name = str(getattr(profile, "name", "default"))
-            self.bridges[name] = profile
-            if self.default_bridge is None:
-                self.default_bridge = name
-
-        def get_bridge(self, name: Optional[str] = None) -> object | None:
-            if name:
-                return self.bridges.get(name)
-            if self.default_bridge:
-                return self.bridges.get(self.default_bridge)
-            return None
-
-    setup_kwargs: dict[str, object] = {}
-    fake_tunnel_config = FakeTunnelConfig()
-
-    monkeypatch.setattr(notebook_cmd_module, "require_web_session", lambda ctx, hint: FakeSession())
-    monkeypatch.setattr(notebook_cmd_module, "load_config", lambda ctx: make_test_config(tmp_path))
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_resolve_notebook_id",
-        lambda *args, **kwargs: ("notebook-12345678", None),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "wait_for_notebook_running",
-        lambda notebook_id, session=None: {
-            "name": "test-nb",
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "CPU"}},
-            "start_config": {"allow_ssh": False},
-        },
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_get_current_user_detail",
-        lambda session, base_url: {"id": "user-1", "username": "user"},
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_validate_notebook_account_access",
-        lambda current_user, notebook_detail: (True, ""),
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module, "load_ssh_public_key", lambda pubkey: "ssh-ed25519 AAA"
-    )
-
-    def fake_setup_notebook_rtunnel(**kwargs):  # type: ignore[no-untyped-def]
-        setup_kwargs.update(kwargs)
-        return "wss://proxy.example/notebook/"
-
-    monkeypatch.setattr(browser_api_module, "setup_notebook_rtunnel", fake_setup_notebook_rtunnel)
-
-    monkeypatch.setattr(
-        tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
-    )
-    monkeypatch.setattr(tunnel_module, "save_tunnel_config", lambda config: None)
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: True)
-    monkeypatch.setattr(
-        tunnel_module,
-        "get_ssh_command_args",
-        lambda bridge_name, config, remote_command=None: ["ssh", "root@localhost"],
-    )
-    monkeypatch.setattr(
-        tunnel_module,
-        "is_tunnel_available",
-        lambda bridge_name, config, retries=0, retry_pause=0.0, progressive=True: True,
-    )
-
-    monkeypatch.setattr(notebook_cmd_module.subprocess, "call", lambda args: 0)
-
-    notebook_cmd_module.run_notebook_ssh(
-        Context(),
-        notebook_id="nb-name",
-        workspace="Test Workspace",
-        wait=True,
-        pubkey=None,
-        port=31337,
-        ssh_port=22222,
-        command=None,
-        debug_playwright=False,
-        setup_timeout=60,
-    )
-
-
-def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeSession:
-        workspace_id = "ws-test"
-        all_workspace_ids = ["ws-test"]
-        all_workspace_names = {"ws-test": "Test Workspace"}
-        storage_state = {}
-
-    class FakeTunnelConfig:
-        def __init__(self) -> None:
-            self.bridges: dict[str, object] = {}
-            self.default_bridge = None
-
-        def add_bridge(self, profile: object) -> None:
-            name = str(getattr(profile, "name", "default"))
-            self.bridges[name] = profile
-            if self.default_bridge is None:
-                self.default_bridge = name
-
-        def get_bridge(self, name: Optional[str] = None) -> object | None:
-            if name:
-                return self.bridges.get(name)
-            if self.default_bridge:
-                return self.bridges.get(self.default_bridge)
-            return None
-
-    setup_called = {"value": False}
-    fake_tunnel_config = FakeTunnelConfig()
-    fake_tunnel_config.add_bridge(
-        tunnel_module.BridgeProfile(
-            name="shared-profile",
-            proxy_url="wss://proxy.example/old",
-            notebook_id="notebook-old",
-        )
-    )
-
-    monkeypatch.setattr(notebook_cmd_module, "require_web_session", lambda ctx, hint: FakeSession())
-    monkeypatch.setattr(notebook_cmd_module, "load_config", lambda ctx: make_test_config(tmp_path))
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_resolve_notebook_id",
-        lambda *args, **kwargs: ("notebook-12345678", None),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "wait_for_notebook_running",
-        lambda notebook_id, session=None: {
-            "name": "test-nb",
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "CPU"}},
-            "start_config": {"allow_ssh": False},
-        },
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_get_current_user_detail",
-        lambda session, base_url: {"id": "user-1", "username": "user"},
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_validate_notebook_account_access",
-        lambda current_user, notebook_detail: (True, ""),
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module, "load_ssh_public_key", lambda pubkey: "ssh-ed25519 AAA"
-    )
-
-    def fake_setup_notebook_rtunnel(**kwargs):  # type: ignore[no-untyped-def]
-        setup_called["value"] = True
-        return "wss://proxy.example/new"
-
-    monkeypatch.setattr(browser_api_module, "setup_notebook_rtunnel", fake_setup_notebook_rtunnel)
-    monkeypatch.setattr(
-        tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
-    )
-    monkeypatch.setattr(tunnel_module, "save_tunnel_config", lambda config: None)
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: True)
-    monkeypatch.setattr(
-        tunnel_module,
-        "is_tunnel_available",
-        lambda bridge_name, config, retries=0, retry_pause=0.0, progressive=True: True,
-    )
-    monkeypatch.setattr(
-        tunnel_module,
-        "get_ssh_command_args",
-        lambda bridge_name, config, remote_command=None: ["ssh", "root@localhost"],
-    )
-
-    monkeypatch.setattr(notebook_cmd_module.subprocess, "call", lambda args: 0)
-
-    notebook_cmd_module.run_notebook_ssh(
-        Context(),
-        notebook_id="nb-name",
-        workspace="Test Workspace",
-        wait=True,
-        pubkey=None,
-        port=31337,
-        ssh_port=22222,
-        command=None,
-        debug_playwright=False,
-        setup_timeout=60,
-    )
-
-    assert setup_called["value"] is True
-    # Cache key is now always the notebook's canonical name. The pre-existing
-    # 'shared-profile' entry binds to a *different* notebook_id, so it stays
-    # untouched; the new connection lands under its own canonical key.
-    untouched = fake_tunnel_config.bridges["shared-profile"]
-    assert getattr(untouched, "notebook_id", None) == "notebook-old"
-    canonical_key = "test-nb"  # mock notebook_detail's display name
-    saved_profile = fake_tunnel_config.bridges[canonical_key]
-    assert getattr(saved_profile, "notebook_id", None) == "notebook-12345678"
-
-
-# Removed in v2.0.0: the old "numeric id / partial hex → full id" resolution
-# path no longer exists. Notebook commands take a name (exact match on
-# item.name); anything that looks like an id is rejected upfront.
-
-
-def test_run_notebook_ssh_interactive_reconnects_after_drop(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeSession:
-        workspace_id = "ws-test"
-        all_workspace_ids = ["ws-test"]
-        all_workspace_names = {"ws-test": "Test Workspace"}
-        storage_state = {}
-
-    class FakeTunnelConfig:
-        def __init__(self) -> None:
-            self.bridges: dict[str, object] = {}
-            self.default_bridge = None
-
-        def add_bridge(self, profile: object) -> None:
-            name = str(getattr(profile, "name", "default"))
-            self.bridges[name] = profile
-            if self.default_bridge is None:
-                self.default_bridge = name
-
-        def get_bridge(self, name: Optional[str] = None) -> object | None:
-            if name:
-                return self.bridges.get(name)
-            if self.default_bridge:
-                return self.bridges.get(self.default_bridge)
-            return None
-
-    cfg = make_test_config(tmp_path)
-    cfg.tunnel_retries = 2
-    cfg.tunnel_retry_pause = 0.0
-
-    reconnect_calls = {"rebuild": 0}
-    fake_tunnel_config = FakeTunnelConfig()
-
-    monkeypatch.setattr(notebook_cmd_module, "require_web_session", lambda ctx, hint: FakeSession())
-    monkeypatch.setattr(notebook_cmd_module, "load_config", lambda ctx: cfg)
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_resolve_notebook_id",
-        lambda *args, **kwargs: ("notebook-12345678", None),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "wait_for_notebook_running",
-        lambda notebook_id, session=None: {
-            "name": "test-nb",
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "CPU"}},
-            "start_config": {"allow_ssh": False},
-        },
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_get_current_user_detail",
-        lambda session, base_url: {"id": "user-1", "username": "user"},
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_validate_notebook_account_access",
-        lambda current_user, notebook_detail: (True, ""),
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module, "load_ssh_public_key", lambda pubkey: "ssh-ed25519 AAA"
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "setup_notebook_rtunnel",
-        lambda **kwargs: "wss://proxy.example/notebook/",
-    )
-    monkeypatch.setattr(
-        tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
-    )
-    monkeypatch.setattr(tunnel_module, "save_tunnel_config", lambda config: None)
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: True)
-    monkeypatch.setattr(
-        tunnel_module,
-        "is_tunnel_available",
-        lambda bridge_name, config, retries=0, retry_pause=0.0, progressive=True: True,
-    )
-    monkeypatch.setattr(
-        tunnel_module,
-        "get_ssh_command_args",
-        lambda bridge_name, config, remote_command=None: ["ssh", "root@localhost"],
-    )
-
-    ssh_rc = iter([255, 0])
-    monkeypatch.setattr(notebook_cmd_module.subprocess, "call", lambda args: next(ssh_rc))
-
-    def fake_rebuild(*args: Any, **kwargs: Any) -> object:
-        reconnect_calls["rebuild"] += 1
-        profile_name = str(kwargs.get("bridge_name", "notebook-12345678"))
-        return fake_tunnel_config.bridges[profile_name]
-
-    monkeypatch.setattr(notebook_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
-
-    notebook_cmd_module.run_notebook_ssh(
-        Context(),
-        notebook_id="nb-name",
-        workspace="Test Workspace",
-        wait=True,
-        pubkey=None,
-        port=31337,
-        ssh_port=22222,
-        command=None,
-        debug_playwright=False,
-        setup_timeout=60,
-    )
-
-    assert reconnect_calls["rebuild"] == 1
-
-
-def test_run_notebook_ssh_reports_when_tunnel_not_ready(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeSession:
-        workspace_id = "ws-test"
-        all_workspace_ids = ["ws-test"]
-        all_workspace_names = {"ws-test": "Test Workspace"}
-        storage_state = {}
-
-    class FakeTunnelConfig:
-        def __init__(self) -> None:
-            self.bridges: dict[str, object] = {}
-            self.default_bridge = None
-
-        def add_bridge(self, profile: object) -> None:
-            self.bridges[str(getattr(profile, "name", "default"))] = profile
-
-    captured: dict[str, str] = {}
-
-    def fake_handle_error(
-        ctx: Context,
-        error_type: str,
-        message: str,
-        exit_code: int,
-        *,
-        hint: Optional[str] = None,
-    ) -> None:
-        assert ctx is not None
-        captured["type"] = error_type
-        captured["message"] = message
-        captured["hint"] = hint or ""
-        raise SystemExit(exit_code)
-
-    monkeypatch.setattr(notebook_cmd_module, "_handle_error", fake_handle_error)
-    monkeypatch.setattr(notebook_cmd_module, "require_web_session", lambda ctx, hint: FakeSession())
-    monkeypatch.setattr(notebook_cmd_module, "load_config", lambda ctx: make_test_config(tmp_path))
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_resolve_notebook_id",
-        lambda *args, **kwargs: ("notebook-12345678", None),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "wait_for_notebook_running",
-        lambda notebook_id, session=None: {
-            "name": "test-nb",
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "CPU"}},
-            "start_config": {"allow_ssh": False},
-        },
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_get_current_user_detail",
-        lambda session, base_url: {"id": "user-1", "username": "user"},
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module,
-        "_validate_notebook_account_access",
-        lambda current_user, notebook_detail: (True, ""),
-    )
-    monkeypatch.setattr(
-        notebook_cmd_module, "load_ssh_public_key", lambda pubkey: "ssh-ed25519 AAA"
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "setup_notebook_rtunnel",
-        lambda **kwargs: "wss://proxy.example/notebook/",
-    )
-
-    fake_tunnel_config = FakeTunnelConfig()
-    monkeypatch.setattr(
-        tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
-    )
-    monkeypatch.setattr(tunnel_module, "save_tunnel_config", lambda config: None)
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: True)
-    monkeypatch.setattr(
-        tunnel_module,
-        "is_tunnel_available",
-        lambda bridge_name, config, retries=0, retry_pause=0.0, progressive=True: False,
-    )
-    monkeypatch.setattr(
-        tunnel_module,
-        "get_ssh_command_args",
-        lambda bridge_name, config, remote_command=None: ["ssh", "root@localhost"],
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        notebook_cmd_module.run_notebook_ssh(
-            Context(),
-            notebook_id="nb-name",
-            workspace="Test Workspace",
-            wait=True,
-            pubkey=None,
-            port=31337,
-            ssh_port=22222,
-            command=None,
-            debug_playwright=False,
-            setup_timeout=60,
-        )
-
-    assert exc.value.code == EXIT_API_ERROR
-    assert captured["type"] == "APIError"
-    assert "SSH preflight failed" in captured["message"]
-    assert "allow_ssh=false" in captured["hint"]

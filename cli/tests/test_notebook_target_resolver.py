@@ -107,6 +107,8 @@ def test_resolver_lists_candidates_when_noninteractive(
     assert "Multiple cached notebook connections match 'dev-box'" in err
     assert "account=alice" in err
     assert "account=bob" in err
+    assert "--workspace <name>" in err
+    assert "--account <name>" in err
 
 
 def test_resolver_prompt_choice_is_cached_and_can_be_ignored(
@@ -156,6 +158,61 @@ def test_resolver_prompt_choice_is_cached_and_can_be_ignored(
     assert ignored.account == "alice"
 
 
+def test_resolver_pick_overrides_remembered_target_and_caches_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    configs = {
+        "alice": _config("alice", _bridge("dev-box", notebook_id="notebook-alice")),
+        "bob": _config("bob", _bridge("dev-box", notebook_id="notebook-bob")),
+    }
+    _install_accounts(monkeypatch, configs)
+    target_resolver.remember_notebook_target(
+        notebook="dev-box",
+        workspace=None,
+        account="alice",
+        bridge=configs["alice"].get_bridge("dev-box"),
+    )
+
+    selected = target_resolver.resolve_cached_notebook_target(
+        Context(),
+        notebook="dev-box",
+        workspace=None,
+        verify_target_cache=False,
+        allow_prompt=False,
+        pick=2,
+    )
+
+    assert selected is not None
+    assert selected.source == "pick"
+    assert selected.account == "bob"
+    cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text())
+    assert cache["targets"]["dev-box|workspace="]["account"] == "bob"
+
+
+def test_resolver_pick_out_of_range_is_noninteractive_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    _install_accounts(monkeypatch, {"alice": _config("alice", _bridge("dev-box"))})
+
+    with pytest.raises(SystemExit) as exc:
+        target_resolver.resolve_cached_notebook_target(
+            Context(),
+            notebook="dev-box",
+            workspace=None,
+            verify_target_cache=False,
+            allow_prompt=False,
+            pick=2,
+        )
+
+    assert exc.value.code == EXIT_CONFIG_ERROR
+    assert "--pick 2 out of range" in capsys.readouterr().err
+
+
 def test_forget_notebook_targets_removes_matching_aliases(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -195,7 +252,17 @@ def test_connection_target_forget_removes_remembered_targets(
         bridge=bridge,
     )
 
-    result = CliRunner().invoke(cli_main, ["notebook", "connection", "target", "forget", "dev-box"])
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "notebook",
+            "connection",
+            "target",
+            "forget",
+            "dev-box",
+            "--yes",
+        ],
+    )
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert "Removed remembered notebook target entries for dev-box: 1" in result.output

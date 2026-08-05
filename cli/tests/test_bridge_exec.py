@@ -2,7 +2,7 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import importlib
 
 import pytest
@@ -12,6 +12,7 @@ from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
 from inspire.cli.commands.notebook.transport import NotebookTransportPolicy
 from inspire.cli.main import main as cli_main
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, EXIT_SUCCESS, EXIT_TIMEOUT
+from inspire.cli.logging_setup import clear_debug_logging
 from inspire.config import Config
 
 # Import the submodules where the patched names actually live
@@ -48,13 +49,6 @@ def make_sync_config(tmp_path: Path) -> Config:
         username="",
         password="",
         path_aliases={"me": str(tmp_path)},
-        github_repo="owner/repo",
-        github_token="ghp_test",
-        github_server="https://github.com",
-        default_remote="origin",
-        remote_timeout=5,
-        bridge_action_timeout=5,
-        bridge_action_denylist=[],
     )
 
 
@@ -149,35 +143,6 @@ def test_bridge_exec_invalid_remote_env_json_returns_config_error(
     assert "Invalid remote_env key" in payload["error"]["message"]
 
 
-def test_bridge_exec_invalid_remote_env_workflow_branch_returns_config_error(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    config = make_sync_config(tmp_path)
-    config.remote_env = {"NOT-VALID": "value"}
-    called: Dict[str, bool] = {"workflow": False}
-
-    monkeypatch.setattr(
-        Config,
-        "from_files_and_env",
-        classmethod(lambda cls, require_credentials=True: (config, {})),
-    )
-
-    def fake_trigger(*args: Any, **kwargs: Any) -> None:
-        called["workflow"] = True
-
-    monkeypatch.setattr(exec_cmd_module, "trigger_bridge_action_workflow", fake_trigger)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli_main,
-        ["notebook", "exec", "gpu-main", "echo hi", "--artifact-path", ".cache"],
-    )
-
-    assert result.exit_code == EXIT_CONFIG_ERROR
-    assert "Invalid remote_env key" in result.output
-    assert called["workflow"] is False
-
-
 def test_bridge_ssh_invalid_remote_env_human_returns_config_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -231,177 +196,6 @@ def test_bridge_ssh_invalid_remote_env_json_returns_config_error(
     assert payload["success"] is False
     assert payload["error"]["type"] == "ConfigError"
     assert "Invalid remote_env key" in payload["error"]["message"]
-
-
-def test_bridge_exec_triggers_and_no_wait(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    config = make_sync_config(tmp_path)
-
-    called: Dict[str, Any] = {}
-
-    monkeypatch.setattr(
-        Config,
-        "from_files_and_env",
-        classmethod(lambda cls, require_credentials=True: (config, {})),
-    )
-
-    def fake_trigger(
-        config: Config,
-        raw_command: str,
-        remote_cwd: Optional[str],
-        artifact_paths: List[str],
-        request_id: str,
-        denylist: Optional[List[str]] = None,
-    ) -> None:
-        called["trigger"] = {
-            "raw_command": raw_command,
-            "remote_cwd": remote_cwd,
-            "artifact_paths": artifact_paths,
-            "request_id": request_id,
-            "denylist": denylist,
-        }
-
-    monkeypatch.setattr(exec_cmd_module, "trigger_bridge_action_workflow", fake_trigger)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli_main,
-        ["notebook", "exec", "gpu-main", "echo hi", "--no-wait", "--artifact-path", ".cache"],
-    )
-
-    assert result.exit_code == EXIT_SUCCESS
-    assert "trigger" in called
-    assert called["trigger"]["raw_command"] == "echo hi"
-    assert called["trigger"]["remote_cwd"] == str(tmp_path)
-
-
-def test_bridge_exec_uses_env_denylist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    config = make_sync_config(tmp_path)
-    config.bridge_action_denylist = ["rm -rf /"]
-
-    captured: Dict[str, Any] = {}
-
-    monkeypatch.setattr(
-        Config,
-        "from_files_and_env",
-        classmethod(lambda cls, require_credentials=True: (config, {})),
-    )
-
-    def fake_trigger(
-        config: Config,
-        raw_command: str,
-        remote_cwd: Optional[str],
-        artifact_paths: List[str],
-        request_id: str,
-        denylist: Optional[List[str]] = None,
-    ) -> None:
-        captured["denylist"] = denylist
-
-    monkeypatch.setattr(exec_cmd_module, "trigger_bridge_action_workflow", fake_trigger)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli_main,
-        ["notebook", "exec", "gpu-main", "echo hi", "--no-wait", "--artifact-path", ".cache"],
-    )
-
-    assert result.exit_code == EXIT_SUCCESS
-    assert captured["denylist"] == ["rm -rf /"]
-
-
-def test_bridge_exec_reports_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    config = make_sync_config(tmp_path)
-
-    monkeypatch.setattr(
-        Config,
-        "from_files_and_env",
-        classmethod(lambda cls, require_credentials=True: (config, {})),
-    )
-
-    def fake_trigger(*args: Any, **kwargs: Any) -> None:
-        return None
-
-    def fake_wait(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-        return {"status": "completed", "conclusion": "failure", "html_url": "http://example.com"}
-
-    def fake_fetch_log(*args: Any, **kwargs: Any) -> Optional[str]:
-        return None
-
-    monkeypatch.setattr(exec_cmd_module, "trigger_bridge_action_workflow", fake_trigger)
-    monkeypatch.setattr(exec_cmd_module, "wait_for_bridge_action_completion", fake_wait)
-    monkeypatch.setattr(exec_cmd_module, "fetch_bridge_output_log", fake_fetch_log)
-
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi", "--artifact-path", ".cache"])
-
-    assert result.exit_code == EXIT_GENERAL_ERROR
-
-
-def test_bridge_exec_displays_output_log(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Test that command output is displayed to the user."""
-    config = make_sync_config(tmp_path)
-
-    monkeypatch.setattr(
-        Config,
-        "from_files_and_env",
-        classmethod(lambda cls, require_credentials=True: (config, {})),
-    )
-
-    def fake_trigger(*args: Any, **kwargs: Any) -> None:
-        return None
-
-    def fake_wait(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-        return {"status": "completed", "conclusion": "success", "html_url": "http://example.com"}
-
-    def fake_fetch_log(*args: Any, **kwargs: Any) -> Optional[str]:
-        return "Hello from Bridge!\nCommand completed."
-
-    monkeypatch.setattr(exec_cmd_module, "trigger_bridge_action_workflow", fake_trigger)
-    monkeypatch.setattr(exec_cmd_module, "wait_for_bridge_action_completion", fake_wait)
-    monkeypatch.setattr(exec_cmd_module, "fetch_bridge_output_log", fake_fetch_log)
-
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi", "--artifact-path", ".cache"])
-
-    assert result.exit_code == EXIT_SUCCESS
-    assert "Hello from Bridge!" in result.output
-    assert "Command completed." in result.output
-    assert result.output.strip().endswith("OK")
-
-
-def test_bridge_exec_json_includes_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Test that JSON output includes the command output."""
-    config = make_sync_config(tmp_path)
-
-    monkeypatch.setattr(
-        Config,
-        "from_files_and_env",
-        classmethod(lambda cls, require_credentials=True: (config, {})),
-    )
-
-    def fake_trigger(*args: Any, **kwargs: Any) -> None:
-        return None
-
-    def fake_wait(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-        return {"status": "completed", "conclusion": "success", "html_url": "http://example.com"}
-
-    def fake_fetch_log(*args: Any, **kwargs: Any) -> Optional[str]:
-        return "Test output"
-
-    monkeypatch.setattr(exec_cmd_module, "trigger_bridge_action_workflow", fake_trigger)
-    monkeypatch.setattr(exec_cmd_module, "wait_for_bridge_action_completion", fake_wait)
-    monkeypatch.setattr(exec_cmd_module, "fetch_bridge_output_log", fake_fetch_log)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli_main,
-        ["--json", "notebook", "exec", "gpu-main", "echo hi", "--artifact-path", ".cache"],
-    )
-
-    assert result.exit_code == EXIT_SUCCESS
-    payload = json.loads(result.output)
-    assert payload["success"] is True
-    assert payload["data"]["status"] == "success"
-    assert payload["data"]["output"] == "Test output"
 
 
 # Tests for SSH tunnel streaming functionality
@@ -540,6 +334,78 @@ def test_exec_json_reports_jupyter_transport(monkeypatch, tmp_path) -> None:  # 
     assert "returncode" not in payload["error"]
     assert "3" not in payload["error"]["message"]
     assert "method" not in payload["data"]
+
+
+def test_exec_forwards_workspace_account_and_pick_to_target_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = make_sync_config(tmp_path)
+    policy_calls: dict[str, Any] = {}
+    target_calls: dict[str, Any] = {}
+    execution_calls: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=True: (config, {})),
+    )
+    monkeypatch.setattr(
+        exec_cmd_module,
+        "preflight_notebook_transport_policy",
+        lambda _ctx, **kwargs: (
+            policy_calls.update(kwargs)
+            or NotebookTransportPolicy(
+                notebook="gpu-box",
+                notebook_id="nb-123",
+                public_internet=True,
+                reason="test",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        exec_cmd_module,
+        "resolve_cached_notebook_target",
+        lambda _ctx, **kwargs: (
+            target_calls.update(kwargs)
+            or SimpleNamespace(
+                account="alice",
+                bridge=SimpleNamespace(name="gpu-box"),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        exec_cmd_module,
+        "try_exec_via_ssh_tunnel",
+        lambda _ctx, **kwargs: execution_calls.update(kwargs) or EXIT_SUCCESS,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "notebook",
+            "exec",
+            "gpu-box",
+            "--workspace",
+            "CPU资源空间",
+            "--account",
+            "alice",
+            "--pick",
+            "2",
+            "echo",
+            "ok",
+        ],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert policy_calls["workspace"] == "CPU资源空间"
+    assert policy_calls["account"] == "alice"
+    assert policy_calls["pick"] == 2
+    assert target_calls["workspace"] == "CPU资源空间"
+    assert target_calls["account"] == "alice"
+    assert target_calls["pick"] == 2
+    assert execution_calls["bridge_name"] == "gpu-box"
+    assert execution_calls["tunnel_account"] == "alice"
 
 
 def test_bridge_exec_supports_command_after_double_dash(
@@ -725,34 +591,6 @@ def test_bridge_exec_ssh_json_stdin_uses_buffered_with_pass_stdin(
     assert payload["data"]["output"] == "buffered output"
 
 
-def test_bridge_exec_stdin_rejects_artifact_workflow_mode(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    config = make_sync_config(tmp_path)
-    called: Dict[str, Any] = {"workflow": False}
-
-    monkeypatch.setattr(
-        Config,
-        "from_files_and_env",
-        classmethod(lambda cls, require_credentials=True: (config, {})),
-    )
-
-    def fake_trigger(*args: Any, **kwargs: Any) -> None:
-        called["workflow"] = True
-
-    monkeypatch.setattr(exec_cmd_module, "trigger_bridge_action_workflow", fake_trigger)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli_main,
-        ["notebook", "exec", "gpu-main", "--stdin", "echo hi", "--artifact-path", ".cache"],
-    )
-
-    assert result.exit_code == EXIT_GENERAL_ERROR
-    assert "cannot be combined" in result.output
-    assert called["workflow"] is False
-
-
 def test_bridge_exec_ssh_streaming_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Test that streaming mode handles timeout correctly."""
     config = make_sync_config(tmp_path)
@@ -816,7 +654,6 @@ def test_bridge_exec_does_not_fallback_after_ssh_execution_starts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
-    called: Dict[str, bool] = {"workflow": False}
 
     monkeypatch.setattr(
         Config,
@@ -831,20 +668,15 @@ def test_bridge_exec_does_not_fallback_after_ssh_execution_starts(
     def fake_run_ssh_command_streaming(*args: Any, **kwargs: Any) -> int:
         raise RuntimeError("stream broke")
 
-    def fake_trigger(*args: Any, **kwargs: Any) -> None:
-        called["workflow"] = True
-
     monkeypatch.setattr(
         exec_cmd_module, "run_ssh_command_streaming", fake_run_ssh_command_streaming
     )
-    monkeypatch.setattr(exec_cmd_module, "trigger_bridge_action_workflow", fake_trigger)
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "echo hi"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "SSH execution failed: stream broke" in result.output
-    assert called["workflow"] is False
 
 
 def test_bridge_exec_errors_when_bridge_configured_but_not_responding(
@@ -1068,7 +900,7 @@ def test_bridge_exec_errors_when_no_bridge_configured(
     monkeypatch.setattr(exec_cmd_module, "load_tunnel_config", fake_load_tunnel_config)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "exec", "anything", "echo hi", "--no-wait"])
+    result = runner.invoke(cli_main, ["notebook", "exec", "anything", "echo hi"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "No cached notebook connection for 'anything'" in result.output
@@ -1114,7 +946,6 @@ def test_bridge_exec_errors_when_requested_bridge_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
-    workflow_called = {"value": False}
 
     monkeypatch.setattr(
         Config,
@@ -1130,19 +961,14 @@ def test_bridge_exec_errors_when_requested_bridge_missing(
         BridgeProfile(name="other-bridge", proxy_url="https://proxy.example.com")
     )
 
-    def fake_trigger(*args: Any, **kwargs: Any) -> None:
-        workflow_called["value"] = True
-
     monkeypatch.setattr(exec_cmd_module, "is_tunnel_available", fake_is_tunnel_available)
     monkeypatch.setattr(exec_cmd_module, "load_tunnel_config", lambda: tunnel_config)
-    monkeypatch.setattr(exec_cmd_module, "trigger_bridge_action_workflow", fake_trigger)
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "exec", "missing", "echo hi"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "No cached notebook connection for 'missing'" in result.output
-    assert workflow_called["value"] is False
 
 
 def test_bridge_exec_rebuilds_notebook_tunnel_before_command(
@@ -1200,7 +1026,7 @@ def test_bridge_exec_rebuilds_notebook_tunnel_before_command(
     assert "attempt" not in result.output
 
 
-def test_bridge_exec_debug_reports_automatic_tunnel_rebuild(
+def test_bridge_exec_debug_logs_rebuild_without_expanding_cli_output(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1213,9 +1039,11 @@ def test_bridge_exec_debug_reports_automatic_tunnel_rebuild(
         BridgeProfile(
             name="gpu-main",
             proxy_url="https://proxy.example.com/proxy/31337/",
-            notebook_id="notebook-1",
+            notebook_id="notebook-12345678",
         )
     )
+    log_dir = tmp_path / "debug-logs"
+    monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
 
     monkeypatch.setattr(
         Config,
@@ -1242,9 +1070,25 @@ def test_bridge_exec_debug_reports_automatic_tunnel_rebuild(
         cli_main,
         ["--debug", "notebook", "exec", "gpu-main", "echo hi"],
     )
+    clear_debug_logging()
 
     assert result.exit_code == EXIT_SUCCESS
-    assert "Tunnel unavailable; rebuilding automatically (attempt 1/2)..." in result.output
+    assert result.output == "OK\n"
+    for noise in (
+        "Tunnel unavailable",
+        "Using SSH tunnel",
+        "Notebook:",
+        "Command:",
+        "Working dir:",
+        "Command Output",
+    ):
+        assert noise not in result.output
+
+    [log_path] = list(log_dir.glob("inspire-debug-*.log"))
+    debug_log = log_path.read_text(encoding="utf-8")
+    assert "Notebook SSH tunnel rebuild scheduled" in debug_log
+    assert "attempt=1/2" in debug_log
+    assert "notebook-12345678" not in debug_log
 
 
 def test_bridge_exec_cross_account_rebuild_uses_target_account_session(
@@ -1622,13 +1466,13 @@ def test_bridge_ssh_uses_requested_bridge(monkeypatch: pytest.MonkeyPatch, tmp_p
         captured["ssh_bridge"] = kwargs.get("bridge_name")
         return ["ssh", "root@localhost"]
 
-    def fake_call(args: List[str]) -> int:
+    def fake_pty(args: List[str]) -> int:
         captured["ssh_args"] = args
         return 0
 
     monkeypatch.setattr(ssh_cmd_module, "is_tunnel_available", fake_is_tunnel_available)
     monkeypatch.setattr(ssh_cmd_module, "get_ssh_command_args", fake_get_ssh_command_args)
-    monkeypatch.setattr(ssh_cmd_module.subprocess, "call", fake_call)
+    monkeypatch.setattr(ssh_cmd_module, "run_scrubbed_pty", fake_pty)
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
@@ -1659,9 +1503,11 @@ def test_bridge_ssh_rebuilds_notebook_tunnel_before_connect(
         BridgeProfile(
             name="gpu-main",
             proxy_url="https://proxy.example.com/proxy/31337/",
-            notebook_id="notebook-1",
+            notebook_id="notebook-12345678",
         )
     )
+    log_dir = tmp_path / "debug-shell-logs"
+    monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
     monkeypatch.setattr(ssh_cmd_module, "load_tunnel_config", lambda: tunnel_config)
 
     def fake_is_tunnel_available(*args: Any, **kwargs: Any) -> bool:
@@ -1671,7 +1517,7 @@ def test_bridge_ssh_rebuilds_notebook_tunnel_before_connect(
     def fake_get_ssh_command_args(*args: Any, **kwargs: Any) -> List[str]:
         return ["ssh", "root@localhost"]
 
-    def fake_call(args: List[str]) -> int:  # noqa: ARG001
+    def fake_pty(args: List[str]) -> int:  # noqa: ARG001
         calls["ssh"] += 1
         return 0
 
@@ -1681,17 +1527,23 @@ def test_bridge_ssh_rebuilds_notebook_tunnel_before_connect(
 
     monkeypatch.setattr(ssh_cmd_module, "is_tunnel_available", fake_is_tunnel_available)
     monkeypatch.setattr(ssh_cmd_module, "get_ssh_command_args", fake_get_ssh_command_args)
-    monkeypatch.setattr(ssh_cmd_module.subprocess, "call", fake_call)
+    monkeypatch.setattr(ssh_cmd_module, "run_scrubbed_pty", fake_pty)
     monkeypatch.setattr(ssh_cmd_module, "require_web_session", lambda ctx, hint: object())
     monkeypatch.setattr(ssh_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
     monkeypatch.setattr(ssh_cmd_module, "rebuild_notebook_bridge_profile", fake_rebuild)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
+    result = runner.invoke(cli_main, ["--debug", "notebook", "shell", "gpu-main"])
+    clear_debug_logging()
 
     assert result.exit_code == 0
+    assert result.output == ""
     assert calls["rebuild"] == 1
     assert calls["ssh"] == 1
+    [log_path] = list(log_dir.glob("inspire-debug-*.log"))
+    debug_log = log_path.read_text(encoding="utf-8")
+    assert "Notebook shell tunnel rebuild scheduled" in debug_log
+    assert "notebook-12345678" not in debug_log
 
 
 def test_bridge_ssh_fails_fast_when_notebook_is_stopped(
@@ -1820,7 +1672,7 @@ def test_bridge_ssh_reconnects_after_disconnect(
     )
 
     ssh_return_codes = iter([255, 0])
-    monkeypatch.setattr(ssh_cmd_module.subprocess, "call", lambda args: next(ssh_return_codes))
+    monkeypatch.setattr(ssh_cmd_module, "run_scrubbed_pty", lambda args: next(ssh_return_codes))
     monkeypatch.setattr(ssh_cmd_module, "require_web_session", lambda ctx, hint: object())
     monkeypatch.setattr(ssh_cmd_module, "load_ssh_public_key_material", lambda: "ssh-ed25519 AAA")
 

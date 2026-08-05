@@ -23,11 +23,7 @@ from inspire.config.toml import (
     _toml_key_to_field,
 )
 
-from .load_common import (
-    _ProjectLayerState,
-    _parse_alias_map,
-    _reject_removed_task_priority_settings,
-)
+from .load_common import _ProjectLayerState, _parse_alias_map
 from .path_aliases import normalize_path_alias_map
 from .workload_profiles import merge_workload_profiles, normalize_workload_profiles
 
@@ -39,10 +35,7 @@ def _apply_project_layer(
     account: str | None = None,
 ) -> _ProjectLayerState:
     shared_path, account_path = _find_project_configs(account)
-    project_config_path = account_path or shared_path
     layer_state = _ProjectLayerState(
-        project_config_path=project_config_path,
-        project_projects={},
         project_defaults={},
         project_context={},
         shared_project_config_path=shared_path,
@@ -71,15 +64,6 @@ def _apply_one_project_file(
     project_config_path: Path,
 ) -> None:
     project_raw = _load_toml(project_config_path)
-    _reject_removed_task_priority_settings(
-        project_raw,
-        source=f"Project config at {project_config_path}",
-    )
-
-    # Legacy structural sections are silently ignored at project level too —
-    # a project config should never carry an account catalog or [context].account.
-    project_raw.pop("accounts", None)
-
     cli_section = project_raw.pop("cli", {})
     prefer_source = cli_section.get("prefer_source")
     if prefer_source is not None:
@@ -94,18 +78,14 @@ def _apply_one_project_file(
     project_remote_env = {str(k): str(v) for k, v in project_raw.pop("remote_env", {}).items()}
     project_path_aliases = normalize_path_alias_map(project_raw.pop("path_aliases", {}))
     project_profiles = normalize_workload_profiles(project_raw.pop("profiles", {}))
-    project_projects = _parse_alias_map(project_raw.pop("projects", {}))
+    project_aliases = _parse_alias_map(project_raw.pop("projects", {}))
 
     raw_defaults = project_raw.pop("defaults", {})
     if isinstance(raw_defaults, dict):
         layer_state.project_defaults.update(raw_defaults)
     raw_context = project_raw.pop("context", {})
     if isinstance(raw_context, dict):
-        # [context].account has no meaning under the per-account layout.
-        raw_context.pop("account", None)
         layer_state.project_context.update(raw_context)
-
-    project_raw.pop("workspaces", None)
 
     flat_project = _flatten_toml(project_raw)
 
@@ -118,11 +98,7 @@ def _apply_one_project_file(
     from inspire.config.schema import get_option_by_toml
 
     misplaced: list[str] = []
-    removed_defaults = {"notebook.quota"}
     for toml_key in flat_project:
-        if toml_key in removed_defaults:
-            misplaced.append(toml_key)
-            continue
         opt = get_option_by_toml(toml_key)
         if opt is not None and opt.scope == "global":
             misplaced.append(toml_key)
@@ -162,12 +138,11 @@ def _apply_one_project_file(
         sources["profiles"] = SOURCE_PROJECT
 
     # Merge project alias maps on top of account-level ones (project wins).
-    if project_projects:
+    if project_aliases:
         merged_projects = dict(config_dict.get("projects", {}))
-        merged_projects.update(project_projects)
+        merged_projects.update(project_aliases)
         config_dict["projects"] = merged_projects
         sources["projects"] = SOURCE_PROJECT
-        layer_state.project_projects.update(project_projects)
 
 
 __all__ = ["_apply_project_layer"]

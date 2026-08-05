@@ -117,20 +117,10 @@ class ResourceIdentity:
 class ScopeStatus:
     resource_type: str
     workspace_id: str
-    owner_scope: str
     active_count: int
-    tombstone_count: int
-    last_attempt_at: float
     last_refresh_at: float
     last_full_refresh_at: float
-    refresh_complete: bool
     last_error: str
-    expired_count: int = 0
-
-    @property
-    def fresh_count(self) -> int:
-        """Compatibility alias for the available, non-expired item count."""
-        return self.active_count
 
 
 def resource_index_path(account: str | None = None) -> Path | None:
@@ -196,7 +186,7 @@ class ResourceIndex:
         except sqlite3.DatabaseError as exc:
             if not self._is_corruption_error(exc):
                 raise
-            self._quarantine_corrupt_database()
+            self._discard_corrupt_database()
             self._initialize()
 
     @classmethod
@@ -352,21 +342,24 @@ class ResourceIndex:
             )
         )
 
-    def _quarantine_corrupt_database(self) -> None:
-        suffix = f".corrupt-{int(time.time())}-{uuid.uuid4().hex[:8]}"
-        moved = False
+    def _discard_corrupt_database(self) -> None:
+        """Delete the disposable cache and any sidecars from a failed check.
+
+        Resource identities are only an acceleration layer. Keeping a copy of
+        a corrupt database creates local debris without preserving source-of-
+        truth data, so recovery starts from an empty index.
+        """
         for source in (
             self.path,
             Path(f"{self.path}-wal"),
             Path(f"{self.path}-shm"),
         ):
-            if not source.exists():
-                continue
-            target = source.with_name(source.name + suffix)
-            os.replace(source, target)
-            moved = True
-        if not moved and self.path.exists():
-            raise OSError(f"Could not quarantine corrupt resource index: {self.path}")
+            try:
+                source.unlink(missing_ok=True)
+            except OSError as exc:
+                raise OSError(
+                    f"Could not discard corrupt resource index: {source}"
+                ) from exc
 
     @staticmethod
     def _scope_values(scope: ResourceScope) -> tuple[str, str, str, str, str]:
@@ -1014,9 +1007,9 @@ class ResourceIndex:
         The ID is authoritative when it is present in the cache. A name is
         only used as a fallback for an ID that was never indexed, avoiding a
         fragile ``id AND name`` match without deleting a newly-recreated
-        same-name resource when an old ID is already known. Callers handling
+        same-name resource when a previous handle is already known. Callers handling
         a stale platform handle can disable that fallback because a clear
-        may have removed the old ID before a same-name replacement was cached.
+        may have removed the previous handle before a same-name replacement was cached.
         """
         target_id = str(resource_id or "").strip()
         target_name = str(name or "").strip()
@@ -1085,39 +1078,6 @@ class ResourceIndex:
             self._bump_scope_revision(connection, scope)
             return changed
 
-    def mark_scope_stale(self, scope: ResourceScope) -> int:
-        """Expire one scope and invalidate its full-refresh freshness."""
-        scope = scope.validate()
-        with self._connect() as connection:
-            self._begin_mutation(
-                connection,
-                scope,
-                expected_revision=None,
-                expected_generation=None,
-            )
-            cursor = connection.execute(
-                """
-                UPDATE resource_identity
-                SET expires_at = 0
-                WHERE base_url = ? AND subject_id = ? AND resource_type = ?
-                  AND workspace_id = ? AND owner_scope = ?
-                  AND tombstoned_at IS NULL
-                """,
-                self._scope_values(scope),
-            )
-            self._bump_scope_revision(connection, scope)
-            connection.execute(
-                """
-                UPDATE resource_scope
-                SET last_full_refresh_at = 0,
-                    refresh_complete = 0
-                WHERE base_url = ? AND subject_id = ? AND resource_type = ?
-                  AND workspace_id = ? AND owner_scope = ?
-                """,
-                self._scope_values(scope),
-            )
-            return int(cursor.rowcount)
-
     def scope_due(
         self,
         scope: ResourceScope,
@@ -1148,15 +1108,10 @@ class ResourceIndex:
             rows = connection.execute(
                 """
                 SELECT
-                    s.base_url,
-                    s.subject_id,
                     s.resource_type,
                     s.workspace_id,
-                    s.owner_scope,
-                    s.last_attempt_at,
                     s.last_refresh_at,
                     s.last_full_refresh_at,
-                    s.refresh_complete,
                     s.last_error,
                     SUM(
                         CASE
@@ -1165,22 +1120,7 @@ class ResourceIndex:
                              AND r.expires_at > ?
                             THEN 1 ELSE 0
                         END
-                    ) active_count,
-                    SUM(
-                        CASE
-                            WHEN r.resource_id IS NOT NULL
-                             AND r.tombstoned_at IS NULL
-                             AND r.expires_at <= ?
-                            THEN 1 ELSE 0
-                        END
-                    ) expired_count,
-                    SUM(
-                        CASE
-                            WHEN r.resource_id IS NOT NULL
-                             AND r.tombstoned_at IS NOT NULL
-                            THEN 1 ELSE 0
-                        END
-                    ) tombstone_count
+                    ) active_count
                 FROM resource_scope s
                 LEFT JOIN resource_identity r
                   ON r.base_url=s.base_url
@@ -1193,21 +1133,16 @@ class ResourceIndex:
                     s.workspace_id, s.owner_scope
                 ORDER BY s.resource_type, s.workspace_id, s.owner_scope
                 """,
-                (timestamp, timestamp),
+                (timestamp,),
             ).fetchall()
         return [
             ScopeStatus(
                 resource_type=str(row["resource_type"]),
                 workspace_id=str(row["workspace_id"] or ""),
-                owner_scope=str(row["owner_scope"] or ""),
                 active_count=int(row["active_count"] or 0),
-                tombstone_count=int(row["tombstone_count"] or 0),
-                last_attempt_at=float(row["last_attempt_at"] or 0),
                 last_refresh_at=float(row["last_refresh_at"] or 0),
                 last_full_refresh_at=float(row["last_full_refresh_at"] or 0),
-                refresh_complete=bool(row["refresh_complete"]),
                 last_error=str(row["last_error"] or ""),
-                expired_count=int(row["expired_count"] or 0),
             )
             for row in rows
         ]
@@ -1428,36 +1363,6 @@ class ResourceIndex:
             )
 
 
-def candidates_from_dicts(
-    candidates: Iterable[Mapping[str, object]],
-    *,
-    name_key: str = "name",
-    id_key: str = "id",
-) -> list[ResourceIdentity]:
-    """Convert resolver candidate dictionaries into minimal cache rows."""
-    records: list[ResourceIdentity] = []
-    for candidate in candidates:
-        resource_id = str(candidate.get(id_key) or "").strip()
-        name = str(candidate.get(name_key) or "").strip()
-        if not resource_id or not name:
-            continue
-        records.append(
-            ResourceIdentity(
-                resource_id=resource_id,
-                name=name,
-                owner_id=str(
-                    candidate.get("owner_id")
-                    or candidate.get("created_by_id")
-                    or candidate.get("user_id")
-                    or ""
-                ).strip(),
-                status=str(candidate.get("status") or "").strip(),
-                created_at=str(candidate.get("created_at") or "").strip(),
-            )
-        )
-    return records
-
-
 __all__ = [
     "DEFAULT_TTL_SECONDS",
     "RESOURCE_INDEX_FILENAME",
@@ -1467,7 +1372,6 @@ __all__ = [
     "ResourceScope",
     "ScopeStatus",
     "StaleResourceIndexRefresh",
-    "candidates_from_dicts",
     "resource_index_path",
     "scope_for_session",
 ]

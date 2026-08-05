@@ -1,4 +1,5 @@
 import click
+import pytest
 from click.testing import CliRunner
 
 from inspire.cli.main import main as cli_main
@@ -6,6 +7,21 @@ from inspire.cli.main import main as cli_main
 
 def _one_line(value: str) -> str:
     return " ".join(value.split())
+
+
+def _help_option_order(value: str) -> list[str]:
+    options = value.split("Options:", 1)[1]
+    ordered: list[str] = []
+    for line in options.splitlines():
+        if not line.startswith("  -"):
+            continue
+        stripped = line.strip()
+        declaration = stripped.split("  ", 1)[0]
+        for token in declaration.replace(",", " ").replace("/", " ").split():
+            if token.startswith("--"):
+                ordered.append(token)
+                break
+    return ordered
 
 
 def _public_command_paths() -> list[list[str]]:
@@ -24,10 +40,7 @@ def _public_command_paths() -> list[list[str]]:
 
 def test_all_public_help_is_name_only() -> None:
     forbidden = (
-        "--show-ids",
-        "name or id",
-        "id or name",
-        "direct-id",
+        " login id",
         "raw id",
         "platform id",
         "platform handle",
@@ -60,16 +73,31 @@ def test_instances_help_uses_required_workspace_and_limit() -> None:
         result = CliRunner().invoke(cli_main, [group, "instances", "--help"])
 
         assert result.exit_code == 0
-        assert "--workspace TEXT" in result.output
+        assert "--workspace NAME" in result.output
         assert "--limit INTEGER" in result.output
         assert "--all" in result.output
-        assert "--num" not in result.output
-        assert "--web" not in result.output
-        assert "--all-workspaces" not in result.output
-        assert "--all-users" not in result.output
-        assert "--page-num" not in result.output
-        assert "--page-size" not in result.output
-        assert "--max-pages" not in result.output
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        ["job", "status"],
+        ["hpc", "status"],
+        ["ray", "status"],
+        ["serving", "status"],
+        ["model", "status"],
+        ["project", "detail"],
+        ["image", "detail"],
+    ),
+)
+def test_named_detail_commands_share_name_and_pick_interface(path: list[str]) -> None:
+    result = CliRunner().invoke(cli_main, [*path, "--help"])
+
+    assert result.exit_code == 0
+    output = _one_line(result.output)
+    assert " [OPTIONS] NAME" in output
+    assert "--pick INTEGER" in result.output
+    assert "Pick the Nth candidate (1-indexed) when the name is ambiguous." in output
 
 
 def test_resources_nodes_help_prefers_min_nodes_wording() -> None:
@@ -105,6 +133,55 @@ def test_query_commands_require_explicit_workspace() -> None:
         assert "Missing option '--workspace'" in result.output
 
 
+@pytest.mark.parametrize(
+    "path",
+    (
+        ["job", "list"],
+        ["hpc", "list"],
+        ["ray", "list"],
+        ["notebook", "list"],
+        ["serving", "list"],
+        ["model", "list"],
+        ["serving", "configs"],
+        ["user", "permissions"],
+    ),
+)
+def test_workspace_collection_commands_share_query_contract(path: list[str]) -> None:
+    result = CliRunner().invoke(cli_main, [*path, "--help"])
+    output = _one_line(result.output)
+
+    assert result.exit_code == 0, result.output
+    assert "--workspace NAME|all" in result.output
+    assert "Workspace name or 'all'." in output
+    assert "-n, --limit INTEGER RANGE" in output
+    assert "--all" in result.output
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        ["job", "list"],
+        ["hpc", "list"],
+        ["ray", "list"],
+        ["notebook", "list"],
+        ["serving", "list"],
+        ["model", "list"],
+        ["serving", "configs"],
+        ["user", "permissions"],
+    ),
+)
+def test_workspace_collection_commands_reject_limit_with_all(
+    path: list[str],
+) -> None:
+    result = CliRunner().invoke(
+        cli_main,
+        [*path, "--workspace", "all", "--limit", "1", "--all"],
+    )
+
+    assert result.exit_code != 0
+    assert "Use either --limit or --all, not both." in result.output
+
+
 def test_query_group_help_says_keyword_substring() -> None:
     for args in (
         ["job", "quota", "--help"],
@@ -138,8 +215,6 @@ def test_create_and_profile_group_help_requires_full_name() -> None:
         assert result.exit_code == 0
         assert "Full compute group name" in output
         assert "same quota row as --quota" in output
-        assert "Partial matches accepted" not in output
-        assert "compute group name keyword/substring" not in output
 
 
 def test_create_help_explains_workspace_aware_priority() -> None:
@@ -196,31 +271,18 @@ def test_notebook_create_help_explains_auto_stop_boundary() -> None:
     assert "workspace lifetime caps" in output
 
 
-def test_init_help_explains_plain_init_discovery() -> None:
+def test_init_help_exposes_scope_and_discovery_controls() -> None:
     result = CliRunner().invoke(cli_main, ["init", "--help"])
     output = _one_line(result.output)
-    removed_flag = "--" + "discover"
 
     assert result.exit_code == 0
     assert "Plain `inspire init` defaults to global scope" in output
-    assert removed_flag not in output
     assert "writes account-level catalogs and remote path aliases" in output
     assert "writes this repository's project context and path-alias overrides" in output
     assert "top-level `me` points at the selected path tier" in output
     assert "`ssd` suggested for the path hot tier" in output
     assert "--scope [project|global]" in result.output
     assert "--no-discover" in result.output
-    assert "--global" not in result.output
-    assert "--project, -p" not in result.output
-    assert "--json" not in result.output
-
-
-def test_init_rejects_removed_discover_flag() -> None:
-    removed_flag = "--" + "discover"
-    result = CliRunner().invoke(cli_main, ["init", removed_flag])
-
-    assert result.exit_code != 0
-    assert f"No such option: {removed_flag}" in result.output
 
 
 def test_root_help_explains_global_options() -> None:
@@ -229,15 +291,6 @@ def test_root_help_explains_global_options() -> None:
 
     assert result.exit_code == 0
     assert "--json prints structured script output" in output
-    assert "--profile" not in output
-    assert "INSPIRE_PROFILE" not in output
-
-
-def test_root_profile_option_is_removed() -> None:
-    result = CliRunner().invoke(cli_main, ["--profile", "h200", "--help"])
-
-    assert result.exit_code != 0
-    assert "No such option: --profile" in result.output
 
 
 def test_parser_errors_scrub_id_shaped_values_before_root_callback() -> None:
@@ -284,47 +337,104 @@ def test_parser_errors_scrub_path_values_before_root_callback() -> None:
     assert "<redacted>" in result.output
 
 
-def test_top_level_batch_command_is_removed() -> None:
-    result = CliRunner().invoke(cli_main, ["batch", "--help"])
-
-    assert result.exit_code != 0
-    assert "No such command 'batch'" in result.output
-
-
-def test_notebook_top_command_is_removed() -> None:
+def test_notebook_help_exposes_current_command_surface() -> None:
     help_result = CliRunner().invoke(cli_main, ["notebook", "--help"])
-    result = CliRunner().invoke(cli_main, ["notebook", "top"])
 
     assert help_result.exit_code == 0
-    assert "\n  top " not in help_result.output
-    assert result.exit_code != 0
-    assert "No such command 'top'" in result.output
+    for command in ("list", "status", "create", "ssh", "connection", "metrics", "events"):
+        assert f"\n  {command} " in help_result.output
 
 
-def test_notebook_ssh_removed_compat_commands_and_connection_group() -> None:
+def test_notebook_ssh_and_connection_help_expose_current_interfaces() -> None:
     notebook_help = CliRunner().invoke(cli_main, ["notebook", "--help"])
     ssh_help = CliRunner().invoke(cli_main, ["notebook", "ssh", "--help"])
     connection_help = CliRunner().invoke(cli_main, ["notebook", "connection", "--help"])
 
     assert notebook_help.exit_code == 0
-    for removed in ("connections", "refresh", "forget", "test"):
-        assert f"\n  {removed} " not in notebook_help.output
-        result = CliRunner().invoke(cli_main, ["notebook", removed, "--help"])
-        assert result.exit_code != 0
-        assert f"No such command '{removed}'" in result.output
     for command in ("connection", "ssh-config", "ssh-proxy"):
         assert f"\n  {command} " in notebook_help.output
 
     assert ssh_help.exit_code == 0
     assert "OpenSSH access for public-internet notebooks" in ssh_help.output
-    for subcommand in ("connect", "refresh", "forget", "test"):
-        assert f"\n  {subcommand} " not in ssh_help.output
-    for removed in ("list", "status", "exec", "shell", "scp", "install-deps"):
-        assert f"\n  {removed} " not in ssh_help.output
+    assert "NAME" in ssh_help.output
+    assert "--workspace NAME" in ssh_help.output
 
     assert connection_help.exit_code == 0
     for subcommand in ("list", "status", "refresh", "forget", "prune", "target"):
         assert f"\n  {subcommand} " in connection_help.output
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        ["notebook", "ssh"],
+        ["notebook", "ssh-config"],
+        ["notebook", "ssh-proxy"],
+        ["notebook", "exec"],
+        ["notebook", "shell"],
+        ["notebook", "scp"],
+        ["notebook", "install-deps"],
+    ),
+)
+def test_cached_notebook_transport_commands_share_target_selector_contract(
+    path: list[str],
+) -> None:
+    result = CliRunner().invoke(cli_main, [*path, "--help"])
+
+    assert result.exit_code == 0, result.output
+    output = _one_line(result.output)
+    assert " NAME" in output
+    assert "--workspace NAME" in result.output
+    assert "--account NAME" in result.output
+    assert "--pick INTEGER" in result.output
+    assert "Workspace name used to disambiguate this notebook target." in output
+
+
+@pytest.mark.parametrize(
+    "args",
+    (
+        ["notebook", "ssh", "demo", "--workspace", "all"],
+        ["notebook", "ssh-config", "demo", "--workspace", "all"],
+        ["notebook", "ssh-proxy", "demo", "--workspace", "all"],
+        ["notebook", "exec", "demo", "--workspace", "all", "true"],
+        ["notebook", "shell", "demo", "--workspace", "all"],
+        ["notebook", "scp", "demo", "--workspace", "all", "src", "dst"],
+        ["notebook", "install-deps", "demo", "--workspace", "all", "--slurm"],
+    ),
+)
+def test_cached_notebook_transport_commands_reject_workspace_all(
+    args: list[str],
+) -> None:
+    result = CliRunner().invoke(cli_main, args)
+
+    assert result.exit_code == 2
+    assert "--workspace requires one workspace name for this command." in result.output
+
+
+@pytest.mark.parametrize(
+    "args",
+    (
+        ["notebook", "ssh", "demo"],
+        ["notebook", "ssh-config", "demo"],
+        ["notebook", "ssh-proxy", "demo"],
+        ["notebook", "exec", "demo", "true"],
+        ["notebook", "shell", "demo"],
+        ["notebook", "scp", "demo", "src", "dst"],
+        ["notebook", "install-deps", "demo", "--slurm"],
+    ),
+)
+def test_cached_notebook_transport_commands_reject_raw_workspace_id(
+    args: list[str],
+) -> None:
+    raw_workspace_id = "ws-12345678-1234-1234-1234-123456789abc"
+    result = CliRunner().invoke(
+        cli_main,
+        [*args[:3], "--workspace", raw_workspace_id, *args[3:]],
+    )
+
+    assert result.exit_code == 2
+    assert "Workspace selection is invalid. Pass a visible workspace name." in result.output
+    assert raw_workspace_id not in result.output
 
 
 def test_job_batch_help_keeps_scope_small() -> None:
@@ -346,6 +456,16 @@ def test_hpc_batch_help_keeps_scope_small() -> None:
     assert "Submit a JSON/TOML matrix through `hpc create`" in result.output
     assert "Required fields after expansion:" in result.output
     assert "name, entrypoint, quota, workspace, project, group, image" in result.output
+
+
+@pytest.mark.parametrize("kind", ("notebook", "job", "hpc", "ray", "serving"))
+def test_workload_batch_config_argument_uses_path_metavar(kind: str) -> None:
+    result = CliRunner().invoke(cli_main, [kind, "batch", "--help"])
+
+    assert result.exit_code == 0, result.output
+    usage = result.output.splitlines()[0]
+    assert usage.endswith("[OPTIONS] PATH")
+    assert "CONFIG_PATH" not in usage
 
 
 def test_notebook_batch_help_keeps_scope_small() -> None:
@@ -371,135 +491,392 @@ def test_ray_and_serving_batch_help_keeps_scope_small() -> None:
     assert "Condition fields may" in serving_output
 
 
-def test_events_help_has_no_cache_mode() -> None:
+def test_events_help_uses_live_tail_options() -> None:
     for args in (
         ["job", "events", "--help"],
         ["notebook", "events", "--help"],
         ["hpc", "events", "--help"],
+        ["ray", "events", "--help"],
+        ["serving", "events", "--help"],
     ):
         result = CliRunner().invoke(cli_main, args)
+        output = _one_line(result.output)
 
         assert result.exit_code == 0
-        assert "--from-cache" not in result.output
         assert "--follow" in result.output
-        assert "--watch" not in result.output
-        assert "Alias for global --json" not in result.output
-        assert "Equivalent to top-level" not in result.output
-        assert "latest 20 events by default" in result.output
-        assert "use --tail N to change the limit" in _one_line(result.output)
-
-    ray_result = CliRunner().invoke(cli_main, ["ray", "events", "--help"])
-    assert ray_result.exit_code == 0
-    assert "--from-cache" not in ray_result.output
-    assert "--follow" in ray_result.output
-    assert "Maximum recent events to display" in _one_line(ray_result.output)
-    assert "default: 20" in _one_line(ray_result.output)
+        assert "--tail INTEGER" in result.output
+        assert "Maximum recent events to display." in output
+        assert "[default: 20; x>=1]" in output
 
     notebook_result = CliRunner().invoke(cli_main, ["notebook", "events", "--help"])
     assert notebook_result.exit_code == 0
     assert "--keyword" in notebook_result.output
-    assert "--type" not in notebook_result.output
-    assert "--reason" not in notebook_result.output
 
 
-def test_model_help_has_no_cross_user_filter() -> None:
-    for subcommand in ("list", "status", "versions"):
-        result = CliRunner().invoke(cli_main, ["model", subcommand, "--help"])
+@pytest.mark.parametrize(
+    "path",
+    (
+        ["job", "list"],
+        ["hpc", "list"],
+        ["ray", "list"],
+        ["notebook", "list"],
+        ["serving", "list"],
+    ),
+)
+def test_workload_list_status_filters_share_metavar(path: list[str]) -> None:
+    result = CliRunner().invoke(cli_main, [*path, "--help"])
 
-        assert result.exit_code == 0
-        assert "--mine" not in result.output
-
-
-def test_serving_help_has_no_all_users_mode() -> None:
-    for subcommand in ("status", "stop", "delete"):
-        result = CliRunner().invoke(cli_main, ["serving", subcommand, "--help"])
-
-        assert result.exit_code == 0
-        assert "--all" not in result.output
-    result = CliRunner().invoke(cli_main, ["serving", "list", "--help"])
-    assert result.exit_code == 0
-    assert "--all" in result.output
+    assert result.exit_code == 0, result.output
+    assert "-s, --status STATUS" in _one_line(result.output)
 
 
-def test_ray_create_help_has_no_raw_json_body_escape_hatch() -> None:
-    result = CliRunner().invoke(cli_main, ["ray", "create", "--help"])
+@pytest.mark.parametrize(
+    "path",
+    (
+        ["job", "list"],
+        ["hpc", "list"],
+        ["ray", "list"],
+        ["notebook", "list"],
+        ["serving", "list"],
+    ),
+)
+def test_workload_list_keyword_filters_share_metavar(path: list[str]) -> None:
+    result = CliRunner().invoke(cli_main, [*path, "--help"])
 
-    assert result.exit_code == 0
-    assert "--json-body" not in result.output
-    assert "--head-image" not in result.output
-    assert "--head-group" not in result.output
-    assert "--head-quota" not in result.output
-    assert "--head-shm" not in result.output
-    assert "--image TEXT" in result.output
-    assert "--group TEXT" in result.output
-    assert "--quota TEXT" in result.output
+    assert result.exit_code == 0, result.output
+    assert "--keyword KEYWORD" in result.output
 
 
-def test_operation_help_has_no_command_local_json_or_removed_confirm_flags() -> None:
-    runner = CliRunner()
-    cases = (
-        ["init", "--help"],
-        ["config", "show", "--help"],
-        ["config", "check", "--help"],
-        ["config", "context", "--help"],
-        ["project", "list", "--help"],
-        ["notebook", "lifecycle", "--help"],
-        ["notebook", "metrics", "--help"],
-        ["job", "metrics", "--help"],
-        ["hpc", "metrics", "--help"],
-        ["serving", "metrics", "--help"],
-        ["image", "register", "--help"],
-        ["image", "save", "--help"],
-        ["image", "set-visibility", "--help"],
-        ["image", "delete", "--help"],
+def test_hpc_and_ray_list_filters_follow_shared_option_order() -> None:
+    for path in (["hpc", "list"], ["ray", "list"]):
+        result = CliRunner().invoke(cli_main, [*path, "--help"])
+
+        assert result.exit_code == 0, result.output
+        output = _one_line(result.output)
+        positions = [
+            output.index("--workspace NAME|all"),
+            output.index("-s, --status STATUS"),
+            output.index("--keyword KEYWORD"),
+            output.index("-n, --limit INTEGER RANGE"),
+            output.index("--all"),
+        ]
+        assert positions == sorted(positions)
+
+
+@pytest.mark.parametrize(
+    ("path", "ordered_options"),
+    (
+        (
+            ["notebook", "events"],
+            ("--workspace", "--pick", "--keyword", "--tail", "--follow", "--interval"),
+        ),
+        (
+            ["job", "events"],
+            (
+                "--workspace",
+                "--pick",
+                "--type",
+                "--reason",
+                "--tail",
+                "--follow",
+                "--interval",
+            ),
+        ),
+        (
+            ["hpc", "events"],
+            ("--workspace", "--pick", "--reason", "--tail", "--follow", "--interval"),
+        ),
+        (
+            ["ray", "events"],
+            ("--workspace", "--pick", "--type", "--reason", "--tail", "--follow", "--interval"),
+        ),
+        (
+            ["serving", "events"],
+            ("--workspace", "--pick", "--type", "--reason", "--tail", "--follow", "--interval"),
+        ),
+    ),
+)
+def test_events_help_orders_common_options_consistently(
+    path: list[str],
+    ordered_options: tuple[str, ...],
+) -> None:
+    result = CliRunner().invoke(cli_main, [*path, "--help"])
+
+    assert result.exit_code == 0, result.output
+    option_order = _help_option_order(result.output)
+    positions = [option_order.index(option) for option in ordered_options]
+    assert positions == sorted(positions)
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        ["notebook", "start"],
+        ["notebook", "stop"],
+        ["notebook", "delete"],
+        ["notebook", "status"],
+        ["notebook", "events"],
+        ["notebook", "lifecycle"],
+        ["notebook", "metrics"],
+        ["job", "status"],
+        ["job", "stop"],
+        ["job", "delete"],
+        ["job", "events"],
+        ["job", "metrics"],
+        ["hpc", "status"],
+        ["hpc", "stop"],
+        ["hpc", "delete"],
+        ["hpc", "events"],
+        ["hpc", "metrics"],
+        ["serving", "status"],
+        ["serving", "stop"],
+        ["serving", "delete"],
+        ["serving", "metrics"],
+        ["image", "detail"],
+        ["image", "save"],
+        ["image", "set-visibility"],
+        ["image", "delete"],
+    ),
+)
+def test_resource_arguments_use_name_metavar(path: list[str]) -> None:
+    result = CliRunner().invoke(cli_main, [*path, "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert " NAME" in _one_line(result.output.split("Options:", 1)[0])
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        ["notebook", "lifecycle"],
+        ["image", "save"],
+        ["image", "set-visibility"],
+        ["user", "ssh-keys", "delete"],
+    ),
+)
+def test_name_resolving_commands_expose_shared_pick_option(path: list[str]) -> None:
+    result = CliRunner().invoke(cli_main, [*path, "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--pick INTEGER" in result.output
+    assert (
+        "Pick the Nth candidate (1-indexed) when the name is ambiguous."
+        in _one_line(result.output)
     )
-    for args in cases:
-        result = runner.invoke(cli_main, args)
-        assert result.exit_code == 0, args
-        assert "Alias for global --json" not in result.output
-        assert "Equivalent to top-level" not in result.output
-
-    delete_result = runner.invoke(cli_main, ["image", "delete", "--help"])
-    assert "--force" not in delete_result.output
-    assert "--yes" in delete_result.output
-
-    ssh_delete = runner.invoke(cli_main, ["user", "ssh-keys", "delete", "--help"])
-    assert ssh_delete.exit_code == 0
-    assert "--force" not in ssh_delete.output
-    assert "--yes" in ssh_delete.output
 
 
-def test_removed_visibility_and_model_source_options_are_absent() -> None:
-    runner = CliRunner()
-    for args in (
-        ["image", "save", "--help"],
-        ["image", "set-visibility", "--help"],
-        ["model", "register", "--help"],
+def test_destructive_commands_share_yes_help() -> None:
+    for path in (
+        ["account", "remove"],
+        ["cache", "clear"],
+        ["notebook", "delete"],
+        ["notebook", "connection", "forget"],
+        ["notebook", "connection", "prune"],
+        ["notebook", "connection", "target", "forget"],
+        ["notebook", "path", "delete"],
+        ["notebook", "profile", "delete"],
+        ["job", "delete"],
+        ["job", "profile", "delete"],
+        ["hpc", "delete"],
+        ["hpc", "profile", "delete"],
+        ["ray", "delete"],
+        ["ray", "profile", "delete"],
+        ["serving", "delete"],
+        ["serving", "profile", "delete"],
+        ["image", "delete"],
+        ["user", "ssh-keys", "delete"],
     ):
-        result = runner.invoke(cli_main, args)
-        assert result.exit_code == 0, args
-        assert "--public" not in result.output
-        assert "--private" not in result.output
-        assert "--source-type" not in result.output
+        result = CliRunner().invoke(cli_main, [*path, "--help"])
 
+        assert result.exit_code == 0, result.output
+        assert "-y, --yes" in result.output
+        assert "Skip the interactive confirmation prompt." in _one_line(result.output)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    (
+        (
+            ["job", "create"],
+            (
+                "--name NAME",
+                "--workspace NAME",
+                "--project NAME",
+                "--group NAME",
+                "--quota SPEC",
+                "--image NAME|URL",
+                "--profile NAME",
+            ),
+        ),
+        (
+            ["hpc", "create"],
+            (
+                "--name NAME",
+                "--workspace NAME",
+                "--project NAME",
+                "--group NAME",
+                "--quota SPEC",
+                "--image NAME|URL",
+                "--profile NAME",
+            ),
+        ),
+        (
+            ["notebook", "create"],
+            (
+                "--name NAME",
+                "--workspace NAME",
+                "--project NAME",
+                "--group NAME",
+                "--quota SPEC",
+                "--image NAME|URL",
+                "--profile NAME",
+            ),
+        ),
+        (
+            ["ray", "create"],
+            (
+                "--name NAME",
+                "--workspace NAME",
+                "--project NAME",
+                "--group NAME",
+                "--quota SPEC",
+                "--image NAME|URL",
+                "--profile NAME",
+                "--worker SPEC",
+            ),
+        ),
+        (
+            ["serving", "create"],
+            (
+                "--name NAME",
+                "--model NAME",
+                "--workspace NAME",
+                "--project NAME",
+                "--group NAME",
+                "--quota SPEC",
+                "--image NAME|URL",
+                "--profile NAME",
+            ),
+        ),
+    ),
+)
+def test_workload_create_help_uses_name_and_spec_metavars(
+    path: list[str],
+    expected: tuple[str, ...],
+) -> None:
+    result = CliRunner().invoke(cli_main, [*path, "--help"])
+
+    assert result.exit_code == 0, result.output
+    output = _one_line(result.output)
+    for option in expected:
+        assert option in output
+
+
+@pytest.mark.parametrize(
+    ("path", "ordered_options"),
+    (
+        (
+            ["notebook", "create"],
+            (
+                "--name",
+                "--workspace",
+                "--project",
+                "--group",
+                "--quota",
+                "--image",
+                "--profile",
+                "--shm-size",
+            ),
+        ),
+        (
+            ["job", "create"],
+            (
+                "--name",
+                "--command",
+                "--workspace",
+                "--project",
+                "--group",
+                "--quota",
+                "--image",
+                "--profile",
+                "--framework",
+            ),
+        ),
+        (
+            ["hpc", "create"],
+            (
+                "--name",
+                "--entrypoint",
+                "--workspace",
+                "--project",
+                "--group",
+                "--quota",
+                "--image",
+                "--profile",
+                "--image-type",
+            ),
+        ),
+        (
+            ["ray", "create"],
+            (
+                "--name",
+                "--command",
+                "--workspace",
+                "--project",
+                "--group",
+                "--quota",
+                "--image",
+                "--profile",
+                "--description",
+            ),
+        ),
+        (
+            ["serving", "create"],
+            (
+                "--name",
+                "--model",
+                "--model-version",
+                "--command",
+                "--port",
+                "--workspace",
+                "--project",
+                "--group",
+                "--quota",
+                "--image",
+                "--profile",
+                "--replicas",
+            ),
+        ),
+    ),
+)
+def test_workload_create_help_orders_common_scheduling_selectors(
+    path: list[str],
+    ordered_options: tuple[str, ...],
+) -> None:
+    result = CliRunner().invoke(cli_main, [*path, "--help"])
+
+    assert result.exit_code == 0, result.output
+    option_order = _help_option_order(result.output)
+    positions = [option_order.index(option) for option in ordered_options]
+    assert positions == sorted(positions)
+
+
+def test_image_and_model_help_expose_current_visibility_and_source_options() -> None:
+    runner = CliRunner()
     save_result = runner.invoke(cli_main, ["image", "save", "--help"])
-    assert "--workspace TEXT" in save_result.output
+    visibility_result = runner.invoke(
+        cli_main,
+        ["image", "set-visibility", "--help"],
+    )
+    register_result = runner.invoke(cli_main, ["model", "register", "--help"])
+
+    assert save_result.exit_code == 0
+    assert "--workspace NAME" in save_result.output
     assert "--visibility [private|public]" in save_result.output
-
-
-def test_resources_availability_has_no_watch_option() -> None:
-    result = CliRunner().invoke(cli_main, ["resources", "availability", "--help"])
-
-    assert result.exit_code == 0
-    assert "--watch" not in result.output
-    assert "--interval" not in result.output
-
-
-def test_notebook_help_does_not_advertise_platform_cp() -> None:
-    result = CliRunner().invoke(cli_main, ["notebook", "--help"])
-
-    assert result.exit_code == 0
-    assert " cp " not in result.output
+    assert visibility_result.exit_code == 0
+    assert "--visibility [private|public]" in visibility_result.output
+    assert register_result.exit_code == 0
+    assert "--source-path PATH" in register_result.output
 
 
 def test_notebook_scp_help_is_ssh_only() -> None:
@@ -509,11 +886,9 @@ def test_notebook_scp_help_is_ssh_only() -> None:
     assert "SCP" in result.output
     assert "public-internet notebook" in result.output
     assert "/inspire/" in result.output
-    assert "WebDAV" not in result.output
-    assert "JupyterTerminal" not in result.output
 
 
-def test_notebook_proxy_url_help_hides_internal_routing_terms() -> None:
+def test_notebook_proxy_url_help_exposes_temporary_route_info() -> None:
     result = CliRunner().invoke(cli_main, ["notebook", "proxy-url", "--help"])
 
     assert result.exit_code == 0

@@ -144,7 +144,7 @@ def test_ray_events_uses_bounded_name_scan_and_recent_event_pages(monkeypatch) -
     assert captured["page_size"] == 200
     assert captured["max_pages"] == 5
     assert captured["sort_ascending"] is False
-    assert [event["message"] for event in _json_data(result.output)["events"]] == [
+    assert [event["message"] for event in _json_data(result.output)["items"]] == [
         "older",
         "newest",
     ]
@@ -171,7 +171,7 @@ def test_project_owners_default_limit_all_and_conflict(monkeypatch) -> None:  # 
     limited = CliRunner().invoke(cli_main, ["--json", "project", "owners"])
     assert limited.exit_code == 0, limited.output
     limited_data = _json_data(limited.output)
-    assert len(limited_data["owners"]) == 20
+    assert len(limited_data["items"]) == 20
     assert limited_data["shown"] == 20
     assert limited_data["total"] == 25
     assert limited_data["truncated"] is True
@@ -179,7 +179,7 @@ def test_project_owners_default_limit_all_and_conflict(monkeypatch) -> None:  # 
     complete = CliRunner().invoke(cli_main, ["--json", "project", "owners", "--all"])
     assert complete.exit_code == 0, complete.output
     complete_data = _json_data(complete.output)
-    assert len(complete_data["owners"]) == 25
+    assert len(complete_data["items"]) == 25
     assert "truncated" not in complete_data
 
     conflict = CliRunner().invoke(

@@ -1,1 +1,0 @@
-# Inspire CLI tests

@@ -164,7 +164,7 @@ def open_notebook_lab(
 
     # One-shot terminal operations only need the Jupyter proxy surface.  Going
     # straight to it avoids waiting for the outer /ide page and the complete
-    # JupyterLab UI; keep the UI path as a compatibility fallback.
+    # JupyterLab UI; keep the UI path as a secondary route.
     if prefer_direct:
         lab_handle = open_direct(fast=True)
         if lab_handle is not None:
@@ -196,9 +196,8 @@ def open_notebook_lab(
     if lab_handle is not None:
         return lab_handle
 
-    # Preserve the historical direct fallback for callers that prefer the UI
-    # route.  A direct-first caller only reaches this retry after the UI route
-    # also failed, which can recover a notebook that became ready meanwhile.
+    # Retry the direct route after the UI route. A direct-first caller reaches
+    # this point only after both routes have already been attempted.
     lab_handle = open_direct(fast=prefer_direct)
     if lab_handle is not None:
         return lab_handle
@@ -299,15 +298,6 @@ def _split_ide_gateway(url: str) -> Optional[tuple[str, str, str, str]]:
     return parts.scheme, parts.netloc, path, query
 
 
-def _vscode_proxy_suffix(url: str) -> Optional[str]:
-    """Host-less VSCode proxy suffix (path starting with ``/``, no scheme/host)."""
-    parsed = _split_ide_gateway(url)
-    if parsed is None:
-        return None
-    _scheme, _netloc, path, query = parsed
-    return urlunsplit(("", "", path, query, ""))
-
-
 def _ide_gateway_url(url: str) -> Optional[str]:
     """Full VSCode IDE gateway URL (scheme + host), used for caching and probing."""
     parsed = _split_ide_gateway(url)
@@ -353,7 +343,7 @@ def build_notebook_port_forward_url(
 
 
 # ---------------------------------------------------------------------------
-# VSCode proxy suffix — per-account cache, probe, resolution
+# VS Code IDE URL — per-account cache, probe, resolution
 # ---------------------------------------------------------------------------
 
 _IDE_URL_CACHE_BASENAME = "notebook-ide-url"
@@ -583,42 +573,6 @@ def _resolve_notebook_ide_url_sync(
                 context.close()
             finally:
                 browser.close()
-
-
-def resolve_notebook_vscode_proxy_suffix(
-    notebook_id: str,
-    *,
-    session: Optional[WebSession] = None,
-    headless: bool = True,
-    timeout: int = 60,
-    refresh: bool = False,
-    cache_ttl_seconds: int = DEFAULT_IDE_URL_CACHE_TTL_SECONDS,
-) -> Optional[str]:
-    """Resolve a notebook's host-less VSCode proxy suffix, caching the live URL.
-
-    The suffix embeds a per-container token that the notebook detail API does
-    not expose, so it is read by loading the IDE in a browser. That token is
-    stable for the life of the container, so the resolved gateway URL is cached
-    per account (keyed by notebook id) and validated with a cheap HTTP probe
-    before reuse — the browser only runs on a cold cache or after the token
-    rotated (container restart). Cached rtunnel proxy state and SSH bridges,
-    which already hold the same token after ``notebook ssh``/``exec``, are reused
-    as warm candidates.
-
-    Pass ``refresh=True`` to skip the cache/probe and force a fresh browser
-    derivation. Returns ``None`` if the IDE never loads (notebook not RUNNING).
-    """
-    ide_url = resolve_notebook_vscode_ide_url(
-        notebook_id,
-        session=session,
-        headless=headless,
-        timeout=timeout,
-        refresh=refresh,
-        cache_ttl_seconds=cache_ttl_seconds,
-    )
-    if not ide_url:
-        return None
-    return _vscode_proxy_suffix(ide_url)
 
 
 def resolve_notebook_vscode_ide_url(
@@ -876,6 +830,5 @@ __all__ = [
     "open_notebook_lab",
     "resolve_notebook_port_forward_url",
     "resolve_notebook_vscode_ide_url",
-    "resolve_notebook_vscode_proxy_suffix",
     "run_command_in_notebook",
 ]

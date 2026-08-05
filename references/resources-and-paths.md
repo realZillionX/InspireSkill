@@ -14,7 +14,7 @@
 
 调度条件没有隐式默认值。创建 Workload 时显式传入，或用 Workload Profile 保存这五类条件。Path Alias 只表示远端路径，不能替代 Workspace、Project、Group、Quota 或 Image。
 
-Restricted Notebook 的文件流转边界是 `/inspire/<storage>/...` 共享路径。不要新增 WebDAV Copy 命令；通过可上网 Notebook 的 `notebook scp` 或外部 `rsync` 搬入 / 搬出共享盘。
+Restricted Notebook 的文件流转边界是 `/inspire/<storage>/...` 共享路径。通过可上网 Notebook 的 `notebook scp` 或外部 `rsync` 搬入 / 搬出共享盘。
 
 ## 2. Workspace 判断
 
@@ -29,7 +29,7 @@ Restricted Notebook 的文件流转边界是 `/inspire/<storage>/...` 共享路�
 
 ## 3. Resource Truth
 
-资源事实来自 Live 查询，不来自本地缓存、旧截图、旧 Reference 或历史任务输出。判断顺序：
+资源事实来自 Live 查询；判断顺序：
 
 1. 先看账号当前可见的 Workspace、Project 和 Compute Group 名字。
 2. 按 Workload 类型查对应 Quota：CPU Notebook / HPC / CPU Ray 在 `CPU资源空间`，GPU Notebook / Job / Serving 在 `分布式训练空间`。
@@ -42,11 +42,11 @@ Restricted Notebook 的文件流转边界是 `/inspire/<storage>/...` 共享路�
 
 ### Name 解析缓存
 
-CLI 为每个启智账号维护一份可丢弃的本地资源名称索引，只用于加速 Name 到内部请求 Handle 的解析。普通 `list`、`status`、`events`、`metrics`、Quota、规格和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。
+CLI 为每个启智账号维护一份可丢弃的本地资源名称索引，只用于加速 Name 解析。普通 `list`、`status`、`events`、`metrics`、Quota、规格和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。
 
 - 缓存项使用短 TTL；存在有效 Web Session 时，普通命令会静默触发到期范围的后台刷新。
-- Create 成功后会立即写入新名称，Delete 成功后会将旧映射标记为失效。
-- 平台侧删除、同名重建或 Compute Group 变动会在 Live 重解析、到期刷新或手动刷新时替换旧映射。
+- Create 成功后会立即写入新名称，Delete 成功后会将对应缓存记录标记为失效。
+- 平台侧删除、同名重建或 Compute Group 变动会在 Live 重解析、到期刷新或手动刷新时更新缓存记录。
 - 缓存数据库损坏、锁冲突或刷新失败不能阻断正常的 Live 查询；清空缓存不会删除任何平台资源。
 
 需要主动管理时使用：
@@ -61,10 +61,6 @@ inspire cache clear --yes
 ```
 
 `cache refresh` 默认只刷新到期范围；指定 Resource、Workspace、Name 或 `--full` 时会主动刷新对应范围。具体可选 Resource 以 `inspire cache refresh --help` 为准。
-
-### 输出预算
-
-发现类列表默认最多展示 20 项；用对应命令的 `--limit` 收窄，或用 `--all` 明确请求完整结果。Batch 命令会完整处理输入条目，但默认只展示 20 个结果名称；用 `--result-limit` 或 `--all-results` 扩展展示。Job 日志默认最多展示 100 行 / 条目，并受 16,000 个字符的总预算约束。默认输出被截断时，CLI 只显示短提示和可用的完整结果选项；`--json` 会提供 `shown`、`total`、`truncated` 等最小元数据。
 
 ## 4. Quota 语义
 
@@ -116,5 +112,3 @@ Profile 是调度条件组 Alias，只保存 `workspace`、`project`、`group`�
 | PENDING 很久 | 实时资源不足、优先级不足、节点条件不满足 |
 | RUNNING 但业务没推进 | 看 Metrics 是否有 GPU / CPU / I/O 负载，再回到日志和产物 |
 | 多节点某个 Worker 掉队 | 先看 Per-Instance Metrics 和 Instances，再看该 Worker 日志 |
-
-终态且不再需要的资源要清理。Running 对象先 stop，再 delete；不确定是否仍有人使用时跳过。

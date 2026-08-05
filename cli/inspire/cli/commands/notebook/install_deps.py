@@ -37,10 +37,13 @@ from inspire.bridge.tunnel import (
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, pass_context
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.platform.web import browser_api as browser_api_module
+from inspire.platform.web.session import WebSession
 
-from .transport import preflight_notebook_transport_policy
 from .public_output import sanitize_public_text
+from .target_resolver import NOTEBOOK_TARGET_WORKSPACE_HELP, validate_specific_workspace
+from .transport import preflight_notebook_transport_policy
 
 DEFAULT_RAY_VERSION = "2.55.1"
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -195,14 +198,54 @@ def _build_ray_step(version: str, *, pip_index_url: str) -> str:
     )
 
 
-def _resolve_notebook(notebook: str, tunnel_config: TunnelConfig):
-    bridge = tunnel_config.get_bridge(notebook)
-    if bridge is None:
+def _resolve_notebook(
+    notebook: str,
+    tunnel_config: TunnelConfig,
+    *,
+    notebook_id: str | None = None,
+    workspace: str | None = None,
+    pick: int | None = None,
+):
+    requested_workspace = str(workspace or "").strip()
+    candidates = [
+        bridge
+        for bridge in tunnel_config.list_bridges()
+        if notebook
+        in {
+            str(getattr(bridge, "name", "") or "").strip(),
+            str(getattr(bridge, "notebook_name", "") or "").strip(),
+        }
+        and (
+            not requested_workspace
+            or str(getattr(bridge, "workspace_name", "") or "").strip() == requested_workspace
+        )
+    ]
+    if notebook_id:
+        exact = [
+            bridge
+            for bridge in candidates
+            if str(getattr(bridge, "notebook_id", "") or "").strip() == notebook_id
+        ]
+        if len(exact) == 1:
+            return exact[0]
+    if not candidates:
         raise click.UsageError(
             f"No cached notebook connection for {notebook!r}. "
             "Create one with: inspire notebook connection refresh <notebook> --workspace <workspace>"
         )
-    return bridge
+    if pick is not None:
+        if pick < 1 or pick > len(candidates):
+            raise click.UsageError(
+                f"--pick {pick} out of range; {len(candidates)} cached notebook "
+                f"connections match {notebook!r}."
+            )
+        return candidates[pick - 1]
+    if len(candidates) > 1:
+        raise click.UsageError(
+            f"Multiple cached notebook connections match {notebook!r}. "
+            f"{NAME_PICK_HELP}"
+        )
+    return candidates[0]
 
 
 def _run_step(
@@ -214,12 +257,15 @@ def _run_step(
     use_jupyter: bool,
     timeout: int,
     show_output: bool,
+    tunnel_config: TunnelConfig | None = None,
+    session: WebSession | None = None,
 ) -> int:
     del label
     if use_jupyter:
         result = browser_api_module.run_command_capture_in_notebook(
             notebook_id=notebook_id,
             command=command,
+            session=session,
             timeout=timeout,
         )
         if show_output and result.output:
@@ -228,6 +274,7 @@ def _run_step(
     return run_ssh_command_streaming(
         command=command,
         bridge_name=notebook,
+        config=tunnel_config,
         timeout=timeout,
         output_callback=(
             (lambda line: click.echo(sanitize_public_text(line, omit_urls=True), nl=False))
@@ -238,7 +285,20 @@ def _run_step(
 
 
 @click.command("install-deps")
-@click.argument("notebook", metavar="NOTEBOOK")
+@click.argument("notebook", metavar="NAME")
+@click.option(
+    "--workspace",
+    required=False,
+    metavar="NAME",
+    callback=validate_specific_workspace,
+    help=NOTEBOOK_TARGET_WORKSPACE_HELP,
+)
+@click.option(
+    "--account",
+    required=False,
+    metavar="NAME",
+    help="Account name for this notebook target.",
+)
 @click.option(
     "--slurm/--no-slurm",
     default=False,
@@ -262,6 +322,7 @@ def _run_step(
     show_default=True,
     help="Ray version to install when --ray is set.",
 )
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
 @click.option(
     "--pip-index-url",
     default=DEFAULT_PIP_INDEX_URL,
@@ -289,9 +350,12 @@ def _run_step(
 def install_deps_cmd(
     ctx: Context,
     notebook: str,
+    workspace: str | None,
+    account: str | None,
     slurm: bool,
     ray: bool,
     ray_version: str,
+    pick: int | None,
     pip_index_url: str,
     timeout: int,
 ) -> None:
@@ -331,15 +395,26 @@ def install_deps_cmd(
     policy = preflight_notebook_transport_policy(
         ctx,
         notebook=notebook,
-        workspace=None,
+        workspace=workspace,
+        account=account,
         timeout=30,
+        pick=pick,
     )
     use_jupyter = not policy.allow_ssh
 
+    tunnel_config: TunnelConfig | None = None
+    bridge_name = notebook
     try:
         if not use_jupyter:
-            tunnel_config = load_tunnel_config()
-            _resolve_notebook(notebook, tunnel_config)
+            tunnel_config = load_tunnel_config(account=account) if account else load_tunnel_config()
+            bridge = _resolve_notebook(
+                notebook,
+                tunnel_config,
+                notebook_id=policy.notebook_id,
+                workspace=workspace,
+                pick=pick,
+            )
+            bridge_name = bridge.name
     except click.UsageError:
         raise
     except Exception as e:
@@ -364,11 +439,13 @@ def install_deps_cmd(
         exit_code = _run_step(
             label,
             command,
-            notebook=notebook,
+            notebook=bridge_name,
             notebook_id=policy.notebook_id,
             use_jupyter=use_jupyter,
             timeout=timeout,
             show_output=ctx.debug and not ctx.json_output,
+            tunnel_config=tunnel_config,
+            session=policy.session,
         )
         if exit_code != 0:
             _handle_error(

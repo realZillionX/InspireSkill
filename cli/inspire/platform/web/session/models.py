@@ -3,10 +3,6 @@
 Storage: ``~/.inspire/accounts/<active>/web_session.json``, colocated with
 the account's ``config.toml`` and ``bridges.json``. Switching account
 switches session cache in lockstep.
-
-No legacy fallback: the CLI requires an active account. Session saves
-prefer an explicit ``account=`` override, then the account already bound
-to the session, and only then ``inspire.accounts.current_account()``.
 """
 
 from __future__ import annotations
@@ -151,9 +147,9 @@ def _is_valid_session_cache_payload(data: object) -> bool:
         return False
 
     storage_state = data.get("storage_state")
-    if storage_state is not None and not _is_valid_storage_state(storage_state):
+    if not _is_valid_storage_state(storage_state):
         return False
-    if not _is_string_mapping(data.get("cookies")):
+    if "cookies" in data:
         return False
 
     for field in ("workspace_id", "login_username", "base_url", "account"):
@@ -188,7 +184,7 @@ class WebSession:
     all_workspace_fair_scheduling: Optional[dict[str, bool]] = None
     account: Optional[str] = None
 
-    # Back-compat: older cache stored only name->value cookies
+    # Kept in memory for websocket clients; storage_state is the cache format.
     cookies: Optional[dict[str, str]] = None
 
     def is_valid(self) -> bool:
@@ -198,7 +194,6 @@ class WebSession:
     def to_dict(self) -> dict:
         return {
             "storage_state": self.storage_state,
-            "cookies": self.cookies,
             "workspace_id": self.workspace_id,
             "login_username": self.login_username,
             "base_url": self.base_url,
@@ -212,20 +207,23 @@ class WebSession:
 
     @classmethod
     def from_dict(cls, data: dict) -> "WebSession":
-        # Back-compat with older cache files that stored only cookies
         storage_state = data.get("storage_state")
-        cookies = data.get("cookies")
-        if storage_state is None:
-            storage_state = {"cookies": [], "origins": []}
-        elif isinstance(storage_state, dict):
+        if isinstance(storage_state, dict):
             storage_state = dict(storage_state)
             storage_state.setdefault("cookies", [])
             storage_state.setdefault("origins", [])
         else:
             raise ValueError("Invalid session storage state.")
+        storage_cookies = storage_state["cookies"]
+        cookies = {
+            cookie["name"]: cookie["value"]
+            for cookie in storage_cookies
+            if isinstance(cookie, dict)
+            and isinstance(cookie.get("name"), str)
+            and isinstance(cookie.get("value"), str)
+        }
         return cls(
             storage_state=storage_state,
-            cookies=cookies,
             workspace_id=data.get("workspace_id"),
             login_username=data.get("login_username"),
             base_url=data.get("base_url"),
@@ -235,6 +233,7 @@ class WebSession:
             all_workspace_fair_scheduling=data.get("all_workspace_fair_scheduling"),
             account=data.get("account"),
             created_at=data["created_at"],
+            cookies=cookies,
         )
 
     def save(self, account: Optional[str] = None) -> None:

@@ -188,7 +188,8 @@ def _current_user_lookup_failure_message(session: web_session_module.WebSession)
     del session
     return (
         "Cannot determine the current platform account. "
-        "Refresh the account session with `inspire account login`, then retry."
+        "Refresh the account session with `inspire account add` or `inspire init`, "
+        "then retry."
     )
 
 
@@ -328,17 +329,10 @@ def _validate_notebook_account_access(
         and current_user_id not in owner_ids
         and (not member_ids or current_user_id not in member_ids)
     ):
-        return (
-            False,
-            "The current user is not allowed for this notebook.",
-        )
+        return False, "The current account is not allowed for this notebook."
 
     if owner_names and current_username and current_username not in owner_names:
-        return (
-            False,
-            f"current user '{current_username}' does not match notebook owner "
-            f"({', '.join(sorted(owner_names))})",
-        )
+        return False, "The current account does not match this notebook."
 
     return True, ""
 
@@ -477,15 +471,13 @@ def _list_notebooks_for_workspaces(
 
 def _collect_workspace_ids_for_lookup(
     session: web_session_module.WebSession,
-    config: Any,
 ) -> list[str]:
     """Enumerate workspaces in which to look up a notebook by name.
 
-    This is only a broad live-session fallback for legacy internal call sites.
     User-facing query and lifecycle commands pass explicit workspace IDs from
-    ``--workspace <name|all>`` instead of inheriting browser state.
+    ``--workspace <name|all>``. SSH setup uses the authenticated session's
+    workspace list only when no workspace selector was supplied.
     """
-    del config
     candidates: list[str] = []
     all_workspace_ids = getattr(session, "all_workspace_ids", None)
     if isinstance(all_workspace_ids, list):
@@ -506,11 +498,11 @@ def _resolve_notebook_id(
     ctx: Context,
     *,
     session: web_session_module.WebSession,
-    config: Any,
     base_url: str,
     identifier: str,
     json_output: bool,
     workspace_ids: list[str] | None = None,
+    pick: int | None = None,
     require_live: bool = False,
     cache_index: ResourceIndex | None = None,
 ) -> tuple[str, str | None]:
@@ -536,7 +528,7 @@ def _resolve_notebook_id(
             ),
         )
 
-    workspace_ids = workspace_ids or _collect_workspace_ids_for_lookup(session, config)
+    workspace_ids = workspace_ids or _collect_workspace_ids_for_lookup(session)
 
     if not workspace_ids:
         _handle_error(
@@ -738,6 +730,29 @@ def _resolve_notebook_id(
             raise RuntimeError("unreachable")
         return notebook_id, ws_id
 
+    if pick is not None:
+        if pick < 1 or pick > len(matches):
+            _handle_error(
+                ctx,
+                "ValidationError",
+                (
+                    f"--pick {pick} out of range; {len(matches)} notebooks "
+                    f"share the name {identifier!r}."
+                ),
+                EXIT_VALIDATION_ERROR,
+            )
+        ws_id, item = matches[pick - 1]
+        notebook_id = _notebook_id_from_item(item)
+        if not notebook_id:
+            _handle_error(
+                ctx,
+                "APIError",
+                f"Notebook '{identifier}' is missing a required API field.",
+                EXIT_API_ERROR,
+            )
+            raise RuntimeError("unreachable")
+        return notebook_id, ws_id
+
     def _label_for(item: dict, ws_id: str) -> str:
         status = str(item.get("status") or "Unknown")
         resource = _format_notebook_resource(item)
@@ -788,12 +803,12 @@ def _run_notebook_operation_with_stale_handle_retry(
     ctx: Context,
     *,
     session: web_session_module.WebSession,
-    config: Any,
     base_url: str,
     identifier: str,
     json_output: bool,
     workspace_ids: list[str] | None,
     operation: Callable[[str], _T],
+    pick: int | None = None,
     cache_index: ResourceIndex | None = None,
 ) -> tuple[_T, str, str | None]:
     """Run one notebook operation and recover once from an explicit stale handle."""
@@ -803,11 +818,11 @@ def _run_notebook_operation_with_stale_handle_retry(
         handle, workspace_id = _resolve_notebook_id(
             ctx,
             session=session,
-            config=config,
             base_url=base_url,
             identifier=identifier,
             json_output=json_output,
             workspace_ids=workspace_ids,
+            pick=pick,
             require_live=require_live,
             cache_index=cache_index,
         )

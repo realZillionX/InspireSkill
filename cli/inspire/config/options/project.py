@@ -1,4 +1,4 @@
-"""Config options: Job, Notebook, Sync, and Workspaces."""
+"""Config options: Job and Notebook."""
 
 from __future__ import annotations
 
@@ -60,17 +60,3 @@ NOTEBOOK_OPTIONS: list[ConfigOption] = [
         scope="project",
     ),
 ]
-
-SYNC_OPTIONS: list[ConfigOption] = [
-    ConfigOption(
-        env_var="INSPIRE_DEFAULT_REMOTE",
-        toml_key="sync.default_remote",
-        field_name="default_remote",
-        description="Default git remote name",
-        default="origin",
-        category="Sync",
-        scope="project",
-    ),
-]
-
-WORKSPACES_OPTIONS: list[ConfigOption] = []

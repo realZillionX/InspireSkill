@@ -27,18 +27,12 @@ def _cookie_jar_from_session(
             path = cookie.get("path") or "/"
             jar.set(name, value, domain=domain, path=path)
 
-    if not storage_cookies and session.cookies:
-        for name, value in session.cookies.items():
-            if not name:
-                continue
-            jar.set(name, value, domain=base_host, path="/")
-
     return jar
 
 
 def build_requests_session(session: WebSession, base_url: str) -> requests.Session:
     storage_cookies = session.storage_state.get("cookies") if session.storage_state else None
-    if not storage_cookies and not session.cookies:
+    if not storage_cookies:
         raise ValueError("Session expired or invalid (missing storage state)")
 
     http = requests.Session()

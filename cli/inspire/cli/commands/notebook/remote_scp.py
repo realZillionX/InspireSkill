@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -25,10 +26,17 @@ from inspire.bridge.tunnel import (
 from inspire.bridge.tunnel.scp import run_scp_transfer
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
-from .target_resolver import resolve_cached_notebook_target
+from .target_resolver import (
+    NOTEBOOK_TARGET_WORKSPACE_HELP,
+    resolve_cached_notebook_target,
+    validate_specific_workspace,
+)
 from .transport import preflight_notebook_transport_policy
+
+logger = logging.getLogger(__name__)
 
 
 def _scp_failure_details(result: object) -> str | None:
@@ -58,10 +66,23 @@ def _warn_if_remote_path_is_relative(remote_path: str, *, download: bool) -> Non
 
 
 @click.command("scp")
-@click.argument("notebook")
-@click.argument("source")
-@click.argument("destination")
-@click.option("--account", required=False, help="Account name for this notebook target.")
+@click.argument("notebook", metavar="NAME")
+@click.argument("source", metavar="SOURCE")
+@click.argument("destination", metavar="DESTINATION")
+@click.option(
+    "--workspace",
+    required=False,
+    metavar="NAME",
+    callback=validate_specific_workspace,
+    help=NOTEBOOK_TARGET_WORKSPACE_HELP,
+)
+@click.option(
+    "--account",
+    required=False,
+    metavar="NAME",
+    help="Account name for this notebook target.",
+)
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
@@ -76,7 +97,9 @@ def bridge_scp(
     notebook: str,
     source: str,
     destination: str,
+    workspace: str | None,
     account: str | None,
+    pick: int | None,
     ignore_target_cache: bool,
     download: bool,
     recursive: bool,
@@ -131,9 +154,10 @@ def bridge_scp(
     policy = preflight_notebook_transport_policy(
         ctx,
         notebook=notebook,
-        workspace=None,
+        workspace=workspace,
         account=account,
         timeout=30,
+        pick=pick,
     )
     if not policy.allow_ssh:
         _handle_error(
@@ -153,11 +177,12 @@ def bridge_scp(
     target = resolve_cached_notebook_target(
         ctx,
         notebook=notebook,
-        workspace=None,
+        workspace=workspace,
         account=account,
         ignore_target_cache=ignore_target_cache,
         verify_target_cache=True,
         allow_prompt=not ctx.json_output,
+        pick=pick,
     )
     if target is None:
         explicit_account = (
@@ -209,14 +234,12 @@ def bridge_scp(
 
     direction = "download" if download else "upload"
 
-    if not ctx.json_output and ctx.debug:
-        click.echo(f"SCP {direction}: {scrub_raw_ids(source)} -> {scrub_raw_ids(destination)}")
-        if bridge:
-            click.echo(f"Notebook: {scrub_raw_ids(bridge)}")
-        if used_alias:
-            click.echo(f"Remote path: {scrub_raw_ids(remote_path)}")
-        if recursive:
-            click.echo("Mode: recursive")
+    logger.debug(
+        "Notebook SCP transfer started direction=%s recursive=%s alias_resolved=%s",
+        direction,
+        recursive,
+        used_alias,
+    )
 
     try:
         result = run_scp_transfer(

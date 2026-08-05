@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from inspire.cli.commands.serving.public_output import public_serving_list_item
 from inspire.platform.web.browser_api import servings as servings_module
 from inspire.platform.web.browser_api.servings import (
     ServingInfo,
@@ -84,11 +85,15 @@ def test_list_servings_posts_expected_body_and_parses_response(monkeypatch) -> N
                         "status": "RUNNING",
                         "replicas": 2,
                         "image": "reg/img:latest",
+                        "service_type": "CUSTOM",
                         "project_id": "project-1",
                         "workspace_id": "ws-override",
                         "logic_compute_group_id": "lcg-1",
                         "created_at": "1770000000000",
-                        "created_by": {"id": "user-1", "name": "Alice"},
+                        "created_by": {
+                            "id": "user-1",
+                            "display_name": "Alice",
+                        },
                     }
                 ],
                 "total": 7,
@@ -112,7 +117,8 @@ def test_list_servings_posts_expected_body_and_parses_response(monkeypatch) -> N
     assert item.name == "demo-serving"
     assert item.status == "RUNNING"
     assert item.replicas == 2
-    assert item.created_by == "Alice"  # nested object flattened to display name
+    assert item.created_by_name == "Alice"
+    assert "service_type" not in item.__dataclass_fields__
 
     # Wire-format: POST, correct endpoint, correct body.
     assert record["method"] == "POST"
@@ -125,8 +131,8 @@ def test_list_servings_posts_expected_body_and_parses_response(monkeypatch) -> N
     }
 
 
-def test_list_servings_requires_workspace_id() -> None:
-    with pytest.raises(ValueError, match="workspace_id is required"):
+def test_list_servings_requires_workspace_selection() -> None:
+    with pytest.raises(ValueError, match="Workspace selection is required\\."):
         list_servings(session=_FakeSession(workspace_id="ws-session"))
 
 
@@ -142,6 +148,44 @@ def test_list_servings_falls_back_to_list_key_when_inference_servings_missing(
     items, total = list_servings(workspace_id="ws-given", session=_FakeSession())
     assert total == 1
     assert items[0].inference_serving_id == "sv-1"  # falls back from `id`
+
+
+@pytest.mark.parametrize(
+    "identity_fields",
+    (
+        {
+            "created_by": {
+                "id": "user-hidden",
+                "username": "usr_391",
+                "login_name": "253108120116",
+            }
+        },
+        {"created_by": "student-42"},
+        {"creator": "usr_391"},
+        {"owner": "253108120116"},
+    ),
+)
+def test_list_servings_does_not_promote_identity_handles_to_names(
+    monkeypatch,
+    identity_fields: dict[str, Any],
+) -> None:
+    record: dict[str, Any] = {}
+    item = {"id": "sv-1", "name": "demo", **identity_fields}
+    _install_fake_request(
+        monkeypatch,
+        {"code": 0, "data": {"inference_servings": [item], "total": 1}},
+        record,
+    )
+
+    items, total = list_servings(workspace_id="ws-given", session=_FakeSession())
+
+    assert total == 1
+    assert items[0].created_by_name == ""
+    public = public_serving_list_item(items[0])
+    assert public["created_by"] == ""
+    rendered = repr(public)
+    for hidden in ("user-hidden", "usr_391", "student-42", "253108120116"):
+        assert hidden not in rendered
 
 
 def test_list_servings_supports_current_filter_fields(monkeypatch) -> None:

@@ -9,7 +9,7 @@ import logging
 import re
 import time
 from http.cookiejar import Cookie
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import Any, Optional, cast
 from urllib.parse import urljoin
 
 from inspire.config import Config
@@ -26,9 +26,6 @@ from .proxy import (
     redact_proxy_url,
     resolve_playwright_proxy_config,
 )
-
-if TYPE_CHECKING:
-    from playwright.sync_api import ProxySettings
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +317,7 @@ def _login_not_complete_message(
         lines.extend(
             [
                 "Check that the password is correct and `auth.username` is the platform login "
-                "ID (phone, student ID, or email), not the display name.",
+                "name (phone number, student number, or email), not the display name.",
                 "If those are correct, verify that the configured proxy can reach both the "
                 "public internet and *.sii.edu.cn, and whether the platform login page is "
                 "asking for CAPTCHA, MFA, or another manual verification step.",
@@ -404,8 +401,8 @@ def _cas_rsa_chunk_size(modulus_hex: str) -> int:
     return 2 * (digit_count - 1)
 
 
-def _legacy_cas_encrypt_password(password: str, exponent_hex: str, modulus_hex: str) -> str:
-    """Match the CAS page's legacy RSAUtils.encryptedString implementation."""
+def _cas_page_encrypt_password(password: str, exponent_hex: str, modulus_hex: str) -> str:
+    """Match the CAS page's RSAUtils.encryptedString implementation."""
     exponent = int(exponent_hex, 16)
     modulus = int(modulus_hex, 16)
     chunk_size = _cas_rsa_chunk_size(modulus_hex)
@@ -589,7 +586,7 @@ def _login_with_cas_requests(
     action, fields = _extract_login_form(login_resp.text, login_resp.url)
     exponent_hex, modulus_hex = _resolve_cas_rsa_key(http, login_resp.text, login_resp.url)
     fields["username"] = username
-    fields["password"] = _legacy_cas_encrypt_password(password, exponent_hex, modulus_hex)
+    fields["password"] = _cas_page_encrypt_password(password, exponent_hex, modulus_hex)
     fields.setdefault("encrypted", "true")
     fields.setdefault("_eventId", "submit")
     fields.setdefault("loginType", "1")
@@ -734,7 +731,7 @@ def login_with_playwright(
         logger.debug("CAS requests login failed; falling back to Playwright.", exc_info=True)
 
     resolved_proxy, playwright_proxy_source = resolve_playwright_proxy_config(account=account)
-    proxy = cast("ProxySettings | None", resolved_proxy)
+    playwright_proxy = cast(Any, resolved_proxy)
     effective_proxy = describe_effective_proxy_config(account=account, base_url=base_url)
     playwright_diagnostics = effective_proxy.get("playwright")
     playwright_proxy_route = (
@@ -750,12 +747,14 @@ def login_with_playwright(
     )
     with sync_playwright() as p:
         try:
-            browser = p.chromium.launch(**chromium_launch_kwargs(headless=headless, proxy=proxy))
+            browser = p.chromium.launch(
+                **chromium_launch_kwargs(headless=headless, proxy=playwright_proxy)
+            )
         except Exception as exc:
             if _is_browser_launch_runtime_error(exc):
                 _raise_browser_launch_runtime_error(exc)
             raise
-        context = browser.new_context(proxy=proxy, ignore_https_errors=True)
+        context = browser.new_context(proxy=playwright_proxy, ignore_https_errors=True)
         page = context.new_page()
 
         # Navigate to login page; use domcontentloaded since CAS may have
@@ -925,7 +924,7 @@ def login_with_playwright(
         # Capture storage state (cookies + localStorage)
         storage_state = context.storage_state()
 
-        # Keep a simple cookie name->value mapping for debugging/back-compat
+        # Keep a simple cookie name->value mapping for websocket clients.
         cookies = context.cookies()
         cookie_dict = {c["name"]: c["value"] for c in cookies}
 

@@ -14,6 +14,7 @@ from inspire.platform.web import browser_api as browser_api_module
 
 
 _WORKSPACE_ID = "ws-11111111-1111-1111-1111-111111111111"
+_SECOND_WORKSPACE_ID = "ws-22222222-2222-2222-2222-222222222222"
 _FORBIDDEN_PUBLIC_KEYS = {
     "id",
     "model_id",
@@ -63,7 +64,6 @@ def _patch_runtime(
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        log_cache_dir=str(tmp_path / "logs"),
         projects=projects or {},
         project_catalog=project_catalog or {},
     )
@@ -99,13 +99,19 @@ def test_model_list_json_is_compact_and_name_only(
                     project_name="模型项目",
                     workspace_id=_WORKSPACE_ID,
                     user_id="user-secret-123",
-                    user_name="Alice",
+                    user_name="253108120116",
                     status="2",
                     updated_at="2026-08-01T12:00:00Z",
                     latest_version="3",
-                    model_path="/inspire/ssd/project/topic/model-secret-123",
                     model_source_path="/internal/source",
-                    raw={"payload": {"trace": "secret"}},
+                    raw={
+                        "payload": {"trace": "secret"},
+                        "model_path": "/inspire/ssd/project/topic/model-secret-123",
+                        "user_name": "253108120116",
+                        "username": "usr_391",
+                        "login_name": "student-42",
+                        "created_by_name": "Alice",
+                    },
                 )
             ],
             900,
@@ -120,12 +126,14 @@ def test_model_list_json_is_compact_and_name_only(
     assert result.exit_code == 0, result.output
     payload = _json_data(result.output)
     assert payload == {
-        "models": [
+        "items": [
             {
                 "name": "qwen-demo",
-                "version": "V3",
                 "status": "SUCCESS",
                 "project": "模型项目",
+                "workspace": "训练空间",
+                "created_by": "Alice",
+                "version": "V3",
                 "updated_at": "2026-08-01T12:00:00Z",
             }
         ],
@@ -213,7 +221,8 @@ def test_model_list_all_expands_and_limit_conflict_is_pre_api(
     assert result.exit_code == 0, result.output
     payload = _json_data(result.output)
     assert calls == [20, 25]
-    assert len(payload["models"]) == 25
+    assert len(payload["items"]) == 25
+    assert "models" not in payload
     assert "truncated" not in payload
 
     calls.clear()
@@ -232,6 +241,120 @@ def test_model_list_all_expands_and_limit_conflict_is_pre_api(
     assert conflict.exit_code != 0
     assert "Use either --limit or --all, not both." in conflict.output
     assert calls == []
+
+
+def test_model_list_workspace_all_fans_out_and_labels_each_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_runtime(monkeypatch, tmp_path)
+
+    class _AllWorkspaceSession:
+        workspace_id = _WORKSPACE_ID
+        all_workspace_ids = [_WORKSPACE_ID, _SECOND_WORKSPACE_ID]
+        all_workspace_names = {
+            _WORKSPACE_ID: "训练空间",
+            _SECOND_WORKSPACE_ID: "推理空间",
+        }
+        storage_state: dict[str, Any] = {}
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        model_commands_module,
+        "get_web_session",
+        lambda: _AllWorkspaceSession(),
+    )
+
+    def fake_list_models(**kwargs):  # noqa: ANN001
+        workspace_id = kwargs["workspace_id"]
+        calls.append(workspace_id)
+        suffix = "train" if workspace_id == _WORKSPACE_ID else "serve"
+        return (
+            [
+                browser_api_module.ModelInfo(
+                    model_id=f"model-secret-{suffix}",
+                    name=f"model-{suffix}",
+                    project_name="模型项目",
+                    workspace_id=workspace_id,
+                    status="2",
+                    latest_version="1",
+                    updated_at=(
+                        "2026-08-02T12:00:00Z"
+                        if workspace_id == _SECOND_WORKSPACE_ID
+                        else "2026-08-01T12:00:00Z"
+                    ),
+                )
+            ],
+            1,
+        )
+
+    monkeypatch.setattr(browser_api_module, "list_models", fake_list_models)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "list", "--workspace", "all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [_WORKSPACE_ID, _SECOND_WORKSPACE_ID]
+    assert _json_data(result.output) == {
+        "items": [
+            {
+                "name": "model-serve",
+                "status": "SUCCESS",
+                "project": "模型项目",
+                "workspace": "推理空间",
+                "version": "V1",
+                "updated_at": "2026-08-02T12:00:00Z",
+            },
+            {
+                "name": "model-train",
+                "status": "SUCCESS",
+                "project": "模型项目",
+                "workspace": "训练空间",
+                "version": "V1",
+                "updated_at": "2026-08-01T12:00:00Z",
+            },
+        ],
+    }
+    for secret in (
+        _WORKSPACE_ID,
+        _SECOND_WORKSPACE_ID,
+        "model-secret-train",
+        "model-secret-serve",
+    ):
+        assert secret not in result.output
+
+    human = CliRunner().invoke(
+        cli_main,
+        ["model", "list", "--workspace", "all"],
+    )
+    assert human.exit_code == 0, human.output
+    assert "Workspace" in human.output
+    assert "训练空间" in human.output
+    assert "推理空间" in human.output
+    assert _WORKSPACE_ID not in human.output
+    assert _SECOND_WORKSPACE_ID not in human.output
+
+
+@pytest.mark.parametrize(
+    ("args", "metavar"),
+    (
+        (["model", "list", "--help"], "NAME|all"),
+        (["model", "status", "--help"], "NAME"),
+        (["model", "versions", "--help"], "NAME"),
+        (["model", "register", "--help"], "NAME"),
+    ),
+)
+def test_model_workspace_metavars_are_name_only(
+    args: list[str],
+    metavar: str,
+) -> None:
+    result = CliRunner().invoke(cli_main, args)
+
+    assert result.exit_code == 0, result.output
+    assert f"--workspace {metavar}" in result.output
+    assert "--workspace TEXT" not in result.output
 
 
 def test_model_status_json_removes_paths_ids_and_raw_records(
@@ -262,7 +385,10 @@ def test_model_status_json_removes_paths_ids_and_raw_records(
             "project_id": "project-secret-456",
             "project_name": "模型项目",
             "user_id": "user-secret-456",
-            "user_name": "Alice",
+            "user_name": "253108120116",
+            "username": "usr_391",
+            "login_name": "student-42",
+            "owner": {"name": "Alice", "id": "user-secret-456"},
             "payload": {"trace": "secret"},
         },
     )
@@ -320,6 +446,92 @@ def test_model_status_json_removes_paths_ids_and_raw_records(
         assert secret not in result.output
 
 
+def test_model_list_omits_login_scalars_without_display_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_runtime(monkeypatch, tmp_path)
+    leaks = ("253108120116", "usr_391", "student-42")
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_models",
+        lambda **kwargs: (
+            [
+                browser_api_module.ModelInfo(
+                    model_id="model-secret-login-only",
+                    name="qwen-login-only",
+                    project_name="模型项目",
+                    status="2",
+                    user_name=leaks[0],
+                    raw={
+                        "user_name": leaks[0],
+                        "username": leaks[1],
+                        "login_name": leaks[2],
+                    },
+                )
+            ],
+            1,
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "list", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    item = _json_data(result.output)["items"][0]
+    assert "created_by" not in item
+    for leak in leaks:
+        assert leak not in result.output
+
+
+def test_model_status_omits_login_scalars_without_display_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_runtime(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        model_commands_module,
+        "_resolve_model_name",
+        lambda *args, **kwargs: "model-secret-login-only",
+    )
+    leaks = ("253108120116", "usr_391", "student-42")
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_model_detail",
+        lambda **kwargs: {
+            "model": {
+                "name": "qwen-login-only",
+                "status": 2,
+                "user_name": leaks[0],
+                "username": leaks[1],
+                "login_name": leaks[2],
+                "owner": leaks[0],
+            },
+            "user_name": leaks[0],
+            "username": leaks[1],
+            "login_name": leaks[2],
+        },
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_model_version_records",
+        lambda **kwargs: {"list": []},
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "status", "qwen-login-only", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _json_data(result.output)
+    assert "owner" not in payload
+    for leak in leaks:
+        assert leak not in result.output
+
+
 def test_model_versions_json_only_keeps_actionable_fields(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -370,7 +582,7 @@ def test_model_versions_json_only_keeps_actionable_fields(
     payload = _json_data(result.output)
     assert payload == {
         "name": "qwen-demo",
-        "versions": [
+        "items": [
             {
                 "version": "V1",
                 "status": "SUCCESS",
@@ -521,21 +733,21 @@ def test_model_register_resolves_alias_to_current_live_project_id(
 
     monkeypatch.setattr(browser_api_module, "create_model", _create_model)
 
+    register_args = [
+        "model",
+        "register",
+        "--name",
+        "qwen-demo",
+        "--source-path",
+        "/inspire/ssd/project/topic/public/qwen-demo",
+        "--workspace",
+        "训练空间",
+        "--project",
+        "production",
+    ]
     result = CliRunner().invoke(
         cli_main,
-        [
-            "--json",
-            "model",
-            "register",
-            "--name",
-            "qwen-demo",
-            "--source-path",
-            "/inspire/ssd/project/topic/public/qwen-demo",
-            "--workspace",
-            "训练空间",
-            "--project",
-            "production",
-        ],
+        ["--json", *register_args],
     )
 
     assert result.exit_code == 0, result.output
@@ -552,56 +764,25 @@ def test_model_register_resolves_alias_to_current_live_project_id(
     assert "project-current-123" not in result.output
     assert "model-secret-created" not in result.output
 
+    human_result = CliRunner().invoke(cli_main, register_args)
+    assert human_result.exit_code == 0, human_result.output
+    assert human_result.output == "OK Model registered: qwen-demo\n"
 
-def test_legacy_project_alias_uses_live_name_not_stale_id() -> None:
+
+def test_project_alias_with_platform_id_value_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = config_module.Config(
         username="user",
         password="pass",
-        projects={"production": "project-old-123"},
-        project_catalog={"project-old-123": {"name": "模型项目"}},
+        projects={"production": _WORKSPACE_ID.replace("ws-", "project-")},
     )
-    current = browser_api_module.ProjectInfo(
-        project_id="project-new-456",
-        name="模型项目",
-        workspace_id=_WORKSPACE_ID,
-    )
+    monkeypatch.setattr(browser_api_module, "list_projects", lambda **_kwargs: [])
 
-    original = browser_api_module.list_projects
-    try:
-        browser_api_module.list_projects = lambda **kwargs: [current]  # type: ignore[assignment]
-        resolved = model_commands_module._resolve_project_id(
+    with pytest.raises(config_module.ConfigError, match="must map to a project name"):
+        model_commands_module._resolve_project_id(
             config,
             "production",
             workspace_id=_WORKSPACE_ID,
             session=_Session(),
         )
-    finally:
-        browser_api_module.list_projects = original  # type: ignore[assignment]
-
-    assert resolved == "project-new-456"
-
-
-def test_legacy_project_alias_without_name_never_falls_back_to_stale_id() -> None:
-    config = config_module.Config(
-        username="user",
-        password="pass",
-        projects={"production": "project-old-123"},
-    )
-    renamed_old_project = browser_api_module.ProjectInfo(
-        project_id="project-old-123",
-        name="已重命名项目",
-        workspace_id=_WORKSPACE_ID,
-    )
-
-    original = browser_api_module.list_projects
-    try:
-        browser_api_module.list_projects = lambda **kwargs: [renamed_old_project]  # type: ignore[assignment]
-        with pytest.raises(config_module.ConfigError, match="Unknown project name"):
-            model_commands_module._resolve_project_id(
-                config,
-                "production",
-                workspace_id=_WORKSPACE_ID,
-                session=_Session(),
-            )
-    finally:
-        browser_api_module.list_projects = original  # type: ignore[assignment]

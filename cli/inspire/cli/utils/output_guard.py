@@ -48,9 +48,8 @@ def set_parser_redactions(args: list[str] | tuple[str, ...]) -> None:
             candidates.append(token.split("=", maxsplit=1)[1])
         for candidate in candidates:
             value = candidate.strip()
-            # Parser diagnostics are not a name-resolution surface.  Keep
-            # redacting bare partial handles there for compatibility, while
-            # the actual CLI boundary still permits a legitimate hex name.
+            # Parser diagnostics are not a name-resolution surface. Redact
+            # handle-shaped values there while preserving legitimate names.
             if value and (
                 looks_like_platform_id(value)
                 or is_partial_id(value)
@@ -94,7 +93,7 @@ def sanitize_parser_message(message: Any) -> Any:
 
 
 def parser_echo(message: Any = None, *args: Any, **kwargs: Any) -> None:
-    """Click-exception echo that also redacts bare partial handles from argv."""
+    """Echo Click parser diagnostics after applying argv redactions."""
     click.echo(sanitize_parser_message(message), *args, **kwargs)
 
 

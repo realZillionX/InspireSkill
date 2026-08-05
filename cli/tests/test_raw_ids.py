@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.raw_ids import RawIdStreamScrubber, scrub_raw_ids
 
 
 def test_scrub_raw_ids_keeps_human_path_segments_with_model_word() -> None:
@@ -65,3 +65,40 @@ def test_scrub_raw_ids_keeps_name_like_prefixed_values() -> None:
     text = "group-a cg-alpha workspace-1-name"
 
     assert scrub_raw_ids(text) == text
+
+
+def test_stream_scrubber_redacts_ids_split_across_chunks() -> None:
+    scrubber = RawIdStreamScrubber()
+
+    output = b"".join(
+        [
+            scrubber.feed(b"job jo"),
+            scrubber.feed(b"b-1234abcd uuid 550e8400"),
+            scrubber.feed(b"-e29b-41d4-a716-446655440000 done\n"),
+            scrubber.flush(),
+        ]
+    )
+
+    assert output.decode() == "job <redacted> uuid <redacted> done\n"
+
+
+def test_stream_scrubber_preserves_ansi_and_utf8_boundaries() -> None:
+    scrubber = RawIdStreamScrubber()
+    encoded = "\x1b[32m完成\x1b[0m name\n".encode()
+
+    output = b"".join(
+        [
+            scrubber.feed(encoded[:8]),
+            scrubber.feed(encoded[8:]),
+            scrubber.flush(),
+        ]
+    )
+
+    assert output.decode() == "\x1b[32m完成\x1b[0m name\n"
+
+
+def test_stream_scrubber_flushes_an_ordinary_trailing_name() -> None:
+    scrubber = RawIdStreamScrubber()
+
+    assert scrubber.feed("notebook demo-box") == b"notebook "
+    assert scrubber.flush() == b"demo-box"

@@ -34,24 +34,26 @@ def _resolve_hpc_lcg(task_id: str, session: WebSession) -> Optional[str]:
     return None
 
 
-def _hpc_name_to_id(ctx: Context, name: str) -> ResolvedMetricsTarget:
+def _hpc_name_to_id(
+    ctx: Context,
+    name: str,
+    pick: int | None = None,
+) -> ResolvedMetricsTarget:
     # Module-attribute lookup so pytest monkeypatches on the workspace-scoped
     # resolver in ``hpc_commands`` intercept at call time.
     from inspire.cli.commands.hpc import hpc_commands as _hpc
-    from inspire.config import Config
     from inspire.platform.web.session import get_web_session
 
     name = _hpc._reject_hpc_name_at_boundary(ctx, name)
 
-    config, _ = Config.from_files_and_env(require_credentials=False)
     session = get_web_session()
     task_id, lcg = _hpc._run_readonly_hpc_operation(
         ctx,
-        config=config,
         session=session,
         name=name,
         workspace=str(getattr(ctx, "workspace", "") or ""),
         limit=10000,
+        pick=pick,
         operation=lambda resolved_id, live_session: (
             resolved_id,
             _resolve_hpc_lcg(resolved_id, live_session),

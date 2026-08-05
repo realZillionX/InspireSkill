@@ -17,13 +17,32 @@ from inspire.bridge import tunnel as tunnel_module
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR
 from inspire.cli.formatters import human_formatter, json_formatter
-from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.config import ConfigError
+from inspire.config.workspaces import validate_workspace_operation_name
 
 from .public_output import sanitize_public_text
 
 CACHE_VERSION = 1
 TARGET_CACHE_FILENAME = "notebook-targets.json"
+NOTEBOOK_TARGET_WORKSPACE_HELP = (
+    "Workspace name used to disambiguate this notebook target."
+)
+
+
+def validate_specific_workspace(
+    _ctx: click.Context,
+    _param: click.Parameter,
+    value: str | None,
+) -> str | None:
+    """Validate an optional single-workspace selector for cached transports."""
+    if value is None or not value.strip():
+        return None
+    try:
+        return validate_workspace_operation_name(value)
+    except ConfigError as exc:
+        raise click.BadParameter(str(exc)) from exc
 
 
 @dataclass
@@ -382,7 +401,10 @@ def _candidate_label(candidate: NotebookTargetCandidate, index: int | None = Non
 def _candidate_hint(candidates: list[NotebookTargetCandidate]) -> str:
     lines = ["Candidates:"]
     lines.extend(_candidate_label(candidate, index=i) for i, candidate in enumerate(candidates, 1))
-    lines.append("Pass `--account <name>` to select one explicitly, or retry interactively.")
+    lines.append(
+        "Pass `--pick <n>` to select one explicitly, `--workspace <name>` or "
+        "`--account <name>` to narrow the candidates, or retry interactively."
+    )
     return "\n".join(lines)
 
 
@@ -431,7 +453,25 @@ def _select_candidate(
     workspace: str | None,
     candidates: list[NotebookTargetCandidate],
     allow_prompt: bool,
+    pick: int | None,
 ) -> NotebookConnectionTarget:
+    if pick is not None:
+        if pick < 1 or pick > len(candidates):
+            _handle_pick_out_of_range(ctx, notebook=notebook, pick=pick, candidates=candidates)
+        candidate = candidates[pick - 1]
+        remember_notebook_target(
+            notebook=notebook,
+            workspace=workspace,
+            account=candidate.account,
+            bridge=candidate.bridge,
+        )
+        return NotebookConnectionTarget(
+            account=candidate.account,
+            config=candidate.config,
+            bridge=candidate.bridge,
+            source="pick",
+        )
+
     if len(candidates) == 1:
         candidate = candidates[0]
         remember_notebook_target(
@@ -474,6 +514,38 @@ def _select_candidate(
     raise RuntimeError("unreachable")
 
 
+def _handle_pick_out_of_range(
+    ctx: Context,
+    *,
+    notebook: str,
+    pick: int,
+    candidates: list[NotebookTargetCandidate],
+) -> None:
+    message = (
+        f"--pick {pick} out of range; {len(candidates)} cached notebook connections "
+        f"match {notebook!r}."
+    )
+    if ctx.json_output:
+        click.echo(
+            json_formatter.format_json_error(
+                "ValidationError",
+                message,
+                EXIT_CONFIG_ERROR,
+                hint=NAME_PICK_HELP,
+            ),
+            err=True,
+        )
+    else:
+        click.echo(
+            human_formatter.format_error(
+                scrub_raw_ids(message),
+                hint=NAME_PICK_HELP,
+            ),
+            err=True,
+        )
+    raise SystemExit(EXIT_CONFIG_ERROR)
+
+
 def _target_available(candidate: NotebookTargetCandidate) -> bool:
     try:
         return tunnel_module.is_tunnel_available(
@@ -496,6 +568,7 @@ def resolve_cached_notebook_target(
     ignore_target_cache: bool = False,
     verify_target_cache: bool = True,
     allow_prompt: bool = True,
+    pick: int | None = None,
 ) -> NotebookConnectionTarget | None:
     """Resolve a cached notebook bridge across configured accounts.
 
@@ -514,6 +587,13 @@ def resolve_cached_notebook_target(
             workspace,
             resource_type="workspace",
             list_command="inspire config context",
+        )
+    if pick is not None and pick < 1:
+        _handle_pick_out_of_range(
+            ctx,
+            notebook=notebook,
+            pick=pick,
+            candidates=[],
         )
 
     selector = str(account or "").strip()
@@ -535,7 +615,9 @@ def resolve_cached_notebook_target(
             raise SystemExit(EXIT_CONFIG_ERROR) from exc
 
     require_candidate_verification = False
-    if not selector and not ignore_target_cache:
+    # An explicit pick is an instruction to select from the current candidate
+    # set. Do not let a previously remembered target silently override it.
+    if pick is None and not selector and not ignore_target_cache:
         data = _read_target_cache()
         entry = (data.get("targets") or {}).get(notebook_target_cache_key(notebook, workspace))
         candidate = _candidate_from_cache_entry(
@@ -576,10 +658,12 @@ def resolve_cached_notebook_target(
         workspace=workspace,
         candidates=candidates,
         allow_prompt=allow_prompt,
+        pick=pick,
     )
 
 
 __all__ = [
+    "NOTEBOOK_TARGET_WORKSPACE_HELP",
     "NotebookConnectionTarget",
     "NotebookTargetCandidate",
     "forget_notebook_targets",
@@ -589,4 +673,5 @@ __all__ = [
     "remember_notebook_target_aliases",
     "resolve_cached_notebook_target",
     "target_cache_path",
+    "validate_specific_workspace",
 ]

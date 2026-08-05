@@ -5,7 +5,7 @@ from __future__ import annotations
 import atexit
 import logging
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 import requests as requests_lib
 
@@ -32,25 +32,15 @@ from inspire.platform.web.session.browser_launch import (
 )
 from inspire.platform.web.session.proxy import get_playwright_proxy
 from inspire.platform.web.session.requests import build_requests_session
-from inspire.platform.web.session.workspace import (
-    GPUAvailability,
-    fetch_gpu_availability as _fetch_gpu_availability,
-    fetch_node_specs as _fetch_node_specs,
-    fetch_workspace_availability as _fetch_workspace_availability,
-)
 
 __all__ = [
     "DEFAULT_WORKSPACE_ID",
-    "GPUAvailability",
     "SESSION_TTL",
     "SessionExpiredError",
     "WebSession",
     "build_requests_session",
     "clear_all_session_caches",
     "clear_session_cache",
-    "fetch_gpu_availability",
-    "fetch_node_specs",
-    "fetch_workspace_availability",
     "get_credentials",
     "get_playwright_proxy",
     "get_web_session",
@@ -210,45 +200,6 @@ def get_web_session(
         force_refresh=force_refresh,
         require_workspace=require_workspace,
         account=account,
-    )
-
-
-def fetch_node_specs(
-    session: WebSession,
-    compute_group_id: str,
-    base_url: str = "https://api.example.com",
-) -> dict:
-    return _fetch_node_specs(
-        session,
-        compute_group_id,
-        request_json_fn=request_json,
-        base_url=base_url,
-    )
-
-
-def fetch_workspace_availability(
-    session: WebSession,
-    base_url: str = "https://api.example.com",
-    progress_callback: Optional[Callable[[int, int], None]] = None,
-) -> list[dict]:
-    return _fetch_workspace_availability(
-        session,
-        request_json_fn=request_json,
-        base_url=base_url,
-        progress_callback=progress_callback,
-    )
-
-
-def fetch_gpu_availability(
-    session: WebSession,
-    compute_group_ids: list[str],
-    base_url: str = "https://api.example.com",
-) -> list[GPUAvailability]:
-    return _fetch_gpu_availability(
-        session,
-        compute_group_ids,
-        request_json_fn=request_json,
-        base_url=base_url,
     )
 
 

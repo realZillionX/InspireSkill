@@ -165,8 +165,8 @@ def _request_one_metric(
         )
 
     payload = data.get("data") or {}
-    # Upstream response key is "time_seris_metric_groups" (typo). Keep a
-    # fallback for a future fix.
+    # The platform currently emits the misspelled key; accept the corrected
+    # spelling as well so the wrapper follows either response shape.
     raw_groups = payload.get("time_seris_metric_groups")
     if raw_groups is None:
         raw_groups = payload.get("time_series_metric_groups")

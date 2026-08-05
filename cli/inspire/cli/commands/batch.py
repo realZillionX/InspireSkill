@@ -24,7 +24,6 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils import job_submit
-from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.collection_output import (
     bound_collection,
     resolve_collection_limit,
@@ -59,26 +58,7 @@ from inspire.config.workload_profiles import (
 from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NotebookFailedError
-from inspire.platform.web.session import get_web_session
-
-_BATCH_NOISE_KEYS = {
-    "code",
-    "create_body",
-    "create_kwargs",
-    "data",
-    "debug",
-    "internal",
-    "metadata",
-    "payload",
-    "progress",
-    "raw",
-    "request",
-    "response",
-    "result",
-    "scanned",
-    "source",
-    "trace",
-}
+from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 _REFERENCE_FIELDS = {
     "workspace": ("workspace", "inspire config context"),
@@ -135,7 +115,7 @@ _PUBLIC_FIELDS_BY_KIND = {
         ("port", "port"),
         ("replicas", "replicas"),
         ("nodes_per_replica", "nodes_per_replica"),
-        ("shm_gib", "shared_memory_gib"),
+        ("shm_size", "shared_memory_gib"),
         ("custom_domain", "custom_domain"),
         ("command", "command"),
     ),
@@ -210,7 +190,6 @@ def _expanded_items(
             if item_key == "jobs":
                 variables["job_index"] = index
             rendered = _render(merged, variables)
-            rendered["_matrix"] = dict(matrix_vars)
             expanded.append(rendered)
     return expanded
 
@@ -344,23 +323,6 @@ def _apply_item_profile(
     return merged
 
 
-def _public_value(value: Any) -> Any:
-    sanitized = json_formatter.sanitize_json_data(value)
-    if isinstance(sanitized, dict):
-        return {
-            key: _public_value(child)
-            for key, child in sanitized.items()
-            if str(key).replace("-", "_").strip().lower() not in _BATCH_NOISE_KEYS
-        }
-    if isinstance(sanitized, list):
-        return [_public_value(item) for item in sanitized]
-    if isinstance(sanitized, tuple):
-        return [_public_value(item) for item in sanitized]
-    if isinstance(sanitized, str):
-        return scrub_raw_ids(sanitized)
-    return sanitized
-
-
 def _validate_name_references(ctx: Context, item: dict[str, Any]) -> None:
     for field, (resource_type, list_command) in _REFERENCE_FIELDS.items():
         value = item.get(field)
@@ -397,10 +359,7 @@ def _public_batch_plan(
     name: str,
     overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    output: dict[str, Any] = {
-        "kind": kind,
-        "name": name,
-    }
+    output: dict[str, Any] = {"name": name}
     common_fields = (
         ("workspace", "workspace"),
         ("project", "project"),
@@ -413,22 +372,16 @@ def _public_batch_plan(
         value = item.get(source)
         if value not in (None, "", [], {}):
             output[target] = value
-    matrix = item.get("_matrix")
-    if matrix:
-        output["matrix"] = matrix
     for key, value in (overrides or {}).items():
         if value in (None, "", [], {}):
             output.pop(key, None)
         else:
             output[key] = value
-    return _public_value(output)
+    return json_formatter.sanitize_json_data(output)
 
 
-def _submitted_batch_item(*, kind: str, name: str) -> dict[str, str]:
-    return {
-        "kind": kind,
-        "name": scrub_raw_ids(name),
-    }
+def _submitted_batch_item(name: str) -> dict[str, str]:
+    return {"name": scrub_raw_ids(name)}
 
 
 def _require_condition_str(item: dict[str, Any], key: str, *, kind: str) -> str:
@@ -494,7 +447,6 @@ def _prepare_training_item(
 ) -> job_submit.JobSubmissionPlan:
     quota_spec = parse_quota(_require_condition_str(item, "quota", kind="job"))
     workspace_id = select_workspace_id(
-        config,
         explicit_workspace_name=_require_condition_str(item, "workspace", kind="job"),
         session=session,
     )
@@ -566,7 +518,6 @@ def _prepare_hpc_item(
 
     quota_spec = parse_quota(_require_condition_str(item, "quota", kind="hpc"))
     workspace_id = select_workspace_id(
-        config,
         explicit_workspace_name=_require_condition_str(item, "workspace", kind="hpc"),
         session=session,
     )
@@ -648,7 +599,6 @@ def _select_notebook_project(
         selected, _ = browser_api_module.select_project(
             projects,
             _project_request_value(config, requested),
-            allow_requested_over_quota=False,
             needs_gpu_quota=needs_gpu_quota,
             project_order=config.project_order or None,
             congested_projects=congested,
@@ -693,7 +643,6 @@ def _prepare_notebook_item(
     quota_spec = parse_quota(_require_condition_str(item, "quota", kind="notebook"))
     workspace_name = _require_condition_str(item, "workspace", kind="notebook")
     workspace_id = select_workspace_id(
-        config,
         explicit_workspace_name=workspace_name,
         session=session,
     )
@@ -726,10 +675,7 @@ def _prepare_notebook_item(
         workspace_id=workspace_id,
         project_limit=selected_project.priority_name,
     )
-    resource_spec_price = build_resource_spec_price(
-        quota=resolved_quota,
-        shared_memory_size=shm_size,
-    )
+    resource_spec_price = build_resource_spec_price(quota=resolved_quota)
 
     create_kwargs = {
         "name": _require_str(item, "name"),
@@ -819,7 +765,7 @@ def _submit_notebook_plan(plan: dict[str, Any], *, config: Config, session: Any)
             completion_marker=post_start_spec.completion_marker,
         )
 
-    return _submitted_batch_item(kind="notebook", name=str(plan["name"]))
+    return _submitted_batch_item(str(plan["name"]))
 
 
 def _require_list(item: dict[str, Any], key: str) -> list[Any]:
@@ -932,7 +878,6 @@ def _prepare_serving_item(
     )
 
     workspace_id = select_workspace_id(
-        config,
         explicit_workspace_name=_require_condition_str(item, "workspace", kind="serving"),
         session=session,
     )
@@ -982,14 +927,13 @@ def _prepare_serving_item(
         "mirror_id": _resolve_serving_image_id(
             _require_condition_str(item, "image", kind="serving"),
             session=session,
-            ctx=ctx,
         ),
         "command": _require_str(item, "command"),
         "port": _require_int(item, "port", min_value=1),
         "description": _optional_str(item, "description") or "",
         "replicas": _optional_int(item, "replicas", min_value=1) or 1,
         "node_num_per_replica": _optional_int(item, "nodes_per_replica", min_value=1) or 1,
-        "shm_gi": _optional_int(item, "shm_gib", min_value=1),
+        "shm_gi": _optional_int(item, "shm_size", min_value=1),
         "task_priority": resolve_workspace_task_priority(
             _optional_int(item, "priority", min_value=1),
             session=session,
@@ -1004,18 +948,15 @@ def _prepare_serving_item(
 def _emit_batch_result(
     ctx: Context,
     *,
-    dry_run: bool,
     outputs: list[dict[str, Any]],
-    command_name: str,
     output_limit: int | None,
 ) -> None:
-    public_outputs = [_public_value(item) for item in outputs]
+    public_outputs = [json_formatter.sanitize_json_data(item) for item in outputs]
     page = bound_collection(public_outputs, limit=output_limit)
     if ctx.json_output:
         click.echo(
             json_formatter.format_json(
                 {
-                    "dry_run": dry_run,
                     "items": page.items,
                     **page.metadata(),
                 }
@@ -1023,12 +964,10 @@ def _emit_batch_result(
         )
         return
 
-    action = "Planned" if dry_run else "Submitted"
-    click.echo(f"{action} {len(public_outputs)} {command_name} batch item(s)")
     for item in page.items:
-        name = item.get("name") or item.get("create_kwargs", {}).get("name") or "-"
+        name = item.get("name") or "-"
         click.echo(f"- {scrub_raw_ids(str(name))}")
-    notice = truncation_notice(page, full_option="--all-results")
+    notice = truncation_notice(page, full_option="--all")
     if notice:
         click.echo(notice)
 
@@ -1036,20 +975,20 @@ def _emit_batch_result(
 def _resolve_batch_output_limit(
     ctx: Context,
     *,
-    result_limit: int | None,
-    all_results: bool,
+    limit: int | None,
+    show_all: bool,
 ) -> int | None:
     """Validate batch result-output controls before any workload is submitted."""
     try:
         return resolve_collection_limit(
-            limit=result_limit,
-            show_all=all_results,
+            limit=limit,
+            show_all=show_all,
         )
     except ValueError:
         _handle_error(
             ctx,
             "ValidationError",
-            "Use either --result-limit or --all-results, not both.",
+            "Use either --limit or --all, not both.",
             EXIT_VALIDATION_ERROR,
         )
         return None
@@ -1064,7 +1003,7 @@ def _handle_batch_exception(ctx: Context, error: Exception) -> None:
         _handle_error(ctx, "ValidationError", str(error), EXIT_CONFIG_ERROR)
     if isinstance(error, (QuotaParseError, QuotaMatchError)):
         _handle_error(ctx, "ValidationError", str(error), EXIT_VALIDATION_ERROR)
-    if isinstance(error, AuthenticationError):
+    if isinstance(error, SessionExpiredError):
         _handle_error(ctx, "AuthenticationError", str(error), EXIT_AUTH_ERROR)
     if isinstance(error, NotebookFailedError):
         _handle_error(ctx, "NotebookFailed", str(error), EXIT_API_ERROR)
@@ -1072,20 +1011,26 @@ def _handle_batch_exception(ctx: Context, error: Exception) -> None:
 
 
 @click.command("batch")
-@click.argument("config_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument(
+    "config_path",
+    metavar="PATH",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
 @click.option(
     "--dry-run",
     is_flag=True,
     help="Expand the matrix, resolve each job, and print plans without submitting anything.",
 )
 @click.option(
-    "--result-limit",
+    "--limit",
+    "-n",
     type=click.IntRange(1),
     default=None,
     help="Maximum result rows to print (default: 20).",
 )
 @click.option(
-    "--all-results",
+    "--all",
+    "show_all",
     is_flag=True,
     help="Print every result row after processing the full batch.",
 )
@@ -1094,8 +1039,8 @@ def job_batch(
     ctx: Context,
     config_path: Path,
     dry_run: bool,
-    result_limit: int | None,
-    all_results: bool,
+    limit: int | None,
+    show_all: bool,
 ) -> None:
     """Submit a JSON/TOML matrix through `job create`.
 
@@ -1118,8 +1063,8 @@ def job_batch(
     """
     output_limit = _resolve_batch_output_limit(
         ctx,
-        result_limit=result_limit,
-        all_results=all_results,
+        limit=limit,
+        show_all=show_all,
     )
     try:
         data = _load_config(config_path)
@@ -1177,16 +1122,11 @@ def job_batch(
                     session=session,
                 )
                 outputs.append(
-                    _submitted_batch_item(
-                        kind="job",
-                        name=str(plan.create_kwargs["name"]),
-                    )
+                    _submitted_batch_item(str(plan.create_kwargs["name"]))
                 )
         _emit_batch_result(
             ctx,
-            dry_run=dry_run,
             outputs=outputs,
-            command_name="job",
             output_limit=output_limit,
         )
     except Exception as e:
@@ -1194,20 +1134,26 @@ def job_batch(
 
 
 @click.command("batch")
-@click.argument("config_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument(
+    "config_path",
+    metavar="PATH",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
 @click.option(
     "--dry-run",
     is_flag=True,
     help="Expand the matrix, resolve each HPC job, and print plans without submitting anything.",
 )
 @click.option(
-    "--result-limit",
+    "--limit",
+    "-n",
     type=click.IntRange(1),
     default=None,
     help="Maximum result rows to print (default: 20).",
 )
 @click.option(
-    "--all-results",
+    "--all",
+    "show_all",
     is_flag=True,
     help="Print every result row after processing the full batch.",
 )
@@ -1216,8 +1162,8 @@ def hpc_batch(
     ctx: Context,
     config_path: Path,
     dry_run: bool,
-    result_limit: int | None,
-    all_results: bool,
+    limit: int | None,
+    show_all: bool,
 ) -> None:
     """Submit a JSON/TOML matrix through `hpc create`.
 
@@ -1236,8 +1182,8 @@ def hpc_batch(
     """
     output_limit = _resolve_batch_output_limit(
         ctx,
-        result_limit=result_limit,
-        all_results=all_results,
+        limit=limit,
+        show_all=show_all,
     )
     try:
         data = _load_config(config_path)
@@ -1275,16 +1221,11 @@ def hpc_batch(
                     session=session,
                 )
                 outputs.append(
-                    _submitted_batch_item(
-                        kind="hpc",
-                        name=str(create_kwargs["job_name"]),
-                    )
+                    _submitted_batch_item(str(create_kwargs["job_name"]))
                 )
         _emit_batch_result(
             ctx,
-            dry_run=dry_run,
             outputs=outputs,
-            command_name="hpc",
             output_limit=output_limit,
         )
     except Exception as e:
@@ -1292,20 +1233,26 @@ def hpc_batch(
 
 
 @click.command("batch")
-@click.argument("config_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument(
+    "config_path",
+    metavar="PATH",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
 @click.option(
     "--dry-run",
     is_flag=True,
     help="Expand the matrix, resolve each notebook, and print plans without creating anything.",
 )
 @click.option(
-    "--result-limit",
+    "--limit",
+    "-n",
     type=click.IntRange(1),
     default=None,
     help="Maximum result rows to print (default: 20).",
 )
 @click.option(
-    "--all-results",
+    "--all",
+    "show_all",
     is_flag=True,
     help="Print every result row after processing the full batch.",
 )
@@ -1314,8 +1261,8 @@ def notebook_batch(
     ctx: Context,
     config_path: Path,
     dry_run: bool,
-    result_limit: int | None,
-    all_results: bool,
+    limit: int | None,
+    show_all: bool,
 ) -> None:
     """Create notebook instances from a JSON/TOML matrix.
 
@@ -1336,8 +1283,8 @@ def notebook_batch(
     """
     output_limit = _resolve_batch_output_limit(
         ctx,
-        result_limit=result_limit,
-        all_results=all_results,
+        limit=limit,
+        show_all=show_all,
     )
     try:
         data = _load_config(config_path)
@@ -1384,9 +1331,7 @@ def notebook_batch(
                 outputs.append(_submit_notebook_plan(plan, config=config, session=session))
         _emit_batch_result(
             ctx,
-            dry_run=dry_run,
             outputs=outputs,
-            command_name="notebook",
             output_limit=output_limit,
         )
     except Exception as e:
@@ -1394,20 +1339,26 @@ def notebook_batch(
 
 
 @click.command("batch")
-@click.argument("config_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument(
+    "config_path",
+    metavar="PATH",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
 @click.option(
     "--dry-run",
     is_flag=True,
     help="Expand the matrix, resolve each Ray job, and print plans without submitting anything.",
 )
 @click.option(
-    "--result-limit",
+    "--limit",
+    "-n",
     type=click.IntRange(1),
     default=None,
     help="Maximum result rows to print (default: 20).",
 )
 @click.option(
-    "--all-results",
+    "--all",
+    "show_all",
     is_flag=True,
     help="Print every result row after processing the full batch.",
 )
@@ -1416,8 +1367,8 @@ def ray_batch(
     ctx: Context,
     config_path: Path,
     dry_run: bool,
-    result_limit: int | None,
-    all_results: bool,
+    limit: int | None,
+    show_all: bool,
 ) -> None:
     """Create Ray jobs from a JSON/TOML matrix.
 
@@ -1437,8 +1388,8 @@ def ray_batch(
     """
     output_limit = _resolve_batch_output_limit(
         ctx,
-        result_limit=result_limit,
-        all_results=all_results,
+        limit=limit,
+        show_all=show_all,
     )
     try:
         data = _load_config(config_path)
@@ -1474,14 +1425,10 @@ def ray_batch(
                 )
             else:
                 browser_api_module.create_ray_job(body, session=session)
-                outputs.append(
-                    _submitted_batch_item(kind="ray", name=str(body["name"]))
-                )
+                outputs.append(_submitted_batch_item(str(body["name"])))
         _emit_batch_result(
             ctx,
-            dry_run=dry_run,
             outputs=outputs,
-            command_name="ray",
             output_limit=output_limit,
         )
     except Exception as e:
@@ -1489,7 +1436,11 @@ def ray_batch(
 
 
 @click.command("batch")
-@click.argument("config_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument(
+    "config_path",
+    metavar="PATH",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
 @click.option(
     "--dry-run",
     is_flag=True,
@@ -1499,13 +1450,15 @@ def ray_batch(
     ),
 )
 @click.option(
-    "--result-limit",
+    "--limit",
+    "-n",
     type=click.IntRange(1),
     default=None,
     help="Maximum result rows to print (default: 20).",
 )
 @click.option(
-    "--all-results",
+    "--all",
+    "show_all",
     is_flag=True,
     help="Print every result row after processing the full batch.",
 )
@@ -1514,8 +1467,8 @@ def serving_batch(
     ctx: Context,
     config_path: Path,
     dry_run: bool,
-    result_limit: int | None,
-    all_results: bool,
+    limit: int | None,
+    show_all: bool,
 ) -> None:
     """Create inference servings from a JSON/TOML matrix.
 
@@ -1534,8 +1487,8 @@ def serving_batch(
     """
     output_limit = _resolve_batch_output_limit(
         ctx,
-        result_limit=result_limit,
-        all_results=all_results,
+        limit=limit,
+        show_all=show_all,
     )
     try:
         data = _load_config(config_path)
@@ -1578,16 +1531,11 @@ def serving_batch(
                     **submit_payload,
                 )
                 outputs.append(
-                    _submitted_batch_item(
-                        kind="serving",
-                        name=str(payload["name"]),
-                    )
+                    _submitted_batch_item(str(payload["name"]))
                 )
         _emit_batch_result(
             ctx,
-            dry_run=dry_run,
             outputs=outputs,
-            command_name="serving",
             output_limit=output_limit,
         )
     except Exception as e:

@@ -55,6 +55,10 @@ def _workspace_fetch(_session: object, _workspace: str, exact_name: str) -> Fetc
     return FetchResult(records)
 
 
+def _outcome_count(summary: RefreshSummary, outcome: str) -> int:
+    return sum(result.outcome == outcome for result in summary.results)
+
+
 def test_full_refresh_populates_scoped_name_map(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
     calls: list[str] = []
@@ -81,7 +85,7 @@ def test_full_refresh_populates_scoped_name_map(tmp_path) -> None:
     )
 
     assert summary.error_count == 0
-    assert summary.refreshed_count == 2
+    assert _outcome_count(summary, "refreshed") == 2
     assert calls == ["workspace-one"]
     assert [
         item.resource_id for item in index.lookup(_scope("workspace"), "Training Space")
@@ -120,7 +124,7 @@ def test_due_refresh_skips_fresh_scope_without_calling_fetcher(tmp_path) -> None
         },
     )
 
-    assert summary.skipped_count == 1
+    assert _outcome_count(summary, "fresh") == 1
     assert summary.error_count == 0
     assert workspace_calls == []
 
@@ -143,7 +147,7 @@ def test_ssh_key_refresh_never_fetches_workspaces(tmp_path) -> None:
         },
     )
 
-    assert summary.refreshed_count == 1
+    assert _outcome_count(summary, "refreshed") == 1
     assert summary.error_count == 0
 
 
@@ -214,7 +218,7 @@ def test_refresh_does_not_overwrite_newer_write_through(tmp_path) -> None:
         },
     )
 
-    assert summary.stale_count == 1
+    assert _outcome_count(summary, "stale") == 1
     assert summary.error_count == 0
     assert [
         item.resource_id
@@ -245,7 +249,7 @@ def test_refresh_does_not_repopulate_cache_after_clear(tmp_path) -> None:
         },
     )
 
-    assert summary.stale_count == 1
+    assert _outcome_count(summary, "stale") == 1
     assert summary.error_count == 0
     assert index.list_identities(scope, fresh_only=False) == []
 
@@ -317,7 +321,7 @@ def test_refresh_continues_when_tombstone_purge_fails(tmp_path, monkeypatch) -> 
     )
 
     assert summary.error_count == 0
-    assert summary.refreshed_count == 1
+    assert _outcome_count(summary, "refreshed") == 1
 
 
 def test_refresh_reports_database_error_when_lease_acquisition_fails(
@@ -344,7 +348,7 @@ def test_refresh_reports_database_error_when_lease_acquisition_fails(
     )
 
     assert summary.error_count == 1
-    assert summary.busy_count == 0
+    assert _outcome_count(summary, "busy") == 0
     assert summary.results[0].error == "The local resource name cache is unavailable."
 
 
@@ -359,12 +363,12 @@ def test_cache_status_is_stale_at_the_ttl_boundary(tmp_path, monkeypatch) -> Non
 
     monkeypatch.setattr(cache_commands.time, "time", lambda: 159)
     ready = cache_commands._status_payload(index)
-    assert ready["resources"][0]["state"] == "ready"
+    assert ready["items"][0]["state"] == "ready"
 
     monkeypatch.setattr(cache_commands.time, "time", lambda: 160)
     stale = cache_commands._status_payload(index)
-    assert stale["resources"][0]["state"] == "stale"
-    assert stale["resources"][0]["items"] == 0
+    assert stale["items"][0]["state"] == "stale"
+    assert stale["items"][0]["cached_names"] == 0
 
 
 def test_cache_status_marks_targeted_only_scope_partial(tmp_path, monkeypatch) -> None:
@@ -380,7 +384,7 @@ def test_cache_status_marks_targeted_only_scope_partial(tmp_path, monkeypatch) -
     monkeypatch.setattr(cache_commands.time, "time", lambda: 101)
     payload = cache_commands._status_payload(index)
 
-    assert payload["resources"][0]["state"] == "partial"
+    assert payload["items"][0]["state"] == "partial"
 
 
 def test_cache_status_stays_ready_after_targeted_refresh_of_full_scope(
@@ -405,7 +409,7 @@ def test_cache_status_stays_ready_after_targeted_refresh_of_full_scope(
     monkeypatch.setattr(cache_commands.time, "time", lambda: 111)
     payload = cache_commands._status_payload(index)
 
-    assert payload["resources"][0]["state"] == "ready"
+    assert payload["items"][0]["state"] == "ready"
 
 
 def test_incomplete_workspace_snapshot_never_tombstones_unseen_rows(tmp_path) -> None:
@@ -660,10 +664,10 @@ def test_cache_status_and_clear_never_expose_workspace_handle(
     assert "workspace-secret" not in status.output
     assert "job-secret" not in status.output
     payload = json.loads(status.output)["data"]
-    assert len(payload["resources"]) == 1
-    resource = payload["resources"][0]
+    assert len(payload["items"]) == 1
+    resource = payload["items"][0]
     assert resource["resource"] == "job"
-    assert resource["items"] == 1
+    assert resource["cached_names"] == 1
     assert resource["state"] == "ready"
     assert resource["workspaces"] == 1
     assert str(resource["updated"]).endswith("s ago")
@@ -672,6 +676,129 @@ def test_cache_status_and_clear_never_expose_workspace_handle(
     assert cleared.exit_code == 0
     assert cleared.output == "Resource name cache cleared.\n"
     assert index.list_scope_status() == []
+
+
+def test_cache_status_reports_name_only_refresh_failures(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    index.record_refresh_error(
+        _scope("job", "workspace-one"),
+        f"request failed near {tmp_path / 'private.log'} for job-deadbeef",
+        now=100,
+    )
+    monkeypatch.setattr(
+        cache_commands,
+        "_workspace_name_map",
+        lambda: {"workspace-one": "Training Space"},
+    )
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 101)
+
+    assert cache_commands._status_payload(index) == {
+        "items": [
+            {
+                "resource": "job",
+                "cached_names": 0,
+                "state": "error",
+                "updated": "never",
+                "workspaces": 1,
+                "errors": 1,
+                "failures": [
+                    {
+                        "workspace": "Training Space",
+                        "error": "request failed near <redacted> for <redacted>",
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_cache_refresh_json_failure_is_compact(tmp_path, monkeypatch) -> None:
+    from inspire.cli.main import main
+
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    monkeypatch.setattr(cache_commands, "_index_or_exit", lambda *_args: index)
+    monkeypatch.setattr(
+        cache_commands,
+        "require_web_session",
+        lambda *_args, **_kwargs: _Session(),
+    )
+    monkeypatch.setattr(
+        cache_commands,
+        "refresh_resource_index",
+        lambda **_kwargs: RefreshSummary(
+            [
+                RefreshResult(
+                    "job",
+                    "Training Space",
+                    0,
+                    "error",
+                    "API unavailable for job-deadbeef",
+                )
+            ]
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["--json", "cache", "refresh"])
+
+    assert result.exit_code == EXIT_API_ERROR
+    assert json.loads(result.output) == {
+        "success": False,
+        "data": {
+            "refreshed": 0,
+            "fresh": 0,
+            "stale": 0,
+            "busy": 0,
+            "errors": 1,
+            "names_cached": 0,
+            "failures": [
+                {
+                    "workspace": "Training Space",
+                    "resource": "job",
+                    "error": "API unavailable for <redacted>",
+                }
+            ],
+        },
+    }
+
+
+def test_cache_clear_json_requires_explicit_confirmation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from inspire.cli.main import main
+
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    monkeypatch.setattr(cache_commands, "_index_or_exit", lambda *_args: index)
+
+    result = CliRunner().invoke(main, ["--json", "cache", "clear"])
+
+    assert result.exit_code != 0
+    assert json.loads(result.output) == {
+        "success": False,
+        "error": {
+            "type": "ConfirmationRequired",
+            "code": 12,
+            "message": "Cache clearing requires confirmation.",
+            "hint": "Pass --yes to confirm clearing the cache.",
+        },
+    }
+
+
+def test_cache_refresh_workspace_metavar_accepts_name_or_all() -> None:
+    from inspire.cli.main import main
+
+    result = CliRunner().invoke(main, ["cache", "refresh", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--workspace NAME|all" in result.output
+    assert "--workspace NAME " not in result.output
+    assert "--workspace TEXT" not in result.output
 
 
 @pytest.mark.parametrize(

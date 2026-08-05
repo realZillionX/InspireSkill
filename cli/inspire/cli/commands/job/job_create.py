@@ -36,9 +36,6 @@ from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web.session import get_web_session
 from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
 
-from .job_commands import _public_output
-
-
 def run_job_create(
     ctx: Context,
     *,
@@ -147,7 +144,6 @@ def run_job_create(
 
         session = get_web_session()
         selected_workspace_id = select_workspace_id(
-            config,
             explicit_workspace_name=workspace,
             session=session,
         )
@@ -175,14 +171,13 @@ def run_job_create(
             return
 
         try:
-            selected, _fallback_msg = job_submit.select_project_for_workspace(
+            selected, _selection_message = job_submit.select_project_for_workspace(
                 config,
                 workspace_id=selected_workspace_id,
                 requested=project,
             )
         except ValueError as e:
-            error_type = "QuotaExceeded" if "over quota" in str(e) else "ValidationError"
-            _handle_error(ctx, error_type, str(e), EXIT_CONFIG_ERROR)
+            _handle_error(ctx, "ValidationError", str(e), EXIT_CONFIG_ERROR)
             return
 
         selected_project_id = selected.project_id
@@ -219,21 +214,21 @@ def run_job_create(
         plan_exclude_nodes = job_submit.training_plan_exclude_nodes(plan)
 
         if dry_run:
+            workspace_text = workspace_label(
+                session,
+                selected_workspace_id,
+                workspace,
+            )
             if ctx.json_output:
                 dry_run_payload: dict[str, object] = {
                     "dry_run": True,
                     "name": name,
-                    "project_name": selected.name,
-                    "workspace_name": workspace_label(
-                        session,
-                        selected_workspace_id,
-                        workspace,
-                    ),
-                    "compute_group_name": resolved_quota.compute_group_name,
-                    "quota": {
-                        "gpu_count": resolved_quota.gpu_count,
-                        "gpu_type": resolved_quota.gpu_type,
-                        "cpu_count": resolved_quota.cpu_count,
+                    "workspace": workspace_text,
+                    "project": selected.name,
+                    "compute_group": resolved_quota.compute_group_name,
+                    "resource": {
+                        "gpu": resolved_quota.gpu_count,
+                        "cpu": resolved_quota.cpu_count,
                         "memory_gib": resolved_quota.memory_gib,
                     },
                     "priority": priority,
@@ -241,34 +236,35 @@ def run_job_create(
                     "enable_notification": bool(enable_notification),
                     "image": scrub_raw_ids(image),
                     "command": scrub_raw_ids(plan.wrapped_command),
-                    "shm_size_gib": plan.shm_size_gib,
+                    "shared_memory_gib": plan.shm_size_gib,
                 }
+                if resolved_quota.gpu_type:
+                    resource = dry_run_payload["resource"]
+                    assert isinstance(resource, dict)
+                    resource["gpu_type"] = resolved_quota.gpu_type
                 if plan_exclude_nodes:
                     dry_run_payload["exclude_nodes"] = [
                         scrub_raw_ids(node) for node in plan_exclude_nodes
                     ]
                 click.echo(json_formatter.format_json(dry_run_payload))
                 return
-            click.echo(human_formatter.format_success(f"Dry run: job create plan for {name}"))
+            click.echo(f"Create plan: {scrub_raw_ids(name)}")
             click.echo(f"Project: {scrub_raw_ids(selected.name)}")
-            click.echo(
-                f"Workspace: {scrub_raw_ids(workspace_label(session, selected_workspace_id, workspace))}"
-            )
+            click.echo(f"Workspace: {scrub_raw_ids(workspace_text)}")
             click.echo(f"Compute: {scrub_raw_ids(resolved_quota.compute_group_name)}")
-            click.echo(f"Quota: {quota_spec.display()}")
+            click.echo(f"Resource: {quota_spec.display()}")
             if priority is not None:
                 click.echo(f"Priority: {priority}")
             if nodes > 1:
                 click.echo(f"Nodes: {nodes}")
             if enable_notification:
-                click.echo("Status notifications: enabled")
+                click.echo("Notifications: enabled")
             if plan.shm_size_gib is not None:
                 click.echo(f"Shared memory: {plan.shm_size_gib} GiB")
             if plan_exclude_nodes:
                 click.echo(f"Exclude nodes: {scrub_raw_ids(', '.join(plan_exclude_nodes))}")
             click.echo(f"Image: {scrub_raw_ids(image)}")
             click.echo(f"Command: {scrub_raw_ids(plan.wrapped_command)}")
-            click.echo("No job was submitted.")
             return
 
         submission = job_submit.submit_training_job(
@@ -292,9 +288,6 @@ def run_job_create(
             shm_size=shm_size,
         )
 
-        wrapped_command = submission.wrapped_command
-        result = submission.result
-
         data = submission.data
         job_id = submission.job_id
         if job_id:
@@ -309,60 +302,17 @@ def run_job_create(
             )
 
         if ctx.json_output:
-            raw_payload = data if data else result
-            if isinstance(raw_payload, dict) and isinstance(raw_payload.get("data"), dict):
-                payload = dict(raw_payload["data"])
-            elif isinstance(raw_payload, dict):
-                payload = dict(raw_payload)
-            else:
-                payload = {}
-            payload.pop("code", None)
-            payload = _public_output(payload)
-            payload.setdefault("name", name)
-            payload.setdefault("enable_notification", bool(enable_notification))
-            if plan.shm_size_gib is not None:
-                payload.setdefault("shm_size_gib", plan.shm_size_gib)
-            click.echo(json_formatter.format_json(payload))
-            return
-
-        if job_id:
-            click.echo(human_formatter.format_success(f"Job created: {name}"))
-            click.echo(f"Quota: {quota_spec.display()}")
-            if priority is not None:
-                click.echo(f"Priority: {priority}")
-            if nodes > 1:
-                click.echo(f"Nodes:    {nodes}")
-            if enable_notification:
-                click.echo("Status notifications: enabled")
-            if plan.shm_size_gib is not None:
-                click.echo(f"Shared memory: {plan.shm_size_gib} GiB")
-            if plan_exclude_nodes:
-                click.echo(f"Exclude nodes: {scrub_raw_ids(', '.join(plan_exclude_nodes))}")
-            if auto_fault_tolerance:
-                click.echo(f"Fault tolerance: enabled (max retry: {fault_tolerance_max_retry or 10})")
-            max_cmd_len = 80
-            if len(wrapped_command) > max_cmd_len:
-                display_cmd = wrapped_command[:max_cmd_len]
-                suffix = " ... (truncated)"
-            else:
-                display_cmd = wrapped_command
-                suffix = ""
-            click.echo(f"Command:  {scrub_raw_ids(display_cmd)}{suffix}")
             click.echo(
-                "\nCheck status with: "
-                f"inspire job status {scrub_raw_ids(name)} --workspace {scrub_raw_ids(workspace)}"
+                json_formatter.format_json(
+                    {
+                        "name": name,
+                        "status": "created",
+                    }
+                )
             )
             return
 
-        if isinstance(result, dict):
-            message = result.get("message") or f"Job created: {name}"
-            click.echo(human_formatter.format_success(message))
-        else:
-            click.echo(human_formatter.format_success(f"Job created: {name}"))
-        click.echo(
-            "Check status with: "
-            f"inspire job status {scrub_raw_ids(name)} --workspace {scrub_raw_ids(workspace)}"
-        )
+        click.echo(human_formatter.format_mutation_success("Job", "created", name))
 
     except TaskPriorityError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
@@ -373,10 +323,32 @@ def run_job_create(
 
 
 @click.command("create")
-@click.option("--name", "-n", required=True, help="Job name")
+@click.option("--name", "-n", required=True, metavar="NAME", help="Job name")
+@click.option("--command", "-c", required=True, help="Start command")
+@click.option(
+    "--workspace",
+    metavar="NAME",
+    help="Workspace name. Required unless supplied by --profile.",
+)
+@click.option(
+    "--project",
+    "-p",
+    metavar="NAME",
+    help="Project name. Required unless supplied by --profile.",
+)
+@click.option(
+    "--group",
+    metavar="NAME",
+    help=(
+        "Full compute group name copied from the same quota row as --quota. "
+        "Required unless supplied by --profile. "
+        "Partial matches are not accepted."
+    ),
+)
 @click.option(
     "--quota",
     "-q",
+    metavar="SPEC",
     help=(
         "Resource quota as 'gpu,cpu,mem' (mem in GiB). "
         "Example: '4,80,800' for 4 GPU + 80 CPU + 800 GiB. "
@@ -384,7 +356,19 @@ def run_job_create(
         "pass --group <full compute group name> to disambiguate."
     ),
 )
-@click.option("--command", "-c", required=True, help="Start command")
+@click.option(
+    "--image",
+    "-i",
+    metavar="NAME|URL",
+    help="Docker image URL or visible image name. Required unless supplied by --profile.",
+)
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    metavar="NAME",
+    help="Job condition profile providing workspace/project/group/quota/image.",
+)
 @click.option(
     "--framework",
     default="pytorch",
@@ -431,30 +415,6 @@ def run_job_create(
         "Max runtime in hours. Omit for no time limit (the platform will not "
         "kill the job on a timer). The platform caps this at ~24 days when set."
     ),
-)
-@click.option("--workspace", help="Workspace name. Required unless supplied by --profile.")
-@click.option(
-    "--profile",
-    "profile_name",
-    default=None,
-    help="Job condition profile providing workspace/project/group/quota/image.",
-)
-@click.option(
-    "--group",
-    help=(
-        "Full compute group name copied from the same quota row as --quota. "
-        "Required unless supplied by --profile. "
-        "Partial matches are not accepted."
-    ),
-)
-@click.option(
-    "--image",
-    help="Docker image URL or visible image name. Required unless supplied by --profile.",
-)
-@click.option(
-    "--project",
-    "-p",
-    help="Project name. Required unless supplied by --profile.",
 )
 @click.option(
     "--nodes",

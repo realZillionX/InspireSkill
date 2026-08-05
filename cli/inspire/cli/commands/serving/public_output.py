@@ -16,19 +16,55 @@ def _value(item: object, key: str, default: Any = None) -> Any:
     return getattr(item, key, default)
 
 
+def _sources(item: object) -> list[object]:
+    sources = [item]
+    raw = _value(item, "raw")
+    if isinstance(raw, dict) and raw is not item:
+        sources.append(raw)
+    return sources
+
+
 def _nested_name(item: object, key: str, *fallbacks: str) -> str:
-    value = _value(item, key)
-    if isinstance(value, dict):
-        for candidate in ("name", f"{key}_name", "display_name"):
-            text = str(value.get(candidate) or "").strip()
+    for source in _sources(item):
+        value = _value(source, key)
+        if isinstance(value, dict):
+            for candidate in (
+                "name",
+                f"{key}_name",
+                "display_name",
+            ):
+                text = str(value.get(candidate) or "").strip()
+                if text:
+                    return sanitize_public_text(text, omit_urls=True)
+        elif value not in (None, ""):
+            text = sanitize_public_text(value, omit_urls=True)
+            if text:
+                return text
+        for fallback in fallbacks:
+            text = str(_value(source, fallback) or "").strip()
             if text:
                 return sanitize_public_text(text, omit_urls=True)
-    elif value not in (None, ""):
-        return sanitize_public_text(value, omit_urls=True)
-    for fallback in fallbacks:
-        text = str(_value(item, fallback) or "").strip()
-        if text:
-            return sanitize_public_text(text, omit_urls=True)
+    return ""
+
+
+def _identity_name(item: object) -> str:
+    for source in _sources(item):
+        for key in ("created_by", "creator", "owner"):
+            value = _value(source, key)
+            if not isinstance(value, dict):
+                continue
+            for name_key in ("name", "display_name"):
+                name = value.get(name_key)
+                if isinstance(name, str):
+                    text = sanitize_public_text(name, omit_urls=True)
+                    if text:
+                        return text
+        for key in ("created_by_name", "creator_name", "owner_name"):
+            name = _value(source, key)
+            if isinstance(name, str):
+                text = sanitize_public_text(name, omit_urls=True)
+                if text:
+                    return text
     return ""
 
 
@@ -123,6 +159,13 @@ def public_serving(item: object, *, fallback_name: str = "") -> dict[str, Any]:
                 "image": _image_label(item),
                 "project": _nested_name(item, "project", "project_name"),
                 "workspace": _nested_name(item, "workspace", "workspace_name"),
+                "compute_group": _nested_name(
+                    item,
+                    "logic_compute_group",
+                    "logic_compute_group_name",
+                    "compute_group_name",
+                ),
+                "created_by": _identity_name(item),
                 "resource": (
                     sanitize_public_text(resource, omit_urls=True)
                     if resource not in (None, "")
@@ -142,6 +185,107 @@ def public_serving(item: object, *, fallback_name: str = "") -> dict[str, Any]:
                 ),
                 "created_at": sanitize_public_text(_value(item, "created_at") or ""),
                 "updated_at": sanitize_public_text(_value(item, "updated_at") or ""),
+            }
+        )
+    )
+
+
+def public_serving_list_item(
+    item: object,
+    *,
+    fallback_workspace: str = "",
+) -> dict[str, Any]:
+    """Project one serving list row onto the shared workload schema."""
+    view = public_serving(item)
+    workspace = (
+        sanitize_public_text(fallback_workspace, omit_urls=True)
+        or str(view.get("workspace") or "")
+    )
+    return {
+        "name": view.get("name", ""),
+        "status": view.get("status", ""),
+        "project": view.get("project", ""),
+        "workspace": workspace,
+        "compute_group": view.get("compute_group", ""),
+        "created_by": view.get("created_by", ""),
+    }
+
+
+def public_serving_instance(item: object, *, index: int) -> dict[str, Any]:
+    """Project one serving instance without exposing platform handles."""
+    raw_name = (
+        _value(item, "name")
+        or _value(item, "instance_name")
+        or _value(item, "pod_name")
+        or _value(item, "podName")
+        or _value(item, "display_name")
+    )
+    name = sanitize_public_text(raw_name or "", omit_urls=True).strip()
+    if not name or name == "<redacted>":
+        name = f"instance {index}"
+
+    resource = _value(item, "resource")
+    if isinstance(resource, dict):
+        resource = None
+    if not resource:
+        spec = _value(item, "resource_spec")
+        if not isinstance(spec, dict):
+            spec = _value(item, "resource_spec_price")
+        if not isinstance(spec, dict):
+            spec = item if isinstance(item, dict) else {}
+        bits: list[str] = []
+        cpu = spec.get("cpu_count") or spec.get("cpu")
+        gpu = spec.get("gpu_count") or spec.get("gpu")
+        memory = (
+            spec.get("memory_size_gib")
+            or spec.get("memory_gib")
+            or spec.get("memory_size")
+        )
+        if cpu not in (None, ""):
+            bits.append(f"{cpu} CPU")
+        if memory not in (None, ""):
+            bits.append(f"{memory} GiB")
+        if gpu not in (None, ""):
+            bits.append(f"{gpu} GPU")
+        resource = ", ".join(bits)
+
+    return sanitize_public_data(
+        _compact(
+            {
+                "name": name,
+                "status": sanitize_public_text(
+                    _value(
+                        item,
+                        "status",
+                        _value(item, "instance_status", _value(item, "phase")),
+                    )
+                    or "",
+                    omit_urls=True,
+                ),
+                "role": sanitize_public_text(
+                    _value(
+                        item,
+                        "role",
+                        _value(
+                            item,
+                            "instance_type",
+                            _value(item, "type", _value(item, "component")),
+                        ),
+                    )
+                    or "",
+                    omit_urls=True,
+                ),
+                "resource": (
+                    sanitize_public_text(resource, omit_urls=True)
+                    if resource not in (None, "")
+                    else None
+                ),
+                "created_at": sanitize_public_text(
+                    _value(item, "created_at") or ""
+                ),
+                "updated_at": sanitize_public_text(
+                    _value(item, "updated_at") or ""
+                ),
             }
         )
     )
@@ -208,5 +352,7 @@ __all__ = [
     "public_configs",
     "public_operation",
     "public_serving",
+    "public_serving_list_item",
+    "public_serving_instance",
     "sanitize_public_data",
 ]

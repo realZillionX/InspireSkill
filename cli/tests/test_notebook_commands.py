@@ -1,17 +1,20 @@
 import json
+import importlib
 import logging
 from pathlib import Path
-import subprocess
 from types import SimpleNamespace
 from typing import Any, Optional
 
+import click
 import pytest
 from click.testing import CliRunner
 
 from inspire import config as config_module
 from inspire.bridge import tunnel as tunnel_module
+from inspire.cli.commands.notebook import notebook as notebook_group
 from inspire.cli.commands.notebook import connection as connection_module
 from inspire.cli.commands.notebook import notebook_commands as notebook_cmd_module
+from inspire.cli.commands.notebook.notebook_presenters import _print_notebook_list
 from inspire.cli.commands.notebook import remote_exec as remote_exec_module
 from inspire.cli.commands.notebook import remote_shell as remote_shell_module
 from inspire.cli.commands.notebook import notebook_ssh_flow as ssh_flow_module
@@ -20,7 +23,6 @@ from inspire.cli.context import (
     EXIT_API_ERROR,
     EXIT_CONFIG_ERROR,
     EXIT_SUCCESS,
-    EXIT_TIMEOUT,
     EXIT_VALIDATION_ERROR,
 )
 from inspire.cli.main import main as cli_main
@@ -31,6 +33,14 @@ from inspire.cli.utils.resource_index import (
 )
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
+
+
+notebook_lifecycle_module = importlib.import_module(
+    "inspire.cli.commands.notebook.notebook_lifecycle"
+)
+notebook_metrics_module = importlib.import_module(
+    "inspire.cli.commands.notebook.notebook_metrics"
+)
 
 
 NOTEBOOK_CREATE_REQUIRED_ARGS = [
@@ -49,16 +59,27 @@ NOTEBOOK_CREATE_REQUIRED_ARGS = [
 ]
 
 
+def _workspace_metavars(group: click.Group) -> dict[str, str | None]:
+    values: dict[str, str | None] = {}
+
+    def walk(command: click.Command, path: tuple[str, ...]) -> None:
+        for parameter in command.params:
+            if isinstance(parameter, click.Option) and "--workspace" in parameter.opts:
+                values[" ".join(path)] = parameter.metavar
+        if isinstance(command, click.Group):
+            for name, child in command.commands.items():
+                walk(child, (*path, name))
+
+    walk(group, ())
+    return values
+
+
 def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> config_module.Config:
     config = config_module.Config(
         username="user",
         password="pass",
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
-        log_cache_dir=str(tmp_path / "log_cache"),
-        timeout=5,
-        max_retries=0,
-        retry_delay=0.0,
     )
     if include_compute_groups:
         test_group_id = "lcg-test000-0000-0000-0000-000000000000"
@@ -132,11 +153,12 @@ def test_current_user_id_failure_keeps_api_details_in_debug_log(
     message = _NBL_MOD._current_user_lookup_failure_message(session)
     assert message == (
         "Cannot determine the current platform account. "
-        "Refresh the account session with `inspire account login`, then retry."
+        "Refresh the account session with `inspire account add` or `inspire init`, "
+        "then retry."
     )
     assert "/api/v1/user/detail" not in message
     assert "browser runtime missing" not in message
-    assert "inspire account login" in message
+    assert "inspire account login" not in message
     assert "/api/v1/user/detail" in caplog.text
     assert "browser runtime missing" in caplog.text
 
@@ -224,7 +246,6 @@ def test_resolve_notebook_id_allows_notebook_prefixed_human_name(
     notebook_id, resolved_workspace_id = _NBL_MOD._resolve_notebook_id(
         Context(),
         session=session,
-        config=make_test_config(tmp_path),
         base_url="https://example.invalid",
         identifier=notebook_name,
         json_output=False,
@@ -238,7 +259,7 @@ def test_resolve_notebook_id_allows_notebook_prefixed_human_name(
 
 
 def test_resolve_notebook_id_propagates_listing_errors(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Real listing errors propagate immediately — no 12-second silent retry.
 
@@ -255,8 +276,6 @@ def test_resolve_notebook_id_propagates_listing_errors(
 
     class _BoomError(RuntimeError):
         pass
-
-    config = make_test_config(tmp_path)
 
     class _FakeSession:
         workspace_id = "ws-77777777-7777-7777-7777-777777777777"
@@ -277,7 +296,6 @@ def test_resolve_notebook_id_propagates_listing_errors(
         _NBL_MOD._resolve_notebook_id(
             ctx,
             session=_FakeSession(),
-            config=config,
             base_url="https://example.invalid",
             identifier="any-name",
             json_output=False,
@@ -287,14 +305,12 @@ def test_resolve_notebook_id_propagates_listing_errors(
 
 
 def test_resolve_notebook_id_retries_until_eventual_consistency_settles(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Empty results retry; the new notebook appearing later wins."""
     from inspire.cli.context import Context
 
     monkeypatch.setattr(_NBL_MOD, "_resolve_notebook_id", _REAL_RESOLVE_NOTEBOOK_ID)
-
-    config = make_test_config(tmp_path)
 
     class _FakeSession:
         workspace_id = "ws-77777777-7777-7777-7777-777777777777"
@@ -327,7 +343,6 @@ def test_resolve_notebook_id_retries_until_eventual_consistency_settles(
     notebook_id, ws_id = _NBL_MOD._resolve_notebook_id(
         ctx,
         session=_FakeSession(),
-        config=config,
         base_url="https://example.invalid",
         identifier="fresh-name",
         json_output=False,
@@ -395,7 +410,6 @@ def test_notebook_live_snapshot_cannot_overwrite_newer_write_through(
     notebook_id, resolved_workspace_id = _NBL_MOD._resolve_notebook_id(
         Context(),
         session=_FakeSession(),
-        config=make_test_config(tmp_path),
         base_url="https://example.invalid",
         identifier="demo",
         json_output=False,
@@ -458,7 +472,6 @@ def test_notebook_clear_during_live_lookup_does_not_repopulate_cache(
     notebook_id, resolved_workspace_id = _NBL_MOD._resolve_notebook_id(
         Context(),
         session=_FakeSession(),
-        config=make_test_config(tmp_path),
         base_url="https://example.invalid",
         identifier="demo",
         json_output=False,
@@ -522,7 +535,6 @@ def test_notebook_snapshot_failure_skips_live_cache_write(
     notebook_id, resolved_workspace_id = _NBL_MOD._resolve_notebook_id(
         Context(),
         session=_FakeSession(),
-        config=make_test_config(tmp_path),
         base_url="https://example.invalid",
         identifier="demo",
         json_output=False,
@@ -570,7 +582,6 @@ def test_notebook_stale_handle_retry_tombstones_exact_old_handle_and_resolves_li
         _NBL_MOD._run_notebook_operation_with_stale_handle_retry(
             Context(),
             session=session,
-            config=SimpleNamespace(),
             base_url="https://example.invalid",
             identifier="demo-notebook",
             json_output=False,
@@ -605,6 +616,11 @@ def test_notebook_status_runs_detail_fetch_through_stale_retry(
 
     monkeypatch.setattr(
         notebook_cmd_module,
+        "require_confirmation",
+        lambda *_args, **_kwargs: pytest.fail("status must not require confirmation"),
+    )
+    monkeypatch.setattr(
+        notebook_cmd_module,
         "require_web_session",
         lambda *_args, **_kwargs: session,
     )
@@ -612,8 +628,8 @@ def test_notebook_status_runs_detail_fetch_through_stale_retry(
     monkeypatch.setattr(notebook_cmd_module, "load_config", lambda _ctx: SimpleNamespace())
     monkeypatch.setattr(
         notebook_cmd_module,
-        "resolve_workspace_query_scope",
-        lambda *_args, **_kwargs: (["ws-live"], "ws-live"),
+        "resolve_workspace_operation_scope",
+        lambda *_args, **_kwargs: "ws-live",
     )
 
     def fake_retry(*_args, operation, **kwargs):  # noqa: ANN001
@@ -632,8 +648,20 @@ def test_notebook_status_runs_detail_fetch_through_stale_retry(
             "code": 0,
             "data": {
                 "notebook_id": url.rsplit("/", maxsplit=1)[-1],
-                "name": "demo-notebook",
                 "status": "RUNNING",
+                "project": {
+                    "id": "project-hidden",
+                    "name": "Demo Project",
+                },
+                "workspace": {"id": "workspace-hidden"},
+                "logic_compute_group": {
+                    "id": "compute-hidden",
+                    "name": "H200 Room",
+                },
+                "created_by": {
+                    "id": "user-hidden",
+                    "name": "Alice",
+                },
             },
         },
     )
@@ -653,7 +681,136 @@ def test_notebook_status_runs_detail_fetch_through_stale_retry(
     assert result.exit_code == 0, result.output
     assert seen["identifier"] == "demo-notebook"
     assert seen["workspace_ids"] == ["ws-live"]
+    assert json.loads(result.output)["data"] == {
+        "name": "demo-notebook",
+        "status": "RUNNING",
+        "project": "Demo Project",
+        "workspace": "CPU资源空间",
+        "compute_group": "H200 Room",
+        "created_by": "Alice",
+    }
     assert "notebook-live" not in result.output
+    assert "project-hidden" not in result.output
+    assert "workspace-hidden" not in result.output
+    assert "compute-hidden" not in result.output
+    assert "user-hidden" not in result.output
+
+    human = CliRunner().invoke(
+        cli_main,
+        [
+            "notebook",
+            "status",
+            "demo-notebook",
+            "--workspace",
+            "CPU资源空间",
+        ],
+    )
+
+    assert human.exit_code == 0, human.output
+    assert human.output.splitlines()[:2] == [
+        "Name: demo-notebook",
+        "Status: RUNNING",
+    ]
+    assert all(not line.startswith("  ") for line in human.output.splitlines())
+    assert "Project: Demo Project" in human.output
+    assert "Workspace: CPU资源空间" in human.output
+    assert "Compute Group: H200 Room" in human.output
+    assert "Created By: Alice" in human.output
+    assert "notebook-live" not in human.output
+    assert "project-hidden" not in human.output
+    assert "workspace-hidden" not in human.output
+    assert "compute-hidden" not in human.output
+    assert "user-hidden" not in human.output
+
+
+def test_notebook_stop_never_requires_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stopped: list[str] = []
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "require_confirmation",
+        lambda *_args, **_kwargs: pytest.fail("stop must not require confirmation"),
+    )
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "require_web_session",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(notebook_cmd_module, "get_base_url", lambda: "https://example.invalid")
+    monkeypatch.setattr(notebook_cmd_module, "load_config", lambda _ctx: SimpleNamespace())
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "resolve_workspace_operation_scope",
+        lambda *_args, **_kwargs: "workspace-internal",
+    )
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "_resolve_notebook_id",
+        lambda *_args, **_kwargs: ("notebook-internal", "workspace-internal"),
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "stop_notebook",
+        lambda *, notebook_id, session: stopped.append(notebook_id),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "notebook",
+            "stop",
+            "demo",
+            "--workspace",
+            "CPU资源空间",
+        ],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert stopped == ["notebook-internal"]
+    assert json.loads(result.output)["data"] == {
+        "name": "demo",
+        "status": "stopped",
+    }
+    assert "notebook-internal" not in result.output
+
+
+def test_notebook_delete_json_requires_yes_before_remote_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "require_web_session",
+        lambda *_args, **_kwargs: pytest.fail("session must not load before confirmation"),
+    )
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "load_config",
+        lambda *_args, **_kwargs: pytest.fail("config must not load before confirmation"),
+    )
+    monkeypatch.setattr(
+        notebook_cmd_module,
+        "_resolve_notebook_id",
+        lambda *_args, **_kwargs: pytest.fail("resolver must not run before confirmation"),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "notebook",
+            "delete",
+            "demo",
+            "--workspace",
+            "CPU资源空间",
+        ],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION_ERROR
+    payload = json.loads(result.output)
+    assert payload["error"]["type"] == "ConfirmationRequired"
+    assert payload["error"]["hint"] == "Pass --yes to confirm."
 
 
 def test_notebook_list_all_uses_multi_workspace_helper(
@@ -694,14 +851,23 @@ def test_notebook_list_all_uses_multi_workspace_helper(
                     "name": "running-notebook",
                     "status": "RUNNING",
                     "created_at": "2026-06-05 10:00:00",
+                    "project": {
+                        "id": "project-hidden",
+                        "name": "Demo Project",
+                    },
+                    "logic_compute_group": {
+                        "id": "compute-hidden",
+                        "name": "H200 Room",
+                    },
+                    "created_by": {
+                        "id": "user-hidden",
+                        "name": "Alice",
+                    },
                     "quota": {"cpu_count": 20},
                 }
             ],
             "ws-b": [],
         }
-
-    def _single_lister(*args: Any, **kwargs: Any) -> list[dict]:
-        raise AssertionError("notebook list --workspace all should not query workspaces serially")
 
     monkeypatch.setattr(
         notebook_cmd_module,
@@ -709,7 +875,6 @@ def test_notebook_list_all_uses_multi_workspace_helper(
         _multi_lister,
         raising=False,
     )
-    monkeypatch.setattr(notebook_cmd_module, "_list_notebooks_for_workspace", _single_lister)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -719,10 +884,224 @@ def test_notebook_list_all_uses_multi_workspace_helper(
 
     assert result.exit_code == 0
     payload = json.loads(result.output)
-    assert payload["data"]["items"][0]["name"] == "running-notebook"
+    assert payload["data"] == {
+        "items": [
+            {
+                "name": "running-notebook",
+                "status": "RUNNING",
+                "project": "Demo Project",
+                "workspace": "GPU A",
+                "compute_group": "H200 Room",
+                "created_by": "Alice",
+            }
+        ]
+    }
     assert captured["workspace_ids"] == ["ws-a", "ws-b"]
     assert captured["user_ids"] == ["user-1"]
     assert captured["status"] == ["RUNNING"]
+    for hidden in ("project-hidden", "compute-hidden", "user-hidden", "ws-a", "ws-b"):
+        assert hidden not in result.output
+
+
+def test_notebook_list_json_metadata_only_when_truncated(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    item = {
+        "name": "demo",
+        "status": "RUNNING",
+        "project_name": "Project",
+        "workspace_name": "Workspace",
+        "logic_compute_group_name": "H200 Room",
+        "created_by_name": "Alice",
+        "project_id": "project-hidden",
+        "workspace_id": "workspace-hidden",
+        "logic_compute_group_id": "compute-hidden",
+        "created_by_id": "user-hidden",
+    }
+    expected_item = {
+        "name": "demo",
+        "status": "RUNNING",
+        "project": "Project",
+        "workspace": "Workspace",
+        "compute_group": "H200 Room",
+        "created_by": "Alice",
+    }
+
+    _print_notebook_list([item], True, total=1, truncated=False)
+    untruncated = json.loads(capsys.readouterr().out)["data"]
+    assert untruncated == {"items": [expected_item]}
+
+    _print_notebook_list([item], True, total=2, truncated=True)
+    truncated = json.loads(capsys.readouterr().out)["data"]
+    assert truncated == {
+        "items": [expected_item],
+        "shown": 1,
+        "total": 2,
+        "truncated": True,
+    }
+    assert "project-hidden" not in json.dumps(truncated)
+    assert "workspace-hidden" not in json.dumps(truncated)
+    assert "compute-hidden" not in json.dumps(truncated)
+    assert "user-hidden" not in json.dumps(truncated)
+
+
+def test_notebook_lifecycle_empty_json_uses_collection_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        notebook_metrics_module,
+        "_notebook_name_to_id",
+        lambda *_args, **_kwargs: SimpleNamespace(task_id="notebook-internal"),
+    )
+    monkeypatch.setattr(
+        notebook_lifecycle_module,
+        "list_notebook_runs",
+        lambda _task_id: [],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "notebook",
+            "lifecycle",
+            "demo",
+            "--workspace",
+            "CPU Room",
+        ],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert json.loads(result.output) == {
+        "success": True,
+        "data": {"items": []},
+    }
+    assert "notebook-internal" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("limit_args", "expected_data"),
+    (
+        (
+            ("--limit", "2"),
+            {
+                "items": [
+                    {
+                        "index": 2,
+                        "start_time": "2026-08-02 10:00:00",
+                        "end_time": "2026-08-02 11:00:00",
+                        "status": "STOPPED",
+                    },
+                    {
+                        "index": 3,
+                        "start_time": "2026-08-03 10:00:00",
+                        "end_time": "2026-08-03 11:00:00",
+                        "status": "STOPPED",
+                    },
+                ],
+                "shown": 2,
+                "total": 3,
+                "truncated": True,
+            },
+        ),
+        (
+            ("--limit", "3"),
+            {
+                "items": [
+                    {
+                        "index": 1,
+                        "start_time": "2026-08-01 10:00:00",
+                        "end_time": "2026-08-01 11:00:00",
+                        "status": "STOPPED",
+                    },
+                    {
+                        "index": 2,
+                        "start_time": "2026-08-02 10:00:00",
+                        "end_time": "2026-08-02 11:00:00",
+                        "status": "STOPPED",
+                    },
+                    {
+                        "index": 3,
+                        "start_time": "2026-08-03 10:00:00",
+                        "end_time": "2026-08-03 11:00:00",
+                        "status": "STOPPED",
+                    },
+                ]
+            },
+        ),
+        (
+            ("--all",),
+            {
+                "items": [
+                    {
+                        "index": 1,
+                        "start_time": "2026-08-01 10:00:00",
+                        "end_time": "2026-08-01 11:00:00",
+                        "status": "STOPPED",
+                    },
+                    {
+                        "index": 2,
+                        "start_time": "2026-08-02 10:00:00",
+                        "end_time": "2026-08-02 11:00:00",
+                        "status": "STOPPED",
+                    },
+                    {
+                        "index": 3,
+                        "start_time": "2026-08-03 10:00:00",
+                        "end_time": "2026-08-03 11:00:00",
+                        "status": "STOPPED",
+                    },
+                ]
+            },
+        ),
+    ),
+)
+def test_notebook_lifecycle_json_limit_metadata_only_when_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+    limit_args: tuple[str, ...],
+    expected_data: dict[str, object],
+) -> None:
+    runs = [
+        {
+            "index": index,
+            "start_time": f"2026-08-0{index} 10:00:00",
+            "end_time": f"2026-08-0{index} 11:00:00",
+            "status": "STOPPED",
+            "run_id": f"run-internal-{index}",
+        }
+        for index in (3, 1, 2)
+    ]
+    monkeypatch.setattr(
+        notebook_metrics_module,
+        "_notebook_name_to_id",
+        lambda *_args, **_kwargs: SimpleNamespace(task_id="notebook-internal"),
+    )
+    monkeypatch.setattr(
+        notebook_lifecycle_module,
+        "list_notebook_runs",
+        lambda _task_id: runs,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "notebook",
+            "lifecycle",
+            "demo",
+            "--workspace",
+            "CPU Room",
+            *limit_args,
+        ],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert json.loads(result.output) == {
+        "success": True,
+        "data": expected_data,
+    }
+    assert "notebook-internal" not in result.output
+    assert "run-internal" not in result.output
 
 
 def test_notebook_list_fetches_all_pages(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -858,6 +1237,8 @@ def test_notebook_list_human_shows_project_workspace_and_gpu_model(
     result = runner.invoke(cli_main, ["notebook", "list", "--workspace", "all"])
 
     assert result.exit_code == 0
+    assert result.output.splitlines()[0].startswith("Name")
+    assert "Total:" not in result.output
     assert "Project" in result.output
     assert "Workspace" in result.output
     assert "GPU" in result.output
@@ -974,10 +1355,6 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         password="pass",
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
-        log_cache_dir=str(tmp_path / "log_cache"),
-        timeout=5,
-        max_retries=0,
-        retry_delay=0.0,
     )
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
@@ -1074,10 +1451,6 @@ def test_notebook_start_wait_prints_progress(
         password="pass",
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
-        log_cache_dir=str(tmp_path / "log_cache"),
-        timeout=5,
-        max_retries=0,
-        retry_delay=0.0,
     )
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
@@ -1173,10 +1546,6 @@ def test_notebook_start_name_conflict_prompts_selection(
         password="pass",
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
-        log_cache_dir=str(tmp_path / "log_cache"),
-        timeout=5,
-        max_retries=0,
-        retry_delay=0.0,
     )
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
@@ -1281,11 +1650,7 @@ def test_notebook_start_warns_when_no_wait_conflicts_with_configured_post_start(
         password="pass",
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
-        log_cache_dir=str(tmp_path / "log_cache"),
         notebook_post_start="echo from config",
-        timeout=5,
-        max_retries=0,
-        retry_delay=0.0,
     )
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
@@ -1544,7 +1909,14 @@ def test_run_notebook_ssh_fails_fast_on_account_mismatch(
 
     assert exc.value.code == EXIT_CONFIG_ERROR
     assert captured["type"] == "ConfigError"
-    assert "Notebook/account mismatch" in captured["message"]
+    assert captured["message"] == "Notebook/account mismatch detected before tunnel setup."
+    assert captured["hint"] == (
+        "Retry with `--account <name>`, or add the owning account with "
+        "`inspire account add <name>`."
+    )
+    public_error = f"{captured['message']}\n{captured['hint']}"
+    for private_identity in ("current-user", "other-user", "current", "user"):
+        assert private_identity not in public_error
 
 
 def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
@@ -1625,7 +1997,7 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
         lambda bridge_name, config, retries=0, retry_pause=0.0, progressive=True: True,
     )
 
-    monkeypatch.setattr(ssh_flow_module.subprocess, "call", lambda args: 0)
+    monkeypatch.setattr(ssh_flow_module, "run_scrubbed_pty", lambda args: 0)
 
     ssh_flow_module.run_notebook_ssh(
         Context(),
@@ -1808,7 +2180,7 @@ def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
         lambda bridge_name, config, remote_command=None: ["ssh", "root@localhost"],
     )
 
-    monkeypatch.setattr(ssh_flow_module.subprocess, "call", lambda args: 0)
+    monkeypatch.setattr(ssh_flow_module, "run_scrubbed_pty", lambda args: 0)
 
     ssh_flow_module.run_notebook_ssh(
         Context(),
@@ -1916,7 +2288,7 @@ def test_run_notebook_ssh_interactive_reconnects_after_drop(
     )
 
     ssh_rc = iter([255, 0])
-    monkeypatch.setattr(ssh_flow_module.subprocess, "call", lambda args: next(ssh_rc))
+    monkeypatch.setattr(ssh_flow_module, "run_scrubbed_pty", lambda args: next(ssh_rc))
 
     def fake_rebuild(*args: Any, **kwargs: Any) -> object:
         reconnect_calls["rebuild"] += 1
@@ -1939,505 +2311,6 @@ def test_run_notebook_ssh_interactive_reconnects_after_drop(
     )
 
     assert reconnect_calls["rebuild"] == 1
-
-
-def test_run_notebook_ssh_command_uses_non_interactive_executor(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeSession:
-        workspace_id = "ws-test"
-        all_workspace_ids = ["ws-test"]
-        all_workspace_names = {"ws-test": "Test Workspace"}
-        storage_state = {}
-
-    class FakeTunnelConfig:
-        def __init__(self) -> None:
-            self.bridges: dict[str, object] = {}
-            self.default_bridge = None
-
-        def add_bridge(self, profile: object) -> None:
-            name = str(getattr(profile, "name", "default"))
-            self.bridges[name] = profile
-            if self.default_bridge is None:
-                self.default_bridge = name
-
-        def get_bridge(self, name: Optional[str] = None) -> object | None:
-            if name:
-                return self.bridges.get(name)
-            if self.default_bridge:
-                return self.bridges.get(self.default_bridge)
-            return None
-
-    fake_tunnel_config = FakeTunnelConfig()
-    fake_tunnel_config.add_bridge(
-        tunnel_module.BridgeProfile(
-            name="nb-notebook",
-            proxy_url="wss://proxy.example/notebook/",
-            notebook_id="notebook-12345678",
-        )
-    )
-    streamed: dict[str, object] = {}
-
-    monkeypatch.setattr(ssh_flow_module, "require_web_session", lambda ctx, hint: FakeSession())
-    monkeypatch.setattr(ssh_flow_module, "load_config", lambda ctx: make_test_config(tmp_path))
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_resolve_notebook_id",
-        lambda *args, **kwargs: ("notebook-12345678", None),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "wait_for_notebook_running",
-        lambda notebook_id, session=None: {
-            "name": "test-nb",
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "CPU"}},
-        },
-    )
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_get_current_user_detail",
-        lambda session, base_url: {"id": "user-1", "username": "user"},
-    )
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_validate_notebook_account_access",
-        lambda current_user, notebook_detail: (True, ""),
-    )
-    monkeypatch.setattr(
-        tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
-    )
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: False)
-    monkeypatch.setattr(
-        tunnel_module,
-        "get_ssh_command_args",
-        lambda bridge_name, config, remote_command=None: ["ssh", "root@localhost"],
-    )
-    monkeypatch.setattr(
-        tunnel_module,
-        "run_ssh_command_streaming",
-        lambda command, bridge_name=None, config=None, timeout=None, output_callback=None, pass_stdin=False: (
-            streamed.update(
-                {
-                    "command": command,
-                    "bridge_name": bridge_name,
-                    "config": config,
-                    "timeout": timeout,
-                    "pass_stdin": pass_stdin,
-                }
-            )
-            or 0
-        ),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "setup_notebook_rtunnel",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
-    )
-    probe: dict[str, object] = {}
-
-    def fake_probe_run(
-        args: list[str],
-        *,
-        stdin=None,
-        capture_output: bool,
-        timeout: int,
-        text: bool,
-    ) -> subprocess.CompletedProcess:
-        probe.update(
-            {
-                "args": args,
-                "stdin": stdin,
-                "capture_output": capture_output,
-                "timeout": timeout,
-                "text": text,
-            }
-        )
-        return subprocess.CompletedProcess(args, 0, stdout="ok\n", stderr="")
-
-    monkeypatch.setattr(ssh_flow_module.subprocess, "run", fake_probe_run)
-
-    ssh_flow_module.run_notebook_ssh(
-        Context(),
-        notebook_id="nb-name",
-        workspace="Test Workspace",
-        wait=True,
-        pubkey=None,
-        port=31337,
-        ssh_port=22222,
-        command="git status",
-        debug_playwright=False,
-        setup_timeout=60,
-    )
-
-    assert streamed["command"] == "git status"
-    assert streamed["bridge_name"] == "nb-notebook"
-    assert streamed["config"] is fake_tunnel_config
-    assert streamed["timeout"] == 300
-    assert streamed["pass_stdin"] is True
-    assert probe["stdin"] is subprocess.DEVNULL
-
-
-def test_run_notebook_ssh_name_uses_cached_bridge_metadata(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeSession:
-        workspace_id = "ws-test"
-        all_workspace_ids = ["ws-test"]
-        all_workspace_names = {"ws-test": "Test Workspace"}
-        storage_state = {}
-
-    class FakeTunnelConfig:
-        def __init__(self) -> None:
-            self.bridges: dict[str, object] = {}
-            self.default_bridge = None
-
-        def add_bridge(self, profile: object) -> None:
-            name = str(getattr(profile, "name", "default"))
-            self.bridges[name] = profile
-            if self.default_bridge is None:
-                self.default_bridge = name
-
-        def get_bridge(self, name: Optional[str] = None) -> object | None:
-            if name:
-                return self.bridges.get(name)
-            if self.default_bridge:
-                return self.bridges.get(self.default_bridge)
-            return None
-
-    fake_tunnel_config = FakeTunnelConfig()
-    fake_tunnel_config.add_bridge(
-        tunnel_module.BridgeProfile(
-            name="nb-notebook",
-            proxy_url="wss://proxy.example/notebook/",
-            notebook_id="notebook-12345678",
-            notebook_name="container-config",
-        )
-    )
-    streamed: dict[str, object] = {}
-
-    monkeypatch.setattr(ssh_flow_module, "require_web_session", lambda ctx, hint: FakeSession())
-    monkeypatch.setattr(ssh_flow_module, "load_config", lambda ctx: make_test_config(tmp_path))
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_resolve_notebook_id",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not resolve via web")),
-    )
-    monkeypatch.setattr(
-        tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
-    )
-    monkeypatch.setattr(
-        tunnel_module,
-        "get_ssh_command_args",
-        lambda bridge_name, config, remote_command=None: ["ssh", "root@localhost"],
-    )
-    monkeypatch.setattr(
-        tunnel_module,
-        "run_ssh_command_streaming",
-        lambda command, bridge_name=None, config=None, timeout=None, output_callback=None, pass_stdin=False: (
-            streamed.update(
-                {
-                    "command": command,
-                    "bridge_name": bridge_name,
-                    "config": config,
-                    "timeout": timeout,
-                    "pass_stdin": pass_stdin,
-                }
-            )
-            or 0
-        ),
-    )
-    monkeypatch.setattr(
-        ssh_flow_module.subprocess,
-        "run",
-        lambda args, stdin=None, capture_output=True, timeout=10, text=True: (
-            subprocess.CompletedProcess(
-                args,
-                0,
-                stdout="ok\n",
-                stderr="",
-            )
-        ),
-    )
-
-    ssh_flow_module.run_notebook_ssh(
-        Context(),
-        notebook_id="container-config",
-        workspace="Test Workspace",
-        wait=True,
-        pubkey=None,
-        port=31337,
-        ssh_port=22222,
-        command="echo fast-name",
-        debug_playwright=False,
-        setup_timeout=60,
-    )
-
-    assert streamed["command"] == "echo fast-name"
-    assert streamed["bridge_name"] == "nb-notebook"
-    assert streamed["config"] is fake_tunnel_config
-    assert streamed["timeout"] == 300
-    assert streamed["pass_stdin"] is True
-
-
-def test_run_notebook_ssh_command_timeout_is_reported(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeSession:
-        workspace_id = "ws-test"
-        all_workspace_ids = ["ws-test"]
-        all_workspace_names = {"ws-test": "Test Workspace"}
-        storage_state = {}
-
-    class FakeTunnelConfig:
-        def __init__(self) -> None:
-            self.bridges: dict[str, object] = {}
-            self.default_bridge = None
-
-        def add_bridge(self, profile: object) -> None:
-            name = str(getattr(profile, "name", "default"))
-            self.bridges[name] = profile
-            if self.default_bridge is None:
-                self.default_bridge = name
-
-        def get_bridge(self, name: Optional[str] = None) -> object | None:
-            if name:
-                return self.bridges.get(name)
-            if self.default_bridge:
-                return self.bridges.get(self.default_bridge)
-            return None
-
-    fake_tunnel_config = FakeTunnelConfig()
-    fake_tunnel_config.add_bridge(
-        tunnel_module.BridgeProfile(
-            name="nb-notebook",
-            proxy_url="wss://proxy.example/notebook/",
-            notebook_id="notebook-12345678",
-        )
-    )
-    captured: dict[str, str] = {}
-
-    def fake_handle_error(
-        ctx: Context,
-        error_type: str,
-        message: str,
-        exit_code: int,
-        *,
-        hint: Optional[str] = None,
-    ) -> None:
-        assert ctx is not None
-        captured["type"] = error_type
-        captured["message"] = message
-        captured["hint"] = hint or ""
-        raise SystemExit(exit_code)
-
-    monkeypatch.setattr(ssh_flow_module, "_handle_error", fake_handle_error)
-    monkeypatch.setattr(ssh_flow_module, "require_web_session", lambda ctx, hint: FakeSession())
-    monkeypatch.setattr(ssh_flow_module, "load_config", lambda ctx: make_test_config(tmp_path))
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_resolve_notebook_id",
-        lambda *args, **kwargs: ("notebook-12345678", None),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "wait_for_notebook_running",
-        lambda notebook_id, session=None: {
-            "name": "test-nb",
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "CPU"}},
-        },
-    )
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_get_current_user_detail",
-        lambda session, base_url: {"id": "user-1", "username": "user"},
-    )
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_validate_notebook_account_access",
-        lambda current_user, notebook_detail: (True, ""),
-    )
-    monkeypatch.setattr(
-        tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
-    )
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: False)
-    monkeypatch.setattr(
-        tunnel_module,
-        "get_ssh_command_args",
-        lambda bridge_name, config, remote_command=None: ["ssh", "root@localhost"],
-    )
-    monkeypatch.setattr(
-        tunnel_module,
-        "run_ssh_command_streaming",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            subprocess.TimeoutExpired(cmd="ssh", timeout=5)
-        ),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "setup_notebook_rtunnel",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
-    )
-    monkeypatch.setattr(
-        ssh_flow_module.subprocess,
-        "run",
-        lambda args, stdin=None, capture_output=True, timeout=10, text=True: (
-            subprocess.CompletedProcess(
-                args,
-                0,
-                stdout="ok\n",
-                stderr="",
-            )
-        ),
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        ssh_flow_module.run_notebook_ssh(
-            Context(),
-            notebook_id="nb-name",
-            workspace="Test Workspace",
-            wait=True,
-            pubkey=None,
-            port=31337,
-            ssh_port=22222,
-            command="git pull",
-            command_timeout=5,
-            debug_playwright=False,
-            setup_timeout=60,
-        )
-
-    assert exc.value.code == EXIT_TIMEOUT
-    assert captured["type"] == "Timeout"
-    assert "timed out after 5s" in captured["message"]
-    assert "--command-timeout" in captured["hint"]
-
-
-def test_run_notebook_ssh_command_failure_reports_exit_code_and_grep_hint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeSession:
-        workspace_id = "ws-test"
-        all_workspace_ids = ["ws-test"]
-        all_workspace_names = {"ws-test": "Test Workspace"}
-        storage_state = {}
-
-    class FakeTunnelConfig:
-        def __init__(self) -> None:
-            self.bridges: dict[str, object] = {}
-            self.default_bridge = None
-
-        def add_bridge(self, profile: object) -> None:
-            name = str(getattr(profile, "name", "default"))
-            self.bridges[name] = profile
-            if self.default_bridge is None:
-                self.default_bridge = name
-
-        def get_bridge(self, name: Optional[str] = None) -> object | None:
-            if name:
-                return self.bridges.get(name)
-            if self.default_bridge:
-                return self.bridges.get(self.default_bridge)
-            return None
-
-    fake_tunnel_config = FakeTunnelConfig()
-    fake_tunnel_config.add_bridge(
-        tunnel_module.BridgeProfile(
-            name="nb-notebook",
-            proxy_url="wss://proxy.example/notebook/",
-            notebook_id="notebook-12345678",
-        )
-    )
-    captured: dict[str, str] = {}
-
-    def fake_handle_error(
-        ctx: Context,
-        error_type: str,
-        message: str,
-        exit_code: int,
-        *,
-        hint: Optional[str] = None,
-    ) -> None:
-        assert ctx is not None
-        captured["type"] = error_type
-        captured["message"] = message
-        captured["hint"] = hint or ""
-        raise SystemExit(exit_code)
-
-    monkeypatch.setattr(ssh_flow_module, "_handle_error", fake_handle_error)
-    monkeypatch.setattr(ssh_flow_module, "require_web_session", lambda ctx, hint: FakeSession())
-    monkeypatch.setattr(ssh_flow_module, "load_config", lambda ctx: make_test_config(tmp_path))
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_resolve_notebook_id",
-        lambda *args, **kwargs: ("notebook-12345678", None),
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "wait_for_notebook_running",
-        lambda notebook_id, session=None: {
-            "name": "test-nb",
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "CPU"}},
-        },
-    )
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_get_current_user_detail",
-        lambda session, base_url: {"id": "user-1", "username": "user"},
-    )
-    monkeypatch.setattr(
-        ssh_flow_module,
-        "_validate_notebook_account_access",
-        lambda current_user, notebook_detail: (True, ""),
-    )
-    monkeypatch.setattr(
-        tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
-    )
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: False)
-    monkeypatch.setattr(
-        tunnel_module,
-        "get_ssh_command_args",
-        lambda bridge_name, config, remote_command=None: ["ssh", "root@localhost"],
-    )
-    monkeypatch.setattr(
-        tunnel_module,
-        "run_ssh_command_streaming",
-        lambda *args, **kwargs: 1,
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "setup_notebook_rtunnel",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
-    )
-    monkeypatch.setattr(
-        ssh_flow_module.subprocess,
-        "run",
-        lambda args, stdin=None, capture_output=True, timeout=10, text=True: (
-            subprocess.CompletedProcess(
-                args,
-                0,
-                stdout="ok\n",
-                stderr="",
-            )
-        ),
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        ssh_flow_module.run_notebook_ssh(
-            Context(),
-            notebook_id="nb-name",
-            workspace="Test Workspace",
-            wait=True,
-            pubkey=None,
-            port=31337,
-            ssh_port=22222,
-            command="grep -c missing tasks/*/data.json",
-            debug_playwright=False,
-            setup_timeout=60,
-        )
-
-    assert exc.value.code == 1
-    assert captured["type"] == "CommandFailed"
-    assert "exit code 1" in captured["message"]
-    assert "grep returns exit code 1" in captured["hint"]
 
 
 def test_run_notebook_ssh_reports_when_tunnel_not_ready(
@@ -2573,13 +2446,44 @@ def test_notebook_connection_status_json_is_name_only(
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
     data = payload["data"]
-    assert data["name"] == "gpu-main"
-    assert data["status"] == "connected"
-    assert isinstance(data["elapsed_ms"], int)
+    assert data == {
+        "name": "gpu-main",
+        "status": "connected",
+    }
     assert "bridge" not in data
+    assert "elapsed_ms" not in data
     assert "proxy.example" not in result.output
     assert "31337" not in result.output
     assert "notebook-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" not in result.output
+
+
+def test_notebook_connection_status_human_omits_timing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tunnel_config = tunnel_module.TunnelConfig()
+    tunnel_config.add_bridge(
+        tunnel_module.BridgeProfile(
+            name="gpu-main",
+            proxy_url="https://proxy.example/proxy/31337/",
+            notebook_name="gpu-main",
+        )
+    )
+
+    monkeypatch.setattr(connection_module, "load_tunnel_config", lambda: tunnel_config)
+    monkeypatch.setattr(
+        connection_module,
+        "run_ssh_command",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="gpu-host\n", stderr=""),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["notebook", "connection", "status", "gpu-main"],
+    )
+
+    assert result.exit_code == EXIT_SUCCESS
+    assert "connected" in result.output
+    assert "Response time" not in result.output
 
 
 @pytest.mark.parametrize(
@@ -2643,7 +2547,7 @@ def test_notebook_connection_workspace_rejects_id_shaped_values(
     result = CliRunner().invoke(cli_main, args)
 
     assert result.exit_code == EXIT_VALIDATION_ERROR
-    assert "only accept a workspace name" in result.output
+    assert "only accept workspace names" in result.output
     assert "handle" not in result.output.lower()
     assert "ws-123456" not in result.output
 
@@ -2673,6 +2577,24 @@ def test_notebook_path_commands_manage_project_path_alias(
     )
 
     assert set_result.exit_code == EXIT_SUCCESS
+    assert set_result.output == "OK Path alias saved: me\n"
+    json_set_result = runner.invoke(
+        cli_main,
+        [
+            "--json",
+            "notebook",
+            "path",
+            "set",
+            "me",
+            "/inspire/ssd/project/topic/alice/",
+        ],
+    )
+    assert json_set_result.exit_code == EXIT_SUCCESS
+    assert json.loads(json_set_result.output)["data"] == {
+        "name": "me",
+        "status": "saved",
+    }
+    assert "/inspire/" not in json_set_result.output
     config_path = tmp_path / ".inspire" / "accounts" / "alice" / "config.toml"
     assert config_path.exists()
     content = config_path.read_text(encoding="utf-8")
@@ -2683,31 +2605,91 @@ def test_notebook_path_commands_manage_project_path_alias(
     assert list_result.exit_code == EXIT_SUCCESS
     assert "Project path aliases" not in list_result.output
     assert "me" in list_result.output
-    assert "/inspire/ssd/project/topic/alice/" in list_result.output
+    assert "/inspire/" not in list_result.output
+
+    json_list_result = runner.invoke(cli_main, ["--json", "notebook", "path", "list"])
+    assert json_list_result.exit_code == EXIT_SUCCESS
+    assert json.loads(json_list_result.output)["data"] == {"items": [{"name": "me"}]}
+    assert "/inspire/" not in json_list_result.output
 
     show_result = runner.invoke(cli_main, ["notebook", "path", "show", "me"])
     assert show_result.exit_code == EXIT_SUCCESS
     assert "Path alias: me" in show_result.output
     assert "/inspire/ssd/project/topic/alice/" in show_result.output
 
+    json_show_result = runner.invoke(
+        cli_main,
+        ["--json", "notebook", "path", "show", "me"],
+    )
+    assert json_show_result.exit_code == EXIT_SUCCESS
+    assert json.loads(json_show_result.output)["data"] == {
+        "name": "me",
+        "path": "/inspire/ssd/project/topic/alice/",
+    }
+
     delete_result = runner.invoke(cli_main, ["notebook", "path", "delete", "me", "--yes"])
     assert delete_result.exit_code == EXIT_SUCCESS
-    assert "Deleted path alias: me" in delete_result.output
+    assert delete_result.output == "OK Path alias deleted: me\n"
     assert "[path_aliases]" not in config_path.read_text(encoding="utf-8")
 
 
-def test_notebook_help_uses_path_group_instead_of_set_path() -> None:
+def test_notebook_help_exposes_path_group() -> None:
     runner = CliRunner()
 
     notebook_help = runner.invoke(cli_main, ["notebook", "--help"])
     assert notebook_help.exit_code == EXIT_SUCCESS
     assert "path" in notebook_help.output
-    assert "set-path" not in notebook_help.output
 
     path_help = runner.invoke(cli_main, ["notebook", "path", "--help"])
     assert path_help.exit_code == EXIT_SUCCESS
     assert "Manage project-level remote path aliases." in path_help.output
     assert "not bound to any one notebook instance" in path_help.output
+
+    show_help = runner.invoke(cli_main, ["notebook", "path", "show", "--help"])
+    assert show_help.exit_code == EXIT_SUCCESS
+    assert "Reveal the remote path stored for one alias." in show_help.output
+
+
+def test_notebook_workspace_metavars_are_name_oriented() -> None:
+    metavars = _workspace_metavars(notebook_group)
+
+    assert metavars
+    assert {
+        path
+        for path, metavar in metavars.items()
+        if metavar == "NAME|all"
+    } == {"list", "quota"}
+    assert all(
+        metavar == "NAME"
+        for path, metavar in metavars.items()
+        if path not in {"list", "quota"}
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "status",
+        "start",
+        "stop",
+        "delete",
+        "events",
+        "metrics",
+        "url",
+        "vscode",
+        "proxy-url",
+        "net-test",
+    ),
+)
+def test_notebook_live_name_commands_share_pick_interface(command: str) -> None:
+    result = CliRunner().invoke(cli_main, ["notebook", command, "--help"])
+
+    assert result.exit_code == EXIT_SUCCESS, result.output
+    assert "--pick INTEGER" in result.output
+    assert (
+        "Pick the Nth candidate (1-indexed) when the name is ambiguous."
+        in " ".join(result.output.split())
+    )
 
 
 def test_notebook_exec_cwd_uses_path_alias(
@@ -2827,7 +2809,7 @@ def test_notebook_shell_cwd_uses_path_alias(
         return ["ssh", "root@localhost"]
 
     monkeypatch.setattr(remote_shell_module, "get_ssh_command_args", fake_get_ssh_command_args)
-    monkeypatch.setattr(remote_shell_module.subprocess, "call", lambda args: 0)
+    monkeypatch.setattr(remote_shell_module, "run_scrubbed_pty", lambda args: 0)
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main", "--cwd", "me:repo"])
@@ -2868,7 +2850,7 @@ def test_notebook_shell_without_default_path_alias_uses_login_home(
         return ["ssh", "root@localhost"]
 
     monkeypatch.setattr(remote_shell_module, "get_ssh_command_args", fake_get_ssh_command_args)
-    monkeypatch.setattr(remote_shell_module.subprocess, "call", lambda args: 0)
+    monkeypatch.setattr(remote_shell_module, "run_scrubbed_pty", lambda args: 0)
 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main"])
@@ -2876,4 +2858,4 @@ def test_notebook_shell_without_default_path_alias_uses_login_home(
     assert result.exit_code == EXIT_SUCCESS
     assert captured["bridge_name"] == "gpu-main"
     assert captured["remote_command"] is None
-    assert result.output == "Opening shell for 'gpu-main'.\n"
+    assert result.output == ""

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import sys
 import time
@@ -26,15 +25,18 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.auth import AuthenticationError
 from inspire.cli.utils.collection_output import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.errors import (
+    exit_with_error as _handle_error,
+    require_confirmation,
+)
 from inspire.cli.utils.id_resolver import (
+    NAME_PICK_HELP,
     forget_resource_identity,
     is_full_uuid,
     looks_like_platform_id,
@@ -59,6 +61,12 @@ from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_query_scope, select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+
+from .public_output import (
+    format_job_status,
+    public_job_list_item,
+    public_job_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +159,15 @@ def _looks_like_job_id(value: str) -> bool:
     return looks_like_platform_id(value)
 
 
+def _reject_web_job_name_at_boundary(ctx: Context, job: str) -> str:
+    return reject_id_at_boundary(
+        ctx,
+        job,
+        resource_type="job",
+        list_command="inspire job list --workspace <workspace>",
+    )
+
+
 def _job_not_found_message(job: str) -> str:
     return f"Job not found: {scrub_raw_ids(job)}"
 
@@ -164,7 +181,7 @@ def _close_web_client() -> None:
         pass
 
 
-def _resolve_explicit_workspace(config: Config, workspace: Optional[str], session) -> Optional[str]:  # noqa: ANN001
+def _resolve_explicit_workspace(workspace: Optional[str], session) -> Optional[str]:  # noqa: ANN001
     if workspace is None:
         return None
     workspace = workspace.strip()
@@ -177,7 +194,7 @@ def _resolve_explicit_workspace(config: Config, workspace: Optional[str], sessio
             "--workspace takes a workspace name. "
             "See `inspire config context` for available names."
         )
-    return select_workspace_id(config, explicit_workspace_name=workspace, session=session)
+    return select_workspace_id(explicit_workspace_name=workspace, session=session)
 
 
 def _workspace_name(session, workspace_id: str) -> str:  # noqa: ANN001
@@ -196,7 +213,6 @@ def _current_user_id(session) -> str:  # noqa: ANN001
 
 
 def _list_workspace_ids(
-    config: Config,
     session,  # noqa: ANN001
     *,
     workspace: Optional[str],
@@ -206,7 +222,10 @@ def _list_workspace_ids(
     Query commands require ``--workspace <name|all>`` and never inherit the
     browser session's active workspace.
     """
-    workspace_ids, _ = resolve_workspace_query_scope(config, workspace=workspace, session=session)
+    workspace_ids, _ = resolve_workspace_query_scope(
+        workspace=workspace,
+        session=session,
+    )
     return workspace_ids
 
 
@@ -251,44 +270,6 @@ def _job_info_to_row(job, *, workspace_name: str = "") -> dict:  # noqa: ANN001
     }
 
 
-_OUTPUT_METADATA_KEYS = {
-    "debug",
-    "method",
-    "metadata",
-    "payload",
-    "progress",
-    "raw",
-    "request",
-    "requestpayload",
-    "response",
-    "responsemetadata",
-    "result",
-    "scanned",
-    "source",
-}
-
-
-def _is_output_id_key(key: object) -> bool:
-    normalized = str(key or "").replace("-", "_").lower()
-    return normalized in {"id", "ids"} or normalized.endswith("_id") or normalized.endswith("_ids")
-
-
-def _public_output(value: object) -> Any:
-    """Keep command results useful without exposing platform handles/metadata."""
-    if isinstance(value, dict):
-        return {
-            key: _public_output(child)
-            for key, child in value.items()
-            if str(key or "").replace("-", "_").lower() not in _OUTPUT_METADATA_KEYS
-            and not _is_output_id_key(key)
-        }
-    if isinstance(value, (list, tuple)):
-        return [_public_output(item) for item in value]
-    if isinstance(value, str):
-        return scrub_raw_ids(value)
-    return value
-
-
 _INSTANCE_HANDLE_RE = re.compile(
     r"^(?:pod|instance|inst)[-_](?:[0-9a-f]{4,}|[0-9a-f-]{8,})$",
     re.IGNORECASE,
@@ -319,7 +300,7 @@ def _reject_job_instance_name(ctx: Context, value: str) -> str:
         _handle_error(
             ctx,
             "ValidationError",
-            "CLI commands only accept a job instance name.",
+            "CLI commands only accept job instance names.",
             EXIT_VALIDATION_ERROR,
             hint="List instances with `inspire job instances <job-name> --workspace <workspace>`.",
         )
@@ -330,34 +311,77 @@ def _reject_job_instance_name(ctx: Context, value: str) -> str:
 def _instance_rank(item: dict, position: int) -> int:
     for key in ("rank", "instance_rank", "global_rank", "index", "replica_index"):
         value = item.get(key)
-        if isinstance(value, int):
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             return value
-        if isinstance(value, str) and value.strip().isdigit():
-            return int(value.strip())
+        if isinstance(value, str):
+            text = value.strip()
+            if text.isdigit():
+                return int(text)
     return position
 
 
-def _instance_name(item: dict) -> str:
-    for key in ("name", "instance_name", "pod_name", "podName"):
-        value = str(item.get(key) or "").strip()
-        if value:
-            return value
+def _public_instance_text(item: dict, *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if value in (None, "") or isinstance(value, (dict, list, tuple, set)):
+            continue
+        text = scrub_raw_ids(value).strip()
+        if text and "<redacted>" not in text:
+            return text
     return ""
 
 
+def _instance_resource(item: dict) -> str:
+    direct = _public_instance_text(item, "resource")
+    if direct:
+        return direct
+
+    spec: dict = item
+    for key in ("resource_spec", "resource_spec_price", "quota"):
+        candidate = item.get(key)
+        if isinstance(candidate, dict):
+            spec = candidate
+            break
+
+    values = (
+        ("CPU", _public_instance_text(spec, "cpu_count", "cpu")),
+        (
+            "GiB",
+            _public_instance_text(
+                spec,
+                "memory_size_gib",
+                "memory_gib",
+                "memory_size",
+                "memory",
+            ),
+        ),
+        ("GPU", _public_instance_text(spec, "gpu_count", "gpu")),
+    )
+    return ", ".join(f"{value} {unit}" for unit, value in values if value)
+
+
 def _public_job_instances(instances: list[dict]) -> list[dict]:
-    """Normalize instance metadata without exposing an internal handle."""
+    """Project job instances onto the stable public CLI schema."""
     public_instances: list[dict] = []
     for position, item in enumerate(instances):
-        public = _public_output(item)
-        name = _instance_name(item)
-        for key in ("instance_name", "pod_name", "podName"):
-            public.pop(key, None)
+        public: dict[str, Any] = {}
+        name = _public_instance_text(item, "name", "instance_name", "display_name")
         if name and not _looks_like_instance_handle(name):
-            public["name"] = scrub_raw_ids(name)
-        else:
-            public.pop("name", None)
-            public["rank"] = _instance_rank(item, position)
+            public["name"] = name
+
+        for key, candidates in (
+            ("status", ("status", "instance_status", "phase", "state")),
+            ("role", ("role", "component", "worker_group_name")),
+            ("type", ("type", "instance_type")),
+        ):
+            value = _public_instance_text(item, *candidates)
+            if value:
+                public[key] = value
+
+        resource = _instance_resource(item)
+        if resource:
+            public["resource"] = resource
+        public["rank"] = _instance_rank(item, position)
         public_instances.append(public)
     return public_instances
 
@@ -509,96 +533,47 @@ def _scan_web_jobs_round_robin(
     return rows, scanned
 
 
-def _format_web_job_status(job_data: dict) -> str:
-    if not job_data:
-        return "No web job detail found."
-
-    created_by_payload = job_data.get("created_by")
-    created_by: dict = created_by_payload if isinstance(created_by_payload, dict) else {}
-    framework_config = job_data.get("framework_config") or []
-    first_spec = (
-        framework_config[0] if framework_config and isinstance(framework_config[0], dict) else {}
-    )
-    price_info = first_spec.get("instance_spec_price_info") or {}
-    gpu_info = price_info.get("gpu_info") or {}
-
-    fields = [
-        ("Name", job_data.get("name") or "N/A"),
-        ("Status", job_data.get("status") or "N/A"),
-        ("Project", job_data.get("project_name") or ""),
-        ("Compute Group", job_data.get("logic_compute_group_name") or ""),
-        ("Priority", job_data.get("priority_name") or job_data.get("priority") or ""),
-        ("Priority Level", job_data.get("priority_level") or ""),
-        ("Created By", created_by.get("name") or ""),
-        ("Created", human_formatter.format_epoch(job_data.get("created_at"))),
-        ("Framework", job_data.get("framework") or ""),
-        ("Instances", first_spec.get("instance_count") or job_data.get("node_count") or ""),
-        ("Per Instance GPU", first_spec.get("gpu_count") or ""),
-        ("Per Instance CPU", first_spec.get("cpu") or price_info.get("cpu_count") or ""),
-        ("Per Instance Mem", f"{first_spec.get('mem_gi')} GiB" if first_spec.get("mem_gi") else ""),
-        ("Per Instance SHM", f"{first_spec.get('shm_gi')} GiB" if first_spec.get("shm_gi") else ""),
-        ("GPU Type", gpu_info.get("gpu_type_display") or ""),
-        ("Image", first_spec.get("image") or ""),
-        ("Description", job_data.get("description") or ""),
-    ]
-
-    lines = ["Web Job Status"]
-    for label, value in fields:
-        if value not in (None, ""):
-            lines.append(f"{label}: {scrub_raw_ids(value)}")
-    command = str(job_data.get("command") or "").strip()
-    if command:
-        lines.append("Command:")
-        lines.append(scrub_raw_ids(command))
-    return "\n".join(lines)
-
-
 def _format_job_instances(instances: list[dict]) -> str:
     if not instances:
         return "No job instances found."
 
-    rendered = []
-    for position, item in enumerate(instances):
-        name = _instance_name(item)
-        rendered.append(
-            {
-                "name": (
-                    scrub_raw_ids(name)
-                    if name and not _looks_like_instance_handle(name)
-                    else f"rank={_instance_rank(item, position)}"
-                ),
-                "status": scrub_raw_ids(item.get("instance_status") or ""),
-                "type": scrub_raw_ids(item.get("instance_type") or ""),
-                "node": scrub_raw_ids(item.get("node") or ""),
-                "created": human_formatter.format_epoch(item.get("created_at")),
-            }
+    columns = [("name", "Name"), ("status", "Status")]
+    columns.extend(
+        (key, label)
+        for key, label in (
+            ("role", "Role"),
+            ("type", "Type"),
+            ("resource", "Resource"),
+            ("rank", "Rank"),
         )
-    name_w = max(len("Instance"), *(len(str(i["name"])) for i in rendered))
-    status_w = max(len("Status"), *(len(str(i["status"])) for i in rendered))
-    type_w = max(len("Type"), *(len(str(i["type"])) for i in rendered))
-    node_w = max(len("Node"), *(len(str(i["node"])) for i in rendered))
-    header = (
-        f"{'Instance':<{name_w}} {'Status':<{status_w}} "
-        f"{'Type':<{type_w}} {'Node':<{node_w}} {'Created'}"
+        if any(item.get(key) not in (None, "") for item in instances)
     )
-    sep = "-" * len(header)
-    lines = ["Job Instances", header, sep]
-    for inst in rendered:
-        lines.append(
-            f"{inst['name']:<{name_w}} "
-            f"{inst['status']:<{status_w}} "
-            f"{inst['type']:<{type_w}} "
-            f"{inst['node']:<{node_w}} "
-            f"{inst['created']}"
+    rows = [
+        tuple(
+            (
+                item.get("name")
+                or f"rank={item.get('rank')}"
+                if key == "name"
+                else item.get(key, "-")
+            )
+            for key, _ in columns
         )
-    lines.append(sep)
-    lines.append(f"Total: {len(instances)} instance(s)")
-    return "\n".join(lines)
+        for item in instances
+    ]
+    widths = [
+        column_width(label, [row[index] for row in rows], max_width=48)
+        for index, (_, label) in enumerate(columns)
+    ]
+    rendered = render_table(
+        tuple(label for _, label in columns),
+        rows,
+        widths,
+    )
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
 
 def _resolve_web_job_id(
     *,
-    config: Config,
     job: str,
     workspace: Optional[str],
     all_workspaces: bool,
@@ -622,7 +597,6 @@ def _resolve_web_job_id(
     session = get_web_session()
     workspace_ids = (
         _list_workspace_ids(
-            config,
             session,
             workspace=workspace,
         )
@@ -700,9 +674,7 @@ def _resolve_web_job_id(
     page_size = max(1, int(scan_limit)) if scan_limit is not None else 100
     scan_pages = 1 if scan_limit is not None else max_pages
     rows, _ = _list_web_jobs(
-        config=config,
         workspace=workspace,
-        all_workspaces=all_workspaces,
         status=None,
         name=job,
         page_num=1,
@@ -824,7 +796,6 @@ def _resolve_web_job_id(
 
 def _run_readonly_web_job_operation(
     *,
-    config: Config,
     job: str,
     workspace: Optional[str],
     all_workspaces: bool = False,
@@ -848,7 +819,6 @@ def _run_readonly_web_job_operation(
     def _resolve(require_live: bool) -> str:
         resolve_job = resolver or _resolve_web_job_id
         return resolve_job(
-            config=config,
             job=job,
             workspace=workspace,
             all_workspaces=all_workspaces,
@@ -951,24 +921,18 @@ def _format_job_list(rows: list[dict]) -> str:
         column_width("Created By", [row[5] for row in table_rows], max_width=16),
     ]
 
-    lines = [
-        "Jobs",
-        *render_table(
-            ("Name", "Status", "Resource", "Created", "Workspace", "Created By"),
-            table_rows,
-            widths,
-            line_char="─",
-        ),
-    ]
-    lines.append(f"Total: {len(rows)} job(s)")
-    return "\n".join(lines)
+    rendered = render_table(
+        ("Name", "Status", "Resource", "Created", "Workspace", "Created By"),
+        table_rows,
+        widths,
+        line_char="─",
+    )
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
 
 def _list_web_jobs(
     *,
-    config: Config,
     workspace: Optional[str],
-    all_workspaces: bool,
     status: Optional[str],
     name: Optional[str],
     page_num: int,
@@ -988,7 +952,6 @@ def _list_web_jobs(
         scanned: list[dict] = []
         limit_value = _job_list_limit_value(limit)
         workspace_ids = _list_workspace_ids(
-            config,
             session,
             workspace=workspace,
         )
@@ -1079,11 +1042,8 @@ def _list_web_jobs(
 
 
 def _watch_jobs(
-    ctx: Context,
     *,
-    config: Config,
     workspace: Optional[str],
-    all_workspaces: bool,
     status: Optional[str],
     name: Optional[str],
     page_size: int,
@@ -1101,17 +1061,10 @@ def _watch_jobs(
     if active:
         exclude_statuses = set(_JOB_TERMINAL_STATUSES)
 
-    completed_this_session: list[dict] = []
-    completed_job_ids: set[str] = set()
-    last_status_by_id: dict[str, str] = {}
-    terminal_statuses = set(_JOB_TERMINAL_STATUSES)
-
     try:
         while True:
             jobs, scanned = _list_web_jobs(
-                config=config,
                 workspace=workspace,
-                all_workspaces=all_workspaces,
                 status=status,
                 name=name,
                 page_num=1,
@@ -1129,46 +1082,11 @@ def _watch_jobs(
             )
             jobs = page.items
 
-            for job_item in jobs:
-                jid = str(job_item.get("job_id") or "")
-                cur_status = str(job_item.get("status") or "")
-                prior = last_status_by_id.get(jid)
-                if (
-                    cur_status in terminal_statuses
-                    and prior not in terminal_statuses
-                    and jid
-                    and jid not in completed_job_ids
-                ):
-                    completed_this_session.append(dict(job_item))
-                    completed_job_ids.add(jid)
-                if jid:
-                    last_status_by_id[jid] = cur_status
-
-            if ctx.json_output:
-                click.echo(
-                    json_formatter.format_json(
-                        {
-                            "jobs": _public_output(jobs),
-                            "completed": _public_output(completed_this_session),
-                        }
-                    )
-                )
-            else:
-                os.system("clear")
-                click.echo(_format_job_list(jobs))
-                if completed_this_session:
-                    click.echo(f"\n✅ Completed This Session ({len(completed_this_session)})")
-                    click.echo("─" * 60)
-                    for entry in completed_this_session:
-                        s = (entry.get("status") or "").lower()
-                        emoji = "✅" if "succeeded" in s else "❌"
-                        click.echo(
-                            f"{scrub_raw_ids(entry.get('name', 'N/A')):<32}  "
-                            f"{emoji} {scrub_raw_ids(entry.get('status', 'N/A'))}"
-                        )
-                notice = truncation_notice(page, full_option="--limit N")
-                if notice:
-                    click.echo(f"\n{notice}")
+            click.clear()
+            click.echo(_format_job_list(jobs))
+            notice = truncation_notice(page, full_option="--limit N")
+            if notice:
+                click.echo(f"\n{notice}")
 
             time.sleep(interval)
 
@@ -1180,14 +1098,23 @@ def _watch_jobs(
 
 @click.command("list")
 @click.option(
-    "--limit",
-    "-n",
-    type=click.IntRange(1),
-    default=None,
-    help="Maximum jobs to display across requested workspaces (default: 20).",
+    "--workspace",
+    required=True,
+    metavar="NAME|all",
+    help="Workspace name or 'all'.",
 )
-@click.option("--all", "show_all", is_flag=True, help="Show every matching job.")
-@click.option("--status", "-s", help="Filter by status (PENDING, RUNNING, SUCCEEDED, FAILED)")
+@click.option(
+    "--status",
+    "-s",
+    metavar="STATUS",
+    help="Filter by status (PENDING, RUNNING, SUCCEEDED, FAILED)",
+)
+@click.option(
+    "--keyword",
+    default=None,
+    metavar="KEYWORD",
+    help="Case-insensitive keyword filter for job name/command",
+)
 @click.option(
     "--active",
     "-a",
@@ -1202,19 +1129,25 @@ def _watch_jobs(
     show_default=True,
     help="Refresh interval in seconds for --watch",
 )
-@click.option("--workspace", required=True, help="Workspace name or 'all'.")
-@click.option("--keyword", default=None, help="Case-insensitive keyword filter for job name/command")
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum jobs to display across requested workspaces (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every matching job.")
 @pass_context
 def list_jobs(
     ctx: Context,
-    limit: Optional[int],
-    show_all: bool,
+    workspace: Optional[str],
     status: Optional[str],
+    keyword: Optional[str],
     active: bool,
     watch: bool,
     interval: int,
-    workspace: Optional[str],
-    keyword: Optional[str],
+    limit: Optional[int],
+    show_all: bool,
 ) -> None:
     """List training jobs from the platform.
 
@@ -1259,10 +1192,7 @@ def list_jobs(
 
         if watch:
             _watch_jobs(
-                ctx,
-                config=config,
                 workspace=workspace,
-                all_workspaces=False,
                 status=status,
                 name=keyword,
                 page_size=_job_list_page_size(effective_limit),
@@ -1274,9 +1204,7 @@ def list_jobs(
             return
 
         rows, scanned = _list_web_jobs(
-            config=config,
             workspace=workspace,
-            all_workspaces=False,
             status=status,
             name=keyword,
             page_num=1,
@@ -1298,7 +1226,10 @@ def list_jobs(
             click.echo(
                 json_formatter.format_json(
                     {
-                        "jobs": _public_output(page.items),
+                        "items": [
+                            public_job_list_item(item)
+                            for item in page.items
+                        ],
                         **page.metadata(),
                     }
                 )
@@ -1318,29 +1249,38 @@ def list_jobs(
 
 
 @click.command("status")
-@click.argument("job")
-@click.option("--workspace", required=True, help="Workspace name or 'all'.")
+@click.argument("job", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @pass_context
 def status(
     ctx: Context,
     job: str,
     workspace: Optional[str],
+    pick: Optional[int],
 ) -> None:
     """Check the status of a training job.
 
-    JOB is the name shown in `inspire job list`.
+    NAME is shown in `inspire job list`.
 
     \b
     Example:
         inspire job status my-training-run --workspace 分布式训练空间
     """
+    job = _reject_web_job_name_at_boundary(ctx, job)
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         try:
             job_data = _run_readonly_web_job_operation(
-                config=config,
                 job=job,
                 workspace=workspace,
+                pick=pick,
+                workspace_must_be_single=True,
                 operation=lambda job_id, session: (
                     browser_api_module.get_job_detail_v2(job_id, session=session)
                 ),
@@ -1348,10 +1288,11 @@ def status(
         finally:
             _close_web_client()
 
+        detail = public_job_status(job_data, fallback_name=job)
         if ctx.json_output:
-            click.echo(json_formatter.format_json(_public_output(job_data)))
+            click.echo(json_formatter.format_json(detail))
         else:
-            click.echo(_format_web_job_status(job_data))
+            click.echo(format_job_status(detail))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -1359,8 +1300,6 @@ def status(
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
     except WebJobResolutionError as e:
         _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
-    except AuthenticationError as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except (SessionExpiredError, ValueError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
@@ -1378,11 +1317,18 @@ def status(
 
 
 @click.command("instances")
-@click.argument("job")
+@click.argument("job", metavar="NAME")
 @click.option(
     "--workspace",
     required=True,
+    metavar="NAME",
     help="Workspace name.",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
 )
 @click.option(
     "--limit",
@@ -1397,10 +1343,12 @@ def instances(
     ctx: Context,
     job: str,
     workspace: Optional[str],
+    pick: Optional[int],
     limit: Optional[int],
     show_all: bool,
 ) -> None:
     """List pod-level instances for a distributed-training job."""
+    job = _reject_web_job_name_at_boundary(ctx, job)
     try:
         output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
     except ValueError as e:
@@ -1418,10 +1366,11 @@ def instances(
         config, _ = Config.from_files_and_env(require_credentials=False)
         try:
             rows, total = _run_readonly_web_job_operation(
-                config=config,
                 job=job,
                 workspace=workspace,
                 scan_limit=resolution_limit,
+                pick=pick,
+                workspace_must_be_single=True,
                 operation=lambda job_id, session: (
                     _fetch_job_instances(
                         job_id,
@@ -1434,21 +1383,18 @@ def instances(
         finally:
             _close_web_client()
 
+        page = bound_collection(rows, limit=output_limit, total=total)
+        public_items = _public_job_instances(page.items)
+
         if ctx.json_output:
-            page = bound_collection(rows, limit=output_limit, total=total)
             payload: dict[str, Any] = {
-                "instances": _public_job_instances(page.items),
-                "total": page.total,
+                "name": scrub_raw_ids(job),
+                "items": public_items,
+                **page.metadata(),
             }
-            if page.truncated:
-                payload.update(page.metadata())
-                payload["limit"] = output_limit
-            click.echo(
-                json_formatter.format_json(payload)
-            )
+            click.echo(json_formatter.format_json(payload))
         else:
-            page = bound_collection(rows, limit=output_limit, total=total)
-            click.echo(_format_job_instances(page.items))
+            click.echo(_format_job_instances(public_items))
             notice = truncation_notice(page)
             if notice:
                 click.echo(notice)
@@ -1464,13 +1410,13 @@ def instances(
 
 
 @click.command("stop")
-@click.argument("job")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("job", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--pick",
     type=click.IntRange(1),
     default=None,
-    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+    help=NAME_PICK_HELP,
 )
 @pass_context
 def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) -> None:
@@ -1480,10 +1426,10 @@ def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) 
     Example:
         inspire job stop my-training-run --workspace 分布式训练空间
     """
+    job = _reject_web_job_name_at_boundary(ctx, job)
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         job_id = _resolve_web_job_id(
-            config=config,
             job=job,
             workspace=workspace,
             all_workspaces=False,
@@ -1498,11 +1444,11 @@ def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) 
         if ctx.json_output:
             click.echo(json_formatter.format_json({"name": job, "status": "stopped"}))
         else:
-            click.echo(human_formatter.format_success(f"Job stopped: {job}"))
+            click.echo(human_formatter.format_mutation_success("Job", "stopped", job))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         msg = str(e).lower()
@@ -1519,8 +1465,8 @@ def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) 
 
 
 @click.command("delete")
-@click.argument("job")
-@click.option("--workspace", required=True, help="Workspace name.")
+@click.argument("job", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--yes",
     "-y",
@@ -1531,7 +1477,7 @@ def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) 
     "--pick",
     type=click.IntRange(1),
     default=None,
-    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+    help=NAME_PICK_HELP,
 )
 @pass_context
 def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Optional[int]) -> None:
@@ -1545,10 +1491,19 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
     Example:
         inspire job delete my-training-run --workspace 分布式训练空间
     """
+    job = _reject_web_job_name_at_boundary(ctx, job)
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt=(
+            f"Permanently delete training job '{scrub_raw_ids(job)}'? "
+            "This cannot be undone."
+        ),
+        message="Training job deletion requires confirmation.",
+    )
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         job_id = _resolve_web_job_id(
-            config=config,
             job=job,
             workspace=workspace,
             all_workspaces=False,
@@ -1564,16 +1519,10 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
         _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
         return
 
-    if not yes and not ctx.json_output:
-        click.confirm(
-            f"Permanently delete training job '{scrub_raw_ids(job)}'? This cannot be undone.",
-            abort=True,
-        )
-
     try:
         session = get_web_session()
         browser_api_module.delete_job(job_id=job_id, session=session)
-        workspace_id = _resolve_explicit_workspace(config, workspace, session)
+        workspace_id = _resolve_explicit_workspace(workspace, session)
         if workspace_id:
             try:
                 index = ResourceIndex.for_account()
@@ -1591,11 +1540,11 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
         if ctx.json_output:
             click.echo(json_formatter.format_json({"name": job, "status": "deleted"}))
         else:
-            click.echo(human_formatter.format_success(f"Job deleted: {job}"))
+            click.echo(human_formatter.format_mutation_success("Job", "deleted", job))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         msg = str(e).lower()
@@ -1612,7 +1561,14 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
 
 
 @click.command("wait")
-@click.argument("job")
+@click.argument("job", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @click.option(
     "--timeout",
     type=click.IntRange(1),
@@ -1625,7 +1581,6 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
     default=30,
     help="Poll interval in seconds (default: 30)",
 )
-@click.option("--workspace", required=True, help="Workspace name.")
 @pass_context
 def wait(
     ctx: Context,
@@ -1633,6 +1588,7 @@ def wait(
     timeout: int,
     interval: int,
     workspace: Optional[str],
+    pick: Optional[int],
 ) -> None:
     """Wait for a job to complete.
 
@@ -1643,13 +1599,15 @@ def wait(
     Example:
         inspire job wait my-training-run --workspace 分布式训练空间 --timeout 7200
     """
+    job = _reject_web_job_name_at_boundary(ctx, job)
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         try:
             job_id, initial_job_data = _run_readonly_web_job_operation(
-                config=config,
                 job=job,
                 workspace=workspace,
+                pick=pick,
+                workspace_must_be_single=True,
                 operation=lambda resolved_id, session: (
                     resolved_id,
                     browser_api_module.get_job_detail_v2(
@@ -1687,9 +1645,10 @@ def wait(
                 else:
                     try:
                         job_id, job_data = _run_readonly_web_job_operation(
-                            config=config,
                             job=job,
                             workspace=workspace,
+                            pick=pick,
+                            workspace_must_be_single=True,
                             operation=lambda resolved_id, session: (
                                 resolved_id,
                                 browser_api_module.get_job_detail_v2(
@@ -1708,18 +1667,18 @@ def wait(
                     last_status = current_status
 
                 if current_status in terminal_statuses:
+                    detail = public_job_status(job_data, fallback_name=job)
                     if ctx.json_output:
-                        click.echo(json_formatter.format_json(_public_output(job_data)))
+                        click.echo(json_formatter.format_json(detail))
                     else:
-                        click.echo(human_formatter.format_job_status(job_data))
+                        click.echo(human_formatter.format_job_status(detail))
 
                     if current_status in {"SUCCEEDED", "job_succeeded"}:
                         sys.exit(EXIT_SUCCESS)
                     sys.exit(EXIT_GENERAL_ERROR)
 
             except Exception as e:
-                if ctx.debug:
-                    click.echo(f"status refresh failed: {scrub_raw_ids(e)}", err=True)
+                logger.debug("Job wait status refresh failed: %s", e, exc_info=True)
 
             time.sleep(interval)
 
@@ -1727,8 +1686,6 @@ def wait(
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except WebJobResolutionError as e:
         _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
-    except AuthenticationError as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except (SessionExpiredError, ValueError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except KeyboardInterrupt:
@@ -1738,22 +1695,31 @@ def wait(
 
 
 @click.command("command")
-@click.argument("job")
-@click.option("--workspace", required=True, help="Workspace name or 'all'.")
+@click.argument("job", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @pass_context
 def show_command(
     ctx: Context,
     job: str,
     workspace: Optional[str],
+    pick: Optional[int],
 ) -> None:
     """Show the training command used for a job."""
+    job = _reject_web_job_name_at_boundary(ctx, job)
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         try:
             job_data = _run_readonly_web_job_operation(
-                config=config,
                 job=job,
                 workspace=workspace,
+                pick=pick,
+                workspace_must_be_single=True,
                 operation=lambda resolved_id, session: (
                     browser_api_module.get_job_detail_v2(
                         resolved_id,
@@ -1783,8 +1749,6 @@ def show_command(
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except WebJobResolutionError as e:
         _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
-    except AuthenticationError as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except (SessionExpiredError, ValueError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
@@ -1802,21 +1766,22 @@ def show_command(
 
 
 @click.command("shell")
-@click.argument("job")
+@click.argument("job", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @click.option("--rank", type=click.IntRange(0), default=None, help="Open the running instance with this rank")
 @click.option(
     "--instance",
     "instance_name",
     default=None,
+    metavar="NAME",
     help="Open this exact instance name.",
 )
-@click.option(
-    "--pick",
-    type=click.IntRange(1),
-    default=None,
-    help="Pick the Nth matching job (1-indexed) when multiple jobs share a name",
-)
-@click.option("--workspace", required=True, help="Workspace name.")
 @pass_context
 def shell(
     ctx: Context,
@@ -1835,6 +1800,7 @@ def shell(
         inspire job shell my-training-run --workspace 分布式训练空间 --instance pytorchjob-worker-0
         inspire job shell my-training-run --workspace 分布式训练空间 --pick 2
     """
+    job = _reject_web_job_name_at_boundary(ctx, job)
     if rank is not None and instance_name is not None:
         _handle_error(
             ctx,
@@ -1850,7 +1816,6 @@ def shell(
         config, _ = Config.from_files_and_env(require_credentials=False)
         try:
             job_id, session, raw_instances = _run_readonly_web_job_operation(
-                config=config,
                 job=job,
                 workspace=workspace,
                 pick=pick,
@@ -1891,8 +1856,6 @@ def shell(
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
     except WebJobResolutionError as e:
         _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
-    except AuthenticationError as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except (SessionExpiredError, ValueError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except JobShellError as e:

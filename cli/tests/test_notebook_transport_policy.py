@@ -13,7 +13,6 @@ def test_preflight_skips_live_probe_for_statically_restricted_gpu(monkeypatch) -
     probe_calls: list[dict] = []
 
     monkeypatch.setattr(transport_module, "require_web_session", lambda *_a, **_k: session)
-    monkeypatch.setattr(transport_module, "load_config", lambda *_a, **_k: object())
     monkeypatch.setattr(
         transport_module,
         "_resolve_notebook_id",
@@ -51,14 +50,15 @@ def test_preflight_still_live_probes_potentially_public_gpu(monkeypatch) -> None
     session = SimpleNamespace(account="secondary")
     probe = SimpleNamespace(public_internet=True)
     probe_calls: list[dict] = []
+    resolved: dict[str, object] = {}
 
     monkeypatch.setattr(transport_module, "require_web_session", lambda *_a, **_k: session)
-    monkeypatch.setattr(transport_module, "load_config", lambda *_a, **_k: object())
-    monkeypatch.setattr(
-        transport_module,
-        "_resolve_notebook_id",
-        lambda *_a, **_k: ("nb-456", "ws-123"),
-    )
+
+    def fake_resolve(*_args, **kwargs):  # noqa: ANN202
+        resolved.update(kwargs)
+        return "nb-456", "ws-123"
+
+    monkeypatch.setattr(transport_module, "_resolve_notebook_id", fake_resolve)
     monkeypatch.setattr(transport_module, "get_base_url", lambda **_k: "https://example.test")
     monkeypatch.setattr(
         transport_module.browser_api_module,
@@ -84,10 +84,12 @@ def test_preflight_still_live_probes_potentially_public_gpu(monkeypatch) -> None
         workspace=None,
         account="secondary",
         timeout=17,
+        pick=2,
     )
 
     assert policy.exec_transport == "ssh"
     assert policy.reason == "live_probe"
+    assert resolved["pick"] == 2
     assert probe_calls == [
         {"notebook_id": "nb-456", "session": session, "timeout": 17}
     ]

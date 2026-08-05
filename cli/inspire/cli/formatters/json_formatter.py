@@ -66,11 +66,14 @@ _SENSITIVE_KEYS = {
     "api_token",
     "auth_token",
     "client_secret",
+    "login_name",
+    "login_username",
     "password",
     "passwd",
     "refresh_token",
     "secret",
     "token",
+    "username",
 }
 _RAW_CONTENT_KEYS = {
     "command_output",
@@ -91,12 +94,20 @@ _INTERNAL_PATH_KEYS = {
     "runtime_path",
 }
 _URL_RE = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
-_SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(access[_-]?token|api[_-]?key|password|passwd|refresh[_-]?token|token)"
+_SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b("
+    r"access[_-]?token|account[_-]?id|api[_-]?key|"
+    r"login(?:[_-]?(?:id|name|username))?|password|passwd|"
+    r"refresh[_-]?token|token|user[_-]?id|username"
+    r")"
     r"\s*[:=]\s*[^\s,;&]+"
 )
 _UNIX_ABSOLUTE_PATH_RE = re.compile(
     r"(?<![\w:/])/(?!inspire(?:/|$)|shared(?:/|$)|workspace(?:/|$)|mnt(?:/|$)|data(?:/|$))"
+    r"(?:[^/\s=:;,)\]}'\"]+/)*[^/\s=:;,)\]}'\"]+"
+)
+_ALL_UNIX_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![\w:/])/"
     r"(?:[^/\s=:;,)\]}'\"]+/)*[^/\s=:;,)\]}'\"]+"
 )
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(
@@ -171,11 +182,13 @@ def _is_engineering_field(key: object, value: Any) -> bool:
     )
 
 
-def _sanitize_url(raw_url: str) -> str:
+def _sanitize_url(raw_url: str, *, redact: bool = False) -> str:
     trailing = ""
     while raw_url and raw_url[-1] in ".,;!?)]}":
         trailing = raw_url[-1] + trailing
         raw_url = raw_url[:-1]
+    if redact:
+        return "<redacted>" + trailing
     try:
         parsed = urlsplit(raw_url)
         hostname = parsed.hostname
@@ -194,22 +207,47 @@ def _sanitize_url(raw_url: str) -> str:
         return "<redacted>" + trailing
 
 
-def _sanitize_public_text(value: str, *, redact_paths: bool = False) -> str:
+def _sanitize_public_text(
+    value: str,
+    *,
+    redact_paths: bool = False,
+    redact_urls: bool = False,
+    redact_platform_paths: bool = False,
+) -> str:
     sanitized = scrub_raw_ids(value)
-    sanitized = _URL_RE.sub(lambda match: _sanitize_url(match.group(0)), sanitized)
-    sanitized = _SECRET_ASSIGNMENT_RE.sub(
+    sanitized = _URL_RE.sub(
+        lambda match: _sanitize_url(match.group(0), redact=redact_urls),
+        sanitized,
+    )
+    sanitized = _SENSITIVE_ASSIGNMENT_RE.sub(
         lambda match: f"{match.group(1)}=<redacted>",
         sanitized,
     )
     if not redact_paths:
         return sanitized
     sanitized = _WINDOWS_ABSOLUTE_PATH_RE.sub("<redacted>", sanitized)
-    return _UNIX_ABSOLUTE_PATH_RE.sub("<redacted>", sanitized)
+    path_pattern = (
+        _ALL_UNIX_ABSOLUTE_PATH_RE
+        if redact_platform_paths
+        else _UNIX_ABSOLUTE_PATH_RE
+    )
+    return path_pattern.sub("<redacted>", sanitized)
 
 
-def sanitize_text(value: object, *, redact_paths: bool = False) -> str:
+def sanitize_text(
+    value: object,
+    *,
+    redact_paths: bool = False,
+    redact_urls: bool = False,
+    redact_platform_paths: bool = False,
+) -> str:
     """Sanitize human-facing text with the same rules as JSON errors."""
-    return _sanitize_public_text(str(value or ""), redact_paths=redact_paths)
+    return _sanitize_public_text(
+        str(value or ""),
+        redact_paths=redact_paths,
+        redact_urls=redact_urls,
+        redact_platform_paths=redact_platform_paths,
+    )
 
 
 def _is_internal_path_field(key: object) -> bool:
@@ -268,7 +306,11 @@ def _sanitize_json_value(
             and (value.startswith("/") or _WINDOWS_ABSOLUTE_PATH_RE.match(value))
         ):
             return "<redacted>"
-        return _sanitize_public_text(value, redact_paths=not preserve_path)
+        return _sanitize_public_text(
+            value,
+            redact_paths=not preserve_path,
+            redact_urls=False,
+        )
     return value
 
 
@@ -327,10 +369,18 @@ def format_json_error(
     error_data: Dict[str, Any] = {
         "type": error_type,
         "code": code,
-        "message": _sanitize_public_text(message, redact_paths=True),
+        "message": _sanitize_public_text(
+            message,
+            redact_paths=True,
+            redact_urls=True,
+        ),
     }
     if hint:
-        error_data["hint"] = _sanitize_public_text(hint, redact_paths=True)
+        error_data["hint"] = _sanitize_public_text(
+            hint,
+            redact_paths=True,
+            redact_urls=True,
+        )
 
     output = {"success": False, "error": error_data}
     if data is not None:

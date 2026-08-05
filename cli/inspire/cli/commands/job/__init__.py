@@ -58,7 +58,7 @@ job.add_command(stop)
 job.add_command(delete)
 job.add_command(wait)
 job.add_command(show_command)
-job.add_command(job_metrics)  # metrics (资源视图 time-series; per-pod for distributed training)
+job.add_command(job_metrics)
 
 
 __all__ = ["job"]

@@ -1,9 +1,8 @@
-"""``inspire account add <name>`` — create a new account directory."""
+"""Create a named account profile."""
 
 from __future__ import annotations
 
 import io
-import logging
 from contextlib import redirect_stderr, redirect_stdout
 
 import click
@@ -23,32 +22,32 @@ from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.output import emit_success
 
 DEFAULT_BASE_URL = "https://qz.sii.edu.cn"
-EXAMPLE_PROXY = "http://127.0.0.1:7897"
-logger = logging.getLogger(__name__)
 
 
 @click.command("add")
-@click.argument("name")
+@click.argument("name", metavar="NAME")
 @click.option(
     "--username",
+    metavar="LOGIN",
     help=(
-        "Platform login username, such as phone, student ID, or email "
-        "(not the display name). Defaults to the account name; asked "
-        "interactively if omitted."
+        "Platform login username, such as a phone number, student number, "
+        "or email. Defaults to the account name."
     ),
 )
 @click.option(
     "--password",
+    metavar="PASSWORD",
     help="Platform password. Asked interactively (with confirmation) if omitted.",
 )
 @click.option(
     "--base-url",
+    metavar="URL",
     help=f"Inspire platform base URL. Asked interactively if omitted. Default: {DEFAULT_BASE_URL}",
 )
 @click.option(
     "--proxy",
-    help="HTTP/SOCKS5 proxy for both public internet and *.sii.edu.cn. "
-    "Asked interactively if omitted; pass empty string to skip.",
+    metavar="URL",
+    help="HTTP/SOCKS5 proxy URL. Pass an empty string to use no proxy.",
 )
 @click.option(
     "--use/--no-use",
@@ -72,24 +71,17 @@ def add(
     make_active: bool | None,
     non_interactive: bool,
 ) -> None:
-    """Create a new account at ``~/.inspire/accounts/<name>/``.
+    """Create a named account profile.
 
-    By default walks you through five short prompts — platform login username,
-    password (with confirmation), base URL, proxy, and whether to switch
-    to the new account. Any value passed via a flag skips the matching
-    prompt. Pass ``--non-interactive`` to silence every prompt; missing
-    fields fall back to defaults, and a missing ``--password`` aborts.
+    Missing login fields are prompted for unless ``--non-interactive`` is set.
 
     \b
     Examples:
-        # Interactive (recommended for first-time setup):
         inspire account add alice
 
-        # Fully scripted (CI, automation):
-        # Replace 7897 with your local Clash mixed port when needed.
         inspire account add alice \\
           --username user-abc123 --password "$INSPIRE_PW" \\
-          --proxy http://127.0.0.1:7897 --use --non-interactive
+          --use --non-interactive
     """
     non_interactive = non_interactive or ctx.json_output
 
@@ -107,13 +99,12 @@ def add(
             EXIT_VALIDATION_ERROR,
         )
 
-    # ---- username -------------------------------------------------------
     if username is None:
         if non_interactive:
             username = validated
         else:
             username = click.prompt(
-                "Platform login username (login ID, not display name)",
+                "Platform login username (not display name)",
                 default=validated,
                 show_default=True,
             )
@@ -126,7 +117,6 @@ def add(
             EXIT_VALIDATION_ERROR,
         )
 
-    # ---- password -------------------------------------------------------
     if password is None:
         if non_interactive:
             exit_with_error(
@@ -141,7 +131,6 @@ def add(
             confirmation_prompt="Confirm password",
         )
 
-    # ---- base URL -------------------------------------------------------
     if base_url is None:
         if non_interactive:
             base_url = DEFAULT_BASE_URL
@@ -152,15 +141,10 @@ def add(
                 show_default=True,
             )
 
-    # ---- proxy ----------------------------------------------------------
     if proxy is None:
         if non_interactive:
             proxy = ""
         else:
-            click.echo(
-                "Proxy must reach BOTH the public internet and *.sii.edu.cn. "
-                f"Example if your Clash mixed port is 7897: {EXAMPLE_PROXY}"
-            )
             proxy = click.prompt(
                 "Proxy URL (leave empty for none)",
                 default="",
@@ -179,7 +163,6 @@ def add(
     except AccountError as err:
         exit_with_error(ctx, "AccountError", str(err), EXIT_VALIDATION_ERROR)
 
-    # ---- active-account decision ---------------------------------------
     existing_active = current_account()
     if make_active is None:
         if existing_active is None:
@@ -195,31 +178,22 @@ def add(
     if make_active:
         set_current_account(validated)
 
-    # Normalize the wider environment once — quarantine pre-v3 unscoped files,
-    # warn on stale env vars dropped by v3.x, ensure playwright is ready for
-    # the SSO login that every web-side command needs. Idempotent via the
-    # ~/.inspire/.environment-normalized-v3 sentinel; subsequent `account add`
-    # invocations are silent when the environment is already clean.
+    # Check the browser runtime required by web-side commands. This is
+    # best-effort so account creation still succeeds when Playwright setup is
+    # deferred.
     from inspire.accounts import normalize_environment
 
-    normalization_stdout = io.StringIO()
-    normalization_stderr = io.StringIO()
-    with redirect_stdout(normalization_stdout), redirect_stderr(normalization_stderr):
-        report = normalize_environment(
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        normalize_environment(
             interactive=not non_interactive,
             auto_install_playwright=not non_interactive,
         )
-    if captured := normalization_stdout.getvalue().strip():
-        logger.debug("Suppressed normalization stdout: %s", captured)
-    if captured := normalization_stderr.getvalue().strip():
-        logger.debug("Suppressed normalization stderr: %s", captured)
-    logger.debug("Account environment normalization result: %r", report)
 
     is_active = current_account() == validated
     suffix = " (active)" if is_active else ""
     emit_success(
         ctx,
-        payload={"name": validated, "active": is_active},
+        payload={"name": validated, "status": "created", "active": is_active},
         text=json_formatter.sanitize_text(
             f"Account added: {validated}{suffix}",
             redact_paths=True,

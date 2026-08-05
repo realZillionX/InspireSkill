@@ -6,6 +6,7 @@ from inspire.cli.formatters.json_formatter import (
     format_json,
     format_json_error,
     sanitize_json_data,
+    sanitize_text,
 )
 from inspire.cli.utils.output_guard import sanitize_output_message
 
@@ -18,6 +19,8 @@ def test_sanitizer_removes_handles_and_engineering_metadata_recursively() -> Non
             "resourceHandle": "job-secret",
             "object_uuid": "uuid-secret",
             "ownerUid": "user-secret",
+            "username": "login-secret",
+            "login_name": "login-secret",
             "source": "web",
             "backend": "browser",
             "endpoint": "/api/jobs/list",
@@ -179,13 +182,28 @@ def test_error_json_removes_credentials_urls_and_absolute_paths() -> None:
             "type": "SSHExecutionError",
             "code": 1,
             "message": (
-                "SSH failed: https://host.test/run "
+                "SSH failed: <redacted> "
                 "path=<redacted> password=<redacted>"
             ),
         },
     }
     for secret in ("user:pass", "access_token=abc", "/home/user/run.log", "hunter2"):
         assert secret not in rendered
+
+
+def test_error_text_redacts_platform_paths_urls_and_login_assignments() -> None:
+    rendered = sanitize_text(
+        "request https://internal.example/api failed at /inspire/private/run.log "
+        "login_name=alice account_id=acct-123",
+        redact_paths=True,
+        redact_urls=True,
+        redact_platform_paths=True,
+    )
+
+    assert rendered == (
+        "request <redacted> failed at <redacted> "
+        "login_name=<redacted> account_id=<redacted>"
+    )
 
 
 def test_final_output_guard_scrubs_text_and_bytes() -> None:

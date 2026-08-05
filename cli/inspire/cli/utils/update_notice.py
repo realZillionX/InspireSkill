@@ -141,12 +141,6 @@ def fetch_latest_version_info() -> tuple[str | None, str]:
     return _parse_version(body), RAW_PYPROJECT_URL
 
 
-def fetch_latest_version() -> str | None:
-    """Return the latest published CLI version, or None on any failure."""
-    latest, _source = fetch_latest_version_info()
-    return latest
-
-
 def run_check(write: bool = True, *, current_version: str | None = None) -> dict[str, Any]:
     """Perform a fresh version check and (by default) persist the result."""
     latest, source = fetch_latest_version_info()

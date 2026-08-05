@@ -1,4 +1,4 @@
-"""`inspire notebook lifecycle <name>` — coarse run-cycle timeline.
+"""`inspire notebook lifecycle <name> --workspace <workspace>` — coarse run-cycle timeline.
 
 Each row is one start to stop cycle. This complements
 ``inspire notebook events <name>``, which shows the fine-grained lifecycle
@@ -12,16 +12,25 @@ from datetime import datetime, timezone
 
 import click
 
+from inspire.config import ConfigError
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
     EXIT_AUTH_ERROR,
+    EXIT_CONFIG_ERROR,
+    EXIT_VALIDATION_ERROR,
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
-from inspire.cli.utils.auth import AuthenticationError
+from inspire.cli.utils.collection_output import (
+    bound_collection,
+    resolve_collection_limit,
+    truncation_notice,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.platform.web.browser_api.notebooks import list_notebook_runs
+from inspire.platform.web.session import SessionExpiredError
 
 from .public_output import public_runs
 
@@ -47,9 +56,31 @@ def _format_duration(start: str, end: str) -> str:
 
 
 @click.command("lifecycle")
-@click.argument("name")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum run cycles to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every run cycle.")
 @pass_context
-def lifecycle(ctx: Context, name: str) -> None:
+def lifecycle(
+    ctx: Context,
+    name: str,
+    workspace: str,
+    pick: int | None,
+    limit: int | None,
+    show_all: bool,
+) -> None:
     """Show the run-cycle timeline for a notebook instance.
 
     Each row is one start → stop cycle (restarts after auto-recycle or
@@ -57,40 +88,77 @@ def lifecycle(ctx: Context, name: str) -> None:
 
     \b
     Examples:
-      inspire notebook lifecycle <name>
-      inspire --json notebook lifecycle <name>
+      inspire notebook lifecycle <name> --workspace <workspace>
+      inspire notebook lifecycle <name> --workspace <workspace> --pick 2
+      inspire notebook lifecycle <name> --workspace <workspace> --limit 10
+      inspire --json notebook lifecycle <name> --workspace <workspace>
     """
-    from inspire.cli.commands.notebook.notebook_metrics import _notebook_name_to_id
-
-    target = _notebook_name_to_id(ctx, name)
     try:
+        output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="notebook",
+        list_command="inspire notebook list --workspace <workspace|all>",
+    )
+    setattr(ctx, "workspace", workspace)
+    try:
+        from inspire.cli.commands.notebook.notebook_metrics import _notebook_name_to_id
+
+        target = _notebook_name_to_id(ctx, name, pick=pick)
         runs = list_notebook_runs(target.task_id)
-    except AuthenticationError as e:
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        return
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
         return
     except Exception as e:  # noqa: BLE001 — CLI boundary
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
         return
 
+    if not runs:
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {"items": []},
+                )
+            )
+        else:
+            click.echo(
+                f"No run records for notebook {name} "
+                "(may be newly-created or already GC'd)."
+            )
+        return
+
+    runs_sorted = sorted(runs, key=lambda r: r.get("index", 0))
+    visible_runs = (
+        runs_sorted if output_limit is None else runs_sorted[-output_limit:]
+    )
+    page = bound_collection(
+        visible_runs,
+        limit=None,
+        total=len(runs_sorted),
+    )
+
     if ctx.json_output:
         click.echo(
             json_formatter.format_json(
-                {"name": name, "runs": public_runs(runs)}
+                {
+                    "items": public_runs(page.items),
+                    **page.metadata(),
+                }
             )
         )
         return
 
-    if not runs:
-        click.echo(
-            f"No run records for notebook {name} "
-            "(may be newly-created or already GC'd)."
-        )
-        return
-
-    runs_sorted = sorted(runs, key=lambda r: r.get("index", 0))
     header = f"{'#':>3}  {'Start':<19}  {'End':<19}  {'Duration':<9}"
     click.echo(header)
-    for r in runs_sorted:
+    for r in page.items:
         idx = r.get("index", "?")
         # Platform may drift the field types; coerce to str defensively so
         # slicing / `_format_duration` never trip on int / None / dict.
@@ -100,3 +168,6 @@ def lifecycle(ctx: Context, name: str) -> None:
         end_display = end_raw or "ongoing"
         dur = _format_duration(start_raw, end_raw) if end_raw else "running"
         click.echo(f"{str(idx):>3}  {start:<19}  {end_display:<19}  {dur:<9}")
+    notice = truncation_notice(page)
+    if notice:
+        click.echo(notice)

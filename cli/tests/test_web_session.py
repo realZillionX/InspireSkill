@@ -198,7 +198,10 @@ def test_workspace_routes_from_payload_extracts_workspace_list() -> None:
 
 def test_web_session_round_trip_preserves_workspace_capabilities() -> None:
     session = WebSession(
-        storage_state={"cookies": [], "origins": []},
+        storage_state={
+            "cookies": [{"name": "session", "value": "secret"}],
+            "origins": [],
+        },
         workspace_id="ws-test",
         all_workspace_fair_scheduling={"ws-test": True, "ws-standard": False},
         created_at=1.0,
@@ -210,18 +213,19 @@ def test_web_session_round_trip_preserves_workspace_capabilities() -> None:
         "ws-test": True,
         "ws-standard": False,
     }
+    assert restored.cookies == {"session": "secret"}
 
 
-def test_legacy_cas_encrypt_password_matches_page_rsa() -> None:
+def test_cas_page_encrypt_password_matches_page_rsa() -> None:
     assert (
-        ws_auth._legacy_cas_encrypt_password("abc", CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
+        ws_auth._cas_page_encrypt_password("abc", CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
         == "050d4541820093722eb891339242b9e3147ba98618ed03dd97dc98f4719b0a76"
         "a139138a7087ca84ee933dc56d7e7fa615a2dbcd4cda0f356eabedd98616a7a5"
         "cb06926a5005f4c1fe367725e3c0d4651889c92eec7912eb6b01e8edc342acb5"
         "bb11bd05b8bbd51cb4111954df11bcaf2b904c6eabddf6e1a881d57d95490cd5"
     )
     assert (
-        ws_auth._legacy_cas_encrypt_password("password123", CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
+        ws_auth._cas_page_encrypt_password("password123", CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
         == "33547d9dd849975180b45e4bb2377dff321cafb69206403602c31078746174ab"
         "0fd67a3749053d7c864302da7a4603fffca1247ce45d18b5a8f4944692541c409"
         "8f6fe4e0bbd25218c7cc55c5b51d7dc4fb89b66d96cdace1581f09d39ade57b"
@@ -417,7 +421,7 @@ def test_login_not_complete_message_prioritizes_platform_error() -> None:
 
     assert "Login did not complete." in message
     assert "Platform reported: 账号或密码错误" in message
-    assert "platform login ID" not in message
+    assert "platform login name" not in message
     assert "CAPTCHA" not in message
     assert "inspire config show --compact" in message
     assert "last auth check status=401" in message
@@ -430,7 +434,7 @@ def test_login_not_complete_message_uses_general_advice_without_platform_error()
     message = ws_auth._login_not_complete_message(status=401)
 
     assert "Platform reported:" not in message
-    assert "platform login ID" in message
+    assert "platform login name" in message
     assert "*.sii.edu.cn" in message
     assert "CAPTCHA" in message
 
@@ -641,6 +645,10 @@ def test_playwright_install_args_skip_deps_when_not_root(
     )
 
     assert browser_launch.playwright_install_args() == ["install", "chromium"]
+
+
+def test_playwright_install_hint_has_no_dependency_mode_argument() -> None:
+    assert browser_launch.playwright_install_hint() == "inspire update --cli-only"
 
 
 def test_build_requests_session_applies_toml_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1101,7 +1109,7 @@ def test_close_browser_client_does_not_block_on_hung_close(
 
 
 def test_get_credentials_reads_account_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """v4.0.0: account TOML is the sole identity source.
+    """The active account TOML is the sole identity source.
 
     Identity (`[auth]`) is account-scope and cannot live in the project
     layer at all — the loader rejects it. With env unset, get_credentials
@@ -1183,9 +1191,7 @@ def test_get_web_session_reauths_when_cached_user_mismatch(monkeypatch: pytest.M
 def test_get_web_session_reads_cached_session_without_explicit_account(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """``get_web_session`` no longer threads the login-username through as a
-    cache key — resolution lives inside ``WebSession.load`` via the active
-    InspireSkill account (``~/.inspire/current``)."""
+    """Resolve the session cache through the active InspireSkill account."""
     cached = WebSession(
         storage_state={"cookies": [{"name": "session", "value": "abc"}]},
         cookies={"session": "abc"},
@@ -1224,7 +1230,6 @@ def test_get_web_session_explicit_account_uses_account_cache_and_login(
 
     def fake_load(cls, allow_expired=False, account=None):  # type: ignore[no-untyped-def]
         calls["loads"].append((allow_expired, account))
-        return None
 
     def fake_get_credentials(account=None):  # type: ignore[no-untyped-def]
         calls["credentials_account"] = account
@@ -1545,7 +1550,7 @@ def test_save_explicit_account_overrides_bound_and_current_accounts(
     assert not (accounts_root / "beta" / "web_session.json").exists()
 
 
-def test_load_env_vars_do_not_influence_account_resolution(
+def test_credentials_do_not_influence_account_resolution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     fake_home = tmp_path / "home"
@@ -1556,8 +1561,6 @@ def test_load_env_vars_do_not_influence_account_resolution(
 
     monkeypatch.setattr(accounts_mod, "current_account", lambda: None)
     monkeypatch.setenv("INSPIRE_USERNAME", "ghost")
-    monkeypatch.setenv("INSPIRE_ACCOUNT", "ghost")
-    monkeypatch.setenv("INSPIRE_BRIDGE_ACCOUNT", "ghost")
 
     from inspire.platform.web.session.models import get_session_cache_file
 

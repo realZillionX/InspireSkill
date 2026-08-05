@@ -17,11 +17,15 @@ import termios
 import tty
 from dataclasses import dataclass
 from types import TracebackType
-from typing import BinaryIO
 from urllib.parse import urlencode, urlsplit
 
 import click
 
+from inspire.cli.utils.raw_ids import RawIdStreamScrubber
+from inspire.cli.utils.terminal_io import (
+    flush_scrubbed_output,
+    write_scrubbed_output,
+)
 from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url
 from inspire.platform.web.session import WebSession, get_web_session
 from inspire.platform.web.session.proxy import get_rtunnel_proxy_override
@@ -425,11 +429,6 @@ def _stty_command() -> str:
     return f"stty columns {columns} rows {rows}\n"
 
 
-def _write_stdout(stdout: BinaryIO, payload: bytes) -> None:
-    stdout.write(payload)
-    stdout.flush()
-
-
 def run_remote_shell(
     *,
     job_id: str,
@@ -447,6 +446,7 @@ def run_remote_shell(
     headers = build_remote_cmd_headers(session)
     old_term = None
     raw_mode = bool(getattr(stdin, "isatty", lambda: False)())
+    scrubber = RawIdStreamScrubber()
 
     with websocket_cls(ws_url, headers) as ws:
         ws.send_text(SHELL_BOOTSTRAP)
@@ -483,7 +483,7 @@ def run_remote_shell(
                         ws._send_frame(0xA, payload)
                         continue
                     if opcode in {0x1, 0x2}:
-                        _write_stdout(stdout_buffer, payload)
+                        write_scrubbed_output(stdout_buffer, scrubber, payload)
                 if stdin in ready:
                     data = os.read(stdin.fileno(), 4096)
                     if not data:
@@ -493,6 +493,7 @@ def run_remote_shell(
                         return 0
                     ws.send_text(data.decode("utf-8", errors="ignore"))
         finally:
+            flush_scrubbed_output(stdout_buffer, scrubber)
             if raw_mode and old_term is not None:
                 termios.tcsetattr(stdin.fileno(), termios.TCSADRAIN, old_term)
                 if previous_winch is not None:

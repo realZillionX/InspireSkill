@@ -19,7 +19,6 @@ NO_WAIT_POST_START_WARNING = (
     "Remove the post-start action or set notebook_post_start=none to return immediately."
 )
 _POST_START_DISABLED_VALUES = {"0", "disable", "disabled", "false", "none", "off"}
-_REMOVED_POST_START_VALUES = {"keepalive"}
 
 
 @dataclass(frozen=True)
@@ -40,11 +39,6 @@ def _normalize_post_start_value(value: str | None) -> str | None:
 def _is_disabled_post_start(value: str | None) -> bool:
     text = _normalize_post_start_value(value)
     return bool(text and text.lower() in _POST_START_DISABLED_VALUES)
-
-
-def _is_removed_post_start_value(value: str | None) -> bool:
-    text = _normalize_post_start_value(value)
-    return bool(text and text.lower() in _REMOVED_POST_START_VALUES)
 
 
 def _build_background_command(
@@ -153,12 +147,6 @@ def resolve_notebook_post_start_spec(
 
     if _is_disabled_post_start(resolved_value):
         return None
-    if _is_removed_post_start_value(resolved_value):
-        raise ValueError(
-            "The 'keepalive' notebook post-start preset has been removed. "
-            "Use notebook_post_start=none, --post-start '<shell command>', "
-            "or --post-start-script PATH."
-        )
     if resolved_value is None:
         return None
     return _build_command_spec(resolved_value)

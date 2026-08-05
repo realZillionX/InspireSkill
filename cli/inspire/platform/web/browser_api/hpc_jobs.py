@@ -72,9 +72,9 @@ def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
     if isinstance(payload, dict):
         return payload
     if payload is None:
-        legacy_payload = data.get("data")
-        if isinstance(legacy_payload, dict):
-            return legacy_payload
+        nested_payload = data.get("data")
+        if isinstance(nested_payload, dict):
+            return nested_payload
     return {}
 
 
@@ -120,7 +120,7 @@ def get_hpc_job_detail(
     """Fetch an HPC job via the current Web UI v2 Action API."""
     job_id = str(job_id or "").strip()
     if not job_id:
-        raise ValueError("job_id is required")
+        raise ValueError("Job selection is required.")
     if session is None:
         session = get_web_session()
     data = _request_json(
@@ -141,7 +141,7 @@ def stop_hpc_job(
     """Stop an HPC job via the current Web UI v2 Action API."""
     job_id = str(job_id or "").strip()
     if not job_id:
-        raise ValueError("job_id is required")
+        raise ValueError("Job selection is required.")
     if session is None:
         session = get_web_session()
     data = _request_json(
@@ -168,7 +168,7 @@ def list_hpc_jobs(
         session = get_web_session()
 
     if workspace_id is None:
-        raise ValueError("workspace_id is required")
+        raise ValueError("Workspace selection is required.")
     if created_by is None:
         data = _request_json(
             session,
@@ -181,7 +181,7 @@ def list_hpc_jobs(
         current_user: dict[str, Any] = user_payload if isinstance(user_payload, dict) else {}
         created_by = str(current_user.get("id") or current_user.get("user_id") or "").strip()
         if not created_by:
-            raise ValueError("current user is required for HPC listing")
+            raise ValueError("Current user could not be resolved for HPC listing.")
 
     body: dict[str, Any] = {
         "workspace_id": workspace_id,
@@ -229,9 +229,9 @@ def list_hpc_job_events(
     job-level events. Use :func:`list_hpc_job_instances` for the component
     inventory shown on the job detail page.
 
-    Returns ``[]`` on any error (the platform GCs events for long-completed
-    jobs — ``code=100000 record not found`` is a normal steady state for
-    old SUCCEEDED tasks).
+    Returns ``[]`` on any error. The platform garbage-collects events for
+    completed jobs, so ``code=100000 record not found`` is a normal steady
+    state after event retention expires.
     """
     try:
         if session is None:
@@ -279,7 +279,7 @@ def list_hpc_job_instances(
     """
     job_id = str(job_id or "").strip()
     if not job_id:
-        raise ValueError("job_id is required")
+        raise ValueError("Job selection is required.")
     if limit < 1:
         raise ValueError("limit must be positive")
 

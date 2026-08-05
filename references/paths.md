@@ -22,7 +22,7 @@ Path Alias 是远端路径 Alias，不是 Workload Profile。它只回答“文�
 | 全局个人 | `/inspire/<tier>/global_user/<path-user>/...` | 跨项目个人盘，适合小工具和中转 |
 | 全局公共 | `/inspire/hdd/global_public/...` | 全平台共享，普通账号通常只读 |
 
-`<path-user>` 是共享盘返回的个人目录名，不一定等于登录 ID。路径事实以文件页 Browser API 发现结果为准。
+`<path-user>` 是共享盘返回的个人目录名，不一定等于平台登录 username。路径事实以文件页 Browser API 发现结果为准。
 
 ## 3. 存储池
 

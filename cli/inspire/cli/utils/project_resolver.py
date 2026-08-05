@@ -1,10 +1,4 @@
-"""Name-only project resolution helpers.
-
-Project IDs are required by the platform API, but they are not a valid CLI
-surface.  This module keeps the legacy configuration migration boundary in
-one place: aliases and old catalog keys may still be read, while every live
-lookup is performed by the current project name.
-"""
+"""Name-only project resolution helpers."""
 
 from __future__ import annotations
 
@@ -27,42 +21,8 @@ def _casefold_lookup(mapping: Mapping[str, Any], value: str) -> tuple[str, Any] 
     return None
 
 
-def _catalog_name(
-    config: Config,
-    *,
-    requested: str,
-    configured_value: str = "",
-) -> str:
-    """Recover a visible name from either current or legacy catalog layouts."""
-    catalog = config.project_catalog or {}
-    keys = {
-        str(requested or "").strip().casefold(),
-        str(configured_value or "").strip().casefold(),
-    }
-    for key, entry in catalog.items():
-        if not isinstance(entry, Mapping):
-            continue
-        key_text = str(key or "").strip()
-        entry_project_id = str(
-            entry.get("project_id") or entry.get("id") or ""
-        ).strip()
-        if key_text.casefold() not in keys and entry_project_id.casefold() not in keys:
-            continue
-        name = str(entry.get("name") or "").strip()
-        if name and not looks_like_platform_id(name):
-            return name
-    return ""
-
-
 def project_name_candidates(config: Config, requested: str) -> tuple[str, ...]:
-    """Return visible project-name candidates for a user value.
-
-    ``Config.projects`` historically stored ``alias -> project_id``.  That
-    format is accepted only as a migration input.  If the old ID can be
-    mapped through the catalog, its current visible name is used; otherwise
-    the alias is considered stale and is rejected instead of being sent to
-    the platform as an ID.
-    """
+    """Return the live project name represented by a name or configured alias."""
     raw = str(requested or "").strip()
     if not raw:
         raise ConfigError("--project is required.")
@@ -70,50 +30,18 @@ def project_name_candidates(config: Config, requested: str) -> tuple[str, ...]:
         raise ConfigError("--project takes a project name.")
 
     configured = _casefold_lookup(config.projects or {}, raw)
-    candidates: list[str] = []
     if configured is not None:
-        alias, raw_value = configured
-        configured_value = str(raw_value or "").strip()
-        if configured_value:
-            if looks_like_platform_id(configured_value):
-                catalog_name = _catalog_name(
-                    config,
-                    requested=alias,
-                    configured_value=configured_value,
-                )
-                if not catalog_name:
-                    raise ConfigError(
-                        f"Configured project alias {alias!r} no longer resolves "
-                        "to a project name; run `inspire init` to refresh it."
-                    )
-                candidates.append(catalog_name)
-            else:
-                candidates.append(configured_value)
-        catalog_name = _catalog_name(
-            config,
-            requested=alias,
-            configured_value=configured_value,
-        )
-        if catalog_name:
-            candidates.append(catalog_name)
-    else:
-        catalog_name = _catalog_name(config, requested=raw)
-        if catalog_name:
-            candidates.append(catalog_name)
-        candidates.append(raw)
-
-    result: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        value = str(candidate or "").strip()
-        folded = value.casefold()
-        if not value or folded in seen or looks_like_platform_id(value):
-            continue
-        seen.add(folded)
-        result.append(value)
-    if not result:
-        raise ConfigError(f"Unknown project name {raw!r}.")
-    return tuple(result)
+        alias, configured_name = configured
+        configured_name = str(configured_name or "").strip()
+        if not configured_name:
+            raise ConfigError(f"Configured project alias {alias!r} has no project name.")
+        if looks_like_platform_id(configured_name):
+            raise ConfigError(
+                f"Configured project alias {alias!r} must map to a project name; "
+                "run `inspire init` to refresh it."
+            )
+        return (configured_name,)
+    return (raw,)
 
 
 def resolve_project(
@@ -182,7 +110,7 @@ def resolve_project_id(
 
 
 def project_display_name(config: Config, requested: str | None) -> str:
-    """Return a visible name for output without exposing legacy IDs."""
+    """Return a visible project name for output."""
     if not requested:
         return "(project name unavailable)"
     try:

@@ -22,12 +22,12 @@ from inspire.config.models import Config
 from inspire.config.toml import _find_project_config
 
 from .load_account_layer import _apply_account_layer
-from .load_accounts import _apply_project_context_and_defaults
+from .load_context import _apply_project_context_and_defaults
 from .load_common import _default_config_values, _initialize_sources
 from .load_layers import _apply_project_layer
 from .load_runtime import (
     _apply_env_layer,
-    _apply_password_and_token_fallbacks,
+    _apply_password_fallback,
     _validate_required_config,
 )
 
@@ -41,7 +41,7 @@ def config_from_files_and_env(
     config_dict = _default_config_values()
     sources = _initialize_sources(config_dict)
 
-    account_config_path = _apply_account_layer(
+    _apply_account_layer(
         config_dict=config_dict,
         sources=sources,
         account=account,
@@ -64,7 +64,7 @@ def config_from_files_and_env(
         sources=sources,
         prefer_source=project_layer_state.prefer_source,
     )
-    _apply_password_and_token_fallbacks(
+    _apply_password_fallback(
         config_dict=config_dict,
         sources=sources,
         env_password=env_password,
@@ -76,12 +76,8 @@ def config_from_files_and_env(
 
     config_dict["prefer_source"] = project_layer_state.prefer_source
     config = Config(**config_dict)
-    config._global_config_path = account_config_path  # type: ignore[attr-defined]
-    config._project_config_path = project_layer_state.project_config_path  # type: ignore[attr-defined]
     config._shared_project_config_path = project_layer_state.shared_project_config_path  # type: ignore[attr-defined]
     config._account_project_config_path = project_layer_state.account_project_config_path  # type: ignore[attr-defined]
-    config._project_config_paths = project_layer_state.project_config_paths  # type: ignore[attr-defined]
-    config._sources = sources  # type: ignore[attr-defined]
 
     return config, sources
 
@@ -89,10 +85,8 @@ def config_from_files_and_env(
 def get_config_paths(account: str | None = None) -> tuple[Path | None, Path | None]:
     """Return (account_config_path_if_any, project_config_path_if_any).
 
-    The first slot historically held the legacy global path; it now holds
-    the active account's config path. Call sites that used to distinguish
-    "global vs project" still work — the first slot is the writable,
-    non-repo-specific config.
+    The first slot is the active account's config path and the second is the
+    repository project path.
     """
     from .load_account_layer import _resolve_account_config_path
 

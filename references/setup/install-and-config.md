@@ -62,10 +62,13 @@ inspire update --skill-only
 ```bash
 inspire account add <name>
 inspire config show --compact
+inspire --json config show
 inspire config check
 ```
 
-`inspire account add` 会询问平台登录 username、password、base URL 和代理。username 必须是登录 ID，不是网页右上角中文显示名。配置写入 `~/.inspire/accounts/<name>/config.toml`。
+`inspire account add` 会询问平台登录 username、password、base URL 和代理。username 使用登录页接受的手机号、学号或邮箱，不是网页右上角中文显示名。配置写入 `~/.inspire/accounts/<name>/config.toml`。
+
+`config show --format` 只选择 `table` 或 `env`；结构化 JSON 始终使用根级 `inspire --json config show`。
 
 不常驻 SII、但本机 Clash Verge 能转发 `*.sii.edu.cn` 时，先按 [`sii-proxy.md`](sii-proxy.md) 配置本机分流，再把账号 proxy 填为 Clash mixed port。端口以本机设置为准，下面只用 `7897` 作为示例：
 
@@ -75,7 +78,7 @@ http://127.0.0.1:7897
 
 能直连 SII 校园网时，账号 proxy 可以留空；如果想复用同一套 Clash 配置，就仍然填本机 mixed port，然后在 Clash 的 `SII Proxy` 组里选择 `DIRECT`。
 
-账号级 proxy 是标准入口，也会优先于通用 Shell 代理。为兼容现有开发环境，CLI 仍会继承 `http_proxy` / `HTTP_PROXY`、`https_proxy` / `HTTPS_PROXY` 和 `all_proxy` / `ALL_PROXY`；因此即使账号配置里没有 proxy，这些变量也可能改变登录和 Browser API 的实际链路。用下面的命令查看脱敏后的有效代理来源、目标路由和 `NO_PROXY` 匹配结果：
+账号级 proxy 是标准入口，也会优先于通用 Shell 代理。CLI 也会继承 `http_proxy` / `HTTP_PROXY`、`https_proxy` / `HTTPS_PROXY` 和 `all_proxy` / `ALL_PROXY`；因此即使账号配置里没有 proxy，这些变量也可能改变登录和 Browser API 的实际链路。用下面的命令查看脱敏后的有效代理来源、目标路由和 `NO_PROXY` 匹配结果：
 
 ```bash
 inspire config show --compact --filter Proxy
@@ -88,7 +91,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
   -u http_proxy -u https_proxy -u all_proxy inspire init
 ```
 
-不再使用 `INSPIRE_FORCE_PROXY` 等旧式一次性开关；需要稳定代理时写入账号配置。
+需要稳定代理时写入账号配置；临时诊断可按上面的方式显式清除 Shell 代理变量。
 
 ## 4. 全局发现与项目初始化
 
@@ -139,7 +142,7 @@ inspire account rename <old-name> <new-name>
 inspire account current
 ```
 
-这里的 `<name>` 是本地 account alias，也就是 `~/.inspire/accounts/<name>/` 的目录名；它不要求等于平台登录 username。`~/.inspire/current` 是普通文本文件，不是 symlink，内容只有当前 active account alias 一行。`inspire account use <name>` 只更新这个默认指针，不会移动或合并任何账号目录。
+这里的 `<name>` 是本地 account alias，也就是 `~/.inspire/accounts/<name>/` 的目录名；它不要求等于平台登录 username。`~/.inspire/current` 保存当前 active account alias，每行只有一个值。`inspire account use <name>` 只更新这个默认指针，不会移动或合并任何账号目录。
 `inspire account rename <old-name> <new-name>` 只改本地 alias：移动 `~/.inspire/accounts/<old-name>/` 到新目录，若旧 alias 是 active account 则同步更新 `~/.inspire/current`，并把 remembered notebook target cache 中的旧 alias 改成新 alias。平台登录 username 保留在该账号的 `config.toml` 中，不会被 rename 修改。
 
 账号目录、Web Session、联网 Notebook SSH Connection Cache 和 rtunnel proxy state 都在 `~/.inspire/accounts/<name>/` 下。Notebook 连接类命令的 `--account <name>` 同样使用本地 Account Alias；跨账号解析、Connection Cache 管理、SSH / JupyterTerminal Transport 和受限 Notebook 文件流转统一见 [`../notebook.md`](../notebook.md)。

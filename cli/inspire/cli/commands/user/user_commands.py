@@ -18,14 +18,18 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
-from inspire.cli.utils.auth import AuthenticationError
+from inspire.cli.formatters.human_formatter import format_mutation_success
 from inspire.cli.utils.collection_output import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.errors import (
+    exit_with_error as _handle_error,
+    require_confirmation,
+)
 from inspire.cli.utils.id_resolver import (
+    NAME_PICK_HELP,
     forget_resource_identity,
     reject_id_at_boundary,
     remember_resource_identity,
@@ -34,9 +38,12 @@ from inspire.cli.utils.id_resolver import (
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
-from inspire.config.workspaces import select_workspace_id
+from inspire.config.workspaces import (
+    resolve_workspace_query_scope,
+    workspace_name_map,
+)
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import get_web_session
+from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 _SSH_KEY_TYPES = {
     "ssh-rsa",
@@ -48,27 +55,7 @@ _SSH_KEY_TYPES = {
     "sk-ecdsa-sha2-nistp256@openssh.com",
 }
 
-_PUBLIC_NOISE_KEYS = {
-    "debug",
-    "internal",
-    "metadata",
-    "payload",
-    "progress",
-    "raw",
-    "request",
-    "response",
-    "result",
-    "scanned",
-    "source",
-    "trace",
-}
 _OMITTED = object()
-
-
-def _resolve_workspace_id(config: Config, workspace: Optional[str], session) -> Optional[str]:  # noqa: ANN001
-    if workspace is None:
-        return None
-    return select_workspace_id(config, explicit_workspace_name=workspace, session=session)
 
 
 def _ssh_key_id(item: dict) -> str:
@@ -79,29 +66,9 @@ def _ssh_key_name(item: dict) -> str:
     return str(item.get("name") or item.get("title") or "").strip()
 
 
-def _public_value(value: Any) -> Any:
-    sanitized = json_formatter.sanitize_json_data(value)
-    if isinstance(sanitized, dict):
-        return {
-            key: _public_value(child)
-            for key, child in sanitized.items()
-            if str(key).replace("-", "_").strip().lower() not in _PUBLIC_NOISE_KEYS
-        }
-    if isinstance(sanitized, list):
-        return [_public_value(item) for item in sanitized]
-    if isinstance(sanitized, tuple):
-        return [_public_value(item) for item in sanitized]
-    if isinstance(sanitized, str):
-        return scrub_raw_ids(sanitized)
-    return sanitized
-
-
 def _current_user_summary(info: dict[str, Any]) -> dict[str, str]:
-    extra_value = info.get("extra_info")
-    extra: dict[str, Any] = extra_value if isinstance(extra_value, dict) else {}
     fields = {
-        "name": info.get("name") or info.get("username"),
-        "login": extra.get("login_name") or info.get("login_name"),
+        "name": info.get("name") or info.get("display_name"),
         "role": info.get("global_role") or info.get("role"),
         "email": info.get("email"),
     }
@@ -283,6 +250,7 @@ def _resolve_ssh_key_by_name(
     name: str,
     *,
     session,
+    pick: int | None = None,
     require_live: bool = False,
 ) -> dict:  # noqa: ANN001
     key_name = reject_id_at_boundary(
@@ -312,9 +280,9 @@ def _resolve_ssh_key_by_name(
         name=key_name,
         resource_type="ssh-key",
         list_candidates=_lister,
-        json_output=ctx.json_output,
         session=session,
         owner_scope="self",
+        pick_index=pick,
         require_live=require_live,
         list_command="inspire user ssh-keys list",
     )
@@ -337,11 +305,11 @@ def whoami_user(ctx: Context) -> None:
         if not summary:
             click.echo("No user details returned.")
             return
-        for label, key in (("Name", "name"), ("Login", "login"), ("Role", "role"), ("Email", "email")):
+        for label, key in (("Name", "name"), ("Role", "role"), ("Email", "email")):
             if key in summary:
                 click.echo(f"{label}: {summary[key]}")
 
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
@@ -370,12 +338,11 @@ def quota_user(ctx: Context, limit: int | None, show_all: bool) -> None:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
     except ValueError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
-        return
 
     try:
         session = get_web_session()
         data = browser_api_module.get_user_quota(session=session)
-        public_quota = _public_value(data)
+        public_quota = json_formatter.sanitize_json_data(data)
         bounded_quota, rows, metadata = _bound_public_value(
             public_quota,
             limit=effective_limit,
@@ -401,17 +368,22 @@ def quota_user(ctx: Context, limit: int | None, show_all: bool) -> None:
                 "Use --all for the full list."
             )
 
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         msg = str(e)
         if "用户不存在" in msg or "user does not exist" in msg.lower():
-            msg = (
-                f"{msg}\n\n"
-                "Hint: user-level quota is admin-only on qz.sii.edu.cn; regular "
-                "users may see this error. Use `<workload> quota` and live "
-                "availability for ordinary compute decisions; `inspire project "
-                "list` is project-level metadata."
+            _handle_error(
+                ctx,
+                "APIError",
+                msg,
+                EXIT_API_ERROR,
+                hint=(
+                    "User-level quota is admin-only on qz.sii.edu.cn; regular "
+                    "users may see this error. Use `<workload> quota` and live "
+                    "availability for ordinary compute decisions; `inspire project "
+                    "list` is project-level metadata."
+                ),
             )
         _handle_error(ctx, "APIError", msg, EXIT_API_ERROR)
 
@@ -465,7 +437,7 @@ def api_keys_user(ctx: Context, limit: int | None, show_all: bool) -> None:
         if notice:
             click.echo(notice)
 
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
@@ -524,19 +496,25 @@ def list_ssh_keys(ctx: Context, limit: int | None, show_all: bool) -> None:
         if notice:
             click.echo(notice)
 
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @ssh_keys_user.command("add")
-@click.argument("name")
-@click.option("--public-key", default=None, help="OpenSSH public key content")
+@click.argument("name", metavar="NAME")
+@click.option(
+    "--public-key",
+    default=None,
+    metavar="KEY",
+    help="OpenSSH public key content",
+)
 @click.option(
     "--public-key-file",
     type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path),
     default=None,
+    metavar="PATH",
     help="Path to an OpenSSH .pub file",
 )
 @pass_context
@@ -585,34 +563,48 @@ def add_ssh_key(
 
         if ctx.json_output:
             click.echo(
-                json_formatter.format_json({"name": key_name, "status": "created"})
+                json_formatter.format_json(
+                    {"name": scrub_raw_ids(key_name), "status": "created"}
+                )
             )
             return
 
-        click.echo(f"SSH key '{scrub_raw_ids(key_name)}' has been added.")
+        click.echo(format_mutation_success("SSH key", "created", key_name))
 
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @ssh_keys_user.command("delete")
-@click.argument("name")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.argument("name", metavar="NAME")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
 @pass_context
-def delete_ssh_key(ctx: Context, name: str, yes: bool) -> None:
+def delete_ssh_key(ctx: Context, name: str, pick: int | None, yes: bool) -> None:
     """Delete an SSH public key by name."""
     try:
+        require_confirmation(
+            ctx,
+            yes=yes,
+            prompt=f"Delete SSH key '{scrub_raw_ids(name)}'?",
+            message="SSH key deletion requires confirmation.",
+        )
         session = get_web_session()
-        key = _resolve_ssh_key_by_name(ctx, name, session=session)
+        key = _resolve_ssh_key_by_name(ctx, name, session=session, pick=pick)
         key_name = _ssh_key_name(key) or name
         key_id = _ssh_key_id(key)
-
-        if not yes and not ctx.json_output:
-            if not click.confirm(f"Delete SSH key '{scrub_raw_ids(key_name)}'?"):
-                click.echo("Cancelled.")
-                return
 
         def _delete(resolved_id: str) -> str:
             browser_api_module.delete_user_ssh_key(resolved_id, session=session)
@@ -626,6 +618,7 @@ def delete_ssh_key(ctx: Context, name: str, yes: bool) -> None:
                     ctx,
                     live_name,
                     session=session,
+                    pick=pick,
                     require_live=True,
                 )
             ),
@@ -646,20 +639,27 @@ def delete_ssh_key(ctx: Context, name: str, yes: bool) -> None:
         )
         if ctx.json_output:
             click.echo(
-                json_formatter.format_json({"name": key_name, "status": "deleted"})
+                json_formatter.format_json(
+                    {"name": scrub_raw_ids(key_name), "status": "deleted"}
+                )
             )
             return
 
-        click.echo(f"SSH key '{scrub_raw_ids(key_name)}' has been deleted.")
+        click.echo(format_mutation_success("SSH key", "deleted", key_name))
 
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @click.command("permissions")
-@click.option("--workspace", required=True, help="Workspace name")
+@click.option(
+    "--workspace",
+    required=True,
+    metavar="NAME|all",
+    help="Workspace name or 'all'.",
+)
 @click.option(
     "--limit",
     "-n",
@@ -675,7 +675,7 @@ def permissions_user(
     limit: int | None,
     show_all: bool,
 ) -> None:
-    """Show granted permissions in a workspace."""
+    """Show granted permissions by workspace."""
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
     except ValueError as e:
@@ -685,20 +685,51 @@ def permissions_user(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        resolved_workspace = _resolve_workspace_id(config, workspace, session)
-        perms = browser_api_module.get_user_permissions(
-            workspace_id=resolved_workspace, session=session
+        workspace_ids, all_workspaces = resolve_workspace_query_scope(
+            workspace=workspace,
+            session=session,
         )
-        permissions = sorted(set(perms))
+        permissions: list[str | dict[str, str]]
+        if all_workspaces:
+            workspace_names = workspace_name_map(session)
+            permissions = []
+            for workspace_id in workspace_ids:
+                workspace_name = scrub_raw_ids(
+                    workspace_names.get(workspace_id) or "(workspace name unavailable)"
+                )
+                permissions.extend(
+                    {
+                        "workspace": workspace_name,
+                        "permission": scrub_raw_ids(permission),
+                    }
+                    for permission in sorted(
+                        set(
+                            browser_api_module.get_user_permissions(
+                                workspace_id=workspace_id,
+                                session=session,
+                            )
+                        )
+                    )
+                )
+        else:
+            permissions = [
+                scrub_raw_ids(permission)
+                for permission in sorted(
+                    set(
+                        browser_api_module.get_user_permissions(
+                            workspace_id=workspace_ids[0],
+                            session=session,
+                        )
+                    )
+                )
+            ]
         page = bound_collection(permissions, limit=effective_limit)
-        workspace_name = scrub_raw_ids(workspace or "")
 
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
                     {
-                        "workspace": workspace_name,
-                        "permissions": page.items,
+                        "items": page.items,
                         **page.metadata(),
                     }
                 )
@@ -706,19 +737,25 @@ def permissions_user(
             return
 
         if not page.items:
-            click.echo("No permissions granted in this workspace.")
+            click.echo(
+                "No permissions granted in the requested workspaces."
+                if all_workspaces
+                else "No permissions granted in this workspace."
+            )
             return
 
-        click.echo(f"Workspace: {workspace_name}")
         for permission in page.items:
-            click.echo(permission)
+            if isinstance(permission, dict):
+                click.echo(f"{permission['workspace']}: {permission['permission']}")
+            else:
+                click.echo(permission)
         notice = truncation_notice(page)
         if notice:
             click.echo(notice)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)

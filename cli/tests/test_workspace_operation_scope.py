@@ -12,8 +12,8 @@ def test_operation_workspace_rejects_query_sentinels(workspace: str) -> None:
         validate_workspace_operation_name(workspace)
 
 
-def test_operation_workspace_rejects_raw_workspace_id() -> None:
-    with pytest.raises(ConfigError, match="raw workspace ID"):
+def test_operation_workspace_requires_a_visible_name() -> None:
+    with pytest.raises(ConfigError, match="Workspace selection is invalid\\."):
         validate_workspace_operation_name("ws-12345678-1234-1234-1234-123456789abc")
 
 

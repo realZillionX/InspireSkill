@@ -120,20 +120,121 @@ def _compact_mapping(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def public_notebook(item: dict[str, Any]) -> dict[str, Any]:
+def _first_public_text(*values: object) -> str:
+    for value in values:
+        text = sanitize_public_text(value or "", omit_urls=True)
+        if text:
+            return text
+    return ""
+
+
+def _image_label(item: dict[str, Any]) -> str:
+    image = item.get("image")
+    if isinstance(image, dict):
+        name = _first_public_text(
+            image.get("name"),
+            image.get("image_name"),
+            image.get("display_name"),
+        )
+        version = _first_public_text(image.get("version"), image.get("tag"))
+        if name and version:
+            return f"{name}:{version}"
+        if name:
+            return name
+    return _first_public_text(
+        item.get("image_name"),
+        item.get("mirror_name"),
+        image,
+    )
+
+
+def _gpu_type(item: dict[str, Any], quota: dict[str, Any]) -> str:
+    resource_spec = item.get("resource_spec")
+    resource_spec_price = item.get("resource_spec_price")
+    node = item.get("node")
+    logic_compute_group = item.get("logic_compute_group")
+    compute_group = item.get("compute_group")
+
+    resource_spec = resource_spec if isinstance(resource_spec, dict) else {}
+    resource_spec_price = (
+        resource_spec_price if isinstance(resource_spec_price, dict) else {}
+    )
+    node = node if isinstance(node, dict) else {}
+    logic_compute_group = (
+        logic_compute_group if isinstance(logic_compute_group, dict) else {}
+    )
+    compute_group = compute_group if isinstance(compute_group, dict) else {}
+
+    gpu_info = resource_spec_price.get("gpu_info")
+    gpu_info = gpu_info if isinstance(gpu_info, dict) else {}
+    node_gpu_info = node.get("gpu_info")
+    node_gpu_info = node_gpu_info if isinstance(node_gpu_info, dict) else {}
+
+    return _first_public_text(
+        gpu_info.get("gpu_product_simple"),
+        gpu_info.get("gpu_type_display"),
+        gpu_info.get("brand_name"),
+        gpu_info.get("gpu_type"),
+        quota.get("gpu_type_display"),
+        quota.get("gpu_type"),
+        resource_spec.get("gpu_type_display"),
+        resource_spec.get("gpu_type"),
+        node_gpu_info.get("gpu_type_display"),
+        node_gpu_info.get("brand_name"),
+        node_gpu_info.get("gpu_type"),
+        item.get("gpu_type_display"),
+        item.get("gpu_type"),
+        logic_compute_group.get("gpu_type_display"),
+        logic_compute_group.get("gpu_type"),
+        compute_group.get("gpu_type_display"),
+        compute_group.get("gpu_type"),
+    )
+
+
+def _created_by(item: dict[str, Any]) -> str:
+    for key in ("created_by", "creator", "owner"):
+        value = item.get(key)
+        if not isinstance(value, dict):
+            continue
+        text = _first_public_text(
+            value.get("name"),
+            value.get("display_name"),
+        )
+        if text:
+            return text
+    return _first_public_text(
+        item.get("created_by_name"),
+        item.get("creator_name"),
+        item.get("owner_name"),
+    )
+
+
+def public_notebook(
+    item: dict[str, Any],
+    *,
+    fallback_name: str = "",
+) -> dict[str, Any]:
     """Project a notebook list/detail object onto its user-facing fields."""
     quota_value = item.get("quota")
     quota: dict[str, Any] = quota_value if isinstance(quota_value, dict) else {}
+    start_config_value = item.get("start_config")
+    start_config = (
+        start_config_value if isinstance(start_config_value, dict) else {}
+    )
+    priority = item.get("task_priority")
+    if priority in (None, ""):
+        priority = item.get("priority")
     resource = _compact_mapping(
         {
             "gpu_count": quota.get("gpu_count"),
+            "gpu_type": _gpu_type(item, quota),
             "cpu_count": quota.get("cpu_count"),
             "memory_gib": quota.get("memory_size") or quota.get("memory_size_gib"),
         }
     )
     return _compact_mapping(
         {
-            "name": sanitize_public_text(item.get("name") or "", omit_urls=True),
+            "name": _first_public_text(item.get("name"), fallback_name),
             "status": sanitize_public_text(item.get("status") or "", omit_urls=True),
             "project": _nested_name(item, "project", "project_name"),
             "workspace": _nested_name(item, "workspace", "workspace_name"),
@@ -143,33 +244,40 @@ def public_notebook(item: dict[str, Any]) -> dict[str, Any]:
                 "compute_group_name",
                 "logic_compute_group_name",
             ),
-            "image": _nested_name(item, "image", "image_name", "mirror_name"),
+            "created_by": _created_by(item),
+            "image": _image_label(item),
             "resource": resource,
-            "priority": item.get("task_priority"),
+            "priority": priority,
+            "priority_level": _first_public_text(
+                item.get("priority_level"),
+                item.get("priority_name"),
+            ),
+            "shared_memory_gib": (
+                start_config.get("shared_memory_size")
+                or item.get("shared_memory_gib")
+                or item.get("shm_gib")
+            ),
+            "uptime_seconds": item.get("live_time"),
             "created_at": sanitize_public_text(item.get("created_at") or ""),
             "updated_at": sanitize_public_text(item.get("updated_at") or ""),
         }
     )
 
 
-def public_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Project notebook lifecycle events without object handles or source metadata."""
-    return [
-        _compact_mapping(
-            {
-                "time": event.get("last_timestamp") or event.get("first_timestamp"),
-                "type": sanitize_public_text(event.get("type") or "", omit_urls=True),
-                "reason": sanitize_public_text(event.get("reason") or "", omit_urls=True),
-                "message": sanitize_public_text(
-                    event.get("message") or event.get("content") or "",
-                    omit_urls=True,
-                ),
-                "count": event.get("count"),
-            }
+def public_notebook_list_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Project one notebook list row onto the shared workload schema."""
+    view = public_notebook(item)
+    return {
+        key: view.get(key, "")
+        for key in (
+            "name",
+            "status",
+            "project",
+            "workspace",
+            "compute_group",
+            "created_by",
         )
-        for event in events
-        if isinstance(event, dict)
-    ]
+    }
 
 
 def public_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -189,8 +297,8 @@ def public_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 __all__ = [
-    "public_events",
     "public_notebook",
+    "public_notebook_list_item",
     "public_operation",
     "public_runs",
     "sanitize_public_data",

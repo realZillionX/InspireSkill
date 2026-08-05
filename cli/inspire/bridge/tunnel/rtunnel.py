@@ -13,9 +13,7 @@ import os
 import platform
 import subprocess
 from pathlib import Path
-from typing import Optional
 
-from .config import load_tunnel_config
 from .models import TunnelConfig, TunnelError
 
 # Upstream nightly release — includes stdio:// mode for SSH ProxyCommand support.
@@ -120,20 +118,3 @@ def _ensure_rtunnel_binary(config: TunnelConfig) -> Path:
         return config.rtunnel_bin
     except Exception as e:
         raise TunnelError(f"Failed to download rtunnel: {e}")
-
-
-def get_rtunnel_path(config: Optional[TunnelConfig] = None) -> Path:
-    """Get rtunnel binary path, downloading if needed.
-
-    Args:
-        config: Tunnel configuration
-
-    Returns:
-        Path to rtunnel binary
-
-    Raises:
-        TunnelError: If rtunnel cannot be found or downloaded
-    """
-    if config is None:
-        config = load_tunnel_config()
-    return _ensure_rtunnel_binary(config)

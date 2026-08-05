@@ -11,7 +11,7 @@ from inspire.cli.main import main as cli_main
 from inspire.config import Config
 
 
-def test_config_context_renders_workspace_table(capsys):
+def test_config_context_renders_compact_name_lines(capsys):
     _render_human(
         {
             "active": {"account": "default", "project": None, "workspace": None},
@@ -29,19 +29,13 @@ def test_config_context_renders_workspace_table(capsys):
     )
 
     output = capsys.readouterr().out
-    assert "Active  account    default  project    -  workspace  -" in output
-    assert "Projects" in output
-    assert "Projects (1)" not in output
-    assert "Workspaces" in output
-    assert "Workspaces (2)" not in output
-    assert "Name" in output
-    assert "专项项目-2" in output
-    assert "CI-情境智能" in output
-    assert "CPU资源空间" in output
-    assert "共享算力组" in output
+    assert "active account=default project=- workspace=-" in output
+    assert "project 专项项目-2" in output
+    assert "workspace CI-情境智能" in output
+    assert "workspace CPU资源空间" in output
+    assert "compute-group 共享算力组 workspace=CPU资源空间" in output
     assert "internal-project-path" not in output
     assert "internal-gpu-type" not in output
-    assert "─" in output
 
 
 def test_config_context_help_only_describes_name_inputs() -> None:
@@ -58,11 +52,11 @@ def _patch_large_context(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg.context_project = "Project 00"
     cfg.context_workspace = "Workspace 00"
     cfg.projects = {
-        f"Project {index:02d}": f"internal-project-{index}"
+        f"Project {index:02d}": f"Project {index:02d}"
         for index in range(25)
     }
     cfg.project_catalog = {
-        f"internal-project-{index}": {
+        f"Project {index:02d}": {
             "name": f"Project {index:02d}",
             "path": f"/internal/project/{index}",
         }
@@ -174,3 +168,41 @@ def test_config_context_rejects_limit_with_all_as_single_json_document() -> None
     assert payload["success"] is False
     assert payload["error"]["type"] == "ValidationError"
     assert "either --limit or --all" in payload["error"]["message"]
+
+
+def test_config_context_reports_actionable_workspace_discovery_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = Config(username="login-user", password="secret")
+    monkeypatch.setattr(
+        context_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, **_: (cfg, {})),
+    )
+    monkeypatch.setattr("inspire.accounts.current_account", lambda: "primary")
+    monkeypatch.setattr("inspire.accounts.list_accounts", lambda: ["primary"])
+    monkeypatch.setattr(
+        "inspire.platform.web.session.get_web_session",
+        lambda: (_ for _ in ()).throw(RuntimeError("/private/session.json")),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "--no-env-file", "config", "context"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"] == {
+        "active": {
+            "account": "primary",
+            "project": None,
+            "workspace": None,
+        },
+        "projects": [],
+        "workspaces": [],
+        "compute_groups": [],
+        "accounts": ["primary"],
+        "warnings": [
+            "Workspace names are unavailable. Run `inspire config check` and retry."
+        ],
+    }

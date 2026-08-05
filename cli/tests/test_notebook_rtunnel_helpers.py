@@ -1,4 +1,4 @@
-"""Tests for REST API terminal creation, batch script, and _StepTimer helpers."""
+"""Tests for REST API terminal creation and notebook tunnel setup helpers."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from inspire.platform.web.browser_api.rtunnel import (
     OPENSSH_INSTALL_FAILED_MARKER,
     SII_UBUNTU_APT_MIRROR,
     SETUP_DONE_MARKER,
-    _StepTimer,
     _build_batch_setup_script,
     _build_terminal_websocket_url,
     _check_openssh_install_failed_via_ws,
@@ -521,7 +520,6 @@ def test_send_rtunnel_setup_script_defers_browser_terminal_cleanup(
         page=_Page(),
         lab_frame=_Frame(),
         batch_cmd="echo setup",
-        timer=_StepTimer(enabled=False),
     )
 
     assert result.sent_via_ws is False
@@ -1088,8 +1086,6 @@ def test_build_rtunnel_setup_commands_installs_openssh_via_internal_ubuntu_apt()
     assert '"openssh-sftp-server=$_OPENSSH_SFTP_CANDIDATE"' in script
     assert OPENSSH_INSTALL_FAILED_FILE in script
     assert OPENSSH_INSTALL_FAILED_MARKER in script
-    assert '"$KIT/sshd-debs"/*.deb' not in script
-    assert "dpkg -i" not in script
 
 
 def test_build_rtunnel_setup_commands_dedupes_authorized_keys_and_fast_paths() -> None:
@@ -1192,14 +1188,6 @@ def test_build_batch_setup_script_empty() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _TimerStub:
-    def __init__(self) -> None:
-        self.labels: list[str] = []
-
-    def mark(self, label: str) -> None:
-        self.labels.append(label)
-
-
 class _WaitPageStub:
     def __init__(self) -> None:
         self.wait_calls: list[int] = []
@@ -1210,74 +1198,15 @@ class _WaitPageStub:
 
 def test_wait_for_setup_completion_uses_short_settle_for_ws_path() -> None:
     page = _WaitPageStub()
-    timer = _TimerStub()
 
-    _wait_for_setup_completion(page=page, setup_sent_via_ws=True, timer=timer)
+    _wait_for_setup_completion(page=page, setup_sent_via_ws=True)
 
     assert page.wait_calls == [500]
-    assert timer.labels == ["wait_marker"]
 
 
 def test_wait_for_setup_completion_uses_longer_settle_for_browser_path() -> None:
     page = _WaitPageStub()
-    timer = _TimerStub()
 
-    _wait_for_setup_completion(page=page, setup_sent_via_ws=False, timer=timer)
+    _wait_for_setup_completion(page=page, setup_sent_via_ws=False)
 
     assert page.wait_calls == [3000]
-    assert timer.labels == ["wait_marker"]
-
-
-# ---------------------------------------------------------------------------
-# _StepTimer
-# ---------------------------------------------------------------------------
-
-
-def test_step_timer_disabled_is_silent(capsys: pytest.CaptureFixture[str]) -> None:
-    timer = _StepTimer(enabled=False)
-    timer.mark("a")
-    timer.mark("b")
-    timer.summary()
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    assert captured.out == ""
-
-
-def test_step_timer_mark_returns_elapsed() -> None:
-    timer = _StepTimer(enabled=False)
-    result = timer.mark("x")
-    assert result == 0.0
-    assert isinstance(result, float)
-
-
-def test_step_timer_records_steps(capsys: pytest.CaptureFixture[str]) -> None:
-    timer = _StepTimer(enabled=True)
-    timer.mark("alpha")
-    timer.mark("beta")
-    captured = capsys.readouterr()
-    assert "[timing] alpha:" in captured.err
-    assert "[timing] beta:" in captured.err
-
-
-def test_step_timer_summary_format(capsys: pytest.CaptureFixture[str]) -> None:
-    timer = _StepTimer(enabled=True)
-    timer.mark("step_one")
-    timer.mark("step_two")
-    _ = capsys.readouterr()  # discard mark output
-
-    timer.summary()
-    captured = capsys.readouterr()
-    assert "step_one" in captured.err
-    assert "step_two" in captured.err
-    assert "%" in captured.err
-    assert "TOTAL" in captured.err
-
-
-def test_step_timer_summary_empty_when_no_steps(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    timer = _StepTimer(enabled=True)
-    timer.summary()
-    captured = capsys.readouterr()
-    assert captured.err == ""
-    assert captured.out == ""

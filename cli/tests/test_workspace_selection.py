@@ -23,32 +23,18 @@ def _cfg(**kwargs) -> Config:
 
 
 def test_no_arguments_returns_none() -> None:
-    cfg = _cfg()
-    assert select_workspace_id(cfg) is None
-
-
-def test_no_default_workspace_field_in_config() -> None:
-    """Sanity: the removed schema field is gone from Config."""
-    assert not hasattr(Config(username="", password=""), "job_workspace_id")
-
-
-def test_gpu_type_hint_is_silently_ignored() -> None:
-    cfg = _cfg()
-    assert select_workspace_id(cfg, gpu_type="H200") is None
-    assert select_workspace_id(cfg, cpu_only=True) is None
+    assert select_workspace_id() is None
 
 
 def test_explicit_workspace_id_returns_directly() -> None:
-    cfg = _cfg()
     explicit = "ws-11111111-1111-1111-1111-111111111111"
-    assert select_workspace_id(cfg, explicit_workspace_id=explicit) == explicit
+    assert select_workspace_id(explicit_workspace_id=explicit) == explicit
 
 
 def test_explicit_workspace_name_uses_session_workspace_names() -> None:
-    cfg = _cfg()
     session = SimpleNamespace(all_workspace_names={WS_SPECIAL: "special"})
     assert (
-        select_workspace_id(cfg, explicit_workspace_name="special", session=session)
+        select_workspace_id(explicit_workspace_name="special", session=session)
         == WS_SPECIAL
     )
 
@@ -84,7 +70,6 @@ def test_explicit_workspace_name_uses_fresh_local_index(
 
     assert (
         select_workspace_id(
-            _cfg(),
             explicit_workspace_name="SPECIAL",
             session=session,
         )
@@ -134,7 +119,6 @@ def test_live_workspace_snapshot_cannot_overwrite_newer_write_through(
 
     assert (
         select_workspace_id(
-            _cfg(),
             explicit_workspace_name="special",
             session=session,
         )
@@ -179,7 +163,6 @@ def test_clear_during_live_workspace_lookup_does_not_repopulate_cache(
 
     assert (
         select_workspace_id(
-            _cfg(),
             explicit_workspace_name="special",
             session=session,
         )
@@ -221,7 +204,6 @@ def test_workspace_snapshot_failure_skips_live_cache_write(
 
     assert (
         select_workspace_id(
-            _cfg(),
             explicit_workspace_name="special",
             session=session,
         )
@@ -231,20 +213,16 @@ def test_workspace_snapshot_failure_skips_live_cache_write(
 
 
 def test_unknown_workspace_name_raises() -> None:
-    cfg = _cfg()
     with pytest.raises(ConfigError, match="Unknown workspace name"):
         select_workspace_id(
-            cfg,
             explicit_workspace_name="does-not-exist",
             session=SimpleNamespace(all_workspace_names={WS_SPECIAL: "special"}),
         )
 
 
-def test_placeholder_workspace_id_is_rejected_when_explicit() -> None:
-    cfg = _cfg()
-    with pytest.raises(ConfigError, match="placeholder"):
+def test_invalid_workspace_selection_is_rejected_when_explicit() -> None:
+    with pytest.raises(ConfigError, match="Workspace selection is invalid\\."):
         select_workspace_id(
-            cfg,
             explicit_workspace_id="ws-00000000-0000-0000-0000-000000000000",
         )
 

@@ -12,6 +12,8 @@ from inspire.config import Config
 
 def test_shell_uses_jupyter_when_policy_blocks_ssh(monkeypatch) -> None:  # noqa: ANN001
     config = Config(username="", password="")
+    policy_calls = {}
+    shell_calls = {}
 
     monkeypatch.setattr(
         Config,
@@ -21,11 +23,15 @@ def test_shell_uses_jupyter_when_policy_blocks_ssh(monkeypatch) -> None:  # noqa
     monkeypatch.setattr(
         shell_module,
         "preflight_notebook_transport_policy",
-        lambda *_a, **_k: NotebookTransportPolicy(
-            notebook="gpu-box",
-            notebook_id="nb-123",
-            public_internet=False,
-            reason="live_probe",
+        lambda _ctx, **kwargs: (
+            policy_calls.update(kwargs)
+            or NotebookTransportPolicy(
+                notebook="gpu-box",
+                notebook_id="nb-123",
+                public_internet=False,
+                reason="live_probe",
+                session=object(),
+            )
         ),
         raising=False,
     )
@@ -33,14 +39,36 @@ def test_shell_uses_jupyter_when_policy_blocks_ssh(monkeypatch) -> None:  # noqa
     monkeypatch.setattr(
         shell_module.browser_api_module,
         "open_jupyter_terminal_shell",
-        lambda **_k: called.__setitem__("jupyter", True) or 0,
+        lambda **kwargs: (
+            called.__setitem__("jupyter", True)
+            or shell_calls.update(kwargs)
+            or 0
+        ),
         raising=False,
     )
 
-    result = CliRunner().invoke(cli_main, ["notebook", "shell", "gpu-box"])
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "notebook",
+            "shell",
+            "gpu-box",
+            "--workspace",
+            "CPU资源空间",
+            "--account",
+            "alice",
+            "--pick",
+            "2",
+        ],
+    )
 
     assert result.exit_code == 0
     assert called["jupyter"] is True
+    assert result.output == ""
+    assert policy_calls["workspace"] == "CPU资源空间"
+    assert policy_calls["account"] == "alice"
+    assert policy_calls["pick"] == 2
+    assert shell_calls["session"] is not None
 
 
 def test_shell_check_uses_jupyter_probe_when_policy_blocks_ssh(monkeypatch) -> None:  # noqa: ANN001

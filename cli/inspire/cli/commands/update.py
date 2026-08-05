@@ -42,18 +42,17 @@ import click
 
 from inspire import __version__
 from inspire.cli.utils.update_notice import (
-    REPO_SLUG,
     PACKAGE_NAME,
     TARBALL_URL,
     run_check,
     _is_newer,
-    _version_tuple,
 )
+from inspire.cli.context import Context, EXIT_GENERAL_ERROR
+from inspire.cli.formatters import json_formatter
 from inspire.accounts.normalize import (
     _install_playwright_chromium,
     _playwright_chromium_available,
 )
-from inspire.platform.web.session.browser_launch import playwright_install_args
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +97,6 @@ HARNESS_SKILL_DIRS = {
     "kimi-code": _kimi_code_home() / "skills" / "inspire",
     "kimi-desktop": _kimi_desktop_root() / "skills" / "inspire",
 }
-HARNESS_LEGACY_SKILL_DIRS = {
-    "antigravity": [Path.home() / ".gemini" / "skills" / "inspire"],
-}
 HARNESS_ROOTS = {
     "claude": Path.home() / ".claude",
     "codex": Path.home() / ".codex",
@@ -113,18 +109,6 @@ HARNESS_ROOTS = {
     "kimi-code": _kimi_code_home(),
     "kimi-desktop": _kimi_desktop_root(),
 }
-
-SKILL_ASSETS = ("SKILL.md", "references")
-INSTALL_STATE_FILE = ".inspire-skill-install.json"
-
-STALE_SKILL_PATTERNS = (
-    ("INSPIRE_TARGET_DIR", "legacy target-dir environment variable"),
-    ("env -u INSPIRE_PLAYWRIGHT_PROXY", "legacy proxy-unset command prefix"),
-    ("-u INSPIRE_RTUNNEL_PROXY", "legacy rtunnel proxy command prefix"),
-    ("uvx --from inspire-skill playwright", "low-level Playwright runtime repair command"),
-    ("[paths].target_dir", "legacy target_dir config path"),
-    ("Missing target directory configuration", "legacy target_dir error wording"),
-)
 
 PYPI_MIRROR_INDEX_URLS = (
     "https://pypi.tuna.tsinghua.edu.cn/simple",
@@ -158,28 +142,6 @@ _UV_TOOL_LINE_RE = re.compile(
 )
 _UV_TOOL_EXEC_RE = re.compile(r"^-\s+inspire(?:\s+\((?P<path>[^)]+)\))?")
 _VERSION_OUTPUT_RE = re.compile(r"\bversion\s+([0-9][^\s]*)")
-GITHUB_RELEASES_API_URL = f"https://api.github.com/repos/{REPO_SLUG}/releases"
-_CHANGELOG_RELEASE_HEADING_RE = re.compile(
-    r"^#\s+(?P<tag>v?\d+(?:\.\d+){1,3}(?:[A-Za-z0-9._+-]*)?)\s*$",
-    re.MULTILINE,
-)
-_RELEASE_BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?P<text>.+?)\s*$")
-_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
-_RAW_URL_RE = re.compile(r"https?://\S+")
-_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.])/(?:[^\s`/]+/)*[^\s`/]+")
-_RELEASE_SUMMARY_MAX_RELEASES = 3
-_RELEASE_SUMMARY_MAX_ITEMS = 6
-_RELEASE_SUMMARY_ITEM_MAX_CHARS = 160
-_RELEASE_ENGINEERING_HINTS = (
-    "uv tool ",
-    "pipx ",
-    "playwright install",
-    "python -m ",
-    "curl ",
-    "pypi",
-    "http_proxy",
-    "https_proxy",
-)
 _DEBUG_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _DEBUG_SECRET_OPTION_RE = re.compile(
     r"(?i)(?P<prefix>--(?:access[-_]?token|refresh[-_]?token|token|password|passwd|"
@@ -215,22 +177,34 @@ class PipxToolInfo:
     version: str | None = None
 
 
-@dataclass(frozen=True)
-class ReleaseEntry:
-    tag: str
-    body: str
-    url: str | None = None
-
-
-def _emit_stage(message: str, *, silent: bool) -> None:
-    if not silent:
-        click.secho(f"› {message}", fg="blue")
+def _current_output_context() -> Context:
+    click_ctx = click.get_current_context(silent=True)
+    if click_ctx is not None:
+        shared = click_ctx.find_object(Context)
+        if shared is not None:
+            return shared
+    return Context()
 
 
 def _emit_update_failure(*, silent: bool, check_only: bool = False) -> None:
     if silent:
         return
     action = "check" if check_only else "update"
+    ctx = _current_output_context()
+    if ctx.json_output:
+        click.echo(
+            json_formatter.format_json_error(
+                "UpdateError",
+                f"InspireSkill {action} failed.",
+                EXIT_GENERAL_ERROR,
+                hint=(
+                    f"Retry with `inspire --debug update"
+                    f"{' --check' if check_only else ''}` for diagnostics."
+                ),
+            ),
+            err=True,
+        )
+        return
     click.secho(
         f"✗ InspireSkill {action} failed. Retry with `inspire --debug update"
         f"{' --check' if check_only else ''}` for diagnostics.",
@@ -580,76 +554,6 @@ def _global_inspire_executable() -> str | None:
     return shutil.which("inspire")
 
 
-_PLAYWRIGHT_RUNTIME_PROBE = """
-from inspire.platform.web.session.browser_launch import chromium_launch_kwargs
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as p:
-    browser = p.chromium.launch(**chromium_launch_kwargs(headless=True))
-    browser.close()
-"""
-
-
-def _run_runtime_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env["INSPIRE_SKIP_UPDATE_CHECK"] = "1"
-    return subprocess.run(
-        cmd,
-        check=False,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-
-def _wrapper_python_from_inspire_executable(executable: str) -> str | None:
-    try:
-        with Path(executable).open("r", encoding="utf-8") as fh:
-            shebang = fh.readline().strip()
-    except OSError:
-        return None
-    if not shebang.startswith("#!"):
-        return None
-    try:
-        parts = shlex.split(shebang[2:])
-    except ValueError:
-        return None
-    if not parts:
-        return None
-    if Path(parts[0]).name == "env" and len(parts) >= 2:
-        return shutil.which(parts[1])
-    return parts[0] if Path(parts[0]).exists() else None
-
-
-def _ensure_playwright_runtime_with_wrapper_python(executable: str, silent: bool) -> bool:
-    del silent
-    python = _wrapper_python_from_inspire_executable(executable)
-    if not python:
-        logger.debug("Could not resolve wrapper Python: executable=%s", executable)
-        return False
-
-    install_cmd = [
-        python,
-        "-m",
-        "playwright",
-        *playwright_install_args(include_system_deps=None),
-    ]
-    install_proc = _run_runtime_command(install_cmd)
-    _log_completed_process("Playwright install", install_proc, cmd=install_cmd)
-    if install_proc.returncode != 0:
-        return False
-
-    probe_cmd = [python, "-c", _PLAYWRIGHT_RUNTIME_PROBE]
-    probe_proc = _run_runtime_command(probe_cmd)
-    _log_completed_process("Playwright probe", probe_proc, cmd=probe_cmd)
-    return probe_proc.returncode == 0
-
-
-def _is_missing_runtime_hook(output: str) -> bool:
-    return "_ensure-playwright-runtime" in output and "No such command" in output
-
-
 def _ensure_global_playwright_runtime(silent: bool) -> bool:
     executable = _global_inspire_executable()
     if not executable:
@@ -677,17 +581,11 @@ def _ensure_global_playwright_runtime(silent: bool) -> bool:
     if proc.returncode == 0:
         return True
 
-    output = (proc.stdout or "") + (proc.stderr or "")
-    if _is_missing_runtime_hook(output):
-        logger.debug("Runtime hook is unavailable; using wrapper Python fallback")
-        return _ensure_playwright_runtime_with_wrapper_python(executable, silent)
-
     return False
 
 
 def _run_post_update_command(
     *,
-    previous_version: str,
     expected_version: str,
     cli_only: bool,
     silent: bool,
@@ -700,8 +598,6 @@ def _run_post_update_command(
     cmd = [
         executable,
         "_post-update",
-        "--previous-version",
-        previous_version,
         "--expected-version",
         expected_version,
     ]
@@ -728,7 +624,7 @@ def _run_post_update_command(
     return proc.returncode == 0
 
 
-def _download_tarball(timeout: int = 30, *, silent: bool = False) -> bytes | None:
+def _download_tarball(timeout: int = 30) -> bytes | None:
     req = urllib.request.Request(
         TARBALL_URL,
         headers={"User-Agent": f"inspire-skill/{__version__}"},
@@ -752,7 +648,7 @@ def _extract_assets(tarball: bytes, dest: Path) -> Path | None:
       scanning all members.
     - **Path traversal**: pin ``filter='data'`` on Python 3.12+ where
       that's a documented safe default. Older Pythons silently use the
-      legacy 'fully trusting' filter (``extractall`` without a filter
+      Python 3.10 fallback (``extractall`` without a filter
       kwarg), which is what we used before — codeload is GitHub-trusted
       so this is low-risk, but the explicit filter is strictly safer.
     """
@@ -770,7 +666,7 @@ def _extract_assets(tarball: bytes, dest: Path) -> Path | None:
                 tf.extractall(dest, filter="data")
             except TypeError:
                 # Python < 3.11.4 (no `filter=` kwarg). codeload is GitHub
-                # which we trust, so the legacy extract is acceptable.
+                # which we trust, so the fallback extract is acceptable.
                 tf.extractall(dest)
             extracted = dest / top
             return extracted if extracted.is_dir() else None
@@ -790,20 +686,6 @@ def _iter_skill_files(root: Path) -> list[Path]:
     return sorted(files)
 
 
-def _scan_stale_skill_patterns(root: Path) -> list[str]:
-    errors: list[str] = []
-    for path in _iter_skill_files(root):
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            errors.append(f"{path}: unreadable ({e})")
-            continue
-        for pattern, description in STALE_SKILL_PATTERNS:
-            if pattern in text:
-                errors.append(f"{path}: found {description} (`{pattern}`)")
-    return errors
-
-
 def _verify_skill_target(source_root: Path, target: Path) -> list[str]:
     errors: list[str] = []
     for source_path in _iter_skill_files(source_root):
@@ -817,56 +699,17 @@ def _verify_skill_target(source_root: Path, target: Path) -> list[str]:
                 errors.append(f"{target_path}: content differs from refreshed source")
         except OSError as e:
             errors.append(f"{target_path}: unreadable after refresh ({e})")
-    errors.extend(_scan_stale_skill_patterns(target))
     return errors
 
 
-def _clean_legacy_skill_targets(harness: str, silent: bool) -> bool:
-    ok = True
-    target = HARNESS_SKILL_DIRS.get(harness)
-    for legacy in HARNESS_LEGACY_SKILL_DIRS.get(harness, []):
-        if target is not None and legacy == target:
-            continue
-        if not legacy.exists() and not legacy.is_symlink():
-            continue
-        try:
-            if legacy.is_symlink() or legacy.is_file():
-                legacy.unlink()
-            else:
-                shutil.rmtree(legacy)
-            logger.debug("Removed legacy skill path: %s", legacy)
-        except OSError as e:
-            ok = False
-            logger.debug("Could not clean legacy skill path %s: %s", legacy, e, exc_info=True)
-    return ok
-
-
-def _write_install_state(target: Path, *, latest_version: str | None = None) -> None:
-    payload = {
-        "package": PACKAGE_NAME,
-        "version": latest_version or __version__,
-        "source": TARBALL_URL,
-        "assets": list(SKILL_ASSETS),
-    }
-    try:
-        (target / INSTALL_STATE_FILE).write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-    except OSError:
-        # The copy verification below will catch serious write failures. The
-        # manifest is a diagnostic convenience, not the source of truth.
-        pass
-
-
-def _refresh_skill_files(silent: bool, *, latest_version: str | None = None) -> bool:
+def _refresh_skill_files(silent: bool) -> bool:
     del silent
     harnesses = _detect_harnesses()
     if not harnesses:
         logger.debug("No supported agent harness detected; skipping skill refresh")
         return True  # not a failure; user may run skill-less
 
-    tarball = _download_tarball(silent=True)
+    tarball = _download_tarball()
     if tarball is None:
         return False
 
@@ -884,8 +727,6 @@ def _refresh_skill_files(silent: bool, *, latest_version: str | None = None) -> 
 
         for harness in harnesses:
             target = HARNESS_SKILL_DIRS[harness]
-            if not _clean_legacy_skill_targets(harness, True):
-                return False
             # Wipe any previous install, including stale symlinks or files.
             if target.exists() or target.is_symlink():
                 try:
@@ -901,7 +742,6 @@ def _refresh_skill_files(silent: bool, *, latest_version: str | None = None) -> 
             shutil.copy2(src_skill, target / "SKILL.md")
             if src_refs.is_dir():
                 shutil.copytree(src_refs, target / "references", dirs_exist_ok=True)
-            _write_install_state(target, latest_version=latest_version)
 
             verify_errors = _verify_skill_target(extracted, target)
             if verify_errors:
@@ -928,234 +768,15 @@ def _refresh_skill_files(silent: bool, *, latest_version: str | None = None) -> 
     return True
 
 
-def _normalize_release_version(version: str | None) -> str:
-    return (version or "").strip().lstrip("v")
-
-
-def _fetch_release_entries_from_github(timeout: int = 10) -> list[ReleaseEntry]:
-    entries: list[ReleaseEntry] = []
-    for page in range(1, 11):
-        req = urllib.request.Request(
-            f"{GITHUB_RELEASES_API_URL}?per_page=100&page={page}",
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": f"inspire-skill/{__version__}",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-            return entries
-        if not isinstance(payload, list):
-            return entries
-        if not payload:
-            return entries
-
-        for item in payload:
-            if not isinstance(item, dict) or item.get("draft"):
-                continue
-            tag = item.get("tag_name")
-            if not isinstance(tag, str) or not tag.strip():
-                continue
-            body = item.get("body")
-            url = item.get("html_url")
-            entries.append(
-                ReleaseEntry(
-                    tag=tag.strip(),
-                    body=body if isinstance(body, str) else "",
-                    url=url if isinstance(url, str) else None,
-                )
-            )
-        if len(payload) < 100:
-            return entries
-    return entries
-
-
-def _release_entries_from_changelog_text(text: str) -> list[ReleaseEntry]:
-    matches = list(_CHANGELOG_RELEASE_HEADING_RE.finditer(text))
-    entries: list[ReleaseEntry] = []
-    for index, match in enumerate(matches):
-        tag = match.group("tag").strip()
-        body_start = match.end()
-        body_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        body = text[body_start:body_end].strip()
-        entries.append(ReleaseEntry(tag=tag, body=body))
-    return entries
-
-
-def _changelog_text_from_tarball(tarball: bytes) -> str | None:
-    try:
-        with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tf:
-            for member in tf.getmembers():
-                if not member.isfile() or not member.name.endswith("/CHANGELOG.md"):
-                    continue
-                extracted = tf.extractfile(member)
-                if extracted is None:
-                    return None
-                return extracted.read().decode("utf-8", errors="replace")
-    except (tarfile.TarError, OSError):
-        return None
-    return None
-
-
-def _fetch_release_entries_from_changelog(timeout: int = 10) -> list[ReleaseEntry]:
-    tarball = _download_tarball(timeout=timeout, silent=True)
-    if tarball is None:
-        return []
-    text = _changelog_text_from_tarball(tarball)
-    if text is None:
-        return []
-    return _release_entries_from_changelog_text(text)
-
-
-def _fetch_release_entries(timeout: int = 10) -> list[ReleaseEntry]:
-    entries = _fetch_release_entries_from_github(timeout=timeout)
-    if entries:
-        return entries
-    return _fetch_release_entries_from_changelog(timeout=timeout)
-
-
-def _release_entries_between(
-    entries: list[ReleaseEntry],
-    *,
-    previous_version: str,
-    new_version: str,
-) -> list[ReleaseEntry]:
-    previous = _normalize_release_version(previous_version)
-    new = _normalize_release_version(new_version)
-    if not previous or not new or not _is_newer(new, previous):
-        return []
-
-    selected = [
-        entry
-        for entry in entries
-        if _is_newer(_normalize_release_version(entry.tag), previous)
-        and not _is_newer(_normalize_release_version(entry.tag), new)
-    ]
-    return sorted(
-        selected,
-        key=lambda entry: _version_tuple(_normalize_release_version(entry.tag)),
-        reverse=True,
-    )
-
-
-def _release_body_for_display(body: str) -> str:
-    lines = body.strip().splitlines()
-    if lines and lines[0].strip() == "## 更新内容":
-        lines = lines[1:]
-    while lines and not lines[0].strip():
-        lines = lines[1:]
-    while lines and not lines[-1].strip():
-        lines = lines[:-1]
-    return "\n".join(lines)
-
-
-def _compact_release_item(text: str) -> str:
-    text = _MARKDOWN_LINK_RE.sub(r"\1", text)
-    text = _RAW_URL_RE.sub("", text)
-    text = _ABSOLUTE_PATH_RE.sub("<path>", text)
-    text = re.sub(r"\s+", " ", text).strip(" -:")
-    if len(text) > _RELEASE_SUMMARY_ITEM_MAX_CHARS:
-        text = text[: _RELEASE_SUMMARY_ITEM_MAX_CHARS - 1].rstrip() + "…"
-    return text
-
-
-def _release_items_for_display(body: str) -> list[str]:
-    body = _release_body_for_display(body)
-    items: list[str] = []
-    for line in body.splitlines():
-        match = _RELEASE_BULLET_RE.match(line)
-        if not match:
-            continue
-        item = _compact_release_item(match.group("text"))
-        if any(hint in item.lower() for hint in _RELEASE_ENGINEERING_HINTS):
-            continue
-        if item and item not in items:
-            items.append(item)
-    if items:
-        return items
-
-    for line in body.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith(("#", "```", ">")):
-            continue
-        item = _compact_release_item(stripped)
-        if any(hint in item.lower() for hint in _RELEASE_ENGINEERING_HINTS):
-            continue
-        return [item] if item else []
-    return []
-
-
-def _print_release_summary(previous_version: str, new_version: str, *, silent: bool) -> None:
-    if silent or not _is_newer(new_version, previous_version):
-        return
-
-    entries = _release_entries_between(
-        _fetch_release_entries(),
-        previous_version=previous_version,
-        new_version=new_version,
-    )
-    if not entries:
-        logger.debug(
-            "No release summary available between v%s and v%s",
-            previous_version,
-            new_version,
-        )
-        return
-
-    displayed: list[tuple[str, str]] = []
-    for entry in entries[:_RELEASE_SUMMARY_MAX_RELEASES]:
-        version = _normalize_release_version(entry.tag)
-        for item in _release_items_for_display(entry.body):
-            displayed.append((version, item))
-            if len(displayed) >= _RELEASE_SUMMARY_MAX_ITEMS:
-                break
-        if len(displayed) >= _RELEASE_SUMMARY_MAX_ITEMS:
-            break
-
-    if not displayed:
-        logger.debug("Release entries contained no compact user-facing summary")
-        return
-
-    click.secho(
-        f"What's new (v{previous_version} → v{new_version}):",
-        bold=True,
-    )
-    for version, item in displayed:
-        click.echo(f"- v{version}: {item}")
-
-
-def _normalize_after_success(silent: bool) -> None:
-    del silent
-    try:
-        from inspire.accounts import normalize_environment
-
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            normalize_environment(interactive=False)
-        if stdout.getvalue() or stderr.getvalue():
-            logger.debug(
-                "Environment normalization output: stdout=%r stderr=%r",
-                stdout.getvalue(),
-                stderr.getvalue(),
-            )
-    except Exception:
-        # Normalization is best-effort cleanup; never fail the upgrade itself.
-        logger.debug("Environment normalization failed", exc_info=True)
-
-
 def _run_post_update_tasks(
     *,
     expected_version: str | None,
-    previous_version: str,
     cli_only: bool,
     silent: bool,
 ) -> bool:
     ok = True
     if not cli_only:
-        ok = _refresh_skill_files(silent, latest_version=expected_version) and ok
+        ok = _refresh_skill_files(silent) and ok
 
     audit_ok, actual_version = _audit_update_state(
         expected_version=expected_version,
@@ -1173,7 +794,6 @@ def _run_post_update_tasks(
     if not ok:
         return False
 
-    _normalize_after_success(silent)
     return True
 
 
@@ -1247,12 +867,7 @@ def _audit_installed_skills(silent: bool) -> bool:
             ok = False
             logger.debug("%s skill is missing from %s", harness, target)
             continue
-        stale_errors = _scan_stale_skill_patterns(target)
-        if stale_errors:
-            ok = False
-            logger.debug("%s skill contains stale patterns: %s", harness, stale_errors)
-        else:
-            logger.debug("%s skill verified at %s", harness, target)
+        logger.debug("%s skill verified at %s", harness, target)
     return ok
 
 
@@ -1295,6 +910,44 @@ def _print_status(check_result: dict, silent: bool) -> None:
         click.secho(f"InspireSkill is up to date (v{current}).", fg="green")
 
 
+def _emit_update_success(version: str, *, silent: bool) -> None:
+    if silent:
+        return
+    ctx = _current_output_context()
+    if ctx.json_output:
+        click.echo(json_formatter.format_json({"version": version, "updated": True}))
+        return
+    click.secho(f"InspireSkill updated to v{version}.", fg="green", bold=True)
+
+
+def _emit_update_check(result: dict, *, actual_version: str | None, silent: bool) -> None:
+    if silent:
+        return
+    latest = result.get("latest")
+    current = actual_version or result.get("current") or __version__
+    if not isinstance(current, str):
+        current = str(current)
+    if not isinstance(latest, str) or not latest:
+        _emit_update_failure(silent=False, check_only=True)
+        return
+    ctx = _current_output_context()
+    if ctx.json_output:
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "current": current,
+                    "latest": latest,
+                    "update_available": _is_newer(latest, current),
+                }
+            )
+        )
+        return
+    _print_status(
+        {"current": current, "latest": latest},
+        silent=False,
+    )
+
+
 @click.command("update")
 @click.option("--check", "check_only", is_flag=True, help="Only check upstream; don't upgrade.")
 @click.option("--silent", is_flag=True, help="Suppress output (used by background checks).")
@@ -1307,7 +960,6 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
 
     # --- check path -------------------------------------------------------
     if check_only:
-        _emit_stage("Checking for updates...", silent=silent)
         result = run_check(write=True)
         audit_ok, actual_version = _audit_update_state(
             expected_version=result.get("latest"),
@@ -1323,48 +975,35 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
         if not audit_ok:
             _emit_update_failure(silent=silent, check_only=True)
             sys.exit(1)
-        _print_status(result, silent)
+        _emit_update_check(result, actual_version=actual_version, silent=silent)
         return
 
     # --- upgrade path -----------------------------------------------------
     # Always refresh the version cache first so subsequent invocations show
     # the correct state and the notice goes away if we successfully upgrade.
-    _emit_stage("Checking for updates...", silent=silent)
     pre = run_check(write=True)
     logger.debug("Pre-update status: %s", pre)
 
     ok = True
     if not skill_only:
-        _emit_stage("Updating CLI...", silent=silent)
         ok = _upgrade_cli(silent, target_version=pre.get("latest")) and ok
         expected_version = str(pre.get("latest") or "")
-        previous_version = str(pre.get("current") or __version__)
         if ok and expected_version and _is_newer(expected_version, __version__):
-            _emit_stage("Completing setup...", silent=silent)
             if not _run_post_update_command(
-                previous_version=previous_version,
                 expected_version=expected_version,
                 cli_only=cli_only,
                 silent=silent,
             ):
                 _emit_update_failure(silent=silent)
                 sys.exit(1)
-            if not silent:
-                click.secho(
-                    f"✓ InspireSkill updated to v{expected_version}.",
-                    fg="green",
-                    bold=True,
-                )
-            _print_release_summary(previous_version, expected_version, silent=silent)
+            _emit_update_success(expected_version, silent=silent)
             return
     if not cli_only:
-        _emit_stage("Refreshing agent skills...", silent=silent)
-        ok = _refresh_skill_files(silent, latest_version=pre.get("latest")) and ok
+        ok = _refresh_skill_files(silent) and ok
 
     # Verify the observable install state rather than trusting command exit
     # codes. This catches PATH shadowing, stale agent skill files, and local
     # uv-tool sources that would otherwise keep the global command outdated.
-    _emit_stage("Verifying installation...", silent=silent)
     audit_ok, actual_version = _audit_update_state(
         expected_version=pre.get("latest"),
         check_cli=not skill_only,
@@ -1374,7 +1013,6 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
     ok = audit_ok and ok
 
     if ok and not skill_only:
-        _emit_stage("Preparing browser runtime...", silent=silent)
         ok = _ensure_global_playwright_runtime(silent) and ok
 
     # Re-check after upgrade so the cache reflects the externally visible
@@ -1385,21 +1023,5 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
         _emit_update_failure(silent=silent)
         sys.exit(1)
 
-    # Run environment normalization once after a successful upgrade so users
-    # coming from v3.1.x (no sentinel yet) get pre-v3 unscoped files
-    # quarantined and stale env vars flagged on the same `inspire update` they
-    # ran to install v4. Idempotent via the normalization sentinel.
-    _normalize_after_success(silent)
-
-    if not silent:
-        final_version = str(actual_version or pre.get("latest") or __version__)
-        click.secho(
-            f"✓ InspireSkill updated to v{final_version}.",
-            fg="green",
-            bold=True,
-        )
-
-    if not skill_only:
-        previous_version = str(pre.get("current") or __version__)
-        new_version = str(actual_version or pre.get("latest") or __version__)
-        _print_release_summary(previous_version, new_version, silent=silent)
+    final_version = str(actual_version or pre.get("latest") or __version__)
+    _emit_update_success(final_version, silent=silent)

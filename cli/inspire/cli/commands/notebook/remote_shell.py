@@ -24,9 +24,11 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
 from inspire.cli.utils.output import emit_success as emit_output_success
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.terminal_io import run_scrubbed_pty
 from inspire.cli.utils.tunnel_reconnect import (
     load_ssh_public_key_material,
     rebuild_notebook_bridge_profile,
@@ -36,7 +38,11 @@ from inspire.cli.utils.tunnel_reconnect import (
 from inspire.config import Config, ConfigError, build_env_exports, resolve_remote_cwd
 from inspire.platform.web import browser_api as browser_api_module
 
-from .target_resolver import resolve_cached_notebook_target
+from .target_resolver import (
+    NOTEBOOK_TARGET_WORKSPACE_HELP,
+    resolve_cached_notebook_target,
+    validate_specific_workspace,
+)
 from .transport import preflight_notebook_transport_policy
 
 logger = logging.getLogger(__name__)
@@ -86,8 +92,21 @@ def _load_tunnel_config_for_account(account: str | None):
 
 
 @click.command("shell")
-@click.argument("notebook")
-@click.option("--account", required=False, help="Account name for this notebook target.")
+@click.argument("notebook", metavar="NAME")
+@click.option(
+    "--workspace",
+    required=False,
+    metavar="NAME",
+    callback=validate_specific_workspace,
+    help=NOTEBOOK_TARGET_WORKSPACE_HELP,
+)
+@click.option(
+    "--account",
+    required=False,
+    metavar="NAME",
+    help="Account name for this notebook target.",
+)
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
@@ -107,7 +126,9 @@ def _load_tunnel_config_for_account(account: str | None):
 def bridge_ssh(
     ctx: Context,
     notebook: str,
+    workspace: str | None,
     account: str | None,
+    pick: int | None,
     ignore_target_cache: bool,
     cwd: Optional[str],
     check: bool,
@@ -145,9 +166,10 @@ def bridge_ssh(
     policy = preflight_notebook_transport_policy(
         ctx,
         notebook=notebook,
-        workspace=None,
+        workspace=workspace,
         account=account,
         timeout=30,
+        pick=pick,
     )
     if policy.exec_transport == "jupyter":
         if check:
@@ -175,8 +197,6 @@ def bridge_ssh(
                 EXIT_GENERAL_ERROR,
                 hint=result.output.strip() or None,
             )
-        if not ctx.json_output:
-            click.echo(f"Opening shell for '{scrub_raw_ids(notebook)}'.")
         code = browser_api_module.open_jupyter_terminal_shell(
             notebook_id=policy.notebook_id,
             session=policy.session,
@@ -188,11 +208,12 @@ def bridge_ssh(
     target = resolve_cached_notebook_target(
         ctx,
         notebook=notebook,
-        workspace=None,
+        workspace=workspace,
         account=account,
         ignore_target_cache=ignore_target_cache,
         verify_target_cache=True,
         allow_prompt=not ctx.json_output,
+        pick=pick,
     )
     if target is None:
         explicit_account = (
@@ -218,7 +239,7 @@ def bridge_ssh(
         raise RuntimeError("unreachable")
 
     bridge_name = selected_bridge.name
-    logger.debug("bridge_ssh start bridge=%s", bridge_name)
+    logger.debug("Notebook shell session starting")
 
     remote_command = _build_remote_shell_command(
         remote_cwd=remote_cwd,
@@ -228,7 +249,6 @@ def bridge_ssh(
     reconnect_pause = float(getattr(config, "tunnel_retry_pause", 0.0) or 0.0)
     reconnect_attempt = 0
     should_rebuild = False
-    opened_once = False
     web_session = None
     ssh_public_key = ""
 
@@ -305,19 +325,16 @@ def bridge_ssh(
                     )
             except Exception as status_error:  # noqa: BLE001
                 logger.debug(
-                    "Skipping notebook status preflight bridge=%s notebook_id=%s error=%s",
-                    bridge_name,
-                    notebook_id,
-                    status_error,
+                    "Notebook status preflight skipped error=%s",
+                    scrub_raw_ids(status_error),
                 )
 
             reconnect_attempt += 1
-            if not ctx.json_output:
-                click.echo(
-                    f"Tunnel unavailable; rebuilding automatically "
-                    f"(attempt {reconnect_attempt}/{reconnect_limit})...",
-                    err=True,
-                )
+            logger.debug(
+                "Notebook shell tunnel rebuild scheduled attempt=%s/%s",
+                reconnect_attempt,
+                reconnect_limit,
+            )
             try:
                 if web_session is None:
                     if target_account:
@@ -388,7 +405,7 @@ def bridge_ssh(
                     check=False,
                 )
             except KeyboardInterrupt:
-                logger.debug("bridge_ssh check interrupted bridge=%s", bridge_name)
+                logger.debug("Notebook shell check interrupted")
                 raise SystemExit(130) from None
 
             returncode = completed.returncode
@@ -406,36 +423,24 @@ def bridge_ssh(
                 interactive=False,
                 allow_non_interactive=True,
             ):
-                if not ctx.json_output:
-                    click.echo(
-                        "SSH check failed; attempting automatic tunnel rebuild...",
-                        err=True,
-                )
+                logger.debug("Notebook shell check requested automatic tunnel rebuild")
                 should_rebuild = True
                 continue
             if not ctx.json_output and output.strip():
                 click.echo(scrub_raw_ids(output.rstrip()), err=True)
             sys.exit(returncode if returncode is not None else EXIT_GENERAL_ERROR)
 
-        if not opened_once and not ctx.json_output:
-            click.echo(f"Opening shell for '{scrub_raw_ids(notebook)}'.")
-            opened_once = True
-
         try:
-            returncode = subprocess.call(ssh_args)
+            returncode = run_scrubbed_pty(ssh_args)
         except KeyboardInterrupt:
-            logger.debug("bridge_ssh interrupted bridge=%s", bridge_name)
+            logger.debug("Notebook shell interrupted")
             raise SystemExit(130) from None
 
-        logger.debug("bridge_ssh returncode bridge=%s code=%s", bridge_name, returncode)
+        logger.debug("Notebook shell finished returncode=%s", returncode)
         if returncode == 0:
             sys.exit(0)
         if should_attempt_ssh_reconnect(returncode, interactive=True):
-            if not ctx.json_output:
-                click.echo(
-                    "SSH connection dropped; attempting automatic tunnel rebuild...",
-                    err=True,
-                )
+            logger.debug("Notebook shell requested automatic tunnel rebuild after disconnect")
             should_rebuild = True
             continue
         sys.exit(returncode if returncode is not None else EXIT_GENERAL_ERROR)

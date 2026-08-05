@@ -5,7 +5,7 @@
 ## Validation
 
 - [ ] `cd cli && uv run pytest -q`
-- [ ] `cd cli && uv run ruff check inspire tests --select E9,F63,F7,F82`
+- [ ] `cd cli && uv run ruff check inspire tests`
 - [ ] `cd cli && uv run mypy`
 - [ ] `cd cli && uv build`
 

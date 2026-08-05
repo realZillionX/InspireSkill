@@ -4,7 +4,8 @@ Browser API fills in everything the UI needs on the `/jobs/modelDeployment` page
 listing, create / detail / stop / delete, configs per workspace, and the
 user+project pickers for the create dialog. Reverse-engineered via Chrome and
 frontend bundle inspection — see
-[cli/scripts/reverse_capture/](../../../../scripts/reverse_capture/).
+the controlled browser/live-smoke workflow in
+`references/dev/browser-api.md`.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ def _resolve_workspace(
     if session is None:
         session = get_web_session()
     if workspace_id is None:
-        raise ValueError("workspace_id is required")
+        raise ValueError("Workspace selection is required.")
     return session, workspace_id
 
 
@@ -73,7 +74,6 @@ class ServingInfo:
     model_name: str = ""
     model_version: str = ""
     framework: str = ""
-    service_type: str = ""
     project_id: str = ""
     project_name: str = ""
     workspace_id: str = ""
@@ -82,7 +82,7 @@ class ServingInfo:
     priority: str = ""
     created_at: str = ""
     updated_at: str = ""
-    created_by: str = ""
+    created_by_name: str = ""
     raw: dict[str, Any] | None = None
 
 
@@ -181,11 +181,20 @@ def list_servings(
                 return 0
         return 0
 
-    def _created_by(item: dict) -> str:
-        cb = item.get("created_by")
-        if isinstance(cb, dict):
-            return cb.get("name") or cb.get("id") or ""
-        return str(cb or "")
+    def _created_by_name(item: dict) -> str:
+        for key in ("created_by", "creator", "owner"):
+            identity = item.get(key)
+            if not isinstance(identity, dict):
+                continue
+            for name_key in ("name", "display_name"):
+                value = identity.get(name_key)
+                if isinstance(value, str) and value.strip():
+                    return value
+        for key in ("created_by_name", "creator_name", "owner_name"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        return ""
 
     return (
         [
@@ -204,7 +213,6 @@ def list_servings(
                 ),
                 model_version=_pick(it, "model_version", "version"),
                 framework=_pick(it, "framework", "deploy_framework", "deployment_framework"),
-                service_type=_pick(it, "service_type", "serving_type", "deploy_type"),
                 project_id=_pick(it, "project_id"),
                 project_name=_pick(it, "project_name")
                 or _pick_nested(it, "project", "name", "project_name"),
@@ -214,7 +222,7 @@ def list_servings(
                 priority=_pick(it, "priority", "task_priority"),
                 created_at=_pick(it, "created_at"),
                 updated_at=_pick(it, "updated_at"),
-                created_by=_created_by(it),
+                created_by_name=_created_by_name(it),
                 raw=it if isinstance(it, dict) else None,
             )
             for it in raw_items

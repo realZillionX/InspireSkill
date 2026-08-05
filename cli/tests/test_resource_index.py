@@ -13,7 +13,6 @@ from inspire.cli.utils.resource_index import (
     ResourceIndexDatabaseError,
     ResourceScope,
     StaleResourceIndexRefresh,
-    candidates_from_dicts,
     resource_index_path,
     scope_for_session,
 )
@@ -47,6 +46,27 @@ def _record(
         status=status,
         created_at=created_at,
     )
+
+
+def _scope_metadata(index: ResourceIndex, scope: ResourceScope) -> sqlite3.Row:
+    with index._connect() as connection:
+        row = connection.execute(
+            """
+            SELECT last_attempt_at, refresh_complete
+            FROM resource_scope
+            WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+              AND workspace_id = ? AND owner_scope = ?
+            """,
+            (
+                scope.base_url,
+                scope.subject_id,
+                scope.resource_type,
+                scope.workspace_id,
+                scope.owner_scope,
+            ),
+        ).fetchone()
+    assert row is not None
+    return row
 
 
 def test_lookup_respects_freshness_and_scope(tmp_path) -> None:
@@ -298,11 +318,12 @@ def test_refresh_error_preserves_last_successful_snapshot(tmp_path) -> None:
     index.record_refresh_error(scope, "network unavailable", now=200)
 
     status = index.list_scope_status()[0]
-    assert status.last_attempt_at == 200
     assert status.last_refresh_at == 100
     assert status.last_full_refresh_at == 100
-    assert status.refresh_complete is True
     assert status.last_error == "network unavailable"
+    metadata = _scope_metadata(index, scope)
+    assert metadata["last_attempt_at"] == 200
+    assert metadata["refresh_complete"] == 1
     assert [
         item.resource_id
         for item in index.lookup(scope, "A", fresh_only=False, now=200)
@@ -322,8 +343,8 @@ def test_older_refresh_error_cannot_overwrite_newer_success(tmp_path) -> None:
     index.record_refresh_error(scope, "old failure", now=100)
 
     status = index.list_scope_status()[0]
-    assert status.last_attempt_at == 200
     assert status.last_error == ""
+    assert _scope_metadata(index, scope)["last_attempt_at"] == 200
 
 
 def test_write_through_preserves_full_refresh_error_until_full_success(tmp_path) -> None:
@@ -340,7 +361,9 @@ def test_write_through_preserves_full_refresh_error_until_full_success(tmp_path)
     assert index.list_scope_status()[0].last_error == ""
 
 
-def test_scope_status_separates_fresh_expired_and_tombstoned_rows(tmp_path) -> None:
+def test_scope_status_reports_active_rows_without_losing_expired_or_tombstoned_rows(
+    tmp_path,
+) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
     scope = _scope()
     index.reconcile(
@@ -363,9 +386,11 @@ def test_scope_status_separates_fresh_expired_and_tombstoned_rows(tmp_path) -> N
     status = index.list_scope_status(now=111)[0]
 
     assert status.active_count == 1
-    assert status.fresh_count == 1
-    assert status.expired_count == 1
-    assert status.tombstone_count == 1
+    assert len(index.lookup(scope, "expired", fresh_only=False, now=111)) == 1
+    assert index.lookup(scope, "deleted", fresh_only=False, now=111) == []
+    deleted = index.lookup_id(scope, "job-deleted", include_tombstoned=True)
+    assert deleted is not None
+    assert deleted.tombstoned_at == 105
 
 
 def test_duplicate_names_are_retained_for_ambiguity_detection(tmp_path) -> None:
@@ -414,30 +439,6 @@ def test_clear_generation_rejects_revision_zero_in_flight_refresh(tmp_path) -> N
         index.reconcile(
             scope,
             [_record("job-old", "A")],
-            expected_generation=generation,
-            expected_revision=revision,
-        )
-
-
-def test_mark_scope_stale_is_transactional_and_makes_full_refresh_due(tmp_path) -> None:
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-    scope = _scope()
-    index.reconcile(scope, [_record("job-a", "A")], now=100)
-    generation, revision = index.snapshot_token(scope)
-
-    assert index.mark_scope_stale(scope) == 1
-
-    assert index.scope_due(
-        scope,
-        interval_seconds=60,
-        now=101,
-        require_full=True,
-    )
-    assert index.lookup(scope, "A", now=101) == []
-    with pytest.raises(StaleResourceIndexRefresh):
-        index.reconcile(
-            scope,
-            [_record("job-a", "A")],
             expected_generation=generation,
             expected_revision=revision,
         )
@@ -625,16 +626,16 @@ def test_refresh_lease_renews_during_a_long_scan(tmp_path) -> None:
             assert second is False
 
 
-def test_corrupt_database_is_quarantined_and_rebuilt(tmp_path) -> None:
+def test_corrupt_database_is_discarded_and_rebuilt(tmp_path) -> None:
     path = tmp_path / "index.sqlite3"
     path.write_bytes(b"not a sqlite database")
+    (tmp_path / "index.sqlite3-wal").write_bytes(b"stale wal")
+    (tmp_path / "index.sqlite3-shm").write_bytes(b"stale shm")
 
     index = ResourceIndex(path)
 
     assert index.list_scope_status() == []
-    quarantined = list(tmp_path.glob("index.sqlite3.corrupt-*"))
-    assert len(quarantined) == 1
-    assert quarantined[0].read_bytes() == b"not a sqlite database"
+    assert path.exists()
 
 
 @pytest.mark.parametrize(
@@ -645,36 +646,8 @@ def test_corrupt_database_is_quarantined_and_rebuilt(tmp_path) -> None:
         "disk I/O error",
     ],
 )
-def test_non_corruption_database_errors_are_not_quarantined(message: str) -> None:
+def test_non_corruption_database_errors_are_not_discarded(message: str) -> None:
     assert ResourceIndex._is_corruption_error(sqlite3.OperationalError(message)) is False
-
-
-def test_candidates_from_dicts_keeps_only_minimal_identity_fields() -> None:
-    records = candidates_from_dicts(
-        [
-            {
-                "handle": "job-one",
-                "display": "train",
-                "created_by_id": "user-one",
-                "status": "RUNNING",
-                "created_at": "now",
-                "raw": {"large": "payload"},
-            },
-            {"handle": "", "display": "missing"},
-        ],
-        name_key="display",
-        id_key="handle",
-    )
-
-    assert records == [
-        ResourceIdentity(
-            resource_id="job-one",
-            name="train",
-            owner_id="user-one",
-            status="RUNNING",
-            created_at="now",
-        )
-    ]
 
 
 def test_scope_for_session_requires_stable_account_identity() -> None:

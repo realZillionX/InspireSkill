@@ -13,12 +13,7 @@ from inspire.platform.web.browser_api.notebooks import _config_compute_groups_fa
 def test_notebook_cli_base_url_reads_account_toml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """v4.0.0: base_url is account-scope.
-
-    With env unset, ``get_base_url()`` returns the active account's
-    stored ``[api].base_url``. Project layer cannot carry account-scope
-    keys (loader rejects them), so prefer_source no longer applies here.
-    """
+    """Account-scoped ``[api].base_url`` is used when the environment is unset."""
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: fake_home)

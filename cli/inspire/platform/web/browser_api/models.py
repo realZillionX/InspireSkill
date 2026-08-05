@@ -2,7 +2,8 @@
 
 Reverse-engineered from the current `/jobs/modelService` page. Model registry
 browsing and registration use the web-session Browser API. See
-`cli/scripts/reverse_capture/` for the capture methodology.
+the controlled browser/live-smoke workflow documented in
+`references/dev/browser-api.md`.
 
 Wire-format notes:
 - `POST /api/v1/model/list` body
@@ -72,7 +73,7 @@ def _resolve_workspace(
     if session is None:
         session = get_web_session()
     if workspace_id is None:
-        raise ValueError("workspace_id is required")
+        raise ValueError("Workspace selection is required.")
     return session, workspace_id
 
 
@@ -88,20 +89,13 @@ class ModelInfo:
     user_id: str = ""
     user_name: str = ""
     status: str = ""
-    has_published: bool = False
-    is_vllm_compatible: bool = False
     created_at: str = ""
     updated_at: str = ""
     latest_version: str = ""
     model_type: list[str] | None = None
     tags: list[str] | None = None
-    model_path: str = ""
     model_source_path: str = ""
     model_source_type: int = 0
-    model_size_gi: float = 0.0
-    version_description: str = ""
-    fail_reason: str = ""
-    plaza_publish_status: str = ""
     raw: dict[str, Any] | None = None
 
 
@@ -123,20 +117,13 @@ def _parse_model(item: dict[str, Any]) -> ModelInfo:
         user_id=str(inner.get("user_id") or item.get("user_id") or ""),
         user_name=str(item.get("user_name") or inner.get("user_name") or ""),
         status=str(inner.get("status") if inner.get("status") is not None else ""),
-        has_published=bool(inner.get("has_published", False)),
-        is_vllm_compatible=bool(inner.get("is_vllm_compatible", False)),
         created_at=str(inner.get("created_at") or ""),
         updated_at=str(inner.get("updated_at") or ""),
         latest_version=str(version_value or ""),
         model_type=list(inner.get("model_type") or []),
         tags=list(inner.get("tags") or []),
-        model_path=str(inner.get("model_path") or ""),
         model_source_path=str(inner.get("model_source_path") or ""),
         model_source_type=int(inner.get("model_source_type") or 0),
-        model_size_gi=float(inner.get("model_size_gi") or 0.0),
-        version_description=str(inner.get("version_description") or ""),
-        fail_reason=str(inner.get("model_fail_reason") or ""),
-        plaza_publish_status=str(inner.get("plaza_publish_status") or ""),
         raw=item,
     )
 
@@ -179,7 +166,7 @@ def _current_user_id(session: WebSession, workspace_id: str) -> str:
     payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
     user_id = str(payload.get("id") or payload.get("user_id") or "").strip()
     if not user_id:
-        raise ValueError("current user is required for model listing")
+        raise ValueError("Current user could not be resolved for model listing.")
     return user_id
 
 

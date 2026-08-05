@@ -57,7 +57,7 @@ def get_user_detail(
         session = get_web_session()
     raw_id = user_id.strip()
     if not raw_id:
-        raise ValueError("user_id is required")
+        raise ValueError("User selection is required.")
     data = _request_json(
         session,
         "GET",
@@ -172,7 +172,7 @@ def delete_user_ssh_key(
         session = get_web_session()
     raw_id = ssh_id.strip()
     if not raw_id:
-        raise ValueError("ssh_id is required")
+        raise ValueError("SSH key selection is required.")
     data = _request_json(
         session,
         "DELETE",
@@ -211,6 +211,6 @@ def get_user_permissions(
     if isinstance(perms, list):
         return [str(p) for p in perms]
     if isinstance(perms, dict):
-        # Legacy matrix shape: dict[permission -> bool]; keep only granted keys.
+        # Some responses use a permission-to-granted mapping.
         return [k for k, v in perms.items() if v]
     return []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import re
 
 _UUID_RE = re.compile(
@@ -42,6 +43,61 @@ _LABELLED_COMPACT_ID_RE = re.compile(
     re.IGNORECASE,
 )
 
+_STREAM_TOKEN_PARTIAL_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{1,96}$"
+)
+_STREAM_LABEL_PARTIAL_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_-])(?:id|uuid|handle)\s*[:=#]?\s*[0-9a-f]*$"
+)
+
+
+def _partial_raw_id_suffix_start(text: str) -> int | None:
+    """Return the start of a possible identifier split across stream chunks."""
+    candidates: list[int] = []
+    for pattern in (
+        _STREAM_TOKEN_PARTIAL_RE,
+        _STREAM_LABEL_PARTIAL_RE,
+    ):
+        match = pattern.search(text)
+        if match is not None:
+            candidate = match.group(0)
+            if scrub_raw_ids(candidate) != candidate:
+                continue
+            candidates.append(match.start())
+    return min(candidates) if candidates else None
+
+
+class RawIdStreamScrubber:
+    """Redact platform handles while preserving interactive byte streams."""
+
+    def __init__(self) -> None:
+        self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self._pending = ""
+
+    def feed(self, payload: bytes | str) -> bytes:
+        """Return the safe portion of one stream chunk."""
+        if isinstance(payload, bytes):
+            text = self._decoder.decode(payload)
+        else:
+            text = str(payload)
+        if not text:
+            return b""
+
+        combined = self._pending + text
+        partial_start = _partial_raw_id_suffix_start(combined)
+        if partial_start is None:
+            self._pending = ""
+            return scrub_raw_ids(combined).encode("utf-8")
+
+        self._pending = combined[partial_start:]
+        return scrub_raw_ids(combined[:partial_start]).encode("utf-8")
+
+    def flush(self) -> bytes:
+        """Flush decoder and any identifier suffix held for the next chunk."""
+        tail = self._pending + self._decoder.decode(b"", final=True)
+        self._pending = ""
+        return scrub_raw_ids(tail).encode("utf-8")
+
 
 def scrub_raw_ids(value: object) -> str:
     """Replace platform-looking handles in human-visible strings.
@@ -62,4 +118,4 @@ def scrub_raw_ids(value: object) -> str:
     return _UUID_RE.sub("<redacted>", text)
 
 
-__all__ = ["scrub_raw_ids"]
+__all__ = ["RawIdStreamScrubber", "scrub_raw_ids"]

@@ -11,12 +11,16 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
+from inspire.cli.formatters.human_formatter import format_mutation_success
 from inspire.cli.utils.collection_output import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.errors import (
+    exit_with_error as _handle_error,
+    require_confirmation,
+)
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.config.path_aliases import (
@@ -65,26 +69,26 @@ def list_path_aliases(ctx: Context, limit: int | None, show_all: bool) -> None:
 
     try:
         _config_path, aliases = load_project_path_aliases()
+        rows = [{"name": scrub_raw_ids(alias)} for alias in sorted(aliases)]
         page = bound_collection(
-            sorted(aliases.items()),
+            rows,
             limit=effective_limit,
         )
-        shown_aliases = dict(page.items)
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
                     {
-                        "aliases": shown_aliases,
+                        "items": page.items,
                         **page.metadata(),
                     }
                 )
             )
             return
-        if not shown_aliases:
+        if not page.items:
             click.echo("No project path aliases found.")
             return
-        for alias, remote_path in page.items:
-            click.echo(f"  {scrub_raw_ids(alias)}  {scrub_raw_ids(remote_path)}")
+        for item in page.items:
+            click.echo(item["name"])
         notice = truncation_notice(page)
         if notice:
             click.echo(notice)
@@ -93,17 +97,17 @@ def list_path_aliases(ctx: Context, limit: int | None, show_all: bool) -> None:
 
 
 @click.command("show")
-@click.argument("alias")
+@click.argument("alias", metavar="ALIAS")
 @pass_context
 def show_path_alias(ctx: Context, alias: str) -> None:
-    """Show one project-level remote path alias."""
+    """Reveal the remote path stored for one alias."""
     try:
         _config_path, aliases = load_project_path_aliases()
         resolved_alias, remote_path = _resolve_alias(alias, aliases)
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"alias": resolved_alias, "path": remote_path}
+                    {"name": scrub_raw_ids(resolved_alias), "path": scrub_raw_ids(remote_path)}
                 )
             )
             return
@@ -114,8 +118,8 @@ def show_path_alias(ctx: Context, alias: str) -> None:
 
 
 @click.command("set")
-@click.argument("alias")
-@click.argument("remote_path")
+@click.argument("alias", metavar="ALIAS")
+@click.argument("remote_path", metavar="REMOTE_PATH")
 @pass_context
 def set_path_alias(ctx: Context, alias: str, remote_path: str) -> None:
     """Create or replace a project-level remote path alias."""
@@ -124,33 +128,45 @@ def set_path_alias(ctx: Context, alias: str, remote_path: str) -> None:
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"alias": alias, "path": remote_path, "status": "saved"}
+                    {
+                        "name": scrub_raw_ids(alias),
+                        "status": "saved",
+                    }
                 )
             )
             return
-        click.echo(f"Path alias '{scrub_raw_ids(alias)}' = {scrub_raw_ids(remote_path)}")
+        click.echo(format_mutation_success("Path alias", "saved", alias))
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 
 
 @click.command("delete")
-@click.argument("alias")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation.")
+@click.argument("alias", metavar="ALIAS")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
 @pass_context
 def delete_path_alias(ctx: Context, alias: str, yes: bool) -> None:
     """Delete one project-level remote path alias."""
     try:
-        if not yes and not ctx.json_output:
-            click.confirm(f"Delete path alias '{scrub_raw_ids(alias)}'?", abort=True)
+        require_confirmation(
+            ctx,
+            yes=yes,
+            prompt=f"Delete path alias '{scrub_raw_ids(alias)}'?",
+            message="Path alias deletion requires confirmation.",
+        )
         delete_project_path_alias(alias)
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
-                    {"alias": alias, "status": "deleted"}
+                    {"name": scrub_raw_ids(alias), "status": "deleted"}
                 )
             )
             return
-        click.echo(f"Deleted path alias: {scrub_raw_ids(alias)}")
+        click.echo(format_mutation_success("Path alias", "deleted", alias))
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 

@@ -49,11 +49,10 @@ def _event() -> dict:
 def test_events_json_projects_only_public_diagnostics() -> None:
     @click.command()
     def command() -> None:
+        ctx = Context()
+        ctx.json_output = True
         emit_events(
-            ctx_json=True,
-            local_json=False,
-            resource_type="job",
-            resource_name="train",
+            ctx=ctx,
             events=[_event()],
         )
 
@@ -62,8 +61,7 @@ def test_events_json_projects_only_public_diagnostics() -> None:
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["data"] == {
-        "name": "train",
-        "events": [
+        "items": [
             {
                 "time": "recent",
                 "type": "Warning",
@@ -74,7 +72,7 @@ def test_events_json_projects_only_public_diagnostics() -> None:
         ],
     }
     assert _RAW_JOB_ID not in result.output
-    event = payload["data"]["events"][0]
+    event = payload["data"]["items"][0]
     for field in ("object_id", "object_type", "source", "raw", "result", "from"):
         assert field not in event
 
@@ -135,13 +133,9 @@ def test_events_json_fetch_failure_is_one_actionable_error() -> None:
         ctx.json_output = True
         run_events_command(
             ctx,
-            resource_id="internal",
-            resource_type="job",
-            resource_name="train",
             fetch=lambda: (_ for _ in ()).throw(
                 RuntimeError("request failed for job-12345678-1234-1234-1234-123456789abc")
             ),
-            json_output_local=False,
             type_filter=None,
             reason_filter=None,
         )
@@ -167,14 +161,10 @@ def test_events_default_output_is_bounded() -> None:
         ctx.json_output = True
         run_events_command(
             ctx,
-            resource_id="internal",
-            resource_type="job",
-            resource_name="train",
             fetch=lambda: [
                 {"message": f"event-{index}", "timestamp": str(index)}
                 for index in range(45)
             ],
-            json_output_local=False,
             type_filter=None,
             reason_filter=None,
         )
@@ -183,10 +173,14 @@ def test_events_default_output_is_bounded() -> None:
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    events = payload["data"]["events"]
+    data = payload["data"]
+    events = data["items"]
     assert len(events) == 20
     assert events[0]["message"] == "event-25"
     assert events[-1]["message"] == "event-44"
+    assert data["shown"] == 20
+    assert data["total"] == 45
+    assert data["truncated"] is True
 
 
 def test_events_explicit_tail_preserves_requested_window_and_content() -> None:
@@ -212,14 +206,10 @@ def test_events_command_explicit_tail_can_exceed_default() -> None:
         ctx.json_output = True
         run_events_command(
             ctx,
-            resource_id="internal",
-            resource_type="job",
-            resource_name="train",
             fetch=lambda: [
                 {"message": f"event-{index}", "timestamp": str(index)}
                 for index in range(45)
             ],
-            json_output_local=False,
             type_filter=None,
             reason_filter=None,
             tail=30,
@@ -228,9 +218,13 @@ def test_events_command_explicit_tail_can_exceed_default() -> None:
     result = CliRunner().invoke(command)
 
     assert result.exit_code == 0, result.output
-    events = json.loads(result.output)["data"]["events"]
+    data = json.loads(result.output)["data"]
+    events = data["items"]
     assert len(events) == 30
     assert events[0]["message"] == "event-15"
+    assert data["shown"] == 30
+    assert data["total"] == 45
+    assert data["truncated"] is True
 
 
 def test_follow_event_deduplication_window_is_bounded() -> None:
@@ -264,8 +258,8 @@ def test_notebook_events_fetch_runs_through_stale_retry(
     monkeypatch.setattr(notebook_cli_module, "get_base_url", lambda: "https://example.invalid")
     monkeypatch.setattr(
         workspace_module,
-        "resolve_workspace_query_scope",
-        lambda *_args, **_kwargs: (["ws-live"], "ws-live"),
+        "resolve_workspace_operation_scope",
+        lambda *_args, **_kwargs: "ws-live",
     )
 
     def fake_retry(*_args, operation, **kwargs):  # noqa: ANN001
@@ -293,11 +287,14 @@ def test_notebook_events_fetch_runs_through_stale_retry(
             "demo-notebook",
             "--workspace",
             "CPU资源空间",
+            "--pick",
+            "2",
         ],
     )
 
     assert result.exit_code == 0, result.output
     assert seen["identifier"] == "demo-notebook"
     assert seen["workspace_ids"] == ["ws-live"]
+    assert seen["pick"] == 2
     assert fetched_handles == ["notebook-live"]
     assert "notebook-live" not in result.output

@@ -24,7 +24,6 @@ from inspire.accounts import (
 )
 from inspire.cli.commands.account.add import (
     DEFAULT_BASE_URL,
-    EXAMPLE_PROXY,
     _render_config as _render_account_config,
 )
 from inspire.cli.env_bootstrap import write_shared_project_env_file
@@ -93,8 +92,6 @@ def _bootstrap_first_account_if_needed(
         )
 
     ensure_inspire_home()
-    click.echo("No active account configured. Creating the first account.\n")
-
     while True:
         raw_name = click.prompt(
             "Account alias",
@@ -114,7 +111,7 @@ def _bootstrap_first_account_if_needed(
 
     if cli_username is None:
         username = click.prompt(
-            "Platform login username (login ID, not display name)",
+            "Platform login name (not display name)",
             default=account_name,
             show_default=True,
         )
@@ -139,10 +136,6 @@ def _bootstrap_first_account_if_needed(
     else:
         base_url = cli_base_url
 
-    click.echo(
-        "Proxy must reach BOTH the public internet and *.sii.edu.cn. "
-        f"Example if your Clash mixed port is 7897: {EXAMPLE_PROXY}"
-    )
     proxy = click.prompt(
         "Proxy URL (leave empty for none)",
         default="",
@@ -197,20 +190,23 @@ def _bootstrap_first_account_if_needed(
     "--username",
     "-u",
     default=None,
+    metavar="LOGIN",
     help=(
-        "Platform login username, such as phone, student ID, or email "
+        "Platform login name, such as phone number, student number, or email "
         "(not the display name). Used by discovery."
     ),
 )
 @click.option(
     "--base-url",
     default=None,
+    metavar="URL",
     help="Platform base URL (prompted if not configured). Used by discovery.",
 )
 @click.option(
     "--select-project",
     "select_project_name",
     default=None,
+    metavar="NAME",
     help=(
         "Pick a project explicitly by name (skips the interactive "
         "prompt and the platform-heuristic guess). Used by discovery."
@@ -219,6 +215,7 @@ def _bootstrap_first_account_if_needed(
 @click.option(
     "--env-file",
     default=None,
+    metavar="PATH",
     help="Register a repo-wide dotenv file in shared project config (project scope only).",
 )
 @pass_context
@@ -338,14 +335,12 @@ def init(
                 cli_base_url=base_url,
                 cli_select_project=select_project_name,
                 non_interactive=non_interactive,
-                verbose=ctx.debug,
             )
             env_file_config_path = _register_env_file()
             if env_file_config_path is not None and env_file_config_path not in discover_target_paths:
                 discover_target_paths.append(env_file_config_path)
 
             emit_init_result(
-                scope=scope_value,
                 target_paths=discover_target_paths,
                 before=before,
                 warnings=warnings,
@@ -366,14 +361,12 @@ def init(
                 global_flag,
                 project_flag,
                 force,
-                verbose=ctx.debug,
             )
             env_file_config_path = _register_env_file()
             target_paths = [global_path] if global_flag else [project_path]
             if env_file_config_path is not None and env_file_config_path not in target_paths:
                 target_paths.append(env_file_config_path)
             emit_init_result(
-                scope=scope_value,
                 target_paths=target_paths,
                 before=before,
                 warnings=warnings,
@@ -393,14 +386,6 @@ def init(
                     raise ValueError(
                         "Non-interactive init requires --force to overwrite configuration."
                     )
-                if (
-                    not (global_flag or project_flag)
-                    and (global_path.exists() or project_path.exists())
-                ):
-                    raise ValueError(
-                        "Non-interactive init requires --force for auto-split overwrites."
-                    )
-
             run_init_action(
                 _init_smart_mode,
                 effective_json,
@@ -408,7 +393,6 @@ def init(
                 global_flag,
                 project_flag,
                 force,
-                verbose=ctx.debug,
             )
             target_paths = []
             if global_flag:
@@ -417,19 +401,10 @@ def init(
             elif project_flag:
                 has_project = any(opt.scope == "project" for opt, _ in detected)
                 target_paths = [project_path] if has_project else []
-            else:
-                has_global = any(opt.scope == "global" for opt, _ in detected)
-                has_project = any(opt.scope == "project" for opt, _ in detected)
-                target_paths = []
-                if has_global:
-                    target_paths.append(global_path)
-                if has_project:
-                    target_paths.append(project_path)
             env_file_config_path = _register_env_file()
             if env_file_config_path is not None and env_file_config_path not in target_paths:
                 target_paths.append(env_file_config_path)
             emit_init_result(
-                scope=scope_value,
                 target_paths=target_paths,
                 before=before,
                 warnings=warnings,
@@ -449,14 +424,12 @@ def init(
             global_flag,
             project_flag,
             force,
-            verbose=ctx.debug,
         )
         env_file_config_path = _register_env_file()
         target_paths = [global_path] if global_flag else [project_path]
         if env_file_config_path is not None and env_file_config_path not in target_paths:
             target_paths.append(env_file_config_path)
         emit_init_result(
-            scope=scope_value,
             target_paths=target_paths,
             before=before,
             warnings=warnings,

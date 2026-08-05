@@ -20,6 +20,7 @@ from inspire.cli.utils.resource_index import (
 from inspire.platform.web import browser_api as browser_api_module
 
 _WORKSPACE_ID = "ws-00000000-0000-0000-0000-0000000000aa"
+_SECOND_WORKSPACE_ID = "ws-00000000-0000-0000-0000-0000000000bb"
 
 
 class _FakeSession:
@@ -257,6 +258,7 @@ def test_ssh_keys_add_validates_and_uses_content(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert calls == {"name": "main-key", "content": _valid_public_key()}
+    assert result.output == "OK SSH key created: main-key\n"
     assert "ssh-12345678" not in result.output
 
 
@@ -355,8 +357,43 @@ def test_ssh_keys_delete_resolves_by_name(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert calls["ssh_id"] == "ssh-12345678-1234-1234-1234-123456789abc"
-    assert "main-key" in result.output
+    assert result.output == "OK SSH key deleted: main-key\n"
     assert "ssh-12345678" not in result.output
+
+
+def test_ssh_keys_delete_forwards_pick(monkeypatch) -> None:
+    _patch_session(monkeypatch)
+    seen: list[int | None] = []
+    monkeypatch.setattr(
+        user_cmd_module,
+        "_resolve_ssh_key_by_name",
+        lambda _ctx, _name, *, session, pick=None, require_live=False: (
+            seen.append(pick)
+            or {"name": "main-key", "ssh_id": "ssh-internal"}
+        ),
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "delete_user_ssh_key",
+        lambda *_args, **_kwargs: {},
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "user",
+            "ssh-keys",
+            "delete",
+            "main-key",
+            "--pick",
+            "2",
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == [2]
+    assert "ssh-internal" not in result.output
 
 
 def test_ssh_keys_delete_tombstones_cached_identity(monkeypatch, tmp_path) -> None:
@@ -491,11 +528,12 @@ def test_whoami_json_projects_public_identity_fields(monkeypatch) -> None:
         "get_current_user",
         lambda **_: {
             "id": "user-12345678-1234-1234-1234-123456789abc",
-            "name": "Ada",
+            "display_name": "Ada",
+            "username": "253108120116",
             "email": "ada@example.com",
             "global_role": "member",
             "extra_info": {
-                "login_name": "ada",
+                "login_name": "usr_391",
                 "workspace_id": _WORKSPACE_ID,
                 "debug": "drop",
             },
@@ -508,10 +546,48 @@ def test_whoami_json_projects_public_identity_fields(monkeypatch) -> None:
     assert result.exit_code == 0
     assert json.loads(result.output)["data"] == {
         "name": "Ada",
-        "login": "ada",
         "role": "member",
         "email": "ada@example.com",
     }
+
+    human = CliRunner().invoke(cli_main, ["user", "whoami"])
+    assert human.exit_code == 0
+    assert human.output.splitlines() == [
+        "Name: Ada",
+        "Role: member",
+        "Email: ada@example.com",
+    ]
+
+
+@pytest.mark.parametrize(
+    "login_value",
+    ("user-hidden", "usr_391", "student-42", "253108120116"),
+)
+def test_whoami_never_uses_login_identifiers_as_name(
+    monkeypatch,
+    login_value: str,
+) -> None:
+    _patch_session(monkeypatch)
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_current_user",
+        lambda **_: {
+            "username": login_value,
+            "login_name": login_value,
+            "global_role": "member",
+        },
+    )
+
+    result = CliRunner().invoke(cli_main, ["--json", "user", "whoami"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["data"] == {"role": "member"}
+    assert login_value not in result.output
+
+    human = CliRunner().invoke(cli_main, ["user", "whoami"])
+    assert human.exit_code == 0
+    assert human.output.splitlines() == ["Role: member"]
+    assert login_value not in human.output
 
 
 def test_user_quota_json_drops_ids_and_engineering_fields(monkeypatch) -> None:
@@ -620,7 +696,7 @@ def test_user_quota_bounds_long_scalar_lists(monkeypatch) -> None:
     assert data["truncated"] is True
 
 
-def test_user_permissions_json_uses_workspace_name(monkeypatch) -> None:
+def test_user_permissions_json_returns_name_only_permissions(monkeypatch) -> None:
     _patch_session(monkeypatch)
     monkeypatch.setattr(
         user_cmd_module.Config,
@@ -648,9 +724,16 @@ def test_user_permissions_json_uses_workspace_name(monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     assert captured["workspace_id"] == _WORKSPACE_ID
     assert json.loads(result.output)["data"] == {
-        "workspace": "Default WS",
-        "permissions": ["job.create", "job.read"],
+        "items": ["job.create", "job.read"],
     }
+
+
+def test_user_permissions_workspace_metavar_accepts_name_or_all() -> None:
+    result = CliRunner().invoke(cli_main, ["user", "permissions", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--workspace NAME|all" in result.output
+    assert "--workspace TEXT" not in result.output
 
 
 def test_user_permissions_default_json_is_bounded(monkeypatch) -> None:
@@ -685,8 +768,7 @@ def test_user_permissions_default_json_is_bounded(monkeypatch) -> None:
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)["data"]
     assert data == {
-        "workspace": "Default WS",
-        "permissions": [f"permission.{index:02d}" for index in range(20)],
+        "items": [f"permission.{index:02d}" for index in range(20)],
         "shown": 20,
         "total": 25,
         "truncated": True,
@@ -725,8 +807,76 @@ def test_user_permissions_all_is_unbounded_without_metadata(monkeypatch) -> None
 
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)["data"]
-    assert len(data["permissions"]) == 25
-    assert set(data) == {"workspace", "permissions"}
+    assert len(data["items"]) == 25
+    assert set(data) == {"items"}
+
+
+def test_user_permissions_workspace_all_fans_out_with_workspace_names(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    class _AllWorkspaceSession:
+        workspace_id = _WORKSPACE_ID
+        all_workspace_ids = [_WORKSPACE_ID, _SECOND_WORKSPACE_ID]
+        all_workspace_names = {
+            _WORKSPACE_ID: "Default WS",
+            _SECOND_WORKSPACE_ID: "Research WS",
+        }
+
+    monkeypatch.setattr(
+        user_cmd_module,
+        "get_web_session",
+        lambda: _AllWorkspaceSession(),
+    )
+    monkeypatch.setattr(
+        user_cmd_module.Config,
+        "from_files_and_env",
+        classmethod(
+            lambda cls, **_: (
+                user_cmd_module.Config(username="user", password="pass"),
+                {},
+            )
+        ),
+    )
+    calls: list[str] = []
+
+    def fake_permissions(*, workspace_id, session=None):  # noqa: ANN001,ARG001
+        calls.append(workspace_id)
+        if workspace_id == _WORKSPACE_ID:
+            return ["job.read", "job.create", "job.read"]
+        return ["serving.read"]
+
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_user_permissions",
+        fake_permissions,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "user", "permissions", "--workspace", "all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [_WORKSPACE_ID, _SECOND_WORKSPACE_ID]
+    assert json.loads(result.output)["data"] == {
+        "items": [
+            {"workspace": "Default WS", "permission": "job.create"},
+            {"workspace": "Default WS", "permission": "job.read"},
+            {"workspace": "Research WS", "permission": "serving.read"},
+        ]
+    }
+    assert _WORKSPACE_ID not in result.output
+    assert _SECOND_WORKSPACE_ID not in result.output
+
+    human = CliRunner().invoke(
+        cli_main,
+        ["user", "permissions", "--workspace", "all"],
+    )
+    assert human.exit_code == 0, human.output
+    assert "Default WS: job.create" in human.output
+    assert "Research WS: serving.read" in human.output
+    assert _WORKSPACE_ID not in human.output
+    assert _SECOND_WORKSPACE_ID not in human.output
 
 
 @pytest.mark.parametrize(

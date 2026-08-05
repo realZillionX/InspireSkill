@@ -292,11 +292,18 @@ def test_job_instances_requires_workspace_and_uses_limit(monkeypatch) -> None:  
         return (
             [
                 {
+                    "instance_id": "job-abc-worker-deadbeef",
                     "name": "worker-0",
                     "instance_status": "instance_running",
                     "instance_type": "worker",
                     "node": "node-a",
                     "created_at": 0,
+                    "resource_spec": {
+                        "cpu_count": 4,
+                        "memory_size_gib": 32,
+                        "gpu_count": 1,
+                    },
+                    "backend": "browser",
                 }
             ],
             1,
@@ -315,12 +322,12 @@ def test_job_instances_requires_workspace_and_uses_limit(monkeypatch) -> None:  
         [
             "job",
             "instances",
-                "train-a",
-                "--workspace",
-                "分布式训练空间",
-                "--limit",
-                "42",
-            ],
+            "train-a",
+            "--workspace",
+            "分布式训练空间",
+            "--limit",
+            "42",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -330,7 +337,14 @@ def test_job_instances_requires_workspace_and_uses_limit(monkeypatch) -> None:  
     assert captured["resolve"]["scan_limit"] == 42
     assert captured["list"]["job_id"] == "job-abc"
     assert captured["list"]["limit"] == 42
+    assert result.output.splitlines()[0].lstrip().startswith("Name")
     assert "worker-0" in result.output
+    assert "4 CPU, 32 GiB, 1 GPU" in result.output
+    assert "Job Instances" not in result.output
+    assert "Total:" not in result.output
+    assert "job-abc-worker-deadbeef" not in result.output
+    assert "node-a" not in result.output
+    assert "backend" not in result.output
 
 
 def test_job_instances_json_uses_rank_when_platform_only_returns_handle(
@@ -368,10 +382,11 @@ def test_job_instances_json_uses_rank_when_platform_only_returns_handle(
     )
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    instance = payload["data"]["instances"][0]
-    assert instance["rank"] == 3
-    assert "instance_id" not in instance
+    payload = json.loads(result.output)["data"]
+    assert payload == {
+        "name": "train-a",
+        "items": [{"type": "worker", "rank": 3}],
+    }
     assert "internal-instance-handle" not in result.output
 
 
@@ -428,10 +443,12 @@ def test_job_instances_default_budget_keeps_resolution_window_and_notifies(
     )
     assert json_result.exit_code == 0, json_result.output
     metadata = json.loads(json_result.output)["data"]
+    assert metadata["name"] == "train-a"
+    assert len(metadata["items"]) == 20
     assert metadata["shown"] == 20
     assert metadata["total"] == 25
     assert metadata["truncated"] is True
-    assert metadata["limit"] == 20
+    assert "limit" not in metadata
 
 
 def test_job_instances_all_expands_once_and_conflict_is_rejected(
@@ -478,10 +495,10 @@ def test_job_instances_all_expands_once_and_conflict_is_rejected(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)["data"]
     assert calls == [20, 25]
-    assert len(payload["instances"]) == 25
-    assert payload["total"] == 25
-    assert "truncated" not in payload
-    assert all("instance_id" not in item for item in payload["instances"])
+    assert set(payload) == {"name", "items"}
+    assert payload["name"] == "train-a"
+    assert len(payload["items"]) == 25
+    assert all(set(item) <= {"name", "status", "role", "type", "resource", "rank"} for item in payload["items"])
     assert "job-abc-worker" not in result.output
 
     monkeypatch.setattr(
@@ -523,7 +540,6 @@ def test_resolve_web_job_id_pick_selects_matching_job(monkeypatch) -> None:  # n
     monkeypatch.setattr(job_commands, "_list_web_jobs", fake_list_web_jobs)
 
     job_id = job_commands._resolve_web_job_id(
-        config=object(),
         job="train-a",
         workspace=None,
         all_workspaces=True,
@@ -564,7 +580,6 @@ def test_resolve_web_job_id_allows_job_prefixed_human_name(monkeypatch) -> None:
     monkeypatch.setattr(job_commands, "_list_web_jobs", fake_list_web_jobs)
 
     job_id = job_commands._resolve_web_job_id(
-        config=object(),
         job=job_name,
         workspace=None,
         all_workspaces=True,
@@ -623,7 +638,6 @@ def test_resolve_web_job_id_clear_during_live_lookup_does_not_repopulate_cache(
     monkeypatch.setattr(job_commands, "_list_web_jobs", _live_jobs)
 
     job_id = job_commands._resolve_web_job_id(
-        config=object(),
         job="train-a",
         workspace="CPU",
         all_workspaces=False,
@@ -687,7 +701,6 @@ def test_resolve_web_job_id_snapshot_failure_skips_live_cache_write(
     )
 
     job_id = job_commands._resolve_web_job_id(
-        config=object(),
         job="train-a",
         workspace="CPU",
         all_workspaces=False,
@@ -715,7 +728,7 @@ def test_job_shell_command_rejects_job_id_boundary(monkeypatch) -> None:  # noqa
     )
 
     assert result.exit_code != 0
-    assert "take a job name" in result.output
+    assert "only accept job names" in result.output
 
 
 class _FakeSocket:

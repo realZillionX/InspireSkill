@@ -115,7 +115,6 @@ def test_init_defaults_to_discover_mode_with_active_account(
     assert calls["force"] is True
     assert calls["kwargs"]["scope"] == "global"
     assert calls["kwargs"]["non_interactive"] is True
-    assert calls["kwargs"]["verbose"] is False
 
 
 def test_init_bootstraps_first_account_before_discover(
@@ -147,7 +146,6 @@ def test_init_bootstraps_first_account_before_discover(
     )
 
     assert result.exit_code == EXIT_SUCCESS, result.output
-    assert "Creating the first account" in result.output
     assert "Active account: zillionx" in result.output
     assert calls["func"] is init_cmd_module._init_discover_mode
     assert calls["kwargs"]["scope"] == "global"
@@ -211,7 +209,7 @@ def test_discover_relogin_confirms_configured_username(
 
     def fake_prompt(text: str, **kwargs):  # noqa: ANN001
         prompts.append((text, kwargs.get("default")))
-        if text.startswith("Platform login username"):
+        if text.startswith("Platform login name"):
             return "253108120116"
         if text == "Password":
             return "secret"
@@ -229,7 +227,7 @@ def test_discover_relogin_confirms_configured_username(
     assert username == "253108120116"
     assert password == "secret"
     assert base_url == "https://qz.sii.edu.cn"
-    assert prompts[0] == ("Platform login username (login ID, not display name)", "仝")
+    assert prompts[0] == ("Platform login name (not display name)", "仝")
 
 
 def test_discover_relogin_ignores_template_username(
@@ -248,7 +246,7 @@ def test_discover_relogin_ignores_template_username(
 
     def fake_prompt(text: str, **kwargs):  # noqa: ANN001
         prompts.append((text, kwargs.get("default")))
-        if text.startswith("Platform login username"):
+        if text.startswith("Platform login name"):
             return "253108120116"
         if text == "Password":
             return "secret"
@@ -266,7 +264,7 @@ def test_discover_relogin_ignores_template_username(
     assert username == "253108120116"
     assert password == "secret"
     assert base_url == "https://qz.sii.edu.cn"
-    assert prompts[0] == ("Platform login username (login ID, not display name)", None)
+    assert prompts[0] == ("Platform login name (not display name)", None)
 
 
 def test_discover_non_interactive_credentials_never_prompt(
@@ -485,14 +483,12 @@ def test_discover_runtime_retries_configured_login_after_browser_repair(
 
 def test_persist_prompted_credentials_updates_auth_username() -> None:
     global_data = {
-        "auth": {"username": "仝"},
+        "auth": {"username": "仝", "password": "old-secret"},
         "api": {"base_url": "https://qz.sii.edu.cn"},
     }
-    account_section = {"password": "old-secret"}
 
     discover_module._persist_prompted_credentials(
         global_data=global_data,
-        account_section=account_section,
         prompted_credentials=(
             "253108120116",
             "new-secret",
@@ -503,7 +499,6 @@ def test_persist_prompted_credentials_updates_auth_username() -> None:
     assert global_data["auth"]["username"] == "253108120116"
     assert global_data["auth"]["password"] == "new-secret"
     assert global_data["api"]["base_url"] == "https://qz.sii.edu.cn"
-    assert "password" not in account_section
 
 
 @pytest.mark.parametrize(
@@ -523,90 +518,6 @@ def test_looks_like_project_handle_uses_platform_handle_shape(
     expected: bool,
 ) -> None:
     assert discover_module._looks_like_project_handle(value) is expected
-
-
-def test_build_project_aliases_preserves_project_prefixed_human_name() -> None:
-    aliases, alias_for_id = discover_module._build_project_aliases(
-        [],
-        existing={"project-alpha-2026": "project-alpha-2026"},
-    )
-
-    assert aliases == {"project-alpha-2026": "project-alpha-2026"}
-    assert alias_for_id == {}
-
-
-def test_build_project_aliases_migrates_legacy_id_to_live_name() -> None:
-    projects = [
-        SimpleNamespace(
-            project_id="project-a1b2c3d4",
-            name="模型项目",
-        )
-    ]
-
-    aliases, alias_for_id = discover_module._build_project_aliases(
-        projects,
-        existing={"production": "project-deadbeef"},
-    )
-
-    assert aliases == {"模型项目": "模型项目"}
-    assert alias_for_id == {"project-a1b2c3d4": "模型项目"}
-    assert "project-deadbeef" not in json.dumps(aliases, ensure_ascii=False)
-    assert "project-a1b2c3d4" not in json.dumps(aliases, ensure_ascii=False)
-
-
-def test_build_project_aliases_preserves_legacy_alias_when_catalog_name_is_live() -> None:
-    projects = [
-        SimpleNamespace(
-            project_id="project-a1b2c3d4",
-            name="模型项目",
-        )
-    ]
-
-    aliases, alias_for_id = discover_module._build_project_aliases(
-        projects,
-        existing={"production": "模型项目"},
-    )
-
-    assert aliases == {"production": "模型项目"}
-    assert alias_for_id == {"project-a1b2c3d4": "production"}
-
-
-def test_build_project_aliases_uses_legacy_catalog_to_migrate_stale_id() -> None:
-    projects = [
-        SimpleNamespace(
-            project_id="project-a1b2c3d4",
-            name="模型项目",
-        )
-    ]
-
-    aliases, alias_for_id = discover_module._build_project_aliases(
-        projects,
-        existing={"production": "project-deadbeef"},
-        existing_catalog={"project-deadbeef": {"name": "模型项目"}},
-    )
-
-    assert aliases == {"production": "模型项目"}
-    assert alias_for_id == {"project-a1b2c3d4": "production"}
-    serialized = json.dumps(aliases, ensure_ascii=False)
-    assert "project-deadbeef" not in serialized
-    assert "project-a1b2c3d4" not in serialized
-
-
-def test_build_project_aliases_replaces_handle_shaped_alias_with_name() -> None:
-    projects = [
-        SimpleNamespace(
-            project_id="project-a1b2c3d4",
-            name="模型项目",
-        )
-    ]
-
-    aliases, alias_for_id = discover_module._build_project_aliases(
-        projects,
-        existing={"project-deadbeef": "模型项目"},
-    )
-
-    assert aliases == {"模型项目": "模型项目"}
-    assert alias_for_id == {"project-a1b2c3d4": "模型项目"}
 
 
 def test_merge_compute_groups_strips_ids_and_persists_workspace_names() -> None:
@@ -654,7 +565,7 @@ def test_merge_compute_groups_strips_ids_and_persists_workspace_names() -> None:
 
 
 def test_persist_compute_groups_refreshes_successful_workspaces_and_preserves_failed() -> None:
-    project_data = {
+    global_data = {
         "compute_groups": [
             {
                 "name": "已删除资源组",
@@ -668,21 +579,9 @@ def test_persist_compute_groups_refreshes_successful_workspaces_and_preserves_fa
             },
         ]
     }
-    global_data = {
-        "compute_groups": [
-            {
-                "id": "lcg-global-old",
-                "name": "旧全局资源组",
-                "workspace_ids": ["ws-global-old"],
-            }
-        ]
-    }
 
     discover_module._persist_compute_groups(
-        project_data=project_data,
-        project_account_section={},
         global_data=global_data,
-        global_account_section={},
         compute_groups=[
             {
                 "name": "新资源组",
@@ -690,11 +589,10 @@ def test_persist_compute_groups_refreshes_successful_workspaces_and_preserves_fa
                 "workspace_names": ["训练空间"],
             }
         ],
-        workspace_names_by_id={"ws-global-old": "旧空间"},
         failed_workspace_names={"容灾空间"},
     )
 
-    assert project_data["compute_groups"] == [
+    assert global_data["compute_groups"] == [
         {
             "name": "新资源组",
             "gpu_type": "H100",
@@ -706,11 +604,8 @@ def test_persist_compute_groups_refreshes_successful_workspaces_and_preserves_fa
             "workspace_names": ["容灾空间"],
         },
     ]
-    assert "compute_groups" not in global_data
-    serialized = json.dumps(project_data, ensure_ascii=False)
+    serialized = json.dumps(global_data, ensure_ascii=False)
     assert "已删除资源组" not in serialized
-    assert "lcg-global-old" not in serialized
-    assert "ws-global-old" not in serialized
 
 
 def test_discover_compute_groups_returns_name_only_records() -> None:
@@ -768,7 +663,6 @@ def test_init_json_report_only_emits_result_and_changed_configs(
     config_path.write_text("[projects]\nproduction = \"模型项目\"\n", encoding="utf-8")
 
     json_report_module.emit_init_result(
-        scope="global",
         target_paths=[config_path],
         before=before,
         warnings=[],
@@ -778,13 +672,5 @@ def test_init_json_report_only_emits_result_and_changed_configs(
     rendered = capsys.readouterr().out
     parsed = json.loads(rendered)
     payload = parsed.get("data", parsed)
-    assert payload == {
-        "status": "updated",
-        "scope": "global",
-    }
-    assert "detected_env_count" not in payload
-    assert "secret_env_count" not in payload
-    assert "next_steps" not in payload
-    assert "discover" not in payload
-    assert "scanned" not in payload
+    assert payload == {"status": "updated"}
     assert str(tmp_path) not in rendered

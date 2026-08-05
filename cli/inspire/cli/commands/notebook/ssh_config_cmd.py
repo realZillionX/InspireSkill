@@ -12,12 +12,17 @@ import click
 from inspire.bridge.tunnel import BridgeProfile, load_tunnel_config
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, pass_context
 from inspire.cli.formatters import human_formatter, json_formatter
-from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
 from .notebook_ssh_flow import run_notebook_ssh
 from .public_output import sanitize_public_text
-from .target_resolver import NotebookConnectionTarget, resolve_cached_notebook_target
+from .target_resolver import (
+    NOTEBOOK_TARGET_WORKSPACE_HELP,
+    NotebookConnectionTarget,
+    resolve_cached_notebook_target,
+    validate_specific_workspace,
+)
 from .transport import emit_ssh_policy_error, preflight_notebook_transport_policy
 
 
@@ -47,6 +52,7 @@ def _load_cached_target(
     workspace: str | None,
     account: str | None,
     ignore_target_cache: bool,
+    pick: int | None,
 ) -> NotebookConnectionTarget | None:
     target = resolve_cached_notebook_target(
         ctx,
@@ -56,6 +62,7 @@ def _load_cached_target(
         ignore_target_cache=ignore_target_cache,
         verify_target_cache=False,
         allow_prompt=not ctx.json_output,
+        pick=pick,
     )
     if target is not None:
         return target
@@ -83,6 +90,7 @@ def _format_ssh_config(
     notebook_name: str,
     bridge: BridgeProfile,
     account: str | None,
+    pick: int | None,
 ) -> str:
     proxy_parts = [
         "inspire",
@@ -94,8 +102,9 @@ def _format_ssh_config(
         proxy_parts.extend(["--account", account])
     if bridge.workspace_name:
         proxy_parts.extend(["--workspace", bridge.workspace_name])
+    if pick is not None:
+        proxy_parts.extend(["--pick", str(pick)])
     proxy_parts.extend(["--port", "%p"])
-    proxy_parts.append("--quiet")
     proxy_command = " ".join(shlex.quote(part) for part in proxy_parts)
 
     lines = [
@@ -113,9 +122,21 @@ def _format_ssh_config(
 
 
 @click.command("ssh-config")
-@click.argument("notebook")
-@click.option("--workspace", required=False, help="Workspace name.")
-@click.option("--account", required=False, help="Account name for this notebook target.")
+@click.argument("notebook", metavar="NAME")
+@click.option(
+    "--workspace",
+    required=False,
+    metavar="NAME",
+    callback=validate_specific_workspace,
+    help=NOTEBOOK_TARGET_WORKSPACE_HELP,
+)
+@click.option(
+    "--account",
+    required=False,
+    metavar="NAME",
+    help="Account name for this notebook target.",
+)
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
@@ -155,6 +176,7 @@ def ssh_config_cmd(
     notebook: str,
     workspace: str | None,
     account: str | None,
+    pick: int | None,
     ignore_target_cache: bool,
     host_alias: str | None,
     pubkey: str | None,
@@ -180,6 +202,7 @@ def ssh_config_cmd(
         workspace=workspace,
         account=account,
         ignore_target_cache=ignore_target_cache,
+        pick=pick,
     )
     if target is None:
         policy = preflight_notebook_transport_policy(
@@ -188,6 +211,7 @@ def ssh_config_cmd(
             workspace=workspace,
             account=account,
             timeout=min(setup_timeout, 30),
+            pick=pick,
         )
         if not policy.allow_ssh:
             raise SystemExit(emit_ssh_policy_error(ctx, policy))
@@ -206,6 +230,7 @@ def ssh_config_cmd(
             setup_only=True,
             account=account,
             ignore_target_cache=ignore_target_cache,
+            pick=pick,
         )
         target = _load_cached_target(
             ctx,
@@ -213,6 +238,7 @@ def ssh_config_cmd(
             workspace=workspace,
             account=account,
             ignore_target_cache=True,
+            pick=pick,
         )
 
     if target is None:
@@ -227,23 +253,24 @@ def ssh_config_cmd(
         sys.exit(EXIT_CONFIG_ERROR)
 
     bridge = target.bridge
-    if not bridge.workspace_name:
-        click.echo(
-            "Warning: cached connection has no workspace metadata; "
-            "regenerate with --workspace to make ssh_config stable.",
-            err=True,
-        )
-
     host = host_alias or _default_host_alias(notebook)
     config_text = _format_ssh_config(
         host=host,
         notebook_name=notebook,
         bridge=bridge,
         account=target.account,
+        pick=pick,
     )
     if ctx.json_output:
         click.echo(json_formatter.format_json(config_text))
         return
+
+    if not bridge.workspace_name:
+        click.echo(
+            "Warning: cached connection has no workspace metadata; "
+            "regenerate with --workspace to make ssh_config stable.",
+            err=True,
+        )
 
     click.echo(config_text, nl=False)
     if ctx.debug:

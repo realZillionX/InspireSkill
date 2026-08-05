@@ -240,7 +240,91 @@ def test_install_deps_passes_timeout_to_ssh(monkeypatch: pytest.MonkeyPatch) -> 
     assert calls[0]["timeout"] == 1234
 
 
+def test_install_deps_forwards_pick_to_live_preflight_and_cached_bridge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy_calls: list[dict] = []
+    ssh_calls: list[dict] = []
+    config = TunnelConfig(account="alice")
+    config.add_bridge(
+        BridgeProfile(
+            name="cpu-box-first",
+            notebook_name="cpu-box",
+            notebook_id="nb-first",
+            workspace_name="CPU资源空间",
+            proxy_url="https://proxy.example/first",
+        )
+    )
+    config.add_bridge(
+        BridgeProfile(
+            name="cpu-box-second",
+            notebook_name="cpu-box",
+            notebook_id="nb-second",
+            workspace_name="CPU资源空间",
+            proxy_url="https://proxy.example/second",
+        )
+    )
+
+    def fake_preflight(*_args, **kwargs):  # noqa: ANN001, ANN202
+        policy_calls.append(kwargs)
+        return NotebookTransportPolicy(
+            notebook="cpu-box",
+            notebook_id="nb-second",
+            public_internet=True,
+            reason="test",
+        )
+
+    monkeypatch.setattr(install_deps_module, "preflight_notebook_transport_policy", fake_preflight)
+    loaded_accounts: list[str | None] = []
+
+    def fake_load_tunnel_config(account: str | None = None) -> TunnelConfig:
+        loaded_accounts.append(account)
+        return config
+
+    monkeypatch.setattr(install_deps_module, "load_tunnel_config", fake_load_tunnel_config)
+    monkeypatch.setattr(
+        install_deps_module,
+        "run_ssh_command_streaming",
+        lambda **kwargs: ssh_calls.append(kwargs) or 0,
+    )
+
+    result = CliRunner().invoke(
+        install_deps_cmd,
+        [
+            "cpu-box",
+            "--workspace",
+            "CPU资源空间",
+            "--account",
+            "alice",
+            "--slurm",
+            "--pick",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert policy_calls[0]["workspace"] == "CPU资源空间"
+    assert policy_calls[0]["account"] == "alice"
+    assert policy_calls[0]["pick"] == 2
+    assert loaded_accounts == ["alice"]
+    assert ssh_calls[0]["bridge_name"] == "cpu-box-second"
+    assert ssh_calls[0]["config"] is config
+
+
+def test_install_deps_help_exposes_pick() -> None:
+    result = CliRunner().invoke(cli_main, ["notebook", "install-deps", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--pick INTEGER" in result.output
+    assert (
+        "Pick the Nth candidate (1-indexed) when the name is ambiguous."
+        in " ".join(result.output.split())
+    )
+
+
 def test_install_deps_uses_jupyter_on_restricted_notebook(monkeypatch) -> None:  # noqa: ANN001
+    target_session = object()
+    capture_calls: list[dict] = []
     monkeypatch.setattr(
         install_deps_module,
         "preflight_notebook_transport_policy",
@@ -249,12 +333,16 @@ def test_install_deps_uses_jupyter_on_restricted_notebook(monkeypatch) -> None: 
             notebook_id="nb-123",
             public_internet=False,
             reason="live_probe",
+            session=target_session,
         ),
     )
     monkeypatch.setattr(
         install_deps_module.browser_api_module,
         "run_command_capture_in_notebook",
-        lambda **_k: SimpleNamespace(returncode=0, output="done\n", completed=True, marker="m"),
+        lambda **kwargs: (
+            capture_calls.append(kwargs)
+            or SimpleNamespace(returncode=0, output="done\n", completed=True, marker="m")
+        ),
         raising=False,
     )
 
@@ -262,3 +350,5 @@ def test_install_deps_uses_jupyter_on_restricted_notebook(monkeypatch) -> None: 
 
     assert result.exit_code == 0
     assert "install-deps complete" in result.output
+    assert capture_calls
+    assert capture_calls[0]["session"] is target_session

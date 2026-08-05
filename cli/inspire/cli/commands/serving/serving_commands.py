@@ -17,16 +17,22 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import human_formatter, json_formatter
-from inspire.cli.utils.auth import AuthenticationError
+from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.collection_output import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.errors import (
+    exit_with_error as _handle_error,
+    require_confirmation,
+)
+from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, run_events_command
 from inspire.cli.utils.id_resolver import (
+    NAME_PICK_HELP,
     forget_resource_identity,
+    looks_like_platform_id,
     reject_id_at_boundary,
     remember_resource_identity,
     resolve_by_name,
@@ -41,14 +47,20 @@ from inspire.cli.utils.task_priority import (
 )
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
-from inspire.config.workspaces import select_workspace_id
+from inspire.config.workspaces import (
+    resolve_workspace_query_scope,
+    select_workspace_id,
+    workspace_label,
+    workspace_name_map,
+)
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import get_web_session
+from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 from .public_output import (
     public_configs,
     public_operation,
     public_serving,
+    public_serving_list_item,
     sanitize_public_data,
     sanitize_public_text,
 )
@@ -101,7 +113,6 @@ def _resolve_serving_name(
         name=name,
         resource_type="serving",
         list_candidates=_lister,
-        json_output=ctx.json_output,
         pick_index=pick,
         session=session,
         workspace_id=str(workspace_id or ""),
@@ -111,10 +122,46 @@ def _resolve_serving_name(
     )
 
 
-def _resolve_workspace_id(config: Config, workspace: Optional[str], *, session=None) -> Optional[str]:
+def _resolve_workspace_id(workspace: Optional[str], *, session=None) -> Optional[str]:
     if workspace is None:
         return None
-    return select_workspace_id(config, explicit_workspace_name=workspace, session=session)
+    return select_workspace_id(explicit_workspace_name=workspace, session=session)
+
+
+def _run_readonly_serving_operation(
+    ctx: Context,
+    *,
+    name: str,
+    workspace_id: Optional[str],
+    session,
+    pick: Optional[int],
+    operation,
+):
+    """Run a read-only serving operation and recover one stale cache hit."""
+
+    def _resolve(require_live: bool) -> str:
+        return _resolve_serving_name(
+            ctx,
+            name,
+            workspace_id=workspace_id,
+            pick=pick,
+            require_live=require_live,
+        )
+
+    return run_with_stale_handle_retry(
+        name=name,
+        resolve_cached=lambda: _resolve(False),
+        resolve_live=lambda _name: _resolve(True),
+        operation=lambda serving_id: operation(serving_id, session),
+        invalidate=lambda serving_id: forget_resource_identity(
+            session=session,
+            resource_type="serving",
+            resource_id=serving_id,
+            name=name,
+            workspace_id=str(workspace_id or ""),
+            owner_scope="self",
+        ),
+    )
 
 
 def _created_serving_id(payload: object) -> str:
@@ -175,7 +222,7 @@ def _resolve_project_id(
     )
 
 
-def _resolve_image_for_create(raw: str, *, session, ctx: Context) -> tuple[str, str]:
+def _resolve_image_for_create(raw: str, *, session) -> tuple[str, str]:
     """Resolve a visible image label to the `mirror_id` used by the web UI."""
     raw = (raw or "").strip()
     if not raw:
@@ -205,8 +252,8 @@ def _resolve_image_for_create(raw: str, *, session, ctx: Context) -> tuple[str, 
     raise ConfigError(f"Unknown image: {raw!r}.")
 
 
-def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
-    image_id, _display = _resolve_image_for_create(raw, session=session, ctx=ctx)
+def _resolve_image_id(raw: str, *, session) -> str:
+    image_id, _display = _resolve_image_for_create(raw, session=session)
     return image_id
 
 
@@ -265,7 +312,6 @@ def _resolve_model_for_create(
         name=name,
         resource_type="model",
         list_candidates=lambda: candidates,
-        json_output=ctx.json_output,
         session=session,
         workspace_id=str(workspace_id or ""),
         owner_scope="self",
@@ -281,42 +327,6 @@ def _resolve_model_for_create(
             except ValueError:
                 return model_id, None, item.name
     return model_id, None, name
-
-
-def _serving_model_label(data: dict[str, Any]) -> str:
-    model_payload = data.get("model")
-    if isinstance(model_payload, dict):
-        name = (
-            model_payload.get("name")
-            or model_payload.get("model_name")
-            or data.get("model_name")
-            or data.get("model_display_name")
-        )
-        version = (
-            model_payload.get("version")
-            or model_payload.get("model_version")
-            or data.get("model_version")
-        )
-    else:
-        name = data.get("model_name") or data.get("model_display_name")
-        version = data.get("model_version")
-    if not name:
-        return ""
-    return f"{name} v{version}" if version not in (None, "") else str(name)
-
-
-def _serving_image_label(data: dict[str, Any]) -> str:
-    mirror_payload = data.get("mirror")
-    if isinstance(mirror_payload, dict):
-        name = mirror_payload.get("name") or mirror_payload.get("image_name")
-        version = mirror_payload.get("version")
-        if name and version:
-            return f"{name}:{version}"
-        return str(name or "")
-    image = str(data.get("image") or data.get("image_name") or "").strip()
-    if image.lower().startswith(("http://", "https://", "docker://")):
-        return ""
-    return image
 
 
 def _serving_resource_label(data: dict[str, Any]) -> str:
@@ -355,15 +365,160 @@ def _format_list_rows(rows: list[dict[str, str]], total: int) -> str:
     del total
     if not rows:
         return "No inference servings found."
-    lines: list[str] = []
-    for row in rows:
-        parts = [row["name"], row["status"]]
-        for key in ("model", "replicas", "project", "updated_at"):
-            value = row.get(key) or "-"
-            if value != "-":
-                parts.append(f"{key}={value}")
-        lines.append("  ".join(parts))
-    return "\n".join(lines)
+    columns = [("name", "Name"), ("status", "Status")]
+    columns.extend(
+        (key, label)
+        for key, label in (
+            ("model", "Model"),
+            ("replicas", "Replicas"),
+            ("project", "Project"),
+            ("workspace", "Workspace"),
+            ("updated_at", "Updated"),
+        )
+        if any(row.get(key) not in (None, "", "-") for row in rows)
+    )
+    table_rows = [
+        tuple(row.get(key) or "-" for key, _label in columns)
+        for row in rows
+    ]
+    widths = [
+        column_width(label, [row[index] for row in table_rows], max_width=48)
+        for index, (_key, label) in enumerate(columns)
+    ]
+    rendered = render_table(
+        tuple(label for _key, label in columns),
+        table_rows,
+        widths,
+        line_char="─",
+    )
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+
+
+def _public_serving_instance_text(
+    item: dict[str, Any],
+    *keys: str,
+) -> str:
+    for key in keys:
+        value = item.get(key)
+        if value in (None, "") or isinstance(value, (dict, list, tuple, set)):
+            continue
+        text = scrub_raw_ids(value).strip()
+        if text and "<redacted>" not in text:
+            return text
+    return ""
+
+
+def _serving_instance_rank(item: dict[str, Any], position: int) -> int:
+    for key in ("rank", "instance_rank", "global_rank", "index", "replica_index"):
+        value = item.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if text.isdigit():
+                return int(text)
+    return position
+
+
+def _serving_instance_resource(item: dict[str, Any]) -> str:
+    direct = _public_serving_instance_text(item, "resource")
+    if direct:
+        return direct
+
+    spec = item
+    for key in ("resource_spec", "resource_spec_price", "quota"):
+        candidate = item.get(key)
+        if isinstance(candidate, dict):
+            spec = candidate
+            break
+
+    values = (
+        ("CPU", _public_serving_instance_text(spec, "cpu_count", "cpu")),
+        (
+            "GiB",
+            _public_serving_instance_text(
+                spec,
+                "memory_size_gib",
+                "memory_gib",
+                "memory_size",
+                "memory",
+            ),
+        ),
+        ("GPU", _public_serving_instance_text(spec, "gpu_count", "gpu")),
+    )
+    return ", ".join(f"{value} {unit}" for unit, value in values if value)
+
+
+def _public_serving_instances(
+    instances: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    for position, raw in enumerate(instances):
+        item: dict[str, Any] = {}
+        name = _public_serving_instance_text(
+            raw,
+            "name",
+            "instance_name",
+            "display_name",
+        )
+        if name and not looks_like_platform_id(name):
+            item["name"] = name
+
+        for key, candidates in (
+            ("status", ("status", "instance_status", "phase", "state")),
+            ("role", ("role", "instance_type", "component")),
+            ("type", ("type",)),
+        ):
+            value = _public_serving_instance_text(raw, *candidates)
+            if value:
+                item[key] = value
+
+        resource = _serving_instance_resource(raw)
+        if resource:
+            item["resource"] = resource
+        item["rank"] = _serving_instance_rank(raw, position)
+        projected.append(item)
+    return projected
+
+
+def _format_serving_instances(instances: list[dict[str, Any]]) -> str:
+    """Render projected serving instances as a compact table."""
+    if not instances:
+        return "No serving instances found."
+
+    columns = [("name", "Name"), ("status", "Status")]
+    columns.extend(
+        (key, label)
+        for key, label in (
+            ("role", "Role"),
+            ("type", "Type"),
+            ("resource", "Resource"),
+            ("rank", "Rank"),
+        )
+        if any(item.get(key) not in (None, "") for item in instances)
+    )
+    table_rows = [
+        tuple(
+            (
+                item.get("name")
+                or f"rank={item.get('rank')}"
+                if key == "name"
+                else item.get(key, "-")
+            )
+            for key, _ in columns
+        )
+        for item in instances
+    ]
+    widths = [
+        column_width(label, [row[index] for row in table_rows], max_width=48)
+        for index, (_, label) in enumerate(columns)
+    ]
+    rendered = render_table(
+        tuple(label for _, label in columns),
+        table_rows,
+        widths,
+    )
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
 
 def _config_label(item: dict[str, Any], index: int) -> str:
@@ -437,6 +592,7 @@ def _format_configs(data: dict[str, Any]) -> str:
         if not isinstance(item, dict):
             lines.append(f"config-{i}")
             continue
+        workspace = scrub_raw_ids(item.get("workspace") or "")
         gpu_min = item.get("gpu_count_min")
         gpu_max = item.get("gpu_count_max")
         bits = []
@@ -447,15 +603,35 @@ def _format_configs(data: dict[str, Any]) -> str:
         )
         if rule != "-":
             bits.append(f"auto_stop={rule}")
-        lines.append(", ".join(bits) if bits else _config_label(item, i))
+        if "auto_stop" in item:
+            bits.append(f"auto-stop={'enabled' if item.get('auto_stop') else 'disabled'}")
+        label = ", ".join(bits) if bits else _config_label(item, i)
+        lines.append(f"{workspace}: {label}" if workspace else label)
     return "\n".join(lines)
 
 
 @click.command("list")
-@click.option("--workspace", required=True, help="Workspace name")
-@click.option("--project", default=None, help="Project name filter")
-@click.option("--status", "status_filter", default=None, help="Serving status filter")
-@click.option("--keyword", default=None, help="Server-side name/model search")
+@click.option(
+    "--workspace",
+    required=True,
+    metavar="NAME|all",
+    help="Workspace name or 'all'.",
+)
+@click.option("--project", default=None, metavar="NAME", help="Project name filter")
+@click.option(
+    "--status",
+    "-s",
+    "status_filter",
+    default=None,
+    metavar="STATUS",
+    help="Serving status filter",
+)
+@click.option(
+    "--keyword",
+    default=None,
+    metavar="KEYWORD",
+    help="Server-side name/model search",
+)
 @click.option(
     "--limit",
     "-n",
@@ -480,6 +656,7 @@ def list_serving(
     Examples:
         inspire serving list --workspace 分布式训练空间 --project CI-情境智能
         inspire serving list --workspace 分布式训练空间 --keyword qwen --status RUNNING
+        inspire serving list --workspace all --keyword qwen
     """
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
@@ -492,72 +669,93 @@ def list_serving(
     )
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        resolved_workspace = _resolve_workspace_id(config, workspace)
-
         session = get_web_session()
-        project_id = _resolve_project_id(
-            ctx=ctx,
-            workspace_id=resolved_workspace,
-            session=session,
-            config=config,
-            requested=project,
-        )
-        items, total = browser_api_module.list_servings(
-            workspace_id=resolved_workspace,
-            keyword=keyword,
-            project_ids=[project_id] if project_id else None,
-            statuses=[status_filter] if status_filter else None,
-            page=1,
-            page_size=request_limit,
+        workspace_ids, all_workspaces = resolve_workspace_query_scope(
+            workspace=workspace,
             session=session,
         )
-        if show_all and total > len(items):
-            items, expanded_total = browser_api_module.list_servings(
-                workspace_id=resolved_workspace,
+        workspace_names = workspace_name_map(session)
+        items: list[tuple[Any, str]] = []
+        total = 0
+        matched_project_scope = project is None
+        for workspace_id in workspace_ids:
+            try:
+                project_id = _resolve_project_id(
+                    ctx=ctx,
+                    workspace_id=workspace_id,
+                    session=session,
+                    config=config,
+                    requested=project,
+                )
+            except ConfigError as e:
+                if all_workspaces and str(e).startswith("Unknown project name "):
+                    continue
+                raise
+            matched_project_scope = True
+            workspace_items, workspace_total = browser_api_module.list_servings(
+                workspace_id=workspace_id,
                 keyword=keyword,
                 project_ids=[project_id] if project_id else None,
                 statuses=[status_filter] if status_filter else None,
                 page=1,
-                page_size=max(total, len(items), 1),
+                page_size=request_limit,
                 session=session,
             )
-            total = max(total, expanded_total, len(items))
+            if show_all and workspace_total > len(workspace_items):
+                workspace_items, expanded_total = browser_api_module.list_servings(
+                    workspace_id=workspace_id,
+                    keyword=keyword,
+                    project_ids=[project_id] if project_id else None,
+                    statuses=[status_filter] if status_filter else None,
+                    page=1,
+                    page_size=max(workspace_total, len(workspace_items), 1),
+                    session=session,
+                )
+                workspace_total = max(
+                    workspace_total,
+                    expanded_total,
+                    len(workspace_items),
+                )
+            workspace_name = workspace_names.get(workspace_id) or (
+                "(workspace name unavailable)"
+            )
+            items.extend((item, workspace_name) for item in workspace_items)
+            total += max(workspace_total, len(workspace_items))
+        if not matched_project_scope:
+            raise ConfigError(
+                f"Unknown project name {project!r} in the requested workspaces."
+            )
+        if all_workspaces:
+            items.sort(
+                key=lambda pair: str(
+                    getattr(pair[0], "updated_at", "")
+                    or getattr(pair[0], "created_at", "")
+                    or ""
+                ),
+                reverse=True,
+            )
         page = bound_collection(items, limit=effective_limit, total=total)
 
         if ctx.json_output:
+            public_items = [
+                public_serving_list_item(
+                    serving,
+                    fallback_workspace=workspace_name,
+                )
+                for serving, workspace_name in page.items
+            ]
             click.echo(
                 json_formatter.format_json(
                     {
                         **page.metadata(),
-                        "items": [
-                            {
-                                key: value
-                                for key, value in public_serving(s).items()
-                                if key
-                                in {
-                                    "name",
-                                    "status",
-                                    "model",
-                                    "image",
-                                    "project",
-                                    "workspace",
-                                    "resource",
-                                    "replicas",
-                                    "nodes_per_replica",
-                                    "priority",
-                                    "created_at",
-                                    "updated_at",
-                                }
-                            }
-                            for s in page.items
-                        ],
+                        "items": public_items,
                     }
                 )
             )
             return
 
         rows = []
-        for serving in page.items:
+        for serving, workspace_name in page.items:
             projected = public_serving(
                 serving,
                 fallback_name=str(getattr(serving, "name", "") or ""),
@@ -575,6 +773,9 @@ def list_serving(
                         else str(replicas or "-")
                     ),
                     "project": str(projected.get("project") or "-"),
+                    "workspace": (
+                        scrub_raw_ids(workspace_name) if all_workspaces else "-"
+                    ),
                     "updated_at": str(
                         projected.get("updated_at")
                         or projected.get("created_at")
@@ -589,16 +790,21 @@ def list_serving(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @click.command("status")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name")
-@click.option("--pick", type=click.IntRange(1), default=None, help="Pick Nth duplicate name (1-indexed)")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
 @pass_context
 def status_serving(
     ctx: Context,
@@ -611,9 +817,15 @@ def status_serving(
     Detail includes status, project, model, image, resource, startup command,
     port, replicas, and timestamps when the platform returns them.
     """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        workspace_id = _resolve_workspace_id(config, workspace)
+        workspace_id = _resolve_workspace_id(workspace)
         session = get_web_session()
         inference_serving_id, data = run_with_stale_handle_retry(
             name=name,
@@ -674,6 +886,8 @@ def status_serving(
             ("type", "Type"),
             ("project", "Project"),
             ("workspace", "Workspace"),
+            ("compute_group", "Compute Group"),
+            ("created_by", "Created By"),
             ("replicas", "Replicas"),
             ("nodes_per_replica", "Nodes/rep"),
             ("priority", "Priority"),
@@ -692,20 +906,73 @@ def status_serving(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("start")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", metavar="NAME", required=True, help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def start_serving(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    pick: Optional[int],
+) -> None:
+    """Start an inference serving by name."""
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace)
+        inference_serving_id = _resolve_serving_name(
+            ctx,
+            name,
+            workspace_id=workspace_id,
+            pick=pick,
+            require_live=True,
+        )
+        browser_api_module.start_serving(
+            inference_serving_id=inference_serving_id,
+            session=session,
+        )
+
+        if ctx.json_output:
+            click.echo(json_formatter.format_json(public_operation(name, "started")))
+            return
+
+        click.echo(human_formatter.format_mutation_success("Serving", "started", name))
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @click.command("stop")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--pick",
     type=click.IntRange(1),
     default=None,
-    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+    help=NAME_PICK_HELP,
 )
 @pass_context
 def stop_serving(
@@ -715,10 +982,16 @@ def stop_serving(
     pick: Optional[int],
 ) -> None:
     """Stop an inference serving (pass the serving name)."""
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_id = _resolve_workspace_id(config, workspace)
+        workspace_id = _resolve_workspace_id(workspace)
         inference_serving_id = _resolve_serving_name(
             ctx,
             name,
@@ -735,19 +1008,209 @@ def stop_serving(
             click.echo(json_formatter.format_json(public_operation(name, "stopped")))
             return
 
-        click.echo(human_formatter.format_success(f"Inference serving stopped: {name}"))
+        click.echo(human_formatter.format_mutation_success("Serving", "stopped", name))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("events")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", metavar="NAME", required=True, help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@click.option(
+    "--type",
+    "type_filter",
+    type=click.Choice(["Normal", "Warning"], case_sensitive=False),
+    default=None,
+    help="Filter by event type.",
+)
+@click.option(
+    "--reason",
+    "reason_filter",
+    default=None,
+    metavar="REASON",
+    help="Filter events whose reason contains this substring.",
+)
+@click.option(
+    "--tail",
+    type=click.IntRange(1),
+    default=DEFAULT_EVENT_TAIL,
+    show_default=True,
+    help="Maximum recent events to display.",
+)
+@click.option("--follow", "-f", is_flag=True, help="Follow and print new events.")
+@click.option(
+    "--interval",
+    type=click.IntRange(1),
+    default=5,
+    show_default=True,
+    help="Polling interval in seconds for --follow.",
+)
+@pass_context
+def events_serving(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    pick: Optional[int],
+    reason_filter: Optional[str],
+    type_filter: Optional[str],
+    tail: int,
+    follow: bool,
+    interval: int,
+) -> None:
+    """Show lifecycle and scheduling events for an inference serving."""
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace)
+        run_events_command(
+            ctx,
+            fetch=lambda: _run_readonly_serving_operation(
+                ctx,
+                name=name,
+                workspace_id=workspace_id,
+                session=session,
+                pick=pick,
+                operation=lambda serving_id, live_session: (
+                    browser_api_module.list_serving_events(
+                        serving_id,
+                        session=live_session,
+                    )
+                ),
+            ),
+            type_filter=type_filter,
+            reason_filter=reason_filter,
+            tail=tail,
+            follow=follow,
+            interval=interval,
+        )
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("instances")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", metavar="NAME", required=True, help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum instances to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every instance.")
+@pass_context
+def instances_serving(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    pick: Optional[int],
+    limit: Optional[int],
+    show_all: bool,
+) -> None:
+    """List runtime instances for an inference serving by name."""
+    try:
+        output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    request_limit = (
+        output_limit if output_limit is not None else DEFAULT_COLLECTION_LIMIT
+    )
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace)
+
+        def _fetch(serving_id: str, live_session):
+            items, total = browser_api_module.list_serving_instances(
+                serving_id,
+                page=1,
+                page_size=request_limit,
+                session=live_session,
+            )
+            if show_all and total > len(items):
+                items, expanded_total = browser_api_module.list_serving_instances(
+                    serving_id,
+                    page=1,
+                    page_size=max(total, len(items), 1),
+                    session=live_session,
+                )
+                total = max(total, expanded_total, len(items))
+            return items, total
+
+        items, total = _run_readonly_serving_operation(
+            ctx,
+            name=name,
+            workspace_id=workspace_id,
+            session=session,
+            pick=pick,
+            operation=_fetch,
+        )
+        projected = _public_serving_instances(items)
+        page = bound_collection(projected, limit=output_limit, total=total)
+
+        if ctx.json_output:
+            payload: dict[str, Any] = {
+                "name": scrub_raw_ids(name),
+                "items": page.items,
+                **page.metadata(),
+            }
+            click.echo(
+                json_formatter.format_json(payload)
+            )
+            return
+
+        click.echo(_format_serving_instances(page.items))
+        notice = truncation_notice(page)
+        if notice:
+            click.echo(notice)
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @click.command("delete")
-@click.argument("name")
-@click.option("--workspace", required=True, help="Workspace name")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--yes",
     "-y",
@@ -758,7 +1221,7 @@ def stop_serving(
     "--pick",
     type=click.IntRange(1),
     default=None,
-    help="Pick the Nth candidate (1-indexed) when the name is ambiguous.",
+    help=NAME_PICK_HELP,
 )
 @pass_context
 def delete_serving(
@@ -769,10 +1232,25 @@ def delete_serving(
     pick: Optional[int],
 ) -> None:
     """Delete an inference serving entry (pass the serving name)."""
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt=(
+            f"Permanently delete inference serving '{scrub_raw_ids(name)}'? "
+            "This cannot be undone."
+        ),
+        message="Inference serving deletion requires confirmation.",
+    )
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_id = _resolve_workspace_id(config, workspace)
+        workspace_id = _resolve_workspace_id(workspace)
         inference_serving_id = _resolve_serving_name(
             ctx,
             name,
@@ -780,11 +1258,6 @@ def delete_serving(
             pick=pick,
             require_live=True,
         )
-        if not yes and not ctx.json_output:
-            click.confirm(
-                f"Permanently delete inference serving '{scrub_raw_ids(name)}'? This cannot be undone.",
-                abort=True,
-            )
         browser_api_module.delete_serving(
             inference_serving_id=inference_serving_id,
             session=session,
@@ -802,20 +1275,25 @@ def delete_serving(
             click.echo(json_formatter.format_json(public_operation(name, "deleted")))
             return
 
-        click.echo(human_formatter.format_success(f"Inference serving deleted: {name}"))
+        click.echo(human_formatter.format_mutation_success("Serving", "deleted", name))
 
     except click.Abort:
         raise
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @click.command("configs")
-@click.option("--workspace", required=True, help="Workspace name")
+@click.option(
+    "--workspace",
+    required=True,
+    metavar="NAME|all",
+    help="Workspace name or 'all'.",
+)
 @click.option(
     "--limit",
     "-n",
@@ -831,7 +1309,7 @@ def configs_serving(
     limit: int | None,
     show_all: bool,
 ) -> None:
-    """Show available inference-serving choices for a workspace.
+    """Show available inference-serving choices by workspace.
 
     Use this before `serving create` to inspect deployment settings exposed
     by the platform. Use `serving quota --workspace <name>` to choose the
@@ -845,22 +1323,62 @@ def configs_serving(
 
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        resolved_workspace = _resolve_workspace_id(config, workspace)
-
         session = get_web_session()
-        data = browser_api_module.get_serving_configs(
-            workspace_id=resolved_workspace, session=session
+        workspace_ids, all_workspaces = resolve_workspace_query_scope(
+            workspace=workspace,
+            session=session,
         )
-        public_data = public_configs(data)
-        page = bound_collection(
-            public_data.get("items", []),
-            limit=effective_limit,
-        )
-        output = {
-            **({"auto_stop": public_data["auto_stop"]} if "auto_stop" in public_data else {}),
-            "items": page.items,
-            **page.metadata(),
-        }
+        workspace_names = workspace_name_map(session)
+        if all_workspaces:
+            items: list[dict[str, Any]] = []
+            for workspace_id in workspace_ids:
+                public_data = public_configs(
+                    browser_api_module.get_serving_configs(
+                        workspace_id=workspace_id,
+                        session=session,
+                    )
+                )
+                workspace_name = scrub_raw_ids(
+                    workspace_names.get(workspace_id) or "(workspace name unavailable)"
+                )
+                for item in public_data.get("items", []):
+                    scoped_item = {
+                        "workspace": workspace_name,
+                        **item,
+                    }
+                    if "auto_stop" in public_data:
+                        scoped_item["auto_stop"] = public_data["auto_stop"]
+                    items.append(scoped_item)
+            page = bound_collection(items, limit=effective_limit)
+            output = {
+                "items": page.items,
+                **page.metadata(),
+            }
+        else:
+            data = browser_api_module.get_serving_configs(
+                workspace_id=workspace_ids[0],
+                session=session,
+            )
+            public_data = public_configs(data)
+            items = [
+                {
+                    **item,
+                    **(
+                        {"auto_stop": public_data["auto_stop"]}
+                        if "auto_stop" in public_data
+                        else {}
+                    ),
+                }
+                for item in public_data.get("items", [])
+            ]
+            page = bound_collection(
+                items,
+                limit=effective_limit,
+            )
+            output = {
+                "items": page.items,
+                **page.metadata(),
+            }
 
         if ctx.json_output:
             click.echo(json_formatter.format_json(output))
@@ -872,49 +1390,27 @@ def configs_serving(
             click.echo(notice)
 
     except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
 @click.command("create")
-@click.option("--name", "-n", required=True, help="Serving name")
-@click.option("--model", "model_name", required=True, help="Registered model name")
+@click.option("--name", "-n", required=True, metavar="NAME", help="Serving name")
+@click.option(
+    "--model",
+    "model_name",
+    required=True,
+    metavar="NAME",
+    help="Registered model name",
+)
 @click.option(
     "--model-version",
     type=click.IntRange(1),
     default=None,
     help="Model version (default: latest version from model list)",
-)
-@click.option("--workspace", help="Workspace name. Required unless supplied by --profile.")
-@click.option(
-    "--project",
-    "-p",
-    help="Project name. Required unless supplied by --profile.",
-)
-@click.option(
-    "--group",
-    help=(
-        "Full compute group name copied from the same quota row as --quota. "
-        "Required unless supplied by --profile."
-    ),
-)
-@click.option(
-    "--quota",
-    "-q",
-    help="Serving resource as gpu,cpu,mem. Required unless supplied by --profile.",
-)
-@click.option(
-    "--image",
-    help="Visible image name or name:tag. Required unless supplied by --profile.",
-)
-@click.option(
-    "--profile",
-    "profile_name",
-    default=None,
-    help="Serving condition profile providing workspace/project/group/quota/image.",
 )
 @click.option("--command", "-c", required=True, help="Serving startup command")
 @click.option(
@@ -923,9 +1419,52 @@ def configs_serving(
     required=True,
     help="Service port in the container",
 )
+@click.option(
+    "--workspace",
+    metavar="NAME",
+    help="Workspace name. Required unless supplied by --profile.",
+)
+@click.option(
+    "--project",
+    "-p",
+    metavar="NAME",
+    help="Project name. Required unless supplied by --profile.",
+)
+@click.option(
+    "--group",
+    metavar="NAME",
+    help=(
+        "Full compute group name copied from the same quota row as --quota. "
+        "Required unless supplied by --profile."
+    ),
+)
+@click.option(
+    "--quota",
+    "-q",
+    metavar="SPEC",
+    help="Serving resource as gpu,cpu,mem. Required unless supplied by --profile.",
+)
+@click.option(
+    "--image",
+    "-i",
+    metavar="NAME|URL",
+    help="Visible image name or name:tag. Required unless supplied by --profile.",
+)
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    metavar="NAME",
+    help="Serving condition profile providing workspace/project/group/quota/image.",
+)
 @click.option("--replicas", type=click.IntRange(1), default=1, show_default=True)
 @click.option("--nodes-per-replica", type=click.IntRange(1), default=1, show_default=True)
-@click.option("--shm-gib", type=click.IntRange(1), default=None, help="Shared memory size in GiB")
+@click.option(
+    "--shm-size",
+    type=click.IntRange(1),
+    default=None,
+    help="Shared memory size in GiB.",
+)
 @task_priority_option()
 @click.option(
     "--custom-domain",
@@ -951,7 +1490,7 @@ def create_serving(
     port: int,
     replicas: int,
     nodes_per_replica: int,
-    shm_gib: Optional[int],
+    shm_size: Optional[int],
     priority: Optional[int],
     custom_domain: Optional[str],
     description: str,
@@ -1015,7 +1554,10 @@ def create_serving(
         image = cast(str, image)
         quota = cast(str, quota)
 
-        workspace_id = select_workspace_id(config, explicit_workspace_name=workspace, session=session)
+        workspace_id = select_workspace_id(
+            explicit_workspace_name=workspace,
+            session=session,
+        )
         if not workspace_id:
             raise ConfigError(profile_required_message("serving", "workspace"))
         project_id = _resolve_project_id(
@@ -1058,7 +1600,7 @@ def create_serving(
                 "Could not infer model version. Pass --model-version explicitly."
             )
 
-        mirror_id, image_label = _resolve_image_for_create(image, session=session, ctx=ctx)
+        mirror_id, image_label = _resolve_image_for_create(image, session=session)
         resource_spec_price = _build_resource_spec_price(resolved)
         final_priority = resolve_workspace_task_priority(
             priority,
@@ -1079,7 +1621,7 @@ def create_serving(
             "port": port,
             "replicas": replicas,
             "node_num_per_replica": nodes_per_replica,
-            "shm_gi": shm_gib,
+            "shm_gi": shm_size,
             "task_priority": final_priority,
             "resource_spec_price": resource_spec_price,
         }
@@ -1090,21 +1632,24 @@ def create_serving(
             plan = sanitize_public_data(
                 {
                     "dry_run": True,
-                    "kind": "serving",
                     "name": name,
-                    "workspace_name": workspace,
-                    "project_name": project,
-                    "compute_group_name": resolved.compute_group_name,
-                    "image_name": image_label,
-                    "model_name": model_label,
+                    "workspace": workspace_label(session, workspace_id, workspace),
+                    "project": project,
+                    "compute_group": resolved.compute_group_name,
+                    "resource": {
+                        "gpu": resolved.gpu_count,
+                        "cpu": resolved.cpu_count,
+                        "memory_gib": resolved.memory_gib,
+                    },
+                    "image": image_label,
+                    "model": model_label,
                     "model_version": final_model_version,
-                    "resource": spec.display(),
                     "command": command,
                     "description": description,
                     "port": port,
                     "replicas": replicas,
                     "nodes_per_replica": nodes_per_replica,
-                    "shm_gib": shm_gib,
+                    "shared_memory_gib": shm_size,
                     "priority": final_priority,
                     "custom_domain": custom_domain,
                 },
@@ -1113,31 +1658,32 @@ def create_serving(
             if ctx.json_output:
                 click.echo(json_formatter.format_json(plan))
             else:
-                click.echo("Inference Serving Create Plan")
-                click.echo(f"Name:      {sanitize_public_text(name, omit_urls=True)}")
-                click.echo(f"Project:   {sanitize_public_text(project, omit_urls=True)}")
+                click.echo(
+                    f"Create plan: {sanitize_public_text(name, omit_urls=True)}"
+                )
+                click.echo(f"Project: {sanitize_public_text(project, omit_urls=True)}")
                 click.echo(f"Workspace: {sanitize_public_text(workspace, omit_urls=True)}")
                 click.echo(
-                    "Compute:   "
+                    "Compute: "
                     f"{sanitize_public_text(resolved.compute_group_name, omit_urls=True)}"
                 )
-                click.echo(f"Resource:  {spec.display()}")
-                click.echo(f"Image:     {sanitize_public_text(image_label, omit_urls=True)}")
+                click.echo(f"Resource: {spec.display()}")
+                click.echo(f"Image: {sanitize_public_text(image_label, omit_urls=True)}")
                 click.echo(
-                    f"Model:     {sanitize_public_text(model_label, omit_urls=True)} "
+                    f"Model: {sanitize_public_text(model_label, omit_urls=True)} "
                     f"v{final_model_version}"
                 )
-                click.echo(f"Command:   {sanitize_public_text(command, omit_urls=True)}")
-                click.echo(f"Port:      {port}")
-                click.echo(f"Replicas:  {replicas} x {nodes_per_replica} node(s)")
-                if shm_gib is not None:
-                    click.echo(f"SHM:       {shm_gib} GiB")
-                click.echo(f"Priority:  {final_priority}")
+                click.echo(f"Command: {sanitize_public_text(command, omit_urls=True)}")
+                click.echo(f"Port: {port}")
+                click.echo(f"Replicas: {replicas} x {nodes_per_replica} node(s)")
+                if shm_size is not None:
+                    click.echo(f"Shared memory: {shm_size} GiB")
+                if final_priority is not None:
+                    click.echo(f"Priority: {final_priority}")
                 if custom_domain:
                     click.echo(
-                        f"Domain:    {sanitize_public_text(custom_domain, omit_urls=True)}"
+                        f"Domain: {sanitize_public_text(custom_domain, omit_urls=True)}"
                     )
-                click.echo("No serving was created.")
             return
 
         result = browser_api_module.create_serving(
@@ -1153,7 +1699,7 @@ def create_serving(
             description=description,
             replicas=replicas,
             node_num_per_replica=nodes_per_replica,
-            shm_gi=shm_gib,
+            shm_gi=shm_size,
             task_priority=final_priority,
             custom_domain=custom_domain,
             resource_spec_price=resource_spec_price,
@@ -1172,24 +1718,15 @@ def create_serving(
                 created_at=str(result.get("created_at") or ""),
             )
         if ctx.json_output:
-            click.echo(
-                json_formatter.format_json(
-                    public_operation(
-                        name,
-                        "created",
-                        model=model_label,
-                        model_version=final_model_version,
-                    )
-                )
-            )
+            click.echo(json_formatter.format_json(public_operation(name, "created")))
             return
-        click.echo(human_formatter.format_success(f"Inference serving created: {name}"))
+        click.echo(human_formatter.format_mutation_success("Serving", "created", name))
 
     except TaskPriorityError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except AuthenticationError as e:
+    except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)

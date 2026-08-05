@@ -63,6 +63,11 @@ def _install_common_fakes(
     monkeypatch.setattr(notebook_cli_module, "load_config", lambda _ctx: SimpleNamespace(workspaces={}))
     monkeypatch.setattr(notebook_cli_module, "get_base_url", lambda: "https://example.test")
     monkeypatch.setattr(
+        workspace_module,
+        "resolve_workspace_operation_scope",
+        lambda *_args, **_kwargs: "ws-fake",
+    )
+    monkeypatch.setattr(
         notebook_lookup_module,
         "_resolve_notebook_id",
         lambda *args, **kwargs: (_NOTEBOOK_ID, None),
@@ -130,8 +135,8 @@ def test_notebook_metrics_name_resolution_validates_cached_handle_with_retry(
     monkeypatch.setattr(notebook_cli_module, "get_base_url", lambda: "https://example.test")
     monkeypatch.setattr(
         workspace_module,
-        "resolve_workspace_query_scope",
-        lambda *_args, **_kwargs: (["ws-live"], "ws-live"),
+        "resolve_workspace_operation_scope",
+        lambda *_args, **_kwargs: "ws-live",
     )
 
     def fake_retry(*_args, operation, **kwargs):  # noqa: ANN001
@@ -150,12 +155,17 @@ def test_notebook_metrics_name_resolution_validates_cached_handle_with_retry(
         or {"name": _NOTEBOOK_NAME},
     )
 
-    target = notebook_metrics_module._notebook_name_to_id(ctx, _NOTEBOOK_NAME)
+    target = notebook_metrics_module._notebook_name_to_id(
+        ctx,
+        _NOTEBOOK_NAME,
+        pick=2,
+    )
 
     assert target.task_id == "notebook-live"
     assert target.logic_compute_group_id is None
     assert seen["identifier"] == _NOTEBOOK_NAME
     assert seen["workspace_ids"] == ["ws-live"]
+    assert seen["pick"] == 2
     assert detail_calls == ["notebook-live"]
 
 
@@ -182,8 +192,8 @@ def test_metrics_json_output_is_compact_name_only_summary_and_skips_plot(
             "notebook",
             "metrics",
             _NOTEBOOK_NAME,
-                "--workspace",
-                "all",
+            "--workspace",
+            "Fake Workspace",
             "--metric",
             "gpu,cpu",
             "--window",
@@ -250,7 +260,18 @@ def test_metrics_default_output_writes_png_and_prints_path(
         tmp_metrics_dir=str(tmp_path),
     )
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "metrics", _NOTEBOOK_NAME, "--workspace", "all", "--metric", "gpu"])
+    result = runner.invoke(
+        cli_main,
+        [
+            "notebook",
+            "metrics",
+            _NOTEBOOK_NAME,
+            "--workspace",
+            "Fake Workspace",
+            "--metric",
+            "gpu",
+        ],
+    )
 
     assert result.exit_code == 0, result.output
 
@@ -284,7 +305,17 @@ def test_metrics_no_plot_suppresses_render(
     )
     runner = CliRunner()
     result = runner.invoke(
-        cli_main, ["notebook", "metrics", _NOTEBOOK_NAME, "--workspace", "all", "--metric", "gpu", "--no-plot"]
+        cli_main,
+        [
+            "notebook",
+            "metrics",
+            _NOTEBOOK_NAME,
+            "--workspace",
+            "Fake Workspace",
+            "--metric",
+            "gpu",
+            "--no-plot",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert render_captures == []
@@ -303,7 +334,17 @@ def test_metrics_sparkline_flag_includes_block_chars(
     )
     runner = CliRunner()
     result = runner.invoke(
-        cli_main, ["notebook", "metrics", _NOTEBOOK_NAME, "--workspace", "all", "--metric", "gpu", "--sparkline"]
+        cli_main,
+        [
+            "notebook",
+            "metrics",
+            _NOTEBOOK_NAME,
+            "--workspace",
+            "Fake Workspace",
+            "--metric",
+            "gpu",
+            "--sparkline",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert any(ch in result.output for ch in "▁▂▃▄▅▆▇█")
@@ -328,8 +369,8 @@ def test_metrics_custom_plot_path_is_honored(
             "notebook",
             "metrics",
             _NOTEBOOK_NAME,
-                "--workspace",
-                "all",
+            "--workspace",
+            "Fake Workspace",
             "--metric",
             "gpu",
             "--plot",
@@ -359,7 +400,7 @@ def test_metrics_json_raw_is_bounded_and_reports_truncation(
             "metrics",
             _NOTEBOOK_NAME,
             "--workspace",
-            "all",
+            "Fake Workspace",
             "--metric",
             "gpu",
             "--raw",
@@ -419,7 +460,16 @@ def test_metrics_rejects_unknown_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     runner = CliRunner()
     result = runner.invoke(
-        cli_main, ["notebook", "metrics", _NOTEBOOK_NAME, "--workspace", "all", "--metric", "throughput"]
+        cli_main,
+        [
+            "notebook",
+            "metrics",
+            _NOTEBOOK_NAME,
+            "--workspace",
+            "Fake Workspace",
+            "--metric",
+            "throughput",
+        ],
     )
     assert result.exit_code == EXIT_VALIDATION_ERROR
     assert "unknown metric" in result.output
@@ -432,7 +482,16 @@ def test_metrics_errors_when_lcg_unresolvable(monkeypatch: pytest.MonkeyPatch) -
         groups=[],
     )
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "metrics", _NOTEBOOK_NAME, "--workspace", "all"])
+    result = runner.invoke(
+        cli_main,
+        [
+            "notebook",
+            "metrics",
+            _NOTEBOOK_NAME,
+            "--workspace",
+            "Fake Workspace",
+        ],
+    )
     assert result.exit_code == EXIT_CONFIG_ERROR
     assert "Unable to resolve compute group" in result.output
     assert "logic_compute_group_id" not in result.output
@@ -466,7 +525,7 @@ def test_metrics_cli_resolves_explicit_group_name(
             "metrics",
             _NOTEBOOK_NAME,
             "--workspace",
-            "all",
+            "Fake Workspace",
             "--group",
             "H200-2号机房",
             "--metric",
@@ -474,7 +533,7 @@ def test_metrics_cli_resolves_explicit_group_name(
         ],
     )
     assert result.exit_code == 0, result.output
-    assert group_calls == {"workspace": "all", "name": "H200-2号机房"}
+    assert group_calls == {"workspace": "Fake Workspace", "name": "H200-2号机房"}
     assert capture["logic_compute_group_id"] == "lcg-explicit"
 
 
@@ -494,8 +553,8 @@ def test_metrics_absolute_window(monkeypatch: pytest.MonkeyPatch) -> None:
             "notebook",
             "metrics",
             _NOTEBOOK_NAME,
-                "--workspace",
-                "all",
+            "--workspace",
+            "Fake Workspace",
             "--metric",
             "gpu",
             "--start",
@@ -566,7 +625,16 @@ def test_multi_pod_text_summary_surfaces_stragglers(
     )
     runner = CliRunner()
     result = runner.invoke(
-        cli_main, ["notebook", "metrics", _NOTEBOOK_NAME, "--workspace", "all", "--metric", "gpu"]
+        cli_main,
+        [
+            "notebook",
+            "metrics",
+            _NOTEBOOK_NAME,
+            "--workspace",
+            "Fake Workspace",
+            "--metric",
+            "gpu",
+        ],
     )
     assert result.exit_code == 0, result.output
     # Pod count reflected.

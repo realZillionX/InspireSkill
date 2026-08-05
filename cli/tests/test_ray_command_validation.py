@@ -46,12 +46,13 @@ def test_ray_worker_spec_rejects_loose_or_invalid_schema(raw: str, message: str)
         _parse_worker_spec(raw)
 
 
-def test_ray_create_help_uses_unified_head_condition_flags() -> None:
+def test_ray_create_help_uses_named_condition_flags() -> None:
     result = CliRunner().invoke(cli_main, ["ray", "create", "--help"])
 
     assert result.exit_code == 0
-    assert "--head-image" not in result.output
-    assert "--image TEXT" in result.output
+    assert "--image NAME|URL" in result.output
+    assert "--group NAME" in result.output
+    assert "--quota SPEC" in result.output
     assert "shm-size" in result.output
 
 

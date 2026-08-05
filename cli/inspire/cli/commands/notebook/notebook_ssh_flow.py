@@ -27,6 +27,7 @@ from inspire.cli.utils.notebook_cli import (
 )
 from inspire.cli.utils.output import emit_success as emit_output_success
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.terminal_io import run_scrubbed_pty
 from inspire.cli.utils.tunnel_reconnect import (
     NotebookBridgeReconnectState,
     NotebookBridgeReconnectStatus,
@@ -43,7 +44,6 @@ from inspire.platform.web.browser_api import NotebookFailedError
 from .notebook_lookup import (
     _collect_workspace_ids_for_lookup,
     _get_current_user_detail,
-    _looks_like_notebook_id,
     _resolve_notebook_id,
     _validate_notebook_account_access,
     _workspace_label,
@@ -95,23 +95,6 @@ def _identity_file_for_pubkey(pubkey_path: Optional[str] = None) -> str | None:
     return None
 
 
-def _find_cached_entry_for_notebook_id(cached_config, notebook_id: str) -> Optional[str]:
-    """Return the cache key of any entry bound to *notebook_id*, or ``None``.
-
-    Used to detect legacy custom-named entries from pre-rename CLI versions
-    so the bootstrap path can migrate them to the canonical (notebook-name)
-    cache key on first reconnect.
-    """
-    target = str(notebook_id or "").strip()
-    if not target:
-        return None
-    for name, bridge in cached_config.bridges.items():
-        bridge_notebook_id = str(getattr(bridge, "notebook_id", "") or "").strip()
-        if bridge_notebook_id == target:
-            return name
-    return None
-
-
 def _command_timeout_seconds(command_timeout: Optional[int]) -> Optional[int]:
     if command_timeout is None:
         return 300
@@ -123,18 +106,21 @@ def _command_timeout_seconds(command_timeout: Optional[int]) -> Optional[int]:
 def _cached_bridge_for_identifier(
     *,
     identifier: str,
-    config,
     account: Optional[str] = None,
+    pick: int | None = None,
 ):
     from inspire.bridge.tunnel import load_tunnel_config
 
     normalized = str(identifier or "").strip()
     if not normalized:
         return None, None, None
-    if _looks_like_notebook_id(normalized):
-        return None, None, None
-
     tunnel_account = account
+    # An explicit pick must be resolved against the complete candidate set by
+    # ``resolve_cached_notebook_target`` or the live notebook lookup. This
+    # A single-account fast path cannot safely choose among duplicates.
+    if pick is not None:
+        return None, None, tunnel_account
+
     tunnel_config = load_tunnel_config(account=account) if account else load_tunnel_config()
     for bridge in tunnel_config.bridges.values():
         notebook_name = str(getattr(bridge, "notebook_name", "") or "").strip()
@@ -287,7 +273,6 @@ def _run_notebook_command_with_reconnect(
         reconnect_pause=tunnel_retry_pause,
     )
     timeout_s = _command_timeout_seconds(command_timeout)
-    announced_command_start = False
 
     def _load_reconnect_session():
         nonlocal session
@@ -311,12 +296,10 @@ def _run_notebook_command_with_reconnect(
             return False
 
         attempt = reconnect_state.reconnect_attempt + 1
-        click.echo(
-            (
-                "SSH connection dropped; rebuilding tunnel automatically "
-                f"(attempt {attempt}/{reconnect_limit})..."
-            ),
-            err=True,
+        logger.debug(
+            "Notebook SSH tunnel rebuild scheduled after disconnect attempt=%s/%s",
+            attempt,
+            reconnect_limit,
         )
 
         reconnect_result = attempt_notebook_bridge_rebuild(
@@ -418,10 +401,7 @@ def _run_notebook_command_with_reconnect(
                 )
                 raise SystemExit(result.returncode)
 
-            if ctx.debug and not announced_command_start:
-                click.echo("Running remote command...", err=True)
-                announced_command_start = True
-
+            logger.debug("Notebook SSH command started")
             exit_code = run_ssh_command_streaming(
                 command=command,
                 bridge_name=profile_name,
@@ -512,7 +492,7 @@ def _run_interactive_notebook_ssh_with_reconnect(
 
         args = get_ssh_command_args(bridge_name=profile_name, config=tunnel_config)
         try:
-            returncode = subprocess.call(args)
+            returncode = run_scrubbed_pty(args)
         except KeyboardInterrupt:
             raise SystemExit(130) from None
 
@@ -531,12 +511,10 @@ def _run_interactive_notebook_ssh_with_reconnect(
             return
 
         attempt = reconnect_state.reconnect_attempt + 1
-        click.echo(
-            (
-                "SSH connection dropped; rebuilding tunnel automatically "
-                f"(attempt {attempt}/{reconnect_limit})..."
-            ),
-            err=True,
+        logger.debug(
+            "Interactive notebook SSH tunnel rebuild scheduled attempt=%s/%s",
+            attempt,
+            reconnect_limit,
         )
 
         reconnect_result = attempt_notebook_bridge_rebuild(
@@ -637,10 +615,10 @@ def run_notebook_ssh(
     setup_only: bool = False,
     account: Optional[str] = None,
     ignore_target_cache: bool = False,
+    pick: int | None = None,
 ) -> None:
     from inspire.bridge.tunnel import (
         BridgeProfile,
-        get_ssh_command_args,
         has_internet_for_gpu_type,
         is_tunnel_available,
         load_tunnel_config,
@@ -667,13 +645,13 @@ def run_notebook_ssh(
         ignore_target_cache=ignore_target_cache,
         verify_target_cache=True,
         allow_prompt=not ctx.json_output,
+        pick=pick,
     )
     if cached_target is not None:
         config = _load_config_for_account(ctx, cached_target.account)
         cached_profile_name = cached_target.bridge.name
         tunnel_account = cached_target.account
-        if ctx.debug and not ctx.json_output:
-            click.echo("Using cached tunnel connection (fast path).", err=True)
+        logger.debug("Using cached notebook SSH connection")
         if setup_only:
             return
         if command is None:
@@ -718,23 +696,21 @@ def run_notebook_ssh(
     requested_identifier = notebook_id
     cached_bridge, cached_notebook_id, tunnel_account = _cached_bridge_for_identifier(
         identifier=notebook_id,
-        config=config,
         account=explicit_tunnel_account,
+        pick=pick,
     )
     explicit_workspace = str(workspace or "").strip() or None
     if explicit_workspace:
         workspace_ids, _ = resolve_workspace_query_scope(
-            config,
             workspace=explicit_workspace,
             session=session,
         )
     elif cached_bridge and getattr(cached_bridge, "workspace_id", None):
         workspace_ids = [str(cached_bridge.workspace_id)]
     else:
-        workspace_ids = _collect_workspace_ids_for_lookup(session, config)
+        workspace_ids = _collect_workspace_ids_for_lookup(session)
 
-    if ctx.debug and not ctx.json_output:
-        click.echo("Resolving notebook target...", err=True)
+    logger.debug("Resolving notebook target by name")
 
     resolved_workspace_id: str | None = (
         str(getattr(cached_bridge, "workspace_id", "") or "").strip() or None
@@ -745,107 +721,16 @@ def run_notebook_ssh(
         notebook_id, resolved_workspace_id = _resolve_notebook_id(
             ctx,
             session=session,
-            config=config,
             base_url=base_url,
             identifier=notebook_id,
             json_output=False,
             workspace_ids=workspace_ids,
+            pick=pick,
         )
     if explicit_workspace and workspace_ids:
         resolved_workspace_id = workspace_ids[0]
 
-    # Cache key = notebook name. If a legacy custom-named entry exists for
-    # this notebook_id (from older CLI versions that supported custom names),
-    # use it as the fast-path probe target; we'll rewrite the entry under
-    # the canonical name below.
-    cached_config = load_tunnel_config(account=tunnel_account)
-    legacy_entry = _find_cached_entry_for_notebook_id(cached_config, notebook_id)
-    profile_name: Optional[str] = legacy_entry
-
-    if profile_name and profile_name in cached_config.bridges:
-        cached_bridge = cached_config.bridges[profile_name]
-        bridge_notebook_id = str(getattr(cached_bridge, "notebook_id", "") or "").strip()
-        if bridge_notebook_id == notebook_id:
-            test_args = get_ssh_command_args(
-                bridge_name=profile_name,
-                config=cached_config,
-                remote_command="echo ok",
-            )
-            try:
-                result = subprocess.run(
-                    test_args,
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    timeout=10,
-                    text=True,
-                )
-                if result.returncode == 0 and "ok" in result.stdout:
-                    if not getattr(
-                        cached_bridge, "notebook_name", None
-                    ) and not _looks_like_notebook_id(requested_identifier):
-                        cached_bridge.notebook_name = requested_identifier.strip() or None
-                        try:
-                            cached_config.add_bridge(cached_bridge)
-                            save_tunnel_config(cached_config)
-                        except Exception:
-                            pass
-                    if ctx.debug and not ctx.json_output:
-                        click.echo("Using cached tunnel connection (fast path).", err=True)
-                    if setup_only:
-                        return
-                    if command is None:
-                        _run_interactive_notebook_ssh_with_reconnect(
-                            ctx,
-                            profile_name=profile_name,
-                            tunnel_account=tunnel_account,
-                            session=session,
-                            pubkey=pubkey,
-                            debug_playwright=debug_playwright,
-                            setup_timeout=setup_timeout,
-                            tunnel_retries=config.tunnel_retries,
-                            tunnel_retry_pause=config.tunnel_retry_pause,
-                        )
-                        return
-                    _run_notebook_command_with_reconnect(
-                        ctx,
-                        profile_name=profile_name,
-                        tunnel_account=tunnel_account,
-                        session=session,
-                        pubkey=pubkey,
-                        command=command,
-                        command_timeout=command_timeout,
-                        debug_playwright=debug_playwright,
-                        setup_timeout=setup_timeout,
-                        tunnel_retries=config.tunnel_retries,
-                        tunnel_retry_pause=config.tunnel_retry_pause,
-                    )
-                    return
-            except subprocess.TimeoutExpired:
-                pass
-        else:
-            if bridge_notebook_id:
-                if ctx.debug and not ctx.json_output:
-                    click.echo(
-                        (
-                            "Cached notebook connection "
-                            f"'{scrub_raw_ids(profile_name)}' points to a different notebook; "
-                            f"refreshing tunnel for '{scrub_raw_ids(requested_identifier)}'."
-                        ),
-                        err=True,
-                    )
-            else:
-                if ctx.debug and not ctx.json_output:
-                    click.echo(
-                        (
-                            f"Cached notebook '{scrub_raw_ids(profile_name)}' has no notebook "
-                            "binding metadata; refreshing tunnel for "
-                            f"'{scrub_raw_ids(requested_identifier)}'."
-                        ),
-                        err=True,
-                    )
-
-    if ctx.debug and not ctx.json_output:
-        click.echo("Fetching notebook details for tunnel setup...", err=True)
+    logger.debug("Fetching notebook state for SSH setup")
     try:
         if wait:
             notebook_detail = browser_api_module.wait_for_notebook_running(
@@ -899,9 +784,6 @@ def run_notebook_ssh(
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
         return
 
-    # Cache key is always the notebook's display name. If a pre-rename
-    # legacy entry exists under a different key, drop it so each notebook
-    # has exactly one canonical entry going forward.
     notebook_display_name = str(notebook_detail.get("name") or "").strip()
     if not notebook_display_name:
         # If the platform returns a notebook with no name, the cache would
@@ -921,15 +803,6 @@ def run_notebook_ssh(
             ),
         )
         return
-    if legacy_entry and legacy_entry != notebook_display_name:
-        cached_config.remove_bridge(legacy_entry)
-        save_tunnel_config(cached_config)
-        if ctx.debug and not ctx.json_output:
-            click.echo(
-                f"Migrated cached bridge '{scrub_raw_ids(legacy_entry)}' to "
-                f"'{scrub_raw_ids(notebook_display_name)}'.",
-                err=True,
-            )
     profile_name = notebook_display_name
 
     current_user_detail: dict = {}
@@ -938,22 +811,19 @@ def run_notebook_ssh(
     except Exception:
         current_user_detail = {}
 
-    allowed, reason = _validate_notebook_account_access(
+    allowed, _reason = _validate_notebook_account_access(
         current_user=current_user_detail,
         notebook_detail=notebook_detail,
     )
     if not allowed:
-        configured_user = str(getattr(config, "username", "") or "").strip()
-        user_label = configured_user or "current account"
         _handle_error(
             ctx,
             "ConfigError",
-            f"Notebook/account mismatch detected before tunnel setup: {reason}.",
+            "Notebook/account mismatch detected before tunnel setup.",
             EXIT_CONFIG_ERROR,
             hint=(
-                f"This notebook belongs to another account (current: {user_label}). "
-                "Retry with `--account <name>`, or run `inspire account add <name>` "
-                "for the owning account."
+                "Retry with `--account <name>`, or add the owning account with "
+                "`inspire account add <name>`."
             ),
         )
         return
@@ -1084,11 +954,7 @@ def run_notebook_ssh(
         bridge=bridge,
     )
 
-    if ctx.debug and not ctx.json_output:
-        click.echo(
-            f"Notebook connection ready: {scrub_raw_ids(profile_name)}",
-            err=True,
-        )
+    logger.debug("Notebook SSH connection is ready")
 
     if setup_only:
         return

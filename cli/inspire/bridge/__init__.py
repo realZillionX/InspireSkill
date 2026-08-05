@@ -1,1 +1,1 @@
-"""Bridge execution integrations (forge workflows, tunnels, SSH)."""
+"""Notebook SSH tunnel integrations."""

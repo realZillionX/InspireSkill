@@ -56,6 +56,13 @@ def _assert_compact_public_payload(value: Any) -> None:
             _assert_compact_public_payload(child)
 
 
+def _assert_safe_failure(output: str, expected: str) -> None:
+    assert expected in output
+    assert "/Users/alice/private.log" not in output
+    assert "img-secret-123" not in output
+    assert "request payload" not in output
+
+
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
@@ -74,10 +81,6 @@ def _make_config(tmp_path: Path) -> config_module.Config:
         password="pass",
         base_url="https://example.invalid",
         path_aliases={"me": str(tmp_path / "logs")},
-        log_cache_dir=str(tmp_path / "log_cache"),
-        timeout=5,
-        max_retries=0,
-        retry_delay=0.0,
     )
 
 
@@ -320,8 +323,35 @@ def test_image_help_includes_subcommands() -> None:
     assert "register" in result.output
     assert "save" in result.output
     assert "delete" in result.output
-    removed_default_cmd = "set" + "-default"
-    assert removed_default_cmd not in result.output
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["list"],
+        ["detail"],
+        ["register"],
+        ["save"],
+        ["set-visibility"],
+        ["delete"],
+    ],
+)
+def test_image_command_help_is_compact_and_name_only(command: list[str]) -> None:
+    result = CliRunner().invoke(cli_main, ["image", *command, "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "Examples:" not in result.output
+    assert "image_id" not in result.output
+    assert "IMAGE_ID" not in result.output
+
+
+def test_image_register_help_keeps_push_workflow_requirements() -> None:
+    result = CliRunner().invoke(cli_main, ["image", "register", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "registry-specific" in result.output
+    assert "docker tag" in result.output
+    assert "docker push" in result.output
 
 
 def test_image_list_human_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -407,13 +437,14 @@ def test_image_list_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert result.exit_code == 0
 
     payload = _json_data(result.output)
-    assert len(payload["images"]) == 1
-    assert payload["images"][0] == {
+    assert len(payload["items"]) == 1
+    assert payload["items"][0] == {
         "name": "pytorch:2.0",
         "status": "READY",
         "framework": "PyTorch",
         "visibility": "official",
     }
+    assert "images" not in payload
     assert "total" not in payload
     _assert_compact_public_payload(payload)
     assert "img-001" not in result.output
@@ -445,9 +476,9 @@ def test_image_list_private_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert result.exit_code == 0
 
     payload = _json_data(result.output)
-    assert len(payload["images"]) == 1
-    assert payload["images"][0]["name"] == "personal-visible-img:2.1"
-    assert payload["images"][0]["visibility"] == "public"
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["name"] == "personal-visible-img:2.1"
+    assert payload["items"][0]["visibility"] == "public"
     _assert_compact_public_payload(payload)
 
 
@@ -511,8 +542,8 @@ def test_image_list_all_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
 
     payload = _json_data(result.output)
     # official + public + private
-    assert len(payload["images"]) == 3
-    names = [img["name"] for img in payload["images"]]
+    assert len(payload["items"]) == 3
+    names = [img["name"] for img in payload["items"]]
     assert "official-img:1.0" in names
     assert "public-img:1.9" in names
     assert "personal-visible-img:2.0" in names
@@ -527,7 +558,9 @@ def test_image_list_all_sources_partial_failure(
 
     def fake_list_by_source(source="official", session=None):
         if source == "public":
-            raise RuntimeError("socket hang up")
+            raise RuntimeError(
+                "socket hang up at /Users/alice/private.log image_id=img-secret-123"
+            )
         if source == "official":
             return [
                 browser_api_module.CustomImageInfo(
@@ -565,10 +598,12 @@ def test_image_list_all_sources_partial_failure(
     assert result.exit_code == 0
 
     payload = _json_data(result.output)
-    assert len(payload["images"]) == 2
-    assert len(payload["warnings"]) == 1
-    assert payload["warnings"][0].startswith("public image catalog unavailable:")
+    assert len(payload["items"]) == 2
+    assert payload["warnings"] == ["public image catalog unavailable."]
     _assert_compact_public_payload(payload)
+    assert "/Users/alice/private.log" not in result.output
+    assert "img-secret-123" not in result.output
+    assert "socket hang up" not in result.output
 
 
 def test_image_list_all_sources_all_fail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -583,6 +618,8 @@ def test_image_list_all_sources_all_fail(monkeypatch: pytest.MonkeyPatch, tmp_pa
     runner = CliRunner()
     result = runner.invoke(cli_main, ["--json", "image", "list", "--source", "all"])
     assert result.exit_code != 0
+    assert "Image catalog is unavailable." in result.output
+    assert "boom" not in result.output
 
 
 def test_image_name_resolver_uses_successful_sources_when_others_fail(
@@ -678,7 +715,8 @@ def test_destructive_image_lookup_all_sources_fail_preserves_cached_identity(
 
     assert result.exit_code != 0
     assert "APIError" in result.output
-    assert "all image catalogues failed" in result.output
+    assert "Image catalog is unavailable." in result.output
+    assert "endpoint unavailable" not in result.output
     assert [item.resource_id for item in index.lookup(scope, "target:v1")] == [
         "img-old"
     ]
@@ -712,10 +750,17 @@ def test_image_detail_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     assert result.exit_code == 0
 
     payload = _json_data(result.output)
-    assert payload["name"] == "detail-img:2.0"
-    assert payload["visibility"] == "private"
+    assert payload == {
+        "name": "detail-img:2.0",
+        "status": "READY",
+        "framework": "pytorch",
+        "visibility": "private",
+    }
     _assert_compact_public_payload(payload)
     assert "img-123" not in result.output
+    assert "registry/detail-img" not in result.output
+    assert "Detailed" not in result.output
+    assert "2026-01-15" not in result.output
 
 
 def test_image_detail_human(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -745,6 +790,12 @@ def test_image_detail_human(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     assert "Image Detail" not in result.output
     assert "Source:" not in result.output
     assert "img-123" not in result.output
+    assert "Registry:" not in result.output
+    assert "Description:" not in result.output
+    assert "Created:" not in result.output
+    assert "registry/detail-img" not in result.output
+    assert "Detailed" not in result.output
+    assert "2026-01-15" not in result.output
 
 
 def test_image_detail_retries_stale_cached_handle_by_name(
@@ -804,9 +855,29 @@ def test_image_detail_retries_stale_cached_handle_by_name(
     assert "img-new" not in result.output
 
 
-# Removed in v2.0.0: partial-hex id resolution was replaced by name-only
-# lookup. The name path is covered by `resolve_by_name` unit tests; image
-# detail itself is covered above under test_image_detail_human.
+def test_image_detail_error_hides_internal_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    _patch_image_name_resolver(monkeypatch, {"detail-img:2.0": "img-secret-123"})
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_image_detail",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "request payload failed at /Users/alice/private.log "
+                "image_id=img-secret-123"
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "image", "detail", "detail-img:2.0"],
+    )
+
+    assert result.exit_code != 0
+    _assert_safe_failure(result.output, "Could not load image details.")
 
 
 def test_image_register_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -841,7 +912,6 @@ def test_image_register_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     assert payload == {
         "name": "my-img:v1.0",
         "status": "registered",
-        "visibility": "private",
     }
     _assert_compact_public_payload(payload)
     assert "img-new-001" not in result.output
@@ -864,11 +934,102 @@ def test_image_register_human_push(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     runner = CliRunner()
     result = runner.invoke(cli_main, ["image", "register", "-n", "test", "-v", "v0.1"])
     assert result.exit_code == 0
-    assert "Image registered: test:v0.1" in result.output
+    assert result.output.splitlines()[0] == "OK Image registered: test:v0.1"
     assert "img-new-002" not in result.output
     assert "docker tag" in result.output
     assert "docker push" in result.output
     assert "registry.example/my-img:v0.1" in result.output
+
+
+def test_image_register_json_push_keeps_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        browser_api_module,
+        "create_image",
+        lambda **_kwargs: {
+            "image": {
+                "image_id": "img-new-003",
+                "address": "registry.example/my-img:v0.2",
+            }
+        },
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "image", "register", "-n", "test", "-v", "v0.2"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _json_data(result.output) == {
+        "name": "test:v0.2",
+        "status": "registered",
+        "registry": "registry.example/my-img:v0.2",
+    }
+    assert "img-new-003" not in result.output
+
+
+def test_image_register_errors_hide_internal_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        browser_api_module,
+        "create_image",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "request payload failed at /Users/alice/private.log "
+                "image_id=img-secret-123"
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "image", "register", "-n", "test", "-v", "v0.2"],
+    )
+
+    assert result.exit_code != 0
+    _assert_safe_failure(result.output, "Could not register image.")
+
+
+def test_image_register_wait_error_hides_internal_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        browser_api_module,
+        "create_image",
+        lambda **_kwargs: {"image": {"image_id": "img-secret-123"}},
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "wait_for_image_ready",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            TimeoutError(
+                "request payload failed at /Users/alice/private.log "
+                "image_id=img-secret-123"
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "image",
+            "register",
+            "-n",
+            "test",
+            "-v",
+            "v0.2",
+            "--wait",
+        ],
+    )
+
+    assert result.exit_code != 0
+    _assert_safe_failure(result.output, "Image did not become ready.")
 
 
 def test_image_save_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -908,6 +1069,50 @@ def test_image_save_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert captured["notebook_id"] == "notebook-abc"
 
 
+def test_image_save_forwards_pick_to_notebook_name_resolution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    seen: dict[str, object] = {}
+
+    def resolve_notebook(*_args, **kwargs):  # noqa: ANN001
+        seen["pick"] = kwargs["pick"]
+        return "notebook-abc", None
+
+    monkeypatch.setattr(
+        notebook_lookup_module,
+        "_resolve_notebook_id",
+        resolve_notebook,
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "save_notebook_as_image",
+        lambda notebook_id, name, version="v1", description="", session=None: {
+            "image": {"image_id": "img-saved-002"}
+        },
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "image",
+            "save",
+            "demo-notebook",
+            "--workspace",
+            "Test Workspace",
+            "--pick",
+            "2",
+            "-n",
+            "saved-img",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == {"pick": 2}
+    assert "img-saved-002" not in result.output
+
+
 def test_image_save_public_visibility_calls_update_image(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -945,7 +1150,7 @@ def test_image_save_public_visibility_calls_update_image(
     )
     assert result.exit_code == 0
     assert update_captured == {"image_id": "img-pub-001", "visibility": "VISIBILITY_PUBLIC"}
-    assert "Visibility: public" in result.output
+    assert result.output == "OK Image saving: shared-base:v1\n"
 
 
 def test_image_save_private_visibility_calls_update_image(
@@ -984,7 +1189,88 @@ def test_image_save_private_visibility_calls_update_image(
     )
     assert result.exit_code == 0
     assert seen_visibility == {"visibility": "VISIBILITY_PRIVATE"}
-    assert "Visibility: private" in result.output
+    assert result.output == "OK Image saving: my-img:v1\n"
+
+
+def test_image_save_visibility_warning_is_compact_and_safe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        browser_api_module,
+        "save_notebook_as_image",
+        lambda **_kwargs: {"image": {"image_id": "img-saved-warning"}},
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "update_image",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "failed at /Users/alice/private.log image_id=img-saved-warning"
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "image",
+            "save",
+            "demo-notebook",
+            "--workspace",
+            "Test Workspace",
+            "-n",
+            "saved-img",
+            "--visibility",
+            "public",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _json_data(result.output) == {
+        "name": "saved-img:v1",
+        "status": "saving",
+        "warning": (
+            "Visibility was not updated. Retry with: "
+            "inspire image set-visibility saved-img:v1 --visibility public"
+        ),
+    }
+    assert "/Users/alice/private.log" not in result.output
+    assert "img-saved-warning" not in result.output
+
+
+def test_image_save_error_hides_internal_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        browser_api_module,
+        "save_notebook_as_image",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "request payload failed at /Users/alice/private.log "
+                "image_id=img-secret-123"
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "image",
+            "save",
+            "demo-notebook",
+            "--workspace",
+            "Test Workspace",
+            "-n",
+            "saved-img",
+        ],
+    )
+
+    assert result.exit_code != 0
+    _assert_safe_failure(result.output, "Could not save notebook as an image.")
 
 
 def test_image_set_visibility_command(
@@ -992,6 +1278,13 @@ def test_image_set_visibility_command(
 ) -> None:
     _patch_config_and_session(monkeypatch, tmp_path)
     _patch_image_name_resolver(monkeypatch, {"my-image:v1": "image-abc-def"})
+    monkeypatch.setattr(
+        image_commands_module,
+        "require_confirmation",
+        lambda *_args, **_kwargs: pytest.fail(
+            "set-visibility must not use deletion confirmation"
+        ),
+    )
 
     captured: dict[str, Any] = {}
 
@@ -1009,7 +1302,7 @@ def test_image_set_visibility_command(
     )
     assert result.exit_code == 0
     assert captured == {"image_id": "image-abc-def", "visibility": "VISIBILITY_PUBLIC"}
-    assert "visibility set to public" in result.output
+    assert result.output == "OK Image updated: my-image:v1\n"
     assert "image-abc-def" not in result.output
 
     result2 = runner.invoke(
@@ -1018,8 +1311,80 @@ def test_image_set_visibility_command(
     )
     assert result2.exit_code == 0
     assert captured == {"image_id": "image-abc-def", "visibility": "VISIBILITY_PRIVATE"}
-    assert "visibility set to private" in result2.output
+    assert result2.output == "OK Image updated: my-image:v1\n"
     assert "image-abc-def" not in result2.output
+
+
+def test_image_set_visibility_forwards_pick_to_name_resolution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    seen: dict[str, object] = {}
+
+    def resolve_image(*_args, **kwargs):  # noqa: ANN001
+        seen["pick"] = kwargs["pick"]
+        return "image-abc-def"
+
+    monkeypatch.setattr(image_commands_module, "_resolve_image_name", resolve_image)
+    monkeypatch.setattr(
+        browser_api_module,
+        "update_image",
+        lambda **_kwargs: {"ok": True},
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "image",
+            "set-visibility",
+            "my-image:v1",
+            "--pick",
+            "2",
+            "--visibility",
+            "public",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == {"pick": 2}
+    assert _json_data(result.output) == {
+        "name": "my-image:v1",
+        "status": "updated",
+    }
+    assert "image-abc-def" not in result.output
+
+
+def test_image_set_visibility_error_hides_internal_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    _patch_image_name_resolver(monkeypatch, {"my-image:v1": "img-secret-123"})
+    monkeypatch.setattr(
+        browser_api_module,
+        "update_image",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "request payload failed at /Users/alice/private.log "
+                "image_id=img-secret-123"
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "image",
+            "set-visibility",
+            "my-image:v1",
+            "--visibility",
+            "public",
+        ],
+    )
+
+    assert result.exit_code != 0
+    _assert_safe_failure(result.output, "Could not update image visibility.")
 
 
 def test_image_save_fallback_resolves_image_id_via_list(
@@ -1087,7 +1452,7 @@ def test_image_save_fallback_resolves_image_id_via_list(
     )
 
     assert result.exit_code == 0
-    assert result.output == "Image saving: saved-img:v1\n"
+    assert result.output == "OK Image saving: saved-img:v1\n"
     assert "img-newest" not in result.output
 
 
@@ -1122,7 +1487,7 @@ def test_image_save_unknown_when_fallback_fails(
     )
 
     assert result.exit_code == 0
-    assert result.output == "Image saving: saved-img:v1\n"
+    assert result.output == "OK Image saving: saved-img:v1\n"
     assert "unknown" not in result.output
 
 
@@ -1141,7 +1506,7 @@ def test_image_delete_with_yes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     runner = CliRunner()
     result = runner.invoke(cli_main, ["image", "delete", "stale-image:v1", "--yes"])
     assert result.exit_code == 0
-    assert "stale-image:v1" in result.output
+    assert result.output == "OK Image deleted: stale-image:v1\n"
     assert "img-del-001" not in result.output
     assert deleted_ids == ["img-del-001"]
 
@@ -1167,32 +1532,100 @@ def test_image_delete_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     _assert_compact_public_payload(payload)
 
 
+def test_image_delete_error_hides_internal_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    _patch_image_name_resolver(monkeypatch, {"stale-image:v2": "img-secret-123"})
+    monkeypatch.setattr(
+        browser_api_module,
+        "delete_image",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "request payload failed at /Users/alice/private.log "
+                "image_id=img-secret-123"
+            )
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "image", "delete", "stale-image:v2", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    _assert_safe_failure(result.output, "Could not delete image.")
+
+
+def test_image_delete_json_requires_confirmation_before_session_or_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        image_commands_module,
+        "require_web_session",
+        lambda *_args, **_kwargs: calls.append("session"),
+    )
+    monkeypatch.setattr(
+        image_commands_module,
+        "_resolve_image_name",
+        lambda *_args, **_kwargs: calls.append("resolve"),
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "delete_image",
+        lambda **_kwargs: calls.append("delete"),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "image", "delete", "stale-image:v3"],
+    )
+
+    assert result.exit_code == 12, result.output
+    assert json.loads(result.output) == {
+        "success": False,
+        "error": {
+            "type": "ConfirmationRequired",
+            "code": 12,
+            "message": "Image deletion requires confirmation.",
+            "hint": "Pass --yes to confirm.",
+        },
+    }
+    assert calls == []
+
+
 def test_image_delete_prompts_without_yes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _patch_config_and_session(monkeypatch, tmp_path)
-    _patch_image_name_resolver(monkeypatch, {"stale-image:v3": "img-del-003"})
-
+    calls: list[str] = []
+    monkeypatch.setattr(
+        image_commands_module,
+        "_resolve_image_name",
+        lambda *_args, **_kwargs: calls.append("resolve"),
+    )
     monkeypatch.setattr(
         browser_api_module,
         "delete_image",
-        lambda image_id, session=None: {},
+        lambda **_kwargs: calls.append("delete"),
     )
 
     runner = CliRunner()
-    # Answer 'n' to the confirmation prompt
     result = runner.invoke(cli_main, ["image", "delete", "stale-image:v3"], input="n\n")
-    assert result.exit_code == 0
-    assert "Cancelled" in result.output
-    assert "img-del-003" not in result.output
+
+    assert result.exit_code != 0
+    assert "Aborted!" in result.output
+    assert calls == []
 
 
-def test_image_set_default_command_is_removed() -> None:
-    runner = CliRunner()
-    removed_default_cmd = "set" + "-default"
-    result = runner.invoke(cli_main, ["image", removed_default_cmd])
-    assert result.exit_code == 2
-    assert f"No such command '{removed_default_cmd}'" in result.output
+def test_image_save_workspace_metavar_is_name_only() -> None:
+    result = CliRunner().invoke(cli_main, ["image", "save", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--workspace NAME" in result.output
+    assert "--workspace NAME|all" not in result.output
+    assert "--workspace TEXT" not in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1363,3 +1796,9 @@ def test_format_image_detail():
     assert "private" in result
     assert "Source" not in result
     assert "READY" in result
+    assert "Registry" not in result
+    assert "registry/my-image:v1" not in result
+    assert "Description" not in result
+    assert "Test image" not in result
+    assert "Created" not in result
+    assert "2026-01-15" not in result

@@ -1,4 +1,4 @@
-"""Tests for `inspire notebook url` / proxy URL helpers."""
+"""Tests for notebook web-entry commands and IDE URL helpers."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import importlib
 import json
 from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from inspire.cli.commands.notebook import url_cmd as url_cmd_mod
@@ -33,31 +34,6 @@ workspace_module = importlib.import_module("inspire.config.workspaces")
 # ---------------------------------------------------------------------------
 # URL normalization
 # ---------------------------------------------------------------------------
-
-
-def test_suffix_is_host_less_and_starts_with_slash() -> None:
-    raw = f"{_IDE_URL}/lab?folder=/root"
-    suffix = pw._vscode_proxy_suffix(raw)
-    assert suffix == _SUFFIX
-    assert suffix is not None and suffix.startswith("/ws-")
-
-
-def test_suffix_forces_vscode_marker() -> None:
-    # The loaded IDE may be something other than VSCode; the marker (segment
-    # after user-<id>) is rewritten to vscode regardless.
-    raw = "https://gw/ws-a/project-b/user-c/jupyter/run/tok/lab"
-    assert pw._vscode_proxy_suffix(raw) == "/ws-a/project-b/user-c/vscode/run/tok"
-
-
-def test_suffix_keeps_query_token_when_no_path_token() -> None:
-    raw = "https://gw/ws-a/project-b/user-c/anyide/run/?token=secret&x=1"
-    assert pw._vscode_proxy_suffix(raw) == "/ws-a/project-b/user-c/vscode/run?token=secret"
-
-
-def test_suffix_returns_none_without_gateway_structure() -> None:
-    assert pw._vscode_proxy_suffix("https://h/ide?notebook_id=x") is None
-    assert pw._vscode_proxy_suffix("https://h/api/user-c/jupyter/run/tok") is None
-    assert pw._vscode_proxy_suffix("") is None
 
 
 def test_ide_gateway_url_keeps_host_and_strips_proxy_suffix() -> None:
@@ -107,7 +83,7 @@ def test_find_returns_none_when_no_gateway_frame() -> None:
 
 
 # ---------------------------------------------------------------------------
-# resolve_notebook_vscode_proxy_suffix — cache / probe / browser
+# resolve_notebook_vscode_ide_url — cache / probe / browser
 # ---------------------------------------------------------------------------
 
 
@@ -128,7 +104,7 @@ def test_resolve_uses_cache_when_probe_live(monkeypatch) -> None:  # noqa: ANN00
 
     monkeypatch.setattr(pw, "resolve_notebook_ide_url", _no_browser)
 
-    assert pw.resolve_notebook_vscode_proxy_suffix(_NOTEBOOK_ID, session=object()) == _SUFFIX
+    assert pw.resolve_notebook_vscode_ide_url(_NOTEBOOK_ID, session=object()) == _IDE_URL
 
 
 def test_resolve_reuses_warm_rtunnel_candidate(monkeypatch) -> None:  # noqa: ANN001
@@ -142,7 +118,7 @@ def test_resolve_reuses_warm_rtunnel_candidate(monkeypatch) -> None:  # noqa: AN
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("browser must not run")),
     )
 
-    assert pw.resolve_notebook_vscode_proxy_suffix(_NOTEBOOK_ID, session=object()) == _SUFFIX
+    assert pw.resolve_notebook_vscode_ide_url(_NOTEBOOK_ID, session=object()) == _IDE_URL
 
 
 def test_resolve_falls_back_to_browser_when_stale(monkeypatch) -> None:  # noqa: ANN001
@@ -152,7 +128,7 @@ def test_resolve_falls_back_to_browser_when_stale(monkeypatch) -> None:  # noqa:
     monkeypatch.setattr(pw, "_is_ide_url_live", lambda *a, **k: False)  # token rotated
     monkeypatch.setattr(pw, "resolve_notebook_ide_url", lambda *a, **k: _IDE_URL)
 
-    assert pw.resolve_notebook_vscode_proxy_suffix(_NOTEBOOK_ID, session=object()) == _SUFFIX
+    assert pw.resolve_notebook_vscode_ide_url(_NOTEBOOK_ID, session=object()) == _IDE_URL
 
 
 def test_resolve_refresh_skips_cache_and_probe(monkeypatch) -> None:  # noqa: ANN001
@@ -169,8 +145,8 @@ def test_resolve_refresh_skips_cache_and_probe(monkeypatch) -> None:  # noqa: AN
     )
     monkeypatch.setattr(pw, "resolve_notebook_ide_url", lambda *a, **k: _IDE_URL)
 
-    out = pw.resolve_notebook_vscode_proxy_suffix(_NOTEBOOK_ID, session=object(), refresh=True)
-    assert out == _SUFFIX
+    out = pw.resolve_notebook_vscode_ide_url(_NOTEBOOK_ID, session=object(), refresh=True)
+    assert out == _IDE_URL
 
 
 def test_resolve_returns_none_when_browser_fails(monkeypatch) -> None:  # noqa: ANN001
@@ -179,7 +155,7 @@ def test_resolve_returns_none_when_browser_fails(monkeypatch) -> None:  # noqa: 
     monkeypatch.setattr(pw, "_warm_ide_url_candidates", lambda *a, **k: [])
     monkeypatch.setattr(pw, "resolve_notebook_ide_url", lambda *a, **k: None)
 
-    assert pw.resolve_notebook_vscode_proxy_suffix(_NOTEBOOK_ID, session=object()) is None
+    assert pw.resolve_notebook_vscode_ide_url(_NOTEBOOK_ID, session=object()) is None
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +168,7 @@ def _patch_resolve(monkeypatch) -> list[str]:  # noqa: ANN001
     monkeypatch.setattr(
         url_cmd_mod,
         "_resolve_notebook",
-        lambda ctx, notebook, workspace: (
+        lambda ctx, notebook, workspace, *, pick=None: (
             SimpleNamespace(storage_state={}),
             _BASE_URL,
             _NOTEBOOK_ID,
@@ -232,8 +208,8 @@ def test_resolve_notebook_validates_cached_handle_through_stale_retry(
     monkeypatch.setattr(notebook_cli_module, "load_config", lambda _ctx: SimpleNamespace())
     monkeypatch.setattr(
         workspace_module,
-        "resolve_workspace_query_scope",
-        lambda *_args, **_kwargs: (["ws-live"], "ws-live"),
+        "resolve_workspace_operation_scope",
+        lambda *_args, **_kwargs: "ws-live",
     )
 
     def fake_retry(*_args, operation, **kwargs):  # noqa: ANN001
@@ -256,6 +232,7 @@ def test_resolve_notebook_validates_cached_handle_through_stale_retry(
         Context(),
         "demo-notebook",
         "CPU资源空间",
+        pick=2,
     )
 
     assert resolved_session is session
@@ -263,7 +240,80 @@ def test_resolve_notebook_validates_cached_handle_through_stale_retry(
     assert notebook_id == "notebook-live"
     assert seen["identifier"] == "demo-notebook"
     assert seen["workspace_ids"] == ["ws-live"]
+    assert seen["pick"] == 2
     assert detail_calls == ["notebook-live"]
+
+
+@pytest.mark.parametrize(
+    ("command", "extra_args"),
+    (
+        ("url", ()),
+        ("vscode", ()),
+        ("proxy-url", ("--port", "30000")),
+    ),
+)
+def test_url_commands_pass_pick_to_live_resolvers(
+    monkeypatch,
+    command: str,
+    extra_args: tuple[str, ...],
+) -> None:  # noqa: ANN001
+    resolved_picks: list[int | None] = []
+    policy_picks: list[int | None] = []
+    monkeypatch.setattr(
+        url_cmd_mod,
+        "_resolve_notebook",
+        lambda _ctx, _notebook, _workspace, *, pick=None: (
+            resolved_picks.append(pick)
+            or (
+                SimpleNamespace(storage_state={}),
+                _BASE_URL,
+                _NOTEBOOK_ID,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        url_cmd_mod,
+        "preflight_notebook_transport_policy",
+        lambda *_args, **kwargs: (
+            policy_picks.append(kwargs.get("pick"))
+            or NotebookTransportPolicy(
+                notebook="nb",
+                notebook_id=_NOTEBOOK_ID,
+                public_internet=True,
+                reason="test",
+            )
+        ),
+    )
+    monkeypatch.setattr(url_cmd_mod.webbrowser, "open", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        browser_api_mod,
+        "resolve_notebook_vscode_ide_url",
+        lambda *_args, **_kwargs: _IDE_URL,
+    )
+    monkeypatch.setattr(
+        browser_api_mod,
+        "resolve_notebook_port_forward_url",
+        lambda *_args, **_kwargs: _IDE_URL,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "notebook",
+            command,
+            "nb",
+            "--workspace",
+            "CPU资源空间",
+            "--pick",
+            "2",
+            *extra_args,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert resolved_picks == [2]
+    assert policy_picks == ([2] if command == "proxy-url" else [])
+    assert _NOTEBOOK_ID not in result.output
 
 
 def test_url_opens_entrance_link_without_printing_it(monkeypatch) -> None:  # noqa: ANN001
@@ -304,7 +354,7 @@ def test_url_rejects_notebook_handle_before_resolution(monkeypatch) -> None:  # 
     )
 
     assert result.exit_code != 0
-    assert "only accept a notebook name" in result.output
+    assert "only accept notebook names" in result.output
     assert "nb-12345678" not in result.output
 
 
@@ -323,13 +373,13 @@ def test_url_browser_failure_does_not_print_resolved_url_or_handle(monkeypatch) 
     assert _NOTEBOOK_ID not in result.output
 
 
-def test_vscode_proxy_suffix_opens_ide_without_printing_path(monkeypatch) -> None:  # noqa: ANN001
+def test_vscode_opens_ide_without_printing_url(monkeypatch) -> None:  # noqa: ANN001
     opened = _patch_resolve(monkeypatch)
     monkeypatch.setattr(
         browser_api_mod, "resolve_notebook_vscode_ide_url", lambda *a, **k: _IDE_URL
     )
     result = CliRunner().invoke(
-        cli_main, ["notebook", "vscode-proxy-suffix", "nb", "--workspace", "CPU资源空间"]
+        cli_main, ["notebook", "vscode", "nb", "--workspace", "CPU资源空间"]
     )
     assert result.exit_code == 0
     assert opened == [_IDE_URL]
@@ -338,14 +388,14 @@ def test_vscode_proxy_suffix_opens_ide_without_printing_path(monkeypatch) -> Non
     assert _NOTEBOOK_ID not in result.output
 
 
-def test_vscode_proxy_suffix_json_is_name_only(monkeypatch) -> None:  # noqa: ANN001
+def test_vscode_json_is_name_only(monkeypatch) -> None:  # noqa: ANN001
     opened = _patch_resolve(monkeypatch)
     monkeypatch.setattr(
         browser_api_mod, "resolve_notebook_vscode_ide_url", lambda *a, **k: _IDE_URL
     )
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "notebook", "vscode-proxy-suffix", "nb", "--workspace", "CPU资源空间"],
+        ["--json", "notebook", "vscode", "nb", "--workspace", "CPU资源空间"],
     )
     assert result.exit_code == 0
     assert opened == [_IDE_URL]
@@ -413,7 +463,7 @@ def test_proxy_url_json_is_name_only(monkeypatch) -> None:  # noqa: ANN001
     assert _NOTEBOOK_ID not in result.output
 
 
-def test_vscode_proxy_suffix_refresh_passes_through(monkeypatch) -> None:  # noqa: ANN001
+def test_vscode_refresh_passes_through(monkeypatch) -> None:  # noqa: ANN001
     opened = _patch_resolve(monkeypatch)
     seen: dict[str, object] = {}
 
@@ -425,7 +475,7 @@ def test_vscode_proxy_suffix_refresh_passes_through(monkeypatch) -> None:  # noq
     monkeypatch.setattr(browser_api_mod, "resolve_notebook_vscode_ide_url", _capture)
     result = CliRunner().invoke(
         cli_main,
-        ["notebook", "vscode-proxy-suffix", "nb", "--workspace", "CPU资源空间", "--refresh"],
+        ["notebook", "vscode", "nb", "--workspace", "CPU资源空间", "--refresh"],
     )
     assert result.exit_code == 0
     assert opened == [_IDE_URL]
@@ -434,13 +484,13 @@ def test_vscode_proxy_suffix_refresh_passes_through(monkeypatch) -> None:  # noq
     assert _NOTEBOOK_ID not in result.output
 
 
-def test_vscode_proxy_suffix_failure_errors(monkeypatch) -> None:  # noqa: ANN001
+def test_vscode_failure_errors(monkeypatch) -> None:  # noqa: ANN001
     opened = _patch_resolve(monkeypatch)
     monkeypatch.setattr(
         browser_api_mod, "resolve_notebook_vscode_ide_url", lambda *a, **k: None
     )
     result = CliRunner().invoke(
-        cli_main, ["notebook", "vscode-proxy-suffix", "nb", "--workspace", "CPU资源空间"]
+        cli_main, ["notebook", "vscode", "nb", "--workspace", "CPU资源空间"]
     )
     assert result.exit_code != 0
     assert "RUNNING" in result.stderr

@@ -14,11 +14,7 @@ from inspire.cli.utils.output import emit_success
 @click.command("current")
 @pass_context
 def current(ctx: Context) -> None:
-    """Print the active account name (exits 1 if none is set).
-
-    stdout stays scriptable: ``active=$(inspire account current)`` works.
-    The hint when no account is active goes to stderr.
-    """
+    """Print the active account name; exit 1 when none is set."""
     name = current_account()
     if not name:
         exit_with_error(
