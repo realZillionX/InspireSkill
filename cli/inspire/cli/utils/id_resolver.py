@@ -16,6 +16,7 @@ from inspire.cli.utils.resource_index import (
     ResourceScope,
     StaleResourceIndexRefresh,
     scope_for_session,
+    scope_workspace_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -325,7 +326,7 @@ def _resolve_cache_context(
         scope = scope_for_session(
             session,
             resource_type=resource_type,
-            workspace_id=workspace_id,
+            workspace_id=scope_workspace_id(resource_type, workspace_id),
             owner_scope=owner_scope,
         )
     if scope is None:

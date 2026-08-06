@@ -22,6 +22,7 @@ from inspire.cli.utils.resource_index import (
     ResourceIdentity,
     ResourceIndex,
     ResourceIndexDatabaseError,
+    GLOBAL_RESOURCE_TYPES,
     ResourceScope,
     StaleResourceIndexRefresh,
     scope_for_session,
@@ -40,16 +41,15 @@ RESOURCE_TYPES = (
     "notebook",
     "ssh-key",
 )
-GLOBAL_RESOURCE_TYPES = frozenset({"workspace", "ssh-key"})
 WORKSPACE_RESOURCE_TYPES = tuple(
     resource_type
     for resource_type in RESOURCE_TYPES
     if resource_type not in GLOBAL_RESOURCE_TYPES
 )
 
-# The scheduler must wake no slower than the shortest resource TTL.  Otherwise
-# a five-minute stamp interval would leave dynamic workload mappings cold for
-# several minutes after their one-minute TTL expires.
+# The scheduler must wake no slower than the shortest resource TTL, otherwise
+# workload mappings sit expired between refreshes. It is also the floor on how
+# often any account spawns a background refresh.
 PERIODIC_REFRESH_INTERVAL_SECONDS = min(DEFAULT_TTL_SECONDS.values())
 PERIODIC_REFRESH_STAMP = "resource-index-refresh.stamp"
 PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS = 30 * 60
@@ -150,10 +150,10 @@ def _workspace_fetch(session: object, _workspace_id: str, exact_name: str) -> Fe
     )
 
 
-def _project_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
-    from inspire.platform.web.browser_api.projects import list_projects
+def _project_fetch(session: object, _workspace_id: str, exact_name: str) -> FetchResult:
+    from inspire.platform.web.browser_api.projects import list_all_projects
 
-    items = list_projects(workspace_id=workspace_id, session=session)  # type: ignore[arg-type]
+    items = list_all_projects(session=session)  # type: ignore[arg-type]
     records = [
         ResourceIdentity(
             resource_id=item.project_id,
@@ -914,7 +914,9 @@ def refresh_resource_index(
             results.append(workspace_result)
             continue
 
-        if resource_type == "ssh-key":
+        # "workspace" already returned above; the rest of GLOBAL_RESOURCE_TYPES
+        # refreshes once, without a workspace fan-out.
+        if resource_type in GLOBAL_RESOURCE_TYPES:
             results.append(
                 _refresh_one(
                     index=index,

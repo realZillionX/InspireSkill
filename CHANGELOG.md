@@ -50,8 +50,17 @@
   `compute_group` 列，旧库自动 `ALTER TABLE` 迁移，schema 版本 3），由后台定时刷新
   一并维护。因此 Transport 判断在缓存命中时不发任何 API 请求；缓存未命中时也只从
   Name 解析本来就要发的 `/notebook/list` 响应里读，不再额外请求 Notebook Detail。
+- 缓存 TTL 整体放宽：Workload（notebook / job / hpc / ray / serving）60 秒 → 5 分钟，
+  平台目录类（workspace / project / compute-group / image / model / ssh-key）5 分钟 →
+  30 分钟。后台刷新进程的最小间隔取所有 TTL 的最小值，因此每账号的后台刷新从最多
+  60 秒一个降到最多 5 分钟一个。
+- Project 改为按账号全局缓存，不再按 Workspace 分片。一个 Project 可同时归属多个
+  Workspace（`ProjectInfo.workspace_ids`），平台的 `project/list` 也支持不带 Workspace
+  过滤，此前每个 Workspace 各存一份、刷新时每个 Workspace 各发一次请求。现在刷新走
+  `list_all_projects()` 一次拿全。Name 解析的 Scope 由 `scope_workspace_id()` 统一
+  归一化，刷新侧和查询侧不会再对同一个名字用不同的 Scope。
 - 新增 Quota 目录缓存：按 `(Workspace, Workload, Compute Group)` 分片缓存
-  `/resource_prices/logic_compute_groups/` 的完整响应，TTL 10 分钟，覆盖 notebook /
+  `/resource_prices/logic_compute_groups/` 的完整响应，TTL 30 分钟，覆盖 notebook /
   job / hpc / ray / serving 五类 Workload。此前 `<workload> quota` 查询和
   `create --quota` 解析都要对 Workspace 里的每个 Compute Group 各发一次规格请求
   （1 + N），现在命中缓存为 0 次。缓存整份存响应，因此“查过且为空”和“没查过”可区分，

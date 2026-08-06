@@ -12,6 +12,7 @@ from click.testing import CliRunner
 from inspire.accounts import create_account, set_current_account
 from inspire.cli.context import EXIT_API_ERROR
 from inspire.cli.utils.resource_index import (
+    DEFAULT_TTL_SECONDS,
     ResourceIdentity,
     ResourceIndex,
     ResourceScope,
@@ -361,11 +362,13 @@ def test_cache_status_is_stale_at_the_ttl_boundary(tmp_path, monkeypatch) -> Non
         now=100,
     )
 
-    monkeypatch.setattr(cache_commands.time, "time", lambda: 159)
+    ttl = DEFAULT_TTL_SECONDS["job"]
+
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 100 + ttl - 1)
     ready = cache_commands._status_payload(index)
     assert ready["items"][0]["state"] == "ready"
 
-    monkeypatch.setattr(cache_commands.time, "time", lambda: 160)
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 100 + ttl)
     stale = cache_commands._status_payload(index)
     assert stale["items"][0]["state"] == "stale"
     assert stale["items"][0]["cached_names"] == 0
@@ -956,3 +959,78 @@ def test_cache_status_human_output_labels_quota_rows(tmp_path, monkeypatch) -> N
 
     assert result.exit_code == 0, result.output
     assert "quota:ray: 1 quota rows in 1 compute groups" in result.output
+
+
+def test_project_refresh_is_global_not_per_workspace(tmp_path) -> None:
+    """A project spans workspaces, so it is fetched and cached once."""
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    fetch_workspaces: list[str] = []
+
+    class _MultiWorkspaceSession(_Session):
+        all_workspace_names = {
+            "workspace-one": "Training Space",
+            "workspace-two": "CPU Space",
+        }
+
+    def _multi_workspace_fetch(
+        _session: object, _workspace: str, exact_name: str
+    ) -> FetchResult:
+        records = [
+            ResourceIdentity(resource_id="workspace-one", name="Training Space"),
+            ResourceIdentity(resource_id="workspace-two", name="CPU Space"),
+        ]
+        if exact_name:
+            records = [record for record in records if record.name == exact_name]
+        return FetchResult(records)
+
+    def _project_fetch(_session: object, workspace_id: str, _name: str) -> FetchResult:
+        fetch_workspaces.append(workspace_id)
+        return FetchResult(
+            [ResourceIdentity(resource_id="project-one", name="CI-情境智能")]
+        )
+
+    summary = refresh_resource_index(
+        session=_MultiWorkspaceSession(),
+        index=index,
+        resource_types=("workspace", "project"),
+        force=True,
+        fetchers={"workspace": _multi_workspace_fetch, "project": _project_fetch},
+    )
+
+    assert summary.error_count == 0
+    # One fetch total, with no workspace, rather than one per workspace.
+    assert fetch_workspaces == [""]
+    assert [
+        item.resource_id for item in index.lookup(_scope("project"), "CI-情境智能")
+    ] == ["project-one"]
+    # Nothing landed under a workspace-scoped key.
+    assert index.lookup(_scope("project", "workspace-one"), "CI-情境智能") == []
+
+
+def test_project_lookup_ignores_the_caller_workspace(tmp_path, monkeypatch) -> None:
+    """Callers still pass a workspace; the scope normalizer drops it."""
+    from inspire.cli.context import Context
+    from inspire.cli.utils.id_resolver import resolve_by_name
+
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    index.upsert(
+        _scope("project"),
+        [ResourceIdentity(resource_id="project-one", name="CI-情境智能")],
+    )
+
+    def _forbidden_lister():
+        raise AssertionError("a cached project must not trigger a live list")
+
+    for workspace_id in ("workspace-one", "workspace-two", ""):
+        assert (
+            resolve_by_name(
+                Context(),
+                name="CI-情境智能",
+                resource_type="project",
+                list_candidates=_forbidden_lister,
+                session=_Session(),
+                workspace_id=workspace_id,
+                cache_index=index,
+            )
+            == "project-one"
+        )

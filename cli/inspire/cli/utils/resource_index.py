@@ -23,21 +23,23 @@ from inspire.accounts import account_dir, current_account
 SCHEMA_VERSION = 3
 RESOURCE_INDEX_FILENAME = "resource-index.sqlite3"
 
+# Two tiers. Workloads come and go under the user's own hand, so they carry the
+# shorter TTL; platform catalog data only moves when an admin changes something.
+# The shortest value here also paces the background refresh, so lowering it
+# costs a background process per account that often.
 DEFAULT_TTL_SECONDS: dict[str, int] = {
-    "workspace": 5 * 60,
-    "project": 5 * 60,
-    "compute-group": 5 * 60,
-    "image": 5 * 60,
-    "model": 5 * 60,
-    "job": 60,
-    "hpc": 60,
-    "ray": 60,
-    "serving": 60,
-    "notebook": 60,
-    "ssh-key": 5 * 60,
-    # Quota rows are workspace catalog data: they only move when an admin edits
-    # a compute group's specs, so they tolerate a longer TTL than workloads.
-    "quota": 10 * 60,
+    "workspace": 30 * 60,
+    "project": 30 * 60,
+    "compute-group": 30 * 60,
+    "image": 30 * 60,
+    "model": 30 * 60,
+    "ssh-key": 30 * 60,
+    "quota": 30 * 60,
+    "job": 5 * 60,
+    "hpc": 5 * 60,
+    "ray": 5 * 60,
+    "serving": 5 * 60,
+    "notebook": 5 * 60,
 }
 
 QUOTA_RESOURCE_TYPE = "quota"
@@ -45,6 +47,19 @@ QUOTA_RESOURCE_TYPE = "quota"
 CASE_INSENSITIVE_RESOURCE_TYPES = frozenset(
     {"workspace", "project", "compute-group"}
 )
+
+# Resource kinds that are not scoped to a workspace. A project in particular
+# belongs to several workspaces at once (``ProjectInfo.workspace_ids``), so
+# every scope for these types must use an empty workspace id -- otherwise a
+# refresh and a lookup can disagree about where a name lives.
+GLOBAL_RESOURCE_TYPES = frozenset({"workspace", "ssh-key", "project"})
+
+
+def scope_workspace_id(resource_type: str, workspace_id: str) -> str:
+    """Blank the workspace for globally scoped resource kinds."""
+    if str(resource_type or "").strip().lower() in GLOBAL_RESOURCE_TYPES:
+        return ""
+    return workspace_id
 
 
 class StaleResourceIndexRefresh(RuntimeError):
