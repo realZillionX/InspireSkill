@@ -5,7 +5,9 @@ listing, create / detail / stop / delete, configs per workspace, and the
 user+project pickers for the create dialog. Reverse-engineered via Chrome and
 frontend bundle inspection — see
 the controlled browser/live-smoke workflow in
-`references/dev/browser-api.md`.
+`references/dev/browser-api-v1.md`. The serving lifecycle actions go through
+`/api/v2/inference_serving`; that contract is in
+`references/dev/browser-api-v2.md`.
 """
 
 from __future__ import annotations

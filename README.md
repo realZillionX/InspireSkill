@@ -247,7 +247,8 @@ inspire resources availability --workspace all --include-cpu
 - [`references/workflows.md`](references/workflows.md) — CPU 准备、数据处理、分布式训练三阶段项目流程。
 - [`references/image.md`](references/image.md) — 镜像职责、保存 / 注册边界、可见性和清理原则。
 - [`references/model.md`](references/model.md) — Model Registry 与 Serving 的职责边界、注册限制和版本判断。
-- [`references/dev/browser-api.md`](references/dev/browser-api.md) — CLI 维护参考：Browser API 域、认证不变量和公开命令映射。
+- [`references/dev/browser-api-v1.md`](references/dev/browser-api-v1.md) — CLI 维护参考：`/api/v1` 域、认证不变量和公开命令映射。
+- [`references/dev/browser-api-v2.md`](references/dev/browser-api-v2.md) — CLI 维护参考：`/api/v2` 请求契约、权限边界与迁移约束。
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — 开发、测试和贡献约定。
 - [`cli/`](cli/) — CLI 源码；入口 `cli/inspire/cli/main.py`。
 - [`scripts/install.sh`](scripts/install.sh) — Curl Pipe Bash 安装器。

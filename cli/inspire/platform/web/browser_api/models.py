@@ -3,7 +3,7 @@
 Reverse-engineered from the current `/jobs/modelService` page. Model registry
 browsing and registration use the web-session Browser API. See
 the controlled browser/live-smoke workflow documented in
-`references/dev/browser-api.md`.
+`references/dev/browser-api-v1.md`.
 
 Wire-format notes:
 - `POST /api/v1/model/list` body

@@ -1,10 +1,12 @@
-# Browser API 实现地图
+# Browser API v1 实现地图
 
 > **文档类型**：CLI 维护者参考。日常启智操作不要加载本页；Agent 使用公开命令时只依赖 Name-only CLI 合同和对应 `--help`。
 >
 > **边界**：平台请求中的不透明键只存在于 [`cli/inspire/platform/web/browser_api/`](../../cli/inspire/platform/web/browser_api/) 和 Session 层。Resolver 从 Name、Workspace、Project、可读候选和本地名称索引完成解析；公开参数、错误、人类输出和 JSON 输出保持 Name-only。
 
-本页只记录当前 CLI 使用的 Browser API 域、认证不变量和公开命令映射。精确请求体与响应解析以同目录 Wrapper 和测试为准；长期文档只保留可复现且有当前消费者的事实。
+本页只记录当前 CLI 使用的 `/api/v1` 域、认证不变量和公开命令映射。精确请求体与响应解析以同目录 Wrapper 和测试为准；长期文档只保留可复现且有当前消费者的事实。
+
+同一 Session 上的 `/api/v2` Action 面单独记在 [`browser-api-v2.md`](browser-api-v2.md)：两代接口共用本页第 2 节的 Session 与账号隔离不变量，但 URL 形状、响应信封、错误语义和权限边界都不同。已经迁到 v2 的域在第 3 节标注为 v2，细节不在本页展开。
 
 ## 1. 事实源
 
@@ -20,7 +22,9 @@
 
 ## 2. 认证与请求不变量
 
-- Browser API v1 默认前缀是 `/api/v1`；部分 Job、HPC 和 Serving 生命周期使用 `/api/v2/<domain>?Action=<Action>`。
+本节的 Session、账号隔离和输出边界对 v1 和 v2 同时成立。
+
+- Browser API v1 默认前缀是 `/api/v1`，由 `browser_api_prefix` 配置；部分 Job、HPC 和 Serving 生命周期已经改走 `/api/v2`，契约见 [`browser-api-v2.md`](browser-api-v2.md)。
 - 所有平台请求使用目标 Account Alias 对应的浏览器 SSO Session；跨账号 Notebook 命令不能退回当前活动账号的 Session。
 - 请求需要使用与页面域匹配的 `Referer`。各 Wrapper 负责构造，调用方不要自行拼接。
 - Base URL、Browser API Prefix 和代理来自当前有效配置；Playwright 登录与后续请求复用同一账号网络设置。
@@ -37,13 +41,13 @@
 | Notebook | `/notebook/create`, `/notebook/list`, `/notebook/operate`, `/notebook/...`, `/notebook/events`, `/run_index/list` | `notebook create/list/status/start/stop/delete/events/lifecycle`, Name Resolver |
 | Notebook 终端与 Proxy | Notebook Lab、Terminal REST/WebSocket、Notebook Proxy | `notebook exec/shell/url/vscode/proxy-url`, 支持 SSH 的 Notebook 的 `ssh`/`scp`/`ssh-config` |
 | Image | `/image/list`, `/image/<image>`, `/image/create`, `/image/update`, `/mirror/save` | `image list/detail/register/save/set-visibility/delete` |
-| GPU Job | v2 Train Action API、`/train_job/delete`, `/train_job/job_event_list`, `/train_job/events/list`, `/logs/train` | `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |
-| HPC | v2 HPC Action API、`/hpc_jobs/list`, `/hpc_jobs/events/list`, `/hpc_jobs/instances/list`, `/hpc_jobs/...` | `hpc create/list/status/stop/delete/events/instances`, Name Resolver |
+| GPU Job | `/train_job/delete`, `/train_job/job_event_list`, `/train_job/events/list`, `/logs/train`；创建、查询、停止和实例列表已迁 v2 | `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |
+| HPC | `/hpc_jobs/list`, `/hpc_jobs/events/list`, `/hpc_jobs/instances/list`, `/hpc_jobs/...`, `/logs/hpc`；创建、查询和停止已迁 v2 | `hpc create/list/status/stop/delete/events/instances`, Name Resolver |
 | Ray | `/ray_job/list`, `/ray_job/detail`, `/ray_job/create`, `/ray_job/stop`, `/ray_job/delete`, `/ray_job/events/list`, `/ray_job/instances/list` | `ray create/list/status/stop/delete/events/instances`, Name Resolver |
 | 资源与 Quota | `/logic_compute_groups/list`, Compute Resource、Schedule Config 与 Cluster Node 家族 | `resources availability/nodes`, `notebook/job/hpc/ray/serving quota`, 创建命令的 Group 与 Quota 解析 |
 | Metrics | `/cluster_metric/resource_metric_by_time` | `notebook/job/hpc/ray/serving metrics` |
 | Model Registry | `/model/list`, `/model/detail`, `/model/...`, `/model/create` | `model list/status/versions/register`, Serving 的 Model 解析 |
-| Serving | `/inference_servings/list`, `/inference_servings/configs/...`, `/inference_servings/create`, Serving Action API、Events 与 Instances 家族 | `serving configs/create/list/status/start/stop/delete/events/instances`, Name Resolver |
+| Serving | `/inference_servings/list`, `/inference_servings/configs/...`, `/inference_servings/create`, Events 与 Instances 家族；部分生命周期已迁 v2 | `serving configs/create/list/status/start/stop/delete/events/instances`, Name Resolver |
 
 Batch 和 Workload Profile 不引入新的平台接口：Batch 展开后复用对应 `create`，Profile 只保存 `workspace`、`project`、`group`、`quota` 和 `image` 名称。
 
@@ -76,3 +80,5 @@ Browser API 变更至少完成：
 5. 对应命令 Help、Wrapper 测试和本页映射同步更新。
 
 未闭合的调查结果不进入长期 Reference。
+
+把某个域从 v1 换到 v2 时，除上述五条外还要满足 [`browser-api-v2.md`](browser-api-v2.md) 的迁移验收，并把本页第 3 节对应行改成 v2 标注。

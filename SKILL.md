@@ -72,4 +72,4 @@ Workspace 判断：
 
 ### CLI 开发
 
-仅在维护 CLI Browser API 封装、核对前端请求合同，或用户明确要求接口细节时加载 [`references/dev/browser-api.md`](references/dev/browser-api.md)。
+仅在维护 CLI Browser API 封装、核对前端请求合同，或用户明确要求接口细节时加载 [`references/dev/browser-api-v1.md`](references/dev/browser-api-v1.md)；涉及 `/api/v2` Action 面时加载 [`references/dev/browser-api-v2.md`](references/dev/browser-api-v2.md)。
