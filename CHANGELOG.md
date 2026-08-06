@@ -59,15 +59,16 @@
   过滤，此前每个 Workspace 各存一份、刷新时每个 Workspace 各发一次请求。现在刷新走
   `list_all_projects()` 一次拿全。Name 解析的 Scope 由 `scope_workspace_id()` 统一
   归一化，刷新侧和查询侧不会再对同一个名字用不同的 Scope。
-- 新增 Quota 目录缓存：按 `(Workspace, Workload, Compute Group)` 分片缓存
-  `/resource_prices/logic_compute_groups/` 的完整响应，TTL 30 分钟，覆盖 notebook /
-  job / hpc / ray / serving 五类 Workload。此前 `<workload> quota` 查询和
-  `create --quota` 解析都要对 Workspace 里的每个 Compute Group 各发一次规格请求
-  （1 + N），现在命中缓存为 0 次。缓存整份存响应，因此“查过且为空”和“没查过”可区分，
-  空结果不会再被误判成失效的 Compute Group 句柄而触发重查。
-- `inspire cache status` 增加 `quota:<workload>` 行（`cached_rows` / `compute_groups`
-  字段），`inspire cache clear` 一并清空 Quota 目录缓存。Name 解析行的
-  `cached_names` 字段不变。
+- 新增 Quota 缓存，作为 Name 解析索引的普通成员：一条 Quota 行本身就是
+  Name → Handle 映射，Name 是 `gpu,cpu,mem` 三元组（正是 `--quota` 传的值），
+  Handle 是平台 `quota_id`。`resource_identity` 新增 `payload` 列存原始规格对象
+  （`create` 需要回传 `cpu_type` / `gpu_type`），旧库自动 `ALTER TABLE` 迁移，
+  schema 版本 4。Resource 名为 `quota-notebook` / `quota-job` / `quota-hpc` /
+  `quota-ray` / `quota-serving`，Scope 是 Workspace，TTL 30 分钟，因此
+  `cache refresh --resource quota-notebook`、`cache status`、`cache clear` 和后台
+  定时刷新全部自动覆盖，Admin 删掉的规格也会被 reconcile 正常 tombstone。
+  此前 `<workload> quota` 查询和 `create --quota` 解析都要对 Workspace 里的每个
+  Compute Group 各发一次规格请求（1 + N），Scope 新鲜时现在是 0 次。
 
 - 新增按账号隔离、可定时刷新且支持手动管理的本地 Name 解析索引；`inspire cache
   status|refresh|clear` 用于查看、刷新或清理该加速层，平台 Live API 仍是资源事实源。

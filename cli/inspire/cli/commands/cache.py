@@ -23,8 +23,6 @@ from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.resource_index import (
     DEFAULT_TTL_SECONDS,
-    QUOTA_RESOURCE_TYPE,
-    QuotaCacheStatus,
     ResourceIndex,
     ResourceIndexDatabaseError,
 )
@@ -168,39 +166,7 @@ def _status_payload(index: ResourceIndex) -> dict[str, object]:
             summary["failures"] = failures
         resources.append(summary)
 
-    resources.extend(_quota_status_rows(index, names=names, now=now))
     return {"items": resources}
-
-
-def _quota_status_rows(
-    index: ResourceIndex,
-    *,
-    names: dict[str, str],
-    now: float,
-) -> list[dict[str, object]]:
-    """Summarize the quota catalog cache as one row per workload."""
-    by_workload: dict[str, list[QuotaCacheStatus]] = {}
-    for status in index.list_quota_cache_status():
-        by_workload.setdefault(status.workload, []).append(status)
-
-    rows: list[dict[str, object]] = []
-    for workload, slices in sorted(by_workload.items()):
-        row: dict[str, object] = {
-            "resource": f"{QUOTA_RESOURCE_TYPE}:{workload}",
-            "cached_rows": sum(item.row_count for item in slices),
-            "compute_groups": sum(item.group_count for item in slices),
-            "state": (
-                "ready"
-                if min(item.expires_at for item in slices) > now
-                else "stale"
-            ),
-            "updated": _age(min(item.last_refresh_at for item in slices), now=now),
-        }
-        workspace_count = sum(bool(names.get(item.workspace_id)) for item in slices)
-        if workspace_count:
-            row["workspaces"] = workspace_count
-        rows.append(row)
-    return rows
 
 
 def _refresh_payload(
@@ -380,7 +346,7 @@ def cache_status(ctx: Context) -> None:
 
     resources = payload["items"]
     if not isinstance(resources, list) or not resources:
-        click.echo("Resource cache is empty.")
+        click.echo("Resource name cache is empty.")
         return
     for row in resources:
         if not isinstance(row, dict):
@@ -388,13 +354,9 @@ def cache_status(ctx: Context) -> None:
         label = str(row["resource"])
         if row.get("workspaces"):
             label += f" ({row['workspaces']} workspaces)"
-        if "cached_rows" in row:
-            counted = f"{row['cached_rows']} quota rows"
-            if row.get("compute_groups"):
-                counted += f" in {row['compute_groups']} compute groups"
-        else:
-            counted = f"{row['cached_names']} names"
-        click.echo(f"{label}: {counted}, {row['state']}, {row['updated']}")
+        click.echo(
+            f"{label}: {row['cached_names']} names, {row['state']}, {row['updated']}"
+        )
         failures = row.get("failures")
         if not isinstance(failures, list):
             continue

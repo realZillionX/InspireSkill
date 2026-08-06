@@ -44,13 +44,19 @@ Restricted Notebook 的文件流转边界是 `/inspire/<storage>/...` 共享路�
 
 CLI 为每个启智账号维护一份可丢弃的本地缓存，只用于加速 Name 解析和 Quota 目录查询。普通 `list`、`status`、`events`、`metrics`、规格和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。
 
-- TTL 分两档：Workload（notebook / job / hpc / ray / serving）5 分钟，平台目录类（workspace / project / compute-group / image / model / ssh-key / quota）30 分钟。存在有效 Web Session 时，普通命令会静默触发到期范围的后台刷新；后台刷新进程每账号最多 5 分钟一个，且只在你实际执行 CLI 命令时才会被拉起。
+- TTL 分两档：Workload（notebook / job / hpc / ray / serving）5 分钟，平台目录类（workspace / project / compute-group / image / model / ssh-key / quota-*）30 分钟。存在有效 Web Session 时，普通命令会静默触发到期范围的后台刷新；后台刷新进程每账号最多 5 分钟一个，且只在你实际执行 CLI 命令时才会被拉起。
 - Project 与 Workspace、SSH Key 一样按账号全局缓存，不按 Workspace 分片：一个 Project 可同时归属多个 Workspace，平台也支持不带 Workspace 过滤一次列全。
 - Create 成功后会立即写入新名称，Delete 成功后会将对应缓存记录标记为失效。
 - 平台侧删除、同名重建或 Compute Group 变动会在 Live 重解析、到期刷新或手动刷新时更新缓存记录。
 - 缓存数据库损坏、锁冲突或刷新失败不能阻断正常的 Live 查询；清空缓存不会删除任何平台资源。
 
-Quota 目录按 `(Workspace, Workload, Compute Group)` 分片缓存，TTL 30 分钟，首次用到时写入。`<workload> quota` 查询和 `create --quota` 解析都读它，因此不再对每个 Compute Group 各发一次规格请求。Admin 改了 Compute Group 规格后想立刻看到新值，用 `inspire cache clear --yes`；`cache refresh` 只负责 Name 解析那一层。
+Quota 行就是普通的 Name → Handle 记录：Name 是 `gpu,cpu,mem` 三元组（正是 `--quota` 传的值），Handle 是平台 `quota_id`，另外带上所属 Compute Group 名和原始规格 Payload。因此它和其他资源共用同一套索引，Resource 名是 `quota-notebook` / `quota-job` / `quota-hpc` / `quota-ray` / `quota-serving`，Scope 是 Workspace，TTL 30 分钟。
+
+`<workload> quota` 查询和 `create --quota` 解析都读它。Scope 新鲜时零 API 调用；Scope 过期或未预热时按 Compute Group 逐个 Live 查询，语义与以前一致。同一个三元组在多个 Compute Group 里重复出现是正常的——那正是 `--group` 要消歧的情形，索引按 Handle 保留全部候选。
+
+```bash
+inspire cache refresh --resource quota-notebook --workspace 分布式训练空间
+```
 
 需要主动管理时使用：
 

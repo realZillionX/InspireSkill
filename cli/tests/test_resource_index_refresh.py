@@ -18,6 +18,7 @@ from inspire.cli.utils.resource_index import (
     ResourceScope,
 )
 from inspire.cli.utils.resource_index_refresh import (
+    RESOURCE_FETCHERS,
     FetchResult,
     RefreshResult,
     RefreshSummary,
@@ -906,61 +907,6 @@ def test_periodic_refresh_is_throttled_and_quiet(tmp_path, monkeypatch) -> None:
     assert len(calls) == 2
 
 
-def test_cache_status_reports_quota_catalog_slices(tmp_path, monkeypatch) -> None:
-    cache_commands = import_module("inspire.cli.commands.cache")
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-    quota_scope = ResourceScope(
-        base_url="https://inspire.example",
-        subject_id="user-one",
-        resource_type="quota",
-        workspace_id="workspace-one",
-        owner_scope="notebook",
-    )
-    index.store_quota_prices(
-        quota_scope,
-        "lcg-a",
-        [{"quota_id": "q-1"}, {"quota_id": "q-2"}],
-        ttl_seconds=600,
-        now=100,
-    )
-
-    monkeypatch.setattr(cache_commands.time, "time", lambda: 200)
-    payload = cache_commands._status_payload(index)
-    rows = {str(row["resource"]): row for row in payload["items"]}
-    assert rows["quota:notebook"]["cached_rows"] == 2
-    assert rows["quota:notebook"]["compute_groups"] == 1
-    assert rows["quota:notebook"]["state"] == "ready"
-
-    monkeypatch.setattr(cache_commands.time, "time", lambda: 5000)
-    stale = cache_commands._status_payload(index)
-    stale_rows = {str(row["resource"]): row for row in stale["items"]}
-    assert stale_rows["quota:notebook"]["state"] == "stale"
-
-
-def test_cache_status_human_output_labels_quota_rows(tmp_path, monkeypatch) -> None:
-    from inspire.cli.main import main
-
-    cache_commands = import_module("inspire.cli.commands.cache")
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-    index.store_quota_prices(
-        ResourceScope(
-            base_url="https://inspire.example",
-            subject_id="user-one",
-            resource_type="quota",
-            workspace_id="workspace-one",
-            owner_scope="ray",
-        ),
-        "lcg-a",
-        [{"quota_id": "q-1"}],
-    )
-    monkeypatch.setattr(cache_commands, "_index_or_exit", lambda *_a, **_k: index)
-
-    result = CliRunner().invoke(main, ["cache", "status"])
-
-    assert result.exit_code == 0, result.output
-    assert "quota:ray: 1 quota rows in 1 compute groups" in result.output
-
-
 def test_project_refresh_is_global_not_per_workspace(tmp_path) -> None:
     """A project spans workspaces, so it is fetched and cached once."""
     index = ResourceIndex(tmp_path / "index.sqlite3")
@@ -1034,3 +980,105 @@ def test_project_lookup_ignores_the_caller_workspace(tmp_path, monkeypatch) -> N
             )
             == "project-one"
         )
+
+
+def test_quota_refresh_warms_one_workload_catalog(tmp_path, monkeypatch) -> None:
+    """Quota is an ordinary resource type: `cache refresh --resource` reaches it."""
+    from inspire.cli.utils import quota_cache as quota_cache_module
+
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    groups = [
+        {"logic_compute_group_id": "lcg-a", "name": "训练区-H200-1号机房"},
+        {"logic_compute_group_id": "lcg-b", "name": "CPU资源-2"},
+    ]
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "list_notebook_compute_groups",
+        lambda **_kwargs: groups,
+    )
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_resource_prices",
+        lambda **kwargs: (
+            [
+                {
+                    "quota_id": "q-8",
+                    "gpu_count": 8,
+                    "cpu_count": 160,
+                    "memory_size_gib": 1800,
+                }
+            ]
+            if kwargs["logic_compute_group_id"] == "lcg-a"
+            else []
+        ),
+    )
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("quota-notebook",),
+        force=True,
+        fetchers={
+            "workspace": _workspace_fetch,
+            "quota-notebook": RESOURCE_FETCHERS["quota-notebook"],
+        },
+    )
+
+    assert summary.error_count == 0
+    scope = _scope("quota-notebook", "workspace-one")
+    matches = index.lookup(scope, "8,160,1800")
+    assert [item.resource_id for item in matches] == ["q-8"]
+    assert matches[0].compute_group == "训练区-H200-1号机房"
+    assert matches[0].owner_id == "lcg-a"
+
+
+def test_cache_status_reports_quota_like_any_other_resource(tmp_path, monkeypatch) -> None:
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    index.reconcile(
+        _scope("quota-ray", "workspace-one"),
+        [ResourceIdentity(resource_id="q-1", name="1,20,200", owner_id="lcg-a")],
+        now=100,
+    )
+    ttl = DEFAULT_TTL_SECONDS["quota-ray"]
+
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 100 + ttl - 1)
+    rows = {
+        str(row["resource"]): row
+        for row in cache_commands._status_payload(index)["items"]
+    }
+    assert rows["quota-ray"]["cached_names"] == 1
+    assert rows["quota-ray"]["state"] == "ready"
+
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 100 + ttl)
+    stale = {
+        str(row["resource"]): row
+        for row in cache_commands._status_payload(index)["items"]
+    }
+    assert stale["quota-ray"]["state"] == "stale"
+
+
+def test_dedupe_preserves_every_identity_field() -> None:
+    """Dedupe must not drop fields; it used to rebuild records by hand."""
+    from dataclasses import fields
+
+    from inspire.cli.utils.resource_index_refresh import _dedupe_records
+
+    record = ResourceIdentity(
+        resource_id="  q-8  ",
+        name="  8,160,1800  ",
+        owner_id="lcg-a",
+        status="READY",
+        created_at="2026-01-01",
+        compute_group="训练区-H200-1号机房",
+        payload='{"quota_id": "q-8"}',
+    )
+
+    deduped = _dedupe_records([record])[0]
+
+    assert deduped.resource_id == "q-8"
+    assert deduped.name == "8,160,1800"
+    for field in fields(ResourceIdentity):
+        if field.name in {"resource_id", "name"}:
+            continue
+        assert getattr(deduped, field.name) == getattr(record, field.name), field.name

@@ -837,144 +837,124 @@ def test_index_without_compute_group_column_is_migrated_in_place(tmp_path) -> No
     )
 
 
-def test_quota_prices_round_trip_and_expire(tmp_path) -> None:
+
+def test_payload_round_trips_for_quota_style_rows(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
-    scope = ResourceScope(
-        base_url="https://inspire.example",
-        subject_id="user-one",
-        resource_type="quota",
-        workspace_id="workspace-one",
-        owner_scope="notebook",
+    scope = _scope(resource_type="quota-notebook")
+    record = ResourceIdentity(
+        resource_id="q-1",
+        name="8,160,1800",
+        owner_id="lcg-a",
+        compute_group="训练区-H200-1号机房",
+        payload='{"quota_id": "q-1", "gpu_count": 8}',
     )
-    prices = [
-        {"quota_id": "q-1", "gpu_count": 1, "cpu_count": 20, "memory_size_gib": 200},
-        {"quota_id": "q-2", "gpu_count": 8, "cpu_count": 160, "memory_size_gib": 1800},
-    ]
 
-    assert index.lookup_quota_prices(scope, "lcg-a", now=100) is None
+    index.upsert(scope, [record], ttl_seconds=60, now=100)
 
-    index.store_quota_prices(scope, "lcg-a", prices, ttl_seconds=60, now=100)
-
-    assert index.lookup_quota_prices(scope, "lcg-a", now=150) == prices
-    # Expiry is a miss, not an empty result.
-    assert index.lookup_quota_prices(scope, "lcg-a", now=200) is None
+    cached = index.lookup(scope, "8,160,1800", now=101)[0]
+    assert cached.resource_id == "q-1"
+    assert cached.owner_id == "lcg-a"
+    assert cached.compute_group == "训练区-H200-1号机房"
+    assert cached.payload == '{"quota_id": "q-1", "gpu_count": 8}'
 
 
-def test_quota_prices_partition_by_workload_and_group(tmp_path) -> None:
+def test_duplicate_quota_triples_across_groups_are_both_retained(tmp_path) -> None:
+    """Two compute groups offering the same triple is the ambiguity case."""
     index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope(resource_type="quota-notebook")
 
-    def _scope_for(workload: str) -> ResourceScope:
-        return ResourceScope(
-            base_url="https://inspire.example",
-            subject_id="user-one",
-            resource_type="quota",
-            workspace_id="workspace-one",
-            owner_scope=workload,
+    index.reconcile(
+        scope,
+        [
+            ResourceIdentity(
+                resource_id="q-h100",
+                name="1,20,200",
+                owner_id="lcg-a",
+                compute_group="开发区-H100",
+            ),
+            ResourceIdentity(
+                resource_id="q-h200",
+                name="1,20,200",
+                owner_id="lcg-b",
+                compute_group="开发区-H200",
+            ),
+        ],
+    )
+
+    matches = index.lookup(scope, "1,20,200")
+    assert {item.resource_id for item in matches} == {"q-h100", "q-h200"}
+    assert {item.compute_group for item in matches} == {"开发区-H100", "开发区-H200"}
+
+
+def test_reconcile_tombstones_a_quota_spec_the_admin_removed(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope(resource_type="quota-notebook")
+    index.reconcile(
+        scope,
+        [
+            ResourceIdentity(resource_id="q-1", name="1,20,200", owner_id="lcg-a"),
+            ResourceIdentity(resource_id="q-2", name="8,160,1800", owner_id="lcg-a"),
+        ],
+        now=100,
+    )
+
+    index.reconcile(
+        scope,
+        [ResourceIdentity(resource_id="q-1", name="1,20,200", owner_id="lcg-a")],
+        now=200,
+    )
+
+    assert [item.resource_id for item in index.lookup(scope, "1,20,200", now=201)] == [
+        "q-1"
+    ]
+    assert index.lookup(scope, "8,160,1800", now=201) == []
+
+
+def test_index_without_payload_column_is_migrated_in_place(tmp_path) -> None:
+    path = tmp_path / "index.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE resource_identity (
+                base_url TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                owner_scope TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                owner_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                compute_group TEXT NOT NULL DEFAULT '',
+                observed_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                last_seen_scan_id TEXT,
+                tombstoned_at REAL,
+                PRIMARY KEY (
+                    base_url, subject_id, resource_type, workspace_id,
+                    owner_scope, resource_id
+                )
+            );
+            INSERT INTO resource_identity(
+                base_url, subject_id, resource_type, workspace_id, owner_scope,
+                resource_id, name, observed_at, expires_at
+            )
+            VALUES(
+                'https://inspire.example', 'user-one', 'notebook',
+                'workspace-one', 'self', 'notebook-old', 'legacy-box',
+                100.0, 9999999999.0
+            );
+            """
         )
 
-    index.store_quota_prices(
-        _scope_for("notebook"), "lcg-a", [{"quota_id": "dsw"}], now=100
+    index = ResourceIndex(path)
+    scope = _scope(resource_type="notebook")
+
+    assert index.lookup(scope, "legacy-box")[0].payload == ""
+
+    index.upsert(
+        scope,
+        [ResourceIdentity(resource_id="nb-new", name="gpu-box", payload='{"a": 1}')],
     )
-    index.store_quota_prices(_scope_for("hpc"), "lcg-a", [{"quota_id": "hpc"}], now=100)
-
-    assert index.lookup_quota_prices(_scope_for("notebook"), "lcg-a", now=101) == [
-        {"quota_id": "dsw"}
-    ]
-    assert index.lookup_quota_prices(_scope_for("hpc"), "lcg-a", now=101) == [
-        {"quota_id": "hpc"}
-    ]
-    assert index.lookup_quota_prices(_scope_for("notebook"), "lcg-b", now=101) is None
-
-
-def test_empty_quota_response_is_cached_as_authoritative(tmp_path) -> None:
-    """"Fetched and empty" must be distinguishable from "never fetched"."""
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-    scope = ResourceScope(
-        base_url="https://inspire.example",
-        subject_id="user-one",
-        resource_type="quota",
-        workspace_id="workspace-one",
-        owner_scope="hpc",
-    )
-
-    index.store_quota_prices(scope, "lcg-cpu", [], ttl_seconds=60, now=100)
-
-    assert index.lookup_quota_prices(scope, "lcg-cpu", now=101) == []
-
-
-def test_quota_prices_replace_previous_snapshot(tmp_path) -> None:
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-    scope = ResourceScope(
-        base_url="https://inspire.example",
-        subject_id="user-one",
-        resource_type="quota",
-        workspace_id="workspace-one",
-        owner_scope="notebook",
-    )
-
-    index.store_quota_prices(
-        scope, "lcg-a", [{"quota_id": "old-1"}, {"quota_id": "old-2"}], now=100
-    )
-    index.store_quota_prices(scope, "lcg-a", [{"quota_id": "new-1"}], now=200)
-
-    assert index.lookup_quota_prices(scope, "lcg-a", now=201) == [{"quota_id": "new-1"}]
-
-
-def test_clear_drops_quota_cache_with_identities(tmp_path) -> None:
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-    identity_scope = _scope(resource_type="notebook")
-    quota_scope = ResourceScope(
-        base_url="https://inspire.example",
-        subject_id="user-one",
-        resource_type="quota",
-        workspace_id="workspace-one",
-        owner_scope="notebook",
-    )
-    index.upsert(identity_scope, [_record("notebook-one", "demo")])
-    index.store_quota_prices(quota_scope, "lcg-a", [{"quota_id": "q-1"}])
-
-    index.clear()
-
-    assert index.lookup(identity_scope, "demo", fresh_only=False) == []
-    assert index.lookup_quota_prices(quota_scope, "lcg-a") is None
-    assert index.list_quota_cache_status() == []
-
-
-def test_quota_cache_status_aggregates_by_workload(tmp_path) -> None:
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-
-    def _scope_for(workload: str, workspace_id: str) -> ResourceScope:
-        return ResourceScope(
-            base_url="https://inspire.example",
-            subject_id="user-one",
-            resource_type="quota",
-            workspace_id=workspace_id,
-            owner_scope=workload,
-        )
-
-    index.store_quota_prices(
-        _scope_for("notebook", "workspace-one"),
-        "lcg-a",
-        [{"quota_id": "q-1"}, {"quota_id": "q-2"}],
-        ttl_seconds=600,
-        now=1000,
-    )
-    index.store_quota_prices(
-        _scope_for("notebook", "workspace-two"),
-        "lcg-b",
-        [{"quota_id": "q-3"}],
-        ttl_seconds=600,
-        now=1000,
-    )
-    index.store_quota_prices(
-        _scope_for("ray", "workspace-one"), "lcg-a", [], ttl_seconds=600, now=1000
-    )
-
-    statuses = {
-        (item.workload, item.workspace_id): item
-        for item in index.list_quota_cache_status()
-    }
-    assert statuses[("notebook", "workspace-one")].row_count == 2
-    assert statuses[("notebook", "workspace-one")].group_count == 1
-    assert statuses[("notebook", "workspace-two")].row_count == 1
-    assert statuses[("ray", "workspace-one")].row_count == 0
+    assert index.lookup(scope, "gpu-box")[0].payload == '{"a": 1}'

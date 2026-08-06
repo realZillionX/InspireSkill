@@ -11,7 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -23,6 +23,7 @@ from inspire.cli.utils.resource_index import (
     ResourceIndex,
     ResourceIndexDatabaseError,
     GLOBAL_RESOURCE_TYPES,
+    QUOTA_RESOURCE_TYPES,
     ResourceScope,
     StaleResourceIndexRefresh,
     scope_for_session,
@@ -40,6 +41,7 @@ RESOURCE_TYPES = (
     "serving",
     "notebook",
     "ssh-key",
+    *QUOTA_RESOURCE_TYPES,
 )
 WORKSPACE_RESOURCE_TYPES = tuple(
     resource_type
@@ -103,14 +105,10 @@ def _dedupe_records(records: Iterable[ResourceIdentity]) -> list[ResourceIdentit
         name = str(record.name or "").strip()
         if not resource_id or not name:
             continue
-        by_id[resource_id] = ResourceIdentity(
-            resource_id=resource_id,
-            name=name,
-            owner_id=str(record.owner_id or "").strip(),
-            status=str(record.status or "").strip(),
-            created_at=str(record.created_at or "").strip(),
-            compute_group=str(record.compute_group or "").strip(),
-        )
+        # `replace` rather than a fresh constructor: rebuilding field by field
+        # silently drops whatever was added to ResourceIdentity since. The
+        # remaining fields are stripped again on write in `_upsert_records`.
+        by_id[resource_id] = replace(record, resource_id=resource_id, name=name)
     return list(by_id.values())
 
 
@@ -469,6 +467,29 @@ def _ssh_key_fetch(session: object, _workspace_id: str, exact_name: str) -> Fetc
     return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
 
 
+def _quota_fetcher(workload: str) -> Fetcher:
+    """Build the fetcher for one workload's quota catalog.
+
+    The scope is a whole workspace catalog, so this fans out over every
+    compute group. That is the same 1+N the lazy path would pay on a cold
+    cache, done once for everything instead of once per group asked about.
+    """
+
+    def _fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+        from inspire.cli.utils.quota_cache import fetch_quota_catalog
+
+        records = fetch_quota_catalog(
+            session,
+            workspace_id=workspace_id,
+            workload=workload,
+        )
+        # Quota names repeat across compute groups on purpose; that ambiguity
+        # is what `--group` disambiguates, so records are not deduped by name.
+        return FetchResult(_filter_exact(records, exact_name))
+
+    return _fetch
+
+
 RESOURCE_FETCHERS: Mapping[str, Fetcher] = {
     "workspace": _workspace_fetch,
     "project": _project_fetch,
@@ -481,6 +502,10 @@ RESOURCE_FETCHERS: Mapping[str, Fetcher] = {
     "serving": _serving_fetch,
     "notebook": _notebook_fetch,
     "ssh-key": _ssh_key_fetch,
+    **{
+        f"quota-{workload}": _quota_fetcher(workload)
+        for workload in ("notebook", "job", "hpc", "ray", "serving")
+    },
 }
 
 
