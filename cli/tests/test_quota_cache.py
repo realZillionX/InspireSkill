@@ -8,12 +8,27 @@ from inspire.cli.utils import quota_cache as quota_cache_module
 from inspire.cli.utils.quota_cache import (
     SCHEDULE_TYPE_BY_WORKLOAD,
     CachedPricesLoader,
+    fetch_quota_catalog,
+    quota_scope_for_session,
     quota_triple,
-    warm_quota_catalog,
     workload_for_schedule_type,
 )
 from inspire.cli.utils.quota_resolver import QuotaMatchError, QuotaSpec, resolve_quota
-from inspire.cli.utils.resource_index import ResourceIndex
+from inspire.cli.utils.resource_index import QUOTA_WORKLOADS, ResourceIndex
+
+
+def warm_quota_catalog(*, session, index, workspace_id, workload) -> int:  # noqa: ANN001
+    """Fetch and reconcile one workspace/workload catalog, as `cache refresh` does."""
+    scope = quota_scope_for_session(
+        session, workspace_id=workspace_id, workload=workload
+    )
+    assert scope is not None
+    records = fetch_quota_catalog(
+        session, workspace_id=workspace_id, workload=workload
+    )
+    index.reconcile(scope, records)
+    return len(records)
+
 
 GROUPS = [
     {"logic_compute_group_id": "lcg-a", "name": "训练区-H200-1号机房"},
@@ -57,6 +72,10 @@ def _patch_platform(monkeypatch, prices_by_group: dict[str, list[dict]]) -> list
         lambda **_kwargs: GROUPS,
     )
     return price_calls
+
+
+def test_every_quota_workload_has_a_schedule_type() -> None:
+    assert set(SCHEDULE_TYPE_BY_WORKLOAD) == set(QUOTA_WORKLOADS)
 
 
 @pytest.mark.parametrize("workload", sorted(SCHEDULE_TYPE_BY_WORKLOAD))

@@ -28,7 +28,6 @@ from typing import Any, Optional, Sequence
 
 from inspire.cli.utils.resource_index import (
     DEFAULT_TTL_SECONDS,
-    QUOTA_WORKLOADS,
     ResourceIdentity,
     ResourceIndex,
     ResourceScope,
@@ -53,8 +52,6 @@ WORKLOAD_BY_SCHEDULE_TYPE: dict[str, str] = {
     schedule_type: workload
     for workload, schedule_type in SCHEDULE_TYPE_BY_WORKLOAD.items()
 }
-
-assert set(SCHEDULE_TYPE_BY_WORKLOAD) == set(QUOTA_WORKLOADS)
 
 
 def workload_for_schedule_type(schedule_config_type: str) -> str:
@@ -229,7 +226,6 @@ class CachedPricesLoader:
         workspace_id: str,
         schedule_config_type: str,
         cache_index: Optional[ResourceIndex] = None,
-        use_cache: bool = True,
     ) -> None:
         self._session = session
         self._workspace_id = workspace_id
@@ -239,7 +235,7 @@ class CachedPricesLoader:
         self._scope: ResourceScope | None = None
         self._index: ResourceIndex | None = None
         self._cached_by_group: dict[str, list[dict[str, Any]]] | None = None
-        if not use_cache or self._workload not in SCHEDULE_TYPE_BY_WORKLOAD:
+        if self._workload not in SCHEDULE_TYPE_BY_WORKLOAD:
             return
         self._scope = quota_scope_for_session(
             session,
@@ -308,30 +304,6 @@ class CachedPricesLoader:
         return list(prices)
 
 
-def warm_quota_catalog(
-    *,
-    session: object,
-    index: ResourceIndex,
-    workspace_id: str,
-    workload: str,
-) -> int:
-    """Fetch and reconcile one workspace/workload catalog. Returns row count."""
-    scope = quota_scope_for_session(
-        session,
-        workspace_id=workspace_id,
-        workload=workload,
-    )
-    if scope is None:
-        return 0
-    records = fetch_quota_catalog(
-        session,
-        workspace_id=workspace_id,
-        workload=workload,
-    )
-    index.reconcile(scope, records)
-    return len(records)
-
-
 __all__ = [
     "CachedPricesLoader",
     "SCHEDULE_TYPE_BY_WORKLOAD",
@@ -341,6 +313,5 @@ __all__ = [
     "quota_records",
     "quota_scope_for_session",
     "quota_triple",
-    "warm_quota_catalog",
     "workload_for_schedule_type",
 ]

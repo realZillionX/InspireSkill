@@ -24,8 +24,10 @@ from inspire.cli.utils.resource_index import (
     ResourceIndexDatabaseError,
     GLOBAL_RESOURCE_TYPES,
     QUOTA_RESOURCE_TYPES,
+    QUOTA_WORKLOADS,
     ResourceScope,
     StaleResourceIndexRefresh,
+    quota_resource_type,
     scope_for_session,
 )
 
@@ -503,8 +505,8 @@ RESOURCE_FETCHERS: Mapping[str, Fetcher] = {
     "notebook": _notebook_fetch,
     "ssh-key": _ssh_key_fetch,
     **{
-        f"quota-{workload}": _quota_fetcher(workload)
-        for workload in ("notebook", "job", "hpc", "ray", "serving")
+        quota_resource_type(workload): _quota_fetcher(workload)
+        for workload in QUOTA_WORKLOADS
     },
 }
 

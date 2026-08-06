@@ -62,10 +62,6 @@ def quota_resource_type(workload: str) -> str:
     return f"quota-{str(workload or '').strip().lower()}"
 
 
-def workload_from_quota_resource_type(resource_type: str) -> str:
-    text = str(resource_type or "").strip().lower()
-    return text[len("quota-") :] if text.startswith("quota-") else ""
-
 CASE_INSENSITIVE_RESOURCE_TYPES = frozenset(
     {"workspace", "project", "compute-group"}
 )
@@ -328,6 +324,10 @@ class ResourceIndex:
                     holder TEXT NOT NULL,
                     expires_at REAL NOT NULL
                 );
+
+                -- Quota rows briefly lived in their own table before becoming
+                -- ordinary resource_identity rows. Reclaim the space.
+                DROP TABLE IF EXISTS quota_price;
                 """
             )
             identity_columns = {
@@ -1461,5 +1461,4 @@ __all__ = [
     "resource_index_path",
     "scope_for_session",
     "scope_workspace_id",
-    "workload_from_quota_resource_type",
 ]
