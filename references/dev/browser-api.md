@@ -35,7 +35,7 @@
 | Workspace 与 Project | `/user/routes/...`, `/project/list*`, `/project/<project>`, `/project/owners` | `config context`, `init`, `project list/detail/owners` |
 | 文件页发现 | `/file/get_system_storage_type_list`, `/file/dir/list` | `init`, `init --scope project`, Notebook Path Alias 工作流 |
 | Notebook | `/notebook/create`, `/notebook/list`, `/notebook/operate`, `/notebook/...`, `/notebook/events`, `/run_index/list` | `notebook create/list/status/start/stop/delete/events/lifecycle`, Name Resolver |
-| Notebook 终端与 Proxy | Notebook Lab、Terminal REST/WebSocket、Notebook Proxy | `notebook exec/shell/net-test/url/vscode/proxy-url`, 联网 Notebook 的 `ssh`/`scp`/`ssh-config` |
+| Notebook 终端与 Proxy | Notebook Lab、Terminal REST/WebSocket、Notebook Proxy | `notebook exec/shell/url/vscode/proxy-url`, 支持 SSH 的 Notebook 的 `ssh`/`scp`/`ssh-config` |
 | Image | `/image/list`, `/image/<image>`, `/image/create`, `/image/update`, `/mirror/save` | `image list/detail/register/save/set-visibility/delete` |
 | GPU Job | v2 Train Action API、`/train_job/delete`, `/train_job/job_event_list`, `/train_job/events/list`, `/logs/train` | `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |
 | HPC | v2 HPC Action API、`/hpc_jobs/list`, `/hpc_jobs/events/list`, `/hpc_jobs/instances/list`, `/hpc_jobs/...` | `hpc create/list/status/stop/delete/events/instances`, Name Resolver |
@@ -61,7 +61,7 @@ Metrics Wrapper 统一覆盖 Notebook、Job、HPC、Ray 和 Serving，并负责�
 ## 5. Notebook Transport
 
 - 受限 Notebook 的 `exec` / `shell` 使用 Jupyter Terminal REST + WebSocket，并在命令结束后回收本次创建的 Terminal。
-- 联网且平台允许 SSH 的 Notebook 可以建立本地 Connection，供 `ssh`、`scp`、`ssh-config` 和外部 OpenSSH 工具复用。
+- Compute Group 名称不含 `H100` / `H200` 的 Notebook 可以建立本地 Connection，供 `ssh`、`scp`、`ssh-config` 和外部 OpenSSH 工具复用。
 - `--account` 指定的 Account Alias 必须贯穿 Name 解析、Session、代理、Terminal 和 Connection Cache。
 - `url`、`vscode` 和 `proxy-url` 输出或打开可读入口，不把内部网关路径作为公共资源身份。
 

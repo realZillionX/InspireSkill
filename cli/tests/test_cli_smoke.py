@@ -44,7 +44,7 @@ def test_notebook_ssh_help_is_human_ssh_entrypoint() -> None:
     runner = CliRunner()
     result = runner.invoke(cli_main, ["notebook", "ssh", "--help"])
     assert result.exit_code == 0
-    assert "OpenSSH access for public-internet notebooks." in result.output
+    assert "OpenSSH access for SSH-capable notebooks." in result.output
     assert "NAME" in result.output
     assert "--workspace NAME" in result.output
     assert "--wait / --no-wait" in result.output

@@ -31,8 +31,7 @@ def _allow_ssh_policy(monkeypatch) -> None:  # noqa: ANN001
         lambda *_args, **_kwargs: NotebookTransportPolicy(
             notebook="demo-box",
             notebook_id="nb-public",
-            public_internet=True,
-            reason="test",
+            compute_group="CPU资源-2",
         ),
     )
 
@@ -163,7 +162,7 @@ def test_notebook_ssh_help_describes_direct_name_command() -> None:
     result = CliRunner().invoke(cli_main, ["notebook", "ssh", "--help"])
 
     assert result.exit_code == EXIT_SUCCESS
-    assert "OpenSSH access for public-internet notebooks" in result.output
+    assert "OpenSSH access for SSH-capable notebooks" in result.output
     assert "NAME" in result.output
     assert "--workspace NAME" in result.output
     assert "--wait / --no-wait" in result.output
@@ -325,7 +324,6 @@ def test_connection_list_json_omits_proxy_url(monkeypatch) -> None:  # noqa: ANN
         {
             "name": "demo-box",
             "workspace": "CPU资源空间",
-            "public_internet": True,
         }
     ]
     assert "proxy.invalid" not in result.output
@@ -339,8 +337,7 @@ def test_connection_refresh_uses_mutation_success_contract(monkeypatch) -> None:
         lambda *_args, **_kwargs: NotebookTransportPolicy(
             notebook="demo-box",
             notebook_id="nb-public",
-            public_internet=True,
-            reason="test",
+            compute_group="CPU资源-2",
         ),
     )
     monkeypatch.setattr(
@@ -519,7 +516,6 @@ def test_notebook_ssh_explicit_account_bootstraps_without_switching_active(
         "load_ssh_public_key",
         lambda _pubkey=None: "ssh-ed25519 AAA",
     )
-    monkeypatch.setattr(ssh_tunnel_module, "has_internet_for_gpu_type", lambda _gpu: True)
     monkeypatch.setattr(
         flow_module.browser_api_module,
         "get_notebook_detail",

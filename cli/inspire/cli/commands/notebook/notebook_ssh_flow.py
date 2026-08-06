@@ -44,6 +44,7 @@ from inspire.platform.web.browser_api import NotebookFailedError
 from .notebook_lookup import (
     _collect_workspace_ids_for_lookup,
     _get_current_user_detail,
+    _notebook_compute_group,
     _resolve_notebook_id,
     _validate_notebook_account_access,
     _workspace_label,
@@ -52,6 +53,7 @@ from .target_resolver import (
     remember_notebook_target_aliases,
     resolve_cached_notebook_target,
 )
+from .transport import group_supports_ssh, restricted_group_label
 
 logger = logging.getLogger(__name__)
 
@@ -619,7 +621,6 @@ def run_notebook_ssh(
 ) -> None:
     from inspire.bridge.tunnel import (
         BridgeProfile,
-        has_internet_for_gpu_type,
         is_tunnel_available,
         load_tunnel_config,
         save_tunnel_config,
@@ -828,9 +829,26 @@ def run_notebook_ssh(
         )
         return
 
-    gpu_info = (notebook_detail.get("resource_spec_price") or {}).get("gpu_info") or {}
-    gpu_type = gpu_info.get("gpu_product_simple", "")
-    has_internet = has_internet_for_gpu_type(gpu_type)
+    # Last gate before the tunnel is built: callers that skip the preflight
+    # (`notebook ssh` without --workspace) must not reach an H100/H200
+    # notebook, and no bridge may be cached for one.
+    compute_group = _notebook_compute_group(notebook_detail)
+    if not group_supports_ssh(compute_group):
+        _handle_error(
+            ctx,
+            "PolicyBlocked",
+            (
+                "SSH/rtunnel access is blocked on H100/H200 notebooks: "
+                f"{scrub_raw_ids(notebook_display_name)} runs in "
+                f"{restricted_group_label(compute_group)}"
+            ),
+            EXIT_CONFIG_ERROR,
+            hint=(
+                "Use `inspire notebook exec` or `inspire notebook shell`; "
+                "restricted notebooks use JupyterTerminal instead of SSH/rtunnel."
+            ),
+        )
+        return
 
     try:
         ssh_public_key = load_ssh_public_key(pubkey)
@@ -902,7 +920,6 @@ def run_notebook_ssh(
         proxy_url=proxy_url,
         ssh_user="root",
         ssh_port=ssh_port,
-        has_internet=has_internet,
         notebook_id=notebook_id,
         notebook_name=str(notebook_detail.get("name") or "").strip() or None,
         workspace_id=resolved_workspace_id,

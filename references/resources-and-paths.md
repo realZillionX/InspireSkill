@@ -14,7 +14,7 @@
 
 调度条件没有隐式默认值。创建 Workload 时显式传入，或用 Workload Profile 保存这五类条件。Path Alias 只表示远端路径，不能替代 Workspace、Project、Group、Quota 或 Image。
 
-Restricted Notebook 的文件流转边界是 `/inspire/<storage>/...` 共享路径。通过可上网 Notebook 的 `notebook scp` 或外部 `rsync` 搬入 / 搬出共享盘。
+Restricted Notebook 的文件流转边界是 `/inspire/<storage>/...` 共享路径。通过支持 SSH 的 Notebook 的 `notebook scp` 或外部 `rsync` 搬入 / 搬出共享盘。
 
 ## 2. Workspace 判断
 

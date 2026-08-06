@@ -96,11 +96,11 @@ def notebook_ssh(
     debug_playwright: bool,
     setup_timeout: int,
 ) -> None:
-    """OpenSSH access for public-internet notebooks.
+    """OpenSSH access for SSH-capable notebooks.
 
     Use `inspire notebook ssh <notebook>` for an interactive shell, or
     `inspire notebook ssh <notebook> -- <command>` for a one-shot command.
-    Restricted notebooks use `inspire notebook shell` instead.
+    H100/H200 notebooks use `inspire notebook shell` instead.
     Cached connection management is available through `inspire notebook connection`.
     """
     notebook = reject_id_at_boundary(
@@ -116,7 +116,6 @@ def notebook_ssh(
             notebook=notebook,
             workspace=workspace,
             account=account,
-            timeout=min(setup_timeout, 30),
             pick=pick,
         )
         if not policy.allow_ssh:

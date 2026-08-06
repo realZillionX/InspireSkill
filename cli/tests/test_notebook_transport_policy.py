@@ -2,35 +2,54 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from inspire.cli.commands.notebook import transport as transport_module
 from inspire.cli.main import main as cli_main
 
 
-def test_preflight_skips_live_probe_for_statically_restricted_gpu(monkeypatch) -> None:  # noqa: ANN001
-    session = SimpleNamespace(account="secondary")
-    probe_calls: list[dict] = []
+@pytest.mark.parametrize(
+    ("compute_group", "expected"),
+    [
+        ("训练区-H200-1号机房", False),
+        ("开发区-H100-cuda12.8版本-119核", False),
+        ("h200-2号机房", False),
+        ("NVIDIA_H100_SXM", False),
+        ("CPU资源-2", True),
+        ("4090 开发区", True),
+        ("", True),
+    ],
+)
+def test_group_supports_ssh(compute_group: str, expected: bool) -> None:
+    assert transport_module.group_supports_ssh(compute_group) is expected
+
+
+def _patch_preflight(monkeypatch, detail: dict, session: object) -> list[dict]:  # noqa: ANN001
+    resolved: list[dict] = []
 
     monkeypatch.setattr(transport_module, "require_web_session", lambda *_a, **_k: session)
-    monkeypatch.setattr(
-        transport_module,
-        "_resolve_notebook_id",
-        lambda *_a, **_k: ("nb-123", "ws-123"),
-    )
     monkeypatch.setattr(transport_module, "get_base_url", lambda **_k: "https://example.test")
+
+    def fake_resolve(*_args, **kwargs):  # noqa: ANN202
+        resolved.append(kwargs)
+        return "nb-123", "ws-123"
+
+    monkeypatch.setattr(transport_module, "_resolve_notebook_id", fake_resolve)
     monkeypatch.setattr(
         transport_module.browser_api_module,
         "get_notebook_detail",
-        lambda **_k: {
-            "resource_spec_price": None,
-            "node": {"gpu_info": {"gpu_product_simple": "H200-SXM"}},
-        },
+        lambda **_k: detail,
     )
-    monkeypatch.setattr(
-        transport_module.browser_api_module,
-        "probe_notebook_network",
-        lambda **kwargs: probe_calls.append(kwargs),
+    return resolved
+
+
+def test_preflight_blocks_ssh_for_h200_group(monkeypatch) -> None:  # noqa: ANN001
+    session = SimpleNamespace(account="secondary")
+    _patch_preflight(
+        monkeypatch,
+        {"logic_compute_group": {"name": "训练区-H200-1号机房"}},
+        session,
     )
 
     policy = transport_module.preflight_notebook_transport_policy(
@@ -40,42 +59,19 @@ def test_preflight_skips_live_probe_for_statically_restricted_gpu(monkeypatch) -
         account="secondary",
     )
 
+    assert policy.compute_group == "训练区-H200-1号机房"
+    assert policy.allow_ssh is False
+    assert policy.allow_proxy_url is False
     assert policy.exec_transport == "jupyter"
-    assert policy.reason == "static_gpu_policy"
     assert policy.session is session
-    assert probe_calls == []
 
 
-def test_preflight_still_live_probes_potentially_public_gpu(monkeypatch) -> None:  # noqa: ANN001
+def test_preflight_allows_ssh_for_cpu_group(monkeypatch) -> None:  # noqa: ANN001
     session = SimpleNamespace(account="secondary")
-    probe = SimpleNamespace(public_internet=True)
-    probe_calls: list[dict] = []
-    resolved: dict[str, object] = {}
-
-    monkeypatch.setattr(transport_module, "require_web_session", lambda *_a, **_k: session)
-
-    def fake_resolve(*_args, **kwargs):  # noqa: ANN202
-        resolved.update(kwargs)
-        return "nb-456", "ws-123"
-
-    monkeypatch.setattr(transport_module, "_resolve_notebook_id", fake_resolve)
-    monkeypatch.setattr(transport_module, "get_base_url", lambda **_k: "https://example.test")
-    monkeypatch.setattr(
-        transport_module.browser_api_module,
-        "get_notebook_detail",
-        lambda **_k: {
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "RTX 4090"}}
-        },
-    )
-
-    def fake_probe(**kwargs):  # noqa: ANN202
-        probe_calls.append(kwargs)
-        return probe
-
-    monkeypatch.setattr(
-        transport_module.browser_api_module,
-        "probe_notebook_network",
-        fake_probe,
+    resolved = _patch_preflight(
+        monkeypatch,
+        {"logic_compute_group": {"name": "CPU资源-2"}},
+        session,
     )
 
     policy = transport_module.preflight_notebook_transport_policy(
@@ -83,24 +79,33 @@ def test_preflight_still_live_probes_potentially_public_gpu(monkeypatch) -> None
         notebook="cpu-box",
         workspace=None,
         account="secondary",
-        timeout=17,
         pick=2,
     )
 
+    assert policy.allow_ssh is True
     assert policy.exec_transport == "ssh"
-    assert policy.reason == "live_probe"
-    assert resolved["pick"] == 2
-    assert probe_calls == [
-        {"notebook_id": "nb-456", "session": session, "timeout": 17}
-    ]
+    assert resolved[0]["pick"] == 2
 
 
-def test_policy_blocks_ssh_when_public_internet_false() -> None:
+def test_preflight_reads_group_from_flat_fallback(monkeypatch) -> None:  # noqa: ANN001
+    session = SimpleNamespace(account="primary")
+    _patch_preflight(monkeypatch, {"compute_group_name": "H100开发区"}, session)
+
+    policy = transport_module.preflight_notebook_transport_policy(
+        SimpleNamespace(json_output=False),
+        notebook="gpu-box",
+        workspace=None,
+    )
+
+    assert policy.compute_group == "H100开发区"
+    assert policy.allow_ssh is False
+
+
+def test_policy_blocks_ssh_for_restricted_group() -> None:
     policy = transport_module.NotebookTransportPolicy(
         notebook="gpu-box",
         notebook_id="nb-123",
-        public_internet=False,
-        reason="live_probe",
+        compute_group="训练区-H200-1号机房",
     )
 
     assert policy.allow_ssh is False
@@ -108,12 +113,11 @@ def test_policy_blocks_ssh_when_public_internet_false() -> None:
     assert "JupyterTerminal" in policy.block_hint
 
 
-def test_policy_allows_ssh_when_public_internet_true() -> None:
+def test_policy_allows_ssh_for_unrestricted_group() -> None:
     policy = transport_module.NotebookTransportPolicy(
         notebook="cpu-box",
         notebook_id="nb-456",
-        public_internet=True,
-        reason="live_probe",
+        compute_group="CPU资源-2",
     )
 
     assert policy.allow_ssh is True
@@ -129,8 +133,7 @@ def test_ssh_command_blocks_restricted_notebook_before_bootstrap(monkeypatch) ->
         lambda *_a, **_k: transport_module.NotebookTransportPolicy(
             notebook="gpu-box",
             notebook_id="nb-123",
-            public_internet=False,
-            reason="live_probe",
+            compute_group="训练区-H200-1号机房",
         ),
     )
     called = {"run": False}
@@ -147,7 +150,8 @@ def test_ssh_command_blocks_restricted_notebook_before_bootstrap(monkeypatch) ->
 
     assert result.exit_code != 0
     assert called["run"] is False
-    assert "blocked on notebooks without public internet" in result.output
+    assert "blocked on H100/H200 notebooks" in result.output
+    assert "训练区-H200-1号机房" in result.output
 
 
 def test_notebook_scp_rejects_restricted_notebook_with_cp_hint(monkeypatch, tmp_path) -> None:  # noqa: ANN001
@@ -161,8 +165,7 @@ def test_notebook_scp_rejects_restricted_notebook_with_cp_hint(monkeypatch, tmp_
         lambda *_a, **_k: transport_module.NotebookTransportPolicy(
             notebook="gpu-box",
             notebook_id="nb-123",
-            public_internet=False,
-            reason="live_probe",
+            compute_group="训练区-H200-1号机房",
         ),
     )
 
@@ -179,5 +182,5 @@ def test_notebook_scp_rejects_restricted_notebook_with_cp_hint(monkeypatch, tmp_
 
     assert result.exit_code != 0
     assert "SSH-based" in result.output
-    assert "public-internet notebook" in result.output
+    assert "SSH-capable notebook" in result.output
     assert "/inspire/" in result.output

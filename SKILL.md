@@ -32,7 +32,7 @@ Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和�
 
 ## 网络与合规闸门
 
-先区分公网与 SII 内部源。公网内容在可联网的 `CPU资源空间` 准备后写入共享盘或固化到已验证镜像；内部源在目标环境验证并固化到镜像。受限 Notebook 的命令通过 `exec` / `shell` 使用 JupyterTerminal，文件经 `/inspire/...` 共享路径和可联网 Notebook 的 `scp` 或外部 `rsync` 流转。
+先区分公网与 SII 内部源。公网内容在可联网的 `CPU资源空间` 准备后写入共享盘或固化到已验证镜像；内部源在目标环境验证并固化到镜像。`H100` / `H200` Compute Group 的受限 Notebook 命令通过 `exec` / `shell` 使用 JupyterTerminal，文件经 `/inspire/...` 共享路径和支持 SSH 的 Notebook 的 `scp` 或外部 `rsync` 流转。
 
 网络可达性不等于服务授权；分别核验接入端点、服务地域与条款、项目政策。不可上网区保持平台提供的 JupyterTerminal 和共享路径闭环，不通过反向隧道、代理、VPN 或中继穿透；未获授权或仅限海外使用的模型 API、AI 编程服务不在启智远端启动。信息不足时让 Agent 留在本地或已批准的联网环境。完整判断见 [`references/network-and-sources.md`](references/network-and-sources.md) 和 [`references/notebook.md`](references/notebook.md)。
 

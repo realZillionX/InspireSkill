@@ -48,32 +48,6 @@ def _proxy_port_from_url(proxy_url: str) -> Optional[int]:
     return _coerce_rtunnel_port(match.group(1))
 
 
-def has_internet_for_gpu_type(gpu_type: str) -> bool:
-    """Determine if a GPU type has internet access.
-
-    On Inspire platform:
-    - CPU, 4090: has internet
-    - H100, H200: no internet
-
-    Args:
-        gpu_type: GPU type string (e.g., "H200", "H100-SXM", "4090", "")
-
-    Returns:
-        True if the GPU type has internet access, False otherwise.
-    """
-    if not gpu_type:
-        return True  # Default to True for CPU/unknown
-
-    gpu_upper = gpu_type.upper()
-
-    # H100/H200 don't have internet
-    if "H100" in gpu_upper or "H200" in gpu_upper:
-        return False
-
-    # CPU and 4090 have internet
-    return True
-
-
 @dataclass
 class BridgeProfile:
     """A single bridge configuration."""
@@ -82,7 +56,6 @@ class BridgeProfile:
     proxy_url: str
     ssh_user: str = DEFAULT_SSH_USER
     ssh_port: int = DEFAULT_SSH_PORT
-    has_internet: bool = True  # Whether this bridge has internet access
     # Optional notebook binding for saved notebook SSH profiles.
     notebook_id: Optional[str] = None
     notebook_name: Optional[str] = None
@@ -98,7 +71,6 @@ class BridgeProfile:
             "proxy_url": self.proxy_url,
             "ssh_user": self.ssh_user,
             "ssh_port": self.ssh_port,
-            "has_internet": self.has_internet,
         }
         if self.notebook_id:
             payload["notebook_id"] = self.notebook_id
@@ -127,7 +99,6 @@ class BridgeProfile:
             proxy_url=proxy_url,
             ssh_user=data.get("ssh_user", DEFAULT_SSH_USER),
             ssh_port=data.get("ssh_port", DEFAULT_SSH_PORT),
-            has_internet=data.get("has_internet", True),
             notebook_id=data.get("notebook_id"),
             notebook_name=data.get("notebook_name"),
             workspace_id=data.get("workspace_id"),

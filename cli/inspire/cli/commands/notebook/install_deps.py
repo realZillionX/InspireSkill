@@ -397,7 +397,6 @@ def install_deps_cmd(
         notebook=notebook,
         workspace=workspace,
         account=account,
-        timeout=30,
         pick=pick,
     )
     use_jupyter = not policy.allow_ssh

@@ -28,8 +28,7 @@ def test_shell_uses_jupyter_when_policy_blocks_ssh(monkeypatch) -> None:  # noqa
             or NotebookTransportPolicy(
                 notebook="gpu-box",
                 notebook_id="nb-123",
-                public_internet=False,
-                reason="live_probe",
+                compute_group="训练区-H200-1号机房",
                 session=object(),
             )
         ),
@@ -85,8 +84,7 @@ def test_shell_check_uses_jupyter_probe_when_policy_blocks_ssh(monkeypatch) -> N
         lambda *_a, **_k: NotebookTransportPolicy(
             notebook="gpu-box",
             notebook_id="nb-123",
-            public_internet=False,
-            reason="live_probe",
+            compute_group="训练区-H200-1号机房",
         ),
         raising=False,
     )
@@ -122,8 +120,7 @@ def test_shell_check_json_is_compact(monkeypatch) -> None:  # noqa: ANN001
         lambda *_a, **_k: NotebookTransportPolicy(
             notebook="gpu-box",
             notebook_id="nb-123",
-            public_internet=False,
-            reason="live_probe",
+            compute_group="训练区-H200-1号机房",
         ),
         raising=False,
     )
@@ -164,8 +161,7 @@ def test_shell_check_uses_ssh_noninteractive_transport(monkeypatch) -> None:  # 
         lambda *_a, **_k: NotebookTransportPolicy(
             notebook="cpu-box",
             notebook_id="nb-123",
-            public_internet=True,
-            reason="live_probe",
+            compute_group="CPU资源-2",
         ),
         raising=False,
     )

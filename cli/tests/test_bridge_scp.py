@@ -28,8 +28,7 @@ def _allow_scp_transport_policy(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *_args, **_kwargs: NotebookTransportPolicy(
             notebook="default",
             notebook_id="nb-public",
-            public_internet=True,
-            reason="test",
+            compute_group="CPU资源-2",
         ),
     )
 
@@ -130,8 +129,7 @@ def test_bridge_scp_forwards_workspace_account_and_pick(
             or NotebookTransportPolicy(
                 notebook="gpu-box",
                 notebook_id="nb-123",
-                public_internet=True,
-                reason="test",
+                compute_group="CPU资源-2",
             )
         ),
     )

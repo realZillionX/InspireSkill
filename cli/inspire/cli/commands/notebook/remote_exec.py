@@ -613,7 +613,6 @@ def exec_command(
         notebook=notebook,
         workspace=workspace,
         account=account,
-        timeout=min(timeout, 30),
         pick=pick,
     )
 

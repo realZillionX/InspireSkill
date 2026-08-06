@@ -76,8 +76,6 @@ def _bridge_payload(bridge: BridgeProfile, *, healthy: bool | None = None) -> di
     }
     if bridge.workspace_name:
         payload["workspace"] = sanitize_public_text(bridge.workspace_name, omit_urls=True)
-    if bridge.has_internet is not None:
-        payload["public_internet"] = bridge.has_internet
     if healthy is not None:
         payload["connected"] = healthy
     return payload
@@ -390,12 +388,6 @@ def connection_status(ctx: Context, notebook: str, workspace: str | None) -> Non
                 f"Notebook '{scrub_raw_ids(display_name)}': connected"
             )
         )
-        if bridge.has_internet is False:
-            click.echo(
-                "Warning: cached connection is marked as no-public-internet; "
-                "do not refresh SSH/rtunnel for this notebook.",
-                err=True,
-            )
         return
 
     click.echo(
@@ -454,7 +446,7 @@ def connection_refresh(
     debug_playwright: bool,
     setup_timeout: int,
 ) -> None:
-    """Create or refresh SSH/rtunnel cache for public-internet notebooks."""
+    """Create or refresh SSH/rtunnel cache for SSH-capable notebooks."""
     workspace = _validate_workspace_selector(ctx, workspace)
     notebook = reject_id_at_boundary(
         ctx,
@@ -466,7 +458,6 @@ def connection_refresh(
         ctx,
         notebook=notebook,
         workspace=workspace,
-        timeout=min(setup_timeout, 30),
         pick=pick,
     )
     if not policy.allow_ssh:

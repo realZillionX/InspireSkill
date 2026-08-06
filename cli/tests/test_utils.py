@@ -15,7 +15,6 @@ from inspire.bridge.tunnel import (
     load_tunnel_config,
     save_tunnel_config,
     _get_proxy_command,
-    has_internet_for_gpu_type,
 )
 
 
@@ -85,40 +84,6 @@ class TestConfigHelpers:
 # ===========================================================================
 
 
-class TestHasInternetForGpuType:
-    """Tests for has_internet_for_gpu_type helper function."""
-
-    def test_empty_gpu_type_returns_true(self) -> None:
-        """Empty GPU type defaults to having internet (CPU)."""
-        assert has_internet_for_gpu_type("") is True
-
-    def test_none_returns_true(self) -> None:
-        """None GPU type defaults to having internet."""
-        # Type hint says str, but handle None gracefully
-        assert has_internet_for_gpu_type(None) is True  # type: ignore[arg-type]
-
-    def test_h200_returns_false(self) -> None:
-        """H200 GPUs don't have internet."""
-        assert has_internet_for_gpu_type("H200") is False
-        assert has_internet_for_gpu_type("h200") is False
-        assert has_internet_for_gpu_type("H200-SXM") is False
-
-    def test_h100_returns_false(self) -> None:
-        """H100 GPUs don't have internet."""
-        assert has_internet_for_gpu_type("H100") is False
-        assert has_internet_for_gpu_type("h100") is False
-        assert has_internet_for_gpu_type("H100-SXM") is False
-
-    def test_4090_returns_true(self) -> None:
-        """4090 GPUs have internet."""
-        assert has_internet_for_gpu_type("4090") is True
-        assert has_internet_for_gpu_type("RTX 4090") is True
-
-    def test_cpu_returns_true(self) -> None:
-        """CPU (no GPU) has internet."""
-        assert has_internet_for_gpu_type("CPU") is True
-
-
 class TestBridgeProfile:
     """Tests for BridgeProfile dataclass."""
 
@@ -170,7 +135,6 @@ class TestBridgeProfile:
         assert profile.name == "test-bridge"
         assert profile.ssh_user == "root"  # default
         assert profile.ssh_port == 22222  # default
-        assert profile.has_internet is True  # default
         assert profile.rtunnel_port == 31337
 
     def test_from_dict_infers_rtunnel_port_from_proxy_url(self) -> None:
@@ -182,39 +146,6 @@ class TestBridgeProfile:
         profile = BridgeProfile.from_dict(d)
 
         assert profile.rtunnel_port == 32222
-
-    def test_has_internet_field(self) -> None:
-        """Test has_internet field in BridgeProfile."""
-        profile_with_internet = BridgeProfile(
-            name="bridge1",
-            proxy_url="https://proxy.example.com",
-            has_internet=True,
-        )
-        profile_without_internet = BridgeProfile(
-            name="bridge2",
-            proxy_url="https://proxy.example.com",
-            has_internet=False,
-        )
-
-        # Test to_dict includes has_internet
-        assert profile_with_internet.to_dict()["has_internet"] is True
-        assert profile_without_internet.to_dict()["has_internet"] is False
-
-        # Test from_dict with has_internet
-        d = {
-            "name": "test",
-            "proxy_url": "https://proxy.example.com",
-            "has_internet": False,
-        }
-        profile = BridgeProfile.from_dict(d)
-        assert profile.has_internet is False
-
-        d_defaulted = {
-            "name": "defaulted",
-            "proxy_url": "https://proxy.example.com",
-        }
-        profile_defaulted = BridgeProfile.from_dict(d_defaulted)
-        assert profile_defaulted.has_internet is True
 
 
 class TestTunnelConfig:

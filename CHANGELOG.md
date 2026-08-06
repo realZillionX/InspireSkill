@@ -31,8 +31,22 @@
   账号是唯一受支持的凭据来源，用 `inspire account add <name>` 配置。其余
   `INSPIRE_*` 配置项（如 `INSPIRE_SHM_SIZE`、`INSPIRE_JOB_ENABLE_NOTIFICATION`）不受影响。
 - `inspire update` 不再抓取并打印 GitHub Release 正文。
+- 移除 `inspire notebook net-test` 及其背后的 JupyterTerminal 出站探测
+  （`probe_notebook_network` 和相关 Browser API 导出）。它唯一的消费者是 SSH transport
+  判断，而该判断已改用 Compute Group（见下）。需要确认某个具体端点是否可达时，用
+  `inspire notebook exec <name> "..."` 在容器里一次性验证。
+- `notebook connection list|status` 的 JSON 输出去掉 `public_internet` 字段，本地
+  bridge profile 也不再持久化 `has_internet`：缓存连接只会存在于支持 SSH 的 Notebook。
+  旧 `bridges.json` 中残留的 `has_internet` 会被静默忽略。
 
 ### 变更
+
+- Notebook 的 SSH/Rtunnel 可用性改为直接看 Compute Group 名称是否含 `H100` / `H200`，
+  不再靠 JupyterTerminal 联网探测推断。旧路径要为每个非静态受限的 Notebook 开一个完整
+  远端终端跑连通性探测（数十秒），且把“能上网”当作“能 SSH”的代理指标；新判断只读
+  Notebook Detail 已有的 Group 名称，preflight 降到一次 API 调用。该判断同时收紧到
+  `run_notebook_ssh` 内部，因此不带 `--workspace` 的 `notebook ssh` 也无法为受限
+  Notebook 建立连接。
 
 - 新增按账号隔离、可定时刷新且支持手动管理的本地 Name 解析索引；`inspire cache
   status|refresh|clear` 用于查看、刷新或清理该加速层，平台 Live API 仍是资源事实源。

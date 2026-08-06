@@ -24,11 +24,7 @@ from .target_resolver import (
     resolve_cached_notebook_target,
     validate_specific_workspace,
 )
-from .transport import (
-    NotebookTransportPolicy,
-    emit_ssh_policy_error,
-    preflight_notebook_transport_policy,
-)
+from .transport import emit_ssh_policy_error, preflight_notebook_transport_policy
 
 logger = logging.getLogger(__name__)
 
@@ -179,18 +175,6 @@ def ssh_proxy_cmd(
     bridge = target.bridge if target else None
     needs_bootstrap = bridge is None
     if bridge is not None:
-        if bridge.has_internet is False:
-            raise SystemExit(
-                emit_ssh_policy_error(
-                    ctx,
-                    NotebookTransportPolicy(
-                        notebook=notebook,
-                        notebook_id=bridge.notebook_id or "",
-                        public_internet=False,
-                        reason="cached_bridge",
-                    ),
-                )
-            )
         ready = is_tunnel_available(
             bridge_name=bridge.name,
             config=config,
@@ -220,7 +204,6 @@ def ssh_proxy_cmd(
             notebook=notebook,
             workspace=bootstrap_workspace,
             account=account,
-            timeout=min(setup_timeout, 30),
             pick=pick,
         )
         if not policy.allow_ssh:

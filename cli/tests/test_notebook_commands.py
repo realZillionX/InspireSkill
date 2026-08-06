@@ -1741,7 +1741,7 @@ def test_notebook_start_warns_when_no_wait_conflicts_with_configured_post_start(
     assert "Waiting for notebook to reach RUNNING status..." in result.output
 
 
-def test_run_notebook_ssh_validates_dropbear_setup_script(
+def test_run_notebook_ssh_blocks_restricted_group_before_tunnel_setup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     class FakeSession:
@@ -1797,7 +1797,7 @@ def test_run_notebook_ssh_validates_dropbear_setup_script(
         "wait_for_notebook_running",
         lambda notebook_id, session=None: {
             "name": "test-nb",
-            "resource_spec_price": {"gpu_info": {"gpu_product_simple": "H200"}},
+            "logic_compute_group": {"name": "训练区-H200-1号机房"},
         },
     )
     monkeypatch.setattr(
@@ -1821,7 +1821,6 @@ def test_run_notebook_ssh_validates_dropbear_setup_script(
     monkeypatch.setattr(
         tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
     )
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: False)
 
     with pytest.raises(SystemExit) as exc:
         ssh_flow_module.run_notebook_ssh(
@@ -1837,7 +1836,10 @@ def test_run_notebook_ssh_validates_dropbear_setup_script(
             setup_timeout=60,
         )
 
-    assert exc.value.code != EXIT_CONFIG_ERROR
+    assert exc.value.code == EXIT_CONFIG_ERROR
+    assert captured["type"] == "PolicyBlocked"
+    assert "训练区-H200-1号机房" in captured["message"]
+    assert fake_tunnel_config.bridges == {}
 
 
 def test_run_notebook_ssh_fails_fast_on_account_mismatch(
@@ -1985,7 +1987,6 @@ def test_run_notebook_ssh_passes_resolved_runtime_to_setup(
         tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
     )
     monkeypatch.setattr(tunnel_module, "save_tunnel_config", lambda config: None)
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: True)
     monkeypatch.setattr(
         tunnel_module,
         "get_ssh_command_args",
@@ -2168,7 +2169,6 @@ def test_run_notebook_ssh_refreshes_saved_profile_on_notebook_mismatch(
         tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
     )
     monkeypatch.setattr(tunnel_module, "save_tunnel_config", lambda config: None)
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: True)
     monkeypatch.setattr(
         tunnel_module,
         "is_tunnel_available",
@@ -2275,7 +2275,6 @@ def test_run_notebook_ssh_interactive_reconnects_after_drop(
         tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
     )
     monkeypatch.setattr(tunnel_module, "save_tunnel_config", lambda config: None)
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: True)
     monkeypatch.setattr(
         tunnel_module,
         "is_tunnel_available",
@@ -2384,7 +2383,6 @@ def test_run_notebook_ssh_reports_when_tunnel_not_ready(
         tunnel_module, "load_tunnel_config", lambda account=None: fake_tunnel_config
     )
     monkeypatch.setattr(tunnel_module, "save_tunnel_config", lambda config: None)
-    monkeypatch.setattr(tunnel_module, "has_internet_for_gpu_type", lambda gpu_type: True)
     monkeypatch.setattr(
         tunnel_module,
         "is_tunnel_available",
@@ -2678,7 +2676,6 @@ def test_notebook_workspace_metavars_are_name_oriented() -> None:
         "url",
         "vscode",
         "proxy-url",
-        "net-test",
     ),
 )
 def test_notebook_live_name_commands_share_pick_interface(command: str) -> None:

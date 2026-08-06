@@ -123,7 +123,7 @@ inspire resources availability --workspace all --include-cpu
 <tr>
   <td width="50%">
     <h4>📝 Notebook 统一入口</h4>
-    全链路命令化：<code>create / list / status / start / stop / ssh / connection / ssh-config / exec / shell / scp / install-deps / metrics / events / lifecycle</code>。联网 Notebook 可使用 OpenSSH / SCP / SSH Config；不可上网区 Notebook 使用 JupyterTerminal 执行命令，文件流转以 <code>/inspire/...</code> 共享路径为边界，并通过可上网 Notebook 使用 <code>notebook scp</code> 或外部 <code>rsync</code> 完成本地上传/下载。连接类命令会跨账号解析本地已缓存的 Notebook Connection，不要求先切 Active Account。
+    全链路命令化：<code>create / list / status / start / stop / ssh / connection / ssh-config / exec / shell / scp / install-deps / metrics / events / lifecycle</code>。非 <code>H100</code> / <code>H200</code> Compute Group 的 Notebook 可使用 OpenSSH / SCP / SSH Config；<code>H100</code> / <code>H200</code> 受限 Notebook 使用 JupyterTerminal 执行命令，文件流转以 <code>/inspire/...</code> 共享路径为边界，并通过支持 SSH 的 Notebook 使用 <code>notebook scp</code> 或外部 <code>rsync</code> 完成本地上传/下载。连接类命令会跨账号解析本地已缓存的 Notebook Connection，不要求先切 Active Account。
   </td>
   <td width="50%">
     <h4>🚀 HPC 任务分派</h4>

@@ -168,7 +168,6 @@ def bridge_ssh(
         notebook=notebook,
         workspace=workspace,
         account=account,
-        timeout=30,
         pick=pick,
     )
     if policy.exec_transport == "jupyter":

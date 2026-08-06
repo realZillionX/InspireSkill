@@ -36,7 +36,6 @@ from .notebook_events import events as notebook_events
 from .notebook_lifecycle import lifecycle as notebook_lifecycle
 from .notebook_metrics import notebook_metrics
 from .url_cmd import notebook_proxy_url, notebook_url, notebook_vscode
-from .net_test import notebook_net_test
 
 # Remote operations on a cached notebook connection.
 from .install_deps import install_deps_cmd
@@ -90,7 +89,6 @@ notebook.add_command(ssh_proxy_cmd)             # ssh-proxy
 notebook.add_command(notebook_events)           # events (K8s scheduling / pod lifecycle)
 notebook.add_command(notebook_lifecycle)        # lifecycle (run-cycle timeline; /run_index/list)
 notebook.add_command(notebook_metrics)          # metrics (资源视图 time-series, no SSH needed)
-notebook.add_command(notebook_net_test)         # net-test (JupyterTerminal egress probe)
 notebook.add_command(path_aliases_cmd)          # path (project remote path aliases)
 
 # Remote operations on a cached notebook connection.

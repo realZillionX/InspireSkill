@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from inspire.bridge.tunnel import has_internet_for_gpu_type
 from inspire.cli.context import EXIT_GENERAL_ERROR, Context
 from inspire.cli.utils.errors import emit_error
 from inspire.cli.utils.notebook_cli import (
@@ -11,31 +10,46 @@ from inspire.cli.utils.notebook_cli import (
     get_base_url,
     require_web_session,
 )
+from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.platform.web import browser_api as browser_api_module
 
-from .notebook_lookup import _notebook_gpu_type, _resolve_notebook_id
+from .notebook_lookup import _notebook_compute_group, _resolve_notebook_id
 
 if TYPE_CHECKING:
     from inspire.platform.web.session import WebSession
 
 NotebookExecTransport = Literal["ssh", "jupyter"]
 
+# Compute groups built on these GPU models are SSH-restricted on the platform.
+SSH_RESTRICTED_GPU_MODELS: tuple[str, ...] = ("H100", "H200")
+
+
+def group_supports_ssh(compute_group: str) -> bool:
+    """Whether notebooks in this compute group can be reached over SSH/rtunnel.
+
+    Group names carry their GPU model (``训练区-H200-1号机房``,
+    ``开发区-H100-cuda12.8版本-119核``), so the name alone decides the
+    transport. Deciding from group metadata the notebook detail already
+    carries keeps the preflight to a single cheap API call.
+    """
+    upper = str(compute_group or "").upper()
+    return not any(model in upper for model in SSH_RESTRICTED_GPU_MODELS)
+
 
 @dataclass(frozen=True)
 class NotebookTransportPolicy:
     notebook: str
     notebook_id: str
-    public_internet: bool | None
-    reason: str
+    compute_group: str
     session: WebSession | None = field(default=None, repr=False, compare=False)
 
     @property
     def allow_ssh(self) -> bool:
-        return self.public_internet is True
+        return group_supports_ssh(self.compute_group)
 
     @property
     def allow_proxy_url(self) -> bool:
-        return self.public_internet is True
+        return group_supports_ssh(self.compute_group)
 
     @property
     def exec_transport(self) -> NotebookExecTransport:
@@ -49,13 +63,19 @@ class NotebookTransportPolicy:
         )
 
 
+def restricted_group_label(compute_group: str) -> str:
+    group = scrub_raw_ids(str(compute_group or "").strip())
+    return f"compute group {group}" if group else "an H100/H200 compute group"
+
+
 def emit_ssh_policy_error(ctx: Context, policy: NotebookTransportPolicy) -> int:
     return emit_error(
         ctx,
         "PolicyBlocked",
         (
-            "SSH/rtunnel access is blocked on notebooks without public internet: "
-            f"{policy.notebook}"
+            "SSH/rtunnel access is blocked on H100/H200 notebooks: "
+            f"{scrub_raw_ids(policy.notebook)} runs in "
+            f"{restricted_group_label(policy.compute_group)}"
         ),
         EXIT_GENERAL_ERROR,
         hint=policy.block_hint,
@@ -68,7 +88,6 @@ def preflight_notebook_transport_policy(
     notebook: str,
     workspace: str | None,
     account: str | None = None,
-    timeout: int = 30,
     pick: int | None = None,
 ) -> NotebookTransportPolicy:
     from inspire.config.workspaces import resolve_workspace_query_scope
@@ -95,33 +114,9 @@ def preflight_notebook_transport_policy(
         pick=pick,
     )
     detail = browser_api_module.get_notebook_detail(notebook_id=notebook_id, session=session)
-    gpu_type = _notebook_gpu_type(detail)
-    static_public = has_internet_for_gpu_type(gpu_type)
-    public_internet: bool | None
-    if static_public is False:
-        # H100/H200 and other statically restricted notebook types must never
-        # use SSH.  Avoid an expensive JupyterTerminal network probe here: it
-        # would open a complete remote terminal only to select the same
-        # restricted transport, then `notebook exec` would open a second one
-        # for the user's command.
-        public_internet = False
-        reason = "static_gpu_policy"
-    else:
-        try:
-            probe = browser_api_module.probe_notebook_network(
-                notebook_id=notebook_id,
-                session=session,
-                timeout=timeout,
-            )
-            public_internet = probe.public_internet
-            reason = "live_probe"
-        except Exception:
-            public_internet = None
-            reason = "static_gpu_fallback"
     return NotebookTransportPolicy(
         notebook=notebook,
         notebook_id=notebook_id,
-        public_internet=public_internet,
-        reason=reason,
+        compute_group=_notebook_compute_group(detail),
         session=session,
     )

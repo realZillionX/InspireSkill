@@ -205,11 +205,11 @@ def ssh_config_cmd(
     ssh_port: int,
     setup_timeout: int,
 ) -> None:
-    """Print OpenSSH config for a public-internet notebook.
+    """Print OpenSSH config for an SSH-capable notebook.
 
     Use this Host entry for ssh, scp, VS Code Remote SSH, or external rsync
-    against /inspire/... shared paths. For restricted notebooks, use a
-    public-internet notebook's config entry and keep the same /inspire/... path.
+    against /inspire/... shared paths. For H100/H200 notebooks, use an
+    SSH-capable notebook's config entry and keep the same /inspire/... path.
     """
     notebook = reject_id_at_boundary(
         ctx,
@@ -231,7 +231,6 @@ def ssh_config_cmd(
             notebook=notebook,
             workspace=workspace,
             account=account,
-            timeout=min(setup_timeout, 30),
             pick=pick,
         )
         if not policy.allow_ssh:

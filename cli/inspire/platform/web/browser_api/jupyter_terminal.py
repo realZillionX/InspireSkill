@@ -52,44 +52,6 @@ class JupyterCommandResult:
     marker: str
 
 
-@dataclass(frozen=True)
-class NetworkEndpointResult:
-    group: str
-    host: str
-    port: int
-    ok: bool
-
-
-@dataclass(frozen=True)
-class NotebookNetworkProbe:
-    public_internet: bool | None
-    endpoints: tuple[NetworkEndpointResult, ...]
-
-    @property
-    def public_successes(self) -> list[str]:
-        return [
-            f"{item.host}:{item.port}"
-            for item in self.endpoints
-            if item.group == "PUBLIC" and item.ok
-        ]
-
-    @property
-    def public_failures(self) -> list[str]:
-        return [
-            f"{item.host}:{item.port}"
-            for item in self.endpoints
-            if item.group == "PUBLIC" and not item.ok
-        ]
-
-
-PUBLIC_PROBE_ENDPOINTS: tuple[tuple[str, int], ...] = (
-    ("www.baidu.com", 443),
-    ("www.qq.com", 443),
-    ("www.163.com", 443),
-    ("mirrors.tuna.tsinghua.edu.cn", 443),
-)
-
-
 def new_completion_marker() -> str:
     return f"{JUPYTER_DONE_PREFIX}{uuid.uuid4().hex}"
 
@@ -139,53 +101,6 @@ def parse_jupyter_exec_output(raw_output: str, *, marker: str) -> JupyterCommand
         output=output,
         completed=True,
         marker=marker,
-    )
-
-
-def build_network_probe_command(
-    *,
-    public_endpoints: tuple[tuple[str, int], ...] = PUBLIC_PROBE_ENDPOINTS,
-) -> str:
-    lines = [
-        "probe_one() {",
-        '  group="$1"; host="$2"; port="$3"',
-        '  if timeout 3 bash -c "</dev/tcp/${host}/${port}" >/dev/null 2>&1; then',
-        '    echo "$group $host $port ok"',
-        "  else",
-        '    echo "$group $host $port fail"',
-        "  fi",
-        "}",
-    ]
-    for host, port in public_endpoints:
-        lines.append(f"probe_one PUBLIC {shlex.quote(host)} {int(port)} &")
-    lines.append("wait")
-    return "\n".join(lines)
-
-
-def parse_network_probe_output(output: str) -> NotebookNetworkProbe:
-    endpoints: list[NetworkEndpointResult] = []
-    for line in output.splitlines():
-        parts = line.strip().split()
-        if len(parts) != 4:
-            continue
-        group, host, port_raw, status = parts
-        if group != "PUBLIC":
-            continue
-        if not port_raw.isdigit():
-            continue
-        endpoints.append(
-            NetworkEndpointResult(
-                group=group,
-                host=host,
-                port=int(port_raw),
-                ok=status == "ok",
-            )
-        )
-    public_items = [item for item in endpoints if item.group == "PUBLIC"]
-    public = any(item.ok for item in public_items) if public_items else None
-    return NotebookNetworkProbe(
-        public_internet=public,
-        endpoints=tuple(endpoints),
     )
 
 
@@ -378,26 +293,6 @@ def run_command_capture_in_notebook(
         timeout=timeout,
         marker=marker,
     )
-
-
-def probe_notebook_network(
-    *,
-    notebook_id: str,
-    session: Optional[WebSession] = None,
-    timeout: int = 30,
-) -> NotebookNetworkProbe:
-    result = run_command_capture_in_notebook(
-        notebook_id=notebook_id,
-        command=build_network_probe_command(),
-        session=session,
-        timeout=timeout,
-    )
-    if not result.completed:
-        return NotebookNetworkProbe(
-            public_internet=None,
-            endpoints=(),
-        )
-    return parse_network_probe_output(result.output)
 
 
 def _jupyter_ws_headers(session: WebSession, ws_url: str) -> dict[str, str]:

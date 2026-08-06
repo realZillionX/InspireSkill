@@ -15,7 +15,6 @@ from .models import (
     TunnelConfig,
     TunnelError,
     TunnelNotAvailableError,
-    has_internet_for_gpu_type,
 )
 from .rtunnel import (
     DEFAULT_RTUNNEL_DOWNLOAD_URL,
@@ -44,7 +43,6 @@ __all__ = [
     "TunnelConfig",
     "TunnelError",
     "TunnelNotAvailableError",
-    "has_internet_for_gpu_type",
     # Config
     "load_tunnel_config",
     "save_tunnel_config",

@@ -15,26 +15,26 @@
 
 只缺内部源覆盖的包、系统依赖、内部镜像或 OSS 时，可以在目标 notebook 里直接配置内部源并验证；跑通后保存镜像，避免后续 workload 每次启动重新安装。
 
-`public_internet` 的 live probe 使用国内公网端点，例如 `www.baidu.com:443`、`www.qq.com:443`、`www.163.com:443` 和 `mirrors.tuna.tsinghua.edu.cn:443`。不要把 GitHub、Hugging Face、OpenAI、Anthropic 等海外模型或代码站点作为默认 probe 目标；probe 只判断普通公网出站能力，不判断具体外部服务是否合规可用。
+CLI 不做联网探测。SSH/Rtunnel 是否可用只由 Notebook 所属 Compute Group 决定：Group 名称含 `H100` / `H200` 的走 JupyterTerminal，其余走 SSH（见 [`notebook.md`](notebook.md)）。真要确认某个出站目标是否可达时，用 `inspire notebook exec <name> "..."` 在容器里对具体端点做一次性验证，并挑国内公网端点，不要把 GitHub、Hugging Face、OpenAI、Anthropic 等海外站点当作通用连通性判据。
 
 ## 2. 连通性与合规授权分开判断
 
-`public_internet=true`、能够解析域名或能够建立 TCP 连接，都只表示技术上可达，不代表可以使用任意外部服务。反过来，`public_internet=false` 也不代表内部源不可用。每次使用外部模型或 AI 编程服务时，都要把网络能力和服务授权分成两步判断。
+能够解析域名或能够建立 TCP 连接，都只表示技术上可达，不代表可以使用任意外部服务。反过来，Workspace 不可上网也不代表内部源不可用。每次使用外部模型或 AI 编程服务时，都要把网络能力和服务授权分成两步判断。
 
 | 场景 | 允许的处理 | 不要做 |
 | --- | --- | --- |
-| Notebook 明确不可上网或 Live Probe 为 `false` | 命令走 `notebook exec` / `notebook shell`，文件走 `/inspire/...` 共享路径 | 自建反向隧道、代理、VPN 或中继，把受限服务器穿透到公网；使用 `notebook ssh` 系列命令 |
-| Notebook 可上网且平台允许 SSH | 可以使用平台提供的 SSH / SCP 通道处理普通开发任务 | 把“能联网”推导成“所有模型 API 和远程 Agent 服务都可使用” |
+| Notebook 在 `H100` / `H200` Group，或所在区域明确不可上网 | 命令走 `notebook exec` / `notebook shell`，文件走 `/inspire/...` 共享路径 | 自建反向隧道、代理、VPN 或中继，把受限服务器穿透到公网；使用 `notebook ssh` 系列命令 |
+| Notebook 在支持 SSH 的 Group | 可以使用平台提供的 SSH / SCP 通道处理普通开发任务 | 把“能用 SSH”推导成“所有模型 API 和远程 Agent 服务都可使用” |
 | 外部模型 API | 核对实际 API 端点、服务地域、使用条款和项目政策 | 调用仅限海外使用或明确不向中国境内提供服务的模型 API |
 | vibe coding（AI 辅助编程）程序或服务 | 核对其实际后端和关键能力是否面向中国境内提供，工具名本身不是一刀切依据 | 在启智远端启动后端或关键能力不向中国境内提供的服务 |
 | SII 内部源 | 按目标镜像和包管理器配置并验证，跑通后保存镜像 | 把内部源可达当成普通公网已开放，或由此转接外部服务 |
 
 执行判断按以下顺序闭环：
 
-1. 先用 Workspace 已知策略或 Live Probe 判断普通公网能力。
+1. 先用 Workspace 与 Compute Group 的已知策略判断普通公网能力。
 2. 再识别实际服务提供方、接入端点、服务地域和使用条款；不要只看客户端命令名。
 3. 确认服务在中国境内可用，并且符合项目或组织政策。
-4. 根据 Notebook 网络类型选择平台支持的连接和文件通道；不可上网区不做任何网络穿透。
+4. 根据 Notebook 所属 Compute Group 选择平台支持的连接和文件通道；不可上网区不做任何网络穿透。
 5. 信息不足时默认不在启智远端启动该服务。把 Agent 留在本地或已批准的联网环境，远端只承担计算，并通过 Git、共享盘或已允许的传输通道交换代码、数据和产物。
 
 ## 3. 准备结果放哪

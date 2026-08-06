@@ -180,8 +180,7 @@ def _patch_resolve(monkeypatch) -> list[str]:  # noqa: ANN001
         lambda *_a, **_k: NotebookTransportPolicy(
             notebook="nb",
             notebook_id=_NOTEBOOK_ID,
-            public_internet=True,
-            reason="test",
+            compute_group="CPU资源-2",
         ),
     )
     monkeypatch.setattr(
@@ -279,8 +278,7 @@ def test_url_commands_pass_pick_to_live_resolvers(
             or NotebookTransportPolicy(
                 notebook="nb",
                 notebook_id=_NOTEBOOK_ID,
-                public_internet=True,
-                reason="test",
+                compute_group="CPU资源-2",
             )
         ),
     )

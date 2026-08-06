@@ -105,12 +105,12 @@ def bridge_scp(
     recursive: bool,
     timeout: Optional[int],
 ) -> None:
-    """Transfer files to/from a public-internet notebook via SSH/SCP.
+    """Transfer files to/from an SSH-capable notebook via SSH/SCP.
 
     Requires `inspire notebook connection refresh <notebook> --workspace <workspace>`
-    first. NOTEBOOK is the notebook name. This command is SSH/SCP-only and
-    is for public-internet notebooks. For restricted notebooks, keep the same
-    /inspire/... shared path and run the transfer against a public-internet
+    first. NOTEBOOK is the notebook name. This command is SSH/SCP-only, so it
+    is unavailable on H100/H200 notebooks. For those, keep the same
+    /inspire/... shared path and run the transfer against an SSH-capable
     notebook instead.
     By default, uploads SOURCE (local) to DESTINATION (remote).
     Use --download to download SOURCE (remote) to DESTINATION (local).
@@ -156,7 +156,6 @@ def bridge_scp(
         notebook=notebook,
         workspace=workspace,
         account=account,
-        timeout=30,
         pick=pick,
     )
     if not policy.allow_ssh:
@@ -166,9 +165,9 @@ def bridge_scp(
             "notebook scp is SSH-based and cannot run for this notebook.",
             EXIT_GENERAL_ERROR,
             hint=(
-                "Use a public-internet notebook to transfer shared paths instead: "
-                "inspire notebook scp <public-notebook> <local-path> /inspire/<storage>/...; "
-                "for rsync, target the public-internet notebook's SSH config entry with the same "
+                "Use an SSH-capable notebook to transfer shared paths instead: "
+                "inspire notebook scp <ssh-notebook> <local-path> /inspire/<storage>/...; "
+                "for rsync, target that notebook's SSH config entry with the same "
                 "/inspire/... path."
             ),
         )

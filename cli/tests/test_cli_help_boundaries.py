@@ -355,7 +355,7 @@ def test_notebook_ssh_and_connection_help_expose_current_interfaces() -> None:
         assert f"\n  {command} " in notebook_help.output
 
     assert ssh_help.exit_code == 0
-    assert "OpenSSH access for public-internet notebooks" in ssh_help.output
+    assert "OpenSSH access for SSH-capable notebooks" in ssh_help.output
     assert "NAME" in ssh_help.output
     assert "--workspace NAME" in ssh_help.output
 
@@ -884,7 +884,7 @@ def test_notebook_scp_help_is_ssh_only() -> None:
 
     assert result.exit_code == 0
     assert "SCP" in result.output
-    assert "public-internet notebook" in result.output
+    assert "SSH-capable notebook" in result.output
     assert "/inspire/" in result.output
 
 
@@ -902,5 +902,5 @@ def test_notebook_ssh_config_help_mentions_rsync_conversion() -> None:
 
     assert result.exit_code == 0
     assert "rsync" in result.output
-    assert "public-internet notebook" in result.output
+    assert "SSH-capable notebook" in result.output
     assert "/inspire/" in result.output

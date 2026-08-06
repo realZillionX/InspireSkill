@@ -145,4 +145,4 @@ inspire account current
 这里的 `<name>` 是本地 account alias，也就是 `~/.inspire/accounts/<name>/` 的目录名；它不要求等于平台登录 username。`~/.inspire/current` 保存当前 active account alias，每行只有一个值。`inspire account use <name>` 只更新这个默认指针，不会移动或合并任何账号目录。
 `inspire account rename <old-name> <new-name>` 只改本地 alias：移动 `~/.inspire/accounts/<old-name>/` 到新目录，若旧 alias 是 active account 则同步更新 `~/.inspire/current`，并把 remembered notebook target cache 中的旧 alias 改成新 alias。平台登录 username 保留在该账号的 `config.toml` 中，不会被 rename 修改。
 
-账号目录、Web Session、联网 Notebook SSH Connection Cache 和 rtunnel proxy state 都在 `~/.inspire/accounts/<name>/` 下。Notebook 连接类命令的 `--account <name>` 同样使用本地 Account Alias；跨账号解析、Connection Cache 管理、SSH / JupyterTerminal Transport 和受限 Notebook 文件流转统一见 [`../notebook.md`](../notebook.md)。
+账号目录、Web Session、Notebook SSH Connection Cache 和 rtunnel proxy state 都在 `~/.inspire/accounts/<name>/` 下。Notebook 连接类命令的 `--account <name>` 同样使用本地 Account Alias；跨账号解析、Connection Cache 管理、SSH / JupyterTerminal Transport 和受限 Notebook 文件流转统一见 [`../notebook.md`](../notebook.md)。

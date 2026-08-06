@@ -143,6 +143,29 @@ def _notebook_gpu_type(item: dict) -> str:
     return ""
 
 
+def _notebook_compute_group(item: dict) -> str:
+    """Return the notebook's compute group name, e.g. ``训练区-H200-1号机房``."""
+    logic_compute_group = _dict_value(item, "logic_compute_group")
+    compute_group = _dict_value(item, "compute_group")
+
+    candidates = [
+        logic_compute_group.get("name"),
+        logic_compute_group.get("logic_compute_group_name"),
+        compute_group.get("name"),
+        compute_group.get("compute_group_name"),
+        item.get("logic_compute_group_name"),
+        item.get("compute_group_name"),
+        item.get("compute_group"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            continue
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def _looks_like_notebook_id(value: str) -> bool:
     return looks_like_platform_id(value)
 
@@ -862,6 +885,7 @@ __all__ = [
     "_get_current_user_detail",
     "_list_notebooks_for_workspace",
     "_looks_like_notebook_id",
+    "_notebook_compute_group",
     "_notebook_id_from_item",
     "_resolve_notebook_id",
     "_run_notebook_operation_with_stale_handle_retry",

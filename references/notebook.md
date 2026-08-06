@@ -31,25 +31,26 @@ Notebook 是交互工作台，不只是“开一个终端”。
 
 ## 3. 连接方式
 
+Transport 由 Notebook 所属 Compute Group 决定：Group 名称含 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH/Rtunnel；其余 Group 走 SSH。这个判断只读 Notebook Detail 里的 Group 名称，不做任何远端探测。
+
 | 入口 | 心智模型 | 受限 Notebook 行为 |
 | --- | --- | --- |
 | `exec` | 一次性独立命令 | 自动走 JupyterTerminal |
 | `shell` | 持久交互会话 | 自动走 JupyterTerminal |
-| `scp` | SSH/SCP 文件复制 | 受限 Notebook 不使用；改走可上网 Notebook 与 `/inspire/...` 共享路径 |
+| `scp` | SSH/SCP 文件复制 | 受限 Notebook 不使用；改走支持 SSH 的 Notebook 与 `/inspire/...` 共享路径 |
 | `ssh` | OpenSSH 交互 | 受限 Notebook 不使用 |
-| `ssh-config` | 给 OpenSSH、`scp`、`rsync`、VS Code Remote SSH 使用 | 受限 Notebook 不生成；联网 Notebook 可生成 |
-| `connection refresh` | 创建/刷新 SSH/Rtunnel Cache | 仅对支持 SSH 的联网 Notebook 建立连接 |
+| `ssh-config` | 给 OpenSSH、`scp`、`rsync`、VS Code Remote SSH 使用 | 受限 Notebook 不生成 |
+| `connection refresh` | 创建/刷新 SSH/Rtunnel Cache | 受限 Notebook 不建立连接 |
 | `ssh-proxy` | OpenSSH ProxyCommand | 受限 Notebook 不使用 |
-| `proxy-url` | 暴露容器 HTTP 端口 | 仍须遵守网络策略和应用自身鉴权 |
+| `proxy-url` | 暴露容器 HTTP 端口 | 受限 Notebook 默认拒绝；仍须遵守网络策略和应用自身鉴权 |
 | `url` | Notebook Web IDE 入口 | 允许 |
 | `vscode` | VS Code Web IDE 入口 | 允许 |
-| `net-test` | JupyterTerminal 网络探测 | 允许 |
 
 `--workspace` 主要用于首次解析或同名 Notebook 消歧；连接缓存建立后，后续命令通常可按名称使用。缓存是性能和连接复用工具，不是平台事实来源。
 
 Transport 不代表外部服务授权；完整合规边界见 [`network-and-sources.md`](network-and-sources.md)。
 
-受限 Notebook 的 `exec` 每次使用独立临时 Jupyter Terminal，命令结束后立即回收，不共享 `cwd`、环境变量或 Shell 状态。平台策略明确受限时，CLI 直接选择 JupyterTerminal；网络类型未知时用 `net-test` 同款探测决定 Transport。
+受限 Notebook 的 `exec` 每次使用独立临时 Jupyter Terminal，命令结束后立即回收，不共享 `cwd`、环境变量或 Shell 状态。
 
 ### 跨账号 Notebook 连接
 
@@ -57,11 +58,11 @@ Notebook 连接类命令包括 `ssh`、`exec`、`shell`、`scp`、`ssh-config` �
 
 不传 `--account` 时，CLI 会先查 Remembered Target Cache；如果没有可用记录，再扫描所有账号下已有的 Cached Connection。唯一匹配会自动使用；多匹配时会列出候选，交互环境会 Prompt 选择并把选择写入 Target Cache。需要忽略 Remembered Target 时传 `--ignore-target-cache`。
 
-已缓存的联网 Notebook Connection 不要求当前 Active Account 是 Notebook 所属账号。连接不可用时，CLI 会用目标 Account Alias 对应的 Web Session 和账号配置重建；用户不需要先 `inspire account use <name>`。受限 Notebook 不建立 SSH Connection，命令执行走 JupyterTerminal。
+已缓存的 Notebook Connection 不要求当前 Active Account 是 Notebook 所属账号。连接不可用时，CLI 会用目标 Account Alias 对应的 Web Session 和账号配置重建；用户不需要先 `inspire account use <name>`。受限 Notebook 不建立 SSH Connection，命令执行走 JupyterTerminal。
 
 受限 Notebook 的 JupyterTerminal 执行同样复用目标 Account Alias 对应的 Web Session 和代理；显式 `--account <name>` 时不会退回当前 Active Account 的登录态。
 
-没有任何 Cached Connection 时，联网 Notebook 的首次 Bootstrap 仍需要能解析 Notebook 的上下文：通常传 `--workspace <workspace>`，必要时再传 `--account <alias>` 指定所属账号。`ssh-config` 生成的 OpenSSH `ProxyCommand` 会固化解析出的 Account Alias，后续 VS Code Remote SSH / 原生 OpenSSH 连接也按该账号路径执行。
+没有任何 Cached Connection 时，支持 SSH 的 Notebook 首次 Bootstrap 仍需要能解析 Notebook 的上下文：通常传 `--workspace <workspace>`，必要时再传 `--account <alias>` 指定所属账号。`ssh-config` 生成的 OpenSSH `ProxyCommand` 会固化解析出的 Account Alias，后续 VS Code Remote SSH / 原生 OpenSSH 连接也按该账号路径执行。
 
 连接缓存由 `notebook connection list/status/refresh/forget/prune` 管理；跨账号 Remembered Target 由 `notebook connection target list/forget` 管理。具体参数以对应 Help 为准。
 
@@ -79,23 +80,23 @@ Notebook 连接类命令包括 `ssh`、`exec`、`shell`、`scp`、`ssh-config` �
 
 受限 Notebook 不使用 SSH/SCP/`rsync`。文件流转以共享盘为边界：
 
-1. 在同账号、同项目上下文里选择一个可上网 Notebook。
-2. 用 `inspire notebook scp <public-notebook> ... /inspire/<storage>/...` 上传或下载共享路径文件。需要 `rsync` 语义时，先为可上网 Notebook 生成 SSH Config，再用外部 `rsync` 操作同一个 `/inspire/...` 路径。
+1. 在同账号、同项目上下文里选择一个支持 SSH 的 Notebook（Group 名称不含 `H100` / `H200`）。
+2. 用 `inspire notebook scp <ssh-notebook> ... /inspire/<storage>/...` 上传或下载共享路径文件。需要 `rsync` 语义时，先为该 Notebook 生成 SSH Config，再用外部 `rsync` 操作同一个 `/inspire/...` 路径。
 3. 用 `inspire notebook exec <restricted-notebook> "..."` 或 `inspire notebook shell <restricted-notebook>` 在受限 Notebook 内操作同一个 `/inspire/<storage>/...` 路径。
 
 示例：
 
 ```bash
-# 通过可上网 Notebook 从本机上传到共享盘。
+# 通过支持 SSH 的 Notebook 从本机上传到共享盘。
 inspire notebook scp cpu-box ./dataset.tar /inspire/hdd/project/topic/user/dataset.tar
 
 # 在受限 Notebook 内直接使用同一共享路径，不走 SSH。
 inspire notebook exec gpu-box "ls -lh /inspire/hdd/project/topic/user/dataset.tar"
 
-# 通过可上网 Notebook 下载共享路径产物。
+# 通过支持 SSH 的 Notebook 下载共享路径产物。
 inspire notebook scp cpu-box -d /inspire/hdd/project/topic/user/results.tar ./results.tar
 
-# 为可上网 Notebook 配好 SSH 后，也可以用外部 rsync 操作共享路径。
+# 为该 Notebook 配好 SSH 后，也可以用外部 rsync 操作共享路径。
 rsync -av ./dataset/ cpu-box:/inspire/hdd/project/topic/user/dataset/
 ```
 

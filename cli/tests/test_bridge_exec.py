@@ -26,8 +26,7 @@ def _allow_exec_transport_policy(monkeypatch: pytest.MonkeyPatch) -> None:
         return NotebookTransportPolicy(
             notebook="gpu-main",
             notebook_id="nb-public",
-            public_internet=True,
-            reason="test",
+            compute_group="CPU资源-2",
         )
 
     monkeypatch.setattr(
@@ -261,8 +260,7 @@ def test_exec_uses_jupyter_when_policy_blocks_ssh(monkeypatch, tmp_path) -> None
         lambda *_a, **_k: NotebookTransportPolicy(
             notebook="gpu-box",
             notebook_id="nb-123",
-            public_internet=False,
-            reason="live_probe",
+            compute_group="训练区-H200-1号机房",
             session=target_session,
         ),
     )
@@ -299,8 +297,7 @@ def test_exec_json_reports_jupyter_transport(monkeypatch, tmp_path) -> None:  # 
         lambda *_a, **_k: NotebookTransportPolicy(
             notebook="gpu-box",
             notebook_id="nb-123",
-            public_internet=False,
-            reason="live_probe",
+            compute_group="训练区-H200-1号机房",
         ),
     )
     monkeypatch.setattr(
@@ -358,8 +355,7 @@ def test_exec_forwards_workspace_account_and_pick_to_target_resolution(
             or NotebookTransportPolicy(
                 notebook="gpu-box",
                 notebook_id="nb-123",
-                public_internet=True,
-                reason="test",
+                compute_group="CPU资源-2",
             )
         ),
     )

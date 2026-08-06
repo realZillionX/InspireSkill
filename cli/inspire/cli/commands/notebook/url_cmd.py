@@ -283,7 +283,7 @@ def _check_proxy_url(session: WebSession, url: str) -> str:
 @click.option(
     "--allow-restricted",
     is_flag=True,
-    help="Allow opening a proxy from a notebook without public internet.",
+    help="Allow opening a proxy from a restricted H100/H200 notebook.",
 )
 @pass_context
 def notebook_proxy_url(
@@ -317,14 +317,13 @@ def notebook_proxy_url(
         ctx,
         notebook=notebook,
         workspace=workspace,
-        timeout=min(timeout, 30),
         pick=pick,
     )
     if not policy.allow_proxy_url and not allow_restricted:
         _handle_error(
             ctx,
             "PolicyBlocked",
-            f"proxy-url is blocked on notebooks without public internet: {scrub_raw_ids(notebook)}",
+            f"proxy-url is blocked on H100/H200 notebooks: {scrub_raw_ids(notebook)}",
             EXIT_API_ERROR,
             hint=(
                 "Use JupyterTerminal for command execution. Do not expose container "

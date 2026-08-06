@@ -9,7 +9,6 @@ from click.testing import CliRunner
 
 from inspire.cli.commands.hpc import hpc_commands
 from inspire.cli.commands.job import job_commands
-from inspire.cli.commands.notebook import net_test as notebook_net_test_module
 from inspire.cli.commands.notebook import notebook_commands
 from inspire.cli.commands.ray import ray_commands
 from inspire.cli.commands.serving import serving_commands
@@ -58,7 +57,6 @@ _SINGLE_RESOURCE_PATHS = (
     ("notebook", "events"),
     ("notebook", "lifecycle"),
     ("notebook", "metrics"),
-    ("notebook", "net-test"),
     ("notebook", "url"),
     ("notebook", "vscode"),
     ("notebook", "proxy-url"),
@@ -165,7 +163,6 @@ def test_job_single_workspace_resolver_rejects_all_before_session(
         ("events", ()),
         ("lifecycle", ()),
         ("metrics", ("--no-plot",)),
-        ("net-test", ()),
         ("url", ()),
         ("vscode", ()),
         ("proxy-url", ("--port", "30000")),
@@ -210,16 +207,6 @@ def test_notebook_single_resource_commands_reject_workspace_all(
     )
     monkeypatch.setattr(
         notebook_commands,
-        "get_base_url",
-        lambda: "https://example.invalid",
-    )
-    monkeypatch.setattr(
-        notebook_net_test_module,
-        "require_web_session",
-        lambda *_args, **_kwargs: session,
-    )
-    monkeypatch.setattr(
-        notebook_net_test_module,
         "get_base_url",
         lambda: "https://example.invalid",
     )

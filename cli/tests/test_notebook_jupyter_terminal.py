@@ -162,15 +162,6 @@ def test_run_command_capture_in_existing_lab_cleans_up_terminal(monkeypatch) -> 
     assert events == [("delete", "https://nb.example.com/lab|term-1")]
 
 
-def test_network_probe_runs_endpoints_in_parallel() -> None:
-    command = jt.build_network_probe_command(
-        public_endpoints=(("one.example", 443), ("two.example", 80))
-    )
-
-    assert "probe_one PUBLIC one.example 443 &" in command
-    assert "probe_one PUBLIC two.example 80 &" in command
-    assert command.splitlines()[-1] == "wait"
-
 
 def test_capture_uses_direct_lab_timeout_and_target_account(monkeypatch) -> None:  # noqa: ANN001
     calls: dict[str, object] = {}
@@ -261,29 +252,6 @@ def test_capture_uses_direct_lab_timeout_and_target_account(monkeypatch) -> None
     assert calls["context_closed"] is True
     assert calls["browser_closed"] is True
 
-
-def test_parse_network_probe_output() -> None:
-    output = "\n".join(
-        [
-            "PUBLIC www.baidu.com 443 ok",
-            "PUBLIC www.qq.com 443 fail",
-            "",
-        ]
-    )
-
-    result = jt.parse_network_probe_output(output)
-
-    assert result.public_internet is True
-    assert result.public_successes == ["www.baidu.com:443"]
-    assert result.public_failures == ["www.qq.com:443"]
-
-
-def test_parse_network_probe_output_all_public_failures() -> None:
-    output = "PUBLIC www.baidu.com 443 fail\nPUBLIC www.qq.com 443 fail\n"
-
-    result = jt.parse_network_probe_output(output)
-
-    assert result.public_internet is False
 
 
 def test_build_jupyter_terminal_ws_url_uses_existing_rtunnel_helper(monkeypatch) -> None:  # noqa: ANN001
