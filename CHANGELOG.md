@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### 变更
+
+- 恢复 `inspire update` 面向用户的输出：逐步打印进度（检查更新 / 升级 CLI / 刷新
+  Skill / 校验安装 / 准备浏览器运行时）、列出刷新到的 harness，并打印新旧版本之间的
+  更新摘要（取自 GitHub Releases，回退到 `main` 的 `CHANGELOG.md`）。v6.3.0 把这些
+  一并降级成了 `--debug` 日志，只剩一行 `InspireSkill updated to vX`。诊断细节仍然
+  只进 `--debug`：harness 只报名称不报本地路径，摘要过滤掉安装 / 构建类条目、URL
+  和绝对路径。`--json` 输出相应新增 `skills` 与 `release_notes` 字段。摘要条目会先
+  合并硬换行的续行，不再从行尾截断成半句话。
+
 ## v6.3.0
 
 ### 新增

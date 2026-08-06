@@ -11,6 +11,10 @@ Covers two things a user might want:
 Design notes:
 - Upstream version comes from cli/pyproject.toml on main (parsed via raw.githubusercontent.com).
 - SKILL/references are copied (not symlinked) into every detected harness skills dir.
+- This command is read by people, not agents: it reports each stage as it runs,
+  names the harnesses whose skill was refreshed, and summarizes what changed
+  between the old and new version from GitHub Releases (CHANGELOG.md on main is
+  the fallback). Everything diagnostic goes to `--debug` logs instead.
 - The Python package is upgraded via whatever installer currently owns it
   (`uv tool upgrade` / `pipx upgrade`), detected from ``sys.executable``'s
   path. ``inspire-skill`` is published to PyPI, so the standard upgrade path
@@ -42,10 +46,12 @@ import click
 
 from inspire import __version__
 from inspire.cli.utils.update_notice import (
+    REPO_SLUG,
     PACKAGE_NAME,
     TARBALL_URL,
     run_check,
     _is_newer,
+    _version_tuple,
 )
 from inspire.cli.context import Context, EXIT_GENERAL_ERROR
 from inspire.cli.formatters import json_formatter
@@ -142,6 +148,30 @@ _UV_TOOL_LINE_RE = re.compile(
 )
 _UV_TOOL_EXEC_RE = re.compile(r"^-\s+inspire(?:\s+\((?P<path>[^)]+)\))?")
 _VERSION_OUTPUT_RE = re.compile(r"\bversion\s+([0-9][^\s]*)")
+GITHUB_RELEASES_API_URL = f"https://api.github.com/repos/{REPO_SLUG}/releases"
+_CHANGELOG_RELEASE_HEADING_RE = re.compile(
+    r"^#{1,2}\s+(?P<tag>v?\d+(?:\.\d+){1,3}(?:[A-Za-z0-9._+-]*)?)\s*$",
+    re.MULTILINE,
+)
+_RELEASE_BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?P<text>.+?)\s*$")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_RAW_URL_RE = re.compile(r"https?://\S+")
+_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.])/(?:[^\s`/]+/)*[^\s`/]+")
+_RELEASE_SUMMARY_MAX_RELEASES = 3
+_RELEASE_SUMMARY_MAX_ITEMS = 6
+_RELEASE_SUMMARY_ITEM_MAX_CHARS = 160
+# The summary is for users, not maintainers: drop entries that only describe
+# how the release was built or installed.
+_RELEASE_ENGINEERING_HINTS = (
+    "uv tool ",
+    "pipx ",
+    "playwright install",
+    "python -m ",
+    "curl ",
+    "pypi",
+    "http_proxy",
+    "https_proxy",
+)
 _DEBUG_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 _DEBUG_SECRET_OPTION_RE = re.compile(
     r"(?i)(?P<prefix>--(?:access[-_]?token|refresh[-_]?token|token|password|passwd|"
@@ -177,6 +207,13 @@ class PipxToolInfo:
     version: str | None = None
 
 
+@dataclass(frozen=True)
+class ReleaseEntry:
+    tag: str
+    body: str
+    url: str | None = None
+
+
 def _current_output_context() -> Context:
     click_ctx = click.get_current_context(silent=True)
     if click_ctx is not None:
@@ -184,6 +221,16 @@ def _current_output_context() -> Context:
         if shared is not None:
             return shared
     return Context()
+
+
+def _emit_stage(message: str, *, silent: bool) -> None:
+    """Print one progress line for a step that can take a while.
+
+    Suppressed under ``--json`` so progress never lands in the payload.
+    """
+    if silent or _current_output_context().json_output:
+        return
+    click.secho(f"› {message}", fg="blue")
 
 
 def _emit_update_failure(*, silent: bool, check_only: bool = False) -> None:
@@ -768,6 +815,244 @@ def _refresh_skill_files(silent: bool) -> bool:
     return True
 
 
+def _installed_skill_harnesses() -> list[str]:
+    """Harnesses that currently hold an installed skill.
+
+    Read from the filesystem rather than from ``_refresh_skill_files``'s own
+    bookkeeping, because on a self-upgrade the refresh runs inside the newly
+    installed CLI and its output never reaches the process printing the
+    summary.
+    """
+    return [
+        harness
+        for harness in _detect_harnesses()
+        if (HARNESS_SKILL_DIRS[harness] / "SKILL.md").is_file()
+    ]
+
+
+def _normalize_release_version(version: str | None) -> str:
+    return (version or "").strip().lstrip("v")
+
+
+def _fetch_release_entries_from_github(timeout: int = 10) -> list[ReleaseEntry]:
+    entries: list[ReleaseEntry] = []
+    for page in range(1, 11):
+        req = urllib.request.Request(
+            f"{GITHUB_RELEASES_API_URL}?per_page=100&page={page}",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": f"inspire-skill/{__version__}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            return entries
+        if not isinstance(payload, list):
+            return entries
+        if not payload:
+            return entries
+
+        for item in payload:
+            if not isinstance(item, dict) or item.get("draft"):
+                continue
+            tag = item.get("tag_name")
+            if not isinstance(tag, str) or not tag.strip():
+                continue
+            body = item.get("body")
+            url = item.get("html_url")
+            entries.append(
+                ReleaseEntry(
+                    tag=tag.strip(),
+                    body=body if isinstance(body, str) else "",
+                    url=url if isinstance(url, str) else None,
+                )
+            )
+        if len(payload) < 100:
+            return entries
+    return entries
+
+
+def _release_entries_from_changelog_text(text: str) -> list[ReleaseEntry]:
+    matches = list(_CHANGELOG_RELEASE_HEADING_RE.finditer(text))
+    entries: list[ReleaseEntry] = []
+    for index, match in enumerate(matches):
+        tag = match.group("tag").strip()
+        body_start = match.end()
+        body_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[body_start:body_end].strip()
+        entries.append(ReleaseEntry(tag=tag, body=body))
+    return entries
+
+
+def _changelog_text_from_tarball(tarball: bytes) -> str | None:
+    try:
+        with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tf:
+            for member in tf.getmembers():
+                if not member.isfile() or not member.name.endswith("/CHANGELOG.md"):
+                    continue
+                extracted = tf.extractfile(member)
+                if extracted is None:
+                    return None
+                return extracted.read().decode("utf-8", errors="replace")
+    except (tarfile.TarError, OSError):
+        return None
+    return None
+
+
+def _fetch_release_entries_from_changelog(timeout: int = 10) -> list[ReleaseEntry]:
+    tarball = _download_tarball(timeout=timeout)
+    if tarball is None:
+        return []
+    text = _changelog_text_from_tarball(tarball)
+    if text is None:
+        return []
+    return _release_entries_from_changelog_text(text)
+
+
+def _fetch_release_entries(timeout: int = 10) -> list[ReleaseEntry]:
+    """Release bodies, preferring GitHub Releases and falling back to CHANGELOG.md.
+
+    Releases can lag a freshly published package by a few minutes, and the API
+    is rate-limited for unauthenticated callers; the CHANGELOG on ``main`` is
+    always there.
+    """
+    entries = _fetch_release_entries_from_github(timeout=timeout)
+    if entries:
+        return entries
+    return _fetch_release_entries_from_changelog(timeout=timeout)
+
+
+def _release_entries_between(
+    entries: list[ReleaseEntry],
+    *,
+    previous_version: str,
+    new_version: str,
+) -> list[ReleaseEntry]:
+    previous = _normalize_release_version(previous_version)
+    new = _normalize_release_version(new_version)
+    if not previous or not new or not _is_newer(new, previous):
+        return []
+
+    selected = [
+        entry
+        for entry in entries
+        if _is_newer(_normalize_release_version(entry.tag), previous)
+        and not _is_newer(_normalize_release_version(entry.tag), new)
+    ]
+    return sorted(
+        selected,
+        key=lambda entry: _version_tuple(_normalize_release_version(entry.tag)),
+        reverse=True,
+    )
+
+
+def _release_body_for_display(body: str) -> str:
+    lines = body.strip().splitlines()
+    if lines and lines[0].strip() == "## 更新内容":
+        lines = lines[1:]
+    while lines and not lines[0].strip():
+        lines = lines[1:]
+    while lines and not lines[-1].strip():
+        lines = lines[:-1]
+    return "\n".join(lines)
+
+
+def _compact_release_item(text: str) -> str:
+    text = _MARKDOWN_LINK_RE.sub(r"\1", text)
+    text = _RAW_URL_RE.sub("", text)
+    text = _ABSOLUTE_PATH_RE.sub("<path>", text)
+    text = re.sub(r"\s+", " ", text).strip(" -:")
+    if len(text) > _RELEASE_SUMMARY_ITEM_MAX_CHARS:
+        text = text[: _RELEASE_SUMMARY_ITEM_MAX_CHARS - 1].rstrip() + "…"
+    return text
+
+
+def _unwrap_release_lines(body: str) -> list[str]:
+    """Fold hard-wrapped continuation lines back into their bullet.
+
+    Release bodies wrap at roughly 90 columns, so the tail of a bullet arrives
+    as an indented continuation line. Read line by line, every such bullet
+    would be reported cut off mid-sentence.
+    """
+    lines: list[str] = []
+    for raw in body.splitlines():
+        stripped = raw.strip()
+        is_continuation = (
+            bool(lines)
+            and bool(stripped)
+            and raw[:1].isspace()
+            and not stripped.startswith(("#", "```", ">"))
+            and not _RELEASE_BULLET_RE.match(raw)
+            and bool(_RELEASE_BULLET_RE.match(lines[-1]))
+        )
+        if is_continuation:
+            lines[-1] = f"{lines[-1].rstrip()} {stripped}"
+        else:
+            lines.append(raw)
+    return lines
+
+
+def _release_items_for_display(body: str) -> list[str]:
+    lines = _unwrap_release_lines(_release_body_for_display(body))
+    items: list[str] = []
+    for line in lines:
+        match = _RELEASE_BULLET_RE.match(line)
+        if not match:
+            continue
+        item = _compact_release_item(match.group("text"))
+        if any(hint in item.lower() for hint in _RELEASE_ENGINEERING_HINTS):
+            continue
+        if item and item not in items:
+            items.append(item)
+    if items:
+        return items
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "```", ">")):
+            continue
+        item = _compact_release_item(stripped)
+        if any(hint in item.lower() for hint in _RELEASE_ENGINEERING_HINTS):
+            continue
+        return [item] if item else []
+    return []
+
+
+def _release_summary_items(previous_version: str, new_version: str) -> list[tuple[str, str]]:
+    """``(version, item)`` pairs describing what changed between two versions."""
+    if not _is_newer(new_version, previous_version):
+        return []
+
+    entries = _release_entries_between(
+        _fetch_release_entries(),
+        previous_version=previous_version,
+        new_version=new_version,
+    )
+    if not entries:
+        logger.debug(
+            "No release summary available between v%s and v%s",
+            previous_version,
+            new_version,
+        )
+        return []
+
+    displayed: list[tuple[str, str]] = []
+    for entry in entries[:_RELEASE_SUMMARY_MAX_RELEASES]:
+        version = _normalize_release_version(entry.tag)
+        for item in _release_items_for_display(entry.body):
+            displayed.append((version, item))
+            if len(displayed) >= _RELEASE_SUMMARY_MAX_ITEMS:
+                break
+        if len(displayed) >= _RELEASE_SUMMARY_MAX_ITEMS:
+            break
+
+    if not displayed:
+        logger.debug("Release entries contained no compact user-facing summary")
+    return displayed
+
+
 def _run_post_update_tasks(
     *,
     expected_version: str | None,
@@ -910,14 +1195,53 @@ def _print_status(check_result: dict, silent: bool) -> None:
         click.secho(f"InspireSkill is up to date (v{current}).", fg="green")
 
 
-def _emit_update_success(version: str, *, silent: bool) -> None:
+def _emit_update_success(
+    version: str,
+    *,
+    previous_version: str | None = None,
+    report_skills: bool = False,
+    silent: bool,
+) -> None:
+    """Report a completed update: version, refreshed harnesses, and what's new.
+
+    ``report_skills`` is off for ``--cli-only``, where no harness skill was
+    touched. Harnesses are named, never pathed — local paths stay out of
+    public output.
+    """
     if silent:
         return
+    harnesses = _installed_skill_harnesses() if report_skills else []
+    notes = (
+        _release_summary_items(previous_version, version)
+        if previous_version
+        else []
+    )
+
     ctx = _current_output_context()
     if ctx.json_output:
-        click.echo(json_formatter.format_json({"version": version, "updated": True}))
+        payload: dict[str, object] = {"version": version, "updated": True}
+        if report_skills:
+            payload["skills"] = harnesses
+        if notes:
+            payload["release_notes"] = [
+                {"version": note_version, "summary": item} for note_version, item in notes
+            ]
+        click.echo(json_formatter.format_json(payload))
         return
+
     click.secho(f"InspireSkill updated to v{version}.", fg="green", bold=True)
+    if report_skills:
+        if harnesses:
+            click.secho(f"Skills refreshed: {', '.join(harnesses)}.", fg="green")
+        else:
+            click.secho(
+                "No agent harness detected, so no skill was installed.",
+                fg="yellow",
+            )
+    if notes:
+        click.secho(f"What's new (v{previous_version} → v{version}):", bold=True)
+        for note_version, item in notes:
+            click.echo(f"- v{note_version}: {item}")
 
 
 def _emit_update_check(result: dict, *, actual_version: str | None, silent: bool) -> None:
@@ -960,6 +1284,7 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
 
     # --- check path -------------------------------------------------------
     if check_only:
+        _emit_stage("Checking for updates...", silent=silent)
         result = run_check(write=True)
         audit_ok, actual_version = _audit_update_state(
             expected_version=result.get("latest"),
@@ -981,14 +1306,18 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
     # --- upgrade path -----------------------------------------------------
     # Always refresh the version cache first so subsequent invocations show
     # the correct state and the notice goes away if we successfully upgrade.
+    _emit_stage("Checking for updates...", silent=silent)
     pre = run_check(write=True)
     logger.debug("Pre-update status: %s", pre)
+    previous_version = str(pre.get("current") or __version__)
 
     ok = True
     if not skill_only:
+        _emit_stage("Updating CLI...", silent=silent)
         ok = _upgrade_cli(silent, target_version=pre.get("latest")) and ok
         expected_version = str(pre.get("latest") or "")
         if ok and expected_version and _is_newer(expected_version, __version__):
+            _emit_stage("Completing setup...", silent=silent)
             if not _run_post_update_command(
                 expected_version=expected_version,
                 cli_only=cli_only,
@@ -996,14 +1325,21 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
             ):
                 _emit_update_failure(silent=silent)
                 sys.exit(1)
-            _emit_update_success(expected_version, silent=silent)
+            _emit_update_success(
+                expected_version,
+                previous_version=previous_version,
+                report_skills=not cli_only,
+                silent=silent,
+            )
             return
     if not cli_only:
+        _emit_stage("Refreshing agent skills...", silent=silent)
         ok = _refresh_skill_files(silent) and ok
 
     # Verify the observable install state rather than trusting command exit
     # codes. This catches PATH shadowing, stale agent skill files, and local
     # uv-tool sources that would otherwise keep the global command outdated.
+    _emit_stage("Verifying installation...", silent=silent)
     audit_ok, actual_version = _audit_update_state(
         expected_version=pre.get("latest"),
         check_cli=not skill_only,
@@ -1013,6 +1349,7 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
     ok = audit_ok and ok
 
     if ok and not skill_only:
+        _emit_stage("Preparing browser runtime...", silent=silent)
         ok = _ensure_global_playwright_runtime(silent) and ok
 
     # Re-check after upgrade so the cache reflects the externally visible
@@ -1024,4 +1361,11 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
         sys.exit(1)
 
     final_version = str(actual_version or pre.get("latest") or __version__)
-    _emit_update_success(final_version, silent=silent)
+    _emit_update_success(
+        final_version,
+        # --skill-only never moves the CLI version, so there is nothing new to
+        # summarize; the release notes describe package releases.
+        previous_version=None if skill_only else previous_version,
+        report_skills=not cli_only,
+        silent=silent,
+    )

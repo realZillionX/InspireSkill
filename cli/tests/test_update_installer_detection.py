@@ -8,12 +8,16 @@ virtual environments and system Python.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
+
+from inspire.cli.main import main as cli_main
 
 from inspire.cli.commands.update import (
     _detect_installer,
@@ -21,8 +25,10 @@ from inspire.cli.commands.update import (
     _ensure_playwright_runtime,
     _kimi_code_home,
     _kimi_desktop_root,
+    _release_entries_between,
     _is_local_requirement,
     _parse_uv_tool_list,
+    ReleaseEntry,
     _upgrade_cli,
 )
 
@@ -566,24 +572,41 @@ def test_download_tarball_uses_only_timeout(
     assert calls[0][1] == 7
 
 
-def test_update_prints_one_compact_success_message(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    calls: list[str] = []
+def _stub_successful_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drive `update()` through the happy path without touching the network."""
 
     def fake_run_check(**kwargs):
-        calls.append(f"check:{kwargs.get('current_version')}")
         if kwargs.get("current_version"):
             return {"current": kwargs.get("current_version"), "latest": "5.2.3"}
         return {"current": "5.2.1", "latest": "5.2.3"}
 
     monkeypatch.setattr(update_module, "run_check", fake_run_check)
-    monkeypatch.setattr(update_module, "_print_status", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(update_module, "_upgrade_cli", lambda *args, **_kwargs: True)
     monkeypatch.setattr(update_module, "_refresh_skill_files", lambda *args, **_kwargs: True)
     monkeypatch.setattr(update_module, "_audit_update_state", lambda **_kwargs: (True, "5.2.3"))
     monkeypatch.setattr(update_module, "_ensure_global_playwright_runtime", lambda silent: True)
+    monkeypatch.setattr(
+        update_module,
+        "_installed_skill_harnesses",
+        lambda: ["claude", "codex"],
+    )
+    monkeypatch.setattr(
+        update_module,
+        "_fetch_release_entries",
+        lambda: [
+            ReleaseEntry(tag="v5.2.3", body="## 更新内容\n\n### 新增\n\n- 新增 Cursor Harness 支持。"),
+            ReleaseEntry(tag="v5.2.2", body="## 更新内容\n\n### 修复\n\n- 修复 Antigravity 安装目录。"),
+            ReleaseEntry(tag="v5.2.1", body="## 更新内容\n\n### 新增\n\n- Qoder。"),
+        ],
+    )
+
+
+def test_update_reports_progress_refreshed_harnesses_and_release_notes(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _stub_successful_update(monkeypatch)
+
     update_module.update.callback(
         check_only=False,
         silent=False,
@@ -591,8 +614,237 @@ def test_update_prints_one_compact_success_message(
         skill_only=False,
     )
 
+    assert capsys.readouterr().out.splitlines() == [
+        "› Checking for updates...",
+        "› Updating CLI...",
+        "› Refreshing agent skills...",
+        "› Verifying installation...",
+        "› Preparing browser runtime...",
+        "InspireSkill updated to v5.2.3.",
+        "Skills refreshed: claude, codex.",
+        "What's new (v5.2.1 → v5.2.3):",
+        "- v5.2.3: 新增 Cursor Harness 支持。",
+        "- v5.2.2: 修复 Antigravity 安装目录。",
+    ]
+
+
+def test_update_cli_only_does_not_claim_a_skill_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _stub_successful_update(monkeypatch)
+
+    update_module.update.callback(
+        check_only=False,
+        silent=False,
+        cli_only=True,
+        skill_only=False,
+    )
+
     output = capsys.readouterr().out
-    assert output.splitlines() == ["InspireSkill updated to v5.2.3."]
+    assert "Skills refreshed" not in output
+    assert "› Refreshing agent skills..." not in output
+    assert "What's new (v5.2.1 → v5.2.3):" in output
+
+
+def test_update_skill_only_reports_harnesses_without_release_notes(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _stub_successful_update(monkeypatch)
+
+    update_module.update.callback(
+        check_only=False,
+        silent=False,
+        cli_only=False,
+        skill_only=True,
+    )
+
+    output = capsys.readouterr().out
+    assert "Skills refreshed: claude, codex." in output
+    # --skill-only leaves the package version alone, so there is no upgrade to
+    # summarize.
+    assert "What's new" not in output
+
+
+def test_update_reports_release_notes_after_the_self_upgrade_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The handoff path returns early — its summary must not be skipped.
+
+    The skill refresh happens inside the newly installed CLI, whose output is
+    captured for debug logs, so the harness list has to be read back from disk
+    by the process that prints the summary.
+    """
+    _stub_successful_update(monkeypatch)
+    monkeypatch.setattr(update_module, "__version__", "5.2.1")
+    monkeypatch.setattr(update_module, "_run_post_update_command", lambda **_kwargs: True)
+
+    update_module.update.callback(
+        check_only=False,
+        silent=False,
+        cli_only=False,
+        skill_only=False,
+    )
+
+    assert capsys.readouterr().out.splitlines() == [
+        "› Checking for updates...",
+        "› Updating CLI...",
+        "› Completing setup...",
+        "InspireSkill updated to v5.2.3.",
+        "Skills refreshed: claude, codex.",
+        "What's new (v5.2.1 → v5.2.3):",
+        "- v5.2.3: 新增 Cursor Harness 支持。",
+        "- v5.2.2: 修复 Antigravity 安装目录。",
+    ]
+
+
+def test_update_json_carries_skills_and_release_notes_without_progress_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_successful_update(monkeypatch)
+
+    result = CliRunner().invoke(cli_main, ["--json", "update"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {
+        "success": True,
+        "data": {
+            "version": "5.2.3",
+            "updated": True,
+            "skills": ["claude", "codex"],
+            "release_notes": [
+                {"version": "5.2.3", "summary": "新增 Cursor Harness 支持。"},
+                {"version": "5.2.2", "summary": "修复 Antigravity 安装目录。"},
+            ],
+        },
+    }
+
+
+def test_installed_skill_harnesses_lists_only_harnesses_holding_a_skill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installed = tmp_path / "claude" / "skills" / "inspire"
+    installed.mkdir(parents=True)
+    (installed / "SKILL.md").write_text("# Inspire\n", encoding="utf-8")
+    empty = tmp_path / "codex" / "skills" / "inspire"
+    empty.mkdir(parents=True)
+
+    monkeypatch.setattr(update_module, "_detect_harnesses", lambda: ["claude", "codex"])
+    monkeypatch.setattr(
+        update_module,
+        "HARNESS_SKILL_DIRS",
+        {"claude": installed, "codex": empty},
+    )
+
+    assert update_module._installed_skill_harnesses() == ["claude"]
+
+
+def test_release_entries_between_includes_versions_between_old_and_new() -> None:
+    entries = _release_entries_between(
+        [
+            ReleaseEntry(tag="v5.2.3", body="## 更新内容\n\n### 新增\n\n- C"),
+            ReleaseEntry(tag="v5.2.2", body="## 更新内容\n\n### 新增\n\n- B"),
+            ReleaseEntry(tag="v5.2.1", body="## 更新内容\n\n### 修复\n\n- A"),
+        ],
+        previous_version="5.2.1",
+        new_version="5.2.3",
+    )
+
+    assert [(entry.tag, entry.body.strip()) for entry in entries] == [
+        ("v5.2.3", "## 更新内容\n\n### 新增\n\n- C"),
+        ("v5.2.2", "## 更新内容\n\n### 新增\n\n- B"),
+    ]
+
+
+def test_release_entries_from_changelog_text_parses_release_sections() -> None:
+    entries = update_module._release_entries_from_changelog_text(
+        "# Changelog\n\n"
+        "## Unreleased\n\n"
+        "- 未发布内容。\n\n"
+        "## v6.3.0\n\n"
+        "### 修复\n\n"
+        "- 修复摘要兜底。\n\n"
+        "## v6.2.0\n\n"
+        "### 新增\n\n"
+        "- 新增 Cursor。\n"
+    )
+
+    assert [(entry.tag, entry.body.strip()) for entry in entries] == [
+        ("v6.3.0", "### 修复\n\n- 修复摘要兜底。"),
+        ("v6.2.0", "### 新增\n\n- 新增 Cursor。"),
+    ]
+
+
+def test_release_items_join_hard_wrapped_continuation_lines() -> None:
+    items = update_module._release_items_for_display(
+        "### 破坏性变更\n\n"
+        "- 移除 `inspire job id`、`inspire hpc id`、`inspire notebook id`。CLI 不再有任何\n"
+        "  Handle 输出入口，用 `list` 拿 Name 即可。\n"
+        "- `serving create --shm-gib` 改名为 `--shm-size`。\n"
+    )
+
+    assert items == [
+        "移除 `inspire job id`、`inspire hpc id`、`inspire notebook id`。"
+        "CLI 不再有任何 Handle 输出入口，用 `list` 拿 Name 即可。",
+        "`serving create --shm-gib` 改名为 `--shm-size`。",
+    ]
+
+
+def test_fetch_release_entries_falls_back_to_changelog_when_github_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fallback_entries = [ReleaseEntry(tag="v5.2.3", body="## 更新内容\n\n- 兜底摘要。")]
+
+    monkeypatch.setattr(update_module, "_fetch_release_entries_from_github", lambda timeout=10: [])
+    monkeypatch.setattr(
+        update_module,
+        "_fetch_release_entries_from_changelog",
+        lambda timeout=10: fallback_entries,
+    )
+
+    assert update_module._fetch_release_entries() == fallback_entries
+
+
+def test_release_summary_is_bounded_and_removes_engineering_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    long_item = "A" * 300
+    monkeypatch.setattr(
+        update_module,
+        "_fetch_release_entries",
+        lambda: [
+            ReleaseEntry(
+                tag="v5.2.4",
+                body=(
+                    "## 更新内容\n\n"
+                    "- 用户可见改进 https://example.com/details?token=secret\n"
+                    "- 修复 /Users/alice/private/config.toml 的兼容性\n"
+                    "- uv tool install --force --refresh inspire-skill\n"
+                    f"- {long_item}\n"
+                    "- 第五项\n"
+                    "- 第六项\n"
+                    "- 第七项\n"
+                ),
+            ),
+            ReleaseEntry(tag="v5.2.3", body="- 不应超过总上限\n"),
+            ReleaseEntry(tag="v5.2.2", body="- 旧版本摘要\n"),
+            ReleaseEntry(tag="v5.2.1", body="- 不应读取第四个 release\n"),
+        ],
+    )
+
+    items = update_module._release_summary_items("5.2.0", "5.2.4")
+
+    rendered = "\n".join(f"- v{version}: {item}" for version, item in items)
+    assert len(items) <= update_module._RELEASE_SUMMARY_MAX_ITEMS
+    assert "https://" not in rendered
+    assert "/Users/alice" not in rendered
+    assert "uv tool install" not in rendered
+    assert "A" * update_module._RELEASE_SUMMARY_ITEM_MAX_CHARS not in rendered
+    assert "…" in rendered
+    assert "不应读取第四个 release" not in rendered
 
 
 def test_update_failure_output_is_one_compact_actionable_hint(
