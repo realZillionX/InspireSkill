@@ -42,12 +42,14 @@ Restricted Notebook 的文件流转边界是 `/inspire/<storage>/...` 共享路�
 
 ### Name 解析缓存
 
-CLI 为每个启智账号维护一份可丢弃的本地资源名称索引，只用于加速 Name 解析。普通 `list`、`status`、`events`、`metrics`、Quota、规格和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。
+CLI 为每个启智账号维护一份可丢弃的本地缓存，只用于加速 Name 解析和 Quota 目录查询。普通 `list`、`status`、`events`、`metrics`、规格和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。
 
 - 缓存项使用短 TTL；存在有效 Web Session 时，普通命令会静默触发到期范围的后台刷新。
 - Create 成功后会立即写入新名称，Delete 成功后会将对应缓存记录标记为失效。
 - 平台侧删除、同名重建或 Compute Group 变动会在 Live 重解析、到期刷新或手动刷新时更新缓存记录。
 - 缓存数据库损坏、锁冲突或刷新失败不能阻断正常的 Live 查询；清空缓存不会删除任何平台资源。
+
+Quota 目录按 `(Workspace, Workload, Compute Group)` 分片缓存，TTL 10 分钟，首次用到时写入。`<workload> quota` 查询和 `create --quota` 解析都读它，因此不再对每个 Compute Group 各发一次规格请求。Admin 改了 Compute Group 规格后想立刻看到新值，用 `inspire cache clear --yes`；`cache refresh` 只负责 Name 解析那一层。
 
 需要主动管理时使用：
 

@@ -21,6 +21,10 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Optional
 
 from inspire.cli.utils.id_resolver import is_full_uuid, is_stale_handle_error
+from inspire.cli.utils.quota_cache import (
+    SCHEDULE_TYPE_BY_WORKLOAD,
+    CachedPricesLoader,
+)
 from inspire.cli.utils.resource_index import (
     ResourceIdentity,
     ResourceIndex,
@@ -33,11 +37,11 @@ from inspire.platform.web.session import WebSession
 
 logger = logging.getLogger(__name__)
 
-SCHEDULE_TYPE_DSW = "SCHEDULE_CONFIG_TYPE_DSW"
-SCHEDULE_TYPE_HPC = "SCHEDULE_CONFIG_TYPE_HPC"
-SCHEDULE_TYPE_TRAIN = "SCHEDULE_CONFIG_TYPE_TRAIN"
-SCHEDULE_TYPE_SERVING = "SCHEDULE_CONFIG_TYPE_SERVE"
-SCHEDULE_TYPE_RAY = "SCHEDULE_CONFIG_TYPE_RAY_JOB"
+SCHEDULE_TYPE_DSW = SCHEDULE_TYPE_BY_WORKLOAD["notebook"]
+SCHEDULE_TYPE_HPC = SCHEDULE_TYPE_BY_WORKLOAD["hpc"]
+SCHEDULE_TYPE_TRAIN = SCHEDULE_TYPE_BY_WORKLOAD["job"]
+SCHEDULE_TYPE_SERVING = SCHEDULE_TYPE_BY_WORKLOAD["serving"]
+SCHEDULE_TYPE_RAY = SCHEDULE_TYPE_BY_WORKLOAD["ray"]
 
 
 class QuotaParseError(ValueError):
@@ -173,17 +177,18 @@ def _default_groups_loader(
 
 
 def _default_prices_loader(
-    *, workspace_id: str, session: WebSession, schedule_config_type: str
+    *,
+    workspace_id: str,
+    session: WebSession,
+    schedule_config_type: str,
+    cache_index: ResourceIndex | None = None,
 ) -> PricesLoader:
-    def loader(lcg_id: str) -> list[dict]:
-        return browser_api_module.get_resource_prices(
-            workspace_id=workspace_id,
-            logic_compute_group_id=lcg_id,
-            schedule_config_type=schedule_config_type,
-            session=session,
-        )
-
-    return loader
+    return CachedPricesLoader(
+        session=session,
+        workspace_id=workspace_id,
+        schedule_config_type=schedule_config_type,
+        cache_index=cache_index,
+    )
 
 
 def _compute_group_cache_context(
@@ -335,6 +340,9 @@ def _load_price_rows(
 ) -> tuple[list[tuple[dict, dict]], bool]:
     rows: list[tuple[dict, dict]] = []
     saw_empty_or_stale_cached_group = False
+    served_from_cache: frozenset[str] | set[str] = getattr(
+        prices_loader, "served_from_cache", frozenset()
+    )
     for group in groups:
         lcg_id = _group_id(group)
         if not lcg_id or not _group_name(group):
@@ -348,7 +356,10 @@ def _load_price_rows(
             if cached_only and _is_stale_compute_group_error(exc):
                 saw_empty_or_stale_cached_group = True
         else:
-            if cached_only and not prices:
+            # An empty *live* response can mean the cached group handle died.
+            # An empty *cached* response is an authoritative "no quotas for
+            # this workload" and must not trigger the stale-handle retry.
+            if cached_only and not prices and lcg_id not in served_from_cache:
                 saw_empty_or_stale_cached_group = True
         for price in prices or []:
             rows.append((group, price))
@@ -478,6 +489,7 @@ def resolve_quota(
             workspace_id=workspace_id,
             session=session,
             schedule_config_type=schedule_config_type,
+            cache_index=cache_index,
         )
 
     all_rows, cached_group_stale = _load_price_rows(

@@ -27,20 +27,15 @@ from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_query_scope, workspace_name_map
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.cli.utils.quota_cache import (
+    SCHEDULE_TYPE_BY_WORKLOAD,
+    CachedPricesLoader,
+)
 from inspire.cli.utils.quota_resolver import (
     QuotaMatchError,
     qz_scheduling_zone_hint_for_group_names,
     validate_compute_group_name,
 )
-
-
-_SCHEDULE_TYPE_BY_WORKLOAD = {
-    "notebook": "SCHEDULE_CONFIG_TYPE_DSW",
-    "job": "SCHEDULE_CONFIG_TYPE_TRAIN",
-    "serving": "SCHEDULE_CONFIG_TYPE_SERVE",
-    "hpc": "SCHEDULE_CONFIG_TYPE_HPC",
-    "ray": "SCHEDULE_CONFIG_TYPE_RAY_JOB",
-}
 
 
 def _group_id(group: dict[str, Any]) -> str:
@@ -84,11 +79,15 @@ def _query_workspace_quotas(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen_rows: set[tuple[str, int, int, int, str]] = set()
-    schedule_config_type = _SCHEDULE_TYPE_BY_WORKLOAD[workload]
     public_workspace_name = scrub_raw_ids(workspace_name)
     groups = browser_api_module.list_notebook_compute_groups(
         workspace_id=workspace_id,
         session=session,
+    )
+    load_prices = CachedPricesLoader(
+        session=session,
+        workspace_id=workspace_id,
+        schedule_config_type=SCHEDULE_TYPE_BY_WORKLOAD[workload],
     )
 
     for item in groups:
@@ -101,12 +100,7 @@ def _query_workspace_quotas(
         if group_filter and group_filter not in compute_group_name.lower():
             continue
 
-        prices = browser_api_module.get_resource_prices(
-            workspace_id=workspace_id,
-            logic_compute_group_id=logic_compute_group_id,
-            schedule_config_type=schedule_config_type,
-            session=session,
-        )
+        prices = load_prices(logic_compute_group_id)
         if not prices:
             if include_empty:
                 rows.append(

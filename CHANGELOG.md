@@ -50,6 +50,15 @@
   `compute_group` 列，旧库自动 `ALTER TABLE` 迁移，schema 版本 3），由后台定时刷新
   一并维护。因此 Transport 判断在缓存命中时不发任何 API 请求；缓存未命中时也只从
   Name 解析本来就要发的 `/notebook/list` 响应里读，不再额外请求 Notebook Detail。
+- 新增 Quota 目录缓存：按 `(Workspace, Workload, Compute Group)` 分片缓存
+  `/resource_prices/logic_compute_groups/` 的完整响应，TTL 10 分钟，覆盖 notebook /
+  job / hpc / ray / serving 五类 Workload。此前 `<workload> quota` 查询和
+  `create --quota` 解析都要对 Workspace 里的每个 Compute Group 各发一次规格请求
+  （1 + N），现在命中缓存为 0 次。缓存整份存响应，因此“查过且为空”和“没查过”可区分，
+  空结果不会再被误判成失效的 Compute Group 句柄而触发重查。
+- `inspire cache status` 增加 `quota:<workload>` 行（`cached_rows` / `compute_groups`
+  字段），`inspire cache clear` 一并清空 Quota 目录缓存。Name 解析行的
+  `cached_names` 字段不变。
 
 - 新增按账号隔离、可定时刷新且支持手动管理的本地 Name 解析索引；`inspire cache
   status|refresh|clear` 用于查看、刷新或清理该加速层，平台 Live API 仍是资源事实源。

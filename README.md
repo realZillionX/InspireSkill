@@ -137,7 +137,7 @@ inspire resources availability --workspace all --include-cpu
   </td>
   <td>
     <h4>📊 资源情报</h4>
-    <code>resources availability --workspace all --include-cpu</code> / <code>resources nodes --workspace all</code> / <code>&lt;workload&gt; quota --workspace &lt;name&gt;</code> — 三板斧定位哪个集群有空，支持透支式申请。余量和规格始终读 Live 数据；<code>inspire cache status / refresh / clear</code> 管的是本地 Name 解析索引这一层加速缓存。
+    <code>resources availability --workspace all --include-cpu</code> / <code>resources nodes --workspace all</code> / <code>&lt;workload&gt; quota --workspace &lt;name&gt;</code> — 三板斧定位哪个集群有空，支持透支式申请。余量和规格始终读 Live 数据；<code>inspire cache status / refresh / clear</code> 管的是本地 Name 解析索引和 Quota 目录这一层加速缓存。
   </td>
 </tr>
 <tr>

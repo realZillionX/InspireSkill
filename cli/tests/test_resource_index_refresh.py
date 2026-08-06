@@ -901,3 +901,58 @@ def test_periodic_refresh_is_throttled_and_quiet(tmp_path, monkeypatch) -> None:
     os.utime(stamp, (time.time() - 3600, time.time() - 3600))
     assert maybe_spawn_periodic_refresh(interval_seconds=7200) is True
     assert len(calls) == 2
+
+
+def test_cache_status_reports_quota_catalog_slices(tmp_path, monkeypatch) -> None:
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    quota_scope = ResourceScope(
+        base_url="https://inspire.example",
+        subject_id="user-one",
+        resource_type="quota",
+        workspace_id="workspace-one",
+        owner_scope="notebook",
+    )
+    index.store_quota_prices(
+        quota_scope,
+        "lcg-a",
+        [{"quota_id": "q-1"}, {"quota_id": "q-2"}],
+        ttl_seconds=600,
+        now=100,
+    )
+
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 200)
+    payload = cache_commands._status_payload(index)
+    rows = {str(row["resource"]): row for row in payload["items"]}
+    assert rows["quota:notebook"]["cached_rows"] == 2
+    assert rows["quota:notebook"]["compute_groups"] == 1
+    assert rows["quota:notebook"]["state"] == "ready"
+
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 5000)
+    stale = cache_commands._status_payload(index)
+    stale_rows = {str(row["resource"]): row for row in stale["items"]}
+    assert stale_rows["quota:notebook"]["state"] == "stale"
+
+
+def test_cache_status_human_output_labels_quota_rows(tmp_path, monkeypatch) -> None:
+    from inspire.cli.main import main
+
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    index.store_quota_prices(
+        ResourceScope(
+            base_url="https://inspire.example",
+            subject_id="user-one",
+            resource_type="quota",
+            workspace_id="workspace-one",
+            owner_scope="ray",
+        ),
+        "lcg-a",
+        [{"quota_id": "q-1"}],
+    )
+    monkeypatch.setattr(cache_commands, "_index_or_exit", lambda *_a, **_k: index)
+
+    result = CliRunner().invoke(main, ["cache", "status"])
+
+    assert result.exit_code == 0, result.output
+    assert "quota:ray: 1 quota rows in 1 compute groups" in result.output

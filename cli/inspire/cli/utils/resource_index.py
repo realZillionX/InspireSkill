@@ -1,13 +1,14 @@
-"""Disposable per-account resource identity index.
+"""Disposable per-account resource cache.
 
 The platform remains the sole source of truth.  This SQLite database only
-accelerates name-to-handle resolution; it must never become the backing store
-for normal ``list`` or status output.
+accelerates name-to-handle resolution and quota catalog lookups; it must never
+become the backing store for normal ``list`` or status output.
 """
 
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import sqlite3
 import threading
@@ -15,7 +16,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from inspire.accounts import account_dir, current_account
 
@@ -34,7 +35,12 @@ DEFAULT_TTL_SECONDS: dict[str, int] = {
     "serving": 60,
     "notebook": 60,
     "ssh-key": 5 * 60,
+    # Quota rows are workspace catalog data: they only move when an admin edits
+    # a compute group's specs, so they tolerate a longer TTL than workloads.
+    "quota": 10 * 60,
 }
+
+QUOTA_RESOURCE_TYPE = "quota"
 
 CASE_INSENSITIVE_RESOURCE_TYPES = frozenset(
     {"workspace", "project", "compute-group"}
@@ -124,6 +130,18 @@ class ScopeStatus:
     last_refresh_at: float
     last_full_refresh_at: float
     last_error: str
+
+
+@dataclass(frozen=True)
+class QuotaCacheStatus:
+    """One cached ``(workspace, workload)`` quota catalog slice."""
+
+    workspace_id: str
+    workload: str
+    group_count: int
+    row_count: int
+    last_refresh_at: float
+    expires_at: float
 
 
 def resource_index_path(account: str | None = None) -> Path | None:
@@ -278,6 +296,27 @@ class ResourceIndex:
                     lease_key TEXT PRIMARY KEY,
                     holder TEXT NOT NULL,
                     expires_at REAL NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS quota_price (
+                    base_url TEXT NOT NULL,
+                    subject_id TEXT NOT NULL,
+                    resource_type TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    owner_scope TEXT NOT NULL,
+                    logic_compute_group_id TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    row_count INTEGER NOT NULL DEFAULT 0,
+                    observed_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    PRIMARY KEY (
+                        base_url,
+                        subject_id,
+                        resource_type,
+                        workspace_id,
+                        owner_scope,
+                        logic_compute_group_id
+                    )
                 );
                 """
             )
@@ -1366,14 +1405,140 @@ class ResourceIndex:
                     # and cleanup must never mask the command result.
                     pass
 
+    # ------------------------------------------------------------------
+    # Quota catalog
+    #
+    # One cached row per ``(workspace, workload, compute group)`` holding that
+    # combination's complete ``/resource_prices/logic_compute_groups/``
+    # response. Storing the response whole keeps "fetched and empty" distinct
+    # from "never fetched", which callers need: an empty live response is a
+    # stale-group signal, an empty cached response is not.
+    # ------------------------------------------------------------------
+
+    def lookup_quota_prices(
+        self,
+        scope: ResourceScope,
+        logic_compute_group_id: str,
+        *,
+        now: float | None = None,
+    ) -> list[dict] | None:
+        """Return cached price rows, or ``None`` when absent or expired."""
+        group_id = str(logic_compute_group_id or "").strip()
+        if not group_id:
+            return None
+        timestamp = float(time.time() if now is None else now)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload FROM quota_price
+                WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+                  AND workspace_id = ? AND owner_scope = ?
+                  AND logic_compute_group_id = ? AND expires_at > ?
+                """,
+                (*self._scope_values(scope), group_id, timestamp),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(str(row["payload"]))
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, list):
+            return None
+        return [item for item in payload if isinstance(item, dict)]
+
+    def store_quota_prices(
+        self,
+        scope: ResourceScope,
+        logic_compute_group_id: str,
+        prices: Sequence[Mapping[str, Any]],
+        *,
+        ttl_seconds: int | None = None,
+        now: float | None = None,
+    ) -> None:
+        """Replace one group's cached quota catalog with a fresh response."""
+        group_id = str(logic_compute_group_id or "").strip()
+        if not group_id:
+            return
+        rows = [dict(price) for price in prices if isinstance(price, Mapping)]
+        try:
+            payload = json.dumps(rows, ensure_ascii=False)
+        except (TypeError, ValueError):
+            # A price row the platform sent that will not round-trip through
+            # JSON must not poison the cache; skip caching this group.
+            return
+        observed_at = float(time.time() if now is None else now)
+        ttl = (
+            DEFAULT_TTL_SECONDS[QUOTA_RESOURCE_TYPE]
+            if ttl_seconds is None
+            else int(ttl_seconds)
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO quota_price(
+                    base_url, subject_id, resource_type, workspace_id,
+                    owner_scope, logic_compute_group_id, payload, row_count,
+                    observed_at, expires_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    base_url, subject_id, resource_type, workspace_id,
+                    owner_scope, logic_compute_group_id
+                ) DO UPDATE SET
+                    payload=excluded.payload,
+                    row_count=excluded.row_count,
+                    observed_at=excluded.observed_at,
+                    expires_at=excluded.expires_at
+                """,
+                (
+                    *self._scope_values(scope),
+                    group_id,
+                    payload,
+                    len(rows),
+                    observed_at,
+                    observed_at + max(0, ttl),
+                ),
+            )
+
+    def list_quota_cache_status(self) -> list[QuotaCacheStatus]:
+        """Summarize cached quota slices for ``inspire cache status``."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT workspace_id, owner_scope,
+                       COUNT(*) AS group_count,
+                       SUM(row_count) AS row_count,
+                       MIN(observed_at) AS observed_at,
+                       MIN(expires_at) AS expires_at
+                FROM quota_price
+                WHERE resource_type = ?
+                GROUP BY workspace_id, owner_scope
+                ORDER BY workspace_id, owner_scope
+                """,
+                (QUOTA_RESOURCE_TYPE,),
+            ).fetchall()
+        return [
+            QuotaCacheStatus(
+                workspace_id=str(row["workspace_id"]),
+                workload=str(row["owner_scope"]),
+                group_count=int(row["group_count"] or 0),
+                row_count=int(row["row_count"] or 0),
+                last_refresh_at=float(row["observed_at"] or 0.0),
+                expires_at=float(row["expires_at"] or 0.0),
+            )
+            for row in rows
+        ]
+
     def clear(self) -> None:
-        """Delete all cached identity and refresh metadata."""
+        """Delete all cached identity, quota, and refresh metadata."""
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             generation = self._generation_from_connection(connection) + 1
             connection.execute("DELETE FROM resource_identity")
             connection.execute("DELETE FROM resource_scope")
             connection.execute("DELETE FROM refresh_lease")
+            connection.execute("DELETE FROM quota_price")
             connection.execute(
                 """
                 INSERT INTO metadata(key, value) VALUES('cache_generation', ?)
@@ -1385,6 +1550,8 @@ class ResourceIndex:
 
 __all__ = [
     "DEFAULT_TTL_SECONDS",
+    "QUOTA_RESOURCE_TYPE",
+    "QuotaCacheStatus",
     "RESOURCE_INDEX_FILENAME",
     "ResourceIdentity",
     "ResourceIndex",
