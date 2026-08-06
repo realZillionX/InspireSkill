@@ -1,10 +1,10 @@
 # 项目工作流
 
-一个项目跨越 CPU 准备、数据处理、GPU 训练、部署或交付时看本页。这里给阶段化决策和验收点，不维护命令模板；具体命令表面回到 CLI Help，单领域边界分别看 Resources、Network、Paths、Notebook、Image、Compute Workloads 和 Model References。
+一个项目跨越 CPU 准备、数据处理、GPU 训练、部署或交付时看本页。这里给阶段化决策和验收点，不维护命令模板；具体命令表面回到 CLI Help，单领域边界分别看 Project Context、Resources、Internal Sources、Paths、Notebook、Image、Compute Workloads 和 Model References。
 
 ## 1. 总体框架
 
-把项目推进拆成三段：
+项目上下文是所有阶段的前置：进入项目工作区先按 [`project-context.md`](project-context.md) 核对 `INSPIRE.md` 和项目初始化状态，问清 Project / Workspace / Paths / Image 再动手。之后把项目推进拆成三段：
 
 | 阶段 | 目标 | 典型平台位置 | 验收 |
 | --- | --- | --- | --- |
@@ -12,7 +12,7 @@
 | B. CPU 处理 | 预处理、清洗、评测、打包、索引构建 | HPC，必要时 Ray | 小规模 Probe 通过，正式规模产物完整，有 Fingerprint |
 | C. GPU 训练 / 部署 | 单节点调试、多节点训练、Serving | `分布式训练空间` 的 GPU Notebook、Job、Serving | 日志推进，Metrics 有负载，产物 / 服务 Smoke 通过 |
 
-核心原则：公网和依赖准备前置；目标 GPU 空间只负责读共享盘、拉已准备镜像、运行目标程序。特殊 Workspace 只有在硬件、权限或项目环境明确要求时才进入计划。
+核心原则：公网和依赖准备前置；目标 GPU 空间只负责读共享盘、拉已准备镜像、运行目标程序。用户指认的专属 Workspace 只有在硬件、权限或项目环境明确要求时才进入计划。
 
 ## 2. 阶段 A：准备
 
@@ -27,18 +27,11 @@
 - 关键 Python / System 依赖能在目标镜像里导入或执行。
 - 数据和权重路径在目标项目共享盘下可读。
 - 后续 Workload 要复用的镜像状态为 `READY`。
-- 项目约定已记录 Path Conventions、默认镜像和相关 Workload Profile 名称。
+- Path 约定、基底镜像身份和相关 Workload Profile 名称已按 [`project-context.md`](project-context.md) 写入 `INSPIRE.md`。
 
 ## 3. 阶段 B：CPU 处理
 
-固定规模 CPU 批处理优先 HPC；流式、长守护或异构 Worker 才考虑 Ray。
-
-| 形态 | HPC | Ray |
-| --- | --- | --- |
-| 任务边界 | 明确开始和结束 | 长时间流式或服务型 |
-| 并发模型 | 固定 Task / Instance | Worker Min / Max 弹性伸缩 |
-| 数据流 | GPFS 读写 | Ray 对象存储 + GPFS |
-| 结束条件 | Slurm 程序退出 | Driver 退出 |
+固定规模 CPU 批处理优先 HPC；流式、长守护或异构 Worker 才考虑 Ray。选型边界见 [`compute-workloads.md`](compute-workloads.md)。
 
 正式放量前先跑接近生产形状的 Probe。小规模通过不代表正式规模稳定；正式处理要写 Fingerprint，并用同项目 Notebook 回读产物目录确认数量、大小和内容摘要。
 
@@ -62,6 +55,6 @@
 - Metrics 显示请求或模型加载后的资源曲线合理。
 - `/health`、`/v1/models` 或业务 Smoke Test 通过。
 - 无 Key 请求被拒绝，带 Key 请求成功。
-- 模型版本、镜像版本、启动命令和端口写入项目交付记录。
+- 模型版本、镜像版本、启动命令和端口写入 `INSPIRE.md` 的复现合同。
 
 非服务型交付则回到共享盘产物：目录结构、Fingerprint、大小、样例文件和下游读取 Smoke 都要确认。

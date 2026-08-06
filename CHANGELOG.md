@@ -41,6 +41,14 @@
 
 ### 变更
 
+- 重构 Agent 使用手册：新增 `references/project-context.md`，承载项目初始化问询
+  （Project / Workspace / Paths / Image 四项须由用户确认，其中 `CPU资源空间` 与
+  `分布式训练空间` 是默认公共 Workspace，其余专属 Workspace 须用户亲自指认）、
+  `INSPIRE.md` 资产合同（合并原 `project-assets.md`）和项目信息持续维护触发点；
+  `resources-and-paths.md` 更名 `resources.md`、`network-and-sources.md` 更名
+  `internal-sources.md`、`image-management.md` 更名 `image.md`。删除 SKILL.md 的
+  “网络与合规闸门”一节（此类限制由 CLI 层承担），并清理各使用手册中缓存实现、
+  内部字段名等开发层细节；`references/dev/` 之外的文档只保留面向 Agent 的操作语义。
 - Notebook 的 SSH/Rtunnel 可用性改为直接看 Compute Group 名称是否含 `H100` / `H200`，
   不再靠 JupyterTerminal 联网探测推断。旧路径要为每个非静态受限的 Notebook 开一个完整
   远端终端跑连通性探测（数十秒），且把“能上网”当作“能 SSH”的代理指标。该判断同时收紧到

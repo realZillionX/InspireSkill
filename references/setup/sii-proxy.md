@@ -1,6 +1,6 @@
 # Clash Verge SII 分流
 
-本页只处理本机 Clash Verge 对 `*.sii.edu.cn` 的分流，以及公网代理与 SII 校园网直连之间的切换。账号级 proxy、Shell proxy、`NO_PROXY` 和有效路由诊断见 [`install-and-config.md`](install-and-config.md)；受限 Notebook 的远端 Transport 与合规边界见 [`../notebook.md`](../notebook.md) 和 [`../network-and-sources.md`](../network-and-sources.md)。
+本页只处理本机 Clash Verge 对 `*.sii.edu.cn` 的分流，以及公网代理与 SII 校园网直连之间的切换。账号级 proxy、Shell proxy、`NO_PROXY` 和有效路由诊断见 [`install-and-config.md`](install-and-config.md)；受限 Notebook 的连接与文件流转见 [`../notebook.md`](../notebook.md)。
 
 - [配置目标](#1-配置目标)
 - [脚本模板](#2-脚本模板)

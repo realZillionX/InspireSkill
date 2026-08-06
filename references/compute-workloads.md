@@ -1,6 +1,6 @@
 # Job、HPC、Ray 与 Serving
 
-在 GPU Job、CPU HPC、Ray 和 Serving 之间选型，或提交后观察 Events / Logs / Metrics / Instances / Status 时看本页。资源目录和 Profile 看 [`resources-and-paths.md`](resources-and-paths.md)，镜像看 [`image-management.md`](image-management.md)，模型仓库看 [`model.md`](model.md)。命令语法和参数以 CLI Help 为准。
+在 GPU Job、CPU HPC、Ray 和 Serving 之间选型，或提交后观察 Events / Logs / Metrics / Instances / Status 时看本页。资源目录和 Profile 看 [`resources.md`](resources.md)，镜像看 [`image.md`](image.md)，模型仓库看 [`model.md`](model.md)。命令语法和参数以 CLI Help 为准。
 
 ## 1. 先选工作负载类型
 
@@ -32,13 +32,13 @@ Job 覆盖 GPU 多节点工作负载，包括分布式训练、批量推理和�
 Job 的关键边界：
 
 - 日志和工作目录依赖共享盘约定；训练 Repo 建议在 `me:<repo>`，启动命令里使用相对共享盘路径或让脚本自己切目录。
-- Shared Memory 是每个 Job Instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader Workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置；也可用 `INSPIRE_SHM_SIZE` 或 `[job] shm_size` 作为默认值，命令行参数优先。提交前用 `job create --dry-run` 看解析后的 Shared Memory；提交后用 `job list/status` 确认平台返回的 Per-Instance SHM。
-- 需要平台在任务状态变化时通知当前用户，可在 `job create` 使用 `--enable-notification`；平台收件人固定为当前用户绑定的飞书账号。持久默认值用 `[job].enable_notification` 或 `INSPIRE_JOB_ENABLE_NOTIFICATION`，显式 `--enable-notification/--no-enable-notification` 优先。`job batch` 在 item 未设置时继承该默认值，item 内布尔值优先。
-- 自动容错默认值用 `[job].auto_fault_tolerance` / `[job].fault_tolerance_max_retry` 或对应环境变量管理；CLI 显式参数和 Batch item 仍优先。通知与自动容错默认都保持关闭，除非明确启用；提交前用 `job create --dry-run` 或 `job batch --dry-run` 检查最终 Payload。
+- Shared Memory 是每个 Job Instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader Workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置。
+- 状态变化通知（`--enable-notification`，收件人固定为当前用户绑定的飞书账号）和自动容错默认关闭，除非明确启用。
+- 需要项目级持久默认值时写 `[job]` 配置段；提交前用 `job create --dry-run` 检查 Shared Memory、通知和容错的最终生效值。
 - 多节点训练要关注每个 Pod 的 GPU、显存、CPU 和网络曲线是否同步；某个 Worker 长期低负载通常比日志更早暴露问题。
 - 排除坏节点是“不要调度到这些 Ready 节点”，不是固定节点；候选节点来自所选 Compute Group。
 
-优先级是 Workspace 能力限定的调度信号。qz 公平调度 Workspace 只接受 `1=LOW`（可抢占）或 `4=HIGH`（稳定且可抢占 LOW），默认 4；其他 Workspace 保留 `1–10`，默认 10。CLI 从 live `is_fair_workspace` 选择合同，项目策略仍可能降低最终优先级。任务需要稳定训练但显示 LOW 时，先 stop，再按当前 Workspace 和项目策略重提。
+优先级是 Workspace 能力限定的调度信号。qz 公平调度 Workspace 只接受 `1=LOW`（可抢占）或 `4=HIGH`（稳定且可抢占 LOW），默认 4；其他 Workspace 保留 `1–10`，默认 10。CLI 按当前 Workspace 的公平调度标记自动选择优先级合同，项目策略仍可能降低最终优先级。任务需要稳定训练但显示 LOW 时，先 stop，再按当前 Workspace 和项目策略重提。
 
 qz 当前公平调度训练区的碎卡任务是明确例外：它只能以 `1=LOW`（可抢占）提交；需要稳定优先级的碎卡任务时改选开发区中真实存在的 Live Quota Row。整节点 / 碎卡按每个 Job Instance 的 Quota 判断，不按 `quota.gpu × --nodes` 的总卡数判断；例如 2 个 4 GPU Instance 仍是碎卡请求。训练区碎卡提交后用 Status / Events 核实解析后的优先级和调度结果。
 

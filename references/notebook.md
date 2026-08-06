@@ -1,6 +1,6 @@
 # Notebook 工作流
 
-创建交互环境、进入容器、管理远端文件、按网络策略暴露容器 HTTP 服务，或用 Notebook 准备可复用环境时看本页。资源条件看 [`resources-and-paths.md`](resources-and-paths.md)；公网和内部源看 [`network-and-sources.md`](network-and-sources.md)；镜像生命周期看 [`image-management.md`](image-management.md)。命令语法和参数以 CLI Help 为准。
+创建交互环境、进入容器、管理远端文件、暴露容器 HTTP 服务，或用 Notebook 准备可复用环境时看本页。资源条件看 [`resources.md`](resources.md)；联网准备和内部源看 [`internal-sources.md`](internal-sources.md)；镜像生命周期看 [`image.md`](image.md)。命令语法和参数以 CLI Help 为准。
 
 ## 1. Notebook 的角色
 
@@ -31,7 +31,7 @@ Notebook 是交互工作台，不只是“开一个终端”。
 
 ## 3. 连接方式
 
-Transport 由 Notebook 所属 Compute Group 决定：Group 名称含 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH/Rtunnel；其余 Group 走 SSH。判断不做任何远端探测：Group 名称和 Name 解析索引存在一起（`inspire cache status|refresh|clear`），命中缓存时零 API 调用，未命中时也只从 Name 解析本来就要发的 List 响应里读。
+Transport 由 Notebook 所属 Compute Group 决定：Group 名称含 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH/Rtunnel；其余 Group 走 SSH。CLI 自动完成该判断，不需要远端探测。
 
 | 入口 | 心智模型 | 受限 Notebook 行为 |
 | --- | --- | --- |
@@ -42,13 +42,11 @@ Transport 由 Notebook 所属 Compute Group 决定：Group 名称含 `H100` 或 
 | `ssh-config` | 给 OpenSSH、`scp`、`rsync`、VS Code Remote SSH 使用 | 受限 Notebook 不生成 |
 | `connection refresh` | 创建/刷新 SSH/Rtunnel Cache | 受限 Notebook 不建立连接 |
 | `ssh-proxy` | OpenSSH ProxyCommand | 受限 Notebook 不使用 |
-| `proxy-url` | 暴露容器 HTTP 端口 | 受限 Notebook 默认拒绝；仍须遵守网络策略和应用自身鉴权 |
+| `proxy-url` | 暴露容器 HTTP 端口 | 受限 Notebook 默认拒绝 |
 | `url` | Notebook Web IDE 入口 | 允许 |
 | `vscode` | VS Code Web IDE 入口 | 允许 |
 
 `--workspace` 主要用于首次解析或同名 Notebook 消歧；连接缓存建立后，后续命令通常可按名称使用。缓存是性能和连接复用工具，不是平台事实来源。
-
-Transport 不代表外部服务授权；完整合规边界见 [`network-and-sources.md`](network-and-sources.md)。
 
 受限 Notebook 的 `exec` 每次使用独立临时 Jupyter Terminal，命令结束后立即回收，不共享 `cwd`、环境变量或 Shell 状态。
 
@@ -113,8 +111,6 @@ inspire notebook vscode <name> --workspace <workspace>
 ```
 
 容器内 HTTP 服务用 Notebook Proxy 暴露。Proxy 只提供网络通路，不替代应用自己的鉴权；Gradio、FastAPI、LLM API 仍要有自己的登录或 API Key。发布给协作者前做无 Key / 有 Key 对照，确认未授权请求会被拒绝。
-
-不要用本机临时 gateway 绑定 `0.0.0.0` 对外分享，这会绕开启智访问控制。
 
 ## 6. 基底环境
 

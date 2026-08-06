@@ -113,7 +113,7 @@ inspire resources availability --workspace all --include-cpu
 
 `inspire init` 默认做账号级全局发现，写入平台 Catalog 和默认 Path Alias；`--scope project` 用于当前仓库的 Project Context 和 Path Alias 覆盖。
 
-账号级 / 项目级配置分层和多账号操作见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)；Clash Verge 的 SII Proxy / DIRECT 分流模板见 [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)。
+安装、更新和多账号操作见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)；项目初始化问询（Project / Workspace / Paths / Image）和 `INSPIRE.md` 维护见 [`references/project-context.md`](references/project-context.md)；Clash Verge 的 SII Proxy / DIRECT 分流模板见 [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)。
 
 ---
 
@@ -197,7 +197,7 @@ inspire resources availability --workspace all --include-cpu
 
 `SKILL.md` 装完是一份通用 Playbook。日常 Workspace 基本就是 `CPU资源空间` 和 `分布式训练空间`；资源条件不要写成隐式默认值，把 `workspace`、`project`、`group`、`quota` 和 `image` 组合成 Workload Profile，并在 `inspire notebook/job/hpc/... create --profile <name>` 或 Batch 文件里显式使用。
 
-`INSPIRE.md` 不是所有仓库必备的文件。只有某个具体科研或工程项目在启智上维护稳定拓扑、Canonical Remote Paths、永久基础设施或 Image / Model / Dataset / Checkpoint 等持久资产时，才在该项目工作区根维护 `INSPIRE.md`。CLI、Skill、文档和其它通用工具源码仓库不应为了“使用了启智”而创建它；字段与生命周期边界见 [`references/project-assets.md`](references/project-assets.md)。
+`INSPIRE.md` 不是所有仓库必备的文件。只有某个具体科研或工程项目在启智上维护稳定拓扑、Canonical Remote Paths、永久基础设施或 Image / Model / Dataset / Checkpoint 等持久资产时，才在该项目工作区根维护 `INSPIRE.md`。CLI、Skill、文档和其它通用工具源码仓库不应为了“使用了启智”而创建它；初始化问询、字段与生命周期边界见 [`references/project-context.md`](references/project-context.md)。
 
 需要定制 Harness 级入口时，直接编辑 `~/.claude/skills/inspire/SKILL.md` 和同目录 `references/`（Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Desktop 同理）。`inspire update` 默认会覆盖 `SKILL.md` 和 `references/`；维护本地改动后用 `inspire update --cli-only` 只升级 CLI 与运行时。
 
@@ -235,19 +235,19 @@ inspire resources availability --workspace all --include-cpu
 
 # 文档索引
 
-- [`SKILL.md`](SKILL.md) — 日常使用入口：平台不变量、风险边界、最短执行闭环和按需加载索引。
-- [`references/setup/install-and-config.md`](references/setup/install-and-config.md) — 安装、更新、账号初始化、多账号操作和项目初始化。
+- [`SKILL.md`](SKILL.md) — 日常使用入口：平台不变量、项目上下文约定、最短执行闭环和按需加载索引。
+- [`references/setup/install-and-config.md`](references/setup/install-and-config.md) — 安装、更新、账号配置、全局发现和多账号操作。
 - [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md) — Clash Verge 的 SII Proxy / DIRECT 分流模板和验证步骤。
-- [`references/dev/browser-api.md`](references/dev/browser-api.md) — CLI 维护参考：Browser API 域、认证不变量和公开命令映射。
-- [`references/resources-and-paths.md`](references/resources-and-paths.md) — Workspace、Compute Group、规格三元组、实时资源和 Workload Profile 边界。
-- [`references/network-and-sources.md`](references/network-and-sources.md) — 公网、离线 GPU 空间、SII 内部源和镜像固化策略。
+- [`references/project-context.md`](references/project-context.md) — 项目初始化问询（Project / Workspace / Paths / Image）、`INSPIRE.md` 资产合同和项目信息持续维护。
+- [`references/resources.md`](references/resources.md) — Workspace、Compute Group、规格三元组、实时资源和 Workload Profile 边界。
 - [`references/paths.md`](references/paths.md) — 共享盘作用域、存储池、挂载隔离、Path Alias 和远端路径边界。
-- [`references/notebook.md`](references/notebook.md) — Notebook 作为交互工作台、连接方式、文件流转、Proxy、安全和观察边界。
-- [`references/image-management.md`](references/image-management.md) — 镜像职责、保存 / 注册边界、可见性和清理原则。
+- [`references/internal-sources.md`](references/internal-sources.md) — 联网准备动线、SII 内部源入口和镜像固化策略。
+- [`references/notebook.md`](references/notebook.md) — Notebook 作为交互工作台、连接方式、文件流转、Proxy 和观察边界。
 - [`references/compute-workloads.md`](references/compute-workloads.md) — GPU Job、CPU HPC、Ray、Serving 的适用边界、调度语义和观察闭环。
 - [`references/workflows.md`](references/workflows.md) — CPU 准备、数据处理、分布式训练三阶段项目流程。
+- [`references/image.md`](references/image.md) — 镜像职责、保存 / 注册边界、可见性和清理原则。
 - [`references/model.md`](references/model.md) — Model Registry 与 Serving 的职责边界、注册限制和版本判断。
-- [`references/project-assets.md`](references/project-assets.md) — 具体项目工作区的 `INSPIRE.md` 资产合同、内容边界和生命周期。
+- [`references/dev/browser-api.md`](references/dev/browser-api.md) — CLI 维护参考：Browser API 域、认证不变量和公开命令映射。
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — 开发、测试和贡献约定。
 - [`cli/`](cli/) — CLI 源码；入口 `cli/inspire/cli/main.py`。
 - [`scripts/install.sh`](scripts/install.sh) — Curl Pipe Bash 安装器。

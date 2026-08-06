@@ -1,6 +1,6 @@
 # 远端路径
 
-理解共享盘作用域、存储池、挂载隔离和 Path Alias 时先看本页。调度条件和资源规格看 [`resources-and-paths.md`](resources-and-paths.md)；公网 / 内部源看 [`network-and-sources.md`](network-and-sources.md)。
+理解共享盘作用域、存储池、挂载隔离和 Path Alias 时先看本页。调度条件和资源规格看 [`resources.md`](resources.md)；联网准备和内部源看 [`internal-sources.md`](internal-sources.md)。
 
 ## 1. 路径不是调度条件
 
@@ -22,7 +22,7 @@ Path Alias 是远端路径 Alias，不是 Workload Profile。它只回答“文�
 | 全局个人 | `/inspire/<tier>/global_user/<path-user>/...` | 跨项目个人盘，适合小工具和中转 |
 | 全局公共 | `/inspire/hdd/global_public/...` | 全平台共享，普通账号通常只读 |
 
-`<path-user>` 是共享盘返回的个人目录名，不一定等于平台登录 username。路径事实以文件页 Browser API 发现结果为准。
+`<path-user>` 是共享盘返回的个人目录名，不一定等于平台登录 username。路径事实以 `inspire init` 的平台发现结果为准。
 
 ## 3. 存储池
 
@@ -43,7 +43,7 @@ Path Alias 是远端路径 Alias，不是 Workload Profile。它只回答“文�
 
 ## 5. Alias 语义
 
-默认 Alias 由 `inspire init` 写入账号配置；当前 Repo 需要覆盖时，用项目初始化或 Path Alias 命令写仓库级配置。
+默认 Alias 由 `inspire init` 写入账号配置；当前 Repo 需要覆盖时，由 `inspire init --scope project` 写入仓库级配置，日常增删改用 `inspire notebook path list/set/delete`。项目初始化问询和路径约定的持续维护见 [`project-context.md`](project-context.md)。
 
 | Alias | 指向 |
 | --- | --- |

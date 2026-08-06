@@ -1,6 +1,6 @@
 # 资源与调度条件
 
-选择 Workspace、Project、Compute Group、`--quota`、镜像和 Workload Profile 时先看本页。公网 / SII 内部源看 [`network-and-sources.md`](network-and-sources.md)；共享盘、存储池和 Path Alias 看 [`paths.md`](paths.md)。具体命令表面始终回到 CLI Help。
+选择 Workspace、Project、Compute Group、`--quota`、镜像和 Workload Profile 时先看本页。共享盘、存储池和 Path Alias 看 [`paths.md`](paths.md)；联网准备和内部源看 [`internal-sources.md`](internal-sources.md)。具体命令表面始终回到 CLI Help。
 
 ## 1. 三类名字
 
@@ -14,18 +14,16 @@
 
 调度条件没有隐式默认值。创建 Workload 时显式传入，或用 Workload Profile 保存这五类条件。Path Alias 只表示远端路径，不能替代 Workspace、Project、Group、Quota 或 Image。
 
-Restricted Notebook 的文件流转边界是 `/inspire/<storage>/...` 共享路径。通过支持 SSH 的 Notebook 的 `notebook scp` 或外部 `rsync` 搬入 / 搬出共享盘。
-
 ## 2. Workspace 判断
 
-日常 Workspace 选择不要抽象化：
+`CPU资源空间` 和 `分布式训练空间` 是所有用户默认可用的公共 Workspace，日常任务直接按职责选择：
 
 | Workspace | 主要职责 |
 | --- | --- |
 | `CPU资源空间` | CPU Notebook、联网准备、依赖安装、CPU HPC、CPU Ray |
 | `分布式训练空间` | GPU Notebook、GPU Job、多节点训练、Serving、GPU 指标观察 |
 
-国产卡分区、`CI-情境智能` 工作空间或小组专属空间只在任务明确要求特殊硬件、特殊权限或特殊项目环境时使用。
+其余 Workspace（项目专属空间、国产卡分区等）都必须由用户亲自指认后才能使用；已指认的专属 Workspace 及其职责记录在项目上下文（见 [`project-context.md`](project-context.md)），不要因为列表里可见就自行启用。
 
 ## 3. Resource Truth
 
@@ -38,46 +36,17 @@ Restricted Notebook 的文件流转边界是 `/inspire/<storage>/...` 共享路�
 
 `resources availability`、`resources nodes` 和各 Workload 的 `quota` 是资源事实入口；具体参数和输出以 CLI Help 为准。
 
-`Available` 是平台上当前未被占用的 GPU，`Low Pri` 是低优任务占用、可被高优任务抢占的 GPU，`High Pri` 是 `Available + Low Pri`。判断高优任务时不要只看 `Available`，但 `High Pri` 也只是可抢占容量上限；提交后仍以 Events 为准。公平调度 Workspace 的高优写入值为 4，其他 Workspace 仍按其 `1–10` 策略。
+`Available` 是平台上当前未被占用的 GPU，`Low Pri` 是低优任务占用、可被高优任务抢占的 GPU，`High Pri` 是 `Available + Low Pri`。判断高优任务时不要只看 `Available`，但 `High Pri` 也只是可抢占容量上限；提交后仍以 Events 为准。
 
-### Name 解析缓存
-
-CLI 为每个启智账号维护一份可丢弃的本地缓存，只用于加速 Name 解析和 Quota 目录查询。普通 `list`、`status`、`events`、`metrics`、规格和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。
-
-- TTL 分两档：Workload（notebook / job / hpc / ray / serving）5 分钟，平台目录类（workspace / project / compute-group / image / model / ssh-key / quota-*）30 分钟。存在有效 Web Session 时，普通命令会静默触发到期范围的后台刷新；后台刷新进程每账号最多 5 分钟一个，且只在你实际执行 CLI 命令时才会被拉起。
-- Project 与 Workspace、SSH Key 一样按账号全局缓存，不按 Workspace 分片：一个 Project 可同时归属多个 Workspace，平台也支持不带 Workspace 过滤一次列全。
-- Create 成功后会立即写入新名称，Delete 成功后会将对应缓存记录标记为失效。
-- 平台侧删除、同名重建或 Compute Group 变动会在 Live 重解析、到期刷新或手动刷新时更新缓存记录。
-- 缓存数据库损坏、锁冲突或刷新失败不能阻断正常的 Live 查询；清空缓存不会删除任何平台资源。
-
-Quota 行就是普通的 Name → Handle 记录：Name 是 `gpu,cpu,mem` 三元组（正是 `--quota` 传的值），Handle 是平台 `quota_id`，另外带上所属 Compute Group 名和原始规格 Payload。因此它和其他资源共用同一套索引，Resource 名是 `quota-notebook` / `quota-job` / `quota-hpc` / `quota-ray` / `quota-serving`，Scope 是 Workspace，TTL 30 分钟。
-
-`<workload> quota` 查询和 `create --quota` 解析都读它。Scope 新鲜时零 API 调用；Scope 过期或未预热时按 Compute Group 逐个 Live 查询，语义与以前一致。同一个三元组在多个 Compute Group 里重复出现是正常的——那正是 `--group` 要消歧的情形，索引按 Handle 保留全部候选。
-
-```bash
-inspire cache refresh --resource quota-notebook --workspace 分布式训练空间
-```
-
-需要主动管理时使用：
-
-```bash
-inspire cache status
-inspire cache refresh
-inspire cache refresh --full
-inspire cache refresh --resource notebook --workspace CPU资源空间
-inspire cache refresh --resource notebook --name prep-box
-inspire cache clear --yes
-```
-
-`cache refresh` 默认只刷新到期范围；指定 Resource、Workspace、Name 或 `--full` 时会主动刷新对应范围。具体可选 Resource 以 `inspire cache refresh --help` 为准。
+CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解析；普通 `list`、`status`、`events`、`metrics` 和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。怀疑缓存过期时用 `inspire cache status|refresh|clear` 管理；清空缓存不会删除任何平台资源。
 
 ## 4. Quota 语义
 
 `--quota` / `-q` 是 `gpu,cpu,mem` 三元组，`mem` 以 GiB 计。GPU 型号不写进三元组，而由 Workspace + Compute Group 决定。
 
-`mem` 表示实例常规内存规格，不是 Shared Memory。GPU Job 的 `/dev/shm` / IPC 空间用 `--shm-size <GiB>` 控制，且不能超过所选 Quota 的 `mem`；需要项目级默认时用 `INSPIRE_SHM_SIZE` 或 `[job] shm_size`。`job create --dry-run` 和 `job list/status` 会显示解析后的 Shared Memory，方便确认命令行参数和配置默认最终是否生效。
+`mem` 表示实例常规内存规格，不是 Shared Memory。GPU Job 的 `/dev/shm` / IPC 空间用 `--shm-size <GiB>` 控制，且不能超过所选 Quota 的 `mem`；提交前用 `job create --dry-run` 确认解析后的 Shared Memory。
 
-三元组必须在当前可见规格里唯一匹配。如果多个 Compute Group 有同一组三元组，先用查询命令按 Group 关键词收窄，再在 `create` 或 Profile 中写完整 Group 名称。
+三元组必须在当前可见规格里唯一匹配。同一个三元组出现在多个 Compute Group 里是正常现象；先用查询命令按 Group 关键词收窄，再在 `create` 或 Profile 中写完整 Group 名称消歧。
 
 ### qz 开发区与训练区
 
