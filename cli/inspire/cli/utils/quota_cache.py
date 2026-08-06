@@ -280,14 +280,6 @@ class CachedPricesLoader:
         self._cached_by_group = by_group
         return by_group
 
-    def _store_catalog(self, records: Sequence[ResourceIdentity]) -> None:
-        if self._index is None or self._scope is None:
-            return
-        try:
-            self._index.reconcile(self._scope, records)
-        except Exception:  # noqa: BLE001 - caching is best effort
-            logger.debug("Quota cache write failed", exc_info=True)
-
     def __call__(self, logic_compute_group_id: str) -> list[dict]:
         group_id = str(logic_compute_group_id or "").strip()
         cached = self._load_cached_catalog()
