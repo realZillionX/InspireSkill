@@ -31,7 +31,7 @@ Notebook 是交互工作台，不只是“开一个终端”。
 
 ## 3. 连接方式
 
-Transport 由 Notebook 所属 Compute Group 决定：Group 名称含 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH/Rtunnel；其余 Group 走 SSH。这个判断只读 Notebook Detail 里的 Group 名称，不做任何远端探测。
+Transport 由 Notebook 所属 Compute Group 决定：Group 名称含 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH/Rtunnel；其余 Group 走 SSH。判断不做任何远端探测：Group 名称和 Name 解析索引存在一起（`inspire cache status|refresh|clear`），命中缓存时零 API 调用，未命中时也只从 Name 解析本来就要发的 List 响应里读。
 
 | 入口 | 心智模型 | 受限 Notebook 行为 |
 | --- | --- | --- |

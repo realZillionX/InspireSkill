@@ -13,7 +13,7 @@ from inspire.cli.utils.notebook_cli import (
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.platform.web import browser_api as browser_api_module
 
-from .notebook_lookup import _notebook_compute_group, _resolve_notebook_id
+from .notebook_lookup import _notebook_compute_group, _resolve_notebook_target
 
 if TYPE_CHECKING:
     from inspire.platform.web.session import WebSession
@@ -104,7 +104,7 @@ def preflight_notebook_transport_policy(
         )
     else:
         workspace_ids = None
-    notebook_id, _workspace_id = _resolve_notebook_id(
+    notebook_id, _workspace_id, compute_group = _resolve_notebook_target(
         ctx,
         session=session,
         base_url=get_base_url(account=account),
@@ -113,10 +113,18 @@ def preflight_notebook_transport_policy(
         workspace_ids=workspace_ids,
         pick=pick,
     )
-    detail = browser_api_module.get_notebook_detail(notebook_id=notebook_id, session=session)
+    if not compute_group:
+        # Name resolution normally hands back the group for free, from either
+        # the identity cache or the list response it already fetched. Only a
+        # platform payload that omitted it costs a detail request.
+        detail = browser_api_module.get_notebook_detail(
+            notebook_id=notebook_id,
+            session=session,
+        )
+        compute_group = _notebook_compute_group(detail)
     return NotebookTransportPolicy(
         notebook=notebook,
         notebook_id=notebook_id,
-        compute_group=_notebook_compute_group(detail),
+        compute_group=compute_group,
         session=session,
     )

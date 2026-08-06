@@ -109,6 +109,7 @@ def _dedupe_records(records: Iterable[ResourceIdentity]) -> list[ResourceIdentit
             owner_id=str(record.owner_id or "").strip(),
             status=str(record.status or "").strip(),
             created_at=str(record.created_at or "").strip(),
+            compute_group=str(record.compute_group or "").strip(),
         )
     return list(by_id.values())
 
@@ -388,6 +389,7 @@ def _serving_fetch(session: object, workspace_id: str, exact_name: str) -> Fetch
 def _notebook_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
     from inspire.cli.commands.notebook.notebook_lookup import (
         _list_notebooks_for_workspace,
+        _notebook_compute_group,
         _notebook_id_from_item,
         _try_get_current_user_ids,
     )
@@ -432,6 +434,7 @@ def _notebook_fetch(session: object, workspace_id: str, exact_name: str) -> Fetc
             ),
             status=str(item.get("status") or ""),
             created_at=str(item.get("created_at") or ""),
+            compute_group=_notebook_compute_group(item),
         )
         for item in items
     ]

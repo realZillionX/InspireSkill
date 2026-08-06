@@ -43,10 +43,13 @@
 
 - Notebook 的 SSH/Rtunnel 可用性改为直接看 Compute Group 名称是否含 `H100` / `H200`，
   不再靠 JupyterTerminal 联网探测推断。旧路径要为每个非静态受限的 Notebook 开一个完整
-  远端终端跑连通性探测（数十秒），且把“能上网”当作“能 SSH”的代理指标；新判断只读
-  Notebook Detail 已有的 Group 名称，preflight 降到一次 API 调用。该判断同时收紧到
+  远端终端跑连通性探测（数十秒），且把“能上网”当作“能 SSH”的代理指标。该判断同时收紧到
   `run_notebook_ssh` 内部，因此不带 `--workspace` 的 `notebook ssh` 也无法为受限
   Notebook 建立连接。
+- Compute Group 名称随 Notebook 一起进本地 Name 解析索引（`resource_identity` 新增
+  `compute_group` 列，旧库自动 `ALTER TABLE` 迁移，schema 版本 3），由后台定时刷新
+  一并维护。因此 Transport 判断在缓存命中时不发任何 API 请求；缓存未命中时也只从
+  Name 解析本来就要发的 `/notebook/list` 响应里读，不再额外请求 Notebook Detail。
 
 - 新增按账号隔离、可定时刷新且支持手动管理的本地 Name 解析索引；`inspire cache
   status|refresh|clear` 用于查看、刷新或清理该加速层，平台 Live API 仍是资源事实源。

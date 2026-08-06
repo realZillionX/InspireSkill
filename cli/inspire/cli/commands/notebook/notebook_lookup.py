@@ -517,7 +517,7 @@ def _workspace_label(session: web_session_module.WebSession, workspace_id: str) 
     return "(workspace name unavailable)"
 
 
-def _resolve_notebook_id(
+def _resolve_notebook_target(
     ctx: Context,
     *,
     session: web_session_module.WebSession,
@@ -528,7 +528,14 @@ def _resolve_notebook_id(
     pick: int | None = None,
     require_live: bool = False,
     cache_index: ResourceIndex | None = None,
-) -> tuple[str, str | None]:
+) -> tuple[str, str | None, str]:
+    """Resolve a notebook name to ``(handle, workspace_id, compute_group)``.
+
+    The compute group rides along because every path that produces a handle --
+    the identity cache and the platform list response -- already carries it.
+    Callers that gate on it (notebook SSH transport policy) therefore need no
+    extra detail request.
+    """
     identifier = identifier.strip()
     if not identifier:
         _handle_error(
@@ -596,6 +603,7 @@ def _resolve_notebook_id(
                                 "name": cached_item.name,
                                 "status": cached_item.status,
                                 "created_at": cached_item.created_at,
+                                "compute_group": cached_item.compute_group,
                             },
                         )
                     )
@@ -684,6 +692,7 @@ def _resolve_notebook_id(
                                 ),
                                 status=str(notebook_item.get("status") or ""),
                                 created_at=str(notebook_item.get("created_at") or ""),
+                                compute_group=_notebook_compute_group(notebook_item),
                             )
                             for match_workspace_id, notebook_item in matches
                             if match_workspace_id == workspace_id
@@ -707,6 +716,7 @@ def _resolve_notebook_id(
                                     "name": item.name,
                                     "status": item.status,
                                     "created_at": item.created_at,
+                                    "compute_group": item.compute_group,
                                 },
                             )
                             for item in cache_index.lookup(scope, identifier)
@@ -740,8 +750,8 @@ def _resolve_notebook_id(
             hint="Run 'inspire notebook list --workspace all' to find the notebook name.",
         )
 
-    if len(matches) == 1:
-        ws_id, item = matches[0]
+    def _target_for(match: tuple[str, dict]) -> tuple[str, str | None, str]:
+        ws_id, item = match
         notebook_id = _notebook_id_from_item(item)
         if not notebook_id:
             _handle_error(
@@ -751,7 +761,10 @@ def _resolve_notebook_id(
                 EXIT_API_ERROR,
             )
             raise RuntimeError("unreachable")
-        return notebook_id, ws_id
+        return notebook_id, ws_id, _notebook_compute_group(item)
+
+    if len(matches) == 1:
+        return _target_for(matches[0])
 
     if pick is not None:
         if pick < 1 or pick > len(matches):
@@ -764,17 +777,7 @@ def _resolve_notebook_id(
                 ),
                 EXIT_VALIDATION_ERROR,
             )
-        ws_id, item = matches[pick - 1]
-        notebook_id = _notebook_id_from_item(item)
-        if not notebook_id:
-            _handle_error(
-                ctx,
-                "APIError",
-                f"Notebook '{identifier}' is missing a required API field.",
-                EXIT_API_ERROR,
-            )
-            raise RuntimeError("unreachable")
-        return notebook_id, ws_id
+        return _target_for(matches[pick - 1])
 
     def _label_for(item: dict, ws_id: str) -> str:
         status = str(item.get("status") or "Unknown")
@@ -809,17 +812,33 @@ def _resolve_notebook_id(
         default=1,
         show_default=True,
     )
-    ws_id, item = matches[choice - 1]
-    notebook_id = _notebook_id_from_item(item)
-    if not notebook_id:
-        _handle_error(
-            ctx,
-            "APIError",
-            f"Notebook '{identifier}' is missing a required API field.",
-            EXIT_API_ERROR,
-        )
-        raise RuntimeError("unreachable")
-    return notebook_id, ws_id
+    return _target_for(matches[choice - 1])
+
+
+def _resolve_notebook_id(
+    ctx: Context,
+    *,
+    session: web_session_module.WebSession,
+    base_url: str,
+    identifier: str,
+    json_output: bool,
+    workspace_ids: list[str] | None = None,
+    pick: int | None = None,
+    require_live: bool = False,
+    cache_index: ResourceIndex | None = None,
+) -> tuple[str, str | None]:
+    notebook_id, workspace_id, _compute_group = _resolve_notebook_target(
+        ctx,
+        session=session,
+        base_url=base_url,
+        identifier=identifier,
+        json_output=json_output,
+        workspace_ids=workspace_ids,
+        pick=pick,
+        require_live=require_live,
+        cache_index=cache_index,
+    )
+    return notebook_id, workspace_id
 
 
 def _run_notebook_operation_with_stale_handle_retry(
@@ -888,6 +907,7 @@ __all__ = [
     "_notebook_compute_group",
     "_notebook_id_from_item",
     "_resolve_notebook_id",
+    "_resolve_notebook_target",
     "_run_notebook_operation_with_stale_handle_retry",
     "_sort_notebook_items",
     "_try_get_current_user_ids",

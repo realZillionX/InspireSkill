@@ -747,3 +747,91 @@ def test_empty_targeted_name_is_rejected(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
     with pytest.raises(ValueError, match="cannot be empty"):
         index.replace_name(_scope(), " ", [])
+
+
+def test_compute_group_round_trips_through_lookup_paths(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope(resource_type="notebook")
+    record = ResourceIdentity(
+        resource_id="notebook-one",
+        name="gpu-box",
+        compute_group="训练区-H200-1号机房",
+    )
+
+    index.upsert(scope, [record], ttl_seconds=60, now=100)
+
+    assert index.lookup(scope, "gpu-box", now=101)[0].compute_group == (
+        "训练区-H200-1号机房"
+    )
+    cached = index.lookup_id(scope, "notebook-one")
+    assert cached is not None and cached.compute_group == "训练区-H200-1号机房"
+    assert index.list_identities(scope, now=101)[0].compute_group == (
+        "训练区-H200-1号机房"
+    )
+
+    index.replace_name(
+        scope,
+        "gpu-box",
+        [ResourceIdentity(resource_id="notebook-one", name="gpu-box", compute_group="CPU资源-2")],
+        now=102,
+    )
+    assert index.lookup(scope, "gpu-box", now=103)[0].compute_group == "CPU资源-2"
+
+
+def test_index_without_compute_group_column_is_migrated_in_place(tmp_path) -> None:
+    path = tmp_path / "index.sqlite3"
+    # A pre-existing database written by the schema that predates the column.
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE resource_identity (
+                base_url TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                owner_scope TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                owner_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                observed_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                last_seen_scan_id TEXT,
+                tombstoned_at REAL,
+                PRIMARY KEY (
+                    base_url, subject_id, resource_type, workspace_id,
+                    owner_scope, resource_id
+                )
+            );
+            INSERT INTO resource_identity(
+                base_url, subject_id, resource_type, workspace_id, owner_scope,
+                resource_id, name, observed_at, expires_at
+            )
+            VALUES(
+                'https://inspire.example', 'user-one', 'notebook',
+                'workspace-one', 'self', 'notebook-old', 'legacy-box',
+                100.0, 9999999999.0
+            );
+            """
+        )
+
+    index = ResourceIndex(path)
+    scope = _scope(resource_type="notebook")
+
+    # The pre-existing row survives and simply reports an empty group.
+    assert index.lookup(scope, "legacy-box")[0].compute_group == ""
+
+    index.upsert(
+        scope,
+        [
+            ResourceIdentity(
+                resource_id="notebook-new",
+                name="gpu-box",
+                compute_group="开发区-H100-cuda12.8版本-119核",
+            )
+        ],
+    )
+    assert index.lookup(scope, "gpu-box")[0].compute_group == (
+        "开发区-H100-cuda12.8版本-119核"
+    )

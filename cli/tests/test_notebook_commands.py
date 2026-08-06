@@ -2856,3 +2856,117 @@ def test_notebook_shell_without_default_path_alias_uses_login_home(
     assert captured["bridge_name"] == "gpu-main"
     assert captured["remote_command"] is None
     assert result.output == ""
+
+
+def test_resolve_notebook_target_serves_compute_group_from_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A warm identity cache answers the SSH group question with no list call."""
+    workspace_id = "ws-77777777-7777-7777-7777-777777777777"
+
+    class _FakeSession:
+        base_url = "https://example.invalid"
+        user_detail = {"id": "user-one"}
+
+        def __init__(self) -> None:
+            self.workspace_id = workspace_id
+            self.all_workspace_ids = [workspace_id]
+            self.all_workspace_names = {workspace_id: "gpu"}
+
+    index = ResourceIndex(tmp_path / "resource-index.sqlite3")
+    scope = ResourceScope(
+        base_url="https://example.invalid",
+        subject_id="user-one",
+        resource_type="notebook",
+        workspace_id=workspace_id,
+        owner_scope="self",
+    )
+    index.upsert(
+        scope,
+        [
+            ResourceIdentity(
+                resource_id="notebook-cached",
+                name="gpu-box",
+                compute_group="训练区-H200-1号机房",
+            )
+        ],
+    )
+
+    def _forbidden_lister(*_args, **_kwargs):
+        raise AssertionError("cache hit must not fall through to the list API")
+
+    monkeypatch.setattr(_NBL_MOD, "_list_notebooks_for_workspaces", _forbidden_lister)
+
+    notebook_id, resolved_workspace_id, compute_group = _NBL_MOD._resolve_notebook_target(
+        Context(),
+        session=_FakeSession(),
+        base_url="https://example.invalid",
+        identifier="gpu-box",
+        json_output=False,
+        workspace_ids=[workspace_id],
+        cache_index=index,
+    )
+
+    assert notebook_id == "notebook-cached"
+    assert resolved_workspace_id == workspace_id
+    assert compute_group == "训练区-H200-1号机房"
+
+
+def test_resolve_notebook_target_caches_compute_group_from_live_list(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A live resolution returns the group and writes it through to the cache."""
+    workspace_id = "ws-77777777-7777-7777-7777-777777777777"
+
+    class _FakeSession:
+        base_url = "https://example.invalid"
+        user_detail = {"id": "user-one"}
+
+        def __init__(self) -> None:
+            self.workspace_id = workspace_id
+            self.all_workspace_ids = [workspace_id]
+            self.all_workspace_names = {workspace_id: "gpu"}
+
+    index = ResourceIndex(tmp_path / "resource-index.sqlite3")
+    scope = ResourceScope(
+        base_url="https://example.invalid",
+        subject_id="user-one",
+        resource_type="notebook",
+        workspace_id=workspace_id,
+        owner_scope="self",
+    )
+
+    monkeypatch.setattr(
+        _NBL_MOD,
+        "_list_notebooks_for_workspaces",
+        lambda *_args, **_kwargs: {
+            workspace_id: [
+                {
+                    "name": "gpu-box",
+                    "notebook_id": "notebook-live",
+                    "logic_compute_group": {"name": "训练区-H200-1号机房"},
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        _NBL_MOD,
+        "_try_get_current_user_ids",
+        lambda *_args, **_kwargs: ["user-one"],
+    )
+
+    _notebook_id, _workspace, compute_group = _NBL_MOD._resolve_notebook_target(
+        Context(),
+        session=_FakeSession(),
+        base_url="https://example.invalid",
+        identifier="gpu-box",
+        json_output=False,
+        workspace_ids=[workspace_id],
+        require_live=True,
+        cache_index=index,
+    )
+
+    assert compute_group == "训练区-H200-1号机房"
+    assert index.lookup(scope, "gpu-box")[0].compute_group == "训练区-H200-1号机房"

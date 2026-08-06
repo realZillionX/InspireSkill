@@ -19,7 +19,7 @@ from typing import Iterable, Iterator, Mapping, Sequence
 
 from inspire.accounts import account_dir, current_account
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 RESOURCE_INDEX_FILENAME = "resource-index.sqlite3"
 
 DEFAULT_TTL_SECONDS: dict[str, int] = {
@@ -104,6 +104,9 @@ class ResourceIdentity:
     owner_id: str = ""
     status: str = ""
     created_at: str = ""
+    # Compute group name, cached for workload types whose transport or
+    # scheduling decisions read it (notebook SSH policy). Empty elsewhere.
+    compute_group: str = ""
     observed_at: float = 0.0
     expires_at: float = 0.0
     tombstoned_at: float | None = None
@@ -222,6 +225,7 @@ class ResourceIndex:
                     owner_id TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT '',
+                    compute_group TEXT NOT NULL DEFAULT '',
                     observed_at REAL NOT NULL,
                     expires_at REAL NOT NULL,
                     last_seen_scan_id TEXT,
@@ -277,6 +281,19 @@ class ResourceIndex:
                 );
                 """
             )
+            identity_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(resource_identity)"
+                ).fetchall()
+            }
+            if "compute_group" not in identity_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE resource_identity
+                    ADD COLUMN compute_group TEXT NOT NULL DEFAULT ''
+                    """
+                )
             scope_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(resource_scope)").fetchall()
@@ -380,6 +397,7 @@ class ResourceIndex:
             owner_id=str(row["owner_id"] or ""),
             status=str(row["status"] or ""),
             created_at=str(row["created_at"] or ""),
+            compute_group=str(row["compute_group"] or ""),
             observed_at=float(row["observed_at"]),
             expires_at=float(row["expires_at"]),
             tombstoned_at=(
@@ -406,7 +424,7 @@ class ResourceIndex:
         sql = (
             """
             SELECT resource_id, name, owner_id, status, created_at,
-                   observed_at, expires_at, tombstoned_at
+                   compute_group, observed_at, expires_at, tombstoned_at
             FROM resource_identity
             WHERE base_url = ? AND subject_id = ? AND resource_type = ?
               AND workspace_id = ? AND owner_scope = ?
@@ -441,7 +459,7 @@ class ResourceIndex:
         sql = (
             """
             SELECT resource_id, name, owner_id, status, created_at,
-                   observed_at, expires_at, tombstoned_at
+                   compute_group, observed_at, expires_at, tombstoned_at
             FROM resource_identity
             WHERE base_url = ? AND subject_id = ? AND resource_type = ?
               AND workspace_id = ? AND owner_scope = ?
@@ -469,7 +487,7 @@ class ResourceIndex:
         sql = (
             """
             SELECT resource_id, name, owner_id, status, created_at,
-                   observed_at, expires_at, tombstoned_at
+                   compute_group, observed_at, expires_at, tombstoned_at
             FROM resource_identity
             WHERE base_url = ? AND subject_id = ? AND resource_type = ?
               AND workspace_id = ? AND owner_scope = ?
@@ -658,10 +676,10 @@ class ResourceIndex:
                 INSERT INTO resource_identity(
                     base_url, subject_id, resource_type, workspace_id,
                     owner_scope, resource_id, name, owner_id, status,
-                    created_at, observed_at, expires_at, last_seen_scan_id,
-                    tombstoned_at
+                    created_at, compute_group, observed_at, expires_at,
+                    last_seen_scan_id, tombstoned_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 ON CONFLICT(
                     base_url, subject_id, resource_type, workspace_id,
                     owner_scope, resource_id
@@ -670,6 +688,7 @@ class ResourceIndex:
                     owner_id=excluded.owner_id,
                     status=excluded.status,
                     created_at=excluded.created_at,
+                    compute_group=excluded.compute_group,
                     observed_at=excluded.observed_at,
                     expires_at=excluded.expires_at,
                     last_seen_scan_id=COALESCE(
@@ -685,6 +704,7 @@ class ResourceIndex:
                     str(record.owner_id or "").strip(),
                     str(record.status or "").strip(),
                     str(record.created_at or "").strip(),
+                    str(record.compute_group or "").strip(),
                     observed_at,
                     expires_at,
                     scan_id,

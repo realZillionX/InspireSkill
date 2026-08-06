@@ -25,31 +25,43 @@ def test_group_supports_ssh(compute_group: str, expected: bool) -> None:
     assert transport_module.group_supports_ssh(compute_group) is expected
 
 
-def _patch_preflight(monkeypatch, detail: dict, session: object) -> list[dict]:  # noqa: ANN001
+def _patch_preflight(
+    monkeypatch,  # noqa: ANN001
+    *,
+    resolved_group: str,
+    session: object,
+    detail: dict | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Stub name resolution and detail lookup; return their recorded calls."""
     resolved: list[dict] = []
+    detail_calls: list[dict] = []
 
     monkeypatch.setattr(transport_module, "require_web_session", lambda *_a, **_k: session)
     monkeypatch.setattr(transport_module, "get_base_url", lambda **_k: "https://example.test")
 
     def fake_resolve(*_args, **kwargs):  # noqa: ANN202
         resolved.append(kwargs)
-        return "nb-123", "ws-123"
+        return "nb-123", "ws-123", resolved_group
 
-    monkeypatch.setattr(transport_module, "_resolve_notebook_id", fake_resolve)
+    def fake_detail(**kwargs):  # noqa: ANN202
+        detail_calls.append(kwargs)
+        return detail or {}
+
+    monkeypatch.setattr(transport_module, "_resolve_notebook_target", fake_resolve)
     monkeypatch.setattr(
         transport_module.browser_api_module,
         "get_notebook_detail",
-        lambda **_k: detail,
+        fake_detail,
     )
-    return resolved
+    return resolved, detail_calls
 
 
 def test_preflight_blocks_ssh_for_h200_group(monkeypatch) -> None:  # noqa: ANN001
     session = SimpleNamespace(account="secondary")
-    _patch_preflight(
+    _resolved, detail_calls = _patch_preflight(
         monkeypatch,
-        {"logic_compute_group": {"name": "训练区-H200-1号机房"}},
-        session,
+        resolved_group="训练区-H200-1号机房",
+        session=session,
     )
 
     policy = transport_module.preflight_notebook_transport_policy(
@@ -64,14 +76,16 @@ def test_preflight_blocks_ssh_for_h200_group(monkeypatch) -> None:  # noqa: ANN0
     assert policy.allow_proxy_url is False
     assert policy.exec_transport == "jupyter"
     assert policy.session is session
+    # The group came back with the name resolution, so no detail request.
+    assert detail_calls == []
 
 
 def test_preflight_allows_ssh_for_cpu_group(monkeypatch) -> None:  # noqa: ANN001
     session = SimpleNamespace(account="secondary")
-    resolved = _patch_preflight(
+    resolved, detail_calls = _patch_preflight(
         monkeypatch,
-        {"logic_compute_group": {"name": "CPU资源-2"}},
-        session,
+        resolved_group="CPU资源-2",
+        session=session,
     )
 
     policy = transport_module.preflight_notebook_transport_policy(
@@ -85,11 +99,17 @@ def test_preflight_allows_ssh_for_cpu_group(monkeypatch) -> None:  # noqa: ANN00
     assert policy.allow_ssh is True
     assert policy.exec_transport == "ssh"
     assert resolved[0]["pick"] == 2
+    assert detail_calls == []
 
 
-def test_preflight_reads_group_from_flat_fallback(monkeypatch) -> None:  # noqa: ANN001
+def test_preflight_falls_back_to_detail_when_group_missing(monkeypatch) -> None:  # noqa: ANN001
     session = SimpleNamespace(account="primary")
-    _patch_preflight(monkeypatch, {"compute_group_name": "H100开发区"}, session)
+    _resolved, detail_calls = _patch_preflight(
+        monkeypatch,
+        resolved_group="",
+        session=session,
+        detail={"compute_group_name": "H100开发区"},
+    )
 
     policy = transport_module.preflight_notebook_transport_policy(
         SimpleNamespace(json_output=False),
@@ -99,6 +119,7 @@ def test_preflight_reads_group_from_flat_fallback(monkeypatch) -> None:  # noqa:
 
     assert policy.compute_group == "H100开发区"
     assert policy.allow_ssh is False
+    assert detail_calls == [{"notebook_id": "nb-123", "session": session}]
 
 
 def test_policy_blocks_ssh_for_restricted_group() -> None:
