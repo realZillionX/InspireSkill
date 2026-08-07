@@ -147,6 +147,35 @@ def _browser_api_path(endpoint_path: str) -> str:
     return f"{prefix}/{endpoint}"
 
 
+def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
+    """Unwrap the `/api/v2` AWS-style envelope.
+
+    v2 reports business errors inside ``ResponseMetadata.Error`` while the HTTP
+    status stays 200, so success can never be inferred from the status code.
+    Falls back to the legacy ``code``/``data`` envelope for responses that have
+    not moved to v2 yet. Callers pick their own list key out of the result;
+    there is no cross-Action convention for it.
+    """
+    metadata = data.get("ResponseMetadata")
+    if isinstance(metadata, dict):
+        error = metadata.get("Error")
+        if isinstance(error, dict):
+            code = error.get("Code") or "Error"
+            message = error.get("Message") or "unknown error"
+            raise ValueError(f"API error: {code}: {message}")
+    elif data.get("code") not in (None, 0):
+        raise ValueError(f"API error: {data.get('message')}")
+
+    payload = data.get("Result")
+    if isinstance(payload, dict):
+        return payload
+    if payload is None:
+        nested_payload = data.get("data")
+        if isinstance(nested_payload, dict):
+            return nested_payload
+    return {}
+
+
 def _request_json(
     session: WebSession,
     method: str,

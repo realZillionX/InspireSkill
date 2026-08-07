@@ -9,7 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url, _request_json
+from inspire.platform.web.browser_api.core import (
+    _browser_api_path,
+    _get_base_url,
+    _request_json,
+    _v2_result,
+)
 from inspire.platform.web.session import WebSession, get_web_session
 
 __all__ = [
@@ -77,27 +82,6 @@ class JobInfo:
             priority=data.get("priority", 0),
             workspace_id=data.get("workspace_id", ""),
         )
-
-
-def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
-    metadata = data.get("ResponseMetadata")
-    if isinstance(metadata, dict):
-        error = metadata.get("Error")
-        if isinstance(error, dict):
-            code = error.get("Code") or "Error"
-            message = error.get("Message") or "unknown error"
-            raise ValueError(f"API error: {code}: {message}")
-    elif data.get("code") not in (None, 0):
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("Result")
-    if isinstance(payload, dict):
-        return payload
-    if payload is None:
-        nested_payload = data.get("data")
-        if isinstance(nested_payload, dict):
-            return nested_payload
-    return {}
 
 
 def create_training_job(

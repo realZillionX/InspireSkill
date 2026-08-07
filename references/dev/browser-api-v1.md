@@ -43,7 +43,7 @@
 | Image | `/image/list`, `/image/<image>`, `/image/create`, `/image/update`, `/mirror/save` | `image list/detail/register/save/set-visibility/delete` |
 | GPU Job | `/train_job/delete`, `/train_job/job_event_list`, `/train_job/events/list`, `/logs/train`；创建、查询、停止和实例列表已迁 v2 | `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |
 | HPC | `/hpc_jobs/list`, `/hpc_jobs/events/list`, `/hpc_jobs/instances/list`, `/hpc_jobs/...`, `/logs/hpc`；创建、查询和停止已迁 v2 | `hpc create/list/status/stop/delete/events/instances`, Name Resolver |
-| Ray | `/ray_job/list`, `/ray_job/detail`, `/ray_job/create`, `/ray_job/stop`, `/ray_job/delete`, `/ray_job/events/list`, `/ray_job/instances/list` | `ray create/list/status/stop/delete/events/instances`, Name Resolver |
+| Ray | 全部已迁 v2；按当前用户过滤列表时仍复用账号域的 `/user/detail` | `ray create/list/status/stop/delete/events/instances`, Name Resolver |
 | 资源与 Quota | `/logic_compute_groups/list`, Compute Resource、Schedule Config 与 Cluster Node 家族 | `resources availability/nodes`, `notebook/job/hpc/ray/serving quota`, 创建命令的 Group 与 Quota 解析 |
 | Metrics | `/cluster_metric/resource_metric_by_time` | `notebook/job/hpc/ray/serving metrics` |
 | Model Registry | `/model/list`, `/model/detail`, `/model/...`, `/model/create` | `model list/status/versions/register`, Serving 的 Model 解析 |

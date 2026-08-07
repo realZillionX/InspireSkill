@@ -1,10 +1,11 @@
 """Unit tests for `inspire.platform.web.browser_api.ray_jobs`.
 
-The ``/api/v1/ray_job/*`` endpoints were reverse-engineered from the
+The ``/api/v2/ray`` Actions were verified against a live job on the
 ``/jobs/ray`` (弹性计算) page. These tests pin the request shapes we found
 (field naming — ``ray_job_id``, not ``id`` / ``job_id``; ``filter_by`` in
-list; error handling when ``code != 0``) so future refactors can't
-silently change the wire format and break a live workspace.
+list; top-level ``workspace_id`` rather than the ``workspace.*`` ``filter``
+envelope; error handling via ``ResponseMetadata.Error``) so future refactors
+can't silently change the wire format and break a live workspace.
 """
 
 from __future__ import annotations
@@ -58,8 +59,8 @@ def test_list_ray_jobs_posts_expected_body_and_parses(monkeypatch) -> None:
     _install_fake_request(
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "ResponseMetadata": {"Action": "ListJobs"},
+            "Result": {
                 "items": [
                     {
                         "ray_job_id": "ray-abc-1",
@@ -74,6 +75,7 @@ def test_list_ray_jobs_posts_expected_body_and_parses(monkeypatch) -> None:
                         "priority": 5,
                     }
                 ],
+                # v2 reports `total` as a string; the wrapper coerces it.
                 "total": "1",
             },
         },
@@ -97,11 +99,13 @@ def test_list_ray_jobs_posts_expected_body_and_parses(monkeypatch) -> None:
     assert job.created_by_name == "Alice"
     assert job.priority == 5
 
-    # Wire format assertions: list endpoint, user filter nested under `filter_by`,
-    # referer matches the web UI page.
+    # Wire format assertions: ListJobs Action, user filter nested under
+    # `filter_by`, referer matches the web UI page.
     assert record["method"] == "POST"
-    assert record["url"].endswith("/ray_job/list")
+    assert record["url"].endswith("/api/v2/ray?Action=ListJobs")
     assert "/jobs/ray" in record["referer"]
+    # Top-level, not the nested `filter` envelope `workspace.*` Actions want —
+    # ray rejects `filter` with `unknown field`.
     assert record["body"]["workspace_id"] == "ws-override"
     assert record["body"]["filter_by"] == {"user_id": ["user-1"]}
     assert record["body"]["page_num"] == 1
@@ -113,9 +117,11 @@ def test_list_ray_jobs_without_user_filter_uses_current_user(monkeypatch) -> Non
 
     def fake_request(session, method, url, *, referer=None, body=None, timeout=30):
         records.append({"method": method, "url": url, "body": body})
+        # `/user/detail` belongs to the user domain and is still on v1, so it
+        # keeps the legacy envelope while ray answers with the v2 one.
         if url.endswith("/user/detail"):
             return {"code": 0, "data": {"id": "user-current"}}
-        return {"code": 0, "data": {"items": [], "total": 0}}
+        return {"Result": {"items": [], "total": "0"}}
 
     monkeypatch.setattr(ray_jobs_module, "_request_json", fake_request)
 
@@ -131,14 +137,24 @@ def test_list_ray_jobs_requires_workspace_selection() -> None:
         list_ray_jobs(user_ids=["user-1"], session=_FakeSession(workspace_id="ws-from-session"))
 
 
-def test_list_ray_jobs_raises_on_non_zero_code(monkeypatch) -> None:
+def test_list_ray_jobs_raises_on_response_metadata_error(monkeypatch) -> None:
+    # v2 signals business errors inside the envelope while HTTP stays 200, so
+    # the wrapper has to unpack `ResponseMetadata.Error` rather than trust the
+    # status code.
     _install_fake_request(
         monkeypatch,
-        {"code": 170000, "message": "workspace not accessible"},
+        {
+            "ResponseMetadata": {
+                "Error": {
+                    "Code": "AccessForbidden",
+                    "Message": "workspace not accessible",
+                }
+            }
+        },
         {},
     )
 
-    with pytest.raises(ValueError, match="list failed"):
+    with pytest.raises(ValueError, match="list failed.*AccessForbidden"):
         list_ray_jobs(workspace_id="ws-x", user_ids=["user-1"], session=_FakeSession())
 
 
@@ -151,14 +167,14 @@ def test_get_ray_job_detail_requires_ray_job_id_field(monkeypatch) -> None:
     record: dict[str, Any] = {}
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"ray_job_id": "ray-1", "name": "demo", "status": "RUNNING"}},
+        {"Result": {"ray_job_id": "ray-1", "name": "demo", "status": "RUNNING"}},
         record,
     )
 
     detail = get_ray_job_detail("ray-1", session=_FakeSession())
 
     assert detail["ray_job_id"] == "ray-1"
-    assert record["url"].endswith("/ray_job/detail")
+    assert record["url"].endswith("/api/v2/ray?Action=GetJob")
     # The proto schema insists on `ray_job_id` — not `id` or `job_id`.
     assert record["body"] == {"ray_job_id": "ray-1"}
 
@@ -170,21 +186,21 @@ def test_get_ray_job_detail_requires_ray_job_selection() -> None:
 
 def test_stop_ray_job_posts_expected_body(monkeypatch) -> None:
     record: dict[str, Any] = {}
-    _install_fake_request(monkeypatch, {"code": 0, "data": {}}, record)
+    _install_fake_request(monkeypatch, {"Result": {}}, record)
 
     stop_ray_job("ray-42", session=_FakeSession())
 
-    assert record["url"].endswith("/ray_job/stop")
+    assert record["url"].endswith("/api/v2/ray?Action=StopJob")
     assert record["body"] == {"ray_job_id": "ray-42"}
 
 
 def test_delete_ray_job_posts_expected_body(monkeypatch) -> None:
     record: dict[str, Any] = {}
-    _install_fake_request(monkeypatch, {"code": 0, "data": {}}, record)
+    _install_fake_request(monkeypatch, {"Result": {}}, record)
 
     delete_ray_job("ray-42", session=_FakeSession())
 
-    assert record["url"].endswith("/ray_job/delete")
+    assert record["url"].endswith("/api/v2/ray?Action=DeleteJob")
     assert record["body"] == {"ray_job_id": "ray-42"}
 
 
@@ -208,8 +224,7 @@ def test_list_ray_job_users_returns_items_list(monkeypatch) -> None:
     _install_fake_request(
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "Result": {
                 "items": [
                     {"id": "user-1", "name": "Alice"},
                     {"id": "user-2", "name": "Bob"},
@@ -223,14 +238,12 @@ def test_list_ray_job_users_returns_items_list(monkeypatch) -> None:
 
     assert len(users) == 2
     assert {u["name"] for u in users} == {"Alice", "Bob"}
-    assert record["url"].endswith("/ray_job/users")
+    assert record["url"].endswith("/api/v2/ray?Action=ListJobCreators")
     assert record["body"] == {"workspace_id": "ws-x"}
 
 
 def test_list_ray_job_users_empty_on_none(monkeypatch) -> None:
-    _install_fake_request(
-        monkeypatch, {"code": 0, "data": {"items": []}}, {}
-    )
+    _install_fake_request(monkeypatch, {"Result": {"items": []}}, {})
     assert list_ray_job_users(workspace_id="ws-x", session=_FakeSession()) == []
 
 
@@ -276,8 +289,7 @@ def test_create_ray_job_posts_body_verbatim_and_returns_data(monkeypatch) -> Non
     _install_fake_request(
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "Result": {
                 "ray_job_id": "ray-new-1",
                 "sub_code": "OK",
                 "sub_msg": "created",
@@ -324,7 +336,9 @@ def test_create_ray_job_posts_body_verbatim_and_returns_data(monkeypatch) -> Non
     # Wire format assertions — create is POST, body is sent unmodified,
     # and the referer matches the /jobs/ray origin the SPA uses.
     assert record["method"] == "POST"
-    assert record["url"].endswith("/ray_job/create")
+    # Plain CreateJob: unlike train / hpc there is no CreateJobConsole variant,
+    # ray answers InvalidAction for it.
+    assert record["url"].endswith("/api/v2/ray?Action=CreateJob")
     assert "/jobs/ray" in record["referer"]
     assert record["body"] == body
 
@@ -334,14 +348,21 @@ def test_create_ray_job_rejects_non_dict_body() -> None:
         create_ray_job("not-a-dict", session=_FakeSession())  # type: ignore[arg-type]
 
 
-def test_create_ray_job_raises_on_non_zero_code(monkeypatch) -> None:
+def test_create_ray_job_raises_on_response_metadata_error(monkeypatch) -> None:
     _install_fake_request(
         monkeypatch,
-        {"code": 100002, "message": 'proto: unknown field "image"'},
+        {
+            "ResponseMetadata": {
+                "Error": {
+                    "Code": "InvalidParameter",
+                    "Message": 'invalid JSON: proto: unknown field "image"',
+                }
+            }
+        },
         {},
     )
     # Any dict body gets us past the type check; the backend rejects it.
-    with pytest.raises(ValueError, match="create failed"):
+    with pytest.raises(ValueError, match="create failed.*InvalidParameter"):
         create_ray_job({"anything": "goes"}, session=_FakeSession())
 
 
@@ -355,13 +376,12 @@ def test_list_ray_job_scaling_histories_posts_expected_body(monkeypatch) -> None
     _install_fake_request(
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "Result": {
                 "items": [
                     {"ts": "1776000000", "group_name": "decode", "from": 1, "to": 4},
                     {"ts": "1776000060", "group_name": "decode", "from": 4, "to": 2},
                 ],
-                "total": 2,
+                "total": "2",
             },
         },
         record,
@@ -377,7 +397,7 @@ def test_list_ray_job_scaling_histories_posts_expected_body(monkeypatch) -> None
     assert total == 2
     assert len(items) == 2
     assert items[0]["group_name"] == "decode"
-    assert record["url"].endswith("/ray_job/scaling_histories/list")
+    assert record["url"].endswith("/api/v2/ray?Action=ListJobScalingHistories")
     assert record["body"] == {
         "ray_job_id": "ray-42",
         "page_num": 2,
@@ -403,8 +423,7 @@ def test_list_ray_job_events_posts_top_level_ray_job_id(monkeypatch) -> None:
     _install_fake_request(
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "Result": {
                 "items": [
                     {
                         "reason": "CreatedRayCluster",
@@ -421,7 +440,7 @@ def test_list_ray_job_events_posts_top_level_ray_job_id(monkeypatch) -> None:
                         "count": 3,
                     },
                 ],
-                "total": 2,
+                "total": "2",
             },
         },
         record,
@@ -431,7 +450,7 @@ def test_list_ray_job_events_posts_top_level_ray_job_id(monkeypatch) -> None:
 
     assert len(events) == 2
     assert events[1]["reason"] == "FailedScheduling"
-    assert record["url"].endswith("/ray_job/events/list")
+    assert record["url"].endswith("/api/v2/ray?Action=ListJobEvents")
     # Must be flat — NO `filter` / `object_type` wrapper (HPC-style body is
     # rejected with 参数错误 on this endpoint).
     assert "filter" not in record["body"]
@@ -445,7 +464,7 @@ def test_list_ray_job_events_posts_top_level_ray_job_id(monkeypatch) -> None:
 
 def test_list_ray_job_events_sort_descending(monkeypatch) -> None:
     record: dict[str, Any] = {}
-    _install_fake_request(monkeypatch, {"code": 0, "data": {"items": [], "total": 0}}, record)
+    _install_fake_request(monkeypatch, {"Result": {"items": [], "total": "0"}}, record)
     list_ray_job_events("rj-abc", sort_ascending=False, session=_FakeSession())
     assert record["body"]["sorter"] == [{"field": "last_timestamp", "sort": "descend"}]
 
@@ -465,8 +484,7 @@ def test_list_ray_job_instances_posts_expected_body(monkeypatch) -> None:
     _install_fake_request(
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "Result": {
                 "items": [
                     {
                         "instance_id": "rj-abc-vhd4h-head-qlrtm",
@@ -493,7 +511,7 @@ def test_list_ray_job_instances_posts_expected_body(monkeypatch) -> None:
     assert len(instances) == 2
     assert instances[0]["instance_type"] == "head"
     assert instances[1]["worker_group_name"] == "w"
-    assert record["url"].endswith("/ray_job/instances/list")
+    assert record["url"].endswith("/api/v2/ray?Action=ListJobInstances")
     assert record["body"] == {
         "ray_job_id": "rj-abc",
         "page_num": 1,

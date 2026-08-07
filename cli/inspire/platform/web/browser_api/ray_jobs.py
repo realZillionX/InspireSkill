@@ -1,17 +1,29 @@
 """Browser API client for Ray (弹性计算) jobs.
 
-The web UI exposes Ray-cluster job management under ``/api/v1/ray_job/*`` for
-users running hybrid CPU-decode / GPU-inference streaming pipelines (what the
-UI labels "弹性计算"). This endpoint family is web-session only, so we hit it
-the same way the SPA does, with stored Playwright cookies and a matching
-``Referer``.
+The web UI exposes Ray-cluster job management under ``/api/v2/ray`` for users
+running hybrid CPU-decode / GPU-inference streaming pipelines (what the UI
+labels "弹性计算"). This route is web-session only, so we hit it the same way
+the SPA does, with stored Playwright cookies and a matching ``Referer``.
+
+Every Action here was verified against a live job before being wired up; the
+v2 responses are field-for-field identical to the ``/api/v1/ray_job/*`` ones
+they replace, so the normalization below is unchanged from the v1 wrapper.
+Wire details that differ from sibling domains:
+
+- The resource key is ``ray_job_id`` on every Action. ``job_id`` and ``id`` are
+  both rejected with ``unknown field``, unlike ``train`` / ``hpc``.
+- Workspace scoping is a **top-level** ``workspace_id``. The nested ``filter``
+  envelope that ``workspace.*`` Actions require is rejected here.
+- There is no ``CreateJobConsole`` variant — ``ray`` answers ``InvalidAction``
+  for it, so creation goes through plain ``CreateJob``.
 
 Create payload shape was reverse-engineered from the SPA's own submit handler
-(``/assets/constant.BP_zw-df.js``). Wire surprises worth remembering:
-``head_node`` (singular, not ``head``); ``mirror_id`` = internal ``image_id``
-(not the Docker URL — resolve via ``image/list`` first); worker side is
-``worker_groups[]`` with ``group_name`` / ``min_replicas`` / ``max_replicas``
-/ ``quota_id``; command is ``entrypoint`` (form renames it from ``command``).
+(``/assets/constant.BP_zw-df.js``) and is accepted verbatim by v2. Wire
+surprises worth remembering: ``head_node`` (singular, not ``head``);
+``mirror_id`` = internal ``image_id`` (not the Docker URL — resolve via
+``image/list`` first); worker side is ``worker_groups[]`` with ``group_name``
+/ ``min_replicas`` / ``max_replicas`` / ``quota_id``; command is
+``entrypoint`` (form renames it from ``command``).
 """
 
 from __future__ import annotations
@@ -23,6 +35,7 @@ from inspire.platform.web.browser_api.core import (
     _browser_api_path,
     _get_base_url,
     _request_json,
+    _v2_result,
 )
 from inspire.platform.web.session import WebSession, get_web_session
 
@@ -49,7 +62,7 @@ def _ray_referer() -> str:
 
 @dataclass
 class RayJobInfo:
-    """Summary view of a Ray job returned by ``ray_job/list``.
+    """Summary view of a Ray job returned by ``ListJobs``.
 
     Field names intentionally mirror the wire format so future additions
     (e.g. elastic scaling metrics) can be surfaced without renames. Fields
@@ -97,13 +110,51 @@ def _int_or_none(value: Any) -> Optional[int]:
         return None
 
 
-def _assert_ok(data: dict, *, context: str) -> dict:
-    code = data.get("code")
-    if code != 0:
-        raise ValueError(
-            f"Ray Job {context} failed: code={code} message={data.get('message')}"
-        )
-    return data
+def _ray_v2(
+    session: WebSession,
+    action: str,
+    body: dict[str, Any],
+    *,
+    context: str,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    """Call one `/api/v2/ray` Action and return its unwrapped ``Result``.
+
+    Keeps the ``Ray Job <context> failed`` message shape the v1 wrapper used so
+    command-layer error text is unchanged.
+    """
+    data = _request_json(
+        session,
+        "POST",
+        f"/api/v2/ray?Action={action}",
+        referer=_ray_referer(),
+        body=body,
+        timeout=timeout,
+    )
+    try:
+        return _v2_result(data)
+    except ValueError as exc:
+        raise ValueError(f"Ray Job {context} failed: {exc}") from exc
+
+
+def _ray_page(payload: dict[str, Any]) -> tuple[list[dict], Optional[int]]:
+    """Split a paged ray Result into its item list and total.
+
+    ``ray`` reports ``total`` as a string ("3"), so it is coerced here rather
+    than at each call site.
+    """
+    items = payload.get("items")
+    if not isinstance(items, list):
+        items = []
+    items = [item for item in items if isinstance(item, dict)]
+
+    raw_total = payload.get("total")
+    if raw_total is None:
+        return items, None
+    try:
+        return items, int(str(raw_total))
+    except (TypeError, ValueError):
+        return items, None
 
 
 def list_ray_jobs(
@@ -148,25 +199,9 @@ def list_ray_jobs(
         "filter_by": {"user_id": list(user_ids)},
     }
 
-    data = _assert_ok(
-        _request_json(
-            session,
-            "POST",
-            _browser_api_path("/ray_job/list"),
-            referer=_ray_referer(),
-            body=body,
-            timeout=30,
-        ),
-        context="list",
-    )
-
-    payload = data.get("data") or {}
-    items = payload.get("items") or payload.get("list") or []
-    try:
-        total = int(payload.get("total") or 0)
-    except (TypeError, ValueError):
-        total = 0
-    return [RayJobInfo.from_api_response(item) for item in items], total
+    payload = _ray_v2(session, "ListJobs", body, context="list")
+    items, total = _ray_page(payload)
+    return [RayJobInfo.from_api_response(item) for item in items], total or 0
 
 
 def list_ray_job_users(
@@ -185,19 +220,15 @@ def list_ray_job_users(
     if workspace_id is None:
         raise ValueError("Workspace selection is required.")
 
-    data = _assert_ok(
-        _request_json(
-            session,
-            "POST",
-            _browser_api_path("/ray_job/users"),
-            referer=_ray_referer(),
-            body={"workspace_id": workspace_id},
-            timeout=15,
-        ),
+    payload = _ray_v2(
+        session,
+        "ListJobCreators",
+        {"workspace_id": workspace_id},
         context="users",
+        timeout=15,
     )
-    payload = data.get("data") or {}
-    return payload.get("items") or payload.get("list") or []
+    items, _ = _ray_page(payload)
+    return items
 
 
 def get_ray_job_detail(
@@ -219,18 +250,9 @@ def get_ray_job_detail(
     if session is None:
         session = get_web_session()
 
-    data = _assert_ok(
-        _request_json(
-            session,
-            "POST",
-            _browser_api_path("/ray_job/detail"),
-            referer=_ray_referer(),
-            body={"ray_job_id": ray_job_id},
-            timeout=30,
-        ),
-        context="detail",
+    return _ray_v2(
+        session, "GetJob", {"ray_job_id": ray_job_id}, context="detail"
     )
-    return data.get("data") or {}
 
 
 def stop_ray_job(
@@ -246,17 +268,7 @@ def stop_ray_job(
     if session is None:
         session = get_web_session()
 
-    _assert_ok(
-        _request_json(
-            session,
-            "POST",
-            _browser_api_path("/ray_job/stop"),
-            referer=_ray_referer(),
-            body={"ray_job_id": ray_job_id},
-            timeout=30,
-        ),
-        context="stop",
-    )
+    _ray_v2(session, "StopJob", {"ray_job_id": ray_job_id}, context="stop")
 
 
 def delete_ray_job(
@@ -277,17 +289,7 @@ def delete_ray_job(
     if session is None:
         session = get_web_session()
 
-    _assert_ok(
-        _request_json(
-            session,
-            "POST",
-            _browser_api_path("/ray_job/delete"),
-            referer=_ray_referer(),
-            body={"ray_job_id": ray_job_id},
-            timeout=30,
-        ),
-        context="delete",
-    )
+    _ray_v2(session, "DeleteJob", {"ray_job_id": ray_job_id}, context="delete")
 
 
 def create_ray_job(
@@ -297,7 +299,7 @@ def create_ray_job(
 ) -> dict[str, Any]:
     """Submit a new Ray (弹性计算) job.
 
-    ``body`` is posted verbatim to ``/api/v1/ray_job/create``. Callers are
+    ``body`` is posted verbatim to ``ray?Action=CreateJob``. Callers are
     expected to assemble the structure the SPA submits — a flat copy of
     the wire contract:
 
@@ -341,18 +343,7 @@ def create_ray_job(
     if session is None:
         session = get_web_session()
 
-    data = _assert_ok(
-        _request_json(
-            session,
-            "POST",
-            _browser_api_path("/ray_job/create"),
-            referer=_ray_referer(),
-            body=body,
-            timeout=60,
-        ),
-        context="create",
-    )
-    return data.get("data") or {}
+    return _ray_v2(session, "CreateJob", body, context="create", timeout=60)
 
 
 def list_ray_job_events(
@@ -394,35 +385,19 @@ def list_ray_job_events(
     sort = "ascend" if sort_ascending else "descend"
     events: list[dict] = []
     for current_page in range(page_num, page_num + max_pages):
-        data = _assert_ok(
-            _request_json(
-                session,
-                "POST",
-                _browser_api_path("/ray_job/events/list"),
-                referer=_ray_referer(),
-                body={
-                    "ray_job_id": ray_job_id,
-                    "page_num": current_page,
-                    "page_size": page_size,
-                    "sorter": [{"field": "last_timestamp", "sort": sort}],
-                },
-                timeout=30,
-            ),
+        payload = _ray_v2(
+            session,
+            "ListJobEvents",
+            {
+                "ray_job_id": ray_job_id,
+                "page_num": current_page,
+                "page_size": page_size,
+                "sorter": [{"field": "last_timestamp", "sort": sort}],
+            },
             context="events",
         )
-        payload = data.get("data") or {}
-        page_events = payload.get("items") or payload.get("list") or []
-        if not isinstance(page_events, list):
-            page_events = []
+        page_events, total = _ray_page(payload)
         events.extend(page_events)
-        raw_total = payload.get("total")
-        if raw_total is None:
-            total = None
-        else:
-            try:
-                total = int(str(raw_total))
-            except ValueError:
-                total = None
         if (
             not page_events
             or len(page_events) < page_size
@@ -456,33 +431,18 @@ def list_ray_job_instances(
     if session is None:
         session = get_web_session()
 
-    data = _assert_ok(
-        _request_json(
-            session,
-            "POST",
-            _browser_api_path("/ray_job/instances/list"),
-            referer=_ray_referer(),
-            body={
-                "ray_job_id": ray_job_id,
-                "page_num": 1,
-                "page_size": limit,
-            },
-            timeout=30,
-        ),
+    payload = _ray_v2(
+        session,
+        "ListJobInstances",
+        {
+            "ray_job_id": ray_job_id,
+            "page_num": 1,
+            "page_size": limit,
+        },
         context="instances",
     )
-    payload = data.get("data") or {}
-    items = payload.get("items")
-    if not isinstance(items, list):
-        items = payload.get("list")
-    if not isinstance(items, list):
-        items = []
-    total_raw = payload.get("total")
-    try:
-        total = int(str(total_raw)) if total_raw is not None else len(items)
-    except ValueError:
-        total = len(items)
-    return [item for item in items if isinstance(item, dict)], total
+    items, total = _ray_page(payload)
+    return items, total if total is not None else len(items)
 
 
 def list_ray_job_scaling_histories(
@@ -494,7 +454,7 @@ def list_ray_job_scaling_histories(
 ) -> tuple[list[dict], int]:
     """Fetch the elastic-scaling event history for a Ray job.
 
-    The SPA hits ``/ray_job/scaling_histories/list`` to render the
+    The SPA hits ``ListJobScalingHistories`` to render the
     "扩缩容历史" tab on a Ray detail page — each entry is a worker-group
     instance count change driven by platform-side load signals. Useful for
     post-mortem on whether ``min_replicas`` / ``max_replicas`` ever moved.
@@ -506,25 +466,16 @@ def list_ray_job_scaling_histories(
     if session is None:
         session = get_web_session()
 
-    data = _assert_ok(
-        _request_json(
-            session,
-            "POST",
-            _browser_api_path("/ray_job/scaling_histories/list"),
-            referer=_ray_referer(),
-            body={
-                "ray_job_id": ray_job_id,
-                "page_num": page_num,
-                "page_size": page_size,
-            },
-            timeout=30,
-        ),
+    payload = _ray_v2(
+        session,
+        "ListJobScalingHistories",
+        {
+            "ray_job_id": ray_job_id,
+            "page_num": page_num,
+            "page_size": page_size,
+        },
         context="scaling_histories",
     )
-    payload = data.get("data") or {}
-    items = payload.get("items") or payload.get("list") or []
-    try:
-        total = int(payload.get("total") or 0)
-    except (TypeError, ValueError):
-        total = 0
+    items, raw_total = _ray_page(payload)
+    total = raw_total or 0
     return list(items), total
