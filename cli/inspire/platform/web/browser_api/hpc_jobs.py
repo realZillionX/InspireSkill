@@ -176,19 +176,16 @@ def list_hpc_jobs(
     if status:
         body["status"] = status
 
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/hpc_jobs/list"),
-        referer=f"{_get_base_url()}/jobs/highPerformanceComputing",
-        body=body,
-        timeout=30,
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/hpc?Action=ListJobs",
+            referer=f"{_get_base_url()}/jobs/highPerformanceComputing",
+            body=body,
+            timeout=30,
+        )
     )
-
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("data", {})
     jobs_data = payload.get("jobs")
     if not isinstance(jobs_data, list):
         jobs_data = payload.get("items")
@@ -209,38 +206,33 @@ def list_hpc_job_events(
 ) -> list[dict]:
     """List platform events for an HPC job.
 
-    Endpoint: ``POST /api/v1/hpc_jobs/events/list``. This wrapper fetches
-    job-level events. Use :func:`list_hpc_job_instances` for the component
-    inventory shown on the job detail page.
+    Action: ``ListJobEvents``. This wrapper fetches job-level events. Use
+    :func:`list_hpc_job_instances` for the component inventory shown on the
+    job detail page.
 
     Returns ``[]`` on any error. The platform garbage-collects events for
-    completed jobs, so ``code=100000 record not found`` is a normal steady
-    state after event retention expires.
+    completed jobs, so a not-found answer is a normal steady state after event
+    retention expires.
     """
     try:
         if session is None:
             session = get_web_session()
 
-        data = _request_json(
-            session,
-            "POST",
-            _browser_api_path("/hpc_jobs/events/list"),
-            referer=f"{_get_base_url()}/jobs/hpcDetail/{job_id}",
-            body={
-                "pageNum": -1,
-                "pageSize": 200,
-                "filter": {"object_ids": [job_id], "object_type": "HPC_JOB"},
-                "sorter": [{"field": "last_timestamp", "sort": "ascend"}],
-            },
-            timeout=30,
+        payload = _v2_result(
+            _request_json(
+                session,
+                "POST",
+                "/api/v2/hpc?Action=ListJobEvents",
+                referer=f"{_get_base_url()}/jobs/hpcDetail/{job_id}",
+                body={
+                    "pageNum": -1,
+                    "pageSize": 200,
+                    "filter": {"object_ids": [job_id], "object_type": "HPC_JOB"},
+                    "sorter": [{"field": "last_timestamp", "sort": "ascend"}],
+                },
+                timeout=30,
+            )
         )
-
-        if data.get("code") != 0:
-            return []
-
-        payload = data.get("data") if isinstance(data, dict) else None
-        if not isinstance(payload, dict):
-            return []
         for key in ("events", "items", "list"):
             events = payload.get(key)
             if isinstance(events, list):
@@ -269,18 +261,16 @@ def list_hpc_job_instances(
 
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/hpc_jobs/instances/list"),
-        referer=f"{_get_base_url()}/jobs/hpcDetail/{job_id}",
-        body={"jobId": job_id, "page_num": 1, "page_size": limit},
-        timeout=30,
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/hpc?Action=ListJobInstances",
+            referer=f"{_get_base_url()}/jobs/hpcDetail/{job_id}",
+            body={"jobId": job_id, "page_num": 1, "page_size": limit},
+            timeout=30,
+        )
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("data") or {}
     items = payload.get("items")
     if not isinstance(items, list):
         items = payload.get("list")
@@ -311,25 +301,23 @@ def list_hpc_job_logs(
     if session is None:
         session = get_web_session()
     detail = f"/jobs/hpcDetail/{job_id}" if job_id else "/jobs/highPerformanceComputing"
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/logs/hpc"),
-        referer=f"{_get_base_url()}{detail}",
-        body={
-            "page_size": page_size,
-            "filter": {
-                "podNames": pod_names,
-                "start_timestamp_ms": str(start_timestamp_ms),
-                "end_timestamp_ms": str(end_timestamp_ms),
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/hpc?Action=GetJobLog",
+            referer=f"{_get_base_url()}{detail}",
+            body={
+                "page_size": page_size,
+                "filter": {
+                    "podNames": pod_names,
+                    "start_timestamp_ms": str(start_timestamp_ms),
+                    "end_timestamp_ms": str(end_timestamp_ms),
+                },
             },
-        },
-        timeout=30,
+            timeout=30,
+        )
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("data") or {}
     logs = payload.get("logs")
     if not isinstance(logs, list):
         logs = payload.get("items")
@@ -349,24 +337,24 @@ def delete_hpc_job(
 ) -> dict:
     """Permanently delete an HPC job entry from the platform.
 
-    Endpoint: ``DELETE /api/v1/hpc_jobs/{id}`` (REST-style, same shape as
-    notebook / image delete). Confirmed empirically via probe on 2026-04-21;
-    ``POST /hpc_jobs/delete`` returns 404. Destructive: the entry disappears
-    from the UI — if the job is still running, ``stop`` it first.
+    Action: ``DeleteJob``. v1 needed the REST-style
+    ``DELETE /api/v1/hpc_jobs/{id}`` because ``POST /hpc_jobs/delete`` was a
+    404; v2 has a first-class Action, so the special case is gone.
+
+    Destructive: the entry disappears from the UI — if the job is still
+    running, ``stop`` it first. An id that does not resolve comes back as
+    ``ResourceNotFound``.
     """
     if session is None:
         session = get_web_session()
 
-    data = _request_json(
-        session,
-        "DELETE",
-        _browser_api_path(f"/hpc_jobs/{job_id}"),
-        referer=f"{_get_base_url()}/jobs/highPerformanceComputing",
-        timeout=30,
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/hpc?Action=DeleteJob",
+            referer=f"{_get_base_url()}/jobs/highPerformanceComputing",
+            body={"job_id": job_id},
+            timeout=30,
+        )
     )
-
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("data")
-    return payload if isinstance(payload, dict) else {}

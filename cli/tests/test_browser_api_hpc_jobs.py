@@ -37,8 +37,7 @@ def test_list_hpc_job_instances_posts_job_id_body(monkeypatch: pytest.MonkeyPatc
     _install_fake_request(
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "Result": {
                 "items": [{"name": "launcher", "status": "Succeeded"}],
                 "total": "1",
             },
@@ -55,7 +54,7 @@ def test_list_hpc_job_instances_posts_job_id_body(monkeypatch: pytest.MonkeyPatc
     assert total == 1
     assert items[0]["name"] == "launcher"
     assert record["method"] == "POST"
-    assert record["url"].endswith("/hpc_jobs/instances/list")
+    assert record["url"].endswith("/api/v2/hpc?Action=ListJobInstances")
     assert record["body"] == {
         "jobId": "hpc-job-123",
         "page_num": 1,
@@ -78,8 +77,7 @@ def test_list_hpc_job_logs_omits_sorter(monkeypatch: pytest.MonkeyPatch) -> None
     _install_fake_request(
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "Result": {
                 "logs": [{"pod_name": "launcher", "message": "hello"}],
                 "total": 1,
             },
@@ -99,7 +97,7 @@ def test_list_hpc_job_logs_omits_sorter(monkeypatch: pytest.MonkeyPatch) -> None
     assert total == 1
     assert logs[0]["message"] == "hello"
     assert record["method"] == "POST"
-    assert record["url"].endswith("/logs/hpc")
+    assert record["url"].endswith("/api/v2/hpc?Action=GetJobLog")
     assert record["body"] == {
         "page_size": 10,
         "filter": {
