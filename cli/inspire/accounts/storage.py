@@ -21,6 +21,8 @@ import shutil
 import time
 from pathlib import Path
 
+from .cache_lock import exclusive_cache_lock
+
 CONFIG_FILENAME = "config.toml"
 NOTEBOOK_TARGET_CACHE_FILENAME = "notebook-targets.json"
 
@@ -217,36 +219,37 @@ def rename_account(old_name: str, new_name: str) -> None:
 def _rewrite_notebook_target_cache_account(old: str, new: str) -> None:
     """Rewrite remembered cross-account notebook target selections."""
     path = inspire_home() / NOTEBOOK_TARGET_CACHE_FILENAME
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        return
-    except (json.JSONDecodeError, OSError):
-        return
-    if not isinstance(data, dict):
-        return
-    targets = data.get("targets")
-    if not isinstance(targets, dict):
-        return
+    with exclusive_cache_lock(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return
+        except (json.JSONDecodeError, OSError):
+            return
+        if not isinstance(data, dict):
+            return
+        targets = data.get("targets")
+        if not isinstance(targets, dict):
+            return
 
-    changed = False
-    updated_at = int(time.time())
-    for entry in targets.values():
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("account") != old:
-            continue
-        entry["account"] = new
-        entry["updated_at"] = updated_at
-        changed = True
-    if not changed:
-        return
+        changed = False
+        updated_at = int(time.time())
+        for entry in targets.values():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("account") != old:
+                continue
+            entry["account"] = new
+            entry["updated_at"] = updated_at
+            changed = True
+        if not changed:
+            return
 
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
