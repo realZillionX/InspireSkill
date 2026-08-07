@@ -35,8 +35,7 @@ def test_list_train_job_logs_uses_string_epoch_ms(monkeypatch) -> None:  # noqa:
             }
         )
         return {
-            "code": 0,
-            "data": {
+            "Result": {
                 "logs": [{"pod_name": "pod-a", "message": "hello"}],
                 "total": 1,
             },
@@ -56,7 +55,7 @@ def test_list_train_job_logs_uses_string_epoch_ms(monkeypatch) -> None:  # noqa:
     assert total == 1
     assert logs[0]["message"] == "hello"
     assert captured["method"] == "POST"
-    assert captured["path"].endswith("/logs/train")
+    assert captured["path"].endswith("/api/v2/train?Action=GetJobLog")
     assert captured["body"] == {
         "page_size": 7,
         "filter": {

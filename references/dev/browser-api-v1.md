@@ -41,7 +41,7 @@
 | Notebook | 全部已迁 v2；Notebook Lab 与 Proxy 见下一行，仍在 v1 | `notebook create/list/status/start/stop/delete/events/lifecycle`, Name Resolver |
 | Notebook 终端与 Proxy | Notebook Lab、Terminal REST/WebSocket、Notebook Proxy | `notebook exec/shell/url/vscode/proxy-url`, 支持 SSH 的 Notebook 的 `ssh`/`scp`/`ssh-config` |
 | Image | `/image/list`, `/image/<image>`, `/image/create`, `/image/update`, `/mirror/save` | `image list/detail/register/save/set-visibility/delete` |
-| GPU Job | `/train_job/delete`, `/train_job/job_event_list`, `/train_job/events/list`, `/logs/train`；创建、查询、停止和实例列表已迁 v2 | `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |
+| GPU Job | 仅剩 `/train_job/delete`；其余已全部迁 v2 | `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |
 | HPC | `/hpc_jobs/list`, `/hpc_jobs/events/list`, `/hpc_jobs/instances/list`, `/hpc_jobs/...`, `/logs/hpc`；创建、查询和停止已迁 v2 | `hpc create/list/status/stop/delete/events/instances`, Name Resolver |
 | Ray | 全部已迁 v2；按当前用户过滤列表时仍复用账号域的 `/user/detail` | `ray create/list/status/stop/delete/events/instances`, Name Resolver |
 | 资源与 Quota | `/logic_compute_groups/list`, Compute Resource、Schedule Config 与 Cluster Node 家族 | `resources availability/nodes`, `notebook/job/hpc/ray/serving quota`, 创建命令的 Group 与 Quota 解析 |

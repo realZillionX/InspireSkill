@@ -255,11 +255,15 @@ def list_job_events(
 ) -> list[dict]:
     """List job-level K8s events for a training job.
 
-    Endpoint: ``POST /api/v1/train_job/job_event_list``. Returns controller-
-    level events (e.g. ``SetPodTemplateSchedulerName``, ``Unschedulable``
-    reported at the pytorchjob controller level). For per-pod events (e.g.
-    ``FailedScheduling`` / ``Scheduled`` from the K8s scheduler on specific
-    pods), use :func:`list_job_instance_events` instead.
+    Action: ``ListJobEvents`` with ``filter.object_type="job"``. Returns
+    controller-level events (e.g. ``SetPodTemplateSchedulerName``,
+    ``Unschedulable`` reported at the pytorchjob controller level). For per-pod
+    events (e.g. ``FailedScheduling`` / ``Scheduled`` from the K8s scheduler on
+    specific pods), use :func:`list_job_instance_events` instead.
+
+    v1 split these across two endpoints — ``/train_job/job_event_list`` took a
+    bare ``job_id`` while ``/train_job/events/list`` took the filter envelope.
+    v2 collapses both into this one Action; only ``object_type`` differs.
 
     Best-effort: returns ``[]`` on any error.
     """
@@ -267,19 +271,22 @@ def list_job_events(
         if session is None:
             session = get_web_session()
 
-        data = _request_json(
-            session,
-            "POST",
-            _browser_api_path("/train_job/job_event_list"),
-            referer=f"{_get_base_url()}/jobs/distributedTraining",
-            body={"job_id": job_id},
-            timeout=30,
+        payload = _v2_result(
+            _request_json(
+                session,
+                "POST",
+                "/api/v2/train?Action=ListJobEvents",
+                referer=f"{_get_base_url()}/jobs/distributedTraining",
+                body={
+                    "PageNumber": 1,
+                    "page_size": 500,
+                    "filter": {"object_type": "job", "object_ids": [job_id]},
+                },
+                timeout=30,
+            )
         )
 
-        if data.get("code") != 0:
-            return []
-
-        events = data.get("data", {}).get("events", [])
+        events = payload.get("events", [])
         if not isinstance(events, list):
             return []
         return events
@@ -297,11 +304,15 @@ def list_job_instance_events(
 ) -> list[dict]:
     """List per-pod K8s events for a training job.
 
-    Endpoint: ``POST /api/v1/train_job/events/list`` with
-    ``filter.object_type="instance"`` and ``filter.object_ids=[<pod>, ...]``.
-    Returns pod-level events (scheduler view — ``FailedScheduling`` /
-    ``Scheduled`` / ``Pulling`` / ``Started``), richer than the job-level
-    endpoint.
+    Action: ``ListJobEvents`` with ``filter.object_type="instance"`` and
+    ``filter.object_ids=[<pod>, ...]``. Returns pod-level events (scheduler
+    view — ``FailedScheduling`` / ``Scheduled`` / ``Pulling`` / ``Started``),
+    richer than the job-level view.
+
+    Not to be confused with the ``ListJobInstanceEvents`` Action, which takes
+    a single ``instance_name`` and reports ``total: "0"`` regardless of how
+    many events it returns; this path stays on ``ListJobEvents`` so paging
+    keeps working.
 
     `job_id` is only used for the Referer header; the filter keys off
     `pod_names` exclusively. Best-effort: returns ``[]`` on any error.
@@ -329,27 +340,25 @@ def list_job_instance_events(
             page_num = 1
             chunk_events: list[dict] = []
             while max_pages is None or page_num <= max_pages:
-                data = _request_json(
-                    session,
-                    "POST",
-                    _browser_api_path("/train_job/events/list"),
-                    referer=f"{_get_base_url()}/jobs/distributedTrainingDetail/{job_id}",
-                    body={
-                        "page_num": page_num,
-                        "page_size": page_size,
-                        "filter": {
-                            "object_type": "instance",
-                            "object_ids": pod_chunk,
+                payload = _v2_result(
+                    _request_json(
+                        session,
+                        "POST",
+                        "/api/v2/train?Action=ListJobEvents",
+                        referer=(
+                            f"{_get_base_url()}/jobs/distributedTrainingDetail/{job_id}"
+                        ),
+                        body={
+                            "page_num": page_num,
+                            "page_size": page_size,
+                            "filter": {
+                                "object_type": "instance",
+                                "object_ids": pod_chunk,
+                            },
                         },
-                    },
-                    timeout=30,
+                        timeout=30,
+                    )
                 )
-                if data.get("code") != 0:
-                    return []
-
-                payload = data.get("data") if isinstance(data, dict) else None
-                if not isinstance(payload, dict):
-                    return []
                 page_events: list[dict] = []
                 for key in ("events", "items", "list"):
                     value = payload.get(key)
@@ -388,9 +397,9 @@ def list_train_job_logs(
 ) -> tuple[list[dict], int]:
     """Fetch aggregated train-job logs from the web UI API.
 
-    Endpoint: ``POST /api/v1/logs/train``. The web backend validates
-    ``start_timestamp_ms`` and ``end_timestamp_ms`` as string fields, even
-    though their values are epoch milliseconds.
+    Action: ``GetJobLog``. The backend validates ``start_timestamp_ms`` and
+    ``end_timestamp_ms`` as string fields, even though their values are epoch
+    milliseconds, and rejects any window wider than one month.
     """
     if session is None:
         session = get_web_session()
@@ -411,21 +420,16 @@ def list_train_job_logs(
         else f"{_get_base_url()}/jobs/distributedTraining"
     )
 
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/logs/train"),
-        referer=referer,
-        body=body,
-        timeout=30,
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/train?Action=GetJobLog",
+            referer=referer,
+            body=body,
+            timeout=30,
+        )
     )
-
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(payload, dict):
-        return [], 0
     logs = payload.get("logs") or []
     total = payload.get("total") or len(logs)
     return (logs if isinstance(logs, list) else []), int(total)
@@ -437,12 +441,17 @@ def delete_job(
 ) -> dict:
     """Permanently delete a training job entry from the platform.
 
-    Endpoint: ``POST /api/v1/train_job/delete`` with body ``{"job_id": <id>}``. The
-    exact body key is inferred from the parallel ``/train_job/*`` endpoints
-    (``detail``/``workdir`` both use ``job_id``); confirm via
-    ``inspire --debug`` on a rejected call. Destructive: the job entry
-    disappears from the UI and cannot be recovered — if it is still
-    running, ``stop`` first.
+    Endpoint: ``POST /api/v1/train_job/delete`` with body ``{"job_id": <id>}``.
+    Destructive: the job entry disappears from the UI and cannot be recovered —
+    if it is still running, ``stop`` first.
+
+    Still on v1 while the rest of the domain moved to v2. ``train.DeleteJob``
+    exists and takes the same ``job_id``, but delete semantics may not be
+    inferred from probes, and the controlled validation this needs cannot be
+    run: distributed-training jobs are rejected by every CPU compute group in
+    CPU资源空间 (the platform reports it as ``无法找到对应镜像`` even though the
+    image resolves), so the only place to exercise it is a GPU workspace.
+    Migrate this call together with that validation.
     """
     if session is None:
         session = get_web_session()
