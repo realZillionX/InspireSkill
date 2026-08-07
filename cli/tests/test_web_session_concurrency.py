@@ -1,33 +1,18 @@
 from __future__ import annotations
 
-import multiprocessing
 import os
 import threading
 import time
 from pathlib import Path
-from typing import Protocol
 
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.session import WebSession
 from inspire.platform.web.session import auth as web_session_auth
+from multiprocess_workers import Barrier, Counter, run_workers, worker_context
 
 WORKER_COUNT = 8
 
-
-class _Barrier(Protocol):
-    def wait(self, timeout: float | None = None) -> int: ...
-
-
-class _CounterLock(Protocol):
-    def __enter__(self) -> None: ...
-
-    def __exit__(self, *_args) -> None: ...  # noqa: ANN002
-
-
-class _Counter(Protocol):
-    value: int
-
-    def get_lock(self) -> _CounterLock: ...
+_http_calls: list[str] = []
 
 
 class _SessionBrowserClient:
@@ -40,10 +25,27 @@ class _SessionBrowserClient:
         return {"ok": True}
 
 
+class _StubResponse:
+    status_code = 200
+    text = ""
+
+    def json(self) -> dict[str, bool]:
+        return {"ok": True}
+
+
+class _StubHTTP:
+    def get(self, url: str, headers=None, timeout=None) -> _StubResponse:  # noqa: ANN001
+        _http_calls.append(url)
+        return _StubResponse()
+
+    def close(self) -> None:
+        pass
+
+
 def _refresh_expired_session(
     home: str,
-    barrier: _Barrier,
-    login_count: _Counter,
+    barrier: Barrier,
+    login_count: Counter,
 ) -> None:
     os.environ["HOME"] = home
     session = WebSession.load(allow_expired=True, account="default")
@@ -52,6 +54,9 @@ def _refresh_expired_session(
     def fake_get_web_session(**_kwargs) -> WebSession:  # noqa: ANN003
         with login_count.get_lock():
             login_count.value += 1
+        # A real CAS login is slow. Hold that window open so an unserialized
+        # waiter would read the still-stale cache and start its own login.
+        time.sleep(0.2)
         refreshed = WebSession(
             storage_state={
                 "cookies": [{"name": "session", "value": "fresh"}],
@@ -68,6 +73,7 @@ def _refresh_expired_session(
     web_session_module._get_browser_client = _SessionBrowserClient
     web_session_module._close_browser_client = lambda: None
     web_session_module.get_web_session = fake_get_web_session
+    web_session_module.build_requests_session = lambda _session, _url: _StubHTTP()
 
     barrier.wait()
     assert web_session_module.request_json(
@@ -75,6 +81,9 @@ def _refresh_expired_session(
         "GET",
         "https://example.test/api/v1/user/detail",
     ) == {"ok": True}
+    # Reauthentication must return the process to the plain HTTP request path
+    # rather than leaving it pinned to the browser fallback.
+    assert _http_calls == ["https://example.test/api/v1/user/detail"]
 
 
 def test_concurrent_expired_session_requests_share_one_refresh(
@@ -93,25 +102,20 @@ def test_concurrent_expired_session_requests_share_one_refresh(
         created_at=1.0,
     )
     old_session.save(account="default")
-    context = multiprocessing.get_context("fork")
+    context = worker_context()
     barrier = context.Barrier(WORKER_COUNT)
     login_count = context.Value("i", 0)
-    workers = [
-        context.Process(
-            target=_refresh_expired_session,
-            args=(str(tmp_path), barrier, login_count),
-        )
-        for _ in range(WORKER_COUNT)
-    ]
 
     # When: every process discovers the expiry at the same time.
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=10)
+    exit_codes = run_workers(
+        context,
+        _refresh_expired_session,
+        count=WORKER_COUNT,
+        args_for=lambda _index: (str(tmp_path), barrier, login_count),
+    )
 
     # Then: one process logs in and the waiters reuse its refreshed session.
-    assert [worker.exitcode for worker in workers] == [0] * WORKER_COUNT
+    assert exit_codes == [0] * WORKER_COUNT
     assert login_count.value == 1
 
 
@@ -145,8 +149,8 @@ def test_stale_session_save_does_not_replace_refreshed_cache(
 
 def _load_or_login_session(
     home: str,
-    barrier: _Barrier,
-    login_count: _Counter,
+    barrier: Barrier,
+    login_count: Counter,
 ) -> None:
     os.environ["HOME"] = home
 
@@ -206,21 +210,18 @@ def test_concurrent_initial_session_login_shares_one_refresh(
         created_at=1.0,
     )
     stale.save(account="default")
-    context = multiprocessing.get_context("fork")
+    context = worker_context()
     barrier = context.Barrier(WORKER_COUNT)
     login_count = context.Value("i", 0)
-    workers = [
-        context.Process(
-            target=_load_or_login_session,
-            args=(str(tmp_path), barrier, login_count),
-        )
-        for _ in range(WORKER_COUNT)
-    ]
 
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=10)
+    # When: every process reaches the login decision at the same time.
+    exit_codes = run_workers(
+        context,
+        _load_or_login_session,
+        count=WORKER_COUNT,
+        args_for=lambda _index: (str(tmp_path), barrier, login_count),
+    )
 
-    assert [worker.exitcode for worker in workers] == [0] * WORKER_COUNT
+    # Then: one process logs in and the waiters reuse the session it cached.
+    assert exit_codes == [0] * WORKER_COUNT
     assert login_count.value == 1

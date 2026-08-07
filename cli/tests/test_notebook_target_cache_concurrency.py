@@ -1,22 +1,17 @@
 from __future__ import annotations
 
 import json
-import multiprocessing
 import os
 from pathlib import Path
-from typing import Protocol
 
 from inspire.bridge.tunnel import BridgeProfile
 from inspire.cli.commands.notebook.target_resolver import remember_notebook_target
+from multiprocess_workers import Barrier, run_workers, worker_context
 
 WORKER_COUNT = 16
 
 
-class _Barrier(Protocol):
-    def wait(self, timeout: float | None = None) -> int: ...
-
-
-def _write_target(index: int, home: str, barrier: _Barrier) -> None:
+def _write_target(index: int, home: str, barrier: Barrier) -> None:
     os.environ["HOME"] = home
     bridge = BridgeProfile(
         name=f"bench-{index}",
@@ -36,28 +31,19 @@ def _write_target(index: int, home: str, barrier: _Barrier) -> None:
 
 def test_concurrent_target_cache_writes_preserve_every_entry(tmp_path: Path) -> None:
     # Given: independent CLI processes share one notebook target cache.
-    context = multiprocessing.get_context("fork")
+    context = worker_context()
     barrier = context.Barrier(WORKER_COUNT)
-    workers = [
-        context.Process(
-            target=_write_target,
-            args=(index, str(tmp_path), barrier),
-        )
-        for index in range(WORKER_COUNT)
-    ]
 
     # When: every process resolves and remembers a target at the same time.
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=10)
-    for worker in workers:
-        if worker.is_alive():
-            worker.terminate()
-            worker.join()
+    exit_codes = run_workers(
+        context,
+        _write_target,
+        count=WORKER_COUNT,
+        args_for=lambda index: (index, str(tmp_path), barrier),
+    )
 
     # Then: no writer crashes, and every independent entry remains cached.
-    assert [worker.exitcode for worker in workers] == [0] * WORKER_COUNT
+    assert exit_codes == [0] * WORKER_COUNT
     cache_path = tmp_path / ".inspire" / "notebook-targets.json"
     data = json.loads(cache_path.read_text())
     assert set(data["targets"]) == {
