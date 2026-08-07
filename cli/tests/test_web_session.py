@@ -892,28 +892,16 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
         def request_json(self, *_args, **_kwargs):
             raise ws.SessionExpiredError("expired")
 
-    class WorkingBrowserClient:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def request_json(self, *_args, **_kwargs):
-            self.calls += 1
-            return {"ok": True}
-
-    working = WorkingBrowserClient()
+    expiring = ExpiringBrowserClient()
+    http = DummyHTTP(DummyResponse(200, payload={"ok": True}))
     refresh_calls = {"count": 0}
-
-    def fake_get_browser_client(current_session: WebSession):  # type: ignore[no-untyped-def]
-        cookie_value = current_session.storage_state.get("cookies", [{}])[0].get("value")  # type: ignore[index]
-        if cookie_value == "old":
-            return ExpiringBrowserClient()
-        return working
 
     def fake_get_web_session(**_kwargs):
         refresh_calls["count"] += 1
         return refreshed
 
-    monkeypatch.setattr(ws, "_get_browser_client", fake_get_browser_client)
+    monkeypatch.setattr(ws, "_get_browser_client", lambda _session: expiring)
+    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(ws, "clear_session_cache", lambda **_kwargs: None)
     monkeypatch.setattr(ws, "get_web_session", fake_get_web_session)
@@ -928,12 +916,12 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
     assert session.login_username == refreshed.login_username
     assert session.all_workspace_fair_scheduling == refreshed.all_workspace_fair_scheduling
     assert session.created_at == refreshed.created_at
-    assert working.calls == 1
+    assert len(http.calls) == 1
 
     second_result = ws.request_json(session, "GET", "https://example.test")
     assert second_result == {"ok": True}
     assert refresh_calls["count"] == 1
-    assert working.calls == 2
+    assert len(http.calls) == 2
 
 
 def test_browser_request_context_posts_json_bytes():

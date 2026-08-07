@@ -13,6 +13,7 @@ from typing import Any
 import click
 
 from inspire.accounts import account_exists, current_account, list_accounts
+from inspire.accounts.cache_lock import exclusive_cache_lock
 from inspire.bridge import tunnel as tunnel_module
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR
@@ -126,22 +127,23 @@ def remember_notebook_target(
     identifier = str(notebook or "").strip()
     if not identifier:
         return
-    data = _read_target_cache()
-    targets = data.setdefault("targets", {})
-    if not isinstance(targets, dict):
-        targets = {}
-        data["targets"] = targets
-    key = notebook_target_cache_key(identifier, workspace)
-    targets[key] = {
-        "account": account,
-        "bridge_name": bridge.name,
-        "notebook_name": bridge.notebook_name,
-        "notebook_id": bridge.notebook_id,
-        "workspace_name": bridge.workspace_name,
-        "workspace_id": bridge.workspace_id,
-        "updated_at": int(time.time()),
-    }
-    _write_target_cache(data)
+    with exclusive_cache_lock(target_cache_path()):
+        data = _read_target_cache()
+        targets = data.setdefault("targets", {})
+        if not isinstance(targets, dict):
+            targets = {}
+            data["targets"] = targets
+        key = notebook_target_cache_key(identifier, workspace)
+        targets[key] = {
+            "account": account,
+            "bridge_name": bridge.name,
+            "notebook_name": bridge.notebook_name,
+            "notebook_id": bridge.notebook_id,
+            "workspace_name": bridge.workspace_name,
+            "workspace_id": bridge.workspace_id,
+            "updated_at": int(time.time()),
+        }
+        _write_target_cache(data)
 
 
 def remember_notebook_target_aliases(
@@ -255,31 +257,32 @@ def forget_notebook_targets(
     bridge_name: str | None = None,
     notebook_id: str | None = None,
 ) -> list[str]:
-    data = _read_target_cache()
-    targets = data.get("targets") or {}
-    if not isinstance(targets, dict) or not targets:
-        return []
+    with exclusive_cache_lock(target_cache_path()):
+        data = _read_target_cache()
+        targets = data.get("targets") or {}
+        if not isinstance(targets, dict) or not targets:
+            return []
 
-    removed: list[str] = []
-    kept: dict[str, Any] = {}
-    for key, entry in targets.items():
-        if _target_entry_matches(
-            key=str(key),
-            entry=entry,
-            notebook=notebook,
-            workspace=workspace,
-            account=account,
-            bridge_name=bridge_name,
-            notebook_id=notebook_id,
-        ):
-            removed.append(str(key))
-        else:
-            kept[str(key)] = entry
+        removed: list[str] = []
+        kept: dict[str, Any] = {}
+        for key, entry in targets.items():
+            if _target_entry_matches(
+                key=str(key),
+                entry=entry,
+                notebook=notebook,
+                workspace=workspace,
+                account=account,
+                bridge_name=bridge_name,
+                notebook_id=notebook_id,
+            ):
+                removed.append(str(key))
+            else:
+                kept[str(key)] = entry
 
-    if removed:
-        data["targets"] = kept
-        _write_target_cache(data)
-    return removed
+        if removed:
+            data["targets"] = kept
+            _write_target_cache(data)
+        return removed
 
 
 def _account_scope(account: str | None) -> list[str]:

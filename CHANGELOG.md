@@ -12,6 +12,17 @@
   和绝对路径。`--json` 输出相应新增 `skills` 与 `release_notes` 字段。摘要条目会先
   合并硬换行的续行，不再从行尾截断成半句话。
 
+### 修复
+
+- 并发冷启动的 Notebook SSH 连接不再互相踩踏。VS Code Remote SSH 这类客户端会同时拉起
+  多个 `ssh-proxy` ProxyCommand 进程，此前它们各自看到共享状态缺失或过期，于是同时写
+  Notebook Target Cache、同时刷新 Web Session、同时跑一遍 Bootstrap，表现为间歇性的
+  平台账号识别失败。现在 Target Cache 的读改写、`web_session.json` 的写入与按账号的登录
+  刷新、以及按 账号/Workspace/Notebook 的冷启动 Bootstrap 都跨进程串行化：等待方复用赢
+  家产出的 Session 与连接，过期的 Session 不再覆盖新的，重新登录后也会回到正常 HTTP 请求
+  路径而不是留在浏览器回退上。等待有上限（Bootstrap 为 `--timeout` 加 60 秒），卡死的
+  持有者不会把后续 `ssh` 永久堵住。
+
 ## v6.3.0
 
 ### 新增
