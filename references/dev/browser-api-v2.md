@@ -159,6 +159,17 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `/user/permissions/{workspace_id}`、`/user/routes/{workspace_id}` | 权限与工作空间路由发现 |
 | `/project/owners` | Project Owner 列表 |
 
+迁移各域时又实测确认了以下几条同样没有对应 Action，一并保留 v1：
+
+| v1 端点 | 为什么没有对应物 |
+| --- | --- |
+| `/user/quota` | `user` 服务只有 3 个 Action，没有配额 |
+| `/user/{user_id}` | `GetUserDetail` 拒绝任何 id 参数，永远只返回当前账号 |
+| `/project/list`、`/project/list_v2`、`/project/{id}` | `project` 服务只有 `GetProjectForPage` |
+| `/cluster_nodes/list` | 只有工作空间级的 `workspace.ListWorkspaceNodes`，不接受 `logic_compute_group_id`；按计算组统计空闲节点没有对应物 |
+| `/inference_servings/create` | `CreateServing` 存在但请求契约不同，见第 8 节 |
+| `/train_job/delete` | `DeleteJob` 存在但无法在 CPU 工作空间做受控验证，见第 8 节 |
+
 ## 10. 回落纪律
 
 v1 与 v2 并存期间，**只有「v2 这条路由不通」才回落 v1**：网关 404 `page not found`、405、5xx，或响应非 JSON。
