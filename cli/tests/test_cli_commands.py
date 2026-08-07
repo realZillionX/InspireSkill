@@ -2097,4 +2097,7 @@ def test_notebook_list_all_workspaces_combines_results(
     items = payload["data"]["items"]
     assert [item["name"] for item in items] == ["cpu-notebook", "gpu-notebook"]
     assert all("id" not in item for item in items)
-    assert calls == [ws_cpu, ws_gpu]
+    # Both workspaces are fetched, but concurrently -- the completion order is
+    # not deterministic, so compare as a set. The rendered `items` order above
+    # is what actually has to be stable.
+    assert sorted(calls) == sorted([ws_cpu, ws_gpu])
