@@ -111,9 +111,14 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | --- | --- |
 | `train` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobInstances`、`ListJobEvents`、`GetJobLog`、`StopJob` |
 | `hpc` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobEvents`、`ListJobInstances`、`GetJobLog`、`StopJob`、`DeleteJob` |
-| `inference_serving` | 生命周期 Action（动态拼接） |
+| `inference_serving` | `ListServings`、`GetServing`、`ListServingVersions`、`ListServingInstances`、`ListServingEvents`、`ListServingScaleHistory`、`GetServingLog`、`GetInferenceServingTerms`、`GetServingConfigByWorkspaceId`、`GetInferenceServingUserProjectList`、`StartServing`、`StopServing`、`DeleteServing` |
 | `ray` | `CreateJob`、`GetJob`、`ListJobs`、`ListJobCreators`、`ListJobEvents`、`ListJobInstances`、`ListJobScalingHistories`、`StopJob`、`DeleteJob` |
 | `notebook` | `CreateNotebook`、`GetNotebook`、`ListNotebooks`、`ListNotebookCreators`、`ListNotebookEvents`、`ListNotebookLifecycles`、`ListRunIndex`、`StartNotebook`、`StopNotebook`、`DeleteNotebook` |
+
+`inference_serving` 的十个读 Action 逐字接受 v1 请求体、响应字段完全一致，但**写侧不能照搬**。两个已经踩到的坑：
+
+- `StartServing` / `StopServing` 早先迁了 URL 却仍用 v1 的信封检查（`code != 0`）解包，而 v2 响应根本没有 `code`，于是两条命令对任何输入都返回 `API error: None`。改用 `_v2_result()` 后真正的错误才暴露出来：请求体里的 `version` 字段 v2 也不认，正确的体只有 `{inference_serving_id}`。**迁 URL 而不同时换解包器，会把真错误伪装成假错误。**
+- `CreateServing` 存在，但请求契约与 v1 不同：`description`、`inference_serving_type`、`mirror_id`、`model_source` 全部被当作 unknown field 拒绝，`resource_spec_price` 的内层形状也不一样。这不是换 URL 能完成的迁移，创建因此保留在 v1。
 
 `hpc` 是全域迁移，且是最省事的一个：discovery 对 hpc 的每个 Action **都没有声明任何参数**，但实测下来 v1 的请求体逐字被接受，响应字段也逐字一致，所以 Wrapper 只换了 URL。`DeleteJob` 要求先停止，运行中删除返回 `Conflict`；id 不存在返回 `ResourceNotFound`（不像 `train.DeleteJob` 给的是 `AccessForbidden`）。
 

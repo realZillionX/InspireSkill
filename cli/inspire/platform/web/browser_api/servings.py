@@ -2,12 +2,16 @@
 
 Browser API fills in everything the UI needs on the `/jobs/modelDeployment` page:
 listing, create / detail / stop / delete, configs per workspace, and the
-user+project pickers for the create dialog. Reverse-engineered via Chrome and
-frontend bundle inspection — see
-the controlled browser/live-smoke workflow in
-`references/dev/browser-api-v1.md`. The serving lifecycle actions go through
-`/api/v2/inference_serving`; that contract is in
-`references/dev/browser-api-v2.md`.
+user+project pickers for the create dialog. Everything except creation goes
+through `/api/v2/inference_serving`; that contract is in
+`references/dev/browser-api-v2.md`. Every migrated Action was checked against a
+live serving first — the v1 request bodies are accepted verbatim and the
+responses are field-for-field identical, so the normalization is unchanged.
+Creation stays on `/api/v1/inference_servings/create`; see `create_serving`.
+
+The list keys differ per Action and are spelled out at each call site:
+`inference_servings` for listing and versions, `groups` for instances,
+`events`, `logs`, `scale_history_items`, `terms`.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from inspire.platform.web.browser_api.core import (
     _browser_api_path,
     _get_base_url,
     _request_json,
+    _v2_result,
 )
 from inspire.platform.web.session import WebSession, get_web_session
 
@@ -58,11 +63,27 @@ def _resolve_workspace(
     return session, workspace_id
 
 
-def _check_response(data: dict[str, Any]) -> dict[str, Any]:
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-    payload = data.get("data")
-    return payload if isinstance(payload, dict) else {}
+def _serving_v2(
+    session: WebSession,
+    action: str,
+    body: Optional[dict[str, Any]] = None,
+    *,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    """Call one `/api/v2/inference_serving` Action and unwrap its ``Result``.
+
+    The route is ``inference_serving`` with an underscore; the hyphenated
+    Service name from discovery 404s.
+    """
+    data = _request_json(
+        session,
+        "POST",
+        f"/api/v2/inference_serving?Action={action}",
+        referer=_referer(),
+        body=body or {},
+        timeout=timeout,
+    )
+    return _v2_result(data)
 
 
 @dataclass
@@ -127,7 +148,7 @@ def list_servings(
     serving_types: Optional[Iterable[str]] = None,
     session: Optional[WebSession] = None,
 ) -> tuple[list[ServingInfo], int]:
-    """List inference servings via `POST /api/v1/inference_servings/list`.
+    """List inference servings via ``Action=ListServings``.
 
     Returns `(items, total)`. The CLI always mirrors the UI's personal view.
     """
@@ -144,15 +165,7 @@ def list_servings(
         ),
         "workspace_id": workspace_id,
     }
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/inference_servings/list"),
-        referer=f"{_referer()}?spaceId={workspace_id}",
-        body=body,
-        timeout=30,
-    )
-    payload = _check_response(data)
+    payload = _serving_v2(session, "ListServings", body)
     raw_items = payload.get("inference_servings") or payload.get("list") or []
     total = int(payload.get("total") or len(raw_items) or 0)
 
@@ -244,15 +257,9 @@ def list_serving_user_project(
     mirrors the UI drop-downs so we don't collapse it into typed objects here.
     """
     session, workspace_id = _resolve_workspace(workspace_id, session)
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/inference_servings/user_project/list"),
-        referer=_referer(),
-        body={"workspace_id": workspace_id},
-        timeout=30,
+    return _serving_v2(
+        session, "GetInferenceServingUserProjectList", {"workspace_id": workspace_id}
     )
-    return _check_response(data)
 
 
 def get_serving_configs(
@@ -265,14 +272,9 @@ def get_serving_configs(
     Returns the raw `data` dict, typically `{configs: [...]}`.
     """
     session, workspace_id = _resolve_workspace(workspace_id, session)
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path(f"/inference_servings/configs/workspace/{workspace_id}"),
-        referer=_referer(),
-        timeout=30,
+    return _serving_v2(
+        session, "GetServingConfigByWorkspaceId", {"workspace_id": workspace_id}
     )
-    return _check_response(data)
 
 
 def get_serving_detail(
@@ -285,14 +287,9 @@ def get_serving_detail(
     """
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path(f"/inference_servings/{inference_serving_id}"),
-        referer=_referer(),
-        timeout=30,
+    return _serving_v2(
+        session, "GetServing", {"inference_serving_id": inference_serving_id}
     )
-    return _check_response(data)
 
 
 def list_serving_versions(
@@ -303,14 +300,9 @@ def list_serving_versions(
     """List historical versions for a serving."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path(f"/inference_servings/{inference_serving_id}/versions"),
-        referer=_referer(),
-        timeout=30,
+    payload = _serving_v2(
+        session, "ListServingVersions", {"inference_serving_id": inference_serving_id}
     )
-    payload = _check_response(data)
     items = payload.get("inference_servings")
     if not isinstance(items, list):
         items = payload.get("list")
@@ -334,19 +326,15 @@ def list_serving_instances(
     """List serving pod instances."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
+    payload = _serving_v2(
         session,
-        "POST",
-        _browser_api_path("/inference_servings/instances/list"),
-        referer=f"{_referer()}/{inference_serving_id}",
-        body={
+        "ListServingInstances",
+        {
             "inference_serving_id": inference_serving_id,
             "page": page,
             "page_size": page_size,
         },
-        timeout=30,
     )
-    payload = _check_response(data)
     items = payload.get("items")
     if not isinstance(items, list):
         items = payload.get("list")
@@ -373,12 +361,10 @@ def list_serving_events(
     """List serving lifecycle / Kubernetes events."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
+    payload = _serving_v2(
         session,
-        "POST",
-        _browser_api_path("/inference_servings/events/list"),
-        referer=f"{_referer()}/{inference_serving_id}",
-        body={
+        "ListServingEvents",
+        {
             "page": page,
             "page_size": page_size,
             "filter": {
@@ -386,9 +372,7 @@ def list_serving_events(
                 "object_ids": [inference_serving_id],
             },
         },
-        timeout=30,
     )
-    payload = _check_response(data)
     events = payload.get("events")
     if not isinstance(events, list):
         events = payload.get("items")
@@ -411,13 +395,10 @@ def list_serving_logs(
     """Fetch serving aggregated logs."""
     if session is None:
         session = get_web_session()
-    detail = f"/{inference_serving_id}" if inference_serving_id else ""
-    data = _request_json(
+    payload = _serving_v2(
         session,
-        "POST",
-        _browser_api_path("/logs/inference_serving"),
-        referer=f"{_referer()}{detail}",
-        body={
+        "GetServingLog",
+        {
             "page_size": page_size,
             "filter": {
                 "podNames": pod_names,
@@ -425,9 +406,7 @@ def list_serving_logs(
                 "end_timestamp_ms": str(end_timestamp_ms),
             },
         },
-        timeout=30,
     )
-    payload = _check_response(data)
     logs = payload.get("logs")
     if not isinstance(logs, list):
         logs = payload.get("items")
@@ -451,19 +430,15 @@ def list_serving_scale_history(
     """List serving scale history records."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
+    payload = _serving_v2(
         session,
-        "POST",
-        _browser_api_path("/inference_servings/scale_history/list"),
-        referer=f"{_referer()}/{inference_serving_id}",
-        body={
+        "ListServingScaleHistory",
+        {
             "inference_serving_id": inference_serving_id,
             "page": page,
             "page_size": page_size,
         },
-        timeout=30,
     )
-    payload = _check_response(data)
     items = payload.get("items")
     if not isinstance(items, list):
         items = payload.get("list")
@@ -485,14 +460,11 @@ def get_serving_terms(
     """Get serving terms / invocation instructions."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
+    return _serving_v2(
         session,
-        "GET",
-        _browser_api_path(f"/inference_servings/{inference_serving_id}/terms"),
-        referer=f"{_referer()}/{inference_serving_id}",
-        timeout=30,
+        "GetInferenceServingTerms",
+        {"inference_serving_id": inference_serving_id},
     )
-    return _check_response(data)
 
 
 def create_serving(
@@ -550,6 +522,12 @@ def create_serving(
     if model_source:
         body["model_source"] = model_source
 
+    # Still on v1. `inference_serving.CreateServing` exists but does NOT take
+    # this body: it rejects `description`, `inference_serving_type`,
+    # `mirror_id` and `model_source` as unknown fields, and wants a different
+    # `resource_spec_price` shape. Moving create over is a body rewrite plus
+    # its own controlled validation, not a transport swap, so it is kept on
+    # the v1 endpoint that the public `serving create` contract is built on.
     data = _request_json(
         session,
         "POST",
@@ -558,7 +536,10 @@ def create_serving(
         body=body,
         timeout=60,
     )
-    return _check_response(data)
+    if data.get("code") != 0:
+        raise ValueError(f"API error: {data.get('message')}")
+    payload = data.get("data")
+    return payload if isinstance(payload, dict) else {}
 
 
 def _serving_action(
@@ -569,15 +550,15 @@ def _serving_action(
 ) -> dict[str, Any]:
     if session is None:
         session = get_web_session()
-    data = _request_json(
+    # No `version` here: v2 rejects it with `unknown field "version"`. The v1
+    # envelope checker used to swallow that as "API error: None", which is why
+    # start / stop failed for every input before this call moved to
+    # `_serving_v2`.
+    return _serving_v2(
         session,
-        "POST",
-        f"/api/v2/inference_serving?Action={action}",
-        referer=_referer(),
-        body={"inference_serving_id": inference_serving_id, "version": 0},
-        timeout=30,
+        action,
+        {"inference_serving_id": inference_serving_id},
     )
-    return _check_response(data)
 
 
 def stop_serving(
@@ -608,14 +589,14 @@ def delete_serving(
     inference_serving_id: str,
     session: Optional[WebSession] = None,
 ) -> dict[str, Any]:
-    """Delete a model deployment entry via `DELETE /inference_servings/{id}`."""
+    """Delete a model deployment entry via ``Action=DeleteServing``.
+
+    v1 needed a REST-style ``DELETE /inference_servings/{id}``; v2 has a
+    first-class Action. An id that does not resolve answers
+    ``ResourceNotFound``.
+    """
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "DELETE",
-        _browser_api_path(f"/inference_servings/{inference_serving_id}"),
-        referer=_referer(),
-        timeout=30,
+    return _serving_v2(
+        session, "DeleteServing", {"inference_serving_id": inference_serving_id}
     )
-    return _check_response(data)

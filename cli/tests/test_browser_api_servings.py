@@ -76,8 +76,7 @@ def test_list_servings_posts_expected_body_and_parses_response(monkeypatch) -> N
     _install_fake_request(
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "Result": {
                 "inference_servings": [
                     {
                         "inference_serving_id": "sv-abc",
@@ -122,7 +121,7 @@ def test_list_servings_posts_expected_body_and_parses_response(monkeypatch) -> N
 
     # Wire-format: POST, correct endpoint, correct body.
     assert record["method"] == "POST"
-    assert record["url"].endswith("/inference_servings/list")
+    assert record["url"].endswith("/api/v2/inference_serving?Action=ListServings")
     assert record["body"] == {
         "page": 2,
         "page_size": 20,
@@ -142,7 +141,7 @@ def test_list_servings_falls_back_to_list_key_when_inference_servings_missing(
     record: dict[str, Any] = {}
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"list": [{"id": "sv-1", "name": "x"}], "total": 1}},
+        {"Result": {"list": [{"id": "sv-1", "name": "x"}], "total": 1}},
         record,
     )
     items, total = list_servings(workspace_id="ws-given", session=_FakeSession())
@@ -173,7 +172,7 @@ def test_list_servings_does_not_promote_identity_handles_to_names(
     item = {"id": "sv-1", "name": "demo", **identity_fields}
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"inference_servings": [item], "total": 1}},
+        {"Result": {"inference_servings": [item], "total": 1}},
         record,
     )
 
@@ -220,7 +219,7 @@ def test_list_servings_raises_on_nonzero_code(monkeypatch) -> None:
 
 
 def test_list_servings_empty_response_returns_empty_list_and_zero_total(monkeypatch) -> None:
-    _install_fake_request(monkeypatch, {"code": 0, "data": None}, {})
+    _install_fake_request(monkeypatch, {"Result": None}, {})
     items, total = list_servings(workspace_id="ws-given", session=_FakeSession())
     assert items == []
     assert total == 0
@@ -235,20 +234,20 @@ def test_get_serving_configs_uses_get_and_workspace_path(monkeypatch) -> None:
     record: dict[str, Any] = {}
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"enable_auto_stop": False, "items": []}},
+        {"Result": {"enable_auto_stop": False, "items": []}},
         record,
     )
     data = get_serving_configs(workspace_id="ws-abc", session=_FakeSession())
     assert data == {"enable_auto_stop": False, "items": []}
-    assert record["method"] == "GET"
-    assert record["url"].endswith("/inference_servings/configs/workspace/ws-abc")
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/inference_serving?Action=GetServingConfigByWorkspaceId")
 
 
 def test_list_serving_user_project_posts_workspace_id(monkeypatch) -> None:
     record: dict[str, Any] = {}
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"projects": [{"id": "p1"}], "users": []}},
+        {"Result": {"projects": [{"id": "p1"}], "users": []}},
         record,
     )
     data = list_serving_user_project(
@@ -256,7 +255,7 @@ def test_list_serving_user_project_posts_workspace_id(monkeypatch) -> None:
     )
     assert data == {"projects": [{"id": "p1"}], "users": []}
     assert record["method"] == "POST"
-    assert record["url"].endswith("/inference_servings/user_project/list")
+    assert record["url"].endswith("/api/v2/inference_serving?Action=GetInferenceServingUserProjectList")
     assert record["body"] == {"workspace_id": "ws-xx"}
 
 
@@ -267,8 +266,8 @@ def test_get_serving_detail_uses_current_path_endpoint(monkeypatch) -> None:
     )
     data = get_serving_detail("sv-xyz", session=_FakeSession())
     assert data == {"status": "RUNNING"}
-    assert record["method"] == "GET"
-    assert record["url"].endswith("/inference_servings/sv-xyz")
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/inference_serving?Action=GetServing")
 
 
 def test_get_serving_detail_raises_on_error(monkeypatch) -> None:
@@ -282,8 +281,7 @@ def test_serving_detail_tab_helpers_use_current_paths(monkeypatch) -> None:
     _install_fake_request(
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "Result": {
                 "inference_servings": [{"version": 1}],
                 "total": "1",
             },
@@ -294,12 +292,12 @@ def test_serving_detail_tab_helpers_use_current_paths(monkeypatch) -> None:
     items, total = list_serving_versions("sv-1", session=_FakeSession())
     assert total == 1
     assert items == [{"version": 1}]
-    assert record["method"] == "GET"
-    assert record["url"].endswith("/inference_servings/sv-1/versions")
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/inference_serving?Action=ListServingVersions")
 
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"items": [{"name": "pod-1"}], "total": "1"}},
+        {"Result": {"items": [{"name": "pod-1"}], "total": "1"}},
         record,
     )
     items, total = list_serving_instances(
@@ -308,7 +306,7 @@ def test_serving_detail_tab_helpers_use_current_paths(monkeypatch) -> None:
     assert total == 1
     assert items == [{"name": "pod-1"}]
     assert record["method"] == "POST"
-    assert record["url"].endswith("/inference_servings/instances/list")
+    assert record["url"].endswith("/api/v2/inference_serving?Action=ListServingInstances")
     assert record["body"] == {
         "inference_serving_id": "sv-1",
         "page": 2,
@@ -317,7 +315,7 @@ def test_serving_detail_tab_helpers_use_current_paths(monkeypatch) -> None:
 
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"events": [{"reason": "Scheduled"}]}},
+        {"Result": {"events": [{"reason": "Scheduled"}]}},
         record,
     )
     events = list_serving_events(
@@ -329,7 +327,7 @@ def test_serving_detail_tab_helpers_use_current_paths(monkeypatch) -> None:
     )
     assert events == [{"reason": "Scheduled"}]
     assert record["method"] == "POST"
-    assert record["url"].endswith("/inference_servings/events/list")
+    assert record["url"].endswith("/api/v2/inference_serving?Action=ListServingEvents")
     assert record["body"] == {
         "page": 3,
         "page_size": 50,
@@ -344,7 +342,7 @@ def test_serving_logs_and_scale_history_omit_sorter(monkeypatch) -> None:
     record: dict[str, Any] = {}
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"logs": [{"message": "ready"}], "total": "1"}},
+        {"Result": {"logs": [{"message": "ready"}], "total": "1"}},
         record,
     )
 
@@ -359,7 +357,7 @@ def test_serving_logs_and_scale_history_omit_sorter(monkeypatch) -> None:
     assert total == 1
     assert logs == [{"message": "ready"}]
     assert record["method"] == "POST"
-    assert record["url"].endswith("/logs/inference_serving")
+    assert record["url"].endswith("/api/v2/inference_serving?Action=GetServingLog")
     assert record["body"] == {
         "page_size": 20,
         "filter": {
@@ -372,7 +370,7 @@ def test_serving_logs_and_scale_history_omit_sorter(monkeypatch) -> None:
 
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"list": [{"replicas": 2}], "total": 1}},
+        {"Result": {"list": [{"replicas": 2}], "total": 1}},
         record,
     )
     items, total = list_serving_scale_history(
@@ -381,7 +379,7 @@ def test_serving_logs_and_scale_history_omit_sorter(monkeypatch) -> None:
     assert total == 1
     assert items == [{"replicas": 2}]
     assert record["method"] == "POST"
-    assert record["url"].endswith("/inference_servings/scale_history/list")
+    assert record["url"].endswith("/api/v2/inference_serving?Action=ListServingScaleHistory")
     assert record["body"] == {
         "inference_serving_id": "sv-1",
         "page": 2,
@@ -393,15 +391,15 @@ def test_get_serving_terms_uses_terms_path(monkeypatch) -> None:
     record: dict[str, Any] = {}
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"endpoint": "https://example.invalid"}},
+        {"Result": {"endpoint": "https://example.invalid"}},
         record,
     )
 
     data = get_serving_terms("sv-1", session=_FakeSession())
 
     assert data == {"endpoint": "https://example.invalid"}
-    assert record["method"] == "GET"
-    assert record["url"].endswith("/inference_servings/sv-1/terms")
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/inference_serving?Action=GetInferenceServingTerms")
 
 
 def test_create_serving_posts_current_web_ui_payload(monkeypatch) -> None:
@@ -485,16 +483,19 @@ def test_serving_actions_use_v2_action_endpoint(monkeypatch) -> None:
     assert stop_serving("sv-1", session=_FakeSession()) == {"ok": True}
     assert record["method"] == "POST"
     assert record["url"].endswith("/api/v2/inference_serving?Action=StopServing")
-    assert record["body"] == {"inference_serving_id": "sv-1", "version": 0}
+    # v2 rejects a `version` field on these Actions.
+    assert record["body"] == {"inference_serving_id": "sv-1"}
 
     assert start_serving("sv-1", session=_FakeSession()) == {"ok": True}
     assert record["url"].endswith("/api/v2/inference_serving?Action=StartServing")
 
 
-def test_delete_serving_uses_current_path_endpoint(monkeypatch) -> None:
+def test_delete_serving_uses_delete_serving_action(monkeypatch) -> None:
     record: dict[str, Any] = {}
-    _install_fake_request(monkeypatch, {"code": 0, "data": {"ok": True}}, record)
+    _install_fake_request(monkeypatch, {"Result": {"ok": True}}, record)
 
     assert delete_serving("sv-1", session=_FakeSession()) == {"ok": True}
-    assert record["method"] == "DELETE"
-    assert record["url"].endswith("/inference_servings/sv-1")
+    # v1 needed a REST-style DELETE; v2 has a first-class Action.
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/inference_serving?Action=DeleteServing")
+    assert record["body"] == {"inference_serving_id": "sv-1"}

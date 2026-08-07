@@ -47,7 +47,7 @@
 | 资源与 Quota | `/logic_compute_groups/list`, Compute Resource、Schedule Config 与 Cluster Node 家族 | `resources availability/nodes`, `notebook/job/hpc/ray/serving quota`, 创建命令的 Group 与 Quota 解析 |
 | Metrics | `/cluster_metric/resource_metric_by_time` | `notebook/job/hpc/ray/serving metrics` |
 | Model Registry | `/model/list`, `/model/detail`, `/model/...`, `/model/create` | `model list/status/versions/register`, Serving 的 Model 解析 |
-| Serving | `/inference_servings/list`, `/inference_servings/configs/...`, `/inference_servings/create`, Events 与 Instances 家族；部分生命周期已迁 v2 | `serving configs/create/list/status/start/stop/delete/events/instances`, Name Resolver |
+| Serving | 仅剩 `/inference_servings/create`；其余已全部迁 v2 | `serving configs/create/list/status/start/stop/delete/events/instances`, Name Resolver |
 
 Batch 和 Workload Profile 不引入新的平台接口：Batch 展开后复用对应 `create`，Profile 只保存 `workspace`、`project`、`group`、`quota` 和 `image` 名称。
 
