@@ -44,8 +44,8 @@
 | GPU Job | 仅剩 `/train_job/delete`；其余已全部迁 v2 | `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |
 | HPC | 全部已迁 v2；按当前用户过滤列表时仍复用账号域的 `/user/detail` | `hpc create/list/status/stop/delete/events/instances`, Name Resolver |
 | Ray | 全部已迁 v2；按当前用户过滤列表时仍复用账号域的 `/user/detail` | `ray create/list/status/stop/delete/events/instances`, Name Resolver |
-| 资源与 Quota | `/logic_compute_groups/list`, Compute Resource、Schedule Config 与 Cluster Node 家族 | `resources availability/nodes`, `notebook/job/hpc/ray/serving quota`, 创建命令的 Group 与 Quota 解析 |
-| Metrics | `/cluster_metric/resource_metric_by_time` | `notebook/job/hpc/ray/serving metrics` |
+| 资源与 Quota | Compute Resource、Schedule Config 与 Cluster Node 家族；`/logic_compute_groups/list` 已迁 v2 | `resources availability/nodes`, `notebook/job/hpc/ray/serving quota`, 创建命令的 Group 与 Quota 解析 |
+| Metrics | 全部已迁 v2 | `notebook/job/hpc/ray/serving metrics` |
 | Model Registry | `/model/list`, `/model/detail`, `/model/...`, `/model/create` | `model list/status/versions/register`, Serving 的 Model 解析 |
 | Serving | 仅剩 `/inference_servings/create`；其余已全部迁 v2 | `serving configs/create/list/status/start/stop/delete/events/instances`, Name Resolver |
 

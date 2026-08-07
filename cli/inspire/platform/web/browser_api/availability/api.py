@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Optional
 
 from .models import FullFreeNodeCount, GPUAvailability
-from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url, _request_json
+from inspire.platform.web.browser_api.core import (
+    _browser_api_path,
+    _get_base_url,
+    _request_json,
+    _v2_result,
+)
 from inspire.platform.web.session import SessionExpiredError, WebSession, clear_session_cache, get_web_session
 
 
@@ -20,24 +25,29 @@ def list_compute_groups(
     if workspace_id is None:
         raise ValueError("Workspace selection is required.")
 
+    # `page_size: -1` means "all" and v2 honours it. Keep it: omitting
+    # `page_size` entirely makes v2 return an empty list with a non-zero
+    # `total`, which would silently look like a workspace with no groups.
     body = {
         "page_size": -1,
         "page_num": 1,
         "filter": {"workspace_id": workspace_id},
     }
 
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/logic_compute_groups/list"),
-        referer=f"{_get_base_url()}/jobs/distributedTraining",
-        body=body,
-        timeout=30,
+    # workspace.*, never cluster.* — the cluster twin of this Action answers
+    # AccessForbidden to anyone who is not a cluster admin.
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/workspace?Action=ListLogicComputeGroups",
+            referer=f"{_get_base_url()}/jobs/distributedTraining",
+            body=body,
+            timeout=30,
+        )
     )
-    code = data.get("code")
-    if code not in (None, 0):
-        raise ValueError(f"API error: {data.get('message') or code}")
-    return data.get("data", {}).get("logic_compute_groups", [])
+    groups = payload.get("logic_compute_groups")
+    return groups if isinstance(groups, list) else []
 
 
 def _group_id(group: dict) -> str:

@@ -1,6 +1,7 @@
 """Cluster resource metrics (time-series) queries.
 
-Backs the web UI "资源视图" tab: `POST /api/v1/cluster_metric/resource_metric_by_time`.
+Backs the web UI "资源视图" tab. v1 served every workload from one cluster-wide
+endpoint; v2 splits it per service, so the route is chosen from `task_type`.
 Browser API time-series endpoint used by notebook/job/HPC/serving/Ray pages.
 
 The UI fans out one request per metric_type (confirmed empirically 2026-04:
@@ -17,7 +18,11 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
-from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url, _request_json
+from inspire.platform.web.browser_api.core import (
+    _get_base_url,
+    _request_json,
+    _v2_result,
+)
 from inspire.platform.web.session import WebSession, get_web_session
 
 _log = logging.getLogger(__name__)
@@ -111,6 +116,20 @@ class MetricGroup:
         )
 
 
+# v1 served every workload's metrics from one cluster-wide endpoint. v2 has no
+# such endpoint: each service owns a `GetTaskMetric` Action that takes the same
+# per-task filter. `workspace.GetOverviewResourceMetricByTime` is NOT the
+# counterpart -- it is a workspace-level overview and answers AccessForbidden
+# to ordinary members.
+_METRIC_ROUTE_BY_TASK_TYPE: dict[str, str] = {
+    "interactive_modeling": "notebook",
+    "distributed_training": "train",
+    "hpc_job": "hpc",
+    "inference_serving": "inference_serving",
+    "ray_job": "ray",
+}
+
+
 def _metrics_referer(task_type: str, task_id: str) -> str:
     base = _get_base_url()
     # Any valid qz.sii.edu.cn page works; pick the canonical detail page per
@@ -150,21 +169,24 @@ def _request_one_metric(
         },
     }
 
+    route = _METRIC_ROUTE_BY_TASK_TYPE.get(task_type)
+    if route is None:
+        raise ValueError(f"metric '{metric_type}' failed: unknown task type {task_type!r}")
+
     data = _request_json(
         session,
         "POST",
-        _browser_api_path("/cluster_metric/resource_metric_by_time"),
+        f"/api/v2/{route}?Action=GetTaskMetric",
         referer=_metrics_referer(task_type, task_id),
         body=body,
         timeout=timeout,
     )
 
-    if data.get("code") != 0:
-        raise ValueError(
-            f"metric '{metric_type}' failed: {data.get('message') or 'unknown error'}"
-        )
+    try:
+        payload = _v2_result(data)
+    except ValueError as exc:
+        raise ValueError(f"metric '{metric_type}' failed: {exc}") from exc
 
-    payload = data.get("data") or {}
     # The platform currently emits the misspelled key; accept the corrected
     # spelling as well so the wrapper follows either response shape.
     raw_groups = payload.get("time_seris_metric_groups")
@@ -189,7 +211,7 @@ def get_resource_metrics_by_time(
 ) -> list[MetricGroup]:
     """Query cluster-metric time series for a single task.
 
-    Backing endpoint: ``POST /api/v1/cluster_metric/resource_metric_by_time``.
+    Backing Action: ``GetTaskMetric`` on the service that owns the workload.
 
     The ``metric_types`` iterable is fanned out into one request per entry
     (a single multi-metric request silently returns data only for the first

@@ -114,7 +114,8 @@ def test_get_resource_metrics_fans_out_one_request_per_metric(
 
     first = calls[0]
     assert first["method"] == "POST"
-    assert first["url"].endswith("/cluster_metric/resource_metric_by_time")
+    # v2 has no cluster-wide metric endpoint; the route comes from task_type.
+    assert first["url"].endswith("/api/v2/notebook?Action=GetTaskMetric")
     assert first["referer"].endswith("/jobs/interactiveModelDetail/nb-abc")
     assert first["body"]["filter"] == {
         "logic_compute_group_id": "lcg-test",
