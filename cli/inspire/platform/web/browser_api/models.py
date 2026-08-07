@@ -203,18 +203,16 @@ def list_models(
         ),
         "workspace_id": workspace_id,
     }
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/model/list"),
-        referer=_referer(workspace_id),
-        body=body,
-        timeout=30,
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=ListModels",
+            referer=_referer(workspace_id),
+            body=body,
+            timeout=30,
+        )
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("data") or {}
     raw_items = payload.get("list") or []
     total = int(payload.get("total") or len(raw_items) or 0)
     return [_parse_model(it) for it in raw_items if isinstance(it, dict)], total
@@ -232,17 +230,16 @@ def get_model_detail(
     """
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/model/detail"),
-        referer=_referer(workspace_id),
-        body={"model_id": model_id},
-        timeout=30,
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=GetModelDetail",
+            referer=_referer(workspace_id),
+            body={"model_id": model_id},
+            timeout=30,
+        )
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-    return data.get("data") or {}
 
 
 def list_model_versions(
@@ -256,16 +253,18 @@ def list_model_versions(
     """
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path(f"/model/{model_id}/versions"),
-        referer=_referer(workspace_id),
-        timeout=30,
+    # The compact view. `ListModelVersions` is the *richer* Action and returns
+    # an extra `next_version`; that one backs `list_model_version_records`.
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=ListModelVersionOptions",
+            referer=_referer(workspace_id),
+            body={"model_id": model_id},
+            timeout=30,
+        )
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-    return data.get("data") or {}
 
 
 def list_model_version_records(
@@ -280,16 +279,16 @@ def list_model_version_records(
     """
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path(f"/model/{model_id}"),
-        referer=_referer(workspace_id),
-        timeout=30,
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=ListModelVersions",
+            referer=_referer(workspace_id),
+            body={"model_id": model_id},
+            timeout=30,
+        )
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-    return data.get("data") or {}
 
 
 def check_model_inference_serving_pending(
@@ -302,15 +301,16 @@ def check_model_inference_serving_pending(
     """Check whether a model version has pending servings before edit/delete."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/model/inference_serving/pending"),
-        referer=_referer(workspace_id),
-        body={"model_id": model_id, "version": int(version)},
-        timeout=30,
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=GetHasModelPendingServing",
+            referer=_referer(workspace_id),
+            body={"model_id": model_id, "version": int(version)},
+            timeout=30,
+        )
     )
-    return _check_response(data)
 
 
 def list_model_inference_servings(
@@ -325,20 +325,21 @@ def list_model_inference_servings(
     """List servings using one model version (POST /model/inference_servings)."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/model/inference_servings"),
-        referer=_referer(workspace_id),
-        body={
-            "model_id": model_id,
-            "version": int(version),
-            "page": page,
-            "page_size": page_size,
-        },
-        timeout=30,
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=ListModelRelatedServings",
+            referer=_referer(workspace_id),
+            body={
+                "model_id": model_id,
+                "version": int(version),
+                "page": page,
+                "page_size": page_size,
+            },
+            timeout=30,
+        )
     )
-    payload = _check_response(data)
     items = payload.get("serving")
     if not isinstance(items, list):
         items = payload.get("inference_servings")
@@ -366,12 +367,13 @@ def get_model_publish_prefill(
         session = get_web_session()
     data = _request_json(
         session,
-        "GET",
-        _browser_api_path(f"/model/{model_id}/version/{int(version)}/publish/prefill"),
+        "POST",
+        "/api/v2/model-hub?Action=GetModelPublishPrefill",
         referer=_referer(workspace_id),
+        body={"model_id": model_id, "version": int(version)},
         timeout=30,
     )
-    return _check_response(data)
+    return _v2_result(data)
 
 
 def get_model_publish_status(
@@ -386,12 +388,13 @@ def get_model_publish_status(
         session = get_web_session()
     data = _request_json(
         session,
-        "GET",
-        _browser_api_path(f"/model/{model_id}/version/{int(version)}/publish/status"),
+        "POST",
+        "/api/v2/model-hub?Action=GetModelPublishStatus",
         referer=_referer(workspace_id),
+        body={"model_id": model_id, "version": int(version)},
         timeout=30,
     )
-    return _check_response(data)
+    return _v2_result(data)
 
 
 def list_model_users(
@@ -403,15 +406,16 @@ def list_model_users(
     """List model users for a project filter (POST /model/users)."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/model/users"),
-        referer=_referer(workspace_id),
-        body={"project_id": project_id},
-        timeout=30,
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=ListModelCreators",
+            referer=_referer(workspace_id),
+            body={"project_id": project_id},
+            timeout=30,
+        )
     )
-    payload = _check_response(data)
     items = payload.get("list")
     if not isinstance(items, list):
         items = payload.get("items")

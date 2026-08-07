@@ -78,7 +78,7 @@ def test_list_project_page_records_posts_management_body(monkeypatch: pytest.Mon
     _install_fake_request(
         projects_module,
         monkeypatch,
-        {"code": 0, "data": {"items": [{"id": "project-1"}], "total": 3}},
+        {"Result": {"items": [{"id": "project-1"}], "total": 3}},
         record,
     )
 
@@ -92,7 +92,7 @@ def test_list_project_page_records_posts_management_body(monkeypatch: pytest.Mon
     assert total == 3
     assert len(items) == 1
     assert record["method"] == "POST"
-    assert record["url"].endswith("/project/list_for_page")
+    assert record["url"].endswith("/api/v2/project?Action=GetProjectForPage")
     assert record["body"] == {"page": 2, "page_size": 5, "filter": {"name": "demo"}}
 
 

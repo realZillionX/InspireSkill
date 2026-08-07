@@ -10,7 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url, _request_json
+from inspire.platform.web.browser_api.core import (
+    _browser_api_path,
+    _get_base_url,
+    _request_json,
+    _v2_result,
+)
 from inspire.platform.web.browser_api.jobs import list_job_events, list_jobs
 from inspire.platform.web.session import WebSession, get_web_session
 
@@ -259,22 +264,25 @@ def list_project_page_records(
     filter_body: Optional[dict[str, Any]] = None,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """List project-management page records via ``POST /api/v1/project/list_for_page``."""
+    """List project-management page records via ``project.GetProjectForPage``.
+
+    The only Action the `project` service exposes. `/project/list`,
+    `/project/list_v2`, `/project/{id}` and `/project/owners` have no v2
+    counterpart and stay on v1.
+    """
     if session is None:
         session = get_web_session()
     body = {"page": page, "page_size": page_size, "filter": dict(filter_body or {})}
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/project/list_for_page"),
-        referer=f"{_get_base_url()}/projects",
-        body=body,
-        timeout=30,
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/project?Action=GetProjectForPage",
+            referer=f"{_get_base_url()}/projects",
+            body=body,
+            timeout=30,
+        )
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("data") or {}
     items = payload.get("items")
     if not isinstance(items, list):
         items = []

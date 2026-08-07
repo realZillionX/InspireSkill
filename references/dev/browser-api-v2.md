@@ -116,7 +116,13 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `notebook` | `CreateNotebook`、`GetNotebook`、`ListNotebooks`、`ListNotebookCreators`、`ListNotebookEvents`、`ListNotebookLifecycles`、`ListRunIndex`、`StartNotebook`、`StopNotebook`、`DeleteNotebook` |
 | `workspace` | `ListLogicComputeGroups` |
 | `user` | `GetUserDetail`、`ListAPIKeys` |
+| `project` | `GetProjectForPage` |
+| `model-hub` | `ListModels`、`GetModelDetail`、`ListModelVersions`、`ListModelVersionOptions`、`ListModelCreators`、`ListModelRelatedServings`、`GetHasModelPendingServing`、`GetModelPublishPrefill`、`GetModelPublishStatus` |
 | 各域 | `GetTaskMetric`（`notebook` / `train` / `hpc` / `ray` / `inference_serving` 各一份） |
+
+`model-hub` 里有两个名字近似、极易搞混的 Action，只能靠响应字段区分：`ListModelVersionOptions` 返回 `{list, total}`，对应 v1 的 `GET /model/{id}/versions`；`ListModelVersions` 多一个 `next_version`，对应 v1 的 `GET /model/{id}`。按名字直觉配对会把两者接反。`ListModelVersions` 不接受 `page`；`ListModelCreators` 接受 `project_id`，与 v1 `/model/users` 的作用域一致。
+
+`project` 服务只有 `GetProjectForPage` 一个 Action，对应 `/project/list_for_page`；`/project/list`、`/project/list_v2`、`/project/{id}` 和 `/project/owners` 都没有对应物，保留 v1。
 
 `user` 只覆盖**当前用户**：`GetUserDetail` 传空体返回当前账号，字段与 v1 `/user/detail` 完全一致；传 `user_id` / `id` / `UserId` 一律 `InvalidParameter`，所以按 id 查别人的 `/user/{user_id}` 没有对应物。`/user/quota` 同样无对应 Action，两者保留 v1。`ListAPIKeys` 不接受 `PageNumber`。
 

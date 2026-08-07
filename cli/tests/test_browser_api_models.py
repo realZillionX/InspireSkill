@@ -113,7 +113,7 @@ def test_list_models_posts_current_filter_shape_and_parses_response(monkeypatch)
         "plaza_publish_status",
     }.isdisjoint(item.__dataclass_fields__)
     assert record["method"] == "POST"
-    assert record["url"].endswith("/model/list")
+    assert record["url"].endswith("/api/v2/model-hub?Action=ListModels")
     assert record["body"] == {
         "page": 2,
         "page_size": 10,
@@ -141,16 +141,21 @@ def test_model_detail_and_version_endpoints(monkeypatch) -> None:
         "ok": True
     }
     assert record["method"] == "POST"
-    assert record["url"].endswith("/model/detail")
+    assert record["url"].endswith("/api/v2/model-hub?Action=GetModelDetail")
     assert record["body"] == {"model_id": "model-1"}
 
+    # v1 was a REST GET on /model/{id}/versions; v2 is a POST Action. The
+    # compact view is ListModelVersionOptions -- ListModelVersions is the
+    # richer one that also returns `next_version`.
     assert list_model_versions("model-1", session=_FakeSession()) == {"ok": True}
-    assert record["method"] == "GET"
-    assert record["url"].endswith("/model/model-1/versions")
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/model-hub?Action=ListModelVersionOptions")
+    assert record["body"] == {"model_id": "model-1"}
 
     assert list_model_version_records("model-1", session=_FakeSession()) == {"ok": True}
-    assert record["method"] == "GET"
-    assert record["url"].endswith("/model/model-1")
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/model-hub?Action=ListModelVersions")
+    assert record["body"] == {"model_id": "model-1"}
 
 
 def test_model_version_serving_helpers_use_current_body_shapes(monkeypatch) -> None:
@@ -169,7 +174,7 @@ def test_model_version_serving_helpers_use_current_body_shapes(monkeypatch) -> N
     )
     assert pending == {"serving": [{"name": "svc"}], "total": "1"}
     assert record["method"] == "POST"
-    assert record["url"].endswith("/model/inference_serving/pending")
+    assert record["url"].endswith("/api/v2/model-hub?Action=GetHasModelPendingServing")
     assert record["body"] == {"model_id": "model-1", "version": 2}
 
     items, total = list_model_inference_servings(
@@ -183,7 +188,7 @@ def test_model_version_serving_helpers_use_current_body_shapes(monkeypatch) -> N
     assert total == 1
     assert items == [{"name": "svc"}]
     assert record["method"] == "POST"
-    assert record["url"].endswith("/model/inference_servings")
+    assert record["url"].endswith("/api/v2/model-hub?Action=ListModelRelatedServings")
     assert record["body"] == {
         "model_id": "model-1",
         "version": 2,
@@ -192,21 +197,24 @@ def test_model_version_serving_helpers_use_current_body_shapes(monkeypatch) -> N
     }
 
 
-def test_model_publish_helpers_use_version_path(monkeypatch) -> None:
+def test_model_publish_helpers_use_version_action(monkeypatch) -> None:
     record: dict[str, Any] = {}
-    _install_fake_request(monkeypatch, {"code": 0, "data": {"ok": True}}, record)
+    _install_fake_request(monkeypatch, {"Result": {"ok": True}}, record)
 
+    # v1 encoded model + version in the path; v2 takes them in the body.
     assert get_model_publish_prefill(
         "model-1", "4", session=_FakeSession(), workspace_id="ws-1"
     ) == {"ok": True}
-    assert record["method"] == "GET"
-    assert record["url"].endswith("/model/model-1/version/4/publish/prefill")
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/model-hub?Action=GetModelPublishPrefill")
+    assert record["body"] == {"model_id": "model-1", "version": 4}
 
     assert get_model_publish_status(
         "model-1", 4, session=_FakeSession(), workspace_id="ws-1"
     ) == {"ok": True}
-    assert record["method"] == "GET"
-    assert record["url"].endswith("/model/model-1/version/4/publish/status")
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/model-hub?Action=GetModelPublishStatus")
+    assert record["body"] == {"model_id": "model-1", "version": 4}
 
 
 def test_list_model_users_posts_project_id(monkeypatch) -> None:
@@ -224,7 +232,7 @@ def test_list_model_users_posts_project_id(monkeypatch) -> None:
     assert total == 1
     assert items == [{"user_name": "Alice"}]
     assert record["method"] == "POST"
-    assert record["url"].endswith("/model/users")
+    assert record["url"].endswith("/api/v2/model-hub?Action=ListModelCreators")
     assert record["body"] == {"project_id": "project-1"}
 
 
