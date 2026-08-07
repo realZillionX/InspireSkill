@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
+from inspire.cli.commands.notebook import bootstrap_lock
+from inspire.cli.commands.notebook.bootstrap_lock import serialize_notebook_bootstrap
 from inspire.cli.commands.notebook.target_resolver import NotebookConnectionTarget
 from inspire.cli.commands.notebook.transport import NotebookTransportPolicy
 from inspire.cli.context import Context
@@ -99,3 +101,40 @@ def test_concurrent_proxy_calls_bootstrap_once(
     # Then: only the lock owner prepares the connection; both calls proxy it.
     assert state["bootstraps"] == 1
     assert state["proxies"] == 2
+
+
+def test_bootstrap_gives_up_waiting_on_a_stuck_preparer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Given: a preparing process wedged while holding this notebook's lock.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(bootstrap_lock, "_BOOTSTRAP_WAIT_SLACK", 0.0)
+    scope = {"account": "alice", "workspace": "CPU资源空间", "notebook": "demo-box"}
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        with serialize_notebook_bootstrap(**scope, setup_timeout=30.0):
+            holding.set()
+            release.wait(timeout=30)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    prepared = False
+    try:
+        assert holding.wait(timeout=10)
+
+        # When: a later ProxyCommand's wait budget runs out.
+        with serialize_notebook_bootstrap(**scope, setup_timeout=0.2):
+            prepared = True
+    finally:
+        release.set()
+        holder.join(timeout=10)
+
+    # Then: it prepares unserialized rather than stranding the ssh connection.
+    assert prepared
+    stderr = capsys.readouterr().err
+    assert "Waiting for another process" in stderr
+    assert "continuing without waiting" in stderr

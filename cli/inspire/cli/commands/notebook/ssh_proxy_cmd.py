@@ -193,6 +193,7 @@ def ssh_proxy_cmd(
             account=bootstrap_account,
             notebook=notebook,
             workspace=bootstrap_workspace,
+            setup_timeout=setup_timeout,
         ):
             target = _load_proxy_target(
                 ctx,
