@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from inspire.platform.web.browser_api.core import (
-    _browser_api_path,
     _get_base_url,
     _request_json,
     _v2_result,
@@ -443,34 +442,23 @@ def delete_job(
 ) -> dict:
     """Permanently delete a training job entry from the platform.
 
-    Endpoint: ``POST /api/v1/train_job/delete`` with body ``{"job_id": <id>}``.
-    Destructive: the job entry disappears from the UI and cannot be recovered —
-    if it is still running, ``stop`` first.
+    Action: ``DeleteJob`` with body ``{"job_id": <id>}``. Destructive: the job
+    entry disappears from the UI and cannot be recovered — if it is still
+    running, ``stop`` first.
 
-    Still on v1 while the rest of the domain moved to v2. ``train.DeleteJob``
-    exists and takes the same ``job_id``, but delete semantics may not be
-    inferred from probes, and the controlled validation this needs cannot be
-    run: distributed-training jobs are rejected by every CPU compute group in
-    CPU资源空间 (the platform reports it as ``无法找到对应镜像`` even though the
-    image resolves), so the only place to exercise it is a GPU workspace.
-    Migrate this call together with that validation.
+    A job id that does not resolve for the caller comes back as
+    ``AccessForbidden``, not a not-found code, unlike ``hpc.DeleteJob``.
     """
     if session is None:
         session = get_web_session()
 
-    body: dict[str, Any] = {"job_id": job_id}
-
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/train_job/delete"),
-        referer=f"{_get_base_url()}/jobs/distributedTraining",
-        body=body,
-        timeout=30,
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/train?Action=DeleteJob",
+            referer=f"{_get_base_url()}/jobs/distributedTraining",
+            body={"job_id": job_id},
+            timeout=30,
+        )
     )
-
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("data")
-    return payload if isinstance(payload, dict) else {}

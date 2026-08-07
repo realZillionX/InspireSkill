@@ -143,3 +143,38 @@ def test_get_job_detail_v2_uses_action_api(monkeypatch) -> None:  # noqa: ANN001
     assert captured["path"] == "/api/v2/train?Action=GetJob"
     assert captured["body"] == {"job_id": "job-abc"}
     assert "distributedTrainingDetail/job-abc" in captured["referer"]
+
+
+def test_delete_job_uses_action_api(monkeypatch) -> None:  # noqa: ANN001
+    captured: dict[str, Any] = {}
+
+    def fake_request_json(session, method, path, *, referer, body=None, timeout=30):  # noqa: ANN001
+        captured.update({"method": method, "path": path, "referer": referer, "body": body})
+        return {
+            "ResponseMetadata": {"Action": "DeleteJob"},
+            "Result": {"job_id": "job-abc"},
+        }
+
+    monkeypatch.setattr(jobs_module, "_request_json", fake_request_json)
+
+    assert jobs_module.delete_job("job-abc", session=_FakeSession()) == {"job_id": "job-abc"}
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v2/train?Action=DeleteJob"
+    assert captured["body"] == {"job_id": "job-abc"}
+    assert "/jobs/distributedTraining" in captured["referer"]
+
+
+def test_delete_job_surfaces_running_conflict(monkeypatch) -> None:  # noqa: ANN001
+    # The platform refuses to delete a job that is still running; the wrapper
+    # must let that reach the caller rather than swallow it.
+    def fake_request_json(session, method, path, *, referer, body=None, timeout=30):  # noqa: ANN001
+        return {
+            "ResponseMetadata": {
+                "Error": {"Code": "Conflict", "Message": "当前状态（运行中）无法删除，请先停止后再删除"}
+            }
+        }
+
+    monkeypatch.setattr(jobs_module, "_request_json", fake_request_json)
+
+    with pytest.raises(ValueError, match="Conflict"):
+        jobs_module.delete_job("job-abc", session=_FakeSession())

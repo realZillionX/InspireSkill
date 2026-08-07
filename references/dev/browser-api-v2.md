@@ -109,7 +109,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 | 路由 | Action |
 | --- | --- |
-| `train` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobInstances`、`ListJobEvents`、`GetJobLog`、`StopJob` |
+| `train` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobInstances`、`ListJobEvents`、`GetJobLog`、`StopJob`、`DeleteJob` |
 | `hpc` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobEvents`、`ListJobInstances`、`GetJobLog`、`StopJob`、`DeleteJob` |
 | `inference_serving` | `ListServings`、`GetServing`、`ListServingVersions`、`ListServingInstances`、`ListServingEvents`、`ListServingScaleHistory`、`GetServingLog`、`GetInferenceServingTerms`、`GetServingConfigByWorkspaceId`、`GetInferenceServingUserProjectList`、`StartServing`、`StopServing`、`DeleteServing` |
 | `ray` | `CreateJob`、`GetJob`、`ListJobs`、`ListJobCreators`、`ListJobEvents`、`ListJobInstances`、`ListJobScalingHistories`、`StopJob`、`DeleteJob` |
@@ -137,7 +137,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 `hpc` 是全域迁移，且是最省事的一个：discovery 对 hpc 的每个 Action **都没有声明任何参数**，但实测下来 v1 的请求体逐字被接受，响应字段也逐字一致，所以 Wrapper 只换了 URL。`DeleteJob` 要求先停止，运行中删除返回 `Conflict`；id 不存在返回 `ResourceNotFound`（不像 `train.DeleteJob` 给的是 `AccessForbidden`）。
 
-`train` 把 v1 两个事件端点合并成了一个 Action：`/train_job/job_event_list`（裸 `job_id`）和 `/train_job/events/list`（`filter` 信封）在 v2 都是 `ListJobEvents`，只靠 `filter.object_type` 取 `job` / `instance` 区分，事件条数与 v1 逐一对得上。另有一个同名易混的 `ListJobInstanceEvents`（参数是 `job_id` + `instance_name`），它无论返回多少条 `total` 都是 `"0"`，需要分页的调用方不要用它。`/train_job/delete` 仍留在 v1：`DeleteJob` 存在且参数相同，但分布式训练任务在 CPU资源空间 的所有 CPU 组都建不起来（平台报 `无法找到对应镜像`，实际是组不支持），受控验证只能在 GPU 工作空间做，因此删除语义尚未验证。
+`train` 把 v1 两个事件端点合并成了一个 Action：`/train_job/job_event_list`（裸 `job_id`）和 `/train_job/events/list`（`filter` 信封）在 v2 都是 `ListJobEvents`，只靠 `filter.object_type` 取 `job` / `instance` 区分，事件条数与 v1 逐一对得上。另有一个同名易混的 `ListJobInstanceEvents`（参数是 `job_id` + `instance_name`），它无论返回多少条 `total` 都是 `"0"`，需要分页的调用方不要用它。`DeleteJob` 与 `hpc.DeleteJob` 语义一致：要求先停止，运行中删除返回 `Conflict: 当前状态（运行中）无法删除`。差别在找不到资源时它返回 `AccessForbidden` 而不是 `ResourceNotFound`。受控验证在 分布式训练空间 用 1 卡 H100 最小规格完成（建→停→删→确认消失，随即释放）；分布式训练任务在 CPU资源空间 的所有 CPU 组都建不起来（平台报 `无法找到对应镜像`，实际是组不支持），所以这一条只能在 GPU 工作空间验。
 
 `notebook` 同样是全域迁移，但 `/notebook/lab*` 和 Notebook Proxy 按第 9 节保留 v1。几处与 `ray` 相反、必须逐个实测的地方：列表键是 **`list`** 而不是 `items`，`total` 是 int 而不是字符串；`ListRunIndex` 无分页，传 `PageNumber` 直接报错；v1 用 `operation` 枚举复用的 `/notebook/operate` 在 v2 拆成了 `StartNotebook` / `StopNotebook`，v1 那条 REST 风格的 `DELETE /notebook/{id}` 也有了正式的 `DeleteNotebook`。找不到资源时返回 `ResourceNotFound`（HTTP 仍是 200），不再是 v1 的传输层 404，依赖 404 判断「不存在」的调用方必须同时认这个码。
 
@@ -170,7 +170,6 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `/project/list`、`/project/list_v2`、`/project/{id}` | `project` 服务只有 `GetProjectForPage` |
 | `/cluster_nodes/list` | 只有工作空间级的 `workspace.ListWorkspaceNodes`，不接受 `logic_compute_group_id`；按计算组统计空闲节点没有对应物 |
 | `/inference_servings/create` | `CreateServing` 存在但请求契约不同，见第 8 节 |
-| `/train_job/delete` | `DeleteJob` 存在但无法在 CPU 工作空间做受控验证，见第 8 节 |
 
 ## 10. 回落纪律
 
