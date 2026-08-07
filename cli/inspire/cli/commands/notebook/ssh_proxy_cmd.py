@@ -7,16 +7,13 @@ import sys
 
 import click
 
-from inspire.bridge.tunnel import (
-    exec_rtunnel_proxy,
-    is_tunnel_available,
-    load_tunnel_config,
-)
+from inspire.bridge.tunnel import exec_rtunnel_proxy, is_tunnel_available, load_tunnel_config
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, pass_context
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
+from .bootstrap_lock import notebook_target_is_ready, serialize_notebook_bootstrap
 from .notebook_ssh_flow import run_notebook_ssh
 from .target_resolver import (
     NOTEBOOK_TARGET_WORKSPACE_HELP,
@@ -56,7 +53,9 @@ def _load_proxy_target(
         if str(account or "").strip() and str(account or "").strip().lower() != "all"
         else None
     )
-    config = load_tunnel_config(account=explicit_account) if explicit_account else load_tunnel_config()
+    config = (
+        load_tunnel_config(account=explicit_account) if explicit_account else load_tunnel_config()
+    )
     bridge = config.get_bridge(notebook)
     if bridge is None:
         return None
@@ -173,16 +172,7 @@ def ssh_proxy_cmd(
     )
     config = target.config if target else None
     bridge = target.bridge if target else None
-    needs_bootstrap = bridge is None
-    if bridge is not None:
-        ready = is_tunnel_available(
-            bridge_name=bridge.name,
-            config=config,
-            retries=0,
-            retry_pause=0.0,
-            progressive=False,
-        )
-        needs_bootstrap = not ready
+    needs_bootstrap = not notebook_target_is_ready(target, is_tunnel_available)
 
     if needs_bootstrap:
         bootstrap_workspace = workspace or (bridge.workspace_name if bridge else None)
@@ -195,46 +185,64 @@ def ssh_proxy_cmd(
                 err=True,
             )
             sys.exit(EXIT_CONFIG_ERROR)
-        click.echo(
-            f"Preparing notebook SSH connection for {scrub_raw_ids(notebook)}...",
-            err=True,
-        )
-        policy = preflight_notebook_transport_policy(
-            ctx,
+        requested_account = str(account or "").strip() or None
+        bootstrap_account = target.account if target and target.account else requested_account
+        if bootstrap_account and bootstrap_account.lower() == "all":
+            bootstrap_account = None
+        with serialize_notebook_bootstrap(
+            account=bootstrap_account,
             notebook=notebook,
             workspace=bootstrap_workspace,
-            account=account,
-            pick=pick,
-        )
-        if not policy.allow_ssh:
-            raise SystemExit(emit_ssh_policy_error(ctx, policy))
-        run_notebook_ssh(
-            ctx,
-            notebook_id=notebook,
-            workspace=bootstrap_workspace,
-            wait=True,
-            pubkey=pubkey,
-            port=connection_port,
-            ssh_port=ssh_port,
-            command=None,
-            command_timeout=None,
-            debug_playwright=False,
-            setup_timeout=setup_timeout,
-            setup_only=True,
-            account=account,
-            ignore_target_cache=ignore_target_cache,
-            pick=pick,
-        )
-        target = _load_proxy_target(
-            ctx,
-            notebook=notebook,
-            workspace=bootstrap_workspace,
-            account=account,
-            ignore_target_cache=True,
-            pick=pick,
-        )
-        config = target.config if target else None
-        bridge = target.bridge if target else None
+        ):
+            target = _load_proxy_target(
+                ctx,
+                notebook=notebook,
+                workspace=bootstrap_workspace,
+                account=bootstrap_account,
+                ignore_target_cache=True,
+                pick=pick,
+            )
+            if not notebook_target_is_ready(target, is_tunnel_available):
+                click.echo(
+                    f"Preparing notebook SSH connection for {scrub_raw_ids(notebook)}...",
+                    err=True,
+                )
+                policy = preflight_notebook_transport_policy(
+                    ctx,
+                    notebook=notebook,
+                    workspace=bootstrap_workspace,
+                    account=bootstrap_account,
+                    pick=pick,
+                )
+                if not policy.allow_ssh:
+                    raise SystemExit(emit_ssh_policy_error(ctx, policy))
+                run_notebook_ssh(
+                    ctx,
+                    notebook_id=notebook,
+                    workspace=bootstrap_workspace,
+                    wait=True,
+                    pubkey=pubkey,
+                    port=connection_port,
+                    ssh_port=ssh_port,
+                    command=None,
+                    command_timeout=None,
+                    debug_playwright=False,
+                    setup_timeout=setup_timeout,
+                    setup_only=True,
+                    account=bootstrap_account,
+                    ignore_target_cache=ignore_target_cache,
+                    pick=pick,
+                )
+            target = _load_proxy_target(
+                ctx,
+                notebook=notebook,
+                workspace=bootstrap_workspace,
+                account=bootstrap_account,
+                ignore_target_cache=True,
+                pick=pick,
+            )
+            config = target.config if target else None
+            bridge = target.bridge if target else None
 
     if bridge is None or config is None:
         click.echo(

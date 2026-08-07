@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from inspire.accounts.cache_lock import exclusive_cache_lock
+
 SESSION_TTL = 3600  # 1 hour
 
 
@@ -247,16 +249,20 @@ class WebSession:
         if cache_file is None:  # pragma: no cover - resolved account is explicit
             return
         self.account = resolved_account
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        # Restrict permissions: session contains sensitive cookies/tokens.
-        tmp_path = cache_file.with_suffix(".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, ensure_ascii=False)
-        os.replace(tmp_path, cache_file)
-        try:
-            os.chmod(cache_file, 0o600)
-        except Exception:
-            pass
+        with exclusive_cache_lock(cache_file):
+            cached = WebSession.load(allow_expired=True, account=resolved_account)
+            if cached is not None and cached.created_at > self.created_at:
+                return
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            # Restrict permissions: session contains sensitive cookies/tokens.
+            tmp_path = cache_file.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(self.to_dict(), f, ensure_ascii=False)
+            os.replace(tmp_path, cache_file)
+            try:
+                os.chmod(cache_file, 0o600)
+            except OSError:
+                pass
 
     @classmethod
     def load(

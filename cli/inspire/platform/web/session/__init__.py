@@ -31,6 +31,7 @@ from inspire.platform.web.session.browser_launch import (
     playwright_install_hint,
 )
 from inspire.platform.web.session.proxy import get_playwright_proxy
+from inspire.platform.web.session.refresh_lock import exclusive_session_refresh
 from inspire.platform.web.session.requests import build_requests_session
 
 __all__ = [
@@ -77,6 +78,22 @@ def _refresh_session_in_place(current: "WebSession", refreshed: "WebSession") ->
     current.all_workspace_names = refreshed.all_workspace_names
     current.all_workspace_fair_scheduling = refreshed.all_workspace_fair_scheduling
     current.created_at = refreshed.created_at
+
+
+def _refresh_expired_session(session: "WebSession") -> "WebSession":
+    account = session.account
+    if not account:
+        return get_web_session(force_refresh=True, account=account)
+    with exclusive_session_refresh(account):
+        cached = WebSession.load(allow_expired=True, account=account)
+        if (
+            cached is not None
+            and bool(cached.storage_state.get("cookies"))
+            and cached.created_at > session.created_at
+        ):
+            return cached
+        clear_session_cache(account=account)
+        return get_web_session(force_refresh=True, account=account)
 
 
 def request_json(
@@ -152,10 +169,9 @@ def request_json(
         # Auto-retry once with fresh session
         if _retry_count < 1:
             logger.debug("Web session expired; refreshing cached session.")
-            refresh_account = getattr(session, "account", None)
-            clear_session_cache(account=refresh_account)
-            new_session = get_web_session(force_refresh=True, account=refresh_account)
+            new_session = _refresh_expired_session(session)
             _refresh_session_in_place(session, new_session)
+            _BROWSER_API_FORCE_BROWSER = False
             return request_json(
                 session,
                 method,
@@ -196,11 +212,17 @@ def get_web_session(
     require_workspace: bool = False,
     account: Optional[str] = None,
 ) -> WebSession:
-    return _get_web_session(
-        force_refresh=force_refresh,
-        require_workspace=require_workspace,
-        account=account,
-    )
+    if force_refresh:
+        return _get_web_session(
+            force_refresh=True,
+            require_workspace=require_workspace,
+            account=account,
+        )
+    with exclusive_session_refresh(account):
+        return _get_web_session(
+            require_workspace=require_workspace,
+            account=account,
+        )
 
 
 def _remove_session_file(session_file: Path | None) -> None:
