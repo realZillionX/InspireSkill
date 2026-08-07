@@ -203,14 +203,16 @@ def get_current_user(session: Optional[WebSession] = None) -> dict:
     if session is None:
         session = get_web_session()
 
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path("/user/detail"),
-        referer=f"{_get_base_url()}/jobs/distributedTraining",
-        timeout=30,
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/user?Action=GetUserDetail",
+            referer=f"{_get_base_url()}/jobs/distributedTraining",
+            body={},
+            timeout=30,
+        )
     )
-    return data.get("data", {})
 
 
 def list_job_instances(

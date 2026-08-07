@@ -117,10 +117,8 @@ def test_list_ray_jobs_without_user_filter_uses_current_user(monkeypatch) -> Non
 
     def fake_request(session, method, url, *, referer=None, body=None, timeout=30):
         records.append({"method": method, "url": url, "body": body})
-        # `/user/detail` belongs to the user domain and is still on v1, so it
-        # keeps the legacy envelope while ray answers with the v2 one.
-        if url.endswith("/user/detail"):
-            return {"code": 0, "data": {"id": "user-current"}}
+        if url.endswith("Action=GetUserDetail"):
+            return {"Result": {"id": "user-current"}}
         return {"Result": {"items": [], "total": "0"}}
 
     monkeypatch.setattr(ray_jobs_module, "_request_json", fake_request)

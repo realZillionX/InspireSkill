@@ -14,6 +14,7 @@ from inspire.platform.web.browser_api.core import (
     _browser_api_path,
     _get_base_url,
     _request_json,
+    _v2_result,
 )
 from inspire.platform.web.session import DEFAULT_WORKSPACE_ID, WebSession, get_web_session
 
@@ -72,7 +73,7 @@ def get_user_detail(
 
 
 def list_user_api_keys(session: Optional[WebSession] = None) -> list[dict[str, Any]]:
-    """List the current user's API keys (GET /api/v1/user/my-api-key/list).
+    """List the current user's API keys via ``user.ListAPIKeys``.
 
     Returns the raw `items` array; individual keys carry metadata like
     `id / name / create_at / last_used_at`. The key value itself is only
@@ -80,16 +81,17 @@ def list_user_api_keys(session: Optional[WebSession] = None) -> list[dict[str, A
     """
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path("/user/my-api-key/list"),
-        referer=_referer("/userCenter"),
-        timeout=15,
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/user?Action=ListAPIKeys",
+            referer=_referer("/userCenter"),
+            body={},
+            timeout=15,
+        )
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-    items = (data.get("data") or {}).get("items")
+    items = payload.get("items")
     return items if isinstance(items, list) else []
 
 

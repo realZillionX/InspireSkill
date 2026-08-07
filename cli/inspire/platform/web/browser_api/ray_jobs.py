@@ -176,15 +176,16 @@ def list_ray_jobs(
     if workspace_id is None:
         raise ValueError("Workspace selection is required.")
     if not user_ids:
-        user_data = _request_json(
-            session,
-            "GET",
-            _browser_api_path("/user/detail"),
-            referer=_ray_referer(),
-            timeout=30,
+        current_user = _v2_result(
+            _request_json(
+                session,
+                "POST",
+                "/api/v2/user?Action=GetUserDetail",
+                referer=_ray_referer(),
+                body={},
+                timeout=30,
+            )
         )
-        user_payload = user_data.get("data")
-        current_user: dict[str, Any] = user_payload if isinstance(user_payload, dict) else {}
         current_user_id = str(
             current_user.get("id") or current_user.get("user_id") or ""
         ).strip()

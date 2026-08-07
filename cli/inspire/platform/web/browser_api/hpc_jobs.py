@@ -154,15 +154,16 @@ def list_hpc_jobs(
     if workspace_id is None:
         raise ValueError("Workspace selection is required.")
     if created_by is None:
-        data = _request_json(
-            session,
-            "GET",
-            _browser_api_path("/user/detail"),
-            referer=f"{_get_base_url()}/jobs/highPerformanceComputing",
-            timeout=30,
+        current_user = _v2_result(
+            _request_json(
+                session,
+                "POST",
+                "/api/v2/user?Action=GetUserDetail",
+                referer=f"{_get_base_url()}/jobs/highPerformanceComputing",
+                body={},
+                timeout=30,
+            )
         )
-        user_payload = data.get("data")
-        current_user: dict[str, Any] = user_payload if isinstance(user_payload, dict) else {}
         created_by = str(current_user.get("id") or current_user.get("user_id") or "").strip()
         if not created_by:
             raise ValueError("Current user could not be resolved for HPC listing.")

@@ -23,6 +23,7 @@ from inspire.platform.web.browser_api.core import (
     _browser_api_path,
     _get_base_url,
     _request_json,
+    _v2_result,
 )
 from inspire.platform.web.session import WebSession, get_web_session
 
@@ -155,15 +156,16 @@ def _merge_filter(
 
 
 def _current_user_id(session: WebSession, workspace_id: str) -> str:
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path("/user/detail"),
-        referer=_referer(workspace_id),
-        timeout=30,
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/user?Action=GetUserDetail",
+            referer=_referer(workspace_id),
+            body={},
+            timeout=30,
+        )
     )
-    raw_payload = data.get("data")
-    payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
     user_id = str(payload.get("id") or payload.get("user_id") or "").strip()
     if not user_id:
         raise ValueError("Current user could not be resolved for model listing.")
