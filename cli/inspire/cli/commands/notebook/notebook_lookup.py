@@ -28,6 +28,7 @@ from inspire.cli.utils.resource_index import (
     StaleResourceIndexRefresh,
     scope_for_session,
 )
+from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 
 logger = logging.getLogger(__name__)
@@ -363,7 +364,6 @@ def _validate_notebook_account_access(
 def _list_notebooks_for_workspace(
     session: web_session_module.WebSession,
     *,
-    base_url: str,
     workspace_id: str,
     user_ids: list[str],
     keyword: str = "",
@@ -381,45 +381,22 @@ def _list_notebooks_for_workspace(
     total: int | None = None
 
     while current_page <= max_pages:
-        body = {
-            "workspace_id": workspace_id,
-            "page": current_page,
-            "page_size": page_size,
-            "filter_by": {
-                "keyword": keyword,
-                "user_id": user_ids,
-                "logic_compute_group_id": [],
-                "status": status or [],
-                "mirror_url": [],
-            },
-            "order_by": [{"field": "created_at", "order": "desc"}],
-        }
-
-        data = web_session_module.request_json(
-            session,
-            "POST",
-            f"{base_url}/api/v1/notebook/list",
-            body=body,
-            timeout=30,
+        items, page_total = browser_api_module.list_notebooks(
+            workspace_id,
+            user_ids=user_ids,
+            keyword=keyword,
+            status=status,
+            page=current_page,
+            page_size=page_size,
+            session=session,
         )
-
-        if data.get("code") != 0:
-            message = data.get("message", "Unknown error")
-            raise ValueError(f"API error: {message}")
-
-        payload = data.get("data", {})
-        payload = payload if isinstance(payload, dict) else {}
-        items = payload.get("list", [])
-        if not isinstance(items, list) or not items:
+        if not items:
             break
 
-        all_items.extend(item for item in items if isinstance(item, dict))
+        all_items.extend(items)
 
         if total is None:
-            try:
-                total = int(payload["total"])
-            except (KeyError, TypeError, ValueError):
-                total = None
+            total = page_total
         if total is not None and current_page * page_size >= total:
             break
         if len(items) < page_size:
@@ -432,7 +409,6 @@ def _list_notebooks_for_workspace(
 def _list_notebooks_for_workspaces(
     session: web_session_module.WebSession,
     *,
-    base_url: str,
     workspace_ids: list[str],
     user_ids: list[str],
     keyword: str = "",
@@ -448,7 +424,6 @@ def _list_notebooks_for_workspaces(
         return {
             ws_id: _list_notebooks_for_workspace(
                 session,
-                base_url=base_url,
                 workspace_id=ws_id,
                 user_ids=user_ids,
                 keyword=keyword,
@@ -465,7 +440,6 @@ def _list_notebooks_for_workspaces(
             ws_id,
             _list_notebooks_for_workspace(
                 session,
-                base_url=base_url,
                 workspace_id=ws_id,
                 user_ids=user_ids,
                 keyword=keyword,
@@ -651,7 +625,6 @@ def _resolve_notebook_target(
         for attempt in range(attempts):
             workspace_items = _list_notebooks_for_workspaces(
                 session,
-                base_url=base_url,
                 workspace_ids=workspace_ids,
                 user_ids=user_ids,
                 keyword=identifier,

@@ -167,8 +167,7 @@ def test_list_notebook_users_posts_workspace_id(monkeypatch: pytest.MonkeyPatch)
         notebooks_module,
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "Result": {
                 "list": [{"id": "user-1", "name": "Alice"}],
                 "total": "1",
             },
@@ -181,7 +180,7 @@ def test_list_notebook_users_posts_workspace_id(monkeypatch: pytest.MonkeyPatch)
     assert total == 1
     assert users[0]["name"] == "Alice"
     assert record["method"] == "POST"
-    assert record["url"].endswith("/notebook/users")
+    assert record["url"].endswith("/api/v2/notebook?Action=ListNotebookCreators")
     assert record["body"] == {"workspace_id": "ws-session"}
 
 
@@ -192,14 +191,14 @@ def test_list_notebook_lifecycle_omits_empty_time_filters(
     _install_fake_request(
         notebooks_module,
         monkeypatch,
-        {"code": 0, "data": {"list": [], "total": 0}},
+        {"Result": {"list": [], "total": 0}},
         record,
     )
 
     list_notebook_lifecycle("notebook-1", session=_FakeSession())
 
     assert record["method"] == "POST"
-    assert record["url"].endswith("/lifecycle/list")
+    assert record["url"].endswith("/api/v2/notebook?Action=ListNotebookLifecycles")
     assert record["body"] == {
         "notebook_id": "notebook-1",
         "page": 1,

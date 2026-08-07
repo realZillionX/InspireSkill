@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from inspire.config import Config
-from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url, _request_json
+from inspire.platform.web.browser_api.core import (
+    _browser_api_path,
+    _get_base_url,
+    _request_json,
+    _v2_result,
+)
 from inspire.platform.web.session import DEFAULT_WORKSPACE_ID, WebSession, get_web_session
 
 _log = logging.getLogger(__name__)
@@ -80,6 +85,12 @@ def _request_notebooks_data(
     timeout: int = 30,
     default_data: Any = None,
 ) -> Any:
+    """Call a `/api/v1` endpoint that has no v2 counterpart.
+
+    Only the non-notebook families still routed through this module use it —
+    Image and resource pricing. The notebook family itself is on v2 via
+    :func:`_notebook_v2`.
+    """
     data = _request_json(
         session,
         method,
@@ -93,6 +104,48 @@ def _request_notebooks_data(
         raise ValueError(f"API error: {data.get('message')}")
 
     return data.get("data", default_data)
+
+
+def _notebook_v2(
+    session: WebSession,
+    action: str,
+    body: Optional[dict] = None,
+    *,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    """Call one `/api/v2/notebook` Action and return its unwrapped ``Result``.
+
+    Keeps the ``API error: ...`` message shape the v1 helper raised so the
+    command layer's error handling is unchanged.
+    """
+    data = _request_json(
+        session,
+        "POST",
+        f"/api/v2/notebook?Action={action}",
+        referer=_notebooks_referer(),
+        body=body or {},
+        timeout=timeout,
+    )
+    return _v2_result(data)
+
+
+def _notebook_page(payload: dict[str, Any]) -> tuple[list[dict], int]:
+    """Split a paged notebook Result into its item list and total.
+
+    The list key here is ``list``, not the ``items`` that ``ray`` uses — v2 has
+    no cross-Action convention for it, so it is spelled out per domain.
+    """
+    items = payload.get("list")
+    if not isinstance(items, list):
+        items = []
+    items = [item for item in items if isinstance(item, dict)]
+
+    total_raw = payload.get("total")
+    try:
+        total = int(str(total_raw)) if total_raw is not None else len(items)
+    except (TypeError, ValueError):
+        total = len(items)
+    return items, total
 
 
 # ---------------------------------------------------------------------------
@@ -287,29 +340,69 @@ def list_notebook_users(
     *,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """List users for the notebook page filter (POST /api/v1/notebook/users)."""
+    """List users for the notebook page filter (``ListNotebookCreators``)."""
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
     )
-    data = _request_notebooks_data(
+    payload = _notebook_v2(
         session,
-        "POST",
-        "/notebook/users",
-        body={"workspace_id": workspace_id},
+        "ListNotebookCreators",
+        {"workspace_id": workspace_id},
         timeout=15,
-        default_data={},
     )
-    if not isinstance(data, dict):
-        return [], 0
-    items = data.get("list")
+    return _notebook_page(payload)
+
+
+def list_notebooks(
+    workspace_id: str,
+    *,
+    user_ids: list[str],
+    keyword: str = "",
+    status: Optional[list[str]] = None,
+    page: int = 1,
+    page_size: int = 100,
+    session: Optional[WebSession] = None,
+) -> tuple[list[dict], Optional[int]]:
+    """Fetch one page of notebooks for a workspace via ``ListNotebooks``.
+
+    Returns ``(items, total)``; ``total`` is ``None`` when the platform omits
+    it. Pagination policy stays with the caller — this is a 1:1 wrapper around
+    the platform call.
+
+    The filter envelope is the same one v1 took, and v2 accepts it verbatim:
+    ``filter_by`` carries the user / keyword / status selection while
+    ``workspace_id`` stays top-level. The nested ``filter`` object that
+    ``workspace.*`` Actions require is rejected here.
+    """
+    if not user_ids:
+        raise ValueError("Cannot list notebooks without a current-user filter.")
+    if session is None:
+        session = get_web_session()
+
+    body: dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "page": max(1, int(page)),
+        "page_size": max(1, int(page_size)),
+        "filter_by": {
+            "keyword": keyword,
+            "user_id": list(user_ids),
+            "logic_compute_group_id": [],
+            "status": list(status or []),
+            "mirror_url": [],
+        },
+        "order_by": [{"field": "created_at", "order": "desc"}],
+    }
+
+    payload = _notebook_v2(session, "ListNotebooks", body)
+    items = payload.get("list")
     if not isinstance(items, list):
-        items = []
-    total_raw = data.get("total")
+        return [], None
+    items = [item for item in items if isinstance(item, dict)]
     try:
-        total = int(str(total_raw)) if total_raw is not None else len(items)
-    except ValueError:
-        total = len(items)
-    return [item for item in items if isinstance(item, dict)], total
+        total = int(str(payload["total"]))
+    except (KeyError, TypeError, ValueError):
+        total = None
+    return items, total
 
 
 def _config_compute_groups_fallback(workspace_id: str | None = None) -> list[dict]:
@@ -421,36 +514,22 @@ def create_notebook(
     if node_id:
         body["node_id"] = node_id
 
-    return _request_notebooks_data(
-        session,
-        "POST",
-        "/notebook/create",
-        body=body,
-        timeout=30,
-        default_data={},
-    )
+    return _notebook_v2(session, "CreateNotebook", body)
 
 
 def stop_notebook(
     notebook_id: str,
     session: Optional[WebSession] = None,
 ) -> dict:
-    """Stop a running notebook instance."""
+    """Stop a running notebook instance.
+
+    v1 multiplexed start/stop through ``/notebook/operate`` with an
+    ``operation`` enum; v2 splits them into their own Actions and takes only
+    the id.
+    """
     session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
 
-    body = {
-        "notebook_id": notebook_id,
-        "operation": "STOP",
-    }
-
-    return _request_notebooks_data(
-        session,
-        "POST",
-        "/notebook/operate",
-        body=body,
-        timeout=30,
-        default_data={},
-    )
+    return _notebook_v2(session, "StopNotebook", {"notebook_id": notebook_id})
 
 
 def start_notebook(
@@ -460,19 +539,7 @@ def start_notebook(
     """Start a stopped notebook instance."""
     session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
 
-    body = {
-        "notebook_id": notebook_id,
-        "operation": "START",
-    }
-
-    return _request_notebooks_data(
-        session,
-        "POST",
-        "/notebook/operate",
-        body=body,
-        timeout=30,
-        default_data={},
-    )
+    return _notebook_v2(session, "StartNotebook", {"notebook_id": notebook_id})
 
 
 def delete_notebook(
@@ -481,25 +548,16 @@ def delete_notebook(
 ) -> dict:
     """Permanently delete a notebook instance.
 
-    Endpoint: ``DELETE /api/v1/notebook/{id}`` (REST-style, same shape as
-    ``DELETE /api/v1/image/{id}``). Confirmed empirically via probe on
-    2026-04-21: ``/notebook/operate`` only accepts ``operation`` enum
-    ``START`` / ``STOP`` (``DELETE`` / ``REMOVE`` / ``DESTROY`` etc all
-    proto-rejected), and ``POST /notebook/delete`` returns 404. This REST
-    path is the correct one.
+    v1 needed the REST-style ``DELETE /api/v1/notebook/{id}`` because
+    ``/notebook/operate`` only accepted ``START`` / ``STOP``; v2 has a first
+    class ``DeleteNotebook`` Action, so the special case is gone.
 
     Destructive — the entry disappears from the platform UI and cannot be
     recovered. If the notebook is running, stop it first.
     """
     session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
 
-    return _request_notebooks_data(
-        session,
-        "DELETE",
-        f"/notebook/{notebook_id}",
-        timeout=30,
-        default_data={},
-    )
+    return _notebook_v2(session, "DeleteNotebook", {"notebook_id": notebook_id})
 
 
 def get_notebook_detail(
@@ -509,13 +567,7 @@ def get_notebook_detail(
     """Get detailed notebook information."""
     session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
 
-    return _request_notebooks_data(
-        session,
-        "GET",
-        f"/notebook/{notebook_id}",
-        timeout=30,
-        default_data={},
-    )
+    return _notebook_v2(session, "GetNotebook", {"notebook_id": notebook_id})
 
 
 # ---------------------------------------------------------------------------
@@ -560,27 +612,21 @@ def list_notebook_events(
         session = get_web_session()
 
     def _fetch_page(p: int, ps: int) -> tuple[list[dict], Optional[int]]:
-        data = _request_notebooks_data(
+        data = _notebook_v2(
             session,
-            "POST",
-            "/notebook/events",
-            body={"notebook_id": notebook_id, "page": p, "page_size": ps},
+            "ListNotebookEvents",
+            {"notebook_id": notebook_id, "page": p, "page_size": ps},
             timeout=10,
-            default_data={},
         )
-        if isinstance(data, list):
-            return data, None
-        if isinstance(data, dict):
-            items_raw = data.get("list") or data.get("events") or []
-            items_list = items_raw if isinstance(items_raw, list) else []
-            total_raw = data.get("total")
-            if total_raw is None:
-                return items_list, None
-            try:
-                return items_list, int(total_raw)
-            except (TypeError, ValueError):
-                return items_list, None
-        return [], None
+        items_raw = data.get("list") or data.get("events") or []
+        items_list = items_raw if isinstance(items_raw, list) else []
+        total_raw = data.get("total")
+        if total_raw is None:
+            return items_list, None
+        try:
+            return items_list, int(total_raw)
+        except (TypeError, ValueError):
+            return items_list, None
 
     raw_items: list[dict] = []
     current_page = page
@@ -654,30 +700,27 @@ def list_notebook_runs(
     *,
     session: Optional[WebSession] = None,
 ) -> list[dict]:
-    """List all run cycles of a notebook via `POST /api/v1/run_index/list`.
+    """List all run cycles of a notebook via ``ListRunIndex``.
 
     Each run corresponds to one start→stop cycle (notebooks can be
     re-started after being auto-recycled or manually stopped). Returns the
     raw `list`: each entry is `{index: int, start_time: str, end_time: str}`.
     The current run has `end_time = ""`. Sorted oldest-first by `index`.
 
+    Takes the notebook id alone — this Action is unpaginated and rejects
+    ``PageNumber`` outright.
+
     Backs `inspire notebook lifecycle`, which uses the run boundaries as a
     coarse counterpart to the fine-grained `inspire notebook events`.
     """
     if session is None:
         session = get_web_session()
-    data = _request_notebooks_data(
-        session,
-        "POST",
-        "/run_index/list",
-        body={"notebook_id": notebook_id},
-        timeout=15,
-        default_data={},
+    data = _notebook_v2(
+        session, "ListRunIndex", {"notebook_id": notebook_id}, timeout=15
     )
-    if isinstance(data, dict):
-        runs = data.get("list")
-        if isinstance(runs, list):
-            return [r for r in runs if isinstance(r, dict)]
+    runs = data.get("list")
+    if isinstance(runs, list):
+        return [r for r in runs if isinstance(r, dict)]
     return []
 
 
@@ -690,13 +733,13 @@ def list_notebook_lifecycle(
     end_time: str = "",
     session: Optional[WebSession] = None,
 ) -> list[dict]:
-    """Fetch notebook lifecycle state-transition records (`POST /api/v1/lifecycle/list`).
+    """Fetch notebook lifecycle state-transition records (``ListNotebookLifecycles``).
 
-    Returns the raw `list`. In practice this endpoint returns an empty list
+    Returns the raw `list`. In practice this Action returns an empty list
     for most notebooks on qz.sii.edu.cn (2026-04) — the web 生命周期 tab
     is rendered from :func:`list_notebook_runs` instead. Kept as a thin
-    wrapper because the endpoint is present in the known-endpoint map and
-    may come back with data as the platform evolves.
+    wrapper because the Action is present on the platform and may come back
+    with data as it evolves.
     """
     if session is None:
         session = get_web_session()
@@ -709,18 +752,10 @@ def list_notebook_lifecycle(
         body["start_time"] = start_time
     if end_time != "":
         body["end_time"] = end_time
-    data = _request_notebooks_data(
-        session,
-        "POST",
-        "/lifecycle/list",
-        body=body,
-        timeout=15,
-        default_data={},
-    )
-    if isinstance(data, dict):
-        items = data.get("list")
-        if isinstance(items, list):
-            return [r for r in items if isinstance(r, dict)]
+    data = _notebook_v2(session, "ListNotebookLifecycles", body, timeout=15)
+    items = data.get("list")
+    if isinstance(items, list):
+        return [r for r in items if isinstance(r, dict)]
     return []
 
 
@@ -784,6 +819,7 @@ __all__ = [
     "list_notebook_lifecycle",
     "list_notebook_runs",
     "list_notebook_users",
+    "list_notebooks",
     "start_notebook",
     "stop_notebook",
     "wait_for_notebook_running",

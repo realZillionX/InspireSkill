@@ -635,11 +635,11 @@ def test_create_notebook_payload_includes_node_id_when_pinned(
 
     captured: dict[str, object] = {}
 
-    def fake_request(_session, _method, _path, *, body=None, **_kwargs):  # noqa: ANN001
+    def fake_request(_session, _action, body=None, **_kwargs):  # noqa: ANN001
         captured["body"] = body
         return {"id": "nb-1"}
 
-    monkeypatch.setattr(notebooks_module, "_request_notebooks_data", fake_request)
+    monkeypatch.setattr(notebooks_module, "_notebook_v2", fake_request)
 
     notebooks_module.create_notebook(
         name="n",
@@ -669,11 +669,11 @@ def test_create_notebook_payload_omits_node_id_when_absent(
 
     captured: dict[str, object] = {}
 
-    def fake_request(_session, _method, _path, *, body=None, **_kwargs):  # noqa: ANN001
+    def fake_request(_session, _action, body=None, **_kwargs):  # noqa: ANN001
         captured["body"] = body
         return {"id": "nb-1"}
 
-    monkeypatch.setattr(notebooks_module, "_request_notebooks_data", fake_request)
+    monkeypatch.setattr(notebooks_module, "_notebook_v2", fake_request)
 
     notebooks_module.create_notebook(
         name="n",

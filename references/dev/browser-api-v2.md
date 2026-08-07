@@ -113,6 +113,9 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `hpc` | `CreateJobConsole`、`GetJob`、`StopJob` |
 | `inference_serving` | 生命周期 Action（动态拼接） |
 | `ray` | `CreateJob`、`GetJob`、`ListJobs`、`ListJobCreators`、`ListJobEvents`、`ListJobInstances`、`ListJobScalingHistories`、`StopJob`、`DeleteJob` |
+| `notebook` | `CreateNotebook`、`GetNotebook`、`ListNotebooks`、`ListNotebookCreators`、`ListNotebookEvents`、`ListNotebookLifecycles`、`ListRunIndex`、`StartNotebook`、`StopNotebook`、`DeleteNotebook` |
+
+`notebook` 同样是全域迁移，但 `/notebook/lab*` 和 Notebook Proxy 按第 9 节保留 v1。几处与 `ray` 相反、必须逐个实测的地方：列表键是 **`list`** 而不是 `items`，`total` 是 int 而不是字符串；`ListRunIndex` 无分页，传 `PageNumber` 直接报错；v1 用 `operation` 枚举复用的 `/notebook/operate` 在 v2 拆成了 `StartNotebook` / `StopNotebook`，v1 那条 REST 风格的 `DELETE /notebook/{id}` 也有了正式的 `DeleteNotebook`。找不到资源时返回 `ResourceNotFound`（HTTP 仍是 200），不再是 v1 的传输层 404，依赖 404 判断「不存在」的调用方必须同时认这个码。
 
 `ray` 是全域迁移，v1 `/ray_job/*` 九个端点已全部退出。响应逐字段与 v1 一致，因此 Wrapper 的归一化未改动。三条与其它域不同的约束：资源键在每个 Action 上都是 `ray_job_id`（`job_id` 和 `id` 都报 `unknown field`）；工作空间 scoping 是顶层 `workspace_id`，第 5 节那层 `filter` 嵌套在这里会被拒；**没有 `CreateJobConsole` 变体**，创建走 `CreateJob`。
 

@@ -32,6 +32,7 @@ from inspire.cli.utils.resource_index import (
     ResourceScope,
 )
 from inspire.platform.web import browser_api as browser_api_module
+from inspire.platform.web.browser_api import notebooks as notebooks_api_module
 from inspire.platform.web import session as web_session_module
 
 
@@ -642,26 +643,23 @@ def test_notebook_status_runs_detail_fetch_through_stale_retry(
         fake_retry,
     )
     monkeypatch.setattr(
-        notebook_cmd_module.web_session_module,
-        "request_json",
-        lambda _session, _method, url, **_kwargs: {
-            "code": 0,
-            "data": {
-                "notebook_id": url.rsplit("/", maxsplit=1)[-1],
-                "status": "RUNNING",
-                "project": {
-                    "id": "project-hidden",
-                    "name": "Demo Project",
-                },
-                "workspace": {"id": "workspace-hidden"},
-                "logic_compute_group": {
-                    "id": "compute-hidden",
-                    "name": "H200 Room",
-                },
-                "created_by": {
-                    "id": "user-hidden",
-                    "name": "Alice",
-                },
+        notebook_cmd_module.browser_api_module,
+        "get_notebook_detail",
+        lambda notebook_id, session=None: {
+            "notebook_id": notebook_id,
+            "status": "RUNNING",
+            "project": {
+                "id": "project-hidden",
+                "name": "Demo Project",
+            },
+            "workspace": {"id": "workspace-hidden"},
+            "logic_compute_group": {
+                "id": "compute-hidden",
+                "name": "H200 Room",
+            },
+            "created_by": {
+                "id": "user-hidden",
+                "name": "Alice",
             },
         },
     )
@@ -1107,29 +1105,27 @@ def test_notebook_lifecycle_json_limit_metadata_only_when_truncated(
 def test_notebook_list_fetches_all_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     pages: list[int] = []
 
-    def _fake_request_json(session, method, url, *, body, timeout):  # noqa: ANN001, ARG001
+    def _fake_request_json(session, method, url, *, body, timeout, **kwargs):  # noqa: ANN001, ARG001
         assert method == "POST"
-        assert url == "https://example.invalid/api/v1/notebook/list"
+        assert url == "/api/v2/notebook?Action=ListNotebooks"
         assert timeout == 30
         page = int(body["page"])
         pages.append(page)
         if page == 1:
             return {
-                "code": 0,
-                "data": {
+                "Result": {
                     "total": 3,
                     "list": [{"name": "n3"}, {"name": "n2"}],
                 },
             }
         if page == 2:
-            return {"code": 0, "data": {"total": 3, "list": [{"name": "n1"}]}}
+            return {"Result": {"total": 3, "list": [{"name": "n1"}]}}
         raise AssertionError(f"unexpected page: {page}")
 
-    monkeypatch.setattr(_NBL_MOD.web_session_module, "request_json", _fake_request_json)
+    monkeypatch.setattr(notebooks_api_module, "_request_json", _fake_request_json)
 
     rows = _NBL_MOD._list_notebooks_for_workspace(
         SimpleNamespace(),
-        base_url="https://example.invalid",
         workspace_id="ws-a",
         user_ids=["user-1"],
         page_size=2,
@@ -1389,6 +1385,7 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         body: Optional[dict] = None,
         timeout: int = 30,
         _retry_count: int = 0,
+        **kwargs,
     ) -> dict:
         assert timeout
         assert _retry_count >= 0
@@ -1397,18 +1394,19 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
             return {"data": {"id": "user-1"}}
 
         assert method.upper() == "POST"
-        assert url.endswith("/api/v1/notebook/list")
+        assert url.endswith("/api/v2/notebook?Action=ListNotebooks")
         assert body and "workspace_id" in body
         assert (body.get("filter_by") or {}).get("keyword") == "ring-8h100-test"
 
         ws_id = str(body["workspace_id"])
         if ws_id == ws_cpu:
-            return {"code": 0, "data": {"list": [item]}}
+            return {"Result": {"list": [item]}}
         if ws_id == ws_gpu:
-            return {"code": 0, "data": {"list": []}}
-        return {"code": 0, "data": {"list": []}}
+            return {"Result": {"list": []}}
+        return {"Result": {"list": []}}
 
     monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
+    monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
 
     started: dict[str, str] = {}
 
@@ -1485,6 +1483,7 @@ def test_notebook_start_wait_prints_progress(
         body: Optional[dict] = None,
         timeout: int = 30,
         _retry_count: int = 0,
+        **kwargs,
     ) -> dict:
         assert timeout
         assert _retry_count >= 0
@@ -1493,12 +1492,13 @@ def test_notebook_start_wait_prints_progress(
             return {"data": {"id": "user-1"}}
 
         assert method.upper() == "POST"
-        assert url.endswith("/api/v1/notebook/list")
+        assert url.endswith("/api/v2/notebook?Action=ListNotebooks")
         assert body and "workspace_id" in body
         assert (body.get("filter_by") or {}).get("keyword") == "ring-8h100-test"
-        return {"code": 0, "data": {"list": [item]}}
+        return {"Result": {"list": [item]}}
 
     monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
+    monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
     monkeypatch.setattr(
         browser_api_module,
         "start_notebook",
@@ -1587,6 +1587,7 @@ def test_notebook_start_name_conflict_prompts_selection(
         body: Optional[dict] = None,
         timeout: int = 30,
         _retry_count: int = 0,
+        **kwargs,
     ) -> dict:
         assert timeout
         assert _retry_count >= 0
@@ -1595,18 +1596,19 @@ def test_notebook_start_name_conflict_prompts_selection(
             return {"data": {"id": "user-1"}}
 
         assert method.upper() == "POST"
-        assert url.endswith("/api/v1/notebook/list")
+        assert url.endswith("/api/v2/notebook?Action=ListNotebooks")
         assert body and "workspace_id" in body
         assert (body.get("filter_by") or {}).get("keyword") == "ring-8h100-test"
 
         ws_id = str(body["workspace_id"])
         if ws_id == ws_cpu:
-            return {"code": 0, "data": {"list": [cpu_item]}}
+            return {"Result": {"list": [cpu_item]}}
         if ws_id == ws_gpu:
-            return {"code": 0, "data": {"list": [gpu_item]}}
-        return {"code": 0, "data": {"list": []}}
+            return {"Result": {"list": [gpu_item]}}
+        return {"Result": {"list": []}}
 
     monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
+    monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
 
     started: dict[str, str] = {}
 
@@ -1685,6 +1687,7 @@ def test_notebook_start_warns_when_no_wait_conflicts_with_configured_post_start(
         body: Optional[dict] = None,
         timeout: int = 30,
         _retry_count: int = 0,
+        **kwargs,
     ) -> dict:
         assert timeout
         assert _retry_count >= 0
@@ -1693,18 +1696,19 @@ def test_notebook_start_warns_when_no_wait_conflicts_with_configured_post_start(
             return {"data": {"id": "user-1"}}
 
         assert method.upper() == "POST"
-        assert url.endswith("/api/v1/notebook/list")
+        assert url.endswith("/api/v2/notebook?Action=ListNotebooks")
         assert body and "workspace_id" in body
         assert (body.get("filter_by") or {}).get("keyword") == "ring-8h100-test"
 
         ws_id = str(body["workspace_id"])
         if ws_id == ws_cpu:
-            return {"code": 0, "data": {"list": [item]}}
+            return {"Result": {"list": [item]}}
         if ws_id == ws_gpu:
-            return {"code": 0, "data": {"list": []}}
-        return {"code": 0, "data": {"list": []}}
+            return {"Result": {"list": []}}
+        return {"Result": {"list": []}}
 
     monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
+    monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
 
     started: dict[str, str] = {}
 

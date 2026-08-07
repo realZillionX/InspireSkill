@@ -20,6 +20,7 @@ from inspire import config as config_module
 from inspire.cli.commands.notebook import notebook_commands as notebook_cmd_module
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
+from inspire.platform.web.browser_api import notebooks as notebooks_api_module
 from inspire.config import ConfigError
 from inspire.cli.utils.quota_resolver import ResolvedQuota
 
@@ -2062,25 +2063,26 @@ def test_notebook_list_all_workspaces_combines_results(
         body: Optional[dict] = None,
         timeout: int = 30,
         _retry_count: int = 0,
+        **kwargs,
     ) -> dict:
         assert headers is None or isinstance(headers, dict)
         assert timeout
         assert _retry_count >= 0
 
         assert method.upper() == "POST"
-        assert url.endswith("/api/v1/notebook/list")
+        assert url.endswith("/api/v2/notebook?Action=ListNotebooks")
         assert body and "workspace_id" in body
 
         ws_id = str(body["workspace_id"])
         calls.append(ws_id)
 
         if ws_id == ws_cpu:
-            return {"code": 0, "data": {"list": [cpu_item]}}
+            return {"Result": {"list": [cpu_item]}}
         if ws_id == ws_gpu:
-            return {"code": 0, "data": {"list": [gpu_item]}}
-        return {"code": 0, "data": {"list": []}}
+            return {"Result": {"list": [gpu_item]}}
+        return {"Result": {"list": []}}
 
-    monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
+    monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
     monkeypatch.setattr(
         notebook_cmd_module,
         "_try_get_current_user_ids",

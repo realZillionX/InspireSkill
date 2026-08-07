@@ -38,7 +38,7 @@
 | 账号与用户 | `/user/detail`, `/user/quota`, `/user/permissions/...`, `/user/my-api-key/list`, `/ssh/*` | `user whoami`, `user quota`, `user permissions`, `user api-keys`, `user ssh-keys list/add/delete` |
 | Workspace 与 Project | `/user/routes/...`, `/project/list*`, `/project/<project>`, `/project/owners` | `config context`, `init`, `project list/detail/owners` |
 | 文件页发现 | `/file/get_system_storage_type_list`, `/file/dir/list` | `init`, `init --scope project`, Notebook Path Alias 工作流 |
-| Notebook | `/notebook/create`, `/notebook/list`, `/notebook/operate`, `/notebook/...`, `/notebook/events`, `/run_index/list` | `notebook create/list/status/start/stop/delete/events/lifecycle`, Name Resolver |
+| Notebook | 全部已迁 v2；Notebook Lab 与 Proxy 见下一行，仍在 v1 | `notebook create/list/status/start/stop/delete/events/lifecycle`, Name Resolver |
 | Notebook 终端与 Proxy | Notebook Lab、Terminal REST/WebSocket、Notebook Proxy | `notebook exec/shell/url/vscode/proxy-url`, 支持 SSH 的 Notebook 的 `ssh`/`scp`/`ssh-config` |
 | Image | `/image/list`, `/image/<image>`, `/image/create`, `/image/update`, `/mirror/save` | `image list/detail/register/save/set-visibility/delete` |
 | GPU Job | `/train_job/delete`, `/train_job/job_event_list`, `/train_job/events/list`, `/logs/train`；创建、查询、停止和实例列表已迁 v2 | `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |

@@ -644,18 +644,17 @@ def notebook_status(
                 json_output=ctx.json_output,
                 workspace_ids=[workspace_id],
                 pick=pick,
-                operation=lambda notebook_id: web_session_module.request_json(
-                    session,
-                    "GET",
-                    f"{base_url}/api/v1/notebook/{notebook_id}",
-                    headers={"Accept": "application/json"},
-                    timeout=30,
+                operation=lambda notebook_id: browser_api_module.get_notebook_detail(
+                    notebook_id, session=session
                 ),
             )
         )
     except ValueError as e:
         message = str(e)
-        if "API returned 404" in message:
+        # v1 surfaced a missing notebook as a transport 404; v2 answers 200
+        # with `ResourceNotFound` in the envelope. Both map to the same
+        # public error.
+        if "API returned 404" in message or "ResourceNotFound" in message:
             _handle_error(
                 ctx,
                 "NotFound",
@@ -669,25 +668,15 @@ def notebook_status(
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
         return
 
-    if data.get("code") == 0:
-        notebook_payload = data.get("data", {})
-        notebook_detail = notebook_payload if isinstance(notebook_payload, dict) else {}
-        public_detail = public_notebook(
-            _with_workspace_display_name(notebook_detail, workspace),
-            fallback_name=notebook,
-        )
-        if ctx.json_output:
-            click.echo(json_formatter.format_json(public_detail))
-        else:
-            _print_notebook_detail(public_detail)
-        return
-
-    _handle_error(
-        ctx,
-        "APIError",
-        data.get("message", "Unknown error"),
-        EXIT_API_ERROR,
+    notebook_detail = data if isinstance(data, dict) else {}
+    public_detail = public_notebook(
+        _with_workspace_display_name(notebook_detail, workspace),
+        fallback_name=notebook,
     )
+    if ctx.json_output:
+        click.echo(json_formatter.format_json(public_detail))
+    else:
+        _print_notebook_detail(public_detail)
     return
 
 
@@ -779,7 +768,6 @@ def list_notebooks(
     try:
         workspace_items = _list_notebooks_for_workspaces(
             session,
-            base_url=base_url,
             workspace_ids=workspace_ids,
             user_ids=user_ids,
             keyword=keyword,

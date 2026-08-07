@@ -417,7 +417,6 @@ def _notebook_fetch(session: object, workspace_id: str, exact_name: str) -> Fetc
         raise ValueError("Cannot determine the current account user.")
     items = _list_notebooks_for_workspace(
         session,  # type: ignore[arg-type]
-        base_url=base_url,
         workspace_id=workspace_id,
         user_ids=user_ids,
         keyword=exact_name,
