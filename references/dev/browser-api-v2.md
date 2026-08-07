@@ -141,6 +141,8 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 `notebook` 同样是全域迁移，但 `/notebook/lab*` 和 Notebook Proxy 按第 9 节保留 v1。几处与 `ray` 相反、必须逐个实测的地方：列表键是 **`list`** 而不是 `items`，`total` 是 int 而不是字符串；`ListRunIndex` 无分页，传 `PageNumber` 直接报错；v1 用 `operation` 枚举复用的 `/notebook/operate` 在 v2 拆成了 `StartNotebook` / `StopNotebook`，v1 那条 REST 风格的 `DELETE /notebook/{id}` 也有了正式的 `DeleteNotebook`。找不到资源时返回 `ResourceNotFound`（HTTP 仍是 200），不再是 v1 的传输层 404，依赖 404 判断「不存在」的调用方必须同时认这个码。
 
+`notebook` 下还有一个 `GetNotebookAccessUrl`，**故意不接**。它看起来像是 `notebook url` / `notebook vscode` 那条 Playwright 抓取链路的替代品，实际不等价：这两条命令现在共用同一个 resolver（`resolve_notebook_vscode_ide_url` 只是给 `resolve_notebook_ide_url` 加了缓存），打开的都是 **VS Code**；而 `GetNotebookAccessUrl` 返回真正区分开的 `jupyter_url` 与 `vscode_url`，各自带 `?token=`。接进来会让 `notebook url` 改为打开 JupyterLab —— 这是公开命令的行为变化，而 JSON 输出仍是 `{"status":"opened"}`，测试抓不到。它确实能把一次约 36 秒的无头浏览器抓取换成一次 JSON 调用，但那属于功能改动，要单独评估，不在 v1→v2 迁移范围内。（STOPPED 的 Notebook 上它返回两个空字符串。）
+
 `ray` 是全域迁移，v1 `/ray_job/*` 九个端点已全部退出。响应逐字段与 v1 一致，因此 Wrapper 的归一化未改动。三条与其它域不同的约束：资源键在每个 Action 上都是 `ray_job_id`（`job_id` 和 `id` 都报 `unknown field`）；工作空间 scoping 是顶层 `workspace_id`，第 5 节那层 `filter` 嵌套在这里会被拒；**没有 `CreateJobConsole` 变体**，创建走 `CreateJob`。
 
 其余域仍在 `/api/v1`，映射见 [`browser-api-v1.md`](browser-api-v1.md) 第 3 节。
