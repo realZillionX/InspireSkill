@@ -23,6 +23,7 @@ from inspire.platform.web.browser_api.images import (
     CustomImageInfo,
     _image_from_api,
     list_images_by_source,
+    save_notebook_as_image,
 )
 
 
@@ -288,6 +289,46 @@ def test_list_images_by_source_private_personal_visible(monkeypatch: pytest.Monk
     assert "SOURCE_PRIVATE" in captured["body"]["filter"]["source_list"]
     assert "SOURCE_PUBLIC" in captured["body"]["filter"]["source_list"]
     assert "source" not in captured["body"]["filter"]
+
+
+def test_save_notebook_as_image_posts_the_notebook_action(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, Any] = {}
+
+    def fake_notebook_v2(session, action: str, body: Optional[dict] = None, *, timeout: int = 30) -> Any:
+        captured["action"] = action
+        captured["body"] = body
+        captured["timeout"] = timeout
+        # The platform answers `Result: null` here, which unwraps to {}.
+        return {}
+
+    from inspire.platform.web.browser_api import images as images_module
+
+    monkeypatch.setattr(images_module, "_notebook_v2", fake_notebook_v2)
+    monkeypatch.setattr(
+        images_module,
+        "_get_session_and_workspace_id",
+        lambda workspace_id, session: (FakeWebSession(), "ws-test"),
+    )
+
+    result = save_notebook_as_image(
+        notebook_id="nb-1",
+        name="demo",
+        version="v2",
+        description="saved",
+    )
+
+    # The save lives on the `notebook` service, not `image`.
+    assert captured["action"] == "SaveNotebookImage"
+    assert captured["timeout"] == 60
+    # `visibility` is rejected by the platform; callers use update_image instead.
+    assert captured["body"] == {
+        "notebook_id": "nb-1",
+        "name": "demo",
+        "version": "v2",
+        "description": "saved",
+    }
+    # No image id comes back, so the command layer has to find it by listing.
+    assert result == {}
 
 
 # ---------------------------------------------------------------------------

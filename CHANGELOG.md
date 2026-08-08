@@ -18,7 +18,8 @@
   Name-only 语义、human 与 JSON 输出都保持原样，写操作全部经过受控验证（在 CPU资源空间
   起最小规格临时资源跑完整生命周期，train 的删除因为 CPU 组不支持该任务类型，在
   分布式训练空间 用 1 卡 H100 验证后随即释放；镜像与模型注册各跑了一遍
-  建→读→改→删并确认痕迹清除）。两代接口的契约差异记在
+  建→读→改→删；「存镜像」用最小 CPU 配额加最小官方镜像起了一个临时 Notebook，真提交出
+  一个 196 MB 的镜像，全部痕迹随即清除）。两代接口的契约差异记在
   `references/dev/browser-api-v2.md`。
 
   第二轮迁移推翻了第一轮的一个前提：**平台的 `/discovery` 清单是不完整的，不能用来
@@ -34,8 +35,7 @@
   Notebook Proxy、`/train_job/remote_cmd`、`/resource_prices/logic_compute_groups/`
   （27 个候选名 × 11 条路由全部 `InvalidAction`，最接近的 `GetScheduleConfig` 给的是
   同样的配额档位但没有价格）、`/model_plaza/list`（`ListModels` 在所有工作空间与请求体
-  下一律 `AccessForbidden`，而 v1 正常返回）。另有 `/mirror/save`：`SaveNotebookImage`
-  存在且参数匹配，但受控验证需要从运行中的 Notebook 真提交一次镜像，未做，因此不迁。
+  下一律 `AccessForbidden`，而 v1 正常返回）。
 
 ### 破坏性变更
 

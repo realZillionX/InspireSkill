@@ -121,7 +121,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `hpc` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobEvents`、`ListJobInstances`、`GetJobLog`、`StopJob`、`DeleteJob` |
 | `inference_serving` | `CreateServingConsole`、`ListServings`、`GetServing`、`ListServingVersions`、`ListServingInstances`、`ListServingEvents`、`ListServingScaleHistory`、`GetServingLog`、`GetInferenceServingTerms`、`GetServingConfigByWorkspaceId`、`GetInferenceServingUserProjectList`、`StartServing`、`StopServing`、`DeleteServing` |
 | `ray` | `CreateJob`、`GetJob`、`ListJobs`、`ListJobCreators`、`ListJobEvents`、`ListJobInstances`、`ListJobScalingHistories`、`StopJob`、`DeleteJob` |
-| `notebook` | `CreateNotebook`、`GetNotebook`、`ListNotebooks`、`ListNotebookCreators`、`ListNotebookEvents`、`ListNotebookLifecycles`、`ListRunIndex`、`StartNotebook`、`StopNotebook`、`DeleteNotebook` |
+| `notebook` | `CreateNotebook`、`GetNotebook`、`ListNotebooks`、`ListNotebookCreators`、`ListNotebookEvents`、`ListNotebookLifecycles`、`ListRunIndex`、`StartNotebook`、`StopNotebook`、`DeleteNotebook`、`SaveNotebookImage` |
 | `workspace` | `ListLogicComputeGroups`、`ListNodeDimension`、`GetLogicComputeGroupResource` |
 | `user` | `GetUserDetail`、`GetPermissions`、`GetRoutes` |
 | `project` | `GetProjectForPage`、`ListProjects`、`GetProjectDetail`、`GetProjectOwners` |
@@ -152,6 +152,10 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 - v1 的「`/image/update` 用 `id` 不用 `image_id`」这条老约定 v2 原样保留，没有借迁移统一。
 
 受控验证：建（`CreateImage`，`add_method=2`）→ 读（`GetImageById`）→ 改可见性与描述（`UpdateImage`）→ 删（`DeleteImage`）→ 确认列表与详情都查不到，全程走 v2。`add_method=0`（本地推送）在 v1 和 v2 上给出**同一个**拒绝（`no image uploaded`），语义没有漂移。
+
+「把 Notebook 存成镜像」不在 `image` 服务，在 **`notebook.SaveNotebookImage`**（对应 v1 `/mirror/save`）。它逐字接受 v1 请求体，并且保留了 v1 那条怪规则：**不收 `visibility`**，措辞都一样（`unknown field "visibility"`），要改可见性只能存完再调 `image.UpdateImage`。**两代都不返回新镜像的 id** —— v1 回一个光秃秃的 `{"code": 0}`（连 `data` 都没有），v2 回 `Result: null`，解包后同样是 `{}`，所以调用方只能靠列表去找。同一层还有 `EstimateSaveMirrorSize` 与 `CancelSaveMirror`（对应 `/mirror/save/estimate_size` 和 `/mirror/save/cancel`），前者实测与 v1 逐字节相同。
+
+受控验证在 CPU资源空间 用 `HPC-可上网区资源-2` 的 `0,1,4` 最小配额 + `ubuntu-original:22.04`（77.9 MB，官方镜像里最小的）起了一个临时 Notebook：v2 提交出一个真镜像（`add_method=Notebook`，196 MB，约 30 秒到 `SUCCESS`），同一个 Notebook 上又用 v1 提交一次做响应体对照，随后 `inspire image save` 走迁移后的 Wrapper 端到端再跑一遍；三个镜像与 Notebook 全部删除。
 
 `file` 整个服务不在 discovery 里（历史上出现过又被删掉，见第 3 节末尾），但路由活着，两个 Action 逐字接受 v1 请求体、返回同一个集合。**唯一差异是行顺序**：`GetSystemStorageTypeList` 的 12 个存储池和 `GetDirList` 的目录都会换序，排序后完全相等。当前调用方都不依赖顺序，新调用方也不要依赖。
 
@@ -194,7 +198,6 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `/train_job/remote_cmd` | Action 不存在 | WebSocket 端点，v2 面上没有对应物 |
 | `/resource_prices/logic_compute_groups/` | Action 不存在 | 27 个候选名 × 11 条路由全部 `InvalidAction`；`resource_prices` / `price` / `prices` 路由 404。最接近的 `workspace.GetScheduleConfig` 和 `notebook.GetScheduleConfig` 给出**相同的 quota id 与 cpu/mem/gpu 规格**，但**没有价格**，也不是按计算组解析的，不能替代；`workspace.GetLogicComputeGroupNodeSpecs` 返回的是节点硬件规格，不是配额档位 |
 | `/model_plaza/list` | 有 Action，不可用 | `model_plaza.ListModels` 在 5 个工作空间 × 7 种请求体下一律 `AccessForbidden`，而 v1 正常返回行。按第 10 节，`AccessForbidden` 不回落，所以这条**直接保持 v1**，不是「先试 v2 再退回」 |
-| `/mirror/save` | 有 Action，未验证 | `notebook.SaveNotebookImage` 存在且声明了本请求体的超集，但受控验证要真的从运行中的 Notebook 提交一次镜像。**按第 12 节第 7 条，写操作不能只凭探针迁移**，留 v1 待验 |
 
 **这张表在 2026-08-08 大幅缩水过一次。** 它原先列着 `/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 共 10 个家族，理由都是「discovery 里没有」。实测下来这 10 个全部有可用 Action，现已迁完 —— 唯一真正没有对应物的只有上面这几条。**往这张表里加行之前，先按第 3 节把存在性探针跑一遍。**
 

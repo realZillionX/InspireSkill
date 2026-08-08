@@ -9,7 +9,7 @@ from typing import Any, Optional
 from inspire.platform.web.browser_api.notebooks import (
     _get_session_and_workspace_id,
     _image_v2,
-    _request_notebooks_data,
+    _notebook_v2,
 )
 from inspire.platform.web.session import WebSession, get_web_session
 
@@ -195,25 +195,14 @@ def save_notebook_as_image(
 ) -> dict[str, Any]:
     """Save a running notebook's state as a custom Docker image.
 
-    Uses the ``/mirror/save`` endpoint. The endpoint does **not** accept a
-    ``visibility`` field (confirmed empirically 2026-04-22 — passing it returns
-    ``code=100002, message='proto: unknown field "visibility"'``). To control
-    visibility, call :func:`update_image` after this returns.
+    Goes to ``notebook.SaveNotebookImage``. The Action still refuses a
+    ``visibility`` field, with the same ``unknown field "visibility"`` wording
+    v1 used — to control visibility, call :func:`update_image` after this
+    returns.
 
-    TODO: ``notebook.SaveNotebookImage`` is the v2 counterpart and declares a
-    superset of this body, but validating it means committing a real image off
-    a running notebook, so it has not been through the controlled verification
-    the write-path rule requires. Stays on v1 until it has.
-
-    Args:
-        notebook_id: ID of the running notebook.
-        name: Name for the saved image.
-        version: Version tag (default ``"v1"``).
-        description: Optional description.
-        session: Existing web session.
-
-    Returns:
-        API response data.
+    **Returns an empty dict, always.** v1 answered a bare ``{"code": 0}`` with
+    no ``data``; v2 answers ``Result: null``. Neither hands back the new
+    image's id, so callers have to find it by listing.
     """
     session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
 
@@ -224,14 +213,7 @@ def save_notebook_as_image(
         "description": description,
     }
 
-    return _request_notebooks_data(
-        session,
-        "POST",
-        "/mirror/save",
-        body=body,
-        timeout=60,
-        default_data={},
-    )
+    return _notebook_v2(session, "SaveNotebookImage", body, timeout=60)
 
 
 def update_image(

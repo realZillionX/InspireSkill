@@ -42,7 +42,7 @@
 | 文件页发现 | 全部已迁 v2 | `init`, `init --scope project`, Notebook Path Alias 工作流 |
 | Notebook | 全部已迁 v2；Notebook Lab 与 Proxy 见下一行，仍在 v1 | `notebook create/list/status/start/stop/delete/events/lifecycle`, Name Resolver |
 | Notebook 终端与 Proxy | Notebook Lab、Terminal REST/WebSocket、Notebook Proxy | `notebook exec/shell/url/vscode/proxy-url`, 支持 SSH 的 Notebook 的 `ssh`/`scp`/`ssh-config` |
-| Image | 仅剩 `/mirror/save`；列表、详情、注册、改可见性与删除已迁 v2 | `image list/detail/register/save/set-visibility/delete` |
+| Image | 全部已迁 v2 | `image list/detail/register/save/set-visibility/delete` |
 | GPU Job | 仅剩 `/train_job/remote_cmd`（WebSocket，无 v2 对应）| `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |
 | HPC | 全部已迁 v2；按当前用户过滤列表时仍复用账号域的 `/user/detail` | `hpc create/list/status/stop/delete/events/instances`, Name Resolver |
 | Ray | 全部已迁 v2；按当前用户过滤列表时仍复用账号域的 `/user/detail` | `ray create/list/status/stop/delete/events/instances`, Name Resolver |

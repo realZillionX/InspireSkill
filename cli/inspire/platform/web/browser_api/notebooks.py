@@ -87,7 +87,7 @@ def _request_notebooks_data(
 ) -> Any:
     """Call a `/api/v1` endpoint that has no v2 counterpart.
 
-    Resource pricing is the only family left on it: no Action on any v2 route
+    Resource pricing is the only caller left: no Action on any v2 route
     answers `/resource_prices/logic_compute_groups/`. The notebook family is on
     v2 via :func:`_notebook_v2`, the image family via :func:`_image_v2`.
     """
