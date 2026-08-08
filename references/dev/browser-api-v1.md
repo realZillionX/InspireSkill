@@ -15,7 +15,9 @@
 1. 当前 Click Help 定义公开 CLI 合同。
 2. [`cli/inspire/platform/web/browser_api/`](../../cli/inspire/platform/web/browser_api/) 定义平台请求和响应归一化。
 3. [`cli/inspire/platform/web/session/`](../../cli/inspire/platform/web/session/) 定义账号隔离、登录、Cookie、代理和 Workspace 解析。
-4. `cli/tests/` 锁定公开 Name-only 输出与内部 Wrapper 合同。
+4. `cli/tests/` 锁定公开 Name-only 输出与内部 Wrapper 合同；`test_browser_api_boundary.py`
+   另外保证平台路径只在本目录内构造 —— 命令层出现 `_browser_api_path` 或 `/api/v1` 字面量
+   会直接让 CI 失败，例外必须在该测试的 `_ALLOWED` 里写明理由。
 5. 平台行为变化时，用脱敏 `inspire --debug ...`、浏览器 DevTools 或受控写操作核对，再同步修改 Wrapper、测试和本页。
 
 不要在本页积累尚未消费的端点猜测。没有当前 CLI 或维护 Helper 消费者的信息应留在一次性调查记录中，验证后立即实现或删除。

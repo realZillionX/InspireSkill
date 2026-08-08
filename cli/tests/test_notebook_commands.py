@@ -115,11 +115,13 @@ def test_current_user_id_uses_live_user_detail(
 
     calls: list[tuple[str, str]] = []
 
-    def _fake_request_json(session, method, url, **kwargs):  # noqa: ANN001
-        calls.append((method, url))
-        return {"data": {"id": "live-user"}}
+    def _fake_current_user(session=None):  # noqa: ANN001
+        calls.append(("GetUserDetail", ""))
+        return {"id": "live-user"}
 
-    monkeypatch.setattr(_NBL_MOD.web_session_module, "request_json", _fake_request_json)
+    monkeypatch.setattr(
+        _NBL_MOD.browser_api_module, "get_current_user", _fake_current_user
+    )
 
     session = _FakeSession()
     assert _NBL_MOD._try_get_current_user_ids(session, base_url="https://example.invalid") == [
@@ -127,7 +129,7 @@ def test_current_user_id_uses_live_user_detail(
     ]
     assert session.user_detail == {"id": "live-user"}
     assert getattr(session, "saved", False) is True
-    assert calls == [("GET", "https://example.invalid/api/v1/user/detail")]
+    assert calls == [("GetUserDetail", "")]
 
 
 def test_current_user_id_failure_keeps_api_details_in_debug_log(
@@ -137,10 +139,12 @@ def test_current_user_id_failure_keeps_api_details_in_debug_log(
     class _FakeSession:
         user_detail = {"id": "cached-user"}
 
-    def _fake_request_json(session, method, url, **kwargs):  # noqa: ANN001
+    def _fake_current_user(session=None):  # noqa: ANN001
         raise RuntimeError("browser runtime missing")
 
-    monkeypatch.setattr(_NBL_MOD.web_session_module, "request_json", _fake_request_json)
+    monkeypatch.setattr(
+        _NBL_MOD.browser_api_module, "get_current_user", _fake_current_user
+    )
     caplog.set_level(logging.DEBUG, logger=_NBL_MOD.__name__)
 
     session = _FakeSession()
@@ -157,10 +161,8 @@ def test_current_user_id_failure_keeps_api_details_in_debug_log(
         "Refresh the account session with `inspire account add` or `inspire init`, "
         "then retry."
     )
-    assert "/api/v1/user/detail" not in message
     assert "browser runtime missing" not in message
     assert "inspire account login" not in message
-    assert "/api/v1/user/detail" in caplog.text
     assert "browser runtime missing" in caplog.text
 
 
@@ -173,10 +175,11 @@ def test_current_user_detail_uses_live_user_detail(
         def save(self) -> None:
             self.saved = True
 
-    def _fake_request_json(session, method, url, **kwargs):  # noqa: ANN001
-        return {"data": {"id": "live-user", "name": "Live"}}
-
-    monkeypatch.setattr(_NBL_MOD.web_session_module, "request_json", _fake_request_json)
+    monkeypatch.setattr(
+        _NBL_MOD.browser_api_module,
+        "get_current_user",
+        lambda session=None: {"id": "live-user", "name": "Live"},
+    )
 
     session = _FakeSession()
     assert _NBL_MOD._get_current_user_detail(
@@ -1390,8 +1393,6 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         assert timeout
         assert _retry_count >= 0
 
-        if method.upper() == "GET" and url.endswith("/api/v1/user/detail"):
-            return {"data": {"id": "user-1"}}
 
         assert method.upper() == "POST"
         assert url.endswith("/api/v2/notebook?Action=ListNotebooks")
@@ -1407,6 +1408,9 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
     monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
+    monkeypatch.setattr(
+        browser_api_module, "get_current_user", lambda session=None: {"id": "user-1"}
+    )
 
     started: dict[str, str] = {}
 
@@ -1488,8 +1492,6 @@ def test_notebook_start_wait_prints_progress(
         assert timeout
         assert _retry_count >= 0
 
-        if method.upper() == "GET" and url.endswith("/api/v1/user/detail"):
-            return {"data": {"id": "user-1"}}
 
         assert method.upper() == "POST"
         assert url.endswith("/api/v2/notebook?Action=ListNotebooks")
@@ -1499,6 +1501,9 @@ def test_notebook_start_wait_prints_progress(
 
     monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
     monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
+    monkeypatch.setattr(
+        browser_api_module, "get_current_user", lambda session=None: {"id": "user-1"}
+    )
     monkeypatch.setattr(
         browser_api_module,
         "start_notebook",
@@ -1592,8 +1597,6 @@ def test_notebook_start_name_conflict_prompts_selection(
         assert timeout
         assert _retry_count >= 0
 
-        if method.upper() == "GET" and url.endswith("/api/v1/user/detail"):
-            return {"data": {"id": "user-1"}}
 
         assert method.upper() == "POST"
         assert url.endswith("/api/v2/notebook?Action=ListNotebooks")
@@ -1609,6 +1612,9 @@ def test_notebook_start_name_conflict_prompts_selection(
 
     monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
     monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
+    monkeypatch.setattr(
+        browser_api_module, "get_current_user", lambda session=None: {"id": "user-1"}
+    )
 
     started: dict[str, str] = {}
 
@@ -1692,8 +1698,6 @@ def test_notebook_start_warns_when_no_wait_conflicts_with_configured_post_start(
         assert timeout
         assert _retry_count >= 0
 
-        if method.upper() == "GET" and url.endswith("/api/v1/user/detail"):
-            return {"data": {"id": "user-1"}}
 
         assert method.upper() == "POST"
         assert url.endswith("/api/v2/notebook?Action=ListNotebooks")
@@ -1709,6 +1713,9 @@ def test_notebook_start_warns_when_no_wait_conflicts_with_configured_post_start(
 
     monkeypatch.setattr(web_session_module, "request_json", fake_request_json)
     monkeypatch.setattr(notebooks_api_module, "_request_json", fake_request_json)
+    monkeypatch.setattr(
+        browser_api_module, "get_current_user", lambda session=None: {"id": "user-1"}
+    )
 
     started: dict[str, str] = {}
 

@@ -222,15 +222,8 @@ def _try_get_current_user_ids(
     *,
     base_url: str,
 ) -> list[str]:
-    endpoint = f"{base_url}/api/v1/user/detail"
     try:
-        user_data = web_session_module.request_json(
-            session,
-            "GET",
-            endpoint,
-            timeout=30,
-        )
-        data = user_data.get("data", {}) if isinstance(user_data, dict) else {}
+        data = browser_api_module.get_current_user(session=session)
         if isinstance(data, dict):
             session.user_detail = data
             try:
@@ -244,11 +237,7 @@ def _try_get_current_user_ids(
             "Current platform account response omitted its internal identifier"
         )
     except Exception:
-        logger.debug(
-            "Current platform account lookup failed at %s",
-            endpoint,
-            exc_info=True,
-        )
+        logger.debug("Current platform account lookup failed", exc_info=True)
     return []
 
 
@@ -257,13 +246,7 @@ def _get_current_user_detail(
     *,
     base_url: str,
 ) -> dict:
-    user_data = web_session_module.request_json(
-        session,
-        "GET",
-        f"{base_url}/api/v1/user/detail",
-        timeout=30,
-    )
-    data = user_data.get("data", {}) if isinstance(user_data, dict) else {}
+    data = browser_api_module.get_current_user(session=session)
     if isinstance(data, dict) and data:
         session.user_detail = data
         try:
