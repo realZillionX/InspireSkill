@@ -74,7 +74,7 @@ discovery 的 `Version` 是内容 etag，可以直接用来判断平台是否改
 
 **不能从 `Name` 机械推导路由。** 新增 Service 时必须实测两种写法。当前 Wrapper 用的 `inference_serving` 和 `model_plaza` 是正确形式。
 
-`audit`、`billing`、`storage` 三个路由也活着（分别返回 `InvalidAction` 或 `AccessForbidden: user is not system admin`，都不是 404），但没有找到与当前 CLI 相关的 Action。`ssh` 路由是真的 404，`/ssh/*` 没有 v2 对应物。
+`audit`、`billing`、`storage` 三个路由也活着（分别返回 `InvalidAction` 或 `AccessForbidden: user is not system admin`，都不是 404），但没有找到与当前 CLI 相关的 Action。
 
 ## 5. Scoping 决定权限判定
 
@@ -189,15 +189,29 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 ## 9. 仍留在 v1 的端点
 
-这张表**只收实测结论**，每条都注明是哪一类：路由不存在、Action 不存在、有 Action 但不可用，还是有 Action 但尚未受控验证。四类的处置方式不同，混在一起写会重演第 3 节那个错误。
+这张表**只收有当前消费者、且实测确认过的端点**，每条都注明是哪一类：Action 不存在，还是有 Action 但不可用。两类处置方式不同，混在一起写会重演第 3 节那个错误。没有消费者的端点不进这张表 —— 它记录的是「迁不动的活代码」，不是平台接口面的全集。
 
 | v1 端点 | 类别 | 依据 |
 | --- | --- | --- |
-| `/ssh/*` | 路由不存在 | `/api/v2/ssh`、`/api/v2/ssh_key`、`/api/v2/sshkey` 全部 `404 page not found` |
 | `/notebook/lab*`、Notebook Proxy | Action 不存在 | `notebook` 下 `GetNotebookLab` / `GetLabUrl` / `GetNotebookProxy` / `GetProxyUrl` 均 `InvalidAction`。唯一沾边的 `GetNotebookAccessUrl` 语义不同，见下文，**故意不接** |
 | `/train_job/remote_cmd` | Action 不存在 | WebSocket 端点，v2 面上没有对应物 |
 | `/resource_prices/logic_compute_groups/` | Action 不存在 | 27 个候选名 × 11 条路由全部 `InvalidAction`；`resource_prices` / `price` / `prices` 路由 404。最接近的 `workspace.GetScheduleConfig` 和 `notebook.GetScheduleConfig` 给出**相同的 quota id 与 cpu/mem/gpu 规格**，但**没有价格**，也不是按计算组解析的，不能替代；`workspace.GetLogicComputeGroupNodeSpecs` 返回的是节点硬件规格，不是配额档位 |
 | `/model_plaza/list` | 有 Action，不可用 | `model_plaza.ListModels` 在 5 个工作空间 × 7 种请求体下一律 `AccessForbidden`，而 v1 正常返回行。按第 10 节，`AccessForbidden` 不回落，所以这条**直接保持 v1**，不是「先试 v2 再退回」 |
+
+**Notebook Proxy 是什么。** 它是平台自带的一条反向代理路径，把 Notebook **容器内部**监听的某个 HTTP 端口，从 `qz.sii.edu.cn` 这个已登录的域名转出来：
+
+```
+{base_url}/api/v1/notebook/lab/{notebook_id}/proxy/{port}/
+```
+
+JupyterLab / VS Code 打开之后还有一种带 token 的等价形式 `/{jupyter|vscode}/<notebook>/<token>/proxy/<port>/`，token 段必须当敏感信息处理（[`rtunnel.py`](../../cli/inspire/platform/web/browser_api/rtunnel.py) 的 `redact_proxy_url` 专门负责在日志与报错里抹掉它）。
+
+CLI 里有两个消费者，第二个是关键：
+
+1. `inspire notebook proxy-url --port N` —— 把容器里跑的 HTTP 服务（TensorBoard、Gradio、Streamlit、临时 dev server 之类）在系统浏览器里打开。URL 含临时路由信息，命令只负责打开，不打印也不返回。H100/H200 受限 Notebook 上默认拒绝，要 `--allow-restricted` 才放行。
+2. **整条 SSH 链路都架在它上面。** 受限环境不接受直连，所以 InspireSkill 在容器里起一个 sshd（默认 22222 端口），再**通过这条 HTTP 代理**去够它 —— `_wait_for_rtunnel` 轮询的就是这个 proxy URL，等 sshd 应答。`notebook ssh` / `scp` / `ssh-config` 以及外部 OpenSSH 工具能用，全靠这一条。
+
+所以它不是可有可无的遗留：删掉 Notebook Proxy 等于同时删掉 `proxy-url` 和整套 Notebook SSH。它与平台用户中心的 SSH 公钥注册表（曾经的 `/ssh/*`）没有任何关系 —— 后者管的是账号级公钥，rtunnel 读的是本机 `~/.ssh/*.pub` 并直接注入容器。
 
 **这张表在 2026-08-08 大幅缩水过一次。** 它原先列着 `/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 共 10 个家族，理由都是「discovery 里没有」。实测下来这 10 个全部有可用 Action，现已迁完 —— 唯一真正没有对应物的只有上面这几条。**往这张表里加行之前，先按第 3 节把存在性探针跑一遍。**
 

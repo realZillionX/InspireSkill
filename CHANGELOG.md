@@ -31,11 +31,15 @@
   只能靠空 body 探针（`InvalidAction` 才是不存在），路由是否存在只能靠 `404` 与
   `InvalidAction` 的区别。
 
-  仍留在 v1 的只剩五处，各有实测依据：`/ssh/*`（路由 404）、`/notebook/lab*` 与
-  Notebook Proxy、`/train_job/remote_cmd`、`/resource_prices/logic_compute_groups/`
-  （27 个候选名 × 11 条路由全部 `InvalidAction`，最接近的 `GetScheduleConfig` 给的是
-  同样的配额档位但没有价格）、`/model_plaza/list`（`ListModels` 在所有工作空间与请求体
-  下一律 `AccessForbidden`，而 v1 正常返回）。
+  仍留在 v1 的只剩四处，各有实测依据：`/notebook/lab*` 与 Notebook Proxy（整套
+  Notebook SSH 架在它上面，见 `references/dev/browser-api-v2.md` 第 9 节）、
+  `/train_job/remote_cmd`、`/resource_prices/logic_compute_groups/`（27 个候选名 ×
+  11 条路由全部 `InvalidAction`，最接近的 `GetScheduleConfig` 给的是同样的配额档位但
+  没有价格）、`/model_plaza/list`（`ListModels` 在所有工作空间与请求体下一律
+  `AccessForbidden`，而 v1 正常返回）。
+
+  平台用户中心的 SSH 公钥接口 `/ssh/*` 不在此列：它随 `inspire user ssh-keys` 一起
+  下线后已无任何消费者，文档里那几行「留在 v1」是残留，一并删除。
 
 ### 破坏性变更
 
