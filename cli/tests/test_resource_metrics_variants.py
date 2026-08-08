@@ -230,11 +230,13 @@ def test_job_metrics_resolver_and_wiring(
     )
     _patch_job_metrics_name_resolver(monkeypatch, expected_pick=2)
 
-    def _fake_request(session, method, path, *, referer=None, body=None, timeout=30):
-        resolver_calls.append({"method": method, "path": path, "referer": referer, "body": body})
-        return {"code": 0, "data": {"logic_compute_group_id": "lcg-train-42"}}
+    def _fake_detail(job_id, session=None):  # noqa: ANN001
+        resolver_calls.append({"job_id": job_id})
+        return {"logic_compute_group_id": "lcg-train-42"}
 
-    monkeypatch.setattr(job_metrics_module, "_request_json", _fake_request)
+    monkeypatch.setattr(
+        job_metrics_module.browser_api_module, "get_job_detail_v2", _fake_detail
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -255,13 +257,10 @@ def test_job_metrics_resolver_and_wiring(
     )
     assert result.exit_code == 0, result.output
 
-    # Resolver hit the Browser API train_job/detail POST with the right body.
+    # Resolver reuses the migrated detail wrapper instead of re-issuing the
+    # v1 train_job/detail request itself.
     assert len(resolver_calls) == 1
-    call = resolver_calls[0]
-    assert call["method"] == "POST"
-    assert call["path"].endswith("/train_job/detail")
-    assert call["body"] == {"job_id": "job-abc123"}
-    assert "/jobs/distributedTrainingDetail/job-abc123" in call["referer"]
+    assert resolver_calls[0] == {"job_id": "job-abc123"}
 
     # Factory forwarded the right task_type and resolved lcg.
     assert capture["task_type"] == "distributed_training"
@@ -293,11 +292,13 @@ def test_hpc_metrics_resolver_and_wiring(
         tmp_metrics_dir=str(tmp_path),
     )
 
-    def _fake_request(session, method, path, *, referer=None, body=None, timeout=30):
-        resolver_calls.append({"method": method, "path": path, "referer": referer, "body": body})
-        return {"code": 0, "data": {"logic_compute_group_id": "lcg-hpc-9"}}
+    def _fake_detail(job_id, session=None):  # noqa: ANN001
+        resolver_calls.append({"job_id": job_id})
+        return {"logic_compute_group_id": "lcg-hpc-9"}
 
-    monkeypatch.setattr(hpc_metrics_module, "_request_json", _fake_request)
+    monkeypatch.setattr(
+        hpc_metrics_module.browser_api_module, "get_hpc_job_detail", _fake_detail
+    )
     _patch_hpc_metrics_name_resolver(monkeypatch, expected_pick=2)
 
     runner = CliRunner()
@@ -319,11 +320,8 @@ def test_hpc_metrics_resolver_and_wiring(
     )
     assert result.exit_code == 0, result.output
 
-    call = resolver_calls[0]
-    assert call["method"] == "GET"  # RESTful detail path
-    assert call["path"].endswith("/hpc_jobs/hpc-job-xyz")
-    assert call["body"] is None
-    assert "/jobs/hpcDetail/hpc-job-xyz" in call["referer"]
+    # Reuses the migrated detail wrapper; v1 needed a RESTful GET here.
+    assert resolver_calls == [{"job_id": "hpc-job-xyz"}]
 
     assert capture["task_type"] == "hpc_job"
     assert capture["logic_compute_group_id"] == "lcg-hpc-9"
@@ -720,12 +718,12 @@ def test_variants_emit_resource_tagged_json(
     # Bypass each resource's resolver with a constant lcg so the test stays
     # focused on the --json envelope shape.
     monkeypatch.setattr(
-        job_metrics_module, "_request_json",
-        lambda *a, **kw: {"code": 0, "data": {"logic_compute_group_id": "lcg-ok"}},
+        job_metrics_module.browser_api_module, "get_job_detail_v2",
+        lambda *a, **kw: {"logic_compute_group_id": "lcg-ok"},
     )
     monkeypatch.setattr(
-        hpc_metrics_module, "_request_json",
-        lambda *a, **kw: {"code": 0, "data": {"logic_compute_group_id": "lcg-ok"}},
+        hpc_metrics_module.browser_api_module, "get_hpc_job_detail",
+        lambda *a, **kw: {"logic_compute_group_id": "lcg-ok"},
     )
     if resource == "hpc":
         _patch_hpc_metrics_name_resolver(monkeypatch)

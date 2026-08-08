@@ -11,21 +11,14 @@ from typing import Optional
 
 from inspire.cli.context import Context
 from inspire.cli.utils.metrics_shared import ResolvedMetricsTarget, build_metrics_command
-from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url, _request_json
+from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import WebSession
 
 
 def _resolve_hpc_lcg(task_id: str, session: WebSession) -> Optional[str]:
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path(f"/hpc_jobs/{task_id}"),
-        referer=f"{_get_base_url()}/jobs/hpcDetail/{task_id}",
-        timeout=30,
-    )
-    if data.get("code") != 0:
-        raise ValueError(f"hpc_jobs detail failed: {data.get('message')}")
-    payload = data.get("data")
+    # Reuses the migrated detail wrapper rather than re-issuing the request;
+    # this used to call GET /api/v1/hpc_jobs/{id} directly.
+    payload = browser_api_module.get_hpc_job_detail(task_id, session)
     if not isinstance(payload, dict):
         return None
     lcg = payload.get("logic_compute_group_id")
