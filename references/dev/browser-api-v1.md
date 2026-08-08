@@ -49,7 +49,6 @@
 | 资源与 Quota | 仅剩 Schedule Config 家族；计算组、节点维度与组资源统计已迁 v2 | `resources availability/nodes`, `notebook/job/hpc/ray/serving quota`, 创建命令的 Group 与 Quota 解析 |
 | Metrics | 全部已迁 v2 | `notebook/job/hpc/ray/serving metrics` |
 | Model Registry | 全部已迁 v2 | `model list/status/versions/register`, Serving 的 Model 解析 |
-| Model Plaza | 仅剩 `/model_plaza/list`（v2 侧 `AccessForbidden`）；筛选项与三个按 id 读的端点已迁 v2 | Model Plaza 浏览与部署配置 |
 | Serving | 全部已迁 v2 | `serving configs/create/list/status/start/stop/delete/events/instances`, Name Resolver |
 
 Batch 和 Workload Profile 不引入新的平台接口：Batch 展开后复用对应 `create`，Profile 只保存 `workspace`、`project`、`group`、`quota` 和 `image` 名称。

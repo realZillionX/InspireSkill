@@ -13,7 +13,7 @@
   合并硬换行的续行，不再从行尾截断成半句话。
 
 - Browser API 按域从 `/api/v1` 迁到 `/api/v2`：notebook、ray、train、hpc、
-  inference_serving、model-hub、project、user、image、file、model_plaza，以及计算组、
+  inference_serving、model-hub、project、user、image、file，以及计算组、
   节点维度、组资源统计和五个 Workload 的 metrics。公开 CLI 合同不变——命令名、参数、
   Name-only 语义、human 与 JSON 输出都保持原样，写操作全部经过受控验证（在 CPU资源空间
   起最小规格临时资源跑完整生命周期，train 的删除因为 CPU 组不支持该任务类型，在
@@ -31,17 +31,24 @@
   只能靠空 body 探针（`InvalidAction` 才是不存在），路由是否存在只能靠 `404` 与
   `InvalidAction` 的区别。
 
-  仍留在 v1 的只剩四处，各有实测依据：`/notebook/lab*` 与 Notebook Proxy（整套
+  仍留在 v1 的只剩三处，各有实测依据：`/notebook/lab*` 与 Notebook Proxy（整套
   Notebook SSH 架在它上面，见 `references/dev/browser-api-v2.md` 第 9 节）、
-  `/train_job/remote_cmd`、`/resource_prices/logic_compute_groups/`（27 个候选名 ×
-  11 条路由全部 `InvalidAction`，最接近的 `GetScheduleConfig` 给的是同样的配额档位但
-  没有价格）、`/model_plaza/list`（`ListModels` 在所有工作空间与请求体下一律
-  `AccessForbidden`，而 v1 正常返回）。
+  `/train_job/remote_cmd`（WebSocket），以及
+  `/resource_prices/logic_compute_groups/`（27 个候选名 × 11 条路由全部
+  `InvalidAction`，最接近的 `GetScheduleConfig` 给的是同样的配额档位但没有价格）。
 
   平台用户中心的 SSH 公钥接口 `/ssh/*` 不在此列：它随 `inspire user ssh-keys` 一起
   下线后已无任何消费者，文档里那几行「留在 v1」是残留，一并删除。
 
 ### 破坏性变更
+
+- 移除 Model Plaza 的全部 Wrapper（`list_model_plaza`、`get_model_plaza_filters`、
+  `get_model_plaza_detail`、`list_model_plaza_related_workspaces`、
+  `get_model_plaza_deploy_serving_config`）。它们从未被任何 `inspire` 命令调用，只存在
+  导出和自测。Model Plaza 是平台侧的公共模型货架（一键部署用），与 `inspire model`
+  操作的 Model Hub 是两回事——后者是本工作空间自己注册、带版本管理的模型仓库，两者靠
+  `plaza_publish_status` 和 `model-hub.GetModelPublish*` 相连，那条发布链路仍然保留。
+  随之 `/model_plaza/list` 从「仍留在 v1」清单里消失。
 
 - 移除 `inspire user` 整个命令组。`inspire user permissions` 迁到
   `inspire account permissions`，选项、Name-only 输出和 `--limit` / `--all` 边界都不变；
@@ -60,6 +67,14 @@
   空间级的，接过去需要新增必填的 `--workspace`，回答的也不再是「我的账号配额」这个问题。
 
 ### 修复
+
+- `inspire notebook vscode` 与 `inspire notebook url` 打开的页面是 404。解析出的 IDE
+  网关 URL 丢了结尾的斜杠，而网关对这个 URL 的响应是一个 **302 到相对路径**
+  `./?folder=...`：带斜杠时 `./` 落在 token 目录上，IDE 正常加载；不带斜杠时 `./`
+  被解析到上一级，`<token>` 那段被吃掉，重定向终点 404。两种写法对第一个请求都回
+  302，所以命令自己的存活探测（只看 2xx/3xx）一直判定「可达」，故障只在浏览器跟完
+  重定向后才显现。修复点在 URL 归一化，同时会修掉磁盘上已缓存的旧地址——那些条目照样
+  探活通过，不主动重写就会继续发出 404 的链接。
 
 - `inspire serving start` 与 `inspire serving stop` 此前对任何输入都失败，返回
   `API error: None`。这两条命令的 URL 早先已指向 `/api/v2`，但仍用 v1 的信封检查

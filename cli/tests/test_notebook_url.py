@@ -26,7 +26,10 @@ _SUFFIX = (
     f"/vscode/{_NOTEBOOK_ID}/ed659e4b-012e-4d94-9439-c67eebc771d5"
 )
 _GATEWAY = "https://nat2-notebook-inspire.sii.edu.cn"
-_IDE_URL = f"{_GATEWAY}{_SUFFIX}"
+# The gateway 302s to a *relative* target, so the canonical IDE URL must keep
+# its trailing slash or the redirect drops the token segment and 404s.
+_IDE_URL = f"{_GATEWAY}{_SUFFIX}/"
+_IDE_URL_NO_SLASH = f"{_GATEWAY}{_SUFFIX}"
 notebook_cli_module = importlib.import_module("inspire.cli.utils.notebook_cli")
 workspace_module = importlib.import_module("inspire.config.workspaces")
 
@@ -38,7 +41,7 @@ workspace_module = importlib.import_module("inspire.config.workspaces")
 
 def test_ide_gateway_url_keeps_host_and_strips_proxy_suffix() -> None:
     # A cached rtunnel proxy URL normalizes to the bare IDE gateway URL.
-    proxy_url = f"{_IDE_URL}/proxy/8080/"
+    proxy_url = f"{_IDE_URL_NO_SLASH}/proxy/8080/"
     assert pw._ide_gateway_url(proxy_url) == _IDE_URL
 
 
@@ -47,13 +50,47 @@ def test_ide_gateway_url_requires_a_host() -> None:
     assert pw._ide_gateway_url("") is None
 
 
+def test_ide_gateway_url_always_ends_in_a_slash() -> None:
+    """The gateway 302s to the relative target ``./?folder=...``.
+
+    With the trailing slash ``./`` resolves to the token directory and the IDE
+    loads; without it ``./`` resolves one level up, the ``<token>`` segment is
+    dropped, and the redirect lands on a 404. Both forms answer 302 to the
+    first request, so nothing catches this until the redirect is followed.
+    """
+    for variant in (
+        _IDE_URL_NO_SLASH,  # what the iframe URL looks like before normalizing
+        _IDE_URL,  # already canonical — normalizing must be idempotent
+        f"{_IDE_URL_NO_SLASH}/lab?folder=/inspire/ssd/project/demo",
+        f"{_IDE_URL_NO_SLASH}/proxy/8080/",
+    ):
+        assert pw._ide_gateway_url(variant) == _IDE_URL
+
+
+def test_resolve_repairs_a_cached_url_that_lost_its_slash(monkeypatch) -> None:  # noqa: ANN001
+    """Caches written before the slash was required must not survive a read.
+
+    Such an entry still probes as live, because the gateway answers 302 to it
+    just the same, so an unrepaired cache would keep handing back the URL that
+    404s once the browser follows the redirect.
+    """
+    monkeypatch.setattr(pw, "_read_cached_ide_url", lambda *a, **k: _IDE_URL_NO_SLASH)
+    monkeypatch.setattr(pw, "_warm_ide_url_candidates", lambda *a, **k: [])
+    monkeypatch.setattr(pw, "_is_ide_url_live", lambda *a, **k: True)
+    monkeypatch.setattr(pw, "_write_cached_ide_url", lambda *a, **k: None)
+    monkeypatch.setattr(pw, "_active_account_name", lambda *a, **k: "acct")
+    monkeypatch.setattr(pw, "_get_base_url", lambda: _BASE_URL)
+
+    assert pw.resolve_notebook_vscode_ide_url(_NOTEBOOK_ID, session=object()) == _IDE_URL
+
+
 def test_build_port_forward_url_keeps_ide_gateway_host() -> None:
     out = pw.build_notebook_port_forward_url(
         _IDE_URL,
         port=30000,
         service_path="/v1/models?limit=1",
     )
-    assert out == (f"{_IDE_URL}/proxy/30000/v1/models?limit=1")
+    assert out == (f"{_IDE_URL_NO_SLASH}/proxy/30000/v1/models?limit=1")
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +110,7 @@ class _FakePage:
 
 
 def test_find_returns_full_ide_url_from_gateway_frame() -> None:
-    page = _FakePage(["about:blank", f"{_IDE_URL}/lab"])
+    page = _FakePage(["about:blank", f"{_IDE_URL_NO_SLASH}/lab"])
     assert pw._find_ide_gateway_url(page) == _IDE_URL
 
 
@@ -408,7 +445,7 @@ def test_proxy_url_opens_service_without_printing_url(monkeypatch) -> None:  # n
     monkeypatch.setattr(
         browser_api_mod,
         "resolve_notebook_port_forward_url",
-        lambda *a, **k: f"{_IDE_URL}/proxy/{k['port']}{k['service_path']}",
+        lambda *a, **k: f"{_IDE_URL_NO_SLASH}/proxy/{k['port']}{k['service_path']}",
     )
     result = CliRunner().invoke(
         cli_main,
@@ -425,7 +462,7 @@ def test_proxy_url_opens_service_without_printing_url(monkeypatch) -> None:  # n
         ],
     )
     assert result.exit_code == 0
-    assert opened == [f"{_IDE_URL}/proxy/30000/v1"]
+    assert opened == [f"{_IDE_URL_NO_SLASH}/proxy/30000/v1"]
     assert result.output == "Opened notebook 'nb'.\n"
     assert _IDE_URL not in result.output
     assert _NOTEBOOK_ID not in result.output
@@ -436,7 +473,7 @@ def test_proxy_url_json_is_name_only(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(
         browser_api_mod,
         "resolve_notebook_port_forward_url",
-        lambda *a, **k: f"{_IDE_URL}/proxy/{k['port']}{k['service_path']}",
+        lambda *a, **k: f"{_IDE_URL_NO_SLASH}/proxy/{k['port']}{k['service_path']}",
     )
     result = CliRunner().invoke(
         cli_main,
@@ -454,7 +491,7 @@ def test_proxy_url_json_is_name_only(monkeypatch) -> None:  # noqa: ANN001
         ],
     )
     assert result.exit_code == 0
-    assert opened == [f"{_IDE_URL}/proxy/30000/v1"]
+    assert opened == [f"{_IDE_URL_NO_SLASH}/proxy/30000/v1"]
     data = json.loads(result.output)["data"]
     assert data == {"name": "nb", "status": "opened"}
     assert _IDE_URL not in result.output

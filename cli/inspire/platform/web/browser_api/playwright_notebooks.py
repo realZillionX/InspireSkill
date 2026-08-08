@@ -259,6 +259,14 @@ def _split_ide_gateway(url: str) -> Optional[tuple[str, str, str, str]]:
     rewrite that drops any ``/lab`` / ``/proxy/...`` tail. When the token rides
     as a ``?token=`` query parameter instead of a path segment, keep that single
     parameter. Returns ``None`` if the URL is not a notebook IDE gateway URL.
+
+    **The path must keep its trailing slash.** The gateway answers this URL with
+    a ``302`` to the *relative* target ``./?folder=...``. With the slash, ``./``
+    resolves to the token directory itself and the IDE loads. Without it, ``./``
+    resolves one level up, the ``<token>`` segment is dropped, and the redirect
+    lands on a ``404`` — the URL itself still looks fine and still answers
+    ``302``, so the breakage only shows up after the redirect is followed.
+
     """
     value = str(url or "").strip()
     if not value:
@@ -286,7 +294,8 @@ def _split_ide_gateway(url: str) -> Optional[tuple[str, str, str, str]]:
 
     has_path_token = token_idx < len(segments) and bool(segments[token_idx])
     end_idx = token_idx if has_path_token else runtime_idx
-    kept = segments[:marker_idx] + ["vscode"] + segments[marker_idx + 1 : end_idx + 1]
+    # The trailing "" is what puts the slash on the end; see the docstring.
+    kept = segments[:marker_idx] + ["vscode"] + segments[marker_idx + 1 : end_idx + 1] + [""]
     path = "/".join(kept)
 
     query = ""
@@ -591,7 +600,13 @@ def resolve_notebook_vscode_ide_url(
     account = _active_account_name()
 
     if not refresh:
-        cached = _read_cached_ide_url(notebook_id, base_url, account, cache_ttl_seconds)
+        # Re-normalize the cached value: entries written before the trailing
+        # slash was required are still on disk, and they still probe as live
+        # (the gateway answers 302 either way), so an unrepaired cache would
+        # keep serving the URL that 404s after the redirect.
+        cached = _ide_gateway_url(
+            _read_cached_ide_url(notebook_id, base_url, account, cache_ttl_seconds) or ""
+        )
         candidates = ([cached] if cached else []) + _warm_ide_url_candidates(notebook_id, account)
         seen: set[str] = set()
         for ide_url in candidates:

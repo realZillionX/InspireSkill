@@ -11,15 +11,10 @@ from inspire.platform.web.browser_api.models import (
     ModelInfo,
     check_model_inference_serving_pending,
     create_model,
-    get_model_plaza_deploy_serving_config,
-    get_model_plaza_detail,
-    get_model_plaza_filters,
     get_model_detail,
     get_model_publish_prefill,
     get_model_publish_status,
     list_model_inference_servings,
-    list_model_plaza,
-    list_model_plaza_related_workspaces,
     list_model_users,
     list_model_version_records,
     list_model_versions,
@@ -234,82 +229,6 @@ def test_list_model_users_posts_project_id(monkeypatch) -> None:
     assert record["method"] == "POST"
     assert record["url"].endswith("/api/v2/model-hub?Action=ListModelCreators")
     assert record["body"] == {"project_id": "project-1"}
-
-
-def test_model_plaza_list_filters_and_total_count(monkeypatch) -> None:
-    record: dict[str, Any] = {}
-    _install_fake_request(
-        monkeypatch,
-        {"code": 0, "data": {"items": [{"name": "Qwen"}], "total_count": "12"}},
-        record,
-    )
-
-    items, total = list_model_plaza(
-        workspace_id="ws-1",
-        page=2,
-        page_size=6,
-        keyword="qwen",
-        source="MODEL_SOURCE_OPEN",
-        model_type="TextGeneration",
-        region="domestic",
-        min_param_size_b=7,
-        max_context_len=32768,
-        session=_FakeSession(),
-    )
-
-    assert total == 12
-    assert items == [{"name": "Qwen"}]
-    assert record["method"] == "POST"
-    assert record["url"].endswith("/model_plaza/list")
-    assert record["body"] == {
-        "page": 2,
-        "page_size": 6,
-        "filter": {
-            "workspace_id": "ws-1",
-            "keyword": "qwen",
-            "source": "MODEL_SOURCE_OPEN",
-            "model_type": "TextGeneration",
-            "region": "domestic",
-            "min_param_size_b": 7,
-            "max_context_len": 32768,
-        },
-    }
-
-
-def test_model_plaza_get_helpers_use_the_underscored_v2_route(monkeypatch) -> None:
-    record: dict[str, Any] = {}
-    _install_fake_request(
-        monkeypatch,
-        {"ResponseMetadata": {}, "Result": {"items": [{"workspace_id": "ws-1"}]}},
-        record,
-    )
-
-    assert get_model_plaza_filters(session=_FakeSession()) == {
-        "items": [{"workspace_id": "ws-1"}]
-    }
-    assert record["method"] == "POST"
-    # `model-plaza` 404s; only the underscored route resolves.
-    assert record["url"] == "/api/v2/model_plaza?Action=GetFilters"
-    assert record["body"] == {}
-
-    assert get_model_plaza_detail("mp-1", session=_FakeSession()) == {
-        "items": [{"workspace_id": "ws-1"}]
-    }
-    assert record["url"] == "/api/v2/model_plaza?Action=GetModelDetail"
-    assert record["body"] == {"ModelId": "mp-1"}
-
-    items, total = list_model_plaza_related_workspaces("mp-1", session=_FakeSession())
-    assert total == 1
-    assert items == [{"workspace_id": "ws-1"}]
-    assert record["url"] == "/api/v2/model_plaza?Action=GetRelatedWorkspaceList"
-    assert record["body"] == {"ModelId": "mp-1"}
-
-    assert get_model_plaza_deploy_serving_config("mp-1", session=_FakeSession()) == {
-        "items": [{"workspace_id": "ws-1"}]
-    }
-    assert record["url"] == "/api/v2/model_plaza?Action=GetDeployServingConfig"
-    assert record["body"] == {"ModelId": "mp-1"}
-
 
 def test_create_model_posts_registration_body(monkeypatch) -> None:
     record: dict[str, Any] = {}

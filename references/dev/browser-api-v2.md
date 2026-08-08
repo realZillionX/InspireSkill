@@ -49,13 +49,13 @@ Content-Type: application/json
 | 字段 | 问题 |
 | --- | --- |
 | Service `Name` | 不等于网关路由名，见第 4 节 |
-| Service 全集 | **不完整**。`file` 和 `model_plaza` 两个路由完全不在 discovery 里，但都活着，当前 CLI 正在用 |
+| Service 全集 | **不完整**。`file` 路由完全不在 discovery 里，但活着，当前 CLI 正在用；`model_plaza` 同样存在但已无消费者 |
 | Action 全集 | **不完整**，且缺口不小。当前 169 个声明之外，实测活着的至少还有 11 个：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`image.CreateImage`、`image.UpdateImage`、`image.PreheatImage`、`model-hub.CreateModel`、`model-hub.UpdateModel`、`model-hub.DeleteModel`、`user.GetPermissions`、`user.GetRoutes`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners` |
 | 分页字段 `PageNumber` | 是唯一的 PascalCase 字段，实际网关同时接受 `PageNumber` / `page_num` / `page`，三者等价且都真实生效 |
 
 **判定「无对应物」时的固定错误模式**：这个错误已经犯过很多次 —— `inference_serving` 只测了 discovery 里的 `CreateServing` 就说契约变了（其实有 `CreateServingConsole`）；`/cluster_nodes/list` 只测了 `ListWorkspaceNodes` 就说没有（其实是 `ListNodeDimension`，且 `AccessForbidden` 只是 scoping 没写全）；`/user/quota` 只看了 `user` 服务就说没有配额 Action（`workspace.*` 下有 10 个）。**最大的一次**：`/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 一共 10 个家族被写进第 9 节的「无对应物」表，实际全部有 Action —— 它们只是不在 discovery 里。**Discovery 只能用来找候选，不能用来否定。下结论前必须把所有 service 里名字沾边的 Action 全部列出来逐个实测，并按下一段的存在性探针枚举未文档化的变体；路由本身也要探，`404 page not found` 才是路由不存在，`InvalidAction` 说明路由活着。**
 
-未文档化 Action 的命名有规律，可以据此猜候选：基本是 v1 路径去掉资源前缀后的 PascalCase，`GET /project/{id}` → `GetProjectDetail`，`/file/dir/list` → `GetDirList`，`/model_plaza/related_workspace/{id}` → `GetRelatedWorkspaceList`。猜不中就换动词（`Get` / `List` / `Create` / `Update` / `Delete`）和单复数重试，一轮十几个名字就能覆盖。
+未文档化 Action 的命名有规律，可以据此猜候选：基本是 v1 路径去掉资源前缀后的 PascalCase，`GET /project/{id}` → `GetProjectDetail`，`/file/dir/list` → `GetDirList`，`/project/owners` → `GetProjectOwners`。猜不中就换动词（`Get` / `List` / `Create` / `Update` / `Delete`）和单复数重试，一轮十几个名字就能覆盖。
 
 因为 Action 全集不可信，某个 Action 是否存在只能实测。网关对此有明确信号，且不需要发出一次真正的写请求：**空 body 打过去，`InvalidAction: unknown action: X` 表示该 Action 不存在，其它错误码（`InvalidParameter` / `InternalError`，通常带参数校验文案）表示存在但参数不对**。迁移写操作前用这一条确认有没有 Console 变体：`train`、`hpc`、`inference_serving` 有，`ray` 没有。空 body 会在校验阶段被拒，不会创建任何东西，但这只能用来判断存在性 —— 语义仍须按第 18 行的受控验证确认。
 
@@ -70,9 +70,9 @@ discovery 的 `Version` 是内容 etag，可以直接用来判断平台是否改
 | `inference-serving` | **`inference_serving`** | 连字符形式 404 |
 | `model-hub` | **`model-hub`** | 下划线形式 404 |
 | 其余 9 个 | 与 `Name` 相同 | — |
-| （不在 discovery 里） | **`file`**、**`model_plaza`** | `files`、`model-plaza` 均 404 |
+| （不在 discovery 里） | **`file`** | `files` 404 |
 
-**不能从 `Name` 机械推导路由。** 新增 Service 时必须实测两种写法。当前 Wrapper 用的 `inference_serving` 和 `model_plaza` 是正确形式。
+**不能从 `Name` 机械推导路由。** 新增 Service 时必须实测两种写法。当前 Wrapper 用的 `inference_serving` 是正确形式。
 
 `audit`、`billing`、`storage` 三个路由也活着（分别返回 `InvalidAction` 或 `AccessForbidden: user is not system admin`，都不是 404），但没有找到与当前 CLI 相关的 Action。
 
@@ -127,7 +127,6 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `project` | `GetProjectForPage`、`ListProjects`、`GetProjectDetail`、`GetProjectOwners` |
 | `image` | `ListImages`、`GetImageById`、`CreateImage`、`UpdateImage`、`DeleteImage` |
 | `file` | `GetSystemStorageTypeList`、`GetDirList` |
-| `model_plaza` | `GetFilters`、`GetModelDetail`、`GetRelatedWorkspaceList`、`GetDeployServingConfig` |
 | `model-hub` | `ListModels`、`GetModelDetail`、`ListModelVersions`、`ListModelVersionOptions`、`ListModelCreators`、`ListModelRelatedServings`、`GetHasModelPendingServing`、`GetModelPublishPrefill`、`GetModelPublishStatus`、`CreateModel` |
 | 各域 | `GetTaskMetric`（`notebook` / `train` / `hpc` / `ray` / `inference_serving` 各一份） |
 
@@ -158,8 +157,6 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 受控验证在 CPU资源空间 用 `HPC-可上网区资源-2` 的 `0,1,4` 最小配额 + `ubuntu-original:22.04`（77.9 MB，官方镜像里最小的）起了一个临时 Notebook：v2 提交出一个真镜像（`add_method=Notebook`，196 MB，约 30 秒到 `SUCCESS`），同一个 Notebook 上又用 v1 提交一次做响应体对照，随后 `inspire image save` 走迁移后的 Wrapper 端到端再跑一遍；三个镜像与 Notebook 全部删除。
 
 `file` 整个服务不在 discovery 里（历史上出现过又被删掉，见第 3 节末尾），但路由活着，两个 Action 逐字接受 v1 请求体、返回同一个集合。**唯一差异是行顺序**：`GetSystemStorageTypeList` 的 12 个存储池和 `GetDirList` 的目录都会换序，排序后完全相等。当前调用方都不依赖顺序，新调用方也不要依赖。
-
-`model_plaza` 同样不在 discovery 里。三个按 id 读的 Action 统一用 `ModelId`，响应与 v1 逐字节相等。`ListModels` 是例外，见第 9 节。
 
 **Metrics 不属于 `workspace.*`。** v1 用一个集群级端点 `/cluster_metric/resource_metric_by_time` 服务所有 Workload，v2 没有对应的集群级端点：每个 service 各有一份 `GetTaskMetric`，接受**逐字相同**的 `{filter:{logic_compute_group_id, task_id, task_type}, metric_types, time_range}`，返回同一个（拼错的）键 `time_seris_metric_groups`，五个域实测数量与 v1 一致。看起来同名的 `workspace.GetOverviewResourceMetricByTime` 是工作空间级总览，对普通成员返回 `AccessForbidden`，不是它的对应物。第 6 节「用 workspace.\* 不用 cluster.\*」只适用于两边同名的那 8 个 Action，不能推广成「集群级端点一律换 workspace.\*」。
 
@@ -196,7 +193,6 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `/notebook/lab*`、Notebook Proxy | Action 不存在 | `notebook` 下 `GetNotebookLab` / `GetLabUrl` / `GetNotebookProxy` / `GetProxyUrl` 均 `InvalidAction`。唯一沾边的 `GetNotebookAccessUrl` 语义不同，见下文，**故意不接** |
 | `/train_job/remote_cmd` | Action 不存在 | WebSocket 端点，v2 面上没有对应物 |
 | `/resource_prices/logic_compute_groups/` | Action 不存在 | 27 个候选名 × 11 条路由全部 `InvalidAction`；`resource_prices` / `price` / `prices` 路由 404。最接近的 `workspace.GetScheduleConfig` 和 `notebook.GetScheduleConfig` 给出**相同的 quota id 与 cpu/mem/gpu 规格**，但**没有价格**，也不是按计算组解析的，不能替代；`workspace.GetLogicComputeGroupNodeSpecs` 返回的是节点硬件规格，不是配额档位 |
-| `/model_plaza/list` | 有 Action，不可用 | `model_plaza.ListModels` 在 5 个工作空间 × 7 种请求体下一律 `AccessForbidden`，而 v1 正常返回行。按第 10 节，`AccessForbidden` 不回落，所以这条**直接保持 v1**，不是「先试 v2 再退回」 |
 
 **Notebook Proxy 是什么。** 它是平台自带的一条反向代理路径，把 Notebook **容器内部**监听的某个 HTTP 端口，从 `qz.sii.edu.cn` 这个已登录的域名转出来：
 
@@ -213,7 +209,7 @@ CLI 里有两个消费者，第二个是关键：
 
 所以它不是可有可无的遗留：删掉 Notebook Proxy 等于同时删掉 `proxy-url` 和整套 Notebook SSH。它与平台用户中心的 SSH 公钥注册表（曾经的 `/ssh/*`）没有任何关系 —— 后者管的是账号级公钥，rtunnel 读的是本机 `~/.ssh/*.pub` 并直接注入容器。
 
-**这张表在 2026-08-08 大幅缩水过一次。** 它原先列着 `/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 共 10 个家族，理由都是「discovery 里没有」。实测下来这 10 个全部有可用 Action，现已迁完 —— 唯一真正没有对应物的只有上面这几条。**往这张表里加行之前，先按第 3 节把存在性探针跑一遍。**
+**这张表在 2026-08-08 大幅缩水过一次。** 它原先列着 `/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 共 10 个家族，理由都是「discovery 里没有」。实测下来这 10 个全部有可用 Action：9 个已迁完，`/model_plaza/*` 因为始终没有 CLI 消费者，整族连同 Wrapper 一起删除。唯一真正没有对应物的只有上面这几条。**往这张表里加行之前，先按第 3 节把存在性探针跑一遍。**
 
 ## 10. 回落纪律
 
