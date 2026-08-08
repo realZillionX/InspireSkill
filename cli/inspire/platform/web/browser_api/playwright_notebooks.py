@@ -584,6 +584,32 @@ def _resolve_notebook_ide_url_sync(
                 browser.close()
 
 
+def _ide_url_from_access_api(notebook_id: str, session: WebSession) -> Optional[str]:
+    """Ask the platform for the notebook's IDE URL. No browser involved.
+
+    ``notebook.GetNotebookAccessUrl`` answers in well under a second, where
+    driving a headless Chromium to the same answer costs seconds to tens of
+    seconds. Normalized, the two are byte-identical, so this is a pure
+    shortcut rather than a second source of truth.
+
+    Returns ``None`` when the platform has nothing to give — a STOPPED notebook
+    answers with two empty strings — leaving the browser path to try.
+    """
+    from inspire.platform.web.browser_api.notebooks import _notebook_v2
+
+    try:
+        payload = _notebook_v2(session, "GetNotebookAccessUrl", {"notebook_id": notebook_id})
+    except Exception:
+        return None
+    # Either URL normalizes to the same gateway URL: the runtime and token are
+    # shared across both IDEs, and `_split_ide_gateway` rewrites the IDE marker.
+    for key in ("vscode_url", "jupyter_url"):
+        ide_url = _ide_gateway_url(str(payload.get(key) or ""))
+        if ide_url:
+            return ide_url
+    return None
+
+
 def resolve_notebook_vscode_ide_url(
     notebook_id: str,
     *,
@@ -616,6 +642,13 @@ def resolve_notebook_vscode_ide_url(
             if _is_ide_url_live(session, ide_url):
                 _write_cached_ide_url(notebook_id, ide_url, base_url, account)
                 return ide_url
+
+    # Ask the platform before spending a browser on it. Runs on `refresh` too:
+    # refresh means "do not trust the cache", not "insist on scraping".
+    api_url = _ide_url_from_access_api(notebook_id, session)
+    if api_url:
+        _write_cached_ide_url(notebook_id, api_url, base_url, account)
+        return api_url
 
     fresh_url = resolve_notebook_ide_url(
         notebook_id, session=session, headless=headless, timeout=timeout

@@ -184,7 +184,11 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 没有免 token 的形式。实测：平台域上的 `/api/v1/notebook/lab/{id}/proxy/{port}/` 返回 `404 page not found`，只有带 token 的网关 URL 真的会去连容器端口（端口没人监听时返回 500 `connect ECONNREFUSED`，`--check` 据此报 `no_service` 而不是 `blocked`）。
 
-`notebook` 下的 `GetNotebookAccessUrl` 返回 `{jupyter_url, vscode_url}`，**归一化之后与 Playwright 抓取的结果逐字节相同**，0.53 秒对抓取的 6–36 秒。它现在是 `proxy-url` 的一个明确优化机会（省掉每次起 Chromium），但还没接。真正的大头在别处：实测**纯 HTTP 就能拿到 `_xsrf` 并建/删 Jupyter terminal**（GET `jupyter_url` → 200 且 cookie 落袋 → POST `api/terminals` → 200），所以 `notebook exec` / `shell` 那条无头浏览器链路原则上可以整条拆掉，只剩页内 WebSocket 需要换成 Python 客户端（`job_shell.py` 对 `/train_job/remote_cmd` 已经是这么做的）。这属于功能重构，要单独验证和受控验收。（STOPPED 的 Notebook 上 `GetNotebookAccessUrl` 返回两个空字符串。）
+网关 URL 现在**优先向平台要，不再默认起浏览器**：`notebook.GetNotebookAccessUrl` 返回 `{jupyter_url, vscode_url}`，归一化之后与 Playwright 抓取的结果**逐字节相同**（两个 IDE 共用同一套 runtime 与 token，`_split_ide_gateway` 只是重写 IDE 标记，所以两个字段任取其一都行）。实测 **0.57 秒对 6.4–36 秒**。
+
+解析顺序是 **缓存/热候选 → `GetNotebookAccessUrl` → Playwright**，收口在 `resolve_notebook_vscode_ide_url`，因此 `proxy-url` 与 rtunnel 的 SSH 候选路径同时受益。API 在 `refresh=True` 时也会走：refresh 的语义是「别信缓存」，不是「一定要抓」。STOPPED 的 Notebook 上它返回两个空字符串，此时回落浏览器路径（那条也会失败，语义不变）。
+
+剩下的大头还没做：实测**纯 HTTP 就能拿到 `_xsrf` 并建/删 Jupyter terminal**（GET `jupyter_url` → 200 且 cookie 落袋 → POST `api/terminals` → 200 → DELETE → 204），所以 `notebook exec` / `shell` 那条无头浏览器链路原则上可以整条拆掉，只剩页内 WebSocket 需要换成 Python 客户端（`job_shell.py` 对 `/train_job/remote_cmd` 已经是这么做的）。这属于功能重构，要单独验证和受控验收。
 
 `ray` 是全域迁移，v1 `/ray_job/*` 九个端点已全部退出。响应逐字段与 v1 一致，因此 Wrapper 的归一化未改动。三条与其它域不同的约束：资源键在每个 Action 上都是 `ray_job_id`（`job_id` 和 `id` 都报 `unknown field`）；工作空间 scoping 是顶层 `workspace_id`，第 5 节那层 `filter` 嵌套在这里会被拒；**没有 `CreateJobConsole` 变体**，创建走 `CreateJob`。
 

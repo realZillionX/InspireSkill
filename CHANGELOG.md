@@ -89,6 +89,13 @@
 
 ### 修复
 
+- Notebook 网关 URL 的解析不再默认起一个无头 Chromium：先问平台的
+  `notebook.GetNotebookAccessUrl`，拿不到才回落浏览器抓取。两者归一化后的结果**逐字节
+  相同**，耗时 **0.57 秒对 6.4–36 秒**。收口在 `resolve_notebook_vscode_ide_url`，所以
+  `notebook proxy-url` 和 rtunnel 的 SSH 候选路径同时受益。`--refresh` 也走 API——
+  它的语义是「别信缓存」而不是「一定要抓」；STOPPED 的 Notebook 上 API 返回空串，
+  照旧回落浏览器。
+
 - `inspire notebook vscode` 打开的页面是 404。解析出的 IDE 网关 URL 丢了结尾的斜杠，而网关对这个 URL 的响应是一个 **302 到相对路径**
   `./?folder=...`：带斜杠时 `./` 落在 token 目录上，IDE 正常加载；不带斜杠时 `./`
   被解析到上一级，`<token>` 那段被吃掉，重定向终点 404。两种写法对第一个请求都回

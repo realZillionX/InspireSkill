@@ -158,6 +158,78 @@ def test_resolve_reuses_warm_rtunnel_candidate(monkeypatch) -> None:  # noqa: AN
     assert pw.resolve_notebook_vscode_ide_url(_NOTEBOOK_ID, session=object()) == _IDE_URL
 
 
+def test_resolve_prefers_the_access_api_over_the_browser(monkeypatch) -> None:  # noqa: ANN001
+    """A cache miss must cost one JSON call, not a headless Chromium.
+
+    `GetNotebookAccessUrl` answers the same gateway URL in well under a second.
+    """
+    _patch_env(monkeypatch)
+    monkeypatch.setattr(pw, "_read_cached_ide_url", lambda *a, **k: None)
+    monkeypatch.setattr(pw, "_warm_ide_url_candidates", lambda *a, **k: [])
+    monkeypatch.setattr(pw, "_ide_url_from_access_api", lambda *a, **k: _IDE_URL)
+    monkeypatch.setattr(
+        pw,
+        "resolve_notebook_ide_url",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("browser must not run")),
+    )
+
+    assert pw.resolve_notebook_vscode_ide_url(_NOTEBOOK_ID, session=object()) == _IDE_URL
+
+
+def test_resolve_still_consults_the_access_api_on_refresh(monkeypatch) -> None:  # noqa: ANN001
+    """`refresh` means "do not trust the cache", not "insist on scraping"."""
+    _patch_env(monkeypatch)
+    monkeypatch.setattr(
+        pw,
+        "_read_cached_ide_url",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("cache read on refresh")),
+    )
+    monkeypatch.setattr(pw, "_ide_url_from_access_api", lambda *a, **k: _IDE_URL)
+    monkeypatch.setattr(
+        pw,
+        "resolve_notebook_ide_url",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("browser must not run")),
+    )
+
+    out = pw.resolve_notebook_vscode_ide_url(_NOTEBOOK_ID, session=object(), refresh=True)
+    assert out == _IDE_URL
+
+
+def test_resolve_falls_back_to_browser_when_the_access_api_is_empty(monkeypatch) -> None:  # noqa: ANN001
+    """A STOPPED notebook answers with two empty strings; the browser still tries."""
+    _patch_env(monkeypatch)
+    monkeypatch.setattr(pw, "_read_cached_ide_url", lambda *a, **k: None)
+    monkeypatch.setattr(pw, "_warm_ide_url_candidates", lambda *a, **k: [])
+    monkeypatch.setattr(pw, "_ide_url_from_access_api", lambda *a, **k: None)
+    monkeypatch.setattr(pw, "resolve_notebook_ide_url", lambda *a, **k: _IDE_URL)
+
+    assert pw.resolve_notebook_vscode_ide_url(_NOTEBOOK_ID, session=object()) == _IDE_URL
+
+
+def test_access_api_returns_none_when_the_notebook_is_stopped(monkeypatch) -> None:  # noqa: ANN001
+    import inspire.platform.web.browser_api.notebooks as notebooks_module
+
+    monkeypatch.setattr(
+        notebooks_module,
+        "_notebook_v2",
+        lambda *a, **k: {"jupyter_url": "", "vscode_url": ""},
+    )
+    assert pw._ide_url_from_access_api(_NOTEBOOK_ID, session=object()) is None
+
+
+def test_access_api_normalizes_either_url_to_the_gateway_form(monkeypatch) -> None:  # noqa: ANN001
+    """Both IDEs share one runtime and token, so either URL normalizes the same."""
+    import inspire.platform.web.browser_api.notebooks as notebooks_module
+
+    jupyter = _IDE_URL_NO_SLASH.replace("/vscode/", "/jupyter/") + "/lab?token=secret"
+    monkeypatch.setattr(
+        notebooks_module,
+        "_notebook_v2",
+        lambda *a, **k: {"jupyter_url": jupyter, "vscode_url": ""},
+    )
+    assert pw._ide_url_from_access_api(_NOTEBOOK_ID, session=object()) == _IDE_URL
+
+
 def test_resolve_falls_back_to_browser_when_stale(monkeypatch) -> None:  # noqa: ANN001
     _patch_env(monkeypatch)
     monkeypatch.setattr(pw, "_read_cached_ide_url", lambda *a, **k: _IDE_URL)
