@@ -68,13 +68,14 @@
 
 ### 修复
 
-- `inspire notebook vscode` 与 `inspire notebook url` 打开的页面是 404。解析出的 IDE
-  网关 URL 丢了结尾的斜杠，而网关对这个 URL 的响应是一个 **302 到相对路径**
+- `inspire notebook vscode` 打开的页面是 404。解析出的 IDE 网关 URL 丢了结尾的斜杠，而网关对这个 URL 的响应是一个 **302 到相对路径**
   `./?folder=...`：带斜杠时 `./` 落在 token 目录上，IDE 正常加载；不带斜杠时 `./`
   被解析到上一级，`<token>` 那段被吃掉，重定向终点 404。两种写法对第一个请求都回
   302，所以命令自己的存活探测（只看 2xx/3xx）一直判定「可达」，故障只在浏览器跟完
   重定向后才显现。修复点在 URL 归一化，同时会修掉磁盘上已缓存的旧地址——那些条目照样
-  探活通过，不主动重写就会继续发出 404 的链接。
+  探活通过，不主动重写就会继续发出 404 的链接。`notebook url` 不受影响——它开的是平台
+  入口页 `/ide?notebook_id=...`，不走网关 URL 解析；`proxy-url` 也不受影响，它拼
+  `/proxy/<port>/` 时本来就补了尾斜杠。
 
 - `inspire serving start` 与 `inspire serving stop` 此前对任何输入都失败，返回
   `API error: None`。这两条命令的 URL 早先已指向 `/api/v2`，但仍用 v1 的信封检查
