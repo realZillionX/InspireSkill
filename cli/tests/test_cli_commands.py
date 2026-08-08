@@ -1480,7 +1480,7 @@ def test_nodes_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(
         browser_api_module,
         "get_full_free_node_counts",
-        lambda group_ids, gpu_per_node=8, session=None, _retry=True: [  # noqa: ARG005
+        lambda group_ids, gpu_per_node=8, session=None, _retry=True, **_kwargs: [  # noqa: ARG005
             browser_api_module.FullFreeNodeCount(
                 group_id=test_group_id,
                 group_name="H200 TestRoom",

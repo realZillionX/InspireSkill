@@ -450,7 +450,7 @@ def test_resources_availability_human_hides_raw_group_ids(
     _assert_compact_public_payload(row)
 
 
-def test_availability_prefers_cluster_basic_info_and_node_dimension(
+def test_availability_uses_workspace_actions_for_groups_and_nodes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from inspire.platform.web.browser_api.availability import api as availability_api
@@ -464,10 +464,9 @@ def test_availability_prefers_cluster_basic_info_and_node_dimension(
 
     def fake_request(session, method, path, *, referer, body=None, timeout=30):
         calls.append(path)
-        if path.endswith("/compute_resources/cluster_basic_info"):
+        if path.endswith("Action=ListLogicComputeGroups"):
             return {
-                "code": 0,
-                "data": {
+                "Result": {
                     "logic_compute_groups": [
                         {
                             "logic_compute_group_id": "lcg-live",
@@ -476,10 +475,9 @@ def test_availability_prefers_cluster_basic_info_and_node_dimension(
                     ]
                 },
             }
-        if path.endswith("/compute_resources/logic_compute_groups/lcg-live"):
+        if path.endswith("Action=GetLogicComputeGroupResource"):
             return {
-                "code": 0,
-                "data": {
+                "Result": {
                     "logic_resouces": {
                         "gpu_total": 16,
                         "gpu_used": 4,
@@ -492,24 +490,25 @@ def test_availability_prefers_cluster_basic_info_and_node_dimension(
                     "gpu_type_stats": [{"gpu_info": {"gpu_type_display": "H200"}}],
                 },
             }
-        if path.endswith("/compute_resources/list_node_dimension"):
+        if path.endswith("Action=ListNodeDimension"):
+            # ListNodeDimension nests the GPU counts under `gpu`.
             return {
-                "code": 0,
-                "data": {
+                "Result": {
+                    "total": "2",
                     "node_dimensions": [
                         {
-                            "gpu_count": 8,
+                            "gpu": {"total": 8, "used": 0},
                             "status": "READY",
                             "task_list": [],
                             "resource_pool": "online",
                         },
                         {
-                            "gpu_count": 8,
+                            "gpu": {"total": 8, "used": 8},
                             "status": "READY",
                             "task_list": [{"name": "busy"}],
                             "resource_pool": "online",
                         },
-                    ]
+                    ],
                 },
             }
         raise AssertionError(f"unexpected path: {path}")
@@ -525,5 +524,7 @@ def test_availability_prefers_cluster_basic_info_and_node_dimension(
     assert rows[0].available_gpus == 12
     assert rows[0].ready_nodes == 2
     assert rows[0].free_nodes == 1
-    assert any(path.endswith("/compute_resources/cluster_basic_info") for path in calls)
-    assert not any(path.endswith("/logic_compute_groups/list") for path in calls)
+    assert any(path.endswith("Action=ListLogicComputeGroups") for path in calls)
+    assert any(path.endswith("Action=ListNodeDimension") for path in calls)
+    # Nothing should touch /api/v1 in this path any more.
+    assert not any("/api/v1" in path for path in calls)

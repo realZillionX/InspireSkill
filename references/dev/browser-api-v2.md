@@ -114,7 +114,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `inference_serving` | `CreateServingConsole`、`ListServings`、`GetServing`、`ListServingVersions`、`ListServingInstances`、`ListServingEvents`、`ListServingScaleHistory`、`GetServingLog`、`GetInferenceServingTerms`、`GetServingConfigByWorkspaceId`、`GetInferenceServingUserProjectList`、`StartServing`、`StopServing`、`DeleteServing` |
 | `ray` | `CreateJob`、`GetJob`、`ListJobs`、`ListJobCreators`、`ListJobEvents`、`ListJobInstances`、`ListJobScalingHistories`、`StopJob`、`DeleteJob` |
 | `notebook` | `CreateNotebook`、`GetNotebook`、`ListNotebooks`、`ListNotebookCreators`、`ListNotebookEvents`、`ListNotebookLifecycles`、`ListRunIndex`、`StartNotebook`、`StopNotebook`、`DeleteNotebook` |
-| `workspace` | `ListLogicComputeGroups` |
+| `workspace` | `ListLogicComputeGroups`、`ListNodeDimension`、`GetLogicComputeGroupResource` |
 | `user` | `GetUserDetail`、`ListAPIKeys` |
 | `project` | `GetProjectForPage` |
 | `model-hub` | `ListModels`、`GetModelDetail`、`ListModelVersions`、`ListModelVersionOptions`、`ListModelCreators`、`ListModelRelatedServings`、`GetHasModelPendingServing`、`GetModelPublishPrefill`、`GetModelPublishStatus` |
@@ -129,6 +129,10 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 **Metrics 不属于 `workspace.*`。** v1 用一个集群级端点 `/cluster_metric/resource_metric_by_time` 服务所有 Workload，v2 没有对应的集群级端点：每个 service 各有一份 `GetTaskMetric`，接受**逐字相同**的 `{filter:{logic_compute_group_id, task_id, task_type}, metric_types, time_range}`，返回同一个（拼错的）键 `time_seris_metric_groups`，五个域实测数量与 v1 一致。看起来同名的 `workspace.GetOverviewResourceMetricByTime` 是工作空间级总览，对普通成员返回 `AccessForbidden`，不是它的对应物。第 6 节「用 workspace.\* 不用 cluster.\*」只适用于两边同名的那 8 个 Action，不能推广成「集群级端点一律换 workspace.\*」。
 
 `ListLogicComputeGroups` 是那 8 个之一，`workspace.*` 可用、`cluster.*` 返回 `AccessForbidden`，与第 6 节一致。但它有个分页陷阱：**省略 `page_size` 时返回空列表却带非零 `total`**，看起来就像工作空间里没有任何计算组。v1 的 `page_size: -1`（取全部）v2 同样接受，保持原样即可。
+
+**分页语义逐 Action 不同，不能类推。** 同为 `workspace.*`，`ListNodeDimension` 的 `page_size: -1` 只返回 10 条而不是全部，必须显式按 `total` 翻页。它也是第 5 节 scoping 陷阱最典型的一例：`filter` 里只放 `logic_compute_group_id` 返回 `AccessForbidden`，同时放 `workspace_id` 和 `logic_compute_group_id` 才通——**看到 `AccessForbidden` 先把 scoping 补全再下结论**。
+
+节点与组资源这一块，v1 那侧本来就是坏的：`/cluster_nodes/list` 对非管理员返回 `You are not the admin of any workspace`（`resources nodes` 因此整条命令报错），`/compute_resources/list_node_dimension`、`/compute_resources/node_dimension/list` 和三条 `cluster_basic_info` 路径全部 404。对应物是 `ListNodeDimension`（每节点实时状态，GPU 数在嵌套的 `gpu.total` 里，不是扁平 `gpu_count`）和 `GetLogicComputeGroupResource`（组级汇总，字段与 v1 逐一对应，注意平台把键拼成了 `logic_resouces`）。
 
 `inference_serving` 的读 Action 逐字接受 v1 请求体、响应字段完全一致，但**写侧不能照搬**。两个已经踩到的坑：
 

@@ -163,7 +163,12 @@ def list_nodes(
         }
 
         group_ids = [a.group_id for a in accurate_availability]
-        counts = browser_api_module.get_full_free_node_counts(group_ids, gpu_per_node=8)
+        counts = browser_api_module.get_full_free_node_counts(
+            group_ids,
+            gpu_per_node=8,
+            workspace_id_by_group={a.group_id: a.workspace_id for a in accurate_availability},
+            session=session,
+        )
 
         # Fill missing names and apply filter
         filtered: list[dict] = []

@@ -72,7 +72,7 @@ def test_resources_nodes_filters_and_returns_compact_json(
     monkeypatch.setattr(
         nodes_module.browser_api_module,
         "get_full_free_node_counts",
-        lambda group_ids, gpu_per_node: [
+        lambda group_ids, gpu_per_node, **_kwargs: [
             FullFreeNodeCount(
                 group_id="cg-11111111-1111-1111-1111-111111111111",
                 group_name="H200-2号机房",
@@ -146,7 +146,7 @@ def test_resources_nodes_human_scrubs_raw_ids(
     monkeypatch.setattr(
         nodes_module.browser_api_module,
         "get_full_free_node_counts",
-        lambda group_ids, gpu_per_node: [
+        lambda group_ids, gpu_per_node, **_kwargs: [
             FullFreeNodeCount(
                 group_id=raw_group_id,
                 group_name=f"H200 {raw_group_id}",
@@ -229,7 +229,7 @@ def test_resources_nodes_defaults_to_twenty_rows(
     monkeypatch.setattr(
         nodes_module.browser_api_module,
         "get_full_free_node_counts",
-        lambda group_ids, gpu_per_node: [
+        lambda group_ids, gpu_per_node, **_kwargs: [
             FullFreeNodeCount(
                 group_id=group_id,
                 group_name=f"Group {index:02d}",
