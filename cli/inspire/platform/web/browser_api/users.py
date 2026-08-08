@@ -3,7 +3,7 @@
 The basic `user/detail` + `user/routes/{ws}` live in
 [`platform.web.browser_api.jobs`](jobs.py) and [`workspaces.py`](workspaces.py).
 This module covers the "userCenter" additions found via Playwright capture:
-API-key metadata, SSH key management, per-workspace permission matrix, and user quota.
+API-key metadata, SSH key management, and the per-workspace permission matrix.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ __all__ = [
     "create_user_ssh_key",
     "delete_user_ssh_key",
     "get_user_detail",
-    "get_user_quota",
     "list_user_api_keys",
     "list_user_ssh_keys",
     "get_user_permissions",
@@ -31,22 +30,6 @@ __all__ = [
 
 def _referer(path: str) -> str:
     return f"{_get_base_url()}{path}"
-
-
-def get_user_quota(session: Optional[WebSession] = None) -> dict[str, Any]:
-    """Return the current user's quota payload (GET /api/v1/user/quota)."""
-    if session is None:
-        session = get_web_session()
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path("/user/quota"),
-        referer=_referer("/userCenter"),
-        timeout=15,
-    )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-    return data.get("data") or {}
 
 
 def get_user_detail(

@@ -146,7 +146,6 @@ from .users import (
     delete_user_ssh_key,
     get_user_detail,
     get_user_permissions,
-    get_user_quota,
     list_user_api_keys,
     list_user_ssh_keys,
 )
@@ -313,7 +312,6 @@ __all__ = [
     "delete_user_ssh_key",
     "get_user_detail",
     "get_user_permissions",
-    "get_user_quota",
     "list_user_api_keys",
     "list_user_ssh_keys",
 ]

@@ -590,112 +590,6 @@ def test_whoami_never_uses_login_identifiers_as_name(
     assert login_value not in human.output
 
 
-def test_user_quota_json_drops_ids_and_engineering_fields(monkeypatch) -> None:
-    _patch_session(monkeypatch)
-    monkeypatch.setattr(
-        browser_api_module,
-        "get_user_quota",
-        lambda **_: {
-            "gpu": 8,
-            "workspace_id": _WORKSPACE_ID,
-            "raw": {"quota_id": "quota-12345678-1234-1234-1234-123456789abc"},
-            "limits": {
-                "cpu": 80,
-                "result": {"debug": True},
-            },
-        },
-    )
-
-    result = CliRunner().invoke(cli_main, ["--json", "user", "quota"])
-
-    assert result.exit_code == 0
-    assert json.loads(result.output)["data"] == {
-        "quota": {
-            "gpu": 8,
-            "limits": {"cpu": 80},
-        }
-    }
-
-
-def test_user_quota_default_json_bounds_flat_rows_without_changing_shape(
-    monkeypatch,
-) -> None:
-    _patch_session(monkeypatch)
-    monkeypatch.setattr(
-        browser_api_module,
-        "get_user_quota",
-        lambda **_: {
-            f"quota-{index:02d}": index
-            for index in range(25)
-        },
-    )
-
-    result = CliRunner().invoke(cli_main, ["--json", "user", "quota"])
-
-    assert result.exit_code == 0, result.output
-    data = json.loads(result.output)["data"]
-    assert data["quota"] == {
-        f"quota-{index:02d}": index
-        for index in range(20)
-    }
-    assert data["shown"] == 20
-    assert data["total"] == 25
-    assert data["truncated"] is True
-
-
-def test_user_quota_limit_human_and_all_json(monkeypatch) -> None:
-    _patch_session(monkeypatch)
-    monkeypatch.setattr(
-        browser_api_module,
-        "get_user_quota",
-        lambda **_: {
-            f"quota-{index:02d}": index
-            for index in range(25)
-        },
-    )
-    runner = CliRunner()
-
-    limited = runner.invoke(cli_main, ["user", "quota", "--limit", "2"])
-    assert limited.exit_code == 0, limited.output
-    assert limited.output.splitlines() == [
-        "quota-00: 0",
-        "quota-01: 1",
-        "Showing 2 of 25. Use --all for the full list.",
-    ]
-
-    unbounded = runner.invoke(cli_main, ["--json", "user", "quota", "--all"])
-    assert unbounded.exit_code == 0, unbounded.output
-    data = json.loads(unbounded.output)["data"]
-    assert len(data["quota"]) == 25
-    assert set(data) == {"quota"}
-
-
-def test_user_quota_bounds_long_scalar_lists(monkeypatch) -> None:
-    _patch_session(monkeypatch)
-    monkeypatch.setattr(
-        browser_api_module,
-        "get_user_quota",
-        lambda **_: {
-            "available_profiles": [
-                f"profile-{index:02d}"
-                for index in range(25)
-            ]
-        },
-    )
-
-    result = CliRunner().invoke(cli_main, ["--json", "user", "quota"])
-
-    assert result.exit_code == 0, result.output
-    data = json.loads(result.output)["data"]
-    assert data["quota"]["available_profiles"] == [
-        f"profile-{index:02d}"
-        for index in range(20)
-    ]
-    assert data["shown"] == 20
-    assert data["total"] == 25
-    assert data["truncated"] is True
-
-
 def test_user_permissions_json_returns_name_only_permissions(monkeypatch) -> None:
     _patch_session(monkeypatch)
     monkeypatch.setattr(
@@ -881,12 +775,9 @@ def test_user_permissions_workspace_all_fans_out_with_workspace_names(
 
 @pytest.mark.parametrize(
     "args",
-    (
-        ["user", "quota"],
-        ["user", "permissions", "--workspace", "Default WS"],
-    ),
+    (["user", "permissions", "--workspace", "Default WS"],),
 )
-def test_user_quota_and_permissions_reject_limit_with_all(args) -> None:
+def test_user_permissions_rejects_limit_with_all(args) -> None:
     result = CliRunner().invoke(
         cli_main,
         ["--json", *args, "--limit", "2", "--all"],

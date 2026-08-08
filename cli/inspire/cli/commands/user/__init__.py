@@ -7,7 +7,6 @@ import click
 from .user_commands import (
     api_keys_user,
     permissions_user,
-    quota_user,
     ssh_keys_user,
     whoami_user,
 )
@@ -15,7 +14,7 @@ from .user_commands import (
 
 @click.group()
 def user() -> None:
-    """Inspect the current user's identity, permissions, quota, and keys.
+    """Inspect the current user's identity, permissions, and keys.
 
     Use `whoami` to verify the active user, `permissions --workspace` to
     check whether the account can create a workload in a workspace,
@@ -25,7 +24,6 @@ def user() -> None:
 
 
 user.add_command(whoami_user)
-user.add_command(quota_user)
 user.add_command(api_keys_user)
 user.add_command(ssh_keys_user)
 user.add_command(permissions_user)

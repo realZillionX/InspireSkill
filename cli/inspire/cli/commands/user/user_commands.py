@@ -55,8 +55,6 @@ _SSH_KEY_TYPES = {
     "sk-ecdsa-sha2-nistp256@openssh.com",
 }
 
-_OMITTED = object()
-
 
 def _ssh_key_id(item: dict) -> str:
     return str(item.get("ssh_id") or item.get("id") or "").strip()
@@ -115,71 +113,6 @@ def _list_ssh_keys_for_output(
         if not items or len(collected) >= known_total:
             return collected, known_total
         page += 1
-
-
-def _flatten_public_values(value: Any, *, prefix: str = "") -> list[tuple[str, str]]:
-    if isinstance(value, dict):
-        rows: list[tuple[str, str]] = []
-        for key in sorted(value):
-            child_prefix = f"{prefix}.{key}" if prefix else str(key)
-            rows.extend(_flatten_public_values(value[key], prefix=child_prefix))
-        return rows
-    if isinstance(value, list):
-        rows = []
-        for index, child in enumerate(value, start=1):
-            rows.extend(_flatten_public_values(child, prefix=f"{prefix}[{index}]"))
-        return rows
-    if isinstance(value, tuple):
-        return _flatten_public_values(list(value), prefix=prefix)
-    return [(prefix or "quota", scrub_raw_ids(value))]
-
-
-def _prune_public_value(value: Any, remaining: int) -> tuple[Any, int]:
-    if remaining <= 0:
-        return _OMITTED, 0
-    if isinstance(value, dict):
-        result: dict[str, Any] = {}
-        used = 0
-        for key in sorted(value):
-            child, child_used = _prune_public_value(value[key], remaining - used)
-            if child is not _OMITTED:
-                result[str(key)] = child
-            used += child_used
-            if used >= remaining:
-                break
-        return result, used
-    if isinstance(value, list):
-        if all(not isinstance(item, (dict, list, tuple)) for item in value):
-            shown = min(len(value), remaining)
-            return list(value[:shown]), shown
-        result_list: list[Any] = []
-        used = 0
-        for item in value:
-            child, child_used = _prune_public_value(item, remaining - used)
-            if child is not _OMITTED:
-                result_list.append(child)
-            used += child_used
-            if used >= remaining:
-                break
-        return result_list, used
-    if isinstance(value, tuple):
-        return _prune_public_value(list(value), remaining)
-    return value, 1
-
-
-def _bound_public_value(
-    value: Any,
-    *,
-    limit: int | None,
-) -> tuple[Any, list[tuple[str, str]], dict[str, int | bool]]:
-    rows = _flatten_public_values(value)
-    page = bound_collection(rows, limit=limit)
-    if not page.truncated:
-        return value, page.items, {}
-    bounded_value, _used = _prune_public_value(value, page.shown)
-    if bounded_value is _OMITTED:
-        bounded_value = {}
-    return bounded_value, page.items, page.metadata()
 
 
 def _read_public_key(
@@ -313,79 +246,6 @@ def whoami_user(ctx: Context) -> None:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
-
-
-@click.command("quota")
-@click.option(
-    "--limit",
-    "-n",
-    type=click.IntRange(1),
-    default=None,
-    help="Maximum quota rows to display (default: 20).",
-)
-@click.option("--all", "show_all", is_flag=True, help="Show every quota row.")
-@pass_context
-def quota_user(ctx: Context, limit: int | None, show_all: bool) -> None:
-    """Show the current user's quota.
-
-    \b
-    Note: user-level quota is admin-only on qz.sii.edu.cn. Regular users may
-    see `用户不存在`; use `<workload> quota` and live availability for ordinary
-    compute decisions, and `inspire project list` only for project-level
-    metadata.
-    """
-    try:
-        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
-    except ValueError as e:
-        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
-
-    try:
-        session = get_web_session()
-        data = browser_api_module.get_user_quota(session=session)
-        public_quota = json_formatter.sanitize_json_data(data)
-        bounded_quota, rows, metadata = _bound_public_value(
-            public_quota,
-            limit=effective_limit,
-        )
-        if ctx.json_output:
-            click.echo(
-                json_formatter.format_json(
-                    {
-                        "quota": bounded_quota,
-                        **metadata,
-                    }
-                )
-            )
-            return
-        if not public_quota:
-            click.echo("No quota data returned.")
-            return
-        for key, value in rows:
-            click.echo(f"{key}: {value}")
-        if metadata:
-            click.echo(
-                f"Showing {metadata['shown']} of {metadata['total']}. "
-                "Use --all for the full list."
-            )
-
-    except SessionExpiredError as e:
-        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
-    except Exception as e:
-        msg = str(e)
-        if "用户不存在" in msg or "user does not exist" in msg.lower():
-            _handle_error(
-                ctx,
-                "APIError",
-                msg,
-                EXIT_API_ERROR,
-                hint=(
-                    "User-level quota is admin-only on qz.sii.edu.cn; regular "
-                    "users may see this error. Use `<workload> quota` and live "
-                    "availability for ordinary compute decisions; `inspire project "
-                    "list` is project-level metadata."
-                ),
-            )
-        _handle_error(ctx, "APIError", msg, EXIT_API_ERROR)
 
 
 @click.command("api-keys")
@@ -763,7 +623,6 @@ def permissions_user(
 
 __all__ = [
     "whoami_user",
-    "quota_user",
     "api_keys_user",
     "ssh_keys_user",
     "permissions_user",

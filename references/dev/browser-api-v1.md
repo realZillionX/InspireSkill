@@ -35,7 +35,7 @@
 
 | 域 | 当前 Browser API 家族 | 公开 CLI |
 | --- | --- | --- |
-| 账号与用户 | `/user/quota`, `/user/{user_id}`, `/user/permissions/...`, `/ssh/*`；当前用户详情与 API Key 已迁 v2 | `user whoami`, `user quota`, `user permissions`, `user api-keys`, `user ssh-keys list/add/delete` |
+| 账号与用户 | `/user/{user_id}`, `/user/permissions/...`, `/ssh/*`；当前用户详情与 API Key 已迁 v2 | `user whoami`, `user permissions`, `user api-keys`, `user ssh-keys list/add/delete` |
 | Workspace 与 Project | `/user/routes/...`, `/project/list*`, `/project/<project>`, `/project/owners` | `config context`, `init`, `project list/detail/owners` |
 | 文件页发现 | `/file/get_system_storage_type_list`, `/file/dir/list` | `init`, `init --scope project`, Notebook Path Alias 工作流 |
 | Notebook | 全部已迁 v2；Notebook Lab 与 Proxy 见下一行，仍在 v1 | `notebook create/list/status/start/stop/delete/events/lifecycle`, Name Resolver |
