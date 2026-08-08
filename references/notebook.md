@@ -42,9 +42,7 @@ Transport 由 Notebook 所属 Compute Group 决定：Group 名称含 `H100` 或 
 | `ssh-config` | 给 OpenSSH、`scp`、`rsync`、VS Code Remote SSH 使用 | 受限 Notebook 不生成 |
 | `connection refresh` | 创建/刷新 SSH/Rtunnel Cache | 受限 Notebook 不建立连接 |
 | `ssh-proxy` | OpenSSH ProxyCommand | 受限 Notebook 不使用 |
-| `proxy-url` | 暴露容器 HTTP 端口 | 受限 Notebook 默认拒绝 |
-| `url` | Notebook Web IDE 入口 | 允许 |
-| `vscode` | VS Code Web IDE 入口 | 允许 |
+| `proxy-url` | 返回容器 HTTP 端口的外部地址 | 受限 Notebook 默认拒绝 |
 
 `--workspace` 主要用于首次解析或同名 Notebook 消歧；连接缓存建立后，后续命令通常可按名称使用。缓存是性能和连接复用工具，不是平台事实来源。
 
@@ -102,15 +100,18 @@ rsync -av ./dataset/ cpu-box:/inspire/hdd/project/topic/user/dataset/
 
 ## 5. IDE URL 与 HTTP Proxy
 
-Notebook Web IDE URL 是浏览器入口，受启智登录态和项目权限约束，不是 SDK base URL。
-
-VS Code Web IDE 使用最终公开命令：
+容器内 HTTP 服务用 `proxy-url` 取得外部地址：
 
 ```bash
-inspire notebook vscode <name> --workspace <workspace>
+inspire notebook proxy-url <name> --workspace <workspace> --port 7860
 ```
 
-容器内 HTTP 服务用 Notebook Proxy 暴露。Proxy 只提供网络通路，不替代应用自己的鉴权；Gradio、FastAPI、LLM API 仍要有自己的登录或 API Key。发布给协作者前做无 Key / 有 Key 对照，确认未授权请求会被拒绝。
+它**只打印地址、不打开任何东西**，所以拿到就能直接 `curl`。`--path` 追加服务路径，`--check` 顺带探一次：`reachable` 表示服务在应答，`no_service` 表示端口上没东西（去把服务起起来），`blocked` 表示网关拒绝（权限问题）。
+
+两点必须记住：
+
+- **这个地址本身是凭据。** 它内嵌一段短期 token，拿到的人对该 Notebook 的访问权和你一样。它会进对话记录和 shell 历史，别往外发。
+- **Proxy 只提供网络通路，不替代应用自己的鉴权。** Gradio、FastAPI、LLM API 仍要有自己的登录或 API Key。发布给协作者前做无 Key / 有 Key 对照，确认未授权请求会被拒绝。
 
 ## 6. 基底环境
 

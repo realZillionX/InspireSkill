@@ -57,8 +57,6 @@ _SINGLE_RESOURCE_PATHS = (
     ("notebook", "events"),
     ("notebook", "lifecycle"),
     ("notebook", "metrics"),
-    ("notebook", "url"),
-    ("notebook", "vscode"),
     ("notebook", "proxy-url"),
     ("hpc", "status"),
     ("hpc", "instances"),
@@ -163,8 +161,6 @@ def test_job_single_workspace_resolver_rejects_all_before_session(
         ("events", ()),
         ("lifecycle", ()),
         ("metrics", ("--no-plot",)),
-        ("url", ()),
-        ("vscode", ()),
         ("proxy-url", ("--port", "30000")),
     ),
 )

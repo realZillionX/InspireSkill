@@ -41,7 +41,7 @@
 | Workspace 与 Project | 全部已迁 v2 | `config context`, `init`, `project list/detail/owners` |
 | 文件页发现 | 全部已迁 v2 | `init`, `init --scope project`, Notebook Path Alias 工作流 |
 | Notebook | 全部已迁 v2；Notebook Lab 与 Proxy 见下一行，仍在 v1 | `notebook create/list/status/start/stop/delete/events/lifecycle`, Name Resolver |
-| Notebook 终端与 Proxy | Notebook Lab、Terminal REST/WebSocket、Notebook Proxy | `notebook exec/shell/url/vscode/proxy-url`, 支持 SSH 的 Notebook 的 `ssh`/`scp`/`ssh-config` |
+| Notebook 终端与 Proxy | Notebook Lab、Terminal REST/WebSocket、Notebook Proxy | `notebook exec/shell/proxy-url`, 支持 SSH 的 Notebook 的 `ssh`/`scp`/`ssh-config` |
 | Image | 全部已迁 v2 | `image list/detail/register/save/set-visibility/delete` |
 | GPU Job | 仅剩 `/train_job/remote_cmd`（WebSocket，无 v2 对应）| `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |
 | HPC | 全部已迁 v2；按当前用户过滤列表时仍复用账号域的 `/user/detail` | `hpc create/list/status/stop/delete/events/instances`, Name Resolver |
@@ -69,7 +69,7 @@ Metrics Wrapper 统一覆盖 Notebook、Job、HPC、Ray 和 Serving，并负责�
 - 受限 Notebook 的 `exec` / `shell` 使用 Jupyter Terminal REST + WebSocket，并在命令结束后回收本次创建的 Terminal。
 - Compute Group 名称不含 `H100` / `H200` 的 Notebook 可以建立本地 Connection，供 `ssh`、`scp`、`ssh-config` 和外部 OpenSSH 工具复用。
 - `--account` 指定的 Account Alias 必须贯穿 Name 解析、Session、代理、Terminal 和 Connection Cache。
-- `url`、`vscode` 和 `proxy-url` 输出或打开可读入口，不把内部网关路径作为公共资源身份。
+- `proxy-url` 是整个 Notebook 命令组里**唯一**打印平台 URL 的命令：Agent 要靠它去请求容器里的服务，而这个地址的每一段都是平台句柄，洗过就不通了。它走 `format_json(..., preserve_raw={"url"})` 这个显式开关，不是绕过输出边界。其余命令一律不把内部网关路径当作公共资源身份。
 
 ## 6. 变更验收
 

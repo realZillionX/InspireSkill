@@ -42,6 +42,27 @@
 
 ### 破坏性变更
 
+- 移除 `inspire notebook url` 和 `inspire notebook vscode`。这个 CLI 由 Agent 驱动，
+  而这两条命令唯一的作用是在本机默认浏览器里打开一个网页——Agent 没有浏览器可开，
+  这个动作对它没有任何意义。要人来看 Web IDE，直接在启智控制台打开 Notebook 即可。
+
+- `inspire notebook proxy-url` 改为**打印**地址，不再打开浏览器。它的用途是拿到
+  Notebook 容器里某个端口的外部 HTTP 地址，好去请求部署在里面的服务，所以地址本身就是
+  结果；此前它把地址藏起来、只开一个浏览器窗口，对 Agent 完全不可用。human 输出就是
+  一行 URL，`--json` 输出 `{name, url}`（带 `--check` 时多一个 `service_check`）。
+
+  这条命令因此成为整个 Notebook 命令组里唯一打印平台 URL 的命令。**这个地址等同于
+  凭据**：它内嵌一段短期 token，持有者对该 Notebook 的访问权与你相同，而它会进 Agent
+  对话记录和 shell 历史。没有免 token 的替代形式——平台域上的
+  `/api/v1/notebook/lab/{id}/proxy/{port}/` 实测 404，只有带 token 的网关 URL 真的会去
+  连容器端口。JSON 输出走新增的显式开关 `format_json(..., preserve_raw={"url"})`，因为
+  默认的句柄清洗会把这条 URL 整条洗成 `<redacted>`，洗完就不通了；这个开关比既有的
+  `preserve_paths` 更强，只在「洗过就没有意义」的值上使用。
+
+  顺带修正 `--check` 的判定：端口上没有服务时网关返回 500 `connect ECONNREFUSED`，
+  此前落进 `blocked` 这一档，读起来像是权限问题；现在报 `no_service`，与「去把服务起
+  起来」这个真实动作对应。
+
 - 移除 Model Plaza 的全部 Wrapper（`list_model_plaza`、`get_model_plaza_filters`、
   `get_model_plaza_detail`、`list_model_plaza_related_workspaces`、
   `get_model_plaza_deploy_serving_config`）。它们从未被任何 `inspire` 命令调用，只存在

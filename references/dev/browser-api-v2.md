@@ -178,16 +178,13 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 `notebook` 同样是全域迁移，但 `/notebook/lab*` 和 Notebook Proxy 按第 9 节保留 v1。几处与 `ray` 相反、必须逐个实测的地方：列表键是 **`list`** 而不是 `items`，`total` 是 int 而不是字符串；`ListRunIndex` 无分页，传 `PageNumber` 直接报错；v1 用 `operation` 枚举复用的 `/notebook/operate` 在 v2 拆成了 `StartNotebook` / `StopNotebook`，v1 那条 REST 风格的 `DELETE /notebook/{id}` 也有了正式的 `DeleteNotebook`。找不到资源时返回 `ResourceNotFound`（HTTP 仍是 200），不再是 v1 的传输层 404，依赖 404 判断「不存在」的调用方必须同时认这个码。
 
-`notebook url` 和 `notebook vscode` 打开的**不是同一个东西**，这点很容易记反：
+**网关 URL 现在只有一个消费者：`proxy-url`。** 打开 Web IDE 的 `notebook url` 和 `notebook vscode` 已经删除 —— 这个 CLI 由 Agent 驱动，Agent 没有浏览器可开，「在本机打开一个网页」这个动作对它没有任何意义。留下的是「拿到容器里某个端口的外部地址」，那是 Agent 真正要的：它在 Notebook 里部署完东西之后得能去请求。
 
-| 命令 | 打开的 URL | 来源 |
-| --- | --- | --- |
-| `notebook url` | `{base_url}/ide?notebook_id=<id>` —— 平台自己的入口页，由它把 IDE 装进 iframe | 直接拼字符串，不抓取，秒开 |
-| `notebook vscode` | `https://<gateway>/ws-.../vscode/<runtime>/<token>/` —— 直连 IDE 网关，跳过平台外壳 | Playwright 抓取或读缓存（缓存约 1.5 秒，未命中约 36 秒） |
+`proxy-url` 因此是整个 Notebook 命令组里唯一打印平台 URL 的命令。这不是绕过输出边界，是显式开的口子：`format_json(..., preserve_raw={"url"})`。理由是这个地址的**每一段都是平台句柄**（`ws-`、`project-`、`user-`、runtime、token），默认的 `scrub_raw_ids` 会把它整条洗成 `<redacted>`，洗完就不通了。代价必须说清楚：**这个地址等同于凭据**，内嵌的短期 token 让持有者对该 Notebook 的访问权与你相同，而它会进 Agent 对话记录和 shell 历史。
 
-只有 `vscode` 走 `_split_ide_gateway`。`proxy-url` 也从网关 URL 派生，但它拼 `/proxy/<port>/` 时会先 `rstrip('/')` 再补斜杠，所以尾斜杠那个坑碰不到它。
+没有免 token 的形式。实测：平台域上的 `/api/v1/notebook/lab/{id}/proxy/{port}/` 返回 `404 page not found`，只有带 token 的网关 URL 真的会去连容器端口（端口没人监听时返回 500 `connect ECONNREFUSED`，`--check` 据此报 `no_service` 而不是 `blocked`）。
 
-`notebook` 下还有一个 `GetNotebookAccessUrl`，**故意不接**。它返回 `{jupyter_url, vscode_url}`，各自带 `?token=`，形状与抓取结果一致（实测逐段对得上，只多一个 `?token=` 查询参数，而那个参数非必需）。不接的理由是**它只能替掉一小块**：`vscode` 确实能把约 36 秒的无头浏览器抓取换成一次 JSON 调用，但 `notebook exec` / `shell` 和 rtunnel bootstrap 要的不是 URL 字符串，而是一个**活的 Playwright 页面句柄**（前者在 lab frame 里驱动 Terminal 控件，后者往容器里注入脚本），所以浏览器链路无论如何都得留着。接它属于性能改动，要单独评估，不在 v1→v2 迁移范围内。（STOPPED 的 Notebook 上它返回两个空字符串。）
+`notebook` 下的 `GetNotebookAccessUrl` 返回 `{jupyter_url, vscode_url}`，**归一化之后与 Playwright 抓取的结果逐字节相同**，0.53 秒对抓取的 6–36 秒。它现在是 `proxy-url` 的一个明确优化机会（省掉每次起 Chromium），但还没接。真正的大头在别处：实测**纯 HTTP 就能拿到 `_xsrf` 并建/删 Jupyter terminal**（GET `jupyter_url` → 200 且 cookie 落袋 → POST `api/terminals` → 200），所以 `notebook exec` / `shell` 那条无头浏览器链路原则上可以整条拆掉，只剩页内 WebSocket 需要换成 Python 客户端（`job_shell.py` 对 `/train_job/remote_cmd` 已经是这么做的）。这属于功能重构，要单独验证和受控验收。（STOPPED 的 Notebook 上 `GetNotebookAccessUrl` 返回两个空字符串。）
 
 `ray` 是全域迁移，v1 `/ray_job/*` 九个端点已全部退出。响应逐字段与 v1 一致，因此 Wrapper 的归一化未改动。三条与其它域不同的约束：资源键在每个 Action 上都是 `ray_job_id`（`job_id` 和 `id` 都报 `unknown field`）；工作空间 scoping 是顶层 `workspace_id`，第 5 节那层 `filter` 嵌套在这里会被拒；**没有 `CreateJobConsole` 变体**，创建走 `CreateJob`。
 
@@ -213,10 +210,10 @@ JupyterLab / VS Code 打开之后还有一种带 token 的等价形式 `/{jupyte
 
 CLI 里有两个消费者，第二个是关键：
 
-1. `inspire notebook proxy-url --port N` —— 把容器里跑的 HTTP 服务（TensorBoard、Gradio、Streamlit、临时 dev server 之类）在系统浏览器里打开。URL 含临时路由信息，命令只负责打开，不打印也不返回。H100/H200 受限 Notebook 上默认拒绝，要 `--allow-restricted` 才放行。
+1. `inspire notebook proxy-url --port N` —— **返回**容器里那个 HTTP 服务（TensorBoard、Gradio、Streamlit、推理端点）的外部地址，供调用方直接请求；它不打开任何东西。H100/H200 受限 Notebook 上默认拒绝，要 `--allow-restricted` 才放行。
 2. **整条 SSH 链路都架在它上面。** 受限环境不接受直连，所以 InspireSkill 在容器里起一个 sshd（默认 22222 端口），再**通过这条 HTTP 代理**去够它 —— `_wait_for_rtunnel` 轮询的就是这个 proxy URL，等 sshd 应答。`notebook ssh` / `scp` / `ssh-config` 以及外部 OpenSSH 工具能用，全靠这一条。
 
-所以它不是可有可无的遗留：删掉 Notebook Proxy 等于同时删掉 `proxy-url` 和整套 Notebook SSH。它与平台用户中心的 SSH 公钥注册表（曾经的 `/ssh/*`）没有任何关系 —— 后者管的是账号级公钥，rtunnel 读的是本机 `~/.ssh/*.pub` 并直接注入容器。
+所以它不是可有可无的遗留：Web IDE 那两条命令已经删了，但删掉 Notebook Proxy 等于同时删掉 `proxy-url` 和整套 Notebook SSH。它与平台用户中心的 SSH 公钥注册表（曾经的 `/ssh/*`）没有任何关系 —— 后者管的是账号级公钥，rtunnel 读的是本机 `~/.ssh/*.pub` 并直接注入容器。
 
 **这张表在 2026-08-08 大幅缩水过一次。** 它原先列着 `/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 共 10 个家族，理由都是「discovery 里没有」。实测下来这 10 个全部有可用 Action：9 个已迁完，`/model_plaza/*` 因为始终没有 CLI 消费者，整族连同 Wrapper 一起删除。唯一真正没有对应物的只有上面这几条。**往这张表里加行之前，先按第 3 节把存在性探针跑一遍。**
 

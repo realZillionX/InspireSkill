@@ -265,6 +265,7 @@ def _sanitize_json_value(
     *,
     parent_key: object = "",
     preserve_path_keys: frozenset[str] = frozenset(),
+    preserve_raw_keys: frozenset[str] = frozenset(),
 ) -> Any:
     if isinstance(value, dict):
         return {
@@ -272,6 +273,7 @@ def _sanitize_json_value(
                 child,
                 parent_key=key,
                 preserve_path_keys=preserve_path_keys,
+                preserve_raw_keys=preserve_raw_keys,
             )
             for key, child in value.items()
             if not _is_id_key(key)
@@ -284,6 +286,7 @@ def _sanitize_json_value(
                 item,
                 parent_key=parent_key,
                 preserve_path_keys=preserve_path_keys,
+                preserve_raw_keys=preserve_raw_keys,
             )
             for item in value
         ]
@@ -293,10 +296,17 @@ def _sanitize_json_value(
                 item,
                 parent_key=parent_key,
                 preserve_path_keys=preserve_path_keys,
+                preserve_raw_keys=preserve_raw_keys,
             )
             for item in value
         ]
     if isinstance(value, str):
+        if _normalized_key(parent_key) in preserve_raw_keys:
+            # The caller declared this key's value *is* the answer, so it ships
+            # byte for byte. Only for values that are useless once scrubbed —
+            # `notebook proxy-url` is the one caller today, because a proxy URL
+            # with its handles removed addresses nothing.
+            return value
         if _normalized_key(parent_key) in _RAW_CONTENT_KEYS:
             return scrub_raw_ids(value)
         preserve_path = _normalized_key(parent_key) in preserve_path_keys
@@ -318,12 +328,24 @@ def sanitize_json_data(
     data: Any,
     *,
     preserve_paths: set[str] | frozenset[str] | None = None,
+    preserve_raw: set[str] | frozenset[str] | None = None,
 ) -> Any:
-    """Return a CLI-safe JSON payload with platform handle fields removed."""
+    """Return a CLI-safe JSON payload with platform handle fields removed.
+
+    ``preserve_paths`` exempts a key from filesystem-path redaction only.
+    ``preserve_raw`` is the stronger, rarer opt-in: the key's string value skips
+    sanitization entirely. Reach for it only when scrubbing would destroy the
+    value's whole purpose, and say why at the call site.
+    """
     normalized_paths = frozenset(
         _normalized_key(key) for key in (preserve_paths or ())
     )
-    return _sanitize_json_value(data, preserve_path_keys=normalized_paths)
+    normalized_raw = frozenset(_normalized_key(key) for key in (preserve_raw or ()))
+    return _sanitize_json_value(
+        data,
+        preserve_path_keys=normalized_paths,
+        preserve_raw_keys=normalized_raw,
+    )
 
 
 def format_json(
@@ -331,6 +353,7 @@ def format_json(
     success: bool = True,
     *,
     preserve_paths: set[str] | frozenset[str] | None = None,
+    preserve_raw: set[str] | frozenset[str] | None = None,
 ) -> str:
     """Format data as JSON output.
 
@@ -343,7 +366,9 @@ def format_json(
     """
     output = {
         "success": success,
-        "data": sanitize_json_data(data, preserve_paths=preserve_paths),
+        "data": sanitize_json_data(
+            data, preserve_paths=preserve_paths, preserve_raw=preserve_raw
+        ),
     }
     return json.dumps(output, ensure_ascii=False, separators=(",", ":"))
 

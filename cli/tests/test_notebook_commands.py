@@ -2684,8 +2684,6 @@ def test_notebook_workspace_metavars_are_name_oriented() -> None:
         "delete",
         "events",
         "metrics",
-        "url",
-        "vscode",
         "proxy-url",
     ),
 )

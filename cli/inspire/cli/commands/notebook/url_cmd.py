@@ -1,14 +1,17 @@
-"""Notebook web-entry commands.
+"""`notebook proxy-url` — the HTTP address of a container port.
 
-Platform IDE links contain notebook, workspace, runtime, and short-lived
-token handles.  They are still required internally to open the web UI, but
-are never emitted by the CLI.  The commands below resolve the link, open it
-locally, and report only the user-facing notebook name.
+This CLI is driven by agents, which have no browser to open, so the web IDE
+entrances (`url`, `vscode`) were removed; only reaching a *service* deployed in
+the notebook is still useful, and that needs the address in hand.
+
+So this one command deliberately breaks the notebook output boundary that the
+rest of the group keeps: it prints the resolved proxy URL, token segment and
+all. There is no token-free form — the platform route on the console domain
+404s, and only the gateway URL with its token actually proxies.
 """
 
 from __future__ import annotations
 
-import webbrowser
 from typing import TYPE_CHECKING
 
 import click
@@ -18,7 +21,6 @@ from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 
-from .public_output import public_operation
 from .transport import preflight_notebook_transport_policy
 
 if TYPE_CHECKING:
@@ -80,138 +82,11 @@ def _resolve_notebook(
     return session, base_url, notebook_id
 
 
-def _open_resolved_url(
-    ctx: Context,
-    *,
-    notebook: str,
-    url: str,
-    action: str = "open",
-) -> bool:
-    """Open a resolved URL without exposing it on any CLI stream."""
-    from inspire.cli.context import EXIT_API_ERROR
-    from inspire.cli.utils.errors import exit_with_error as _handle_error
-
-    try:
-        opened = bool(webbrowser.open(url, new=2, autoraise=True))
-    except Exception:
-        opened = False
-    if not opened:
-        _handle_error(
-            ctx,
-            "BrowserError",
-            f"Could not {action} the web interface for notebook '{scrub_raw_ids(notebook)}'.",
-            EXIT_API_ERROR,
-            hint="Run the command in a session with a browser available.",
-        )
-        return False
-
-    if ctx.json_output:
-        click.echo(
-            json_formatter.format_json(public_operation(scrub_raw_ids(notebook), "opened"))
-        )
-    else:
-        click.echo(f"Opened notebook '{scrub_raw_ids(notebook)}'.")
-    return True
-
-
-@click.command("url")
-@click.argument("notebook", metavar="NAME")
-@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
-@click.option(
-    "--pick",
-    type=click.IntRange(1),
-    default=None,
-    help=NAME_PICK_HELP,
-)
-@pass_context
-def notebook_url(
-    ctx: Context,
-    notebook: str,
-    workspace: str,
-    pick: int | None,
-) -> None:
-    """Open a notebook's web IDE in the system browser."""
-    _session, base_url, notebook_id = _resolve_notebook(
-        ctx,
-        notebook,
-        workspace,
-        pick=pick,
-    )
-    _open_resolved_url(
-        ctx,
-        notebook=notebook,
-        url=f"{base_url}/ide?notebook_id={notebook_id}",
-        action="open",
-    )
-
-
-@click.command("vscode")
-@click.argument("notebook", metavar="NAME")
-@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
-@click.option(
-    "--pick",
-    type=click.IntRange(1),
-    default=None,
-    help=NAME_PICK_HELP,
-)
-@click.option(
-    "--timeout",
-    type=click.IntRange(10),
-    default=60,
-    show_default=True,
-    help="Seconds to wait for the IDE to load.",
-)
-@click.option(
-    "--refresh",
-    is_flag=True,
-    help="Skip the cached IDE route and resolve a fresh route.",
-)
-@pass_context
-def notebook_vscode(
-    ctx: Context,
-    notebook: str,
-    workspace: str,
-    pick: int | None,
-    timeout: int,
-    refresh: bool,
-) -> None:
-    """Open the notebook's VS Code web IDE.
-
-    The runtime/token suffix is an internal implementation detail.
-    """
-    from inspire.platform.web.browser_api import resolve_notebook_vscode_ide_url
-
-    session, _base_url, notebook_id = _resolve_notebook(
-        ctx,
-        notebook,
-        workspace,
-        pick=pick,
-    )
-    ide_url = resolve_notebook_vscode_ide_url(
-        notebook_id,
-        session=session,
-        timeout=timeout,
-        refresh=refresh,
-    )
-    if not ide_url:
-        from inspire.cli.context import EXIT_API_ERROR
-        from inspire.cli.utils.errors import exit_with_error as _handle_error
-
-        _handle_error(
-            ctx,
-            "APIError",
-            f"Could not open the VS Code interface for notebook '{scrub_raw_ids(notebook)}'.",
-            EXIT_API_ERROR,
-            hint="Retry once the notebook is RUNNING.",
-        )
-        return
-    _open_resolved_url(ctx, notebook=notebook, url=ide_url, action="open")
-
-
 def _check_proxy_url(session: WebSession, url: str) -> str:
     from inspire.platform.web.session import build_requests_session
 
     http = None
+    body = ""
     try:
         http = build_requests_session(session, url)
         response = http.get(
@@ -222,6 +97,9 @@ def _check_proxy_url(session: WebSession, url: str) -> str:
         )
         try:
             status = int(response.status_code)
+            if status >= 500:
+                # Bounded: only enough to read the gateway's upstream verdict.
+                body = str(response.raw.read(256, decode_content=True) or b"")
         finally:
             response.close()
     except Exception:
@@ -239,6 +117,11 @@ def _check_proxy_url(session: WebSession, url: str) -> str:
         return "blocked"
     if status in {502, 503, 504}:
         return "no_service"
+    # The gateway answers 500 `connect ECONNREFUSED <addr>` when the port has
+    # nothing listening. That is "start your service", not "you lack access" —
+    # reporting it as blocked sends the caller looking for a permission problem.
+    if status >= 500 and "ECONNREFUSED" in body:
+        return "no_service"
     return "blocked"
 
 
@@ -255,7 +138,7 @@ def _check_proxy_url(session: WebSession, url: str) -> str:
     "--port",
     required=True,
     type=click.IntRange(1, 65535),
-    help="Container HTTP port to open through the notebook proxy.",
+    help="Container HTTP port to reach through the notebook proxy.",
 )
 @click.option(
     "--path",
@@ -268,7 +151,7 @@ def _check_proxy_url(session: WebSession, url: str) -> str:
     type=click.IntRange(10),
     default=60,
     show_default=True,
-    help="Seconds to wait for the IDE to load.",
+    help="Seconds to wait for the notebook gateway route to resolve.",
 )
 @click.option(
     "--refresh",
@@ -278,12 +161,12 @@ def _check_proxy_url(session: WebSession, url: str) -> str:
 @click.option(
     "--check",
     is_flag=True,
-    help="Probe the service before opening it.",
+    help="Probe the service and report whether it answers.",
 )
 @click.option(
     "--allow-restricted",
     is_flag=True,
-    help="Allow opening a proxy from a restricted H100/H200 notebook.",
+    help="Allow a proxy URL for a restricted H100/H200 notebook.",
 )
 @pass_context
 def notebook_proxy_url(
@@ -298,10 +181,14 @@ def notebook_proxy_url(
     check: bool,
     allow_restricted: bool,
 ) -> None:
-    """Open a notebook container service in the system browser.
+    """Print the HTTP URL that reaches a container port from outside.
 
-    The generated proxy URL contains temporary routing information and is
-    never printed or returned. Use the browser window opened by this command.
+    Use this to fetch a service deployed inside the notebook — an inference
+    endpoint, a dev server, TensorBoard. The URL is the command's whole output;
+    nothing is opened locally.
+
+    The URL embeds a short-lived access token, so it grants whoever holds it the
+    same reach into the notebook that you have. Treat it as a credential.
     """
     from inspire.cli.context import EXIT_API_ERROR
     from inspire.cli.utils.errors import exit_with_error as _handle_error
@@ -344,21 +231,30 @@ def notebook_proxy_url(
         _handle_error(
             ctx,
             "APIError",
-            f"Could not open the proxy service for notebook '{scrub_raw_ids(notebook)}'.",
+            f"Could not resolve the proxy service for notebook '{scrub_raw_ids(notebook)}'.",
             EXIT_API_ERROR,
             hint="Retry once the notebook is RUNNING with its web IDE reachable.",
         )
         return
 
     check_status = _check_proxy_url(session, resolved_url) if check else None
-    if not _open_resolved_url(ctx, notebook=notebook, url=resolved_url, action="open"):
-        return
+
     if ctx.json_output:
-        # `_open_resolved_url` already emitted the compact result.  The check
-        # result is intentionally omitted to keep the JSON contract stable.
+        payload: dict[str, object] = {
+            "name": scrub_raw_ids(notebook),
+            "url": resolved_url,
+        }
+        if check_status:
+            payload["service_check"] = check_status
+        # `preserve_raw` because the default scrub rewrites every handle in the
+        # URL to `<redacted>`, which is correct everywhere else and leaves this
+        # command emitting an address that reaches nothing.
+        click.echo(json_formatter.format_json(payload, preserve_raw={"url"}))
         return
+
+    click.echo(resolved_url)
     if check_status:
         click.echo(f"Service check: {check_status}")
 
 
-__all__ = ["notebook_proxy_url", "notebook_url", "notebook_vscode"]
+__all__ = ["notebook_proxy_url"]

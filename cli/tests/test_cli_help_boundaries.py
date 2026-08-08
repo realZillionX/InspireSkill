@@ -886,11 +886,17 @@ def test_notebook_scp_help_is_ssh_only() -> None:
     assert "/inspire/" in result.output
 
 
-def test_notebook_proxy_url_help_exposes_temporary_route_info() -> None:
+def test_notebook_proxy_url_help_warns_the_url_is_a_credential() -> None:
+    """The one command that emits a platform URL must say what that URL is.
+
+    It embeds a short-lived token, so it reaches the notebook for anyone who
+    holds it — and it lands in agent transcripts and shell history by design.
+    """
     result = CliRunner().invoke(cli_main, ["notebook", "proxy-url", "--help"])
 
     assert result.exit_code == 0
-    assert "temporary routing information" in result.output
+    assert "token" in result.output.lower()
+    assert "credential" in result.output.lower()
     assert "handle" not in result.output.lower()
     assert " id " not in f" {result.output.lower()} "
 
