@@ -406,7 +406,7 @@ def test_create_serving_posts_current_web_ui_payload(monkeypatch) -> None:
     record: dict[str, Any] = {}
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"inference_serving_id": "sv-new"}},
+        {"Result": {"inference_serving_id": "sv-new"}},
         record,
     )
 
@@ -440,7 +440,7 @@ def test_create_serving_posts_current_web_ui_payload(monkeypatch) -> None:
 
     assert result == {"inference_serving_id": "sv-new"}
     assert record["method"] == "POST"
-    assert record["url"].endswith("/inference_servings/create")
+    assert record["url"].endswith("/api/v2/inference_serving?Action=CreateServingConsole")
     assert record["body"] == {
         "workspace_id": "ws-1",
         "project_id": "project-1",

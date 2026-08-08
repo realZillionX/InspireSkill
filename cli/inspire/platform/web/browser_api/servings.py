@@ -2,12 +2,13 @@
 
 Browser API fills in everything the UI needs on the `/jobs/modelDeployment` page:
 listing, create / detail / stop / delete, configs per workspace, and the
-user+project pickers for the create dialog. Everything except creation goes
-through `/api/v2/inference_serving`; that contract is in
+user+project pickers for the create dialog. The whole domain goes through
+`/api/v2/inference_serving`; that contract is in
 `references/dev/browser-api-v2.md`. Every migrated Action was checked against a
 live serving first — the v1 request bodies are accepted verbatim and the
 responses are field-for-field identical, so the normalization is unchanged.
-Creation stays on `/api/v1/inference_servings/create`; see `create_serving`.
+Creation goes through the undocumented `CreateServingConsole`; see
+`create_serving`.
 
 The list keys differ per Action and are spelled out at each call site:
 `inference_servings` for listing and versions, `groups` for instances,
@@ -20,7 +21,6 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
 from inspire.platform.web.browser_api.core import (
-    _browser_api_path,
     _get_base_url,
     _request_json,
     _v2_result,
@@ -522,24 +522,13 @@ def create_serving(
     if model_source:
         body["model_source"] = model_source
 
-    # Still on v1. `inference_serving.CreateServing` exists but does NOT take
-    # this body: it rejects `description`, `inference_serving_type`,
-    # `mirror_id` and `model_source` as unknown fields, and wants a different
-    # `resource_spec_price` shape. Moving create over is a body rewrite plus
-    # its own controlled validation, not a transport swap, so it is kept on
-    # the v1 endpoint that the public `serving create` contract is built on.
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/inference_servings/create"),
-        referer=f"{_referer()}?spaceId={workspace_id}",
-        body=body,
-        timeout=60,
-    )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-    payload = data.get("data")
-    return payload if isinstance(payload, dict) else {}
+    # `CreateServingConsole`, not the `CreateServing` that discovery lists.
+    # The documented one is described as "via OpenAPI with simplified config"
+    # and takes a different contract (`spec_id` instead of resource_spec_price,
+    # a plain `image` string instead of `mirror_id`, and no `description` /
+    # `inference_serving_type` / `model_source`). The Console variant is absent
+    # from discovery -- like train and hpc -- and accepts this body verbatim.
+    return _serving_v2(session, "CreateServingConsole", body, timeout=60)
 
 
 def _serving_action(
