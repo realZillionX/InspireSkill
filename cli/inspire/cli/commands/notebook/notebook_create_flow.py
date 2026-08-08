@@ -201,7 +201,6 @@ def _resolve_created_notebook_id(
             return ""
         items = _list_notebooks_for_workspace(
             session,
-            base_url=get_base_url(),
             workspace_id=workspace_id,
             user_ids=user_ids,
             keyword=name,

@@ -32,7 +32,6 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from inspire.platform.web.browser_api.core import (
-    _browser_api_path,
     _get_base_url,
     _request_json,
     _v2_result,

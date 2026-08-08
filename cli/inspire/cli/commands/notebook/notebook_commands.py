@@ -59,7 +59,6 @@ from inspire.config.workspaces import (
     resolve_workspace_query_scope,
 )
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web import session as web_session_module
 from inspire.platform.web.browser_api import NotebookFailedError
 
 logger = logging.getLogger(__name__)
