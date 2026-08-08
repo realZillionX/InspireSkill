@@ -52,6 +52,8 @@ Content-Type: application/json
 | Action 全集 | **不完整**。`train.CreateJobConsole`、`hpc.CreateJobConsole` 和 `inference_serving.CreateServingConsole` 都不在 discovery 里，但真实存在且当前 CLI 正在使用 |
 | 分页字段 `PageNumber` | 是唯一的 PascalCase 字段，实际网关同时接受 `PageNumber` / `page_num` / `page`，三者等价且都真实生效 |
 
+**判定「无对应物」时的固定错误模式**：这次迁移里同一个错误犯了三次 —— `inference_serving` 只测了 discovery 里的 `CreateServing` 就说契约变了（其实有 `CreateServingConsole`）；`/cluster_nodes/list` 只测了 `ListWorkspaceNodes` 就说没有（其实是 `ListNodeDimension`，且 `AccessForbidden` 只是 scoping 没写全）；`/user/quota` 只看了 `user` 服务就说没有配额 Action（`workspace.*` 下有 10 个）。**下结论前必须把所有 service 里名字沾边的 Action 全部列出来逐个实测，并按下一段的存在性探针确认有没有未文档化的变体。**
+
 因为 Action 全集不可信，某个 Action 是否存在只能实测。网关对此有明确信号，且不需要发出一次真正的写请求：**空 body 打过去，`InvalidAction: unknown action: X` 表示该 Action 不存在，其它错误码（`InvalidParameter` / `InternalError`，通常带参数校验文案）表示存在但参数不对**。迁移写操作前用这一条确认有没有 Console 变体：`train`、`hpc`、`inference_serving` 有，`ray` 没有。空 body 会在校验阶段被拒，不会创建任何东西，但这只能用来判断存在性 —— 语义仍须按第 18 行的受控验证确认。
 
 discovery 的 `Version` 是内容 etag，可以直接用来判断平台是否改过接口面。历史上它**双向变动过**：早期版本有 `audit`、`file` 两个 service 和整套节点运维 Action，之后被移除；`image`、`model-hub` 则是后加的。所以不能假设新版本是旧版本的超集。
@@ -170,10 +172,9 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 | v1 端点 | 为什么没有对应物 |
 | --- | --- |
-| `/user/quota` | `user` 服务只有 3 个 Action，没有配额 |
+| `/user/quota` | `user` 服务没有配额 Action。`workspace.*` 下有 10 个配额 Action，其中 `GetDefaultUserQuota` / `GetWorkspaceQuota` 普通成员可用且有真实数据，但都是**工作空间级**，与本端点的全局用户配额不是一回事；换过去会改变 `user quota` 的语义并需要新增 `--workspace`，因此按公开合同不变的原则保留 v1（该端点本身对普通用户就是 admin-only，报「用户不存在」）|
 | `/user/{user_id}` | `GetUserDetail` 拒绝任何 id 参数，永远只返回当前账号 |
-| `/project/list`、`/project/list_v2`、`/project/{id}` | `project` 服务只有 `GetProjectForPage` |
-| `/cluster_nodes/list` | 只有工作空间级的 `workspace.ListWorkspaceNodes`，不接受 `logic_compute_group_id`；按计算组统计空闲节点没有对应物 |
+| `/project/list`、`/project/list_v2`、`/project/{id}` | `project` 服务只有 `GetProjectForPage`，且实测与 `/project/list_v2` **不等价**：同一工作空间下前者返回 2 条、后者 3 条，item 字段也不同（`gpu_limit` / `hpc` 只在 v2 侧） |
 
 ## 10. 回落纪律
 
