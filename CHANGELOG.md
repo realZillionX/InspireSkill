@@ -12,7 +12,63 @@
   和绝对路径。`--json` 输出相应新增 `skills` 与 `release_notes` 字段。摘要条目会先
   合并硬换行的续行，不再从行尾截断成半句话。
 
+- Browser API 按域从 `/api/v1` 迁到 `/api/v2`：notebook、ray、train、hpc、
+  inference_serving、model-hub、project、user 的当前用户查询，以及计算组、节点维度、
+  组资源统计和五个 Workload 的 metrics。公开 CLI 合同不变——命令名、参数、Name-only
+  语义、human 与 JSON 输出都保持原样，写操作全部经过受控验证（在 CPU资源空间 起最小
+  规格临时资源跑完整生命周期，train 的删除因为 CPU 组不支持该任务类型，在
+  分布式训练空间 用 1 卡 H100 验证后随即释放）。仍留在 v1 的是实测确认没有对应 Action
+  的部分：`/ssh/*`、`/file/*`、`/notebook/lab*` 与 Notebook Proxy、`/model_plaza/*`、
+  `/model/create`、`/user/permissions`、`/user/routes`、`/project/list*` 与
+  `/project/owners`。两代接口的契约差异记在 `references/dev/browser-api-v2.md`。
+
+### 破坏性变更
+
+- 移除 `inspire user` 整个命令组。`inspire user permissions` 迁到
+  `inspire account permissions`，选项、Name-only 输出和 `--limit` / `--all` 边界都不变；
+  `whoami`、`api-keys`、`ssh-keys` 直接删除。这三条各自的理由：`whoami` 只打印姓名和
+  角色，其底层查询作为内部实现仍在（train / hpc / ray / model 列表靠它按当前用户过滤）；
+  API Key 的值只在创建时可见，列出元数据在 CLI 里无法转化为任何操作；`ssh-keys` 管的是
+  平台用户中心的公钥注册表，而 `notebook ssh` / `scp` / `exec` 读的是本机
+  `~/.ssh/*.pub` 并直接注入，两者互不相干，删除不影响 Notebook SSH。随之移除的还有
+  `ssh-key` 这一资源索引类型——它存在的唯一目的是让 `ssh-keys delete <name>` 按名字解析。
+
+- 移除 `inspire user quota`。它调用的是 admin-only 端点，普通用户恒定收到
+  `用户不存在`（账号是存在的，这只是平台拒绝权限的说法），命令自身的 `--help` 和错误
+  提示早已写明这一点。工作空间级配额用 `<workload> quota`，实时占用用
+  `resources availability`，项目级信息用 `project list`。没有改接 v2 的同名 Action：
+  `workspace.GetDefaultUserQuota` / `GetWorkspaceQuota` 普通成员确实可用，但都是工作
+  空间级的，接过去需要新增必填的 `--workspace`，回答的也不再是「我的账号配额」这个问题。
+
 ### 修复
+
+- `inspire serving start` 与 `inspire serving stop` 此前对任何输入都失败，返回
+  `API error: None`。这两条命令的 URL 早先已指向 `/api/v2`，但仍用 v1 的信封检查
+  （`code != 0`）解包，而 v2 响应根本没有 `code` 字段，于是每次调用都被判成错误。换用
+  v2 解包器后暴露出第二个问题：请求体里的 `version` 字段 v2 同样不接受，正确的请求体
+  只有 `{inference_serving_id}`。
+
+- `inspire hpc create` 此前对任何输入都失败，返回 `InternalError: priority must be set`。
+  请求体把优先级写成了 `task_priority`，而 v2 要 `priority`；平台的措辞像是「值没传」
+  而不是「字段名写错」，所以这个问题一直没被认出来。
+
+- `inspire job create` 和 `inspire hpc create` 传镜像显示名（如
+  `ngc-pytorch:25.02-cuda12.8.0-py3`）会被拒绝，报 `无法找到对应镜像`——平台按 registry
+  URL 匹配，而报错读起来像是镜像不存在。现在显示名会先在镜像目录里解析成 URL；已经是
+  URL 的直接透传、不查目录，`--image NAME|URL` 的合同不变，刚推送尚未出现在列表里的
+  镜像也仍然可用。
+
+- `inspire hpc list` 的名字列此前恒为 N/A，`inspire hpc status|stop|delete <name>`
+  也无法按名字定位任何任务：解析读的是 `name`，而平台返回的字段是 `job_name`。
+
+- `inspire ray list` 的 Created By 列此前恒为 N/A：解析读的是 `created_by` 和
+  `priority`，而平台返回的是 `creator` 和 `priority_name`（前两者始终为 null）。
+
+- `inspire resources nodes` 此前对非工作空间管理员整条命令失败，报
+  `You are not the admin of any workspace`；同时 `resources availability` 的 Free Nodes
+  列恒为 0。两者都源于节点数据取自管理员专属端点，而退化路径取到的是硬件规格表、不含
+  实时状态，因此没有任何节点会被判为空闲。现在改用工作空间级的节点维度查询，普通成员
+  可用，空闲节点数是真实统计。
 
 - 并发冷启动的 Notebook SSH 连接不再互相踩踏。VS Code Remote SSH 这类客户端会同时拉起
   多个 `ssh-proxy` ProxyCommand 进程，此前它们各自看到共享状态缺失或过期，于是同时写
