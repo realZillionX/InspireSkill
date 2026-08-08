@@ -84,7 +84,10 @@ class RayJobInfo:
 
     @classmethod
     def from_api_response(cls, data: dict) -> "RayJobInfo":
-        created_by = data.get("created_by") or {}
+        # The wire fields are `creator` and `priority_name`. `created_by` and
+        # `priority` are always null, so reading only those left every job
+        # ownerless (the list printed N/A) and every priority None.
+        created_by = data.get("creator") or data.get("created_by") or {}
         return cls(
             ray_job_id=str(data.get("ray_job_id") or data.get("id") or ""),
             name=str(data.get("name") or ""),
@@ -96,7 +99,10 @@ class RayJobInfo:
             finished_at=data.get("finished_at") or None,
             created_by_id=str(created_by.get("id") or ""),
             created_by_name=str(created_by.get("name") or ""),
-            priority=_int_or_none(data.get("priority")),
+            priority=_int_or_none(
+                data.get("priority") if data.get("priority") is not None
+                else data.get("priority_name")
+            ),
             raw=data,
         )
 

@@ -166,3 +166,23 @@ def test_hpc_job_info_reads_job_name() -> None:
     # The wire field is `job_name`; reading `name` left every job nameless.
     info = HPCJobInfo.from_api_response({"job_id": "hpc-1", "job_name": "demo"})
     assert info.name == "demo"
+
+
+def test_ray_job_info_reads_creator_and_priority_name() -> None:
+    from inspire.platform.web.browser_api.ray_jobs import RayJobInfo
+
+    # The wire fields are `creator` and `priority_name`; `created_by` and
+    # `priority` are always null, so reading only those left the owner blank.
+    info = RayJobInfo.from_api_response(
+        {
+            "ray_job_id": "rj-1",
+            "name": "demo",
+            "created_by": None,
+            "creator": {"id": "user-1", "name": "Alice"},
+            "priority": None,
+            "priority_name": "10",
+        }
+    )
+    assert info.created_by_id == "user-1"
+    assert info.created_by_name == "Alice"
+    assert info.priority == 10
