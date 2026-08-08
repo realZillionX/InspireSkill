@@ -499,6 +499,7 @@ def _prepare_training_item(
         ),
         exclude_nodes=_optional_str_list(item, "exclude_nodes"),
         shm_size=_optional_int(item, "shm_size", min_value=1),
+        session=session,
     )
 
 

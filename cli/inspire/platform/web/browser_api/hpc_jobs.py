@@ -48,7 +48,10 @@ class HPCJobInfo:
         created_by = data.get("created_by", {}) if isinstance(data.get("created_by"), dict) else {}
         return cls(
             job_id=data.get("job_id", ""),
-            name=data.get("name", ""),
+            # The wire field is `job_name`; `name` has never been populated, so
+            # reading it left every HPC job nameless -- the list rendered N/A
+            # and the Name Resolver could not match anything.
+            name=data.get("job_name") or data.get("name") or "",
             status=data.get("status", ""),
             entrypoint=data.get("entrypoint", data.get("command", "")),
             created_at=data.get("created_at", ""),
@@ -67,34 +70,27 @@ def create_hpc_job(
     payload: dict[str, Any],
     session: Optional[WebSession] = None,
 ) -> dict[str, Any]:
-    """Create an HPC job via the current Web UI v2 Action API."""
+    """Create an HPC job via the current Web UI v2 Action API.
+
+    The payload carries the priority as ``priority``. There used to be a retry
+    here that stripped ``task_priority`` when the platform complained about an
+    unknown ``task`` field; it never fired, because v2 answers the misnamed
+    field with ``priority must be set`` rather than an unknown-field error, and
+    the retry then sent no priority at all. The field is spelled correctly at
+    the call site now, so the retry is gone.
+    """
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "POST",
-        "/api/v2/hpc?Action=CreateJobConsole",
-        referer=f"{_get_base_url()}/jobs/hpc",
-        body=payload,
-        timeout=60,
-    )
-    try:
-        return _v2_result(data)
-    except ValueError as exc:
-        message = str(exc).lower()
-        if "unknown field" not in message or "task" not in message:
-            raise
-        retry_payload = dict(payload)
-        retry_payload.pop("task_priority", None)
-        data = _request_json(
+    return _v2_result(
+        _request_json(
             session,
             "POST",
             "/api/v2/hpc?Action=CreateJobConsole",
             referer=f"{_get_base_url()}/jobs/hpc",
-            body=retry_payload,
+            body=payload,
             timeout=60,
         )
-        return _v2_result(data)
+    )
 
 
 def get_hpc_job_detail(

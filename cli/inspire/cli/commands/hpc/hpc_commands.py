@@ -27,6 +27,7 @@ from inspire.cli.utils.errors import (
     require_confirmation,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.image_resolver import resolve_image_url
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
     resolve_workspace_task_priority,
@@ -282,6 +283,7 @@ def build_hpc_create_payload(
     memory_per_cpu: int,
     enable_hyper_threading: bool,
     resource_spec_price: dict[str, Any],
+    session: Any = None,
 ) -> dict[str, Any]:
     """Build the current Web UI v2 HPC create payload."""
     payload: dict[str, Any] = {
@@ -301,14 +303,19 @@ def build_hpc_create_payload(
             "predef_quota_id": quota_id,
             "cpu": int(resource_spec_price.get("cpu_count") or 0),
             "mem_gi": int(resource_spec_price.get("memory_size_gib") or 0),
-            "image": image,
+            # The platform matches on the registry URL, not the visible name;
+            # sending the name is rejected with 无法找到对应镜像.
+            "image": resolve_image_url(image, session=session),
             "image_type": image_type,
             "instance_count": int(instance_count),
             "spec_price": dict(resource_spec_price),
         },
     }
     if task_priority is not None:
-        payload["task_priority"] = int(task_priority)
+        # `priority`, not `task_priority`: v2 CreateJobConsole rejects the
+        # latter with "priority must be set", which reads like the value is
+        # missing rather than misnamed.
+        payload["priority"] = int(task_priority)
     return payload
 
 
@@ -962,6 +969,7 @@ def create_hpc(
             memory_per_cpu=memory_per_cpu,
             enable_hyper_threading=enable_hyper_threading,
             resource_spec_price=resource_spec_price,
+            session=session,
         )
 
         project_text = _project_label(config, project)

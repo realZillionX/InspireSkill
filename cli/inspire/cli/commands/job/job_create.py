@@ -206,6 +206,7 @@ def run_job_create(
                 enable_notification=enable_notification,
                 exclude_nodes=exclude_nodes,
                 shm_size=shm_size,
+                session=session,
             )
         except ValueError as e:
             _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

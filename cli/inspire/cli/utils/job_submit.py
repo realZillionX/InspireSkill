@@ -13,6 +13,7 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.browser_api import ProjectInfo
 from inspire.cli.utils.id_resolver import _looks_like_platform_id
+from inspire.cli.utils.image_resolver import IMAGE_TYPE, resolve_image_url
 from inspire.config import Config, ConfigError, build_env_exports, default_remote_cwd
 from inspire.cli.utils.quota_resolver import ResolvedQuota, build_resource_spec_price
 
@@ -242,6 +243,7 @@ def build_training_job_plan(
     enable_notification: bool = False,
     exclude_nodes: Iterable[str] | None = None,
     shm_size: Optional[int] = None,
+    session: Any = None,
 ) -> JobSubmissionPlan:
     if not image:
         raise ValueError("--image is required.")
@@ -258,9 +260,11 @@ def build_training_job_plan(
     max_time_ms = str(int(max_time_hours * 3600 * 1000)) if max_time_hours is not None else None
 
     resource_spec_price = build_resource_spec_price(quota=quota)
+    # The platform matches on the registry URL, not the visible name; sending
+    # the name is rejected with 无法找到对应镜像.
     framework_config: dict[str, Any] = {
-        "image_type": "SOURCE_PRIVATE",
-        "image": image,
+        "image_type": IMAGE_TYPE,
+        "image": resolve_image_url(image, session=session),
         "instance_count": int(nodes),
         "resource_spec_price": resource_spec_price,
         "cpu": quota.cpu_count,
