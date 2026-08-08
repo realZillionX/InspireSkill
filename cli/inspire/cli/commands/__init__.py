@@ -14,7 +14,6 @@ from inspire.cli.commands.model import model
 from inspire.cli.commands.ray import ray
 from inspire.cli.commands.serving import serving
 from inspire.cli.commands.update import update
-from inspire.cli.commands.user import user
 
 __all__ = [
     "account",
@@ -31,5 +30,4 @@ __all__ = [
     "ray",
     "serving",
     "update",
-    "user",
 ]

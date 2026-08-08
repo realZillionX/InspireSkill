@@ -42,7 +42,6 @@ RESOURCE_TYPES = (
     "ray",
     "serving",
     "notebook",
-    "ssh-key",
     *QUOTA_RESOURCE_TYPES,
 )
 WORKSPACE_RESOURCE_TYPES = tuple(
@@ -440,34 +439,6 @@ def _notebook_fetch(session: object, workspace_id: str, exact_name: str) -> Fetc
     return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
 
 
-def _ssh_key_fetch(session: object, _workspace_id: str, exact_name: str) -> FetchResult:
-    from inspire.platform.web.browser_api.users import list_user_ssh_keys
-
-    records: list[ResourceIdentity] = []
-    page = 1
-    page_size = 500
-    total_seen = 0
-    while True:
-        items, total = list_user_ssh_keys(
-            page=page,
-            page_size=page_size,
-            session=session,  # type: ignore[arg-type]
-        )
-        total_seen += len(items)
-        for item in items:
-            records.append(
-                ResourceIdentity(
-                    resource_id=str(item.get("ssh_id") or item.get("id") or ""),
-                    name=str(item.get("name") or item.get("title") or ""),
-                    created_at=str(item.get("created_at") or item.get("create_at") or ""),
-                )
-            )
-        if not items or total_seen >= total or len(items) < page_size:
-            break
-        page += 1
-    return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
-
-
 def _quota_fetcher(workload: str) -> Fetcher:
     """Build the fetcher for one workload's quota catalog.
 
@@ -502,7 +473,6 @@ RESOURCE_FETCHERS: Mapping[str, Fetcher] = {
     "ray": _ray_fetch,
     "serving": _serving_fetch,
     "notebook": _notebook_fetch,
-    "ssh-key": _ssh_key_fetch,
     **{
         quota_resource_type(workload): _quota_fetcher(workload)
         for workload in QUOTA_WORKLOADS

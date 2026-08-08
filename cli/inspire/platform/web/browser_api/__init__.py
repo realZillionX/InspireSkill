@@ -142,12 +142,7 @@ from .models import (
     list_models,
 )
 from .users import (
-    create_user_ssh_key,
-    delete_user_ssh_key,
-    get_user_detail,
     get_user_permissions,
-    list_user_api_keys,
-    list_user_ssh_keys,
 )
 from .servings import (
     ServingInfo,
@@ -308,10 +303,5 @@ __all__ = [
     "list_model_versions",
     "list_models",
     # User utilities
-    "create_user_ssh_key",
-    "delete_user_ssh_key",
-    "get_user_detail",
     "get_user_permissions",
-    "list_user_api_keys",
-    "list_user_ssh_keys",
 ]

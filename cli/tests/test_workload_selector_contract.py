@@ -31,7 +31,7 @@ _COLLECTION_PATHS = (
     ("resources", "availability"),
     ("resources", "nodes"),
     ("serving", "configs"),
-    ("user", "permissions"),
+    ("account", "permissions"),
     ("job", "quota"),
     ("notebook", "quota"),
     ("hpc", "quota"),

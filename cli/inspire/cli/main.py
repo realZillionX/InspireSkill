@@ -38,7 +38,6 @@ from inspire.cli.commands import (
     ray,
     serving,
     update,
-    user,
 )
 from inspire.cli.commands.serving.serving_commands import (
     events_serving,
@@ -235,7 +234,6 @@ main.add_command(model)
 main.add_command(ray)
 main.add_command(serving)
 main.add_command(update)
-main.add_command(user)
 main.add_command(ensure_playwright_runtime)
 main.add_command(post_update)
 

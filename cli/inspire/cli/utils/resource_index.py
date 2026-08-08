@@ -37,7 +37,6 @@ DEFAULT_TTL_SECONDS: dict[str, int] = {
     "compute-group": 30 * 60,
     "image": 30 * 60,
     "model": 30 * 60,
-    "ssh-key": 30 * 60,
     "job": 5 * 60,
     "hpc": 5 * 60,
     "ray": 5 * 60,
@@ -70,7 +69,7 @@ CASE_INSENSITIVE_RESOURCE_TYPES = frozenset(
 # belongs to several workspaces at once (``ProjectInfo.workspace_ids``), so
 # every scope for these types must use an empty workspace id -- otherwise a
 # refresh and a lookup can disagree about where a name lives.
-GLOBAL_RESOURCE_TYPES = frozenset({"workspace", "ssh-key", "project"})
+GLOBAL_RESOURCE_TYPES = frozenset({"workspace", "project"})
 
 
 def scope_workspace_id(resource_type: str, workspace_id: str) -> str:

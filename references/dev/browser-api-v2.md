@@ -117,7 +117,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `ray` | `CreateJob`、`GetJob`、`ListJobs`、`ListJobCreators`、`ListJobEvents`、`ListJobInstances`、`ListJobScalingHistories`、`StopJob`、`DeleteJob` |
 | `notebook` | `CreateNotebook`、`GetNotebook`、`ListNotebooks`、`ListNotebookCreators`、`ListNotebookEvents`、`ListNotebookLifecycles`、`ListRunIndex`、`StartNotebook`、`StopNotebook`、`DeleteNotebook` |
 | `workspace` | `ListLogicComputeGroups`、`ListNodeDimension`、`GetLogicComputeGroupResource` |
-| `user` | `GetUserDetail`、`ListAPIKeys` |
+| `user` | `GetUserDetail` |
 | `project` | `GetProjectForPage` |
 | `model-hub` | `ListModels`、`GetModelDetail`、`ListModelVersions`、`ListModelVersionOptions`、`ListModelCreators`、`ListModelRelatedServings`、`GetHasModelPendingServing`、`GetModelPublishPrefill`、`GetModelPublishStatus` |
 | 各域 | `GetTaskMetric`（`notebook` / `train` / `hpc` / `ray` / `inference_serving` 各一份） |
@@ -126,7 +126,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 `project` 服务只有 `GetProjectForPage` 一个 Action，对应 `/project/list_for_page`；`/project/list`、`/project/list_v2`、`/project/{id}` 和 `/project/owners` 都没有对应物，保留 v1。
 
-`user` 只覆盖**当前用户**：`GetUserDetail` 传空体返回当前账号，字段与 v1 `/user/detail` 完全一致；传 `user_id` / `id` / `UserId` 一律 `InvalidParameter`，所以按 id 查别人的 `/user/{user_id}` 没有对应物，保留 v1。`ListAPIKeys` 不接受 `PageNumber`。
+`user` 只覆盖**当前用户**：`GetUserDetail` 传空体返回当前账号，字段与 v1 `/user/detail` 完全一致；传 `user_id` / `id` / `UserId` 一律 `InvalidParameter`。它是 train / hpc / ray / model 列表按当前用户过滤时的身份来源。`ListAPIKeys` 也可用，但随 `user api-keys` 命令一起下线，已无消费者。
 
 **Metrics 不属于 `workspace.*`。** v1 用一个集群级端点 `/cluster_metric/resource_metric_by_time` 服务所有 Workload，v2 没有对应的集群级端点：每个 service 各有一份 `GetTaskMetric`，接受**逐字相同**的 `{filter:{logic_compute_group_id, task_id, task_type}, metric_types, time_range}`，返回同一个（拼错的）键 `time_seris_metric_groups`，五个域实测数量与 v1 一致。看起来同名的 `workspace.GetOverviewResourceMetricByTime` 是工作空间级总览，对普通成员返回 `AccessForbidden`，不是它的对应物。第 6 节「用 workspace.\* 不用 cluster.\*」只适用于两边同名的那 8 个 Action，不能推广成「集群级端点一律换 workspace.\*」。
 
@@ -172,7 +172,6 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 | v1 端点 | 为什么没有对应物 |
 | --- | --- |
-| `/user/{user_id}` | `GetUserDetail` 拒绝任何 id 参数，永远只返回当前账号 |
 | `/project/list`、`/project/list_v2`、`/project/{id}` | `project` 服务只有 `GetProjectForPage`，且实测与 `/project/list_v2` **不等价**：同一工作空间下前者返回 2 条、后者 3 条，item 字段也不同（`gpu_limit` / `hpc` 只在 v2 侧） |
 
 ## 10. 回落纪律

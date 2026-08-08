@@ -124,7 +124,7 @@ def test_query_commands_require_explicit_workspace() -> None:
         ["model", "list"],
         ["serving", "list"],
         ["serving", "configs"],
-        ["user", "permissions"],
+        ["account", "permissions"],
     )
     runner = CliRunner()
     for args in cases:
@@ -143,7 +143,7 @@ def test_query_commands_require_explicit_workspace() -> None:
         ["serving", "list"],
         ["model", "list"],
         ["serving", "configs"],
-        ["user", "permissions"],
+        ["account", "permissions"],
     ),
 )
 def test_workspace_collection_commands_share_query_contract(path: list[str]) -> None:
@@ -167,7 +167,7 @@ def test_workspace_collection_commands_share_query_contract(path: list[str]) -> 
         ["serving", "list"],
         ["model", "list"],
         ["serving", "configs"],
-        ["user", "permissions"],
+        ["account", "permissions"],
     ),
 )
 def test_workspace_collection_commands_reject_limit_with_all(
@@ -651,7 +651,6 @@ def test_resource_arguments_use_name_metavar(path: list[str]) -> None:
         ["notebook", "lifecycle"],
         ["image", "save"],
         ["image", "set-visibility"],
-        ["user", "ssh-keys", "delete"],
     ),
 )
 def test_name_resolving_commands_expose_shared_pick_option(path: list[str]) -> None:
@@ -684,7 +683,6 @@ def test_destructive_commands_share_yes_help() -> None:
         ["serving", "delete"],
         ["serving", "profile", "delete"],
         ["image", "delete"],
-        ["user", "ssh-keys", "delete"],
     ):
         result = CliRunner().invoke(cli_main, [*path, "--help"])
 

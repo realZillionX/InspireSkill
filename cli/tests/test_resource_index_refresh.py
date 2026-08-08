@@ -131,28 +131,6 @@ def test_due_refresh_skips_fresh_scope_without_calling_fetcher(tmp_path) -> None
     assert workspace_calls == []
 
 
-def test_ssh_key_refresh_never_fetches_workspaces(tmp_path) -> None:
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-
-    summary = refresh_resource_index(
-        session=_Session(),
-        index=index,
-        resource_types=("ssh-key",),
-        force=True,
-        fetchers={
-            "workspace": lambda *_args: (_ for _ in ()).throw(
-                AssertionError("ssh-key refresh must not fetch workspaces")
-            ),
-            "ssh-key": lambda *_args: FetchResult(
-                [ResourceIdentity(resource_id="key-one", name="laptop")]
-            ),
-        },
-    )
-
-    assert _outcome_count(summary, "refreshed") == 1
-    assert summary.error_count == 0
-
-
 def test_exact_refresh_replaces_recreated_resource(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
     scope = _scope("notebook", "workspace-one")
