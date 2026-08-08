@@ -202,16 +202,8 @@ def test_image_from_api_handles_missing_fields():
 def test_list_images_by_source_official(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, Any] = {}
 
-    def fake_request_notebooks_data(
-        session,
-        method: str,
-        endpoint_path: str,
-        *,
-        body: Optional[dict] = None,
-        timeout: int = 30,
-        default_data: Any = None,
-    ) -> Any:
-        captured["method"] = method
+    def fake_image_v2(session, action: str, body: Optional[dict] = None, *, timeout: int = 30) -> Any:
+        captured["action"] = action
         captured["body"] = body
         return {
             "images": [
@@ -231,7 +223,7 @@ def test_list_images_by_source_official(monkeypatch: pytest.MonkeyPatch):
 
     from inspire.platform.web.browser_api import images as images_module
 
-    monkeypatch.setattr(images_module, "_request_notebooks_data", fake_request_notebooks_data)
+    monkeypatch.setattr(images_module, "_image_v2", fake_image_v2)
     monkeypatch.setattr(
         images_module,
         "_get_session_and_workspace_id",
@@ -239,6 +231,7 @@ def test_list_images_by_source_official(monkeypatch: pytest.MonkeyPatch):
     )
 
     results = list_images_by_source(source="official")
+    assert captured["action"] == "ListImages"
     assert len(results) == 1
     assert results[0].image_id == "img-off-001"
     assert results[0].source == "SOURCE_OFFICIAL"
@@ -249,21 +242,14 @@ def test_list_images_by_source_official(monkeypatch: pytest.MonkeyPatch):
 def test_list_images_by_source_public(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, Any] = {}
 
-    def fake_request_notebooks_data(
-        session,
-        method: str,
-        endpoint_path: str,
-        *,
-        body: Optional[dict] = None,
-        timeout: int = 30,
-        default_data: Any = None,
-    ) -> Any:
+    def fake_image_v2(session, action: str, body: Optional[dict] = None, *, timeout: int = 30) -> Any:
+        captured["action"] = action
         captured["body"] = body
         return {"images": []}
 
     from inspire.platform.web.browser_api import images as images_module
 
-    monkeypatch.setattr(images_module, "_request_notebooks_data", fake_request_notebooks_data)
+    monkeypatch.setattr(images_module, "_image_v2", fake_image_v2)
     monkeypatch.setattr(
         images_module,
         "_get_session_and_workspace_id",
@@ -271,6 +257,7 @@ def test_list_images_by_source_public(monkeypatch: pytest.MonkeyPatch):
     )
 
     results = list_images_by_source(source="public")
+    assert captured["action"] == "ListImages"
     assert results == []
     # Public uses source_list + visibility filter
     assert captured["body"]["filter"]["visibility"] == "VISIBILITY_PUBLIC"
@@ -280,21 +267,14 @@ def test_list_images_by_source_public(monkeypatch: pytest.MonkeyPatch):
 def test_list_images_by_source_private_personal_visible(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, Any] = {}
 
-    def fake_request_notebooks_data(
-        session,
-        method: str,
-        endpoint_path: str,
-        *,
-        body: Optional[dict] = None,
-        timeout: int = 30,
-        default_data: Any = None,
-    ) -> Any:
+    def fake_image_v2(session, action: str, body: Optional[dict] = None, *, timeout: int = 30) -> Any:
+        captured["action"] = action
         captured["body"] = body
         return {"images": []}
 
     from inspire.platform.web.browser_api import images as images_module
 
-    monkeypatch.setattr(images_module, "_request_notebooks_data", fake_request_notebooks_data)
+    monkeypatch.setattr(images_module, "_image_v2", fake_image_v2)
     monkeypatch.setattr(
         images_module,
         "_get_session_and_workspace_id",
@@ -302,6 +282,7 @@ def test_list_images_by_source_private_personal_visible(monkeypatch: pytest.Monk
     )
 
     results = list_images_by_source(source="private")
+    assert captured["action"] == "ListImages"
     assert results == []
     assert captured["body"]["filter"]["visibility"] == "VISIBILITY_PRIVATE"
     assert "SOURCE_PRIVATE" in captured["body"]["filter"]["source_list"]

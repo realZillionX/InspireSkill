@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from inspire.platform.web.browser_api.notebooks import (
     _get_session_and_workspace_id,
+    _image_v2,
     _request_notebooks_data,
 )
 from inspire.platform.web.session import WebSession, get_web_session
@@ -114,14 +115,7 @@ def list_images_by_source(
             },
         }
 
-    data = _request_notebooks_data(
-        session,
-        "POST",
-        "/image/list",
-        body=body,
-        timeout=30,
-        default_data={},
-    )
+    data = _image_v2(session, "ListImages", body)
     items = data.get("images", [])
     return [_image_from_api(item) for item in items]
 
@@ -143,13 +137,9 @@ def get_image_detail(
     """
     session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
 
-    data = _request_notebooks_data(
-        session,
-        "GET",
-        f"/image/{image_id}",
-        timeout=30,
-        default_data={},
-    )
+    # `GetImageById` spells the target `ImageId`; `DeleteImage` spells the same
+    # thing `image_id`. The two are not interchangeable.
+    data = _image_v2(session, "GetImageById", {"ImageId": image_id})
     return _image_from_api(data)
 
 
@@ -193,14 +183,7 @@ def create_image(
         "description": description,
     }
 
-    return _request_notebooks_data(
-        session,
-        "POST",
-        "/image/create",
-        body=body,
-        timeout=30,
-        default_data={},
-    )
+    return _image_v2(session, "CreateImage", body)
 
 
 def save_notebook_as_image(
@@ -216,6 +199,11 @@ def save_notebook_as_image(
     ``visibility`` field (confirmed empirically 2026-04-22 — passing it returns
     ``code=100002, message='proto: unknown field "visibility"'``). To control
     visibility, call :func:`update_image` after this returns.
+
+    TODO: ``notebook.SaveNotebookImage`` is the v2 counterpart and declares a
+    superset of this body, but validating it means committing a real image off
+    a running notebook, so it has not been through the controlled verification
+    the write-path rule requires. Stays on v1 until it has.
 
     Args:
         notebook_id: ID of the running notebook.
@@ -259,10 +247,11 @@ def update_image(
     visibility (``VISIBILITY_PRIVATE`` ↔ ``VISIBILITY_PUBLIC``) after a save,
     or to edit the description.
 
-    The platform's body schema uses ``id`` (not ``image_id``) for the target —
-    confirmed empirically 2026-04-22 with ``{"image_id": ...}`` returning
-    ``code=100002, message='proto: unknown field "image_id"'`` while ``{"id":
-    ...}`` returns ``code=0``.
+    The platform's body schema uses ``id`` (not ``image_id``) for the target.
+    v2 kept the quirk but degraded the error: ``{"image_id": ...}`` no longer
+    says "unknown field", it says ``InternalError: 数据库错误`` — the field is
+    simply ignored, so the update runs against an empty id. Confirmed
+    2026-08-08 by a create → update → delete round trip.
 
     Args:
         image_id: The image ID to update. (Wired into the body as ``id``.)
@@ -281,14 +270,7 @@ def update_image(
     if description is not None:
         body["description"] = description
 
-    return _request_notebooks_data(
-        session,
-        "POST",
-        "/image/update",
-        body=body,
-        timeout=30,
-        default_data={},
-    )
+    return _image_v2(session, "UpdateImage", body)
 
 
 def delete_image(
@@ -306,13 +288,9 @@ def delete_image(
     """
     session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
 
-    return _request_notebooks_data(
-        session,
-        "DELETE",
-        f"/image/{image_id}",
-        timeout=30,
-        default_data={},
-    )
+    # `image_id` here, but `ImageId` on `GetImageById` — the image service is
+    # inconsistent about the same identifier.
+    return _image_v2(session, "DeleteImage", {"image_id": image_id})
 
 
 _IMAGE_READY_STATES = {"READY", "SUCCESS", "SUCCEED", "SUCCEEDED"}

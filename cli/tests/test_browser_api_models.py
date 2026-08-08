@@ -276,41 +276,46 @@ def test_model_plaza_list_filters_and_total_count(monkeypatch) -> None:
     }
 
 
-def test_model_plaza_get_helpers_use_read_only_paths(monkeypatch) -> None:
+def test_model_plaza_get_helpers_use_the_underscored_v2_route(monkeypatch) -> None:
     record: dict[str, Any] = {}
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"items": [{"workspace_id": "ws-1"}]}},
+        {"ResponseMetadata": {}, "Result": {"items": [{"workspace_id": "ws-1"}]}},
         record,
     )
 
     assert get_model_plaza_filters(session=_FakeSession()) == {
         "items": [{"workspace_id": "ws-1"}]
     }
-    assert record["method"] == "GET"
-    assert record["url"].endswith("/model_plaza/filters")
+    assert record["method"] == "POST"
+    # `model-plaza` 404s; only the underscored route resolves.
+    assert record["url"] == "/api/v2/model_plaza?Action=GetFilters"
+    assert record["body"] == {}
 
     assert get_model_plaza_detail("mp-1", session=_FakeSession()) == {
         "items": [{"workspace_id": "ws-1"}]
     }
-    assert record["url"].endswith("/model_plaza/detail/mp-1")
+    assert record["url"] == "/api/v2/model_plaza?Action=GetModelDetail"
+    assert record["body"] == {"ModelId": "mp-1"}
 
     items, total = list_model_plaza_related_workspaces("mp-1", session=_FakeSession())
     assert total == 1
     assert items == [{"workspace_id": "ws-1"}]
-    assert record["url"].endswith("/model_plaza/related_workspace/mp-1")
+    assert record["url"] == "/api/v2/model_plaza?Action=GetRelatedWorkspaceList"
+    assert record["body"] == {"ModelId": "mp-1"}
 
     assert get_model_plaza_deploy_serving_config("mp-1", session=_FakeSession()) == {
         "items": [{"workspace_id": "ws-1"}]
     }
-    assert record["url"].endswith("/model_plaza/deploy_serving_config/mp-1")
+    assert record["url"] == "/api/v2/model_plaza?Action=GetDeployServingConfig"
+    assert record["body"] == {"ModelId": "mp-1"}
 
 
 def test_create_model_posts_registration_body(monkeypatch) -> None:
     record: dict[str, Any] = {}
     _install_fake_request(
         monkeypatch,
-        {"code": 0, "data": {"model_id": "model-new"}},
+        {"ResponseMetadata": {}, "Result": {"model_id": "model-new"}},
         record,
     )
 
@@ -327,7 +332,7 @@ def test_create_model_posts_registration_body(monkeypatch) -> None:
 
     assert result == {"model_id": "model-new"}
     assert record["method"] == "POST"
-    assert record["url"].endswith("/model/create")
+    assert record["url"] == "/api/v2/model-hub?Action=CreateModel"
     assert record["body"] == {
         "name": "demo",
         "project_id": "project-1",

@@ -87,9 +87,9 @@ def _request_notebooks_data(
 ) -> Any:
     """Call a `/api/v1` endpoint that has no v2 counterpart.
 
-    Only the non-notebook families still routed through this module use it —
-    Image and resource pricing. The notebook family itself is on v2 via
-    :func:`_notebook_v2`.
+    Resource pricing is the only family left on it: no Action on any v2 route
+    answers `/resource_prices/logic_compute_groups/`. The notebook family is on
+    v2 via :func:`_notebook_v2`, the image family via :func:`_image_v2`.
     """
     data = _request_json(
         session,
@@ -104,6 +104,30 @@ def _request_notebooks_data(
         raise ValueError(f"API error: {data.get('message')}")
 
     return data.get("data", default_data)
+
+
+def _image_v2(
+    session: WebSession,
+    action: str,
+    body: Optional[dict] = None,
+    *,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    """Call one `/api/v2/image` Action and return its unwrapped ``Result``.
+
+    Only `DeleteImage`, `GetImageById`, `ListImageBrands` and `ListImages` are
+    published in discovery; `CreateImage` and `UpdateImage` are live but
+    undocumented, and all six take the v1 request bodies unchanged.
+    """
+    data = _request_json(
+        session,
+        "POST",
+        f"/api/v2/image?Action={action}",
+        referer=_notebooks_referer(),
+        body=body or {},
+        timeout=timeout,
+    )
+    return _v2_result(data)
 
 
 def _notebook_v2(
@@ -205,14 +229,7 @@ def list_images(
             },
         }
 
-    data = _request_notebooks_data(
-        session,
-        "POST",
-        "/image/list",
-        body=body,
-        timeout=30,
-        default_data={},
-    )
+    data = _image_v2(session, "ListImages", body)
     items = data.get("images", [])
     results = []
     for item in items:

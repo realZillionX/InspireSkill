@@ -15,7 +15,7 @@ from inspire.platform.web.browser_api.notebooks import (
 from inspire.platform.web.browser_api.projects import (
     list_all_projects,
     list_project_page_records,
-    list_projects_v2,
+    list_project_selector_records,
 )
 
 
@@ -37,21 +37,24 @@ def _install_fake_request(module, monkeypatch: pytest.MonkeyPatch, response: dic
     monkeypatch.setattr(module, "_request_json", _fake)
 
 
-def test_list_projects_v2_posts_frontend_selector_body(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_list_project_selector_records_posts_frontend_selector_body(monkeypatch: pytest.MonkeyPatch) -> None:
     record: dict[str, Any] = {}
     _install_fake_request(
         projects_module,
         monkeypatch,
-        {"code": 0, "data": {"items": [{"id": "project-1", "name": "Demo"}], "total": "1"}},
+        {
+            "ResponseMetadata": {},
+            "Result": {"items": [{"id": "project-1", "name": "Demo"}], "total": "1"},
+        },
         record,
     )
 
-    items, total = list_projects_v2(workspace_id="ws-x", session=_FakeSession())
+    items, total = list_project_selector_records(workspace_id="ws-x", session=_FakeSession())
 
     assert total == 1
     assert items[0]["name"] == "Demo"
     assert record["method"] == "POST"
-    assert record["url"].endswith("/project/list_v2")
+    assert record["url"] == "/api/v2/project?Action=ListProjects"
     assert record["body"] == {
         "filter": {"workspace_id": "ws-x", "check_admin": True},
         "page": 1,
@@ -59,16 +62,16 @@ def test_list_projects_v2_posts_frontend_selector_body(monkeypatch: pytest.Monke
     }
 
 
-def test_list_projects_v2_can_omit_check_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_list_project_selector_records_can_omit_check_admin(monkeypatch: pytest.MonkeyPatch) -> None:
     record: dict[str, Any] = {}
     _install_fake_request(
         projects_module,
         monkeypatch,
-        {"code": 0, "data": {"items": [], "total": 0}},
+        {"ResponseMetadata": {}, "Result": {"items": [], "total": 0}},
         record,
     )
 
-    list_projects_v2(workspace_id="ws-x", check_admin=None, session=_FakeSession())
+    list_project_selector_records(workspace_id="ws-x", check_admin=None, session=_FakeSession())
 
     assert record["body"]["filter"] == {"workspace_id": "ws-x"}
 
@@ -104,8 +107,8 @@ def test_list_all_projects_posts_single_unscoped_project_query(
         projects_module,
         monkeypatch,
         {
-            "code": 0,
-            "data": {
+            "ResponseMetadata": {},
+            "Result": {
                 "items": [
                     {
                         "id": "project-1",
@@ -129,7 +132,7 @@ def test_list_all_projects_posts_single_unscoped_project_query(
     assert projects[0].workspace_ids == ("ws-1",)
     assert projects[0].workspace_names == ("Workspace One",)
     assert record["method"] == "POST"
-    assert record["url"].endswith("/project/list")
+    assert record["url"] == "/api/v2/project?Action=ListProjects"
     assert record["body"] == {"page": 1, "page_size": 100, "filter": {"check_admin": True}}
 
 
@@ -141,15 +144,15 @@ def test_list_all_projects_paginates_project_query(monkeypatch: pytest.MonkeyPat
         page = body["page"]
         if page == 1:
             return {
-                "code": 0,
-                "data": {
+                "ResponseMetadata": {},
+                "Result": {
                     "items": [{"id": f"project-{idx}", "name": f"Demo {idx}"} for idx in range(100)],
                     "total": 101,
                 },
             }
         return {
-            "code": 0,
-            "data": {"items": [{"id": "project-100", "name": "Demo 100"}], "total": 101},
+            "ResponseMetadata": {},
+            "Result": {"items": [{"id": "project-100", "name": "Demo 100"}], "total": 101},
         }
 
     monkeypatch.setattr(projects_module, "_request_json", _fake)

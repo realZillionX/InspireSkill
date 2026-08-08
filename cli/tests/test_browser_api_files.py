@@ -24,11 +24,12 @@ def test_list_system_storage_types_posts_workspace_filter(monkeypatch) -> None: 
             }
         )
         return {
-            "code": 0,
-            "data": {
+            "ResponseMetadata": {},
+            "Result": {
+                "total": 1,
                 "system_storages": [
                     {"name": "hdd", "cluster_id": "cluster-stg-id-1", "is_primary": True}
-                ]
+                ],
             },
         }
 
@@ -43,7 +44,7 @@ def test_list_system_storage_types_posts_workspace_filter(monkeypatch) -> None: 
     assert storages[0].cluster_id == "cluster-stg-id-1"
     assert tuple(storages[0].__dataclass_fields__) == ("name", "cluster_id")
     assert captured["method"] == "POST"
-    assert captured["path"].endswith("/file/get_system_storage_type_list")
+    assert captured["path"] == "/api/v2/file?Action=GetSystemStorageTypeList"
     assert captured["referer"].endswith("/jobs/files?spaceId=ws-x")
     assert captured["body"] == {"filter": {"workspace_id": "ws-x"}}
 
@@ -61,15 +62,16 @@ def test_list_file_directories_posts_frontend_directory_filter(monkeypatch) -> N
             }
         )
         return {
-            "code": 0,
-            "data": {
+            "ResponseMetadata": {},
+            "Result": {
+                "total": 1,
                 "files": [
                     {
                         "name": "CI-情境智能",
                         "directory": "/inspire/hdd/project/embodied-multimodality/public",
                         "is_share": 0,
                     }
-                ]
+                ],
             },
         }
 
@@ -85,7 +87,7 @@ def test_list_file_directories_posts_frontend_directory_filter(monkeypatch) -> N
 
     assert entries[0].directory == "/inspire/hdd/project/embodied-multimodality/public"
     assert captured["method"] == "POST"
-    assert captured["path"].endswith("/file/dir/list")
+    assert captured["path"] == "/api/v2/file?Action=GetDirList"
     assert captured["referer"].endswith("/jobs/files?spaceId=ws-x")
     assert captured["body"] == {
         "filter": {

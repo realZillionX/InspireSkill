@@ -5,13 +5,9 @@ browsing and registration use the web-session Browser API. See
 the controlled browser/live-smoke workflow documented in
 `references/dev/browser-api-v1.md`.
 
-Wire-format notes:
-- `POST /api/v1/model/list` body
-  `{page, page_size, filter_by:{keyword?, user_id?, project_id?[]}, workspace_id}`.
-- `POST /api/v1/model/detail` body `{model_id}` returns the model head record.
-- `GET /api/v1/model/{model_id}` returns detailed version records.
-- `GET /api/v1/model/{model_id}/versions` returns compact version status records.
-- `POST /api/v1/model/create` registers a new model from a platform-visible path.
+Model Hub is on `/api/v2/model-hub`. Model Plaza is on `/api/v2/model_plaza` —
+underscored, like `inference_serving`; the hyphenated spelling 404s, and the
+whole service is absent from discovery.
 """
 
 from __future__ import annotations
@@ -66,6 +62,30 @@ def _check_response(data: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"API error: {data.get('message')}")
     payload = data.get("data")
     return payload if isinstance(payload, dict) else {}
+
+
+def _plaza_v2(
+    session: WebSession,
+    action: str,
+    body: Optional[dict[str, Any]] = None,
+    *,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    """Call one `/api/v2/model_plaza` Action and return its unwrapped ``Result``.
+
+    The three by-id Actions all spell the target ``ModelId`` and answer the v1
+    payloads byte for byte. ``ListModels`` is the exception and stays on v1 —
+    see :func:`list_model_plaza`.
+    """
+    data = _request_json(
+        session,
+        "POST",
+        f"/api/v2/model_plaza?Action={action}",
+        referer=_plaza_referer(),
+        body=body or {},
+        timeout=timeout,
+    )
+    return _v2_result(data)
 
 
 def _resolve_workspace(
@@ -436,14 +456,7 @@ def get_model_plaza_filters(
     """Return model-plaza filter metadata."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path("/model_plaza/filters"),
-        referer=_plaza_referer(),
-        timeout=30,
-    )
-    return _check_response(data)
+    return _plaza_v2(session, "GetFilters")
 
 
 def list_model_plaza(
@@ -460,7 +473,13 @@ def list_model_plaza(
     max_context_len: Optional[int] = None,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """List public model-plaza records."""
+    """List public model-plaza records.
+
+    Stays on v1. ``model_plaza.ListModels`` exists but answers
+    ``AccessForbidden`` for every workspace and every body shape tried, while
+    v1 returns rows — a real permission boundary, not a scoping mistake, so
+    there is nothing to fall back from.
+    """
     session, workspace_id = _resolve_workspace(workspace_id, session)
     merged_filter: dict[str, Any] = dict(filter_body or {})
     merged_filter.setdefault("workspace_id", workspace_id)
@@ -503,14 +522,7 @@ def get_model_plaza_detail(
     """Get model-plaza detail by id."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path(f"/model_plaza/detail/{model_plaza_id}"),
-        referer=_plaza_referer(),
-        timeout=30,
-    )
-    return _check_response(data)
+    return _plaza_v2(session, "GetModelDetail", {"ModelId": model_plaza_id})
 
 
 def list_model_plaza_related_workspaces(
@@ -521,14 +533,7 @@ def list_model_plaza_related_workspaces(
     """List workspaces related to one model-plaza record."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path(f"/model_plaza/related_workspace/{model_plaza_id}"),
-        referer=_plaza_referer(),
-        timeout=30,
-    )
-    payload = _check_response(data)
+    payload = _plaza_v2(session, "GetRelatedWorkspaceList", {"ModelId": model_plaza_id})
     items = payload.get("items")
     if not isinstance(items, list):
         items = payload.get("list")
@@ -545,14 +550,7 @@ def get_model_plaza_deploy_serving_config(
     """Get the serving-create prefill config for a model-plaza record."""
     if session is None:
         session = get_web_session()
-    data = _request_json(
-        session,
-        "GET",
-        _browser_api_path(f"/model_plaza/deploy_serving_config/{model_plaza_id}"),
-        referer=_plaza_referer(),
-        timeout=30,
-    )
-    return _check_response(data)
+    return _plaza_v2(session, "GetDeployServingConfig", {"ModelId": model_plaza_id})
 
 
 def create_model(
@@ -571,6 +569,11 @@ def create_model(
 
     The first version is inferred by the backend. `model_source_type=1` matches
     the UI path-registration flow for a platform-visible directory.
+
+    Goes to `model-hub.CreateModel`, which is live but absent from discovery
+    and takes the v1 body unchanged. `model_source_path` must sit under the
+    given workspace *and* project; anything else — a `global_user` path
+    included — is rejected with `存储路径格式不正确`.
     """
     if session is None:
         session = get_web_session()
@@ -584,14 +587,13 @@ def create_model(
         "tags": [str(v) for v in (tags or []) if str(v).strip()],
         "description": description,
     }
-    data = _request_json(
-        session,
-        "POST",
-        _browser_api_path("/model/create"),
-        referer=_referer(workspace_id),
-        body=body,
-        timeout=60,
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=CreateModel",
+            referer=_referer(workspace_id),
+            body=body,
+            timeout=60,
+        )
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-    return data.get("data") or {}

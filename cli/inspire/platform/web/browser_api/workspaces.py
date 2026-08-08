@@ -7,7 +7,7 @@ from typing import Any
 
 from inspire.platform.web.session.models import DEFAULT_WORKSPACE_ID, WebSession
 
-from .core import _browser_api_path, _get_base_url, _request_json
+from .core import _get_base_url, _request_json, _v2_result
 
 _WS_ID_RE = re.compile(r"^ws-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -35,18 +35,18 @@ def _workspace_route_entries(
     if not probe_ws_id or probe_ws_id == DEFAULT_WORKSPACE_ID:
         raise WorkspaceCapabilityError("No workspace is available for capability lookup.")
 
-    resp = _request_json(
-        session,
-        "GET",
-        _browser_api_path(f"/user/routes/{probe_ws_id}"),
-        referer=referer,
-        timeout=15,
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/user?Action=GetRoutes",
+            referer=referer,
+            body={"WorkspaceId": probe_ws_id},
+            timeout=15,
+        )
     )
-    code = resp.get("code")
-    if code not in (None, 0):
-        raise ValueError(f"API error: {resp.get('message') or code}")
     results: dict[str, dict[str, Any]] = {}
-    for route_group in (resp.get("data") or {}).get("routes") or []:
+    for route_group in payload.get("routes") or []:
         if not isinstance(route_group, dict) or route_group.get("name") != "userWorkspaceList":
             continue
         for entry in route_group.get("routes") or []:
@@ -78,9 +78,11 @@ def try_enumerate_workspaces(
 ) -> list[dict[str, Any]]:
     """Try to enumerate workspaces via API endpoints.
 
-    Primary method: ``GET /api/v1/user/routes/{workspace_id}`` which returns
-    a ``userWorkspaceList`` route group containing all workspaces the user
-    can access.
+    Primary method: ``user.GetRoutes``, which returns a ``userWorkspaceList``
+    route group containing all workspaces the user can access. The Action is
+    absent from discovery but live, and answers the v1
+    ``/user/routes/{workspace_id}`` payload verbatim — ``is_fair_workspace``
+    included.
 
     Returns workspace id, name, and fair-scheduling capability dictionaries.
     Returns an empty list only when the live API successfully reports no

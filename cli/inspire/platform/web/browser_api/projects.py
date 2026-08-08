@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from inspire.platform.web.browser_api.core import (
-    _browser_api_path,
     _get_base_url,
     _request_json,
     _v2_result,
@@ -28,10 +27,35 @@ __all__ = [
     "list_all_projects",
     "list_project_owners",
     "list_project_page_records",
+    "list_project_selector_records",
     "list_projects",
-    "list_projects_v2",
     "select_project",
 ]
+
+
+def _project_v2(
+    session: WebSession,
+    action: str,
+    body: Optional[dict[str, Any]] = None,
+    *,
+    referer: str,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    """Call one `/api/v2/project` Action and return its unwrapped ``Result``.
+
+    Discovery publishes only ``GetProjectForPage``; ``ListProjects``,
+    ``GetProjectDetail`` and ``GetProjectOwners`` are live but undocumented,
+    and take the v1 request bodies unchanged.
+    """
+    data = _request_json(
+        session,
+        "POST",
+        f"/api/v2/project?Action={action}",
+        referer=referer,
+        body=body or {},
+        timeout=timeout,
+    )
+    return _v2_result(data)
 
 
 @dataclass
@@ -142,19 +166,7 @@ def _list_project_items(
             "page_size": _PROJECT_LIST_PAGE_SIZE,
             "filter": dict(filter_body),
         }
-        data = _request_json(
-            session,
-            "POST",
-            _browser_api_path("/project/list"),
-            referer=referer,
-            body=body,
-            timeout=30,
-        )
-
-        if data.get("code") != 0:
-            raise ValueError(f"API error: {data.get('message')}")
-
-        payload = data.get("data", {}) or {}
+        payload = _project_v2(session, "ListProjects", body, referer=referer)
         page_items = payload.get("items", [])
         if not isinstance(page_items, list):
             page_items = []
@@ -211,7 +223,7 @@ def list_all_projects(session: Optional[WebSession] = None) -> list[ProjectInfo]
     ]
 
 
-def list_projects_v2(
+def list_project_selector_records(
     workspace_id: Optional[str] = None,
     *,
     check_admin: bool | None = True,
@@ -219,10 +231,14 @@ def list_projects_v2(
     page_size: int = -1,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """List projects from the current frontend selector endpoint.
+    """List raw project records with their total, one page at a time.
 
-    Endpoint: ``POST /api/v1/project/list_v2``. The UI uses this endpoint for
-    project drop-downs in notebook / train / model / serving forms.
+    Backs the project drop-downs in the notebook / train / model / serving
+    forms. This used to call ``POST /api/v1/project/list_v2``, which returned
+    the same rows through a lossier projection — ``created_at``, ``updated_at``,
+    ``status``, ``notebook`` and ``training_job`` all came back empty, and
+    ``gpu_limit`` / ``hpc`` / ``hpc_limit`` were missing outright.
+    ``ListProjects`` fills every one of them.
     """
     if session is None:
         session = get_web_session()
@@ -234,18 +250,12 @@ def list_projects_v2(
         filter_body["check_admin"] = check_admin
     body = {"filter": filter_body, "page": page, "page_size": page_size}
 
-    data = _request_json(
+    payload = _project_v2(
         session,
-        "POST",
-        _browser_api_path("/project/list_v2"),
+        "ListProjects",
+        body,
         referer=f"{_get_base_url()}/jobs/interactiveModeling",
-        body=body,
-        timeout=30,
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("data") or {}
     items = payload.get("items")
     if not isinstance(items, list):
         items = []
@@ -266,22 +276,18 @@ def list_project_page_records(
 ) -> tuple[list[dict[str, Any]], int]:
     """List project-management page records via ``project.GetProjectForPage``.
 
-    The only Action the `project` service exposes. `/project/list`,
-    `/project/list_v2`, `/project/{id}` and `/project/owners` have no v2
-    counterpart and stay on v1.
+    The management page's own row set, which is narrower than
+    :func:`list_project_selector_records`: it drops projects the user has left
+    or that have finished, so the two disagree on count by design.
     """
     if session is None:
         session = get_web_session()
     body = {"page": page, "page_size": page_size, "filter": dict(filter_body or {})}
-    payload = _v2_result(
-        _request_json(
-            session,
-            "POST",
-            "/api/v2/project?Action=GetProjectForPage",
-            referer=f"{_get_base_url()}/projects",
-            body=body,
-            timeout=30,
-        )
+    payload = _project_v2(
+        session,
+        "GetProjectForPage",
+        body,
+        referer=f"{_get_base_url()}/projects",
     )
     items = payload.get("items")
     if not isinstance(items, list):
@@ -433,42 +439,37 @@ def get_project_detail(
     project_id: str,
     session: Optional[WebSession] = None,
 ) -> dict:
-    """Fetch a project's detail via `GET /api/v1/project/{project_id}`.
+    """Fetch a project's detail via `project.GetProjectDetail`.
 
-    Returns the raw `data` dict: budget / children_budget / created_at /
+    Returns the raw `Result` dict: budget / children_budget / created_at /
     en_name / description / priority / owner metadata. CLI-facing code should
     tolerate the shape since fields are platform-defined and may drift.
     """
     if session is None:
         session = get_web_session()
-    data = _request_json(
+    return _project_v2(
         session,
-        "GET",
-        _browser_api_path(f"/project/{project_id}"),
+        "GetProjectDetail",
+        {"ProjectId": project_id},
         referer=f"{_get_base_url()}/projects",
         timeout=15,
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-    return data.get("data") or {}
 
 
 def list_project_owners(session: Optional[WebSession] = None) -> list[dict]:
-    """List candidate project owners (`GET /api/v1/project/owners`).
+    """List candidate project owners (`project.GetProjectOwners`).
 
     Backs the "负责人" dropdown when creating a job. Returns the raw `items`
     array; each entry typically carries `{id, name, login_name, ...}`.
     """
     if session is None:
         session = get_web_session()
-    data = _request_json(
+    payload = _project_v2(
         session,
-        "GET",
-        _browser_api_path("/project/owners"),
+        "GetProjectOwners",
+        {},
         referer=f"{_get_base_url()}/projects",
         timeout=15,
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-    items = (data.get("data") or {}).get("items")
+    items = payload.get("items")
     return items if isinstance(items, list) else []

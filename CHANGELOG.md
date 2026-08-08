@@ -13,14 +13,29 @@
   合并硬换行的续行，不再从行尾截断成半句话。
 
 - Browser API 按域从 `/api/v1` 迁到 `/api/v2`：notebook、ray、train、hpc、
-  inference_serving、model-hub、project、user 的当前用户查询，以及计算组、节点维度、
-  组资源统计和五个 Workload 的 metrics。公开 CLI 合同不变——命令名、参数、Name-only
-  语义、human 与 JSON 输出都保持原样，写操作全部经过受控验证（在 CPU资源空间 起最小
-  规格临时资源跑完整生命周期，train 的删除因为 CPU 组不支持该任务类型，在
-  分布式训练空间 用 1 卡 H100 验证后随即释放）。仍留在 v1 的是实测确认没有对应 Action
-  的部分：`/ssh/*`、`/file/*`、`/notebook/lab*` 与 Notebook Proxy、`/model_plaza/*`、
-  `/model/create`、`/user/permissions`、`/user/routes`、`/project/list*` 与
-  `/project/owners`。两代接口的契约差异记在 `references/dev/browser-api-v2.md`。
+  inference_serving、model-hub、project、user、image、file、model_plaza，以及计算组、
+  节点维度、组资源统计和五个 Workload 的 metrics。公开 CLI 合同不变——命令名、参数、
+  Name-only 语义、human 与 JSON 输出都保持原样，写操作全部经过受控验证（在 CPU资源空间
+  起最小规格临时资源跑完整生命周期，train 的删除因为 CPU 组不支持该任务类型，在
+  分布式训练空间 用 1 卡 H100 验证后随即释放；镜像与模型注册各跑了一遍
+  建→读→改→删并确认痕迹清除）。两代接口的契约差异记在
+  `references/dev/browser-api-v2.md`。
+
+  第二轮迁移推翻了第一轮的一个前提：**平台的 `/discovery` 清单是不完整的，不能用来
+  否定一个端点有没有对应物。** 第一轮把 `/user/permissions`、`/user/routes`、
+  `/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、
+  `/image/create`、`/image/update`、`/model/create` 共 10 个家族判成「没有对应 Action」
+  并保留 v1，依据都是「discovery 里查不到」。逐个实测下来它们全部有可用 Action，只是
+  没被声明——`file` 和 `model_plaza` 连整个路由都不在清单里。判断一个 Action 是否存在
+  只能靠空 body 探针（`InvalidAction` 才是不存在），路由是否存在只能靠 `404` 与
+  `InvalidAction` 的区别。
+
+  仍留在 v1 的只剩五处，各有实测依据：`/ssh/*`（路由 404）、`/notebook/lab*` 与
+  Notebook Proxy、`/train_job/remote_cmd`、`/resource_prices/logic_compute_groups/`
+  （27 个候选名 × 11 条路由全部 `InvalidAction`，最接近的 `GetScheduleConfig` 给的是
+  同样的配额档位但没有价格）、`/model_plaza/list`（`ListModels` 在所有工作空间与请求体
+  下一律 `AccessForbidden`，而 v1 正常返回）。另有 `/mirror/save`：`SaveNotebookImage`
+  存在且参数匹配，但受控验证需要从运行中的 Notebook 真提交一次镜像，未做，因此不迁。
 
 ### 破坏性变更
 

@@ -31,7 +31,7 @@ from .projects import (
     list_project_owners,
     list_project_page_records,
     list_projects,
-    list_projects_v2,
+    list_project_selector_records,
     select_project,
 )
 from .files import (
@@ -224,7 +224,7 @@ __all__ = [
     "list_project_owners",
     "list_project_page_records",
     "list_projects",
-    "list_projects_v2",
+    "list_project_selector_records",
     "select_project",
     # Images
     "CustomImageInfo",

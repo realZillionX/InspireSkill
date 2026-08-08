@@ -49,10 +49,13 @@ Content-Type: application/json
 | 字段 | 问题 |
 | --- | --- |
 | Service `Name` | 不等于网关路由名，见第 4 节 |
-| Action 全集 | **不完整**。`train.CreateJobConsole`、`hpc.CreateJobConsole` 和 `inference_serving.CreateServingConsole` 都不在 discovery 里，但真实存在且当前 CLI 正在使用 |
+| Service 全集 | **不完整**。`file` 和 `model_plaza` 两个路由完全不在 discovery 里，但都活着，当前 CLI 正在用 |
+| Action 全集 | **不完整**，且缺口不小。当前 169 个声明之外，实测活着的至少还有 11 个：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`image.CreateImage`、`image.UpdateImage`、`image.PreheatImage`、`model-hub.CreateModel`、`model-hub.UpdateModel`、`model-hub.DeleteModel`、`user.GetPermissions`、`user.GetRoutes`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners` |
 | 分页字段 `PageNumber` | 是唯一的 PascalCase 字段，实际网关同时接受 `PageNumber` / `page_num` / `page`，三者等价且都真实生效 |
 
-**判定「无对应物」时的固定错误模式**：这次迁移里同一个错误犯了三次 —— `inference_serving` 只测了 discovery 里的 `CreateServing` 就说契约变了（其实有 `CreateServingConsole`）；`/cluster_nodes/list` 只测了 `ListWorkspaceNodes` 就说没有（其实是 `ListNodeDimension`，且 `AccessForbidden` 只是 scoping 没写全）；`/user/quota` 只看了 `user` 服务就说没有配额 Action（`workspace.*` 下有 10 个）。**下结论前必须把所有 service 里名字沾边的 Action 全部列出来逐个实测，并按下一段的存在性探针确认有没有未文档化的变体。**
+**判定「无对应物」时的固定错误模式**：这个错误已经犯过很多次 —— `inference_serving` 只测了 discovery 里的 `CreateServing` 就说契约变了（其实有 `CreateServingConsole`）；`/cluster_nodes/list` 只测了 `ListWorkspaceNodes` 就说没有（其实是 `ListNodeDimension`，且 `AccessForbidden` 只是 scoping 没写全）；`/user/quota` 只看了 `user` 服务就说没有配额 Action（`workspace.*` 下有 10 个）。**最大的一次**：`/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 一共 10 个家族被写进第 9 节的「无对应物」表，实际全部有 Action —— 它们只是不在 discovery 里。**Discovery 只能用来找候选，不能用来否定。下结论前必须把所有 service 里名字沾边的 Action 全部列出来逐个实测，并按下一段的存在性探针枚举未文档化的变体；路由本身也要探，`404 page not found` 才是路由不存在，`InvalidAction` 说明路由活着。**
+
+未文档化 Action 的命名有规律，可以据此猜候选：基本是 v1 路径去掉资源前缀后的 PascalCase，`GET /project/{id}` → `GetProjectDetail`，`/file/dir/list` → `GetDirList`，`/model_plaza/related_workspace/{id}` → `GetRelatedWorkspaceList`。猜不中就换动词（`Get` / `List` / `Create` / `Update` / `Delete`）和单复数重试，一轮十几个名字就能覆盖。
 
 因为 Action 全集不可信，某个 Action 是否存在只能实测。网关对此有明确信号，且不需要发出一次真正的写请求：**空 body 打过去，`InvalidAction: unknown action: X` 表示该 Action 不存在，其它错误码（`InvalidParameter` / `InternalError`，通常带参数校验文案）表示存在但参数不对**。迁移写操作前用这一条确认有没有 Console 变体：`train`、`hpc`、`inference_serving` 有，`ray` 没有。空 body 会在校验阶段被拒，不会创建任何东西，但这只能用来判断存在性 —— 语义仍须按第 18 行的受控验证确认。
 
@@ -67,8 +70,11 @@ discovery 的 `Version` 是内容 etag，可以直接用来判断平台是否改
 | `inference-serving` | **`inference_serving`** | 连字符形式 404 |
 | `model-hub` | **`model-hub`** | 下划线形式 404 |
 | 其余 9 个 | 与 `Name` 相同 | — |
+| （不在 discovery 里） | **`file`**、**`model_plaza`** | `files`、`model-plaza` 均 404 |
 
-**不能从 `Name` 机械推导路由。** 新增 Service 时必须实测两种写法。当前 Wrapper 用的 `inference_serving` 是正确形式。
+**不能从 `Name` 机械推导路由。** 新增 Service 时必须实测两种写法。当前 Wrapper 用的 `inference_serving` 和 `model_plaza` 是正确形式。
+
+`audit`、`billing`、`storage` 三个路由也活着（分别返回 `InvalidAction` 或 `AccessForbidden: user is not system admin`，都不是 404），但没有找到与当前 CLI 相关的 Action。`ssh` 路由是真的 404，`/ssh/*` 没有 v2 对应物。
 
 ## 5. Scoping 决定权限判定
 
@@ -117,16 +123,39 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `ray` | `CreateJob`、`GetJob`、`ListJobs`、`ListJobCreators`、`ListJobEvents`、`ListJobInstances`、`ListJobScalingHistories`、`StopJob`、`DeleteJob` |
 | `notebook` | `CreateNotebook`、`GetNotebook`、`ListNotebooks`、`ListNotebookCreators`、`ListNotebookEvents`、`ListNotebookLifecycles`、`ListRunIndex`、`StartNotebook`、`StopNotebook`、`DeleteNotebook` |
 | `workspace` | `ListLogicComputeGroups`、`ListNodeDimension`、`GetLogicComputeGroupResource` |
-| `user` | `GetUserDetail` |
-| `project` | `GetProjectForPage` |
-| `model-hub` | `ListModels`、`GetModelDetail`、`ListModelVersions`、`ListModelVersionOptions`、`ListModelCreators`、`ListModelRelatedServings`、`GetHasModelPendingServing`、`GetModelPublishPrefill`、`GetModelPublishStatus` |
+| `user` | `GetUserDetail`、`GetPermissions`、`GetRoutes` |
+| `project` | `GetProjectForPage`、`ListProjects`、`GetProjectDetail`、`GetProjectOwners` |
+| `image` | `ListImages`、`GetImageById`、`CreateImage`、`UpdateImage`、`DeleteImage` |
+| `file` | `GetSystemStorageTypeList`、`GetDirList` |
+| `model_plaza` | `GetFilters`、`GetModelDetail`、`GetRelatedWorkspaceList`、`GetDeployServingConfig` |
+| `model-hub` | `ListModels`、`GetModelDetail`、`ListModelVersions`、`ListModelVersionOptions`、`ListModelCreators`、`ListModelRelatedServings`、`GetHasModelPendingServing`、`GetModelPublishPrefill`、`GetModelPublishStatus`、`CreateModel` |
 | 各域 | `GetTaskMetric`（`notebook` / `train` / `hpc` / `ray` / `inference_serving` 各一份） |
 
-`model-hub` 里有两个名字近似、极易搞混的 Action，只能靠响应字段区分：`ListModelVersionOptions` 返回 `{list, total}`，对应 v1 的 `GET /model/{id}/versions`；`ListModelVersions` 多一个 `next_version`，对应 v1 的 `GET /model/{id}`。按名字直觉配对会把两者接反。`ListModelVersions` 不接受 `page`；`ListModelCreators` 接受 `project_id`，与 v1 `/model/users` 的作用域一致。
+`model-hub` 里有两个名字近似、极易搞混的 Action，只能靠响应字段区分：`ListModelVersionOptions` 返回 `{list, total}`，对应 v1 的 `GET /model/{id}/versions`；`ListModelVersions` 多一个 `next_version`，对应 v1 的 `GET /model/{id}`。按名字直觉配对会把两者接反。`ListModelVersions` 不接受 `page`；`ListModelCreators` 接受 `project_id`，与 v1 `/model/users` 的作用域一致。`CreateModel` 不在 discovery 里，逐字接受 v1 `/model/create` 的请求体，返回 `{model_id}`；`model_source_path` 必须落在所给 workspace + project 的路径下，`global_user` 路径会被 `存储路径格式不正确` 拒掉。受控验证走 建→读→删（`DeleteModel`）完成。
 
-`project` 服务只有 `GetProjectForPage` 一个 Action，对应 `/project/list_for_page`；`/project/list`、`/project/list_v2`、`/project/{id}` 和 `/project/owners` 都没有对应物，保留 v1。
+`project` 有四个 Action，discovery 只声明了 `GetProjectForPage`：
 
-`user` 只覆盖**当前用户**：`GetUserDetail` 传空体返回当前账号，字段与 v1 `/user/detail` 完全一致；传 `user_id` / `id` / `UserId` 一律 `InvalidParameter`。它是 train / hpc / ray / model 列表按当前用户过滤时的身份来源。`ListAPIKeys` 也可用，但随 `user api-keys` 命令一起下线，已无消费者。
+- `ListProjects` 对应 `/project/list`，逐字接受 v1 请求体，实测两个工作空间下**逐叶子相等**（0 处差异）。带 `filter.check_admin` 时也覆盖 `/project/list_v2` —— 行集相同，且是**严格超集**：v1 `list_v2` 的 `created_at`、`updated_at`、`status`、`notebook`、`training_job` 全是空值，`gpu_limit` / `hpc` / `hpc_limit` 直接没有，v2 全都填满。
+- `GetProjectDetail`（`ProjectId`）对应 `GET /project/{id}`，字段集完全一致；唯三不等的 `remain_budget` / `used_budget` / `resource` 是**本来就在跳的值**，v1 连着读两次同样不等。
+- `GetProjectOwners` 对应 `/project/owners`，空体调用，返回逐字节相同的 `items`。
+- `GetProjectForPage` 是项目管理页自己的行集，比 `ListProjects` 窄：它会滤掉用户已退出或已结束的项目，所以两者条数不同是**设计如此**，不是谁坏了。旧版文档把这条差异当成「`GetProjectForPage` 与 `list_v2` 不等价，所以没有对应物」，方向搞反了。
+
+`user` 有三个 Action，discovery 只声明了 `GetUserDetail`：
+
+- `GetUserDetail` 只覆盖**当前用户**：传空体返回当前账号，字段与 v1 `/user/detail` 完全一致；传 `user_id` / `id` / `UserId` 一律 `InvalidParameter`。它是 train / hpc / ray / model 列表按当前用户过滤时的身份来源。`ListAPIKeys` 也可用，但随 `user api-keys` 命令一起下线，已无消费者。
+- `GetPermissions`（`WorkspaceId`）对应 `/user/permissions/{workspace_id}`，权限码集合逐字相同。
+- `GetRoutes`（`WorkspaceId`）对应 `/user/routes/{workspace_id}`，四个 route group 与 `userWorkspaceList` 的每个条目逐字相同，**`is_fair_workspace` 也在**——它是 qz 优先级选择器的唯一数据源，缺了就没法迁。
+
+`image` 五个 Action 里 `CreateImage` 和 `UpdateImage` 不在 discovery 里。整组逐字接受 v1 请求体，`ListImages` 在三种 UI 来源下与 v1 **逐字节相等**（官方 17 条、公开 4593 条、个人可见 57 条）。两个必须记住的坑：
+
+- **同一个标识符，三种拼法。** `GetImageById` 要 `ImageId`，`DeleteImage` 要 `image_id`，`UpdateImage` 要 `id`。传错不会报 `unknown field`：`UpdateImage` 收到 `image_id` 时**默默忽略**，然后拿空 id 去查库，回一句 `InternalError: 数据库错误, 请联系管理员`。看到这个错先检查字段名，不要去找 DBA。
+- v1 的「`/image/update` 用 `id` 不用 `image_id`」这条老约定 v2 原样保留，没有借迁移统一。
+
+受控验证：建（`CreateImage`，`add_method=2`）→ 读（`GetImageById`）→ 改可见性与描述（`UpdateImage`）→ 删（`DeleteImage`）→ 确认列表与详情都查不到，全程走 v2。`add_method=0`（本地推送）在 v1 和 v2 上给出**同一个**拒绝（`no image uploaded`），语义没有漂移。
+
+`file` 整个服务不在 discovery 里（历史上出现过又被删掉，见第 3 节末尾），但路由活着，两个 Action 逐字接受 v1 请求体、返回同一个集合。**唯一差异是行顺序**：`GetSystemStorageTypeList` 的 12 个存储池和 `GetDirList` 的目录都会换序，排序后完全相等。当前调用方都不依赖顺序，新调用方也不要依赖。
+
+`model_plaza` 同样不在 discovery 里。三个按 id 读的 Action 统一用 `ModelId`，响应与 v1 逐字节相等。`ListModels` 是例外，见第 9 节。
 
 **Metrics 不属于 `workspace.*`。** v1 用一个集群级端点 `/cluster_metric/resource_metric_by_time` 服务所有 Workload，v2 没有对应的集群级端点：每个 service 各有一份 `GetTaskMetric`，接受**逐字相同**的 `{filter:{logic_compute_group_id, task_id, task_type}, metric_types, time_range}`，返回同一个（拼错的）键 `time_seris_metric_groups`，五个域实测数量与 v1 一致。看起来同名的 `workspace.GetOverviewResourceMetricByTime` 是工作空间级总览，对普通成员返回 `AccessForbidden`，不是它的对应物。第 6 节「用 workspace.\* 不用 cluster.\*」只适用于两边同名的那 8 个 Action，不能推广成「集群级端点一律换 workspace.\*」。
 
@@ -154,25 +183,20 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 其余域仍在 `/api/v1`，映射见 [`browser-api-v1.md`](browser-api-v1.md) 第 3 节。
 
-## 9. 尚无 v2 对应的 v1 域
+## 9. 仍留在 v1 的端点
 
-以下 v1 家族在当前 discovery 中**没有任何对应 Action**，迁移时必须保留 v1，不能按「v2 全覆盖」规划：
+这张表**只收实测结论**，每条都注明是哪一类：路由不存在、Action 不存在、有 Action 但不可用，还是有 Action 但尚未受控验证。四类的处置方式不同，混在一起写会重演第 3 节那个错误。
 
-| v1 家族 | 用途 |
-| --- | --- |
-| `/ssh/*` | SSH 公钥管理，Notebook 连接链路的基础 |
-| `/file/dir/list`、`/file/get_system_storage_type_list` | 共享盘目录与存储池发现，Path Alias 的来源 |
-| `/notebook/lab*`、Notebook Proxy | Web IDE 入口与容器 HTTP 端口暴露 |
-| `/model_plaza/*` | Model Plaza 浏览与部署配置 |
-| `/model/create`、`/image/create`、`/image/update` | Model 与 Image 注册；`model-hub` 和 `image` 在 v2 只有只读与删除 |
-| `/user/permissions/{workspace_id}`、`/user/routes/{workspace_id}` | 权限与工作空间路由发现 |
-| `/project/owners` | Project Owner 列表 |
+| v1 端点 | 类别 | 依据 |
+| --- | --- | --- |
+| `/ssh/*` | 路由不存在 | `/api/v2/ssh`、`/api/v2/ssh_key`、`/api/v2/sshkey` 全部 `404 page not found` |
+| `/notebook/lab*`、Notebook Proxy | Action 不存在 | `notebook` 下 `GetNotebookLab` / `GetLabUrl` / `GetNotebookProxy` / `GetProxyUrl` 均 `InvalidAction`。唯一沾边的 `GetNotebookAccessUrl` 语义不同，见下文，**故意不接** |
+| `/train_job/remote_cmd` | Action 不存在 | WebSocket 端点，v2 面上没有对应物 |
+| `/resource_prices/logic_compute_groups/` | Action 不存在 | 27 个候选名 × 11 条路由全部 `InvalidAction`；`resource_prices` / `price` / `prices` 路由 404。最接近的 `workspace.GetScheduleConfig` 和 `notebook.GetScheduleConfig` 给出**相同的 quota id 与 cpu/mem/gpu 规格**，但**没有价格**，也不是按计算组解析的，不能替代；`workspace.GetLogicComputeGroupNodeSpecs` 返回的是节点硬件规格，不是配额档位 |
+| `/model_plaza/list` | 有 Action，不可用 | `model_plaza.ListModels` 在 5 个工作空间 × 7 种请求体下一律 `AccessForbidden`，而 v1 正常返回行。按第 10 节，`AccessForbidden` 不回落，所以这条**直接保持 v1**，不是「先试 v2 再退回」 |
+| `/mirror/save` | 有 Action，未验证 | `notebook.SaveNotebookImage` 存在且声明了本请求体的超集，但受控验证要真的从运行中的 Notebook 提交一次镜像。**按第 12 节第 7 条，写操作不能只凭探针迁移**，留 v1 待验 |
 
-迁移各域时又实测确认了以下几条同样没有对应 Action，一并保留 v1：
-
-| v1 端点 | 为什么没有对应物 |
-| --- | --- |
-| `/project/list`、`/project/list_v2`、`/project/{id}` | `project` 服务只有 `GetProjectForPage`，且实测与 `/project/list_v2` **不等价**：同一工作空间下前者返回 2 条、后者 3 条，item 字段也不同（`gpu_limit` / `hpc` 只在 v2 侧） |
+**这张表在 2026-08-08 大幅缩水过一次。** 它原先列着 `/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 共 10 个家族，理由都是「discovery 里没有」。实测下来这 10 个全部有可用 Action，现已迁完 —— 唯一真正没有对应物的只有上面这几条。**往这张表里加行之前，先按第 3 节把存在性探针跑一遍。**
 
 ## 10. 回落纪律
 
@@ -201,5 +225,5 @@ v2 相对 v1 **没有可测量的延迟或吞吐优势**：等价端点单请求
 3. 响应解包走 `_v2_result()`，列表键显式声明，不依赖猜测。
 4. 401/302 触发 Session 续期并重试一次。
 5. 回落条件符合第 10 节，且 `AccessForbidden`、`InvalidParameter`、429 都不回落。
-6. 该域若在第 9 节的无对应清单里，不做迁移，并保持 v1 路径。
+6. 该域若在第 9 节的留守清单里，不做迁移，并保持 v1 路径；反过来，判它「没有对应物」之前必须跑完第 3 节的存在性探针。
 7. 写操作经过受控验证，不能只凭只读探针的结果推断。

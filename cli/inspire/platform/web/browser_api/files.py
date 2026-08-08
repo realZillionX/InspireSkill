@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url, _request_json
+from inspire.platform.web.browser_api.core import _get_base_url, _request_json, _v2_result
 from inspire.platform.web.session import WebSession, get_web_session
 
 __all__ = [
@@ -50,6 +50,32 @@ def _files_referer(workspace_id: str | None = None) -> str:
     return f"{_get_base_url()}/jobs/files{suffix}"
 
 
+def _file_v2(
+    session: WebSession,
+    action: str,
+    body: dict[str, Any],
+    *,
+    workspace_id: str,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    """Call one `/api/v2/file` Action and return its unwrapped ``Result``.
+
+    The whole `file` service is absent from discovery — discovery once listed
+    it, then dropped it — but the route is live and both Actions take the v1
+    request bodies unchanged. Row order is not preserved from v1, so callers
+    must not depend on it.
+    """
+    data = _request_json(
+        session,
+        "POST",
+        f"/api/v2/file?Action={action}",
+        referer=_files_referer(workspace_id),
+        body=body,
+        timeout=timeout,
+    )
+    return _v2_result(data)
+
+
 def list_system_storage_types(
     *,
     workspace_id: str,
@@ -62,18 +88,14 @@ def list_system_storage_types(
     if session is None:
         session = get_web_session()
 
-    data = _request_json(
+    data = _file_v2(
         session,
-        "POST",
-        _browser_api_path("/file/get_system_storage_type_list"),
-        referer=_files_referer(workspace_id),
-        body={"filter": {"workspace_id": workspace_id}},
-        timeout=30,
+        "GetSystemStorageTypeList",
+        {"filter": {"workspace_id": workspace_id}},
+        workspace_id=workspace_id,
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
 
-    items = data.get("data", {}).get("system_storages", [])
+    items = data.get("system_storages", [])
     if not isinstance(items, list):
         return []
     return [
@@ -114,18 +136,14 @@ def list_file_directories(
     if cluster_id:
         filter_body["cluster_id"] = cluster_id
 
-    data = _request_json(
+    data = _file_v2(
         session,
-        "POST",
-        _browser_api_path("/file/dir/list"),
-        referer=_files_referer(workspace_id),
-        body={"filter": filter_body},
-        timeout=30,
+        "GetDirList",
+        {"filter": filter_body},
+        workspace_id=workspace_id,
     )
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
 
-    items = data.get("data", {}).get("files", [])
+    items = data.get("files", [])
     if not isinstance(items, list):
         return []
     return [
