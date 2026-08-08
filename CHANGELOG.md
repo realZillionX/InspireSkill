@@ -89,6 +89,18 @@
 
 ### 修复
 
+- `inspire notebook exec` 和 `inspire notebook shell` 走 Jupyter Terminal 时不再启动
+  无头浏览器。那个浏览器只做三件事：取 lab URL、取 `_xsrf`、建/删 terminal。现在
+  分别由 `notebook.GetNotebookAccessUrl`、一次普通 GET（`_xsrf` 本来就是个 cookie）和
+  `POST`/`DELETE api/terminals` 完成。交互式 shell 的会话本就跑在 Python WebSocket 上；
+  `exec` 的抓取循环从页内 JavaScript 移植到 Python，协议未变（等 prompt、分块喂 stdin、
+  见到 `<marker>:exit:<code>` 收工）。受控验证在 RUNNING 的 CPU Notebook 上完成，全程用
+  import hook 封死 `playwright` 包，退出码与多行输出都正确。
+
+  顺带说明一个容易误判的事实：`exec` 在该容器上端到端约 31 秒，其中 **27 秒是容器里
+  内层 `bash` 在 source rc 文件**（`build_jupyter_exec_command` 的执行方式一直如此），
+  与传输方式无关，老的浏览器路径同样要付这笔钱。
+
 - Notebook 网关 URL 的解析不再默认起一个无头 Chromium：先问平台的
   `notebook.GetNotebookAccessUrl`，拿不到才回落浏览器抓取。两者归一化后的结果**逐字节
   相同**，耗时 **0.57 秒对 6.4–36 秒**。收口在 `resolve_notebook_vscode_ide_url`，所以

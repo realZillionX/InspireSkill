@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import json
 import subprocess
 import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
+
+import pytest
 
 from inspire.platform.web.browser_api import jupyter_terminal as jt
 
@@ -72,186 +75,228 @@ def test_parse_command_output_marks_missing_marker_unknown() -> None:
     assert result.completed is False
 
 
-def test_send_terminal_command_capture_collects_stdout_until_marker() -> None:
-    captured: dict[str, object] = {}
+class _FakeHttp:
+    """Stands in for a `requests.Session` primed with the notebook cookies."""
 
-    class _Frame:
-        def evaluate(self, script: str, payload: dict):  # noqa: ANN201
-            captured["script"] = script
-            captured["payload"] = payload
-            return "hello\n__INSPIRE_DONE_abc__:exit:0\n"
+    def __init__(self, *, post_status: int = 200, term_name: str = "1") -> None:
+        self.cookies = {"_xsrf": "xsrf-token"}
+        self._post_status = post_status
+        self._term_name = term_name
+        self.calls: list[tuple[str, str, dict]] = []
+        self.closed = False
 
-    result = jt._send_terminal_command_capture_via_websocket(
-        _Frame(),
+    def _record(self, verb, url, headers):  # noqa: ANN001, ANN202
+        self.calls.append((verb, url, dict(headers or {})))
+
+    def get(self, url, **kwargs):  # noqa: ANN001, ANN003, ANN201
+        self._record("GET", url, kwargs.get("headers"))
+        return SimpleNamespace(status_code=200)
+
+    def post(self, url, **kwargs):  # noqa: ANN001, ANN003, ANN201
+        self._record("POST", url, kwargs.get("headers"))
+        return SimpleNamespace(
+            status_code=self._post_status,
+            json=lambda: {"name": self._term_name},
+        )
+
+    def delete(self, url, **kwargs):  # noqa: ANN001, ANN003, ANN201
+        self._record("DELETE", url, kwargs.get("headers"))
+        return SimpleNamespace(status_code=204)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _patch_terminal_http(monkeypatch, http, *, jupyter_url):  # noqa: ANN001, ANN202
+    monkeypatch.setattr(jt, "build_requests_session", lambda *_a, **_k: http)
+    monkeypatch.setattr(jt, "_notebook_jupyter_url", lambda *_a, **_k: jupyter_url)
+    monkeypatch.setattr(
+        jt.rtunnel_module,
+        "_build_terminal_websocket_url",
+        lambda lab_url, term_name: f"wss://nb.example.com/terminals/websocket/{term_name}",
+    )
+
+
+def test_jupyter_terminal_creates_and_deletes_over_plain_http(monkeypatch) -> None:  # noqa: ANN001
+    """No browser anywhere: `_xsrf` is a cookie, and the rest is REST.
+
+    Chromium used to be started solely to obtain that cookie and to issue two
+    API calls the platform is happy to take over ordinary HTTP.
+    """
+    http = _FakeHttp()
+    _patch_terminal_http(monkeypatch, http, jupyter_url="https://nb.example.com/jupyter/nb-1/tok/lab")
+
+    with jt._jupyter_terminal(object(), "nb-1") as term:
+        assert term is not None
+        assert term.name == "1"
+        assert term.ws_url == "wss://nb.example.com/terminals/websocket/1"
+
+    verbs = [verb for verb, _url, _headers in http.calls]
+    assert verbs == ["GET", "POST", "DELETE"]
+    # The Jupyter server rejects state-changing calls without the echoed token.
+    assert http.calls[1][2]["X-XSRFToken"] == "xsrf-token"
+    assert http.calls[1][1].endswith("/api/terminals")
+    assert http.calls[2][1].endswith("/api/terminals/1")
+    assert http.closed is True
+
+
+def test_jupyter_terminal_deletes_even_when_the_body_raises(monkeypatch) -> None:  # noqa: ANN001
+    http = _FakeHttp()
+    _patch_terminal_http(monkeypatch, http, jupyter_url="https://nb.example.com/jupyter/nb-1/tok/lab")
+
+    with pytest.raises(RuntimeError):
+        with jt._jupyter_terminal(object(), "nb-1"):
+            raise RuntimeError("command blew up")
+
+    assert [verb for verb, _u, _h in http.calls][-1] == "DELETE"
+
+
+def test_jupyter_terminal_yields_none_for_a_stopped_notebook(monkeypatch) -> None:  # noqa: ANN001
+    """A STOPPED notebook answers `GetNotebookAccessUrl` with empty strings."""
+    monkeypatch.setattr(jt, "_notebook_jupyter_url", lambda *_a, **_k: "")
+
+    with jt._jupyter_terminal(object(), "nb-1") as term:
+        assert term is None
+
+
+def test_jupyter_terminal_yields_none_when_creation_is_refused(monkeypatch) -> None:  # noqa: ANN001
+    http = _FakeHttp(post_status=403)
+    _patch_terminal_http(monkeypatch, http, jupyter_url="https://nb.example.com/jupyter/nb-1/tok/lab")
+
+    with jt._jupyter_terminal(object(), "nb-1") as term:
+        assert term is None
+    # Nothing was created, so nothing is deleted.
+    assert "DELETE" not in [verb for verb, _u, _h in http.calls]
+
+
+class _FakeWebSocket:
+    """Replays terminal frames, and records what was written back."""
+
+    def __init__(self, frames: list[str]) -> None:
+        self._frames = list(frames)
+        self.sent: list[str] = []
+
+    def __enter__(self):  # noqa: ANN204
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001
+        return False
+
+    def fileno(self) -> int:
+        return 0
+
+    def send_text(self, text: str) -> None:
+        self.sent.append(text)
+
+    def recv_frame(self):  # noqa: ANN201
+        if not self._frames:
+            raise EOFError
+        return 0x1, json.dumps(["stdout", self._frames.pop(0)]).encode()
+
+
+def _patch_capture_socket(monkeypatch, ws):  # noqa: ANN001, ANN202
+    import inspire.cli.utils.job_shell as job_shell
+
+    monkeypatch.setattr(job_shell, "_WebSocketClient", lambda *_a, **_k: ws)
+    monkeypatch.setattr(jt.select, "select", lambda r, _w, _x, _t=None: (r, [], []))
+    monkeypatch.setattr(jt, "_jupyter_ws_headers", lambda *_a, **_k: {})
+
+
+def test_capture_sends_on_the_prompt_and_stops_at_the_marker(monkeypatch) -> None:  # noqa: ANN001
+    """The Python port keeps the protocol the in-page JavaScript used."""
+    marker = "__INSPIRE_DONE_abc__"
+    ws = _FakeWebSocket(
+        [
+            "user@pod:~$ ",
+            # The PTY echoes the command back; the prelude stripper cuts to here.
+            "echo 'ZWNobyBoaQo=' | base64 -d | bash\r\n",
+            "hello\n",
+            f"{marker}:exit:0 \n",
+        ]
+    )
+    _patch_capture_socket(monkeypatch, ws)
+
+    result = jt._capture_terminal_output(
         ws_url="wss://nb.example.com/terminals/websocket/1",
+        session=object(),
+        stdin_data="echo hi\r",
+        timeout_ms=5000,
+        marker=marker,
+    )
+
+    assert result is not None
+    assert result.completed is True
+    assert result.returncode == 0
+    assert result.output == "hello\n"
+    # Sent once, only after the prompt showed up.
+    assert ws.sent == [json.dumps(["stdin", "echo hi\r"])]
+
+
+def test_capture_chunks_stdin_the_pty_cannot_swallow_whole(monkeypatch) -> None:  # noqa: ANN001
+    marker = "__INSPIRE_DONE_abc__"
+    payload = "x" * (jt._STDIN_CHUNK * 2 + 5)
+    ws = _FakeWebSocket(["$ ", f"{marker}:exit:0 \n"])
+    _patch_capture_socket(monkeypatch, ws)
+    monkeypatch.setattr(jt.time, "sleep", lambda _s: None)
+
+    jt._capture_terminal_output(
+        ws_url="wss://nb.example.com/terminals/websocket/1",
+        session=object(),
+        stdin_data=payload,
+        timeout_ms=5000,
+        marker=marker,
+    )
+
+    assert len(ws.sent) == 3
+    assert "".join(json.loads(frame)[1] for frame in ws.sent) == payload
+
+
+def test_capture_reports_unfinished_when_the_marker_never_arrives(monkeypatch) -> None:  # noqa: ANN001
+    ws = _FakeWebSocket(["$ ", "partial output"])
+    _patch_capture_socket(monkeypatch, ws)
+
+    result = jt._capture_terminal_output(
+        ws_url="wss://nb.example.com/terminals/websocket/1",
+        session=object(),
         stdin_data="echo hi\r",
         timeout_ms=5000,
         marker="__INSPIRE_DONE_abc__",
     )
 
     assert result is not None
-    assert result.returncode == 0
-    assert result.output == "hello\n"
-    assert captured["payload"] == {
-        "wsUrl": "wss://nb.example.com/terminals/websocket/1",
-        "stdinData": "echo hi\r",
-        "timeoutMs": 5000,
-        "promptTimeoutMs": 3000,
-        "marker": "__INSPIRE_DONE_abc__",
-    }
-    assert "new WebSocket" in captured["script"]
-    assert 'const donePrefix = marker + ":exit:"' in captured["script"]
-    assert "/^\\d+\\s/" in captured["script"]
+    assert result.completed is False
+    assert result.returncode == jt.MISSING_MARKER_RETURN_CODE
 
 
-def test_send_terminal_command_capture_returns_none_on_evaluate_failure() -> None:
-    class _Frame:
-        def evaluate(self, script: str, payload: dict):  # noqa: ANN201
-            raise RuntimeError("browser closed")
+def test_command_capture_runs_without_playwright(monkeypatch) -> None:  # noqa: ANN001
+    """The whole point: `notebook exec` no longer starts a browser."""
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
 
-    assert (
-        jt._send_terminal_command_capture_via_websocket(
-            _Frame(),
-            ws_url="wss://nb.example.com/terminals/websocket/1",
-            stdin_data="echo hi\r",
-            timeout_ms=5000,
-            marker="__INSPIRE_DONE_abc__",
+    http = _FakeHttp()
+    _patch_terminal_http(monkeypatch, http, jupyter_url="https://nb.example.com/jupyter/nb-1/tok/lab")
+    seen: dict[str, object] = {}
+
+    def _capture(**kwargs):  # noqa: ANN003, ANN202
+        seen.update(kwargs)
+        return jt.JupyterCommandResult(
+            returncode=0, output="ok\n", completed=True, marker=kwargs["marker"]
         )
-        is None
-    )
 
-
-def test_run_command_capture_in_existing_lab_cleans_up_terminal(monkeypatch) -> None:  # noqa: ANN001
-    events: list[tuple[str, object]] = []
-
-    class _Frame:
-        url = "https://nb.example.com/lab"
-
-    monkeypatch.setattr(jt.rtunnel_module, "_create_terminal_via_api", lambda *_a, **_k: "term-1")
-    monkeypatch.setattr(
-        jt.rtunnel_module,
-        "_build_terminal_websocket_url",
-        lambda _url, _term: "wss://nb.example.com/terminals/websocket/term-1",
-    )
-    monkeypatch.setattr(
-        jt,
-        "_send_terminal_command_capture_via_websocket",
-        lambda *_a, **_k: jt.JupyterCommandResult(
-            returncode=0,
-            output="ok\n",
-            completed=True,
-            marker=_k["marker"],
-        ),
-    )
-    monkeypatch.setattr(
-        jt.rtunnel_module,
-        "_delete_terminal_via_api",
-        lambda _ctx, *, lab_url, term_name: events.append(("delete", f"{lab_url}|{term_name}"))
-        or True,
-    )
-
-    result = jt.run_command_capture_in_existing_lab(
-        context=object(),
-        lab_frame=_Frame(),
-        command="echo ok",
-        timeout_ms=5000,
-    )
-
-    assert result.returncode == 0
-    assert result.output == "ok\n"
-    assert events == [("delete", "https://nb.example.com/lab|term-1")]
-
-
-
-def test_capture_uses_direct_lab_timeout_and_target_account(monkeypatch) -> None:  # noqa: ANN001
-    calls: dict[str, object] = {}
-
-    class _Page:
-        pass
-
-    class _Context:
-        def __init__(self) -> None:
-            self.page = _Page()
-
-        def new_page(self) -> _Page:
-            return self.page
-
-        def close(self) -> None:
-            calls["context_closed"] = True
-
-    class _Browser:
-        def close(self) -> None:
-            calls["browser_closed"] = True
-
-    class _SyncPlaywright:
-        def __enter__(self):  # noqa: ANN201
-            return object()
-
-        def __exit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001, ANN201
-            return False
-
-    fake_sync_api = ModuleType("playwright.sync_api")
-    fake_sync_api.sync_playwright = lambda: _SyncPlaywright()
-    fake_playwright = ModuleType("playwright")
-    fake_playwright.sync_api = fake_sync_api
-    monkeypatch.setitem(sys.modules, "playwright", fake_playwright)
-    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake_sync_api)
-
-    context = _Context()
-    browser = _Browser()
-    session = SimpleNamespace(
-        storage_state={"cookies": []},
-        account="secondary",
-        base_url="https://secondary.example.test",
-    )
-    expected = jt.JupyterCommandResult(
-        returncode=0,
-        output="ok\n",
-        completed=True,
-        marker="done",
-    )
-
-    def fake_launch(_p, *, headless, account):  # noqa: ANN001, ANN202
-        calls["launch"] = {"headless": headless, "account": account}
-        return browser
-
-    def fake_context(_browser, *, storage_state, account):  # noqa: ANN001, ANN202
-        calls["context"] = {"storage_state": storage_state, "account": account}
-        return context
-
-    def fake_open(_page, **kwargs):  # noqa: ANN001, ANN202
-        calls["open"] = kwargs
-        return SimpleNamespace(url="https://secondary.example.test/api/v1/notebook/lab/nb-123")
-
-    monkeypatch.setattr(jt, "_launch_browser", fake_launch)
-    monkeypatch.setattr(jt, "_new_context", fake_context)
-    monkeypatch.setattr(jt, "open_notebook_lab", fake_open)
-    monkeypatch.setattr(jt, "run_command_capture_in_existing_lab", lambda **_k: expected)
+    monkeypatch.setattr(jt, "_capture_terminal_output", _capture)
 
     result = jt._run_command_capture_in_notebook_sync(
-        notebook_id="nb-123",
+        notebook_id="nb-1",
         command="echo ok",
-        session=session,
-        headless=True,
+        session=SimpleNamespace(storage_state={"cookies": []}, account="secondary"),
         timeout=9,
         marker="done",
     )
 
-    assert result is expected
-    assert calls["launch"] == {"headless": True, "account": "secondary"}
-    assert calls["context"] == {
-        "storage_state": {"cookies": []},
-        "account": "secondary",
-    }
-    assert calls["open"] == {
-        "notebook_id": "nb-123",
-        "timeout": 9000,
-        "session": session,
-        "prefer_direct": True,
-    }
-    assert calls["context_closed"] is True
-    assert calls["browser_closed"] is True
-
+    assert result.returncode == 0
+    assert seen["ws_url"] == "wss://nb.example.com/terminals/websocket/1"
+    assert seen["timeout_ms"] == 9000
+    assert http.closed is True
 
 
 def test_build_jupyter_terminal_ws_url_uses_existing_rtunnel_helper(monkeypatch) -> None:  # noqa: ANN001

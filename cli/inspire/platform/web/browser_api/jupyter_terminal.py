@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
 import re
@@ -9,35 +10,31 @@ import signal
 import shlex
 import sys
 import termios
+import time
 import tty
 import uuid
 from dataclasses import dataclass
-from typing import Protocol, Optional
+from typing import Iterator, Protocol, Optional
 from urllib.parse import urlsplit
 
 from inspire.cli.utils.terminal_io import write_stream_output
 from inspire.platform.web.browser_api import rtunnel as rtunnel_module
 from inspire.platform.web.browser_api.core import (
     _in_asyncio_loop,
-    _launch_browser,
-    _new_context,
     _run_in_thread,
 )
-from inspire.platform.web.browser_api.playwright_notebooks import open_notebook_lab
 from inspire.platform.web.session import WebSession
-from inspire.platform.web.session import get_web_session
+from inspire.platform.web.session import build_requests_session, get_web_session
 
 JUPYTER_DONE_PREFIX = "__INSPIRE_JUPYTER_DONE_"
 MISSING_MARKER_RETURN_CODE = 124
 _ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-
-
-class _Evaluatable(Protocol):
-    def evaluate(self, _expression: str, arg: object | None = None) -> object: ...
-
-
-class _LabFrameLike(_Evaluatable, Protocol):
-    url: str
+# The terminal echoes a shell prompt when it is ready for input.
+_PROMPT_RE = re.compile(r"[$#]\s*$")
+_EXIT_CODE_RE = re.compile(r"^\d+\s")
+# The PTY drops input that arrives faster than it drains, so feed it in chunks.
+_STDIN_CHUNK = 2048
+_STDIN_CHUNK_DELAY_S = 0.05
 
 
 class _TextWebSocket(Protocol):
@@ -116,162 +113,11 @@ def build_shell_bootstrap(*, cwd: str | None, env_exports: str) -> str:
     return "exec $SHELL -l\r"
 
 
-def _send_terminal_command_capture_via_websocket(
-    page_or_frame: _Evaluatable,
-    *,
-    ws_url: str,
-    stdin_data: str,
-    timeout_ms: int,
-    marker: str,
-) -> Optional[JupyterCommandResult]:
-    prompt_timeout_ms = max(0, min(timeout_ms - 500, 3000))
-    try:
-        raw_output = page_or_frame.evaluate(
-            """
-            async ({ wsUrl, stdinData, timeoutMs, promptTimeoutMs, marker }) => {
-              return await new Promise((resolve, reject) => {
-                let settled = false;
-                let sent = false;
-                let socket = null;
-                let output = "";
-                const finish = (value) => {
-                  if (settled) return;
-                  settled = true;
-                  clearTimeout(timer);
-                  try {
-                    if (socket) socket.close();
-                  } catch (_) {}
-                  resolve(value);
-                };
-                const fail = (err) => {
-                  if (settled) return;
-                  settled = true;
-                  clearTimeout(timer);
-                  try {
-                    if (socket) socket.close();
-                  } catch (_) {}
-                  reject(err);
-                };
-                const timer = setTimeout(() => finish(output), timeoutMs);
-                const doSend = () => {
-                  if (sent || settled) return;
-                  sent = true;
-                  const CHUNK = 2048;
-                  const DELAY = 50;
-                  const chunks = [];
-                  for (let i = 0; i < stdinData.length; i += CHUNK) {
-                    chunks.push(stdinData.slice(i, i + CHUNK));
-                  }
-                  let idx = 0;
-                  const next = () => {
-                    if (settled) return;
-                    try {
-                      socket.send(JSON.stringify(["stdin", chunks[idx]]));
-                    } catch (err) {
-                      fail(err);
-                      return;
-                    }
-                    idx++;
-                    if (idx < chunks.length) {
-                      setTimeout(next, DELAY);
-                    }
-                  };
-                  next();
-                };
-                socket = new WebSocket(wsUrl);
-                socket.onopen = () => {
-                  setTimeout(doSend, promptTimeoutMs);
-                };
-                socket.onerror = () => fail(new Error("terminal websocket error"));
-                socket.onmessage = (event) => {
-                  let msg = null;
-                  try {
-                    msg = JSON.parse(event.data);
-                  } catch (_) {
-                    return;
-                  }
-                  if (!Array.isArray(msg) || msg.length < 2) return;
-                  if (msg[0] !== "stdout") return;
-                  const text = String(msg[1] || "");
-                  output += text;
-                  if (!sent && /[$#]\\s*$/.test(text)) {
-                    doSend();
-                  }
-                  if (sent) {
-                    const donePrefix = marker + ":exit:";
-                    const doneAt = output.indexOf(donePrefix);
-                    if (
-                      doneAt >= 0 &&
-                      /^\\d+\\s/.test(output.slice(doneAt + donePrefix.length))
-                    ) {
-                      finish(output);
-                    }
-                  }
-                };
-              });
-            }
-            """,
-            {
-                "wsUrl": ws_url,
-                "stdinData": stdin_data,
-                "timeoutMs": max(int(timeout_ms), 1000),
-                "promptTimeoutMs": prompt_timeout_ms,
-                "marker": marker,
-            },
-        )
-    except Exception:
-        return None
-    return parse_jupyter_exec_output(str(raw_output or ""), marker=marker)
-
-
-def run_command_capture_in_existing_lab(
-    *,
-    context: object,
-    lab_frame: _LabFrameLike,
-    command: str,
-    timeout_ms: int,
-    marker: str | None = None,
-) -> JupyterCommandResult:
-    effective_marker = marker or new_completion_marker()
-    term_name = rtunnel_module._create_terminal_via_api(context, lab_frame.url)
-    if not term_name:
-        return JupyterCommandResult(
-            returncode=MISSING_MARKER_RETURN_CODE,
-            output="",
-            completed=False,
-            marker=effective_marker,
-        )
-    try:
-        ws_url = rtunnel_module._build_terminal_websocket_url(lab_frame.url, term_name)
-        result = _send_terminal_command_capture_via_websocket(
-            lab_frame,
-            ws_url=ws_url,
-            stdin_data=build_jupyter_exec_command(command, marker=effective_marker),
-            timeout_ms=timeout_ms,
-            marker=effective_marker,
-        )
-        if result is None:
-            return JupyterCommandResult(
-                returncode=MISSING_MARKER_RETURN_CODE,
-                output="",
-                completed=False,
-                marker=effective_marker,
-            )
-        return result
-    finally:
-        rtunnel_module._delete_terminal_via_api(
-            context,
-            lab_url=lab_frame.url,
-            term_name=term_name,
-        )
-
-
 def run_command_capture_in_notebook(
     *,
     notebook_id: str,
     command: str,
     session: Optional[WebSession] = None,
-    headless: bool = True,
     timeout: int = 60,
     marker: str | None = None,
 ) -> JupyterCommandResult:
@@ -281,7 +127,6 @@ def run_command_capture_in_notebook(
             notebook_id=notebook_id,
             command=command,
             session=session,
-            headless=headless,
             timeout=timeout,
             marker=marker,
         )
@@ -289,10 +134,161 @@ def run_command_capture_in_notebook(
         notebook_id=notebook_id,
         command=command,
         session=session,
-        headless=headless,
         timeout=timeout,
         marker=marker,
     )
+
+
+@dataclass
+class _JupyterTerminal:
+    """One Jupyter terminal, created and torn down over plain HTTP."""
+
+    lab_url: str
+    name: str
+    ws_url: str
+
+
+def _notebook_jupyter_url(session: WebSession, notebook_id: str) -> str:
+    """The notebook's JupyterLab entrance, straight from the platform.
+
+    Deliberately the raw ``jupyter_url``: the terminal REST and WebSocket
+    routes hang off the Jupyter server base, so the ``vscode`` rewrite that
+    :func:`playwright_notebooks._ide_gateway_url` applies is wrong here.
+    """
+    from inspire.platform.web.browser_api.notebooks import _notebook_v2
+
+    payload = _notebook_v2(session, "GetNotebookAccessUrl", {"notebook_id": notebook_id})
+    return str(payload.get("jupyter_url") or "").strip()
+
+
+@contextlib.contextmanager
+def _jupyter_terminal(
+    session: WebSession,
+    notebook_id: str,
+    *,
+    timeout_s: float = 30.0,
+) -> Iterator[Optional[_JupyterTerminal]]:
+    """Create a terminal for the notebook, and always clean it up.
+
+    Yields ``None`` when the notebook has no reachable Jupyter server — a
+    STOPPED notebook returns an empty access URL — so callers report the same
+    "could not start a terminal" outcome they always did.
+
+    No browser anywhere in here. `_xsrf` is a plain cookie the Jupyter server
+    sets on any GET, and the REST API only wants it echoed back in a header;
+    driving Chromium to obtain it was never necessary.
+    """
+    lab_url = _notebook_jupyter_url(session, notebook_id)
+    if not lab_url:
+        yield None
+        return
+
+    http = build_requests_session(session, lab_url)
+    term_name = ""
+    base = rtunnel_module._jupyter_server_base(lab_url)
+    try:
+        http.get(lab_url, timeout=(5, timeout_s), allow_redirects=True)
+        xsrf = str(http.cookies.get("_xsrf") or "")
+        headers = {"X-XSRFToken": xsrf} if xsrf else {}
+        response = http.post(f"{base}api/terminals", headers=headers, timeout=(5, timeout_s))
+        if response.status_code not in (200, 201):
+            yield None
+            return
+        term_name = str(response.json().get("name") or "")
+        if not term_name:
+            yield None
+            return
+        yield _JupyterTerminal(
+            lab_url=lab_url,
+            name=term_name,
+            ws_url=rtunnel_module._build_terminal_websocket_url(lab_url, term_name),
+        )
+    finally:
+        if term_name:
+            with contextlib.suppress(Exception):
+                http.delete(
+                    f"{base}api/terminals/{term_name}",
+                    headers={"X-XSRFToken": str(http.cookies.get("_xsrf") or "")},
+                    timeout=(5, timeout_s),
+                )
+        with contextlib.suppress(Exception):
+            http.close()
+
+
+def _capture_terminal_output(
+    *,
+    ws_url: str,
+    session: WebSession,
+    stdin_data: str,
+    timeout_ms: int,
+    marker: str,
+) -> Optional[JupyterCommandResult]:
+    """Run one command on the terminal and read back everything it printed.
+
+    A Python port of what used to run as JavaScript inside a Playwright page.
+    The protocol is unchanged: wait for a prompt (or give up waiting and send
+    anyway), feed stdin in chunks, and stop as soon as the marker line carries
+    an exit code.
+    """
+    from inspire.cli.utils.job_shell import _WebSocketClient
+
+    deadline = time.monotonic() + max(int(timeout_ms), 1000) / 1000.0
+    # Bounded wait for the prompt: a terminal that never prints one still has
+    # to receive the command, or the call would return empty on a timeout.
+    prompt_deadline = time.monotonic() + max(0, min(timeout_ms - 500, 3000)) / 1000.0
+    done_prefix = f"{marker}:exit:"
+    output = ""
+    sent = False
+
+    def _send(ws: object) -> None:
+        for start in range(0, len(stdin_data), _STDIN_CHUNK):
+            _send_jupyter_stdin(ws, stdin_data[start : start + _STDIN_CHUNK])
+            if start + _STDIN_CHUNK < len(stdin_data):
+                time.sleep(_STDIN_CHUNK_DELAY_S)
+
+    try:
+        with _WebSocketClient(ws_url, _jupyter_ws_headers(session, ws_url)) as ws:
+            while True:
+                now = time.monotonic()
+                if now >= deadline:
+                    break
+                if not sent and now >= prompt_deadline:
+                    sent = True
+                    _send(ws)
+                ready, _, _ = select.select([ws], [], [], min(0.25, deadline - now))
+                if not ready:
+                    continue
+                try:
+                    opcode, payload = ws.recv_frame()
+                except EOFError:
+                    break
+                if opcode == 0x8:
+                    break
+                if opcode == 0x9:
+                    ws._send_frame(0xA, payload)
+                    continue
+                if opcode not in {0x1, 0x2}:
+                    continue
+                try:
+                    message = json.loads(payload.decode("utf-8", errors="ignore"))
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(message, list) or len(message) < 2:
+                    continue
+                if message[0] != "stdout":
+                    continue
+                text = str(message[1] or "")
+                output += text
+                if not sent and _PROMPT_RE.search(text):
+                    sent = True
+                    _send(ws)
+                if sent:
+                    done_at = output.find(done_prefix)
+                    if done_at >= 0 and _EXIT_CODE_RE.match(output[done_at + len(done_prefix) :]):
+                        break
+    except Exception:
+        return None
+    return parse_jupyter_exec_output(output, marker=marker)
 
 
 def _jupyter_ws_headers(session: WebSession, ws_url: str) -> dict[str, str]:
@@ -419,54 +415,15 @@ def open_jupyter_terminal_shell(
     env_exports: str = "",
     timeout: int = 60,
 ) -> int:
-    from playwright.sync_api import sync_playwright
-
     active_session = session or get_web_session()
-    timeout_ms = max(int(timeout * 1000), 1000)
-    with sync_playwright() as p:
-        browser = _launch_browser(
-            p,
-            headless=True,
-            account=active_session.account,
+    with _jupyter_terminal(active_session, notebook_id, timeout_s=max(int(timeout), 10)) as term:
+        if term is None:
+            return MISSING_MARKER_RETURN_CODE
+        return _run_jupyter_terminal_shell(
+            ws_url=term.ws_url,
+            session=active_session,
+            bootstrap=build_shell_bootstrap(cwd=cwd, env_exports=env_exports),
         )
-        context = _new_context(
-            browser,
-            storage_state=active_session.storage_state,
-            account=active_session.account,
-        )
-        page = context.new_page()
-
-        term_name: str | None = None
-        lab_url = ""
-        try:
-            lab_frame = open_notebook_lab(
-                page,
-                notebook_id=notebook_id,
-                session=active_session,
-                timeout=timeout_ms,
-                prefer_direct=True,
-            )
-            lab_url = lab_frame.url
-            term_name = rtunnel_module._create_terminal_via_api(context, lab_url)
-            if not term_name:
-                return MISSING_MARKER_RETURN_CODE
-            ws_url = build_jupyter_terminal_ws_url(lab_url, term_name)
-            return _run_jupyter_terminal_shell(
-                ws_url=ws_url,
-                session=active_session,
-                bootstrap=build_shell_bootstrap(cwd=cwd, env_exports=env_exports),
-            )
-        finally:
-            if term_name and lab_url:
-                rtunnel_module._delete_terminal_via_api(
-                    context,
-                    lab_url=lab_url,
-                    term_name=term_name,
-                )
-            try:
-                context.close()
-            finally:
-                browser.close()
 
 
 def _run_command_capture_in_notebook_sync(
@@ -474,47 +431,31 @@ def _run_command_capture_in_notebook_sync(
     notebook_id: str,
     command: str,
     session: Optional[WebSession],
-    headless: bool,
     timeout: int,
     marker: str | None,
 ) -> JupyterCommandResult:
-    from playwright.sync_api import sync_playwright
-
     if session is None:
         session = get_web_session()
 
     effective_marker = marker or new_completion_marker()
     timeout_ms = max(int(timeout * 1000), 1000)
-    with sync_playwright() as p:
-        browser = _launch_browser(
-            p,
-            headless=headless,
-            account=session.account,
-        )
-        context = _new_context(
-            browser,
-            storage_state=session.storage_state,
-            account=session.account,
-        )
-        page = context.new_page()
 
-        try:
-            lab_frame = open_notebook_lab(
-                page,
-                notebook_id=notebook_id,
-                timeout=timeout_ms,
-                session=session,
-                prefer_direct=True,
-            )
-            return run_command_capture_in_existing_lab(
-                context=context,
-                lab_frame=lab_frame,
-                command=command,
-                timeout_ms=timeout_ms,
-                marker=effective_marker,
-            )
-        finally:
-            try:
-                context.close()
-            finally:
-                browser.close()
+    def _unfinished() -> JupyterCommandResult:
+        return JupyterCommandResult(
+            returncode=MISSING_MARKER_RETURN_CODE,
+            output="",
+            completed=False,
+            marker=effective_marker,
+        )
+
+    with _jupyter_terminal(session, notebook_id, timeout_s=max(int(timeout), 10)) as term:
+        if term is None:
+            return _unfinished()
+        result = _capture_terminal_output(
+            ws_url=term.ws_url,
+            session=session,
+            stdin_data=build_jupyter_exec_command(command, marker=effective_marker),
+            timeout_ms=timeout_ms,
+            marker=effective_marker,
+        )
+        return result if result is not None else _unfinished()

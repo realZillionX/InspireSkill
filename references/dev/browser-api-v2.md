@@ -121,7 +121,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `hpc` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobEvents`、`ListJobInstances`、`GetJobLog`、`StopJob`、`DeleteJob` |
 | `inference_serving` | `CreateServingConsole`、`ListServings`、`GetServing`、`ListServingVersions`、`ListServingInstances`、`ListServingEvents`、`ListServingScaleHistory`、`GetServingLog`、`GetInferenceServingTerms`、`GetServingConfigByWorkspaceId`、`GetInferenceServingUserProjectList`、`StartServing`、`StopServing`、`DeleteServing` |
 | `ray` | `CreateJob`、`GetJob`、`ListJobs`、`ListJobCreators`、`ListJobEvents`、`ListJobInstances`、`ListJobScalingHistories`、`StopJob`、`DeleteJob` |
-| `notebook` | `CreateNotebook`、`GetNotebook`、`ListNotebooks`、`ListNotebookCreators`、`ListNotebookEvents`、`ListNotebookLifecycles`、`ListRunIndex`、`StartNotebook`、`StopNotebook`、`DeleteNotebook`、`SaveNotebookImage` |
+| `notebook` | `CreateNotebook`、`GetNotebook`、`ListNotebooks`、`ListNotebookCreators`、`ListNotebookEvents`、`ListNotebookLifecycles`、`ListRunIndex`、`StartNotebook`、`StopNotebook`、`DeleteNotebook`、`SaveNotebookImage`、`GetNotebookAccessUrl` |
 | `workspace` | `ListLogicComputeGroups`、`ListNodeDimension`、`GetLogicComputeGroupResource` |
 | `user` | `GetUserDetail`、`GetPermissions`、`GetRoutes` |
 | `project` | `GetProjectForPage`、`ListProjects`、`GetProjectDetail`、`GetProjectOwners` |
@@ -188,7 +188,9 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 解析顺序是 **缓存/热候选 → `GetNotebookAccessUrl` → Playwright**，收口在 `resolve_notebook_vscode_ide_url`，因此 `proxy-url` 与 rtunnel 的 SSH 候选路径同时受益。API 在 `refresh=True` 时也会走：refresh 的语义是「别信缓存」，不是「一定要抓」。STOPPED 的 Notebook 上它返回两个空字符串，此时回落浏览器路径（那条也会失败，语义不变）。
 
-剩下的大头还没做：实测**纯 HTTP 就能拿到 `_xsrf` 并建/删 Jupyter terminal**（GET `jupyter_url` → 200 且 cookie 落袋 → POST `api/terminals` → 200 → DELETE → 204），所以 `notebook exec` / `shell` 那条无头浏览器链路原则上可以整条拆掉，只剩页内 WebSocket 需要换成 Python 客户端（`job_shell.py` 对 `/train_job/remote_cmd` 已经是这么做的）。这属于功能重构，要单独验证和受控验收。
+**`notebook exec` / `shell` 已经不再起浏览器。** 那条链路以前要拉一个无头 Chromium，只为了三件事，逐件都有更直接的做法：拿 lab URL 用 `GetNotebookAccessUrl`（注意用**原始 `jupyter_url`**，不能用 `_ide_gateway_url` 归一化后的形式 —— terminal 的 REST 与 WebSocket 路由挂在 Jupyter server base 上，`vscode` 那次重写在这里是错的）；拿 `_xsrf` 只需对 `jupyter_url` 发一次普通 GET，它就是个 cookie；建/删 terminal 是 `POST`/`DELETE api/terminals`，把 `_xsrf` 放进 `X-XSRFToken` 头即可。交互式 `shell` 的会话本来就跑在 Python WebSocket 上（`job_shell.py` 的 `_WebSocketClient`），`exec` 的抓取循环则从页内 JavaScript 逐行移植到了 Python，协议不变：等 prompt（最多等 3 秒就直接发）、按 2048 字节分块喂 stdin、看到 `<marker>:exit:<code>` 就收工。
+
+受控验证在一个 RUNNING 的 CPU Notebook 上完成，全程用 import hook 封死 `playwright` 包：命令正常执行、退出码正确传出（`ls` 不存在的路径回 2）、多行输出完整。**耗时的大头不在这条链路**：实测时间线是横幅 1.5 秒、prompt 3.9 秒、命令结果 30.8 秒 —— 中间那 27 秒是容器里 `echo '<b64>' | base64 -d | bash` 拉起的**内层 bash 在 source rc 文件**，与传输方式无关，老的浏览器路径同样要付。
 
 `ray` 是全域迁移，v1 `/ray_job/*` 九个端点已全部退出。响应逐字段与 v1 一致，因此 Wrapper 的归一化未改动。三条与其它域不同的约束：资源键在每个 Action 上都是 `ray_job_id`（`job_id` 和 `id` 都报 `unknown field`）；工作空间 scoping 是顶层 `workspace_id`，第 5 节那层 `filter` 嵌套在这里会被拒；**没有 `CreateJobConsole` 变体**，创建走 `CreateJob`。
 

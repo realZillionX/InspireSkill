@@ -103,7 +103,6 @@ from .jupyter_terminal import (
     new_completion_marker,
     open_jupyter_terminal_shell,
     parse_jupyter_exec_output,
-    run_command_capture_in_existing_lab,
     run_command_capture_in_notebook,
 )
 from .images import (
@@ -254,7 +253,6 @@ __all__ = [
     "new_completion_marker",
     "open_jupyter_terminal_shell",
     "parse_jupyter_exec_output",
-    "run_command_capture_in_existing_lab",
     "run_command_capture_in_notebook",
     "OpenSSHInternalInstallError",
     "OPENSSH_INSTALL_LOG",
