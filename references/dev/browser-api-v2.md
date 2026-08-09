@@ -50,10 +50,12 @@ Content-Type: application/json
 | --- | --- |
 | Service `Name` | 不等于网关路由名，见第 4 节 |
 | Service 全集 | **不完整**。`file` 路由完全不在 discovery 里，但活着，当前 CLI 正在用；`model_plaza` 同样存在但已无消费者 |
-| Action 全集 | **不完整**，且缺口不小。当前 169 个声明之外，实测活着的至少还有 11 个：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`image.CreateImage`、`image.UpdateImage`、`image.PreheatImage`、`model-hub.CreateModel`、`model-hub.UpdateModel`、`model-hub.DeleteModel`、`user.GetPermissions`、`user.GetRoutes`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners` |
+| Action 全集 | **不完整**，且缺口不小。当前 169 个声明之外，实测活着的至少还有 16 个：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`image.CreateImage`、`image.UpdateImage`、`image.PreheatImage`、`model-hub.CreateModel`、`model-hub.UpdateModel`、`model-hub.DeleteModel`、`user.GetPermissions`、`user.GetRoutes`、`user.ListSSH`、`user.GetMyPermissions`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners` |
 | 分页字段 `PageNumber` | 是唯一的 PascalCase 字段，实际网关同时接受 `PageNumber` / `page_num` / `page`，三者等价且都真实生效 |
 
 **判定「无对应物」时的固定错误模式**：这个错误已经犯过很多次 —— `inference_serving` 只测了 discovery 里的 `CreateServing` 就说契约变了（其实有 `CreateServingConsole`）；`/cluster_nodes/list` 只测了 `ListWorkspaceNodes` 就说没有（其实是 `ListNodeDimension`，且 `AccessForbidden` 只是 scoping 没写全）；`/user/quota` 只看了 `user` 服务就说没有配额 Action（`workspace.*` 下有 10 个）。**最大的一次**：`/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 一共 10 个家族被写进第 9 节的「无对应物」表，实际全部有 Action —— 它们只是不在 discovery 里。**Discovery 只能用来找候选，不能用来否定。下结论前必须把所有 service 里名字沾边的 Action 全部列出来逐个实测，并按下一段的存在性探针枚举未文档化的变体；路由本身也要探，`404 page not found` 才是路由不存在，`InvalidAction` 说明路由活着。**
+
+**穷举名字找不到，不等于不存在 —— 去看控制台调什么。** 用带 Session 的浏览器打开对应页面录网络请求，是比猜名字强得多的方法：平台前端现在**全程走 v2**，它调什么就说明什么存在。`/resource_prices/logic_compute_groups/` 的对应物就是这么找到的（第 9 节），`user.ListSSH` 和 `user.GetMyPermissions` 也是这一趟顺手抓到的。猜名字只适合作为补充。
 
 未文档化 Action 的命名有规律，可以据此猜候选：基本是 v1 路径去掉资源前缀后的 PascalCase，`GET /project/{id}` → `GetProjectDetail`，`/file/dir/list` → `GetDirList`，`/project/owners` → `GetProjectOwners`。猜不中就换动词（`Get` / `List` / `Create` / `Update` / `Delete`）和单复数重试，一轮十几个名字就能覆盖。
 
@@ -204,7 +206,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | --- | --- | --- |
 | `/notebook/lab*`、Notebook Proxy | Action 不存在 | `notebook` 下 `GetNotebookLab` / `GetLabUrl` / `GetNotebookProxy` / `GetProxyUrl` 均 `InvalidAction`。唯一沾边的 `GetNotebookAccessUrl` 语义不同，见下文，**故意不接** |
 | `/train_job/remote_cmd` | **不是 Action 能表达的东西** | 双向 PTY 流。23 个候选名 × 5 条路由全部 `InvalidAction`，`/api/v2/{train_job,train/remote_cmd,terminal,ws,exec}` 全部 404。与 Notebook Proxy 同类：v2 是「POST + `?Action=` + JSON 信封」的网关，装不下流式连接，所以这里不存在「还没迁完」，而是**不该迁** |
-| `/resource_prices/logic_compute_groups/` | Action 不存在，且**数据在 v2 侧不存在** | 见下文 |
+| `/resource_prices/logic_compute_groups/` | **有 v2 数据源，但过滤规则未完全复现** | 见下文 |
 
 **Notebook Proxy 是什么。** 它是平台自带的一条反向代理路径，把 Notebook **容器内部**监听的某个 HTTP 端口，从 `qz.sii.edu.cn` 这个已登录的域名转出来：
 
@@ -221,14 +223,19 @@ CLI 里有两个消费者，第二个是关键：
 
 所以它不是可有可无的遗留：Web IDE 那两条命令已经删了，但删掉 Notebook Proxy 等于同时删掉 `proxy-url` 和整套 Notebook SSH。它与平台用户中心的 SSH 公钥注册表（曾经的 `/ssh/*`）没有任何关系 —— 后者管的是账号级公钥，rtunnel 读的是本机 `~/.ssh/*.pub` 并直接注入容器。
 
-**`/resource_prices/logic_compute_groups/` 为什么迁不了。** 这条值得展开，因为它的名字有误导性，容易让人以为「不要价格就能换掉」：
+**`/resource_prices/logic_compute_groups/` 的现状。** 这条查过两轮，第一轮的结论是错的，记在这里以免重犯。
 
-- **CLI 从来不读价格。** 全仓搜 `total_price_per_hour` / `cpu_price` / `gpu_price` / `memory_price` 零命中。实际消费的是 `quota_id` 加 `(gpu_count, cpu_count, memory_size_gib)`，外加 serving 读的 `cpu_info.cpu_type` / `gpu_info.gpu_type`。**我们把它当配额目录用，不是价目表。**
-- **计算组参数是真起作用的。** 在 分布式训练空间 实测：各组返回的 quota 集合互不相同，H100 组与 H200 组规格不同，`开发区-H200-3号机房` 更是一条都没有。所以任何工作空间级的单一列表都替代不了它。
-- **最接近的 v2 数据源重建不出来。** `workspace.GetScheduleConfig` 的 `quota` / `predef_train_spec` 每条**都带 `logic_compute_group_ids`**，看起来正好能在客户端做映射 —— 实测不行。按组过滤后与 v1 逐组比对，DSW 在三个工作空间上分别是 **0/3、1/4、8/9 一致**：CPU 空间里 v1 给 6–10 条而配置映射到 0–1 条，GPU 空间里那个 v1 返回 0 条的组配置却给出 4 条。配置里的 `logic_compute_group_ids` 是**规格定义上的可选限制**，与调度端「这个组实际能开什么」不是同一个关系。TRAIN 侧碰巧对得上（3/3、4/4、8/9），但不能因此推广。
-- `workspace.GetLogicComputeGroupNodeSpecs` 返回的是节点硬件规格，不是配额档位，量纲就不对。
+先说清楚它是什么：**它是规格菜单，不是价目表**。名字里的 `resource_prices` 有误导性 —— 全仓搜 `total_price_per_hour` / `cpu_price` / `gpu_price` / `memory_price` 零命中，CLI 只读 `quota_id` 加 `(gpu_count, cpu_count, memory_size_gib)`，外加 serving 读的 `cpu_info.cpu_type` / `gpu_info.gpu_type`。它是把用户敲的 `-q 1,20,200` 翻成平台要的 `quota_id` 的**唯一**来源，挡在每一个 `create` 命令前面，`<workload> quota` 打印的也是它。
 
-结论是**保留 v1，并且这不是「还没找到」而是「v2 没有这份数据」**。顺带记一笔改进空间：现在 `fetch_quota_catalog` 是**逐计算组各发一次请求**（分布式训练空间 = 9 次）。哪天平台补上一个工作空间级、按组解析好的配额 Action，这里能从 N 次降到 1 次 —— 这是可以向平台方提的缺口。
+**第一轮结论「v2 没有这份数据」是错的。** 那一轮只做了名字穷举（27 个候选 × 11 条路由全 `InvalidAction`）就下结论。正确做法是**抓平台自己的前端**：用带 Session 的浏览器打开 `/jobs/interactiveModeling` 和 `/jobs/distributedTraining` 录网络请求，结果是**控制台全程 v2、零 v1 请求**，规格选择器渲染靠的是 `workspace.GetScheduleConfig` + `workspace.ListLogicComputeGroups` + `workspace.ListWorkspaceNodes`。（这一趟还顺手抓到两个未文档化的 Action：`user.ListSSH`、`user.GetMyPermissions`。）**猜 Action 名找不到，不等于没有；去看控制台调什么。**
+
+**但控制台把组↔规格的过滤放在了客户端**，要迁移就得复刻那套规则。目前复现出两条，还差至少一条：
+
+1. **`logic_compute_group_ids` 为空 = 对所有组开放。** 漏掉这条会得出灾难性的错误结论 —— 按「必须包含本组」过滤时 CPU临时测试空间 是 0/3 一致，加上这条立刻变 3/3。
+2. **规格必须装得进组内某个节点。** `HPC-可上网区资源-2` 的节点是 55 核 375G，配置给出 10 条而 v1 只留 7 条，被砍的正是 `110核`、`55核500GB`、`15U500G`；`HPC-可上网区资源` 节点数为 0，于是全砍。
+3. **仍有一例无法解释**：`开发区-H200-3号机房` 与 `训练区-H200-1号机房` 节点硬件完全相同（183 核 / 8×H200 141G），`support_job_type_list` 都含 `interactive_modeling`，但 v1 对前者返回 0 条、对后者返回 4 条。两者可见的差异只有 `node_count`（1 vs 180），不足以推出规则。
+
+**所以现在保留 v1，理由不是「没有对应物」，而是「复刻不全就会错」**：少一条规则，`-q` 要么翻出平台不接受的 `quota_id`，要么把本来能用的档位藏起来 —— 两种都比慢一点糟糕得多。真要迁，得先把第 3 条问清楚（问平台方比继续逆向快）。附带收益值得一提：`fetch_quota_catalog` 现在**逐计算组各发一次请求**（分布式训练空间 = 9 次），而 `GetScheduleConfig` 是工作空间级的一次调用。
 
 **这张表在 2026-08-08 大幅缩水过一次。** 它原先列着 `/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 共 10 个家族，理由都是「discovery 里没有」。实测下来这 10 个全部有可用 Action：9 个已迁完，`/model_plaza/*` 因为始终没有 CLI 消费者，整族连同 Wrapper 一起删除。唯一真正没有对应物的只有上面这几条。**往这张表里加行之前，先按第 3 节把存在性探针跑一遍。**
 
