@@ -1,44 +1,6 @@
 # Changelog
 
-## Unreleased
-
-### 变更
-
-- 恢复 `inspire update` 面向用户的输出：逐步打印进度（检查更新 / 升级 CLI / 刷新
-  Skill / 校验安装 / 准备浏览器运行时）、列出刷新到的 harness，并打印新旧版本之间的
-  更新摘要（取自 GitHub Releases，回退到 `main` 的 `CHANGELOG.md`）。v6.3.0 把这些
-  一并降级成了 `--debug` 日志，只剩一行 `InspireSkill updated to vX`。诊断细节仍然
-  只进 `--debug`：harness 只报名称不报本地路径，摘要过滤掉安装 / 构建类条目、URL
-  和绝对路径。`--json` 输出相应新增 `skills` 与 `release_notes` 字段。摘要条目会先
-  合并硬换行的续行，不再从行尾截断成半句话。
-
-- Browser API 按域从 `/api/v1` 迁到 `/api/v2`：notebook、ray、train、hpc、
-  inference_serving、model-hub、project、user、image、file，以及计算组、
-  节点维度、组资源统计和五个 Workload 的 metrics。公开 CLI 合同不变——命令名、参数、
-  Name-only 语义、human 与 JSON 输出都保持原样，写操作全部经过受控验证（在 CPU资源空间
-  起最小规格临时资源跑完整生命周期，train 的删除因为 CPU 组不支持该任务类型，在
-  分布式训练空间 用 1 卡 H100 验证后随即释放；镜像与模型注册各跑了一遍
-  建→读→改→删；「存镜像」用最小 CPU 配额加最小官方镜像起了一个临时 Notebook，真提交出
-  一个 196 MB 的镜像，全部痕迹随即清除）。两代接口的契约差异记在
-  `references/dev/browser-api-v2.md`。
-
-  第二轮迁移推翻了第一轮的一个前提：**平台的 `/discovery` 清单是不完整的，不能用来
-  否定一个端点有没有对应物。** 第一轮把 `/user/permissions`、`/user/routes`、
-  `/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、
-  `/image/create`、`/image/update`、`/model/create` 共 10 个家族判成「没有对应 Action」
-  并保留 v1，依据都是「discovery 里查不到」。逐个实测下来它们全部有可用 Action，只是
-  没被声明——`file` 和 `model_plaza` 连整个路由都不在清单里。判断一个 Action 是否存在
-  只能靠空 body 探针（`InvalidAction` 才是不存在），路由是否存在只能靠 `404` 与
-  `InvalidAction` 的区别。
-
-  仍留在 v1 的只剩三处，各有实测依据：`/notebook/lab*` 与 Notebook Proxy（整套
-  Notebook SSH 架在它上面，见 `references/dev/browser-api-v2.md` 第 9 节）、
-  `/train_job/remote_cmd`（WebSocket），以及
-  `/resource_prices/logic_compute_groups/`（27 个候选名 × 11 条路由全部
-  `InvalidAction`，最接近的 `GetScheduleConfig` 给的是同样的配额档位但没有价格）。
-
-  平台用户中心的 SSH 公钥接口 `/ssh/*` 不在此列：它随 `inspire user ssh-keys` 一起
-  下线后已无任何消费者，文档里那几行「留在 v1」是残留，一并删除。
+## v7.0.0
 
 ### 破坏性变更
 
@@ -87,6 +49,51 @@
   `workspace.GetDefaultUserQuota` / `GetWorkspaceQuota` 普通成员确实可用，但都是工作
   空间级的，接过去需要新增必填的 `--workspace`，回答的也不再是「我的账号配额」这个问题。
 
+### 变更
+
+- 恢复 `inspire update` 面向用户的输出：逐步打印进度（检查更新 / 升级 CLI / 刷新
+  Skill / 校验安装 / 准备浏览器运行时）、列出刷新到的 harness，并打印新旧版本之间的
+  更新摘要（取自 GitHub Releases，回退到 `main` 的 `CHANGELOG.md`）。v6.3.0 把这些
+  一并降级成了 `--debug` 日志，只剩一行 `InspireSkill updated to vX`。诊断细节仍然
+  只进 `--debug`：harness 只报名称不报本地路径，摘要过滤掉安装 / 构建类条目、URL
+  和绝对路径。`--json` 输出相应新增 `skills` 与 `release_notes` 字段。摘要条目会先
+  合并硬换行的续行，不再从行尾截断成半句话。
+
+- Browser API 按域从 `/api/v1` 迁到 `/api/v2`：notebook、ray、train、hpc、
+  inference_serving、model-hub、project、user、image、file，以及计算组、
+  节点维度、组资源统计和五个 Workload 的 metrics。公开 CLI 合同不变——命令名、参数、
+  Name-only 语义、human 与 JSON 输出都保持原样，写操作全部经过受控验证（在 CPU资源空间
+  起最小规格临时资源跑完整生命周期，train 的删除因为 CPU 组不支持该任务类型，在
+  分布式训练空间 用 1 卡 H100 验证后随即释放；镜像与模型注册各跑了一遍
+  建→读→改→删；「存镜像」用最小 CPU 配额加最小官方镜像起了一个临时 Notebook，真提交出
+  一个 196 MB 的镜像，全部痕迹随即清除）。两代接口的契约差异记在
+  `references/dev/browser-api-v2.md`。
+
+  第二轮迁移推翻了第一轮的一个前提：**平台的 `/discovery` 清单是不完整的，不能用来
+  否定一个端点有没有对应物。** 第一轮把 `/user/permissions`、`/user/routes`、
+  `/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、
+  `/image/create`、`/image/update`、`/model/create` 共 10 个家族判成「没有对应 Action」
+  并保留 v1，依据都是「discovery 里查不到」。逐个实测下来它们全部有可用 Action，只是
+  没被声明——`file` 和 `model_plaza` 连整个路由都不在清单里。判断一个 Action 是否存在
+  只能靠空 body 探针（`InvalidAction` 才是不存在），路由是否存在只能靠 `404` 与
+  `InvalidAction` 的区别。
+
+  仍留在 v1 的只剩三处，各有实测依据：
+
+  - `/notebook/lab*` 与 Notebook Proxy —— 反向代理，要转发任意 HTTP 流量，整套
+    Notebook SSH 也架在它上面。v2 的 Action 模型装不下。
+  - `/train_job/remote_cmd` —— 双向 PTY 流，同理。23 个候选名 × 5 条路由全部
+    `InvalidAction`。
+  - `/resource_prices/logic_compute_groups/` —— **不是没有对应物，是换过去更贵**。
+    它一次答完「这个组能选哪些规格」；v2 的 `workspace.GetScheduleConfig` 只给静态
+    菜单，还要按组补 `GetLogicComputeGroupNodeSpecs`（规格得装得进组内机器）和
+    `GetLogicComputeGroupResource`（组得真有可分配容量）才能筛出同样结果 —— 实测
+    9 个组从 9 次请求变 19 次，且等于在客户端维护一份平台调度端筛选逻辑的副本。
+    完整规则与逐组验证记在 `references/dev/browser-api-v2.md` 第 9 节。
+
+  平台用户中心的 SSH 公钥接口 `/ssh/*` 不在此列：它随 `inspire user ssh-keys` 一起
+  下线后已无任何消费者，文档里那几行「留在 v1」是残留，一并删除。
+
 ### 修复
 
 - `inspire notebook exec` 和 `inspire notebook shell` 走 Jupyter Terminal 时不再启动
@@ -108,14 +115,16 @@
   它的语义是「别信缓存」而不是「一定要抓」；STOPPED 的 Notebook 上 API 返回空串，
   照旧回落浏览器。
 
-- `inspire notebook vscode` 打开的页面是 404。解析出的 IDE 网关 URL 丢了结尾的斜杠，而网关对这个 URL 的响应是一个 **302 到相对路径**
-  `./?folder=...`：带斜杠时 `./` 落在 token 目录上，IDE 正常加载；不带斜杠时 `./`
-  被解析到上一级，`<token>` 那段被吃掉，重定向终点 404。两种写法对第一个请求都回
-  302，所以命令自己的存活探测（只看 2xx/3xx）一直判定「可达」，故障只在浏览器跟完
-  重定向后才显现。修复点在 URL 归一化，同时会修掉磁盘上已缓存的旧地址——那些条目照样
-  探活通过，不主动重写就会继续发出 404 的链接。`notebook url` 不受影响——它开的是平台
-  入口页 `/ide?notebook_id=...`，不走网关 URL 解析；`proxy-url` 也不受影响，它拼
-  `/proxy/<port>/` 时本来就补了尾斜杠。
+- Notebook 网关 URL 的归一化丢了结尾的斜杠，任何直接打开它的地方都会落到 404。网关对
+  这个 URL 的响应是一个 **302 到相对路径** `./?folder=...`：带斜杠时 `./` 落在 token
+  目录上，正常加载；不带斜杠时 `./` 被解析到上一级，`<token>` 那段被吃掉，重定向终点
+  就是 404。两种写法对第一个请求都回 302，所以存活探测（只看 2xx/3xx）一直判定「可达」，
+  故障只在跟完重定向后才显现。修复同时会重写磁盘上已缓存的旧地址——那些条目照样探活
+  通过，不主动修就会继续发出坏链接。
+
+  这个 bug 是在删掉 `notebook vscode` 之前发现的，当时正是它打开 404。现存命令里
+  `proxy-url` 不受影响（它拼 `/proxy/<port>/` 时本来就补了尾斜杠），修复的价值在于
+  归一化结果现在对任何消费方都是可用的。
 
 - `inspire serving start` 与 `inspire serving stop` 此前对任何输入都失败，返回
   `API error: None`。这两条命令的 URL 早先已指向 `/api/v2`，但仍用 v1 的信封检查

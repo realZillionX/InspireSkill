@@ -123,7 +123,7 @@ inspire resources availability --workspace all --include-cpu
 <tr>
   <td width="50%">
     <h4>📝 Notebook 统一入口</h4>
-    全链路命令化：<code>create / list / status / start / stop / ssh / connection / ssh-config / exec / shell / scp / install-deps / metrics / events / lifecycle</code>。非 <code>H100</code> / <code>H200</code> Compute Group 的 Notebook 可使用 OpenSSH / SCP / SSH Config；<code>H100</code> / <code>H200</code> 受限 Notebook 使用 JupyterTerminal 执行命令，文件流转以 <code>/inspire/...</code> 共享路径为边界，并通过支持 SSH 的 Notebook 使用 <code>notebook scp</code> 或外部 <code>rsync</code> 完成本地上传/下载。连接类命令会跨账号解析本地已缓存的 Notebook Connection，不要求先切 Active Account。
+    全链路命令化：<code>create / list / status / start / stop / ssh / connection / ssh-config / exec / shell / scp / install-deps / proxy-url / path / metrics / events / lifecycle</code>。容器里部署好的服务用 <code>proxy-url --port</code> 拿到外部地址直接请求。非 <code>H100</code> / <code>H200</code> Compute Group 的 Notebook 可使用 OpenSSH / SCP / SSH Config；<code>H100</code> / <code>H200</code> 受限 Notebook 使用 JupyterTerminal 执行命令，文件流转以 <code>/inspire/...</code> 共享路径为边界，并通过支持 SSH 的 Notebook 使用 <code>notebook scp</code> 或外部 <code>rsync</code> 完成本地上传/下载。连接类命令会跨账号解析本地已缓存的 Notebook Connection，不要求先切 Active Account。
   </td>
   <td width="50%">
     <h4>🚀 HPC 任务分派</h4>
@@ -156,8 +156,8 @@ inspire resources availability --workspace all --include-cpu
     <code>inspire model list / register / status / versions</code> —— 浏览或注册 Workspace 下的模型 + 每个模型的历史版本，带 vLLM 兼容标记 / 创建时间；之前只能在平台网页里翻。
   </td>
   <td>
-    <h4>👤 身份 / 配额 / 权限</h4>
-    <code>inspire user whoami / permissions / api-keys</code> —— 一眼看清当前账号、在某 Workspace 下实际授予的权限码（<code>job.trainingJob.create</code> 等），以及已申请的 API Key 元数据。
+    <h4>👤 权限</h4>
+    <code>inspire account permissions --workspace &lt;workspace&gt;</code> —— 看清当前账号在某 Workspace 下实际授予的权限码（<code>job.trainingJob.create</code> 等），提交前先确认自己有没有这个动作的权限。
   </td>
 </tr>
 <tr>

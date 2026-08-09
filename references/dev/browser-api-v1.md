@@ -26,7 +26,7 @@
 
 本节的 Session、账号隔离和输出边界对 v1 和 v2 同时成立。
 
-- Browser API v1 默认前缀是 `/api/v1`，由 `browser_api_prefix` 配置；部分 Job、HPC 和 Serving 生命周期已经改走 `/api/v2`，契约见 [`browser-api-v2.md`](browser-api-v2.md)。
+- Browser API v1 默认前缀是 `/api/v1`，由 `browser_api_prefix` 配置。**平台调用面现在基本都在 `/api/v2`**（83 个 Action 调用点 / 11 条路由），v1 只剩第 3 节标出的三处，契约见 [`browser-api-v2.md`](browser-api-v2.md)。
 - 所有平台请求使用目标 Account Alias 对应的浏览器 SSO Session；跨账号 Notebook 命令不能退回当前活动账号的 Session。
 - 请求需要使用与页面域匹配的 `Referer`。各 Wrapper 负责构造，调用方不要自行拼接。
 - Base URL、Browser API Prefix 和代理来自当前有效配置；Playwright 登录与后续请求复用同一账号网络设置。
@@ -41,12 +41,12 @@
 | Workspace 与 Project | 全部已迁 v2 | `config context`, `init`, `project list/detail/owners` |
 | 文件页发现 | 全部已迁 v2 | `init`, `init --scope project`, Notebook Path Alias 工作流 |
 | Notebook | 全部已迁 v2；Notebook Lab 与 Proxy 见下一行，仍在 v1 | `notebook create/list/status/start/stop/delete/events/lifecycle`, Name Resolver |
-| Notebook 终端与 Proxy | Notebook Lab、Terminal REST/WebSocket、Notebook Proxy | `notebook exec/shell/proxy-url`, 支持 SSH 的 Notebook 的 `ssh`/`scp`/`ssh-config` |
+| Notebook 终端与 Proxy | 仅剩 Notebook Proxy（反向代理，见 v2 文档第 9 节）；Terminal 已改走纯 HTTP + Python WebSocket，`/notebook/lab*` 只作浏览器回落 | `notebook exec/shell/proxy-url`, 支持 SSH 的 Notebook 的 `ssh`/`scp`/`ssh-config` |
 | Image | 全部已迁 v2 | `image list/detail/register/save/set-visibility/delete` |
-| GPU Job | 仅剩 `/train_job/remote_cmd`（WebSocket，无 v2 对应）| `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |
-| HPC | 全部已迁 v2；按当前用户过滤列表时仍复用账号域的 `/user/detail` | `hpc create/list/status/stop/delete/events/instances`, Name Resolver |
-| Ray | 全部已迁 v2；按当前用户过滤列表时仍复用账号域的 `/user/detail` | `ray create/list/status/stop/delete/events/instances`, Name Resolver |
-| 资源与 Quota | 仅剩 Schedule Config 家族；计算组、节点维度与组资源统计已迁 v2 | `resources availability/nodes`, `notebook/job/hpc/ray/serving quota`, 创建命令的 Group 与 Quota 解析 |
+| GPU Job | 仅剩 `/train_job/remote_cmd`（双向 PTY 流，不是 Action 能表达的东西）| `job create/list/status/stop/delete/events/instances/logs/command/shell/wait`, Name Resolver |
+| HPC | 全部已迁 v2；按当前用户过滤列表时复用账号域的 `user.GetUserDetail` | `hpc create/list/status/stop/delete/events/instances`, Name Resolver |
+| Ray | 全部已迁 v2；按当前用户过滤列表时复用账号域的 `user.GetUserDetail` | `ray create/list/status/stop/delete/events/instances`, Name Resolver |
+| 资源与 Quota | 仅剩 `/resource_prices/logic_compute_groups/`（换 v2 更贵，见 v2 文档第 9 节）；计算组、节点维度与组资源统计已迁 v2 | `resources availability/nodes`, `notebook/job/hpc/ray/serving quota`, 创建命令的 Group 与 Quota 解析 |
 | Metrics | 全部已迁 v2 | `notebook/job/hpc/ray/serving metrics` |
 | Model Registry | 全部已迁 v2 | `model list/status/versions/register`, Serving 的 Model 解析 |
 | Serving | 全部已迁 v2 | `serving configs/create/list/status/start/stop/delete/events/instances`, Name Resolver |
@@ -66,7 +66,7 @@ Metrics Wrapper 统一覆盖 Notebook、Job、HPC、Ray 和 Serving，并负责�
 
 ## 5. Notebook Transport
 
-- 受限 Notebook 的 `exec` / `shell` 使用 Jupyter Terminal REST + WebSocket，并在命令结束后回收本次创建的 Terminal。
+- 受限 Notebook 的 `exec` / `shell` 使用 Jupyter Terminal REST + WebSocket，全程不起浏览器（lab URL 来自 `notebook.GetNotebookAccessUrl`，`_xsrf` 来自一次普通 GET），并在命令结束后回收本次创建的 Terminal。
 - Compute Group 名称不含 `H100` / `H200` 的 Notebook 可以建立本地 Connection，供 `ssh`、`scp`、`ssh-config` 和外部 OpenSSH 工具复用。
 - `--account` 指定的 Account Alias 必须贯穿 Name 解析、Session、代理、Terminal 和 Connection Cache。
 - `proxy-url` 是整个 Notebook 命令组里**唯一**打印平台 URL 的命令：Agent 要靠它去请求容器里的服务，而这个地址的每一段都是平台句柄，洗过就不通了。它走 `format_json(..., preserve_raw={"url"})` 这个显式开关，不是绕过输出边界。其余命令一律不把内部网关路径当作公共资源身份。
