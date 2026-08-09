@@ -240,7 +240,7 @@ def _capture_terminal_output(
     output = ""
     sent = False
 
-    def _send(ws: object) -> None:
+    def _send(ws: _TextWebSocket) -> None:
         for start in range(0, len(stdin_data), _STDIN_CHUNK):
             _send_jupyter_stdin(ws, stdin_data[start : start + _STDIN_CHUNK])
             if start + _STDIN_CHUNK < len(stdin_data):
