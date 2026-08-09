@@ -206,7 +206,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | --- | --- | --- |
 | `/notebook/lab*`、Notebook Proxy | Action 不存在 | `notebook` 下 `GetNotebookLab` / `GetLabUrl` / `GetNotebookProxy` / `GetProxyUrl` 均 `InvalidAction`。唯一沾边的 `GetNotebookAccessUrl` 语义不同，见下文，**故意不接** |
 | `/train_job/remote_cmd` | **不是 Action 能表达的东西** | 双向 PTY 流。23 个候选名 × 5 条路由全部 `InvalidAction`，`/api/v2/{train_job,train/remote_cmd,terminal,ws,exec}` 全部 404。与 Notebook Proxy 同类：v2 是「POST + `?Action=` + JSON 信封」的网关，装不下流式连接，所以这里不存在「还没迁完」，而是**不该迁** |
-| `/resource_prices/logic_compute_groups/` | **有 v2 数据源，但过滤规则未完全复现** | 见下文 |
+| `/resource_prices/logic_compute_groups/` | **可复现，但重建更贵**（2N+1 次调用 vs N 次） | 见下文 |
 
 **Notebook Proxy 是什么。** 它是平台自带的一条反向代理路径，把 Notebook **容器内部**监听的某个 HTTP 端口，从 `qz.sii.edu.cn` 这个已登录的域名转出来：
 
@@ -229,13 +229,17 @@ CLI 里有两个消费者，第二个是关键：
 
 **第一轮结论「v2 没有这份数据」是错的。** 那一轮只做了名字穷举（27 个候选 × 11 条路由全 `InvalidAction`）就下结论。正确做法是**抓平台自己的前端**：用带 Session 的浏览器打开 `/jobs/interactiveModeling` 和 `/jobs/distributedTraining` 录网络请求，结果是**控制台全程 v2、零 v1 请求**，规格选择器渲染靠的是 `workspace.GetScheduleConfig` + `workspace.ListLogicComputeGroups` + `workspace.ListWorkspaceNodes`。（这一趟还顺手抓到两个未文档化的 Action：`user.ListSSH`、`user.GetMyPermissions`。）**猜 Action 名找不到，不等于没有；去看控制台调什么。**
 
-**但控制台把组↔规格的过滤放在了客户端**，要迁移就得复刻那套规则。目前复现出两条，还差至少一条：
+**但控制台把组↔规格的过滤放在客户端**，规则已经完整复原，**三个工作空间 16 个组 16/16 逐组一致**：
 
-1. **`logic_compute_group_ids` 为空 = 对所有组开放。** 漏掉这条会得出灾难性的错误结论 —— 按「必须包含本组」过滤时 CPU临时测试空间 是 0/3 一致，加上这条立刻变 3/3。
-2. **规格必须装得进组内某个节点。** `HPC-可上网区资源-2` 的节点是 55 核 375G，配置给出 10 条而 v1 只留 7 条，被砍的正是 `110核`、`55核500GB`、`15U500G`；`HPC-可上网区资源` 节点数为 0，于是全砍。
-3. **仍有一例无法解释**：`开发区-H200-3号机房` 与 `训练区-H200-1号机房` 节点硬件完全相同（183 核 / 8×H200 141G），`support_job_type_list` 都含 `interactive_modeling`，但 v1 对前者返回 0 条、对后者返回 4 条。两者可见的差异只有 `node_count`（1 vs 180），不足以推出规则。
+1. **`logic_compute_group_ids` 为空 = 对所有组开放。** 漏掉这条会得出灾难性的错误结论 —— 按「必须包含本组」过滤时 CPU临时测试空间 是 0/3 一致，加上这条立刻 3/3。
+2. **规格必须装得进组内某个节点**（cpu / memory / gpu 三项都 ≤ 某个 `node_spec`）。`HPC-可上网区资源-2` 的节点是 55 核 375G，配置给 10 条而 v1 只留 7 条，被砍的正是 `110核`、`55核500GB`、`15U500G`。
+3. **组必须真的有可分配容量。** 这条最不显眼：`开发区-H200-3号机房` 与 `训练区-H200-1号机房` 节点硬件完全相同、`support_job_type_list` 都含 `interactive_modeling`，但前者 `GetLogicComputeGroupResource` 返回 `cpu_total: 0 / gpu_total: 0`（`node_count` 是 1，那个节点不贡献可分配量），v1 因此对它返回 0 条。**这是运行时状态，不是静态配置**。
 
-**所以现在保留 v1，理由不是「没有对应物」，而是「复刻不全就会错」**：少一条规则，`-q` 要么翻出平台不接受的 `quota_id`，要么把本来能用的档位藏起来 —— 两种都比慢一点糟糕得多。真要迁，得先把第 3 条问清楚（问平台方比继续逆向快）。附带收益值得一提：`fetch_quota_catalog` 现在**逐计算组各发一次请求**（分布式训练空间 = 9 次），而 `GetScheduleConfig` 是工作空间级的一次调用。
+**结论：不迁，而且理由是成本，不是不可行。** 规则 2 要 `GetLogicComputeGroupNodeSpecs`、规则 3 要 `GetLogicComputeGroupResource`，两者都是**按组**的，于是重建一个工作空间的配额目录要 **2N+1 次 v2 调用**，而 v1 是 **N 次**（实测 3 组→7 vs 3、4 组→9 vs 4、9 组→19 vs 9）。原本设想的「工作空间级一次调用」并不成立 —— `GetScheduleConfig` 只提供静态菜单，两条过滤规则都得逐组补齐。
+
+代价还不止请求数：迁过去等于**在客户端维护一份平台调度端过滤逻辑的副本**。平台改一条规则，我们不会收到任何信号，只会开始默默地把不能用的档位报给用户、或者把能用的藏起来。v1 那一个端点直接给出答案，这个职责本来就该在服务端。
+
+要重新评估这个决定，触发条件是明确的：平台出现一个**工作空间级、已经按组解析好**的配额 Action（届时 2N+1 变 1）。在那之前没有理由动。
 
 **这张表在 2026-08-08 大幅缩水过一次。** 它原先列着 `/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 共 10 个家族，理由都是「discovery 里没有」。实测下来这 10 个全部有可用 Action：9 个已迁完，`/model_plaza/*` 因为始终没有 CLI 消费者，整族连同 Wrapper 一起删除。唯一真正没有对应物的只有上面这几条。**往这张表里加行之前，先按第 3 节把存在性探针跑一遍。**
 
