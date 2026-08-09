@@ -1,5 +1,6 @@
 ---
-name: inspire description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire CLI: install/update, accounts, local SII proxy setup, INSPIRE.md project onboarding and upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, Image, Model Registry, observation, cleanup, and Inspire CLI Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
+name: inspire
+description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire CLI: install/update, accounts, local SII proxy setup, INSPIRE.md project onboarding and upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, Image, Model Registry, observation, cleanup, and Inspire CLI Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
 ---
 
 # Inspire Skill
@@ -12,7 +13,7 @@ name: inspire description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through
 
 | 平面 | 绑定内容 |
 | --- | --- |
-| 调度条件 | `workspace`、`project`、`group`、`quota`、GPU/CPU/内存/Shared Memory 和 `image`，决定任务在哪里、以什么规格运行。 |
+| 调度条件 | `workspace`、`project`、`group`、`quota`、GPU / CPU / 内存 / Shared Memory 和 `image`，决定任务在哪里、以什么规格运行。 |
 | 远端文件 | 代码、数据、权重、Checkpoint 和产物的共享盘路径；Path Alias 只描述文件在哪里。 |
 | 工作负载 | 交互调试用 Notebook；固定 GPU 后台任务用 Job；CPU Slurm 批处理用 HPC；弹性 Worker、常驻或流式任务用 Ray；模型 HTTP 服务用 Serving。 |
 | 观察收尾 | Events 看调度，Job Logs 看程序，Metrics / Instances 看实际工作单元，Status 看平台状态；其它 Workload 的应用日志按对应 Help 和共享盘约定处理。最后核验业务健康和产物，再清理资源。 |

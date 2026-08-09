@@ -33,7 +33,7 @@ Path Alias 是远端路径 Alias，不是 Workload Profile。它只回答“文�
 | qb-ilm `qb_prod_ipfs01` | `/inspire/qb-ilm/project/<topic>/` | 大容量，顺序读带宽接近 SSD |
 | qb-ilm2 `qb_prod_ipfs02` | `/inspire/qb-ilm2/project/<topic>/` | 新且空余多，新增大数据默认优先考虑 |
 
-`global_public` 只在 HDD。需要 SSD 或 Qb-Ilm 速度时，优先走项目个人或项目公共路径。
+`global_public` 只在 HDD。需要 SSD 或 QB-ILM 速度时，优先走项目个人或项目公共路径。
 
 ## 4. 挂载隔离
 

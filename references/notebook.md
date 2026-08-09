@@ -31,16 +31,16 @@ Notebook 是交互工作台，不只是“开一个终端”。
 
 ## 3. 连接方式
 
-Transport 由 Notebook 所属 Compute Group 决定：Group 名称含 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH/Rtunnel；其余 Group 走 SSH。CLI 自动完成该判断，不需要远端探测。
+Transport 由 Notebook 所属 Compute Group 决定：Group 名称含 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH / Rtunnel；其余 Group 走 SSH。CLI 自动完成该判断，不需要远端探测。
 
 | 入口 | 心智模型 | 受限 Notebook 行为 |
 | --- | --- | --- |
 | `exec` | 一次性独立命令 | 自动走 JupyterTerminal |
 | `shell` | 持久交互会话 | 自动走 JupyterTerminal |
-| `scp` | SSH/SCP 文件复制 | 受限 Notebook 不使用；改走支持 SSH 的 Notebook 与 `/inspire/...` 共享路径 |
+| `scp` | SSH / SCP 文件复制 | 受限 Notebook 不使用；改走支持 SSH 的 Notebook 与 `/inspire/...` 共享路径 |
 | `ssh` | OpenSSH 交互 | 受限 Notebook 不使用 |
 | `ssh-config` | 给 OpenSSH、`scp`、`rsync`、VS Code Remote SSH 使用 | 受限 Notebook 不生成 |
-| `connection refresh` | 创建/刷新 SSH/Rtunnel Cache | 受限 Notebook 不建立连接 |
+| `connection refresh` | 创建/刷新 SSH / Rtunnel Cache | 受限 Notebook 不建立连接 |
 | `ssh-proxy` | OpenSSH ProxyCommand | 受限 Notebook 不使用 |
 | `proxy-url` | 返回容器 HTTP 端口的外部地址 | 受限 Notebook 默认拒绝 |
 
@@ -74,7 +74,7 @@ Notebook 连接类命令包括 `ssh`、`exec`、`shell`、`scp`、`ssh-config` �
 
 ### 受限 Notebook 文件流转
 
-受限 Notebook 不使用 SSH/SCP/`rsync`。文件流转以共享盘为边界：
+受限 Notebook 不使用 SSH / SCP / `rsync`。文件流转以共享盘为边界：
 
 1. 在同账号、同项目上下文里选择一个支持 SSH 的 Notebook（Group 名称不含 `H100` / `H200`）。
 2. 用 `inspire notebook scp <ssh-notebook> ... /inspire/<storage>/...` 上传或下载共享路径文件。需要 `rsync` 语义时，先为该 Notebook 生成 SSH Config，再用外部 `rsync` 操作同一个 `/inspire/...` 路径。

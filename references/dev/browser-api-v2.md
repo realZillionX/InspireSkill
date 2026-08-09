@@ -42,7 +42,7 @@ Content-Type: application/json
 
 `GET {base_url}/discovery` 返回 `{"Result": {"Version": "<etag>", "Services": [...]}}`，每个 Action 带完整的嵌套参数与响应结构。
 
-**不带任何认证头**，且匿名与带 Cookie 的响应逐字节相同 —— 它是静态文档，**不按调用者角色过滤**。因此 Action 出现在 discovery 里**不代表当前账号能调**，权限只能实测（第 6 节）。
+**不带任何认证头**，且匿名与带 Cookie 的响应逐字节相同——它是静态文档，**不按调用者角色过滤**。因此 Action 出现在 discovery 里**不代表当前账号能调**，权限只能实测（第 6 节）。
 
 不能信的部分：
 
@@ -53,13 +53,13 @@ Content-Type: application/json
 | Action 全集 | **不完整**，且缺口不小。当前 169 个声明之外，实测活着的至少还有 16 个：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`image.CreateImage`、`image.UpdateImage`、`image.PreheatImage`、`model-hub.CreateModel`、`model-hub.UpdateModel`、`model-hub.DeleteModel`、`user.GetPermissions`、`user.GetRoutes`、`user.ListSSH`、`user.GetMyPermissions`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners` |
 | 分页字段 `PageNumber` | 是唯一的 PascalCase 字段，实际网关同时接受 `PageNumber` / `page_num` / `page`，三者等价且都真实生效 |
 
-**判定「无对应物」时的固定错误模式**：这个错误已经犯过很多次 —— `inference_serving` 只测了 discovery 里的 `CreateServing` 就说契约变了（其实有 `CreateServingConsole`）；`/cluster_nodes/list` 只测了 `ListWorkspaceNodes` 就说没有（其实是 `ListNodeDimension`，且 `AccessForbidden` 只是 scoping 没写全）；`/user/quota` 只看了 `user` 服务就说没有配额 Action（`workspace.*` 下有 10 个）。**最大的一次**：`/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 一共 10 个家族被写进第 9 节的「无对应物」表，实际全部有 Action —— 它们只是不在 discovery 里。**Discovery 只能用来找候选，不能用来否定。下结论前必须把所有 service 里名字沾边的 Action 全部列出来逐个实测，并按下一段的存在性探针枚举未文档化的变体；路由本身也要探，`404 page not found` 才是路由不存在，`InvalidAction` 说明路由活着。**
+**判定「无对应物」时的固定错误模式**：这个错误已经犯过很多次——`inference_serving` 只测了 discovery 里的 `CreateServing` 就说契约变了（其实有 `CreateServingConsole`）；`/cluster_nodes/list` 只测了 `ListWorkspaceNodes` 就说没有（其实是 `ListNodeDimension`，且 `AccessForbidden` 只是 scoping 没写全）；`/user/quota` 只看了 `user` 服务就说没有配额 Action（`workspace.*` 下有 10 个）。**最大的一次**：`/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 一共 10 个家族被写进第 9 节的「无对应物」表，实际全部有 Action——它们只是不在 discovery 里。**Discovery 只能用来找候选，不能用来否定。下结论前必须把所有 service 里名字沾边的 Action 全部列出来逐个实测，并按下一段的存在性探针枚举未文档化的变体；路由本身也要探，`404 page not found` 才是路由不存在，`InvalidAction` 说明路由活着。**
 
-**穷举名字找不到，不等于不存在 —— 去看控制台调什么。** 用带 Session 的浏览器打开对应页面录网络请求，是比猜名字强得多的方法：平台前端现在**全程走 v2**，它调什么就说明什么存在。`/resource_prices/logic_compute_groups/` 的对应物就是这么找到的（第 9 节），`user.ListSSH` 和 `user.GetMyPermissions` 也是这一趟顺手抓到的。猜名字只适合作为补充。
+**穷举名字找不到，不等于不存在——去看控制台调什么。** 用带 Session 的浏览器打开对应页面录网络请求，是比猜名字强得多的方法：平台前端现在**全程走 v2**，它调什么就说明什么存在。`/resource_prices/logic_compute_groups/` 的对应物就是这么找到的（第 9 节），`user.ListSSH` 和 `user.GetMyPermissions` 也是这一趟顺手抓到的。猜名字只适合作为补充。
 
 未文档化 Action 的命名有规律，可以据此猜候选：基本是 v1 路径去掉资源前缀后的 PascalCase，`GET /project/{id}` → `GetProjectDetail`，`/file/dir/list` → `GetDirList`，`/project/owners` → `GetProjectOwners`。猜不中就换动词（`Get` / `List` / `Create` / `Update` / `Delete`）和单复数重试，一轮十几个名字就能覆盖。
 
-因为 Action 全集不可信，某个 Action 是否存在只能实测。网关对此有明确信号，且不需要发出一次真正的写请求：**空 body 打过去，`InvalidAction: unknown action: X` 表示该 Action 不存在，其它错误码（`InvalidParameter` / `InternalError`，通常带参数校验文案）表示存在但参数不对**。迁移写操作前用这一条确认有没有 Console 变体：`train`、`hpc`、`inference_serving` 有，`ray` 没有。空 body 会在校验阶段被拒，不会创建任何东西，但这只能用来判断存在性 —— 语义仍须按第 18 行的受控验证确认。
+因为 Action 全集不可信，某个 Action 是否存在只能实测。网关对此有明确信号，且不需要发出一次真正的写请求：**空 body 打过去，`InvalidAction: unknown action: X` 表示该 Action 不存在，其它错误码（`InvalidParameter` / `InternalError`，通常带参数校验文案）表示存在但参数不对**。迁移写操作前用这一条确认有没有 Console 变体：`train`、`hpc`、`inference_serving` 有，`ray` 没有。空 body 会在校验阶段被拒，不会创建任何东西，但这只能用来判断存在性——语义仍须按第 18 行的受控验证确认。
 
 discovery 的 `Version` 是内容 etag，可以直接用来判断平台是否改过接口面。历史上它**双向变动过**：早期版本有 `audit`、`file` 两个 service 和整套节点运维 Action，之后被移除；`image`、`model-hub` 则是后加的。所以不能假设新版本是旧版本的超集。
 
@@ -132,11 +132,11 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `model-hub` | `ListModels`、`GetModelDetail`、`ListModelVersions`、`ListModelVersionOptions`、`ListModelCreators`、`ListModelRelatedServings`、`GetHasModelPendingServing`、`GetModelPublishPrefill`、`GetModelPublishStatus`、`CreateModel` |
 | 各域 | `GetTaskMetric`（`notebook` / `train` / `hpc` / `ray` / `inference_serving` 各一份） |
 
-`model-hub` 里有两个名字近似、极易搞混的 Action，只能靠响应字段区分：`ListModelVersionOptions` 返回 `{list, total}`，对应 v1 的 `GET /model/{id}/versions`；`ListModelVersions` 多一个 `next_version`，对应 v1 的 `GET /model/{id}`。按名字直觉配对会把两者接反。`ListModelVersions` 不接受 `page`；`ListModelCreators` 接受 `project_id`，与 v1 `/model/users` 的作用域一致。`CreateModel` 不在 discovery 里，逐字接受 v1 `/model/create` 的请求体，返回 `{model_id}`；`model_source_path` 必须落在所给 workspace + project 的路径下，`global_user` 路径会被 `存储路径格式不正确` 拒掉。受控验证走 建→读→删（`DeleteModel`）完成。
+`model-hub` 里有两个名字近似、极易搞混的 Action，只能靠响应字段区分：`ListModelVersionOptions` 返回 `{list, total}`，对应 v1 的 `GET /model/{id}/versions`；`ListModelVersions` 多一个 `next_version`，对应 v1 的 `GET /model/{id}`。按名字直觉配对会把两者接反。`ListModelVersions` 不接受 `page`；`ListModelCreators` 接受 `project_id`，与 v1 `/model/users` 的作用域一致。`CreateModel` 不在 discovery 里，逐字接受 v1 `/model/create` 的请求体，返回 `{model_id}`；`model_source_path` 必须落在所给 workspace + project 的路径下，`global_user` 路径会被 `存储路径格式不正确` 拒掉。受控验证走建→读→删（`DeleteModel`）完成。
 
 `project` 有四个 Action，discovery 只声明了 `GetProjectForPage`：
 
-- `ListProjects` 对应 `/project/list`，逐字接受 v1 请求体，实测两个工作空间下**逐叶子相等**（0 处差异）。带 `filter.check_admin` 时也覆盖 `/project/list_v2` —— 行集相同，且是**严格超集**：v1 `list_v2` 的 `created_at`、`updated_at`、`status`、`notebook`、`training_job` 全是空值，`gpu_limit` / `hpc` / `hpc_limit` 直接没有，v2 全都填满。
+- `ListProjects` 对应 `/project/list`，逐字接受 v1 请求体，实测两个工作空间下**逐叶子相等**（0 处差异）。带 `filter.check_admin` 时也覆盖 `/project/list_v2`——行集相同，且是**严格超集**：v1 `list_v2` 的 `created_at`、`updated_at`、`status`、`notebook`、`training_job` 全是空值，`gpu_limit` / `hpc` / `hpc_limit` 直接没有，v2 全都填满。
 - `GetProjectDetail`（`ProjectId`）对应 `GET /project/{id}`，字段集完全一致；唯三不等的 `remain_budget` / `used_budget` / `resource` 是**本来就在跳的值**，v1 连着读两次同样不等。
 - `GetProjectOwners` 对应 `/project/owners`，空体调用，返回逐字节相同的 `items`。
 - `GetProjectForPage` 是项目管理页自己的行集，比 `ListProjects` 窄：它会滤掉用户已退出或已结束的项目，所以两者条数不同是**设计如此**，不是谁坏了。旧版文档把这条差异当成「`GetProjectForPage` 与 `list_v2` 不等价，所以没有对应物」，方向搞反了。
@@ -154,9 +154,9 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 受控验证：建（`CreateImage`，`add_method=2`）→ 读（`GetImageById`）→ 改可见性与描述（`UpdateImage`）→ 删（`DeleteImage`）→ 确认列表与详情都查不到，全程走 v2。`add_method=0`（本地推送）在 v1 和 v2 上给出**同一个**拒绝（`no image uploaded`），语义没有漂移。
 
-「把 Notebook 存成镜像」不在 `image` 服务，在 **`notebook.SaveNotebookImage`**（对应 v1 `/mirror/save`）。它逐字接受 v1 请求体，并且保留了 v1 那条怪规则：**不收 `visibility`**，措辞都一样（`unknown field "visibility"`），要改可见性只能存完再调 `image.UpdateImage`。**两代都不返回新镜像的 id** —— v1 回一个光秃秃的 `{"code": 0}`（连 `data` 都没有），v2 回 `Result: null`，解包后同样是 `{}`，所以调用方只能靠列表去找。同一层还有 `EstimateSaveMirrorSize` 与 `CancelSaveMirror`（对应 `/mirror/save/estimate_size` 和 `/mirror/save/cancel`），前者实测与 v1 逐字节相同。
+「把 Notebook 存成镜像」不在 `image` 服务，在 **`notebook.SaveNotebookImage`**（对应 v1 `/mirror/save`）。它逐字接受 v1 请求体，并且保留了 v1 那条怪规则：**不收 `visibility`**，措辞都一样（`unknown field "visibility"`），要改可见性只能存完再调 `image.UpdateImage`。**两代都不返回新镜像的 id**——v1 回一个光秃秃的 `{"code": 0}`（连 `data` 都没有），v2 回 `Result: null`，解包后同样是 `{}`，所以调用方只能靠列表去找。同一层还有 `EstimateSaveMirrorSize` 与 `CancelSaveMirror`（对应 `/mirror/save/estimate_size` 和 `/mirror/save/cancel`），前者实测与 v1 逐字节相同。
 
-受控验证在 CPU资源空间 用 `HPC-可上网区资源-2` 的 `0,1,4` 最小配额 + `ubuntu-original:22.04`（77.9 MB，官方镜像里最小的）起了一个临时 Notebook：v2 提交出一个真镜像（`add_method=Notebook`，196 MB，约 30 秒到 `SUCCESS`），同一个 Notebook 上又用 v1 提交一次做响应体对照，随后 `inspire image save` 走迁移后的 Wrapper 端到端再跑一遍；三个镜像与 Notebook 全部删除。
+受控验证在 `CPU资源空间` 用 `HPC-可上网区资源-2` 的 `0,1,4` 最小配额 + `ubuntu-original:22.04`（77.9 MB，官方镜像里最小的）起了一个临时 Notebook：v2 提交出一个真镜像（`add_method=Notebook`，196 MB，约 30 秒到 `SUCCESS`），同一个 Notebook 上又用 v1 提交一次做响应体对照，随后 `inspire image save` 走迁移后的 Wrapper 端到端再跑一遍；三个镜像与 Notebook 全部删除。
 
 `file` 整个服务不在 discovery 里（历史上出现过又被删掉，见第 3 节末尾），但路由活着，两个 Action 逐字接受 v1 请求体、返回同一个集合。**唯一差异是行顺序**：`GetSystemStorageTypeList` 的 12 个存储池和 `GetDirList` 的目录都会换序，排序后完全相等。当前调用方都不依赖顺序，新调用方也不要依赖。
 
@@ -175,11 +175,11 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 `hpc` 是全域迁移，且是最省事的一个：discovery 对 hpc 的每个 Action **都没有声明任何参数**，但实测下来 v1 的请求体逐字被接受，响应字段也逐字一致，所以 Wrapper 只换了 URL。`DeleteJob` 要求先停止，运行中删除返回 `Conflict`；id 不存在返回 `ResourceNotFound`（不像 `train.DeleteJob` 给的是 `AccessForbidden`）。
 
-`train` 把 v1 两个事件端点合并成了一个 Action：`/train_job/job_event_list`（裸 `job_id`）和 `/train_job/events/list`（`filter` 信封）在 v2 都是 `ListJobEvents`，只靠 `filter.object_type` 取 `job` / `instance` 区分，事件条数与 v1 逐一对得上。另有一个同名易混的 `ListJobInstanceEvents`（参数是 `job_id` + `instance_name`），它无论返回多少条 `total` 都是 `"0"`，需要分页的调用方不要用它。`DeleteJob` 与 `hpc.DeleteJob` 语义一致：要求先停止，运行中删除返回 `Conflict: 当前状态（运行中）无法删除`。差别在找不到资源时它返回 `AccessForbidden` 而不是 `ResourceNotFound`。受控验证在 分布式训练空间 用 1 卡 H100 最小规格完成（建→停→删→确认消失，随即释放）；分布式训练任务在 CPU资源空间 的所有 CPU 组都建不起来（平台报 `无法找到对应镜像`，实际是组不支持），所以这一条只能在 GPU 工作空间验。
+`train` 把 v1 两个事件端点合并成了一个 Action：`/train_job/job_event_list`（裸 `job_id`）和 `/train_job/events/list`（`filter` 信封）在 v2 都是 `ListJobEvents`，只靠 `filter.object_type` 取 `job` / `instance` 区分，事件条数与 v1 逐一对得上。另有一个同名易混的 `ListJobInstanceEvents`（参数是 `job_id` + `instance_name`），它无论返回多少条 `total` 都是 `"0"`，需要分页的调用方不要用它。`DeleteJob` 与 `hpc.DeleteJob` 语义一致：要求先停止，运行中删除返回 `Conflict: 当前状态（运行中）无法删除`。差别在找不到资源时它返回 `AccessForbidden` 而不是 `ResourceNotFound`。受控验证在 `分布式训练空间` 用 1 卡 H100 最小规格完成（建→停→删→确认消失，随即释放）；分布式训练任务在 `CPU资源空间` 的所有 CPU 组都建不起来（平台报 `无法找到对应镜像`，实际是组不支持），所以这一条只能在 GPU 工作空间验。
 
 `notebook` 同样是全域迁移，但 `/notebook/lab*` 和 Notebook Proxy 按第 9 节保留 v1。几处与 `ray` 相反、必须逐个实测的地方：列表键是 **`list`** 而不是 `items`，`total` 是 int 而不是字符串；`ListRunIndex` 无分页，传 `PageNumber` 直接报错；v1 用 `operation` 枚举复用的 `/notebook/operate` 在 v2 拆成了 `StartNotebook` / `StopNotebook`，v1 那条 REST 风格的 `DELETE /notebook/{id}` 也有了正式的 `DeleteNotebook`。找不到资源时返回 `ResourceNotFound`（HTTP 仍是 200），不再是 v1 的传输层 404，依赖 404 判断「不存在」的调用方必须同时认这个码。
 
-**网关 URL 现在只有一个消费者：`proxy-url`。** 打开 Web IDE 的 `notebook url` 和 `notebook vscode` 已经删除 —— 这个 CLI 由 Agent 驱动，Agent 没有浏览器可开，「在本机打开一个网页」这个动作对它没有任何意义。留下的是「拿到容器里某个端口的外部地址」，那是 Agent 真正要的：它在 Notebook 里部署完东西之后得能去请求。
+**网关 URL 现在只有一个消费者：`proxy-url`。** 打开 Web IDE 的 `notebook url` 和 `notebook vscode` 已经删除——这个 CLI 由 Agent 驱动，Agent 没有浏览器可开，「在本机打开一个网页」这个动作对它没有任何意义。留下的是「拿到容器里某个端口的外部地址」，那是 Agent 真正要的：它在 Notebook 里部署完东西之后得能去请求。
 
 `proxy-url` 因此是整个 Notebook 命令组里唯一打印平台 URL 的命令。这不是绕过输出边界，是显式开的口子：`format_json(..., preserve_raw={"url"})`。理由是这个地址的**每一段都是平台句柄**（`ws-`、`project-`、`user-`、runtime、token），默认的 `scrub_raw_ids` 会把它整条洗成 `<redacted>`，洗完就不通了。代价必须说清楚：**这个地址等同于凭据**，内嵌的短期 token 让持有者对该 Notebook 的访问权与你相同，而它会进 Agent 对话记录和 shell 历史。
 
@@ -189,9 +189,9 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 解析顺序是 **缓存/热候选 → `GetNotebookAccessUrl` → Playwright**，收口在 `resolve_notebook_vscode_ide_url`，因此 `proxy-url` 与 rtunnel 的 SSH 候选路径同时受益。API 在 `refresh=True` 时也会走：refresh 的语义是「别信缓存」，不是「一定要抓」。STOPPED 的 Notebook 上它返回两个空字符串，此时回落浏览器路径（那条也会失败，语义不变）。
 
-**`notebook exec` / `shell` 已经不再起浏览器。** 那条链路以前要拉一个无头 Chromium，只为了三件事，逐件都有更直接的做法：拿 lab URL 用 `GetNotebookAccessUrl`（注意用**原始 `jupyter_url`**，不能用 `_ide_gateway_url` 归一化后的形式 —— terminal 的 REST 与 WebSocket 路由挂在 Jupyter server base 上，`vscode` 那次重写在这里是错的）；拿 `_xsrf` 只需对 `jupyter_url` 发一次普通 GET，它就是个 cookie；建/删 terminal 是 `POST`/`DELETE api/terminals`，把 `_xsrf` 放进 `X-XSRFToken` 头即可。交互式 `shell` 的会话本来就跑在 Python WebSocket 上（`job_shell.py` 的 `_WebSocketClient`），`exec` 的抓取循环则从页内 JavaScript 逐行移植到了 Python，协议不变：等 prompt（最多等 3 秒就直接发）、按 2048 字节分块喂 stdin、看到 `<marker>:exit:<code>` 就收工。
+**`notebook exec` / `shell` 已经不再起浏览器。** 那条链路以前要拉一个无头 Chromium，只为了三件事，逐件都有更直接的做法：拿 lab URL 用 `GetNotebookAccessUrl`（注意用**原始 `jupyter_url`**，不能用 `_ide_gateway_url` 归一化后的形式——terminal 的 REST 与 WebSocket 路由挂在 Jupyter server base 上，`vscode` 那次重写在这里是错的）；拿 `_xsrf` 只需对 `jupyter_url` 发一次普通 GET，它就是个 cookie；建/删 terminal 是 `POST`/`DELETE api/terminals`，把 `_xsrf` 放进 `X-XSRFToken` 头即可。交互式 `shell` 的会话本来就跑在 Python WebSocket 上（`job_shell.py` 的 `_WebSocketClient`），`exec` 的抓取循环则从页内 JavaScript 逐行移植到了 Python，协议不变：等 prompt（最多等 3 秒就直接发）、按 2048 字节分块喂 stdin、看到 `<marker>:exit:<code>` 就收工。
 
-受控验证在一个 RUNNING 的 CPU Notebook 上完成，全程用 import hook 封死 `playwright` 包：命令正常执行、退出码正确传出（`ls` 不存在的路径回 2）、多行输出完整。**耗时的大头不在这条链路**：实测时间线是横幅 1.5 秒、prompt 3.9 秒、命令结果 30.8 秒 —— 中间那 27 秒是容器里 `echo '<b64>' | base64 -d | bash` 拉起的**内层 bash 在 source rc 文件**，与传输方式无关，老的浏览器路径同样要付。
+受控验证在一个 RUNNING 的 CPU Notebook 上完成，全程用 import hook 封死 `playwright` 包：命令正常执行、退出码正确传出（`ls` 不存在的路径回 2）、多行输出完整。**耗时的大头不在这条链路**：实测时间线是横幅 1.5 秒、prompt 3.9 秒、命令结果 30.8 秒——中间那 27 秒是容器里 `echo '<b64>' | base64 -d | bash` 拉起的**内层 bash 在 source rc 文件**，与传输方式无关，老的浏览器路径同样要付。
 
 `ray` 是全域迁移，v1 `/ray_job/*` 九个端点已全部退出。响应逐字段与 v1 一致，因此 Wrapper 的归一化未改动。三条与其它域不同的约束：资源键在每个 Action 上都是 `ray_job_id`（`job_id` 和 `id` 都报 `unknown field`）；工作空间 scoping 是顶层 `workspace_id`，第 5 节那层 `filter` 嵌套在这里会被拒；**没有 `CreateJobConsole` 变体**，创建走 `CreateJob`。
 
@@ -199,7 +199,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 ## 9. 仍留在 v1 的端点
 
-这张表**只收有当前消费者、且实测确认过的端点**，每条都注明是哪一类：Action 不存在，还是有 Action 但不可用。两类处置方式不同，混在一起写会重演第 3 节那个错误。没有消费者的端点不进这张表 —— 它记录的是「迁不动的活代码」，不是平台接口面的全集。
+这张表**只收有当前消费者、且实测确认过的端点**，每条都注明是哪一类：Action 不存在，还是有 Action 但不可用。两类处置方式不同，混在一起写会重演第 3 节那个错误。没有消费者的端点不进这张表——它记录的是「迁不动的活代码」，不是平台接口面的全集。
 
 | v1 端点 | 类别 | 依据 |
 | --- | --- | --- |
@@ -217,24 +217,24 @@ JupyterLab / VS Code 打开之后还有一种带 token 的等价形式 `/{jupyte
 
 CLI 里有两个消费者，第二个是关键：
 
-1. `inspire notebook proxy-url --port N` —— **返回**容器里那个 HTTP 服务（TensorBoard、Gradio、Streamlit、推理端点）的外部地址，供调用方直接请求；它不打开任何东西。H100/H200 受限 Notebook 上默认拒绝，要 `--allow-restricted` 才放行。
-2. **整条 SSH 链路都架在它上面。** 受限环境不接受直连，所以 InspireSkill 在容器里起一个 sshd（默认 22222 端口），再**通过这条 HTTP 代理**去够它 —— `_wait_for_rtunnel` 轮询的就是这个 proxy URL，等 sshd 应答。`notebook ssh` / `scp` / `ssh-config` 以及外部 OpenSSH 工具能用，全靠这一条。
+1. `inspire notebook proxy-url --port N`——**返回**容器里那个 HTTP 服务（TensorBoard、Gradio、Streamlit、推理端点）的外部地址，供调用方直接请求；它不打开任何东西。H100 / H200 受限 Notebook 上默认拒绝，要 `--allow-restricted` 才放行。
+2. **整条 SSH 链路都架在它上面。** 受限环境不接受直连，所以 InspireSkill 在容器里起一个 sshd（默认 22222 端口），再**通过这条 HTTP 代理**去够它——`_wait_for_rtunnel` 轮询的就是这个 proxy URL，等 sshd 应答。`notebook ssh` / `scp` / `ssh-config` 以及外部 OpenSSH 工具能用，全靠这一条。
 
-所以它不是可有可无的遗留：Web IDE 那两条命令已经删了，但删掉 Notebook Proxy 等于同时删掉 `proxy-url` 和整套 Notebook SSH。它与平台用户中心的 SSH 公钥注册表（曾经的 `/ssh/*`）没有任何关系 —— 后者管的是账号级公钥，rtunnel 读的是本机 `~/.ssh/*.pub` 并直接注入容器。
+所以它不是可有可无的遗留：Web IDE 那两条命令已经删了，但删掉 Notebook Proxy 等于同时删掉 `proxy-url` 和整套 Notebook SSH。它与平台用户中心的 SSH 公钥注册表（曾经的 `/ssh/*`）没有任何关系——后者管的是账号级公钥，rtunnel 读的是本机 `~/.ssh/*.pub` 并直接注入容器。
 
 **`/resource_prices/logic_compute_groups/` 的现状。** 这条查过两轮，第一轮的结论是错的，记在这里以免重犯。
 
-先说清楚它是什么：**它是规格菜单，不是价目表**。名字里的 `resource_prices` 有误导性 —— 全仓搜 `total_price_per_hour` / `cpu_price` / `gpu_price` / `memory_price` 零命中，CLI 只读 `quota_id` 加 `(gpu_count, cpu_count, memory_size_gib)`，外加 serving 读的 `cpu_info.cpu_type` / `gpu_info.gpu_type`。它是把用户敲的 `-q 1,20,200` 翻成平台要的 `quota_id` 的**唯一**来源，挡在每一个 `create` 命令前面，`<workload> quota` 打印的也是它。
+先说清楚它是什么：**它是规格菜单，不是价目表**。名字里的 `resource_prices` 有误导性——全仓搜 `total_price_per_hour` / `cpu_price` / `gpu_price` / `memory_price` 零命中，CLI 只读 `quota_id` 加 `(gpu_count, cpu_count, memory_size_gib)`，外加 serving 读的 `cpu_info.cpu_type` / `gpu_info.gpu_type`。它是把用户敲的 `-q 1,20,200` 翻成平台要的 `quota_id` 的**唯一**来源，挡在每一个 `create` 命令前面，`<workload> quota` 打印的也是它。
 
 **第一轮结论「v2 没有这份数据」是错的。** 那一轮只做了名字穷举（27 个候选 × 11 条路由全 `InvalidAction`）就下结论。正确做法是**抓平台自己的前端**：用带 Session 的浏览器打开 `/jobs/interactiveModeling` 和 `/jobs/distributedTraining` 录网络请求，结果是**控制台全程 v2、零 v1 请求**，规格选择器渲染靠的是 `workspace.GetScheduleConfig` + `workspace.ListLogicComputeGroups` + `workspace.ListWorkspaceNodes`。（这一趟还顺手抓到两个未文档化的 Action：`user.ListSSH`、`user.GetMyPermissions`。）**猜 Action 名找不到，不等于没有；去看控制台调什么。**
 
 **但控制台把组↔规格的过滤放在客户端**，规则已经完整复原，**三个工作空间 16 个组 16/16 逐组一致**：
 
-1. **`logic_compute_group_ids` 为空 = 对所有组开放。** 漏掉这条会得出灾难性的错误结论 —— 按「必须包含本组」过滤时 CPU临时测试空间 是 0/3 一致，加上这条立刻 3/3。
+1. **`logic_compute_group_ids` 为空 = 对所有组开放。** 漏掉这条会得出灾难性的错误结论——按「必须包含本组」过滤时 `CPU临时测试空间` 是 0/3 一致，加上这条立刻 3/3。
 2. **规格必须装得进组内某个节点**（cpu / memory / gpu 三项都 ≤ 某个 `node_spec`）。`HPC-可上网区资源-2` 的节点是 55 核 375G，配置给 10 条而 v1 只留 7 条，被砍的正是 `110核`、`55核500GB`、`15U500G`。
 3. **组必须真的有可分配容量。** 这条最不显眼：`开发区-H200-3号机房` 与 `训练区-H200-1号机房` 节点硬件完全相同、`support_job_type_list` 都含 `interactive_modeling`，但前者 `GetLogicComputeGroupResource` 返回 `cpu_total: 0 / gpu_total: 0`（`node_count` 是 1，那个节点不贡献可分配量），v1 因此对它返回 0 条。**这是运行时状态，不是静态配置**。
 
-**结论：不迁，而且理由是成本，不是不可行。** 规则 2 要 `GetLogicComputeGroupNodeSpecs`、规则 3 要 `GetLogicComputeGroupResource`，两者都是**按组**的，于是重建一个工作空间的配额目录要 **2N+1 次 v2 调用**，而 v1 是 **N 次**（实测 3 组→7 vs 3、4 组→9 vs 4、9 组→19 vs 9）。原本设想的「工作空间级一次调用」并不成立 —— `GetScheduleConfig` 只提供静态菜单，两条过滤规则都得逐组补齐。
+**结论：不迁，而且理由是成本，不是不可行。** 规则 2 要 `GetLogicComputeGroupNodeSpecs`、规则 3 要 `GetLogicComputeGroupResource`，两者都是**按组**的，于是重建一个工作空间的配额目录要 **2N+1 次 v2 调用**，而 v1 是 **N 次**（实测 3 组→7 vs 3、4 组→9 vs 4、9 组→19 vs 9）。原本设想的「工作空间级一次调用」并不成立——`GetScheduleConfig` 只提供静态菜单，两条过滤规则都得逐组补齐。
 
 代价还不止请求数：迁过去等于**在客户端维护一份平台调度端过滤逻辑的副本**。平台改一条规则，我们不会收到任何信号，只会开始默默地把不能用的档位报给用户、或者把能用的藏起来。v1 那一个端点直接给出答案，这个职责本来就该在服务端。
 
