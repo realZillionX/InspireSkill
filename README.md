@@ -91,6 +91,16 @@ inspire update --skill-only   # 仅刷 SKILL.md / references/
 
 升级旧版本和 Installer 检测说明见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。
 
+## 卸载
+
+```bash
+inspire uninstall                # skill 目录 + 更新检查 agent + CLI 包
+inspire uninstall --purge        # 连 ~/.inspire 的账号配置一起删
+inspire uninstall --purge-runtime # 连共享的 Playwright 浏览器缓存一起删
+```
+
+执行前会打印完整清单并要求确认。账号配置和浏览器缓存默认保留——前者重装后还能直接用，后者是本机所有 Playwright 工具共用的；仓库自己的 `INSPIRE.md` 和 `./.inspire/` 任何一档都不碰。CLI 已经跑不起来时，用安装脚本的 `--uninstall` 兜底，分层与参数见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。
+
 ## 完整初始化（安装后必跑）
 
 ```bash

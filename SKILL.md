@@ -1,6 +1,6 @@
 ---
 name: inspire
-description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire CLI: install/update, accounts, local SII proxy setup, INSPIRE.md project onboarding and upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, Image, Model Registry, observation, cleanup, and Inspire CLI Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
+description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire CLI: install/update/uninstall, accounts, local SII proxy setup, INSPIRE.md project onboarding and upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, Image, Model Registry, observation, cleanup, and Inspire CLI Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
 ---
 
 # Inspire Skill
@@ -58,7 +58,7 @@ Workspace 判断：
 
 | 用户问题或判断点 | 先加载 |
 | --- | --- |
-| 安装、更新、账号、多账号切换、全局发现 | [`references/setup/install-and-config.md`](references/setup/install-and-config.md) |
+| 安装、更新、卸载、账号、多账号切换、全局发现 | [`references/setup/install-and-config.md`](references/setup/install-and-config.md) |
 | 本机 Clash Verge 的 `*.sii.edu.cn`、`SII Proxy` / `DIRECT` 分流 | [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md) |
 | 项目初始化、`INSPIRE.md`、Project / Workspace / Paths / Image 问询、项目信息持续维护 | [`references/project-context.md`](references/project-context.md) |
 | Workspace、Compute Group、Quota、实时资源、优先级、Workload Profile | [`references/resources.md`](references/resources.md) |

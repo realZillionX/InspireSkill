@@ -55,7 +55,29 @@ inspire update --skill-only
 
 `inspire update` 会自动识别 `uv tool` / `pipx` 安装来源，升级 CLI 包，刷新 harness skill，并逐步打印进度、刷新到的 harness 列表和新旧版本之间的更新摘要（取自 GitHub Releases，回退到 `main` 的 `CHANGELOG.md`）。`--cli-only` 只升 CLI 包与运行时；`--skill-only` 只刷 `SKILL.md` 和 `references/`。
 
-## 3. 账号配置
+## 3. 卸载
+
+```bash
+inspire uninstall
+inspire uninstall --purge
+inspire uninstall --purge-runtime
+```
+
+默认删掉安装器写下、且只有 InspireSkill 要的东西：各 harness 的 skill 目录、macOS 每日检查的 launchd agent 及其日志、`~/.inspire/update-status.json`，最后是 CLI 包本身（`uv tool uninstall` / `pipx uninstall`）。执行前打印完整清单并要求确认，`--yes` 跳过；`--json` 下必须带 `--yes`。
+
+分层的依据是归属，不是省事：
+
+- `~/.inspire` 存的是平台凭据，重装后还能直接用，所以默认保留，`--purge` 才删。
+- Playwright 浏览器缓存装在共享位置，本机其它 Playwright 用户也在读，所以默认保留，`--purge-runtime` 才删，且不被 `--purge` 蕴含。
+- 仓库自己的 `INSPIRE.md` 和 `./.inspire/` 是项目资产，任何一档都不碰。
+
+有文件删不掉时会中止并保留 CLI 包，这样清掉阻碍后还能再跑一次 `inspire uninstall`。CLI 已经跑不起来时用安装脚本兜底，参数与上面同名：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scripts/install.sh | bash -s -- --uninstall
+```
+
+## 4. 账号配置
 
 账号配置和仓库无关，任意目录运行：
 
@@ -91,7 +113,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
 
 需要稳定代理时写入账号配置；临时诊断可按上面的方式显式清除 Shell 代理变量。
 
-## 4. 全局发现
+## 5. 全局发现
 
 账号配置完成后，先做一次全局发现，把可见 Project、平台目录和默认远端 Path Alias 写入账号配置，并确认能读到实时资源：
 
@@ -102,7 +124,7 @@ inspire resources availability --workspace all --include-cpu
 
 全局发现是账号级动作，和具体仓库无关。把某个项目工作区接入启智（`inspire init --scope project`、问清 Project / Workspace / Paths / Image、创建和维护 `INSPIRE.md`）是另一件事，见 [`../project-context.md`](../project-context.md)。
 
-## 5. 多账号
+## 6. 多账号
 
 多账号只用这些命令：
 

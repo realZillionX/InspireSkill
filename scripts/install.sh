@@ -12,6 +12,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scripts/install.sh | bash
 #   curl -fsSL .../install.sh | bash -s -- --harness claude,codex
 #   curl -fsSL .../install.sh | bash -s -- --no-schedule
+#   curl -fsSL .../install.sh | bash -s -- --uninstall
 #
 # Flags:
 #   --harness claude[,codex,antigravity,cursor,openclaw,opencode,qoder,qoder-work,
@@ -19,6 +20,14 @@
 #                                     explicit harness list (default: auto-detect)
 #   --no-cli                          skip installing the Python package (skill-only)
 #   --no-schedule                     skip the macOS launchd update-check agent
+#   --uninstall                       remove everything this script installs
+#   --purge                           with --uninstall: also remove ~/.inspire
+#   --purge-runtime                   with --uninstall: also remove the shared
+#                                     Playwright browser cache
+#   --yes                             with --uninstall: skip the confirmation
+#
+# `inspire uninstall` does the same job from the CLI itself and is the normal
+# way to do this. This path exists for a machine where the CLI no longer runs.
 #
 set -euo pipefail
 
@@ -26,11 +35,17 @@ REPO_SLUG="realZillionX/InspireSkill"
 PACKAGE="inspire-skill"
 DEFAULT_REF="main"
 LAUNCH_LABEL="sh.inspire-skill.update-check"
+LAUNCH_LOG="$HOME/Library/Logs/inspire-skill-update-check.log"
+ALL_HARNESSES="claude,codex,antigravity,cursor,openclaw,opencode,qoder,qoder-work,kimi-code,kimi-desktop"
 
 HARNESSES=""
 INSTALL_CLI=1
 INSTALL_SCHEDULE=1
 INSTALLER=""
+UNINSTALL=0
+PURGE=0
+PURGE_RUNTIME=0
+ASSUME_YES=0
 KIMI_CODE_HOME_DIR="${KIMI_CODE_HOME:-$HOME/.kimi-code}"
 KIMI_DESKTOP_ROOT="$HOME/Library/Application Support/kimi-desktop/daimon-share/daimon"
 
@@ -54,10 +69,165 @@ while [[ $# -gt 0 ]]; do
     --harness=*)     HARNESSES="${1#*=}";  shift ;;
     --no-cli)        INSTALL_CLI=0;        shift ;;
     --no-schedule)   INSTALL_SCHEDULE=0;   shift ;;
+    --uninstall)     UNINSTALL=1;          shift ;;
+    --purge)         PURGE=1;              shift ;;
+    --purge-runtime) PURGE_RUNTIME=1;      shift ;;
+    -y|--yes)        ASSUME_YES=1;         shift ;;
     -h|--help)       usage ;;
     *)               die "unknown argument: $1" ;;
   esac
 done
+
+# ---- shared: where each harness keeps its skill -----------------------------
+known_harness() {
+  case ",$ALL_HARNESSES," in
+    *",$1,"*) return 0 ;;
+    *)        return 1 ;;
+  esac
+}
+
+skill_target() {
+  case "$1" in
+    claude)       echo "$HOME/.claude/skills/inspire" ;;
+    codex)        echo "$HOME/.codex/skills/inspire" ;;
+    antigravity)  echo "$HOME/.gemini/config/skills/inspire" ;;
+    cursor)       echo "$HOME/.cursor/skills/inspire" ;;
+    openclaw)     echo "$HOME/.openclaw/skills/inspire" ;;
+    opencode)     echo "${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}/skills/inspire" ;;
+    qoder)        echo "$HOME/.qoder/skills/inspire" ;;
+    qoder-work)   echo "$HOME/.qoderwork/skills/inspire" ;;
+    kimi-code)    echo "$KIMI_CODE_HOME_DIR/skills/inspire" ;;
+    kimi-desktop) echo "$KIMI_DESKTOP_ROOT/skills/inspire" ;;
+  esac
+}
+
+# Home-relative display, so nothing printed here carries the local username.
+tildify() {
+  case "$1" in
+    "$HOME"/*) echo "~${1#"$HOME"}" ;;
+    *)         echo "$1" ;;
+  esac
+}
+
+# ---- uninstall -------------------------------------------------------------
+# Mirrors `inspire uninstall`, for a machine whose CLI no longer runs. The two
+# share no code, so cli/tests/test_uninstall_command.py pins the constants and
+# tiering they both encode.
+playwright_cache_dir() {
+  # `PLAYWRIGHT_BROWSERS_PATH=0` keeps browsers inside the package, which the
+  # package removal already covers.
+  [[ "${PLAYWRIGHT_BROWSERS_PATH:-}" == "0" ]] && return 0
+  if [[ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ]]; then
+    echo "$PLAYWRIGHT_BROWSERS_PATH"
+  elif [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "$HOME/Library/Caches/ms-playwright"
+  else
+    echo "$HOME/.cache/ms-playwright"
+  fi
+}
+
+confirm_uninstall() {
+  (( ASSUME_YES )) && return 0
+  # Under `curl | bash` stdin is the script itself, so the prompt has to come
+  # off the terminal directly. `-r /dev/tty` does not answer this: the node
+  # exists with read permission even in a session that has no controlling
+  # terminal, and only the open fails. Probe it in a subshell so a redirection
+  # error on `exec` cannot take this shell down with it.
+  ( exec 3<>/dev/tty ) 2>/dev/null \
+    || die "no terminal for confirmation — rerun with --yes."
+  printf '%s ' "$(bold 'Remove InspireSkill from this machine? [y/N]')" >/dev/tty
+  local answer=""
+  read -r answer </dev/tty || answer=""
+  case "$answer" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+remove_package() {
+  if command -v uv >/dev/null 2>&1 && uv tool list 2>/dev/null | grep -q "^${PACKAGE} "; then
+    uv tool uninstall "$PACKAGE" >/dev/null 2>&1 && return 0
+    return 1
+  fi
+  if command -v pipx >/dev/null 2>&1 && pipx list --short 2>/dev/null | grep -q "^${PACKAGE} "; then
+    pipx uninstall "$PACKAGE" >/dev/null 2>&1 && return 0
+    return 1
+  fi
+  return 2
+}
+
+do_uninstall() {
+  local sweep=() victims=() keeps=() h target plist browsers
+  IFS=',' read -r -a sweep <<<"${HARNESSES:-$ALL_HARNESSES}"
+  for h in "${sweep[@]}"; do
+    known_harness "$h" || die "unknown harness: $h (pick from $ALL_HARNESSES)"
+    target="$(skill_target "$h")"
+    [[ -n "$target" && ( -e "$target" || -L "$target" ) ]] && victims+=("$target")
+  done
+
+  plist="$HOME/Library/LaunchAgents/${LAUNCH_LABEL}.plist"
+  [[ -e "$plist" ]] && victims+=("$plist")
+  [[ -e "$LAUNCH_LOG" ]] && victims+=("$LAUNCH_LOG")
+
+  if (( PURGE )); then
+    [[ -e "$HOME/.inspire" ]] && victims+=("$HOME/.inspire")
+  else
+    [[ -e "$HOME/.inspire/update-status.json" ]] && victims+=("$HOME/.inspire/update-status.json")
+    [[ -e "$HOME/.inspire" ]] && keeps+=("$HOME/.inspire (account config; --purge removes it)")
+  fi
+
+  browsers="$(playwright_cache_dir)"
+  if [[ -n "$browsers" && -e "$browsers" ]]; then
+    if (( PURGE_RUNTIME )); then
+      victims+=("$browsers")
+    else
+      keeps+=("$browsers (shared with other Playwright users; --purge-runtime removes it)")
+    fi
+  fi
+
+  echo "About to remove:"
+  if (( ${#victims[@]} > 0 )); then
+    for target in "${victims[@]}"; do printf '  %s\n' "$(tildify "$target")"; done
+  fi
+  echo "  CLI package: $PACKAGE (if installed via uv or pipx)"
+  if (( ${#keeps[@]} > 0 )); then
+    echo
+    echo "Keeping:"
+    for target in "${keeps[@]}"; do printf '  %s\n' "$(tildify "$target")"; done
+  fi
+  echo
+
+  confirm_uninstall || die "aborted."
+
+  if [[ -e "$plist" ]]; then
+    launchctl unload "$plist" >/dev/null 2>&1 || true
+  fi
+  if (( ${#victims[@]} > 0 )); then
+    for target in "${victims[@]}"; do
+      rm -rf "$target" || die "could not remove $(tildify "$target")"
+      ok "removed $(dim "$(tildify "$target")")"
+    done
+  fi
+
+  set +e
+  remove_package
+  local package_status=$?
+  set -e
+  case "$package_status" in
+    0) ok "removed $(bold "$PACKAGE")" ;;
+    2) warn "no uv or pipx installation of $(bold "$PACKAGE") found; nothing to remove." ;;
+    *) die "could not remove $PACKAGE — uninstall it manually." ;;
+  esac
+
+  echo
+  bold "InspireSkill uninstalled."
+  echo
+  exit 0
+}
+
+if (( UNINSTALL )); then
+  do_uninstall
+fi
 
 # ---- harness detection -----------------------------------------------------
 detect_harnesses() {
@@ -84,10 +254,7 @@ fi
 
 IFS=',' read -r -a HARNESS_LIST <<<"$HARNESSES"
 for h in "${HARNESS_LIST[@]}"; do
-  case "$h" in
-    claude|codex|antigravity|cursor|openclaw|opencode|qoder|qoder-work|kimi-code|kimi-desktop) ;;
-    *) die "unknown harness: $h (pick from claude,codex,antigravity,cursor,openclaw,opencode,qoder,qoder-work,kimi-code,kimi-desktop)" ;;
-  esac
+  known_harness "$h" || die "unknown harness: $h (pick from $ALL_HARNESSES)"
 done
 
 # ---- prerequisites ---------------------------------------------------------
@@ -182,20 +349,7 @@ TOP="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -n1)"
 install_skill() {
   local harness="$1"
   local target
-  case "$harness" in
-    claude)   target="$HOME/.claude/skills/inspire"                                    ;;
-    codex)    target="$HOME/.codex/skills/inspire"                                     ;;
-    antigravity)
-      target="$HOME/.gemini/config/skills/inspire"
-      ;;
-    cursor)   target="$HOME/.cursor/skills/inspire"                                    ;;
-    openclaw) target="$HOME/.openclaw/skills/inspire"                                  ;;
-    opencode) target="${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}/skills/inspire"   ;;
-    qoder)    target="$HOME/.qoder/skills/inspire"                                     ;;
-    qoder-work) target="$HOME/.qoderwork/skills/inspire"                               ;;
-    kimi-code) target="$KIMI_CODE_HOME_DIR/skills/inspire"                             ;;
-    kimi-desktop) target="$KIMI_DESKTOP_ROOT/skills/inspire"                           ;;
-  esac
+  target="$(skill_target "$harness")"
 
   # Wipe prior install (handles real dirs and stale symlink layouts).
   if [[ -L "$target" || -e "$target" ]]; then
@@ -286,6 +440,7 @@ fi
 
 echo
 bold "InspireSkill installed."
+echo
 cat <<EOF
   1) Configure accounts & proxy:
         inspire account add <name>

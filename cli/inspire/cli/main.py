@@ -37,6 +37,7 @@ from inspire.cli.commands import (
     model,
     ray,
     serving,
+    uninstall,
     update,
 )
 from inspire.cli.commands.serving.serving_commands import (
@@ -152,7 +153,10 @@ def main(
 
     # Keep the background update check detached and silent. An interactive
     # notice is opt-in and is never allowed to contaminate JSON output.
-    if not (len(sys.argv) > 1 and sys.argv[1] == "update"):
+    # `uninstall` is excluded for a different reason than `update`: the check
+    # writes ~/.inspire/update-status.json, which the uninstall is on its way
+    # to delete, and a detached child would outlive the venv it runs from.
+    if not (len(sys.argv) > 1 and sys.argv[1] in {"update", "uninstall"}):
         try:
             if not json_output:
                 maybe_notify_update()
@@ -160,7 +164,10 @@ def main(
         except Exception:
             pass
 
-    if not (len(sys.argv) > 1 and sys.argv[1] in {"account", "cache", "update"}):
+    if not (
+        len(sys.argv) > 1
+        and sys.argv[1] in {"account", "cache", "update", "uninstall"}
+    ):
         try:
             from inspire.cli.utils.resource_index_refresh import (
                 maybe_spawn_periodic_refresh,
@@ -233,6 +240,7 @@ main.add_command(hpc)
 main.add_command(model)
 main.add_command(ray)
 main.add_command(serving)
+main.add_command(uninstall)
 main.add_command(update)
 main.add_command(ensure_playwright_runtime)
 main.add_command(post_update)
