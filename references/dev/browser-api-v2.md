@@ -203,8 +203,8 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | v1 端点 | 类别 | 依据 |
 | --- | --- | --- |
 | `/notebook/lab*`、Notebook Proxy | Action 不存在 | `notebook` 下 `GetNotebookLab` / `GetLabUrl` / `GetNotebookProxy` / `GetProxyUrl` 均 `InvalidAction`。唯一沾边的 `GetNotebookAccessUrl` 语义不同，见下文，**故意不接** |
-| `/train_job/remote_cmd` | Action 不存在 | WebSocket 端点，v2 面上没有对应物 |
-| `/resource_prices/logic_compute_groups/` | Action 不存在 | 27 个候选名 × 11 条路由全部 `InvalidAction`；`resource_prices` / `price` / `prices` 路由 404。最接近的 `workspace.GetScheduleConfig` 和 `notebook.GetScheduleConfig` 给出**相同的 quota id 与 cpu/mem/gpu 规格**，但**没有价格**，也不是按计算组解析的，不能替代；`workspace.GetLogicComputeGroupNodeSpecs` 返回的是节点硬件规格，不是配额档位 |
+| `/train_job/remote_cmd` | **不是 Action 能表达的东西** | 双向 PTY 流。23 个候选名 × 5 条路由全部 `InvalidAction`，`/api/v2/{train_job,train/remote_cmd,terminal,ws,exec}` 全部 404。与 Notebook Proxy 同类：v2 是「POST + `?Action=` + JSON 信封」的网关，装不下流式连接，所以这里不存在「还没迁完」，而是**不该迁** |
+| `/resource_prices/logic_compute_groups/` | Action 不存在，且**数据在 v2 侧不存在** | 见下文 |
 
 **Notebook Proxy 是什么。** 它是平台自带的一条反向代理路径，把 Notebook **容器内部**监听的某个 HTTP 端口，从 `qz.sii.edu.cn` 这个已登录的域名转出来：
 
@@ -220,6 +220,15 @@ CLI 里有两个消费者，第二个是关键：
 2. **整条 SSH 链路都架在它上面。** 受限环境不接受直连，所以 InspireSkill 在容器里起一个 sshd（默认 22222 端口），再**通过这条 HTTP 代理**去够它 —— `_wait_for_rtunnel` 轮询的就是这个 proxy URL，等 sshd 应答。`notebook ssh` / `scp` / `ssh-config` 以及外部 OpenSSH 工具能用，全靠这一条。
 
 所以它不是可有可无的遗留：Web IDE 那两条命令已经删了，但删掉 Notebook Proxy 等于同时删掉 `proxy-url` 和整套 Notebook SSH。它与平台用户中心的 SSH 公钥注册表（曾经的 `/ssh/*`）没有任何关系 —— 后者管的是账号级公钥，rtunnel 读的是本机 `~/.ssh/*.pub` 并直接注入容器。
+
+**`/resource_prices/logic_compute_groups/` 为什么迁不了。** 这条值得展开，因为它的名字有误导性，容易让人以为「不要价格就能换掉」：
+
+- **CLI 从来不读价格。** 全仓搜 `total_price_per_hour` / `cpu_price` / `gpu_price` / `memory_price` 零命中。实际消费的是 `quota_id` 加 `(gpu_count, cpu_count, memory_size_gib)`，外加 serving 读的 `cpu_info.cpu_type` / `gpu_info.gpu_type`。**我们把它当配额目录用，不是价目表。**
+- **计算组参数是真起作用的。** 在 分布式训练空间 实测：各组返回的 quota 集合互不相同，H100 组与 H200 组规格不同，`开发区-H200-3号机房` 更是一条都没有。所以任何工作空间级的单一列表都替代不了它。
+- **最接近的 v2 数据源重建不出来。** `workspace.GetScheduleConfig` 的 `quota` / `predef_train_spec` 每条**都带 `logic_compute_group_ids`**，看起来正好能在客户端做映射 —— 实测不行。按组过滤后与 v1 逐组比对，DSW 在三个工作空间上分别是 **0/3、1/4、8/9 一致**：CPU 空间里 v1 给 6–10 条而配置映射到 0–1 条，GPU 空间里那个 v1 返回 0 条的组配置却给出 4 条。配置里的 `logic_compute_group_ids` 是**规格定义上的可选限制**，与调度端「这个组实际能开什么」不是同一个关系。TRAIN 侧碰巧对得上（3/3、4/4、8/9），但不能因此推广。
+- `workspace.GetLogicComputeGroupNodeSpecs` 返回的是节点硬件规格，不是配额档位，量纲就不对。
+
+结论是**保留 v1，并且这不是「还没找到」而是「v2 没有这份数据」**。顺带记一笔改进空间：现在 `fetch_quota_catalog` 是**逐计算组各发一次请求**（分布式训练空间 = 9 次）。哪天平台补上一个工作空间级、按组解析好的配额 Action，这里能从 N 次降到 1 次 —— 这是可以向平台方提的缺口。
 
 **这张表在 2026-08-08 大幅缩水过一次。** 它原先列着 `/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 共 10 个家族，理由都是「discovery 里没有」。实测下来这 10 个全部有可用 Action：9 个已迁完，`/model_plaza/*` 因为始终没有 CLI 消费者，整族连同 Wrapper 一起删除。唯一真正没有对应物的只有上面这几条。**往这张表里加行之前，先按第 3 节把存在性探针跑一遍。**
 
