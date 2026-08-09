@@ -1,4 +1,4 @@
-<p align="center"> <img src="https://raw.githubusercontent.com/realZillionX/InspireSkill/main/assets/hero.svg" width="100%" alt="Inspire Skill — the Agent-Native cockpit for the Inspire compute platform"/> </p>
+<p align="center"> <img src="https://raw.githubusercontent.com/realZillionX/InspireSkill/main/assets/hero.svg" width="100%" alt="Inspire Skill: the Agent-Native cockpit for the Inspire compute platform"/> </p>
 
 <p align="center"> <b>让 AI Agent 直接在本地 CLI 里完成启智平台的全部操作。</b><br/> </p>
 
@@ -28,7 +28,7 @@ InspireSkill 将算力平台的一切入口交给 AI Agent。当 Claude Code / C
 
 ## 为什么比 InspireCode / 在实例里装 Agent 更好？
 
-启智官方的 InspireCode 是把 OpenCode 直接部署到某个 Inspire 实例里——要用就得打开 `qz.sii.edu.cn`、进那个实例、在它的终端里跟 OpenCode 对话。凡是“把 Agent 装在服务器上”的方案都是这个路数。InspireSkill 走相反路径：Agent 留在本机，Inspire 降格为被调用的工具。
+启智官方的 InspireCode 是把 OpenCode 直接部署到某个 Inspire 实例里，要用就得打开 `qz.sii.edu.cn`、进那个实例、在它的终端里跟 OpenCode 对话。凡是“把 Agent 装在服务器上”的方案都是这个路数。InspireSkill 走相反路径：Agent 留在本机，Inspire 降格为被调用的工具。
 
 | 维度 | InspireCode（Agent 装在 Inspire 实例里） | InspireSkill（Agent 装在本机） |
 | --- | --- | --- |
@@ -67,7 +67,7 @@ InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命�
 
 # 快速上手
 
-> 平台支持：macOS + Linux 一等公民。Windows 用户请用 [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)——CLI 依赖 SSH / `rsync` / GPFS 目录约定 / POSIX 文件权限，Windows 原生不在 Roadmap。
+> 平台支持：macOS + Linux 一等公民。Windows 用户请用 [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)。CLI 依赖 SSH / `rsync` / GPFS 目录约定 / POSIX 文件权限，Windows 原生不在 Roadmap。
 
 ## 安装
 
@@ -99,7 +99,7 @@ inspire uninstall --purge        # 连 ~/.inspire 的账号配置一起删
 inspire uninstall --purge-runtime # 连共享的 Playwright 浏览器缓存一起删
 ```
 
-执行前会打印完整清单并要求确认。账号配置和浏览器缓存默认保留——前者重装后还能直接用，后者是本机所有 Playwright 工具共用的；仓库自己的 `INSPIRE.md` 和 `./.inspire/` 任何一档都不碰。CLI 已经跑不起来时，用安装脚本的 `--uninstall` 兜底，分层与参数见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。
+执行前会打印完整清单并要求确认。账号配置和浏览器缓存默认保留：前者重装后还能直接用，后者是本机所有 Playwright 工具共用的；仓库自己的 `INSPIRE.md` 和 `./.inspire/` 任何一档都不碰。CLI 已经跑不起来时，用安装脚本的 `--uninstall` 兜底，分层与参数见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。
 
 ## 完整初始化（安装后必跑）
 
@@ -120,7 +120,7 @@ inspire resources availability --workspace all --include-cpu
 
 # 能力一览
 
-<table> <tr> <td width="50%"> <h4>📝 Notebook 统一入口</h4> 全链路命令化：<code>create / list / status / start / stop / ssh / connection / ssh-config / exec / shell / scp / install-deps / proxy-url / path / metrics / events / lifecycle</code>。容器里部署好的服务用 <code>proxy-url --port</code> 拿到外部地址直接请求。非 <code>H100</code> / <code>H200</code> Compute Group 的 Notebook 可使用 OpenSSH / SCP / SSH Config；<code>H100</code> / <code>H200</code> 受限 Notebook 使用 JupyterTerminal 执行命令，文件流转以 <code>/inspire/...</code> 共享路径为边界，并通过支持 SSH 的 Notebook 使用 <code>notebook scp</code> 或外部 <code>rsync</code> 完成本地上传/下载。连接类命令会跨账号解析本地已缓存的 Notebook Connection，不要求先切 Active Account。</td> <td width="50%"> <h4>🚀 HPC 任务分派</h4> <code>inspire hpc create -c &lt;slurm-body&gt;</code> 只写 Slurm 正文 + 显式 <code>srun</code>，平台自动补 <code>#SBATCH</code> 头。两层独立：节点资源用 <code>--quota gpu,cpu,mem</code>（CLI 自动解析到平台 Quota Row），Slurm 调度用 <code>--number-of-tasks / --cpus-per-task / --memory-per-cpu</code>。</td> </tr> <tr> <td> <h4>🏃 GPU 后台任务（平台名：分布式训练）</h4> 平台官方把 <code>job</code> 这一路叫“分布式训练” / Distributed Training；提交 Job 时只要求 GPU 计算资源和启动命令，不强制程序必须是训练。<code>inspire job</code> 可用于一张卡、多卡、单节点、多节点等后台 GPU 任务：分布式训练 / 批量推理 / 并发 Worker Pool 都走这里（<code>hpc</code> 对应 CPU Slurm）。提交统一使用 <code>job create</code>，可用 <code>--enable-notification</code> 开启当前用户绑定飞书账号的状态通知；需要跟日志时用 <code>job logs &lt;name&gt; --workspace &lt;workspace&gt; --follow</code>，健康度用 <code>job metrics &lt;name&gt; --workspace &lt;workspace&gt;</code> 看 GPU、显存、CPU、内存、I/O 和多 Pod 负载是否同步。</td> <td> <h4>📊 资源情报</h4> <code>resources availability --workspace all --include-cpu</code> / <code>resources nodes --workspace all</code> / <code>&lt;workload&gt; quota --workspace &lt;name&gt;</code>——三板斧定位哪个集群有空，支持透支式申请。余量和规格始终读 Live 数据；<code>inspire cache status / refresh / clear</code> 管的是本地 Name 解析索引和 Quota 目录这一层加速缓存。</td> </tr> <tr> <td> <h4>🗂 镜像管理</h4> <code>image list / detail / save / register / set-visibility / delete</code>，创建 Notebook、Job、HPC、Ray 或 Serving 时显式传 <code>--image</code>；<code>hpc create --image-type</code> 明确可见性。</td> <td> <h4>🛰 模型部署（Serving）</h4> <code>inspire serving create / list / status / start / stop / configs / events / instances / metrics</code>——覆盖模型部署服务的创建、列表、状态、启停、可用配置、事件、实例和资源指标；创建前用 <code>serving quota --workspace &lt;workspace&gt;</code> 选 Quota。</td> </tr> <tr> <td> <h4>📦 模型注册表（Model）</h4> <code>inspire model list / register / status / versions</code>——浏览或注册 Workspace 下的模型 + 每个模型的历史版本，带 vLLM 兼容标记 / 创建时间；之前只能在平台网页里翻。</td> <td> <h4>👤 权限</h4> <code>inspire account permissions --workspace &lt;workspace&gt;</code>——看清当前账号在某 Workspace 下实际授予的权限码（<code>job.trainingJob.create</code> 等），提交前先确认自己有没有这个动作的权限。</td> </tr> <tr> <td width="50%"> <h4>📈 指标、事件 & 生命周期</h4> <code>notebook metrics</code> / <code>job metrics</code> / <code>hpc metrics</code> / <code>ray metrics</code> / <code>serving metrics</code> 读取平台 <code>资源视图</code> 的历史时间序列，默认输出 PNG 趋势图，<code>--no-plot --sparkline</code> 适合终端快速判断；<code>job events</code> / <code>hpc events</code> / <code>notebook events</code> / <code>ray events</code> / <code>serving events</code> 拉平台 Events，<code>job instances</code> / <code>hpc instances</code> / <code>ray instances</code> / <code>serving instances</code> 看 Live Pod / Component 清单，<code>notebook lifecycle &lt;name&gt;</code> 看一个实例的多次启停记录。</td> <td width="50%"> <h4>🗝 多账号（一账号一目录）</h4> <code>inspire account add / list / use / rename / current / remove</code>——每个账号的 <code>config.toml</code>、SSH Tunnel Bridges 和登录缓存都在独立目录 <code>~/.inspire/accounts/&lt;name&gt;/</code>，活动账号由 <code>~/.inspire/current</code> 一行决定。不再有 <code>[accounts."&lt;user&gt;"]</code> 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。Notebook 连接类命令的 <code>--account &lt;name&gt;</code> 使用本地 Account Alias，不是平台登录用户名；<code>all</code> 是跨账号扫描 Selector。</td> </tr> </table>
+<table> <tr> <td width="50%"> <h4>📝 Notebook 统一入口</h4> 全链路命令化：<code>create / list / status / start / stop / ssh / connection / ssh-config / exec / shell / scp / install-deps / proxy-url / path / metrics / events / lifecycle</code>。容器里部署好的服务用 <code>proxy-url --port</code> 拿到外部地址直接请求。非 <code>H100</code> / <code>H200</code> Compute Group 的 Notebook 可使用 OpenSSH / SCP / SSH Config；<code>H100</code> / <code>H200</code> 受限 Notebook 使用 JupyterTerminal 执行命令，文件流转以 <code>/inspire/...</code> 共享路径为边界，并通过支持 SSH 的 Notebook 使用 <code>notebook scp</code> 或外部 <code>rsync</code> 完成本地上传/下载。连接类命令会跨账号解析本地已缓存的 Notebook Connection，不要求先切 Active Account。</td> <td width="50%"> <h4>🚀 HPC 任务分派</h4> <code>inspire hpc create -c &lt;slurm-body&gt;</code> 只写 Slurm 正文 + 显式 <code>srun</code>，平台自动补 <code>#SBATCH</code> 头。两层独立：节点资源用 <code>--quota gpu,cpu,mem</code>（CLI 自动解析到平台 Quota Row），Slurm 调度用 <code>--number-of-tasks / --cpus-per-task / --memory-per-cpu</code>。</td> </tr> <tr> <td> <h4>🏃 GPU 后台任务（平台名：分布式训练）</h4> 平台官方把 <code>job</code> 这一路叫“分布式训练” / Distributed Training；提交 Job 时只要求 GPU 计算资源和启动命令，不强制程序必须是训练。<code>inspire job</code> 可用于一张卡、多卡、单节点、多节点等后台 GPU 任务：分布式训练 / 批量推理 / 并发 Worker Pool 都走这里（<code>hpc</code> 对应 CPU Slurm）。提交统一使用 <code>job create</code>，可用 <code>--enable-notification</code> 开启当前用户绑定飞书账号的状态通知；需要跟日志时用 <code>job logs &lt;name&gt; --workspace &lt;workspace&gt; --follow</code>，健康度用 <code>job metrics &lt;name&gt; --workspace &lt;workspace&gt;</code> 看 GPU、显存、CPU、内存、I/O 和多 Pod 负载是否同步。</td> <td> <h4>📊 资源情报</h4> <code>resources availability --workspace all --include-cpu</code> / <code>resources nodes --workspace all</code> / <code>&lt;workload&gt; quota --workspace &lt;name&gt;</code>：三板斧定位哪个集群有空，支持透支式申请。余量和规格始终读 Live 数据；<code>inspire cache status / refresh / clear</code> 管的是本地 Name 解析索引和 Quota 目录这一层加速缓存。</td> </tr> <tr> <td> <h4>🗂 镜像管理</h4> <code>image list / detail / save / register / set-visibility / delete</code>，创建 Notebook、Job、HPC、Ray 或 Serving 时显式传 <code>--image</code>；<code>hpc create --image-type</code> 明确可见性。</td> <td> <h4>🛰 模型部署（Serving）</h4> <code>inspire serving create / list / status / start / stop / configs / events / instances / metrics</code>：覆盖模型部署服务的创建、列表、状态、启停、可用配置、事件、实例和资源指标；创建前用 <code>serving quota --workspace &lt;workspace&gt;</code> 选 Quota。</td> </tr> <tr> <td> <h4>📦 模型注册表（Model）</h4> <code>inspire model list / register / status / versions</code>：浏览或注册 Workspace 下的模型 + 每个模型的历史版本，带 vLLM 兼容标记 / 创建时间；之前只能在平台网页里翻。</td> <td> <h4>👤 权限</h4> <code>inspire account permissions --workspace &lt;workspace&gt;</code>：看清当前账号在某 Workspace 下实际授予的权限码（<code>job.trainingJob.create</code> 等），提交前先确认自己有没有这个动作的权限。</td> </tr> <tr> <td width="50%"> <h4>📈 指标、事件 & 生命周期</h4> <code>notebook metrics</code> / <code>job metrics</code> / <code>hpc metrics</code> / <code>ray metrics</code> / <code>serving metrics</code> 读取平台 <code>资源视图</code> 的历史时间序列，默认输出 PNG 趋势图，<code>--no-plot --sparkline</code> 适合终端快速判断；<code>job events</code> / <code>hpc events</code> / <code>notebook events</code> / <code>ray events</code> / <code>serving events</code> 拉平台 Events，<code>job instances</code> / <code>hpc instances</code> / <code>ray instances</code> / <code>serving instances</code> 看 Live Pod / Component 清单，<code>notebook lifecycle &lt;name&gt;</code> 看一个实例的多次启停记录。</td> <td width="50%"> <h4>🗝 多账号（一账号一目录）</h4> <code>inspire account add / list / use / rename / current / remove</code>：每个账号的 <code>config.toml</code>、SSH Tunnel Bridges 和登录缓存都在独立目录 <code>~/.inspire/accounts/&lt;name&gt;/</code>，活动账号由 <code>~/.inspire/current</code> 一行决定。不再有 <code>[accounts."&lt;user&gt;"]</code> 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。Notebook 连接类命令的 <code>--account &lt;name&gt;</code> 使用本地 Account Alias，不是平台登录用户名；<code>all</code> 是跨账号扫描 Selector。</td> </tr> </table>
 
 ---
 
@@ -185,23 +185,23 @@ inspire resources availability --workspace all --include-cpu
 
 # 文档索引
 
-- [`SKILL.md`](SKILL.md) — 日常使用入口：平台不变量、项目上下文约定、最短执行闭环和按需加载索引。
-- [`references/setup/install-and-config.md`](references/setup/install-and-config.md) — 安装、更新、账号配置、全局发现和多账号操作。
-- [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md) — Clash Verge 的 SII Proxy / DIRECT 分流模板和验证步骤。
-- [`references/project-context.md`](references/project-context.md) — 项目初始化问询（Project / Workspace / Paths / Image）、`INSPIRE.md` 资产合同和项目信息持续维护。
-- [`references/resources.md`](references/resources.md) — Workspace、Compute Group、规格三元组、实时资源和 Workload Profile 边界。
-- [`references/paths.md`](references/paths.md) — 共享盘作用域、存储池、挂载隔离、Path Alias 和远端路径边界。
-- [`references/internal-sources.md`](references/internal-sources.md) — 联网准备动线、SII 内部源入口和镜像固化策略。
-- [`references/notebook.md`](references/notebook.md) — Notebook 作为交互工作台、连接方式、文件流转、Proxy 和观察边界。
-- [`references/compute-workloads.md`](references/compute-workloads.md) — GPU Job、CPU HPC、Ray、Serving 的适用边界、调度语义和观察闭环。
-- [`references/workflows.md`](references/workflows.md) — CPU 准备、数据处理、分布式训练三阶段项目流程。
-- [`references/image.md`](references/image.md) — 镜像职责、保存 / 注册边界、可见性和清理原则。
-- [`references/model.md`](references/model.md) — Model Registry 与 Serving 的职责边界、注册限制和版本判断。
-- [`references/dev/browser-api-v1.md`](references/dev/browser-api-v1.md) — CLI 维护参考：`/api/v1` 域、认证不变量和公开命令映射。
-- [`references/dev/browser-api-v2.md`](references/dev/browser-api-v2.md) — CLI 维护参考：`/api/v2` 请求契约、权限边界与迁移约束。
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — 开发、测试和贡献约定。
-- [`cli/`](cli/) — CLI 源码；入口 `cli/inspire/cli/main.py`。
-- [`scripts/install.sh`](scripts/install.sh) — Curl Pipe Bash 安装器。
+- [`SKILL.md`](SKILL.md)：日常使用入口，包含平台不变量、项目上下文约定、最短执行闭环和按需加载索引。
+- [`references/setup/install-and-config.md`](references/setup/install-and-config.md)：安装、更新、账号配置、全局发现和多账号操作。
+- [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)：Clash Verge 的 SII Proxy / DIRECT 分流模板和验证步骤。
+- [`references/project-context.md`](references/project-context.md)：项目初始化问询（Project / Workspace / Paths / Image）、`INSPIRE.md` 资产合同和项目信息持续维护。
+- [`references/resources.md`](references/resources.md)：Workspace、Compute Group、规格三元组、实时资源和 Workload Profile 边界。
+- [`references/paths.md`](references/paths.md)：共享盘作用域、存储池、挂载隔离、Path Alias 和远端路径边界。
+- [`references/internal-sources.md`](references/internal-sources.md)：联网准备动线、SII 内部源入口和镜像固化策略。
+- [`references/notebook.md`](references/notebook.md)：Notebook 作为交互工作台、连接方式、文件流转、Proxy 和观察边界。
+- [`references/compute-workloads.md`](references/compute-workloads.md)：GPU Job、CPU HPC、Ray、Serving 的适用边界、调度语义和观察闭环。
+- [`references/workflows.md`](references/workflows.md)：CPU 准备、数据处理、分布式训练三阶段项目流程。
+- [`references/image.md`](references/image.md)：镜像职责、保存 / 注册边界、可见性和清理原则。
+- [`references/model.md`](references/model.md)：Model Registry 与 Serving 的职责边界、注册限制和版本判断。
+- [`references/dev/browser-api-v1.md`](references/dev/browser-api-v1.md)：CLI 维护参考，覆盖 `/api/v1` 域、认证不变量和公开命令映射。
+- [`references/dev/browser-api-v2.md`](references/dev/browser-api-v2.md)：CLI 维护参考，覆盖 `/api/v2` 请求契约、权限边界与迁移约束。
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)：开发、测试和贡献约定。
+- [`cli/`](cli/)：CLI 源码；入口 `cli/inspire/cli/main.py`。
+- [`scripts/install.sh`](scripts/install.sh)：Curl Pipe Bash 安装器。
 
 ---
 
