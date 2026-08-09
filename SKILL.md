@@ -1,6 +1,5 @@
 ---
-name: inspire
-description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire CLI: install/update, accounts, local SII proxy setup, INSPIRE.md project onboarding and upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, Image, Model Registry, observation, cleanup, and Inspire CLI Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
+name: inspire description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire CLI: install/update, accounts, local SII proxy setup, INSPIRE.md project onboarding and upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, Image, Model Registry, observation, cleanup, and Inspire CLI Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
 ---
 
 # Inspire Skill

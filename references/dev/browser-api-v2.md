@@ -171,8 +171,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 `inference_serving` 的读 Action 逐字接受 v1 请求体、响应字段完全一致，但**写侧不能照搬**。两个已经踩到的坑：
 
 - `StartServing` / `StopServing` 早先迁了 URL 却仍用 v1 的信封检查（`code != 0`）解包，而 v2 响应根本没有 `code`，于是两条命令对任何输入都返回 `API error: None`。改用 `_v2_result()` 后真正的错误才暴露出来：请求体里的 `version` 字段 v2 也不认，正确的体只有 `{inference_serving_id}`。**迁 URL 而不同时换解包器，会把真错误伪装成假错误。**
-- 创建要用 **`CreateServingConsole`**，不是 discovery 里那个 `CreateServing`。后者的 Description 明写「via OpenAPI with simplified config」，契约确实不同：要 `spec_id` 而不是 `resource_spec_price`，`image` 是普通字符串而不是 `mirror_id`，且不收 `description` / `inference_serving_type` / `model_source`。Console 变体和 `train` / `hpc` 一样不在 discovery 里，但**逐字接受 v1 的控制台请求体**，迁移只是换 URL。
-  这里踩过一次弯路：只测了 discovery 里的 `CreateServing`，看到一串 unknown field 就判定「契约不同、不能迁」，而没有先按第 3 节那条规则查 Console 变体。**看到写操作的字段被大面积拒绝时，第一反应应该是「是不是找错 Action 了」，而不是「契约变了」。**
+- 创建要用 **`CreateServingConsole`**，不是 discovery 里那个 `CreateServing`。后者的 Description 明写「via OpenAPI with simplified config」，契约确实不同：要 `spec_id` 而不是 `resource_spec_price`，`image` 是普通字符串而不是 `mirror_id`，且不收 `description` / `inference_serving_type` / `model_source`。Console 变体和 `train` / `hpc` 一样不在 discovery 里，但**逐字接受 v1 的控制台请求体**，迁移只是换 URL。这里踩过一次弯路：只测了 discovery 里的 `CreateServing`，看到一串 unknown field 就判定「契约不同、不能迁」，而没有先按第 3 节那条规则查 Console 变体。**看到写操作的字段被大面积拒绝时，第一反应应该是「是不是找错 Action 了」，而不是「契约变了」。**
 
 `hpc` 是全域迁移，且是最省事的一个：discovery 对 hpc 的每个 Action **都没有声明任何参数**，但实测下来 v1 的请求体逐字被接受，响应字段也逐字一致，所以 Wrapper 只换了 URL。`DeleteJob` 要求先停止，运行中删除返回 `Conflict`；id 不存在返回 `ResourceNotFound`（不像 `train.DeleteJob` 给的是 `AccessForbidden`）。
 
