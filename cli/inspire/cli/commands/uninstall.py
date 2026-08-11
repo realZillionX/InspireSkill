@@ -152,7 +152,7 @@ def _plan(
                     "account config",
                     home,
                     "--purge",
-                    "platform credentials, reusable after a reinstall",
+                    "platform credentials and local caches, reusable after a reinstall",
                 )
             )
 

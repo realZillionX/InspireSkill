@@ -415,7 +415,8 @@ def cache_status(ctx: Context, resources: tuple[str, ...]) -> None:
         click.echo(json_formatter.format_json(payload))
         return
 
-    rows = [row for row in payload["items"] if isinstance(row, dict)]  # type: ignore[union-attr]
+    items = payload["items"]
+    rows = [row for row in items if isinstance(row, dict)] if isinstance(items, list) else []
     # A whole-cache view of nothing reads better as one sentence than as a
     # column of zeroes. A --resource view still gets its rows: "empty" is the
     # answer it asked for.

@@ -367,6 +367,17 @@ class ResourceIndex:
                     ADD COLUMN mutation_revision INTEGER NOT NULL DEFAULT 0
                     """
                 )
+            # A resource kind this build no longer knows can never be refreshed,
+            # never be named by `cache clear --resource`, and still shows up in
+            # `cache status` — `ssh-key` outlived its commands that way. Drop the
+            # rows so the index only reports kinds that still exist.
+            known = sorted(DEFAULT_TTL_SECONDS)
+            placeholders = ",".join("?" for _ in known)
+            for table in ("resource_identity", "resource_scope"):
+                connection.execute(
+                    f"DELETE FROM {table} WHERE resource_type NOT IN ({placeholders})",
+                    known,
+                )
             connection.execute(
                 """
                 INSERT INTO metadata(key, value) VALUES('schema_version', ?)

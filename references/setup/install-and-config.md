@@ -67,7 +67,7 @@ inspire uninstall --purge-runtime
 
 分层的依据是归属，不是省事：
 
-- `~/.inspire` 存的是平台凭据，重装后还能直接用，所以默认保留，`--purge` 才删。
+- `~/.inspire` 存的是平台凭据，以及 Name 解析索引、Notebook 连接和显卡型号这些本地加速缓存，重装后还能直接用，所以默认保留，`--purge` 才删。
 - Playwright 浏览器缓存装在共享位置，本机其它 Playwright 用户也在读，所以默认保留，`--purge-runtime` 才删，且不被 `--purge` 蕴含。
 - 仓库自己的 `INSPIRE.md` 和 `./.inspire/` 是项目资产，任何一档都不碰。
 

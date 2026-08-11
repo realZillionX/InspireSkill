@@ -20,7 +20,7 @@ description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire C
 
 创建 Workload 时显式绑定 `workspace`、`project`、`group`、`quota` 和 `image`，或引用保存这五项的 Workload Profile；这些调度字段没有隐式默认值。选择资源时从同一条 Live Quota Row 复制完整 `group` 和 `quota`。GPU Job Shared Memory 是实例级资源，不能超过所选 Quota 的实例内存；细节见 [`references/compute-workloads.md`](references/compute-workloads.md)。Workload Profile 保存调度条件，Path Alias 保存远端路径，两者不能互相替代。
 
-Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和资源可用性的事实源；本地缓存只是加速层，可用 `inspire cache status|refresh|clear` 管理，不能当作资源事实。CLI 对 Agent 的稳定资源身份只有 Name 和 Alias；同名对象用 Workspace、可读候选和 `--pick` 消歧。
+Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和资源可用性的事实源；本地缓存只是加速层，可用 `inspire cache status|refresh|clear` 管理，三条命令都接受 `--resource <kind>` 只针对一类，不能当作资源事实。CLI 对 Agent 的稳定资源身份只有 Name 和 Alias；同名对象用 Workspace、可读候选和 `--pick` 消歧。
 
 发现类列表和 Batch 结果默认最多展示 20 项，用命令自身的 `--limit/-n` 收窄或 `--all` 显式展开；Job 日志默认有行数和字符预算，截断时会给出已展示数量和继续获取完整结果的选项。需要结构化输出时使用根级 `inspire --json ...`，输出始终是单一 JSON 文档。
 

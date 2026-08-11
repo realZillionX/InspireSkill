@@ -660,6 +660,54 @@ def test_cache_status_and_clear_never_expose_workspace_handle(
     assert index.list_scope_status() == []
 
 
+def test_opening_the_index_drops_kinds_this_build_no_longer_knows(tmp_path) -> None:
+    """`ssh-key` outlived its commands: unrefreshable, unclearable, still listed."""
+    path = tmp_path / "index.sqlite3"
+    index = ResourceIndex(path)
+    index.reconcile(
+        _scope("job", "workspace-one"),
+        [ResourceIdentity(resource_id="job-1", name="train")],
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO resource_scope(
+                base_url, subject_id, resource_type, workspace_id, owner_scope,
+                last_refresh_at, last_full_refresh_at, last_error
+            ) VALUES('https://inspire.example', 'user-one', 'ssh-key', '', 'self', 1, 1, '')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO resource_identity(
+                base_url, subject_id, resource_type, workspace_id, owner_scope,
+                resource_id, name, owner_id, status, created_at,
+                observed_at, expires_at
+            ) VALUES('https://inspire.example', 'user-one', 'ssh-key', '', 'self',
+                     'key-1', 'laptop', '', '', '', 1, 9999999999)
+            """
+        )
+        leftover = connection.execute(
+            "SELECT COUNT(*) FROM resource_scope WHERE resource_type = 'ssh-key'"
+        ).fetchone()[0]
+    assert leftover == 1
+
+    reopened = ResourceIndex(path)
+
+    assert "ssh-key" not in {
+        status.resource_type for status in reopened.list_scope_status()
+    }
+    with sqlite3.connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM resource_identity WHERE resource_type = 'ssh-key'"
+            ).fetchone()[0]
+            == 0
+        )
+    # The kinds that still exist survive the sweep.
+    assert len(reopened.lookup(_scope("job", "workspace-one"), "train")) == 1
+
+
 def test_cache_status_reports_one_kind_at_a_time(tmp_path, monkeypatch) -> None:
     cache_commands = import_module("inspire.cli.commands.cache")
     index = ResourceIndex(tmp_path / "index.sqlite3")
