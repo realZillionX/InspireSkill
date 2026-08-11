@@ -142,8 +142,8 @@ class ResourceIdentity:
     owner_id: str = ""
     status: str = ""
     created_at: str = ""
-    # Compute group name, cached for the types whose scheduling decisions read
-    # it (quota rows). Empty elsewhere.
+    # Compute group name, cached for the types whose transport or scheduling
+    # decisions read it (notebook SSH policy, quota rows). Empty elsewhere.
     compute_group: str = ""
     # Opaque JSON text for types whose consumers need the platform payload
     # verbatim (quota rows carry the price object `create` has to echo back).
@@ -1427,13 +1427,36 @@ class ResourceIndex:
                     # and cleanup must never mask the command result.
                     pass
 
-    def clear(self) -> None:
-        """Delete all cached identity and refresh metadata."""
+    def clear(self, resource_types: Iterable[str] | None = None) -> int:
+        """Delete cached identities and refresh metadata; return names removed.
+
+        ``resource_types`` narrows the delete to those kinds. A partial clear
+        still bumps the generation: an in-flight refresh holding a snapshot of
+        any scope must not write its results over an emptied one.
+        """
+        selected = [
+            normalized
+            for resource_type in (resource_types or ())
+            if (normalized := str(resource_type or "").strip().lower())
+        ]
+        if resource_types is not None and not selected:
+            return 0
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             generation = self._generation_from_connection(connection) + 1
-            connection.execute("DELETE FROM resource_identity")
-            connection.execute("DELETE FROM resource_scope")
+            if selected:
+                placeholders = ",".join("?" for _ in selected)
+                where = f" WHERE resource_type IN ({placeholders})"
+                removed = connection.execute(
+                    f"DELETE FROM resource_identity{where}", selected
+                ).rowcount
+                connection.execute(f"DELETE FROM resource_scope{where}", selected)
+            else:
+                removed = connection.execute("DELETE FROM resource_identity").rowcount
+                connection.execute("DELETE FROM resource_scope")
+            # Leases are keyed by an opaque scope string, so a narrowed clear
+            # cannot pick out its own. Dropping all of them only forces the
+            # affected refreshes to re-acquire.
             connection.execute("DELETE FROM refresh_lease")
             connection.execute(
                 """
@@ -1442,6 +1465,7 @@ class ResourceIndex:
                 """,
                 (str(generation),),
             )
+        return max(0, int(removed))
 
 
 __all__ = [

@@ -32,30 +32,42 @@ def _patch_preflight(
     *,
     gpu_model: str | None,
     session: object,
-) -> tuple[list[dict], list[dict]]:
-    """Stub name resolution and the GPU probe; return their recorded calls."""
+    compute_group: str = "训练区-H200-1号机房",
+    status: str = "RUNNING",
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Stub name resolution, the GPU probe and detail; return their calls."""
     resolved: list[dict] = []
     probes: list[dict] = []
+    details: list[dict] = []
 
     monkeypatch.setattr(transport_module, "require_web_session", lambda *_a, **_k: session)
     monkeypatch.setattr(transport_module, "get_base_url", lambda **_k: "https://example.test")
 
     def fake_resolve(*_args, **kwargs):  # noqa: ANN202
         resolved.append(kwargs)
-        return "nb-123", "ws-123"
+        return "nb-123", "ws-123", compute_group
 
     def fake_probe(**kwargs):  # noqa: ANN202
         probes.append(kwargs)
         return gpu_model
 
-    monkeypatch.setattr(transport_module, "_resolve_notebook_id", fake_resolve)
+    def fake_detail(**kwargs):  # noqa: ANN202
+        details.append(kwargs)
+        return {"status": status, "compute_group_name": compute_group}
+
+    monkeypatch.setattr(transport_module, "_resolve_notebook_target", fake_resolve)
     monkeypatch.setattr(transport_module, "notebook_gpu_model", fake_probe)
-    return resolved, probes
+    monkeypatch.setattr(
+        transport_module.browser_api_module,
+        "get_notebook_detail",
+        fake_detail,
+    )
+    return resolved, probes, details
 
 
 def test_preflight_blocks_ssh_when_the_machine_reports_h200(monkeypatch) -> None:  # noqa: ANN001
     session = SimpleNamespace(account="secondary")
-    _resolved, probes = _patch_preflight(
+    _resolved, probes, details = _patch_preflight(
         monkeypatch,
         gpu_model="H200",
         session=session,
@@ -73,15 +85,24 @@ def test_preflight_blocks_ssh_when_the_machine_reports_h200(monkeypatch) -> None
     assert policy.allow_proxy_url is False
     assert policy.exec_transport == "jupyter"
     assert policy.session is session
-    assert probes == [{"notebook_id": "nb-123", "session": session}]
+    # The group came back with the name resolution, so no detail request.
+    assert details == []
+    assert probes == [
+        {
+            "notebook_id": "nb-123",
+            "compute_group": "训练区-H200-1号机房",
+            "session": session,
+        }
+    ]
 
 
 def test_preflight_allows_ssh_when_the_machine_has_no_gpu(monkeypatch) -> None:  # noqa: ANN001
     session = SimpleNamespace(account="secondary")
-    resolved, _probes = _patch_preflight(
+    resolved, _probes, _details = _patch_preflight(
         monkeypatch,
         gpu_model="",
         session=session,
+        compute_group="CPU资源-2",
     )
 
     policy = transport_module.preflight_notebook_transport_policy(
@@ -97,10 +118,20 @@ def test_preflight_allows_ssh_when_the_machine_has_no_gpu(monkeypatch) -> None: 
     assert resolved[0]["pick"] == 2
 
 
-def test_preflight_allows_ssh_when_the_machine_does_not_answer(monkeypatch) -> None:  # noqa: ANN001
-    """An unread model leaves SSH as the only transport that can still work."""
+def test_preflight_reads_the_group_from_detail_when_resolution_omits_it(monkeypatch) -> None:  # noqa: ANN001
+    """The group is the probe's cache key, so it is worth one detail request."""
     session = SimpleNamespace(account="primary")
-    _patch_preflight(monkeypatch, gpu_model=None, session=session)
+    _resolved, probes, details = _patch_preflight(
+        monkeypatch,
+        gpu_model="H100",
+        session=session,
+        compute_group="",
+    )
+    monkeypatch.setattr(
+        transport_module.browser_api_module,
+        "get_notebook_detail",
+        lambda **kwargs: details.append(kwargs) or {"compute_group_name": "H100开发区"},
+    )
 
     policy = transport_module.preflight_notebook_transport_policy(
         SimpleNamespace(json_output=False),
@@ -108,9 +139,43 @@ def test_preflight_allows_ssh_when_the_machine_does_not_answer(monkeypatch) -> N
         workspace=None,
     )
 
-    assert policy.gpu_model is None
-    assert policy.allow_ssh is True
-    assert policy.exec_transport == "ssh"
+    assert policy.allow_ssh is False
+    assert details == [{"notebook_id": "nb-123", "session": session}]
+    assert probes[0]["compute_group"] == "H100开发区"
+
+
+def test_preflight_stops_when_the_notebook_is_not_running(monkeypatch, capsys) -> None:  # noqa: ANN001
+    """A silent machine is almost always a stopped one; say so and stop."""
+    session = SimpleNamespace(account="primary")
+    _patch_preflight(monkeypatch, gpu_model=None, session=session, status="STOPPED")
+
+    with pytest.raises(SystemExit) as exc:
+        transport_module.preflight_notebook_transport_policy(
+            SimpleNamespace(json_output=False),
+            notebook="gpu-box",
+            workspace=None,
+        )
+
+    assert exc.value.code != 0
+    errors = capsys.readouterr().err
+    assert "gpu-box is STOPPED" in errors
+    assert "inspire notebook start gpu-box" in errors
+
+
+def test_preflight_stops_when_a_running_notebook_stays_silent(monkeypatch, capsys) -> None:  # noqa: ANN001
+    session = SimpleNamespace(account="primary")
+    _patch_preflight(monkeypatch, gpu_model=None, session=session, status="RUNNING")
+
+    with pytest.raises(SystemExit) as exc:
+        transport_module.preflight_notebook_transport_policy(
+            SimpleNamespace(json_output=False),
+            notebook="gpu-box",
+            workspace=None,
+        )
+
+    assert exc.value.code != 0
+    errors = capsys.readouterr().err
+    assert "JupyterTerminal did not respond" in errors
 
 
 def test_policy_blocks_ssh_for_restricted_gpu() -> None:

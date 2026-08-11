@@ -17,6 +17,10 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
+from inspire.cli.commands.notebook.gpu_model import (
+    clear_gpu_model_cache,
+    gpu_model_cache_status,
+)
 from inspire.cli.utils.errors import exit_with_error, require_confirmation
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
@@ -32,6 +36,11 @@ from inspire.cli.utils.resource_index_refresh import (
     refresh_resource_index,
 )
 from inspire.platform.web.session.models import WebSession
+
+# The probed notebook GPU models are not name mappings and do not live in the
+# index, but they are cache all the same: one more kind to show and to clear.
+GPU_MODEL_RESOURCE = "notebook-gpu"
+CLEARABLE_RESOURCES: tuple[str, ...] = (*RESOURCE_TYPES, GPU_MODEL_RESOURCE)
 
 
 def _index_or_exit(ctx: Context, account: str | None = None) -> ResourceIndex:
@@ -165,6 +174,17 @@ def _status_payload(index: ResourceIndex) -> dict[str, object]:
                 failures.append(failure)
             summary["failures"] = failures
         resources.append(summary)
+
+    gpu_count, gpu_observed_at = gpu_model_cache_status()
+    resources.append(
+        {
+            "resource": GPU_MODEL_RESOURCE,
+            "cached_names": gpu_count,
+            "state": "ready" if gpu_count else "empty",
+            "updated": _age(gpu_observed_at, now=now),
+        }
+    )
+    resources.sort(key=lambda item: str(item["resource"]))
 
     return {"items": resources}
 
@@ -373,32 +393,61 @@ def cache_status(ctx: Context) -> None:
 
 @cache.command("clear")
 @click.option(
+    "--resource",
+    "resources",
+    type=click.Choice(CLEARABLE_RESOURCES, case_sensitive=False),
+    multiple=True,
+    metavar="RESOURCE",
+    help="Clear only this cache kind. Repeat to select several. Default: all of them.",
+)
+@click.option(
     "--yes",
     "-y",
     is_flag=True,
     help="Skip the interactive confirmation prompt.",
 )
 @pass_context
-def clear_cache(ctx: Context, yes: bool) -> None:
-    """Clear cached resource-name mappings."""
+def clear_cache(ctx: Context, resources: tuple[str, ...], yes: bool) -> None:
+    """Clear local caches, all of them or one kind at a time.
+
+    \b
+    Examples:
+        inspire cache clear --yes
+        inspire cache clear --resource notebook --yes
+        inspire cache clear --resource notebook-gpu --resource quota-notebook --yes
+    """
+    selected = tuple(dict.fromkeys(resource.lower() for resource in resources))
+    scope_label = ", ".join(selected) if selected else "every local cache"
     require_confirmation(
         ctx,
         yes=yes,
-        prompt="Clear the local resource name cache?",
+        prompt=f"Clear {scope_label}?",
         message="Cache clearing requires confirmation.",
         hint="Pass --yes to confirm clearing the cache.",
     )
-    index = _index_or_exit(ctx)
-    try:
-        index.clear()
-    except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
-        _exit_cache_database_error(ctx)
-        raise RuntimeError("unreachable")
-    payload = {"status": "cleared"}
+
+    index_types = [
+        resource for resource in selected if resource != GPU_MODEL_RESOURCE
+    ]
+    cleared: dict[str, int] = {}
+    if index_types or not selected:
+        try:
+            cleared["names"] = _index_or_exit(ctx).clear(index_types or None)
+        except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
+            _exit_cache_database_error(ctx)
+            raise RuntimeError("unreachable")
+    if not selected or GPU_MODEL_RESOURCE in selected:
+        cleared["gpu_models"] = clear_gpu_model_cache()
+
+    payload: dict[str, object] = {"status": "cleared", **cleared}
+    if selected:
+        payload["resources"] = list(selected)
     if ctx.json_output:
         click.echo(json_formatter.format_json(payload))
-    else:
-        click.echo("Resource name cache cleared.")
+        return
+    labels = {"names": "names", "gpu_models": "GPU models"}
+    parts = [f"{count} {labels[key]}" for key, count in cleared.items()]
+    click.echo(f"Cleared {scope_label}: " + ", ".join(parts) + ".")
 
 
 __all__ = ["cache"]

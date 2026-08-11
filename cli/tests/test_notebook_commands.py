@@ -1810,8 +1810,8 @@ def test_run_notebook_ssh_blocks_restricted_gpu_before_tunnel_setup(
     )
     monkeypatch.setattr(
         ssh_flow_module,
-        "notebook_gpu_model",
-        lambda **_kwargs: "H200",
+        "require_notebook_gpu_model",
+        lambda *_args, **_kwargs: "H200",
     )
     monkeypatch.setattr(
         ssh_flow_module,

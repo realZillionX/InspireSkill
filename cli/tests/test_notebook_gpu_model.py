@@ -95,8 +95,34 @@ def test_probe_returns_none_when_the_machine_does_not_answer(
     assert gpu_model_module.notebook_gpu_model(notebook_id="nb-stopped", session=None) is None
 
 
-def test_probe_runs_once_per_notebook(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The model is fixed for the life of a notebook id, so one probe answers."""
+def test_one_probe_answers_for_the_whole_compute_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A group is one pool of identical machines, so it is the cache key."""
+    calls: list[str] = []
+
+    def fake_run(**kwargs):  # noqa: ANN202
+        calls.append(str(kwargs["notebook_id"]))
+        return _Result(returncode=0, output="NVIDIA H200\n")
+
+    monkeypatch.setattr(
+        gpu_model_module.browser_api_module,
+        "run_command_capture_in_notebook",
+        fake_run,
+    )
+    probe = gpu_model_module.notebook_gpu_model
+
+    assert probe(notebook_id="nb-1", compute_group="训练区-H200-1号机房") == "H200"
+    assert probe(notebook_id="nb-2", compute_group="训练区-H200-1号机房") == "H200"
+    assert probe(notebook_id="nb-3", compute_group="开发区-H100-119核") == "H200"
+
+    # Only the first notebook in each group reached the machine.
+    assert calls == ["nb-1", "nb-3"]
+
+
+def test_a_notebook_without_a_group_falls_back_to_its_own_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[str] = []
 
     def fake_run(**kwargs):  # noqa: ANN202
@@ -109,9 +135,9 @@ def test_probe_runs_once_per_notebook(monkeypatch: pytest.MonkeyPatch) -> None:
         fake_run,
     )
 
-    assert gpu_model_module.notebook_gpu_model(notebook_id="nb-1", session=None) == "H200"
-    assert gpu_model_module.notebook_gpu_model(notebook_id="nb-1", session=None) == "H200"
-    assert gpu_model_module.notebook_gpu_model(notebook_id="nb-2", session=None) == "H200"
+    assert gpu_model_module.notebook_gpu_model(notebook_id="nb-1") == "H200"
+    assert gpu_model_module.notebook_gpu_model(notebook_id="nb-1") == "H200"
+    assert gpu_model_module.notebook_gpu_model(notebook_id="nb-2") == "H200"
 
     assert calls == ["nb-1", "nb-2"]
 
@@ -186,3 +212,25 @@ def test_an_unreadable_cache_file_is_ignored(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     assert gpu_model_module.notebook_gpu_model(notebook_id="nb-1", session=None) == "H100"
+
+
+def test_cache_status_and_clear_report_what_is_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        gpu_model_module.browser_api_module,
+        "run_command_capture_in_notebook",
+        lambda **_k: _Result(returncode=0, output="NVIDIA H200\n"),
+    )
+    assert gpu_model_module.gpu_model_cache_status() == (0, 0.0)
+
+    gpu_model_module.notebook_gpu_model(notebook_id="nb-1", compute_group="训练区")
+    gpu_model_module.notebook_gpu_model(notebook_id="nb-2", compute_group="开发区")
+
+    count, observed_at = gpu_model_module.gpu_model_cache_status()
+    assert count == 2
+    assert observed_at > 0
+
+    assert gpu_model_module.clear_gpu_model_cache() == 2
+    assert gpu_model_module.gpu_model_cache_status() == (0, 0.0)
+    assert gpu_model_module.clear_gpu_model_cache() == 0

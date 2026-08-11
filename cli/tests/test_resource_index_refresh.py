@@ -646,18 +646,75 @@ def test_cache_status_and_clear_never_expose_workspace_handle(
     assert "workspace-secret" not in status.output
     assert "job-secret" not in status.output
     payload = json.loads(status.output)["data"]
-    assert len(payload["items"]) == 1
-    resource = payload["items"][0]
-    assert resource["resource"] == "job"
+    by_resource = {item["resource"]: item for item in payload["items"]}
+    resource = by_resource["job"]
     assert resource["cached_names"] == 1
     assert resource["state"] == "ready"
     assert resource["workspaces"] == 1
     assert str(resource["updated"]).endswith("s ago")
+    assert by_resource["notebook-gpu"]["state"] == "empty"
 
     cleared = runner.invoke(main, ["cache", "clear", "--yes"])
     assert cleared.exit_code == 0
-    assert cleared.output == "Resource name cache cleared.\n"
+    assert cleared.output == "Cleared every local cache: 1 names, 0 GPU models.\n"
     assert index.list_scope_status() == []
+
+
+def test_cache_clear_takes_one_kind_at_a_time(tmp_path, monkeypatch) -> None:
+    """Dropping the notebook names must not cost the job names beside them."""
+    from inspire.cli.commands.notebook import gpu_model as gpu_model_module
+    from inspire.cli.main import main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    create_account("alpha", "[inspire]\n")
+    set_current_account("alpha")
+    WebSession(
+        storage_state={"cookies": [], "origins": []},
+        created_at=time.time(),
+        base_url="https://inspire.example",
+        login_username="alice",
+        user_detail={"id": "user-one"},
+    ).save()
+    index = ResourceIndex.for_account()
+    assert index is not None
+    index.reconcile(
+        _scope("notebook", "workspace-one"),
+        [ResourceIdentity(resource_id="nb-1", name="dev-box")],
+    )
+    index.reconcile(
+        _scope("job", "workspace-one"),
+        [ResourceIdentity(resource_id="job-1", name="train")],
+    )
+    monkeypatch.setattr(
+        gpu_model_module.browser_api_module,
+        "run_command_capture_in_notebook",
+        lambda **_k: _GpuProbeResult(),
+    )
+    gpu_model_module.notebook_gpu_model(notebook_id="nb-1", compute_group="训练区")
+
+    runner = CliRunner()
+    cleared = runner.invoke(main, ["cache", "clear", "--resource", "notebook", "--yes"])
+
+    assert cleared.exit_code == 0
+    assert cleared.output == "Cleared notebook: 1 names.\n"
+    assert index.lookup(_scope("notebook", "workspace-one"), "dev-box") == []
+    assert len(index.lookup(_scope("job", "workspace-one"), "train")) == 1
+    assert gpu_model_module.gpu_model_cache_status()[0] == 1
+
+    cleared = runner.invoke(
+        main, ["cache", "clear", "--resource", "notebook-gpu", "--yes"]
+    )
+
+    assert cleared.exit_code == 0
+    assert cleared.output == "Cleared notebook-gpu: 1 GPU models.\n"
+    assert gpu_model_module.gpu_model_cache_status()[0] == 0
+    assert len(index.lookup(_scope("job", "workspace-one"), "train")) == 1
+
+
+class _GpuProbeResult:
+    returncode = 0
+    output = "NVIDIA H200\n"
+    completed = True
 
 
 def test_cache_status_reports_name_only_refresh_failures(
@@ -693,7 +750,13 @@ def test_cache_status_reports_name_only_refresh_failures(
                         "error": "request failed near <redacted> for <redacted>",
                     }
                 ],
-            }
+            },
+            {
+                "resource": "notebook-gpu",
+                "cached_names": 0,
+                "state": "empty",
+                "updated": "never",
+            },
         ]
     }
 

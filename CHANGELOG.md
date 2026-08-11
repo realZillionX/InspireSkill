@@ -6,11 +6,13 @@
 
 - Notebook 的 SSH / Rtunnel 可用性改为读机器上真正插的显卡型号，不再看 Compute Group 名称含不含 `H100` / `H200`。名字是人填的标签：可以被改、可以简写，也可以和机器上的硬件对不上，而这条判断决定的是能不能建 Rtunnel。现在用 JupyterTerminal 在机器上跑一次 `nvidia-smi --query-gpu=name`，型号是 `H100` / `H200` 的就是受限 Notebook。
 
-  这不是 v6.3.0 删掉的那条联网探测：那条探的是「能不能上网」，把它当作「能不能 SSH」的代理指标，还要为此起一个完整远端终端竞速四个 TCP 探针（数十秒）。现在探的就是判断本身要的那个事实，一条命令，而且答案会记住——Notebook 的资源规格在创建时就定死了，所以同一个 `notebook_id` 只探一次，结果存 `~/.inspire/notebook-gpu-models.json`（30 天过期，纯粹是为了不让文件无限长）。`run_notebook_ssh` 里那道内部关卡因此也不重复探测，不带 `--workspace` 的 `notebook ssh` 仍然拦得住受限 Notebook。
+  这不是 v6.3.0 删掉的那条联网探测：那条探的是「能不能上网」，把它当作「能不能 SSH」的代理指标，还要为此起一个完整远端终端竞速四个 TCP 探针（数十秒）。现在探的就是判断本身要的那个事实，一条命令，而且答案会记住。
 
-  机器答不上来时（Notebook 已停止、Jupyter 起不来）按可用 SSH 处理：探测走的就是受限 Transport 那条通道，一台答不上来的机器同样跑不了 JupyterTerminal，此时 SSH 是唯一还有机会的路径，而且它会把自己的失败报清楚。
+  记住的粒度是 **Compute Group**，不是 Notebook：一个组就是一池同型号机器，组里第一个 Notebook 探完，之后落在该组的任何 Notebook 都直接命中。组名跟着 Name 解析一起回来（`_resolve_notebook_target` 的第三个返回值、索引里 notebook 记录的 `compute_group`），所以拿这个 Key 不额外发请求；只有平台回包里没有组名时才多一次 Detail 请求，换掉的是该组每个 Notebook 各探一次。结果存 `~/.inspire/notebook-gpu-models.json`，30 天过期纯粹是为了不让文件无限长。`run_notebook_ssh` 里那道内部关卡读同一份，不带 `--workspace` 的 `notebook ssh` 仍然拦得住受限 Notebook 且不重复探测。
 
-  随之删掉 Name 解析索引里 Notebook 那一份 Compute Group：它当初只为这条判断而存在（`_resolve_notebook_target` 的第三个返回值、notebook 类型上写入的 `ResourceIdentity.compute_group`），现在没有读者。Quota Row 用的那一份 `compute_group` 与此无关，保留。
+  **机器答不上来时直接报错退出，不猜 Transport。** 探测走的就是受限 Transport 那条通道，一台答不上来的机器同样跑不了 JupyterTerminal，而 `ssh` / `exec` / `shell` / `scp` 本来就都要求 Notebook 在 `RUNNING`。此时会去查一次真实状态，未启动就直说未启动并给出 `inspire notebook start <name> --workspace <workspace>`；已经 `RUNNING` 却仍然连不上，就说明是 JupyterTerminal 不通，提示稍后重试或重启 Notebook。
+
+- `inspire cache clear` 支持 `--resource <kind>` 分类清理，可重复；不带该选项才是原来的全清。此前它只有「全炸」一档：想让一个 Notebook 重新探测显卡，得把 Job、Image、Quota 目录一起赔进去，下一条命令再全部重建。可选的 kind 就是 `cache status` 列出的那些，外加 `notebook-gpu`（Notebook 显卡型号那层，不属于 Name 解析索引，但同样是缓存），`cache status` 现在也会列出它。人类输出和 `--json` 都报告各清掉多少条。
 
 ## v7.0.1
 

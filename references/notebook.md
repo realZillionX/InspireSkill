@@ -31,7 +31,9 @@ Notebook 是交互工作台，不只是“开一个终端”。
 
 ## 3. 连接方式
 
-Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH / Rtunnel；其余机器走 SSH。CLI 自动完成该判断——用 JupyterTerminal 在机器上跑一次 `nvidia-smi` 读型号，结果按 Notebook 缓存在 `~/.inspire/notebook-gpu-models.json`，同一个 Notebook 只探测一次。机器答不上来时（Notebook 已停止、Jupyter 起不来）按可用 SSH 处理：这种情况下受限 Transport 本身也不通。
+Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH / Rtunnel；其余机器走 SSH。CLI 自动完成该判断——用 JupyterTerminal 在机器上跑一次 `nvidia-smi` 读型号。结果按 **Compute Group** 缓存在 `~/.inspire/notebook-gpu-models.json`：一个组是一池同型号机器，组里第一个 Notebook 探完，之后落在该组的 Notebook 都直接命中。用 `inspire cache clear --resource notebook-gpu` 单独清这一层。
+
+机器答不上来（Notebook 未启动、Jupyter 起不来）时命令直接报错退出，不猜 Transport：`ssh` / `exec` / `shell` / `scp` 本来就都要求 Notebook 处于 `RUNNING`。未启动时提示先 `inspire notebook start <name> --workspace <workspace>`。
 
 | 入口 | 心智模型 | 受限 Notebook 行为 |
 | --- | --- | --- |

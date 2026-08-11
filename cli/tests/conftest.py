@@ -63,6 +63,28 @@ def _isolate_notebook_target_resolver(monkeypatch):  # noqa: ANN001
 
 
 @pytest.fixture(autouse=True)
+def _stub_notebook_gpu_probe(monkeypatch, tmp_path):  # noqa: ANN001
+    """Answer the notebook GPU probe locally: no GPU, therefore SSH-capable.
+
+    The real probe opens a JupyterTerminal on the machine to read `nvidia-smi`.
+    Every transport decision consumes it through `transport`, so stubbing it
+    there keeps the suite off the network while `test_notebook_gpu_model.py`
+    still exercises the probe and its cache directly. Tests that need a
+    restricted machine set their own answer, which wins over this one.
+
+    The probe's cache is redirected as well, so nothing reads or rewrites the
+    real `~/.inspire/` file of whoever runs pytest.
+    """
+    import importlib
+
+    gpu_model = importlib.import_module("inspire.cli.commands.notebook.gpu_model")
+    transport = importlib.import_module("inspire.cli.commands.notebook.transport")
+
+    monkeypatch.setattr(transport, "notebook_gpu_model", lambda **_kwargs: "")
+    monkeypatch.setattr(gpu_model, "CACHE_FILE", tmp_path / "notebook-gpu-models.json")
+
+
+@pytest.fixture(autouse=True)
 def _short_circuit_platform_resolvers(monkeypatch):  # noqa: ANN001
     """Pass resolver arguments through untouched for internal-path tests.
 
