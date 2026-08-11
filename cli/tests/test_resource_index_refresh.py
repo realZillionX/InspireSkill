@@ -660,6 +660,60 @@ def test_cache_status_and_clear_never_expose_workspace_handle(
     assert index.list_scope_status() == []
 
 
+def test_cache_status_reports_one_kind_at_a_time(tmp_path, monkeypatch) -> None:
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    index.reconcile(
+        _scope("job", "workspace-one"),
+        [ResourceIdentity(resource_id="job-1", name="train")],
+    )
+    monkeypatch.setattr(cache_commands, "_workspace_name_map", lambda: {})
+
+    everything = cache_commands._status_payload(index)
+    assert [item["resource"] for item in everything["items"]] == ["job", "notebook-gpu"]
+
+    only_job = cache_commands._status_payload(index, resources=["job"])
+    assert [item["resource"] for item in only_job["items"]] == ["job"]
+    assert only_job["items"][0]["cached_names"] == 1
+
+    # A kind nothing has cached yet still answers for itself.
+    uncached = cache_commands._status_payload(index, resources=["ray", "notebook-gpu"])
+    assert uncached["items"] == [
+        {
+            "resource": "notebook-gpu",
+            "cached_names": 0,
+            "state": "empty",
+            "updated": "never",
+        },
+        {"resource": "ray", "cached_names": 0, "state": "empty", "updated": "never"},
+    ]
+
+
+def test_cache_status_says_so_when_nothing_at_all_is_cached(tmp_path, monkeypatch) -> None:
+    """The whole-cache view of nothing is a sentence, not a column of zeroes."""
+    from inspire.cli.main import main
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    create_account("alpha", "[inspire]\n")
+    set_current_account("alpha")
+    WebSession(
+        storage_state={"cookies": [], "origins": []},
+        created_at=time.time(),
+        base_url="https://inspire.example",
+        login_username="alice",
+        user_detail={"id": "user-one"},
+    ).save()
+
+    runner = CliRunner()
+    everything = runner.invoke(main, ["cache", "status"])
+    assert everything.exit_code == 0
+    assert everything.output == "Resource name cache is empty.\n"
+
+    one_kind = runner.invoke(main, ["cache", "status", "--resource", "notebook"])
+    assert one_kind.exit_code == 0
+    assert one_kind.output == "notebook: 0 names, empty, never\n"
+
+
 def test_cache_clear_takes_one_kind_at_a_time(tmp_path, monkeypatch) -> None:
     """Dropping the notebook names must not cost the job names beside them."""
     from inspire.cli.commands.notebook import gpu_model as gpu_model_module

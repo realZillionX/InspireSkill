@@ -40,7 +40,7 @@ from inspire.platform.web.session.models import WebSession
 # The probed notebook GPU models are not name mappings and do not live in the
 # index, but they are cache all the same: one more kind to show and to clear.
 GPU_MODEL_RESOURCE = "notebook-gpu"
-CLEARABLE_RESOURCES: tuple[str, ...] = (*RESOURCE_TYPES, GPU_MODEL_RESOURCE)
+CACHE_RESOURCES: tuple[str, ...] = (*RESOURCE_TYPES, GPU_MODEL_RESOURCE)
 
 
 def _index_or_exit(ctx: Context, account: str | None = None) -> ResourceIndex:
@@ -100,11 +100,30 @@ def _public_error(value: object) -> str:
     return json_formatter.sanitize_text(value, redact_paths=True)
 
 
-def _status_payload(index: ResourceIndex) -> dict[str, object]:
+def _reports_nothing(row: dict[str, object]) -> bool:
+    """Whether a status row carries neither names nor a problem worth reading."""
+    return (
+        not row.get("cached_names")
+        and not row.get("errors")
+        and row.get("state") == "empty"
+    )
+
+
+def _status_payload(
+    index: ResourceIndex,
+    *,
+    resources: Sequence[str] = (),
+) -> dict[str, object]:
+    selected = {str(resource or "").strip().lower() for resource in resources}
+    selected.discard("")
     names = _workspace_name_map()
     now = time.time()
     scopes: list[dict[str, object]] = []
-    statuses = index.list_scope_status()
+    statuses = [
+        status
+        for status in index.list_scope_status()
+        if not selected or status.resource_type in selected
+    ]
     for status in statuses:
         row: dict[str, object] = {
             "resource": status.resource_type,
@@ -134,7 +153,7 @@ def _status_payload(index: ResourceIndex) -> dict[str, object]:
         by_resource.setdefault(str(row["resource"]), []).append(row)
 
     state_rank = {"ready": 0, "empty": 1, "partial": 2, "stale": 3, "error": 4}
-    resources: list[dict[str, object]] = []
+    items: list[dict[str, object]] = []
     for resource, rows in sorted(by_resource.items()):
         state = max(
             (str(row.get("state") or "empty") for row in rows),
@@ -173,20 +192,34 @@ def _status_payload(index: ResourceIndex) -> dict[str, object]:
                     failure["workspace"] = workspace
                 failures.append(failure)
             summary["failures"] = failures
-        resources.append(summary)
+        items.append(summary)
 
-    gpu_count, gpu_observed_at = gpu_model_cache_status()
-    resources.append(
-        {
-            "resource": GPU_MODEL_RESOURCE,
-            "cached_names": gpu_count,
-            "state": "ready" if gpu_count else "empty",
-            "updated": _age(gpu_observed_at, now=now),
-        }
-    )
-    resources.sort(key=lambda item: str(item["resource"]))
+    if not selected or GPU_MODEL_RESOURCE in selected:
+        gpu_count, gpu_observed_at = gpu_model_cache_status()
+        items.append(
+            {
+                "resource": GPU_MODEL_RESOURCE,
+                "cached_names": gpu_count,
+                "state": "ready" if gpu_count else "empty",
+                "updated": _age(gpu_observed_at, now=now),
+            }
+        )
 
-    return {"items": resources}
+    # An explicitly named kind always gets a row: "not cached yet" is an answer
+    # to "what is the state of X", and silence is not.
+    reported = {str(item["resource"]) for item in items}
+    for resource in sorted(selected - reported):
+        items.append(
+            {
+                "resource": resource,
+                "cached_names": 0,
+                "state": "empty",
+                "updated": "never",
+            }
+        )
+    items.sort(key=lambda item: str(item["resource"]))
+
+    return {"items": items}
 
 
 def _refresh_payload(
@@ -352,11 +385,29 @@ def refresh_cache(
 
 
 @cache.command("status")
+@click.option(
+    "--resource",
+    "resources",
+    type=click.Choice(CACHE_RESOURCES, case_sensitive=False),
+    multiple=True,
+    metavar="RESOURCE",
+    help="Report only this cache kind. Repeat to select several. Default: all of them.",
+)
 @pass_context
-def cache_status(ctx: Context) -> None:
-    """Show cache freshness and name counts."""
+def cache_status(ctx: Context, resources: tuple[str, ...]) -> None:
+    """Show cache freshness and name counts.
+
+    A kind named with --resource always gets a row, reported as empty when
+    nothing is cached for it yet.
+
+    \b
+    Examples:
+        inspire cache status
+        inspire cache status --resource notebook
+        inspire cache status --resource notebook-gpu --resource quota-notebook
+    """
     try:
-        payload = _status_payload(_index_or_exit(ctx))
+        payload = _status_payload(_index_or_exit(ctx), resources=resources)
     except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
         _exit_cache_database_error(ctx)
         raise RuntimeError("unreachable")
@@ -364,13 +415,14 @@ def cache_status(ctx: Context) -> None:
         click.echo(json_formatter.format_json(payload))
         return
 
-    resources = payload["items"]
-    if not isinstance(resources, list) or not resources:
+    rows = [row for row in payload["items"] if isinstance(row, dict)]  # type: ignore[union-attr]
+    # A whole-cache view of nothing reads better as one sentence than as a
+    # column of zeroes. A --resource view still gets its rows: "empty" is the
+    # answer it asked for.
+    if not resources and all(_reports_nothing(row) for row in rows):
         click.echo("Resource name cache is empty.")
         return
-    for row in resources:
-        if not isinstance(row, dict):
-            continue
+    for row in rows:
         label = str(row["resource"])
         if row.get("workspaces"):
             label += f" ({row['workspaces']} workspaces)"
@@ -395,7 +447,7 @@ def cache_status(ctx: Context) -> None:
 @click.option(
     "--resource",
     "resources",
-    type=click.Choice(CLEARABLE_RESOURCES, case_sensitive=False),
+    type=click.Choice(CACHE_RESOURCES, case_sensitive=False),
     multiple=True,
     metavar="RESOURCE",
     help="Clear only this cache kind. Repeat to select several. Default: all of them.",
