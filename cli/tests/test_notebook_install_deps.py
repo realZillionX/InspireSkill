@@ -24,7 +24,7 @@ def _allow_install_deps_transport_policy(monkeypatch: pytest.MonkeyPatch) -> Non
         lambda *_args, **_kwargs: NotebookTransportPolicy(
             notebook="cpu-box",
             notebook_id="nb-public",
-            compute_group="CPU资源-2",
+            gpu_model="",
         ),
         raising=False,
     )
@@ -269,7 +269,7 @@ def test_install_deps_forwards_pick_to_live_preflight_and_cached_bridge(
         return NotebookTransportPolicy(
             notebook="cpu-box",
             notebook_id="nb-second",
-            compute_group="CPU资源-2",
+            gpu_model="",
         )
 
     monkeypatch.setattr(install_deps_module, "preflight_notebook_transport_policy", fake_preflight)
@@ -329,7 +329,7 @@ def test_install_deps_uses_jupyter_on_restricted_notebook(monkeypatch) -> None: 
         lambda *_a, **_k: NotebookTransportPolicy(
             notebook="gpu-box",
             notebook_id="nb-123",
-            compute_group="训练区-H200-1号机房",
+            gpu_model="H200",
             session=target_session,
         ),
     )

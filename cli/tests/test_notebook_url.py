@@ -289,7 +289,7 @@ def _patch_resolve(monkeypatch) -> list[str]:  # noqa: ANN001
         lambda *_a, **_k: NotebookTransportPolicy(
             notebook="nb",
             notebook_id=_NOTEBOOK_ID,
-            compute_group="CPU资源-2",
+            gpu_model="",
         ),
     )
     return opened
@@ -378,7 +378,7 @@ def test_url_commands_pass_pick_to_live_resolvers(
             or NotebookTransportPolicy(
                 notebook="nb",
                 notebook_id=_NOTEBOOK_ID,
-                compute_group="CPU资源-2",
+                gpu_model="",
             )
         ),
     )

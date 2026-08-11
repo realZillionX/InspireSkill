@@ -31,7 +31,7 @@ def _allow_ssh_policy(monkeypatch) -> None:  # noqa: ANN001
         lambda *_args, **_kwargs: NotebookTransportPolicy(
             notebook="demo-box",
             notebook_id="nb-public",
-            compute_group="CPU资源-2",
+            gpu_model="",
         ),
     )
 
@@ -337,7 +337,7 @@ def test_connection_refresh_uses_mutation_success_contract(monkeypatch) -> None:
         lambda *_args, **_kwargs: NotebookTransportPolicy(
             notebook="demo-box",
             notebook_id="nb-public",
-            compute_group="CPU资源-2",
+            gpu_model="",
         ),
     )
     monkeypatch.setattr(

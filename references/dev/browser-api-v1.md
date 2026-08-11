@@ -65,7 +65,7 @@ Metrics Wrapper 统一覆盖 Notebook、Job、HPC、Ray 和 Serving，并负责�
 ## 5. Notebook Transport
 
 - 受限 Notebook 的 `exec` / `shell` 使用 Jupyter Terminal REST + WebSocket，全程不起浏览器（lab URL 来自 `notebook.GetNotebookAccessUrl`，`_xsrf` 来自一次普通 GET），并在命令结束后回收本次创建的 Terminal。
-- Compute Group 名称不含 `H100` / `H200` 的 Notebook 可以建立本地 Connection，供 `ssh`、`scp`、`ssh-config` 和外部 OpenSSH 工具复用。
+- 受限与否读机器上的 `nvidia-smi`，走同一条 Jupyter Terminal 通道；显卡不是 `H100` / `H200` 的 Notebook 可以建立本地 Connection，供 `ssh`、`scp`、`ssh-config` 和外部 OpenSSH 工具复用。同一个 `notebook_id` 只探测一次，结果存 `~/.inspire/notebook-gpu-models.json`。
 - `--account` 指定的 Account Alias 必须贯穿 Name 解析、Session、代理、Terminal 和 Connection Cache。
 - `proxy-url` 是整个 Notebook 命令组里**唯一**打印平台 URL 的命令：Agent 要靠它去请求容器里的服务，而这个地址的每一段都是平台句柄，洗过就不通了。它走 `format_json(..., preserve_raw={"url"})` 这个显式开关，不是绕过输出边界。其余命令一律不把内部网关路径当作公共资源身份。
 

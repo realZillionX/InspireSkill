@@ -41,10 +41,10 @@ from inspire.config import ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NotebookFailedError
 
+from .gpu_model import notebook_gpu_model
 from .notebook_lookup import (
     _collect_workspace_ids_for_lookup,
     _get_current_user_detail,
-    _notebook_compute_group,
     _resolve_notebook_id,
     _validate_notebook_account_access,
     _workspace_label,
@@ -53,7 +53,7 @@ from .target_resolver import (
     remember_notebook_target_aliases,
     resolve_cached_notebook_target,
 )
-from .transport import group_supports_ssh, restricted_group_label
+from .transport import gpu_model_supports_ssh, restricted_gpu_label
 
 logger = logging.getLogger(__name__)
 
@@ -831,16 +831,17 @@ def run_notebook_ssh(
 
     # Last gate before the tunnel is built: callers that skip the preflight
     # (`notebook ssh` without --workspace) must not reach an H100/H200
-    # notebook, and no bridge may be cached for one.
-    compute_group = _notebook_compute_group(notebook_detail)
-    if not group_supports_ssh(compute_group):
+    # notebook, and no bridge may be cached for one. The preflight's probe is
+    # remembered per notebook, so this repeats no remote work when it ran.
+    gpu_model = notebook_gpu_model(notebook_id=notebook_id, session=session)
+    if not gpu_model_supports_ssh(gpu_model):
         _handle_error(
             ctx,
             "PolicyBlocked",
             (
                 "SSH/rtunnel access is blocked on H100/H200 notebooks: "
-                f"{scrub_raw_ids(notebook_display_name)} runs in "
-                f"{restricted_group_label(compute_group)}"
+                f"{scrub_raw_ids(notebook_display_name)} runs "
+                f"{restricted_gpu_label(gpu_model)}"
             ),
             EXIT_CONFIG_ERROR,
             hint=(

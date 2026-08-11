@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### 变更
+
+- Notebook 的 SSH / Rtunnel 可用性改为读机器上真正插的显卡型号，不再看 Compute Group 名称含不含 `H100` / `H200`。名字是人填的标签：可以被改、可以简写，也可以和机器上的硬件对不上，而这条判断决定的是能不能建 Rtunnel。现在用 JupyterTerminal 在机器上跑一次 `nvidia-smi --query-gpu=name`，型号是 `H100` / `H200` 的就是受限 Notebook。
+
+  这不是 v6.3.0 删掉的那条联网探测：那条探的是「能不能上网」，把它当作「能不能 SSH」的代理指标，还要为此起一个完整远端终端竞速四个 TCP 探针（数十秒）。现在探的就是判断本身要的那个事实，一条命令，而且答案会记住——Notebook 的资源规格在创建时就定死了，所以同一个 `notebook_id` 只探一次，结果存 `~/.inspire/notebook-gpu-models.json`（30 天过期，纯粹是为了不让文件无限长）。`run_notebook_ssh` 里那道内部关卡因此也不重复探测，不带 `--workspace` 的 `notebook ssh` 仍然拦得住受限 Notebook。
+
+  机器答不上来时（Notebook 已停止、Jupyter 起不来）按可用 SSH 处理：探测走的就是受限 Transport 那条通道，一台答不上来的机器同样跑不了 JupyterTerminal，此时 SSH 是唯一还有机会的路径，而且它会把自己的失败报清楚。
+
+  随之删掉 Name 解析索引里 Notebook 那一份 Compute Group：它当初只为这条判断而存在（`_resolve_notebook_target` 的第三个返回值、notebook 类型上写入的 `ResourceIdentity.compute_group`），现在没有读者。Quota Row 用的那一份 `compute_group` 与此无关，保留。
+
 ## v7.0.1
 
 ### 新增

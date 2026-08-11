@@ -31,7 +31,7 @@ Notebook 是交互工作台，不只是“开一个终端”。
 
 ## 3. 连接方式
 
-Transport 由 Notebook 所属 Compute Group 决定：Group 名称含 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH / Rtunnel；其余 Group 走 SSH。CLI 自动完成该判断，不需要远端探测。
+Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH / Rtunnel；其余机器走 SSH。CLI 自动完成该判断——用 JupyterTerminal 在机器上跑一次 `nvidia-smi` 读型号，结果按 Notebook 缓存在 `~/.inspire/notebook-gpu-models.json`，同一个 Notebook 只探测一次。机器答不上来时（Notebook 已停止、Jupyter 起不来）按可用 SSH 处理：这种情况下受限 Transport 本身也不通。
 
 | 入口 | 心智模型 | 受限 Notebook 行为 |
 | --- | --- | --- |
@@ -76,7 +76,7 @@ Notebook 连接类命令包括 `ssh`、`exec`、`shell`、`scp`、`ssh-config` �
 
 受限 Notebook 不使用 SSH / SCP / `rsync`。文件流转以共享盘为边界：
 
-1. 在同账号、同项目上下文里选择一个支持 SSH 的 Notebook（Group 名称不含 `H100` / `H200`）。
+1. 在同账号、同项目上下文里选择一个支持 SSH 的 Notebook（显卡不是 `H100` / `H200`，例如 CPU 机器）。
 2. 用 `inspire notebook scp <ssh-notebook> ... /inspire/<storage>/...` 上传或下载共享路径文件。需要 `rsync` 语义时，先为该 Notebook 生成 SSH Config，再用外部 `rsync` 操作同一个 `/inspire/...` 路径。
 3. 用 `inspire notebook exec <restricted-notebook> "..."` 或 `inspire notebook shell <restricted-notebook>` 在受限 Notebook 内操作同一个 `/inspire/<storage>/...` 路径。
 

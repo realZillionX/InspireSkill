@@ -142,8 +142,8 @@ class ResourceIdentity:
     owner_id: str = ""
     status: str = ""
     created_at: str = ""
-    # Compute group name, cached for the types whose transport or scheduling
-    # decisions read it (notebook SSH policy, quota rows). Empty elsewhere.
+    # Compute group name, cached for the types whose scheduling decisions read
+    # it (quota rows). Empty elsewhere.
     compute_group: str = ""
     # Opaque JSON text for types whose consumers need the platform payload
     # verbatim (quota rows carry the price object `create` has to echo back).

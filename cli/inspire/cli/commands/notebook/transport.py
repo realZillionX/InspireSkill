@@ -11,28 +11,28 @@ from inspire.cli.utils.notebook_cli import (
     require_web_session,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.platform.web import browser_api as browser_api_module
 
-from .notebook_lookup import _notebook_compute_group, _resolve_notebook_target
+from .gpu_model import notebook_gpu_model
+from .notebook_lookup import _resolve_notebook_id
 
 if TYPE_CHECKING:
     from inspire.platform.web.session import WebSession
 
 NotebookExecTransport = Literal["ssh", "jupyter"]
 
-# Compute groups built on these GPU models are SSH-restricted on the platform.
+# Machines built on these GPU models are SSH-restricted on the platform.
 SSH_RESTRICTED_GPU_MODELS: tuple[str, ...] = ("H100", "H200")
 
 
-def group_supports_ssh(compute_group: str) -> bool:
-    """Whether notebooks in this compute group can be reached over SSH/rtunnel.
+def gpu_model_supports_ssh(gpu_model: str | None) -> bool:
+    """Whether a machine reporting this GPU model can be reached over SSH/rtunnel.
 
-    Group names carry their GPU model (``训练区-H200-1号机房``,
-    ``开发区-H100-cuda12.8版本-119核``), so the name alone decides the
-    transport. Deciding from group metadata the notebook detail already
-    carries keeps the preflight to a single cheap API call.
+    ``None`` is the probe's "the machine did not answer", and it allows SSH: the
+    probe runs over JupyterTerminal, so a machine that cannot answer cannot
+    serve the restricted transport either. SSH is then the only transport with a
+    chance of working, and it reports its own failure clearly.
     """
-    upper = str(compute_group or "").upper()
+    upper = str(gpu_model or "").upper()
     return not any(model in upper for model in SSH_RESTRICTED_GPU_MODELS)
 
 
@@ -40,16 +40,16 @@ def group_supports_ssh(compute_group: str) -> bool:
 class NotebookTransportPolicy:
     notebook: str
     notebook_id: str
-    compute_group: str
+    gpu_model: str | None
     session: WebSession | None = field(default=None, repr=False, compare=False)
 
     @property
     def allow_ssh(self) -> bool:
-        return group_supports_ssh(self.compute_group)
+        return gpu_model_supports_ssh(self.gpu_model)
 
     @property
     def allow_proxy_url(self) -> bool:
-        return group_supports_ssh(self.compute_group)
+        return gpu_model_supports_ssh(self.gpu_model)
 
     @property
     def exec_transport(self) -> NotebookExecTransport:
@@ -63,9 +63,9 @@ class NotebookTransportPolicy:
         )
 
 
-def restricted_group_label(compute_group: str) -> str:
-    group = scrub_raw_ids(str(compute_group or "").strip())
-    return f"compute group {group}" if group else "an H100/H200 compute group"
+def restricted_gpu_label(gpu_model: str | None) -> str:
+    model = str(gpu_model or "").strip()
+    return f"on {model} GPUs" if model else "on H100/H200 GPUs"
 
 
 def emit_ssh_policy_error(ctx: Context, policy: NotebookTransportPolicy) -> int:
@@ -74,8 +74,8 @@ def emit_ssh_policy_error(ctx: Context, policy: NotebookTransportPolicy) -> int:
         "PolicyBlocked",
         (
             "SSH/rtunnel access is blocked on H100/H200 notebooks: "
-            f"{scrub_raw_ids(policy.notebook)} runs in "
-            f"{restricted_group_label(policy.compute_group)}"
+            f"{scrub_raw_ids(policy.notebook)} runs "
+            f"{restricted_gpu_label(policy.gpu_model)}"
         ),
         EXIT_GENERAL_ERROR,
         hint=policy.block_hint,
@@ -104,7 +104,7 @@ def preflight_notebook_transport_policy(
         )
     else:
         workspace_ids = None
-    notebook_id, _workspace_id, compute_group = _resolve_notebook_target(
+    notebook_id, _workspace_id = _resolve_notebook_id(
         ctx,
         session=session,
         base_url=get_base_url(account=account),
@@ -113,18 +113,9 @@ def preflight_notebook_transport_policy(
         workspace_ids=workspace_ids,
         pick=pick,
     )
-    if not compute_group:
-        # Name resolution normally hands back the group for free, from either
-        # the identity cache or the list response it already fetched. Only a
-        # platform payload that omitted it costs a detail request.
-        detail = browser_api_module.get_notebook_detail(
-            notebook_id=notebook_id,
-            session=session,
-        )
-        compute_group = _notebook_compute_group(detail)
     return NotebookTransportPolicy(
         notebook=notebook,
         notebook_id=notebook_id,
-        compute_group=compute_group,
+        gpu_model=notebook_gpu_model(notebook_id=notebook_id, session=session),
         session=session,
     )

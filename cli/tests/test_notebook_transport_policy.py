@@ -10,57 +10,54 @@ from inspire.cli.main import main as cli_main
 
 
 @pytest.mark.parametrize(
-    ("compute_group", "expected"),
+    ("gpu_model", "expected"),
     [
-        ("训练区-H200-1号机房", False),
-        ("开发区-H100-cuda12.8版本-119核", False),
-        ("h200-2号机房", False),
-        ("NVIDIA_H100_SXM", False),
-        ("CPU资源-2", True),
-        ("4090 开发区", True),
+        ("H200", False),
+        ("H100", False),
+        ("NVIDIA H100 80GB HBM3", False),
+        ("h200", False),
+        ("4090", True),
+        ("A100", True),
+        # No GPU on the machine, and a machine that never answered.
         ("", True),
+        (None, True),
     ],
 )
-def test_group_supports_ssh(compute_group: str, expected: bool) -> None:
-    assert transport_module.group_supports_ssh(compute_group) is expected
+def test_gpu_model_supports_ssh(gpu_model: str | None, expected: bool) -> None:
+    assert transport_module.gpu_model_supports_ssh(gpu_model) is expected
 
 
 def _patch_preflight(
     monkeypatch,  # noqa: ANN001
     *,
-    resolved_group: str,
+    gpu_model: str | None,
     session: object,
-    detail: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    """Stub name resolution and detail lookup; return their recorded calls."""
+    """Stub name resolution and the GPU probe; return their recorded calls."""
     resolved: list[dict] = []
-    detail_calls: list[dict] = []
+    probes: list[dict] = []
 
     monkeypatch.setattr(transport_module, "require_web_session", lambda *_a, **_k: session)
     monkeypatch.setattr(transport_module, "get_base_url", lambda **_k: "https://example.test")
 
     def fake_resolve(*_args, **kwargs):  # noqa: ANN202
         resolved.append(kwargs)
-        return "nb-123", "ws-123", resolved_group
+        return "nb-123", "ws-123"
 
-    def fake_detail(**kwargs):  # noqa: ANN202
-        detail_calls.append(kwargs)
-        return detail or {}
+    def fake_probe(**kwargs):  # noqa: ANN202
+        probes.append(kwargs)
+        return gpu_model
 
-    monkeypatch.setattr(transport_module, "_resolve_notebook_target", fake_resolve)
-    monkeypatch.setattr(
-        transport_module.browser_api_module,
-        "get_notebook_detail",
-        fake_detail,
-    )
-    return resolved, detail_calls
+    monkeypatch.setattr(transport_module, "_resolve_notebook_id", fake_resolve)
+    monkeypatch.setattr(transport_module, "notebook_gpu_model", fake_probe)
+    return resolved, probes
 
 
-def test_preflight_blocks_ssh_for_h200_group(monkeypatch) -> None:  # noqa: ANN001
+def test_preflight_blocks_ssh_when_the_machine_reports_h200(monkeypatch) -> None:  # noqa: ANN001
     session = SimpleNamespace(account="secondary")
-    _resolved, detail_calls = _patch_preflight(
+    _resolved, probes = _patch_preflight(
         monkeypatch,
-        resolved_group="训练区-H200-1号机房",
+        gpu_model="H200",
         session=session,
     )
 
@@ -71,20 +68,19 @@ def test_preflight_blocks_ssh_for_h200_group(monkeypatch) -> None:  # noqa: ANN0
         account="secondary",
     )
 
-    assert policy.compute_group == "训练区-H200-1号机房"
+    assert policy.gpu_model == "H200"
     assert policy.allow_ssh is False
     assert policy.allow_proxy_url is False
     assert policy.exec_transport == "jupyter"
     assert policy.session is session
-    # The group came back with the name resolution, so no detail request.
-    assert detail_calls == []
+    assert probes == [{"notebook_id": "nb-123", "session": session}]
 
 
-def test_preflight_allows_ssh_for_cpu_group(monkeypatch) -> None:  # noqa: ANN001
+def test_preflight_allows_ssh_when_the_machine_has_no_gpu(monkeypatch) -> None:  # noqa: ANN001
     session = SimpleNamespace(account="secondary")
-    resolved, detail_calls = _patch_preflight(
+    resolved, _probes = _patch_preflight(
         monkeypatch,
-        resolved_group="CPU资源-2",
+        gpu_model="",
         session=session,
     )
 
@@ -99,17 +95,12 @@ def test_preflight_allows_ssh_for_cpu_group(monkeypatch) -> None:  # noqa: ANN00
     assert policy.allow_ssh is True
     assert policy.exec_transport == "ssh"
     assert resolved[0]["pick"] == 2
-    assert detail_calls == []
 
 
-def test_preflight_falls_back_to_detail_when_group_missing(monkeypatch) -> None:  # noqa: ANN001
+def test_preflight_allows_ssh_when_the_machine_does_not_answer(monkeypatch) -> None:  # noqa: ANN001
+    """An unread model leaves SSH as the only transport that can still work."""
     session = SimpleNamespace(account="primary")
-    _resolved, detail_calls = _patch_preflight(
-        monkeypatch,
-        resolved_group="",
-        session=session,
-        detail={"compute_group_name": "H100开发区"},
-    )
+    _patch_preflight(monkeypatch, gpu_model=None, session=session)
 
     policy = transport_module.preflight_notebook_transport_policy(
         SimpleNamespace(json_output=False),
@@ -117,16 +108,16 @@ def test_preflight_falls_back_to_detail_when_group_missing(monkeypatch) -> None:
         workspace=None,
     )
 
-    assert policy.compute_group == "H100开发区"
-    assert policy.allow_ssh is False
-    assert detail_calls == [{"notebook_id": "nb-123", "session": session}]
+    assert policy.gpu_model is None
+    assert policy.allow_ssh is True
+    assert policy.exec_transport == "ssh"
 
 
-def test_policy_blocks_ssh_for_restricted_group() -> None:
+def test_policy_blocks_ssh_for_restricted_gpu() -> None:
     policy = transport_module.NotebookTransportPolicy(
         notebook="gpu-box",
         notebook_id="nb-123",
-        compute_group="训练区-H200-1号机房",
+        gpu_model="H200",
     )
 
     assert policy.allow_ssh is False
@@ -134,11 +125,11 @@ def test_policy_blocks_ssh_for_restricted_group() -> None:
     assert "JupyterTerminal" in policy.block_hint
 
 
-def test_policy_allows_ssh_for_unrestricted_group() -> None:
+def test_policy_allows_ssh_for_unrestricted_gpu() -> None:
     policy = transport_module.NotebookTransportPolicy(
-        notebook="cpu-box",
+        notebook="dev-box",
         notebook_id="nb-456",
-        compute_group="CPU资源-2",
+        gpu_model="4090",
     )
 
     assert policy.allow_ssh is True
@@ -154,7 +145,7 @@ def test_ssh_command_blocks_restricted_notebook_before_bootstrap(monkeypatch) ->
         lambda *_a, **_k: transport_module.NotebookTransportPolicy(
             notebook="gpu-box",
             notebook_id="nb-123",
-            compute_group="训练区-H200-1号机房",
+            gpu_model="H200",
         ),
     )
     called = {"run": False}
@@ -172,7 +163,7 @@ def test_ssh_command_blocks_restricted_notebook_before_bootstrap(monkeypatch) ->
     assert result.exit_code != 0
     assert called["run"] is False
     assert "blocked on H100/H200 notebooks" in result.output
-    assert "训练区-H200-1号机房" in result.output
+    assert "runs on H200 GPUs" in result.output
 
 
 def test_notebook_scp_rejects_restricted_notebook_with_cp_hint(monkeypatch, tmp_path) -> None:  # noqa: ANN001
@@ -186,7 +177,7 @@ def test_notebook_scp_rejects_restricted_notebook_with_cp_hint(monkeypatch, tmp_
         lambda *_a, **_k: transport_module.NotebookTransportPolicy(
             notebook="gpu-box",
             notebook_id="nb-123",
-            compute_group="训练区-H200-1号机房",
+            gpu_model="H200",
         ),
     )
 

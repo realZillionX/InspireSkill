@@ -69,7 +69,7 @@ def test_concurrent_proxy_calls_bootstrap_once(
         lambda *_a, **_k: NotebookTransportPolicy(
             notebook="demo-box",
             notebook_id="notebook-demo",
-            compute_group="CPU资源-2",
+            gpu_model="",
         ),
     )
 
