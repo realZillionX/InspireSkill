@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import subprocess
 import time
 from pathlib import Path
@@ -64,9 +65,17 @@ def _get_proxy_command(bridge: BridgeProfile, rtunnel_bin: Path, quiet: bool = F
     # ProxyCommand is executed by a shell on the client; quote the URL because it
     # can contain characters like '?' (e.g. token query params) that some shells
     # treat as glob patterns.
-    base_cmd = (
-        f"{shlex.quote(str(rtunnel_bin))} {shlex.quote(ws_url)} {shlex.quote('stdio://%h:%p')}"
-    )
+    if sys.platform == "win32":
+        # Windows OpenSSH invokes ProxyCommand through cmd.exe. Proxy settings
+        # are inherited from the SSH process, so POSIX VAR=value prefixes and
+        # `sh -c` cannot be used here.
+        quote = lambda value: '"' + str(value).replace('"', '\\"') + '"'
+        base_cmd = f"{quote(rtunnel_bin)} {quote(ws_url)} {quote('stdio://%h:%p')}"
+        if quiet:
+            return f"{base_cmd} 2>NUL"
+        return base_cmd
+
+    base_cmd = f"{shlex.quote(str(rtunnel_bin))} {shlex.quote(ws_url)} {shlex.quote('stdio://%h:%p')}"
     base_cmd = _prepend_proxy_env(base_cmd)
     if quiet:
         # Wrap in sh -c to redirect stderr, suppressing rtunnel's verbose output
@@ -159,7 +168,7 @@ def _test_ssh_connection(
                 "-o",
                 "StrictHostKeyChecking=no",
                 "-o",
-                "UserKnownHostsFile=/dev/null",
+                "UserKnownHostsFile=NUL" if sys.platform == "win32" else "UserKnownHostsFile=/dev/null",
                 "-o",
                 "BatchMode=yes",
                 "-o",

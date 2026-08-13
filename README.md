@@ -67,9 +67,18 @@ InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命�
 
 # 快速上手
 
-> 平台支持：macOS + Linux 一等公民。Windows 用户请用 [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)。CLI 依赖 SSH / `rsync` / GPFS 目录约定 / POSIX 文件权限，Windows 原生不在 Roadmap。
+> 平台支持：macOS、Linux 与 Windows。Windows 原生使用系统 OpenSSH（Windows Optional Feature），不需要 WSL。SSH、SCP、Notebook 创建、任务提交和网页 API 操作均可用；`rsync` 仍是可选外部工具，建议用 `notebook scp` 完成文件传输。
 
 ## 安装
+
+### Windows PowerShell
+
+在本仓库根目录运行：
+
+    Set-ExecutionPolicy -Scope Process Bypass
+    .\scripts\install.ps1
+
+前置：Python 3.10+（带 `py.exe`）和 Windows OpenSSH Client。安装器以可编辑方式安装当前 fork，并写入 Codex Skill。首次安装会下载 Playwright Chromium；不需要浏览器登录时可传 `-SkipPlaywright`。
 
 前置：`bash` / `curl` / `tar` / Python 3.10+ / 已装 `uv`（推荐）或 `pipx` 任一。
 

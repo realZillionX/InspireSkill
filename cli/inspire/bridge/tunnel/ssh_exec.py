@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import select
+import sys
+import threading
+import queue
 import shlex
 import subprocess
 import time
@@ -89,7 +92,7 @@ def _build_ssh_base_args(
         "-o",
         "StrictHostKeyChecking=no",
         "-o",
-        "UserKnownHostsFile=/dev/null",
+        "UserKnownHostsFile=NUL" if sys.platform == "win32" else "UserKnownHostsFile=/dev/null",
         "-o",
         f"ProxyCommand={proxy_cmd}",
         "-o",
@@ -258,6 +261,20 @@ def run_ssh_command_streaming(
 
     start_time = time.time()
 
+    reader_queue: queue.Queue[str | None] | None = None
+    reader_thread: threading.Thread | None = None
+    if sys.platform == "win32":
+        # select() only accepts sockets on Windows; pipes used by Popen must be
+        # drained from a reader thread instead.
+        reader_queue = queue.Queue()
+        def _drain_stdout() -> None:
+            for line in iter(stdout.readline, ""):
+                reader_queue.put(line)
+            reader_queue.put(None)
+
+        reader_thread = threading.Thread(target=_drain_stdout, daemon=True)
+        reader_thread.start()
+
     try:
         while True:
             # Check timeout
@@ -275,7 +292,14 @@ def run_ssh_command_streaming(
                     raise subprocess.TimeoutExpired(ssh_cmd, timeout)
 
             # Read from a single path (readline only) so lines cannot be emitted twice.
-            if process.poll() is not None:
+            if sys.platform == "win32":
+                try:
+                    line = reader_queue.get(timeout=1.0) if reader_queue is not None else None
+                except queue.Empty:
+                    continue
+                if line is None:
+                    break
+            elif process.poll() is not None:
                 line = stdout.readline()
             else:
                 ready, _, _ = select.select([stdout], [], [], 1.0)
@@ -307,6 +331,8 @@ def run_ssh_command_streaming(
         if process.poll() is None:
             process.terminate()
             process.wait()
+        if reader_thread is not None:
+            reader_thread.join(timeout=1.0)
 
 
 __all__ = [

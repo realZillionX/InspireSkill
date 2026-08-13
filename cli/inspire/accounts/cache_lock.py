@@ -12,14 +12,19 @@ holder exits, so a crashed writer never strands it.
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
+import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 _POLL_INTERVAL = 0.05
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 
 class CacheLockTimeout(TimeoutError):
@@ -49,7 +54,7 @@ def exclusive_cache_lock(
         try:
             yield
         finally:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            _release(descriptor)
     finally:
         os.close(descriptor)
 
@@ -62,7 +67,7 @@ def _acquire(
     on_wait: Callable[[], None] | None,
 ) -> None:
     if timeout is None and on_wait is None:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        _block_acquire(descriptor)
         return
 
     if _try_acquire(descriptor):
@@ -70,7 +75,7 @@ def _acquire(
     if on_wait is not None:
         on_wait()
     if timeout is None:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        _block_acquire(descriptor)
         return
 
     deadline = time.monotonic() + timeout
@@ -83,6 +88,17 @@ def _acquire(
 
 
 def _try_acquire(descriptor: int) -> bool:
+    if sys.platform == "win32":
+        # msvcrt locks from the current file position. Keep a single byte at
+        # offset zero reserved for the lock's whole lifetime.
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                return False
+            raise
+        return True
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
@@ -90,3 +106,19 @@ def _try_acquire(descriptor: int) -> bool:
             return False
         raise
     return True
+
+
+def _block_acquire(descriptor: int) -> None:
+    if sys.platform != "win32":
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        return
+    while not _try_acquire(descriptor):
+        time.sleep(_POLL_INTERVAL)
+
+
+def _release(descriptor: int) -> None:
+    if sys.platform != "win32":
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)

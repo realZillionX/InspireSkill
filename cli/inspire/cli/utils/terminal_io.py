@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
-import pty
 import select
 import signal
 import struct
 import sys
-import termios
 import time
-import tty
 from collections.abc import Sequence
 from types import TracebackType
 from typing import BinaryIO
+
+if sys.platform != "win32":
+    import fcntl
+    import pty
+    import termios
+    import tty
 
 
 def write_stream_output(stream: BinaryIO, payload: bytes | str) -> None:
@@ -86,6 +88,13 @@ def run_interactive_pty(
     """Run an interactive command in a PTY, proxying stdio verbatim."""
     if not argv:
         raise ValueError("Interactive command cannot be empty.")
+
+    if sys.platform == "win32":
+        # Windows has no POSIX PTY APIs. Native OpenSSH allocates a console for
+        # interactive sessions, so inherit the current stdio handles directly.
+        import subprocess
+
+        return subprocess.run(list(argv), check=False).returncode
 
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout

@@ -9,9 +9,7 @@ import select
 import signal
 import shlex
 import sys
-import termios
 import time
-import tty
 import uuid
 from dataclasses import dataclass
 from typing import Iterator, Protocol, Optional
@@ -25,6 +23,10 @@ from inspire.platform.web.browser_api.core import (
 )
 from inspire.platform.web.session import WebSession
 from inspire.platform.web.session import build_requests_session, get_web_session
+
+if sys.platform != "win32":
+    import termios
+    import tty
 
 JUPYTER_DONE_PREFIX = "__INSPIRE_JUPYTER_DONE_"
 MISSING_MARKER_RETURN_CODE = 124
@@ -338,6 +340,9 @@ def _run_jupyter_terminal_shell(
         _WebSocketClient,
         _stty_command,
     )
+
+    if sys.platform == "win32":
+        raise RuntimeError("Interactive Jupyter terminal shells are not yet supported on native Windows; use `inspire notebook exec` instead.")
 
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout

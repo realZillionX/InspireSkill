@@ -4,7 +4,7 @@
 
 ## 1. 安装
 
-macOS + Linux 是一等公民。Windows Agent 用 WSL2；Windows 原生命令行不支持。
+macOS、Linux 和 Windows 都支持。Windows 原生运行前安装 Windows OpenSSH Client，并在仓库根目录执行 `Set-ExecutionPolicy -Scope Process Bypass; .\scripts\install.ps1`。Windows 文件传输优先使用 `inspire notebook scp`；外部 `rsync` 不随 Windows 支持提供。
 
 前置只需要 `bash`、`curl`、`tar`、Python 3.10+，以及 `uv` 或 `pipx` 任一。没有 `uv` 时先装：
 

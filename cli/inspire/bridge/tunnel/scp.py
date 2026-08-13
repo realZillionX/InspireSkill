@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 from typing import Optional
 
 from .models import BridgeProfile
@@ -23,7 +24,7 @@ def _build_scp_base_args(
         "-o",
         "StrictHostKeyChecking=no",
         "-o",
-        "UserKnownHostsFile=/dev/null",
+        "UserKnownHostsFile=NUL" if sys.platform == "win32" else "UserKnownHostsFile=/dev/null",
         "-o",
         f"ProxyCommand={proxy_cmd}",
         "-o",

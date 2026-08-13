@@ -96,8 +96,14 @@ def _identity_file_for_pubkey(pubkey_path: Optional[str] = None) -> str | None:
             ]
         )
     for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            return str(candidate)
+        try:
+            if candidate.exists() and candidate.is_file():
+                return str(candidate)
+        except OSError:
+            # A Windows profile may contain an inherited or policy-protected
+            # .ssh path. A missing usable private key is non-fatal here: SSH
+            # can still use ssh-agent or an explicitly supplied key.
+            continue
     return None
 
 

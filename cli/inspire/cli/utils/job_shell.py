@@ -13,8 +13,6 @@ import socket
 import ssl
 import struct
 import sys
-import termios
-import tty
 from dataclasses import dataclass
 from types import TracebackType
 from urllib.parse import urlencode, urlsplit
@@ -25,6 +23,10 @@ from inspire.cli.utils.terminal_io import write_stream_output
 from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url
 from inspire.platform.web.session import WebSession, get_web_session
 from inspire.platform.web.session.proxy import get_rtunnel_proxy_override
+
+if sys.platform != "win32":
+    import termios
+    import tty
 
 RUNNING_INSTANCE_STATUS = "instance_running"
 SHELL_BOOTSTRAP = "command -v bash >/dev/null 2>&1 && exec bash || exec sh\n"
@@ -435,6 +437,9 @@ def run_remote_shell(
     websocket_cls: type[_WebSocketClient] = _WebSocketClient,
 ) -> int:
     """Open the remote PTY websocket and proxy local stdio."""
+    if sys.platform == "win32":
+        raise JobShellError("Interactive job shells are not yet supported on native Windows; use job logs or notebook exec instead.")
+
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     stdout_buffer = getattr(stdout, "buffer", stdout)
