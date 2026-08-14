@@ -34,7 +34,9 @@
 3. 用实时 Availability 判断空余；多节点 GPU 任务再看整节点空闲。
 4. 创建命令里的 `--group` 使用完整 Compute Group 名称；查询命令里的 Group Filter 可以用关键词收窄候选。
 
-`resources availability`、`resources nodes` 和各 Workload 的 `quota` 是资源事实入口；具体参数和输出以 CLI Help 为准。
+`resources availability`、`resources nodes`、`resources quota` 和各 Workload 的 `quota` 是资源事实入口；具体参数和输出以 CLI Help 为准。
+
+`<workload> quota` 和 `resources quota` 回答的不是同一个问题：前者是「有哪些合法的 `gpu,cpu,mem` 档位」，后者是「这个 Workspace 还允许占多少、集群还剩多少」。两者都会拒绝任务，失败形态不同——配额用尽停在 `QUOTA_PENDING`，集群占满停在 `PENDING` 并伴随 `FailedScheduling` 事件。大规模提交前两个都看。用户级和项目级配额需要 Workspace 管理员权限，普通成员读不到。
 
 `Available` 是平台上当前未被占用的 GPU，`Low Pri` 是低优任务占用、可被高优任务抢占的 GPU，`High Pri` 是 `Available + Low Pri`。判断高优任务时不要只看 `Available`，但 `High Pri` 也只是可抢占容量上限；提交后仍以 Events 为准。
 

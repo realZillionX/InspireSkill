@@ -24,6 +24,8 @@ Path Alias 是远端路径 Alias，不是 Workload Profile。它只回答“文�
 
 `<path-user>` 是共享盘返回的个人目录名，不一定等于平台登录 username。路径事实以 `inspire init` 的平台发现结果为准。
 
+`/inspire/dataset/<数据集名>/<版本名>` 不属于共享盘，是创建时用 `--dataset` 挂进来的官方数据集，只读，不占项目配额，也没有 Alias；语义见 [`dataset.md`](dataset.md)。
+
 ## 3. 存储池
 
 | 池 | 项目路径前缀 | 定位 |

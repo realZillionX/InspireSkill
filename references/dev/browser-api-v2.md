@@ -49,8 +49,8 @@ Content-Type: application/json
 | 字段 | 问题 |
 | --- | --- |
 | Service `Name` | 不等于网关路由名，见第 4 节 |
-| Service 全集 | **不完整**。`file` 路由完全不在 discovery 里，但活着，当前 CLI 正在用；`model_plaza` 同样存在但已无消费者 |
-| Action 全集 | **不完整**，且缺口不小。当前 169 个声明之外，实测活着的至少还有 16 个：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`image.CreateImage`、`image.UpdateImage`、`image.PreheatImage`、`model-hub.CreateModel`、`model-hub.UpdateModel`、`model-hub.DeleteModel`、`user.GetPermissions`、`user.GetRoutes`、`user.ListSSH`、`user.GetMyPermissions`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners` |
+| Service 全集 | **不完整**。`file` 和 `dataset` 两条路由完全不在 discovery 里，但都活着且当前 CLI 正在用；`model_plaza` 同样存在但已无消费者 |
+| Action 全集 | **不完整**，且缺口不小。当前 175 个声明之外，实测活着的至少还有 21 个：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`image.CreateImage`、`image.UpdateImage`、`image.PreheatImage`、`model-hub.CreateModel`、`model-hub.UpdateModel`、`model-hub.DeleteModel`、`user.GetPermissions`、`user.GetRoutes`、`user.ListSSH`、`user.GetMyPermissions`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners`、`project.GetProjectListV2`、`file.GetSftpgoConnectionInfo`、`dataset.ValidateDataset`、`workspace.GetWorkspaceQuota`、`workspace.GetWorkspaceComputeResource` |
 | 分页字段 `PageNumber` | 是唯一的 PascalCase 字段，实际网关同时接受 `PageNumber` / `page_num` / `page`，三者等价且都真实生效 |
 
 **判定「无对应物」时的固定错误模式**：这个错误已经犯过很多次——`inference_serving` 只测了 discovery 里的 `CreateServing` 就说契约变了（其实有 `CreateServingConsole`）；`/cluster_nodes/list` 只测了 `ListWorkspaceNodes` 就说没有（其实是 `ListNodeDimension`，且 `AccessForbidden` 只是 scoping 没写全）；`/user/quota` 只看了 `user` 服务就说没有配额 Action（`workspace.*` 下有 10 个）。**最大的一次**：`/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 一共 10 个家族被写进第 9 节的「无对应物」表，实际全部有 Action——它们只是不在 discovery 里。**Discovery 只能用来找候选，不能用来否定。下结论前必须把所有 service 里名字沾边的 Action 全部列出来逐个实测，并按下一段的存在性探针枚举未文档化的变体；路由本身也要探，`404 page not found` 才是路由不存在，`InvalidAction` 说明路由活着。**
@@ -61,7 +61,11 @@ Content-Type: application/json
 
 因为 Action 全集不可信，某个 Action 是否存在只能实测。网关对此有明确信号，且不需要发出一次真正的写请求：**空 body 打过去，`InvalidAction: unknown action: X` 表示该 Action 不存在，其它错误码（`InvalidParameter` / `InternalError`，通常带参数校验文案）表示存在但参数不对**。迁移写操作前用这一条确认有没有 Console 变体：`train`、`hpc`、`inference_serving` 有，`ray` 没有。空 body 会在校验阶段被拒，不会创建任何东西，但这只能用来判断存在性——语义仍须按第 18 行的受控验证确认。
 
-discovery 的 `Version` 是内容 etag，可以直接用来判断平台是否改过接口面。历史上它**双向变动过**：早期版本有 `audit`、`file` 两个 service 和整套节点运维 Action，之后被移除；`image`、`model-hub` 则是后加的。所以不能假设新版本是旧版本的超集。
+**字段有没有，用同一把尺子量。** 网关先按 proto 解析 body，再校验业务必填项，所以只带一个候选字段打过去：`InvalidParameter: invalid JSON: proto: unknown field "X"` 表示该字段不在合同里，**其它任何报错都表示字段在合同里**（通常是「名称不能为空」之类的必填校验）。因为必填项全缺，这同样创建不出任何东西。这是唯一能测未文档化 Console 变体字段面的办法，第 8 节那张创建字段表就是这么得出的。注意读一句 `InternalError: internal server error` 时先做对照实验：`hpc.CreateJobConsole` 对空 body 和对合法字段都回这一句，只有塞进一个确定不存在的字段才会回 `unknown field`——没有对照就无法区分「字段被接受、处理器崩了」和「请求根本没进解析」。
+
+discovery 的 `Version` 是内容 etag，可以直接用来判断平台是否改过接口面。历史上它**双向变动过**：早期版本有 `audit`、`file` 两个 service 和整套节点运维 Action，之后被移除；`image`、`model-hub` 则是后加的。所以不能假设新版本是旧版本的超集。当前 `Version` 是 `e1daec0f`，与上一次记录相比又漂了三处：Action 从 169 涨到 175；`hpc` 的每个 Action 从「不声明任何参数」变成 `CreateJob` 声明 17 个参数；`image` 反而缩到只剩 `ListImages` / `GetImageById` / `DeleteImage` / `ListImageBrands` 四个，`CreateImage` 和 `UpdateImage` 退回未文档化状态。
+
+**控制台 SPA 是代码分割的。** 想从前端 bundle 反推某个表单的字段形状时，只取 `/assets/index.*.js` 入口是不够的，创建表单在惰性加载的 chunk 里，需要从入口递归抓一遍。这条在确认 `mount_path` 有没有前端生产者时用上了——递归抓完 322 个 chunk，`real_path` / `mount_path` 零命中，于是判定「字段虽然被接受，但没有可抄的正确形状」。
 
 ## 4. 路由名与 Action 名
 
@@ -73,6 +77,7 @@ discovery 的 `Version` 是内容 etag，可以直接用来判断平台是否改
 | `model-hub` | **`model-hub`** | 下划线形式 404 |
 | 其余 9 个 | 与 `Name` 相同 | — |
 | （不在 discovery 里） | **`file`** | `files` 404 |
+| （不在 discovery 里） | **`dataset`** | `datasets`、`dataset-hub`、`dataset_hub`、`data_plaza`、`data`、`plaza` 全部 404 |
 
 **不能从 `Name` 机械推导路由。** 新增 Service 时必须实测两种写法。当前 Wrapper 用的 `inference_serving` 是正确形式。
 
@@ -121,16 +126,64 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | --- | --- |
 | `train` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobInstances`、`ListJobEvents`、`GetJobLog`、`StopJob`、`DeleteJob` |
 | `hpc` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobEvents`、`ListJobInstances`、`GetJobLog`、`StopJob`、`DeleteJob` |
-| `inference_serving` | `CreateServingConsole`、`ListServings`、`GetServing`、`ListServingVersions`、`ListServingInstances`、`ListServingEvents`、`ListServingScaleHistory`、`GetServingLog`、`GetInferenceServingTerms`、`GetServingConfigByWorkspaceId`、`GetInferenceServingUserProjectList`、`StartServing`、`StopServing`、`DeleteServing` |
-| `ray` | `CreateJob`、`GetJob`、`ListJobs`、`ListJobCreators`、`ListJobEvents`、`ListJobInstances`、`ListJobScalingHistories`、`StopJob`、`DeleteJob` |
+| `inference_serving` | `CreateServingConsole`、`ListServings`、`GetServing`、`ListServingVersions`、`ListServingInstances`、`ListServingEvents`、`ListServingScaleHistory`、`GetServingLog`、`GetServingApiMetric`、`GetInferenceServingTerms`、`GetServingConfigByWorkspaceId`、`GetInferenceServingUserProjectList`、`StartServing`、`StopServing`、`ScaleServing`、`RollbackServing`、`DeleteServing` |
+| `ray` | `CreateJob`、`GetJob`、`ListJobs`、`ListJobCreators`、`ListJobEvents`、`ListJobInstances`、`ListJobScalingHistories`、`StartJob`、`StopJob`、`DeleteJob` |
 | `notebook` | `CreateNotebook`、`GetNotebook`、`ListNotebooks`、`ListNotebookCreators`、`ListNotebookEvents`、`ListNotebookLifecycles`、`ListRunIndex`、`StartNotebook`、`StopNotebook`、`DeleteNotebook`、`SaveNotebookImage`、`GetNotebookAccessUrl` |
-| `workspace` | `ListLogicComputeGroups`、`ListNodeDimension`、`GetLogicComputeGroupResource` |
+| `workspace` | `ListLogicComputeGroups`、`ListNodeDimension`、`GetLogicComputeGroupResource`、`GetWorkspaceQuota`、`GetWorkspaceComputeResource` |
 | `user` | `GetUserDetail`、`GetPermissions`、`GetRoutes` |
 | `project` | `GetProjectForPage`、`ListProjects`、`GetProjectDetail`、`GetProjectOwners` |
 | `image` | `ListImages`、`GetImageById`、`CreateImage`、`UpdateImage`、`DeleteImage` |
 | `file` | `GetSystemStorageTypeList`、`GetDirList` |
-| `model-hub` | `ListModels`、`GetModelDetail`、`ListModelVersions`、`ListModelVersionOptions`、`ListModelCreators`、`ListModelRelatedServings`、`GetHasModelPendingServing`、`GetModelPublishPrefill`、`GetModelPublishStatus`、`CreateModel` |
+| `dataset` | `ValidateDataset` |
+| `model-hub` | `ListModels`、`GetModelDetail`、`ListModelVersions`、`ListModelVersionOptions`、`ListModelCreators`、`ListModelRelatedServings`、`GetHasModelPendingServing`、`GetModelPublishPrefill`、`GetModelPublishStatus`、`GetRecommendedConfig`、`CheckModelVLLMCompatible`、`CreateModel` |
 | 各域 | `GetTaskMetric`（`notebook` / `train` / `hpc` / `ray` / `inference_serving` 各一份） |
+
+### 创建面的字段合同
+
+五个 Console / Create 变体接受的字段互不相同，且只有 `notebook.CreateNotebook`、`train.CreateJob` 和 `ray.CreateJob` 在 discovery 里声明过。下表用上一节那把 `unknown field` 尺子逐字段量出来，**是判断某个网页选项能不能进 CLI 的唯一依据**：
+
+| 字段 | notebook | train Console | hpc Console | ray | serving Console |
+| --- | --- | --- | --- | --- | --- |
+| `dataset_info` | 接受 | 接受 | 接受 | **拒绝** | **拒绝** |
+| `envs` | **拒绝** | 接受 | **拒绝** | **拒绝** | **拒绝** |
+| `description` | **拒绝** | 接受 | 接受 | 接受 | 接受 |
+| `mounts` / `mount_path` | 接受 | 接受 | **拒绝** | **拒绝** | 接受（`custom_mounts`） |
+| `is_publicpath_readonly` | 接受 | 接受 | 接受 | 接受 | 接受 |
+| `is_projectuserspath_readonly` | 接受 | **拒绝** | **拒绝** | — | — |
+| `queue_id` | 接受 | 接受 | 接受 | **拒绝** | **拒绝** |
+| `runtime_attributes` | 接受 | 接受 | 接受 | 接受 | 接受 |
+
+几处不能靠直觉推的细节：
+
+- **`envs` 的元素是 `{name, value}`，不是 `{key, value}`**，`key` 会被拒为 `unknown field "key"`。`train.GetJob` 的读投影**不回显 `envs`**（容器里明明有变量，读回来是 `[]`），所以不能用读接口核对写了什么。
+- **`is_projectuserspath_readonly` 只有 notebook 有**，而且要项目 Maintainer：普通成员传了会拿到 `AccessForbidden: only project maintainer can enable project users path readonly mount`。
+- **HPC 的最大运行时长不在顶层**。`max_running_time_ms` 和 `max_running_time_minutes` 打顶层都是 `unknown field`；它嵌在 `sbatch_script` 里，而且控制台**同时发两份**：`job_max_time`（`"D-HH:MM:SS"`，即 Slurm `--time`）和 `max_running_time_days` / `_hours` / `_minutes`。`slurm_cluster_spec` 一个都不收。
+- `train.mounts` 的元素是 `{real_path, mount_path, volume}`，没有 `read_only`。`mount_path` 虽然被 notebook 和 train 接受，但递归抓完整个控制台 SPA 也找不到任何生产者，`volume` 的取值无从对照，因此当前**故意不接**。
+- `reserve_on_fail_ms` / `reserve_on_success_ms` 和 `max_running_time_ms` 一样是**字符串**类型，不是数字。
+
+### `dataset`：官方数据集挂载
+
+`/api/v2/dataset` 不在 discovery 里，路由活着，穷举四十个候选名后只有一个 Action：
+
+```jsonc
+POST /api/v2/dataset?Action=ValidateDataset
+{"datasets": [{"dataset_id": "pixabay-81k", "version_id": "v0"}], "workspace_id": "ws-..."}
+→ Result: {"datasets_result": [{dataset_id, version_id, success, path, error_message}]}
+```
+
+**`dataset_id` 是数据集的 code，`version_id` 是版本的 code，都不是数字主键。** `pixabay-81k` + `v0` 解析成功并返回存储路径 `sftpgo/pixabay-81k/v0`；同一个数据集的 `1710` + `2310` 回 `数据集不存在`。错误码三种：`2000 数据集不存在`、`2001 版本不存在`、`2005 无访问权限`。
+
+返回的 `path` 是**平台内部存储路径**，不是容器内挂载点；容器里固定出现在 `/inspire/dataset/<code>/<version>`，且是只读挂载（受控验证时 `mount` 输出确认为 `ro`）。创建请求里的 `dataset_info[].path` 要填这个存储路径，所以创建前必须先走一次 `ValidateDataset`——这正是控制台「校验数据」按钮做的事。
+
+**检索不在这条路由上，也不在这个平台上。** 控制台侧边栏的「数据集」是外链，目录、搜索、版本和权限都在 `aip.sii.edu.cn`，见第 13 节。
+
+### 写侧已经踩到的坑
+
+- **`ray.StartJob` 会「受理但不执行」。** 对一个 STOPPED 的 Ray Job 调用，第一次返回干净的成功信封，`updated_at` 纹丝不动，再调一次变成 `InternalError`。照信封写的 Wrapper 会打印「已启动」而什么都没发生——和当年 `StartServing` 那个 `API error: None` 是同一类谎报。`ray start` 因此以状态真的离开 `STOPPED` 为准，轮询确认后才报成功。
+- **`ray.UpdateJob` 不是弹性伸缩杠杆**，只收 `ray_job_id` / `name` / `description`；`worker_groups`、`head_node`、`entrypoint`、`min_replicas`、`replicas`、`task_priority`、`project_id` 全被拒。它是改名字，不是改集群。
+- **`ScaleServing` 的字段是单数 `replica`**，而 create 和 update 用复数 `replicas`。
+- **`UpdateServing` 的 `resource_spec_price` 是扁平结构**（`cpu_type` / `cpu_count` / `gpu_type` / …），与其它地方嵌套的 `cpu_info` / `gpu_info` 形状不同。安全的 Wrapper 需要基于 `GetServing` 做读改写，且必须先确认省略字段是保留还是清空——当前账号在九个 Workspace 里都没有 serving，无法受控验证，因此**未接**。
+- **`hpc.GetUserProjectWorkingDir` 返回的 `Result` 是一个裸 JSON 字符串**，不是对象，`_v2_result()` 会把它压成 `{}`。要接这个 Action 得先改解包。
 
 `model-hub` 里有两个名字近似、极易搞混的 Action，只能靠响应字段区分：`ListModelVersionOptions` 返回 `{list, total}`，对应 v1 的 `GET /model/{id}/versions`；`ListModelVersions` 多一个 `next_version`，对应 v1 的 `GET /model/{id}`。按名字直觉配对会把两者接反。`ListModelVersions` 不接受 `page`；`ListModelCreators` 接受 `project_id`，与 v1 `/model/users` 的作用域一致。`CreateModel` 不在 discovery 里，逐字接受 v1 `/model/create` 的请求体，返回 `{model_id}`；`model_source_path` 必须落在所给 workspace + project 的路径下，`global_user` 路径会被 `存储路径格式不正确` 拒掉。受控验证走建→读→删（`DeleteModel`）完成。
 
@@ -163,6 +216,8 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 **Metrics 不属于 `workspace.*`。** v1 用一个集群级端点 `/cluster_metric/resource_metric_by_time` 服务所有 Workload，v2 没有对应的集群级端点：每个 service 各有一份 `GetTaskMetric`，接受**逐字相同**的 `{filter:{logic_compute_group_id, task_id, task_type}, metric_types, time_range}`，返回同一个（拼错的）键 `time_seris_metric_groups`，五个域实测数量与 v1 一致。看起来同名的 `workspace.GetOverviewResourceMetricByTime` 是工作空间级总览，对普通成员返回 `AccessForbidden`，不是它的对应物。第 6 节「用 workspace.\* 不用 cluster.\*」只适用于两边同名的那 8 个 Action，不能推广成「集群级端点一律换 workspace.\*」。
 
 `ListLogicComputeGroups` 是那 8 个之一，`workspace.*` 可用、`cluster.*` 返回 `AccessForbidden`，与第 6 节一致。但它有个分页陷阱：**省略 `page_size` 时返回空列表却带非零 `total`**，看起来就像工作空间里没有任何计算组。v1 的 `page_size: -1`（取全部）v2 同样接受，保持原样即可。
+
+配额那一族里普通成员只能用两个：`GetWorkspaceQuota`（Workspace 配额上限与当前占用）和 `GetWorkspaceComputeResource`（集群物理容量），两者都不在 discovery 里，而且 **`workspace_id` 要放顶层**——第 5 节那层 `filter` 嵌套在这里反而被拒。配额值 `-1` 表示不限；组级汇总那个键平台拼错成 `logic_resouces`，与 `GetLogicComputeGroupResource` 同病。其余的 `ListUserQuotas`、`GetUserTaskQuota`、`GetWorkspaceTaskQuota`、`GetDefaultUserTaskQuota` 实测都要 Workspace 管理员；`GetDefaultUserQuota` 普通成员能读，但它描述的是**新成员的默认值**、在可达 Workspace 上一律不限，对调用者没有信息量。
 
 **分页语义逐 Action 不同，不能类推。** 同为 `workspace.*`，`ListNodeDimension` 的 `page_size: -1` 只返回 10 条而不是全部，必须显式按 `total` 翻页。它也是第 5 节 scoping 陷阱最典型的一例：`filter` 里只放 `logic_compute_group_id` 返回 `AccessForbidden`，同时放 `workspace_id` 和 `logic_compute_group_id` 才通——**看到 `AccessForbidden` 先把 scoping 补全再下结论**。
 
@@ -271,3 +326,40 @@ v2 相对 v1 **没有可测量的延迟或吞吐优势**：等价端点单请求
 5. 回落条件符合第 10 节，且 `AccessForbidden`、`InvalidParameter`、429 都不回落。
 6. 该域若在第 9 节的留守清单里，不做迁移，并保持 v1 路径；反过来，判它「没有对应物」之前必须跑完第 3 节的存在性探针。
 7. 写操作经过受控验证，不能只凭只读探针的结果推断。
+8. 写操作的成功以**状态真的变了**为准，不以响应信封为准。`ray.StartJob` 会返回成功却什么都不做（第 8 节），这类谎报只有回读状态才发现得了。
+
+## 13. 数据广场是另一个平台
+
+`aip.sii.edu.cn`（上海创智学院数据广场）不是启智的一部分：不同 host、不同 API 风格、不同 Session，只共用同一套 CAS SSO。启智控制台侧边栏的「数据集」是外链，`qz` 这边只有 `dataset.ValidateDataset` 负责把某个版本挂进容器（第 8 节），检索、版本和权限全在这边。
+
+信封是 `{"code": 0, "data": {...}, "msg": "..."}`，**不是 AWS 风格**，`code != 0` 即失败。握手三步，纯 HTTP，不需要浏览器：
+
+```
+1. GET  https://cas.sii.edu.cn/cas/login?service=<urlencode("https://aip.sii.edu.cn/")>
+        带现有 Session 里的 CASTGC → 302，Location 上带 ?ticket=ST-...   （必须 allow_redirects=False）
+2. POST https://aip.sii.edu.cn/api/base/login   {"ticket": "...", "service": "https://aip.sii.edu.cn/"}
+        → 下发 `datasets-session` cookie，body 里带 userInfo
+3. 之后的调用带该 cookie；前端还会发 `x-user-id: <userInfo.ID>`，实测不带也通
+```
+
+CAS 的登录路径是 `/cas/login`，不是 `/login`——后者 404。
+
+已封装的端点：
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /api/datasets/getDatasetsList?page=&pageSize=&keyword=&tags=&sortBy=&order=` | 目录；`total` 与 `list` 同层 |
+| `POST /api/datasets/findDatasets` `{datasetId}` | 详情 + `versions[]` |
+| `GET /api/datasetTags/getDatasetTagsList` | 全部 52 个标签，五个 `categoryId` 分类 |
+
+几条只有实测才知道的约束：
+
+- **`tags` 是逗号连接的数字 tagId，语义为 OR**；但**空字符串不是通配符**，`tags=""` 返回 0 行。前端把空值整个删掉，客户端也必须省略这个键，不能急着把查询字典拼满。
+- **`pageSize` 无上限**，1000 一次取回全部；`page` 越界返回空 `list` 但 `total` 仍然正确。
+- **`keyword` 连描述一起匹配**且不区分大小写，命中范围通常比预期宽，所以按 code 定位要在结果里取精确相等的那一行，不能取第一条。
+- **`findDatasets` 的失败和未登录共用 `code: 7`**：坏 `datasetId` 是 HTTP 200 + `查询失败:record not found`，未登录是 HTTP 401 + `未登录或非法访问`。**判断要不要重新握手只能看 HTTP 状态码，不能看 `code`。**
+- `state` 有四个值（`active` / `wanted` / `processing` / `error`），版本另有 `downloading` / `pending_upload`；`hasPermission` 按账号给，为 false 的数据集挂载时报 `2005 无访问权限`，申请权限只有网页端有入口。
+- `filesSize` 的单位是 MiB；`dataFormats` 是一个 **JSON 编码的字符串**，不是数组。
+- `datasetCode` 全表唯一，标签名也唯一，两个 name→handle 映射都不会歧义。版本号**不保证是 `vN`**，实际存在 `v1-br`、`2026-07-30`、`v3again`。
+
+存在但当前没有消费者、也未封装的端点：`getDatasetsListUserCenter`、`datasetApplyApprove/*`（权限申请流）、`createDatasets`、`createDatasetVersion`、`updateDatasetsValue`、`checkDatasetsName`、`datasetUserRole/*`。

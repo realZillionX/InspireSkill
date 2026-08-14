@@ -24,8 +24,11 @@ Notebook 是交互工作台，不只是“开一个终端”。
 2. 用 Quota Live 查询选择合法 `gpu,cpu,mem` 三元组。
 3. 确认 Project 是目标项目名，Image 已 `READY`。
 4. 需要复用同一调度条件时写 Workload Profile；远端目录仍用 Path Alias。
+5. 需要数据广场的官方数据集时用 `--dataset <数据集名>:<版本名>`，先按 [`dataset.md`](dataset.md) 确认版本和访问权限。
 
-`--auto-stop` 只表达空闲自动停止请求，不覆盖平台管理员设置的自动回收规则或 Workspace 生命周期上限。长时间训练、批量推理或守护任务应改用 Job、Ray 或 Serving 这类匹配的 Workload。需要在 Notebook 中验证长任务入口时，只跑短 Probe，并把正式命令迁移到后台 Workload。
+共享盘默认可写。需要防止误写项目公共目录或项目成员目录时，创建时用只读挂载开关把它们降级为 `ro`；项目成员目录那一档还要求当前账号是项目 Maintainer，否则平台直接拒绝创建。两者默认都不开启，行为与不传时一致。
+
+`--auto-stop` 只表达空闲自动停止请求，不覆盖平台管理员设置的自动回收规则或 Workspace 生命周期上限。定时停止是另一回事：它是平台侧的运行时长计时器，到点停机，与空闲无关。长时间训练、批量推理或守护任务应改用 Job、Ray 或 Serving 这类匹配的 Workload。需要在 Notebook 中验证长任务入口时，只跑短 Probe，并把正式命令迁移到后台 Workload。
 
 手动 Pin 节点只用于排查坏节点、复现实验或平台同学明确指定节点；传入所选 Compute Group 中显示的节点名。
 

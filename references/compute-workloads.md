@@ -23,6 +23,10 @@
 4. 代码、数据、权重和输出路径在目标项目共享盘可见。
 5. 复杂调度条件先 `dry-run` 或小规模 Probe。
 
+Job 和 HPC 可以在创建时用 `--dataset <数据集名>:<版本名>` 只读挂载数据广场的官方数据集，语义见 [`dataset.md`](dataset.md)；Ray 和 Serving 不支持，需要数据时走共享盘。三类 Workload 都能把项目公共目录降级为只读，用于防止批量任务误写共享结果，默认不开启。
+
+提交前想知道「这个规模到底放不放得下」，用 `resources quota` 分开看两件事：Quota 余量是 Workspace 还允许占多少，集群余量是硬件还剩多少。两者都会拒绝任务，但失败形态不同——配额用尽停在 `QUOTA_PENDING`，集群占满停在 `PENDING` 并伴随 `FailedScheduling` 事件。
+
 离线 GPU 空间不要在启动命令里做公网下载。公网内容提前准备；内部源依赖可在目标 Notebook 验证后保存镜像。
 
 ## 3. GPU Job
@@ -33,6 +37,8 @@ Job 的关键边界：
 
 - 日志和工作目录依赖共享盘约定；训练 Repo 建议在 `me:<repo>`，启动命令里使用相对共享盘路径或让脚本自己切目录。
 - Shared Memory 是每个 Job Instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader Workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置。
+- 环境变量由平台注入，不必再拼进启动命令；值可能是凭据，CLI 输出只回显变量名。
+- 任务结束后容器默认立即释放。需要事后进容器看现场时，在创建时设置成功 / 失败保留时长，任务会停在保留态等待，过期自动释放；这是排查失败训练最省事的路径，比重跑一次便宜。
 - 状态变化通知（`--enable-notification`，收件人固定为当前用户绑定的飞书账号）和自动容错默认关闭，除非明确启用。
 - 需要项目级持久默认值时写 `[job]` 配置段；提交前用 `job create --dry-run` 检查 Shared Memory、通知和容错的最终生效值。
 - 多节点训练要关注每个 Pod 的 GPU、显存、CPU 和网络曲线是否同步；某个 Worker 长期低负载通常比日志更早暴露问题。
@@ -72,6 +78,10 @@ Ray 特有风险：
 
 创建后用 `ray events` 看调度、`ray instances` 看 Head 与实际 Worker、`ray metrics` 看各组负载；结束后先 `ray stop`，确认不再需要再 `ray delete`。重复配置用 `ray profile`，矩阵提交用 `ray batch`。
 
+停掉的 Ray Job 保留完整集群规格，`ray start` 用原样的 Head、Worker Group 和 Driver 命令拉回来，不需要重新指定。平台在这里会「受理但不执行」——请求返回成功而任务纹丝不动，所以 `ray start` 以状态真的离开 `STOPPED` 为准，没动就报失败。从未真正 `RUNNING` 过的 Job 通常起不来，重建比重试可靠。
+
+支持 Ray 的 Compute Group 是 CPU 组里很窄的一部分，`ray quota` 目前会列出并不受理 Ray 的组，创建时才报「已选择的计算类型组不支持此类型任务」。
+
 ## 6. Serving
 
 Serving 面向模型部署服务。通常先用 Model Registry 找到模型和版本，再创建自定义部署。
@@ -87,6 +97,10 @@ Serving 面向模型部署服务。通常先用 Model Registry 找到模型和�
 LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类型；普通 Custom Serving 不要推导它们的字段。
 
 当前 Custom Serving 生命周期是：`serving configs` / `serving quota` 选配置，`serving create` 或 `serving batch` 创建，`serving list/status/events/instances/metrics` 观察，`serving stop` / `serving start` 控制，最后 `serving delete` 清理。重复调度条件用 `serving profile`。
+
+副本数用 `serving scale` 调整，其余配置原样保留；每个副本各占一份完整规格，扩容前先看 `resources quota`。历史配置用 `serving versions` 列出，`serving rollback --version` 按某个历史版本重新部署——副本会被替换，在途请求和重启一样会断。
+
+两套指标不要混：`serving metrics` 看 GPU / CPU / 内存这类资源占用，`serving api-metrics` 看请求量、成功率和延迟。「没人调用」和「一直调用一直失败」只有后者分得清。
 
 ## 7. 观察闭环
 

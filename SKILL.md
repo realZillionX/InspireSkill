@@ -14,7 +14,7 @@ description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire C
 | 平面 | 绑定内容 |
 | --- | --- |
 | 调度条件 | `workspace`、`project`、`group`、`quota`、GPU / CPU / 内存 / Shared Memory 和 `image`，决定任务在哪里、以什么规格运行。 |
-| 远端文件 | 代码、数据、权重、Checkpoint 和产物的共享盘路径；Path Alias 只描述文件在哪里。 |
+| 远端文件 | 代码、数据、权重、Checkpoint 和产物的共享盘路径；Path Alias 只描述文件在哪里。数据广场的官方数据集是另一条来源，由创建时的 `--dataset` 只读挂载，不归 Path Alias 管。 |
 | 工作负载 | 交互调试用 Notebook；固定 GPU 后台任务用 Job；CPU Slurm 批处理用 HPC；弹性 Worker、常驻或流式任务用 Ray；模型 HTTP 服务用 Serving。 |
 | 观察收尾 | Events 看调度，Job Logs 看程序，Metrics / Instances 看实际工作单元，Status 看平台状态；其它 Workload 的应用日志按对应 Help 和共享盘约定处理。最后核验业务健康和产物，再清理资源。 |
 
@@ -63,6 +63,7 @@ Workspace 判断：
 | 项目初始化、`INSPIRE.md`、Project / Workspace / Paths / Image 问询、项目信息持续维护 | [`references/project-context.md`](references/project-context.md) |
 | Workspace、Compute Group、Quota、实时资源、优先级、Workload Profile | [`references/resources.md`](references/resources.md) |
 | 共享盘、存储池、挂载隔离、Path Alias | [`references/paths.md`](references/paths.md) |
+| 数据广场检索、官方数据集挂载、版本与访问权限 | [`references/dataset.md`](references/dataset.md) |
 | 联网准备、SII 内部源、依赖安装、镜像固化 | [`references/internal-sources.md`](references/internal-sources.md) |
 | Notebook 创建、连接、跨账号解析、`exec` / `shell` / `scp`、IDE URL、文件流转 | [`references/notebook.md`](references/notebook.md) |
 | GPU Job、CPU HPC、Ray、Serving，及提交后的观察、优先级与异常 | [`references/compute-workloads.md`](references/compute-workloads.md) |
