@@ -10,7 +10,12 @@ from inspire.platform.web.browser_api.core import (
     _request_json,
     _v2_result,
 )
-from inspire.platform.web.session import WebSession, get_web_session
+from inspire.platform.web.session import (
+    SessionExpiredError,
+    TransientAPIError,
+    WebSession,
+    get_web_session,
+)
 
 __all__ = [
     "HPCJobInfo",
@@ -206,9 +211,10 @@ def list_hpc_job_events(
     :func:`list_hpc_job_instances` for the component inventory shown on the
     job detail page.
 
-    Returns ``[]`` on any error. The platform garbage-collects events for
-    completed jobs, so a not-found answer is a normal steady state after event
-    retention expires.
+    Returns ``[]`` when the platform answers with nothing: it garbage-collects
+    events for completed jobs, so a not-found answer is a normal steady state
+    after event retention expires. An expired session or a rate-limited
+    platform raises instead, so "no events" is never an invented answer.
     """
     try:
         if session is None:
@@ -234,6 +240,8 @@ def list_hpc_job_events(
             if isinstance(events, list):
                 return events
         return []
+    except (SessionExpiredError, TransientAPIError):
+        raise
     except Exception:
         return []
 

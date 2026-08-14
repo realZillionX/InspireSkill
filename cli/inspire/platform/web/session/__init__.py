@@ -22,9 +22,12 @@ from inspire.platform.web.session.auth import (
 from inspire.platform.web.session.models import (
     DEFAULT_WORKSPACE_ID,
     SESSION_TTL,
+    TRANSIENT_HTTP_STATUSES,
     SessionExpiredError,
+    TransientAPIError,
     WebSession,
     get_session_cache_file,
+    is_transient_api_error,
 )
 from inspire.platform.web.session.browser_launch import (
     is_playwright_browser_runtime_error,
@@ -33,11 +36,17 @@ from inspire.platform.web.session.browser_launch import (
 from inspire.platform.web.session.proxy import get_playwright_proxy
 from inspire.platform.web.session.refresh_lock import exclusive_session_refresh
 from inspire.platform.web.session.requests import build_requests_session
+from inspire.platform.web.session.retry import (
+    retry_after_seconds,
+    with_transient_retry,
+)
 
 __all__ = [
     "DEFAULT_WORKSPACE_ID",
     "SESSION_TTL",
+    "TRANSIENT_HTTP_STATUSES",
     "SessionExpiredError",
+    "TransientAPIError",
     "WebSession",
     "build_requests_session",
     "clear_all_session_caches",
@@ -45,8 +54,10 @@ __all__ = [
     "get_credentials",
     "get_playwright_proxy",
     "get_web_session",
+    "is_transient_api_error",
     "login_with_playwright",
     "request_json",
+    "with_transient_retry",
 ]
 
 
@@ -106,6 +117,37 @@ def request_json(
     timeout: int = 30,
     _retry_count: int = 0,
 ) -> dict:
+    """Call one browser API endpoint, waiting out momentary refusals.
+
+    A workspace-wide question costs one request per compute group, which is
+    exactly the shape a rate limiter reacts to. Absorbing that here means the
+    ``429`` never reaches the callers that have to decide what a response
+    means; what does reach them is either data or a
+    :class:`TransientAPIError` saying the platform never answered.
+    """
+    return with_transient_retry(
+        lambda: _request_json_once(
+            session,
+            method,
+            url,
+            headers=headers,
+            body=body,
+            timeout=timeout,
+            _retry_count=_retry_count,
+        )
+    )
+
+
+def _request_json_once(
+    session: "WebSession",
+    method: str,
+    url: str,
+    *,
+    headers: Optional[dict[str, str]] = None,
+    body: Optional[dict] = None,
+    timeout: int = 30,
+    _retry_count: int = 0,
+) -> dict:
     global _BROWSER_API_FORCE_BROWSER
 
     if not _BROWSER_API_FORCE_BROWSER:
@@ -127,7 +169,14 @@ def request_json(
             if resp.status_code == 401:
                 raise SessionExpiredError("Session expired or invalid")
             if resp.status_code >= 400:
-                raise ValueError(f"API returned {resp.status_code}: {resp.text}")
+                message = f"API returned {resp.status_code}: {resp.text}"
+                if resp.status_code in TRANSIENT_HTTP_STATUSES:
+                    raise TransientAPIError(
+                        message,
+                        status=resp.status_code,
+                        retry_after=retry_after_seconds(resp.headers),
+                    )
+                raise ValueError(message)
             try:
                 return resp.json()
             except ValueError as e:
@@ -172,7 +221,7 @@ def request_json(
             new_session = _refresh_expired_session(session)
             _refresh_session_in_place(session, new_session)
             _BROWSER_API_FORCE_BROWSER = False
-            return request_json(
+            return _request_json_once(
                 session,
                 method,
                 url,

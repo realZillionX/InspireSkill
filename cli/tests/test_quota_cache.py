@@ -15,19 +15,25 @@ from inspire.cli.utils.quota_cache import (
 )
 from inspire.cli.utils.quota_resolver import QuotaMatchError, QuotaSpec, resolve_quota
 from inspire.cli.utils.resource_index import QUOTA_WORKLOADS, ResourceIndex
+from inspire.platform.web.session import TransientAPIError
 
 
 def warm_quota_catalog(*, session, index, workspace_id, workload) -> int:  # noqa: ANN001
-    """Fetch and reconcile one workspace/workload catalog, as `cache refresh` does."""
+    """Fetch and reconcile one workspace/workload catalog, as `cache refresh` does.
+
+    Only a complete catalog may reconcile; that is the contract the refresh
+    engine enforces, and warming the cache in a test must not sidestep it.
+    """
     scope = quota_scope_for_session(
         session, workspace_id=workspace_id, workload=workload
     )
     assert scope is not None
-    records = fetch_quota_catalog(
+    catalog = fetch_quota_catalog(
         session, workspace_id=workspace_id, workload=workload
     )
-    index.reconcile(scope, records)
-    return len(records)
+    assert catalog.complete
+    index.reconcile(scope, catalog.records)
+    return len(catalog.records)
 
 
 GROUPS = [
@@ -256,6 +262,143 @@ def test_resolve_quota_reuses_the_warm_catalog(monkeypatch, tmp_path) -> None:  
     # build_resource_spec_price needs the raw payload, which survived the cache.
     assert resolved.raw_price["cpu_info"]["cpu_type"] == "intel"
     assert price_calls == before
+
+
+def _rate_limited(group_ids: set[str]):  # noqa: ANN202
+    """A price fetcher that rate-limits *group_ids* and answers for the rest."""
+
+    def _prices(**kwargs):  # noqa: ANN202
+        group_id = kwargs["logic_compute_group_id"]
+        if group_id in group_ids:
+            raise TransientAPIError(
+                "API returned 429: Too Many Requests", status=429
+            )
+        return [_price("q-8", 8, 160, 1800)]
+
+    return _prices
+
+
+def test_one_rate_limited_group_leaves_the_catalog_incomplete(monkeypatch) -> None:  # noqa: ANN001
+    """A fan-out that failed in one place is partial, not a shorter catalog."""
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_resource_prices",
+        _rate_limited({"lcg-b"}),
+    )
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "list_notebook_compute_groups",
+        lambda **_kwargs: GROUPS,
+    )
+
+    catalog = fetch_quota_catalog(
+        _session(), workspace_id="workspace-one", workload="job"
+    )
+
+    assert catalog.complete is False
+    assert "429" in catalog.error
+    # What did answer is still worth caching.
+    assert [record.owner_id for record in catalog.records] == ["lcg-a"]
+
+
+def test_every_group_rate_limited_is_not_an_empty_catalog(monkeypatch) -> None:  # noqa: ANN001
+    """The exact shape of issue #68: nothing read, nothing may be reconciled."""
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_resource_prices",
+        _rate_limited({"lcg-a", "lcg-b"}),
+    )
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "list_notebook_compute_groups",
+        lambda **_kwargs: GROUPS,
+    )
+
+    catalog = fetch_quota_catalog(
+        _session(), workspace_id="workspace-one", workload="job"
+    )
+
+    assert catalog.records == []
+    assert catalog.complete is False
+
+
+def test_every_group_answering_empty_is_authoritatively_empty(monkeypatch) -> None:  # noqa: ANN001
+    """The one case where an empty catalog is a fact the platform stated."""
+    _patch_platform(monkeypatch, {})
+
+    catalog = fetch_quota_catalog(
+        _session(), workspace_id="workspace-one", workload="job"
+    )
+
+    assert catalog.records == []
+    assert catalog.complete is True
+
+
+def test_unlistable_compute_groups_fail_the_catalog(monkeypatch) -> None:  # noqa: ANN001
+    """No group list means no catalog at all -- partial or otherwise."""
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "list_notebook_compute_groups",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            TransientAPIError("API returned 429: Too Many Requests", status=429)
+        ),
+    )
+
+    with pytest.raises(TransientAPIError):
+        fetch_quota_catalog(
+            _session(), workspace_id="workspace-one", workload="job"
+        )
+
+
+def test_catalog_never_stands_in_config_groups_for_the_platform(monkeypatch) -> None:  # noqa: ANN001
+    """config.toml is a display fallback, never the source of cached fact."""
+    seen: dict[str, object] = {}
+
+    def _list_groups(**kwargs):  # noqa: ANN202
+        seen.update(kwargs)
+        return GROUPS
+
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "list_notebook_compute_groups",
+        _list_groups,
+    )
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_resource_prices",
+        lambda **_kwargs: [],
+    )
+
+    fetch_quota_catalog(_session(), workspace_id="workspace-one", workload="job")
+
+    assert seen["allow_config_fallback"] is False
+
+
+def test_a_rate_limited_group_is_not_served_as_an_empty_cached_group(
+    monkeypatch,  # noqa: ANN001
+    tmp_path,  # noqa: ANN001
+) -> None:
+    """The lazy path must not answer `[]` for a group it could not read."""
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_resource_prices",
+        _rate_limited({"lcg-a"}),
+    )
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "list_notebook_compute_groups",
+        lambda **_kwargs: GROUPS,
+    )
+
+    loader = CachedPricesLoader(
+        session=_session(),  # type: ignore[arg-type]
+        workspace_id="workspace-one",
+        schedule_config_type=SCHEDULE_TYPE_BY_WORKLOAD["job"],
+        cache_index=ResourceIndex(tmp_path / "index.sqlite3"),
+    )
+
+    with pytest.raises(TransientAPIError):
+        loader("lcg-a")
 
 
 def test_cached_empty_group_does_not_trigger_stale_group_retry(

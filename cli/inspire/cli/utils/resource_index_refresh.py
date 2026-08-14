@@ -60,8 +60,17 @@ PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS = 30 * 60
 
 @dataclass(frozen=True)
 class FetchResult:
+    """What one fetcher saw, and whether that was all of it.
+
+    ``complete=False`` is the difference between "these are the rows" and
+    "these are the rows I could read". Only the former may reconcile a scope
+    and tombstone what it did not see; the latter merges, keeps the older
+    rows, and carries ``error`` so the reason survives into ``cache status``.
+    """
+
     records: list[ResourceIdentity]
     complete: bool = True
+    error: str = ""
 
 
 @dataclass(frozen=True)
@@ -80,6 +89,17 @@ class RefreshSummary:
     @property
     def error_count(self) -> int:
         return sum(result.outcome == "error" for result in self.results)
+
+    @property
+    def partial_count(self) -> int:
+        """Scopes that cached what they could read and kept the rest.
+
+        Separate from ``error_count``: nothing about the cache is broken and
+        the previously cached rows are intact, so the command still succeeds.
+        What the user needs to know is that the scope is not authoritative
+        yet, which the printed summary and ``cache status`` both say.
+        """
+        return sum(result.outcome == "partial" for result in self.results)
 
 
 Fetcher = Callable[[object, str, str], FetchResult]
@@ -445,19 +465,27 @@ def _quota_fetcher(workload: str) -> Fetcher:
     The scope is a whole workspace catalog, so this fans out over every
     compute group. That is the same 1+N the lazy path would pay on a cold
     cache, done once for everything instead of once per group asked about.
+
+    A fan-out that wide meets the platform's rate limiter, so it reports
+    partial results as partial: a group that did not answer must never be
+    cached as a group with no quotas.
     """
 
     def _fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
         from inspire.cli.utils.quota_cache import fetch_quota_catalog
 
-        records = fetch_quota_catalog(
+        catalog = fetch_quota_catalog(
             session,
             workspace_id=workspace_id,
             workload=workload,
         )
         # Quota names repeat across compute groups on purpose; that ambiguity
         # is what `--group` disambiguates, so records are not deduped by name.
-        return FetchResult(_filter_exact(records, exact_name))
+        return FetchResult(
+            _filter_exact(catalog.records, exact_name),
+            complete=catalog.complete,
+            error=catalog.error,
+        )
 
     return _fetch
 
@@ -664,6 +692,35 @@ def _refresh_one(
                     else fetcher(session, workspace_id, exact_name)
                 )
                 records = _dedupe_records(fetched.records)
+                if not fetched.complete:
+                    # Merge, never replace or reconcile: rows this pass could
+                    # not see are rows it knows nothing about, not rows the
+                    # platform removed. That holds for a `--name` refresh too
+                    # -- the group that did not answer may be exactly the one
+                    # holding that name. The scope stays short of a full
+                    # refresh, so readers that demand one keep going live.
+                    count = index.upsert(
+                        scope,
+                        records,
+                        ttl_seconds=interval,
+                        expected_revision=expected_revision,
+                        expected_generation=expected_generation,
+                        attempted_at=attempted_at,
+                    )
+                    if fetched.error:
+                        _record_refresh_error(
+                            index,
+                            scope,
+                            fetched.error,
+                            attempted_at=attempted_at,
+                        )
+                    return RefreshResult(
+                        resource_type,
+                        workspace_name,
+                        count,
+                        "partial",
+                        scrub_raw_ids(fetched.error),
+                    )
                 if exact_name:
                     count = index.replace_name(
                         scope,
@@ -674,17 +731,8 @@ def _refresh_one(
                         expected_generation=expected_generation,
                         attempted_at=attempted_at,
                     )
-                elif fetched.complete:
-                    count = index.reconcile(
-                        scope,
-                        records,
-                        ttl_seconds=interval,
-                        expected_revision=expected_revision,
-                        expected_generation=expected_generation,
-                        attempted_at=attempted_at,
-                    )
                 else:
-                    count = index.upsert(
+                    count = index.reconcile(
                         scope,
                         records,
                         ttl_seconds=interval,

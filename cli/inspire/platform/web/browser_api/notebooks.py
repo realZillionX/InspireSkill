@@ -14,7 +14,12 @@ from inspire.platform.web.browser_api.core import (
     _request_json,
     _v2_result,
 )
-from inspire.platform.web.session import DEFAULT_WORKSPACE_ID, WebSession, get_web_session
+from inspire.platform.web.session import (
+    DEFAULT_WORKSPACE_ID,
+    TransientAPIError,
+    WebSession,
+    get_web_session,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -273,6 +278,11 @@ def get_resource_prices(
     - SCHEDULE_CONFIG_TYPE_TRAIN: training-job framework specs
     - SCHEDULE_CONFIG_TYPE_RAY_JOB: Ray head / worker quotas
       (consumed by `inspire ray create --group/--quota` and worker specs)
+
+    A failed request raises. An empty list means the platform answered and
+    this group has no specs for this schedule type — the two used to be the
+    same value, which is how a rate-limited refresh cached a workspace as
+    having no quotas at all.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
@@ -284,17 +294,14 @@ def get_resource_prices(
         "logic_compute_group_id": logic_compute_group_id,
     }
 
-    try:
-        data = _request_notebooks_data(
-            session,
-            "POST",
-            "/resource_prices/logic_compute_groups/",
-            body=body,
-            timeout=30,
-            default_data=[],
-        )
-    except ValueError:
-        return []
+    data = _request_notebooks_data(
+        session,
+        "POST",
+        "/resource_prices/logic_compute_groups/",
+        body=body,
+        timeout=30,
+        default_data=[],
+    )
 
     if isinstance(data, list):
         return data
@@ -307,12 +314,23 @@ def get_resource_prices(
 def list_notebook_compute_groups(
     workspace_id: Optional[str] = None,
     session: Optional[WebSession] = None,
+    *,
+    allow_config_fallback: bool = True,
 ) -> list[dict]:
     """List compute groups available for notebook creation.
 
     Use the workspace-wide ``logic_compute_groups/list`` endpoint as the
     source of truth, with an InspireSkill-config-based fallback for offline
     or misconfigured environments.
+
+    A failure the platform will recover from is raised rather than answered
+    with the config list: everything downstream fans out one request per
+    compute group, so a short list quietly becomes a short quota catalog. The
+    same goes for a failure with no fallback to offer — an empty list here
+    reads as "this workspace has no compute groups", and that has to be
+    something the platform actually said. Callers building authoritative
+    state pass ``allow_config_fallback=False`` so config.toml can never stand
+    in for the platform.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
@@ -327,10 +345,16 @@ def list_notebook_compute_groups(
         data = _list_groups(workspace_id=workspace_id, session=session)
         if isinstance(data, list) and data:
             return data
+    except TransientAPIError:
+        raise
     except Exception as exc:  # noqa: BLE001 — fallback path must remain available
         api_error = exc
 
-    fallback = _config_compute_groups_fallback(workspace_id=workspace_id)
+    fallback = (
+        _config_compute_groups_fallback(workspace_id=workspace_id)
+        if allow_config_fallback
+        else []
+    )
     if fallback:
         reason = f"API error: {api_error!r}" if api_error else "API returned empty list"
         _log.warning(
@@ -344,11 +368,7 @@ def list_notebook_compute_groups(
         return fallback
 
     if api_error is not None:
-        _log.warning(
-            "list_notebook_compute_groups: %r and no config.toml fallback "
-            "available; returning empty list.",
-            api_error,
-        )
+        raise api_error
     return []
 
 

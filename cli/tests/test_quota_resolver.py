@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from inspire.cli.utils.quota_resolver import (
+    QuotaCatalogUnavailable,
     QuotaMatchError,
     QuotaParseError,
     QuotaSpec,
@@ -607,7 +608,9 @@ def test_cached_group_network_error_does_not_trigger_live_retry(tmp_path) -> Non
         group_list_calls += 1
         raise AssertionError("network errors must not trigger a blind group retry")
 
-    with pytest.raises(QuotaMatchError):
+    # A timeout is the platform not answering, so it is reported as such —
+    # never as "that quota does not exist".
+    with pytest.raises(QuotaCatalogUnavailable):
         resolve_quota(
             spec=QuotaSpec(1, 20, 200),
             workspace_id="ws-1",
@@ -636,7 +639,8 @@ def test_cached_group_auth_error_does_not_trigger_live_retry(tmp_path) -> None:
         group_list_calls += 1
         raise AssertionError("auth errors must not trigger a blind group retry")
 
-    with pytest.raises(QuotaMatchError):
+    # 403 says the caller may not read this group, not that the group is gone.
+    with pytest.raises(QuotaCatalogUnavailable):
         resolve_quota(
             spec=QuotaSpec(1, 20, 200),
             workspace_id="ws-1",
@@ -763,7 +767,13 @@ def test_resolve_quota_empty_workspace_raises() -> None:
         )
 
 
-def test_resolve_quota_swallows_price_loader_errors() -> None:
+def test_resolve_quota_reports_an_unreadable_group_instead_of_guessing() -> None:
+    """One unreadable group invalidates the whole match, not just its rows.
+
+    The unread group could have held the same triple, which is the case that
+    requires `--group` to disambiguate. Answering from the groups that did
+    reply would send the workload somewhere the user never chose.
+    """
     groups = [
         _make_group("lcg-broken", "Broken"),
         _make_group("lcg-ok", "OK"),
@@ -771,16 +781,20 @@ def test_resolve_quota_swallows_price_loader_errors() -> None:
 
     def loader(lcg: str) -> list[dict]:
         if lcg == "lcg-broken":
-            raise RuntimeError("transient")
+            raise RuntimeError("API returned 429: Too Many Requests")
         return [_make_price(quota_id="q-ok", gpu=1, cpu=20, mem=200, gpu_type="H200")]
 
-    result = resolve_quota(
-        spec=QuotaSpec(1, 20, 200),
-        workspace_id="ws-1",
-        groups=groups,
-        prices_loader=loader,
-    )
-    assert result.quota_id == "q-ok"
+    with pytest.raises(QuotaCatalogUnavailable) as excinfo:
+        resolve_quota(
+            spec=QuotaSpec(1, 20, 200),
+            workspace_id="ws-1",
+            groups=groups,
+            prices_loader=loader,
+        )
+
+    message = str(excinfo.value)
+    assert "'Broken'" in message
+    assert "not a workspace without quotas" in message
 
 
 @pytest.mark.parametrize("group_name", ["开发区-H100", "训练区-H200"])

@@ -40,6 +40,8 @@
 
 CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解析；普通 `list`、`status`、`events`、`metrics` 和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。怀疑缓存过期时用 `inspire cache status|refresh|clear` 管理；清空缓存不会删除任何平台资源。三条命令都支持 `--resource <kind>` 只针对一类，可重复，不带才是全部。kind 分四组：平台目录 `workspace` / `project` / `compute-group` / `image` / `model`，Workload `notebook` / `job` / `hpc` / `ray` / `serving`，Quota 目录 `quota-<workload>`，以及 Notebook 显卡型号那层 `notebook-gpu`。最后这个只能 `status` 和 `clear`，不能 `refresh`——它是用到才探一个组，没有可以整批拉的列表接口。
 
+空结果只在平台成功回答时才是事实。Quota 目录是「Workspace 里每个 Compute Group 一次请求」的扇出，任何一组没答上（限流、超时、5xx），这一轮就记成 incomplete：已读到的行照常缓存，读不到的那些保留上一轮的旧行，Scope 不算完整刷新。`cache refresh` 会在汇总里报 `N incomplete` 并列出原因，`cache status` 把原因留在该 Scope 的 `error` 上，下一次完整刷新才清掉。因此 `No quota rows found.` 和 `(workspace has no quotas)` 现在只可能来自平台真的返回空；上游没答复时命令直接报 API 错误。命中限流时先重试，持续不缓解再针对性 `inspire cache refresh --resource quota-<workload> --workspace <name> --full`。
+
 ## 4. Quota 语义
 
 `--quota` / `-q` 是 `gpu,cpu,mem` 三元组，`mem` 以 GiB 计。GPU 型号不写进三元组，而由 Workspace + Compute Group 决定。

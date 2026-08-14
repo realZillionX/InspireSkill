@@ -58,7 +58,11 @@ from inspire.config.workload_profiles import (
 from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NotebookFailedError
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import (
+    SessionExpiredError,
+    TransientAPIError,
+    get_web_session,
+)
 
 _REFERENCE_FIELDS = {
     "workspace": ("workspace", "inspire config context"),
@@ -622,6 +626,10 @@ def _select_notebook_image(*, workspace_id: str, requested: str, session: Any):
                     source=source,
                     session=session,
                 )
+            except TransientAPIError:
+                # "not found" below would be a verdict on a catalog that was
+                # never listed. Say the platform did not answer instead.
+                raise
             except Exception:
                 continue
             images = images + extra_images

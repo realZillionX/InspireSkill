@@ -230,9 +230,12 @@ def _refresh_payload(
         "fresh": sum(result.outcome == "fresh" for result in results),
         "stale": sum(result.outcome == "stale" for result in results),
         "busy": sum(result.outcome == "busy" for result in results),
+        "partial": sum(result.outcome == "partial" for result in results),
         "errors": sum(result.outcome == "error" for result in results),
         "names_cached": sum(
-            result.item_count for result in results if result.outcome == "refreshed"
+            result.item_count
+            for result in results
+            if result.outcome in {"refreshed", "partial"}
         ),
     }
     failures = [
@@ -246,6 +249,20 @@ def _refresh_payload(
     ]
     if failures:
         payload["failures"] = failures
+    # A partial scope is not a failure -- the rows it did read are cached and
+    # the ones it could not read are still the previously cached ones -- but it
+    # is not the whole catalog either, and silence would read as "complete".
+    incomplete = [
+        {
+            **({"workspace": scrub_raw_ids(result.workspace_name)} if result.workspace_name else {}),
+            "resource": result.resource_type,
+            "reason": _public_error(result.error),
+        }
+        for result in results
+        if result.outcome == "partial"
+    ]
+    if incomplete:
+        payload["incomplete"] = incomplete
     return payload
 
 
@@ -367,18 +384,20 @@ def refresh_cache(
             ("fresh", "fresh"),
             ("stale", "superseded"),
             ("busy", "busy"),
+            ("partial", "incomplete"),
             ("errors", "errors"),
         ):
             if payload[key]:
                 parts.append(f"{payload[key]} {label}")
         click.echo(", ".join(parts) + ".")
         for result in summary.results:
-            if result.outcome != "error":
+            if result.outcome not in {"error", "partial"}:
                 continue
             label = result.resource_type
             if result.workspace_name:
                 label += f" @ {scrub_raw_ids(result.workspace_name)}"
-            click.echo(f"Error: {label}: {_public_error(result.error)}", err=True)
+            prefix = "Error" if result.outcome == "error" else "Incomplete"
+            click.echo(f"{prefix}: {label}: {_public_error(result.error)}", err=True)
 
     if summary.error_count:
         raise SystemExit(EXIT_API_ERROR)

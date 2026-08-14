@@ -30,6 +30,8 @@
 - Base URL、Browser API Prefix 和代理来自当前有效配置；Playwright 登录与后续请求复用同一账号网络设置。
 - Browser API 的平台原始响应不得直接穿透到公共输出。命令层必须先解析、投影和清洗。
 - 写操作需要明确的受控验证；只读流量不能用来推导创建、启动、停止、保存或删除语义。
+- **平台没有回答，不等于平台回答了「没有」。** 429、408、5xx、请求超时和 v2 信封里的 `Throttling` / `ServiceUnavailable` 一类错误码统一抛 `TransientAPIError`（`ValueError` 子类，所以既有 `except ValueError` 边界仍然把它映射成 API 错误）。Wrapper 不得把它折叠成 `[]`、`None`、`0` 或「不存在」；能判断「这个对象没有」的，只有平台成功返回的空结果。
+- **限流在传输层退避重试，不在调用方。** `request_json()` 是 requests 与 Playwright 两条路径唯一的收口，遇到 `TransientAPIError` 最多重试 3 次，优先采纳平台的 `Retry-After`，否则指数退避加抖动；重试耗尽后原样抛给调用方。Workspace 级问题（Quota 目录、资源可用量、节点维度）都是「每个 Compute Group 一次请求」的扇出，正是限流器会反应的形状，所以这层吸收必须留在传输层，Wrapper 不要各自重试。
 
 ## 3. 当前公开命令映射
 
@@ -78,6 +80,7 @@ Browser API 变更至少完成：
 3. Human 与 JSON 输出使用显式 Allowlist，不透传原始响应。
 4. Help、错误、事件流、SSH / PTY 输出和 Debug 摘要通过输出边界测试。
 5. 对应命令 Help、Wrapper 测试和本页映射同步更新。
+6. 请求失败与「平台返回空」在返回值上可区分，且有测试覆盖失败那一侧；扇出型 Wrapper 还要能表达「部分成功」。
 
 未闭合的调查结果不进入长期 Reference。
 

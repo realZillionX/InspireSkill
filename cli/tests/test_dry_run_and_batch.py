@@ -266,6 +266,58 @@ def test_job_create_dry_run_resolves_plan_without_create_api(
     assert api.training_calls == []
 
 
+def test_job_create_reports_a_rate_limited_catalog_not_an_empty_one(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Issue #68: `(workspace has no quotas)` was the visible face of the bug."""
+    from inspire.cli.utils.quota_resolver import resolve_quota as real_resolve_quota
+    from inspire.platform.web.session import TransientAPIError
+
+    # Bound before the shared harness swaps in its stub, so this exercises the
+    # real resolver against a rate-limited price loader.
+    _patch_submit_deps(monkeypatch, tmp_path)
+    job_create_module = importlib.import_module("inspire.cli.commands.job.job_create")
+
+    def _real_resolve(**kwargs):  # noqa: ANN202
+        return real_resolve_quota(
+            **kwargs,
+            groups=[{"logic_compute_group_id": "lcg-a", "name": "H200 Room"}],
+            prices_loader=lambda _group_id: (_ for _ in ()).throw(
+                TransientAPIError("API returned 429: Too Many Requests", status=429)
+            ),
+        )
+
+    monkeypatch.setattr(job_create_module, "resolve_quota", _real_resolve)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "create",
+            "--name",
+            "quota-cache-repro",
+            "--quota",
+            "1,10,100",
+            "--command",
+            "echo ok",
+            "--workspace",
+            "cpu",
+            "--project",
+            "Project One",
+            "--group",
+            "H200 Room",
+            "--image",
+            "registry.local/train:latest",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "workspace has no quotas" not in result.output
+    assert "429" in result.output
+
+
 @pytest.mark.parametrize(
     ("config_default", "flag", "expected"),
     (

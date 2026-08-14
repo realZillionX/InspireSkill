@@ -14,7 +14,12 @@ from inspire.platform.web.browser_api.core import (
     _request_json,
     _v2_result,
 )
-from inspire.platform.web.session import WebSession, get_web_session
+from inspire.platform.web.session import (
+    SessionExpiredError,
+    TransientAPIError,
+    WebSession,
+    get_web_session,
+)
 
 __all__ = [
     "JobInfo",
@@ -266,7 +271,10 @@ def list_job_events(
     bare ``job_id`` while ``/train_job/events/list`` took the filter envelope.
     v2 collapses both into this one Action; only ``object_type`` differs.
 
-    Best-effort: returns ``[]`` on any error.
+    Best-effort: returns ``[]`` when the platform answers but has nothing to
+    report, or fails in a way specific to this job. An expired session or a
+    platform that is rate limiting raises — "no events" is a fact users read
+    a scheduling decision out of, and it must not be manufactured.
     """
     try:
         if session is None:
@@ -291,6 +299,8 @@ def list_job_events(
         if not isinstance(events, list):
             return []
         return events
+    except (SessionExpiredError, TransientAPIError):
+        raise
     except Exception:
         return []
 
@@ -316,7 +326,9 @@ def list_job_instance_events(
     keeps working.
 
     `job_id` is only used for the Referer header; the filter keys off
-    `pod_names` exclusively. Best-effort: returns ``[]`` on any error.
+    `pod_names` exclusively. Best-effort like :func:`list_job_events`: an
+    expired session or a rate-limited platform raises rather than reading as
+    a pod with no events.
     """
     clean_pods = list(
         dict.fromkeys(
@@ -383,6 +395,8 @@ def list_job_instance_events(
                 page_num += 1
             all_events.extend(chunk_events)
         return all_events
+    except (SessionExpiredError, TransientAPIError):
+        raise
     except Exception:
         return []
 

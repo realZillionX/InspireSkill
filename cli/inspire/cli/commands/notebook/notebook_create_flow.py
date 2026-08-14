@@ -53,7 +53,7 @@ from inspire.platform.web.browser_api.workspaces import (
     WorkspaceCapabilityError,
     is_fair_scheduling_workspace,
 )
-from inspire.platform.web.session import WebSession
+from inspire.platform.web.session import TransientAPIError, WebSession
 from .notebook_lookup import (
     _list_notebooks_for_workspace,
     _notebook_id_from_item,
@@ -649,6 +649,18 @@ def _fetch_notebook_images(
                     images = images + extra_images
                     if _find_image_match(images, image):
                         break
+            except TransientAPIError:
+                # An unsearched source must not become "no such image": the
+                # caller matches `image` against whatever this returns.
+                logger.debug("Notebook image source unavailable", exc_info=True)
+                _handle_error(
+                    ctx,
+                    "APIError",
+                    "Could not load notebook images: the platform is rate "
+                    "limiting or unavailable. Retry in a moment.",
+                    EXIT_API_ERROR,
+                )
+                return None
             except Exception:
                 pass
 

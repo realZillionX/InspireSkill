@@ -30,6 +30,7 @@ from inspire.cli.utils.resource_index import (
 )
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
+from inspire.platform.web.session import TransientAPIError
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -222,6 +223,12 @@ def _try_get_current_user_ids(
     *,
     base_url: str,
 ) -> list[str]:
+    """Resolve the signed-in account's user id, or ``[]`` if it cannot be read.
+
+    Callers turn ``[]`` into "the account could not be identified", so a
+    platform that is merely rate limiting raises instead: telling the user
+    their session is broken would send them to re-login over a wait.
+    """
     try:
         data = browser_api_module.get_current_user(session=session)
         if isinstance(data, dict):
@@ -236,6 +243,8 @@ def _try_get_current_user_ids(
         logger.debug(
             "Current platform account response omitted its internal identifier"
         )
+    except TransientAPIError:
+        raise
     except Exception:
         logger.debug("Current platform account lookup failed", exc_info=True)
     return []

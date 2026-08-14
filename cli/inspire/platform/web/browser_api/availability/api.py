@@ -10,7 +10,13 @@ from inspire.platform.web.browser_api.core import (
     _request_json,
     _v2_result,
 )
-from inspire.platform.web.session import SessionExpiredError, WebSession, clear_session_cache, get_web_session
+from inspire.platform.web.session import (
+    SessionExpiredError,
+    TransientAPIError,
+    WebSession,
+    clear_session_cache,
+    get_web_session,
+)
 
 
 def list_compute_groups(
@@ -262,7 +268,9 @@ def get_accurate_resource_availability(
                             timeout=30,
                         )
                     )
-                except SessionExpiredError:
+                except (SessionExpiredError, TransientAPIError):
+                    # Dropping the group here would under-report capacity as
+                    # fact. Availability is a live answer or it is an error.
                     raise
                 except ValueError:
                     continue
@@ -271,7 +279,9 @@ def get_accurate_resource_availability(
                     node_summary = _compute_node_summary(
                         list_node_dimension(group_id, workspace_id=wid, session=session)
                     )
-                except SessionExpiredError:
+                except (SessionExpiredError, TransientAPIError):
+                    # Zeroed node counts read as "nothing free". Never say that
+                    # because the platform was busy.
                     raise
                 except ValueError:
                     node_summary = {

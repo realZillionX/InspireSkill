@@ -900,6 +900,7 @@ def test_cache_refresh_json_failure_is_compact(tmp_path, monkeypatch) -> None:
             "fresh": 0,
             "stale": 0,
             "busy": 0,
+            "partial": 0,
             "errors": 1,
             "names_cached": 0,
             "failures": [
@@ -1173,6 +1174,161 @@ def test_quota_refresh_warms_one_workload_catalog(tmp_path, monkeypatch) -> None
     assert [item.resource_id for item in matches] == ["q-8"]
     assert matches[0].compute_group == "训练区-H200-1号机房"
     assert matches[0].owner_id == "lcg-a"
+
+
+def test_partial_named_refresh_does_not_replace_what_it_could_not_read(
+    tmp_path,  # noqa: ANN001
+) -> None:
+    """`--name` narrows the question, not the standard of evidence.
+
+    A quota triple lives in several compute groups at once, so replacing the
+    name from a fan-out that lost a group would drop that group's row.
+    """
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope("quota-notebook", "workspace-one")
+    index.reconcile(
+        scope,
+        [
+            ResourceIdentity(resource_id="q-a", name="8,160,1800", owner_id="lcg-a"),
+            ResourceIdentity(resource_id="q-b", name="8,160,1800", owner_id="lcg-b"),
+        ],
+    )
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("quota-notebook",),
+        exact_name="8,160,1800",
+        force=True,
+        fetchers={
+            "workspace": _workspace_fetch,
+            "quota-notebook": lambda _session, _workspace, _name: FetchResult(
+                [
+                    ResourceIdentity(
+                        resource_id="q-a", name="8,160,1800", owner_id="lcg-a"
+                    )
+                ],
+                complete=False,
+                error="1 compute group(s) did not answer",
+            ),
+        },
+    )
+
+    assert _outcome_count(summary, "partial") == 1
+    assert sorted(item.resource_id for item in index.lookup(scope, "8,160,1800")) == [
+        "q-a",
+        "q-b",
+    ]
+
+
+def _patch_quota_platform(monkeypatch, *, rate_limited: set[str]) -> None:  # noqa: ANN001
+    """Stub the quota fan-out, rate-limiting the named compute groups."""
+    from inspire.cli.utils import quota_cache as quota_cache_module
+    from inspire.platform.web.session import TransientAPIError
+
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "list_notebook_compute_groups",
+        lambda **_kwargs: [
+            {"logic_compute_group_id": "lcg-a", "name": "训练区-H200-1号机房"},
+            {"logic_compute_group_id": "lcg-b", "name": "CPU资源-2"},
+        ],
+    )
+
+    def _prices(**kwargs):  # noqa: ANN202
+        group_id = kwargs["logic_compute_group_id"]
+        if group_id in rate_limited:
+            raise TransientAPIError("API returned 429: Too Many Requests", status=429)
+        if group_id != "lcg-a":
+            return []
+        return [
+            {
+                "quota_id": "q-8",
+                "gpu_count": 8,
+                "cpu_count": 160,
+                "memory_size_gib": 1800,
+            }
+        ]
+
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module, "get_resource_prices", _prices
+    )
+
+
+def _refresh_quota(index: ResourceIndex) -> RefreshSummary:
+    return refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("quota-notebook",),
+        force=True,
+        fetchers={
+            "workspace": _workspace_fetch,
+            "quota-notebook": RESOURCE_FETCHERS["quota-notebook"],
+        },
+    )
+
+
+def test_one_rate_limited_group_never_tombstones_the_cached_catalog(
+    tmp_path,  # noqa: ANN001
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    """Issue #68, case 1: a partial fan-out keeps every previously cached row."""
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    _patch_quota_platform(monkeypatch, rate_limited=set())
+    assert _outcome_count(_refresh_quota(index), "refreshed") == 1
+
+    _patch_quota_platform(monkeypatch, rate_limited={"lcg-b"})
+    summary = _refresh_quota(index)
+
+    assert _outcome_count(summary, "partial") == 1
+    assert summary.error_count == 0
+    scope = _scope("quota-notebook", "workspace-one")
+    assert [item.resource_id for item in index.lookup(scope, "8,160,1800")] == ["q-8"]
+    # Not a full refresh, so a reader that demands one goes live instead of
+    # trusting a catalog nobody fully read.
+    assert index.scope_due(scope, interval_seconds=1, require_full=True) is False
+    assert any("429" in row.last_error for row in index.list_scope_status())
+
+
+def test_a_fully_rate_limited_refresh_never_becomes_an_empty_catalog(
+    tmp_path,  # noqa: ANN001
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    """Issue #68, case 2: every group failing must not reconcile to nothing."""
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    _patch_quota_platform(monkeypatch, rate_limited=set())
+    _refresh_quota(index)
+
+    _patch_quota_platform(monkeypatch, rate_limited={"lcg-a", "lcg-b"})
+    summary = _refresh_quota(index)
+
+    assert _outcome_count(summary, "partial") == 1
+    scope = _scope("quota-notebook", "workspace-one")
+    assert [item.resource_id for item in index.lookup(scope, "8,160,1800")] == ["q-8"]
+
+
+def test_a_catalog_the_platform_emptied_is_still_reconciled(
+    tmp_path,  # noqa: ANN001
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    """Issue #68, case 3: a successful empty answer stays authoritative."""
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    _patch_quota_platform(monkeypatch, rate_limited=set())
+    _refresh_quota(index)
+
+    from inspire.cli.utils import quota_cache as quota_cache_module
+
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_resource_prices",
+        lambda **_kwargs: [],
+    )
+    summary = _refresh_quota(index)
+
+    assert _outcome_count(summary, "refreshed") == 1
+    assert _outcome_count(summary, "partial") == 0
+    scope = _scope("quota-notebook", "workspace-one")
+    assert index.lookup(scope, "8,160,1800") == []
 
 
 def test_cache_status_reports_quota_like_any_other_resource(tmp_path, monkeypatch) -> None:

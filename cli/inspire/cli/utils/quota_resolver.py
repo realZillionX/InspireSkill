@@ -25,6 +25,7 @@ from inspire.cli.utils.quota_cache import (
     SCHEDULE_TYPE_BY_WORKLOAD,
     CachedPricesLoader,
 )
+from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.resource_index import (
     ResourceIdentity,
     ResourceIndex,
@@ -33,7 +34,7 @@ from inspire.cli.utils.resource_index import (
     scope_for_session,
 )
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import WebSession
+from inspire.platform.web.session import WebSession, is_transient_api_error
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,15 @@ class QuotaParseError(ValueError):
 
 class QuotaMatchError(ValueError):
     """Raised on zero or multi-match of a quota triple inside a workspace."""
+
+
+class QuotaCatalogUnavailable(ValueError):
+    """Raised when the quota catalog could not be read at all.
+
+    Deliberately not a :class:`QuotaMatchError`: no match was ruled out here.
+    The platform did not answer, so callers must report an API error rather
+    than tell the user their ``--quota`` does not exist.
+    """
 
 
 @dataclass(frozen=True)
@@ -286,6 +296,10 @@ def _cache_group_name(
 
 
 def _is_stale_compute_group_error(exc: BaseException) -> bool:
+    # A platform that did not answer has said nothing about the handle. Re-listing
+    # groups on a rate limit only spends another request on the same limiter.
+    if is_transient_api_error(exc):
+        return False
     if is_stale_handle_error(exc):
         return True
     for candidate in (exc, getattr(exc, "response", None)):
@@ -338,6 +352,14 @@ def _load_price_rows(
     prices_loader: PricesLoader,
     cached_only: bool,
 ) -> tuple[list[tuple[dict, dict]], bool]:
+    """Collect every price row across *groups*, or say why it could not.
+
+    A group whose prices could not be read contributes no rows, and a resolver
+    that quietly accepted that would answer "your quota does not exist" using
+    a catalog it never read. The one exception is the stale-handle signal a
+    cached compute group handle produces, which the caller recovers from by
+    re-listing groups.
+    """
     rows: list[tuple[dict, dict]] = []
     saw_empty_or_stale_cached_group = False
     served_from_cache: frozenset[str] | set[str] = getattr(
@@ -352,9 +374,18 @@ def _load_price_rows(
             prices = prices_loader(lcg_id)
         except (KeyboardInterrupt, SystemExit):
             raise
-        except Exception as exc:  # noqa: BLE001 - preserve existing quota semantics
+        except Exception as exc:
             if cached_only and _is_stale_compute_group_error(exc):
                 saw_empty_or_stale_cached_group = True
+            else:
+                raise QuotaCatalogUnavailable(
+                    "Could not read the quota rows of compute group "
+                    f"{_group_name(group)!r}: {scrub_raw_ids(exc) or type(exc).__name__}. "
+                    "This is the platform failing to answer, not a workspace "
+                    "without quotas -- retry, and if it persists refresh the "
+                    "cached catalog with `inspire cache refresh --resource "
+                    "quota-<workload> --workspace <name> --full`."
+                ) from exc
         else:
             # An empty *live* response can mean the cached group handle died.
             # An empty *cached* response is an authoritative "no quotas for
@@ -662,6 +693,7 @@ def build_resource_spec_price(*, quota: ResolvedQuota) -> dict[str, Any]:
 
 
 __all__ = [
+    "QuotaCatalogUnavailable",
     "QuotaMatchError",
     "QuotaParseError",
     "QuotaSpec",

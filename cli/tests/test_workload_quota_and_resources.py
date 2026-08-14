@@ -124,6 +124,30 @@ def test_job_quota_workspace_all_sweeps_visible_workspaces(
     assert sorted(queried_workspaces) == sorted([_WS_DEFAULT, _WS_CPU, _WS_TRAIN])
 
 
+def test_quota_reports_rate_limiting_instead_of_no_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`No quota rows found.` is a claim about the workspace, not about the API."""
+    from inspire.platform.web.session import TransientAPIError
+
+    _patch_config(monkeypatch, tmp_path)
+    _stub_quota_browser(
+        monkeypatch,
+        groups_by_ws={_WS_TRAIN: [{"logic_compute_group_id": "lcg-a", "name": "H200"}]},
+        prices_fn=lambda **_kwargs: (_ for _ in ()).throw(
+            TransientAPIError("API returned 429: Too Many Requests", status=429)
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main, ["job", "quota", "--workspace", "分布式训练空间"]
+    )
+
+    assert result.exit_code != 0
+    assert "No quota rows found" not in result.output
+    assert "429" in result.output
+
+
 def test_quota_requires_explicit_workspace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _patch_config(monkeypatch, tmp_path)
     result = CliRunner().invoke(cli_main, ["job", "quota"])

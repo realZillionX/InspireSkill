@@ -18,12 +18,20 @@ just a lookup returning two rows.
 Consumers keep the plain ``(logic_compute_group_id) -> list[price]`` loader
 contract; the cache sits inside the loader. The platform stays authoritative:
 a stale scope, a miss, or any cache failure falls through to the live call.
+
+One request per compute group is also one chance per compute group to be rate
+limited, and the whole point of this cache is that a group with no rows means
+"this group has no quotas for this workload". Those two facts collide unless a
+fan-out that failed anywhere is recorded as incomplete -- which is what
+:class:`QuotaCatalog` carries and why only a complete catalog is allowed to
+reconcile a scope.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 from inspire.cli.utils.resource_index import (
@@ -170,31 +178,68 @@ def _group_name(group: dict) -> str:
     return str(group.get("name") or group.get("logic_compute_group_name") or "").strip()
 
 
+@dataclass(frozen=True)
+class QuotaCatalog:
+    """One workspace/workload catalog, and whether it is the whole of it.
+
+    ``complete`` is the only thing standing between a refresh and a cache that
+    claims a workspace has no quotas because the platform was rate-limiting
+    the fan-out. It is true only when every compute group answered.
+    """
+
+    records: list[ResourceIdentity]
+    complete: bool = True
+    error: str = ""
+
+
 def fetch_quota_catalog(
     session: object,
     *,
     workspace_id: str,
     workload: str,
     groups: Optional[Sequence[dict]] = None,
-) -> list[ResourceIdentity]:
-    """Fetch one workspace's complete quota catalog for one workload."""
+) -> QuotaCatalog:
+    """Fetch one workspace's quota catalog for one workload.
+
+    The catalog is a fan-out of one request per compute group, and a fan-out
+    fails in pieces. A group that could not be read leaves the catalog
+    incomplete and the rest of the groups still cached: the caller merges
+    what came back instead of reconciling a scope it never fully saw.
+
+    Failing to list the compute groups at all is different -- there is no
+    catalog, partial or otherwise -- so that one propagates.
+    """
     schedule_config_type = SCHEDULE_TYPE_BY_WORKLOAD[workload]
     if groups is None:
         groups = browser_api_module.list_notebook_compute_groups(
             workspace_id=workspace_id,
             session=session,  # type: ignore[arg-type]
+            allow_config_fallback=False,
         )
     records: list[ResourceIdentity] = []
+    failures: list[str] = []
     for group in groups or []:
         group_id = _group_id(group)
         if not group_id:
             continue
-        prices = browser_api_module.get_resource_prices(
-            workspace_id=workspace_id,
-            logic_compute_group_id=group_id,
-            schedule_config_type=schedule_config_type,
-            session=session,  # type: ignore[arg-type]
-        )
+        try:
+            prices = browser_api_module.get_resource_prices(
+                workspace_id=workspace_id,
+                logic_compute_group_id=group_id,
+                schedule_config_type=schedule_config_type,
+                session=session,  # type: ignore[arg-type]
+            )
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:  # noqa: BLE001 - one unreadable group, not a dead refresh
+            logger.debug(
+                "Quota catalog fetch failed for one compute group", exc_info=True
+            )
+            failures.append(
+                f"{_group_name(group) or 'compute group'}: "
+                f"{str(exc) or type(exc).__name__}"
+            )
+            continue
         records.extend(
             quota_records(
                 prices or [],
@@ -202,7 +247,16 @@ def fetch_quota_catalog(
                 compute_group_name=_group_name(group),
             )
         )
-    return records
+    if failures:
+        return QuotaCatalog(
+            records,
+            complete=False,
+            error=(
+                f"{len(failures)} compute group(s) did not answer; "
+                f"kept the previously cached rows. First: {failures[0]}"
+            ),
+        )
+    return QuotaCatalog(records)
 
 
 class CachedPricesLoader:
@@ -211,7 +265,9 @@ class CachedPricesLoader:
     The scope is the workspace's whole catalog for one workload, so the first
     miss fetches every compute group and reconciles the scope; from then on a
     lookup answers locally, and a group with no rows is authoritatively empty
-    rather than merely unfetched.
+    rather than merely unfetched. That authority rests on the scope having had
+    a *complete* refresh: a partial one leaves the scope short of full, and
+    the loader goes back to the platform per group.
 
     ``served_from_cache`` records which compute groups were answered locally.
     Callers that treat an empty live response as a stale-handle signal consult
@@ -298,6 +354,7 @@ class CachedPricesLoader:
 
 __all__ = [
     "CachedPricesLoader",
+    "QuotaCatalog",
     "SCHEDULE_TYPE_BY_WORKLOAD",
     "WORKLOAD_BY_SCHEDULE_TYPE",
     "fetch_quota_catalog",

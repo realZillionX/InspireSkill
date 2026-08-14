@@ -12,7 +12,12 @@ import os
 import threading
 from typing import Any, Optional
 
-from inspire.platform.web.session import WebSession, get_playwright_proxy, request_json
+from inspire.platform.web.session import (
+    TransientAPIError,
+    WebSession,
+    get_playwright_proxy,
+    request_json,
+)
 from inspire.platform.web.session.browser_launch import chromium_launch_kwargs
 
 DEFAULT_BASE_URL = "https://api.example.com"
@@ -147,6 +152,29 @@ def _browser_api_path(endpoint_path: str) -> str:
     return f"{prefix}/{endpoint}"
 
 
+# v2 carries throttling and server faults in the envelope, under HTTP 200.
+# An error announced this way is still the platform declining to answer, and
+# must not read as "the answer is empty".
+_TRANSIENT_V2_ERROR_CODES = frozenset(
+    {
+        "internalerror",
+        "internalfailure",
+        "internalservererror",
+        "requesttimeout",
+        "serviceunavailable",
+        "slowdown",
+        "throttling",
+        "throttlingexception",
+        "toomanyrequests",
+        "toomanyrequestsexception",
+    }
+)
+
+
+def _is_transient_v2_error_code(code: str) -> bool:
+    return str(code or "").strip().lower().replace("_", "") in _TRANSIENT_V2_ERROR_CODES
+
+
 def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
     """Unwrap the `/api/v2` AWS-style envelope.
 
@@ -162,7 +190,10 @@ def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(error, dict):
             code = error.get("Code") or "Error"
             message = error.get("Message") or "unknown error"
-            raise ValueError(f"API error: {code}: {message}")
+            text = f"API error: {code}: {message}"
+            if _is_transient_v2_error_code(code):
+                raise TransientAPIError(text)
+            raise ValueError(text)
     elif data.get("code") not in (None, 0):
         raise ValueError(f"API error: {data.get('message')}")
 
