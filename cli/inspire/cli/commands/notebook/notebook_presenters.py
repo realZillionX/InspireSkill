@@ -94,6 +94,10 @@ def _print_notebook_detail(notebook: dict) -> None:
             ),
         ),
         ("Uptime", _format_uptime(notebook.get("uptime_seconds"))),
+        *(
+            ("Dataset", f"{mount['name']}:{mount['version']} -> {mount['path']}")
+            for mount in notebook.get("datasets") or []
+        ),
         ("Created", notebook.get("created_at")),
         ("Updated", notebook.get("updated_at")),
     ]

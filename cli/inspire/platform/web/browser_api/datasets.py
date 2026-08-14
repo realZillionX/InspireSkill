@@ -25,6 +25,7 @@ __all__ = [
     "DatasetValidation",
     "CONTAINER_DATASET_ROOT",
     "container_mount_path",
+    "mounted_dataset_views",
     "validate_dataset_mounts",
 ]
 
@@ -72,6 +73,38 @@ class DatasetValidation:
 def container_mount_path(dataset: str, version: str) -> str:
     """Where a mounted dataset shows up inside the container."""
     return f"{CONTAINER_DATASET_ROOT}/{dataset}/{version}"
+
+
+def mounted_dataset_views(dataset_info: Any) -> list[dict[str, str]]:
+    """Project a workload's stored `dataset_info` onto its user-facing form.
+
+    `GetNotebook`, `ListNotebooks`, `train.GetJob` and `hpc.GetJob` all echo the
+    mounts a workload was created with, so a status view can answer "what data
+    is in here" without going back to the console.
+
+    Each stored entry carries the platform's own storage path next to the two
+    codes. That path is a platform handle: it names an internal bucket layout
+    the user never addresses and cannot use. Only the codes and the container
+    path they resolve to come out.
+    """
+    if not isinstance(dataset_info, list):
+        return []
+    views: list[dict[str, str]] = []
+    for entry in dataset_info:
+        if not isinstance(entry, dict):
+            continue
+        dataset = str(entry.get("dataset_id") or "").strip()
+        version = str(entry.get("version_id") or "").strip()
+        if not dataset or not version:
+            continue
+        views.append(
+            {
+                "name": dataset,
+                "version": version,
+                "path": container_mount_path(dataset, version),
+            }
+        )
+    return views
 
 
 def _dataset_referer(workspace_id: str | None = None) -> str:

@@ -13,6 +13,7 @@ import re
 from typing import Any
 
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.platform.web.browser_api.datasets import mounted_dataset_views
 
 _URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s\"'<>]+", re.IGNORECASE)
 _REDACTION_MARKER_RE = re.compile(
@@ -258,6 +259,7 @@ def public_notebook(
                 or item.get("shm_gib")
             ),
             "uptime_seconds": item.get("live_time"),
+            "datasets": mounted_dataset_views(item.get("dataset_info")),
             "created_at": sanitize_public_text(item.get("created_at") or ""),
             "updated_at": sanitize_public_text(item.get("updated_at") or ""),
         }

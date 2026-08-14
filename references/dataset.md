@@ -33,13 +33,15 @@
 
 版本另有自己的状态，`downloading` 和 `pending_upload` 表示数据还没落盘。数据集 `active` 不代表每个版本都可用。
 
-`--keyword` 同时匹配名称和描述，命中范围通常比预期宽；`--tag` 可重复，多个标签之间是 OR。
+`--keyword` 同时匹配名称和描述，命中范围通常比预期宽；`--tag` 可重复，多个标签之间是 OR，接受的标签名用 `inspire dataset tags` 列出——标签是固定的中文词，猜不出来。
 
 ## 4. 挂载语义
 
 `notebook`、`job` 和 `hpc` 的 `create` 支持 `--dataset`，可重复。`ray` 和 `serving` 不支持——平台直接拒绝该字段，网页端对应表单也没有这一项，需要数据时走共享盘。
 
 挂载点固定为 `/inspire/dataset/<数据集名>/<版本名>`，**只读**。它不受 Path Alias 管辖，也不占项目共享盘配额。
+
+建好之后用 `notebook status` / `job status` / `hpc status` 回看挂了哪些数据集和它们的容器路径，不必回网页确认。
 
 创建前平台会逐条校验并解析真实存储路径，任何一条不通就整体失败，不会先建出一个缺数据的 Workload。想在创建之前单独确认，用 `inspire dataset validate ... --workspace <workspace>`，它按条给出拒绝原因：数据集不存在、版本不存在，或当前账号在该 Workspace 无访问权限。
 

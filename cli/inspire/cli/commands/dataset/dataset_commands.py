@@ -517,7 +517,48 @@ def validate_datasets_cmd(
         sys.exit(EXIT_VALIDATION_ERROR)
 
 
+@click.command("tags")
+@pass_context
+def list_dataset_tags_cmd(ctx: Context) -> None:
+    """List the tag vocabulary `dataset list --tag` accepts.
+
+    `--tag` matches an exact tag name, and the names are fixed Chinese terms
+    that cannot be guessed reliably. This prints all of them, grouped by the
+    modality they belong to.
+    """
+    session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+
+    try:
+        tags = plaza_module.list_dataset_tags(session=session)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+        return
+    except Exception:
+        _handle_error(ctx, "APIError", "Could not list dataset tags.", EXIT_API_ERROR)
+        return
+
+    rows = [{"name": tag.name, "category": tag.category} for tag in tags]
+    if ctx.json_output:
+        click.echo(json_formatter.format_json({"items": rows, "total": len(rows)}))
+        return
+
+    if not rows:
+        click.echo("No dataset tags found.")
+        return
+
+    # The vocabulary is small and fixed, so it is never truncated: a partial
+    # list of accepted values would be worse than none.
+    headers = ["Name", "Category"]
+    widths = [
+        column_width(headers[0], [row["name"] for row in rows]),
+        column_width(headers[1], [row["category"] for row in rows]),
+    ]
+    values = [[row["name"], row["category"]] for row in rows]
+    click.echo("\n".join(render_table(headers, values, widths, line_char="─")))
+
+
 __all__ = [
+    "list_dataset_tags_cmd",
     "list_datasets_cmd",
     "show_dataset_cmd",
     "validate_datasets_cmd",

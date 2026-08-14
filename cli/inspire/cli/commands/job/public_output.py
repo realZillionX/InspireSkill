@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.platform.web.browser_api.datasets import mounted_dataset_views
 
 _URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s\"'<>]+", re.IGNORECASE)
 _PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
@@ -228,6 +229,7 @@ def public_job_status(item: object, *, fallback_name: str = "") -> dict[str, Any
             "priority": priority,
             "priority_level": priority_level,
             "sub_status": _text(_value(item, "sub_status")),
+            "datasets": mounted_dataset_views(_value(item, "dataset_info")),
             "created_at": _timestamp(item, ("created_at", "create_time")),
             "updated_at": _timestamp(item, ("updated_at", "update_time")),
             "finished_at": _timestamp(
@@ -297,6 +299,8 @@ def format_job_status(view: dict[str, Any]) -> str:
     resource = _format_resource(view.get("resource"))
     if resource:
         lines.append(f"Resource: {resource}")
+    for mount in view.get("datasets") or []:
+        lines.append(f"Dataset: {mount['name']}:{mount['version']} -> {mount['path']}")
     for key, label in (
         ("priority", "Priority"),
         ("priority_level", "Priority Level"),

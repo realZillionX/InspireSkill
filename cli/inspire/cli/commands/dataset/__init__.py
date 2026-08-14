@@ -2,6 +2,7 @@
 
 Usage:
     inspire dataset list [--keyword TEXT] [--tag NAME]
+    inspire dataset tags
     inspire dataset show <name>
     inspire dataset validate <name>:<version> ... --workspace <workspace>
 """
@@ -11,6 +12,7 @@ from __future__ import annotations
 import click
 
 from .dataset_commands import (
+    list_dataset_tags_cmd,
     list_datasets_cmd,
     show_dataset_cmd,
     validate_datasets_cmd,
@@ -29,6 +31,7 @@ def dataset():
     \b
     Examples:
         inspire dataset list --keyword pixabay
+        inspire dataset tags
         inspire dataset list --tag 视频生成 --limit 5
         inspire dataset show pixabay-81k
         inspire dataset validate pixabay-81k:v0 --workspace CPU资源空间
@@ -37,5 +40,6 @@ def dataset():
 
 
 dataset.add_command(list_datasets_cmd)
+dataset.add_command(list_dataset_tags_cmd)
 dataset.add_command(show_dataset_cmd)
 dataset.add_command(validate_datasets_cmd)
