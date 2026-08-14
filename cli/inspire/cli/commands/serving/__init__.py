@@ -8,13 +8,17 @@ from inspire.cli.commands.batch import serving_batch
 from inspire.cli.commands.workload_quota import make_quota_command
 from inspire.cli.commands.workload_profile import make_profile_command
 
+from .serving_api_metrics import serving_api_metrics
 from .serving_commands import (
     configs_serving,
     create_serving,
     delete_serving,
     list_serving,
+    rollback_serving,
+    scale_serving,
     status_serving,
     stop_serving,
+    versions_serving,
 )
 from .serving_metrics import serving_metrics
 
@@ -24,9 +28,14 @@ def serving() -> None:
     """Manage inference servings (model deployment).
 
     Deploy a registered model as an HTTP service, inspect the service list
-    and detail, check resource metrics, and stop or delete stale deployments.
-    Use `model list/status/versions` first when you need to pick a model and
-    version, then `serving create --dry-run` to verify the deployment plan.
+    and detail, scale or roll it back, check resource and request metrics, and
+    stop or delete stale deployments. Use `model list/status/versions` first
+    when you need to pick a model and version, then `serving create --dry-run`
+    to verify the deployment plan.
+
+    \b
+    `metrics` covers GPU / CPU / memory utilization; `api-metrics` covers
+    request traffic (QPS, success rate, latency, tokens).
 
     \b
     Examples:
@@ -35,8 +44,12 @@ def serving() -> None:
         inspire serving create --name demo --model my-model --workspace 分布式训练空间 --project CI-情境智能 --group H200-2号机房 --quota 1,18,200 --image serve-base:v1 --command "python serve.py" --port 8000 --dry-run
         inspire serving list --workspace 分布式训练空间
         inspire serving status <serving-name> --workspace 分布式训练空间
+        inspire serving scale <serving-name> --workspace 分布式训练空间 --replicas 3
+        inspire serving versions <serving-name> --workspace 分布式训练空间
+        inspire serving rollback <serving-name> --workspace 分布式训练空间 --version 2
         inspire serving delete <serving-name> --workspace 分布式训练空间
         inspire serving metrics <serving-name> --workspace 分布式训练空间 --window 30m
+        inspire serving api-metrics <serving-name> --workspace 分布式训练空间 --window 30m
     """
 
 
@@ -47,9 +60,13 @@ serving.add_command(serving_batch)
 serving.add_command(list_serving)
 serving.add_command(status_serving)
 serving.add_command(stop_serving)
+serving.add_command(scale_serving)
+serving.add_command(versions_serving)
+serving.add_command(rollback_serving)
 serving.add_command(delete_serving)
 serving.add_command(configs_serving)
 serving.add_command(serving_metrics)
+serving.add_command(serving_api_metrics)
 
 
 __all__ = ["serving"]

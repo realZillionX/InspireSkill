@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Optional, cast
 
 import click
@@ -625,6 +626,101 @@ def status_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> 
 # ---------------------------------------------------------------------------
 
 
+# `ray.StartJob` can answer a clean success envelope and still leave the job
+# STOPPED, so the command confirms the transition instead of trusting the
+# response. Observed live: the Action returns no error, `updated_at` never
+# moves, and a repeat call answers `InternalError`.
+_RAY_START_CONFIRM_ATTEMPTS = 6
+_RAY_START_CONFIRM_INTERVAL_SECONDS = 2.5
+
+
+def _confirm_ray_left_stopped(
+    ray_job_id: str,
+    *,
+    session,  # noqa: ANN001
+) -> str:
+    """Poll briefly for the job to leave STOPPED; return the observed status."""
+    status = ""
+    for attempt in range(_RAY_START_CONFIRM_ATTEMPTS):
+        if attempt:
+            time.sleep(_RAY_START_CONFIRM_INTERVAL_SECONDS)
+        detail = browser_api_module.get_ray_job_detail(ray_job_id, session=session)
+        status = str(detail.get("status") or "").strip()
+        if status and status.upper() != "STOPPED":
+            return status
+    return status
+
+
+@click.command("start")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def start_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
+    """Restart a stopped Ray (弹性计算) job.
+
+    \b
+    The platform keeps the head and worker-group spec on the record, so a job
+    stopped with `inspire ray stop` comes back with the same cluster shape and
+    driver command; nothing has to be re-specified.
+
+    \b
+    The command waits for the job to actually leave STOPPED before reporting
+    success, because the platform can accept the request and then not act on
+    it. If it reports that the job stayed STOPPED, the restart did not happen —
+    submit a fresh job with `inspire ray create` instead. Follow the startup
+    with `inspire ray events <name> --workspace <workspace>`.
+    """
+    name = _reject_ray_name_at_boundary(ctx, name)
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        ray_job_id = _resolve_ray_name_in_workspace(
+            ctx,
+            session=session,
+            name=name,
+            workspace=workspace,
+            limit=10000,
+            pick=pick,
+            require_live=True,
+        )
+        browser_api_module.start_ray_job(ray_job_id, session=session)
+        status = _confirm_ray_left_stopped(ray_job_id, session=session)
+
+        if not status or status.upper() == "STOPPED":
+            _handle_error(
+                ctx,
+                "APIError",
+                f"Ray job {scrub_raw_ids(name)!r} is still stopped; "
+                "the platform accepted the start request without acting on it.",
+                EXIT_API_ERROR,
+                hint=(
+                    "A job that never reached RUNNING cannot be restarted. "
+                    "Submit a fresh one with `inspire ray create`."
+                ),
+            )
+            return
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {"name": name, "status": "started", "job_status": status}
+                ),
+            )
+            return
+        click.echo(human_formatter.format_mutation_success("Ray", "started", name))
+
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
 @click.command("stop")
 @click.argument("name", metavar="NAME")
 @click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
@@ -636,7 +732,12 @@ def status_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> 
 )
 @pass_context
 def stop_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
-    """Stop a running Ray (弹性计算) job."""
+    """Stop a running Ray (弹性计算) job.
+
+    \b
+    The record survives; `inspire ray start <name>` brings the same cluster
+    back. Use `inspire ray delete` to remove the record entirely.
+    """
     name = _reject_ray_name_at_boundary(ctx, name)
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
@@ -886,6 +987,14 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
     ),
 )
 @click.option(
+    "--public-path-readonly/--no-public-path-readonly",
+    default=None,
+    help=(
+        "Mount the project's public path read-only inside every Ray container "
+        "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Resolve names, images, quotas, and worker groups, then print the plan without submitting.",
@@ -906,6 +1015,7 @@ def create_ray(
     quota: Optional[str],
     shm_size: Optional[int],
     workers: tuple[str, ...],
+    public_path_readonly: Optional[bool],
     dry_run: bool,
 ) -> None:
     """Create a Ray (弹性计算) job with one head and one or more worker groups.
@@ -965,6 +1075,7 @@ def create_ray(
             quota=quota,
             shm_size=shm_size,
             workers=workers,
+            public_path_readonly=public_path_readonly,
         )
 
         if dry_run:
@@ -1014,6 +1125,8 @@ def create_ray(
                 plan["description"] = description
             if shm_size is not None:
                 plan["shared_memory_gib"] = shm_size
+            if public_path_readonly is not None:
+                plan["public_path_readonly"] = bool(public_path_readonly)
             if ctx.json_output:
                 click.echo(json_formatter.format_json(plan))
                 return
@@ -1027,6 +1140,12 @@ def create_ray(
             if shm_size is not None:
                 click.echo(f"Shared memory: {shm_size} GiB")
             click.echo(f"Image: {scrub_raw_ids(image)}")
+            if public_path_readonly is not None:
+                click.echo(
+                    "Public path: read-only"
+                    if public_path_readonly
+                    else "Public path: writable"
+                )
             click.echo(f"Command: {scrub_raw_ids(body.get('entrypoint'))}")
             click.echo(f"Workers: {len(worker_plans)}")
             for worker in worker_plans:
@@ -1103,6 +1222,7 @@ def _assemble_create_body(
     quota: Optional[str],
     shm_size: Optional[int],
     workers: tuple[str, ...],
+    public_path_readonly: Optional[bool] = None,
 ) -> dict[str, Any]:
     from inspire.cli.utils.quota_resolver import (
         QuotaMatchError,
@@ -1207,6 +1327,10 @@ def _assemble_create_body(
         "head_node": head_node,
         "worker_groups": worker_groups,
     }
+    # Only an explicit flag reaches the wire: the platform owns the default and
+    # sending `false` would change every create that never asked.
+    if public_path_readonly is not None:
+        body["is_publicpath_readonly"] = bool(public_path_readonly)
     body["task_priority"] = resolve_workspace_task_priority(
         priority,
         session=session,

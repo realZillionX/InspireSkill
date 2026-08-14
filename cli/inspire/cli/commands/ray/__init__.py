@@ -20,6 +20,7 @@ from .ray_commands import (
     events_ray,
     instances_ray,
     list_ray,
+    start_ray,
     status_ray,
     stop_ray,
 )
@@ -29,6 +30,8 @@ from .ray_metrics import ray_metrics
 @click.group()
 def ray() -> None:
     """Manage Ray (弹性计算) jobs with one head and elastic workers.
+
+    A stopped job keeps its cluster spec: `stop` then `start` reuses it.
 
     Use Ray only when the workload needs a long-running driver, elastic
     worker groups, streaming processing, or heterogeneous CPU/GPU workers.
@@ -47,6 +50,7 @@ def ray() -> None:
 
 ray.add_command(list_ray)
 ray.add_command(status_ray)
+ray.add_command(start_ray)
 ray.add_command(stop_ray)
 ray.add_command(delete_ray)
 ray.add_command(create_ray)

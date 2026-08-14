@@ -8,6 +8,7 @@ total when the caller is paginating. Complements the wire-format tests in
 
 from __future__ import annotations
 
+import inspect
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -600,7 +601,10 @@ def test_serving_raw_handle_is_rejected_before_detail_api(monkeypatch) -> None: 
     assert "handle" not in result.output.lower()
 
 
-@pytest.mark.parametrize("subcommand", ("start", "events", "instances"))
+@pytest.mark.parametrize(
+    "subcommand",
+    ("start", "events", "instances", "scale", "versions", "rollback", "api-metrics"),
+)
 def test_new_serving_commands_share_name_workspace_and_pick_help(
     subcommand: str,
 ) -> None:
@@ -643,6 +647,8 @@ def test_serving_workspace_metavars_are_name_oriented() -> None:
         ("start", "start_serving"),
         ("events", "list_serving_events"),
         ("instances", "list_serving_instances"),
+        ("scale", "scale_serving"),
+        ("versions", "list_serving_versions"),
     ),
 )
 def test_new_serving_commands_reject_raw_handle_before_api(
@@ -660,7 +666,14 @@ def test_new_serving_commands_reject_raw_handle_before_api(
 
     result = CliRunner().invoke(
         cli_main,
-        ["serving", subcommand, "sv-12345678", "--workspace", "Test Workspace"],
+        [
+            "serving",
+            subcommand,
+            "sv-12345678",
+            "--workspace",
+            "Test Workspace",
+            *(["--replicas", "2"] if subcommand == "scale" else []),
+        ],
     )
 
     assert result.exit_code != 0
@@ -1177,3 +1190,207 @@ def test_serving_create_rejects_invalid_custom_domain() -> None:
 
     assert result.exit_code != 0
     assert "Invalid value for '--custom-domain'" in result.output
+
+
+# ---------------------------------------------------------------------------
+# scale / versions / rollback
+# ---------------------------------------------------------------------------
+
+
+def test_serving_scale_is_name_only_and_forwards_pick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolutions = _patch_serving_cli_deps(monkeypatch)
+    calls: dict[str, Any] = {}
+
+    def fake_scale(serving_id: str, *, replica: int, session=None) -> dict[str, Any]:
+        calls["serving_id"] = serving_id
+        calls["replica"] = replica
+        return {}
+
+    monkeypatch.setattr(browser_api_module, "scale_serving", fake_scale)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "serving",
+            "scale",
+            "demo-svc",
+            "--workspace",
+            "Serving空间",
+            "--replicas",
+            "3",
+            "--pick",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {
+        "success": True,
+        "data": {"name": "demo-svc", "status": "scaled", "replicas": 3},
+    }
+    assert calls == {"serving_id": "sv-internal", "replica": 3}
+    # Scaling mutates a live deployment, so the handle has to come from a fresh
+    # lookup rather than a possibly stale cache entry.
+    assert resolutions[-1]["require_live"] is True
+    assert resolutions[-1]["pick"] == 2
+
+
+def test_serving_scale_human_output_is_compact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_cli_deps(monkeypatch)
+    monkeypatch.setattr(
+        browser_api_module,
+        "scale_serving",
+        lambda serving_id, *, replica, session=None: {},
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["serving", "scale", "demo-svc", "--workspace", "Serving空间", "--replicas", "0"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output == "OK Serving scaled to 0 replica(s): demo-svc\n"
+
+
+def test_serving_scale_requires_a_replica_count() -> None:
+    result = CliRunner().invoke(
+        cli_main, ["serving", "scale", "demo-svc", "--workspace", "Serving空间"]
+    )
+
+    assert result.exit_code == 2
+    assert "--replicas" in result.output
+
+
+def test_serving_versions_are_bounded_and_name_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_cli_deps(monkeypatch)
+    versions = [
+        {
+            "inference_serving_id": "sv-internal",
+            "version": index,
+            "status": "SUCCEEDED",
+            "replicas": 1,
+            "created_at": "2026-04-20 10:00:00",
+        }
+        for index in range(1, 26)
+    ]
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_serving_versions",
+        lambda serving_id, session=None: (versions, len(versions)),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "serving", "versions", "demo-svc", "--workspace", "Serving空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["shown"] == DEFAULT_COLLECTION_LIMIT
+    assert data["total"] == 25
+    assert data["truncated"] is True
+    assert data["items"][0]["version"] == 1
+    # The rollback target is a version number; the platform handle is not part
+    # of the contract.
+    assert "sv-internal" not in result.output
+
+
+def test_serving_rollback_prompts_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_serving_cli_deps(monkeypatch)
+    monkeypatch.setattr(
+        browser_api_module,
+        "rollback_serving",
+        lambda *_args, **_kwargs: pytest.fail("rollback must be confirmed first"),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["serving", "rollback", "demo-svc", "--workspace", "Serving空间", "--version", "2"],
+        input="n\n",
+    )
+
+    assert result.exit_code != 0
+    assert "version 2" in result.output
+
+
+def test_serving_rollback_yes_skips_prompt_and_sends_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_cli_deps(monkeypatch)
+    calls: dict[str, Any] = {}
+
+    def fake_rollback(serving_id: str, *, version: int, session=None) -> dict[str, Any]:
+        calls["serving_id"] = serving_id
+        calls["version"] = version
+        return {}
+
+    monkeypatch.setattr(browser_api_module, "rollback_serving", fake_rollback)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "serving",
+            "rollback",
+            "demo-svc",
+            "--workspace",
+            "Serving空间",
+            "--version",
+            "2",
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {
+        "success": True,
+        "data": {"name": "demo-svc", "status": "rolled back", "version": 2},
+    }
+    assert calls == {"serving_id": "sv-internal", "version": 2}
+
+
+# ---------------------------------------------------------------------------
+# create: auto scaling and read-only public path
+# ---------------------------------------------------------------------------
+
+
+def test_serving_create_help_documents_the_new_optional_flags() -> None:
+    result = CliRunner().invoke(cli_main, ["serving", "create", "--help"])
+
+    assert result.exit_code == 0, result.output
+    joined = " ".join(result.output.split())
+    assert "--auto-scaling / --no-auto-scaling" in joined
+    assert "--public-path-readonly / --no-public-path-readonly" in joined
+    # Both must read as opt-in; the platform still owns the unset case.
+    assert joined.count("Omit to leave the platform default.") >= 2
+
+
+@pytest.mark.parametrize(
+    ("flag", "field"),
+    (
+        ("--auto-scaling", "enable_auto_scaling"),
+        ("--no-auto-scaling", "enable_auto_scaling"),
+        ("--public-path-readonly", "is_publicpath_readonly"),
+        ("--no-public-path-readonly", "is_publicpath_readonly"),
+    ),
+)
+def test_serving_create_flags_map_onto_the_create_action_fields(
+    flag: str, field: str
+) -> None:
+    parameters = {
+        parameter.name: parameter
+        for parameter in serving_commands_module.create_serving.params
+    }
+    option = parameters["auto_scaling" if "auto-scaling" in flag else "public_path_readonly"]
+
+    assert flag in option.secondary_opts or flag in option.opts
+    # Default `None` is what keeps an untouched create byte-for-byte unchanged.
+    assert option.default is None
+    assert field in inspect.signature(browser_api_module.create_serving).parameters

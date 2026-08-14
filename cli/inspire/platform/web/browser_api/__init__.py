@@ -69,6 +69,7 @@ from .ray_jobs import (
     list_ray_job_scaling_histories,
     list_ray_job_users,
     list_ray_jobs,
+    start_ray_job,
     stop_ray_job,
 )
 from .metrics import (
@@ -130,10 +131,12 @@ from .rtunnel import (
 from .models import (
     ModelInfo,
     check_model_inference_serving_pending,
+    check_model_vllm_compatible,
     create_model,
     get_model_detail,
     get_model_publish_prefill,
     get_model_publish_status,
+    get_model_recommended_config,
     list_model_inference_servings,
     list_model_users,
     list_model_version_records,
@@ -144,9 +147,11 @@ from .users import (
     get_user_permissions,
 )
 from .servings import (
+    SERVING_API_METRIC_TYPES,
     ServingInfo,
     create_serving,
     delete_serving,
+    get_serving_api_metrics,
     get_serving_configs,
     get_serving_detail,
     get_serving_terms,
@@ -157,6 +162,8 @@ from .servings import (
     list_serving_user_project,
     list_serving_versions,
     list_servings,
+    rollback_serving,
+    scale_serving,
     start_serving,
     stop_serving,
 )
@@ -206,6 +213,7 @@ __all__ = [
     "list_ray_job_scaling_histories",
     "list_ray_job_users",
     "list_ray_jobs",
+    "start_ray_job",
     "stop_ray_job",
     # Metrics (cluster_metric/resource_metric_by_time — 资源视图 tab)
     "INTERVAL_CHOICES",
@@ -273,8 +281,10 @@ __all__ = [
     "wait_for_notebook_running",
     # Servings (inference / model deployment)
     "ServingInfo",
+    "SERVING_API_METRIC_TYPES",
     "create_serving",
     "delete_serving",
+    "get_serving_api_metrics",
     "get_serving_configs",
     "get_serving_detail",
     "get_serving_terms",
@@ -285,15 +295,19 @@ __all__ = [
     "list_serving_user_project",
     "list_serving_versions",
     "list_servings",
+    "rollback_serving",
+    "scale_serving",
     "start_serving",
     "stop_serving",
     # Model registry
     "ModelInfo",
     "check_model_inference_serving_pending",
+    "check_model_vllm_compatible",
     "create_model",
     "get_model_detail",
     "get_model_publish_prefill",
     "get_model_publish_status",
+    "get_model_recommended_config",
     "list_model_inference_servings",
     "list_model_users",
     "list_model_version_records",

@@ -16,6 +16,11 @@ Wire details that differ from sibling domains:
   envelope that ``workspace.*`` Actions require is rejected here.
 - There is no ``CreateJobConsole`` variant — ``ray`` answers ``InvalidAction``
   for it, so creation goes through plain ``CreateJob``.
+- ``UpdateJob`` exists but is metadata only: it accepts ``ray_job_id`` / ``name``
+  / ``description`` and rejects ``worker_groups``, ``head_node``,
+  ``entrypoint``, ``min_replicas``, ``replicas``, ``task_priority`` and
+  ``project_id`` with ``unknown field``. It is not the elastic worker-count
+  lever, so it stays unwrapped.
 
 Create payload shape was reverse-engineered from the SPA's own submit handler
 (``/assets/constant.BP_zw-df.js``) and is accepted verbatim by v2. Wire
@@ -48,6 +53,7 @@ __all__ = [
     "list_ray_job_scaling_histories",
     "list_ray_job_users",
     "list_ray_jobs",
+    "start_ray_job",
     "stop_ray_job",
 ]
 
@@ -259,6 +265,28 @@ def get_ray_job_detail(
     return _ray_v2(
         session, "GetJob", {"ray_job_id": ray_job_id}, context="detail"
     )
+
+
+def start_ray_job(
+    ray_job_id: str,
+    *,
+    session: Optional[WebSession] = None,
+) -> dict[str, Any]:
+    """Restart a stopped Ray job from its stored configuration.
+
+    The counterpart to :func:`stop_ray_job`: the platform keeps the head and
+    worker-group spec on the record, so restarting needs nothing but the id.
+    A job that is already RUNNING answers ``Conflict``; the returned payload is
+    the refreshed ``ray_job`` object.
+    """
+    ray_job_id = str(ray_job_id or "").strip()
+    if not ray_job_id:
+        raise ValueError("Ray job selection is required.")
+
+    if session is None:
+        session = get_web_session()
+
+    return _ray_v2(session, "StartJob", {"ray_job_id": ray_job_id}, context="start")
 
 
 def stop_ray_job(

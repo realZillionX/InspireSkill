@@ -471,3 +471,217 @@ def test_ray_status_json_uses_stable_public_projection(
     assert "workspace_id" not in result.output
     assert "quota-worker-internal" not in result.output
     assert "trace-internal" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# start
+# ---------------------------------------------------------------------------
+
+
+def _patch_ray_start(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    statuses: list[str],
+) -> dict[str, Any]:
+    """Patch start plus the status reads the command confirms with."""
+    calls = _patch_ray_status_runtime(monkeypatch)
+    remaining = list(statuses)
+
+    def fake_start_ray_job(ray_job_id: str, *, session: object) -> dict[str, Any]:
+        del session
+        calls["start"] = ray_job_id
+        return {"ray_job": {"ray_job_id": ray_job_id}}
+
+    def fake_detail(ray_job_id: str, *, session: object) -> dict[str, Any]:
+        del session
+        calls.setdefault("detail_reads", 0)
+        calls["detail_reads"] += 1
+        return {"status": remaining.pop(0) if remaining else "STOPPED"}
+
+    monkeypatch.setattr(
+        ray_commands.browser_api_module, "start_ray_job", fake_start_ray_job
+    )
+    monkeypatch.setattr(
+        ray_commands.browser_api_module, "get_ray_job_detail", fake_detail
+    )
+    # The command sleeps between confirmation reads; tests must not.
+    monkeypatch.setattr(ray_commands, "_RAY_START_CONFIRM_INTERVAL_SECONDS", 0)
+    return calls
+
+
+def test_ray_start_json_uses_stable_public_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `ray stop` used to be a one-way door: `ray.StartJob` exists, so a stopped
+    # cluster can come back without re-specifying anything.
+    calls = _patch_ray_start(monkeypatch, statuses=["PENDING"])
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "ray", "start", "ray-demo", "--workspace", "Ray资源空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {
+        "success": True,
+        "data": {"name": "ray-demo", "status": "started", "job_status": "PENDING"},
+    }
+    assert calls["start"] == "ray-job-internal"
+    # The refreshed ray_job the Action returns carries platform handles; none
+    # of it reaches the output.
+    assert "ray-job-internal" not in result.output
+
+
+def test_ray_start_human_output_is_compact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_ray_start(monkeypatch, statuses=["RUNNING"])
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["ray", "start", "ray-demo", "--workspace", "Ray资源空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output == "OK Ray started: ray-demo\n"
+
+
+def test_ray_start_fails_when_the_job_never_leaves_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Observed live: `StartJob` answers a clean success envelope, `updated_at`
+    # never moves, and a repeat call returns InternalError. Reporting OK there
+    # would be the same class of lie as the old `API error: None`.
+    calls = _patch_ray_start(monkeypatch, statuses=[])
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["ray", "start", "ray-demo", "--workspace", "Ray资源空间"],
+    )
+
+    assert result.exit_code != 0
+    assert "still stopped" in result.output
+    assert "inspire ray create" in result.output
+    # Every attempt was spent before giving up.
+    assert calls["detail_reads"] == ray_commands._RAY_START_CONFIRM_ATTEMPTS
+
+
+def test_ray_start_stops_polling_as_soon_as_the_job_moves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _patch_ray_start(monkeypatch, statuses=["STOPPED", "PENDING"])
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["ray", "start", "ray-demo", "--workspace", "Ray资源空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["detail_reads"] == 2
+
+
+def test_ray_start_treats_an_unreadable_status_as_not_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_ray_start(monkeypatch, statuses=[""])
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["ray", "start", "ray-demo", "--workspace", "Ray资源空间"],
+    )
+
+    assert result.exit_code != 0
+
+
+def test_ray_start_rejects_a_platform_handle_at_the_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_ray_status_runtime(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "ray",
+            "start",
+            "ray-12345678-1234-1234-1234-123456789abc",
+            "--workspace",
+            "Ray资源空间",
+        ],
+    )
+
+    assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# create: read-only public path
+# ---------------------------------------------------------------------------
+
+
+class _FakeResolvedQuota:
+    quota_id = "quota-internal"
+    logic_compute_group_id = "lcg-internal"
+    compute_group_name = "CPU Room"
+    gpu_count = 0
+    cpu_count = 4
+    memory_gib = 16
+    gpu_type = ""
+    raw_price: dict[str, Any] = {}
+
+
+def _ray_create_body(monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> dict[str, Any]:
+    from inspire.cli.utils import quota_resolver as quota_module
+
+    monkeypatch.setattr(
+        ray_commands, "select_workspace_id", lambda **_kwargs: "ws-internal"
+    )
+    monkeypatch.setattr(
+        ray_commands, "_resolve_project_id", lambda *args, **kw: "project-internal"
+    )
+    monkeypatch.setattr(
+        ray_commands, "_resolve_image_id", lambda raw, **kw: "image-internal"
+    )
+    monkeypatch.setattr(
+        ray_commands, "resolve_workspace_task_priority", lambda *args, **kw: 4
+    )
+    monkeypatch.setattr(
+        quota_module, "resolve_quota", lambda **_kwargs: _FakeResolvedQuota()
+    )
+
+    return ray_commands._assemble_create_body(
+        None,  # type: ignore[arg-type]
+        config=None,  # type: ignore[arg-type]
+        session=_FakeSession(),
+        name="ray-demo",
+        command="python driver.py",
+        description="",
+        project="Project",
+        workspace="Ray资源空间",
+        priority=None,
+        image="ray-base:v1",
+        image_type="SOURCE_PUBLIC",
+        group="CPU Room",
+        quota="0,4,16",
+        shm_size=None,
+        workers=("name=w;image=ray-base:v1;group=CPU Room;quota=0,4,16;min=1;max=2",),
+        **kwargs,
+    )
+
+
+def test_ray_create_body_unchanged_when_read_only_guard_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Read-only is the safer value, but turning it on by default would change
+    # every existing create; the platform keeps deciding.
+    body = _ray_create_body(monkeypatch)
+
+    assert "is_publicpath_readonly" not in body
+
+
+@pytest.mark.parametrize("requested", [True, False])
+def test_ray_create_body_carries_an_explicit_read_only_guard(
+    monkeypatch: pytest.MonkeyPatch, requested: bool
+) -> None:
+    body = _ray_create_body(monkeypatch, public_path_readonly=requested)
+
+    # `False` is a value the caller chose; only `None` means "do not send".
+    assert body["is_publicpath_readonly"] is requested

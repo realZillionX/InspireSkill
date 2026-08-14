@@ -699,6 +699,159 @@ def status_model(
         _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
 
+@click.command("deploy-config")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--project", default=None, metavar="NAME", help="Project name filter")
+@click.option(
+    "--version",
+    "version",
+    type=click.IntRange(1),
+    default=None,
+    help="Model version (default: the latest version from the model list).",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def deploy_config_model(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    project: Optional[str],
+    version: Optional[int],
+    pick: Optional[int],
+) -> None:
+    """Show the minimum resources a model version needs to be deployed.
+
+    \b
+    Read this before `serving create`: the platform reports the smallest node
+    shape that will hold the weights, which is exactly the floor for
+    `--quota gpu,cpu,mem` and `--nodes-per-replica`. A `serving quota` triple
+    below this floor is what an out-of-memory deployment looks like before it
+    starts. vLLM compatibility is reported alongside because it decides
+    whether a vLLM startup command is an option at all.
+
+    \b
+    Examples:
+        inspire model deploy-config qwen-demo --workspace 分布式训练空间
+        inspire --json model deploy-config qwen-demo --workspace 分布式训练空间 --version 2
+    """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="model",
+        list_command="inspire model list --workspace <workspace>",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace, session=session)
+        project_id = _resolve_project_id(
+            config, project, workspace_id=workspace_id, session=session
+        )
+        user_id = _current_user_id(session)
+
+        items, _total = browser_api_module.list_models(
+            workspace_id=workspace_id,
+            page=1,
+            page_size=100,
+            keyword=name,
+            project_ids=[project_id] if project_id else None,
+            user_id=user_id,
+            session=session,
+        )
+        model_id = _resolve_model_name(
+            ctx,
+            name,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            user_id=user_id,
+            pick=pick,
+            session=session,
+            require_live=True,
+        )
+        resolved_version = version
+        if resolved_version is None:
+            for item in items:
+                if item.model_id == model_id and item.latest_version:
+                    try:
+                        resolved_version = int(item.latest_version)
+                    except ValueError:
+                        resolved_version = None
+                    break
+        if resolved_version is None:
+            raise ConfigError(
+                "Could not infer the model version. Pass --version explicitly."
+            )
+
+        recommended = browser_api_module.get_model_recommended_config(
+            model_id,
+            version=resolved_version,
+            session=session,
+            workspace_id=workspace_id,
+        )
+        vllm_compatible = browser_api_module.check_model_vllm_compatible(
+            model_id,
+            version=resolved_version,
+            session=session,
+            workspace_id=workspace_id,
+        )
+
+        def _count(key: str) -> Optional[int]:
+            raw = recommended.get(key)
+            if raw in (None, ""):
+                return None
+            try:
+                return int(float(str(raw)))
+            except (TypeError, ValueError):
+                return None
+
+        nodes = _count("min_node_count")
+        gpu = _count("min_gpu_count_per_node")
+        cpu = _count("min_cpu_count_per_node")
+        memory = _count("min_memory_size_gib_per_node")
+        view: dict[str, Any] = {
+            "model": scrub_raw_ids(name),
+            "version": resolved_version,
+            "vllm_compatible": vllm_compatible,
+        }
+        if nodes is not None:
+            view["min_nodes"] = nodes
+        if gpu is not None:
+            view["min_gpu_per_node"] = gpu
+        if cpu is not None:
+            view["min_cpu_per_node"] = cpu
+        if memory is not None:
+            view["min_memory_gib_per_node"] = memory
+        if None not in (gpu, cpu, memory):
+            view["min_quota"] = f"{gpu},{cpu},{memory}"
+
+        if ctx.json_output:
+            click.echo(json_formatter.format_json(view))
+            return
+
+        lines = [
+            f"Model: {view['model']} v{resolved_version}",
+            f"vLLM compatible: {'yes' if vllm_compatible else 'no'}",
+        ]
+        if "min_quota" in view:
+            lines.append(f"Minimum --quota: {view['min_quota']} (gpu,cpu,mem)")
+        if nodes is not None:
+            lines.append(f"Minimum --nodes-per-replica: {nodes}")
+        click.echo("\n".join(lines))
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
+
+
 @click.command("versions")
 @click.argument("name", metavar="NAME")
 @click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
@@ -939,4 +1092,10 @@ def register_model(
         _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
 
-__all__ = ["list_model", "register_model", "status_model", "versions_model"]
+__all__ = [
+    "deploy_config_model",
+    "list_model",
+    "register_model",
+    "status_model",
+    "versions_model",
+]

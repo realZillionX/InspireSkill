@@ -23,10 +23,12 @@ from inspire.platform.web.session import WebSession, get_web_session
 __all__ = [
     "ModelInfo",
     "check_model_inference_serving_pending",
+    "check_model_vllm_compatible",
     "create_model",
     "get_model_detail",
     "get_model_publish_prefill",
     "get_model_publish_status",
+    "get_model_recommended_config",
     "list_model_inference_servings",
     "list_model_users",
     "list_model_version_records",
@@ -217,6 +219,67 @@ def get_model_detail(
             timeout=30,
         )
     )
+
+
+def get_model_recommended_config(
+    model_id: str,
+    *,
+    version: int,
+    session: Optional[WebSession] = None,
+    workspace_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Minimum viable deployment shape for a model version.
+
+    Backs the deployment form's spec suggestion. Returns
+    ``{min_node_count, min_gpu_count_per_node, min_cpu_count_per_node,
+    min_memory_size_gib_per_node}`` -- a floor, not a recommendation to match
+    exactly; the numbers map onto ``serving create --quota gpu,cpu,mem`` and
+    ``--nodes-per-replica``.
+    """
+    if session is None:
+        session = get_web_session()
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=GetRecommendedConfig",
+            referer=_referer(workspace_id),
+            body={"model_id": model_id, "version": int(version)},
+            timeout=30,
+        )
+    )
+
+
+def check_model_vllm_compatible(
+    model_id: str,
+    *,
+    version: int,
+    inference_serving_type: str = "CUSTOM",
+    session: Optional[WebSession] = None,
+    workspace_id: Optional[str] = None,
+) -> bool:
+    """Whether one model version can be served by vLLM.
+
+    ``GetModelVLLMCompatibleData`` answers the same question for every version
+    at once; this per-version form is the one a deployment decision needs.
+    """
+    if session is None:
+        session = get_web_session()
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=CheckModelVLLMCompatible",
+            referer=_referer(workspace_id),
+            body={
+                "model_id": model_id,
+                "version": int(version),
+                "inference_serving_type": inference_serving_type,
+            },
+            timeout=30,
+        )
+    )
+    return payload.get("is_vllm_compatible") is True
 
 
 def list_model_versions(

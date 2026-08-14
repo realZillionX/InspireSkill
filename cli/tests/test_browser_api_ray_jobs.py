@@ -25,6 +25,7 @@ from inspire.platform.web.browser_api.ray_jobs import (
     list_ray_job_scaling_histories,
     list_ray_job_users,
     list_ray_jobs,
+    start_ray_job,
     stop_ray_job,
 )
 
@@ -200,6 +201,44 @@ def test_delete_ray_job_posts_expected_body(monkeypatch) -> None:
 
     assert record["url"].endswith("/api/v2/ray?Action=DeleteJob")
     assert record["body"] == {"ray_job_id": "ray-42"}
+
+
+def test_start_ray_job_posts_expected_body(monkeypatch) -> None:
+    # `StartJob` is the counterpart to `StopJob`: the platform keeps the head
+    # and worker-group spec on the record, so restarting needs nothing else.
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {"Result": {"ray_job": {"ray_job_id": "ray-42", "status": "PENDING"}}},
+        record,
+    )
+
+    result = start_ray_job("ray-42", session=_FakeSession())
+
+    assert record["url"].endswith("/api/v2/ray?Action=StartJob")
+    assert record["body"] == {"ray_job_id": "ray-42"}
+    assert result == {"ray_job": {"ray_job_id": "ray-42", "status": "PENDING"}}
+
+
+def test_start_ray_job_requires_ray_job_selection() -> None:
+    with pytest.raises(ValueError, match="Ray job selection is required\\."):
+        start_ray_job("  ", session=_FakeSession())
+
+
+def test_start_ray_job_surfaces_platform_error(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "ResponseMetadata": {
+                "Error": {"Code": "Conflict", "Message": "job is already running"}
+            }
+        },
+        record,
+    )
+
+    with pytest.raises(ValueError, match="Ray Job start failed: .*Conflict"):
+        start_ray_job("ray-42", session=_FakeSession())
 
 
 def test_stop_ray_job_requires_ray_job_selection() -> None:

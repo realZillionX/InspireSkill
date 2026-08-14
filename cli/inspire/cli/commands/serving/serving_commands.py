@@ -521,6 +521,74 @@ def _format_serving_instances(instances: list[dict[str, Any]]) -> str:
     return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
 
+def _public_serving_version(item: dict[str, Any]) -> dict[str, Any]:
+    """Project one `ListServingVersions` row onto rollback-relevant fields."""
+    view: dict[str, Any] = {}
+    raw_version = item.get("version")
+    if raw_version not in (None, ""):
+        try:
+            view["version"] = int(str(raw_version))
+        except (TypeError, ValueError):
+            view["version"] = scrub_raw_ids(raw_version)
+    for key, candidates in (
+        ("status", ("status", "phase")),
+        ("model", ("model_name", "model_display_name")),
+        ("command", ("command",)),
+        ("created_at", ("created_at", "updated_at")),
+    ):
+        value = _public_serving_instance_text(item, *candidates)
+        if value:
+            view[key] = value
+    for key, candidates in (
+        ("replicas", ("replicas", "replica_count")),
+        ("port", ("port",)),
+    ):
+        for candidate in candidates:
+            raw = item.get(candidate)
+            if raw not in (None, ""):
+                try:
+                    view[key] = int(str(raw))
+                except (TypeError, ValueError):
+                    pass
+                break
+    resource = _serving_resource_label(item)
+    if resource:
+        view["resource"] = resource
+    return view
+
+
+def _format_serving_versions(versions: list[dict[str, Any]]) -> str:
+    if not versions:
+        return "No serving versions found."
+    columns = [("version", "Version")]
+    columns.extend(
+        (key, label)
+        for key, label in (
+            ("status", "Status"),
+            ("model", "Model"),
+            ("replicas", "Replicas"),
+            ("resource", "Resource"),
+            ("created_at", "Created"),
+        )
+        if any(item.get(key) not in (None, "") for item in versions)
+    )
+    table_rows = [
+        tuple(str(item.get(key, "-") or "-") for key, _label in columns)
+        for item in versions
+    ]
+    widths = [
+        column_width(label, [row[index] for row in table_rows], max_width=48)
+        for index, (_key, label) in enumerate(columns)
+    ]
+    rendered = render_table(
+        tuple(label for _key, label in columns),
+        table_rows,
+        widths,
+        line_char="─",
+    )
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+
+
 def _config_label(item: dict[str, Any], index: int) -> str:
     name = (
         item.get("name")
@@ -1018,6 +1086,263 @@ def stop_serving(
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
+@click.command("scale")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--replicas",
+    type=click.IntRange(0),
+    required=True,
+    help="Target replica count for the deployment.",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def scale_serving(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    replicas: int,
+    pick: Optional[int],
+) -> None:
+    """Change how many replicas an inference serving runs.
+
+    \b
+    Scaling reuses the deployment's existing image, command, port and resource
+    spec — only the replica count moves. Each replica costs the serving's full
+    quota, so check `inspire resources quota --workspace <workspace>` before
+    scaling up. Watch the result with
+    `inspire serving instances <name> --workspace <workspace>`.
+    """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace)
+        inference_serving_id = _resolve_serving_name(
+            ctx,
+            name,
+            workspace_id=workspace_id,
+            pick=pick,
+            require_live=True,
+        )
+        browser_api_module.scale_serving(
+            inference_serving_id,
+            replica=replicas,
+            session=session,
+        )
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    public_operation(name, "scaled", replicas=replicas)
+                )
+            )
+            return
+        click.echo(
+            human_formatter.format_mutation_success(
+                "Serving", f"scaled to {replicas} replica(s)", name
+            )
+        )
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("versions")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum versions to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every version.")
+@pass_context
+def versions_serving(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    pick: Optional[int],
+    limit: Optional[int],
+    show_all: bool,
+) -> None:
+    """List a serving's deployment history.
+
+    \b
+    Each row is one configuration the deployment has run under. The version
+    number is what `inspire serving rollback --version` takes.
+    """
+    try:
+        output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace)
+        items, total = _run_readonly_serving_operation(
+            ctx,
+            name=name,
+            workspace_id=workspace_id,
+            session=session,
+            pick=pick,
+            operation=lambda serving_id, live_session: (
+                browser_api_module.list_serving_versions(
+                    serving_id,
+                    session=live_session,
+                )
+            ),
+        )
+        projected = [_public_serving_version(item) for item in items]
+        page = bound_collection(projected, limit=output_limit, total=total)
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "name": scrub_raw_ids(name),
+                        "items": page.items,
+                        **page.metadata(),
+                    }
+                )
+            )
+            return
+
+        click.echo(_format_serving_versions(page.items))
+        notice = truncation_notice(page, full_option="--all")
+        if notice:
+            click.echo(notice)
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("rollback")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--version",
+    type=click.IntRange(1),
+    required=True,
+    help="Version to roll back to, from `inspire serving versions <name>`.",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def rollback_serving(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    version: int,
+    yes: bool,
+    pick: Optional[int],
+) -> None:
+    """Redeploy an inference serving under an earlier version's configuration.
+
+    \b
+    Pick the target with `inspire serving versions <name> --workspace
+    <workspace>`. The running replicas are replaced, so in-flight requests are
+    interrupted the same way a restart interrupts them.
+    """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt=(
+            f"Roll inference serving '{scrub_raw_ids(name)}' back to version "
+            f"{version}? Running replicas are replaced."
+        ),
+        message="Inference serving rollback requires confirmation.",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace)
+        inference_serving_id = _resolve_serving_name(
+            ctx,
+            name,
+            workspace_id=workspace_id,
+            pick=pick,
+            require_live=True,
+        )
+        browser_api_module.rollback_serving(
+            inference_serving_id,
+            version=version,
+            session=session,
+        )
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    public_operation(name, "rolled back", version=version)
+                )
+            )
+            return
+        click.echo(
+            human_formatter.format_mutation_success(
+                "Serving", f"rolled back to version {version}", name
+            )
+        )
+
+    except click.Abort:
+        raise
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
 @click.command("events")
 @click.argument("name", metavar="NAME")
 @click.option("--workspace", metavar="NAME", required=True, help="Workspace name.")
@@ -1473,6 +1798,23 @@ def configs_serving(
     help="Optional domain prefix: lowercase letters, digits, and hyphens",
 )
 @click.option("--description", default="", help="Serving description")
+@click.option(
+    "--auto-scaling/--no-auto-scaling",
+    "auto_scaling",
+    default=None,
+    help=(
+        "Let the platform move the replica count with load "
+        "(平台 弹性伸缩). Omit to leave the platform default."
+    ),
+)
+@click.option(
+    "--public-path-readonly/--no-public-path-readonly",
+    default=None,
+    help=(
+        "Mount the project's public path read-only inside the serving container "
+        "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
+    ),
+)
 @click.option("--dry-run", is_flag=True, default=False, help="Print the resolved plan without creating")
 @pass_context
 def create_serving(
@@ -1494,6 +1836,8 @@ def create_serving(
     priority: Optional[int],
     custom_domain: Optional[str],
     description: str,
+    auto_scaling: Optional[bool],
+    public_path_readonly: Optional[bool],
     dry_run: bool,
 ) -> None:
     """Create an inference serving from a registered model.
@@ -1627,6 +1971,12 @@ def create_serving(
         }
         if custom_domain:
             payload["custom_domain"] = custom_domain
+        # Only an explicit flag reaches the wire; the platform keeps owning the
+        # default so an untouched create stays byte-for-byte what it was.
+        if auto_scaling is not None:
+            payload["enable_auto_scaling"] = bool(auto_scaling)
+        if public_path_readonly is not None:
+            payload["is_publicpath_readonly"] = bool(public_path_readonly)
 
         if dry_run:
             plan = sanitize_public_data(
@@ -1652,6 +2002,8 @@ def create_serving(
                     "shared_memory_gib": shm_size,
                     "priority": final_priority,
                     "custom_domain": custom_domain,
+                    "auto_scaling": auto_scaling,
+                    "public_path_readonly": public_path_readonly,
                 },
                 omit_urls=True,
             )
@@ -1684,6 +2036,16 @@ def create_serving(
                     click.echo(
                         f"Domain: {sanitize_public_text(custom_domain, omit_urls=True)}"
                     )
+                if auto_scaling is not None:
+                    click.echo(
+                        "Auto scaling: enabled" if auto_scaling else "Auto scaling: disabled"
+                    )
+                if public_path_readonly is not None:
+                    click.echo(
+                        "Public path: read-only"
+                        if public_path_readonly
+                        else "Public path: writable"
+                    )
             return
 
         result = browser_api_module.create_serving(
@@ -1703,6 +2065,8 @@ def create_serving(
             task_priority=final_priority,
             custom_domain=custom_domain,
             resource_spec_price=resource_spec_price,
+            is_publicpath_readonly=public_path_readonly,
+            enable_auto_scaling=auto_scaling,
             session=session,
         )
         serving_id = _created_serving_id(result)
@@ -1736,7 +2100,10 @@ __all__ = [
     "create_serving",
     "delete_serving",
     "list_serving",
+    "rollback_serving",
+    "scale_serving",
     "status_serving",
     "stop_serving",
+    "versions_serving",
     "configs_serving",
 ]

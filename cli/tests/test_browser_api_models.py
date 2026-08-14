@@ -10,10 +10,12 @@ from inspire.platform.web.browser_api import models as models_module
 from inspire.platform.web.browser_api.models import (
     ModelInfo,
     check_model_inference_serving_pending,
+    check_model_vllm_compatible,
     create_model,
     get_model_detail,
     get_model_publish_prefill,
     get_model_publish_status,
+    get_model_recommended_config,
     list_model_inference_servings,
     list_model_users,
     list_model_version_records,
@@ -262,3 +264,71 @@ def test_create_model_posts_registration_body(monkeypatch) -> None:
         "tags": ["vllm"],
         "description": "demo model",
     }
+
+
+# ---------------------------------------------------------------------------
+# Deployment sizing
+# ---------------------------------------------------------------------------
+
+
+def test_get_model_recommended_config_posts_model_and_version(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "Result": {
+                "min_node_count": 1,
+                "min_gpu_count_per_node": 1,
+                "min_cpu_count_per_node": 2,
+                "min_memory_size_gib_per_node": 16,
+            }
+        },
+        record,
+    )
+
+    result = get_model_recommended_config(
+        "model-1", version=2, session=_FakeSession(), workspace_id="ws-1"
+    )
+
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/model-hub?Action=GetRecommendedConfig")
+    assert record["body"] == {"model_id": "model-1", "version": 2}
+    assert result["min_gpu_count_per_node"] == 1
+
+
+def test_get_model_recommended_config_coerces_a_string_version(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(monkeypatch, {"Result": {}}, record)
+
+    get_model_recommended_config("model-1", version="2", session=_FakeSession())  # type: ignore[arg-type]
+
+    # `version` is declared int32; a string is rejected on the wire.
+    assert record["body"]["version"] == 2
+
+
+def test_check_model_vllm_compatible_returns_a_bool(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch, {"Result": {"is_vllm_compatible": True}}, record
+    )
+
+    assert (
+        check_model_vllm_compatible("model-1", version=1, session=_FakeSession())
+        is True
+    )
+    assert record["url"].endswith("/api/v2/model-hub?Action=CheckModelVLLMCompatible")
+    assert record["body"] == {
+        "model_id": "model-1",
+        "version": 1,
+        "inference_serving_type": "CUSTOM",
+    }
+
+
+def test_check_model_vllm_compatible_treats_a_missing_flag_as_false(monkeypatch) -> None:
+    # An absent field is not evidence of compatibility.
+    _install_fake_request(monkeypatch, {"Result": {}}, {})
+
+    assert (
+        check_model_vllm_compatible("model-1", version=1, session=_FakeSession())
+        is False
+    )

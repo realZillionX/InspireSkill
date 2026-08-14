@@ -12,7 +12,12 @@ Creation goes through the undocumented `CreateServingConsole`; see
 
 The list keys differ per Action and are spelled out at each call site:
 `inference_servings` for listing and versions, `groups` for instances,
-`events`, `logs`, `scale_history_items`, `terms`.
+`events`, `logs`, `scale_history_items`, `terms`, `metric_groups`.
+
+Every write here unwraps through `_v2_result()`. That is not optional: v2 has
+no `code` field, so a v1-style envelope check turns every real error into
+`API error: None`, which is exactly how `StartServing` / `StopServing` were
+silently broken once already.
 """
 
 from __future__ import annotations
@@ -28,9 +33,11 @@ from inspire.platform.web.browser_api.core import (
 from inspire.platform.web.session import WebSession, get_web_session
 
 __all__ = [
+    "SERVING_API_METRIC_TYPES",
     "ServingInfo",
     "list_servings",
     "list_serving_user_project",
+    "get_serving_api_metrics",
     "get_serving_configs",
     "get_serving_detail",
     "get_serving_terms",
@@ -40,10 +47,35 @@ __all__ = [
     "list_serving_logs",
     "list_serving_scale_history",
     "list_serving_versions",
+    "rollback_serving",
+    "scale_serving",
     "stop_serving",
     "start_serving",
     "delete_serving",
 ]
+
+# `GetServingApiMetric` metric_types, from discovery. These are request-traffic
+# metrics (QPS, latency, tokens), a different family from the resource metrics
+# `GetTaskMetric` serves -- the two share no metric name.
+SERVING_API_METRIC_TYPES: tuple[str, ...] = (
+    "QPS",
+    "SUCCESS_QPS",
+    "FAIL_QPS",
+    "SUCCESS_RATE",
+    "FAIL_RATE",
+    "REQUEST_COUNT",
+    "LATENCY",
+    "TTFT",
+    "TTFT_P50",
+    "TTFT_P95",
+    "TTFT_P99",
+    "TTLT",
+    "TTLT_P50",
+    "TTLT_P95",
+    "TTLT_P99",
+    "INPUT_TOKENS",
+    "OUTPUT_TOKENS",
+)
 
 
 _REFERER_PATH = "/jobs/modelDeployment"
@@ -487,6 +519,8 @@ def create_serving(
     custom_domain: str | None = None,
     inference_serving_type: str = "CUSTOM",
     model_source: str | None = None,
+    is_publicpath_readonly: bool | None = None,
+    enable_auto_scaling: bool | None = None,
     session: Optional[WebSession] = None,
 ) -> dict[str, Any]:
     """Create a custom model deployment via the Browser API.
@@ -495,6 +529,11 @@ def create_serving(
     particular, images are sent by `mirror_id`, and resource specs are sent as
     a nested `resource_spec_price` proto-style object rather than a flat
     `spec_id`.
+
+    `is_publicpath_readonly` and `enable_auto_scaling` are omitted unless the
+    caller passes them, so a create that does not ask for them is byte-for-byte
+    what it was before they existed. `queue_id`, `dataset_info`, `envs` and
+    `scale_status` are **rejected** by this Action and have no counterpart.
     """
     if session is None:
         session = get_web_session()
@@ -521,6 +560,10 @@ def create_serving(
         body["shm_gi"] = int(shm_gi)
     if model_source:
         body["model_source"] = model_source
+    if is_publicpath_readonly is not None:
+        body["is_publicpath_readonly"] = bool(is_publicpath_readonly)
+    if enable_auto_scaling is not None:
+        body["enable_auto_scaling"] = bool(enable_auto_scaling)
 
     # `CreateServingConsole`, not the `CreateServing` that discovery lists.
     # The documented one is described as "via OpenAPI with simplified config"
@@ -529,6 +572,93 @@ def create_serving(
     # `inference_serving_type` / `model_source`). The Console variant is absent
     # from discovery -- like train and hpc -- and accepts this body verbatim.
     return _serving_v2(session, "CreateServingConsole", body, timeout=60)
+
+
+def scale_serving(
+    inference_serving_id: str,
+    *,
+    replica: int,
+    session: Optional[WebSession] = None,
+) -> dict[str, Any]:
+    """Change a serving's replica count via ``Action=ScaleServing``.
+
+    The field is ``replica``, singular -- ``replicas`` (the plural spelling
+    ``CreateServingConsole`` and ``UpdateServing`` both use) is rejected here.
+    """
+    if session is None:
+        session = get_web_session()
+    return _serving_v2(
+        session,
+        "ScaleServing",
+        {"inference_serving_id": inference_serving_id, "replica": int(replica)},
+    )
+
+
+def rollback_serving(
+    inference_serving_id: str,
+    *,
+    version: int,
+    session: Optional[WebSession] = None,
+) -> dict[str, Any]:
+    """Roll a serving back to an earlier version via ``Action=RollbackServing``.
+
+    ``version`` is the deployment version number from ``ListServingVersions``.
+    """
+    if session is None:
+        session = get_web_session()
+    return _serving_v2(
+        session,
+        "RollbackServing",
+        {"inference_serving_id": inference_serving_id, "version": int(version)},
+        timeout=60,
+    )
+
+
+def get_serving_api_metrics(
+    inference_serving_id: str,
+    *,
+    metric_types: Iterable[str],
+    start_timestamp: int,
+    end_timestamp: int,
+    interval_second: int = 60,
+    session: Optional[WebSession] = None,
+) -> list[dict[str, Any]]:
+    """Query request-traffic time series via ``Action=GetServingApiMetric``.
+
+    Returns the raw ``metric_groups`` list; each entry carries ``metric_type``,
+    ``group_name``, ``data_unit`` and a ``time_series`` of
+    ``{timestamp, data}``. Unlike ``GetTaskMetric`` this Action accepts the
+    whole ``metric_types`` list in one request, and it needs no compute-group
+    handle.
+    """
+    if session is None:
+        session = get_web_session()
+    metrics = [str(m).strip() for m in metric_types if str(m).strip()]
+    if not metrics:
+        raise ValueError("no metric_types provided")
+    unknown = [m for m in metrics if m not in SERVING_API_METRIC_TYPES]
+    if unknown:
+        raise ValueError(
+            f"unknown serving API metric(s): {', '.join(unknown)} "
+            f"(valid: {', '.join(SERVING_API_METRIC_TYPES)})"
+        )
+    payload = _serving_v2(
+        session,
+        "GetServingApiMetric",
+        {
+            "inference_serving_id": inference_serving_id,
+            "metric_types": metrics,
+            "time_range": {
+                "start_timestamp": int(start_timestamp),
+                "end_timestamp": int(end_timestamp),
+                "interval_second": int(interval_second),
+            },
+        },
+    )
+    groups = payload.get("metric_groups")
+    if not isinstance(groups, list):
+        return []
+    return [item for item in groups if isinstance(item, dict)]
 
 
 def _serving_action(

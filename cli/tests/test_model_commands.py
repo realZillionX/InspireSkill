@@ -786,3 +786,181 @@ def test_project_alias_with_platform_id_value_is_rejected(
             workspace_id=_WORKSPACE_ID,
             session=_Session(),
         )
+
+
+# ---------------------------------------------------------------------------
+# deploy-config
+# ---------------------------------------------------------------------------
+
+
+def _patch_deploy_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    latest_version: str = "3",
+    recommended: dict[str, Any] | None = None,
+    vllm: bool = True,
+) -> dict[str, Any]:
+    _patch_runtime(monkeypatch, tmp_path)
+    calls: dict[str, Any] = {}
+
+    model = browser_api_module.ModelInfo(
+        model_id="model-secret-123",
+        name="qwen-demo",
+        latest_version=latest_version,
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_models",
+        lambda **_kwargs: ([model], 1),
+    )
+    monkeypatch.setattr(
+        model_commands_module,
+        "_resolve_model_name",
+        lambda *_args, **_kwargs: "model-secret-123",
+    )
+
+    def _recommended(model_id, *, version, session=None, workspace_id=None):
+        calls["recommended"] = {"model_id": model_id, "version": version}
+        return (
+            recommended
+            if recommended is not None
+            else {
+                "min_node_count": 1,
+                "min_gpu_count_per_node": 1,
+                "min_cpu_count_per_node": 2,
+                "min_memory_size_gib_per_node": 16,
+            }
+        )
+
+    def _vllm(model_id, *, version, inference_serving_type="CUSTOM", session=None, workspace_id=None):
+        calls["vllm"] = {"model_id": model_id, "version": version}
+        return vllm
+
+    monkeypatch.setattr(
+        browser_api_module, "get_model_recommended_config", _recommended
+    )
+    monkeypatch.setattr(browser_api_module, "check_model_vllm_compatible", _vllm)
+    return calls
+
+
+def test_model_deploy_config_json_is_a_serving_create_input(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_deploy_config(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "deploy-config", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = _json_data(result.output)
+    assert data["model"] == "qwen-demo"
+    assert data["version"] == 3
+    assert data["vllm_compatible"] is True
+    # The floor is reported in the exact spelling `serving create --quota`
+    # takes, so an Agent does not have to reassemble it.
+    assert data["min_quota"] == "1,2,16"
+    assert data["min_nodes"] == 1
+    _assert_compact_public_payload(data)
+    assert "model-secret-123" not in result.output
+
+
+def test_model_deploy_config_defaults_to_the_latest_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = _patch_deploy_config(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(
+        cli_main, ["model", "deploy-config", "qwen-demo", "--workspace", "训练空间"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["recommended"]["version"] == 3
+    assert calls["vllm"]["version"] == 3
+
+
+def test_model_deploy_config_explicit_version_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = _patch_deploy_config(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "model",
+            "deploy-config",
+            "qwen-demo",
+            "--workspace",
+            "训练空间",
+            "--version",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["recommended"]["version"] == 1
+
+
+def test_model_deploy_config_requires_a_version_it_can_resolve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_deploy_config(monkeypatch, tmp_path, latest_version="")
+
+    result = CliRunner().invoke(
+        cli_main, ["model", "deploy-config", "qwen-demo", "--workspace", "训练空间"]
+    )
+
+    assert result.exit_code != 0
+    assert "--version" in result.output
+
+
+def test_model_deploy_config_omits_a_quota_it_cannot_complete(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A partial floor must not be rendered as a `--quota` triple; a guessed
+    # zero would read as "no GPU needed".
+    _patch_deploy_config(
+        monkeypatch,
+        tmp_path,
+        recommended={"min_node_count": 2, "min_gpu_count_per_node": 8},
+        vllm=False,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "deploy-config", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = _json_data(result.output)
+    assert "min_quota" not in data
+    assert data["min_gpu_per_node"] == 8
+    assert data["min_nodes"] == 2
+    assert data["vllm_compatible"] is False
+
+
+def test_model_deploy_config_rejects_a_platform_handle_before_any_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_model_recommended_config",
+        lambda *_args, **_kwargs: pytest.fail(
+            "raw handle must be rejected before the Browser API call"
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "model",
+            "deploy-config",
+            "model-12345678-1234-1234-1234-123456789abc",
+            "--workspace",
+            "训练空间",
+        ],
+    )
+
+    assert result.exit_code != 0
