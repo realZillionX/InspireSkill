@@ -38,6 +38,7 @@ Job 的关键边界：
 - 日志和工作目录依赖共享盘约定；训练 Repo 建议在 `me:<repo>`，启动命令里使用相对共享盘路径或让脚本自己切目录。
 - Shared Memory 是每个 Job Instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader Workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置。
 - 环境变量由平台注入，不必再拼进启动命令；值可能是凭据，CLI 输出只回显变量名。
+- 平台会为训练任务单独跑 TensorBoard，`job tensorboards` 列出当前账号的那些。真正能用的字段是 Summary Path——event 文件在共享盘上的目录，同项目任意 Notebook 直接读，不需要浏览器。
 - 任务结束后容器默认立即释放。需要事后进容器看现场时，在创建时设置成功 / 失败保留时长，任务会停在保留态等待，过期自动释放；这是排查失败训练最省事的路径，比重跑一次便宜。
 - 状态变化通知（`--enable-notification`，收件人固定为当前用户绑定的飞书账号）和自动容错默认关闭，除非明确启用。
 - 需要项目级持久默认值时写 `[job]` 配置段；提交前用 `job create --dry-run` 检查 Shared Memory、通知和容错的最终生效值。

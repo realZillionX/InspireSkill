@@ -26,6 +26,8 @@
 
 - `notebook status`、`job status`、`hpc status` 显示实例挂了哪些官方数据集，以及各自在容器里的路径。此前 CLI 能设不能读：建的时候可以 `--dataset`，建完想知道「这里面到底有什么数据」只能回网页看。平台在 `GetNotebook` / `GetJob` 里一直回显这份信息，只是没接。它同时给出容器路径而不是平台内部存储路径——后者命名的是用户既不寻址也用不上的内部布局。
 
+- `inspire job tensorboards`：平台会为训练任务单独跑 TensorBoard，此前 CLI 完全看不见它们。值得做成命令的不是那个网页地址（Agent 没有浏览器，这个 CLI 也早就删掉了「打开一个网页」这类命令），而是 Summary Path——event 文件写在共享盘上的目录，同项目任意 Notebook 直接就能读。于是「平台为这次训练开了 TensorBoard」从一条没法用的信息变成了可执行的路径。
+
 - `inspire dataset tags`：列出 `dataset list --tag` 接受的全部 52 个标签及其所属模态。标签名是固定的中文词（`视频生成`、`具身智能`……），猜不出来，此前唯一的发现路径是故意填错一个再去看报错里的候选。
 
 ### 修复

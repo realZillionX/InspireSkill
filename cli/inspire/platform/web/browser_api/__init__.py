@@ -12,6 +12,7 @@ from .availability import (
 )
 from .jobs import (
     JobInfo,
+    TensorboardInfo,
     create_training_job,
     delete_job,
     get_current_user,
@@ -20,6 +21,7 @@ from .jobs import (
     list_job_instances,
     list_job_instance_events,
     list_jobs,
+    list_tensorboards,
     list_train_job_logs,
     stop_training_job,
 )
@@ -171,6 +173,7 @@ from .servings import (
 __all__ = [
     # Jobs / users
     "JobInfo",
+    "TensorboardInfo",
     "create_training_job",
     "delete_job",
     "get_current_user",
@@ -179,6 +182,7 @@ __all__ = [
     "list_job_instances",
     "list_job_instance_events",
     "list_jobs",
+    "list_tensorboards",
     "list_train_job_logs",
     "stop_training_job",
     # Official dataset mounts

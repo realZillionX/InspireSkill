@@ -178,3 +178,70 @@ def test_delete_job_surfaces_running_conflict(monkeypatch) -> None:  # noqa: ANN
 
     with pytest.raises(ValueError, match="Conflict"):
         jobs_module.delete_job("job-abc", session=_FakeSession())
+
+
+def test_list_tensorboards_uses_the_pascal_case_page_parameter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ListTensorboards` reads `PageNumber`; `page` and `page_num` are ignored."""
+    from inspire.platform.web.browser_api import jobs as jobs_module
+
+    sent: dict = {}
+
+    def _fake(session, method, path, *, referer, body=None, timeout=30):  # noqa: ANN001
+        sent["body"] = body
+        sent["path"] = path
+        return {"Result": {"items": [], "total": "0"}}
+
+    monkeypatch.setattr(jobs_module, "_request_json", _fake)
+    jobs_module.list_tensorboards(
+        workspace_id="ws-1", created_by="user-1", page_num=2, page_size=7, session=object()
+    )
+
+    assert "Action=ListTensorboards" in sent["path"]
+    assert sent["body"]["PageNumber"] == 2
+    assert sent["body"]["page_size"] == 7
+    # Without it the Action reports a workspace-wide total against an empty
+    # list, which reads as "you have none".
+    assert sent["body"]["created_by"] == "user-1"
+    assert "page" not in sent["body"] and "page_num" not in sent["body"]
+
+
+def test_list_tensorboards_projects_rows_without_the_status_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from inspire.platform.web.browser_api import jobs as jobs_module
+
+    def _fake(session, method, path, *, referer, body=None, timeout=30):  # noqa: ANN001
+        return {
+            "Result": {
+                "items": [
+                    {
+                        "name": "tb-a",
+                        "status": "tb_status_running",
+                        "job_name": "train-a",
+                        "tb_summary_path": "/inspire/hdd/project/p/u/logs",
+                        "logic_compute_group_name": "H200",
+                        "created_at": "1769591284000",
+                    }
+                ],
+                "total": "6",
+            }
+        }
+
+    monkeypatch.setattr(jobs_module, "_request_json", _fake)
+    boards, total = jobs_module.list_tensorboards(
+        workspace_id="ws-1", created_by="user-1", session=object()
+    )
+
+    assert total == 6
+    assert boards[0].status == "running"
+    assert boards[0].summary_path == "/inspire/hdd/project/p/u/logs"
+    assert boards[0].job_name == "train-a"
+
+
+def test_list_tensorboards_requires_a_workspace(monkeypatch: pytest.MonkeyPatch) -> None:
+    from inspire.platform.web.browser_api import jobs as jobs_module
+
+    with pytest.raises(ValueError, match="Workspace"):
+        jobs_module.list_tensorboards(workspace_id=None, created_by="u", session=object())

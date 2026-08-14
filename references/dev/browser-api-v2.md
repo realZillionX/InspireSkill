@@ -124,7 +124,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 | 路由 | Action |
 | --- | --- |
-| `train` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobInstances`、`ListJobEvents`、`GetJobLog`、`StopJob`、`DeleteJob` |
+| `train` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobInstances`、`ListJobEvents`、`ListTensorboards`、`GetJobLog`、`StopJob`、`DeleteJob` |
 | `hpc` | `CreateJobConsole`、`GetJob`、`ListJobs`、`ListJobEvents`、`ListJobInstances`、`GetJobLog`、`StopJob`、`DeleteJob` |
 | `inference_serving` | `CreateServingConsole`、`ListServings`、`GetServing`、`ListServingVersions`、`ListServingInstances`、`ListServingEvents`、`ListServingScaleHistory`、`GetServingLog`、`GetServingApiMetric`、`GetInferenceServingTerms`、`GetServingConfigByWorkspaceId`、`GetInferenceServingUserProjectList`、`StartServing`、`StopServing`、`ScaleServing`、`RollbackServing`、`DeleteServing` |
 | `ray` | `CreateJob`、`GetJob`、`ListJobs`、`ListJobCreators`、`ListJobEvents`、`ListJobInstances`、`ListJobScalingHistories`、`StartJob`、`StopJob`、`DeleteJob` |
@@ -158,7 +158,8 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 - **`envs` 的元素是 `{name, value}`，不是 `{key, value}`**，`key` 会被拒为 `unknown field "key"`。`train.GetJob` 的读投影**不回显 `envs`**（容器里明明有变量，读回来是 `[]`），所以不能用读接口核对写了什么。
 - **`is_projectuserspath_readonly` 只有 notebook 有**，而且要项目 Maintainer：普通成员传了会拿到 `AccessForbidden: only project maintainer can enable project users path readonly mount`。
 - **HPC 的最大运行时长不在顶层**。`max_running_time_ms` 和 `max_running_time_minutes` 打顶层都是 `unknown field`；它嵌在 `sbatch_script` 里，而且控制台**同时发两份**：`job_max_time`（`"D-HH:MM:SS"`，即 Slurm `--time`）和 `max_running_time_days` / `_hours` / `_minutes`。`slurm_cluster_spec` 一个都不收。
-- `train.mounts` 的元素是 `{real_path, mount_path, volume}`，没有 `read_only`。`mount_path` 虽然被 notebook 和 train 接受，但递归抓完整个控制台 SPA 也找不到任何生产者，`volume` 的取值无从对照，因此当前**故意不接**。
+- **`mount_path` / `mounts` 是死字段：接受、存储、不生效。** 元素是 `{real_path, mount_path, volume}`，没有 `read_only`。受控验证的做法是一次创建里同时请求三种 `volume` 写法（存储池名 `hdd`、空串、`share-hdd`），三条全部被接受并原样存进 `start_config.mount_path`，但实例起来后 `/mnt/` 是空的，`find / -name 'probe-*'` 零命中，`mount` 里只有平台自动挂的那几条。控制台侧也对得上：notebook 和 train 表单的「高级设置」展开后只有「指定计算节点」/「排除节点」和「项目public只读挂载」，没有任何自定义挂载入口，递归抓完 322 个 SPA chunk 也找不到 `real_path` / `mount_path`。**结论不是「契约未知」，是「这个字段当前没有消费者」**，不要再花时间猜 `volume` 的取值。
+- **`hpc` 的 `working_dir` 同类，而且更早暴露**：`CreateJobConsole` 接受它，但 `GetJob` 读回来是 `None`——平台连存都没存。对照组是同一次请求里的 `dataset_info`、`description`、`ttl_after_job_finish_seconds`，三个都完整 round-trip。**写进去读不回来，就不要接**。
 - `reserve_on_fail_ms` / `reserve_on_success_ms` 和 `max_running_time_ms` 一样是**字符串**类型，不是数字。
 
 ### `dataset`：官方数据集挂载
@@ -238,6 +239,10 @@ POST /api/v2/dataset?Action=ValidateDataset
 - 创建要用 **`CreateServingConsole`**，不是 discovery 里那个 `CreateServing`。后者的 Description 明写「via OpenAPI with simplified config」，契约确实不同：要 `spec_id` 而不是 `resource_spec_price`，`image` 是普通字符串而不是 `mirror_id`，且不收 `description` / `inference_serving_type` / `model_source`。Console 变体和 `train` / `hpc` 一样不在 discovery 里，但**逐字接受 v1 的控制台请求体**，迁移只是换 URL。这里踩过一次弯路：只测了 discovery 里的 `CreateServing`，看到一串 unknown field 就判定「契约不同、不能迁」，而没有先按第 3 节那条规则查 Console 变体。**看到写操作的字段被大面积拒绝时，第一反应应该是「是不是找错 Action 了」，而不是「契约变了」。**
 
 `hpc` 是全域迁移，且是最省事的一个：discovery 对 hpc 的每个 Action **都没有声明任何参数**，但实测下来 v1 的请求体逐字被接受，响应字段也逐字一致，所以 Wrapper 只换了 URL。`DeleteJob` 要求先停止，运行中删除返回 `Conflict`；id 不存在返回 `ResourceNotFound`（不像 `train.DeleteJob` 给的是 `AccessForbidden`）。
+
+**`train_enable_*` 是 Workspace 能力开关，不是可传的参数。** `GetTrainScheduleConfig` 返回一组 `train_enable_pre_check` / `train_enable_troubleshoot` / `train_enable_specified_nodes` / `train_enable_slow_detect` / `train_enable_vccl`，控制台据此决定渲染哪些控件。两个可达 Workspace 上前三个是 `false`（所以 `specified_nodes` 和 `pre_check_items` 无法验证效果），后两个是 `true`——**但表单里照样没有对应控件**。所以 `enable_slow_detect` / `enable_vccl` 虽然被 `CreateJobConsole` 接受，却不是用户可选项，而是平台侧行为；CLI 不暴露它们，理由不是「开关关着」，是「产品里根本没有这个选择」。判断某个字段该不该接时，先看这组开关，再看控制台是否真的渲染了控件，两者缺一不可。
+
+`train.ListTensorboards` 有两处不可猜：分页参数是 PascalCase 的 **`PageNumber`**（`page` 和 `page_num` 都被忽略，静默返回空列表），以及**不带 `created_by` 时返回整个 Workspace 的 `total` 配一个空 `items`**——读起来像「你一个都没有」，实际是那批行不归你读。带上 `created_by` 才拿得到自己的行。行里真正有用的是 `tb_summary_path`（共享盘上的 event 目录，任何同项目 Notebook 都能读），不是 `url`；后者是 `/api/v1/train_job/tensorboard/tb-<id>/` 这样的平台路径，要浏览器才有意义。
 
 `train` 把 v1 两个事件端点合并成了一个 Action：`/train_job/job_event_list`（裸 `job_id`）和 `/train_job/events/list`（`filter` 信封）在 v2 都是 `ListJobEvents`，只靠 `filter.object_type` 取 `job` / `instance` 区分，事件条数与 v1 逐一对得上。另有一个同名易混的 `ListJobInstanceEvents`（参数是 `job_id` + `instance_name`），它无论返回多少条 `total` 都是 `"0"`，需要分页的调用方不要用它。`DeleteJob` 与 `hpc.DeleteJob` 语义一致：要求先停止，运行中删除返回 `Conflict: 当前状态（运行中）无法删除`。差别在找不到资源时它返回 `AccessForbidden` 而不是 `ResourceNotFound`。受控验证在 `分布式训练空间` 用 1 卡 H100 最小规格完成（建→停→删→确认消失，随即释放）；分布式训练任务在 `CPU资源空间` 的所有 CPU 组都建不起来（平台报 `无法找到对应镜像`，实际是组不支持），所以这一条只能在 GPU 工作空间验。
 
