@@ -6,7 +6,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import click
 
@@ -17,6 +17,12 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
 )
 from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.utils.dataset_mounts import (
+    DatasetSpecError,
+    dataset_mount_views,
+    describe_dataset_mounts,
+    resolve_dataset_info,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary, remember_resource_identity
 from inspire.cli.utils.project_resolver import resolve_project
@@ -48,7 +54,7 @@ from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.browser_api import NotebookFailedError
+from inspire.platform.web.browser_api import DatasetMount, NotebookFailedError
 from inspire.platform.web.browser_api.workspaces import (
     WorkspaceCapabilityError,
     is_fair_scheduling_workspace,
@@ -377,6 +383,13 @@ def create_notebook_and_report(
     json_output: bool,
     task_priority: Optional[int] = None,
     node_id: Optional[str] = None,
+    dataset_mounts: Sequence[DatasetMount] = (),
+    dataset_info: Optional[list[dict[str, str]]] = None,
+    enable_notification: Optional[bool] = None,
+    stop_hour: Optional[int] = None,
+    stop_minute: Optional[int] = None,
+    public_path_readonly: Optional[bool] = None,
+    project_path_readonly: Optional[bool] = None,
 ) -> str | None:
     try:
         resource_spec_price = build_resource_spec_price(quota=quota)
@@ -398,6 +411,12 @@ def create_notebook_and_report(
             task_priority=task_priority,
             resource_spec_price=resource_spec_price,
             node_id=node_id,
+            dataset_info=dataset_info,
+            enable_notification=enable_notification,
+            stop_hour=stop_hour,
+            stop_minute=stop_minute,
+            is_publicpath_readonly=public_path_readonly,
+            is_projectuserspath_readonly=project_path_readonly,
         )
 
         notebook_id = _extract_notebook_id(result)
@@ -429,9 +448,14 @@ def create_notebook_and_report(
         )
 
         if json_output:
-            click.echo(json_formatter.format_json(public_operation(name, "created")))
+            extra: dict[str, Any] = {}
+            if dataset_mounts:
+                extra["datasets"] = dataset_mount_views(dataset_mounts)
+            click.echo(json_formatter.format_json(public_operation(name, "created", **extra)))
         else:
             click.echo(human_formatter.format_mutation_success("Notebook", "created", name))
+            for line in describe_dataset_mounts(dataset_mounts):
+                click.echo(f"Dataset: {line}")
 
         return notebook_id
 
@@ -671,6 +695,18 @@ def _fetch_notebook_images(
     return None
 
 
+def _split_auto_stop_after(minutes: Optional[int]) -> tuple[Optional[int], Optional[int]]:
+    """Split a run duration into the hour/minute pair the platform expects.
+
+    The console asks for 运行时长 as two numbers and refuses anything under two
+    minutes; the platform only reads them while `auto_stop` is on.
+    """
+    if minutes is None:
+        return None, None
+    total = int(minutes)
+    return total // 60, total % 60
+
+
 def _resolve_notebook_name(name: Optional[str], *, json_output: bool) -> str:
     if name:
         return name
@@ -755,6 +791,11 @@ def run_notebook_create(
     group: Optional[str] = None,
     node: Optional[str] = None,
     profile_name: str | None = None,
+    dataset_mounts: Sequence[DatasetMount] = (),
+    enable_notification: Optional[bool] = None,
+    auto_stop_after: Optional[int] = None,
+    public_path_readonly: Optional[bool] = None,
+    project_path_readonly: Optional[bool] = None,
 ) -> None:
     del project_explicit
     json_output = resolve_json_output(ctx, json_output)
@@ -933,6 +974,24 @@ def run_notebook_create(
         compute_group=resolved_quota.compute_group_name,
     )
 
+    # Resolving the mounts is the platform's own 校验数据 round trip: it fills
+    # in the storage path each entry needs and turns a typo into an error here
+    # rather than into a notebook that never starts.
+    try:
+        dataset_info = resolve_dataset_info(
+            dataset_mounts,
+            workspace_id=workspace_id,
+            session=session,
+        )
+    except DatasetSpecError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+    except Exception as e:
+        _handle_error(ctx, "APIError", f"Could not check the dataset mounts: {e}", EXIT_API_ERROR)
+        return
+
+    stop_hour, stop_minute = _split_auto_stop_after(auto_stop_after)
+
     notebook_id = create_notebook_and_report(
         ctx,
         name=name,
@@ -941,12 +1000,19 @@ def run_notebook_create(
         selected_image=selected_image,
         quota=resolved_quota,
         shm_size=shm_size,
-        auto_stop=auto_stop,
+        auto_stop=auto_stop or auto_stop_after is not None,
         workspace_id=workspace_id,
         session=session,
         json_output=json_output,
         task_priority=task_priority,
         node_id=node,
+        dataset_mounts=dataset_mounts,
+        dataset_info=dataset_info or None,
+        enable_notification=enable_notification,
+        stop_hour=stop_hour,
+        stop_minute=stop_minute,
+        public_path_readonly=public_path_readonly,
+        project_path_readonly=project_path_readonly,
     )
     if not notebook_id:
         return

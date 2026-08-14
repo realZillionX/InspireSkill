@@ -11,7 +11,9 @@ Spec grammar is `<dataset>:<version>`, both being the codes shown by
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
+
+import click
 
 from inspire.platform.web.browser_api.datasets import (
     DatasetMount,
@@ -23,9 +25,12 @@ from inspire.platform.web.browser_api.datasets import (
 __all__ = [
     "DATASET_OPTION_HELP",
     "DatasetSpecError",
+    "dataset_mount_views",
+    "dataset_option",
     "describe_dataset_mounts",
     "parse_dataset_spec",
     "parse_dataset_specs",
+    "parse_dataset_specs_or_usage_error",
     "resolve_dataset_info",
 ]
 
@@ -108,3 +113,44 @@ def resolve_dataset_info(
 def describe_dataset_mounts(mounts: Sequence[DatasetMount]) -> list[str]:
     """Human lines for dry-run and post-create output."""
     return [f"{m.dataset}:{m.version} -> {container_mount_path(m.dataset, m.version)}" for m in mounts]
+
+
+def dataset_mount_views(mounts: Sequence[DatasetMount]) -> list[dict[str, str]]:
+    """`--json` projection of the requested mounts.
+
+    Only the two names the caller typed and the container path they land on;
+    the storage path the platform resolved stays inside the request body.
+    """
+    return [
+        {
+            "name": m.dataset,
+            "version": m.version,
+            "path": container_mount_path(m.dataset, m.version),
+        }
+        for m in mounts
+    ]
+
+
+def dataset_option() -> Callable:
+    """Return the shared `--dataset` option used by the create commands."""
+    return click.option(
+        "--dataset",
+        "datasets",
+        multiple=True,
+        metavar="NAME:VERSION",
+        help=DATASET_OPTION_HELP,
+    )
+
+
+def parse_dataset_specs_or_usage_error(
+    values: Optional[Iterable[str]],
+) -> list[DatasetMount]:
+    """Parse `--dataset` values, reporting a bad spec as a Click usage error.
+
+    A malformed spec is a typo in the command line, not a platform verdict, so
+    it is reported before any workspace, quota or project is resolved.
+    """
+    try:
+        return parse_dataset_specs(values)
+    except DatasetSpecError as e:
+        raise click.UsageError(str(e)) from e

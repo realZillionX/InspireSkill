@@ -502,12 +502,24 @@ def create_notebook(
     task_priority: Optional[int] = None,
     resource_spec_price: Optional[dict] = None,
     node_id: Optional[str] = None,
+    dataset_info: Optional[list[dict[str, str]]] = None,
+    enable_notification: Optional[bool] = None,
+    stop_hour: Optional[int] = None,
+    stop_minute: Optional[int] = None,
+    is_publicpath_readonly: Optional[bool] = None,
+    is_projectuserspath_readonly: Optional[bool] = None,
 ) -> dict:
     """Create a new notebook instance.
 
     The request body must match the exact structure the platform UI sends.
     Captured via Playwright network interception — the proto rejects unknown
     fields, so only send fields the backend expects.
+
+    Every optional argument stays out of the body unless the caller asks for
+    it: an omitted argument must leave the request byte-for-byte identical to
+    one built without it, so the platform keeps applying its own default. That
+    holds for the two read-only guards as well, even though read-only is the
+    safer value.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
@@ -550,6 +562,27 @@ def create_notebook(
 
     if node_id:
         body["node_id"] = node_id
+
+    # `dataset_info` entries carry the storage path `dataset.ValidateDataset`
+    # resolved, alongside the dataset and version codes; the container sees
+    # each mount at /inspire/dataset/<dataset>/<version>.
+    if dataset_info:
+        body["dataset_info"] = [dict(entry) for entry in dataset_info]
+
+    if enable_notification is not None:
+        body["enable_notification"] = bool(enable_notification)
+
+    # The platform reads the stop timer as hours + minutes and only honours it
+    # while `auto_stop` is on, so both halves are sent together.
+    if stop_hour is not None:
+        body["stop_hour"] = int(stop_hour)
+    if stop_minute is not None:
+        body["stop_minute"] = int(stop_minute)
+
+    if is_publicpath_readonly is not None:
+        body["is_publicpath_readonly"] = bool(is_publicpath_readonly)
+    if is_projectuserspath_readonly is not None:
+        body["is_projectuserspath_readonly"] = bool(is_projectuserspath_readonly)
 
     return _notebook_v2(session, "CreateNotebook", body)
 

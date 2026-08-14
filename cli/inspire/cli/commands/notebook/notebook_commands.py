@@ -32,6 +32,10 @@ from inspire.cli.utils.collection_output import (
     resolve_collection_limit,
     truncation_notice,
 )
+from inspire.cli.utils.dataset_mounts import (
+    dataset_option,
+    parse_dataset_specs_or_usage_error,
+)
 from inspire.cli.utils.errors import (
     exit_with_error as _handle_error,
     require_confirmation,
@@ -173,6 +177,43 @@ def _with_workspace_display_name(item: dict, workspace_name: str) -> dict:
     ),
 )
 @click.option(
+    "--auto-stop-after",
+    type=click.IntRange(min=2),
+    default=None,
+    metavar="MINUTES",
+    help=(
+        "Stop the notebook this many minutes after it starts running (the "
+        "platform's 运行时长 timer, minimum 2). Implies --auto-stop. Omit to "
+        "leave the timer unset."
+    ),
+)
+@dataset_option()
+@click.option(
+    "--enable-notification/--no-enable-notification",
+    default=None,
+    help=(
+        "Send Feishu notifications to the current user when this notebook "
+        "changes state. Omit to leave the platform default."
+    ),
+)
+@click.option(
+    "--public-path-readonly/--no-public-path-readonly",
+    default=None,
+    help=(
+        "Mount the project's public path read-only inside the container "
+        "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
+    ),
+)
+@click.option(
+    "--project-path-readonly/--no-project-path-readonly",
+    default=None,
+    help=(
+        "Mount the project's per-member paths read-only inside the container "
+        "(平台 高级设置·项目成员只读挂载; the platform only offers this to project "
+        "maintainers). Omit to leave the platform default."
+    ),
+)
+@click.option(
     "--wait/--no-wait",
     default=True,
     help=(
@@ -214,6 +255,11 @@ def create_notebook_cmd(
     image: Optional[str],
     shm_size: Optional[int],
     auto_stop: bool,
+    auto_stop_after: Optional[int],
+    datasets: tuple[str, ...],
+    enable_notification: Optional[bool],
+    public_path_readonly: Optional[bool],
+    project_path_readonly: Optional[bool],
     wait: bool,
     post_start: Optional[str],
     post_start_script: Optional[Path],
@@ -236,10 +282,14 @@ def create_notebook_cmd(
         inspire notebook create --workspace 分布式训练空间 --project CI-情境智能 \
           --image sandbox-base:latest --group H200-2号机房 -q 1,20,200 \
           --node qb-prod-gpu1736
+        inspire notebook create --workspace CPU资源空间 --project CI-情境智能 \
+          --image sandbox-base:latest --group CPU资源-2 -q 0,4,32 \
+          --dataset pixabay-81k:v0 --auto-stop-after 120
     """
     if post_start and post_start_script:
         raise click.UsageError("Use either --post-start or --post-start-script, not both.")
 
+    dataset_mounts = parse_dataset_specs_or_usage_error(datasets)
     project_explicit = bool(project)
 
     run_notebook_create(
@@ -261,6 +311,11 @@ def create_notebook_cmd(
         group=group,
         node=node,
         profile_name=profile_name,
+        dataset_mounts=dataset_mounts,
+        enable_notification=enable_notification,
+        auto_stop_after=auto_stop_after,
+        public_path_readonly=public_path_readonly,
+        project_path_readonly=project_path_readonly,
     )
 
 

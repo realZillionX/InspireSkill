@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, cast
+from typing import Any, Optional, Sequence, cast
 
 import click
 
@@ -21,6 +21,14 @@ from inspire.cli.utils.collection_output import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
+)
+from inspire.cli.utils.dataset_mounts import (
+    DatasetSpecError,
+    dataset_mount_views,
+    dataset_option,
+    describe_dataset_mounts,
+    parse_dataset_specs_or_usage_error,
+    resolve_dataset_info,
 )
 from inspire.cli.utils.errors import (
     exit_with_error as _handle_error,
@@ -55,6 +63,7 @@ from inspire.config.workspaces import (
     workspace_name_map,
 )
 from inspire.platform.web import browser_api as browser_api_module
+from inspire.platform.web.browser_api import DatasetMount
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 from .public_output import (
@@ -241,10 +250,11 @@ def _hpc_plan_payload(
     project_label: str,
     workspace_label: str,
     compute_group_name: str,
+    dataset_mounts: Sequence[DatasetMount] = (),
 ) -> dict[str, Any]:
     sbatch = create_kwargs.get("sbatch_script") or {}
     cluster = create_kwargs.get("slurm_cluster_spec") or {}
-    return {
+    payload: dict[str, Any] = {
         "dry_run": True,
         "name": name,
         "workspace": workspace_label,
@@ -263,6 +273,38 @@ def _hpc_plan_payload(
         "memory_per_cpu": sbatch.get("memory_per_cpu"),
         "enable_hyper_threading": sbatch.get("enable_hyper_threading"),
         "priority": create_kwargs.get("task_priority"),
+        "enable_notification": create_kwargs.get("enable_notification"),
+    }
+    if dataset_mounts:
+        payload["datasets"] = dataset_mount_views(dataset_mounts)
+    if sbatch.get("job_max_time"):
+        payload["max_time"] = sbatch.get("job_max_time")
+    for key in ("description", "ttl_after_job_finish_seconds"):
+        if key in create_kwargs:
+            payload[key] = create_kwargs[key]
+    if "is_publicpath_readonly" in create_kwargs:
+        payload["public_path_readonly"] = create_kwargs["is_publicpath_readonly"]
+    return payload
+
+
+def _slurm_time_fields(max_time_hours: float | None) -> dict[str, Any]:
+    """Build the `sbatch_script` runtime cap the console sends.
+
+    最大运行时长 is not a top-level field: the console writes it into
+    `sbatch_script` twice, once as the Slurm ``--time`` string
+    ``D-HH:MM:SS`` and once as the day/hour/minute breakdown, and sends both.
+    """
+    if max_time_hours is None:
+        return {}
+    total_seconds = int(round(max_time_hours * 3600))
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return {
+        "job_max_time": f"{days}-{hours:02d}:{minutes:02d}:{seconds:02d}",
+        "max_running_time_days": days,
+        "max_running_time_hours": hours,
+        "max_running_time_minutes": minutes,
     }
 
 
@@ -283,21 +325,34 @@ def build_hpc_create_payload(
     memory_per_cpu: int,
     enable_hyper_threading: bool,
     resource_spec_price: dict[str, Any],
+    enable_notification: bool = False,
+    max_time_hours: float | None = None,
+    dataset_info: list[dict[str, str]] | None = None,
+    description: str | None = None,
+    keep_after_finish_hours: float | None = None,
+    public_path_readonly: bool | None = None,
     session: Any = None,
 ) -> dict[str, Any]:
-    """Build the current Web UI v2 HPC create payload."""
+    """Build the current Web UI v2 HPC create payload.
+
+    Optional arguments stay out of the body unless the caller sets them, so a
+    payload built without them is byte-for-byte the one this command has always
+    sent. ``enable_notification`` is the exception: it has always been part of
+    the body, so it keeps being sent and only its value is now selectable.
+    """
     payload: dict[str, Any] = {
         "job_name": name,
         "logic_compute_group_id": logic_compute_group_id,
         "project_id": project_id,
         "workspace_id": workspace_id,
-        "enable_notification": False,
+        "enable_notification": bool(enable_notification),
         "sbatch_script": {
             "number_of_tasks": int(number_of_tasks),
             "cpus_per_task": int(cpus_per_task),
             "memory_per_cpu": f"{int(memory_per_cpu)}G",
             "enable_hyper_threading": bool(enable_hyper_threading),
             "entrypoint": entrypoint,
+            **_slurm_time_fields(max_time_hours),
         },
         "slurm_cluster_spec": {
             "predef_quota_id": quota_id,
@@ -316,6 +371,15 @@ def build_hpc_create_payload(
         # latter with "priority must be set", which reads like the value is
         # missing rather than misnamed.
         payload["priority"] = int(task_priority)
+
+    if dataset_info:
+        payload["dataset_info"] = [dict(entry) for entry in dataset_info]
+    if description is not None:
+        payload["description"] = description
+    if keep_after_finish_hours is not None:
+        payload["ttl_after_job_finish_seconds"] = int(round(keep_after_finish_hours * 3600))
+    if public_path_readonly is not None:
+        payload["is_publicpath_readonly"] = bool(public_path_readonly)
     return payload
 
 
@@ -795,6 +859,50 @@ def list_hpc(
     help="Enable hyper-threading",
 )
 @click.option(
+    "--max-time",
+    type=click.FloatRange(min=0, min_open=True),
+    default=None,
+    metavar="HOURS",
+    help=(
+        "Max runtime in hours, sent as the Slurm '--time' cap. Omit to leave "
+        "the workspace default; the workspace also enforces its own ceiling."
+    ),
+)
+@click.option(
+    "--keep-after-finish",
+    type=click.FloatRange(min=0, min_open=True),
+    default=None,
+    metavar="HOURS",
+    help=(
+        "Keep the job's containers this many hours after it finishes, so they "
+        "can still be inspected. Omit to let the platform release them as usual."
+    ),
+)
+@dataset_option()
+@click.option(
+    "--description",
+    default=None,
+    metavar="TEXT",
+    help="Free-text description stored with the job on the platform.",
+)
+@click.option(
+    "--enable-notification/--no-enable-notification",
+    default=False,
+    show_default=True,
+    help=(
+        "Send Feishu notifications to the current user when this job changes "
+        "state (running / succeeded / failed)."
+    ),
+)
+@click.option(
+    "--public-path-readonly/--no-public-path-readonly",
+    default=None,
+    help=(
+        "Mount the project's public path read-only inside the containers "
+        "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help=(
@@ -820,6 +928,12 @@ def create_hpc(
     cpus_per_task: Optional[int],
     memory_per_cpu: Optional[int],
     enable_hyper_threading: bool,
+    max_time: Optional[float],
+    keep_after_finish: Optional[float],
+    datasets: tuple[str, ...],
+    description: Optional[str],
+    enable_notification: bool,
+    public_path_readonly: Optional[bool],
     dry_run: bool,
 ) -> None:
     """Create a CPU Slurm / HPC batch job.
@@ -839,7 +953,11 @@ def create_hpc(
           --group HPC-可上网区资源-2 -q 0,20,256 --image hpc-base:v1 \
           -c 'srun bash -lc "python preprocess.py"'
         inspire hpc create -n probe --profile cpu-hpc -c 'srun hostname' --dry-run
+        inspire hpc create -n index --profile cpu-hpc --dataset pixabay-81k:v0 \
+          --max-time 4 --keep-after-finish 0.5 \
+          -c 'srun bash -lc "python index.py /inspire/dataset/pixabay-81k/v0"'
     """
+    dataset_mounts = parse_dataset_specs_or_usage_error(datasets)
     try:
         from inspire.cli.utils.quota_resolver import (
             QuotaMatchError,
@@ -953,6 +1071,18 @@ def create_hpc(
         if memory_per_cpu is None:
             memory_per_cpu = max(1, int(quota_spec.memory_gib) // max(1, int(cpus_per_task)))
 
+        # The platform resolves and checks every mount before the job is
+        # submitted, exactly as the console's 校验数据 button does.
+        try:
+            dataset_info = resolve_dataset_info(
+                dataset_mounts,
+                workspace_id=resolved_workspace_id,
+                session=session,
+            )
+        except DatasetSpecError as e:
+            _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+            return
+
         create_kwargs = build_hpc_create_payload(
             name=name,
             logic_compute_group_id=resolved_compute_group_id,
@@ -969,6 +1099,12 @@ def create_hpc(
             memory_per_cpu=memory_per_cpu,
             enable_hyper_threading=enable_hyper_threading,
             resource_spec_price=resource_spec_price,
+            enable_notification=enable_notification,
+            max_time_hours=max_time,
+            dataset_info=dataset_info,
+            description=description,
+            keep_after_finish_hours=keep_after_finish,
+            public_path_readonly=public_path_readonly,
             session=session,
         )
 
@@ -982,6 +1118,7 @@ def create_hpc(
                 project_label=project_text,
                 workspace_label=workspace_text,
                 compute_group_name=resolved_quota.compute_group_name,
+                dataset_mounts=dataset_mounts,
             )
             if ctx.json_output:
                 click.echo(json_formatter.format_json(payload))
@@ -995,6 +1132,21 @@ def create_hpc(
                 click.echo(f"Priority: {final_priority}")
             if instance_count > 1:
                 click.echo(f"Nodes: {instance_count}")
+            for line in describe_dataset_mounts(dataset_mounts):
+                click.echo(f"Dataset: {line}")
+            max_time_text = (create_kwargs.get("sbatch_script") or {}).get("job_max_time")
+            if max_time_text:
+                click.echo(f"Max time: {max_time_text} (day-hh:mm:ss)")
+            if keep_after_finish is not None:
+                click.echo(f"Keep after finish: {keep_after_finish} h")
+            if description is not None:
+                click.echo(f"Description: {scrub_raw_ids(description)}")
+            if enable_notification:
+                click.echo("Notifications: enabled")
+            if public_path_readonly is not None:
+                click.echo(
+                    "Public path: read-only" if public_path_readonly else "Public path: writable"
+                )
             click.echo(f"Command: {scrub_raw_ids(entrypoint)}")
             return
 
@@ -1015,14 +1167,15 @@ def create_hpc(
             )
 
         if ctx.json_output:
-            click.echo(
-                json_formatter.format_json(
-                    {"name": name, "status": "created"}
-                )
-            )
+            created: dict[str, Any] = {"name": name, "status": "created"}
+            if dataset_mounts:
+                created["datasets"] = dataset_mount_views(dataset_mounts)
+            click.echo(json_formatter.format_json(created))
             return
 
         click.echo(human_formatter.format_mutation_success("HPC", "created", name))
+        for line in describe_dataset_mounts(dataset_mounts):
+            click.echo(f"Dataset: {line}")
 
     except TaskPriorityError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)

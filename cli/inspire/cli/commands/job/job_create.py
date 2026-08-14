@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
 
 import click
 
@@ -15,6 +15,14 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils import job_submit
+from inspire.cli.utils.dataset_mounts import (
+    DatasetSpecError,
+    dataset_mount_views,
+    dataset_option,
+    describe_dataset_mounts,
+    parse_dataset_specs_or_usage_error,
+    resolve_dataset_info,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary, remember_resource_identity
 from inspire.cli.utils.raw_ids import scrub_raw_ids
@@ -33,6 +41,7 @@ from inspire.cli.utils.quota_resolver import (
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import select_workspace_id, workspace_label
+from inspire.platform.web.browser_api import DatasetMount
 from inspire.platform.web.session import get_web_session
 from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
 
@@ -54,9 +63,16 @@ def run_job_create(
     dry_run: bool = False,
     auto_fault_tolerance: Optional[bool] = None,
     fault_tolerance_max_retry: Optional[int] = None,
+    fault_tolerance_retry_interval: Optional[int] = None,
     enable_notification: Optional[bool] = None,
     exclude_nodes: tuple[str, ...] | None = None,
     shm_size: Optional[int] = None,
+    dataset_mounts: Sequence[DatasetMount] = (),
+    envs: Optional[list[dict[str, str]]] = None,
+    description: Optional[str] = None,
+    keep_after_success: Optional[float] = None,
+    keep_after_failure: Optional[float] = None,
+    public_path_readonly: Optional[bool] = None,
 ) -> None:
     """Run the job creation flow."""
     try:
@@ -187,6 +203,19 @@ def run_job_create(
             fair_scheduling=fair_scheduling,
             project_limit=selected.priority_name,
         )
+
+        # The platform resolves and checks every mount before the job is
+        # submitted, exactly as the console's 校验数据 button does.
+        try:
+            dataset_info = resolve_dataset_info(
+                dataset_mounts,
+                workspace_id=selected_workspace_id,
+                session=session,
+            )
+        except DatasetSpecError as e:
+            _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+            return
+
         try:
             plan = job_submit.build_training_job_plan(
                 config=config,
@@ -206,6 +235,13 @@ def run_job_create(
                 enable_notification=enable_notification,
                 exclude_nodes=exclude_nodes,
                 shm_size=shm_size,
+                dataset_info=dataset_info,
+                envs=envs,
+                description=description,
+                keep_after_success_hours=keep_after_success,
+                keep_after_failure_hours=keep_after_failure,
+                public_path_readonly=public_path_readonly,
+                fault_tolerance_retry_interval_sec=fault_tolerance_retry_interval,
                 session=session,
             )
         except ValueError as e:
@@ -247,6 +283,18 @@ def run_job_create(
                     dry_run_payload["exclude_nodes"] = [
                         scrub_raw_ids(node) for node in plan_exclude_nodes
                     ]
+                if dataset_mounts:
+                    dry_run_payload["datasets"] = dataset_mount_views(dataset_mounts)
+                if envs:
+                    dry_run_payload["env"] = [entry["name"] for entry in envs]
+                if description is not None:
+                    dry_run_payload["description"] = scrub_raw_ids(description)
+                if keep_after_success is not None:
+                    dry_run_payload["keep_after_success_hours"] = keep_after_success
+                if keep_after_failure is not None:
+                    dry_run_payload["keep_after_failure_hours"] = keep_after_failure
+                if public_path_readonly is not None:
+                    dry_run_payload["public_path_readonly"] = bool(public_path_readonly)
                 click.echo(json_formatter.format_json(dry_run_payload))
                 return
             click.echo(f"Create plan: {scrub_raw_ids(name)}")
@@ -264,6 +312,21 @@ def run_job_create(
                 click.echo(f"Shared memory: {plan.shm_size_gib} GiB")
             if plan_exclude_nodes:
                 click.echo(f"Exclude nodes: {scrub_raw_ids(', '.join(plan_exclude_nodes))}")
+            for line in describe_dataset_mounts(dataset_mounts):
+                click.echo(f"Dataset: {line}")
+            if envs:
+                # Names only: a value can be a token, and a plan is printed.
+                click.echo(f"Env: {', '.join(entry['name'] for entry in envs)}")
+            if description is not None:
+                click.echo(f"Description: {scrub_raw_ids(description)}")
+            if keep_after_success is not None:
+                click.echo(f"Keep after success: {keep_after_success} h")
+            if keep_after_failure is not None:
+                click.echo(f"Keep after failure: {keep_after_failure} h")
+            if public_path_readonly is not None:
+                click.echo(
+                    "Public path: read-only" if public_path_readonly else "Public path: writable"
+                )
             click.echo(f"Image: {scrub_raw_ids(image)}")
             click.echo(f"Command: {scrub_raw_ids(plan.wrapped_command)}")
             return
@@ -287,6 +350,13 @@ def run_job_create(
             enable_notification=enable_notification,
             exclude_nodes=exclude_nodes,
             shm_size=shm_size,
+            dataset_info=dataset_info,
+            envs=envs,
+            description=description,
+            keep_after_success_hours=keep_after_success,
+            keep_after_failure_hours=keep_after_failure,
+            public_path_readonly=public_path_readonly,
+            fault_tolerance_retry_interval_sec=fault_tolerance_retry_interval,
         )
 
         data = submission.data
@@ -303,17 +373,15 @@ def run_job_create(
             )
 
         if ctx.json_output:
-            click.echo(
-                json_formatter.format_json(
-                    {
-                        "name": name,
-                        "status": "created",
-                    }
-                )
-            )
+            created: dict[str, object] = {"name": name, "status": "created"}
+            if dataset_mounts:
+                created["datasets"] = dataset_mount_views(dataset_mounts)
+            click.echo(json_formatter.format_json(created))
             return
 
         click.echo(human_formatter.format_mutation_success("Job", "created", name))
+        for line in describe_dataset_mounts(dataset_mounts):
+            click.echo(f"Dataset: {line}")
 
     except TaskPriorityError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
@@ -400,6 +468,63 @@ def run_job_create(
     ),
 )
 @click.option(
+    "--fault-tolerance-retry-interval",
+    type=click.IntRange(min=1),
+    default=None,
+    metavar="SECONDS",
+    help=(
+        "Seconds the platform waits between restart attempts. Requires "
+        "--auto-fault-tolerance. Omit to leave the platform default."
+    ),
+)
+@dataset_option()
+@click.option(
+    "--env",
+    "env_values",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help=(
+        "Set an environment variable in every instance of this job "
+        "(repeatable). The platform injects it into the container, so the "
+        "command no longer has to carry the assignment inline."
+    ),
+)
+@click.option(
+    "--description",
+    default=None,
+    metavar="TEXT",
+    help="Free-text description stored with the job on the platform.",
+)
+@click.option(
+    "--keep-after-success",
+    type=click.FloatRange(min=0, min_open=True),
+    default=None,
+    metavar="HOURS",
+    help=(
+        "Keep the containers alive this many hours after the job succeeds, so "
+        "they can still be inspected with 'inspire job shell'. Omit to let the "
+        "platform release them as usual."
+    ),
+)
+@click.option(
+    "--keep-after-failure",
+    type=click.FloatRange(min=0, min_open=True),
+    default=None,
+    metavar="HOURS",
+    help=(
+        "Keep the containers alive this many hours after the job fails. Omit "
+        "to let the platform release them as usual."
+    ),
+)
+@click.option(
+    "--public-path-readonly/--no-public-path-readonly",
+    default=None,
+    help=(
+        "Mount the project's public path read-only inside the containers "
+        "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
+    ),
+)
+@click.option(
     "--enable-notification/--no-enable-notification",
     default=None,
     help=(
@@ -461,6 +586,7 @@ def create(
     priority: Optional[int],
     auto_fault_tolerance: Optional[bool],
     fault_tolerance_max_retry: Optional[int],
+    fault_tolerance_retry_interval: Optional[int],
     enable_notification: Optional[bool],
     max_time: Optional[float],
     workspace: Optional[str],
@@ -471,6 +597,12 @@ def create(
     nodes: Optional[int],
     exclude_nodes: tuple[str, ...],
     shm_size: Optional[int],
+    datasets: tuple[str, ...],
+    env_values: tuple[str, ...],
+    description: Optional[str],
+    keep_after_success: Optional[float],
+    keep_after_failure: Optional[float],
+    public_path_readonly: Optional[bool],
     dry_run: bool,
 ) -> None:
     """Create a GPU batch job.
@@ -489,6 +621,10 @@ def create(
         inspire job create -n test --workspace 分布式训练空间 --project CI-情境智能 \
           --group H200-2号机房 -q 1,20,200 --image sandbox-base:latest --nodes 1 \
           -c "python train.py" --priority 4
+        inspire job create -n eval --workspace 分布式训练空间 --project CI-情境智能 \
+          --group H200-2号机房 -q 1,20,200 --image sandbox-base:latest --nodes 1 \
+          --dataset pixabay-81k:v0 --env WANDB_MODE=offline --keep-after-failure 1 \
+          -c "python eval.py --data /inspire/dataset/pixabay-81k/v0"
 
     \b
     Priority:
@@ -496,6 +632,12 @@ def create(
         Use `inspire job status <name> --workspace <workspace>` to inspect the platform-assigned
         priority_level.
     """
+    dataset_mounts = parse_dataset_specs_or_usage_error(datasets)
+    try:
+        envs = job_submit.parse_env_assignments(env_values)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
     run_job_create(
         ctx,
         name=name,
@@ -513,7 +655,14 @@ def create(
         dry_run=dry_run,
         auto_fault_tolerance=auto_fault_tolerance,
         fault_tolerance_max_retry=fault_tolerance_max_retry,
+        fault_tolerance_retry_interval=fault_tolerance_retry_interval,
         enable_notification=enable_notification,
         exclude_nodes=exclude_nodes,
         shm_size=shm_size,
+        dataset_mounts=dataset_mounts,
+        envs=envs,
+        description=description,
+        keep_after_success=keep_after_success,
+        keep_after_failure=keep_after_failure,
+        public_path_readonly=public_path_readonly,
     )

@@ -179,6 +179,40 @@ def select_project_for_workspace(
     )
 
 
+def parse_env_assignments(values: Iterable[str] | None) -> list[dict[str, str]]:
+    """Parse repeated ``KEY=VALUE`` pairs into the platform's `envs` entries.
+
+    The wire shape is ``{"name": ..., "value": ...}``; ``{"key": ...}`` is
+    rejected by the create Action. An empty value is allowed (``KEY=``), a
+    missing ``=`` is not, and a repeated key is a mistake worth reporting
+    rather than silently resolving.
+    """
+    envs: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in values or ():
+        text = str(raw)
+        name, separator, value = text.partition("=")
+        name = name.strip()
+        if not separator or not name:
+            raise ValueError(f"--env expects 'KEY=VALUE'; got {text!r}")
+        if name in seen:
+            raise ValueError(f"--env {name} was given more than once")
+        seen.add(name)
+        envs.append({"name": name, "value": value})
+    return envs
+
+
+def hours_to_ms_string(hours: Optional[float]) -> Optional[str]:
+    """Convert an hours option to the string-typed millisecond field.
+
+    ``max_running_time_ms`` and both ``reserve_on_*_ms`` fields are declared as
+    strings; sending a number is rejected outright.
+    """
+    if hours is None:
+        return None
+    return str(int(hours * 3600 * 1000))
+
+
 def normalize_exclude_nodes(exclude_nodes: Iterable[str] | None) -> list[str]:
     """Normalize the Web UI's exclude_nodes create option."""
     normalized: list[str] = []
@@ -243,6 +277,13 @@ def build_training_job_plan(
     enable_notification: bool = False,
     exclude_nodes: Iterable[str] | None = None,
     shm_size: Optional[int] = None,
+    dataset_info: Optional[list[dict[str, str]]] = None,
+    envs: Optional[list[dict[str, str]]] = None,
+    description: Optional[str] = None,
+    keep_after_success_hours: Optional[float] = None,
+    keep_after_failure_hours: Optional[float] = None,
+    public_path_readonly: Optional[bool] = None,
+    fault_tolerance_retry_interval_sec: Optional[int] = None,
     session: Any = None,
 ) -> JobSubmissionPlan:
     if not image:
@@ -257,7 +298,7 @@ def build_training_job_plan(
         config, command=wrapped_command, name=name
     )
 
-    max_time_ms = str(int(max_time_hours * 3600 * 1000)) if max_time_hours is not None else None
+    max_time_ms = hours_to_ms_string(max_time_hours)
 
     resource_spec_price = build_resource_spec_price(quota=quota)
     # The platform matches on the registry URL, not the visible name; sending
@@ -305,6 +346,36 @@ def build_training_job_plan(
         create_kwargs["fault_tolerance_max_retry"] = (
             fault_tolerance_max_retry if fault_tolerance_max_retry is not None else 10
         )
+        if fault_tolerance_retry_interval_sec is not None:
+            create_kwargs["fault_tolerance_retry_interval_sec"] = int(
+                fault_tolerance_retry_interval_sec
+            )
+    elif fault_tolerance_retry_interval_sec is not None:
+        raise ValueError(
+            "--fault-tolerance-retry-interval only applies with --auto-fault-tolerance."
+        )
+
+    # Everything below stays out of the body unless it was asked for, so a
+    # create built without these options is byte-for-byte the old request.
+    if dataset_info:
+        create_kwargs["dataset_info"] = [dict(entry) for entry in dataset_info]
+
+    # `envs` entries are {name, value}; a `key` field is rejected by the proto.
+    if envs:
+        create_kwargs["envs"] = [dict(entry) for entry in envs]
+
+    if description is not None:
+        create_kwargs["description"] = description
+
+    reserve_on_success_ms = hours_to_ms_string(keep_after_success_hours)
+    if reserve_on_success_ms is not None:
+        create_kwargs["reserve_on_success_ms"] = reserve_on_success_ms
+    reserve_on_fail_ms = hours_to_ms_string(keep_after_failure_hours)
+    if reserve_on_fail_ms is not None:
+        create_kwargs["reserve_on_fail_ms"] = reserve_on_fail_ms
+
+    if public_path_readonly is not None:
+        create_kwargs["is_publicpath_readonly"] = bool(public_path_readonly)
 
     return JobSubmissionPlan(
         create_kwargs=create_kwargs,
@@ -338,6 +409,13 @@ def submit_training_job(
     enable_notification: bool = False,
     exclude_nodes: Iterable[str] | None = None,
     shm_size: Optional[int] = None,
+    dataset_info: Optional[list[dict[str, str]]] = None,
+    envs: Optional[list[dict[str, str]]] = None,
+    description: Optional[str] = None,
+    keep_after_success_hours: Optional[float] = None,
+    keep_after_failure_hours: Optional[float] = None,
+    public_path_readonly: Optional[bool] = None,
+    fault_tolerance_retry_interval_sec: Optional[int] = None,
 ) -> JobSubmission:
     plan = build_training_job_plan(
         config=config,
@@ -357,6 +435,13 @@ def submit_training_job(
         enable_notification=enable_notification,
         exclude_nodes=exclude_nodes,
         shm_size=shm_size,
+        dataset_info=dataset_info,
+        envs=envs,
+        description=description,
+        keep_after_success_hours=keep_after_success_hours,
+        keep_after_failure_hours=keep_after_failure_hours,
+        public_path_readonly=public_path_readonly,
+        fault_tolerance_retry_interval_sec=fault_tolerance_retry_interval_sec,
     )
 
     data = browser_api_module.create_training_job(
@@ -382,7 +467,9 @@ __all__ = [
     "build_training_job_plan",
     "build_remote_logged_command",
     "derive_remote_log_glob",
+    "hours_to_ms_string",
     "normalize_exclude_nodes",
+    "parse_env_assignments",
     "sanitize_job_name_for_filename",
     "select_project_for_workspace",
     "submit_training_job",
