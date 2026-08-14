@@ -17,6 +17,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 _SOURCE_ROOT = Path(__file__).resolve().parents[1] / "inspire"
 _BROWSER_API = _SOURCE_ROOT / "platform" / "web" / "browser_api"
 
@@ -116,3 +118,58 @@ def test_allowlist_has_no_stale_entries() -> None:
 def test_allowlist_paths_exist() -> None:
     missing = [rel for rel in _ALLOWED if not (_SOURCE_ROOT / rel).exists()]
     assert not missing, f"_ALLOWED names modules that no longer exist: {missing}"
+
+
+def test_request_json_clamps_a_page_size_above_the_gateway_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Above 5000 the gateway answers `page or page_size too large`."""
+    from inspire.platform.web.browser_api import core as core_module
+
+    sent: dict = {}
+
+    def _fake(session, method, url, *, headers=None, body=None, timeout=30):  # noqa: ANN001
+        sent["body"] = body
+        return {"Result": {}}
+
+    monkeypatch.setattr(core_module, "request_json", _fake)
+    core_module._request_json(
+        object(), "POST", "/api/v2/hpc?Action=ListJobs", referer="r", body={"page_size": 10000}
+    )
+
+    assert sent["body"]["page_size"] == 5000
+
+
+def test_request_json_leaves_page_size_minus_one_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`-1` means every row and the gateway honours it."""
+    from inspire.platform.web.browser_api import core as core_module
+
+    sent: dict = {}
+
+    def _fake(session, method, url, *, headers=None, body=None, timeout=30):  # noqa: ANN001
+        sent["body"] = body
+        return {"Result": {}}
+
+    monkeypatch.setattr(core_module, "request_json", _fake)
+    for requested in (-1, 100, 5000):
+        core_module._request_json(
+            object(), "POST", "/api/v2/x?Action=Y", referer="r", body={"page_size": requested}
+        )
+        assert sent["body"]["page_size"] == requested
+
+
+def test_request_json_does_not_mutate_the_caller_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from inspire.platform.web.browser_api import core as core_module
+
+    def _fake(session, method, url, *, headers=None, body=None, timeout=30):  # noqa: ANN001
+        return {"Result": {}}
+
+    monkeypatch.setattr(core_module, "request_json", _fake)
+    body = {"page_size": 9999, "workspace_id": "ws-1"}
+    core_module._request_json(object(), "POST", "/api/v2/x?Action=Y", referer="r", body=body)
+
+    assert body["page_size"] == 9999

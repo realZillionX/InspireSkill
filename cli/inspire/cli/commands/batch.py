@@ -991,6 +991,7 @@ def _prepare_ray_item(
         group=_require_condition_str(item, "group", kind="ray"),
         quota=_require_condition_str(item, "quota", kind="ray"),
         shm_size=_optional_int(item, "shm_size", min_value=1),
+        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
         workers=_ray_worker_specs(
             item,
             ctx=ctx,
@@ -1057,7 +1058,7 @@ def _prepare_serving_item(
     if final_model_version is None:
         raise ConfigError("Could not infer model version. Set model_version in the batch item.")
 
-    return {
+    payload: dict[str, Any] = {
         "name": _require_str(item, "name"),
         "workspace_id": workspace_id,
         "project_id": project_id,
@@ -1083,6 +1084,14 @@ def _prepare_serving_item(
         "custom_domain": _optional_str(item, "custom_domain"),
         "resource_spec_price": _build_serving_resource_spec_price(resolved),
     }
+    for key, kwarg in (
+        ("public_path_readonly", "is_publicpath_readonly"),
+        ("auto_scaling", "enable_auto_scaling"),
+    ):
+        value = _tristate_bool(item, key)
+        if value is not None:
+            payload[kwarg] = value
+    return payload
 
 
 def _emit_batch_result(
@@ -1535,6 +1544,10 @@ def ray_batch(
     \b
     Required fields after expansion:
         name, command, workspace, project, image, group, quota, workers
+        Optional fields use create-command defaults: priority, description,
+        image_type, shm_size, public_path_readonly
+        Ray takes no dataset mounts: the platform rejects them, and the
+        console form has no 官方数据集 section either.
 
     \b
     Examples:
@@ -1634,6 +1647,10 @@ def serving_batch(
     \b
     Required fields after expansion:
         name, model, workspace, project, group, quota, image, command, port
+        Optional fields use create-command defaults: priority, description,
+        replicas, nodes_per_replica, shm_size, custom_domain, auto_scaling,
+        public_path_readonly
+        Serving takes no dataset mounts: the platform rejects them.
 
     \b
     Examples:

@@ -1479,3 +1479,123 @@ dataset = "pixabay-81k"
     assert result.exit_code != 0
     assert "<dataset>:<version>" in result.output
     assert api.training_calls == []
+
+
+def test_ray_batch_entry_carries_the_readonly_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A batch entry must be able to say everything `ray create` can."""
+    _patch_submit_deps(monkeypatch, tmp_path)
+    batch_module = importlib.import_module("inspire.cli.commands.batch")
+    bodies: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        browser_api_module,
+        "create_ray_job",
+        lambda body, session=None: bodies.append(body) or {"ray_job_id": "ray-1"},
+    )
+    # Ray resolves the image through the per-source catalogues, not `list_images`.
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_images_by_source",
+        lambda source=None, session=None: [
+            browser_api_module.CustomImageInfo(
+                image_id="image-12345678-1234-1234-1234-123456789abc",
+                url="registry.batch/notebook:latest",
+                name="registry.batch/notebook:latest",
+                framework="",
+                version="",
+                source="public",
+                status="SUCCESS",
+                description="",
+                created_at="",
+            )
+        ],
+    )
+    monkeypatch.setattr(batch_module, "get_web_session", lambda: FakeWebSession())
+    batch_path = tmp_path / "batch.toml"
+    batch_path.write_text(
+        """
+[profiles.ray.cpu]
+quota = "0,20,80"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/notebook:latest"
+
+[defaults]
+type = "ray"
+profile = "cpu"
+
+[[jobs]]
+name = "pipeline"
+command = "python driver.py"
+public_path_readonly = true
+workers = ["name=w;image=registry.batch/notebook:latest;group=H200 Room;quota=0,20,80;min=1;max=2"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli_main, ["--json", "ray", "batch", str(batch_path)])
+
+    assert result.exit_code == 0, result.output
+    assert bodies and bodies[0]["is_publicpath_readonly"] is True
+
+
+def test_ray_batch_entry_without_the_guard_omits_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_submit_deps(monkeypatch, tmp_path)
+    batch_module = importlib.import_module("inspire.cli.commands.batch")
+    bodies: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        browser_api_module,
+        "create_ray_job",
+        lambda body, session=None: bodies.append(body) or {"ray_job_id": "ray-1"},
+    )
+    # Ray resolves the image through the per-source catalogues, not `list_images`.
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_images_by_source",
+        lambda source=None, session=None: [
+            browser_api_module.CustomImageInfo(
+                image_id="image-12345678-1234-1234-1234-123456789abc",
+                url="registry.batch/notebook:latest",
+                name="registry.batch/notebook:latest",
+                framework="",
+                version="",
+                source="public",
+                status="SUCCESS",
+                description="",
+                created_at="",
+            )
+        ],
+    )
+    monkeypatch.setattr(batch_module, "get_web_session", lambda: FakeWebSession())
+    batch_path = tmp_path / "batch.toml"
+    batch_path.write_text(
+        """
+[profiles.ray.cpu]
+quota = "0,20,80"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/notebook:latest"
+
+[defaults]
+type = "ray"
+profile = "cpu"
+
+[[jobs]]
+name = "pipeline"
+command = "python driver.py"
+workers = ["name=w;image=registry.batch/notebook:latest;group=H200 Room;quota=0,20,80;min=1;max=2"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli_main, ["--json", "ray", "batch", str(batch_path)])
+
+    assert result.exit_code == 0, result.output
+    assert bodies and "is_publicpath_readonly" not in bodies[0]

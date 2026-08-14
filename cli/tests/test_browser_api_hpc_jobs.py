@@ -147,26 +147,10 @@ def test_list_hpc_jobs_falls_back_when_total_is_unreadable(
     assert total == 1
 
 
-def test_list_hpc_jobs_caps_page_size_at_the_gateway_maximum(
+def test_list_hpc_jobs_passes_page_size_through_untouched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Above 5000 the gateway answers `page or page_size too large`."""
-    record: dict[str, Any] = {}
-    _install_fake_request(monkeypatch, {"Result": {"jobs": [], "total": "0"}}, record)
-
-    hpc_jobs_module.list_hpc_jobs(
-        workspace_id="ws-1",
-        created_by="user-1",
-        page_size=10000,
-        session=_FakeSession(),
-    )
-
-    assert record["body"]["page_size"] == 5000
-
-
-def test_list_hpc_jobs_leaves_a_page_size_under_the_cap_alone(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    """The gateway ceiling is enforced in the transport, not in each wrapper."""
     record: dict[str, Any] = {}
     _install_fake_request(monkeypatch, {"Result": {"jobs": [], "total": "0"}}, record)
 

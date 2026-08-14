@@ -228,6 +228,28 @@ def _coerce_total(value: Any, fallback: int) -> int:
         return fallback
 
 
+def _clamped_page_size(body: Optional[dict]) -> Optional[dict]:
+    """Hold `page_size` at the gateway ceiling.
+
+    Above :data:`MAX_PAGE_SIZE` the gateway answers `InvalidParameter: page or
+    page_size too large`, and it enforces that per service — `hpc` rejects
+    10000 while `ray` accepts it today. Clamping here rather than in each
+    wrapper means no caller has to learn the ceiling from a failure, and it
+    costs nothing: a request above the ceiling could never have returned more
+    rows than one at it.
+
+    ``-1`` means "every row" and the gateway honours it, so it is left alone.
+    """
+    if not isinstance(body, dict):
+        return body
+    requested = body.get("page_size")
+    if not isinstance(requested, int) or isinstance(requested, bool):
+        return body
+    if requested <= MAX_PAGE_SIZE:
+        return body
+    return {**body, "page_size": MAX_PAGE_SIZE}
+
+
 def _request_json(
     session: WebSession,
     method: str,
@@ -244,7 +266,7 @@ def _request_json(
         method,
         url,
         headers=headers,
-        body=body,
+        body=_clamped_page_size(body),
         timeout=timeout,
     )
 

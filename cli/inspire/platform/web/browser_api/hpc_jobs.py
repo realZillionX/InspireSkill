@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from inspire.platform.web.browser_api.core import (
-    MAX_PAGE_SIZE,
     _coerce_total,
     _get_base_url,
     _request_json,
@@ -173,7 +172,7 @@ def list_hpc_jobs(
     body: dict[str, Any] = {
         "workspace_id": workspace_id,
         "page_num": page_num,
-        "page_size": min(page_size, MAX_PAGE_SIZE),
+        "page_size": page_size,
         "created_by": created_by,
     }
     if status:

@@ -192,7 +192,7 @@ POST /api/v2/dataset?Action=ValidateDataset
 - **分页 `total` 逐 Action 或是 int 或是 string。** `notebook.ListNotebooks` 给 int，`hpc.ListJobs` 给 `"202"`。用 `isinstance(total, int)` 判断再回退到 `len(items)`，等于把「这一页」当成「全部」——翻页循环第一页就停，`--all` 的展开分支也不再触发。统一走 `core.py` 的 `_coerce_total()`。
 - **`ListLogicComputeGroups` 的 `support_job_type_list` 是 JSON 编码的字符串**，不是数组：`'["interactive_modeling","hpc_job","distributed_training"]'`。用 `isinstance(x, list)` 判断会把每个组都读成「没声明」，于是按 Workload 过滤计算组这件事看起来生效了、实际一个都没滤掉。取值是 `interactive_modeling` / `hpc_job` / `ray_job` / `distributed_training` / `inference_serving_customize` / `inference_serving_exclusive`，支持面逐组不同：`CPU资源空间` 四个组里只有两个收 `ray_job`，只有一个收 serving。
 
-**`page_size` 有上限 5000**，超过报 `InvalidParameter: page or page_size too large`。这条是逐 service 的——`hpc` 强制执行，`ray` 实测不拦——所以调用方无条件按 `MAX_PAGE_SIZE` 收口，不要靠某个 service 没报错就推断没有上限。
+**`page_size` 有上限 5000**，超过报 `InvalidParameter: page or page_size too large`。这条是逐 service 的——`hpc` 强制执行，`ray` 实测给 10000 也照收——所以截断放在 `core.py` 的 `_request_json()`，对所有 Wrapper 无条件生效，不要逐个 Wrapper 去记，也不要靠某个 service 没报错就推断没有上限。截断不损失任何东西：超过上限的请求本来也不可能比按上限的请求多返回一行。`page_size: -1` 是「取全部」，平台认，原样放过。
 
 `model-hub` 里有两个名字近似、极易搞混的 Action，只能靠响应字段区分：`ListModelVersionOptions` 返回 `{list, total}`，对应 v1 的 `GET /model/{id}/versions`；`ListModelVersions` 多一个 `next_version`，对应 v1 的 `GET /model/{id}`。按名字直觉配对会把两者接反。`ListModelVersions` 不接受 `page`；`ListModelCreators` 接受 `project_id`，与 v1 `/model/users` 的作用域一致。`CreateModel` 不在 discovery 里，逐字接受 v1 `/model/create` 的请求体，返回 `{model_id}`；`model_source_path` 必须落在所给 workspace + project 的路径下，`global_user` 路径会被 `存储路径格式不正确` 拒掉。受控验证走建→读→删（`DeleteModel`）完成。
 
