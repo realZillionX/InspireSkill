@@ -29,6 +29,7 @@ from inspire.cli.commands import (
     job,
     resources,
     config,
+    dataset,
     notebook,
     init,
     image,
@@ -232,6 +233,7 @@ main.add_command(cache)
 main.add_command(job)
 main.add_command(resources)
 main.add_command(config)
+main.add_command(dataset)
 main.add_command(notebook)
 main.add_command(init)
 main.add_command(image)
