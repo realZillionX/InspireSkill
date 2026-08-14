@@ -76,6 +76,39 @@ class ResolvedQuota:
     memory_gib: int
     gpu_type: str
     raw_price: dict
+    # Platform-scheduler restriction on which task priorities this quota may
+    # be requested at (``allowed_priority_levels`` from
+    # ``GetScheduleConfig.predef_train_spec``). Empty means unrestricted;
+    # ``("low",)`` means the quota is accepted only at low priority — the
+    # QZ 训练区 partial-node shape, where the scheduler refuses the standard
+    # high priority outright.
+    allowed_priority_levels: tuple[str, ...] = ()
+
+
+def validate_quota_priority(quota: "ResolvedQuota", priority: int) -> None:
+    """Reject a priority the platform scheduler will refuse for this quota.
+
+    The ``allowed_priority_levels`` on a spec row is the platform-authoritative
+    list of accepted priority *bands* — ``["low"]`` means the quota exists in
+    this group only for low-priority submissions. An empty list imposes no
+    restriction. Job creation hits this check *before* the create call so the
+    user sees the real reason instead of a generic platform rejection.
+    """
+    if not quota.allowed_priority_levels:
+        return
+    allowed = {level.casefold() for level in quota.allowed_priority_levels}
+    # Platform bands we know how to map from a numeric priority. Keep it
+    # conservative: a fair-scheduling LOW is 1, everything else is treated as
+    # HIGH for this comparison.
+    band = "low" if int(priority) == 1 else "high"
+    if band not in allowed:
+        raise QuotaMatchError(
+            f"--priority {priority} is not allowed for quota {quota.quota_id} "
+            f"(gpu={quota.gpu_count}) in {quota.compute_group_name}. "
+            f"This quota only accepts: {', '.join(sorted(allowed))} priority. "
+            "Use --priority 1 for low-priority submission, or pick a quota row "
+            "with no priority restriction (see `inspire job quota`)."
+        )
 
 
 def parse_quota(text: str) -> QuotaSpec:
@@ -569,6 +602,10 @@ def resolve_quota(
         if not quota_id:
             continue
         lcg_id = _group_id(group)
+        raw_allowed = price.get("allowed_priority_levels") or []
+        allowed = tuple(
+            str(level).strip() for level in raw_allowed if str(level or "").strip()
+        )
         matches.append(
             ResolvedQuota(
                 quota_id=quota_id,
@@ -579,6 +616,7 @@ def resolve_quota(
                 memory_gib=memory_gib,
                 gpu_type=_extract_gpu_type(price),
                 raw_price=price,
+                allowed_priority_levels=allowed,
             )
         )
 
@@ -673,6 +711,7 @@ __all__ = [
     "SCHEDULE_TYPE_TRAIN",
     "build_resource_spec_price",
     "parse_quota",
+    "validate_quota_priority",
     "qz_scheduling_zone_hint_for_group_names",
     "resolve_quota",
     "validate_compute_group_name",

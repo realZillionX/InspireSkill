@@ -8,6 +8,8 @@ from .availability import (
     get_accurate_resource_availability,
     get_accurate_gpu_availability,
     get_full_free_node_counts,
+    get_group_node_gpu_type,
+    get_schedule_config_specs,
     list_compute_groups,
 )
 from .jobs import (
@@ -207,6 +209,8 @@ __all__ = [
     "get_accurate_resource_availability",
     "get_accurate_gpu_availability",
     "get_full_free_node_counts",
+    "get_group_node_gpu_type",
+    "get_schedule_config_specs",
     "list_compute_groups",
     # Projects
     "ProjectInfo",

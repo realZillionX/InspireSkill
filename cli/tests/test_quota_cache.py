@@ -13,7 +13,13 @@ from inspire.cli.utils.quota_cache import (
     quota_triple,
     workload_for_schedule_type,
 )
-from inspire.cli.utils.quota_resolver import QuotaMatchError, QuotaSpec, resolve_quota
+from inspire.cli.utils.quota_resolver import (
+    QuotaMatchError,
+    QuotaSpec,
+    ResolvedQuota,
+    resolve_quota,
+    validate_quota_priority,
+)
 from inspire.cli.utils.resource_index import QUOTA_WORKLOADS, ResourceIndex
 
 
@@ -71,6 +77,44 @@ def _patch_platform(monkeypatch, prices_by_group: dict[str, list[dict]]) -> list
         "list_notebook_compute_groups",
         lambda **_kwargs: GROUPS,
     )
+    # Notebook / job / serving read from ``GetScheduleConfig``; stub it (and
+    # gpu_type back-fill from group nodes) at the same platform boundary as
+    # the prices stub so no unit test ever hits the network.
+    def _schedule_config_specs(**kwargs):  # noqa: ANN202
+        spec_field = kwargs["spec_field"]
+        workload = {
+            "quota": "notebook",
+            "predef_train_spec": "job",
+            "serving_quota": "serving",
+        }[spec_field]
+        # Reflect which (group, price) pairs each workload owns by
+        # materialising a spec row per price keyed to the workload ID space.
+        specs = []
+        for group_id, prices in prices_by_group.items():
+            for price in prices:
+                specs.append({
+                    "id": price["quota_id"],
+                    "cpu_count": price["cpu_count"],
+                    "memory_size": price.get("memory_size_gib", 0),
+                    "gpu_count": price["gpu_count"],
+                    "gpu_type": (price.get("gpu_info") or {}).get("gpu_type", ""),
+                    "logic_compute_group_ids": [group_id],
+                    "allowed_priority_levels": [
+                        level for level in (price.get("allowed_priority_levels") or [])
+                    ],
+                })
+        return specs
+
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_schedule_config_specs",
+        _schedule_config_specs,
+    )
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_group_node_gpu_type",
+        lambda *args, **_kwargs: "",
+    )
     return price_calls
 
 
@@ -114,7 +158,6 @@ def test_warm_catalog_then_serve_every_group_from_cache(monkeypatch, tmp_path) -
         )
         == 2
     )
-    assert price_calls == ["lcg-a", "lcg-b"]
 
     loader = CachedPricesLoader(
         session=_session(),  # type: ignore[arg-type]
@@ -125,14 +168,32 @@ def test_warm_catalog_then_serve_every_group_from_cache(monkeypatch, tmp_path) -
     assert loader("lcg-a")[0]["quota_id"] == "q-8"
     assert loader("lcg-b")[0]["quota_id"] == "q-cpu"
     assert loader.served_from_cache == {"lcg-a", "lcg-b"}
-    # Nothing new hit the platform.
-    assert price_calls == ["lcg-a", "lcg-b"]
+    # The warm pass answered from the newly populated catalog without any
+    # additional per-group v1 price call.
+    assert price_calls == []
 
 
 def test_warm_catalog_partitions_by_workload(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    # hpc and ray still walk the per-group v1 ``schedule_config_type``
+    # endpoint; notebook / job / serving read the workspace-level
+    # GetScheduleConfig menus (``quota`` / ``predef_train_spec`` /
+    # ``serving_quota``). The cache partitions by workload either way.
     per_schedule_type = {
-        SCHEDULE_TYPE_BY_WORKLOAD["notebook"]: [_price("dsw", 1, 20, 200)],
         SCHEDULE_TYPE_BY_WORKLOAD["hpc"]: [_price("hpc", 8, 160, 1800)],
+        SCHEDULE_TYPE_BY_WORKLOAD["ray"]: [_price("ray", 0, 4, 16)],
+    }
+    per_spec_field = {
+        "quota": [
+            {
+                "id": "dsw",
+                "cpu_count": 20,
+                "memory_size": 200,
+                "gpu_count": 1,
+                "gpu_type": "H200",
+                "logic_compute_group_ids": ["lcg-a"],
+                "allowed_priority_levels": [],
+            }
+        ]
     }
     monkeypatch.setattr(
         quota_cache_module.browser_api_module,
@@ -147,6 +208,11 @@ def test_warm_catalog_partitions_by_workload(monkeypatch, tmp_path) -> None:  # 
         quota_cache_module.browser_api_module,
         "list_notebook_compute_groups",
         lambda **_kwargs: GROUPS,
+    )
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_schedule_config_specs",
+        lambda **kwargs: per_spec_field.get(kwargs["spec_field"], []),
     )
     index = ResourceIndex(tmp_path / "index.sqlite3")
 
@@ -196,7 +262,7 @@ def test_group_with_no_quotas_is_authoritatively_empty(monkeypatch, tmp_path) ->
 
 
 def test_cold_scope_falls_through_to_live_per_group(monkeypatch, tmp_path) -> None:  # noqa: ANN001
-    price_calls = _patch_platform(monkeypatch, {"lcg-a": [_price("q-8", 8, 160, 1800)]})
+    _patch_platform(monkeypatch, {"lcg-a": [_price("q-8", 8, 160, 1800)]})
     index = ResourceIndex(tmp_path / "index.sqlite3")
 
     loader = CachedPricesLoader(
@@ -208,25 +274,65 @@ def test_cold_scope_falls_through_to_live_per_group(monkeypatch, tmp_path) -> No
 
     assert loader("lcg-a")[0]["quota_id"] == "q-8"
     assert loader.served_from_cache == set()
-    assert price_calls == ["lcg-a"]
 
 
 def test_loader_falls_through_when_cache_lookup_fails(monkeypatch, tmp_path) -> None:  # noqa: ANN001
-    _patch_platform(monkeypatch, {"lcg-a": [_price("q-live", 1, 20, 200)]})
+    """A broken cache must never block a live answer.
+
+    Job quota reads live from the workspace's ``GetScheduleConfig`` spec menu
+    (not the per-group v1 price endpoint); other workloads still fall through
+    to their per-group v1 path. Both answers must surface even when the cache
+    itself is on fire.
+    """
+    _patch_platform(
+        monkeypatch,
+        {"lcg-a": [_price("q-live", 1, 20, 200)]},
+    )
+
+    train_specs = [
+        {
+            "id": "q-live-train",
+            "cpu_count": 20,
+            "memory_size": 200,
+            "gpu_count": 1,
+            "gpu_type": "NVIDIA_H200_SXM_141G",
+            "logic_compute_group_ids": ["lcg-a"],
+        }
+    ]
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_schedule_config_specs",
+        lambda **_kwargs: train_specs,
+    )
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_group_node_gpu_type",
+        lambda *args, **_kwargs: "",
+    )
 
     class _BrokenIndex:
         def scope_due(self, *_args, **_kwargs):  # noqa: ANN202
             raise RuntimeError("cache is on fire")
 
-    loader = CachedPricesLoader(
+    job_loader = CachedPricesLoader(
         session=_session(),  # type: ignore[arg-type]
         workspace_id="workspace-one",
         schedule_config_type=SCHEDULE_TYPE_BY_WORKLOAD["job"],
         cache_index=_BrokenIndex(),  # type: ignore[arg-type]
     )
+    assert job_loader("lcg-a")[0]["quota_id"] == "q-live-train"
+    assert job_loader.served_from_cache == set()
 
-    assert loader("lcg-a")[0]["quota_id"] == "q-live"
-    assert loader.served_from_cache == set()
+    # Notebook / job / serving all read the workspace-level GetScheduleConfig
+    # menus; the cache-on-fire walk just lands on the same live answer.
+    notebook_loader = CachedPricesLoader(
+        session=_session(),  # type: ignore[arg-type]
+        workspace_id="workspace-one",
+        schedule_config_type=SCHEDULE_TYPE_BY_WORKLOAD["notebook"],
+        cache_index=_BrokenIndex(),  # type: ignore[arg-type]
+    )
+    assert notebook_loader("lcg-a")[0]["quota_id"] == "q-live-train"
+    assert notebook_loader.served_from_cache == set()
 
 
 def test_resolve_quota_reuses_the_warm_catalog(monkeypatch, tmp_path) -> None:  # noqa: ANN001
@@ -252,9 +358,15 @@ def test_resolve_quota_reuses_the_warm_catalog(monkeypatch, tmp_path) -> None:  
 
     assert resolved.quota_id == "q-8"
     assert resolved.compute_group_name == "训练区-H200-1号机房"
-    assert resolved.gpu_type == "H200"
-    # build_resource_spec_price needs the raw payload, which survived the cache.
-    assert resolved.raw_price["cpu_info"]["cpu_type"] == "intel"
+    # The GetScheduleConfig spec row carries the platform-machine gpu_type
+    # (``NVIDIA_H200`` from the ``_price`` fixture), not the v1 endpoint's
+    # separate ``gpu_type_display`` short name, so ``_extract_gpu_type``
+    # surfaces it verbatim.
+    assert resolved.gpu_type == "NVIDIA_H200"
+    # The raw payload survives the cache round-trip; ``cpu_info.cpu_type``
+    # is empty because the GetScheduleConfig spec row does not carry it and
+    # the create payload does not depend on it.
+    assert resolved.raw_price["cpu_info"]["cpu_type"] == ""
     assert price_calls == before
 
 
@@ -297,3 +409,34 @@ def test_cached_empty_group_does_not_trigger_stale_group_retry(
 
     assert groups_loader_calls["n"] == 1
     assert price_calls == before
+
+
+def _resolved(*, allowed: tuple[str, ...]) -> ResolvedQuota:
+    return ResolvedQuota(
+        quota_id="q",
+        logic_compute_group_id="lcg-x",
+        compute_group_name="训练区-H200-1号机房",
+        gpu_count=1,
+        cpu_count=20,
+        memory_gib=200,
+        gpu_type="H200",
+        raw_price={},
+        allowed_priority_levels=allowed,
+    )
+
+
+def test_validate_quota_priority_blocks_high_for_low_only_quota() -> None:
+    quota = _resolved(allowed=("low",))
+    with pytest.raises(QuotaMatchError, match=r"--priority 4"):
+        validate_quota_priority(quota, 4)
+
+
+def test_validate_quota_priority_passes_low_for_low_only_quota() -> None:
+    validate_quota_priority(_resolved(allowed=("low",)), 1)
+
+
+def test_validate_quota_priority_passes_anything_for_unrestricted_quota() -> None:
+    quota = _resolved(allowed=())
+    validate_quota_priority(quota, 1)
+    validate_quota_priority(quota, 4)
+    validate_quota_priority(quota, 10)

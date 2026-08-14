@@ -29,6 +29,7 @@ from inspire.cli.utils.quota_resolver import (
     SCHEDULE_TYPE_TRAIN,
     parse_quota,
     resolve_quota,
+    validate_quota_priority,
 )
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
@@ -187,6 +188,13 @@ def run_job_create(
             fair_scheduling=fair_scheduling,
             project_limit=selected.priority_name,
         )
+        # Preflight: refuse a priority the platform scheduler won't accept for
+        # this quota (QZ 训练区 partial-node quotas are low-only).
+        try:
+            validate_quota_priority(resolved_quota, priority)
+        except QuotaMatchError as err:
+            _handle_error(ctx, "ValidationError", str(err), EXIT_VALIDATION_ERROR)
+            return
         try:
             plan = job_submit.build_training_job_plan(
                 config=config,

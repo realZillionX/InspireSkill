@@ -1517,6 +1517,7 @@ def create_serving(
             SCHEDULE_TYPE_SERVING,
             parse_quota,
             resolve_quota,
+            validate_quota_priority,
         )
 
         config, _ = Config.from_files_and_env(require_credentials=False)
@@ -1608,6 +1609,12 @@ def create_serving(
             workspace_id=workspace_id,
             project_id=project_id,
         )
+        # Preflight: refuse a priority the platform scheduler won't accept
+        # for this serving quota (QZ 训练区 partial-node quotas are low-only).
+        try:
+            validate_quota_priority(resolved, final_priority)
+        except QuotaMatchError as exc:
+            raise click.UsageError(str(exc)) from exc
         payload = {
             "name": name,
             "logic_compute_group_id": resolved.logic_compute_group_id,

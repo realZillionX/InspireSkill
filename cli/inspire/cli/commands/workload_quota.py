@@ -118,7 +118,18 @@ def _query_workspace_quotas(
             memory_size_gib = _extract_memory_gib(price)
             gpu_count = int(price.get("gpu_count") or 0)
             gpu_type = _extract_gpu_type(price)
-            key = (compute_group_name, gpu_count, cpu_count, memory_size_gib, gpu_type)
+            allowed_raw = price.get("allowed_priority_levels") or []
+            allowed_priority = ",".join(
+                str(level) for level in allowed_raw if str(level or "").strip()
+            )
+            key = (
+                compute_group_name,
+                gpu_count,
+                cpu_count,
+                memory_size_gib,
+                gpu_type,
+                allowed_priority,
+            )
             if key in seen_rows:
                 continue
             seen_rows.add(key)
@@ -128,6 +139,7 @@ def _query_workspace_quotas(
                     "compute_group": scrub_raw_ids(compute_group_name),
                     "gpu_type": scrub_raw_ids(gpu_type),
                     "quota": f"{gpu_count},{cpu_count},{memory_size_gib}",
+                    "allowed_priority": allowed_priority,
                 }
             )
     return rows
@@ -242,31 +254,40 @@ def make_quota_command(workload: str) -> click.Command:
 
             multi_ws = len({r.get("workspace") for r in rows}) > 1
             table_rows: list[tuple[Any, ...]]
+
+            def _allowed_display(value: str) -> str:
+                # Empty means unrestricted; "low" means this quota exists in
+                # this group only at low priority (``--priority 1``).
+                return value if value else "any"
+
             if multi_ws:
                 headers: tuple[str, ...] = (
                     "Workspace",
                     "Compute Group",
                     "GPU Type",
                     "Quota",
+                    "Priority",
                 )
-                widths = [18, 28, 14, 14]
+                widths = [18, 24, 14, 14, 9]
                 table_rows = [
                     (
                         row["workspace"],
                         row["compute_group"],
                         row["gpu_type"] or "CPU",
                         row["quota"] or "-",
+                        _allowed_display(row["allowed_priority"]),
                     )
                     for row in rows
                 ]
             else:
-                headers = ("Compute Group", "GPU Type", "Quota")
-                widths = [28, 14, 14]
+                headers = ("Compute Group", "GPU Type", "Quota", "Priority")
+                widths = [24, 14, 14, 9]
                 table_rows = [
                     (
                         row["compute_group"],
                         row["gpu_type"] or "CPU",
                         row["quota"] or "-",
+                        _allowed_display(row["allowed_priority"]),
                     )
                     for row in rows
                 ]

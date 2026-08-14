@@ -73,6 +73,8 @@ def _stub_quota_browser(
     *,
     groups_by_ws: dict[str, list[dict]],
     prices_fn,
+    schedule_config_specs_fn=None,
+    group_node_gpu_type_fn=None,
 ) -> None:
     from inspire.cli.commands import workload_quota as quota_module
 
@@ -83,6 +85,23 @@ def _stub_quota_browser(
         lambda **kwargs: groups_by_ws.get(kwargs["workspace_id"], []),
     )
     monkeypatch.setattr(quota_module.browser_api_module, "get_resource_prices", prices_fn)
+    # Train quota reads from GetScheduleConfig (workspace-level spec menu) and
+    # back-fills blank gpu_type from the group's nodes; stub both at the same
+    # platform boundary so no test ever hits the network.
+    if schedule_config_specs_fn is None:
+        schedule_config_specs_fn = lambda **kwargs: []
+    monkeypatch.setattr(
+        quota_module.browser_api_module,
+        "get_schedule_config_specs",
+        schedule_config_specs_fn,
+    )
+    if group_node_gpu_type_fn is None:
+        group_node_gpu_type_fn = lambda *args, **kwargs: ""
+    monkeypatch.setattr(
+        quota_module.browser_api_module,
+        "get_group_node_gpu_type",
+        group_node_gpu_type_fn,
+    )
 
 
 def _make_price(*, qid: str, gpu: int, cpu: int, mem: int, gpu_type: str = "") -> dict:
@@ -135,41 +154,160 @@ def test_each_workload_quota_uses_its_schedule_family(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _patch_config(monkeypatch, tmp_path)
+    # Only hpc and ray still hit the per-group v1 ``schedule_config_type``
+    # endpoint; notebook / job / serving read the workspace-level
+    # GetScheduleConfig menus (``quota`` / ``predef_train_spec`` /
+    # ``serving_quota`` respectively).
     expected = {
-        "notebook": "SCHEDULE_CONFIG_TYPE_DSW",
-        "job": "SCHEDULE_CONFIG_TYPE_TRAIN",
-        "serving": "SCHEDULE_CONFIG_TYPE_SERVE",
         "hpc": "SCHEDULE_CONFIG_TYPE_HPC",
         "ray": "SCHEDULE_CONFIG_TYPE_RAY_JOB",
     }
     seen: dict[str, str] = {}
+    schedule_config_fields: dict[str, str] = {}
 
     def prices(**kwargs):
         seen[current_workload] = kwargs["schedule_config_type"]
         return [_make_price(qid="q-1", gpu=0, cpu=4, mem=16)]
 
+    def schedule_config_specs(**kwargs):
+        schedule_config_fields[current_workload] = kwargs["spec_field"]
+        return []
+
     _stub_quota_browser(
         monkeypatch,
         groups_by_ws={_WS_CPU: [{"logic_compute_group_id": "lcg-1", "name": "CPU资源-2"}]},
         prices_fn=prices,
+        schedule_config_specs_fn=schedule_config_specs,
     )
-    for current_workload in expected:
+    workloads = ("notebook", "job", "serving", "hpc", "ray")
+    for current_workload in workloads:
         result = CliRunner().invoke(
             cli_main,
             ["--json", current_workload, "quota", "--workspace", "CPU资源空间"],
         )
         assert result.exit_code == 0, result.output
     assert seen == expected
+    # Notebook / job / serving ask GetScheduleConfig for their menu field
+    # instead of the per-group v1 schedule_config_type endpoint.
+    assert schedule_config_fields == {
+        "notebook": "quota",
+        "job": "predef_train_spec",
+        "serving": "serving_quota",
+    }
+
+
+def test_train_quota_reads_workspace_schedule_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Job quota flattens the workspace-level spec menu onto candidate groups.
+
+    ``predef_train_spec`` declares group ownership via ``logic_compute_group_ids``;
+    an empty that list means the spec is open to every group, and a blank
+    ``gpu_type`` is back-filled from the group's nodes (the authoritative
+    hardware source). Train groups the v1 endpoint used to hide — the ones the
+    user can submit to but that currently have no allocatable capacity — must
+    appear.
+    """
+    _patch_config(monkeypatch, tmp_path)
+
+    specs = [
+        # 8卡 whole-node quota belongs to the three 训练区 groups; lcg-full-N
+        # has no matching spec row. No allowed_priority_levels → unrestricted.
+        {
+            "id": "q-8",
+            "cpu_count": 160,
+            "memory_size": 1800,
+            "gpu_count": 8,
+            "gpu_type": "NVIDIA_H200_SXM_141G",
+            "logic_compute_group_ids": ["lcg-full-1", "lcg-full-2", "lcg-full-3"],
+        },
+        # Partial-node quotas in 训练区 are low-only (QZ policy, mirrored
+        # verbatim by GetScheduleConfig in allowed_priority_levels).
+        {
+            "id": "q-1",
+            "cpu_count": 20,
+            "memory_size": 200,
+            "gpu_count": 1,
+            "gpu_type": "",  # node's gpu_info fills this in
+            "logic_compute_group_ids": ["lcg-full-1", "lcg-full-2"],
+            "allowed_priority_levels": ["low"],
+        },
+        # A partial-node quota in 开发区 with no priority restriction covers
+        # the remaining groups (empty ownership array = every group).
+        {
+            "id": "q-1-dev",
+            "cpu_count": 20,
+            "memory_size": 200,
+            "gpu_count": 1,
+            "gpu_type": "",
+            "logic_compute_group_ids": [],
+        },
+    ]
+
+    _stub_quota_browser(
+        monkeypatch,
+        groups_by_ws={
+            _WS_TRAIN: [
+                {"logic_compute_group_id": "lcg-full-1", "name": "训练区-H200-1号机房"},
+                {"logic_compute_group_id": "lcg-full-2", "name": "训练区-H200-3号机房-2-cuda12.8"},
+                {"logic_compute_group_id": "lcg-full-3", "name": "开发区-H200-3号机房"},
+                # A group the spec menu does not cover at all — it's still a
+                # valid candidate in the workspace, just with an empty catalog.
+                {"logic_compute_group_id": "lcg-full-N", "name": "开发区-H200-N号机房"},
+            ],
+        },
+        prices_fn=lambda **_: [],
+        schedule_config_specs_fn=lambda **_: specs,
+        group_node_gpu_type_fn=lambda *args, **kw: "NVIDIA_H100_80GB",
+    )
+
+    result = CliRunner().invoke(
+        cli_main, ["--json", "job", "quota", "--workspace", "分布式训练空间"]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _json_data(result.output)
+    by_group: dict[str, set[str]] = {}
+    for row in payload["items"]:
+        by_group.setdefault(row["compute_group"], set()).add(row["quota"])
+    assert by_group["训练区-H200-1号机房"] == {"8,160,1800", "1,20,200"}
+    assert by_group["训练区-H200-3号机房-2-cuda12.8"] == {"8,160,1800", "1,20,200"}
+    assert by_group["开发区-H200-3号机房"] == {"8,160,1800", "1,20,200"}
+    # Group without any matching spec row answers empty, not hidden.
+    assert by_group["开发区-H200-N号机房"] == {"1,20,200"}
+    # Empty ownership marks unrestricted; "low" marks low-only.
+    priority_by_group: dict[str, set[str]] = {}
+    for row in payload["items"]:
+        priority_by_group.setdefault(row["compute_group"], set()).add(
+            row["allowed_priority"]
+        )
+    assert priority_by_group["训练区-H200-1号机房"] == {"", "low"}
+    assert priority_by_group["训练区-H200-3号机房-2-cuda12.8"] == {"", "low"}
+    assert priority_by_group["开发区-H200-3号机房"] == {""}
+    assert priority_by_group["开发区-H200-N号机房"] == {""}
 
 
 def test_quota_json_rows_carry_quota_and_no_ids(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _patch_config(monkeypatch, tmp_path)
+    # Notebook quota reads from ``GetScheduleConfig.quota`` — the v1
+    # prices_fn has no say here. Use the schedule-config fixture instead,
+    # with an explicit ownership row so the row lands on lcg-secret.
     _stub_quota_browser(
         monkeypatch,
         groups_by_ws={_WS_CPU: [{"logic_compute_group_id": "lcg-secret", "name": "CPU资源-2"}]},
-        prices_fn=lambda **_: [_make_price(qid="q-1", gpu=0, cpu=4, mem=16)],
+        prices_fn=lambda **_: [],
+        schedule_config_specs_fn=lambda **_: [
+            {
+                "id": "q-1",
+                "cpu_count": 4,
+                "memory_size": 16,
+                "gpu_count": 0,
+                "gpu_type": "",
+                "logic_compute_group_ids": ["lcg-secret"],
+            }
+        ],
     )
     result = CliRunner().invoke(
         cli_main, ["--json", "notebook", "quota", "--workspace", "CPU资源空间"]
@@ -182,6 +320,7 @@ def test_quota_json_rows_carry_quota_and_no_ids(
         "compute_group",
         "gpu_type",
         "quota",
+        "allowed_priority",
     }
     assert row["workspace"] == "CPU资源空间"
     assert row["compute_group"] == "CPU资源-2"
@@ -197,24 +336,35 @@ def test_qz_quota_human_output_explains_scheduling_zones(
 ) -> None:
     _patch_config(monkeypatch, tmp_path)
 
-    def prices(**kwargs):
-        group_id = kwargs["logic_compute_group_id"]
-        if group_id == "lcg-dev":
-            return [
-                _make_price(
-                    qid="q-dev-4", gpu=4, cpu=55, mem=900, gpu_type="NVIDIA H100"
-                ),
-                _make_price(
-                    qid="q-dev-8", gpu=8, cpu=110, mem=1800, gpu_type="NVIDIA H100"
-                ),
-            ]
-        if group_id == "lcg-train":
-            return [
-                _make_price(
-                    qid="q-train", gpu=8, cpu=160, mem=1800, gpu_type="NVIDIA H200"
-                )
-            ]
-        return []
+    # 开发区 carries a partial-node H100 quota and a full-node H100 quota; the
+    # 训练区 group owns the 8卡 H200 whole-node quota. Ownership comes from
+    # ``logic_compute_group_ids`` on each spec row, not from per-group prices.
+    specs = [
+        {
+            "id": "q-dev-4",
+            "cpu_count": 55,
+            "memory_size": 900,
+            "gpu_count": 4,
+            "gpu_type": "NVIDIA_H100_80GB",
+            "logic_compute_group_ids": ["lcg-dev"],
+        },
+        {
+            "id": "q-dev-8",
+            "cpu_count": 110,
+            "memory_size": 1800,
+            "gpu_count": 8,
+            "gpu_type": "NVIDIA_H100_80GB",
+            "logic_compute_group_ids": ["lcg-dev"],
+        },
+        {
+            "id": "q-train",
+            "cpu_count": 160,
+            "memory_size": 1800,
+            "gpu_count": 8,
+            "gpu_type": "NVIDIA_H200_SXM_141G",
+            "logic_compute_group_ids": ["lcg-train"],
+        },
+    ]
 
     _stub_quota_browser(
         monkeypatch,
@@ -227,7 +377,8 @@ def test_qz_quota_human_output_explains_scheduling_zones(
                 {"logic_compute_group_id": "lcg-train", "name": "训练区-H200-1号机房"},
             ]
         },
-        prices_fn=prices,
+        prices_fn=lambda **_: [],
+        schedule_config_specs_fn=lambda **_: specs,
     )
 
     result = CliRunner().invoke(
@@ -251,8 +402,16 @@ def test_qz_quota_hint_is_human_only(
     _stub_quota_browser(
         monkeypatch,
         groups_by_ws={_WS_TRAIN: [{"logic_compute_group_id": "lcg-dev", "name": "开发区-H200"}]},
-        prices_fn=lambda **_: [
-            _make_price(qid="q-small", gpu=1, cpu=20, mem=200, gpu_type="NVIDIA H200")
+        prices_fn=lambda **_: [],
+        schedule_config_specs_fn=lambda **_: [
+            {
+                "id": "q-small",
+                "cpu_count": 20,
+                "memory_size": 200,
+                "gpu_count": 1,
+                "gpu_type": "NVIDIA H200",
+                "logic_compute_group_ids": ["lcg-dev"],
+            }
         ],
     )
 
@@ -268,6 +427,7 @@ def test_qz_quota_hint_is_human_only(
         "compute_group",
         "gpu_type",
         "quota",
+        "allowed_priority",
     }
     assert "QZ scheduling zones" not in result.output
     _assert_compact_public_payload(payload)
@@ -280,7 +440,17 @@ def test_non_qz_quota_human_output_has_no_card_area_hint(
     _stub_quota_browser(
         monkeypatch,
         groups_by_ws={_WS_CPU: [{"logic_compute_group_id": "lcg-cpu", "name": "CPU资源-2"}]},
-        prices_fn=lambda **_: [_make_price(qid="q-cpu", gpu=0, cpu=20, mem=80)],
+        prices_fn=lambda **_: [],
+        schedule_config_specs_fn=lambda **_: [
+            {
+                "id": "q-cpu",
+                "cpu_count": 20,
+                "memory_size": 80,
+                "gpu_count": 0,
+                "gpu_type": "",
+                "logic_compute_group_ids": ["lcg-cpu"],
+            }
+        ],
     )
 
     result = CliRunner().invoke(

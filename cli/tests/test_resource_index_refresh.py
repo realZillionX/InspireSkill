@@ -1139,21 +1139,27 @@ def test_quota_refresh_warms_one_workload_catalog(tmp_path, monkeypatch) -> None
         "list_notebook_compute_groups",
         lambda **_kwargs: groups,
     )
+    # Notebook quota reads from ``GetScheduleConfig.quota`` (and back-fills
+    # blank gpu_type from the group's nodes); stub the same boundary so the
+    # refresh path stays hermetic. The v1 prices stub has no effect.
     monkeypatch.setattr(
         quota_cache_module.browser_api_module,
-        "get_resource_prices",
-        lambda **kwargs: (
-            [
-                {
-                    "quota_id": "q-8",
-                    "gpu_count": 8,
-                    "cpu_count": 160,
-                    "memory_size_gib": 1800,
-                }
-            ]
-            if kwargs["logic_compute_group_id"] == "lcg-a"
-            else []
-        ),
+        "get_schedule_config_specs",
+        lambda **kwargs: [
+            {
+                "id": "q-8",
+                "cpu_count": 160,
+                "memory_size": 1800,
+                "gpu_count": 8,
+                "gpu_type": "NVIDIA_H200",
+                "logic_compute_group_ids": ["lcg-a"],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        quota_cache_module.browser_api_module,
+        "get_group_node_gpu_type",
+        lambda *args, **_kwargs: "",
     )
 
     summary = refresh_resource_index(

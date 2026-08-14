@@ -6,6 +6,8 @@ from .api import (
     get_accurate_resource_availability,
     get_accurate_gpu_availability,
     get_full_free_node_counts,
+    get_group_node_gpu_type,
+    get_schedule_config_specs,
     list_node_dimension,
     list_compute_groups,
 )
@@ -17,6 +19,8 @@ __all__ = [
     "get_accurate_resource_availability",
     "get_accurate_gpu_availability",
     "get_full_free_node_counts",
+    "get_group_node_gpu_type",
+    "get_schedule_config_specs",
     "list_node_dimension",
     "list_compute_groups",
 ]

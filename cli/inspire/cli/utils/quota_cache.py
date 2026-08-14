@@ -1,10 +1,13 @@
 """Quota catalog rows, cached in the per-account resource identity index.
 
-``POST /resource_prices/logic_compute_groups/`` answers one
-``(workspace, workload, compute group)`` at a time, so listing or resolving a
-quota costs one request per compute group in the workspace. The rows behind it
-are catalog data -- they only move when an admin edits a compute group's specs
--- so they cache well.
+The catalog answers one ``(workspace, workload, compute group)`` at a time.
+For the **train** workload that catalog comes from the workspace-level
+``workspace.GetScheduleConfig`` Action — the same static spec menu the web
+console renders, returned in one request — because the per-group v1
+``/resource_prices/logic_compute_groups/`` endpoint applies server-side
+allocatable-capacity filtering and silently drops groups the user actually
+has permission to submit to. Notebook / HPC / Ray / serving have no v2
+equivalent for their schedule config types yet and keep the per-group path.
 
 A quota row is a name-to-handle mapping like any other resource: the name the
 user types is the ``gpu,cpu,mem`` triple and the handle is the platform
@@ -18,6 +21,13 @@ just a lookup returning two rows.
 Consumers keep the plain ``(logic_compute_group_id) -> list[price]`` loader
 contract; the cache sits inside the loader. The platform stays authoritative:
 a stale scope, a miss, or any cache failure falls through to the live call.
+
+**Data-source upgrade note.** After upgrading from a build whose quota cache
+was filled by the old per-group v1 path, the cached ``quota-job`` scope can
+still be fresh-but-wrong (it contains the server-side-filtered subset). Run
+``inspire cache clear --resource quota-job`` once per affected workspace to
+replace it with the GetScheduleConfig menu; the next query repopulates it
+from the new path and stays fresh afterwards.
 """
 
 from __future__ import annotations
@@ -46,6 +56,20 @@ SCHEDULE_TYPE_BY_WORKLOAD: dict[str, str] = {
     "hpc": "SCHEDULE_CONFIG_TYPE_HPC",
     "ray": "SCHEDULE_CONFIG_TYPE_RAY_JOB",
     "serving": "SCHEDULE_CONFIG_TYPE_SERVE",
+}
+
+# Workload name -> which ``schedule_config`` field carries its spec menu.
+#
+# These three menus live in the same v2 ``workspace.GetScheduleConfig``
+# response and are isomorphic: each row has an id (the quota_id), the
+# hardware triple, ``logic_compute_group_ids`` ownership, and the
+# ``allowed_priority_levels`` scheduler restriction. They share the same
+# loading path: HPC and Ray have no GetScheduleConfig menu yet and stay on
+# their per-group v1 ``schedule_config_type`` endpoint above.
+SCHEDULE_CONFIG_FIELD_BY_WORKLOAD: dict[str, str] = {
+    "notebook": "quota",
+    "job": "predef_train_spec",
+    "serving": "serving_quota",
 }
 
 WORKLOAD_BY_SCHEDULE_TYPE: dict[str, str] = {
@@ -170,6 +194,135 @@ def _group_name(group: dict) -> str:
     return str(group.get("name") or group.get("logic_compute_group_name") or "").strip()
 
 
+def _fetch_schedule_config_catalog(
+    session: object,
+    *,
+    workspace_id: str,
+    spec_field: str,
+    groups: Optional[Sequence[dict]],
+) -> list[ResourceIdentity]:
+    """Whole-workspace quota menu from ``workspace.GetScheduleConfig``.
+
+    Unlike the per-group v1 ``/resource_prices/logic_compute_groups/``, which
+    the platform filters by current server-side allocatable capacity and so
+    silently drops groups the user actually can submit to, this Action returns
+    the workspace's static spec catalog in one request — the same data source
+    the web console uses. Specs the user has permission to see show up; specs
+    whose ``logic_compute_group_ids`` exclude a group are simply not expanded
+    onto that group. That is exactly the "which quota_ids can this group use"
+    answer the CLI needs.
+
+    Two extra behaviors:
+    - an *empty* ``logic_compute_group_ids`` means the spec is open to every
+      group in the workspace, so it is expanded onto every candidate group;
+    - ``gpu_type`` on any of the GetScheduleConfig menus is routinely empty —
+      the row's gpu_type is filled from the group's real installed nodes (the
+      authoritative hardware source), so the create payload carries the
+      platform-required full model string, not a guess.
+    """
+    if groups is None:
+        groups = browser_api_module.list_notebook_compute_groups(
+            workspace_id=workspace_id,
+            session=session,  # type: ignore[arg-type]
+        )
+    candidates = {
+        gid: gname
+        for gid, gname in ((_group_id(g), _group_name(g)) for g in groups or [])
+        if gid and gname
+    }
+    if not candidates:
+        return []
+
+    specs = browser_api_module.get_schedule_config_specs(
+        workspace_id=workspace_id,
+        session=session,  # type: ignore[arg-type]
+        spec_field=spec_field,
+    )
+    if not specs:
+        return []
+
+    prices_per_group: dict[str, list[dict]] = {gid: [] for gid in candidates}
+    needs_gpu_type: set[str] = set()
+    for spec in specs:
+        quota_id = str(spec.get("id") or spec.get("cellId") or "").strip()
+        if not quota_id:
+            continue
+        owned = [
+            gid
+            for gid in (spec.get("logic_compute_group_ids") or [])
+            if str(gid).strip() in candidates
+        ]
+        targets = owned or list(candidates.keys())
+        gpu_type = str(spec.get("gpu_type") or "").strip()
+        if not gpu_type:
+            needs_gpu_type.update(targets)
+            continue
+        price = {
+            "quota_id": quota_id,
+            "gpu_count": int(spec.get("gpu_count") or 0),
+            "cpu_count": int(spec.get("cpu_count") or 0),
+            # v2 uses memory_size, the create payload and the v1 endpoint call
+            # the same field memory_size_gib — normalize to the name the rest
+            # of the CLI already expects.
+            "memory_size_gib": int(spec.get("memory_size") or spec.get("memory_size_gib") or 0),
+            "gpu_info": {"gpu_type": gpu_type},
+            "cpu_info": {"cpu_type": ""},
+            "allowed_priority_levels": list(spec.get("allowed_priority_levels") or []),
+        }
+        for target in targets:
+            prices_per_group[target].append(dict(price))
+
+    # Fill the blank gpu_type rows from the group's live nodes once per group.
+    node_gpu_type: dict[str, str] = {}
+    for group_id in needs_gpu_type:
+        try:
+            node_gpu_type[group_id] = browser_api_module.get_group_node_gpu_type(
+                group_id,
+                workspace_id=workspace_id,
+                session=session,  # type: ignore[arg-type]
+            )
+        except Exception:  # noqa: BLE001 — node's gpu_type is a bonus, not a gate
+            logger.debug("Failed to resolve node gpu_type for %s", group_id, exc_info=True)
+
+    for spec in specs:
+        quota_id = str(spec.get("id") or spec.get("cellId") or "").strip()
+        if not quota_id:
+            continue
+        owned = [
+            gid
+            for gid in (spec.get("logic_compute_group_ids") or [])
+            if str(gid).strip() in candidates
+        ]
+        targets = owned or list(candidates.keys())
+        if str(spec.get("gpu_type") or "").strip():
+            continue  # already emitted above
+        price = {
+            "quota_id": quota_id,
+            "gpu_count": int(spec.get("gpu_count") or 0),
+            "cpu_count": int(spec.get("cpu_count") or 0),
+            "memory_size_gib": int(spec.get("memory_size") or spec.get("memory_size_gib") or 0),
+            "gpu_info": {"gpu_type": ""},
+            "cpu_info": {"cpu_type": ""},
+            "allowed_priority_levels": list(spec.get("allowed_priority_levels") or []),
+        }
+        for target in targets:
+            resolved_type = node_gpu_type.get(target, "")
+            row = dict(price)
+            row["gpu_info"] = {"gpu_type": resolved_type}
+            prices_per_group[target].append(row)
+
+    records: list[ResourceIdentity] = []
+    for group_id, prices in prices_per_group.items():
+        records.extend(
+            quota_records(
+                prices,
+                logic_compute_group_id=group_id,
+                compute_group_name=candidates[group_id],
+            )
+        )
+    return records
+
+
 def fetch_quota_catalog(
     session: object,
     *,
@@ -177,7 +330,22 @@ def fetch_quota_catalog(
     workload: str,
     groups: Optional[Sequence[dict]] = None,
 ) -> list[ResourceIdentity]:
-    """Fetch one workspace's complete quota catalog for one workload."""
+    """Fetch one workspace's complete quota catalog for one workload.
+
+    Workloads with a ``schedule_config`` menu (notebook / job / serving) read
+    the workspace-level GetScheduleConfig answer — one request,
+    authoritative about quotas the user can actually see — instead of the
+    per-group v1 endpoint. HPC and Ray stay on the per-group v1 path: their
+    schedule config types have no GetScheduleConfig menu yet.
+    """
+    spec_field = SCHEDULE_CONFIG_FIELD_BY_WORKLOAD.get(workload)
+    if spec_field is not None:
+        return _fetch_schedule_config_catalog(
+            session,
+            workspace_id=workspace_id,
+            spec_field=spec_field,
+            groups=groups,
+        )
     schedule_config_type = SCHEDULE_TYPE_BY_WORKLOAD[workload]
     if groups is None:
         groups = browser_api_module.list_notebook_compute_groups(
@@ -286,6 +454,20 @@ class CachedPricesLoader:
         if cached is not None:
             self.served_from_cache.add(group_id)
             return list(cached.get(group_id, []))
+
+        spec_field = SCHEDULE_CONFIG_FIELD_BY_WORKLOAD.get(self._workload)
+        if spec_field is not None:
+            prices_per_group = _fetch_schedule_config_catalog(
+                self._session,
+                workspace_id=self._workspace_id,
+                spec_field=spec_field,
+                groups=None,
+            )
+            return prices_from_records(
+                record
+                for record in prices_per_group
+                if record.owner_id == group_id
+            )
 
         prices = browser_api_module.get_resource_prices(
             workspace_id=self._workspace_id,

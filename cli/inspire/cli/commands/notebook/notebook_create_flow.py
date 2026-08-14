@@ -41,6 +41,7 @@ from inspire.cli.utils.quota_resolver import (
     build_resource_spec_price,
     parse_quota,
     resolve_quota,
+    validate_quota_priority,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import TaskPriorityError, resolve_task_priority
@@ -854,6 +855,13 @@ def run_notebook_create(
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
         return
     except TaskPriorityError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+    # Preflight: refuse a priority the platform scheduler won't accept for
+    # this notebook quota (QZ 训练区 partial-node quotas are low-only).
+    try:
+        validate_quota_priority(resolved_quota, uncapped_priority)
+    except QuotaMatchError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
         return
     projects = _fetch_workspace_projects(ctx, workspace_id=workspace_id, session=session)

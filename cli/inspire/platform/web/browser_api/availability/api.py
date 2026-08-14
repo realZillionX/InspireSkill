@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from .models import FullFreeNodeCount, GPUAvailability
@@ -47,6 +48,112 @@ def list_compute_groups(
     )
     groups = payload.get("logic_compute_groups")
     return groups if isinstance(groups, list) else []
+
+
+def get_group_node_gpu_type(
+    logic_compute_group_id: str,
+    *,
+    workspace_id: str,
+    session: Optional[WebSession] = None,
+) -> str:
+    """Compute group's real installed GPU model, from its nodes.
+
+    Card type is a machine property, not a task property: the nodes are the
+    authoritative source, unlike job-history reverse inference which misses
+    quotas that have not run on this group yet. Returns empty when no node
+    reports a type (caller leaves gpu_type empty and lets the platform fault
+    the create).
+
+    This fills the gap ``predef_train_spec`` has: its ``gpu_type`` is often an
+    empty string, but the create payload requires the full model string
+    (``NVIDIA_H200_SXM_141G``). Only consulted when the spec menu itself is
+    blank on gpu_type for a GPU quota.
+    """
+    if session is None:
+        session = get_web_session()
+    try:
+        nodes = list_node_dimension(
+            logic_compute_group_id,
+            workspace_id=workspace_id,
+            session=session,
+            page_size=100,
+        )
+    except (SessionExpiredError, ValueError):
+        return ""
+    counts: dict[str, int] = {}
+    for node in nodes:
+        gpu = node.get("gpu")
+        gtype = ""
+        if isinstance(gpu, dict):
+            gtype = str((gpu.get("gpu_info") or {}).get("gpu_type") or "").strip()
+        if not gtype:
+            gtype = str((node.get("gpu_info") or {}).get("gpu_type") or "").strip()
+        if gtype:
+            counts[gtype] = counts.get(gtype, 0) + 1
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def get_schedule_config_specs(
+    workspace_id: Optional[str] = None,
+    session: Optional[WebSession] = None,
+    *,
+    spec_field: str = "predef_train_spec",
+) -> list[dict]:
+    """Workspace-level predefined spec menu from ``workspace.GetScheduleConfig``.
+
+    ``POST /api/v2/workspace?Action=GetScheduleConfig`` answers the whole
+    workspace's static spec catalog in one request — the same data source the
+    platform's own web console uses to render the spec selector, and the same
+    one qzcli uses. This is the **static menu the user has permission to
+    request**, so groups the user can submit to but that currently have zero
+    allocatable capacity still show up (unlike the v1
+    ``/resource_prices/logic_compute_groups/`` endpoint, which silently drops
+    them).
+
+    Each spec row carries ``id`` (the ``quota_id`` the create call echoes),
+    hardware triple, and a ``logic_compute_group_ids`` array declaring which
+    compute groups are allowed to use it; an empty ``allowed_priority_levels``
+    means unrestricted, ``["low"]`` means the scheduler accepts this quota
+    only at ``--priority 1``. An *empty* ownership list means the spec is
+    open to every group in the workspace — one or more entries means exactly
+    those groups.
+
+    Three isomorphic menus live under ``schedule_config``:
+    ``predef_train_spec`` (training jobs), ``quota`` (notebook/DSW) and
+    ``serving_quota``. HPC and Ray have no v2 equivalent in this Action and
+    keep their per-group v1 path.
+    """
+    if session is None:
+        session = get_web_session()
+
+    if workspace_id is None:
+        raise ValueError("Workspace selection is required.")
+
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/workspace?Action=GetScheduleConfig",
+            referer=f"{_get_base_url()}/jobs/spacesOverview?spaceId={workspace_id}",
+            body={"workspace_id": workspace_id},
+            timeout=30,
+        )
+    )
+    schedule_config = payload.get("schedule_config")
+    if not isinstance(schedule_config, dict):
+        return []
+    raw = schedule_config.get(spec_field)
+    if not raw:
+        return []
+    try:
+        items = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
 
 
 def _group_id(group: dict) -> str:
