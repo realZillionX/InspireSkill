@@ -207,6 +207,27 @@ def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# The gateway rejects `page_size` above this with
+# `InvalidParameter: page or page_size too large`. It is per-service — `hpc`
+# enforces it, `ray` currently does not — so callers cap unconditionally
+# rather than learning it from a failure.
+MAX_PAGE_SIZE = 5000
+
+
+def _coerce_total(value: Any, fallback: int) -> int:
+    """Read a paging `total` that may arrive as an int or a string.
+
+    v2 is inconsistent about this per Action: `notebook.ListNotebooks` answers
+    with an int while `hpc.ListJobs` answers with `"202"`. An isinstance check
+    against int therefore silently swaps the real total for whatever fallback
+    the caller passed, which reads as "this page was the whole list".
+    """
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _request_json(
     session: WebSession,
     method: str,

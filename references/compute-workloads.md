@@ -80,7 +80,7 @@ Ray 特有风险：
 
 停掉的 Ray Job 保留完整集群规格，`ray start` 用原样的 Head、Worker Group 和 Driver 命令拉回来，不需要重新指定。平台在这里会「受理但不执行」——请求返回成功而任务纹丝不动，所以 `ray start` 以状态真的离开 `STOPPED` 为准，没动就报失败。从未真正 `RUNNING` 过的 Job 通常起不来，重建比重试可靠。
 
-支持 Ray 的 Compute Group 是 CPU 组里很窄的一部分，`ray quota` 目前会列出并不受理 Ray 的组，创建时才报「已选择的计算类型组不支持此类型任务」。
+支持 Ray 的 Compute Group 是 CPU 组里很窄的一部分。`<workload> quota` 现在只列出真正受理该 Workload 的组——每个组自己声明支持哪几类任务，按这个过滤，所以看到的档位就是能提交的档位。
 
 ## 6. Serving
 

@@ -24,6 +24,8 @@ from inspire.cli.utils.id_resolver import is_full_uuid, is_stale_handle_error
 from inspire.cli.utils.quota_cache import (
     SCHEDULE_TYPE_BY_WORKLOAD,
     CachedPricesLoader,
+    group_supports_workload,
+    workload_for_schedule_type,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.resource_index import (
@@ -175,13 +177,19 @@ def validate_compute_group_name(value: str) -> str:
 
 
 def _default_groups_loader(
-    *, workspace_id: str, session: WebSession
+    *, workspace_id: str, session: WebSession, workload: str = ""
 ) -> GroupsLoader:
     def loader() -> list[dict]:
-        return browser_api_module.list_notebook_compute_groups(
+        groups = browser_api_module.list_notebook_compute_groups(
             workspace_id=workspace_id,
             session=session,
         )
+        if not workload:
+            return groups
+        # Resolving `--quota` against a group that cannot run this workload
+        # produces a match the platform then rejects at create time with
+        # `已选择的计算类型组不支持此类型任务`.
+        return [group for group in groups if group_supports_workload(group, workload)]
 
     return loader
 
@@ -453,7 +461,9 @@ def resolve_quota(
                 if session is None:
                     raise ValueError("resolve_quota needs a session or groups/groups_loader")
                 loader = _default_groups_loader(
-                    workspace_id=workspace_id, session=session
+                    workspace_id=workspace_id,
+                    session=session,
+                    workload=workload_for_schedule_type(schedule_config_type),
                 )
             group_list = list(loader())
             committed = _cache_group_name(
@@ -479,7 +489,9 @@ def resolve_quota(
             if session is None:
                 raise ValueError("resolve_quota needs a session or groups/groups_loader")
             loader = _default_groups_loader(
-                workspace_id=workspace_id, session=session
+                workspace_id=workspace_id,
+                session=session,
+                workload=workload_for_schedule_type(schedule_config_type),
             )
         group_list = list(loader())
         _cache_group_name(
@@ -545,7 +557,9 @@ def resolve_quota(
             if session is None:
                 raise ValueError("resolve_quota needs a session or groups/groups_loader")
             loader = _default_groups_loader(
-                workspace_id=workspace_id, session=session
+                workspace_id=workspace_id,
+                session=session,
+                workload=workload_for_schedule_type(schedule_config_type),
             )
         retry_generation: int | None = None
         retry_revision: int | None = None

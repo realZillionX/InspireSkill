@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from inspire.platform.web.browser_api.core import (
+    MAX_PAGE_SIZE,
+    _coerce_total,
     _get_base_url,
     _request_json,
     _v2_result,
@@ -171,7 +173,7 @@ def list_hpc_jobs(
     body: dict[str, Any] = {
         "workspace_id": workspace_id,
         "page_num": page_num,
-        "page_size": page_size,
+        "page_size": min(page_size, MAX_PAGE_SIZE),
         "created_by": created_by,
     }
     if status:
@@ -193,9 +195,10 @@ def list_hpc_jobs(
     if not isinstance(jobs_data, list):
         jobs_data = []
 
-    total = payload.get("total")
-    if not isinstance(total, int):
-        total = len(jobs_data)
+    # `hpc.ListJobs` reports `total` as a **string** ("202"), so an isinstance
+    # check against int silently replaces the real total with the page length.
+    # Every caller then concludes it has seen everything after one page.
+    total = _coerce_total(payload.get("total"), len(jobs_data))
 
     jobs = [HPCJobInfo.from_api_response(item) for item in jobs_data if isinstance(item, dict)]
     return jobs, total

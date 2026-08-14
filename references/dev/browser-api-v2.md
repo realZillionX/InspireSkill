@@ -185,6 +185,15 @@ POST /api/v2/dataset?Action=ValidateDataset
 - **`UpdateServing` 的 `resource_spec_price` 是扁平结构**（`cpu_type` / `cpu_count` / `gpu_type` / …），与其它地方嵌套的 `cpu_info` / `gpu_info` 形状不同。安全的 Wrapper 需要基于 `GetServing` 做读改写，且必须先确认省略字段是保留还是清空——当前账号在九个 Workspace 里都没有 serving，无法受控验证，因此**未接**。
 - **`hpc.GetUserProjectWorkingDir` 返回的 `Result` 是一个裸 JSON 字符串**，不是对象，`_v2_result()` 会把它压成 `{}`。要接这个 Action 得先改解包。
 
+### 两个「看起来是数组 / 数字」的字段
+
+平台在一些字段上返回的类型和直觉相反，而这两处的错法都不会报错，只会静静给出错误答案：
+
+- **分页 `total` 逐 Action 或是 int 或是 string。** `notebook.ListNotebooks` 给 int，`hpc.ListJobs` 给 `"202"`。用 `isinstance(total, int)` 判断再回退到 `len(items)`，等于把「这一页」当成「全部」——翻页循环第一页就停，`--all` 的展开分支也不再触发。统一走 `core.py` 的 `_coerce_total()`。
+- **`ListLogicComputeGroups` 的 `support_job_type_list` 是 JSON 编码的字符串**，不是数组：`'["interactive_modeling","hpc_job","distributed_training"]'`。用 `isinstance(x, list)` 判断会把每个组都读成「没声明」，于是按 Workload 过滤计算组这件事看起来生效了、实际一个都没滤掉。取值是 `interactive_modeling` / `hpc_job` / `ray_job` / `distributed_training` / `inference_serving_customize` / `inference_serving_exclusive`，支持面逐组不同：`CPU资源空间` 四个组里只有两个收 `ray_job`，只有一个收 serving。
+
+**`page_size` 有上限 5000**，超过报 `InvalidParameter: page or page_size too large`。这条是逐 service 的——`hpc` 强制执行，`ray` 实测不拦——所以调用方无条件按 `MAX_PAGE_SIZE` 收口，不要靠某个 service 没报错就推断没有上限。
+
 `model-hub` 里有两个名字近似、极易搞混的 Action，只能靠响应字段区分：`ListModelVersionOptions` 返回 `{list, total}`，对应 v1 的 `GET /model/{id}/versions`；`ListModelVersions` 多一个 `next_version`，对应 v1 的 `GET /model/{id}`。按名字直觉配对会把两者接反。`ListModelVersions` 不接受 `page`；`ListModelCreators` 接受 `project_id`，与 v1 `/model/users` 的作用域一致。`CreateModel` 不在 discovery 里，逐字接受 v1 `/model/create` 的请求体，返回 `{model_id}`；`model_source_path` 必须落在所给 workspace + project 的路径下，`global_user` 路径会被 `存储路径格式不正确` 拒掉。受控验证走建→读→删（`DeleteModel`）完成。
 
 `project` 有四个 Action，discovery 只声明了 `GetProjectForPage`：

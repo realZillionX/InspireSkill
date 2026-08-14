@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from inspire.platform.web.browser_api.core import (
+    _coerce_total,
     _get_base_url,
     _request_json,
     _v2_result,
@@ -143,12 +144,6 @@ def _project_info_from_item(item: dict[str, Any], *, workspace_id: str = "") -> 
         workspace_names=tuple(workspace_names),
     )
 
-
-def _coerce_total(value: Any, fallback: int) -> int:
-    try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return fallback
 
 
 def _list_project_items(

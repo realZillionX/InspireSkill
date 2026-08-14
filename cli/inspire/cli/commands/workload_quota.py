@@ -30,6 +30,7 @@ from inspire.platform.web.session import SessionExpiredError, get_web_session
 from inspire.cli.utils.quota_cache import (
     SCHEDULE_TYPE_BY_WORKLOAD,
     CachedPricesLoader,
+    group_supports_workload,
 )
 from inspire.cli.utils.quota_resolver import (
     QuotaMatchError,
@@ -93,6 +94,10 @@ def _query_workspace_quotas(
     for item in groups:
         logic_compute_group_id = _group_id(item)
         if not logic_compute_group_id:
+            continue
+        # A group that does not run this workload has no valid quota row for
+        # it, however many rows its price table returns.
+        if not group_supports_workload(item, workload):
             continue
         compute_group_name = _group_name(item, fallback="")
         if not compute_group_name:

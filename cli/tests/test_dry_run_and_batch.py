@@ -1289,3 +1289,193 @@ def test_batch_hpc_requires_fields_after_expansion(
     assert result.exit_code != 0
     assert "missing required condition field: image" in result.output
     assert api.hpc_calls == []
+
+
+def _patch_batch_dataset_resolution(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Record what the batch path asks the platform to validate."""
+    batch_module = importlib.import_module("inspire.cli.commands.batch")
+    seen: list[Any] = []
+
+    def fake_resolve(mounts, *, workspace_id, session=None):  # noqa: ANN001, ANN202
+        seen.append((list(mounts), workspace_id))
+        return [
+            {
+                "dataset_id": m.dataset,
+                "version_id": m.version,
+                "path": f"store/{m.dataset}/{m.version}",
+            }
+            for m in mounts
+        ]
+
+    monkeypatch.setattr(batch_module, "resolve_dataset_info", fake_resolve)
+    return seen
+
+
+def test_job_batch_entry_carries_datasets_env_and_reservations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    seen = _patch_batch_dataset_resolution(monkeypatch)
+    batch_path = tmp_path / "batch.toml"
+    batch_path.write_text(
+        """
+[profiles.job.h200]
+quota = "1,20,200"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/train:latest"
+
+[defaults]
+type = "job"
+profile = "h200"
+nodes = 1
+
+[[jobs]]
+name = "train"
+command = "python train.py"
+dataset = ["pixabay-81k:v0", "videoufo:v1"]
+env = { HF_HOME = "/tmp/hf", RANK = 0 }
+description = "batch smoke"
+keep_after_success = 1
+keep_after_failure = 2
+public_path_readonly = true
+auto_fault_tolerance = true
+fault_tolerance_retry_interval = 30
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli_main, ["--json", "job", "batch", str(batch_path)])
+
+    assert result.exit_code == 0, result.output
+    assert len(api.training_calls) == 1
+    payload = api.training_calls[0]
+    assert payload["dataset_info"] == [
+        {"dataset_id": "pixabay-81k", "version_id": "v0", "path": "store/pixabay-81k/v0"},
+        {"dataset_id": "videoufo", "version_id": "v1", "path": "store/videoufo/v1"},
+    ]
+    assert payload["envs"] == [
+        {"name": "HF_HOME", "value": "/tmp/hf"},
+        {"name": "RANK", "value": "0"},
+    ]
+    assert payload["description"] == "batch smoke"
+    assert payload["reserve_on_success_ms"] == str(1 * 3600 * 1000)
+    assert payload["reserve_on_fail_ms"] == str(2 * 3600 * 1000)
+    assert payload["is_publicpath_readonly"] is True
+    assert payload["fault_tolerance_retry_interval_sec"] == 30
+    # The workspace the mounts were validated against is the item's own.
+    assert [spec.dataset for spec, _ in [(m, w) for mounts, w in seen for m in mounts]] == [
+        "pixabay-81k",
+        "videoufo",
+    ]
+
+
+def test_job_batch_entry_without_new_fields_sends_todays_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An entry that never mentions the new keys must not gain new payload keys."""
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    _patch_batch_dataset_resolution(monkeypatch)
+    batch_path = tmp_path / "batch.json"
+    _write_job_batch(batch_path, count=1)
+
+    result = CliRunner().invoke(cli_main, ["--json", "job", "batch", str(batch_path)])
+
+    assert result.exit_code == 0, result.output
+    payload = api.training_calls[0]
+    for absent in (
+        "dataset_info",
+        "envs",
+        "description",
+        "reserve_on_success_ms",
+        "reserve_on_fail_ms",
+        "is_publicpath_readonly",
+        "fault_tolerance_retry_interval_sec",
+    ):
+        assert absent not in payload, f"{absent} leaked into an entry that never set it"
+
+
+def test_hpc_batch_entry_carries_dataset_and_retention(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    _patch_batch_dataset_resolution(monkeypatch)
+    batch_path = tmp_path / "batch.toml"
+    batch_path.write_text(
+        """
+[profiles.hpc.cpu]
+quota = "0,20,100"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/hpc:latest"
+
+[defaults]
+type = "hpc"
+profile = "cpu"
+
+[[jobs]]
+name = "prep"
+entrypoint = "srun python prep.py"
+dataset = "pixabay-81k:v0"
+description = "hpc smoke"
+keep_after_finish = 0.5
+max_time = 3
+public_path_readonly = true
+enable_notification = true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli_main, ["--json", "hpc", "batch", str(batch_path)])
+
+    assert result.exit_code == 0, result.output
+    payload = api.hpc_calls[0]
+    assert payload["dataset_info"] == [
+        {"dataset_id": "pixabay-81k", "version_id": "v0", "path": "store/pixabay-81k/v0"}
+    ]
+    assert payload["description"] == "hpc smoke"
+    assert payload["ttl_after_job_finish_seconds"] == 1800
+    assert payload["is_publicpath_readonly"] is True
+    assert payload["enable_notification"] is True
+    assert payload["sbatch_script"]["job_max_time"] == "0-03:00:00"
+
+
+def test_batch_rejects_a_malformed_dataset_spec_before_submitting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    _patch_batch_dataset_resolution(monkeypatch)
+    batch_path = tmp_path / "batch.toml"
+    batch_path.write_text(
+        """
+[profiles.job.h200]
+quota = "1,20,200"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/train:latest"
+
+[defaults]
+type = "job"
+profile = "h200"
+nodes = 1
+
+[[jobs]]
+name = "train"
+command = "python train.py"
+dataset = "pixabay-81k"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli_main, ["job", "batch", str(batch_path)])
+
+    assert result.exit_code != 0
+    assert "<dataset>:<version>" in result.output
+    assert api.training_calls == []

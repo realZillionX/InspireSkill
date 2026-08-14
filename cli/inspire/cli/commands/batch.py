@@ -29,6 +29,12 @@ from inspire.cli.utils.collection_output import (
     resolve_collection_limit,
     truncation_notice,
 )
+from inspire.cli.utils.dataset_mounts import (
+    DatasetMount,
+    DatasetSpecError,
+    parse_dataset_specs,
+    resolve_dataset_info,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.project_resolver import project_name_candidates
@@ -283,6 +289,80 @@ def _optional_bool(item: dict[str, Any], key: str, *, default: bool = False) -> 
     return _require_bool(item, key)
 
 
+def _tristate_bool(item: dict[str, Any], key: str) -> bool | None:
+    """Read a switch that must stay absent from the payload unless it is set.
+
+    The create commands express these as `--flag/--no-flag` with no default, so
+    an entry that never mentions the key has to produce the same request body it
+    produced before the key existed. `_optional_bool` cannot say that: its
+    absent case is a real ``False``.
+    """
+    if key not in item or item[key] is None:
+        return None
+    return _require_bool(item, key)
+
+
+def _optional_dataset_mounts(item: dict[str, Any], key: str = "dataset") -> list[DatasetMount]:
+    """Parse `dataset` entries, accepting one spec or a list of them."""
+    try:
+        return parse_dataset_specs(_optional_str_list(item, key))
+    except DatasetSpecError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+def _optional_env_assignments(item: dict[str, Any], key: str = "env") -> list[dict[str, str]]:
+    """Parse `env` as either a `KEY=VALUE` list or a mapping.
+
+    TOML and JSON both express a mapping more naturally than a list of joined
+    strings, so both are accepted; the command line only has the list form.
+    """
+    if key not in item or item[key] is None:
+        return []
+    value = item[key]
+    if isinstance(value, dict):
+        pairs = []
+        for name, raw in value.items():
+            if not isinstance(name, str) or not name.strip():
+                raise ConfigError(f"Batch item field {key} has an empty variable name.")
+            if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+                raise ConfigError(
+                    f"Batch item field {key}.{name} must be a string, integer or float."
+                )
+            pairs.append(f"{name}={raw}")
+    else:
+        pairs = _optional_str_list(item, key)
+    try:
+        return job_submit.parse_env_assignments(pairs)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+def _optional_hours(item: dict[str, Any], key: str) -> float | None:
+    if key not in item or item[key] is None:
+        return None
+    return _require_float(item, key, min_value=0)
+
+
+def _resolved_dataset_info(
+    mounts: list[DatasetMount],
+    *,
+    workspace_id: str,
+    session: Any,
+) -> list[dict[str, str]] | None:
+    """Resolve batch dataset mounts, reporting a rejection as a config error.
+
+    Resolution happens while the item is being prepared, so a bad spec stops the
+    whole batch before anything is submitted rather than after the first few
+    items are already running.
+    """
+    if not mounts:
+        return None
+    try:
+        return resolve_dataset_info(mounts, workspace_id=workspace_id, session=session)
+    except DatasetSpecError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
 def _optional_int(item: dict[str, Any], key: str, *, min_value: int | None = None) -> int | None:
     if key not in item or item[key] is None:
         return None
@@ -503,6 +583,19 @@ def _prepare_training_item(
         ),
         exclude_nodes=_optional_str_list(item, "exclude_nodes"),
         shm_size=_optional_int(item, "shm_size", min_value=1),
+        dataset_info=_resolved_dataset_info(
+            _optional_dataset_mounts(item),
+            workspace_id=workspace_id,
+            session=session,
+        ),
+        envs=_optional_env_assignments(item) or None,
+        description=_optional_str(item, "description"),
+        keep_after_success_hours=_optional_hours(item, "keep_after_success"),
+        keep_after_failure_hours=_optional_hours(item, "keep_after_failure"),
+        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
+        fault_tolerance_retry_interval_sec=_optional_int(
+            item, "fault_tolerance_retry_interval", min_value=1
+        ),
         session=session,
     )
 
@@ -568,6 +661,17 @@ def _prepare_hpc_item(
         memory_per_cpu=int(memory_per_cpu),
         enable_hyper_threading=_optional_bool(item, "enable_hyper_threading", default=False),
         resource_spec_price=build_resource_spec_price(quota=resolved_quota),
+        enable_notification=_optional_bool(item, "enable_notification", default=False),
+        max_time_hours=_optional_max_time_hours(item),
+        dataset_info=_resolved_dataset_info(
+            _optional_dataset_mounts(item),
+            workspace_id=workspace_id,
+            session=session,
+        ),
+        description=_optional_str(item, "description"),
+        keep_after_finish_hours=_optional_hours(item, "keep_after_finish"),
+        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
+        session=session,
     )
 
 def _project_request_value(config: Config, requested: str) -> str:
@@ -647,7 +751,10 @@ def _prepare_notebook_item(
     config: Config,
     session: Any,
 ) -> dict[str, Any]:
-    from inspire.cli.commands.notebook.notebook_create_flow import format_quota_display
+    from inspire.cli.commands.notebook.notebook_create_flow import (
+        _split_auto_stop_after,
+        format_quota_display,
+    )
 
     quota_spec = parse_quota(_require_condition_str(item, "quota", kind="notebook"))
     workspace_name = _require_condition_str(item, "workspace", kind="notebook")
@@ -704,6 +811,30 @@ def _prepare_notebook_item(
         "task_priority": task_priority,
         "resource_spec_price": resource_spec_price,
     }
+
+    dataset_info = _resolved_dataset_info(
+        _optional_dataset_mounts(item),
+        workspace_id=workspace_id,
+        session=session,
+    )
+    if dataset_info is not None:
+        create_kwargs["dataset_info"] = dataset_info
+    auto_stop_after = _optional_int(item, "auto_stop_after", min_value=2)
+    if auto_stop_after is not None:
+        stop_hour, stop_minute = _split_auto_stop_after(auto_stop_after)
+        create_kwargs["stop_hour"] = stop_hour
+        create_kwargs["stop_minute"] = stop_minute
+        # The timer only runs when auto-stop is armed, exactly as the create
+        # command couples them.
+        create_kwargs["auto_stop"] = True
+    for key, payload_key in (
+        ("enable_notification", "enable_notification"),
+        ("public_path_readonly", "is_publicpath_readonly"),
+        ("project_path_readonly", "is_projectuserspath_readonly"),
+    ):
+        value = _tristate_bool(item, key)
+        if value is not None:
+            create_kwargs[payload_key] = value
 
     post_start = _optional_str(item, "post_start")
     post_start_script_raw = _optional_str(item, "post_start_script")
@@ -1063,7 +1194,11 @@ def job_batch(
         name, command, quota, workspace, project, group, image
         Optional fields use create-command defaults: priority, framework,
         nodes, max_time, auto_fault_tolerance, fault_tolerance_max_retry,
-        enable_notification, exclude_nodes, shm_size
+        fault_tolerance_retry_interval, enable_notification, exclude_nodes,
+        shm_size, dataset, env, description, keep_after_success,
+        keep_after_failure, public_path_readonly
+        `dataset` takes one "<name>:<version>" or a list of them; `env` takes
+        either a "KEY=VALUE" list or a table.
 
     \b
     Examples:
@@ -1183,6 +1318,11 @@ def hpc_batch(
     \b
     Required fields after expansion:
         name, entrypoint, quota, workspace, project, group, image
+        Optional fields use create-command defaults: priority, image_type,
+        instance_count, number_of_tasks, cpus_per_task, memory_per_cpu,
+        enable_hyper_threading, max_time, keep_after_finish, dataset,
+        description, enable_notification, public_path_readonly
+        `dataset` takes one "<name>:<version>" or a list of them.
 
     \b
     Examples:
@@ -1284,6 +1424,12 @@ def notebook_batch(
     \b
     Required fields after expansion:
         name, quota, workspace, project, group, image
+        Optional fields use create-command defaults: priority, shm_size,
+        auto_stop, auto_stop_after, wait, post_start, post_start_script,
+        dataset, enable_notification, public_path_readonly,
+        project_path_readonly
+        `dataset` takes one "<name>:<version>" or a list of them;
+        `auto_stop_after` is in minutes and arms auto_stop.
 
     \b
     Examples:
