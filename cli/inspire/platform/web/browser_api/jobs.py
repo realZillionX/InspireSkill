@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from inspire.platform.web.browser_api.core import (
+    _coerce_total,
     _get_base_url,
     _request_json,
     _v2_result,
@@ -196,7 +197,11 @@ def list_jobs(
 
     payload = _v2_result(data)
     jobs_data = payload.get("jobs", [])
-    total = payload.get("total", 0)
+    # `train.ListJobs` answers with an int today, but `hpc` and `ray` both
+    # answer the same field as a string. Passing it through raw makes the
+    # refresh loop's `len(records) >= total` a TypeError the day this Action
+    # follows them.
+    total = _coerce_total(payload.get("total"), len(jobs_data))
 
     jobs = [JobInfo.from_api_response(j) for j in jobs_data]
     return jobs, total
