@@ -34,6 +34,13 @@ from .projects import (
     list_project_selector_records,
     select_project,
 )
+from .datasets import (
+    CONTAINER_DATASET_ROOT,
+    DatasetMount,
+    DatasetValidation,
+    container_mount_path,
+    validate_dataset_mounts,
+)
 from .files import (
     FileDirectoryInfo,
     SystemStorageInfo,
@@ -167,6 +174,12 @@ __all__ = [
     "list_jobs",
     "list_train_job_logs",
     "stop_training_job",
+    # Official dataset mounts
+    "CONTAINER_DATASET_ROOT",
+    "DatasetMount",
+    "DatasetValidation",
+    "container_mount_path",
+    "validate_dataset_mounts",
     # Files
     "FileDirectoryInfo",
     "SystemStorageInfo",
