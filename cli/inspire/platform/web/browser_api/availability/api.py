@@ -167,6 +167,85 @@ def _group_name(group: dict) -> str:
     ).strip()
 
 
+def list_node_events(
+    node_names: list[str],
+    *,
+    page_size: int = 200,
+    max_pages: int | None = None,
+    sort_ascending: bool = True,
+    session: Optional[WebSession] = None,
+) -> list[dict]:
+    """List Kubernetes events belonging to nodes themselves.
+
+    Action: ``cluster.ListNodeEvents``. This is the only event source on the
+    platform keyed by node rather than by workload — kernel OOM kills, cordons,
+    ``NodeNotSchedulable``, controller removals — and it answers for ordinary
+    workspace members, unlike the rest of the ``cluster.*`` surface.
+
+    ``filter.node_names`` is required in practice: an empty filter answers
+    ``{"events": [], "total": 0}``, which reads as "this cluster is quiet"
+    rather than "you asked nothing". Several node names in one call are fine,
+    and every row carries its own ``node_name``. A node name the cluster does
+    not know is likewise an empty list, not an error.
+
+    Rows are Kubernetes-shaped but spelled differently from every other event
+    Action here: the type field is ``event_type`` (not ``type``) and there is
+    no ``count``. ``filter.from`` narrows by reporting component; ``event_type``
+    / ``type`` / ``keyword`` are all ``unknown field``, and the declared
+    ``start_last_timestamp`` / ``end_last_timestamp`` pair answers
+    ``InternalError``, so time windowing stays on this side.
+    """
+    clean_names = list(
+        dict.fromkeys(
+            str(name or "").strip() for name in node_names if str(name or "").strip()
+        )
+    )
+    if not clean_names:
+        raise ValueError("Node selection is required.")
+    if page_size < 1:
+        raise ValueError("page_size must be positive")
+    if max_pages is not None and max_pages < 1:
+        raise ValueError("max_pages must be positive")
+    if session is None:
+        session = get_web_session()
+
+    sort = "ascend" if sort_ascending else "descend"
+    events: list[dict] = []
+    page = 1
+    while max_pages is None or page <= max_pages:
+        payload = _v2_result(
+            _request_json(
+                session,
+                "POST",
+                "/api/v2/cluster?Action=ListNodeEvents",
+                referer=f"{_get_base_url()}/cluster/nodeList",
+                body={
+                    "PageNumber": page,
+                    "page_size": page_size,
+                    "filter": {"node_names": clean_names},
+                    "sorter": [{"field": "last_timestamp", "sort": sort}],
+                },
+                timeout=30,
+            )
+        )
+        page_events = payload.get("events")
+        if not isinstance(page_events, list):
+            page_events = payload.get("items")
+        if not isinstance(page_events, list):
+            page_events = []
+        events.extend(item for item in page_events if isinstance(item, dict))
+
+        total = _coerce_total(payload.get("total"), -1)
+        if (
+            not page_events
+            or len(page_events) < page_size
+            or (total >= 0 and len(events) >= total)
+        ):
+            break
+        page += 1
+    return events
+
+
 def list_node_dimension(
     logic_compute_group_id: str,
     *,
@@ -879,6 +958,7 @@ __all__ = [
     "get_quota_priority_levels",
     "list_member_usage",
     "list_node_dimension",
+    "list_node_events",
     "list_node_specs",
     "list_compute_groups",
     "list_task_usage",

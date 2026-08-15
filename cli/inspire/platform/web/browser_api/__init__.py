@@ -15,6 +15,7 @@ from .availability import (
     get_quota_priority_levels,
     list_compute_groups,
     list_member_usage,
+    list_node_events,
     list_node_specs,
     list_task_usage,
 )
@@ -270,6 +271,7 @@ __all__ = [
     "get_quota_priority_levels",
     "list_compute_groups",
     "list_member_usage",
+    "list_node_events",
     "list_node_specs",
     "list_task_usage",
     # Projects

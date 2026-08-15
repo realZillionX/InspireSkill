@@ -65,6 +65,16 @@ def event_sort_key(event: dict) -> tuple[int, int]:
     return _epoch(event.get("last_timestamp")), _epoch(event.get("first_timestamp"))
 
 
+def event_type(event: dict) -> str:
+    """Read the Normal / Warning field under either spelling.
+
+    Node events call it ``event_type``; every workload Action calls it
+    ``type``. The difference has to be absorbed in one place, or `--type
+    Warning` silently empties the node stream instead of filtering it.
+    """
+    return str(event.get("type") or event.get("event_type") or "")
+
+
 def _matching_events(
     events: list[dict],
     *,
@@ -76,7 +86,7 @@ def _matching_events(
     out = events
     if type_filter:
         needle = type_filter.lower()
-        out = [e for e in out if str(e.get("type", "")).lower() == needle]
+        out = [e for e in out if event_type(e).lower() == needle]
     if reason_filter:
         needle = reason_filter.lower()
         out = [e for e in out if needle in str(e.get("reason", "")).lower()]
@@ -85,9 +95,10 @@ def _matching_events(
         out = [
             e
             for e in out
-            if any(
+            if needle in event_type(e).lower()
+            or any(
                 needle in str(e.get(key, "")).lower()
-                for key in ("reason", "message", "from", "type", "content")
+                for key in ("reason", "message", "from", "content")
             )
         ]
     return out
@@ -149,12 +160,14 @@ def public_event(event: dict) -> dict[str, Any]:
     )
     projected = {
         "time": _fmt_timestamp(timestamp) if timestamp not in (None, "") else None,
-        # Attached by the command layer for per-pod queries only, and already
-        # public there: the raw `object_id` is a platform handle and stays out
-        # of output. Job- and cluster-level events carry no instance identity,
-        # so the key is simply absent for them.
+        # Who the row is about, when the row is about something narrower than
+        # the workload. `instance` is attached by the command layer for per-pod
+        # queries (the raw `object_id` is a handle and stays out of output);
+        # `node` comes from node events, where the platform names the node
+        # itself. Workload-level rows carry neither, so both keys are absent.
+        "node": event.get("node_name") or event.get("node"),
         "instance": event.get("instance"),
-        "type": event.get("type"),
+        "type": event_type(event),
         "reason": event.get("reason"),
         "message": message,
         "count": event.get("count"),
@@ -170,24 +183,32 @@ def public_event(event: dict) -> dict[str, Any]:
     }
 
 
+# The optional subject column: who a row is about, when that is narrower than
+# the workload. At most one of these is present in any single stream.
+_SUBJECT_COLUMNS = (("node", "Node", 24), ("instance", "Instance", 28))
+
+
 def render_events_table(events: list[dict]) -> None:
     """Print compact event diagnostics to stdout.
 
-    The Instance column appears only when the rows carry one — a merged
-    per-pod window is unreadable without it, and adding it to a job-level
-    window would be a column of dashes.
+    The subject column appears only when the rows carry one — a merged per-pod
+    or multi-node window is unreadable without it, while a workload-level
+    window would only gain a column of dashes.
     """
     if not events:
         click.echo("(no events)")
         return
 
     items = [public_event(event) for event in events]
-    show_instance = any(item.get("instance") for item in items)
+    subjects = [
+        (key, title, width)
+        for key, title, width in _SUBJECT_COLUMNS
+        if any(item.get(key) for item in items)
+    ]
 
     def row(item: dict[str, Any]) -> tuple[str, ...]:
         cells = [str(item.get("time") or "-")]
-        if show_instance:
-            cells.append(str(item.get("instance") or "-"))
+        cells.extend(str(item.get(key) or "-") for key, _title, _width in subjects)
         cells.extend(
             (
                 str(item.get("type") or "-"),
@@ -199,14 +220,30 @@ def render_events_table(events: list[dict]) -> None:
         return tuple(cells)
 
     rows = [row(item) for item in items]
-    if show_instance:
-        header = ("Time", "Instance", "Type", "Reason", "Count", "Message")
-        max_widths = (19, 28, 10, 32, 7, 80)
-        aligns = ["left", "left", "left", "left", "right", "left"]
-    else:
-        header = ("Time", "Type", "Reason", "Count", "Message")
-        max_widths = (19, 10, 32, 7, 80)
-        aligns = ["left", "left", "left", "right", "left"]
+    header = (
+        "Time",
+        *(title for _key, title, _width in subjects),
+        "Type",
+        "Reason",
+        "Count",
+        "Message",
+    )
+    max_widths = (
+        19,
+        *(width for _key, _title, width in subjects),
+        10,
+        32,
+        7,
+        80,
+    )
+    aligns = [
+        "left",
+        *("left" for _ in subjects),
+        "left",
+        "left",
+        "right",
+        "left",
+    ]
     widths = [
         column_width(title, [row[index] for row in rows], max_width=max_width)
         for index, (title, max_width) in enumerate(zip(header, max_widths))

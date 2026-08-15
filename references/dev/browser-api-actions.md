@@ -243,9 +243,12 @@ Referer：`/jobs/distributedTraining`。
 | `GetWorkspaceQuota` | `{workspace_id}` | `{gpu_high_running, gpu_high_running_used, cpu_*, memory_*, is_fair_workspace, …}` | `resources quota` |
 | `GetWorkspaceComputeResource` | `{workspace_id}` | `{logic_resouces{cpu_total, cpu_used, memory_gi_total, memory_gi_used, gpu_total, gpu_used, gpu_low_priority_used}}` | `resources quota` |
 
+另有一个不在本路由上的邻居：**`cluster.ListNodeEvents`**（Referer `/cluster/nodeList`），`{PageNumber, page_size, filter:{node_names[], from?}, sorter:[{field:"last_timestamp", sort}]}` → `{events[], total}`，供 `resources node-events`。
+
 **参数语义与限制**
 
-- **一律用 `workspace.*`，不用 `cluster.*`**：同名的 8 个 Action 在 `cluster.*` 下对非集群管理员一律 `AccessForbidden`。
+- **一律用 `workspace.*`，不用 `cluster.*`**：同名的 8 个 Action 在 `cluster.*` 下对非集群管理员一律 `AccessForbidden`。**`cluster.ListNodeEvents` 是例外**，它没有 `workspace.*` 对应物，且对普通成员可读——这也是平台上唯一按节点而不是按工作负载组织的事件源（内核 OOM kill、`TaskHung`、Cordon / Uncordon、`Rebooted`、`NodeNotSchedulable`）。
+- **`ListNodeEvents` 的 `filter.node_names` 事实上必填**：不给 filter 答 `{events: [], total: 0}`，与「这个集群很安静」不可区分；节点名不认识同样是空列表而不是报错。一次可以给多个节点，行里带 `node_name` 自己署名。行的类型字段叫 **`event_type`**（不是别处的 `type`），也**没有 `count`**。`filter.from` 按上报组件收窄有效；`event_type` / `type` / `keyword` 全是 `unknown field`；discovery 声明的 `start_last_timestamp` / `end_last_timestamp` 答 `InternalError`，时间窗只能在客户端做。
 - **`ListLogicComputeGroups` 省略 `page_size` 会返回空列表配非零 `total`**，看起来就像这个工作空间没有任何计算组。`page_size: -1` 有效，保持原样。
 - **`ListNodeDimension` 的 `page_size: -1` 只返回 10 条**，必须按 `total` 显式翻页。它的两级 scoping 也最容易踩：`filter` 里只放 `logic_compute_group_id` 返回 `AccessForbidden`，同时放 `workspace_id` 和 `logic_compute_group_id` 才通。
 - **节点行的 GPU 数嵌在 `gpu.total` 里**，不是扁平 `gpu_count`；只读扁平键会让每个节点看起来都是零卡，静默把空闲节点数清零。行里还有 `status`（`READY` 判定）、`tasks_associated` / `task_list`（有没有任务）、`cordon_type`、`is_maint`、`resource_pool`（`fault` 要排除），「完全空闲」需要五项同时成立。

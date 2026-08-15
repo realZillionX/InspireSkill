@@ -101,3 +101,6 @@ Profile 是调度条件组 Alias，只保存 `workspace`、`project`、`group`�
 | PENDING 很久 | 实时资源不足、优先级不足、节点条件不满足 |
 | RUNNING 但业务没推进 | 看 Metrics 是否有 GPU / CPU / I/O 负载，再回到日志和产物 |
 | 多节点某个 Worker 掉队 | 先看 Per-Instance Metrics 和 Instances，再看该 Worker 日志 |
+| 同一台机器上反复失败 | `resources node-events <节点名>` 看这台机器自己的事实 |
+
+工作负载的 Events 只说平台对**这个任务**做了什么，说不了机器本身发生了什么。`resources node-events <节点名>` 是唯一按节点组织的事件源：内核 OOM kill、`TaskHung`、Cordon / Uncordon、重启、`NodeNotSchedulable`。节点名从 `<workload> instances` 的 `Node` 列或 `<workload> status` 拿；可以一次给多个节点，输出多一列 `Node`。`--from` 按上报组件收窄（`kubelet` / `kernel-monitor` / `node-controller`）。**查不到事件不等于机器没问题**，先核对节点名拼写。

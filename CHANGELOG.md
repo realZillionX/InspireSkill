@@ -64,6 +64,10 @@
 
 - `notebook status` 的 `Node` 一并给出该节点的健康状态，被 Cordon 或处于维护窗口时标出。**STOPPED 的 Notebook 不会清空节点对象**，而是把名字置空、状态置成 proto 零值 `UNKNOWN_NODE_STATUS`，照直读会印出一个「状态未知的节点」——投影按空名字判定未落点，这一行随之消失。
 
+- `inspire resources node-events <节点名>...`：**唯一按节点而不是按工作负载组织的事件源**。工作负载的 Events 只说平台对这个任务做了什么，说不了机器本身发生了什么——内核 OOM kill（`kernel-monitor` 上报的 `TaskHung`、`Memory cgroup out of memory`）、Cordon / Uncordon、`Rebooted`、`InvalidDiskCapacity`、`NodeNotSchedulable`。「同一台机器上反复失败」此前在 CLI 里没有任何可查的东西，实测一台 4090 上有 149 条、一台 HPC 计算节点上有 88 条 Warning。
+
+  `cluster.*` 这条路由对普通成员基本全是 `AccessForbidden`，**这个 Action 是例外**，本账号读得通。契约有三处得记住：`filter.node_names` 事实上必填（不给 filter 答 `total: 0`，读起来像「集群很安静」而不是「你什么都没问」）；行里的类型字段叫 `event_type` 而不是别处的 `type`，共享渲染与 `--type` 过滤都在一个地方吸收这个差异；平台声明的 `start_last_timestamp` / `end_last_timestamp` 时间窗答 `InternalError`，所以时间收窄留在客户端。节点名不认识时回空列表而不是报错，因此帮助里明说「查不到不等于机器没问题，先核对拼写」。
+
 ### 破坏性变更
 
 - **`events` 的默认口径改成和 `logs` 一样：不加参数就给全部。** `job events` / `hpc events` 现在把控制器事件与每个实例的 Pod 事件合成一条时间线，`--all-instances` 随之删除（默认即是），`--instance` 从「切换到 Pod 视图」变成「收窄到某个实例」。
