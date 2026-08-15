@@ -73,4 +73,10 @@ Workspace 判断：
 
 ### CLI 开发
 
-仅在维护 CLI Browser API 封装、核对前端请求合同，或用户明确要求接口细节时加载 [`references/dev/browser-api-v1.md`](references/dev/browser-api-v1.md)；涉及 `/api/v2` Action 面时加载 [`references/dev/browser-api-v2.md`](references/dev/browser-api-v2.md)。
+仅在维护 CLI Browser API 封装、核对前端请求合同，或用户明确要求接口细节时加载：
+
+| 需要什么 | 加载 |
+| --- | --- |
+| 请求契约、响应信封、认证与 Session、分页、Workspace scoping、错误码、探针方法、仍在用的 v1 端点、变更验收 | [`references/dev/browser-api.md`](references/dev/browser-api.md) |
+| 某个 Action 的请求体、响应键、参数语义、CLI 映射、限制，或创建面字段合同 | [`references/dev/browser-api-actions.md`](references/dev/browser-api-actions.md) |
+| 数据广场（`aip.sii.edu.cn`）的握手、信封与目录端点 | [`references/dev/data-plaza-api.md`](references/dev/data-plaza-api.md) |

@@ -1,11 +1,10 @@
 """Browser API wrappers for the model registry.
 
 Reverse-engineered from the current `/jobs/modelService` page. Model registry
-browsing and registration use the web-session Browser API. See
-the controlled browser/live-smoke workflow documented in
-`references/dev/browser-api-v1.md`.
-
-Model Hub is on `/api/v2/model-hub`.
+browsing and registration use the web-session Browser API; the route is
+`/api/v2/model-hub` (hyphenated -- the underscore spelling 404s). The Action
+contract and the controlled-verification discipline behind it are documented in
+`references/dev/browser-api-actions.md`.
 """
 
 from __future__ import annotations
