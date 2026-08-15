@@ -32,6 +32,7 @@ from inspire.cli.utils.collection_output import (
 from inspire.cli.utils.dataset_mounts import (
     DatasetMount,
     DatasetSpecError,
+    dataset_mount_views,
     parse_dataset_specs,
     resolve_dataset_info,
 )
@@ -94,8 +95,15 @@ _PUBLIC_FIELDS_BY_KIND = {
         ("enable_notification", "notifications"),
         ("auto_fault_tolerance", "auto_fault_tolerance"),
         ("fault_tolerance_max_retry", "fault_tolerance_max_retry"),
+        ("fault_tolerance_retry_interval", "fault_tolerance_retry_interval_seconds"),
         ("exclude_nodes", "exclude_nodes"),
         ("shm_size", "shared_memory_gib"),
+        # Applied by `_prepare_training_item` and therefore part of the plan:
+        # a dry run that hides them cannot be used to check a matrix.
+        ("description", "description"),
+        ("keep_after_success", "keep_after_success_hours"),
+        ("keep_after_failure", "keep_after_failure_hours"),
+        ("public_path_readonly", "public_path_readonly"),
         ("command", "command"),
     ),
     "hpc": (
@@ -110,6 +118,10 @@ _PUBLIC_FIELDS_BY_KIND = {
         ("priority", "priority"),
         ("shm_size", "shared_memory_gib"),
         ("auto_stop", "auto_stop"),
+        ("auto_stop_after", "auto_stop_after_minutes"),
+        ("enable_notification", "notifications"),
+        ("public_path_readonly", "public_path_readonly"),
+        ("project_path_readonly", "project_path_readonly"),
         ("wait", "wait"),
         ("post_start", "post_start"),
     ),
@@ -462,6 +474,22 @@ def _public_batch_plan(
         else:
             output[key] = value
     return json_formatter.sanitize_json_data(output)
+
+
+def _plan_mount_and_env_views(item: dict[str, Any]) -> dict[str, Any]:
+    """Render the dataset and env parts of a plan the way `create` does.
+
+    Env carries values that can be tokens, so only the names are reported —
+    the same rule `inspire job create --dry-run` follows.
+    """
+    views: dict[str, Any] = {}
+    mounts = _optional_dataset_mounts(item)
+    if mounts:
+        views["datasets"] = dataset_mount_views(mounts)
+    envs = _optional_env_assignments(item)
+    if envs:
+        views["env"] = [entry["name"] for entry in envs]
+    return views
 
 
 def _submitted_batch_item(name: str) -> dict[str, str]:
@@ -1108,11 +1136,32 @@ def _prepare_serving_item(
     return payload
 
 
+def _plan_value_text(value: Any) -> str:
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, dict):
+        return ", ".join(f"{key}={_plan_value_text(sub)}" for key, sub in value.items())
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_plan_value_text(entry) for entry in value)
+    return str(value)
+
+
+def _echo_batch_plan(item: dict[str, Any]) -> None:
+    """Print one expanded item the way `<workload> create --dry-run` would."""
+    click.echo(f"Plan: {scrub_raw_ids(str(item.get('name') or '-'))}")
+    for key, value in item.items():
+        if key == "name" or value in (None, "", [], {}):
+            continue
+        label = key.replace("_", " ").capitalize()
+        click.echo(f"  {label}: {scrub_raw_ids(_plan_value_text(value))}")
+
+
 def _emit_batch_result(
     ctx: Context,
     *,
     outputs: list[dict[str, Any]],
     output_limit: int | None,
+    dry_run: bool = False,
 ) -> None:
     public_outputs = [json_formatter.sanitize_json_data(item) for item in outputs]
     page = bound_collection(public_outputs, limit=output_limit)
@@ -1127,9 +1176,17 @@ def _emit_batch_result(
         )
         return
 
-    for item in page.items:
-        name = item.get("name") or "-"
-        click.echo(f"- {scrub_raw_ids(str(name))}")
+    # A submit result is a list of what now exists, so names are the answer. A
+    # dry run is asked for the plan, and its help says it prints one.
+    if dry_run:
+        for index, item in enumerate(page.items):
+            if index:
+                click.echo("")
+            _echo_batch_plan(item)
+    else:
+        for item in page.items:
+            name = item.get("name") or "-"
+            click.echo(f"- {scrub_raw_ids(str(name))}")
     notice = truncation_notice(page, full_option="--all")
     if notice:
         click.echo(notice)
@@ -1280,6 +1337,7 @@ def job_batch(
                             "notifications": plan.create_kwargs.get("enable_notification"),
                             "exclude_nodes": job_submit.training_plan_exclude_nodes(plan),
                             "shared_memory_gib": plan.shm_size_gib,
+                            **_plan_mount_and_env_views(item),
                         },
                     )
                 )
@@ -1295,6 +1353,7 @@ def job_batch(
             ctx,
             outputs=outputs,
             output_limit=output_limit,
+            dry_run=dry_run,
         )
     except Exception as e:
         _handle_batch_exception(ctx, e)
@@ -1399,6 +1458,7 @@ def hpc_batch(
             ctx,
             outputs=outputs,
             output_limit=output_limit,
+            dry_run=dry_run,
         )
     except Exception as e:
         _handle_batch_exception(ctx, e)
@@ -1511,6 +1571,7 @@ def notebook_batch(
             ctx,
             outputs=outputs,
             output_limit=output_limit,
+            dry_run=dry_run,
         )
     except Exception as e:
         _handle_batch_exception(ctx, e)
@@ -1612,6 +1673,7 @@ def ray_batch(
             ctx,
             outputs=outputs,
             output_limit=output_limit,
+            dry_run=dry_run,
         )
     except Exception as e:
         _handle_batch_exception(ctx, e)
@@ -1723,6 +1785,7 @@ def serving_batch(
             ctx,
             outputs=outputs,
             output_limit=output_limit,
+            dry_run=dry_run,
         )
     except Exception as e:
         _handle_batch_exception(ctx, e)

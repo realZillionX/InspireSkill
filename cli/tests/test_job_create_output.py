@@ -153,3 +153,77 @@ def test_job_create_human_output_is_compact(
 
     assert result.exit_code == 0, result.output
     assert result.output == "OK Job created: train\n"
+
+
+def test_dry_run_reports_max_time_and_fault_tolerance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The plan has to name every field it is about to submit.
+
+    `--max-time`, the fault-tolerance trio, and a non-default `--framework`
+    used to be resolved and sent while the plan stayed silent about them, so a
+    dry run could not be used to check what would actually be submitted.
+    """
+    _patch_job_create_runtime(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            *_job_create_args(json_output=False),
+            "--max-time",
+            "2",
+            "--framework",
+            "deepspeed",
+            "--auto-fault-tolerance",
+            "--fault-tolerance-max-retry",
+            "3",
+            "--fault-tolerance-retry-interval",
+            "60",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Max runtime: 2.0 h" in result.output
+    assert "Fault tolerance: enabled, max 3 retries, 60s apart" in result.output
+    assert "Framework: deepspeed" in result.output
+
+
+def test_dry_run_json_reports_max_time_and_fault_tolerance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_job_create_runtime(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            *_job_create_args(json_output=True),
+            "--max-time",
+            "2",
+            "--auto-fault-tolerance",
+            "--fault-tolerance-max-retry",
+            "3",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["data"]
+    assert payload["max_time_hours"] == 2.0
+    assert payload["auto_fault_tolerance"] is True
+    assert payload["fault_tolerance_max_retry"] == 3
+    assert payload["framework"] == "pytorch"
+
+
+def test_dry_run_stays_quiet_about_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No time limit and no fault tolerance means no lines claiming either."""
+    _patch_job_create_runtime(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli_main, [*_job_create_args(json_output=False), "--dry-run"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Max runtime" not in result.output
+    assert "Fault tolerance" not in result.output
+    assert "Framework" not in result.output

@@ -36,6 +36,11 @@ class CustomImageInfo:
     status: str  # READY / BUILDING / FAILED
     description: str
     created_at: str
+    # Who can see the image, which is not what `source` says: `source` is the
+    # registry namespace it was built into and never changes, while
+    # `visibility` is the field `UpdateImage` flips. A personal image saved
+    # from a notebook reads SOURCE_PUBLIC + VISIBILITY_PRIVATE.
+    visibility: str = ""  # VISIBILITY_PRIVATE / VISIBILITY_PUBLIC
 
 
 def _image_from_api(item: dict[str, Any]) -> CustomImageInfo:
@@ -52,6 +57,7 @@ def _image_from_api(item: dict[str, Any]) -> CustomImageInfo:
         status=item.get("status", ""),
         description=item.get("description", ""),
         created_at=item.get("created_at", ""),
+        visibility=item.get("visibility", ""),
     )
 
 
@@ -74,10 +80,11 @@ def list_images_by_source(
     and ``created_at`` populated from the raw API response.
 
     Args:
-        source: One of ``"official"`` / ``"public"`` / ``"private"``, matching the
-            three categories shown in the web UI (官方镜像 / 公开镜像 / 个人可见镜像).
-            ``"private"`` applies ``visibility=VISIBILITY_PRIVATE`` across both
-            private and public source lists.
+        source: One of ``"official"`` / ``"public"`` / ``"project"`` /
+            ``"private"``, matching the four tabs the web image picker shows
+            (官方镜像 / 公开可见镜像 / 项目可见镜像 / 个人可见镜像). Only
+            ``"official"`` is a real source; the other three are
+            ``visibility`` values applied across both source lists.
         session: Existing web session.
         workspace_id: Which workspace's image registry to read. Images are
             stored per workspace and every request carries
@@ -86,35 +93,27 @@ def list_images_by_source(
             workspace silently reads a different registry. Defaults to the
             session's workspace when omitted.
     """
-    source_map = {
-        "official": "SOURCE_OFFICIAL",
-        "public": "SOURCE_PUBLIC",
-        # UI "个人可见镜像": private visibility across both private/public sources.
-        "private": "SOURCE_PERSONAL_VISIBLE",
+    # Three of the four categories are visibility filters over the same two
+    # source lists; only 官方镜像 selects on `source`.
+    visibility_map = {
+        "public": "VISIBILITY_PUBLIC",
+        "project": "VISIBILITY_PROJECT",
+        "private": "VISIBILITY_PRIVATE",
     }
-    api_source = source_map.get(source.lower(), source)
+    normalized = source.lower()
+    visibility = visibility_map.get(normalized)
 
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
     )
 
-    if api_source == "SOURCE_PUBLIC":
+    if visibility is not None:
         body: dict[str, Any] = {
             "page": 0,
             "page_size": -1,
             "filter": {
                 "source_list": ["SOURCE_PRIVATE", "SOURCE_PUBLIC"],
-                "visibility": "VISIBILITY_PUBLIC",
-                "registry_hint": {"workspace_id": workspace_id},
-            },
-        }
-    elif api_source == "SOURCE_PERSONAL_VISIBLE":
-        body = {
-            "page": 0,
-            "page_size": -1,
-            "filter": {
-                "source_list": ["SOURCE_PRIVATE", "SOURCE_PUBLIC"],
-                "visibility": "VISIBILITY_PRIVATE",
+                "visibility": visibility,
                 "registry_hint": {"workspace_id": workspace_id},
             },
         }
@@ -123,7 +122,7 @@ def list_images_by_source(
             "page": 0,
             "page_size": -1,
             "filter": {
-                "source": api_source,
+                "source": "SOURCE_OFFICIAL" if normalized == "official" else source,
                 "source_list": [],
                 "registry_hint": {"workspace_id": workspace_id},
             },

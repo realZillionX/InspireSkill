@@ -196,13 +196,22 @@ def public_event(event: dict) -> dict[str, Any]:
 # the workload. At most one of these is present in any single stream.
 _SUBJECT_COLUMNS = (("node", "Node", 24), ("instance", "Instance", 28))
 
+# Kubernetes-shaped classification, which only the workload event streams
+# carry. Notebook lifecycle events are `{time, message}` and nothing else, so
+# for them these would be three columns of dashes.
+_CLASSIFICATION_COLUMNS = (
+    ("type", "Type", 10, "left"),
+    ("reason", "Reason", 32, "left"),
+    ("count", "Count", 7, "right"),
+)
+
 
 def render_events_table(events: list[dict]) -> None:
     """Print compact event diagnostics to stdout.
 
-    The subject column appears only when the rows carry one — a merged per-pod
-    or multi-node window is unreadable without it, while a workload-level
-    window would only gain a column of dashes.
+    A column appears only when the rows carry it — a merged per-pod or
+    multi-node window is unreadable without its subject, while a notebook's
+    lifecycle window would only gain columns of dashes.
     """
     if not events:
         click.echo("(no events)")
@@ -214,43 +223,38 @@ def render_events_table(events: list[dict]) -> None:
         for key, title, width in _SUBJECT_COLUMNS
         if any(item.get(key) for item in items)
     ]
+    classification = [
+        (key, title, width, align)
+        for key, title, width, align in _CLASSIFICATION_COLUMNS
+        if any(item.get(key) for item in items)
+    ]
 
     def row(item: dict[str, Any]) -> tuple[str, ...]:
         cells = [str(item.get("time") or "-")]
         cells.extend(str(item.get(key) or "-") for key, _title, _width in subjects)
         cells.extend(
-            (
-                str(item.get("type") or "-"),
-                str(item.get("reason") or "-"),
-                str(item.get("count") or "-"),
-                str(item.get("message") or "-").replace("\n", " "),
-            )
+            str(item.get(key) or "-") for key, _title, _width, _align in classification
         )
+        cells.append(str(item.get("message") or "-").replace("\n", " "))
         return tuple(cells)
 
     rows = [row(item) for item in items]
     header = (
         "Time",
         *(title for _key, title, _width in subjects),
-        "Type",
-        "Reason",
-        "Count",
+        *(title for _key, title, _width, _align in classification),
         "Message",
     )
     max_widths = (
         19,
         *(width for _key, _title, width in subjects),
-        10,
-        32,
-        7,
+        *(width for _key, _title, width, _align in classification),
         80,
     )
     aligns = [
         "left",
         *("left" for _ in subjects),
-        "left",
-        "left",
-        "right",
+        *(align for _key, _title, _width, align in classification),
         "left",
     ]
     widths = [

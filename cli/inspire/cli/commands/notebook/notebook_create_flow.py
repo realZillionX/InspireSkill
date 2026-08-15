@@ -292,11 +292,19 @@ def resolve_notebook_project(
         else project
     )
     if project_value:
-        project_value = resolve_project(
-            config,
-            project_value,
-            projects,
-        ).name
+        try:
+            project_value = resolve_project(
+                config,
+                project_value,
+                projects,
+            ).name
+        except ConfigError as e:
+            # An unknown --project is ordinary user input, not a crash. `job
+            # create` and `hpc create` already answer it with one line; this
+            # path used to let the ConfigError reach the top and print a
+            # traceback above the same message.
+            _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+            return None
 
     try:
         congested: set[str] | None = None

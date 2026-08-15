@@ -872,9 +872,10 @@ def test_image_and_model_help_expose_current_visibility_and_source_options() -> 
 
     assert save_result.exit_code == 0
     assert "--workspace NAME" in save_result.output
-    assert "--visibility [private|public]" in save_result.output
+    # Three visibilities, matching the web picker's 个人可见 / 项目可见 / 公开可见.
+    assert "--visibility [private|project|public]" in save_result.output
     assert visibility_result.exit_code == 0
-    assert "--visibility [private|public]" in visibility_result.output
+    assert "--visibility [private|project|public]" in visibility_result.output
     assert register_result.exit_code == 0
     assert "--source-path PATH" in register_result.output
 

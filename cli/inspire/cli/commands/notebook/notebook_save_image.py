@@ -145,7 +145,7 @@ def _resolve_save_notebook_id(
 )
 @click.option(
     "--visibility",
-    type=click.Choice(["private", "public"], case_sensitive=False),
+    type=click.Choice(["private", "project", "public"], case_sensitive=False),
     default=None,
     help="Image visibility. Omit to accept the platform default.",
 )

@@ -17,6 +17,7 @@ from inspire.cli.context import (
 )
 
 from inspire import config as config_module
+from inspire.cli.formatters.human_formatter import format_epoch
 from inspire.cli.commands.notebook import notebook_commands as notebook_cmd_module
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
@@ -565,8 +566,11 @@ def test_job_status_human_output_is_compact_and_name_only(
     assert "Priority: 5" in result.output
     assert "Priority Level: HIGH" in result.output
     assert "Sub-status: READY" in result.output
-    assert "Created: 1770000000" in result.output
-    assert "Updated: 1770000100" in result.output
+    # Human status renders wall-clock, the same as `job list`; the raw epoch
+    # stays in the JSON projection for machine consumers.
+    assert f"Created: {format_epoch('1770000000')}" in result.output
+    assert f"Updated: {format_epoch('1770000100')}" in result.output
+    assert "Created: 1770000000" not in result.output
     assert TEST_JOB_ID not in result.output
     assert "project-internal" not in result.output
     assert "quota-internal" not in result.output

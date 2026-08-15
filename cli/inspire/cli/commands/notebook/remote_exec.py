@@ -565,8 +565,14 @@ def exec_command(
     COMMAND is the shell command to run remotely (in --cwd, the `me` path alias, or $HOME).
     Command output (stdout/stderr) is automatically displayed after completion.
 
+    An SSH-capable notebook needs its connection cached first — run `inspire
+    notebook connection refresh <name> --workspace <workspace>` once after
+    creating it. Restricted H100/H200 notebooks need no setup: they run through
+    JupyterTerminal.
+
     \b
     Examples:
+        inspire notebook connection refresh my-notebook --workspace <workspace>
         inspire notebook exec my-notebook --cwd me:repo "uv venv .venv"
         inspire notebook exec my-notebook --cwd me "pwd"
         inspire notebook exec my-notebook --cwd me:repo "pip install torch" --timeout 600

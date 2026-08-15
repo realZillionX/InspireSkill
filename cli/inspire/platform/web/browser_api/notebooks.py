@@ -1136,10 +1136,14 @@ def wait_for_notebook_running(
     last_status = None
     last_progress_at = 0.0
     last_reported_status = None
+    # The handle cannot go in the timeout message: the CLI scrubs raw ids out
+    # of anything user-facing, so interpolating it produced "Notebook ''".
+    notebook_label = ""
 
     while True:
         notebook = get_notebook_detail(notebook_id=notebook_id, session=session)
         status = (notebook.get("status") or "").upper()
+        notebook_label = str(notebook.get("name") or "").strip() or notebook_label
         if status:
             last_status = status
 
@@ -1160,8 +1164,9 @@ def wait_for_notebook_running(
             last_progress_at = now
 
         if now - start >= timeout:
+            subject = f"Notebook '{notebook_label}'" if notebook_label else "The notebook"
             raise TimeoutError(
-                f"Notebook '{notebook_id}' did not reach RUNNING within {timeout}s "
+                f"{subject} did not reach RUNNING within {timeout}s "
                 f"(last status: {last_status or 'unknown'})"
             )
 

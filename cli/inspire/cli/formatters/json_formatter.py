@@ -102,14 +102,13 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r")"
     r"\s*[:=]\s*[^\s,;&]+"
 )
-_UNIX_ABSOLUTE_PATH_RE = re.compile(
-    r"(?<![\w:/])/(?!inspire(?:/|$)|shared(?:/|$)|workspace(?:/|$)|mnt(?:/|$)|data(?:/|$))"
-    r"(?:[^/\s=:;,)\]}'\"]+/)*[^/\s=:;,)\]}'\"]+"
-)
 _ALL_UNIX_ABSOLUTE_PATH_RE = re.compile(
     r"(?<![\w:/])/"
     r"(?:[^/\s=:;,)\]}'\"]+/)*[^/\s=:;,)\]}'\"]+"
 )
+# Shared-storage roots the CLI is expected to name out loud: they are the
+# addressing scheme for remote files, not local disk layout.
+_SHARED_PATH_ROOTS = ("inspire", "shared", "workspace", "mnt", "data")
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(
     r"(?i)(?<![\w])(?:[a-z]:\\)(?:[^\\\s=:;,)\]}'\"]+\\)+[^\\\s=:;,)\]}'\"]+"
 )
@@ -226,12 +225,19 @@ def _sanitize_public_text(
     if not redact_paths:
         return sanitized
     sanitized = _WINDOWS_ABSOLUTE_PATH_RE.sub("<redacted>", sanitized)
-    path_pattern = (
-        _ALL_UNIX_ABSOLUTE_PATH_RE
-        if redact_platform_paths
-        else _UNIX_ABSOLUTE_PATH_RE
-    )
-    return path_pattern.sub("<redacted>", sanitized)
+    if redact_platform_paths:
+        return _ALL_UNIX_ABSOLUTE_PATH_RE.sub("<redacted>", sanitized)
+
+    def _keep_shared_paths(match: re.Match[str]) -> str:
+        # Decide per whole path, not per leading slash. Refusing to *match*
+        # exempt roots left the rest of such a path exposed to a second
+        # attempt: in `/inspire/<storage>/...` the scan resumed after `>` and
+        # redacted the trailing `/...` on its own.
+        path = match.group(0)
+        root = path[1:].split("/", 1)[0]
+        return path if root in _SHARED_PATH_ROOTS else "<redacted>"
+
+    return _ALL_UNIX_ABSOLUTE_PATH_RE.sub(_keep_shared_paths, sanitized)
 
 
 def sanitize_text(

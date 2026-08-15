@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from inspire.cli.formatters.human_formatter import format_epoch
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.platform.web.browser_api.datasets import mounted_dataset_views
 
@@ -340,13 +341,20 @@ def format_job_status(view: dict[str, Any]) -> str:
         ("priority", "Priority"),
         ("priority_level", "Priority Level"),
         ("sub_status", "Sub-status"),
+    ):
+        value = view.get(key)
+        if value not in (None, ""):
+            lines.append(f"{label}: {value}")
+    # The view keeps epoch millis for machine consumers; a human reading
+    # `job status` should see the same wall-clock format `job list` prints.
+    for key, label in (
         ("created_at", "Created"),
         ("updated_at", "Updated"),
         ("finished_at", "Finished"),
     ):
         value = view.get(key)
         if value not in (None, ""):
-            lines.append(f"{label}: {value}")
+            lines.append(f"{label}: {format_epoch(value)}")
     return "\n".join(lines)
 
 

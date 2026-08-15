@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import time
 from collections import deque
@@ -194,10 +195,29 @@ def _web_log_time_range(job_data: dict, since_minutes: int | None) -> tuple[int,
     return start_ms, max(end_ms, start_ms + 1)
 
 
-def _web_log_sort_key(item: dict) -> tuple[int, str]:
+_SUBSECOND_RE = re.compile(r"\.(\d+)")
+
+
+def _web_log_sub_ms(item: dict) -> int:
+    """Return the sub-millisecond part of a record's `time`, in nanoseconds.
+
+    The platform stamps `time` with nanosecond precision but rounds
+    `timestamp_ms` to milliseconds, so a burst of lines written inside the
+    same millisecond ties on `timestamp_ms` and comes back in whatever order
+    the log store felt like. Ordering on the finer field keeps a job's stdout
+    in the order the job actually wrote it — a CSV header before its row.
+    """
+    match = _SUBSECOND_RE.search(str(item.get("time") or ""))
+    if not match:
+        return 0
+    digits = match.group(1)[:9].ljust(9, "0")
+    return int(digits) % 1_000_000
+
+
+def _web_log_sort_key(item: dict) -> tuple[int, int, str]:
     timestamp_ms = _coerce_epoch_ms(item.get("timestamp_ms")) or 0
     log_id = str(item.get("log_id") or "")
-    return timestamp_ms, log_id
+    return timestamp_ms, _web_log_sub_ms(item), log_id
 
 
 def _web_log_identity(item: dict) -> tuple[int, str, str, int]:

@@ -110,6 +110,32 @@
 
 ### 修复
 
+- **镜像的 Visibility 一栏读的是 `source`，不是 `visibility`。** 这两个字段都在每条镜像记录里，含义完全不同：`source` 是镜像被构建进哪个 registry 命名空间，`visibility` 才是谁能看见它、才是 `set-visibility` 写的那个字段、也才是 `--source public` / `--source private` 实际筛选的依据。从 Notebook 存出来的个人镜像一律是 `SOURCE_PUBLIC` + `VISIBILITY_PRIVATE`，于是 `image list --source private`（网页端「个人可见镜像」）把整张表的 Visibility 全标成 `public`——正好和事实相反。`image list`、`image detail` 和 `notebook save-image` 的回读现在都取 `visibility`；官方镜像自己没有这个字段，仍按 `source` 认。
+
+- **`image list --source` 少了一整类：网页镜像选择器有四个页签，CLI 只有三个。** 「项目可见镜像」（`VISIBILITY_PROJECT`）在 CLI 里既列不出来也设不了，`--source all` 也扫不到——`CPU资源空间` 里有 2 个这样的镜像，此前按名字根本解析不到。`--source` 增加 `project`，`image set-visibility` 和 `notebook save-image --visibility` 同步增加 `project` 一档。
+
+- **`job logs` 会打乱同一毫秒内的输出。** 平台的 `time` 是纳秒精度，`timestamp_ms` 是四舍五入到毫秒的；排序用的是后者，于是一次 `nvidia-smi --format=csv` 的表头和数据行并列成同一个键，日志存储怎么给就怎么印——实测数据行印在了表头前面，`ls` 的三行也被打散。现在按 `time` 的亚毫秒部分排序。
+
+- **`job quota` / `notebook quota` 把 Compute Group 一列截断到 28 列，而 `--group` 恰恰只认逐字相同的全名。** `分布式训练空间` 里 `开发区-H100-cuda12.8版本-119核` 和 `...-183核` 只差后缀，两条的 quota 三元组还不一样（`1,10,200` 对 `1,20,200`），在表里全都显示成 `开发区-H100-cuda12.8版本-...`，等于这张表印出来的值没一个能直接拿去用。该列改为按内容自适应宽度。
+
+- **`notebook create` 传了一个不存在的 `--project` 会打出完整 Python traceback。** `job create` 和 `hpc create` 早就是一行报错，只有 notebook 这条路径让 `ConfigError` 一路冒到顶层，43 行里 42 行是栈。
+
+- **`job create --dry-run` 从不报告 `--max-time`、容错三件套和 `--framework`。** 这些字段会照常解析、照常提交，只是计划里一个字都不提——而手册明确说 dry-run 用来核对容错的最终生效值。`job batch --dry-run` 更彻底：help 说它「print plans」，实际只印一串名字，`--json` 里也漏掉 `dataset`、`env`、`description` 和保留时长。两者现在都把提交什么就印什么（`env` 只印变量名，值可能是凭据）。
+
+- **`notebook lifecycle` 用平台时区，其余命令用本机时区，同一个瞬间差 12 小时。** `ListRunIndex` 是唯一一个回裸墙钟字符串而不是 epoch 的 Action，CLI 原样打印；同一次启动在 `events` 里是 `13:58:03`，在 `lifecycle` 里是 `01:58:03`。现在按平台时钟（+08:00，无夏令时）换算到本机时区。
+
+- **`notebook status` / `job status` 把创建时间印成裸 epoch 毫秒**（`Created: 1786816657000`），而同一份数据在 `list` 里一直是正常时间。`--json` 仍给 epoch。
+
+- **`notebook status` 读不出「剩余运行时长」和优先级。** `--auto-stop-after` 设的那个计时器此前没有任何回读入口，平台的 `left_time` 一直在回；优先级则是 CLI 找错了层级——Notebook 把它放在 `project` 下面，网页端「优先级」列就是从那里读的。现在 `Auto-stop In` 和 `Priority` / `Priority Level` 都出现在 `status` 里。
+
+- **`notebook events` 的 Type / Reason / Count 三列永远是空的。** Notebook 的生命周期事件只有 `{time, message}`，没有 K8s 那套分类；三列 `-` 白占宽度，还暗示存在并不存在的筛选。事件表改为只渲染这批记录真的带着的列，Job / HPC 那侧不受影响。
+
+- **路径脱敏会把 `/inspire/<storage>/...` 这类占位路径拦腰截断。** 豁免规则写成「不匹配以 `/inspire` 开头的路径」，于是扫描到 `>` 之后又把剩下的 `/...` 当成一条新的绝对路径抹掉，`notebook scp` 对受限 Notebook 的提示里就带着一个 `<redacted>`。改为整条路径匹配完再按首段决定去留。
+
+- **等待 Notebook 超时时报的是 `Notebook '' did not reach RUNNING`。** 消息里插的是平台 handle，而 CLI 会把 handle 从所有对外文本里洗掉，于是名字位置就空了。改用 Notebook 名字。
+
+- `notebook exec` / `notebook shell` 的 help 补上 SSH 型 Notebook 首次要跑一次 `connection refresh`：受限 H100/H200 走 JupyterTerminal 不需要任何准备，同一条命令在两类机器上的前置条件不同，此前只有 `scp` 的 help 写了这件事。
+
 - **`hpc create` 会提交一份 Slurm 规格，平台收下、返回 job id，然后什么都不跑。** 节点级（`slurm_cluster_spec`：买几个什么样的节点）和 Slurm 级（`sbatch_script`：程序怎么用这些节点）在平台上互不校验，**控制台也不校验**——它的「最大值」提示来自项目的单任务配额而不是所选规格，而且那几个输入框排在「选择规格」之前，结构上就没法比。受控验证（`CPU资源空间` / `HPC-可上网区资源-2` / `0,4,16`，12 个任务）测出三种形态：
 
   - `--cpus-per-task` 超过一个节点的核数（一个任务跨不了节点），或者单节点上所有任务的内存超过节点内存 → 任务跑约两分钟后 `FAILED`，**`hpc logs` 是空的、`hpc events` 只有正常的 Pod 生命周期，没有任何一处带上 sbatch 的拒绝原因**。

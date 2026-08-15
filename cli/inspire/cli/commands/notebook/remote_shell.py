@@ -135,8 +135,10 @@ def bridge_ssh(
 ) -> None:
     """Open an interactive shell; SSH when allowed, otherwise JupyterTerminal.
 
-    Public-internet notebooks use cached SSH. Restricted notebooks open a
-    JupyterTerminal-backed shell.
+    SSH-capable notebooks use cached SSH, so a freshly created one needs
+    `inspire notebook connection refresh <name> --workspace <workspace>` once.
+    Restricted H100/H200 notebooks open a JupyterTerminal-backed shell and need
+    no setup.
 
     \b
     Example:

@@ -8,7 +8,7 @@ save phases. The ongoing run has an empty end time.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import click
 
@@ -35,14 +35,40 @@ from inspire.platform.web.session import SessionExpiredError
 from .public_output import public_runs
 
 
+_RUN_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# `ListRunIndex` is the one notebook Action that answers with a naive
+# wall-clock string instead of an epoch. It is the platform's own clock, which
+# is China Standard Time and has no DST — verified 2026-08-15 by matching a run
+# whose start read `2026-08-16 01:58:03` against the same notebook's
+# `Notebook is ready` event at 17:58:03Z. Every other command renders epochs in
+# the machine's local time, so a run cycle printed verbatim would sit hours
+# away from the events describing it.
+_PLATFORM_TZ = timezone(timedelta(hours=8))
+
+
+def _to_local(value: str) -> str:
+    """Render one platform wall-clock string in the machine's local time."""
+    text = str(value or "").strip()[:19]
+    if not text:
+        return ""
+    try:
+        stamp = datetime.strptime(text, _RUN_TIME_FORMAT)
+    except ValueError:
+        return str(value)
+    return (
+        stamp.replace(tzinfo=_PLATFORM_TZ).astimezone().strftime(_RUN_TIME_FORMAT)
+    )
+
+
 def _format_duration(start: str, end: str) -> str:
     """Return a short human string like `2h 14m` or `-` if unparseable."""
     if not start or not end:
         return "-"
     try:
-        fmt = "%Y-%m-%d %H:%M:%S"
-        s = datetime.strptime(start, fmt).replace(tzinfo=timezone.utc)
-        e = datetime.strptime(end, fmt).replace(tzinfo=timezone.utc)
+        fmt = _RUN_TIME_FORMAT
+        s = datetime.strptime(start[:19], fmt).replace(tzinfo=timezone.utc)
+        e = datetime.strptime(end[:19], fmt).replace(tzinfo=timezone.utc)
     except ValueError:
         return "-"
     secs = int((e - s).total_seconds())
@@ -164,8 +190,8 @@ def lifecycle(
         # slicing / `_format_duration` never trip on int / None / dict.
         start_raw = str(r.get("start_time") or "")
         end_raw = str(r.get("end_time") or "")
-        start = start_raw[:19] or "-"
-        end_display = end_raw or "ongoing"
+        start = _to_local(start_raw) or "-"
+        end_display = _to_local(end_raw) or "ongoing"
         dur = _format_duration(start_raw, end_raw) if end_raw else "running"
         click.echo(f"{str(idx):>3}  {start:<19}  {end_display:<19}  {dur:<9}")
     notice = truncation_notice(page)

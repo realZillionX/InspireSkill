@@ -46,6 +46,9 @@ from inspire.platform.web.browser_api import DatasetMount
 from inspire.platform.web.session import get_web_session
 from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
 
+DEFAULT_FRAMEWORK = "pytorch"
+
+
 def run_job_create(
     ctx: Context,
     *,
@@ -278,11 +281,22 @@ def run_job_create(
                     },
                     "priority": priority,
                     "nodes": nodes,
+                    "framework": framework,
                     "enable_notification": bool(enable_notification),
+                    # Every field the plan submits has to appear here, or a
+                    # dry-run cannot be used to check what will be submitted.
+                    "auto_fault_tolerance": bool(auto_fault_tolerance),
+                    "max_time_hours": max_time,
                     "image": scrub_raw_ids(image),
                     "command": scrub_raw_ids(plan.wrapped_command),
                     "shared_memory_gib": plan.shm_size_gib,
                 }
+                if auto_fault_tolerance:
+                    dry_run_payload["fault_tolerance_max_retry"] = fault_tolerance_max_retry
+                    if fault_tolerance_retry_interval is not None:
+                        dry_run_payload["fault_tolerance_retry_interval_seconds"] = (
+                            fault_tolerance_retry_interval
+                        )
                 if resolved_quota.gpu_type:
                     resource = dry_run_payload["resource"]
                     assert isinstance(resource, dict)
@@ -314,8 +328,17 @@ def run_job_create(
                 click.echo(f"Priority: {priority}")
             if nodes > 1:
                 click.echo(f"Nodes: {nodes}")
+            if framework and framework != DEFAULT_FRAMEWORK:
+                click.echo(f"Framework: {scrub_raw_ids(framework)}")
             if enable_notification:
                 click.echo("Notifications: enabled")
+            if max_time is not None:
+                click.echo(f"Max runtime: {max_time} h")
+            if auto_fault_tolerance:
+                retry_line = f"Fault tolerance: enabled, max {fault_tolerance_max_retry} retries"
+                if fault_tolerance_retry_interval is not None:
+                    retry_line += f", {fault_tolerance_retry_interval}s apart"
+                click.echo(retry_line)
             if plan.shm_size_gib is not None:
                 click.echo(f"Shared memory: {plan.shm_size_gib} GiB")
             if plan_exclude_nodes:
@@ -448,7 +471,7 @@ def run_job_create(
 )
 @click.option(
     "--framework",
-    default="pytorch",
+    default=DEFAULT_FRAMEWORK,
     help=(
         "Training framework label shown by the platform (default: pytorch). "
         "This does not choose the Docker image; use --image for that. "

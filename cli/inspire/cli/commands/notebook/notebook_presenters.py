@@ -112,12 +112,15 @@ def _print_notebook_detail(notebook: dict) -> None:
             ),
         ),
         ("Uptime", _format_uptime(notebook.get("uptime_seconds"))),
+        ("Auto-stop In", _format_uptime(notebook.get("auto_stop_in_seconds"))),
         *(
             ("Dataset", f"{mount['name']}:{mount['version']} -> {mount['path']}")
             for mount in notebook.get("datasets") or []
         ),
-        ("Created", notebook.get("created_at")),
-        ("Updated", notebook.get("updated_at")),
+        # `list` has always rendered these through format_epoch; status used
+        # to print the raw epoch-millis string the platform sends.
+        ("Created", format_epoch(notebook.get("created_at"))),
+        ("Updated", format_epoch(notebook.get("updated_at"))),
     ]
 
     for label, value in fields:

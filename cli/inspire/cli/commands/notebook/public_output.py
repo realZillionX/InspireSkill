@@ -254,6 +254,13 @@ def public_notebook(
     priority = item.get("task_priority")
     if priority in (None, ""):
         priority = item.get("priority")
+    # A notebook carries its priority under `project`, not at the top level
+    # like the workload records do — the web 优先级 column reads it from there
+    # ("高优任务-10" is priority_level + priority_name).
+    project_value = item.get("project")
+    project = project_value if isinstance(project_value, dict) else {}
+    if priority in (None, ""):
+        priority = project.get("priority_name")
     resource = _compact_mapping(
         {
             "gpu_count": quota.get("gpu_count"),
@@ -282,6 +289,7 @@ def public_notebook(
             "priority_level": _first_public_text(
                 item.get("priority_level"),
                 item.get("priority_name"),
+                project.get("priority_level"),
             ),
             "shared_memory_gib": (
                 start_config.get("shared_memory_size")
@@ -289,6 +297,9 @@ def public_notebook(
                 or item.get("shm_gib")
             ),
             "uptime_seconds": item.get("live_time"),
+            # What `--auto-stop-after` actually bought: the web shows this as
+            # 剩余运行时长 and it is the only readback for that timer.
+            "auto_stop_in_seconds": item.get("left_time"),
             "datasets": mounted_dataset_views(item.get("dataset_info")),
             "created_at": sanitize_public_text(item.get("created_at") or ""),
             "updated_at": sanitize_public_text(item.get("updated_at") or ""),

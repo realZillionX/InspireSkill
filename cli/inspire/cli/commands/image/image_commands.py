@@ -96,7 +96,7 @@ def _resolve_image_name(
     def _lister():
         bucket = []
         failed_sources: list[str] = []
-        for source in ("private", "public", "official"):
+        for source in _ALL_SOURCE_KEYS:
             try:
                 imgs = browser_api_module.list_images_by_source(
                     source=source, session=session, workspace_id=workspace_id
@@ -139,17 +139,27 @@ def _resolve_image_name(
 # Helpers
 # ---------------------------------------------------------------------------
 
-_PUBLIC_SOURCE_CHOICES = ("official", "public", "private", "all")
-_ALL_SOURCE_KEYS = ("official", "public", "private")
+# The web image picker offers four tabs — 官方镜像 / 个人可见镜像 / 项目可见镜像 /
+# 公开可见镜像 — so an image catalogue that stops at three leaves the
+# project-visible ones unreachable by name.
+_PUBLIC_SOURCE_CHOICES = ("official", "public", "project", "private", "all")
+_ALL_SOURCE_KEYS = ("official", "public", "project", "private")
 
 _VISIBILITY_PUBLIC = "VISIBILITY_PUBLIC"
+_VISIBILITY_PROJECT = "VISIBILITY_PROJECT"
 _VISIBILITY_PRIVATE = "VISIBILITY_PRIVATE"
+
+_VISIBILITY_BY_NAME = {
+    "public": _VISIBILITY_PUBLIC,
+    "project": _VISIBILITY_PROJECT,
+    "private": _VISIBILITY_PRIVATE,
+}
 
 
 def _parse_visibility_value(visibility: Optional[str]) -> Optional[str]:
     if visibility is None:
         return None
-    return _VISIBILITY_PUBLIC if visibility.lower() == "public" else _VISIBILITY_PRIVATE
+    return _VISIBILITY_BY_NAME.get(visibility.lower(), _VISIBILITY_PRIVATE)
 
 
 def _parse_source_value(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
@@ -168,12 +178,23 @@ def _image_label(img: browser_api_module.CustomImageInfo) -> str:
     return name
 
 
-def _image_visibility(source: str) -> str:
+def _image_visibility(img: browser_api_module.CustomImageInfo) -> str:
+    """Return who can see the image: official / public / private.
+
+    `visibility` is the field ``set-visibility`` writes and the field the
+    ``--source public`` / ``--source private`` filters select on; `source` is
+    only the registry namespace and reads SOURCE_PUBLIC for personal images
+    too, so it cannot answer this. Official images carry no `visibility`, so
+    they are still recognised by `source`.
+    """
+    source = str(img.source or "").strip()
+    if source == "SOURCE_OFFICIAL":
+        return "official"
     return {
-        "SOURCE_OFFICIAL": "official",
-        "SOURCE_PUBLIC": "public",
-        "SOURCE_PRIVATE": "private",
-    }.get(str(source or "").strip(), "")
+        _VISIBILITY_PUBLIC: "public",
+        _VISIBILITY_PROJECT: "project",
+        _VISIBILITY_PRIVATE: "private",
+    }.get(str(img.visibility or "").strip(), "")
 
 
 def _image_summary(img: browser_api_module.CustomImageInfo) -> dict[str, str]:
@@ -182,7 +203,7 @@ def _image_summary(img: browser_api_module.CustomImageInfo) -> dict[str, str]:
         "name": scrub_raw_ids(_image_label(img)),
         "status": scrub_raw_ids(img.status),
         "framework": scrub_raw_ids(img.framework),
-        "visibility": _image_visibility(img.source),
+        "visibility": _image_visibility(img),
     }
 
 
@@ -254,7 +275,7 @@ def _dedupe_images_by_id(
     "-s",
     type=str,
     callback=_parse_source_value,
-    metavar="[official|public|private|all]",
+    metavar="[official|public|project|private|all]",
     default="all",
     show_default=True,
     help="Image source filter",
@@ -480,7 +501,7 @@ def image_detail(
 )
 @click.option(
     "--visibility",
-    type=click.Choice(["private", "public"], case_sensitive=False),
+    type=click.Choice(["private", "project", "public"], case_sensitive=False),
     default="private",
     show_default=True,
     help="Image visibility",
@@ -615,7 +636,7 @@ def register_image_cmd(
 )
 @click.option(
     "--visibility",
-    type=click.Choice(["private", "public"], case_sensitive=False),
+    type=click.Choice(["private", "project", "public"], case_sensitive=False),
     required=True,
     default=None,
     help="Target visibility.",

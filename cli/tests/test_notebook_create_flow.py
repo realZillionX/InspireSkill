@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from inspire.cli.commands.notebook import notebook_create_flow as flow_module
-from inspire.cli.context import EXIT_VALIDATION_ERROR, Context
+from inspire.cli.context import EXIT_CONFIG_ERROR, EXIT_VALIDATION_ERROR, Context
 from inspire.cli.utils.quota_resolver import QuotaSpec, ResolvedQuota
 
 
@@ -767,3 +767,33 @@ def test_notebook_create_is_not_blocked_by_an_unread_or_empty_priority_menu(
 
     assert raised is None
     assert calls["task_priority"] == 6
+
+
+def test_unknown_project_name_is_reported_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`notebook create -p <unknown>` used to let ConfigError reach the top.
+
+    `job create` and `hpc create` already answered the same mistake with one
+    line; this path printed a full Python traceback above it.
+    """
+    ctx = Context()
+    config = SimpleNamespace(project_order=None, projects={}, profiles={})
+    known = SimpleNamespace(project_id="project-1111", name="Project One", priority_name=None)
+
+    with pytest.raises(SystemExit) as exit_info:
+        flow_module.resolve_notebook_project(
+            ctx,
+            projects=[known],
+            config=config,
+            project="No Such Project",
+            needs_gpu_quota=False,
+            json_output=False,
+        )
+
+    assert exit_info.value.code == EXIT_CONFIG_ERROR
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "No Such Project" in err
+    assert "Project One" in err

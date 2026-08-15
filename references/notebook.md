@@ -63,7 +63,7 @@ Notebook 连接类命令包括 `ssh`、`exec`、`shell`、`scp`、`ssh-config` �
 
 受限 Notebook 的 JupyterTerminal 执行同样复用目标 Account Alias 对应的 Web Session 和代理；显式 `--account <name>` 时不会退回当前 Active Account 的登录态。
 
-没有任何 Cached Connection 时，支持 SSH 的 Notebook 首次 Bootstrap 仍需要能解析 Notebook 的上下文：通常传 `--workspace <workspace>`，必要时再传 `--account <alias>` 指定所属账号。`ssh-config` 生成的 OpenSSH `ProxyCommand` 会固化解析出的 Account Alias，后续 VS Code Remote SSH / 原生 OpenSSH 连接也按该账号路径执行。
+刚创建的支持 SSH 的 Notebook 还没有 Cached Connection，`exec` / `shell` / `scp` 会直接报错退出，不会自己 Bootstrap；先跑一次 `inspire notebook connection refresh <name> --workspace <workspace>`。受限 Notebook 不需要这一步，`exec` / `shell` 直接走 JupyterTerminal。`ssh` / `ssh-config` / `ssh-proxy` 自己会建连接，首次仍需要能解析 Notebook 的上下文：通常传 `--workspace <workspace>`，必要时再传 `--account <alias>` 指定所属账号。`ssh-config` 生成的 OpenSSH `ProxyCommand` 会固化解析出的 Account Alias，后续 VS Code Remote SSH / 原生 OpenSSH 连接也按该账号路径执行。
 
 连接缓存由 `notebook connection list/status/refresh/forget/prune` 管理；跨账号 Remembered Target 由 `notebook connection target list/forget` 管理。具体参数以对应 Help 为准。
 

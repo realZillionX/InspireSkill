@@ -677,7 +677,7 @@ def test_image_list_human_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     runner = CliRunner()
     result = runner.invoke(cli_main, ["image", "list", *_WS])
     assert result.exit_code == 0
-    assert calls == ["official", "public", "private"]
+    assert calls == ["official", "public", "project", "private"]
     assert "pytorch" in result.output
     assert "lyz-dev:100" in result.output
     assert "2.0" in result.output
@@ -740,10 +740,14 @@ def test_image_list_private_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
                 name="personal-visible-img",
                 framework="pytorch",
                 version="2.1",
+                # An image saved from a notebook really does read
+                # SOURCE_PUBLIC: `source` is the registry namespace it was
+                # built into. Only `visibility` says who can see it.
                 source="SOURCE_PUBLIC",
                 status="READY",
                 description="Custom image",
                 created_at="2026-01-10",
+                visibility="VISIBILITY_PRIVATE",
             )
         ],
     )
@@ -757,7 +761,7 @@ def test_image_list_private_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     payload = _json_data(result.output)
     assert len(payload["items"]) == 1
     assert payload["items"][0]["name"] == "personal-visible-img:2.1"
-    assert payload["items"][0]["visibility"] == "public"
+    assert payload["items"][0]["visibility"] == "private"
     _assert_compact_public_payload(payload)
 
 
@@ -1022,6 +1026,7 @@ def test_image_detail_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
             status="READY",
             description="Detailed",
             created_at="2026-01-15",
+            visibility="VISIBILITY_PRIVATE",
         ),
     )
 
@@ -1060,6 +1065,7 @@ def test_image_detail_human(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
             status="READY",
             description="Detailed",
             created_at="2026-01-15",
+            visibility="VISIBILITY_PRIVATE",
         ),
     )
 

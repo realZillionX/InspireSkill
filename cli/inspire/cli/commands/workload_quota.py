@@ -15,7 +15,7 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
-from inspire.cli.formatters.table import render_table
+from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.collection_output import (
     bound_collection,
     resolve_collection_limit,
@@ -297,7 +297,6 @@ def make_quota_command(workload: str) -> click.Command:
                     "Quota",
                     "Priority",
                 )
-                widths = [18, 28, 14, 14, 9]
                 table_rows = [
                     (
                         row["workspace"],
@@ -310,7 +309,6 @@ def make_quota_command(workload: str) -> click.Command:
                 ]
             else:
                 headers = ("Compute Group", "GPU Type", "Quota", "Priority")
-                widths = [28, 14, 14, 9]
                 table_rows = [
                     (
                         row["compute_group"],
@@ -320,6 +318,21 @@ def make_quota_command(workload: str) -> click.Command:
                     )
                     for row in rows
                 ]
+            # Compute Group is the one cell that has to survive verbatim:
+            # `create --group` rejects partial matches, so a clipped name in
+            # this table is a value nobody can act on. Two groups here really
+            # do differ only in a suffix ("...-119核" vs "...-183核").
+            group_column = 1 if multi_ws else 0
+            widths = [
+                column_width(header, [row[index] for row in table_rows])
+                if index == group_column
+                else column_width(
+                    header,
+                    [row[index] for row in table_rows],
+                    max_width=(18 if multi_ws and index == 0 else 14),
+                )
+                for index, header in enumerate(headers)
+            ]
 
             click.echo("\n".join(render_table(headers, table_rows, widths)))
             notice = truncation_notice(page)
