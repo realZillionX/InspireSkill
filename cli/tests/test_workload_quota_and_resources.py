@@ -479,12 +479,16 @@ def test_each_workload_quota_uses_workspace_name_or_all_metavar(
     assert "--workspace TEXT" not in result.output
 
 
-@pytest.mark.parametrize("command", ("availability", "nodes"))
-def test_resource_queries_use_workspace_name_or_all_metavar(command: str) -> None:
+@pytest.mark.parametrize(
+    "command", ("availability", "nodes", "quota", "policy", "usage")
+)
+def test_resource_queries_take_one_workspace(command: str) -> None:
+    """Resource facts are per workspace, so these never fan out."""
     result = CliRunner().invoke(cli_main, ["resources", command, "--help"])
 
     assert result.exit_code == 0, result.output
-    assert "--workspace NAME|all" in result.output
+    assert "--workspace NAME" in result.output
+    assert "--workspace NAME|all" not in result.output
     assert "--workspace TEXT" not in result.output
 
 

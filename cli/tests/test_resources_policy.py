@@ -537,20 +537,17 @@ def test_policy_can_be_narrowed_to_one_workload(monkeypatch: pytest.MonkeyPatch)
     assert [item["workload"] for item in items] == ["hpc"]
 
 
-def test_policy_workspace_all_fans_out_and_labels_each_row(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_policy_refuses_a_workspace_fanout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reclaim rules are declared per workspace and read one at a time."""
     calls = _patch_cli(monkeypatch)
 
     result = CliRunner().invoke(
-        cli_main, ["--json", "resources", "policy", "--workspace", "all", "--all"]
+        cli_main, ["resources", "policy", "--workspace", "all", "--all"]
     )
 
-    assert result.exit_code == 0, result.output
-    assert calls == ["ws-gpu", "ws-cpu"]
-    items = json.loads(result.output)["data"]["items"]
-    assert {item["workspace"] for item in items} == {"分布式训练空间", "CPU资源空间"}
-    assert len(items) == 10
+    assert result.exit_code != 0
+    assert "--workspace requires one workspace name for this command." in result.output
+    assert calls == []
 
 
 def test_policy_limit_and_all_conflict_before_any_request(
@@ -583,9 +580,9 @@ def test_policy_workloads_match_the_rest_of_the_cli_vocabulary(
     assert {policy.workload for policy in policies} == set(QUOTA_WORKLOADS)
 
 
-def test_policy_workspace_metavar_accepts_all() -> None:
+def test_policy_workspace_metavar_is_one_name() -> None:
     option = {
         parameter.name: parameter for parameter in policy_module.policy_resources.params
     }["workspace"]
 
-    assert option.metavar == "NAME|all"
+    assert option.metavar == "NAME"

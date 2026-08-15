@@ -26,7 +26,7 @@ from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
-from inspire.config.workspaces import resolve_workspace_query_scope
+from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NodeSpec
 from inspire.platform.web.session import SessionExpiredError, get_web_session
@@ -46,14 +46,10 @@ def _resolve_workspace_scope(
     config: Optional[Config],
     session,
     workspace: Optional[str],
-) -> tuple[Optional[str], bool]:
+) -> str:
     if config is None:
         raise ConfigError("Workspace selection requires a loaded config.")
-    workspace_ids, all_workspaces = resolve_workspace_query_scope(
-        workspace=workspace,
-        session=session,
-    )
-    return (None if all_workspaces else workspace_ids[0], all_workspaces)
+    return resolve_workspace_operation_scope(workspace=workspace, session=session)
 
 
 def _public_group(row: dict) -> dict[str, object]:
@@ -84,8 +80,8 @@ def _public_spec(spec: NodeSpec) -> dict[str, object]:
 @click.option(
     "--workspace",
     required=True,
-    metavar="NAME|all",
-    help="Workspace name or 'all'.",
+    metavar="NAME",
+    help="Workspace name.",
 )
 @click.option(
     "--group",
@@ -160,7 +156,7 @@ def list_nodes(
         except Exception:
             config = None
         session = get_web_session()
-        workspace_id, all_workspaces = _resolve_workspace_scope(
+        workspace_id = _resolve_workspace_scope(
             config=config,
             session=session,
             workspace=workspace,
@@ -171,7 +167,6 @@ def list_nodes(
             workspace_id=workspace_id,
             session=session,
             include_cpu=False,
-            all_workspaces=all_workspaces,
         )
         accurate_map = {a.group_id: a.available_gpus for a in accurate_availability}
         name_map = {a.group_id: a.group_name for a in accurate_availability}
@@ -251,49 +246,21 @@ def list_nodes(
             click.echo("No compute groups match.")
             return
 
-        show_workspace = (
-            len({row["workspace_name"] for row in shown_rows if row["workspace_name"]}) > 1
-        )
-        if show_workspace:
-            headers: tuple[str, ...] = (
-                "Workspace",
-                "Group",
-                "Node Spec",
-                "Full Free",
-                "Ready",
-                "Total",
-                "Free GPUs",
+        headers = ("Group", "Node Spec", "Full Free", "Ready", "Total", "Free GPUs")
+        widths = [25, 22, 10, 8, 8, 10]
+        aligns = ["left", "left", "right", "right", "right", "right"]
+
+        table_rows: list[tuple[object, ...]] = [
+            (
+                _display_name(row["group_name"]),
+                row["node_spec_label"] or "-",
+                row["full_free_nodes"],
+                row["ready_nodes"],
+                row["total_nodes"],
+                row["full_free_gpus"],
             )
-            widths = [16, 25, 22, 10, 8, 8, 10]
-            aligns = ["left", "left", "left", "right", "right", "right", "right"]
-        else:
-            headers = ("Group", "Node Spec", "Full Free", "Ready", "Total", "Free GPUs")
-            widths = [25, 22, 10, 8, 8, 10]
-            aligns = ["left", "left", "right", "right", "right", "right"]
-
-        table_rows: list[tuple[object, ...]] = []
-        for row in shown_rows:
-            name = _display_name(row["group_name"])
-            spec = row["node_spec_label"] or "-"
-            full_free = row["full_free_nodes"]
-            ready = row["ready_nodes"]
-            total = row["total_nodes"]
-            free_gpus = row["full_free_gpus"]
-
-            if show_workspace:
-                table_rows.append(
-                    (
-                        _display_name(row["workspace_name"], fallback=""),
-                        name,
-                        spec,
-                        full_free,
-                        ready,
-                        total,
-                        free_gpus,
-                    )
-                )
-            else:
-                table_rows.append((name, spec, full_free, ready, total, free_gpus))
+            for row in shown_rows
+        ]
         click.echo(
             "\n".join(render_table(headers, table_rows, widths, aligns=aligns, line_char="─"))
         )

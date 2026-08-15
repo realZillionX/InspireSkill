@@ -39,7 +39,10 @@ from inspire.cli.utils.collection_output import (
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
-from inspire.config.workspaces import resolve_workspace_query_scope, workspace_name_map
+from inspire.config.workspaces import (
+    resolve_workspace_operation_scope,
+    workspace_name_map,
+)
 from inspire.platform.web.browser_api.workspaces import (
     WorkspaceQuotaUsage,
     get_workspace_quota_usage,
@@ -84,12 +87,11 @@ def _public_row(
     return row
 
 
-def _format_rows(rows: list[dict[str, Any]], *, show_workspace: bool) -> str:
+def _format_rows(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "No workspace quota reported."
 
-    headers = ["Workspace"] if show_workspace else []
-    headers.extend(("Resource", "Quota Used", "Quota Limit", "Quota Free", "Cluster Used/Total"))
+    headers = ("Resource", "Quota Used", "Quota Limit", "Quota Free", "Cluster Used/Total")
 
     table_rows: list[tuple[str, ...]] = []
     for row in rows:
@@ -98,31 +100,26 @@ def _format_rows(rows: list[dict[str, Any]], *, show_workspace: bool) -> str:
             if row.get("capacity") is not None
             else "-"
         )
-        values = (
-            _RESOURCE_LABELS.get(str(row["resource"]), str(row["resource"])),
-            _amount(row.get("used")),
-            "unlimited" if row.get("unlimited") else _amount(row.get("limit")),
-            "-" if row.get("unlimited") else _amount(row.get("available")),
-            capacity,
+        table_rows.append(
+            (
+                _RESOURCE_LABELS.get(str(row["resource"]), str(row["resource"])),
+                _amount(row.get("used")),
+                "unlimited" if row.get("unlimited") else _amount(row.get("limit")),
+                "-" if row.get("unlimited") else _amount(row.get("available")),
+                capacity,
+            )
         )
-        if show_workspace:
-            table_rows.append((str(row.get("workspace") or "-"), *values))
-        else:
-            table_rows.append(values)
 
     widths = [
         column_width(header, [row[index] for row in table_rows], max_width=32)
         for index, header in enumerate(headers)
     ]
-    aligns = (["left"] if show_workspace else []) + [
-        "left",
-        "right",
-        "right",
-        "right",
-        "right",
-    ]
     rendered = render_table(
-        tuple(headers), table_rows, widths, aligns=aligns, line_char="─"
+        headers,
+        table_rows,
+        widths,
+        aligns=["left", "right", "right", "right", "right"],
+        line_char="─",
     )
     return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
@@ -131,8 +128,8 @@ def _format_rows(rows: list[dict[str, Any]], *, show_workspace: bool) -> str:
 @click.option(
     "--workspace",
     required=True,
-    metavar="NAME|all",
-    help="Workspace name or 'all'.",
+    metavar="NAME",
+    help="Workspace name.",
 )
 @click.option(
     "--priority",
@@ -176,7 +173,6 @@ def quota_resources(
     \b
     Examples:
         inspire resources quota --workspace 分布式训练空间
-        inspire resources quota --workspace all
         inspire --json resources quota --workspace 分布式训练空间 --priority low
     """
     try:
@@ -189,26 +185,20 @@ def quota_resources(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_ids, all_workspaces = resolve_workspace_query_scope(
+        workspace_id = resolve_workspace_operation_scope(
             workspace=workspace,
             session=session,
         )
-        workspace_names = workspace_name_map(session)
+        label = scrub_raw_ids(workspace_name_map(session).get(workspace_id) or workspace)
 
-        rows: list[dict[str, Any]] = []
-        for workspace_id in workspace_ids:
-            label = scrub_raw_ids(
-                workspace_names.get(workspace_id)
-                or (workspace if not all_workspaces else "(workspace name unavailable)")
-            )
+        rows = [
+            _public_row(usage, workspace=label, priority=priority_value)
             for usage in get_workspace_quota_usage(
                 workspace_id,
                 session=session,
                 priority=priority_value,
-            ):
-                rows.append(
-                    _public_row(usage, workspace=label, priority=priority_value)
-                )
+            )
+        ]
 
         page = bound_collection(rows, limit=effective_limit)
 
@@ -224,7 +214,7 @@ def quota_resources(
             )
             return
 
-        click.echo(_format_rows(page.items, show_workspace=all_workspaces))
+        click.echo(_format_rows(page.items))
         notice = truncation_notice(page, full_option="--all")
         if notice:
             click.echo(notice)

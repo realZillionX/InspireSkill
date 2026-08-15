@@ -24,7 +24,7 @@
 
 | 信息 | 先做什么 | 向用户问清什么 |
 | --- | --- | --- |
-| Project | `inspire project list --workspace all` 列出可见候选 | 本仓库归属哪个平台 Project？多候选时必须让用户指认 |
+| Project | `inspire project list` 列出可见候选（项目是全局对象，不按 Workspace 划分） | 本仓库归属哪个平台 Project？多候选时必须让用户指认 |
 | Workspace | 无需查询：`CPU资源空间`（CPU、联网准备）和 `分布式训练空间`（GPU）是所有用户默认可用的公共 Workspace | 项目是否还有专属 Workspace（项目空间、国产卡分区等）？**专属 Workspace 只能由用户亲自指认**；确认后记录它的职责和适用任务 |
 | Paths | 查看共享盘现状，例如用已有 Notebook `ls` 项目目录 | 默认存储池选哪个（`ssd` / `hdd` / `qb-ilm` / `qb-ilm2`）？远端代码 checkout、公共数据、权重、Checkpoint 是否已有约定路径？老项目沿用现有约定，新项目让用户定 |
 | Image | `inspire image list` 查项目可见镜像 | 项目是否已有验证过的基底镜像？名称是什么、覆盖哪些依赖？没有时记为待建立，后续按 [`internal-sources.md`](internal-sources.md) 和 [`notebook.md`](notebook.md) 建立后回填 |

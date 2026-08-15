@@ -1537,7 +1537,7 @@ def test_nodes_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     }
 
 
-def test_resources_list_all_workspaces_and_cpu_json(
+def test_resources_list_one_workspace_and_cpu_json(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     patch_config_and_auth(monkeypatch, tmp_path, include_compute_groups=True)
@@ -1592,14 +1592,22 @@ def test_resources_list_all_workspaces_and_cpu_json(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["--json", "resources", "availability", "--workspace", "all", "--include-cpu"],
+        [
+            "--json",
+            "resources",
+            "availability",
+            "--workspace",
+            "分布式训练空间",
+            "--include-cpu",
+        ],
     )
     assert result.exit_code == 0
 
     payload = json.loads(result.output)
     rows = payload["data"]["items"]
     assert payload["success"] is True
-    assert captured["all_workspaces"] is True
+    assert "all_workspaces" not in captured
+    assert captured["workspace_id"] == "ws-gpu"
     assert captured["include_cpu"] is True
     assert {row["kind"] for row in rows} == {"gpu", "cpu"}
     assert any(row["workspace"] == "分布式训练空间" for row in rows)

@@ -119,7 +119,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
 
 ```bash
 inspire init
-inspire resources availability --workspace all --include-cpu
+inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
 全局发现是账号级动作，和具体仓库无关。把某个项目工作区接入启智（`inspire init --scope project`、问清 Project / Workspace / Paths / Image、创建和维护 `INSPIRE.md`）是另一件事，见 [`../project-context.md`](../project-context.md)。

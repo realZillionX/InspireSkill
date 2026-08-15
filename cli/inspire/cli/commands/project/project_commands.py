@@ -1,8 +1,12 @@
-"""Project subcommands."""
+"""Project subcommands.
+
+A project is a global object, not a workspace-scoped one: `ListProjects`
+answers the same set with or without a workspace filter, `GetProjectDetail`
+addresses the project alone, and the visible-workspace list the rows carry is
+an attribute rather than a scope. Nothing here takes `--workspace`.
+"""
 
 from __future__ import annotations
-
-import concurrent.futures
 
 import click
 
@@ -35,12 +39,7 @@ from inspire.cli.utils.notebook_cli import (
     require_web_session,
 )
 from inspire.config import ConfigError
-from inspire.config.workspaces import resolve_workspace_query_scope
 from inspire.platform.web import browser_api as browser_api_module
-
-_ZERO_WORKSPACE_ID = "ws-00000000-0000-0000-0000-000000000000"
-_PROJECT_LIST_MAX_WORKERS = 16
-_PROJECT_LIST_WORKSPACE_FANOUT_LIMIT = 6
 
 
 # ---------------------------------------------------------------------------
@@ -76,23 +75,10 @@ def _format_budget(value: object) -> str:
         return str(value)
 
 
-def _project_to_dict(
-    proj: browser_api_module.ProjectInfo,
-    *,
-    workspace_names_by_id: dict[str, str] | None = None,
-) -> dict:
+def _project_to_dict(proj: browser_api_module.ProjectInfo) -> dict:
     """Convert a ProjectInfo to the compact, name-only CLI representation."""
-    workspace_names = list(proj.workspace_names)
-    if not workspace_names and workspace_names_by_id:
-        workspace_ids = list(proj.workspace_ids) or [proj.workspace_id]
-        for workspace_id in workspace_ids:
-            workspace_name = workspace_names_by_id.get(workspace_id)
-            if workspace_name and workspace_name not in workspace_names:
-                workspace_names.append(workspace_name)
-
     view: dict[str, object] = {
         "name": scrub_raw_ids(proj.name),
-        "workspace": ", ".join(scrub_raw_ids(name) for name in workspace_names),
         "priority": scrub_raw_ids(proj.priority_level or proj.priority_name),
         "remaining_budget": _public_number(proj.member_remain_budget),
     }
@@ -109,7 +95,6 @@ def _format_project_list(projects: list[dict]) -> str:
     rows = [
         (
             str(project.get("name") or ""),
-            str(project.get("workspace") or "-"),
             str(project.get("priority") or "-"),
             _format_budget(project.get("remaining_budget")),
         )
@@ -117,16 +102,15 @@ def _format_project_list(projects: list[dict]) -> str:
     ]
     widths = [
         column_width("Name", [row[0] for row in rows], max_width=48),
-        column_width("Workspace", [row[1] for row in rows], max_width=32),
-        column_width("Priority", [row[2] for row in rows], max_width=12),
-        column_width("Budget", [row[3] for row in rows], max_width=16),
+        column_width("Priority", [row[1] for row in rows], max_width=12),
+        column_width("Budget", [row[2] for row in rows], max_width=16),
     ]
     return "\n".join(
         render_table(
-            ("Name", "Workspace", "Priority", "Budget"),
+            ("Name", "Priority", "Budget"),
             rows,
             widths,
-            aligns=["left", "left", "left", "right"],
+            aligns=["left", "left", "right"],
             line_char="─",
         )
     )
@@ -189,17 +173,17 @@ def _resolve_project_name(
     name: str,
     *,
     session,
-    workspace_id: str,
     pick: int | None = None,
     require_live: bool = False,
 ) -> str:  # noqa: ANN001
-    workspace_name = str(
-        (getattr(session, "all_workspace_names", None) or {}).get(workspace_id)
-        or "the selected workspace"
-    ).strip()
+    """Resolve a project name against the whole visible catalog.
 
+    Projects are global, so the candidate set is too. Narrowing by workspace
+    would only hide a project that is visible elsewhere behind a "not found",
+    and `GetProjectDetail` takes the project id alone anyway.
+    """
     def _lister():
-        projects = browser_api_module.list_projects(workspace_id=workspace_id, session=session)
+        projects = browser_api_module.list_all_projects(session=session)
         return [
             {
                 "name": project.name,
@@ -217,168 +201,9 @@ def _resolve_project_name(
         list_candidates=_lister,
         pick_index=pick,
         session=session,
-        workspace_id=workspace_id,
         require_live=require_live,
-        list_command=f"inspire project list --workspace {workspace_name}",
+        list_command="inspire project list",
     )
-
-
-def _unique_workspace_ids(values: list[str | None]) -> list[str]:
-    unique: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        ws_id = str(value or "").strip()
-        if not ws_id or ws_id == _ZERO_WORKSPACE_ID:
-            continue
-        if ws_id in seen:
-            continue
-        seen.add(ws_id)
-        unique.append(ws_id)
-    return unique
-
-
-def _merge_projects(
-    projects: list[browser_api_module.ProjectInfo],
-    additional: list[browser_api_module.ProjectInfo],
-    *,
-    seen: set[str],
-) -> None:
-    for project in additional:
-        if project.project_id not in seen:
-            seen.add(project.project_id)
-            projects.append(project)
-            continue
-        for existing in projects:
-            if existing.project_id != project.project_id:
-                continue
-            workspace_ids = _unique_workspace_ids(
-                [
-                    *existing.workspace_ids,
-                    existing.workspace_id,
-                    *project.workspace_ids,
-                    project.workspace_id,
-                ]
-            )
-            workspace_names = list(existing.workspace_names)
-            for workspace_name in project.workspace_names:
-                if workspace_name and workspace_name not in workspace_names:
-                    workspace_names.append(workspace_name)
-            existing.workspace_ids = tuple(workspace_ids)
-            existing.workspace_names = tuple(workspace_names)
-            break
-
-
-def _collect_workspace_projects(
-    workspace_ids: list[str],
-    *,
-    session,
-) -> tuple[list[browser_api_module.ProjectInfo], list[tuple[str, str]]]:
-    """Collect projects across workspace IDs.
-
-    The first workspace is queried serially to establish the request mode
-    (HTTP vs browser fallback). Remaining workspaces are fetched in parallel.
-    Browser fallback is safe because clients are cached per-thread.
-    """
-    projects: list[browser_api_module.ProjectInfo] = []
-    seen: set[str] = set()
-    workspace_errors: list[tuple[str, str]] = []
-
-    if not workspace_ids:
-        return projects, workspace_errors
-
-    first_ws_id = workspace_ids[0]
-    try:
-        first_projects = browser_api_module.list_projects(workspace_id=first_ws_id, session=session)
-        _merge_projects(projects, first_projects, seen=seen)
-    except Exception as exc:
-        workspace_errors.append((first_ws_id, str(exc)))
-
-    remaining_ws_ids = workspace_ids[1:]
-    if not remaining_ws_ids:
-        return projects, workspace_errors
-
-    if len(remaining_ws_ids) > 1:
-        max_workers = min(len(remaining_ws_ids), _PROJECT_LIST_MAX_WORKERS)
-        results_by_workspace: dict[str, list[browser_api_module.ProjectInfo]] = {}
-        errors_by_workspace: dict[str, str] = {}
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(
-                    browser_api_module.list_projects, workspace_id=ws_id, session=session
-                ): ws_id
-                for ws_id in remaining_ws_ids
-            }
-            for future in concurrent.futures.as_completed(futures):
-                ws_id = futures[future]
-                try:
-                    results_by_workspace[ws_id] = future.result()
-                except Exception as exc:
-                    errors_by_workspace[ws_id] = str(exc)
-
-        for ws_id in remaining_ws_ids:
-            if ws_id in errors_by_workspace:
-                workspace_errors.append((ws_id, errors_by_workspace[ws_id]))
-                continue
-            _merge_projects(projects, results_by_workspace.get(ws_id, []), seen=seen)
-        return projects, workspace_errors
-
-    for ws_id in remaining_ws_ids:
-        try:
-            ws_projects = browser_api_module.list_projects(workspace_id=ws_id, session=session)
-            _merge_projects(projects, ws_projects, seen=seen)
-        except Exception as exc:
-            workspace_errors.append((ws_id, str(exc)))
-    return projects, workspace_errors
-
-
-def _collect_all_workspace_projects(
-    workspace_ids: list[str],
-    *,
-    session,
-) -> tuple[list[browser_api_module.ProjectInfo], list[tuple[str, str]]]:
-    """Collect all visible projects, preferring the single project-scoped endpoint."""
-    try:
-        projects = browser_api_module.list_all_projects(session=session)
-        if any(p.workspace_id or p.workspace_ids or p.workspace_names for p in projects):
-            return projects, []
-        workspace_projects, workspace_errors = _collect_workspace_projects(
-            workspace_ids,
-            session=session,
-        )
-        if workspace_projects:
-            return workspace_projects, workspace_errors
-        return projects, []
-    except Exception:
-        return _collect_workspace_projects(workspace_ids, session=session)
-
-
-def _select_workspace_ids_for_listing(
-    workspace_ids: list[str],
-    *,
-    session_workspace_id: str | None,
-    all_workspaces: bool,
-) -> list[str]:
-    if all_workspaces or len(workspace_ids) <= _PROJECT_LIST_WORKSPACE_FANOUT_LIMIT:
-        return workspace_ids
-
-    selected: list[str] = []
-    seen: set[str] = set()
-
-    preferred = str(session_workspace_id or "").strip()
-    if preferred and preferred in workspace_ids:
-        selected.append(preferred)
-        seen.add(preferred)
-
-    for ws_id in workspace_ids:
-        if ws_id in seen:
-            continue
-        selected.append(ws_id)
-        seen.add(ws_id)
-        if len(selected) >= _PROJECT_LIST_WORKSPACE_FANOUT_LIMIT:
-            break
-
-    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -387,12 +212,6 @@ def _select_workspace_ids_for_listing(
 
 
 @click.command("list")
-@click.option(
-    "--workspace",
-    required=True,
-    metavar="NAME|all",
-    help="Workspace name or 'all'.",
-)
 @click.option(
     "--limit",
     "-n",
@@ -404,16 +223,20 @@ def _select_workspace_ids_for_listing(
 @pass_context
 def list_projects_cmd(
     ctx: Context,
-    workspace: str,
     limit: int | None,
     show_all: bool,
 ) -> None:
-    """List project-level metadata.
+    """List every project visible to this account.
+
+    \b
+    Projects are not scoped to a workspace, so this takes no `--workspace`:
+    `ListProjects` answers the same set with or without a workspace filter,
+    and one unfiltered call replaces a fanout over every visible workspace.
 
     \b
     Examples:
-        inspire project list --workspace all
-        inspire --json project list --workspace all
+        inspire project list
+        inspire --json project list
     """
     json_output = ctx.json_output
     try:
@@ -427,40 +250,7 @@ def list_projects_cmd(
         hint=WEB_AUTH_HINT,
     )
     try:
-        workspace_ids, all_workspaces = resolve_workspace_query_scope(
-            workspace=workspace,
-            session=session,
-        )
-        if all_workspaces:
-            projects, workspace_errors = _collect_all_workspace_projects(
-                workspace_ids,
-                session=session,
-            )
-        else:
-            query_workspace_ids = _select_workspace_ids_for_listing(
-                workspace_ids,
-                session_workspace_id=None,
-                all_workspaces=all_workspaces,
-            )
-            projects, workspace_errors = _collect_workspace_projects(
-                query_workspace_ids,
-                session=session,
-            )
-        if not projects and workspace_errors:
-            workspace_names = dict(
-                getattr(session, "all_workspace_names", None) or {}
-            )
-            error_samples = ", ".join(
-                f"{scrub_raw_ids(workspace_names.get(ws_id) or '(workspace)')}: "
-                f"{scrub_raw_ids(message)}"
-                for ws_id, message in workspace_errors[:3]
-            )
-            if len(workspace_errors) > 3:
-                error_samples += ", ..."
-            raise ValueError(
-                f"Failed to list projects across requested workspaces "
-                f"({len(workspace_errors)} failed: {error_samples})"
-            )
+        projects = browser_api_module.list_all_projects(session=session)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
         return
@@ -473,8 +263,7 @@ def list_projects_cmd(
         )
         return
 
-    session_workspace_names = dict(getattr(session, "all_workspace_names", None) or {})
-    results = [_project_to_dict(p, workspace_names_by_id=session_workspace_names) for p in projects]
+    results = [_project_to_dict(p) for p in projects]
     page = bound_collection(results, limit=effective_limit)
 
     if json_output:
@@ -496,7 +285,6 @@ def list_projects_cmd(
 
 @click.command("detail")
 @click.argument("project", metavar="NAME")
-@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--pick",
     type=click.IntRange(1),
@@ -507,38 +295,33 @@ def list_projects_cmd(
 def detail_project_cmd(
     ctx: Context,
     project: str,
-    workspace: str,
     pick: int | None,
 ) -> None:
-    """Show detail for a single project by name."""
+    """Show detail for a single project by name.
+
+    Projects are not scoped to a workspace, so this takes no `--workspace`:
+    `GetProjectDetail` addresses the project alone.
+    """
     project = reject_id_at_boundary(
         ctx,
         project,
         resource_type="project",
-        list_command="inspire project list --workspace <workspace>",
+        list_command="inspire project list",
     )
     session = require_web_session(ctx, hint="inspire project detail requires a logged-in web session")
     try:
-        workspace_ids, is_all = resolve_workspace_query_scope(
-            workspace=workspace,
-            session=session,
-        )
-        if is_all:
-            raise ConfigError("project detail requires a single workspace name, not 'all'.")
         project_id, data = run_with_stale_handle_retry(
             name=project,
             resolve_cached=lambda: _resolve_project_name(
                 ctx,
                 project,
                 session=session,
-                workspace_id=workspace_ids[0],
                 pick=pick,
             ),
             resolve_live=lambda live_name: _resolve_project_name(
                 ctx,
                 live_name,
                 session=session,
-                workspace_id=workspace_ids[0],
                 pick=pick,
                 require_live=True,
             ),
@@ -554,7 +337,6 @@ def detail_project_cmd(
                 resource_type="project",
                 resource_id=resolved_project_id,
                 name=project,
-                workspace_id=workspace_ids[0],
             ),
         )
     except ConfigError as e:

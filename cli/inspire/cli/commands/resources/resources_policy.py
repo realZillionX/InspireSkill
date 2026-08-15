@@ -36,7 +36,10 @@ from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.resource_index import QUOTA_WORKLOADS
 from inspire.config import Config, ConfigError
-from inspire.config.workspaces import resolve_workspace_query_scope, workspace_name_map
+from inspire.config.workspaces import (
+    resolve_workspace_operation_scope,
+    workspace_name_map,
+)
 from inspire.platform.web.browser_api.schedule_config import (
     WorkloadSchedulePolicy,
     format_duration,
@@ -101,31 +104,27 @@ def _reclaim(row: dict[str, Any]) -> str:
     return "on" if row.get("auto_reclaim") else "off"
 
 
-def _format_rows(rows: list[dict[str, Any]], *, show_workspace: bool) -> str:
+def _format_rows(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return "No scheduling policy reported."
 
-    headers = ["Workspace"] if show_workspace else []
-    headers.extend(("Workload", "Reclaim", "Idle Rule", "Time Limit"))
+    headers = ("Workload", "Reclaim", "Idle Rule", "Time Limit")
 
-    table_rows: list[tuple[str, ...]] = []
-    for row in rows:
-        values = (
+    table_rows: list[tuple[str, ...]] = [
+        (
             str(row.get("workload") or "-"),
             _reclaim(row),
             str(row.get("reclaim_rule") or ("-" if not row.get("configured") else "none")),
             _time_limit(row),
         )
-        if show_workspace:
-            table_rows.append((str(row.get("workspace") or "-"), *values))
-        else:
-            table_rows.append(values)
+        for row in rows
+    ]
 
     widths = [
         column_width(header, [row[index] for row in table_rows], max_width=44)
         for index, header in enumerate(headers)
     ]
-    rendered = render_table(tuple(headers), table_rows, widths, line_char="─")
+    rendered = render_table(headers, table_rows, widths, line_char="─")
     return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
 
@@ -148,8 +147,8 @@ def _notes(rows: list[dict[str, Any]]) -> list[str]:
 @click.option(
     "--workspace",
     required=True,
-    metavar="NAME|all",
-    help="Workspace name or 'all'.",
+    metavar="NAME",
+    help="Workspace name.",
 )
 @click.option(
     "--workload",
@@ -202,23 +201,18 @@ def policy_resources(
     try:
         Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_ids, all_workspaces = resolve_workspace_query_scope(
+        workspace_id = resolve_workspace_operation_scope(
             workspace=workspace,
             session=session,
         )
-        workspace_names = workspace_name_map(session)
+        label = scrub_raw_ids(workspace_name_map(session).get(workspace_id) or workspace)
 
         rows: list[dict[str, Any]] = []
-        for workspace_id in workspace_ids:
-            label = scrub_raw_ids(
-                workspace_names.get(workspace_id)
-                or (workspace if not all_workspaces else "(workspace name unavailable)")
-            )
-            for policy in get_workspace_schedule_policy(workspace_id, session=session):
-                row = _public_row(policy, workspace=label)
-                if selected and row["workload"] != selected:
-                    continue
-                rows.append(row)
+        for policy in get_workspace_schedule_policy(workspace_id, session=session):
+            row = _public_row(policy, workspace=label)
+            if selected and row["workload"] != selected:
+                continue
+            rows.append(row)
 
         page = bound_collection(rows, limit=effective_limit)
 
@@ -228,7 +222,7 @@ def policy_resources(
             )
             return
 
-        click.echo(_format_rows(page.items, show_workspace=all_workspaces))
+        click.echo(_format_rows(page.items))
         for note in _notes(page.items):
             click.echo(note)
         notice = truncation_notice(page, full_option="--all")

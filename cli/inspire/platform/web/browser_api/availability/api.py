@@ -690,45 +690,20 @@ def _compute_node_summary(nodes: list[dict]) -> dict[str, int]:
     }
 
 
-def _resolve_workspace_targets(
-    session: WebSession,
-    workspace_id: Optional[str],
-    *,
-    all_workspaces: bool,
-) -> list[str]:
-    if workspace_id:
-        return [workspace_id]
-
-    if all_workspaces and session.all_workspace_ids:
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for wid in session.all_workspace_ids:
-            if wid and wid not in seen:
-                seen.add(wid)
-                ordered.append(wid)
-        if ordered:
-            return ordered
-
-    raise ValueError("Workspace selection is required unless all workspaces are selected.")
-
-
 def get_accurate_resource_availability(
     workspace_id: Optional[str] = None,
     session: Optional[WebSession] = None,
     *,
     include_cpu: bool = False,
-    all_workspaces: bool = False,
     _retry: bool = True,
 ) -> list[GPUAvailability]:
     """Get accurate compute-group availability, optionally including CPU-only groups."""
     if session is None:
         session = get_web_session()
 
-    workspace_ids = _resolve_workspace_targets(
-        session,
-        workspace_id,
-        all_workspaces=all_workspaces,
-    )
+    if not workspace_id:
+        raise ValueError("Workspace selection is required.")
+    workspace_ids = [workspace_id]
     workspace_names = session.all_workspace_names or {}
 
     try:
@@ -846,7 +821,6 @@ def get_accurate_resource_availability(
                 workspace_id=workspace_id,
                 session=None,
                 include_cpu=include_cpu,
-                all_workspaces=all_workspaces,
                 _retry=False,
             )
         raise
@@ -862,7 +836,6 @@ def get_accurate_gpu_availability(
         workspace_id=workspace_id,
         session=session,
         include_cpu=False,
-        all_workspaces=False,
         _retry=_retry,
     )
     return [row for row in results if row.resource_kind == "gpu"]

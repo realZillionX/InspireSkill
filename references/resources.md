@@ -40,7 +40,9 @@
 
 `Available` 是平台上当前未被占用的 GPU，`Low Pri` 是低优任务占用、可被高优任务抢占的 GPU，`High Pri` 是 `Available + Low Pri`。判断高优任务时不要只看 `Available`，但 `High Pri` 也只是可抢占容量上限；提交后仍以 Events 为准。
 
-余量不够时用 `resources usage` 看余量去了哪儿：它按用户、项目或任务列出存活工作负载持有的算力，以及其中有多少真的在忙（`GPU Busy`）。一大片 GPU 配一个很低的 `GPU Busy` 是资源停着而不是在用，这正是值得去要一下的情况；`--mine` 只看自己的占用，是一次预聚合请求，比扫全 Workspace 便宜。**它只接受一个 Workspace，不接受 `all`**：配额和调度都是按 Workspace 走的，等、去要、还是换个地方提交这三个决定也都是；而聚合是按 Workspace 分桶的，扇出只会给出「(空间, 人) 组合」的排名而看起来像全平台排名。跨 Workspace 找地方仍然是 `resources availability` 和 `resources nodes` 的活。
+余量不够时用 `resources usage` 看余量去了哪儿：它按用户、项目或任务列出存活工作负载持有的算力，以及其中有多少真的在忙（`GPU Busy`）。一大片 GPU 配一个很低的 `GPU Busy` 是资源停着而不是在用，这正是值得去要一下的情况；`--mine` 只看自己的占用，是一次预聚合请求，比扫全 Workspace 便宜。
+
+**`resources` 的每条命令都只接受一个 Workspace，不接受 `all`。** 配额上限、计算组余量、回收策略和当前占用全部是按 Workspace 定义的事实，它们服务的决定——等、去要、换个地方提交、按什么规格提交——也全部是按 Workspace 做的。跨空间扫一遍不会多回答一个问题，只会把逐空间的行拼在一起再按输出预算截断，让「前 N 名」变成「最先枚举到的那个空间的前 N 名」。要在多个 Workspace 之间比较，就逐个跑，各自读各自的事实。
 
 CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解析；普通 `list`、`status`、`events`、`metrics` 和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。怀疑缓存过期时用 `inspire cache status|refresh|clear` 管理；清空缓存不会删除任何平台资源。三条命令都支持 `--resource <kind>` 只针对一类，可重复，不带才是全部。kind 分四组：平台目录 `workspace` / `project` / `compute-group` / `image` / `model`，Workload `notebook` / `job` / `hpc` / `ray` / `serving`，Quota 目录 `quota-<workload>`，以及 Notebook 显卡型号那层 `notebook-gpu`。最后这个只能 `status` 和 `clear`，不能 `refresh`——它是用到才探一个组，没有可以整批拉的列表接口。
 

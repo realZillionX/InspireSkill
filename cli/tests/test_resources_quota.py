@@ -149,22 +149,17 @@ def test_quota_low_priority_is_a_separate_request(
     assert calls == [{"workspace_id": "ws-gpu", "priority": "low"}]
 
 
-def test_quota_workspace_all_fans_out_and_labels_each_row(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_quota_refuses_a_workspace_fanout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A quota ceiling belongs to one workspace, so there is nothing to fan out."""
     calls = _patch_cli(monkeypatch)
 
     result = CliRunner().invoke(
-        cli_main, ["--json", "resources", "quota", "--workspace", "all", "--all"]
+        cli_main, ["resources", "quota", "--workspace", "all", "--all"]
     )
 
-    assert result.exit_code == 0, result.output
-    assert [call["workspace_id"] for call in calls] == ["ws-gpu", "ws-cpu"]
-    data = json.loads(result.output)["data"]
-    assert {item["workspace"] for item in data["items"]} == {
-        "分布式训练空间",
-        "CPU资源空间",
-    }
+    assert result.exit_code != 0
+    assert "--workspace requires one workspace name for this command." in result.output
+    assert calls == []
 
 
 def test_quota_limit_and_all_conflict_before_any_request(
@@ -184,10 +179,10 @@ def test_quota_limit_and_all_conflict_before_any_request(
     assert result.exit_code != 0
 
 
-def test_quota_workspace_metavar_accepts_all() -> None:
+def test_quota_workspace_metavar_is_one_name() -> None:
     option = {
         parameter.name: parameter
         for parameter in quota_module.quota_resources.params
     }["workspace"]
 
-    assert option.metavar == "NAME|all"
+    assert option.metavar == "NAME"
