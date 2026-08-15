@@ -52,18 +52,23 @@ CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解
 
 三元组必须在当前可见规格里唯一匹配。同一个三元组出现在多个 Compute Group 里是正常现象；先用查询命令按 Group 关键词收窄，再在 `create` 或 Profile 中写完整 Group 名称消歧。
 
-### qz 开发区与训练区
+### Quota 行的优先级限制
 
-Compute Group 名称里的资源区前缀也是调度语义。qz 当前规则如下：
+有些 Quota 行只接受低优先级。这是平台按 Workspace 逐行声明的调度事实，`<workload> quota` 的 `Priority` 列直接显示它，不再从 Compute Group 名称推断：
 
-| 调度区 | 整节点 GPU 任务 | 碎卡 GPU 任务 |
-| --- | --- | --- |
-| `开发区` | 支持 | 支持 |
-| `训练区` | 优先保障 | 当前公平调度 Workspace 只允许 `1=LOW`，任务可被抢占 |
+| `Priority` | 含义 |
+| --- | --- |
+| `any` | 平台没有声明限制，`--priority` 只受 Workspace 与 Project 策略约束 |
+| `low` | 平台只调度低优先级，公平调度 Workspace 里就是 `--priority 1`，任务可被抢占 |
+| `unknown` | 这次没读到平台的调度记录，既没有确认限制也没有排除限制 |
 
-整节点 / 碎卡按每个 Workload 实例或节点选择的 Quota 判断，不按任务聚合后的 GPU 总数判断。比如每节点 4 GPU、`--nodes 2` 仍是两个碎卡实例，不会因为总计 8 GPU 变成整节点请求；`--nodes` 只放大实例数，不改变单节点 Quota 的调度区语义。
+`--json` 输出同时给 `priority` 和 `allowed_priority_levels`；后者的 `[]` 是「无限制」，`null` 是「没读到」，不能当作同一件事。`hpc` 和 `ray` 没有这份声明的 Workspace 一律显示 `any`。
 
-“支持”不代表可以猜测规格。具体可用 GPU 型号、机房和 `gpu,cpu,mem` 三元组仍以当前 Workload 的 Live Quota Row 为准；创建 Workload 或写 Profile 时从同一行复制完整 `group` 和 `quota`。训练区提交碎卡任务时显式选择 LOW 优先级，提交后再从 Status / Events 核实平台解析出的优先级、排队和抢占结果。
+`job` / `notebook` / `serving` 的 `create` 在发出创建请求前按这一列预检：所选行只接受低优先级而 `--priority` 更高时直接报错并说明改法；`unknown` 不阻断创建，因为一次读取失败不等于平台拒绝。
+
+限制按每个 Workload 实例或节点选择的 Quota 判断，不按任务聚合后的 GPU 总数判断。比如每节点 4 GPU、`--nodes 2` 仍是两个碎卡实例，不会因为总计 8 GPU 变成整节点请求；`--nodes` 只放大实例数，不改变单行 Quota 的调度语义。同一个 Compute Group 里更大的整节点行往往就是 `any`。
+
+具体可用 GPU 型号、机房和 `gpu,cpu,mem` 三元组仍以当前 Workload 的 Live Quota Row 为准；创建 Workload 或写 Profile 时从同一行复制完整 `group` 和 `quota`。提交后再从 Status / Events 核实平台解析出的优先级、排队和抢占结果。
 
 申请资源前按真实任务需求和实时空余选择规格。不要因为猜测主动降档；只有调度语义、空余量或项目策略明确不足时再缩小规模。
 

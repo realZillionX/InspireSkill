@@ -2048,6 +2048,7 @@ def create_serving(
             QuotaMatchError,
             QuotaParseError,
             SCHEDULE_TYPE_SERVING,
+            ensure_priority_allowed,
             parse_quota,
             resolve_quota,
         )
@@ -2143,6 +2144,15 @@ def create_serving(
             workspace_id=workspace_id,
             project_id=project_id,
         )
+        try:
+            ensure_priority_allowed(
+                resolved, final_priority, quota_command="inspire serving quota"
+            )
+        except QuotaMatchError as exc:
+            # Reported directly rather than raised: the outer `except Exception`
+            # would file a validation failure as an APIError.
+            _handle_error(ctx, "ValidationError", str(exc), EXIT_VALIDATION_ERROR)
+            return
         payload = {
             "name": name,
             "logic_compute_group_id": resolved.logic_compute_group_id,

@@ -68,11 +68,23 @@ class _Session:
     }
 
 
+class _UnrestrictedMenu(dict):
+    """A workspace that published every spec, none of them restricted.
+
+    The default for quota tests that are not about priority at all, so their
+    rows read `any` instead of the `unknown` a missing stub would produce.
+    """
+
+    def get(self, key, default=None):  # type: ignore[no-untyped-def]
+        return ()
+
+
 def _stub_quota_browser(
     monkeypatch: pytest.MonkeyPatch,
     *,
     groups_by_ws: dict[str, list[dict]],
     prices_fn,
+    priority_levels_fn=None,
 ) -> None:
     from inspire.cli.commands import workload_quota as quota_module
 
@@ -83,6 +95,12 @@ def _stub_quota_browser(
         lambda **kwargs: groups_by_ws.get(kwargs["workspace_id"], []),
     )
     monkeypatch.setattr(quota_module.browser_api_module, "get_resource_prices", prices_fn)
+    monkeypatch.setattr(
+        quota_module.browser_api_module,
+        "get_quota_priority_levels",
+        priority_levels_fn or (lambda **_kwargs: _UnrestrictedMenu()),
+        raising=False,
+    )
 
 
 def _make_price(*, qid: str, gpu: int, cpu: int, mem: int, gpu_type: str = "") -> dict:
@@ -206,52 +224,68 @@ def test_quota_json_rows_carry_quota_and_no_ids(
         "compute_group",
         "gpu_type",
         "quota",
+        "priority",
+        "allowed_priority_levels",
     }
     assert row["workspace"] == "CPU资源空间"
     assert row["compute_group"] == "CPU资源-2"
     assert row["quota"] == "0,4,16"
+    assert row["priority"] == "any"
+    assert row["allowed_priority_levels"] == []
     assert "total" not in payload
     _assert_compact_public_payload(payload)
     assert "lcg-secret" not in result.output
     assert "q-1" not in result.output
 
 
-def test_qz_quota_human_output_explains_scheduling_zones(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _patch_config(monkeypatch, tmp_path)
+def _stub_restricted_train_zone(monkeypatch: pytest.MonkeyPatch, **kwargs) -> None:
+    """One workspace shaped like the live 分布式训练空间.
 
-    def prices(**kwargs):
-        group_id = kwargs["logic_compute_group_id"]
-        if group_id == "lcg-dev":
-            return [
-                _make_price(
-                    qid="q-dev-4", gpu=4, cpu=55, mem=900, gpu_type="NVIDIA H100"
-                ),
-                _make_price(
-                    qid="q-dev-8", gpu=8, cpu=110, mem=1800, gpu_type="NVIDIA H100"
-                ),
-            ]
-        if group_id == "lcg-train":
-            return [
-                _make_price(
-                    qid="q-train", gpu=8, cpu=160, mem=1800, gpu_type="NVIDIA H200"
-                )
-            ]
-        return []
+    The training-zone group offers the same four shapes as the dev-zone one,
+    but the platform publishes its three partial-card specs as low-priority
+    only. That difference is invisible in the compute group name, the GPU type
+    and the triple -- it exists only in the workspace's scheduling record.
+    """
+
+    def prices(**price_kwargs):
+        shapes = [(1, 20, 200), (2, 40, 400), (4, 80, 900), (8, 160, 1800)]
+        zone = "dev" if price_kwargs["logic_compute_group_id"] == "lcg-dev" else "train"
+        return [
+            _make_price(qid=f"q-{zone}-{gpu}", gpu=gpu, cpu=cpu, mem=mem, gpu_type="H200")
+            for gpu, cpu, mem in shapes
+        ]
 
     _stub_quota_browser(
         monkeypatch,
         groups_by_ws={
             _WS_TRAIN: [
-                {
-                    "logic_compute_group_id": "lcg-dev",
-                    "name": "开发区-H100-cuda12.8版本-119核",
-                },
+                {"logic_compute_group_id": "lcg-dev", "name": "开发区-H200-3号机房"},
                 {"logic_compute_group_id": "lcg-train", "name": "训练区-H200-1号机房"},
             ]
         },
         prices_fn=prices,
+        **kwargs,
+    )
+
+
+_TRAIN_ZONE_MENU = {
+    "q-train-1": ("low",),
+    "q-train-2": ("low",),
+    "q-train-4": ("low",),
+    "q-train-8": (),
+    "q-dev-1": (),
+    "q-dev-2": (),
+    "q-dev-4": (),
+    "q-dev-8": (),
+}
+
+
+def test_quota_human_output_shows_the_published_priority_per_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config(monkeypatch, tmp_path)
+    _stub_restricted_train_zone(
+        monkeypatch, priority_levels_fn=lambda **_kwargs: dict(_TRAIN_ZONE_MENU)
     )
 
     result = CliRunner().invoke(
@@ -259,45 +293,78 @@ def test_qz_quota_human_output_explains_scheduling_zones(
     )
 
     assert result.exit_code == 0, result.output
-    assert "QZ scheduling zones:" in result.output
-    assert "开发区 supports both full-node and partial-node GPU workloads" in result.output
-    assert "训练区 prioritizes full-node workloads" in result.output
-    assert "partial-node GPU workloads there require LOW priority" in result.output
-    assert "1 in fair-scheduling workspaces, preemptible" in result.output
-    assert "per instance/node quota, not aggregate GPU count" in result.output
-    assert "Use --group and --quota from the same live quota row" in result.output
+    assert "Priority" in result.output
+    rows = {
+        (parts[0], parts[2]): parts[3]
+        for parts in (line.split() for line in result.output.splitlines())
+        if len(parts) == 4 and "," in parts[2]
+    }
+    assert rows[("训练区-H200-1号机房", "1,20,200")] == "low"
+    assert rows[("训练区-H200-1号机房", "2,40,400")] == "low"
+    assert rows[("训练区-H200-1号机房", "4,80,900")] == "low"
+    assert rows[("训练区-H200-1号机房", "8,160,1800")] == "any"
+    assert rows[("开发区-H200-3号机房", "1,20,200")] == "any"
+    # The old hardcoded hint inferred all of this from the group name.
+    assert "QZ scheduling zones" not in result.output
 
 
-def test_qz_quota_hint_is_human_only(
+def test_quota_json_carries_the_priority_restriction(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _patch_config(monkeypatch, tmp_path)
-    _stub_quota_browser(
-        monkeypatch,
-        groups_by_ws={_WS_TRAIN: [{"logic_compute_group_id": "lcg-dev", "name": "开发区-H200"}]},
-        prices_fn=lambda **_: [
-            _make_price(qid="q-small", gpu=1, cpu=20, mem=200, gpu_type="NVIDIA H200")
-        ],
+    _stub_restricted_train_zone(
+        monkeypatch, priority_levels_fn=lambda **_kwargs: dict(_TRAIN_ZONE_MENU)
     )
 
     result = CliRunner().invoke(
-        cli_main, ["--json", "notebook", "quota", "--workspace", "分布式训练空间"]
+        cli_main, ["--json", "job", "quota", "--workspace", "分布式训练空间", "--all"]
     )
 
     assert result.exit_code == 0, result.output
     payload = _json_data(result.output)
-    row = payload["items"][0]
-    assert row.keys() == {
-        "workspace",
-        "compute_group",
-        "gpu_type",
-        "quota",
+    by_row = {
+        (row["compute_group"], row["quota"]): row for row in payload["items"]
     }
-    assert "QZ scheduling zones" not in result.output
+    restricted = by_row[("训练区-H200-1号机房", "1,20,200")]
+    assert restricted["priority"] == "low"
+    assert restricted["allowed_priority_levels"] == ["low"]
+    unrestricted = by_row[("训练区-H200-1号机房", "8,160,1800")]
+    assert unrestricted["priority"] == "any"
+    assert unrestricted["allowed_priority_levels"] == []
     _assert_compact_public_payload(payload)
 
 
-def test_non_qz_quota_human_output_has_no_card_area_hint(
+def test_quota_reports_an_unreadable_priority_menu_as_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A menu the platform never sent is not a menu without restrictions."""
+
+    def _boom(**_kwargs):
+        raise ValueError("API error: RateLimit: too many requests")
+
+    _patch_config(monkeypatch, tmp_path)
+    _stub_restricted_train_zone(monkeypatch, priority_levels_fn=_boom)
+
+    result = CliRunner().invoke(
+        cli_main, ["job", "quota", "--workspace", "分布式训练空间"]
+    )
+    json_result = CliRunner().invoke(
+        cli_main, ["--json", "job", "quota", "--workspace", "分布式训练空间"]
+    )
+
+    # The rows still list -- one unreadable menu must not hide the catalog.
+    assert result.exit_code == 0, result.output
+    assert "训练区-H200-1号机房" in result.output
+    assert "unknown" in result.output
+    assert "any" not in result.output
+    assert "could not be read" in result.output
+    assert json_result.exit_code == 0, json_result.output
+    for row in _json_data(json_result.output)["items"]:
+        assert row["priority"] == "unknown"
+        assert row["allowed_priority_levels"] is None
+
+
+def test_quota_output_never_guesses_a_restriction_from_a_group_name(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _patch_config(monkeypatch, tmp_path)
@@ -313,6 +380,7 @@ def test_non_qz_quota_human_output_has_no_card_area_hint(
 
     assert result.exit_code == 0, result.output
     assert "QZ scheduling zones" not in result.output
+    assert "训练区" not in result.output
 
 
 def test_group_keyword_filter_skips_non_matching_compute_groups(

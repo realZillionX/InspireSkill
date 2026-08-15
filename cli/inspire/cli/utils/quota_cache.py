@@ -159,17 +159,23 @@ def quota_triple(price: dict[str, Any]) -> str:
 
 
 def _quota_handle(price: dict[str, Any], *, logic_compute_group_id: str) -> str:
-    """Return the row's stable handle within its scope.
+    """Return the row's cache key, which must be unique per compute group.
 
-    ``quota_id`` is the platform handle and the value ``create`` echoes back.
-    A price row without one cannot be created against, but it still shows up
-    in ``<workload> quota``, so give it a deterministic synthetic key rather
-    than dropping it from the cache.
+    **``quota_id`` alone is not unique.** The platform reuses one spec id
+    across every group that offers that shape — measured on 分布式训练空间:
+    9 groups, 11 distinct ``quota_id`` values, 7 of them shared by 4 to 7
+    groups each. The cache's primary key does not include ``owner_id``, so a
+    bare ``quota_id`` made each group overwrite the previous one's row and the
+    stored catalog collapsed to one entry per spec — 11 rows across 3 groups
+    instead of 32 across 8. Groups vanished from ``<workload> quota`` and
+    became unreachable by ``--group``, while the platform was answering for
+    all of them.
+
+    The group id therefore always leads. The real ``quota_id`` the create call
+    echoes back is read from the row's ``payload``, never from this key.
     """
     quota_id = str(price.get("quota_id") or price.get("spec_id") or "").strip()
-    if quota_id:
-        return quota_id
-    return f"{logic_compute_group_id}:{quota_triple(price)}"
+    return f"{logic_compute_group_id}:{quota_id or quota_triple(price)}"
 
 
 def quota_records(

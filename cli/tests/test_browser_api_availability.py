@@ -1,8 +1,118 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from inspire.platform.web.browser_api.availability import api
+
+# One spec menu as the live platform sends it: a JSON-encoded *string*, with
+# the three spellings of "no restriction" the platform mixes freely.
+_TRAIN_SPEC_MENU = json.dumps(
+    [
+        {"id": "spec-any-null", "name": "8卡160核", "allowed_priority_levels": None},
+        {"id": "spec-any-empty", "name": "8卡110核", "allowed_priority_levels": []},
+        {"id": "spec-any-missing", "name": "4卡55核"},
+        {"id": "spec-low", "name": "1卡20核", "allowed_priority_levels": ["low"]},
+        {"id": "spec-mixed", "name": "2卡40核", "allowed_priority_levels": ["LOW", " high "]},
+    ]
+)
+
+
+def _stub_schedule_config(monkeypatch, payload: dict, sent: list | None = None) -> None:
+    def _request(_session, method, path, **kwargs):  # noqa: ANN001
+        if sent is not None:
+            sent.append({"method": method, "path": path, **kwargs})
+        return {"Result": payload}
+
+    monkeypatch.setattr(api, "_request_json", _request)
+    monkeypatch.setattr(api, "_get_base_url", lambda: "https://platform.invalid")
+
+
+def test_quota_priority_levels_decodes_the_json_encoded_menu(monkeypatch) -> None:
+    sent: list = []
+    _stub_schedule_config(monkeypatch, {"predef_train_spec": _TRAIN_SPEC_MENU}, sent)
+
+    levels = api.get_quota_priority_levels(
+        "ws-1", spec_field="predef_train_spec", session=object()  # type: ignore[arg-type]
+    )
+
+    assert levels == {
+        # `null`, `[]` and an absent key are all "no restriction declared".
+        "spec-any-null": (),
+        "spec-any-empty": (),
+        "spec-any-missing": (),
+        "spec-low": ("low",),
+        "spec-mixed": ("high", "low"),
+    }
+    # One request for the whole workspace, PascalCase key, notebook Action --
+    # `workspace.GetScheduleConfig` is admin-only and answers AccessForbidden.
+    assert len(sent) == 1
+    assert sent[0]["path"] == "/api/v2/notebook?Action=GetScheduleConfig"
+    assert sent[0]["body"] == {"WorkspaceId": "ws-1"}
+
+
+def test_quota_priority_levels_reads_an_empty_menu_as_no_rows(monkeypatch) -> None:
+    # A workload the workspace publishes nothing for is an empty menu, and
+    # every spec then falls through to the caller's "no statement" branch.
+    _stub_schedule_config(monkeypatch, {"rayjob_quota": "", "predef_train_spec": None})
+
+    for field in ("rayjob_quota", "predef_train_spec", "serving_quota"):
+        assert (
+            api.get_quota_priority_levels(
+                "ws-1", spec_field=field, session=object()  # type: ignore[arg-type]
+            )
+            == {}
+        )
+
+
+def test_quota_priority_levels_survives_an_undecodable_menu(monkeypatch) -> None:
+    _stub_schedule_config(monkeypatch, {"quota": "not json at all"})
+
+    assert (
+        api.get_quota_priority_levels(
+            "ws-1", spec_field="quota", session=object()  # type: ignore[arg-type]
+        )
+        == {}
+    )
+
+
+def test_quota_priority_levels_propagates_a_platform_refusal(monkeypatch) -> None:
+    """A read that failed must reach the caller, not look like an empty menu."""
+    monkeypatch.setattr(
+        api,
+        "_request_json",
+        lambda *_args, **_kwargs: {"code": 403, "message": "permission denied", "data": {}},
+    )
+    monkeypatch.setattr(api, "_get_base_url", lambda: "https://platform.invalid")
+
+    with pytest.raises(ValueError, match="permission denied"):
+        api.get_quota_priority_levels(
+            "ws-1", spec_field="quota", session=object()  # type: ignore[arg-type]
+        )
+
+
+def test_quota_priority_spec_fields_cover_the_workloads_that_have_a_menu() -> None:
+    assert api.QUOTA_PRIORITY_SPEC_FIELDS == {
+        "notebook": "quota",
+        "job": "predef_train_spec",
+        "ray": "rayjob_quota",
+        "serving": "serving_quota",
+    }
+    # HPC's spec list lives in a different Action entirely, so it has no menu
+    # here and must never be given one by accident.
+    assert "hpc" not in api.QUOTA_PRIORITY_SPEC_FIELDS
+
+
+def test_quota_priority_levels_requires_a_workspace_and_a_field() -> None:
+    with pytest.raises(ValueError, match="Workspace selection is required"):
+        api.get_quota_priority_levels(
+            "", spec_field="quota", session=object()  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="spec field is required"):
+        api.get_quota_priority_levels(
+            "ws-1", spec_field="", session=object()  # type: ignore[arg-type]
+        )
 
 
 def test_list_compute_groups_rejects_nonzero_api_code(monkeypatch) -> None:

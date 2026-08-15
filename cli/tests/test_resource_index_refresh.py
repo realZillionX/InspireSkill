@@ -1171,7 +1171,8 @@ def test_quota_refresh_warms_one_workload_catalog(tmp_path, monkeypatch) -> None
     assert summary.error_count == 0
     scope = _scope("quota-notebook", "workspace-one")
     matches = index.lookup(scope, "8,160,1800")
-    assert [item.resource_id for item in matches] == ["q-8"]
+    # The cache key leads with the group: one `quota_id` is shared by many groups.
+    assert [item.resource_id for item in matches] == ["lcg-a:q-8"]
     assert matches[0].compute_group == "训练区-H200-1号机房"
     assert matches[0].owner_id == "lcg-a"
 
@@ -1283,7 +1284,7 @@ def test_one_rate_limited_group_never_tombstones_the_cached_catalog(
     assert _outcome_count(summary, "partial") == 1
     assert summary.error_count == 0
     scope = _scope("quota-notebook", "workspace-one")
-    assert [item.resource_id for item in index.lookup(scope, "8,160,1800")] == ["q-8"]
+    assert [item.resource_id for item in index.lookup(scope, "8,160,1800")] == ["lcg-a:q-8"]
     # Not a full refresh, so a reader that demands one goes live instead of
     # trusting a catalog nobody fully read.
     assert index.scope_due(scope, interval_seconds=1, require_full=True) is False
@@ -1304,7 +1305,7 @@ def test_a_fully_rate_limited_refresh_never_becomes_an_empty_catalog(
 
     assert _outcome_count(summary, "partial") == 1
     scope = _scope("quota-notebook", "workspace-one")
-    assert [item.resource_id for item in index.lookup(scope, "8,160,1800")] == ["q-8"]
+    assert [item.resource_id for item in index.lookup(scope, "8,160,1800")] == ["lcg-a:q-8"]
 
 
 def test_a_catalog_the_platform_emptied_is_still_reconciled(

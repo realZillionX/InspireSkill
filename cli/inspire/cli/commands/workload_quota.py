@@ -33,8 +33,12 @@ from inspire.cli.utils.quota_cache import (
     group_supports_workload,
 )
 from inspire.cli.utils.quota_resolver import (
+    PRIORITY_LEVELS_ANY_DISPLAY,
+    PRIORITY_LEVELS_UNKNOWN_DISPLAY,
     QuotaMatchError,
-    qz_scheduling_zone_hint_for_group_names,
+    allowed_priority_levels_for,
+    describe_priority_levels,
+    load_quota_priority_levels,
     validate_compute_group_name,
 )
 
@@ -79,7 +83,7 @@ def _query_workspace_quotas(
     include_empty: bool,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    seen_rows: set[tuple[str, int, int, int, str]] = set()
+    seen_rows: set[tuple[str, int, int, int, str, str]] = set()
     public_workspace_name = scrub_raw_ids(workspace_name)
     groups = browser_api_module.list_notebook_compute_groups(
         workspace_id=workspace_id,
@@ -90,6 +94,21 @@ def _query_workspace_quotas(
         workspace_id=workspace_id,
         schedule_config_type=SCHEDULE_TYPE_BY_WORKLOAD[workload],
     )
+    # One request for the whole workspace, and only once a row needs it: a
+    # `--workspace all` sweep with a `--group` filter would otherwise pay for
+    # every workspace whose groups it then skips.
+    menu: list[dict[str, tuple[str, ...]] | None] = []
+
+    def priority_levels() -> dict[str, tuple[str, ...]] | None:
+        if not menu:
+            menu.append(
+                load_quota_priority_levels(
+                    workspace_id=workspace_id,
+                    session=session,
+                    workload=workload,
+                )
+            )
+        return menu[0]
 
     for item in groups:
         logic_compute_group_id = _group_id(item)
@@ -114,6 +133,8 @@ def _query_workspace_quotas(
                         "compute_group": scrub_raw_ids(compute_group_name),
                         "gpu_type": "",
                         "quota": "",
+                        "priority": "",
+                        "allowed_priority_levels": None,
                     }
                 )
             continue
@@ -123,7 +144,21 @@ def _query_workspace_quotas(
             memory_size_gib = _extract_memory_gib(price)
             gpu_count = int(price.get("gpu_count") or 0)
             gpu_type = _extract_gpu_type(price)
-            key = (compute_group_name, gpu_count, cpu_count, memory_size_gib, gpu_type)
+            quota_id = str(price.get("quota_id") or price.get("spec_id") or "").strip()
+            levels = allowed_priority_levels_for(
+                priority_levels(), quota_id, workload=workload
+            )
+            priority = describe_priority_levels(levels)
+            # Two rows that differ only in what priorities they accept are two
+            # different offers, so the restriction is part of the identity.
+            key = (
+                compute_group_name,
+                gpu_count,
+                cpu_count,
+                memory_size_gib,
+                gpu_type,
+                priority,
+            )
             if key in seen_rows:
                 continue
             seen_rows.add(key)
@@ -133,6 +168,10 @@ def _query_workspace_quotas(
                     "compute_group": scrub_raw_ids(compute_group_name),
                     "gpu_type": scrub_raw_ids(gpu_type),
                     "quota": f"{gpu_count},{cpu_count},{memory_size_gib}",
+                    "priority": priority,
+                    # `null` is "the platform did not answer", `[]` is "no
+                    # restriction"; a consumer that collapses them is wrong.
+                    "allowed_priority_levels": list(levels) if levels is not None else None,
                 }
             )
     return rows
@@ -191,7 +230,12 @@ def make_quota_command(workload: str) -> click.Command:
         limit: int | None,
         show_all: bool,
     ) -> None:
-        """List valid ``--quota gpu,cpu,mem`` triples for this workload."""
+        """List valid ``--quota gpu,cpu,mem`` triples for this workload.
+
+        The Priority column is the workspace's own statement about which task
+        priorities each row accepts: 'any', 'low' (only --priority 1), or
+        'unknown' when the platform did not answer.
+        """
         try:
             effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
         except ValueError as e:
@@ -253,25 +297,28 @@ def make_quota_command(workload: str) -> click.Command:
                     "Compute Group",
                     "GPU Type",
                     "Quota",
+                    "Priority",
                 )
-                widths = [18, 28, 14, 14]
+                widths = [18, 28, 14, 14, 9]
                 table_rows = [
                     (
                         row["workspace"],
                         row["compute_group"],
                         row["gpu_type"] or "CPU",
                         row["quota"] or "-",
+                        row["priority"] or "-",
                     )
                     for row in rows
                 ]
             else:
-                headers = ("Compute Group", "GPU Type", "Quota")
-                widths = [28, 14, 14]
+                headers = ("Compute Group", "GPU Type", "Quota", "Priority")
+                widths = [28, 14, 14, 9]
                 table_rows = [
                     (
                         row["compute_group"],
                         row["gpu_type"] or "CPU",
                         row["quota"] or "-",
+                        row["priority"] or "-",
                     )
                     for row in rows
                 ]
@@ -280,11 +327,19 @@ def make_quota_command(workload: str) -> click.Command:
             notice = truncation_notice(page)
             if notice:
                 click.echo(notice)
-            qz_hint = qz_scheduling_zone_hint_for_group_names(
-                row.get("compute_group") for row in rows
-            )
-            if qz_hint:
-                click.echo(qz_hint)
+            shown = {str(row.get("priority") or "") for row in rows}
+            if PRIORITY_LEVELS_UNKNOWN_DISPLAY in shown:
+                click.echo(
+                    f"Priority '{PRIORITY_LEVELS_UNKNOWN_DISPLAY}': the workspace's "
+                    "scheduling record could not be read, so nothing was ruled in or out "
+                    "for those rows."
+                )
+            if shown - {PRIORITY_LEVELS_ANY_DISPLAY, PRIORITY_LEVELS_UNKNOWN_DISPLAY, ""}:
+                click.echo(
+                    "Priority is the task priority the platform publishes for that quota "
+                    f"row; '{PRIORITY_LEVELS_ANY_DISPLAY}' means unrestricted, 'low' means "
+                    "only --priority 1 (preemptible) will be accepted."
+                )
         except ConfigError as e:
             _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
         except QuotaMatchError as e:

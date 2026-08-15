@@ -45,6 +45,7 @@ from inspire.cli.utils.quota_resolver import (
     ResolvedQuota,
     SCHEDULE_TYPE_DSW,
     build_resource_spec_price,
+    ensure_priority_allowed,
     parse_quota,
     resolve_quota,
 )
@@ -982,6 +983,14 @@ def run_notebook_create(
             f"Capping priority {uncapped_priority} -> {task_priority} "
             f"(max for project '{scrub_raw_ids(selected_project.name)}')"
         )
+
+    try:
+        ensure_priority_allowed(
+            resolved_quota, task_priority, quota_command="inspire notebook quota"
+        )
+    except QuotaMatchError as err:
+        _handle_error(ctx, "ValidationError", str(err), EXIT_VALIDATION_ERROR)
+        return
 
     images = _fetch_notebook_images(
         ctx,

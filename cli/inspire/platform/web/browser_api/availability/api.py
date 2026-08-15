@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from .models import (
@@ -60,6 +61,97 @@ def list_compute_groups(
     )
     groups = payload.get("logic_compute_groups")
     return groups if isinstance(groups, list) else []
+
+
+# Workload -> the `notebook.GetScheduleConfig` key carrying its spec menu.
+# HPC is deliberately absent: the shared record has no HPC menu at all (its
+# `predef_node_spec` lives in `hpc.GetHpcScheduleConfig`), so HPC quotas have
+# no published priority restriction to join against.
+QUOTA_PRIORITY_SPEC_FIELDS: dict[str, str] = {
+    "notebook": "quota",
+    "job": "predef_train_spec",
+    "ray": "rayjob_quota",
+    "serving": "serving_quota",
+}
+
+
+def get_quota_priority_levels(
+    workspace_id: str,
+    *,
+    spec_field: str,
+    session: Optional[WebSession] = None,
+) -> dict[str, tuple[str, ...]]:
+    """Read which task priorities a workspace lets each quota spec use.
+
+    Action: ``notebook.GetScheduleConfig``, body ``{"WorkspaceId": ...}`` in
+    PascalCase — the sibling Actions of that family take snake_case and reject
+    this spelling. One request answers the whole workspace, because the shared
+    record carries a separate spec menu per workload; there is no per-compute-
+    group fan-out here and adding one would only multiply the rate-limit risk.
+
+    ``workspace.GetScheduleConfig`` looks like the Action for this and is not:
+    it answers ``AccessForbidden: You are not the admin of the <workspace_id>
+    workspace`` to an ordinary member. The notebook Action is member-readable.
+
+    Each menu arrives **JSON-encoded as a string**, not as an array, and each
+    element's ``id`` is the handle the v1 price rows spell ``quota_id`` — that
+    is the join, and it is exact: measured across every visible workspace and
+    workload, all 96+ live price rows found their spec. The payload is
+    ``allowed_priority_levels``: ``null`` or ``[]`` for a spec the workspace
+    schedules at any priority, ``["low"]`` for one it will only schedule at low
+    priority.
+
+    Returns ``{quota_id: levels}``, with an empty tuple meaning "no
+    restriction". A spec id absent from the result is one this workspace said
+    nothing about, and callers must not read silence as permission.
+    """
+    if session is None:
+        session = get_web_session()
+    if not workspace_id:
+        raise ValueError("Workspace selection is required.")
+    field = str(spec_field or "").strip()
+    if not field:
+        raise ValueError("A schedule-config spec field is required.")
+
+    config = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/notebook?Action=GetScheduleConfig",
+            referer=f"{_get_base_url()}/jobs/interactiveModeling",
+            body={"WorkspaceId": workspace_id},
+            timeout=20,
+        )
+    )
+
+    menu = config.get(field)
+    if isinstance(menu, str):
+        text = menu.strip()
+        if not text:
+            return {}
+        try:
+            menu = json.loads(text)
+        except ValueError:
+            return {}
+    if not isinstance(menu, list):
+        return {}
+
+    levels_by_quota_id: dict[str, tuple[str, ...]] = {}
+    for spec in menu:
+        if not isinstance(spec, dict):
+            continue
+        quota_id = str(spec.get("id") or "").strip()
+        if not quota_id:
+            continue
+        allowed = spec.get("allowed_priority_levels")
+        if not isinstance(allowed, list):
+            # `null` and a missing key both mean "no restriction declared",
+            # which the platform also spells as an empty list.
+            allowed = []
+        levels_by_quota_id[quota_id] = tuple(
+            sorted({str(level).strip().lower() for level in allowed if str(level).strip()})
+        )
+    return levels_by_quota_id
 
 
 def _group_id(group: dict) -> str:
@@ -780,9 +872,11 @@ def get_full_free_node_counts(
 
 
 __all__ = [
+    "QUOTA_PRIORITY_SPEC_FIELDS",
     "get_accurate_resource_availability",
     "get_accurate_gpu_availability",
     "get_full_free_node_counts",
+    "get_quota_priority_levels",
     "list_member_usage",
     "list_node_dimension",
     "list_node_specs",

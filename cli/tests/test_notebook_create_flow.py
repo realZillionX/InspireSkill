@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
 
 from inspire.cli.commands.notebook import notebook_create_flow as flow_module
-from inspire.cli.context import Context
+from inspire.cli.context import EXIT_VALIDATION_ERROR, Context
 from inspire.cli.utils.quota_resolver import QuotaSpec, ResolvedQuota
 
 
@@ -693,3 +694,76 @@ def test_create_notebook_payload_omits_node_id_when_absent(
     )
 
     assert "node_id" not in captured["body"]
+
+
+def _run_create_with_levels(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    allowed_priority_levels: tuple[str, ...] | None,
+    priority: int | None = None,
+) -> tuple[dict[str, object], SystemExit | None]:
+    quota = dataclasses.replace(
+        _make_resolved_quota(), allowed_priority_levels=allowed_priority_levels
+    )
+    ctx, calls = _configure_create_happy_path(
+        monkeypatch, wait_result=True, resolved_quota=quota
+    )
+
+    raised: SystemExit | None = None
+    try:
+        flow_module.run_notebook_create(
+            ctx,
+            name=None,
+            workspace="gpu",
+            workspace_id=None,
+            quota="1,20,200",
+            project="Project One",
+            image="Image One",
+            shm_size=None,
+            auto_stop=True,
+            wait=True,
+            post_start=None,
+            post_start_script=None,
+            json_output=False,
+            priority=priority,
+            group="H200 Group",
+        )
+    except SystemExit as exc:
+        raised = exc
+    return calls, raised
+
+
+def test_notebook_create_refuses_a_priority_the_quota_row_does_not_allow(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls, raised = _run_create_with_levels(
+        monkeypatch, allowed_priority_levels=("low",)
+    )
+
+    assert raised is not None and raised.code == EXIT_VALIDATION_ERROR
+    # Nothing was created: the refusal happens before the create call.
+    assert "task_priority" not in calls
+    message = capsys.readouterr().err
+    assert "LOW-priority only" in message
+    assert "inspire notebook quota" in message
+
+
+def test_notebook_create_accepts_the_priority_the_quota_row_publishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, raised = _run_create_with_levels(
+        monkeypatch, allowed_priority_levels=("low",), priority=1
+    )
+
+    assert raised is None
+    assert calls["task_priority"] == 1
+
+
+@pytest.mark.parametrize("levels", [None, ()])
+def test_notebook_create_is_not_blocked_by_an_unread_or_empty_priority_menu(
+    monkeypatch: pytest.MonkeyPatch, levels: tuple[str, ...] | None
+) -> None:
+    calls, raised = _run_create_with_levels(monkeypatch, allowed_priority_levels=levels)
+
+    assert raised is None
+    assert calls["task_priority"] == 6

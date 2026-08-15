@@ -1394,3 +1394,136 @@ def test_serving_create_flags_map_onto_the_create_action_fields(
     # Default `None` is what keeps an untouched create byte-for-byte unchanged.
     assert option.default is None
     assert field in inspect.signature(browser_api_module.create_serving).parameters
+
+
+# ---------------------------------------------------------------------------
+# published per-quota priority restrictions, enforced before the create call
+# ---------------------------------------------------------------------------
+
+
+def _patch_serving_create_deps(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    allowed_priority_levels: tuple[str, ...] | None,
+    priority: int,
+) -> None:
+    from inspire.cli.utils import quota_resolver as quota_resolver_module
+
+    config = config_module.Config(username="user", password="pass")
+    config.profiles = {}
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, **_kwargs: (config, {})),
+    )
+    monkeypatch.setattr(serving_commands_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        serving_commands_module, "select_workspace_id", lambda **_kwargs: "ws-1"
+    )
+    monkeypatch.setattr(
+        serving_commands_module, "_resolve_project_id", lambda **_kwargs: "project-1"
+    )
+    monkeypatch.setattr(
+        serving_commands_module.browser_api_module,
+        "get_current_user",
+        lambda **_kwargs: {"id": "user-1"},
+    )
+    monkeypatch.setattr(
+        quota_resolver_module,
+        "resolve_quota",
+        lambda **_kwargs: quota_resolver_module.ResolvedQuota(
+            quota_id="quota-1",
+            logic_compute_group_id="lcg-1",
+            compute_group_name="训练区-H200-1号机房",
+            gpu_count=1,
+            cpu_count=20,
+            memory_gib=200,
+            gpu_type="H200",
+            raw_price={
+                "cpu_info": {"cpu_type": "CPU_TYPE_INTEL"},
+                "gpu_info": {"gpu_type": "NVIDIA_H200_SXM_141G"},
+            },
+            allowed_priority_levels=allowed_priority_levels,
+        ),
+    )
+    monkeypatch.setattr(
+        serving_commands_module,
+        "_resolve_model_for_create",
+        lambda **_kwargs: ("model-1", 3, "qwen-demo"),
+    )
+    monkeypatch.setattr(
+        serving_commands_module,
+        "_resolve_image_for_create",
+        lambda *_args, **_kwargs: ("mirror-1", "serve-base:v1"),
+    )
+    monkeypatch.setattr(
+        serving_commands_module,
+        "resolve_workspace_task_priority",
+        lambda *_args, **_kwargs: priority,
+    )
+
+
+def _serving_create_args() -> list[str]:
+    return [
+        "serving",
+        "create",
+        "--name",
+        "probe",
+        "--model",
+        "qwen-demo",
+        "--command",
+        "python serve.py",
+        "--port",
+        "8000",
+        "--workspace",
+        "Serving空间",
+        "--project",
+        "Project One",
+        "--group",
+        "训练区-H200-1号机房",
+        "--quota",
+        "1,20,200",
+        "--image",
+        "serve-base:v1",
+        "--dry-run",
+    ]
+
+
+def test_serving_create_refuses_a_priority_the_quota_row_does_not_allow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_create_deps(
+        monkeypatch, allowed_priority_levels=("low",), priority=4
+    )
+
+    result = CliRunner().invoke(cli_main, _serving_create_args())
+
+    assert result.exit_code == EXIT_VALIDATION_ERROR, result.output
+    assert "LOW-priority only" in result.output
+    assert "inspire serving quota" in result.output
+    assert "Create plan" not in result.output
+
+
+def test_serving_create_accepts_the_priority_the_quota_row_publishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_create_deps(
+        monkeypatch, allowed_priority_levels=("low",), priority=1
+    )
+
+    result = CliRunner().invoke(cli_main, _serving_create_args())
+
+    assert result.exit_code == 0, result.output
+    assert "Create plan" in result.output
+
+
+@pytest.mark.parametrize("levels", [None, ()])
+def test_serving_create_is_not_blocked_by_an_unread_or_empty_priority_menu(
+    monkeypatch: pytest.MonkeyPatch, levels: tuple[str, ...] | None
+) -> None:
+    _patch_serving_create_deps(monkeypatch, allowed_priority_levels=levels, priority=4)
+
+    result = CliRunner().invoke(cli_main, _serving_create_args())
+
+    assert result.exit_code == 0, result.output
+    assert "Create plan" in result.output

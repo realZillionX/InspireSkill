@@ -23,6 +23,7 @@ from click.testing import CliRunner
 
 from inspire import config as config_module
 from inspire.cli.commands.hpc import hpc_commands
+from inspire.cli.context import EXIT_VALIDATION_ERROR
 from inspire.cli.main import main as cli_main
 from inspire.cli.utils import dataset_mounts, job_submit
 from inspire.cli.utils.quota_resolver import ResolvedQuota
@@ -802,3 +803,83 @@ def test_notebook_create_reports_where_the_dataset_landed(
 
     assert notebook_id == "nb-1111"
     assert captured["dataset_info"][0]["path"] == "sftpgo/pixabay-81k/v0"
+
+
+# ---------------------------------------------------------------------------
+# published per-quota priority restrictions, enforced before the create call
+# ---------------------------------------------------------------------------
+
+
+def _patch_job_quota_priority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    allowed_priority_levels: tuple[str, ...] | None,
+) -> None:
+    from inspire.cli.commands.job import job_create as job_create_module
+
+    _patch_create_runtime(monkeypatch, tmp_path, verdicts=[])
+
+    def _resolve(*, spec, workspace_id, session=None, **_kwargs):  # noqa: ANN001
+        return ResolvedQuota(
+            quota_id="quota-12345678-1234-1234-1234-123456789abc",
+            logic_compute_group_id="lcg-12345678-1234-1234-1234-123456789abc",
+            compute_group_name="CPU Room",
+            gpu_count=spec.gpu_count,
+            cpu_count=spec.cpu_count,
+            memory_gib=spec.memory_gib,
+            gpu_type="",
+            raw_price={"cpu_info": {"cpu_type": "Test"}},
+            allowed_priority_levels=allowed_priority_levels,
+        )
+
+    monkeypatch.setattr(job_create_module, "resolve_quota", _resolve)
+
+
+def test_job_create_refuses_a_priority_the_quota_row_does_not_allow(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The platform would reject this; say why here instead of relaying a 400."""
+    _patch_job_quota_priority(monkeypatch, tmp_path, allowed_priority_levels=("low",))
+
+    result = CliRunner().invoke(
+        cli_main, _job_create_args("--priority", "4", "--dry-run")
+    )
+
+    assert result.exit_code == EXIT_VALIDATION_ERROR
+    assert "LOW-priority only" in result.output
+    assert "--priority 4 is HIGH" in result.output
+    assert "--priority 1" in result.output
+    assert "inspire job quota" in result.output
+    # Blocked before the plan is even printed, let alone submitted.
+    assert "Create plan" not in result.output
+
+
+def test_job_create_accepts_the_priority_the_quota_row_publishes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_job_quota_priority(monkeypatch, tmp_path, allowed_priority_levels=("low",))
+
+    result = CliRunner().invoke(
+        cli_main, _job_create_args("--priority", "1", "--dry-run")
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Create plan" in result.output
+
+
+@pytest.mark.parametrize("levels", [None, ()])
+def test_job_create_is_not_blocked_by_an_unread_or_empty_priority_menu(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    levels: tuple[str, ...] | None,
+) -> None:
+    """One unanswered read must not become an unusable quota."""
+    _patch_job_quota_priority(monkeypatch, tmp_path, allowed_priority_levels=levels)
+
+    result = CliRunner().invoke(
+        cli_main, _job_create_args("--priority", "4", "--dry-run")
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Create plan" in result.output

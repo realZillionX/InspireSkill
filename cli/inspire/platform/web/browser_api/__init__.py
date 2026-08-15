@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .availability import (
+    QUOTA_PRIORITY_SPEC_FIELDS,
     FullFreeNodeCount,
     GPUAvailability,
     MemberUsage,
@@ -11,6 +12,7 @@ from .availability import (
     get_accurate_resource_availability,
     get_accurate_gpu_availability,
     get_full_free_node_counts,
+    get_quota_priority_levels,
     list_compute_groups,
     list_member_usage,
     list_node_specs,
@@ -256,6 +258,7 @@ __all__ = [
     "MetricSample",
     "get_resource_metrics_by_time",
     # Availability
+    "QUOTA_PRIORITY_SPEC_FIELDS",
     "FullFreeNodeCount",
     "GPUAvailability",
     "MemberUsage",
@@ -264,6 +267,7 @@ __all__ = [
     "get_accurate_resource_availability",
     "get_accurate_gpu_availability",
     "get_full_free_node_counts",
+    "get_quota_priority_levels",
     "list_compute_groups",
     "list_member_usage",
     "list_node_specs",

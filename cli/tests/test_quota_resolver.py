@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import pytest
 
+from inspire.cli.utils import quota_resolver as quota_resolver_module
 from inspire.cli.utils.quota_resolver import (
     QuotaCatalogUnavailable,
     QuotaMatchError,
     QuotaParseError,
     QuotaSpec,
     ResolvedQuota,
+    SCHEDULE_TYPE_HPC,
+    SCHEDULE_TYPE_TRAIN,
+    allowed_priority_levels_for,
     build_resource_spec_price,
+    describe_priority_levels,
+    ensure_priority_allowed,
+    load_quota_priority_levels,
     parse_quota,
-    qz_scheduling_zone_hint_for_group_names,
     resolve_quota,
 )
 from inspire.cli.utils.resource_index import (
@@ -797,74 +803,14 @@ def test_resolve_quota_reports_an_unreadable_group_instead_of_guessing() -> None
     assert "not a workspace without quotas" in message
 
 
-@pytest.mark.parametrize("group_name", ["开发区-H100", "训练区-H200"])
-def test_qz_scheduling_zone_hint_detects_each_zone_name(group_name: str) -> None:
-    hint = qz_scheduling_zone_hint_for_group_names([group_name])
+def test_resolve_quota_errors_no_longer_guess_from_compute_group_names() -> None:
+    """Scheduling behaviour is read from the platform, never from a group name.
 
-    assert hint is not None
-    assert "supports both full-node and partial-node GPU workloads" in hint
-    assert "prioritizes full-node workloads" in hint
-    assert "partial-node GPU workloads there require LOW priority" in hint
-    assert "1 in fair-scheduling workspaces, preemptible" in hint
-    assert "per instance/node quota, not aggregate GPU count" in hint
-    assert "same live quota row" in hint
-
-
-def test_qz_scheduling_zone_hint_ignores_unrelated_groups() -> None:
-    assert qz_scheduling_zone_hint_for_group_names(["CPU资源-2"]) is None
-
-
-def test_resolve_quota_qz_exact_group_miss_adds_scheduling_zone_hint() -> None:
-    groups = [
-        _make_group("lcg-dev", "开发区-H100"),
-        _make_group("lcg-train", "训练区-H200"),
-    ]
-
-    with pytest.raises(QuotaMatchError) as exc:
-        resolve_quota(
-            spec=QuotaSpec(4, 55, 900),
-            workspace_id="ws-qz",
-            groups=groups,
-            prices_loader=lambda lcg: [],
-            group_override="训练区",
-        )
-
-    message = str(exc.value)
-    assert "No compute group name exactly matches --group" in message
-    assert "QZ scheduling zones:" in message
-    assert "require LOW priority (1 in fair-scheduling workspaces, preemptible)" in message
-
-
-def test_resolve_quota_qz_group_quota_mismatch_adds_scheduling_zone_hint() -> None:
-    groups = [
-        _make_group("lcg-dev", "开发区-H100"),
-        _make_group("lcg-train", "训练区-H200"),
-    ]
-    prices = {
-        "lcg-dev": [
-            _make_price(quota_id="q-dev", gpu=4, cpu=55, mem=900, gpu_type="H100")
-        ],
-        "lcg-train": [
-            _make_price(quota_id="q-train", gpu=8, cpu=160, mem=1800, gpu_type="H200")
-        ],
-    }
-
-    with pytest.raises(QuotaMatchError) as exc:
-        resolve_quota(
-            spec=QuotaSpec(4, 55, 900),
-            workspace_id="ws-qz",
-            groups=groups,
-            prices_loader=lambda lcg: prices.get(lcg, []),
-            group_override="训练区-H200",
-        )
-
-    message = str(exc.value)
-    assert "matches no quota row" in message
-    assert "QZ scheduling zones:" in message
-    assert "Use --group and --quota from the same live quota row" in message
-
-
-def test_resolve_quota_qz_multi_match_adds_scheduling_zone_hint() -> None:
+    The zone hint these messages used to carry inferred "this quota needs LOW
+    priority" from the characters 训练区 in a compute group name. The platform
+    publishes the same fact per quota row, so the guess is gone and must not
+    come back through an error string.
+    """
     groups = [
         _make_group("lcg-dev", "开发区-H100"),
         _make_group("lcg-train", "训练区-H200"),
@@ -874,13 +820,27 @@ def test_resolve_quota_qz_multi_match_adds_scheduling_zone_hint() -> None:
             _make_price(quota_id="q-dev", gpu=8, cpu=160, mem=1800, gpu_type="H100")
         ],
         "lcg-train": [
-            _make_price(
-                quota_id="q-train", gpu=8, cpu=160, mem=1800, gpu_type="H200"
-            )
+            _make_price(quota_id="q-train", gpu=8, cpu=160, mem=1800, gpu_type="H200")
         ],
     }
 
-    with pytest.raises(QuotaMatchError) as exc:
+    with pytest.raises(QuotaMatchError) as exact_group_miss:
+        resolve_quota(
+            spec=QuotaSpec(4, 55, 900),
+            workspace_id="ws-qz",
+            groups=groups,
+            prices_loader=lambda lcg: [],
+            group_override="训练区",
+        )
+    with pytest.raises(QuotaMatchError) as no_match:
+        resolve_quota(
+            spec=QuotaSpec(4, 55, 900),
+            workspace_id="ws-qz",
+            groups=groups,
+            prices_loader=lambda lcg: prices.get(lcg, []),
+            group_override="训练区-H200",
+        )
+    with pytest.raises(QuotaMatchError) as multi_match:
         resolve_quota(
             spec=QuotaSpec(8, 160, 1800),
             workspace_id="ws-qz",
@@ -888,10 +848,157 @@ def test_resolve_quota_qz_multi_match_adds_scheduling_zone_hint() -> None:
             prices_loader=lambda lcg: prices.get(lcg, []),
         )
 
-    message = str(exc.value)
-    assert "matches multiple quota rows" in message
-    assert "QZ scheduling zones:" in message
-    assert "per instance/node quota, not aggregate GPU count" in message
+    assert "No compute group name exactly matches --group" in str(exact_group_miss.value)
+    assert "matches no quota row" in str(no_match.value)
+    assert "matches multiple quota rows" in str(multi_match.value)
+    for excinfo in (exact_group_miss, no_match, multi_match):
+        assert "QZ scheduling zones" not in str(excinfo.value)
+        assert "LOW priority" not in str(excinfo.value)
+
+
+def _resolve_with_menu(
+    menu: dict[str, tuple[str, ...]] | None,
+    *,
+    schedule_config_type: str = SCHEDULE_TYPE_TRAIN,
+) -> ResolvedQuota:
+    return resolve_quota(
+        spec=QuotaSpec(1, 20, 200),
+        workspace_id="ws-1",
+        schedule_config_type=schedule_config_type,
+        groups=[_make_group("lcg-a", "训练区-H200-1号机房")],
+        prices_loader=lambda lcg: [
+            _make_price(quota_id="q-1", gpu=1, cpu=20, mem=200, gpu_type="H200")
+        ],
+        priority_levels_loader=lambda: menu,
+    )
+
+
+def test_resolve_quota_carries_the_published_priority_restriction() -> None:
+    assert _resolve_with_menu({"q-1": ("low",)}).allowed_priority_levels == ("low",)
+
+
+def test_resolve_quota_reads_an_empty_menu_entry_as_unrestricted() -> None:
+    assert _resolve_with_menu({"q-1": ()}).allowed_priority_levels == ()
+
+
+def test_resolve_quota_reads_an_unreadable_menu_as_unknown() -> None:
+    # `None` is the loader saying the platform did not answer. Rendering that
+    # as `()` would turn one failed request into "no restriction".
+    assert _resolve_with_menu(None).allowed_priority_levels is None
+
+
+def test_resolve_quota_reads_a_spec_missing_from_the_menu_as_unknown() -> None:
+    assert _resolve_with_menu({"q-other": ("low",)}).allowed_priority_levels is None
+
+
+def test_resolve_quota_treats_menuless_workloads_as_unrestricted() -> None:
+    # HPC has no spec menu anywhere in the scheduling record, so there is
+    # nothing that could restrict it -- that is a platform fact, not a failure.
+    resolved = _resolve_with_menu(None, schedule_config_type=SCHEDULE_TYPE_HPC)
+    assert resolved.allowed_priority_levels == ()
+
+
+def test_load_quota_priority_levels_answers_unknown_when_the_platform_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(**_kwargs: object) -> dict[str, tuple[str, ...]]:
+        raise ValueError("API error: RateLimit")
+
+    monkeypatch.setattr(
+        quota_resolver_module.browser_api_module,
+        "get_quota_priority_levels",
+        _boom,
+        raising=False,
+    )
+
+    assert (
+        load_quota_priority_levels(
+            workspace_id="ws-1",
+            session=_cached_group_session(),
+            workload="job",
+        )
+        is None
+    )
+
+
+def test_load_quota_priority_levels_skips_workloads_without_a_menu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _never(**_kwargs: object) -> dict[str, tuple[str, ...]]:
+        raise AssertionError("HPC has no spec menu, so it must not be requested")
+
+    monkeypatch.setattr(
+        quota_resolver_module.browser_api_module,
+        "get_quota_priority_levels",
+        _never,
+        raising=False,
+    )
+
+    assert (
+        load_quota_priority_levels(
+            workspace_id="ws-1",
+            session=_cached_group_session(),
+            workload="hpc",
+        )
+        is None
+    )
+
+
+def test_allowed_priority_levels_for_separates_silence_from_permission() -> None:
+    assert allowed_priority_levels_for({"q-1": ("low",)}, "q-1", workload="job") == ("low",)
+    assert allowed_priority_levels_for({"q-1": ()}, "q-1", workload="job") == ()
+    assert allowed_priority_levels_for(None, "q-1", workload="job") is None
+    assert allowed_priority_levels_for({}, "q-1", workload="job") is None
+    assert allowed_priority_levels_for(None, "q-1", workload="hpc") == ()
+
+
+def test_describe_priority_levels_never_calls_unknown_unrestricted() -> None:
+    assert describe_priority_levels(None) == "unknown"
+    assert describe_priority_levels(()) == "any"
+    assert describe_priority_levels(("low",)) == "low"
+    assert describe_priority_levels(("high", "low")) == "high/low"
+
+
+def _quota_with_levels(levels: tuple[str, ...] | None) -> ResolvedQuota:
+    return ResolvedQuota(
+        quota_id="q-1",
+        logic_compute_group_id="lcg-a",
+        compute_group_name="训练区-H200-1号机房",
+        gpu_count=1,
+        cpu_count=20,
+        memory_gib=200,
+        gpu_type="H200",
+        raw_price={},
+        allowed_priority_levels=levels,
+    )
+
+
+def test_ensure_priority_allowed_blocks_a_create_the_platform_would_reject() -> None:
+    with pytest.raises(QuotaMatchError) as excinfo:
+        ensure_priority_allowed(
+            _quota_with_levels(("low",)), 4, quota_command="inspire job quota"
+        )
+
+    message = str(excinfo.value)
+    assert "1,20,200" in message
+    assert "LOW-priority only" in message
+    assert "--priority 4 is HIGH" in message
+    assert "--priority 1" in message
+    assert "inspire job quota" in message
+
+
+def test_ensure_priority_allowed_accepts_the_published_level() -> None:
+    ensure_priority_allowed(_quota_with_levels(("low",)), 1)
+
+
+@pytest.mark.parametrize("levels", [None, (), ("emergency",)])
+def test_ensure_priority_allowed_never_blocks_on_silence_or_novelty(
+    levels: tuple[str, ...] | None,
+) -> None:
+    # Unknown, unrestricted, and a vocabulary this CLI has never seen all pass:
+    # a create must not fail because one read failed or the platform grew a
+    # level we cannot interpret.
+    ensure_priority_allowed(_quota_with_levels(levels), 4)
 
 
 def test_build_resource_spec_price_shape() -> None:

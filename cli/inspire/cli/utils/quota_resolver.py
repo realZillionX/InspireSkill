@@ -17,8 +17,8 @@ filters upstream, but this resolver is used by create/profile paths.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Optional
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from inspire.cli.utils.id_resolver import is_full_uuid, is_stale_handle_error
 from inspire.cli.utils.quota_cache import (
@@ -36,7 +36,9 @@ from inspire.cli.utils.resource_index import (
     scope_for_session,
 )
 from inspire.platform.web import browser_api as browser_api_module
+from inspire.platform.web.browser_api.availability import QUOTA_PRIORITY_SPEC_FIELDS
 from inspire.platform.web.session import WebSession, is_transient_api_error
+from inspire.task_priority import is_low_task_priority
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +80,14 @@ class QuotaSpec:
 
 @dataclass(frozen=True)
 class ResolvedQuota:
-    """A matched quota row keyed to its platform handles."""
+    """A matched quota row keyed to its platform handles.
+
+    ``allowed_priority_levels`` carries the workspace's own statement about
+    which task priorities this row may run at, and its three states are all
+    different answers: ``()`` is "the platform declared no restriction",
+    ``("low",)`` is "low priority only", and ``None`` is "the CLI could not
+    read the menu" — never a licence to assume the first.
+    """
 
     quota_id: str
     logic_compute_group_id: str
@@ -88,6 +97,7 @@ class ResolvedQuota:
     memory_gib: int
     gpu_type: str
     raw_price: dict
+    allowed_priority_levels: tuple[str, ...] | None = None
 
 
 def parse_quota(text: str) -> QuotaSpec:
@@ -148,22 +158,120 @@ def _group_name(group: dict, fallback: str = "") -> str:
 
 PricesLoader = Callable[[str], list[dict]]
 GroupsLoader = Callable[[], list[dict]]
+PriorityLevelsLoader = Callable[[], Optional[dict[str, tuple[str, ...]]]]
 
-QZ_SCHEDULING_ZONE_HINT = (
-    "QZ scheduling zones: 开发区 supports both full-node and partial-node GPU "
-    "workloads; 训练区 prioritizes full-node workloads, and partial-node GPU "
-    "workloads there require LOW priority (1 in fair-scheduling workspaces, preemptible). "
-    "Zone semantics "
-    "apply per instance/node quota, not aggregate GPU count. Use --group and "
-    "--quota from the same live quota row."
-)
+# The platform's priority vocabulary, as it spells it in
+# `allowed_priority_levels`. A level outside this set is one this CLI has never
+# seen and therefore cannot enforce.
+PRIORITY_LEVEL_LOW = "low"
+PRIORITY_LEVEL_HIGH = "high"
+KNOWN_PRIORITY_LEVELS = frozenset({PRIORITY_LEVEL_LOW, PRIORITY_LEVEL_HIGH})
+
+PRIORITY_LEVELS_UNKNOWN_DISPLAY = "unknown"
+PRIORITY_LEVELS_ANY_DISPLAY = "any"
 
 
-def qz_scheduling_zone_hint_for_group_names(group_names: Iterable[object]) -> str | None:
-    names = [str(name or "") for name in group_names]
-    if any(("开发区" in name or "训练区" in name) for name in names):
-        return QZ_SCHEDULING_ZONE_HINT
-    return None
+def workload_publishes_priority_levels(workload: str) -> bool:
+    """Whether the platform publishes a per-spec priority menu for *workload*."""
+    return str(workload or "").strip() in QUOTA_PRIORITY_SPEC_FIELDS
+
+
+def load_quota_priority_levels(
+    *,
+    workspace_id: str,
+    session: Optional[WebSession],
+    workload: str,
+) -> dict[str, tuple[str, ...]] | None:
+    """Read one workspace's ``quota_id -> allowed levels`` menu for *workload*.
+
+    ``None`` means the platform did not answer. That is not the same as "no
+    restriction" and must never be rendered as one: a workspace that refuses
+    HIGH on a spec looks exactly like one that allows everything, once the read
+    has failed. It is also not a reason to block a create — a single unanswered
+    request would then read as a quota that cannot be used at all — so the
+    failure is swallowed here and carried as unknown.
+    """
+    spec_field = QUOTA_PRIORITY_SPEC_FIELDS.get(str(workload or "").strip(), "")
+    if not spec_field or session is None:
+        return None
+    try:
+        return browser_api_module.get_quota_priority_levels(
+            workspace_id=workspace_id,
+            spec_field=spec_field,
+            session=session,
+        )
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:  # noqa: BLE001 - an unread menu is unknown, not a failure
+        logger.debug("Quota priority menu unavailable", exc_info=True)
+        return None
+
+
+def allowed_priority_levels_for(
+    levels_by_quota_id: Mapping[str, tuple[str, ...]] | None,
+    quota_id: str,
+    *,
+    workload: str,
+) -> tuple[str, ...] | None:
+    """Return one quota row's levels: ``()`` unrestricted, ``None`` unknown."""
+    if not workload_publishes_priority_levels(workload):
+        # This workload has no spec menu anywhere in the platform's scheduling
+        # record, so there is nothing here that could restrict a priority.
+        return ()
+    if levels_by_quota_id is None:
+        return None
+    # A spec that is not in the menu is one the workspace said nothing about,
+    # and silence is not permission: only a row of the menu is evidence.
+    return levels_by_quota_id.get(str(quota_id or "").strip())
+
+
+def describe_priority_levels(levels: Sequence[str] | None) -> str:
+    """Render a quota row's priority menu for a table cell."""
+    if levels is None:
+        return PRIORITY_LEVELS_UNKNOWN_DISPLAY
+    if not levels:
+        return PRIORITY_LEVELS_ANY_DISPLAY
+    return "/".join(levels)
+
+
+def priority_level_name(priority: int) -> str:
+    """Name the level a numeric task priority falls into."""
+    return PRIORITY_LEVEL_LOW if is_low_task_priority(priority) else PRIORITY_LEVEL_HIGH
+
+
+def ensure_priority_allowed(
+    quota: ResolvedQuota,
+    priority: object,
+    *,
+    quota_command: str = "the workload's `quota` command",
+) -> None:
+    """Refuse a create the workspace's own spec menu says it will reject.
+
+    Silence never blocks: an unknown menu (``None``) and an unrestricted one
+    (``()``) both pass, because turning one unanswered request into a refused
+    create would make a platform hiccup indistinguishable from a quota the user
+    may not have.
+    """
+    levels = quota.allowed_priority_levels
+    if not levels:
+        return
+    if isinstance(priority, bool) or not isinstance(priority, int):
+        return
+    if any(level not in KNOWN_PRIORITY_LEVELS for level in levels):
+        # An unrecognised vocabulary is not something to enforce blindly.
+        return
+    if priority_level_name(priority) in levels:
+        return
+    allowed_text = "/".join(level.upper() for level in levels)
+    raise QuotaMatchError(
+        f"Quota {quota.gpu_count},{quota.cpu_count},{quota.memory_gib} in compute group "
+        f"{quota.compute_group_name!r} is published as {allowed_text}-priority only, and "
+        f"--priority {priority} is {priority_level_name(priority).upper()}. The platform "
+        "would reject this create. Either pass --priority 1 (LOW, preemptible in "
+        "fair-scheduling workspaces), or pick a quota row whose Priority column reads "
+        f"'{PRIORITY_LEVELS_ANY_DISPLAY}' -- the restriction is per quota row, so a larger "
+        f"row in the same compute group is often unrestricted. See `{quota_command}`."
+    )
 
 
 def validate_compute_group_name(value: str) -> str:
@@ -415,13 +523,14 @@ def resolve_quota(
     groups: Optional[Iterable[dict]] = None,
     groups_loader: Optional[GroupsLoader] = None,
     prices_loader: Optional[PricesLoader] = None,
+    priority_levels_loader: Optional[PriorityLevelsLoader] = None,
     cache_index: ResourceIndex | None = None,
 ) -> ResolvedQuota:
     """Resolve ``spec`` to a unique ``ResolvedQuota`` in ``workspace_id``.
 
-    ``groups`` / ``groups_loader`` / ``prices_loader`` let callers inject
-    data (used in tests and to share one prefetched group list between
-    multiple calls).
+    ``groups`` / ``groups_loader`` / ``prices_loader`` /
+    ``priority_levels_loader`` let callers inject data (used in tests and to
+    share one prefetched group list between multiple calls).
     """
     target = (
         validate_compute_group_name(group_override)
@@ -515,13 +624,11 @@ def resolve_quota(
                 _group_name(g) for g in group_list if _group_name(g)
             })
             hint = ", ".join(available) if available else "(none)"
-            qz_hint = qz_scheduling_zone_hint_for_group_names([group_override, *available])
             raise QuotaMatchError(
                 f"No compute group name exactly matches --group {group_override!r}. "
                 "Create/profile --group requires the full compute group name. "
                 "Use a quota query --group <keyword> only to find the exact name. "
                 f"Available: {hint}"
-                + (f"\n{qz_hint}" if qz_hint else "")
             )
         group_list = filtered
 
@@ -628,13 +735,9 @@ def resolve_quota(
         )
 
     if not matches:
-        qz_hint = qz_scheduling_zone_hint_for_group_names(
-            _group_name(group) for group in group_list
-        )
         raise QuotaMatchError(
             f"--quota {spec.display()} matches no quota row in the selected workspace."
-            f"\nAvailable:\n{_format_row_catalog(all_rows)}"
-            + (f"\n{qz_hint}" if qz_hint else "")
+            f"\nAvailable:\n{_format_row_catalog(all_rows, group_override=group_override)}"
         )
 
     if len(matches) > 1:
@@ -642,23 +745,49 @@ def resolve_quota(
             f"  {m.compute_group_name}  (gpu_type={m.gpu_type or 'CPU'})"
             for m in matches
         ]
-        qz_hint = qz_scheduling_zone_hint_for_group_names(
-            m.compute_group_name for m in matches
-        )
         raise QuotaMatchError(
             f"--quota {spec.display()} matches multiple quota rows in the selected workspace; "
             "pass --group <full compute group name> to disambiguate. "
             "Use a quota query --group <keyword> only to find the exact name:\n"
             + "\n".join(lines)
-            + (f"\n{qz_hint}" if qz_hint else "")
         )
 
-    return matches[0]
+    match = matches[0]
+    # Only a unique match is worth a request: the ambiguous and empty cases are
+    # already an error, and this read is one extra round trip per create.
+    workload = workload_for_schedule_type(schedule_config_type)
+    if priority_levels_loader is not None:
+        levels_by_quota_id = priority_levels_loader()
+    else:
+        levels_by_quota_id = load_quota_priority_levels(
+            workspace_id=workspace_id,
+            session=session,
+            workload=workload,
+        )
+    return replace(
+        match,
+        allowed_priority_levels=allowed_priority_levels_for(
+            levels_by_quota_id,
+            match.quota_id,
+            workload=workload,
+        ),
+    )
 
 
-def _format_row_catalog(rows: list[tuple[dict, dict]]) -> str:
+def _format_row_catalog(
+    rows: list[tuple[dict, dict]],
+    *,
+    group_override: Optional[str] = None,
+) -> str:
     if not rows:
-        return "  (workspace has no quotas)"
+        # The row set was already narrowed to `--group` by the time we get
+        # here, so "the workspace has no quotas" would blame the wrong scope
+        # and send the reader looking for a problem that is not there.
+        if group_override:
+            return (
+                f"  (compute group {group_override!r} has no quota rows for this workload)"
+            )
+        return "  (no quota rows in this workspace for this workload)"
     lines: list[str] = []
     for group, price in rows:
         gpu_count = int(price.get("gpu_count") or 0)
@@ -707,19 +836,29 @@ def build_resource_spec_price(*, quota: ResolvedQuota) -> dict[str, Any]:
 
 
 __all__ = [
+    "KNOWN_PRIORITY_LEVELS",
+    "PRIORITY_LEVELS_ANY_DISPLAY",
+    "PRIORITY_LEVELS_UNKNOWN_DISPLAY",
+    "PRIORITY_LEVEL_HIGH",
+    "PRIORITY_LEVEL_LOW",
     "QuotaCatalogUnavailable",
     "QuotaMatchError",
     "QuotaParseError",
     "QuotaSpec",
-    "QZ_SCHEDULING_ZONE_HINT",
     "ResolvedQuota",
     "SCHEDULE_TYPE_DSW",
     "SCHEDULE_TYPE_HPC",
     "SCHEDULE_TYPE_RAY",
     "SCHEDULE_TYPE_TRAIN",
+    "SCHEDULE_TYPE_SERVING",
+    "allowed_priority_levels_for",
     "build_resource_spec_price",
+    "describe_priority_levels",
+    "ensure_priority_allowed",
+    "load_quota_priority_levels",
     "parse_quota",
-    "qz_scheduling_zone_hint_for_group_names",
+    "priority_level_name",
     "resolve_quota",
     "validate_compute_group_name",
+    "workload_publishes_priority_levels",
 ]

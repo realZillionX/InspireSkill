@@ -35,6 +35,7 @@ from inspire.cli.utils.quota_resolver import (
     QuotaMatchError,
     QuotaParseError,
     SCHEDULE_TYPE_TRAIN,
+    ensure_priority_allowed,
     parse_quota,
     resolve_quota,
 )
@@ -203,6 +204,13 @@ def run_job_create(
             fair_scheduling=fair_scheduling,
             project_limit=selected.priority_name,
         )
+        try:
+            ensure_priority_allowed(
+                resolved_quota, priority, quota_command="inspire job quota"
+            )
+        except QuotaMatchError as err:
+            _handle_error(ctx, "ValidationError", str(err), EXIT_VALIDATION_ERROR)
+            return
 
         # The platform resolves and checks every mount before the job is
         # submitted, exactly as the console's 校验数据 button does.

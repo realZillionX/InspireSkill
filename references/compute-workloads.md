@@ -47,7 +47,7 @@ Job 的关键边界：
 
 优先级是 Workspace 能力限定的调度信号。qz 公平调度 Workspace 只接受 `1=LOW`（可抢占）或 `4=HIGH`（稳定且可抢占 LOW），默认 4；其他 Workspace 保留 `1–10`，默认 10。CLI 按当前 Workspace 的公平调度标记自动选择优先级合同，项目策略仍可能降低最终优先级。任务需要稳定训练但显示 LOW 时，先 stop，再按当前 Workspace 和项目策略重提。
 
-qz 当前公平调度训练区的碎卡任务是明确例外：它只能以 `1=LOW`（可抢占）提交；需要稳定优先级的碎卡任务时改选开发区中真实存在的 Live Quota Row。整节点 / 碎卡按每个 Job Instance 的 Quota 判断，不按 `quota.gpu × --nodes` 的总卡数判断；例如 2 个 4 GPU Instance 仍是碎卡请求。训练区碎卡提交后用 Status / Events 核实解析后的优先级和调度结果。
+平台还会逐行限制 Quota 能用的优先级，`job quota` 的 `Priority` 列显示这条声明：`low` 的行只接受 `--priority 1`（可抢占），`any` 不受这层限制，`unknown` 表示这次没读到。`job create` 在发出创建请求前按这一列预检并说明改法，细节见 [`resources.md`](resources.md)。限制按每个 Job Instance 的 Quota 判断，不按 `quota.gpu × --nodes` 的总卡数判断；例如 2 个 4 GPU Instance 仍是两个碎卡实例。提交后用 Status / Events 核实解析后的优先级和调度结果。
 
 ## 4. HPC
 
