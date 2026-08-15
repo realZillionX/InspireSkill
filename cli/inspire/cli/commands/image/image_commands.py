@@ -649,7 +649,13 @@ def set_image_visibility_cmd(
     pick: Optional[int],
     visibility: str,
 ) -> None:
-    """Set a custom image's visibility."""
+    """Set a custom image's visibility: private, project, or public.
+
+    Going public is one-way. The platform stops treating the creator as the
+    owner of a public image, so it can no longer be made private again nor
+    deleted — only a platform administrator can remove it. Widen the audience
+    only once the image is worth keeping.
+    """
     name = reject_id_at_boundary(
         ctx,
         name,
@@ -776,12 +782,30 @@ def delete_image_cmd(
 
     try:
         browser_api_module.delete_image(image_id=image_id, session=session)
-    except Exception:
+    except Exception as e:
+        # "AccessForbidden" is the one-way door, not a transient failure: once
+        # an image is public the platform stops treating its creator as its
+        # owner, so it can be neither deleted nor made private again. Saying
+        # so beats a retry loop against a permission that will never appear.
+        # The exception text itself stays out of the message — it carries the
+        # request payload.
+        forbidden = "AccessForbidden" in str(e)
         _handle_error(
             ctx,
             "APIError",
-            "Could not delete image.",
+            (
+                "Cannot delete a public image."
+                if forbidden
+                else "Could not delete image."
+            ),
             EXIT_API_ERROR,
+            hint=(
+                "Its creator loses ownership once it is public: it can be "
+                "neither deleted nor made private again. Ask a platform "
+                "administrator to remove it."
+                if forbidden
+                else None
+            ),
         )
         return
 

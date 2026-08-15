@@ -388,3 +388,41 @@ def test_notebook_status_reports_auto_stop_countdown_and_priority() -> None:
     assert view["auto_stop_in_seconds"] == "14331"
     assert view["priority"] == "10"
     assert view["priority_level"] == "HIGH"
+
+
+def test_public_image_delete_refusal_names_the_one_way_door(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A public image cannot be deleted or un-published by its creator.
+
+    The platform answers `AccessForbidden: 您没有权限删除该镜像。`, which read
+    as a transient permission glitch behind the old generic message.
+    """
+    from inspire.cli.commands.image import image_commands
+    from inspire.cli.main import main as cli_main
+
+    monkeypatch.setattr(
+        image_commands, "require_web_session", lambda ctx, hint=None: object()
+    )
+    monkeypatch.setattr(
+        image_commands, "_resolve_registry_scope", lambda ctx, **kwargs: "ws-1"
+    )
+    monkeypatch.setattr(
+        image_commands, "_resolve_image_name", lambda ctx, name, **kwargs: "img-1"
+    )
+
+    def refuse(**_kwargs: object) -> None:
+        raise RuntimeError("API error: AccessForbidden: 您没有权限删除该镜像。")
+
+    monkeypatch.setattr(image_commands.browser_api_module, "delete_image", refuse)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["image", "delete", "shared:v1", "--workspace", "CPU资源空间", "--yes"],
+    )
+
+    assert result.exit_code != 0
+    assert "Cannot delete a public image." in result.output
+    assert "neither deleted nor made private again" in result.output
+    # The platform's raw refusal carries the request payload.
+    assert "AccessForbidden" not in result.output

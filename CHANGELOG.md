@@ -114,6 +114,8 @@
 
 - **`image list --source` 少了一整类：网页镜像选择器有四个页签，CLI 只有三个。** 「项目可见镜像」（`VISIBILITY_PROJECT`）在 CLI 里既列不出来也设不了，`--source all` 也扫不到——`CPU资源空间` 里有 2 个这样的镜像，此前按名字根本解析不到。`--source` 增加 `project`，`image set-visibility` 和 `notebook save-image --visibility` 同步增加 `project` 一档。
 
+- **公开镜像删不掉，而 `image delete` 只说「Could not delete image.」。** 平台在镜像转 public 之后就不再把创建者当属主：`AccessForbidden: 您没有权限删除该镜像。`——既删不掉也改不回 private，只有平台管理员能清理。旧消息读起来像一次可以重试的失败。现在报出这是单向操作，`set-visibility` 的 help 和 [`references/image.md`](references/image.md) 也写清楚了这一点：放开可见性之前先确认这个镜像值得长期留着。
+
 - **`job logs` 会打乱同一毫秒内的输出。** 平台的 `time` 是纳秒精度，`timestamp_ms` 是四舍五入到毫秒的；排序用的是后者，于是一次 `nvidia-smi --format=csv` 的表头和数据行并列成同一个键，日志存储怎么给就怎么印——实测数据行印在了表头前面，`ls` 的三行也被打散。现在按 `time` 的亚毫秒部分排序。
 
 - **`job quota` / `notebook quota` 把 Compute Group 一列截断到 28 列，而 `--group` 恰恰只认逐字相同的全名。** `分布式训练空间` 里 `开发区-H100-cuda12.8版本-119核` 和 `...-183核` 只差后缀，两条的 quota 三元组还不一样（`1,10,200` 对 `1,20,200`），在表里全都显示成 `开发区-H100-cuda12.8版本-...`，等于这张表印出来的值没一个能直接拿去用。该列改为按内容自适应宽度。
