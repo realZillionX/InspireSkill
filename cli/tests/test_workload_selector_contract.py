@@ -20,9 +20,9 @@ from inspire.config import ConfigError
 notebook_cli_module = importlib.import_module("inspire.cli.utils.notebook_cli")
 
 
-# Fanout is for finding a named object, or a free slot, when you do not yet
-# know which workspace holds it. Every one of these emits one row (or one
-# block) per workspace, so concatenating them is honest.
+# `all` survives only where the question is "which workspace holds the thing
+# I am naming" — you cannot pass a workspace you do not yet know. Everything
+# here is a search over objects you own, not a reading of a workspace fact.
 _COLLECTION_PATHS = (
     ("job", "list"),
     ("notebook", "list"),
@@ -30,24 +30,24 @@ _COLLECTION_PATHS = (
     ("ray", "list"),
     ("serving", "list"),
     ("model", "list"),
-    ("serving", "configs"),
     ("account", "permissions"),
+)
+
+# Facts that are declared per workspace: the compute-group availability, the
+# free-node count, the quota catalog, the serving config surface, the reclaim
+# policy, who holds the cards. Every decision they feed is per workspace too,
+# so each takes exactly one name.
+_SINGLE_WORKSPACE_RESOURCE_PATHS = (
+    ("resources", "availability"),
+    ("resources", "nodes"),
+    ("resources", "policy"),
+    ("resources", "usage"),
+    ("serving", "configs"),
     ("job", "quota"),
     ("notebook", "quota"),
     ("hpc", "quota"),
     ("ray", "quota"),
     ("serving", "quota"),
-)
-
-# `resources` reads facts that are per workspace by definition — the quota
-# ceiling, the group availability, the reclaim policy, who holds the cards.
-# Every decision they feed is per workspace too, so they take one name.
-_SINGLE_WORKSPACE_RESOURCE_PATHS = (
-    ("resources", "availability"),
-    ("resources", "nodes"),
-    ("resources", "quota"),
-    ("resources", "policy"),
-    ("resources", "usage"),
 )
 
 # A project is global. It is not scoped to a workspace, so no project command

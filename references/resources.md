@@ -34,15 +34,15 @@
 3. 用实时 Availability 判断空余；多节点 GPU 任务再看整节点空闲。
 4. 创建命令里的 `--group` 使用完整 Compute Group 名称；查询命令里的 Group Filter 可以用关键词收窄候选。
 
-`resources availability`、`resources nodes`、`resources quota` 和各 Workload 的 `quota` 是资源事实入口；具体参数和输出以 CLI Help 为准。
+`resources availability`、`resources nodes` 和各 Workload 的 `quota` 是资源事实入口；具体参数和输出以 CLI Help 为准。
 
-`<workload> quota` 和 `resources quota` 回答的不是同一个问题：前者是「有哪些合法的 `gpu,cpu,mem` 档位」，后者是「这个 Workspace 还允许占多少、集群还剩多少」。两者都会拒绝任务，失败形态不同——配额用尽停在 `QUOTA_PENDING`，集群占满停在 `PENDING` 并伴随 `FailedScheduling` 事件。大规模提交前两个都看。用户级和项目级配额需要 Workspace 管理员权限，普通成员读不到。
+`<workload> quota` 回答「有哪些合法的 `gpu,cpu,mem` 档位」，`resources availability` 回答「这些档位现在还有没有空」。**Workspace 的配额天花板不是一个需要规划的约束**：实测 10 个可见 Workspace，GPU 上限要么是 `unlimited`，要么是整个集群容量的两倍（分布式训练空间 10000/20000 对 5589 张卡），要么是 0（那是「这个空间根本没有你的份」，不是配给）；CPU 和内存则处处 `unlimited`。所以先耗尽的永远是硬件，`QUOTA_PENDING` 不会因为这个天花板发生，CLI 也不提供读它的命令。用户级和项目级配额另有一套，需要 Workspace 管理员权限，普通成员读不到。
 
 `Available` 是平台上当前未被占用的 GPU，`Low Pri` 是低优任务占用、可被高优任务抢占的 GPU，`High Pri` 是 `Available + Low Pri`。判断高优任务时不要只看 `Available`，但 `High Pri` 也只是可抢占容量上限；提交后仍以 Events 为准。
 
 余量不够时用 `resources usage` 看余量去了哪儿：它按用户、项目或任务列出存活工作负载持有的算力，以及其中有多少真的在忙（`GPU Busy`）。一大片 GPU 配一个很低的 `GPU Busy` 是资源停着而不是在用，这正是值得去要一下的情况；`--mine` 只看自己的占用，是一次预聚合请求，比扫全 Workspace 便宜。
 
-**`resources` 的每条命令都只接受一个 Workspace，不接受 `all`。** 配额上限、计算组余量、回收策略和当前占用全部是按 Workspace 定义的事实，它们服务的决定——等、去要、换个地方提交、按什么规格提交——也全部是按 Workspace 做的。跨空间扫一遍不会多回答一个问题，只会把逐空间的行拼在一起再按输出预算截断，让「前 N 名」变成「最先枚举到的那个空间的前 N 名」。要在多个 Workspace 之间比较，就逐个跑，各自读各自的事实。
+**`resources` 的每条命令、`<workload> quota` 和 `serving configs` 都只接受一个 Workspace，不接受 `all`。** 配额上限、计算组余量、回收策略和当前占用全部是按 Workspace 定义的事实，它们服务的决定——等、去要、换个地方提交、按什么规格提交——也全部是按 Workspace 做的。跨空间扫一遍不会多回答一个问题，只会把逐空间的行拼在一起再按输出预算截断，让「前 N 名」变成「最先枚举到的那个空间的前 N 名」。要在多个 Workspace 之间比较，就逐个跑，各自读各自的事实。CLI 里还接受 `--workspace all` 的只剩「按名字找东西」那一类：`<workload> list` 和 `account permissions`——不知道东西在哪个空间时，本来就没法先给出空间名。
 
 CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解析；普通 `list`、`status`、`events`、`metrics` 和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。怀疑缓存过期时用 `inspire cache status|refresh|clear` 管理；清空缓存不会删除任何平台资源。三条命令都支持 `--resource <kind>` 只针对一类，可重复，不带才是全部。kind 分四组：平台目录 `workspace` / `project` / `compute-group` / `image` / `model`，Workload `notebook` / `job` / `hpc` / `ray` / `serving`，Quota 目录 `quota-<workload>`，以及 Notebook 显卡型号那层 `notebook-gpu`。最后这个只能 `status` 和 `clear`，不能 `refresh`——它是用到才探一个组，没有可以整批拉的列表接口。
 

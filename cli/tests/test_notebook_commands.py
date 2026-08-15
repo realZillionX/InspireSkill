@@ -2669,11 +2669,11 @@ def test_notebook_workspace_metavars_are_name_oriented() -> None:
         path
         for path, metavar in metavars.items()
         if metavar == "NAME|all"
-    } == {"list", "quota"}
+    } == {"list"}
     assert all(
         metavar == "NAME"
         for path, metavar in metavars.items()
-        if path not in {"list", "quota"}
+        if path != "list"
     )
 
 

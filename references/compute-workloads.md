@@ -25,7 +25,7 @@
 
 Job 和 HPC 可以在创建时用 `--dataset <数据集名>:<版本名>` 只读挂载数据广场的官方数据集，语义见 [`dataset.md`](dataset.md)；Ray 和 Serving 不支持，需要数据时走共享盘。三类 Workload 都能把项目公共目录降级为只读，用于防止批量任务误写共享结果，默认不开启。
 
-提交前想知道「这个规模到底放不放得下」，用 `resources quota` 分开看两件事：Quota 余量是 Workspace 还允许占多少，集群余量是硬件还剩多少。两者都会拒绝任务，但失败形态不同——配额用尽停在 `QUOTA_PENDING`，集群占满停在 `PENDING` 并伴随 `FailedScheduling` 事件。
+提交前想知道「这个规模到底放不放得下」，看 `resources availability`：它按计算组给出空余卡数和整节点空闲数，而任务正是提交到某个计算组的。集群占满时任务停在 `PENDING` 并伴随 `FailedScheduling` 事件。Workspace 的配额天花板不用planning——它要么无限，要么是集群容量的两倍，详见 [`resources.md`](resources.md)。
 
 离线 GPU 空间不要在启动命令里做公网下载。公网内容提前准备；内部源依赖可在目标 Notebook 验证后保存镜像。
 
@@ -99,7 +99,7 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 当前 Custom Serving 生命周期是：`serving configs` / `serving quota` 选配置，`serving create` 或 `serving batch` 创建，`serving list/status/events/instances/metrics` 观察，`serving stop` / `serving start` 控制，最后 `serving delete` 清理。重复调度条件用 `serving profile`。
 
-副本数用 `serving scale` 调整，其余配置原样保留；每个副本各占一份完整规格，扩容前先看 `resources quota`。历史配置用 `serving versions` 列出，`serving rollback --version` 按某个历史版本重新部署——副本会被替换，在途请求和重启一样会断。
+副本数用 `serving scale` 调整，其余配置原样保留；每个副本各占一份完整规格，扩容前先看 `resources availability`。历史配置用 `serving versions` 列出，`serving rollback --version` 按某个历史版本重新部署——副本会被替换，在途请求和重启一样会断。
 
 两套指标不要混：`serving metrics` 看 GPU / CPU / 内存这类资源占用，`serving api-metrics` 看请求量、成功率和延迟。「没人调用」和「一直调用一直失败」只有后者分得清。
 

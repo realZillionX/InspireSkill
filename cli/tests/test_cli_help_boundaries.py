@@ -144,7 +144,6 @@ def test_query_commands_require_explicit_workspace() -> None:
         ["notebook", "list"],
         ["serving", "list"],
         ["model", "list"],
-        ["serving", "configs"],
         ["account", "permissions"],
     ),
 )
@@ -168,7 +167,6 @@ def test_workspace_collection_commands_share_query_contract(path: list[str]) -> 
         ["notebook", "list"],
         ["serving", "list"],
         ["model", "list"],
-        ["serving", "configs"],
         ["account", "permissions"],
     ),
 )

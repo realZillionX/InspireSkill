@@ -78,9 +78,11 @@
 
 ### 破坏性变更
 
+- **移除 `inspire resources quota`。** 它要解释的 `QUOTA_PENDING` 在这个平台上不会因为 Workspace 天花板发生：10 个可见 Workspace 逐个实测，GPU 上限要么是 `unlimited`（4 个），要么是整个集群容量的两倍（分布式训练空间 10000/20000 对 5589 张卡、CI-情境智能 4236/8472 对 1536、可上网GPU资源 2894/5788 对 1438），要么是 0（CI-PPU、专属资源开发空间——那是「这个空间根本没有你的份」，不是配给）；CPU 和内存则处处 `unlimited`。也就是说 `Quota Free` 这一列——整条命令存在的理由——永远要么是 `-`，要么是一个比整个集群还大的数，**先耗尽的永远是硬件**。剩下那列 `Cluster Used/Total` 是 Workspace 级汇总，而任务是提交到某个计算组的，`resources availability` 给的按组余量严格更可用。随之删除 `browser_api.workspaces` 里的 `WorkspaceQuotaUsage` / `get_workspace_quota_usage` / `UNLIMITED_QUOTA`；`GetWorkspaceQuota` 与 `GetWorkspaceComputeResource` 两个 Action 就此没有 CLI 消费者。
+
 - **`inspire project` 整组不再接受 `--workspace`。** 项目根本不按 Workspace 划分：`ListProjects` 不带 `workspace_id` 就是全局目录，`GetProjectDetail` 只认项目自己的 id，那个 `--workspace` 是个过滤器却被写成了 `required=True`。实测这个账号全局 4 个项目，扇出 10 个 Workspace 拿回来的还是同样 4 个——扇出唯一多产出的是一列 `Workspace`，而它是靠「逐空间查一遍看谁答得出来」反推的（全局调用里 `space_list` 是空的），10 个请求换一列截断到看不清的文字。现在 `project list` 一次调用给出全部项目，`Workspace` 列随扇出一起删除；`project detail <名字>` 直接寻址，名称候选也从全局目录取——按 Workspace 收窄只会把一个在别处可见的项目报成「找不到」。
 
-- **`inspire resources` 整组不再接受 `--workspace all`**，五条命令（`availability` / `nodes` / `quota` / `policy` / `usage`）一律要一个 Workspace 名字。配额上限、计算组余量、回收策略和当前占用都是按 Workspace 定义的事实，它们服务的决定也都是按 Workspace 做的；扇出不会多回答一个问题，只会把逐空间的行拼起来再按输出预算截断，把「前 N 名」悄悄变成「最先枚举到的那个空间的前 N 名」。随之删掉的还有只为扇出存在的 `Workspace` 列、`show_workspace` 分支，以及 `get_accurate_resource_availability` 里的 `all_workspaces` 参数和它的多空间目标解析。
+- **`--workspace all` 收敛到「按名字找东西」这一类。** 还接受扇出的只剩 `<workload> list`（`job` / `notebook` / `hpc` / `ray` / `serving` / `model`）和 `account permissions`——不知道东西在哪个 Workspace 时，本来就没法先给出空间名。`resources availability` / `resources nodes` / `resources policy` / `resources usage`、`<workload> quota`、`serving configs` 一律改为要一个 Workspace 名字：档位目录、计算组余量、回收策略、部署配置面和当前占用都是按 Workspace 定义的事实，扇出不会多回答一个问题，只会把逐空间的行拼起来再按输出预算截断，把「前 N 名」悄悄变成「最先枚举到的那个空间的前 N 名」。随之删掉的还有只为扇出存在的 `Workspace` 列与 `show_workspace` 分支，以及 `get_accurate_resource_availability` 的 `all_workspaces` 参数和它的多空间目标解析。
 
   **跨 Workspace 的扇出保留在它真正有意义的地方**：`<workload> list`（不知道东西在哪个空间时按名字找）、`<workload> quota`、`serving configs`、`account permissions`、`cache refresh`。分界线是拼接诚不诚实——这些命令逐空间给一行或一段，`Workspace` 列能分辨归属；`resources` 给的是本来就该逐个读的单空间事实。
 

@@ -1,10 +1,9 @@
-"""Workspace enumeration and quota queries via browser API endpoints."""
+"""Workspace enumeration and scheduling-capability queries via browser API."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from inspire.platform.web.session.models import DEFAULT_WORKSPACE_ID, WebSession
 
@@ -133,128 +132,9 @@ def is_fair_scheduling_workspace(session: WebSession, workspace_id: str) -> bool
 
 
 # `-1` is how the platform spells "no ceiling" in every quota field.
-UNLIMITED_QUOTA = -1
-
-
-@dataclass(frozen=True)
-class WorkspaceQuotaUsage:
-    """One resource's quota ceiling and current draw in a workspace.
-
-    ``limit`` is ``UNLIMITED_QUOTA`` (-1) when the platform sets no ceiling,
-    and ``capacity`` is what the workspace physically has. The two answer
-    different questions: a submit can be refused because the quota is spent
-    even while nodes sit idle, and it can be refused because the nodes are
-    busy even while quota remains.
-    """
-
-    resource: str
-    limit: float
-    used: float
-    capacity: Optional[float] = None
-    capacity_used: Optional[float] = None
-
-    @property
-    def unlimited(self) -> bool:
-        return self.limit == UNLIMITED_QUOTA
-
-    @property
-    def available(self) -> Optional[float]:
-        if self.unlimited:
-            return None
-        return self.limit - self.used
-
-
-def _number(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _optional_number(payload: dict[str, Any], key: str) -> Optional[float]:
-    value = payload.get(key)
-    if value in (None, ""):
-        return None
-    return _number(value)
-
-
-def get_workspace_quota_usage(
-    workspace_id: str,
-    *,
-    session: WebSession,
-    priority: str = "high",
-) -> list[WorkspaceQuotaUsage]:
-    """Read a workspace's quota ceilings, current draw, and physical capacity.
-
-    Two Actions, one call each, both available to an ordinary workspace member:
-    ``workspace.GetWorkspaceQuota`` for the quota ceiling plus what is already
-    drawn against it, and ``workspace.GetWorkspaceComputeResource`` for the
-    physical totals. Both take a **top-level** ``workspace_id``; the nested
-    ``filter`` envelope other ``workspace.*`` Actions want is rejected here.
-
-    ``priority`` selects which half of the quota to report. The platform keeps
-    a separate ceiling for high-priority (guaranteed) and low-priority
-    (reclaimable) work, and a running task draws against exactly one of them,
-    so mixing the two would misreport both.
-
-    The task-level relatives of these Actions -- ``GetWorkspaceTaskQuota``,
-    ``GetUserTaskQuota``, ``GetDefaultUserTaskQuota`` and ``ListUserQuotas`` --
-    all answer ``AccessForbidden`` to a non-admin and are deliberately not
-    wrapped.
-    """
-    prefix = "high" if str(priority).lower() != "low" else "low"
-    referer = f"{_get_base_url()}/jobs/distributedTraining"
-
-    quota = _v2_result(
-        _request_json(
-            session,
-            "POST",
-            "/api/v2/workspace?Action=GetWorkspaceQuota",
-            referer=referer,
-            body={"workspace_id": workspace_id},
-            timeout=20,
-        )
-    )
-    compute = _v2_result(
-        _request_json(
-            session,
-            "POST",
-            "/api/v2/workspace?Action=GetWorkspaceComputeResource",
-            referer=referer,
-            body={"workspace_id": workspace_id},
-            timeout=20,
-        )
-    )
-    # The platform spells the key `logic_resouces`; that typo is the wire
-    # format, not ours.
-    resources = compute.get("logic_resouces")
-    if not isinstance(resources, dict):
-        resources = {}
-
-    rows: list[WorkspaceQuotaUsage] = []
-    for resource, quota_key, total_key, used_key in (
-        ("gpu", "gpu", "gpu_total", "gpu_used"),
-        ("cpu", "cpu", "cpu_total", "cpu_used"),
-        ("memory_gib", "memory", "memory_gi_total", "memory_gi_used"),
-    ):
-        rows.append(
-            WorkspaceQuotaUsage(
-                resource=resource,
-                limit=_number(quota.get(f"{quota_key}_{prefix}_running")),
-                used=_number(quota.get(f"{quota_key}_{prefix}_running_used")),
-                capacity=_optional_number(resources, total_key),
-                capacity_used=_optional_number(resources, used_key),
-            )
-        )
-    return rows
-
-
 __all__ = [
-    "UNLIMITED_QUOTA",
     "WorkspaceCapabilityError",
     "WorkspaceEnumerationError",
-    "WorkspaceQuotaUsage",
-    "get_workspace_quota_usage",
     "is_fair_scheduling_workspace",
     "try_enumerate_workspaces",
 ]

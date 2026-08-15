@@ -170,9 +170,10 @@ def test_serving_configs_single_workspace_keeps_compact_schema(
     assert "config-secret" not in result.output
 
 
-def test_serving_configs_workspace_all_fans_out_with_workspace_names(
+def test_serving_configs_refuses_a_workspace_fanout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The config surface is declared per workspace and read one at a time."""
     config = config_module.Config(username="user", password="pass")
 
     class _AllWorkspaceSession:
@@ -180,7 +181,6 @@ def test_serving_configs_workspace_all_fans_out_with_workspace_names(
         all_workspace_ids = ["ws-a", "ws-b"]
         all_workspace_names = {"ws-a": "Serving East", "ws-b": "Serving West"}
 
-    calls: list[str] = []
     monkeypatch.setattr(
         config_module.Config,
         "from_files_and_env",
@@ -191,63 +191,16 @@ def test_serving_configs_workspace_all_fans_out_with_workspace_names(
         "get_web_session",
         lambda: _AllWorkspaceSession(),
     )
-
-    def fake_configs(*, workspace_id, session=None):  # noqa: ANN001,ARG001
-        calls.append(workspace_id)
-        return {
-            "configs": {
-                "enable_auto_stop": workspace_id == "ws-a",
-                "items": [
-                    {
-                        "id": f"config-secret-{workspace_id}",
-                        "name": f"choice-{workspace_id[-1]}",
-                        "gpu_count_min": 1,
-                        "gpu_count_max": 2,
-                    }
-                ],
-            }
-        }
-
-    monkeypatch.setattr(browser_api_module, "get_serving_configs", fake_configs)
-
-    result = CliRunner().invoke(
-        cli_main,
-        ["--json", "serving", "configs", "--workspace", "all"],
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_serving_configs",
+        lambda **_: pytest.fail("--workspace all must be refused before any request"),
     )
 
-    assert result.exit_code == 0, result.output
-    assert calls == ["ws-a", "ws-b"]
-    assert json.loads(result.output)["data"] == {
-        "items": [
-            {
-                "workspace": "Serving East",
-                "name": "choice-a",
-                "gpu_count_min": 1,
-                "gpu_count_max": 2,
-                "auto_stop": True,
-            },
-            {
-                "workspace": "Serving West",
-                "name": "choice-b",
-                "gpu_count_min": 1,
-                "gpu_count_max": 2,
-                "auto_stop": False,
-            },
-        ],
-    }
-    assert "config-secret" not in result.output
-    assert "ws-a" not in result.output
-    assert "ws-b" not in result.output
+    result = CliRunner().invoke(cli_main, ["serving", "configs", "--workspace", "all"])
 
-    human = CliRunner().invoke(
-        cli_main,
-        ["serving", "configs", "--workspace", "all"],
-    )
-    assert human.exit_code == 0, human.output
-    assert "Serving East: gpu=1-2, auto-stop=enabled" in human.output
-    assert "Serving West: gpu=1-2, auto-stop=disabled" in human.output
-    assert "ws-a" not in human.output
-    assert "ws-b" not in human.output
+    assert result.exit_code != 0
+    assert "--workspace requires one workspace name for this command." in result.output
 
 
 def test_serving_status_projection_renders_nested_web_detail() -> None:
@@ -633,11 +586,11 @@ def test_serving_workspace_metavars_are_name_oriented() -> None:
         path
         for path, metavar in metavars.items()
         if metavar == "NAME|all"
-    } == {"list", "configs", "quota"}
+    } == {"list"}
     assert all(
         metavar == "NAME"
         for path, metavar in metavars.items()
-        if path not in {"list", "configs", "quota"}
+        if path != "list"
     )
 
 

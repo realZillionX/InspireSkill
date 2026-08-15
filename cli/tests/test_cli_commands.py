@@ -268,7 +268,7 @@ def test_job_help_smoke(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     ("command", "metavar"),
     [
         ("create", "NAME"),
-        ("quota", "NAME|all"),
+        ("quota", "NAME"),
         ("status", "NAME"),
         ("logs", "NAME"),
         ("events", "NAME"),

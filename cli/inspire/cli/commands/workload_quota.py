@@ -24,7 +24,10 @@ from inspire.cli.utils.collection_output import (
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
-from inspire.config.workspaces import resolve_workspace_query_scope, workspace_name_map
+from inspire.config.workspaces import (
+    resolve_workspace_operation_scope,
+    workspace_name_map,
+)
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 from inspire.cli.utils.quota_cache import (
@@ -195,8 +198,8 @@ def make_quota_command(workload: str) -> click.Command:
     @click.option(
         "--workspace",
         required=True,
-        metavar="NAME|all",
-        help="Workspace name or 'all'.",
+        metavar="NAME",
+        help="Workspace name.",
     )
     @click.option(
         "--group",
@@ -245,31 +248,26 @@ def make_quota_command(workload: str) -> click.Command:
         try:
             config, _ = Config.from_files_and_env(require_credentials=False)
             session = get_web_session()
-            workspace_ids, _ = resolve_workspace_query_scope(
+            workspace_id = resolve_workspace_operation_scope(
                 workspace=workspace,
                 session=session,
             )
-            workspace_names = workspace_name_map(session)
+            workspace_name = (
+                workspace_name_map(session).get(workspace_id)
+                or "(workspace name unavailable)"
+            )
 
             group_filter = (
                 validate_compute_group_name(group).casefold() if group is not None else ""
             )
-            rows: list[dict[str, Any]] = []
-            display_names = [
-                workspace_names.get(wid) or "(workspace name unavailable)"
-                for wid in workspace_ids
-            ]
-            for workspace_id, workspace_name in zip(workspace_ids, display_names):
-                rows.extend(
-                    _query_workspace_quotas(
-                        session=session,
-                        workspace_id=workspace_id,
-                        workspace_name=workspace_name,
-                        workload=workload,
-                        group_filter=group_filter,
-                        include_empty=include_empty,
-                    )
-                )
+            rows = _query_workspace_quotas(
+                session=session,
+                workspace_id=workspace_id,
+                workspace_name=workspace_name,
+                workload=workload,
+                group_filter=group_filter,
+                include_empty=include_empty,
+            )
             _sort_rows(rows)
             page = bound_collection(rows, limit=effective_limit)
             rows = page.items

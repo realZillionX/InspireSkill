@@ -113,33 +113,25 @@ def _make_price(*, qid: str, gpu: int, cpu: int, mem: int, gpu_type: str = "") -
     }
 
 
-def test_job_quota_workspace_all_sweeps_visible_workspaces(
+def test_job_quota_refuses_a_workspace_fanout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """A quota catalog belongs to one workspace; sweeping them answers nothing new."""
     _patch_config(monkeypatch, tmp_path)
-    queried_workspaces: list[str] = []
-
-    def list_groups(**kwargs):
-        queried_workspaces.append(kwargs["workspace_id"])
-        return []
 
     from inspire.cli.commands import workload_quota as quota_module
 
     monkeypatch.setattr(quota_module, "get_web_session", lambda: _Session())
     monkeypatch.setattr(
-        quota_module.browser_api_module, "list_notebook_compute_groups", list_groups
+        quota_module.browser_api_module,
+        "list_notebook_compute_groups",
+        lambda **_: pytest.fail("--workspace all must be refused before any request"),
     )
-    monkeypatch.setattr(quota_module.browser_api_module, "get_resource_prices", lambda **_: [])
 
-    result = CliRunner().invoke(cli_main, ["--json", "job", "quota", "--workspace", "all"])
-    assert result.exit_code == 0, result.output
-    payload = _json_data(result.output)
-    assert payload == {"items": []}
-    assert "workload" not in payload
-    assert "total" not in payload
-    assert "workspace_names" not in payload
-    _assert_compact_public_payload(payload)
-    assert sorted(queried_workspaces) == sorted([_WS_DEFAULT, _WS_CPU, _WS_TRAIN])
+    result = CliRunner().invoke(cli_main, ["job", "quota", "--workspace", "all"])
+
+    assert result.exit_code != 0
+    assert "--workspace requires one workspace name for this command." in result.output
 
 
 def test_quota_reports_rate_limiting_instead_of_no_rows(
@@ -460,7 +452,7 @@ def test_quota_help_explains_group_keyword() -> None:
     result = CliRunner().invoke(cli_main, ["job", "quota", "--help"])
     output = " ".join(result.output.split())
     assert result.exit_code == 0
-    assert "--workspace NAME|all" in result.output
+    assert "--workspace NAME" in result.output
     assert "compute group name keyword/substring" in output
     assert "full name is not required" in output
 
@@ -469,18 +461,18 @@ def test_quota_help_explains_group_keyword() -> None:
     "workload",
     ("notebook", "job", "hpc", "ray", "serving"),
 )
-def test_each_workload_quota_uses_workspace_name_or_all_metavar(
-    workload: str,
-) -> None:
+def test_each_workload_quota_takes_one_workspace(workload: str) -> None:
+    """A quota catalog is declared per workspace and read one at a time."""
     result = CliRunner().invoke(cli_main, [workload, "quota", "--help"])
 
     assert result.exit_code == 0, result.output
-    assert "--workspace NAME|all" in result.output
+    assert "--workspace NAME" in result.output
+    assert "--workspace NAME|all" not in result.output
     assert "--workspace TEXT" not in result.output
 
 
 @pytest.mark.parametrize(
-    "command", ("availability", "nodes", "quota", "policy", "usage")
+    "command", ("availability", "nodes", "policy", "usage")
 )
 def test_resource_queries_take_one_workspace(command: str) -> None:
     """Resource facts are per workspace, so these never fan out."""

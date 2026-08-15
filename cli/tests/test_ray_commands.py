@@ -163,7 +163,7 @@ def _patch_ray_status_runtime(
     [
         ("list", "NAME|all"),
         ("create", "NAME"),
-        ("quota", "NAME|all"),
+        ("quota", "NAME"),
         ("status", "NAME"),
         ("instances", "NAME"),
         ("stop", "NAME"),

@@ -134,7 +134,7 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     [
         ("list", "NAME|all"),
         ("create", "NAME"),
-        ("quota", "NAME|all"),
+        ("quota", "NAME"),
         ("status", "NAME"),
         ("instances", "NAME"),
         ("stop", "NAME"),

@@ -52,6 +52,7 @@ from inspire.cli.utils.task_priority import (
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import (
+    resolve_workspace_operation_scope,
     resolve_workspace_query_scope,
     select_workspace_id,
     workspace_label,
@@ -1556,6 +1557,7 @@ def _serving_events(
     *,
     session,  # noqa: ANN001
     selectors: tuple[str, ...] = (),
+    workload_level: bool = False,
 ) -> list[dict[str, Any]]:
     """Read deployment events, replica events, or one replica's, in order.
 
@@ -1564,6 +1566,12 @@ def _serving_events(
     `inspire serving instances` prints, because their `object_id` is the
     namespaced pod handle and never reaches output.
     """
+    if workload_level:
+        return sorted(
+            browser_api_module.list_serving_events(serving_id, session=session),
+            key=event_sort_key,
+        )
+
     instances, _total = browser_api_module.list_serving_instances(
         serving_id,
         page_size=_INSTANCE_EVENT_FETCH_SIZE,
@@ -1629,6 +1637,15 @@ def _serving_events(
     ),
 )
 @click.option(
+    "--workload-level",
+    "workload_level",
+    is_flag=True,
+    help=(
+        "Only the controller's own events about the deployment as a whole. "
+        "Cannot be combined with --instance."
+    ),
+)
+@click.option(
     "--tail",
     type=click.IntRange(1),
     default=DEFAULT_EVENT_TAIL,
@@ -1652,6 +1669,7 @@ def events_serving(
     reason_filter: Optional[str],
     type_filter: Optional[str],
     instance_selectors: tuple[str, ...],
+    workload_level: bool,
     tail: int,
     follow: bool,
     interval: int,
@@ -1662,12 +1680,14 @@ def events_serving(
     Deployment events (`CreatingRevision` / `GroupsProgressing` / `Pending`)
     and every replica's pod events (`Scheduled` / `Pulled` / `Started`) are
     disjoint sets, and the default merges both into one timeline with an
-    `Instance` column. Use ``--instance`` to narrow to one replica.
+    `Instance` column. Use ``--instance`` to narrow to one replica, or
+    ``--workload-level`` to keep only the controller's half.
 
     \b
     Examples:
       inspire serving events my-serving --workspace CPU资源空间
       inspire serving events my-serving --workspace CPU资源空间 --instance rank=0
+      inspire serving events my-serving --workspace CPU资源空间 --workload-level
       inspire --json serving events my-serving --workspace CPU资源空间
     """
     name = reject_id_at_boundary(
@@ -1694,6 +1714,7 @@ def events_serving(
                         serving_id,
                         session=live_session,
                         selectors=instance_selectors,
+                        workload_level=workload_level,
                     ),
                 )
             except ServingInstanceSelectionError as e:
@@ -1900,8 +1921,8 @@ def delete_serving(
 @click.option(
     "--workspace",
     required=True,
-    metavar="NAME|all",
-    help="Workspace name or 'all'.",
+    metavar="NAME",
+    help="Workspace name.",
 )
 @click.option(
     "--limit",
@@ -1933,61 +1954,31 @@ def configs_serving(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_ids, all_workspaces = resolve_workspace_query_scope(
+        workspace_id = resolve_workspace_operation_scope(
             workspace=workspace,
             session=session,
         )
-        workspace_names = workspace_name_map(session)
-        if all_workspaces:
-            items: list[dict[str, Any]] = []
-            for workspace_id in workspace_ids:
-                public_data = public_configs(
-                    browser_api_module.get_serving_configs(
-                        workspace_id=workspace_id,
-                        session=session,
-                    )
-                )
-                workspace_name = scrub_raw_ids(
-                    workspace_names.get(workspace_id) or "(workspace name unavailable)"
-                )
-                for item in public_data.get("items", []):
-                    scoped_item = {
-                        "workspace": workspace_name,
-                        **item,
-                    }
-                    if "auto_stop" in public_data:
-                        scoped_item["auto_stop"] = public_data["auto_stop"]
-                    items.append(scoped_item)
-            page = bound_collection(items, limit=effective_limit)
-            output = {
-                "items": page.items,
-                **page.metadata(),
+        data = browser_api_module.get_serving_configs(
+            workspace_id=workspace_id,
+            session=session,
+        )
+        public_data = public_configs(data)
+        items = [
+            {
+                **item,
+                **(
+                    {"auto_stop": public_data["auto_stop"]}
+                    if "auto_stop" in public_data
+                    else {}
+                ),
             }
-        else:
-            data = browser_api_module.get_serving_configs(
-                workspace_id=workspace_ids[0],
-                session=session,
-            )
-            public_data = public_configs(data)
-            items = [
-                {
-                    **item,
-                    **(
-                        {"auto_stop": public_data["auto_stop"]}
-                        if "auto_stop" in public_data
-                        else {}
-                    ),
-                }
-                for item in public_data.get("items", [])
-            ]
-            page = bound_collection(
-                items,
-                limit=effective_limit,
-            )
-            output = {
-                "items": page.items,
-                **page.metadata(),
-            }
+            for item in public_data.get("items", [])
+        ]
+        page = bound_collection(items, limit=effective_limit)
+        output = {
+            "items": page.items,
+            **page.metadata(),
+        }
 
         if ctx.json_output:
             click.echo(json_formatter.format_json(output))
