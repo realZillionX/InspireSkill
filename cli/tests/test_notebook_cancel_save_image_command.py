@@ -1,4 +1,4 @@
-"""Tests for `inspire image cancel-save` and the create-time notebook-name guard.
+"""Tests for `inspire notebook cancel-save-image` and the create-time notebook-name guard.
 
 Both commands sit on Actions that answer a refusal with a message carrying a
 raw notebook handle, so the public output is asserted as well as the behaviour.
@@ -61,7 +61,7 @@ def _patch_config_and_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 
 
 # ---------------------------------------------------------------------------
-# image cancel-save
+# notebook cancel-save-image
 # ---------------------------------------------------------------------------
 
 
@@ -79,7 +79,7 @@ def test_cancel_save_reports_the_cancelled_save(
 
     result = CliRunner().invoke(
         cli_main,
-        ["image", "cancel-save", "demo-notebook", "--workspace", "Test Workspace"],
+        ["notebook", "cancel-save-image", "demo-notebook", "--workspace", "Test Workspace"],
     )
 
     assert result.exit_code == 0
@@ -104,8 +104,8 @@ def test_cancel_save_json_distinguishes_nothing_to_cancel(
         cli_main,
         [
             "--json",
-            "image",
-            "cancel-save",
+            "notebook",
+            "cancel-save-image",
             "demo-notebook",
             "--workspace",
             "Test Workspace",
@@ -131,7 +131,7 @@ def test_cancel_save_human_output_when_nothing_is_saving(
 
     result = CliRunner().invoke(
         cli_main,
-        ["image", "cancel-save", "demo-notebook", "--workspace", "Test Workspace"],
+        ["notebook", "cancel-save-image", "demo-notebook", "--workspace", "Test Workspace"],
     )
 
     assert result.exit_code == 0
@@ -153,7 +153,7 @@ def test_cancel_save_failure_stays_compact(
 
     result = CliRunner().invoke(
         cli_main,
-        ["image", "cancel-save", "demo-notebook", "--workspace", "Test Workspace"],
+        ["notebook", "cancel-save-image", "demo-notebook", "--workspace", "Test Workspace"],
     )
 
     assert result.exit_code != 0
@@ -182,8 +182,8 @@ def test_cancel_save_forwards_pick_to_notebook_name_resolution(
     result = CliRunner().invoke(
         cli_main,
         [
-            "image",
-            "cancel-save",
+            "notebook",
+            "cancel-save-image",
             "demo-notebook",
             "--workspace",
             "Test Workspace",
@@ -209,8 +209,8 @@ def test_cancel_save_rejects_a_handle_at_the_boundary(
     result = CliRunner().invoke(
         cli_main,
         [
-            "image",
-            "cancel-save",
+            "notebook",
+            "cancel-save-image",
             "3e1429b2-f0fb-4e39-bb3b-c60bd885df63",
             "--workspace",
             "Test Workspace",
@@ -221,10 +221,14 @@ def test_cancel_save_rejects_a_handle_at_the_boundary(
 
 
 def test_cancel_save_is_listed_and_name_only() -> None:
-    group_help = CliRunner().invoke(cli_main, ["image", "--help"])
-    assert "cancel-save" in group_help.output
+    group_help = CliRunner().invoke(cli_main, ["notebook", "--help"])
+    assert "cancel-save-image" in group_help.output
+    # The command moved off the image group; no alias is left behind.
+    moved_away = CliRunner().invoke(cli_main, ["image", "cancel-save", "--help"])
+    assert moved_away.exit_code != 0
+    assert "No such command" in moved_away.output
 
-    result = CliRunner().invoke(cli_main, ["image", "cancel-save", "--help"])
+    result = CliRunner().invoke(cli_main, ["notebook", "cancel-save-image", "--help"])
     assert result.exit_code == 0, result.output
     assert "--workspace NAME" in result.output
     assert "--workspace TEXT" not in result.output

@@ -298,7 +298,7 @@ def wait_for_image_ready(
 ) -> CustomImageInfo:
     """Wait for a custom image to reach a terminal success state.
 
-    The platform uses ``SUCCESS`` for ``inspire image save``-produced images
+    The platform uses ``SUCCESS`` for ``notebook save-image``-produced images
     (2026-04 observation — not ``READY`` like ``create_image`` does for
     externally-registered images). Both are accepted here, as are any
     ``SUCCEEDED`` variants, so the wait works for both flows.

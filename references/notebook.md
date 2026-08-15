@@ -1,6 +1,6 @@
 # Notebook 工作流
 
-创建交互环境、进入容器、管理远端文件、暴露容器 HTTP 服务，或用 Notebook 准备可复用环境时看本页。资源条件看 [`resources.md`](resources.md)；联网准备和内部源看 [`internal-sources.md`](internal-sources.md)；镜像生命周期看 [`image.md`](image.md)。命令语法和参数以 CLI Help 为准。
+创建交互环境、进入容器、管理远端文件、暴露容器 HTTP 服务，或用 Notebook 准备可复用环境并固化成镜像时看本页。资源条件看 [`resources.md`](resources.md)；联网准备和内部源看 [`internal-sources.md`](internal-sources.md)；保存出来的镜像之后怎么选、怎么共享、怎么清理看 [`image.md`](image.md)。命令语法和参数以 CLI Help 为准。
 
 ## 1. Notebook 的角色
 
@@ -118,11 +118,17 @@ inspire notebook proxy-url <name> --workspace <workspace> --port 7860
 - **这个地址本身是凭据。** 它内嵌一段短期 token，拿到的人对该 Notebook 的访问权和你一样。它会进对话记录和 shell 历史，别往外发。
 - **Proxy 只提供网络通路，不替代应用自己的鉴权。** Gradio、FastAPI、LLM API 仍要有自己的登录或 API Key。发布给协作者前做无 Key / 有 Key 对照，确认未授权请求会被拒绝。
 
-## 6. 基底环境
+## 6. 基底环境与保存镜像
 
 项目早期用统一基底镜像起 Notebook，把 Slurm、Ray、分布式训练依赖和项目依赖一次性装好。公网下载放 CPU 准备盒；只缺内部源时可在目标 GPU Notebook 配置验证。
 
-验证通过后保存项目镜像。`image save` 会触发中等时长的保存过程，期间不可操作该 Notebook；保存完成后 Notebook 不会自动停止。保存出的镜像才是后续 Notebook / Job / HPC / Ray / Serving 应复用的稳定环境。
+验证通过后保存项目镜像。保存是 **Notebook 的生命周期事件**：`notebook save-image <notebook-name>` 就地提交当前容器，过程中该 Notebook 进入 COMMITTING、不可操作；保存完成后 Notebook 不会自动停止，仍可继续连接和使用，镜像只是这次事件的产物。因此这条命令按 Notebook 名寻址，`--workspace` 指的是 **Notebook 所在的空间**，不是镜像的归属。
+
+保存前平台会给出快照体积估算并先打印出来，用它判断这次会占用多久；`--dry-run` 只看估算、不真的保存。Notebook 未运行时命令直接拒绝，不会产生半成品。
+
+保存跑到一半要拿回 Notebook 时用 `notebook cancel-save-image <notebook-name>`：即使平台已经报告提交完成，取消仍然生效，Notebook 回到保存前的状态。但半成品镜像会以 `FAILED` 留在镜像目录里，需要按 [`image.md`](image.md) 单独删除。
+
+保存出的镜像才是后续 Notebook / Job / HPC / Ray / Serving 应复用的稳定环境。
 
 普通 Notebook 中 Slurm 命令因无 Controller 报错是正常现象；只有 HPC 任务运行时才具备完整 Slurm 运行环境。
 

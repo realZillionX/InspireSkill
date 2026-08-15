@@ -11,7 +11,8 @@ so:
     over half-way through.
 
 Run inside a notebook you already have a cached SSH connection to, then
-``image save`` to derive a project base image with all the runtimes you need.
+``notebook save-image`` to derive a project base image with all the runtimes
+you need.
 
 Scope:
 
@@ -367,7 +368,7 @@ def install_deps_cmd(
     or 分布式训练空间 GPU jobs. Public downloads need internet; use CPU资源空间
     for those. SII internal mirrors may work directly inside GPU or
     internal-only groups. After the checks pass, save the notebook as an image
-    with `inspire image save`.
+    with `inspire notebook save-image`.
 
     \b
     Examples:
@@ -375,8 +376,8 @@ def install_deps_cmd(
         inspire notebook install-deps cpu-box --slurm --ray
         inspire notebook install-deps cpu-box --ray --ray-version 2.40.0
 
-    Designed to run once on a fresh notebook before `inspire image save`,
-    so the resulting image is ready for `inspire hpc create` /
+    Designed to run once on a fresh notebook before `inspire notebook
+    save-image`, so the resulting image is ready for `inspire hpc create` /
     `inspire ray create` without further setup. Each step probes the
     container first and skips itself if the requested runtime is already
     in place — hitting this command twice is safe.

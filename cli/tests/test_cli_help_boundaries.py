@@ -618,6 +618,8 @@ def test_events_help_orders_common_options_consistently(
         ["notebook", "events"],
         ["notebook", "lifecycle"],
         ["notebook", "metrics"],
+        ["notebook", "save-image"],
+        ["notebook", "cancel-save-image"],
         ["job", "status"],
         ["job", "stop"],
         ["job", "delete"],
@@ -633,7 +635,6 @@ def test_events_help_orders_common_options_consistently(
         ["serving", "delete"],
         ["serving", "metrics"],
         ["image", "detail"],
-        ["image", "save"],
         ["image", "set-visibility"],
         ["image", "delete"],
     ),
@@ -649,7 +650,8 @@ def test_resource_arguments_use_name_metavar(path: list[str]) -> None:
     "path",
     (
         ["notebook", "lifecycle"],
-        ["image", "save"],
+        ["notebook", "save-image"],
+        ["notebook", "cancel-save-image"],
         ["image", "set-visibility"],
     ),
 )
@@ -861,7 +863,7 @@ def test_workload_create_help_orders_common_scheduling_selectors(
 
 def test_image_and_model_help_expose_current_visibility_and_source_options() -> None:
     runner = CliRunner()
-    save_result = runner.invoke(cli_main, ["image", "save", "--help"])
+    save_result = runner.invoke(cli_main, ["notebook", "save-image", "--help"])
     visibility_result = runner.invoke(
         cli_main,
         ["image", "set-visibility", "--help"],

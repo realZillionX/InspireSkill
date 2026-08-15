@@ -899,7 +899,7 @@ _NOTHING_TO_CANCEL_MARKER = "nothing to cancel"
 
 @dataclass(frozen=True)
 class NotebookImageSizeEstimate:
-    """How much data ``image save`` would have to snapshot.
+    """How much data ``notebook save-image`` would have to snapshot.
 
     ``size_bytes`` is the platform's ``active_snapshot_size``, **in bytes**:
     every notebook measured answers an exact multiple of 4096, and the values
@@ -966,13 +966,14 @@ def cancel_notebook_image_save(
 ) -> bool:
     """Abort the save ``SaveNotebookImage`` started and resume the container.
 
-    This is the other half of ``image save``: while a save runs the notebook is
-    paused and unusable, and until this Action there was no way back. It really
-    does interrupt the work — verified 2026-08-15 by cancelling one save a
-    second after it started and another 38 seconds in, past the point where the
-    platform had already reported ``Committed notebook … awaiting push``. Both
-    times the platform logged ``Cancelled saving notebook … by user request,
-    container resumed`` and the notebook went straight back to RUNNING.
+    This is the other half of ``notebook save-image``: while a save runs the
+    notebook is paused and unusable, and until this Action there was no way
+    back. It really does interrupt the work — verified 2026-08-15 by cancelling
+    one save a second after it started and another 38 seconds in, past the
+    point where the platform had already reported ``Committed notebook …
+    awaiting push``. Both times the platform logged ``Cancelled saving notebook
+    … by user request, container resumed`` and the notebook went straight back
+    to RUNNING.
 
     **The notebook handle alone selects the save.** Discovery declares the full
     ``SaveNotebookImage`` parameter set here (``name`` / ``version`` /

@@ -145,9 +145,9 @@ Referer：`/jobs/interactiveModeling`。
 | `StartNotebook` | `{notebook_id}` | `{notebook_id, sub_code, sub_msg}` | `notebook start` |
 | `StopNotebook` | `{notebook_id}` | `{notebook_id, sub_code, sub_msg}` | `notebook stop` |
 | `DeleteNotebook` | `{notebook_id}` | `{notebook_id, sub_code, sub_msg}` | `notebook delete` |
-| `SaveNotebookImage` | `{notebook_id, name, version, description}` | **恒为 `{}`**（`Result: null`） | `image save` |
-| `EstimateSaveMirrorSize` | `{notebook_id}` | `{active_snapshot_size}` | `image save`、`image save --dry-run` |
-| `CancelSaveMirror` | `{notebook_id}` | — | `image cancel-save` |
+| `SaveNotebookImage` | `{notebook_id, name, version, description}` | **恒为 `{}`**（`Result: null`） | `notebook save-image` |
+| `EstimateSaveMirrorSize` | `{notebook_id}` | `{active_snapshot_size}` | `notebook save-image`、`--dry-run` |
+| `CancelSaveMirror` | `{notebook_id}` | — | `notebook cancel-save-image` |
 | `CheckNotebook` | `{name, workspace_id}` | 占用时 `{notebook_id, sub_code, sub_msg}`；空闲时 `Result: null` | `notebook create` 的重名前置校验 |
 | `GetNotebookAccessUrl` | `{notebook_id}` | `{jupyter_url, vscode_url}` | `notebook proxy-url`、`exec` / `shell`、SSH 链路 |
 | `GetRealtimeNotebookMetric` | `{notebook_id}` | `{resource_metric_list[]}` | `notebook metrics --now` |
@@ -302,7 +302,7 @@ Referer：`/jobs/interactiveModeling`。
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
 | `ListImages` | `{page: 0, page_size: -1, filter:{…见下…}}` | `{images[], total}` | `image list`、`notebook/job/hpc/ray/serving create` 的镜像解析、`cache refresh` |
-| `GetImageById` | `{ImageId}` | 单个镜像对象：`image_id` / `name` / `address` / `framework` / `version` / `source` / `visibility` / `status` / `description` / `created_at` | `image detail`、`image save` 的就绪轮询 |
+| `GetImageById` | `{ImageId}` | 单个镜像对象：`image_id` / `name` / `address` / `framework` / `version` / `source` / `visibility` / `status` / `description` / `created_at` | `image detail`、`notebook save-image` 的就绪轮询 |
 | `CreateImage` † | `{name, version, registry_hint:{workspace_id}, visibility, add_method, description}` | `{image{image_id, …}}` | `image register` |
 | `UpdateImage` † | `{id, visibility?, description?}` | — | `image set-visibility` |
 | `DeleteImage` | `{image_id}` | — | `image delete` |
@@ -316,8 +316,8 @@ Referer：`/jobs/interactiveModeling`。
   - 个人可见：同上但 `visibility: "VISIBILITY_PRIVATE"`
 - **镜像地址在 `address` 字段**，不是 `url`。创建 Workload 时平台匹配的是**注册表 URL 而不是可见名**，发名字会被拒为 `无法找到对应镜像`。
 - **`add_method`**：`0` = 本地推送（`docker push`，v1 和 v2 给出同一个 `no image uploaded` 拒绝），`2` = 注册已有镜像地址。
-- **就绪状态有两套**：`image register` 产出的镜像走 `READY`，`image save` 产出的走 `SUCCESS`。终态失败包括 `FAILED` / `FAILURE` / `ERROR` / `CANCELLED` / `TIMEOUT` / `ABORTED` / `INTERRUPTED`——漏掉任何一个都会让轮询挂到超时而不是快速失败。
-- 「把 Notebook 存成镜像」不在这条路由，在 `notebook.SaveNotebookImage`。
+- **就绪状态有两套**：`image register` 产出的镜像走 `READY`，`notebook save-image` 产出的走 `SUCCESS`。终态失败包括 `FAILED` / `FAILURE` / `ERROR` / `CANCELLED` / `TIMEOUT` / `ABORTED` / `INTERRUPTED`——漏掉任何一个都会让轮询挂到超时而不是快速失败。
+- 「把 Notebook 存成镜像」不在这条路由，在 `notebook.SaveNotebookImage`——CLI 侧对应 `notebook save-image`，`image` 组只管已经存在的镜像。
 
 ---
 

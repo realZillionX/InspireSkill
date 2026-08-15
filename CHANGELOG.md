@@ -40,19 +40,29 @@
 
 - `inspire model status` 现在会说出哪些推理服务还占着这个模型版本、整个模型有没有排队中的部署、以及哪些别的版本还在跑。此前从 CLI 完全看不出一个版本有没有人在用，换版本或删模型只能盲操作。只报仍可能起来的服务（`RUNNING` / `STOPPED` / `SLEEPING`），已经失败的不算「有人在用」。
 
-- `inspire image save` 在发出保存请求之前先报平台估算的快照大小，并新增 `--dry-run` 只估不存；非 RUNNING 的 Notebook 在任何保存请求之前就被拦下。`image save` 是一段该 Notebook 不可操作的等待，此前按下去之前完全不知道要等多久、会产出多大的东西。估算失败不阻断保存，只是不打印那一行——取不到的大小读作「未知」，不读作 0。
+- `inspire notebook save-image` 在发出保存请求之前先报平台估算的快照大小，并新增 `--dry-run` 只估不存；非 RUNNING 的 Notebook 在任何保存请求之前就被拦下。存镜像是一段该 Notebook 不可操作的等待，此前按下去之前完全不知道要等多久、会产出多大的东西。估算失败不阻断保存，只是不打印那一行——取不到的大小读作「未知」，不读作 0。
 
 - `inspire notebook metrics --now`：给出 CPU / 内存 / GPU / 显存的当下快照。此前只有历史时序，而「这个 Notebook 现在到底在不在用卡」需要的是当下的值。
 
 - `inspire hpc events` 支持 `--instance` / `--all-instances` 的实例级事件，并把重复发生的事件折叠进 `Count` 列（job 级也生效）。平台在 HPC 事件上从不填 `count`，而是按发生次数逐行重复：一个失败任务 106 行事件里 `--tail 20` 全是同一条 BackOff，折叠之后 20 行才露出真正的死因。只出现一次的行完全不变。
 
-- `inspire image cancel-save`：中止进行中的 Notebook 存镜像并立刻把 Notebook 交还。存镜像是一段该 Notebook 不可操作的等待，此前一旦按下去就没有退路。受控验证过两次——保存开始 1 秒时、以及 38 秒后平台已经打出「已提交镜像层，等待推送」之后，**都能成功中止**，Notebook 回到 RUNNING。代价要知道：半成品镜像会以 `FAILED` 留在镜像目录里，得自己删。
+- `inspire notebook cancel-save-image`：中止进行中的 Notebook 存镜像并立刻把 Notebook 交还。存镜像是一段该 Notebook 不可操作的等待，此前一旦按下去就没有退路。受控验证过两次——保存开始 1 秒时、以及 38 秒后平台已经打出「已提交镜像层，等待推送」之后，**都能成功中止**，Notebook 回到 RUNNING。代价要知道：半成品镜像会以 `FAILED` 留在镜像目录里，得自己删。
 
 - `inspire model delete`：CLI 此前能注册模型却不能删，与仓库自己的清理纪律矛盾。删除前逐版本核对推理服务占用与排队中的部署，有占用就点名拒绝，`--force` 放行；占用探测失败**拒绝删除**而不是当作没占用。
 
 - `inspire dataset applications`：只读查看数据集权限申请与待我审批的条目，状态显示为可读词。提交与审批仍然只在网页端——那两个动作会以你的名义触达真人审批者，CLI 不接。
 
 - `inspire notebook create` 提交前挡住工作空间内的重名。**平台自己不校验重名**——实测用同一个名字连建两个都成功，而重名会让此后每一条 `notebook <动词> <名字>` 都变成歧义、必须 `--pick`。校验是大小写不敏感的，也会忽略尾部空格。探测失败时让路、不拦创建。
+
+### 破坏性变更
+
+- `inspire image save` 移到 `inspire notebook save-image`。选项、输出、退出码和 `--json` schema 一个字没变，只换了命令路径，**不保留别名**，所以脚本和 Agent 合同要跟着改。（同组的取消命令是本轮新增的，从未以 `image cancel-save` 发布过，只会以 `notebook cancel-save-image` 出现。）
+
+  归属本来就错了，三处都指向 notebook：这三个动作的平台 Action 全在 notebook 路由上（`SaveNotebookImage` / `EstimateSaveMirrorSize` / `CancelSaveMirror`），`image` 服务下一个都没有；`image` 组其余命令的 NAME 是**镜像名**，而 `save` / `cancel-save` 的 NAME 是 **Notebook 名**——同一个命令组、同一个参数位、两种名词，对 Name-only 的合同是实打实的陷阱；`--workspace` 在这个组里同样有两种含义，`image save --workspace` 指的是 Notebook 所在空间，而镜像 registry 的空间是另一回事。被操作的对象也确实是 Notebook：它在保存期间进入 COMMITTING、不可操作，产物才是镜像。
+
+  没有沿用平台自己的 `CommitNotebook` 叫法：那是控制台的「停止并保存」，镜像名由平台按 `<基底>:stopsave-<notebook>-<hash>-<时间戳>` 自动生成，调用方选不了也猜不到，与这条命令不是一回事。
+
+  `references/notebook.md` 现在承载保存镜像这条动线，`references/image.md` 只留保存之后的可见性与清理并指过去。
 
 ### 修复
 

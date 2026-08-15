@@ -1,9 +1,9 @@
-"""Tests for ``notebook.EstimateSaveMirrorSize`` and ``inspire image save --dry-run``.
+"""Tests for ``notebook.EstimateSaveMirrorSize`` and ``notebook save-image --dry-run``.
 
-The estimate is the only thing that tells a caller how long ``image save`` will
-lock the notebook for, so the boundary that matters here is that a *failed*
-estimate never reads as "there is nothing to snapshot" — neither zero bytes nor
-a stopped notebook.
+The estimate is the only thing that tells a caller how long ``notebook
+save-image`` will lock the notebook for, so the boundary that matters here is
+that a *failed* estimate never reads as "there is nothing to snapshot" —
+neither zero bytes nor a stopped notebook.
 """
 
 from __future__ import annotations
@@ -149,7 +149,7 @@ def test_estimate_requires_a_handle(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# `image save`
+# `notebook save-image`
 # ---------------------------------------------------------------------------
 
 
@@ -169,7 +169,7 @@ def _patch_save_command(
     estimate: Any = NotebookImageSizeEstimate(size_bytes=59_084_800, notebook_running=True),
     estimate_error: Optional[Exception] = None,
 ) -> list[dict[str, Any]]:
-    """Wire `image save` to fakes and return the list of save calls it made."""
+    """Wire `notebook save-image` to fakes and return the list of save calls it made."""
     config = _make_config(tmp_path)
 
     monkeypatch.setattr(
@@ -208,8 +208,8 @@ def _patch_save_command(
 
 def _save_argv(*extra: str) -> list[str]:
     return [
-        "image",
-        "save",
+        "notebook",
+        "save-image",
         "demo-notebook",
         "--workspace",
         "Test Workspace",
