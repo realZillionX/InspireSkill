@@ -159,6 +159,15 @@ def _instance_events(
     ),
 )
 @click.option(
+    "--workload-level",
+    "workload_level",
+    is_flag=True,
+    help=(
+        "Only the controller's own events about the job as a whole. "
+        "Cannot be combined with --instance."
+    ),
+)
+@click.option(
     "--tail",
     type=click.IntRange(1),
     default=DEFAULT_EVENT_TAIL,
@@ -181,6 +190,7 @@ def events(
     pick: Optional[int],
     reason_filter: Optional[str],
     instance_selectors: tuple[str, ...],
+    workload_level: bool,
     tail: int,
     follow: bool,
     interval: int,
@@ -190,7 +200,8 @@ def events(
     \b
     Controller events and every instance's pod events are merged into one
     timeline, so a job that never started explains itself in one call. Use
-    ``--instance`` to narrow to a single role.
+    ``--instance`` to narrow to a single role, or ``--workload-level`` to keep
+    only the controller's half.
 
     \b
     Examples:
@@ -198,9 +209,18 @@ def events(
       inspire --json hpc events prep-a --workspace CPU资源空间
       inspire hpc events prep-a --workspace CPU资源空间 --reason Deleted
       inspire hpc events prep-a --workspace CPU资源空间 --instance slurmd
+      inspire hpc events prep-a --workspace CPU资源空间 --workload-level
       inspire hpc events prep-a --workspace CPU资源空间 --follow
     """
     name = _reject_hpc_name_at_boundary(ctx, name)
+    if workload_level and instance_selectors:
+        _handle_error(
+            ctx,
+            "InvalidUsage",
+            "--workload-level and --instance cannot be used together.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
@@ -209,6 +229,11 @@ def events(
         return
 
     def _fetch(resolved_id: str, live_session) -> list[dict]:  # noqa: ANN001
+        if workload_level:
+            return sorted(
+                list_hpc_job_events(resolved_id, session=live_session),
+                key=event_sort_key,
+            )
         instance_events = _instance_events(
             resolved_id,
             live_session,

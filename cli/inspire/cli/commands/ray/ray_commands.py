@@ -1498,8 +1498,27 @@ def _fetch_recent_ray_events(
     *,
     session,  # noqa: ANN001
     selectors: Sequence[str] = (),
+    workload_level: bool = False,
 ) -> list[dict]:
-    """Fetch a bounded newest-first window and restore chronological output."""
+    """Fetch a bounded newest-first window and restore chronological output.
+
+    The cluster level is a client-side split, not a second call: one
+    ``ListJobEvents`` already returns both, told apart by ``object_type``.
+    """
+    if workload_level:
+        events = browser_api_module.list_ray_job_events(
+            ray_job_id,
+            page_size=_RAY_EVENT_PAGE_SIZE,
+            max_pages=_RAY_EVENT_MAX_PAGES,
+            sort_ascending=False,
+            session=session,
+        )
+        cluster_rows = [
+            event
+            for event in events
+            if str(event.get("object_type") or "").strip().lower() != "instance"
+        ]
+        return sorted(cluster_rows, key=event_sort_key)
     instances, _total = browser_api_module.list_ray_job_instances(
         ray_job_id,
         limit=_DEFAULT_INSTANCE_SCAN_LIMIT,
@@ -1559,6 +1578,15 @@ def _fetch_recent_ray_events(
     ),
 )
 @click.option(
+    "--workload-level",
+    "workload_level",
+    is_flag=True,
+    help=(
+        "Only the controller's own events about the cluster as a whole. "
+        "Cannot be combined with --instance."
+    ),
+)
+@click.option(
     "--tail",
     type=click.IntRange(1),
     default=DEFAULT_EVENT_TAIL,
@@ -1582,6 +1610,7 @@ def events_ray(
     reason: Optional[str],
     type_filter: Optional[str],
     instance_selectors: tuple[str, ...],
+    workload_level: bool,
     tail: int,
     follow: bool,
     interval: int,
@@ -1593,7 +1622,8 @@ def events_ray(
     events spell out exactly why the scheduler can't place a pod
     (insufficient CPU / GPU, node affinity mismatch, taint, etc.). Cluster
     events and every pod's events arrive in one timeline with an `Instance`
-    column; `--instance` narrows to one role.
+    column; `--instance` narrows to one role and `--workload-level` keeps only
+    the controller's half.
 
     \b
     Examples:
@@ -1601,10 +1631,19 @@ def events_ray(
         inspire ray events pipeline --workspace CPU资源空间 --reason FailedScheduling
         inspire ray events pipeline --workspace CPU资源空间 --type Warning --tail 10
         inspire ray events pipeline --workspace CPU资源空间 --instance head
+        inspire ray events pipeline --workspace CPU资源空间 --workload-level
         inspire ray events pipeline --workspace CPU资源空间 --follow
         inspire --json ray events pipeline --workspace CPU资源空间
     """
     name = _reject_ray_name_at_boundary(ctx, name)
+    if workload_level and instance_selectors:
+        _handle_error(
+            ctx,
+            "InvalidUsage",
+            "--workload-level and --instance cannot be used together.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
     try:
         session = get_web_session()
         config, _ = Config.from_files_and_env(require_credentials=False)
@@ -1625,6 +1664,7 @@ def events_ray(
                             ray_job_id,
                             session=live_session,
                             selectors=instance_selectors,
+                            workload_level=workload_level,
                         )
                     ),
                 )

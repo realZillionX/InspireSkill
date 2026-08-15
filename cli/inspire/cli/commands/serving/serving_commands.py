@@ -1696,10 +1696,19 @@ def events_serving(
         resource_type="serving",
         list_command="inspire serving list --workspace <workspace>",
     )
+    if workload_level and instance_selectors:
+        _handle_error(
+            ctx,
+            "InvalidUsage",
+            "--workload-level and --instance cannot be used together.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
         workspace_id = _resolve_workspace_id(workspace)
+
         def _fetch_events() -> list[dict[str, Any]]:
             # An unknown `--instance` is a usage error; the shared runner would
             # otherwise repackage it as "could not fetch events".

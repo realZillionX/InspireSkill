@@ -252,3 +252,61 @@ def test_ray_events_reject_an_unknown_instance(monkeypatch) -> None:  # noqa: AN
 
     assert result.exit_code == 12
     assert json.loads(result.output)["error"]["type"] == "ValidationError"
+
+
+def test_ray_workload_level_splits_the_single_call_client_side(monkeypatch) -> None:  # noqa: ANN001
+    """One call returns both levels, so the cluster view costs no extra request."""
+    sent = _patch_ray_events(
+        monkeypatch,
+        [
+            _ray_event("rj-df33bdba", "job", "CreatedRayCluster", "3", "575463"),
+            _ray_event("rj-df33bdba-x66vw-head-825s5", "instance", "Started", "1", "575499"),
+        ],
+    )
+    monkeypatch.setattr(
+        ray_commands.browser_api_module,
+        "list_ray_job_instances",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("--workload-level must not enumerate instances")
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "ray",
+            "events",
+            "demo-ray",
+            "--workspace",
+            "CPU资源空间",
+            "--workload-level",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert sent[0].get("pod_names") is None
+    items = json.loads(result.output)["data"]["items"]
+    assert [item["reason"] for item in items] == ["CreatedRayCluster"]
+
+
+def test_ray_workload_level_and_instance_contradict_each_other(monkeypatch) -> None:  # noqa: ANN001
+    _patch_ray_events(monkeypatch, [])
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "ray",
+            "events",
+            "demo-ray",
+            "--workspace",
+            "CPU资源空间",
+            "--workload-level",
+            "--instance",
+            "head",
+        ],
+    )
+
+    assert result.exit_code == 12
+    assert json.loads(result.output)["error"]["type"] == "InvalidUsage"

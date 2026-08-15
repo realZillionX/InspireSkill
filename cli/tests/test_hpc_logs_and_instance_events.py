@@ -631,3 +631,57 @@ def test_events_reject_an_unknown_instance(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert result.exit_code == 12
     assert json.loads(result.output)["error"]["type"] == "ValidationError"
+
+
+def test_workload_level_keeps_only_the_controller_half(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The old default stays reachable: one flag, no per-instance requests."""
+    seen = _patch_events(
+        monkeypatch,
+        instance_events=[_pod_event("BackOff", "2")],
+        job_events=[_pod_event("CreatedSlurmCluster", "1")],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "hpc",
+            "events",
+            "prep-a",
+            "--workspace",
+            "CPU Room",
+            "--workload-level",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == []
+    items = json.loads(result.output)["data"]["items"]
+    assert [item["reason"] for item in items] == ["CreatedSlurmCluster"]
+    assert "Instance" not in result.output
+
+
+def test_workload_level_and_instance_contradict_each_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_events(monkeypatch, instance_events=[])
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "hpc",
+            "events",
+            "prep-a",
+            "--workspace",
+            "CPU Room",
+            "--workload-level",
+            "--instance",
+            "slurmd",
+        ],
+    )
+
+    assert result.exit_code == 12
+    assert json.loads(result.output)["error"]["type"] == "InvalidUsage"

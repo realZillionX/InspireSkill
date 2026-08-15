@@ -86,7 +86,7 @@
 
   **跨 Workspace 的扇出保留在它真正有意义的地方**：`<workload> list`（不知道东西在哪个空间时按名字找）、`<workload> quota`、`serving configs`、`account permissions`、`cache refresh`。分界线是拼接诚不诚实——这些命令逐空间给一行或一段，`Workspace` 列能分辨归属；`resources` 给的是本来就该逐个读的单空间事实。
 
-- **`events` 的默认口径改成和 `logs` 一样：不加参数就给全部。** `job events` / `hpc events` 现在把控制器事件与每个实例的 Pod 事件合成一条时间线，`--all-instances` 随之删除（默认即是），`--instance` 从「切换到 Pod 视图」变成「收窄到某个实例」。
+- **`events` 的默认口径改成和 `logs` 一样：不加参数就给全部。** `job` / `hpc` / `ray` / `serving` 的 `events` 现在把控制器事件与每个实例的 Pod 事件合成一条时间线，`--all-instances` 随之删除（默认即是），`--instance` 从「切换到 Pod 视图」变成「收窄到某个实例」。旧的默认视图由新的 `--workload-level` 保留——只要控制器那一半，与 `--instance` 互斥，并且跳过实例枚举，所以它也是最省请求的一条路径。
 
   两条命令此前口径不一致是有原因的，只是那个原因不该由调用方承担：**平台根本没有「工作负载级日志」这一层**（日志端点只按 Pod 名取），所以 `logs` 天生就是全实例聚合；而事件有两套**不相交**的视图——控制器的 `Unschedulable` / `SuccessfulCreatePod` 和 Pod 的 `FailedScheduling` / `Pulling` / `BackOff`——CLI 早先把前者当默认、后者做成开关。于是「这东西为什么没起来」在 logs 上问一次就够，在 events 上要先问一遍、发现没有线索、再加个 flag 问第二遍，而**第二遍才是答案所在的地方**。
 

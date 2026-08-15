@@ -1505,3 +1505,73 @@ def test_serving_create_is_not_blocked_by_an_unread_or_empty_priority_menu(
 
     assert result.exit_code == 0, result.output
     assert "Create plan" in result.output
+
+
+def test_serving_workload_level_skips_the_instance_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deployment view is the old default, and costs one request again."""
+    _patch_serving_cli_deps(monkeypatch)
+
+    def _events(serving_id: str, *, pod_names=None, session=None) -> list[dict[str, Any]]:  # noqa: ANN001
+        assert pod_names is None
+        return [
+            {
+                "object_id": "sv-deadbeef",
+                "object_type": "INFERENCE_SERVING",
+                "reason": "GroupsProgressing",
+                "message": "Replicas are progressing",
+                "last_timestamp": "1",
+            }
+        ]
+
+    monkeypatch.setattr(browser_api_module, "list_serving_events", _events)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_serving_instances",
+        lambda *_args, **_kwargs: pytest.fail(
+            "--workload-level must not enumerate instances"
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "serving",
+            "events",
+            "demo",
+            "--workspace",
+            "Test Workspace",
+            "--workload-level",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    items = json.loads(result.output)["data"]["items"]
+    assert [item["reason"] for item in items] == ["GroupsProgressing"]
+    assert all("instance" not in item for item in items)
+
+
+def test_serving_workload_level_and_instance_contradict_each_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_cli_deps(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "serving",
+            "events",
+            "demo",
+            "--workspace",
+            "Test Workspace",
+            "--workload-level",
+            "--instance",
+            "rank=0",
+        ],
+    )
+
+    assert result.exit_code == 12
+    assert json.loads(result.output)["error"]["type"] == "InvalidUsage"

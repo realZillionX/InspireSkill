@@ -224,6 +224,65 @@ def test_job_events_reject_an_unknown_instance(monkeypatch) -> None:  # noqa: AN
     assert "rank=0, rank=1" in payload["error"]["message"]
 
 
+def test_job_workload_level_skips_the_instance_calls(monkeypatch) -> None:  # noqa: ANN001
+    """The old default stays reachable, and costs one request again."""
+    _patch_job_events(monkeypatch)
+    monkeypatch.setattr(
+        job_events,
+        "list_job_events",
+        lambda _job_id, session=None: [  # noqa: ANN001
+            {"reason": "Unschedulable", "object_type": "job", "last_timestamp": "0"}
+        ],
+    )
+    monkeypatch.setattr(
+        job_events.browser_api_module,
+        "list_job_instances",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("--workload-level must not enumerate instances")
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "events",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+            "--workload-level",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    items = _json_data(result.output)["items"]
+    assert [item["reason"] for item in items] == ["Unschedulable"]
+    assert all("instance" not in item for item in items)
+
+
+def test_job_workload_level_and_instance_contradict_each_other(monkeypatch) -> None:  # noqa: ANN001
+    _patch_job_events(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "events",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+            "--workload-level",
+            "--instance",
+            "0",
+        ],
+    )
+
+    assert result.exit_code == 12
+    assert json.loads(result.output)["error"]["type"] == "InvalidUsage"
+
+
 def test_ray_event_api_paginates_with_finite_pages(monkeypatch) -> None:  # noqa: ANN001
     calls: list[int] = []
 

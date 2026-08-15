@@ -135,6 +135,15 @@ def _list_all_job_instances(job_id: str, *, session) -> list[dict]:  # noqa: ANN
     ),
 )
 @click.option(
+    "--workload-level",
+    "workload_level",
+    is_flag=True,
+    help=(
+        "Only the controller's own events about the job as a whole. "
+        "Cannot be combined with --instance."
+    ),
+)
+@click.option(
     "--tail",
     type=click.IntRange(1),
     default=DEFAULT_EVENT_TAIL,
@@ -158,6 +167,7 @@ def events(
     type_filter: Optional[str],
     reason_filter: Optional[str],
     instance_selectors: tuple[str, ...],
+    workload_level: bool,
     tail: int,
     follow: bool,
     interval: int,
@@ -168,7 +178,8 @@ def events(
     Controller events and every instance's pod events are merged into one
     timeline: the controller says why the job was not created, the pods say
     why they were not scheduled or started, and they are disjoint sets. Use
-    ``--instance`` to narrow to one instance.
+    ``--instance`` to narrow to one instance, or ``--workload-level`` to keep
+    only the controller's half.
 
     \b
     Examples:
@@ -177,9 +188,18 @@ def events(
       inspire job events train-a --workspace 分布式训练空间 --type Warning
       inspire job events train-a --workspace 分布式训练空间 --reason Unschedulable
       inspire job events train-a --workspace 分布式训练空间 --instance rank=0
+      inspire job events train-a --workspace 分布式训练空间 --workload-level
       inspire job events train-a --workspace 分布式训练空间 --follow
     """
     job = _reject_web_job_name_at_boundary(ctx, job)
+    if workload_level and instance_selectors:
+        _handle_error(
+            ctx,
+            "InvalidUsage",
+            "--workload-level and --instance cannot be used together.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
     for value in instance_selectors:
         _reject_job_instance_name(ctx, value)
     try:
@@ -191,6 +211,11 @@ def events(
     def _fetch_web_events() -> list[dict]:
         try:
             def _fetch(resolved_id: str, session) -> list[dict]:  # noqa: ANN001
+                if workload_level:
+                    return sorted(
+                        list_job_events(resolved_id, session=session),
+                        key=event_sort_key,
+                    )
                 views = select_job_instance_views(
                     job_instance_views(
                         _list_all_job_instances(resolved_id, session=session)
