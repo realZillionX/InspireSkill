@@ -492,6 +492,7 @@ def _public_hpc_instances(
             ("status", ("status", "instance_status", "phase", "state")),
             ("role", ("role", "component", "worker_group_name")),
             ("type", ("type", "instance_type")),
+            ("node", ("node", "node_name", "host_name")),
         ):
             value = _public_hpc_instance_text(inst, *candidates)
             if value:
@@ -516,6 +517,7 @@ def _format_hpc_instances(instances: list[dict[str, Any]]) -> str:
         for key, label in (
             ("role", "Role"),
             ("type", "Type"),
+            ("node", "Node"),
             ("resource", "Resource"),
             ("rank", "Rank"),
         )

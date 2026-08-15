@@ -303,6 +303,7 @@ def _public_ray_instances(
             ("status", ("status", "instance_status", "phase", "state")),
             ("role", ("role", "worker_group_name", "component")),
             ("type", ("type", "instance_type")),
+            ("node", ("node_name", "node", "host_name")),
         ):
             value = _public_ray_instance_text(inst, *candidates)
             if value:
@@ -326,6 +327,7 @@ def _format_ray_instances(instances: list[dict[str, Any]]) -> str:
         for key, label in (
             ("role", "Role"),
             ("type", "Type"),
+            ("node", "Node"),
             ("resource", "Resource"),
             ("rank", "Rank"),
         )

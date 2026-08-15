@@ -271,7 +271,7 @@ def test_ray_instances_requires_workspace_and_uses_num(monkeypatch: pytest.Monke
     assert "Ray Instances" not in result.output
     assert "Total:" not in result.output
     assert "rj-abc-head-1" not in result.output
-    assert "ray-node-a" not in result.output
+    assert "ray-node-a" in result.output
     assert "backend" not in result.output
 
 

@@ -58,6 +58,12 @@
 
 - `inspire notebook create` 提交前挡住工作空间内的重名。**平台自己不校验重名**——实测用同一个名字连建两个都成功，而重名会让此后每一条 `notebook <动词> <名字>` 都变成歧义、必须 `--pick`。校验是大小写不敏感的，也会忽略尾部空格。探测失败时让路、不拦创建。
 
+- `job / hpc / notebook / serving status` 报出工作负载落在哪些节点，`job / hpc / ray / serving instances` 新增 `Node` 列给出每个 Pod 的落点。此前 CLI 能回答「要了几个节点」却回答不了「是哪几个」——而排查坏节点、复现某次实验、判断掉队的是哪个 Worker，问的都是后者。平台在这些详情里一直回显落点，只是投影层把它当内部字段丢掉了：`train.GetJob` 有 `node_infos[]`（外加请求侧的 `specified_nodes` / `exclude_nodes`，后者正是 `job create --exclude-node` 传进去的那份），`hpc.GetJob` 有 `nodes[]`，`GetServing` 把 `node_names[]` 放在 `extra_info` 里，四个 `ListJobInstances` 族的行都带 pod 级的 `node`。
+
+  **节点名不是平台 handle。** `qb-prod-4090-gpu105` 这类名字是基础设施身份，人和平台同学都按它对话，所以它照常输出；同一行里的 `instance_id` 仍然被洗掉。空的节点清单读作「还没被调度」而不是「查不到」——排队中的任务 `node_count` 有值而落点为空，两者不相等是正常的。
+
+- `notebook status` 的 `Node` 一并给出该节点的健康状态，被 Cordon 或处于维护窗口时标出。**STOPPED 的 Notebook 不会清空节点对象**，而是把名字置空、状态置成 proto 零值 `UNKNOWN_NODE_STATUS`，照直读会印出一个「状态未知的节点」——投影按空名字判定未落点，这一行随之消失。
+
 ### 破坏性变更
 
 - `inspire image save` 移到 `inspire notebook save-image`。选项、输出、退出码和 `--json` schema 一个字没变，只换了命令路径，**不保留别名**，所以脚本和 Agent 合同要跟着改。（同组的取消命令是本轮新增的，从未以 `image cancel-save` 发布过，只会以 `notebook cancel-save-image` 出现。）

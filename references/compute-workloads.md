@@ -110,10 +110,12 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 | `events` | 为什么排队、为什么启动失败、调度器或控制器拒绝了什么 |
 | `logs` | 程序自身报错、训练进度、业务输出 |
 | `metrics` | 已启动任务是否仍在有效工作，Pod / Task / Replica 是否均衡 |
-| `instances` | 实际运行单元是否齐全，是否有部分 Pending 或异常 |
-| `status` | 平台状态、优先级、基础摘要 |
+| `instances` | 实际运行单元是否齐全，是否有部分 Pending 或异常；每个 Pod 落在哪个节点 |
+| `status` | 平台状态、优先级、基础摘要、落在哪些节点 |
 
 卡住或失败先看 Events；已启动但健康度不明看 Metrics；程序行为看 Logs；产物完整性回到共享盘文件和 Fingerprint。
+
+节点归属分两层，两层都是 Live 事实，任务离开运行态就清空：`status` 给任务级的节点清单（`job` 的 `Nodes` / `Pinned Nodes` / `Excluded Nodes`、`hpc` 与 `serving` 的 `Nodes`、`notebook` 的 `Node` 带节点健康），`instances` 给 Pod 级的 `Node` 列。多节点任务定位掉队的那一个 Worker 用 `instances`，因为只有它把 rank 和节点对上；`ray` 的节点归属只有 `instances` 这一层，`ray status` 的 `head_node` / `worker_groups` 是规格不是落点。**空的节点清单读作「还没被调度」，不是「查不到」。**
 
 当前公共聚合日志命令只在 Job 下提供。HPC、Ray 和 Serving 应使用各自的 Events、Instances、Metrics、Status，以及应用自身写入共享盘或服务端的日志。
 

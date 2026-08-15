@@ -860,7 +860,7 @@ def test_hpc_instances_requires_workspace_and_uses_num(
     assert "HPC Instances" not in result.output
     assert "Total:" not in result.output
     assert "hpc-job-001-launcher-deadbeef" not in result.output
-    assert "cpu-node-a" not in result.output
+    assert "cpu-node-a" in result.output
     assert "backend" not in result.output
 
     json_result = runner.invoke(
@@ -885,6 +885,7 @@ def test_hpc_instances_requires_workspace_and_uses_num(
                 "status": "Running",
                 "role": "launcher",
                 "type": "pod",
+                "node": "cpu-node-a",
                 "resource": "8 CPU, 64 GiB, 0 GPU",
                 "rank": 0,
             }

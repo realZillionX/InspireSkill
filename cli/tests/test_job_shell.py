@@ -343,7 +343,7 @@ def test_job_instances_requires_workspace_and_uses_limit(monkeypatch) -> None:  
     assert "Job Instances" not in result.output
     assert "Total:" not in result.output
     assert "job-abc-worker-deadbeef" not in result.output
-    assert "node-a" not in result.output
+    assert "node-a" in result.output
     assert "backend" not in result.output
 
 

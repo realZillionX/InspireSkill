@@ -192,6 +192,35 @@ def _gpu_type(item: dict[str, Any], quota: dict[str, Any]) -> str:
     )
 
 
+def _node(item: dict[str, Any]) -> dict[str, Any]:
+    """Project where this notebook is actually running.
+
+    ``GetNotebook`` carries the whole node object, but only while the instance
+    holds one: a STOPPED notebook answers an empty ``name`` and the proto
+    zero-value ``UNKNOWN_NODE_STATUS``, which must read as "not placed" rather
+    than as a node in an unknown state. ``cordoned`` and ``maintenance`` are
+    reported only when set, because a placed-but-draining node explains a
+    notebook that is running now and will not be after the next restart.
+    """
+    node = item.get("node")
+    node = node if isinstance(node, dict) else {}
+    name = _first_public_text(node.get("name"))
+    if not name:
+        return {}
+
+    status = _first_public_text(node.get("status"))
+    if status.upper().startswith("UNKNOWN"):
+        status = ""
+    return _compact_mapping(
+        {
+            "name": name,
+            "status": status,
+            "cordoned": _first_public_text(node.get("cordon_type")),
+            "maintenance": bool(node.get("is_maint")) or None,
+        }
+    )
+
+
 def _created_by(item: dict[str, Any]) -> str:
     for key in ("created_by", "creator", "owner"):
         value = item.get(key)
@@ -248,6 +277,7 @@ def public_notebook(
             "created_by": _created_by(item),
             "image": _image_label(item),
             "resource": resource,
+            "node": _node(item),
             "priority": priority,
             "priority_level": _first_public_text(
                 item.get("priority_level"),

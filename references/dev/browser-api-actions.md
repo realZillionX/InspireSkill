@@ -32,7 +32,7 @@ Referer：`/jobs/distributedTraining`，详情页 `/jobs/distributedTrainingDeta
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
 | `CreateJobConsole` † | 见下方创建字段表 | `{job_id, sub_code, sub_msg}` | `job create`、`job batch` |
-| `GetJob` | `{job_id}` | 完整任务对象：`name` / `status` / `command` / `framework_config[]` / `dataset_info[]` / `project_id` / `workspace_id` / `logic_compute_group_name` / `created_at` / `finished_at` | `job status`、`job command`、`job logs`、`job metrics`、`job wait` |
+| `GetJob` | `{job_id}` | 完整任务对象：`name` / `status` / `command` / `framework_config[]` / `dataset_info[]` / `node_infos[]` / `specified_nodes[]` / `exclude_nodes[]` / `project_id` / `workspace_id` / `logic_compute_group_name` / `created_at` / `finished_at` | `job status`、`job command`、`job logs`、`job metrics`、`job wait` |
 | `ListJobs` | `{workspace_id, page_num, page_size, created_by, status?, keyword?}` | `{jobs[], total}` | `job list`、Name Resolver、`cache refresh` |
 | `ListJobInstances` | `{job_id, page_num, page_size}` | `{items[], total}` | `job instances`、`job shell`、`job logs`、`job events` |
 | `ListJobEvents` | `{PageNumber\|page_num, page_size, filter:{object_type, object_ids[]}}` | `{events[], total}` | `job events` |
@@ -51,6 +51,7 @@ Referer：`/jobs/distributedTraining`，详情页 `/jobs/distributedTrainingDeta
 - **`DeleteJob` 要求先停止**，运行中删除返回 `Conflict: 当前状态（运行中）无法删除`。找不到资源时它返回 **`AccessForbidden`**，不是 `ResourceNotFound`（与 `hpc.DeleteJob` 相反）。
 - `ListJobs` 的 `total` 当前是 int，但 `hpc` / `ray` 同名字段是 string，一律走 `_coerce_total()`。
 - `JobInfo` 从 `framework_config[0]` 读规格：`gpu_count` / `cpu` / `mem_gi` / `shm_gi` / `instance_count`，GPU 型号在 `instance_spec_price_info.gpu_info.gpu_type_display`。
+- **节点归属分三个字段，语义不同**：`node_infos[]` 是**实际落点**（元素 `{node_name}`，被调度后才有值，任务停下即清空），`specified_nodes[]` 与 `exclude_nodes[]` 是**创建时的请求侧**（裸字符串数组，`exclude_nodes` 对应 `job create --exclude-node`）。`node_count` 是请求的节点数，与 `framework_config[0].instance_count` 同值——**它不是 `node_infos` 的长度**，排队中的任务两者会不相等。同一层的 pod 级落点在 `ListJobInstances` 行的 `node`（裸字符串），多节点任务只有它能把 rank 和节点对上。
 
 ---
 
@@ -61,7 +62,7 @@ Referer：`/jobs/highPerformanceComputing`，详情页 `/jobs/hpcDetail/{job_id}
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
 | `CreateJobConsole` † | 见下方创建字段表 | `{job_id, sub_code, sub_msg}` | `hpc create`、`hpc batch` |
-| `GetJob` | `{job_id}` | `{job_name, status, sbatch_script{}, slurm_cluster_spec{}, description, ttl_after_job_finish_seconds, dataset_info[], project_id, workspace_id, …}` | `hpc status`、`hpc metrics` |
+| `GetJob` | `{job_id}` | `{job_name, status, sbatch_script{}, slurm_cluster_spec{}, nodes[], steps, description, ttl_after_job_finish_seconds, dataset_info[], project_id, workspace_id, …}` | `hpc status`、`hpc metrics` |
 | `ListJobs` | `{workspace_id, page_num, page_size, created_by, status?}` | `{jobs[]\|items[], total}`（`total` 是**字符串**） | `hpc list`、Name Resolver、`cache refresh` |
 | `ListJobEvents` | `{pageNum: -1, pageSize: 200, filter:{object_ids:[job_id], object_type:"HPC_JOB"}, sorter:[{field:"last_timestamp", sort:"ascend"}]}` | `{events[]\|items[]\|list[]}` | `hpc events` |
 | `ListJobInstances` | `{jobId, page_num, page_size}` | `{items[]\|list[], total}` | `hpc instances` |
@@ -74,7 +75,8 @@ Referer：`/jobs/highPerformanceComputing`，详情页 `/jobs/hpcDetail/{job_id}
 
 **参数语义与限制**
 
-- **`ListJobInstances` 的 id 键是驼峰 `jobId`**，与同一路由上其它 Action 的 `job_id` 不一致。
+- **`ListJobInstances` 的 id 键是驼峰 `jobId`**，与同一路由上其它 Action 的 `job_id` 不一致。它的行里有 pod 级落点 `node`（裸字符串，如 `hpc-compute003`），外加 `component`（`slurmctld` / `slurmd`）。
+- **`GetJob.nodes` 是 Slurm 集群的实际落点**，discovery 声明为字符串数组，实测停止的任务恒为 `[]`——**空数组要读作「没在跑」而不是「读不到」**。带数据的形状尚未在活任务上复核，pod 级的 `ListJobInstances.node` 是同一事实的已验证来源。
 - **`ListJobEvents` 的分页键也是驼峰**（`pageNum` / `pageSize`），并且平台会回收已完成任务的事件，所以「查不到事件」在保留期过后是正常稳态。
 - **`GetJobLog` 与 `ListSlurmdPodEvent` 的实例名都必须带命名空间**（`<ns>/<pod>`）。日志端裸名报 `InvalidParameter: … the hpc job ids length of instances expect 1, but got 0`；事件端裸名和 `job_id` 都**静默回空**。
 - **`GetJobLog` 拒绝任何显式 sorter**，包括 `@timestamp`；不发 sorter，需要排序就在客户端做。
@@ -136,7 +138,7 @@ Referer：`/jobs/interactiveModeling`。
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
 | `CreateNotebook` | 见下方创建字段表 | `{notebook_id, sub_code, sub_msg}` | `notebook create`、`notebook batch` |
-| `GetNotebook` | `{notebook_id}` | 完整实例对象：`status` / `sub_status` / `workspace{}` / `project{}` / `logic_compute_group{}` / `quota{}` / `node{}` / `dataset_info[]` | `notebook status` / `metrics` / `exec` / `shell` / `ssh` / `proxy-url`、`wait` 轮询 |
+| `GetNotebook` | `{notebook_id}` | 完整实例对象：`status` / `sub_status` / `workspace{}` / `project{}` / `logic_compute_group{}` / `quota{}` / `node{}` / `extra_info{}` / `dataset_info[]` | `notebook status` / `metrics` / `exec` / `shell` / `ssh` / `proxy-url`、`wait` 轮询 |
 | `ListNotebooks` | `{workspace_id, page, page_size, filter_by:{keyword, user_id[], logic_compute_group_id[], status[], mirror_url[]}, order_by:[{field:"created_at", order:"desc"}]}` | `{list[], total}`（`total` 是 int） | `notebook list`、Name Resolver、`cache refresh` |
 | `ListNotebookCreators` † | `{workspace_id}` | `{list[], total}` | — |
 | `ListNotebookEvents` | `{notebook_id, page, page_size}` | `{list[]\|events[], total}` | `notebook events`、`notebook create` 的等待预览 |
@@ -160,6 +162,7 @@ Referer：`/jobs/interactiveModeling`。
 - **`ListRunIndex` 无分页**，传 `PageNumber` 直接报错。`end_time = ""` 的那条是当前运行周期，按 `index` 从旧到新排。控制台的「生命周期」页就是用它渲染的——`ListNotebookLifecycles` 对绝大多数 Notebook 返回空列表。
 - **`ListNotebookEvents` 的事件字段是平台自有形状**，不是 K8s 形状：`content`（正文）、`created_at`（epoch-ms 字符串）、`event_id`。共享渲染器把 `content → message`、`created_at → last_timestamp` / `first_timestamp`。事件按从旧到新返回，Wrapper 默认自动翻页到 `total`（安全上限 100 页）。
 - **找不到资源时返回 `ResourceNotFound`，HTTP 仍是 200**，不再是 v1 的传输层 404。依赖 404 判断「不存在」的调用方必须同时认这个码。
+- **`node{}` 是整个节点对象，不只是 GPU 型号**：`name`（如 `cpu-nat-351`）、`status`、`cordon_type`、`is_maint`、`resource_pool`、`cpu_count` / `memory_size` / `gpu_count` 都在里面。**STOPPED 的 Notebook 不清空这个对象，而是把 `name` 置空、`status` 置成 proto 零值 `UNKNOWN_NODE_STATUS`**（同族还有 `unknown_node_type` / `unknown_credit_score`）——只判空对象会把「没在跑」读成「有一个状态未知的节点」。同一份落点还有第二个来源 `extra_info`（`NodeName` / `HostIP` / `PodName` / `ContainerID`），停止时同样是空串而不是缺键。
 - **`SaveNotebookImage` 不收 `visibility`**（`unknown field "visibility"`），要改可见性只能存完再调 `image.UpdateImage`。它**不返回新镜像的 id**，调用方只能靠列表去找。同一层还有 `EstimateSaveMirrorSize` 和 `CancelSaveMirror`，当前未封装。
 - **`GetNotebookAccessUrl` 是 IDE 网关地址，不是 Notebook Proxy。** 两个 URL 归一化后指向同一个网关（两个 IDE 共用同一套 runtime 与 token），任取其一即可。STOPPED 的 Notebook 上它返回两个空字符串，此时回落 Playwright 抓取（那条也会失败，语义不变）。实测 **0.57 秒 vs 6.4–36 秒**。
 - **解析顺序是 缓存/热候选 → `GetNotebookAccessUrl` → Playwright**，收口在 `resolve_notebook_vscode_ide_url`。`refresh=True` 时 API 这一档**也走**：refresh 的语义是「别信缓存」，不是「一定要抓」。
@@ -182,7 +185,7 @@ Referer：`/jobs/modelDeployment`。路由名是**下划线**形式，discovery 
 | --- | --- | --- | --- |
 | `CreateServingConsole` † | 见下方创建字段表 | `{inference_serving_id, sub_code, sub_msg}` | `serving create`、`serving batch` |
 | `ListServings` | `{workspace_id, page, page_size, filter_by:{my_serving:true, keyword?, project_id[]?, status[]?, inference_serving_type[]?}}` | `{inference_servings[], total}` | `serving list`、Name Resolver、`cache refresh` |
-| `GetServing` | `{inference_serving_id}` | 完整部署对象：`status` / `replicas` / `node_num_per_replica` / `model_id` / `model_version` / `mirror_id` / `resource_spec_price{}` | `serving status`、`serving metrics` |
+| `GetServing` | `{inference_serving_id}` | 完整部署对象：`status` / `replicas` / `node_num_per_replica` / `model_id` / `model_version` / `mirror_id` / `resource_spec_price{}` / `extra_info{node_names[]}` | `serving status`、`serving metrics` |
 | `ListServingVersions` | `{inference_serving_id}` | `{inference_servings[]\|list[], total}` | `serving versions` |
 | `ListServingInstances` | `{inference_serving_id, page, page_size}` | `{items[]\|list[]\|instances[], total}` | `serving instances` |
 | `ListServingEvents` | `{page, page_size, filter:{object_type:"INFERENCE_SERVING", object_ids:[id]}}` | `{events[]\|items[]\|list[]}` | `serving events` |
@@ -217,6 +220,7 @@ Referer：`/jobs/modelDeployment`。路由名是**下划线**形式，discovery 
 - **`ListServingScaleHistory` 的列表键是 `scale_history_items`**，不是 `items` 也不是 `list`。曾经按 `items` 读，于是任何有扩缩容历史的 serving 都返回空列表——这是一个「读错键就永远看不到数据」的静默失败，而不是报错。
 - **`GetInferenceServingTerms` 不是调用说明。** 它的 `terms` 元素是 `{term, start_time, end_time}`，即**运行期次索引**（第 N 次运行的起止时间，控制台用它把详情页各 tab 圈定到某一次运行），里面没有 endpoint、示例请求或 token。调用信息是 `GetServing` 的 `port` 和 `command`。**查过，刻意不接**，Wrapper 保留但没有命令消费。
 - **`GetServingLog` 对不在日志库里的 pod 名回 `InternalError`**，看着像平台故障，实际含义是「pod 名不对」。
+- **节点落点在 `GetServing` 的 `extra_info.node_names[]`，不在顶层**：顶层只有 `node_num_per_replica`（每副本几个节点，是规格）。按顶层读会让每个部署都显示成没落点。pod 级的同一事实在 `ListServingInstances` 行的 `node`。两者都取自 discovery 声明，**尚未在活部署上复核**——本账号当前没有可读的 serving。
 - `GetServingScheduleConfig` 的回收规则是**按 GPU 档位**给的（每个 `items` 元素带 `gpu_count_min` / `gpu_count_max`），一个 Workspace 会有多条。
 - `DeleteServing` 的 id 不存在时返回 `ResourceNotFound`。
 - 读 Action 逐字接受 v1 请求体、响应字段完全一致；**写侧不能照搬**。

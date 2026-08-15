@@ -170,6 +170,29 @@ def _timestamp(item: object, keys: tuple[str, ...]) -> str:
     return ""
 
 
+def _node_names(item: object, key: str) -> list[str]:
+    """Read the live Slurm placement off an HPC detail payload.
+
+    ``nodes`` is empty until the cluster is up and empties again on stop, so an
+    absent list means "not placed", never "unknown". Node names are
+    infrastructure identity rather than platform handles and pass ``_text``
+    unscrubbed.
+    """
+    raw = _value(item, key)
+    if not isinstance(raw, list):
+        return []
+    names: list[str] = []
+    for entry in raw:
+        name = (
+            _text(entry.get("node_name") or entry.get("name"))
+            if isinstance(entry, dict)
+            else _text(entry)
+        )
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def public_hpc_status(item: object, *, fallback_name: str = "") -> dict[str, Any]:
     """Project one HPC detail payload onto stable, name-only fields."""
     name = _nested_name(item, ("name", "job_name")) or _text(fallback_name)
@@ -216,6 +239,7 @@ def public_hpc_status(item: object, *, fallback_name: str = "") -> dict[str, Any
             ),
             "compute_group": compute_group,
             "resource": _resource(item),
+            "nodes": _node_names(item, "nodes"),
             "priority": priority,
             "priority_level": priority_level,
             "sub_status": _text(_value(item, "sub_status")),
@@ -303,6 +327,9 @@ def format_hpc_status(view: dict[str, Any]) -> str:
     resource = _format_resource(view.get("resource"))
     if resource:
         lines.append(f"Resource: {resource}")
+    nodes = view.get("nodes")
+    if nodes:
+        lines.append(f"Nodes: {', '.join(nodes)}")
     for mount in view.get("datasets") or []:
         lines.append(f"Dataset: {mount['name']}:{mount['version']} -> {mount['path']}")
     for key, label in (

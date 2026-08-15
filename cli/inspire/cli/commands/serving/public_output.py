@@ -76,6 +76,28 @@ def _compact(values: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _node_names(item: object) -> list[str]:
+    """Read the live placement out of ``GetServing``'s ``extra_info``.
+
+    The platform files the node list one level down rather than beside
+    ``replicas``, so a top-level read finds nothing and reports a serving as
+    unplaced no matter how many replicas are up.
+    """
+    for source in _sources(item):
+        extra = _value(source, "extra_info")
+        raw = extra.get("node_names") if isinstance(extra, dict) else None
+        if not isinstance(raw, list):
+            continue
+        names: list[str] = []
+        for entry in raw:
+            name = sanitize_public_text(entry or "", omit_urls=True).strip()
+            if name and name not in names:
+                names.append(name)
+        if names:
+            return names
+    return []
+
+
 def _model_label(item: object) -> str:
     model = _value(item, "model")
     name = (
@@ -178,6 +200,7 @@ def public_serving(item: object, *, fallback_name: str = "") -> dict[str, Any]:
                     _value(item, "nodes_per_replica"),
                 ),
                 "priority": _value(item, "task_priority", _value(item, "priority")),
+                "nodes": _node_names(item),
                 "port": _value(item, "port"),
                 "command": sanitize_public_text(
                     _value(item, "command") or "",

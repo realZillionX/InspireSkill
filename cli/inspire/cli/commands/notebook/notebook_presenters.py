@@ -72,6 +72,23 @@ def _format_uptime(seconds: object) -> str:
     return " ".join(parts) or "< 1m"
 
 
+def _format_node(node: object) -> str:
+    if not isinstance(node, dict) or not node.get("name"):
+        return ""
+    notes = [
+        note
+        for note in (
+            node.get("status"),
+            f"cordoned: {node['cordoned']}" if node.get("cordoned") else "",
+            "maintenance" if node.get("maintenance") else "",
+        )
+        if note
+    ]
+    if notes:
+        return f"{node['name']} ({', '.join(str(note) for note in notes)})"
+    return str(node["name"])
+
+
 def _print_notebook_detail(notebook: dict) -> None:
     """Print one already-projected notebook detail."""
     fields = [
@@ -83,6 +100,7 @@ def _print_notebook_detail(notebook: dict) -> None:
         ("Created By", notebook.get("created_by")),
         ("Image", notebook.get("image")),
         ("Resource", _format_public_resource(notebook.get("resource"))),
+        ("Node", _format_node(notebook.get("node"))),
         ("Priority", notebook.get("priority")),
         ("Priority Level", notebook.get("priority_level")),
         (

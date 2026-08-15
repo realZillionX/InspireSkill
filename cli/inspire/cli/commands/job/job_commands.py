@@ -373,6 +373,7 @@ def _public_job_instances(instances: list[dict]) -> list[dict]:
             ("status", ("status", "instance_status", "phase", "state")),
             ("role", ("role", "component", "worker_group_name")),
             ("type", ("type", "instance_type")),
+            ("node", ("node", "node_name", "host_name")),
         ):
             value = _public_instance_text(item, *candidates)
             if value:
@@ -543,6 +544,7 @@ def _format_job_instances(instances: list[dict]) -> str:
         for key, label in (
             ("role", "Role"),
             ("type", "Type"),
+            ("node", "Node"),
             ("resource", "Resource"),
             ("rank", "Rank"),
         )

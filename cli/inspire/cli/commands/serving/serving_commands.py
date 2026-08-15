@@ -472,6 +472,7 @@ def _public_serving_instances(
             ("status", ("status", "instance_status", "phase", "state")),
             ("role", ("role", "instance_type", "component")),
             ("type", ("type",)),
+            ("node", ("node", "node_name", "host_name")),
         ):
             value = _public_serving_instance_text(raw, *candidates)
             if value:
@@ -496,6 +497,7 @@ def _format_serving_instances(instances: list[dict[str, Any]]) -> str:
         for key, label in (
             ("role", "Role"),
             ("type", "Type"),
+            ("node", "Node"),
             ("resource", "Resource"),
             ("rank", "Rank"),
         )
@@ -1043,14 +1045,18 @@ def status_serving(
             ("image", "Image"),
             ("model", "Model"),
             ("resource", "Resource"),
+            ("nodes", "Nodes"),
             ("command", "Command"),
             ("port", "Port"),
             ("created_at", "Created"),
             ("updated_at", "Updated"),
         ):
             value = detail.get(key)
-            if value not in (None, ""):
-                lines.append(f"{label}: {value}")
+            if value in (None, ""):
+                continue
+            lines.append(
+                f"{label}: {', '.join(value) if isinstance(value, list) else value}"
+            )
         click.echo("\n".join(lines))
 
     except ConfigError as e:
