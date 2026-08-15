@@ -6,6 +6,9 @@ The ``/api/v2/ray`` Actions were verified against a live job on the
 list; top-level ``workspace_id`` rather than the ``workspace.*`` ``filter``
 envelope; error handling via ``ResponseMetadata.Error``) so future refactors
 can't silently change the wire format and break a live workspace.
+
+``GetJobLog`` is the one Action that does not follow the ``ray_job_id`` rule;
+it lives in ``test_browser_api_ray_logs.py`` with the reason spelled out.
 """
 
 from __future__ import annotations
@@ -439,6 +442,7 @@ def test_list_ray_job_scaling_histories_posts_expected_body(monkeypatch) -> None
         "ray_job_id": "ray-42",
         "page_num": 2,
         "page_size": 25,
+        "worker_group_name": "",
     }
 
 

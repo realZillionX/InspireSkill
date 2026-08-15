@@ -1507,6 +1507,11 @@ def test_nodes_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             )
         ],
     )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_node_specs",
+        lambda workspace_id, logic_compute_group_id=None, session=None, **_kwargs: [],  # noqa: ARG005
+    )
     runner = CliRunner()
 
     result = runner.invoke(
@@ -1526,6 +1531,7 @@ def test_nodes_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
                 "ready_nodes": 8,
                 "full_free_nodes": 3,
                 "full_free_gpus": 12,
+                "node_specs": [],
             }
         ]
     }

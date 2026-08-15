@@ -94,6 +94,67 @@ def _status_label(value: Any) -> str:
     return mapping.get(raw, raw or "-")
 
 
+# `model-hub` reports a serving's state as an int indexing the serving status
+# enum, while the `inference_serving` domain reports the same states as the
+# strings below. Index 4 is pinned by measurement, not by reading the enum:
+# across every model version that has servings, the count of status-4 entries
+# equals the version record's own `running_infrence_serving` (11/11).
+_SERVING_STATUS_LABELS = (
+    "PENDING",
+    "PRE_DEPLOYING",
+    "DEPLOYING",
+    "FAILED",
+    "RUNNING",
+    "SLEEPING",
+    "STOPPING",
+    "STOPPED",
+    "QUOTA_PENDING",
+)
+# A failed serving no longer holds the model version: it is not running, and
+# starting it is not an option. Everything else is a live consumer -- `STOPPED`
+# and `SLEEPING` servings can be started again, so they still break if the
+# model goes away.
+_RELEASED_SERVING_STATUSES = frozenset({"FAILED"})
+# One page covers every model version observed on the platform, and the Action
+# rejects `page_size: -1`, so "everything" has to be a real number.
+_SERVING_PAGE_SIZE = 100
+
+
+def _serving_status_label(value: Any) -> str:
+    if isinstance(value, bool) or value is None or value == "":
+        return ""
+    try:
+        index = int(str(value).strip())
+    except (TypeError, ValueError):
+        return scrub_raw_ids(value).strip()
+    if 0 <= index < len(_SERVING_STATUS_LABELS):
+        return _SERVING_STATUS_LABELS[index]
+    return str(index)
+
+
+def _serving_views(items: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Project related servings down to what identifies and qualifies them.
+
+    The platform hands back `serving_id` and `user_avatar` alongside the name;
+    neither reaches public output. The item's own `version` is dropped too --
+    it is the serving's revision, not the model version that was asked about,
+    and printing it beside a model version would read as the same number.
+    """
+    views: list[dict[str, str]] = []
+    for item in items:
+        name = scrub_raw_ids(item.get("name") or "").strip()
+        if not name:
+            continue
+        status = _serving_status_label(item.get("status"))
+        if status in _RELEASED_SERVING_STATUSES:
+            continue
+        view = {"name": name}
+        if status:
+            view["status"] = status
+        views.append(view)
+    return views
+
+
 def _format_size_gi(value: Any) -> str:
     try:
         number = float(value)
@@ -258,10 +319,58 @@ def _latest_version(data: Any) -> dict[str, Any]:
     return _version_inner(latest)
 
 
+def _version_number(value: Any) -> Optional[int]:
+    text = str(value or "").strip()
+    if text[:1].casefold() == "v":
+        text = text[1:]
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _reported_version(data: dict[str, Any], version_data: dict[str, Any]) -> Optional[int]:
+    """The version number `model status` reports on, as an int."""
+    model_payload = data.get("model")
+    inner: dict[str, Any] = model_payload if isinstance(model_payload, dict) else data
+    latest = _latest_version(version_data)
+    return _version_number(latest.get("version") or inner.get("version"))
+
+
+def _running_serving_count(item: dict[str, Any]) -> int:
+    try:
+        return int(str(item.get("running_infrence_serving") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _other_versions_in_use(
+    version_data: dict[str, Any], *, reported: Optional[int]
+) -> list[str]:
+    """Versions other than the reported one that still carry running servings.
+
+    Free -- the count is already on each version record `model status` fetched.
+    It matters because the serving list below only covers one version: deleting
+    the model takes every version's deployments with it.
+    """
+    labels: list[str] = []
+    for item in _version_items(version_data):
+        inner = _version_inner(item)
+        version = _version_number(inner.get("version") or inner.get("model_version"))
+        if version is None or version == reported:
+            continue
+        if _running_serving_count(item) <= 0:
+            continue
+        labels.append(_version_label(version))
+    return labels
+
+
 def _model_detail_view(
     name: str,
     data: dict[str, Any],
     version_data: dict[str, Any],
+    *,
+    vllm_compatibility: Optional[dict[int, bool]] = None,
 ) -> dict[str, Any]:
     model_payload = data.get("model")
     inner: dict[str, Any] = model_payload if isinstance(model_payload, dict) else data
@@ -276,9 +385,6 @@ def _model_detail_view(
         "description": scrub_raw_ids(inner.get("description") or ""),
         "type": _string_values(inner.get("model_type")),
         "tags": _string_values(inner.get("tags")),
-        "vllm_ready": bool(
-            latest.get("is_vllm_compatible", inner.get("is_vllm_compatible"))
-        ),
         "published": bool(inner.get("has_published")),
         "project": scrub_raw_ids(data.get("project_name") or ""),
         "owner": _explicit_identity_name(data, inner),
@@ -289,6 +395,10 @@ def _model_detail_view(
             format_epoch(inner.get("updated_at")) if inner.get("updated_at") else ""
         ),
     }
+    compatibility = vllm_compatibility or {}
+    version_number = _version_number(version)
+    if version_number is not None and version_number in compatibility:
+        view["vllm_ready"] = compatibility[version_number]
     return {
         key: value
         for key, value in view.items()
@@ -296,7 +406,12 @@ def _model_detail_view(
     }
 
 
-def _model_version_views(data: dict[str, Any]) -> list[dict[str, Any]]:
+def _model_version_views(
+    data: dict[str, Any],
+    *,
+    vllm_compatibility: Optional[dict[int, bool]] = None,
+) -> list[dict[str, Any]]:
+    compatibility = vllm_compatibility or {}
     views: list[dict[str, Any]] = []
     for item in _version_items(data):
         inner = _version_inner(item)
@@ -309,8 +424,10 @@ def _model_version_views(data: dict[str, Any]) -> list[dict[str, Any]]:
                 or inner.get("model_size_gb")
                 or inner.get("size")
             ),
-            "vllm_ready": bool(inner.get("is_vllm_compatible")),
         }
+        version_number = _version_number(version)
+        if version_number is not None and version_number in compatibility:
+            view["vllm_ready"] = compatibility[version_number]
         running = item.get("running_infrence_serving")
         if running not in (None, ""):
             view["running_servings"] = running
@@ -338,6 +455,8 @@ def _format_model_detail(view: dict[str, Any]) -> str:
         ("Owner", "owner"),
         ("Created", "created_at"),
         ("Updated", "updated_at"),
+        ("Pending deployment", "pending_serving"),
+        ("Other versions in use", "other_versions_in_use"),
     )
     lines: list[str] = []
     for label, key in labels:
@@ -349,6 +468,15 @@ def _format_model_detail(view: dict[str, Any]) -> str:
         elif isinstance(value, bool):
             value = "yes" if value else "no"
         lines.append(f"{label}: {value}")
+    if "servings" in view:
+        servings = view["servings"]
+        version = view.get("version") or "this version"
+        if not servings:
+            lines.append(f"Servings on {version}: none")
+        for serving in servings:
+            status = serving.get("status")
+            suffix = f" ({status})" if status else ""
+            lines.append(f"Serving on {version}: {serving['name']}{suffix}")
     return "\n".join(lines)
 
 
@@ -360,7 +488,9 @@ def _format_model_versions(versions: list[dict[str, Any]]) -> str:
             str(version.get("version") or ""),
             str(version.get("status") or ""),
             str(version.get("size") or ""),
-            "yes" if version.get("vllm_ready") else "no",
+            ("yes" if version["vllm_ready"] else "no")
+            if "vllm_ready" in version
+            else "-",
             str(version.get("running_servings") or ""),
         )
         for version in versions
@@ -615,8 +745,18 @@ def status_model(
 ) -> None:
     """Show detail of one registered model by name.
 
+    \b
     Includes latest version status, tags, model type, vLLM readiness,
     publication flag, owner, project, and timestamps when present.
+
+    \b
+    Read the deployment lines before deleting a model or repointing a serving:
+    `Serving on Vn` names the servings that still hold that version (failed ones
+    are left out -- they hold nothing), `Pending deployment` covers the whole
+    model and catches a deployment that is queued but not yet running, and
+    `Other versions in use` flags versions this view does not detail. None of
+    the three shows up in `model versions`, whose Servings column counts
+    running deployments on each version and nothing else.
     """
     name = reject_id_at_boundary(
         ctx,
@@ -684,7 +824,47 @@ def status_model(
             owner_scope="self",
         )
 
-        view = _model_detail_view(name, data, version_data)
+        compatibility = browser_api_module.get_model_vllm_compatibility(
+            model_id,
+            session=session,
+            workspace_id=workspace_id,
+        )
+        view = _model_detail_view(
+            name,
+            data,
+            version_data,
+            vllm_compatibility=compatibility,
+        )
+        # Whole-model question, so no version goes in: the platform reads a
+        # missing version as "any". It is the only signal that catches a
+        # deployment queued behind a busy quota.
+        pending = browser_api_module.check_model_inference_serving_pending(
+            model_id=model_id,
+            session=session,
+            workspace_id=workspace_id,
+        )
+        view["pending_serving"] = pending.get("has_pending_serving") is True
+        reported_version = _reported_version(data, version_data)
+        if reported_version is not None:
+            servings, _total = browser_api_module.list_model_inference_servings(
+                model_id=model_id,
+                version=reported_version,
+                page=1,
+                page_size=_SERVING_PAGE_SIZE,
+                session=session,
+                workspace_id=workspace_id,
+            )
+            page = bound_collection(
+                _serving_views(servings), limit=DEFAULT_COLLECTION_LIMIT
+            )
+            view["servings"] = page.items
+            view.update(
+                {f"servings_{key}": value for key, value in page.metadata().items()}
+            )
+        in_use = _other_versions_in_use(version_data, reported=reported_version)
+        if in_use:
+            view["other_versions_in_use"] = in_use
+
         if ctx.json_output:
             click.echo(json_formatter.format_json(view))
             return
@@ -882,9 +1062,16 @@ def versions_model(
 ) -> None:
     """List all versions of one registered model by name.
 
+    \b
     Use this before `serving create` when you need a specific
     `--model-version`; omit the version on serving create to use the latest
     version shown by model listing.
+
+    \b
+    The Servings column counts *running* deployments on that version. A queued
+    deployment counts as zero here and so does a stopped one; `model status`
+    names the servings on the version it reports and flags a pending
+    deployment anywhere in the model.
     """
     name = reject_id_at_boundary(
         ctx,
@@ -953,7 +1140,12 @@ def versions_model(
             owner_scope="self",
         )
 
-        versions = _model_version_views(data)
+        compatibility = browser_api_module.get_model_vllm_compatibility(
+            model_id,
+            session=session,
+            workspace_id=workspace_id,
+        )
+        versions = _model_version_views(data, vllm_compatibility=compatibility)
         page = bound_collection(versions, limit=effective_limit)
         if ctx.json_output:
             click.echo(

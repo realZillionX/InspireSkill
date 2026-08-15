@@ -8,10 +8,27 @@ from click.testing import CliRunner
 
 from inspire import config as config_module
 from inspire.cli.main import main as cli_main
-from inspire.platform.web.browser_api import FullFreeNodeCount, GPUAvailability
+from inspire.platform.web.browser_api import FullFreeNodeCount, GPUAvailability, NodeSpec
 
 
 _WS_DEFAULT = "ws-00000000-0000-0000-0000-0000000000aa"
+
+_NODE_SPEC = NodeSpec(
+    node_type="gpu",
+    gpu_type="H200",
+    gpu_count=8,
+    cpu_count=183.0,
+    memory_gib=1888.0,
+    job_types=("distributed_training",),
+)
+
+
+def _patch_node_specs(monkeypatch: pytest.MonkeyPatch, nodes_module) -> None:
+    monkeypatch.setattr(
+        nodes_module.browser_api_module,
+        "list_node_specs",
+        lambda _workspace_id, **_kwargs: [_NODE_SPEC],
+    )
 
 
 class _Session:
@@ -92,6 +109,8 @@ def test_resources_nodes_filters_and_returns_compact_json(
         ],
     )
 
+    _patch_node_specs(monkeypatch, nodes_module)
+
     result = CliRunner().invoke(
         cli_main,
         [
@@ -157,6 +176,8 @@ def test_resources_nodes_human_scrubs_raw_ids(
             )
         ],
     )
+
+    _patch_node_specs(monkeypatch, nodes_module)
 
     result = CliRunner().invoke(
         cli_main,
@@ -241,6 +262,8 @@ def test_resources_nodes_defaults_to_twenty_rows(
             for index, group_id in enumerate(group_ids)
         ],
     )
+
+    _patch_node_specs(monkeypatch, nodes_module)
 
     result = CliRunner().invoke(
         cli_main,

@@ -4,24 +4,24 @@
 >
 > 每条都是 `POST {base_url}/api/v2/{路由}?Action={Action}`，请求体是 JSON，响应取 `ResponseMetadata` / `Result` 信封里的 `Result`。「请求体」列写的是 **CLI 实际发出的键**，不是 discovery 声明的全集；「响应」列写的是**实测的线上键**，discovery 声明的 `Items` / `TotalCount` 在多数 Action 上不是真的。
 
-12 条路由、93 个 Action。`†` 标记的 Action 不在 `discovery` 里，但路由活着、Action 可调；`‡` 标记的整条路由不在 discovery 里。
+12 条路由、105 个 Action。`†` 标记的 Action 不在 `discovery` 里，但路由活着、Action 可调；`‡` 标记的整条路由不在 discovery 里。
 
 | 路由 | 域 | Action 数 | 主要 CLI 命令组 |
 | --- | --- | --- | --- |
 | [`train`](#train--分布式训练) | GPU 训练任务 | 10 | `job` |
-| [`hpc`](#hpc--cpu-slurm-批处理) | CPU Slurm 批处理 | 9 | `hpc` |
-| [`ray`](#ray--弹性计算) | 弹性计算 | 11 | `ray` |
-| [`notebook`](#notebook--交互式建模) | 交互式建模 | 13 | `notebook`、`image save` |
-| [`inference_serving`](#inference_serving--模型部署) | 模型部署 | 18 | `serving` |
-| [`workspace`](#workspace--工作空间资源) | 计算组、节点、配额 | 5 | `resources`、`<workload> quota`、每个 `create` |
+| [`hpc`](#hpc--cpu-slurm-批处理) | CPU Slurm 批处理 | 11 | `hpc` |
+| [`ray`](#ray--弹性计算) | 弹性计算 | 12 | `ray` |
+| [`notebook`](#notebook--交互式建模) | 交互式建模 | 16 | `notebook`、`image` |
+| [`inference_serving`](#inference_serving--模型部署) | 模型部署 | 19 | `serving` |
+| [`workspace`](#workspace--工作空间资源) | 计算组、节点、配额、用量 | 9 | `resources`、`<workload> quota`、每个 `create` |
 | [`user`](#user--账号) | 账号身份与权限 | 3 | `account permissions`、所有按当前用户过滤的列表 |
 | [`project`](#project--项目) | 项目 | 4 | `project`、每个 `create` |
 | [`image`](#image--镜像) | 镜像 | 5 | `image` |
-| [`model-hub`](#model-hub--模型仓库) | 模型仓库 | 12 | `model`、`serving create` |
+| [`model-hub`](#model-hub--模型仓库) | 模型仓库 | 13 | `model`、`serving create` |
 | [`file`](#file--文件页-) ‡ | 存储池与目录发现 | 2 | `init --scope project` |
 | [`dataset`](#dataset--官方数据集挂载-) ‡ | 官方数据集挂载 | 1 | `dataset validate`、`--dataset` |
 
-**没有 CLI 消费者的 Wrapper**（存在、有测试覆盖，但当前没有命令调用）：`notebook.ListNotebookLifecycles`、`notebook.ListNotebookCreators`、`ray.ListJobCreators`、`ray.ListJobScalingHistories`、`hpc.GetJobLog`、`inference_serving.GetServingLog`、`inference_serving.ListServingScaleHistory`、`inference_serving.GetInferenceServingTerms`、`model-hub.ListModelVersionOptions`、`model-hub.ListModelCreators`、`model-hub.ListModelRelatedServings`、`model-hub.GetHasModelPendingServing`、`model-hub.GetModelPublishPrefill`、`model-hub.GetModelPublishStatus`、`project.GetProjectForPage`。它们在表里照常列出，CLI 列写「—」。
+**没有 CLI 消费者的 Wrapper**（存在、有测试覆盖，但当前没有命令调用）：`notebook.ListNotebookLifecycles`、`notebook.ListNotebookCreators`、`ray.ListJobCreators`、`inference_serving.GetInferenceServingTerms`、`model-hub.ListModelVersionOptions`、`model-hub.ListModelCreators`、`model-hub.GetModelPublishPrefill`、`model-hub.GetModelPublishStatus`、`project.GetProjectForPage`。它们在表里照常列出，CLI 列写「—」。
 
 ---
 
@@ -65,7 +65,9 @@ Referer：`/jobs/highPerformanceComputing`，详情页 `/jobs/hpcDetail/{job_id}
 | `ListJobs` | `{workspace_id, page_num, page_size, created_by, status?}` | `{jobs[]\|items[], total}`（`total` 是**字符串**） | `hpc list`、Name Resolver、`cache refresh` |
 | `ListJobEvents` | `{pageNum: -1, pageSize: 200, filter:{object_ids:[job_id], object_type:"HPC_JOB"}, sorter:[{field:"last_timestamp", sort:"ascend"}]}` | `{events[]\|items[]\|list[]}` | `hpc events` |
 | `ListJobInstances` | `{jobId, page_num, page_size}` | `{items[]\|list[], total}` | `hpc instances` |
-| `GetJobLog` | `{page_size, filter:{podNames[], start_timestamp_ms, end_timestamp_ms}}` | `{logs[]\|items[], total}` | —（无 `hpc logs` 命令） |
+| `ListSlurmdPodEvent` | `{instance_id, page_size, PageNumber}` | `{events[], total}`（`total` 是字符串） | `hpc events --instance` |
+| `GetJobLog` | `{page_size, filter:{podNames[], start_timestamp_ms, end_timestamp_ms}}` | `{logs[], total}`（`total` 是 **int**） | `hpc logs` |
+| `GetHpcScheduleConfig` | `{workspace_id}` | `{enable_auto_stop, auto_stop_ruleset, enable_max_running_time, max_running_time_days/hours/minutes, predef_node_spec}` **或字面量 `null`** | `resources policy` |
 | `StopJob` | `{job_id}` | `{job_id, sub_code, sub_msg}` | `hpc stop` |
 | `DeleteJob` | `{job_id}` | `{job_id, sub_code, sub_msg}` | `hpc delete` |
 | `GetTaskMetric` | 见 [Metrics](#metrics--gettaskmetric) | `{time_seris_metric_groups[]}` | `hpc metrics` |
@@ -74,7 +76,11 @@ Referer：`/jobs/highPerformanceComputing`，详情页 `/jobs/hpcDetail/{job_id}
 
 - **`ListJobInstances` 的 id 键是驼峰 `jobId`**，与同一路由上其它 Action 的 `job_id` 不一致。
 - **`ListJobEvents` 的分页键也是驼峰**（`pageNum` / `pageSize`），并且平台会回收已完成任务的事件，所以「查不到事件」在保留期过后是正常稳态。
+- **`GetJobLog` 与 `ListSlurmdPodEvent` 的实例名都必须带命名空间**（`<ns>/<pod>`）。日志端裸名报 `InvalidParameter: … the hpc job ids length of instances expect 1, but got 0`；事件端裸名和 `job_id` 都**静默回空**。
 - **`GetJobLog` 拒绝任何显式 sorter**，包括 `@timestamp`；不发 sorter，需要排序就在客户端做。
+- **`GetJobLog` 的时间窗超过一个月报 `InternalError: 日志查询时间区间不能超过1个月`。** 这是个确定性的用户错误，却撞进了 transient 名单——不在客户端 clamp 就会先白烧三次退避重试，再抛出一条看起来像平台故障的错。Wrapper 用 `HPC_LOG_MAX_WINDOW_MS`（30 天）挡在前面。
+- **`GetJobLog` 的 `page_size` 省略或传 `-1` 都只回 100 条**（不是「全部」），`PageNumber` 被彻底忽略，而且 **`page_size=N` 保留的是最旧的 N 条**。所以「最后 N 条」平台点不到，必须先取满窗口再在客户端截尾。*（这一条来自 Wrapper 作者的实测；复核时可见的 HPC 任务日志已过保留期，未能独立复现。）*
+- **`ListSlurmdPodEvent` 的 `page_size` 必发**：省略时回空列表配非零 `total`，与 `ListLogicComputeGroups` 同病。它的行没有 `type` 也没有 `count`——**平台按发生次数逐行重复**（一个实例 `total=106`，去重后只有 20 行），所以读事件前要自己折叠，否则 `--tail 20` 会全是同一条。
 - **列表行的名字键是 `job_name`**，`name` 从来没被填充过——读 `name` 会让每个 HPC 任务都没有名字，列表渲染 N/A 且 Name Resolver 匹配不到任何东西。
 - **`DeleteJob` 要求先停止**，运行中删除返回 `Conflict`；id 不存在返回 `ResourceNotFound`。
 - discovery 对 hpc 的每个 Action 声明的参数与线上不一致（`ListJobs` 声明 `PageNumber`，实发 `page_num`），实测 v1 的请求体逐字被接受。
@@ -93,7 +99,8 @@ Referer：`/jobs/ray`。
 | `ListJobCreators` | `{workspace_id}` | `{items[]}` | — |
 | `ListJobEvents` | `{ray_job_id, page_num, page_size, sorter:[{field:"last_timestamp", sort}]}` | `{items[], total}` | `ray events` |
 | `ListJobInstances` | `{ray_job_id, page_num, page_size}` | `{items[], total}` | `ray instances` |
-| `ListJobScalingHistories` | `{ray_job_id, page_num, page_size}` | `{items[], total}` | — |
+| `ListJobScalingHistories` | `{ray_job_id, page_num, page_size, worker_group_name?}` | `{items[], total}`（`total` 是字符串） | `ray scaling` |
+| `GetJobLog` | `{page_size, filter:{podNames[], start_timestamp_ms, end_timestamp_ms}}` | `{logs[], total}` | `ray logs` |
 | `StartJob` | `{ray_job_id}` | `{ray_job{}}` | `ray start` |
 | `StopJob` | `{ray_job_id}` | `{ray_job{}}` | `ray stop` |
 | `DeleteJob` | `{ray_job_id}` | `{ray_job{}}` | `ray delete` |
@@ -101,7 +108,11 @@ Referer：`/jobs/ray`。
 
 **参数语义与限制**
 
-- **资源键在每个 Action 上都是 `ray_job_id`**；`job_id` 和 `id` 都报 `unknown field`，与 `train` / `hpc` 不同。
+- **资源键在每个 Action 上都是 `ray_job_id`**；`job_id` 和 `id` 都报 `unknown field`，与 `train` / `hpc` 不同。**唯一的例外是 `GetJobLog`**：它反过来只认 `job_id`，`ray_job_id` 是 `unknown field`。
+- **`GetJobLog` 的 `job_id` 不 scope 任何东西**：单独发它答 `InternalError`，与 pod 名同发既不收窄也不解析。真正的定位是 `filter.podNames`，平台把它反解回唯一一个 job，权限检查也落在这里（`InvalidParameter: Invalid instance names, the ray job ids length of instances expect 1, but got 0`）。控制台对 `ray` 不发 `job_id`（只对 `hpc` 发），Wrapper 照做。
+- **`GetJobLog` 的 `filter` 只收 `podNames` / `start_timestamp_ms` / `end_timestamp_ms`**；`worker_group_name`、`instance_type`、`keyword`、`object_type` 全是 `unknown field`。时间戳是字符串型 epoch 毫秒，传 int 报 `invalid value for string field endTimestampMs`。
+- **空或缺失 `podNames` 回一个干净的 `{"logs": [], "total": 0}`**，与「这个集群什么都没打印」不可区分——Wrapper 在发出前就拒绝，不让这个歧义进到调用方。
+- `ListJobScalingHistories` 的行是 `{event_time(epoch ms), event_type ∈ initialized|scale_up|scale_down, replicas_before, replicas_after}`，合同里没有 `filter` 也没有 `sorter`。
 - **Workspace scoping 是顶层 `workspace_id`**，`filter` 嵌套在这里会被拒。
 - **没有 `CreateJobConsole` 变体**，`ray` 对它答 `InvalidAction`，创建走 `CreateJob`。
 - **`ListJobEvents` 的信封是专用的**：`{ray_job_id, page_num, page_size, sorter}`，没有 `object_type`——传了返回 `参数错误`。事件是 K8s 形状（`reason` / `type` / `message` / `first_timestamp` / `last_timestamp` / `count`），关键信号是提交时的 `CreatedRayCluster`（Normal）和卡在 PENDING 时的 `FailedScheduling`（Warning）。
@@ -109,6 +120,7 @@ Referer：`/jobs/ray`。
 - **列表行的属主键是 `creator`、优先级键是 `priority_name`**；`created_by` 和 `priority` 恒为 null，只读那两个会让每个任务都没有属主、优先级恒 None。
 - **`UpdateJob` 不是弹性伸缩杠杆**，只收 `ray_job_id` / `name` / `description`；`worker_groups`、`head_node`、`entrypoint`、`min_replicas`、`replicas`、`task_priority`、`project_id` 全被拒。它是改名字，不是改集群，因此没有封装。
 - 实例行是 pod 形状：`instance_id` / `instance_type`（`head` / `worker`）/ `worker_group_name` / `status` / `cpu_count` / `memory_size` / `gpu_count` / `priority_level` / `created_at`。
+- **验证限度**：当前账号在全部可见 Workspace 里没有任何 Ray Job，别人的 Ray Job 每个详情 Action 都 `AccessForbidden`，所以 `GetJobLog` 与 `ListJobScalingHistories` 的**成功路径从未对真实对象跑通**。已经验证的是这两个 Wrapper 构造的请求体被网关接受并走到业务校验（答的是 `Invalid instance names` / `ResourceNotFound`，从不是 `unknown field`）；**响应的行字段来自控制台 SPA 的渲染代码而不是实时响应**，30 天窗口上限在 `ray` 上也无法探测（实例名解析先于窗口校验）。等有真实 Ray Job 时要补一次实测。
 
 ---
 
@@ -129,7 +141,10 @@ Referer：`/jobs/interactiveModeling`。
 | `StopNotebook` | `{notebook_id}` | `{notebook_id, sub_code, sub_msg}` | `notebook stop` |
 | `DeleteNotebook` | `{notebook_id}` | `{notebook_id, sub_code, sub_msg}` | `notebook delete` |
 | `SaveNotebookImage` | `{notebook_id, name, version, description}` | **恒为 `{}`**（`Result: null`） | `image save` |
+| `EstimateSaveMirrorSize` | `{notebook_id}` | `{active_snapshot_size}` | `image save`、`image save --dry-run` |
 | `GetNotebookAccessUrl` | `{notebook_id}` | `{jupyter_url, vscode_url}` | `notebook proxy-url`、`exec` / `shell`、SSH 链路 |
+| `GetRealtimeNotebookMetric` | `{notebook_id}` | `{resource_metric_list[]}` | `notebook metrics --now` |
+| `GetScheduleConfig` | `{WorkspaceId}` | Workspace 调度策略全集（回收 / 定时关机 / 各 Workload 的运行时长） | `resources policy` |
 | `GetTaskMetric` | 见 [Metrics](#metrics--gettaskmetric) | `{time_seris_metric_groups[]}` | `notebook metrics` |
 
 **参数语义与限制**
@@ -142,6 +157,11 @@ Referer：`/jobs/interactiveModeling`。
 - **`GetNotebookAccessUrl` 是 IDE 网关地址，不是 Notebook Proxy。** 两个 URL 归一化后指向同一个网关（两个 IDE 共用同一套 runtime 与 token），任取其一即可。STOPPED 的 Notebook 上它返回两个空字符串，此时回落 Playwright 抓取（那条也会失败，语义不变）。实测 **0.57 秒 vs 6.4–36 秒**。
 - **解析顺序是 缓存/热候选 → `GetNotebookAccessUrl` → Playwright**，收口在 `resolve_notebook_vscode_ide_url`。`refresh=True` 时 API 这一档**也走**：refresh 的语义是「别信缓存」，不是「一定要抓」。
 - **`exec` / `shell` 全程不起浏览器**：lab URL 取**原始 `jupyter_url`**（不能用 `_ide_gateway_url` 归一化后的形式——terminal 的 REST 与 WebSocket 路由挂在 Jupyter server base 上），`_xsrf` 靠对 `jupyter_url` 发一次普通 GET 拿 cookie，建/删 terminal 是 `POST` / `DELETE api/terminals` 并把 `_xsrf` 放进 `X-XSRFToken` 头。命令结束后回收本次创建的 Terminal。
+- **`EstimateSaveMirrorSize` 的 `active_snapshot_size` 单位是字节，而且线上是十进制字符串**（discovery 声明 int64）。它是容器可写层的增量，不是最终镜像的总大小。非 RUNNING 的 Notebook 答 `InvalidParameter: Cannot save image of non-running notebook: <id>`——**这条消息内嵌 raw notebook_id**，投影时必须折掉；未知 id 答 `ResourceNotFound: notebook not found`。取不到大小要读作「未知」，绝不能读作 0。
+- **`GetRealtimeNotebookMetric` 收到空 / 缺失的 `notebook_id` 不报错，而是用成功信封返回整个集群的汇总**（实测 CPU total 159682.1、GPU total 7765、已用 1743.12）。任何不做前置校验的调用方都会把这个印成「这一个 Notebook 占了上千张卡」。**Wrapper 必须在发出前拒绝空 handle。**
+- `GetRealtimeNotebookMetric` 的 `resource_metric_list` 固定四行 `{resource_name, total, used, available, usage_rate, unit, spec}`，`usage_rate` 是 0–1 比率，`unit` 只有 Memory 是 `"GB"`，`spec` 恒空，没有 disk / network 行。**STOPPED 的 Notebook 四行全 0 且 HTTP 成功**，与「RUNNING 但空闲」不可区分，所以命令层必须同时打印状态。
+- **`GetRealtimeNotebookMetricByTime` 刻意不接**：它只收 `notebook_id`（`time_range` / `metric_types` 都是 `unknown field`），固定约一小时窗口、5 秒粒度，返回同样拼错的 `time_seris_metric_groups`。`metrics --window 1h` 已经用同样四个指标覆盖同一小时，而 CLI 的输出预算只打 min/max/avg/last 加 sparkline，5 秒与 60 秒的差别在这个粒度上不可见；它又只存在于 `notebook` 路由，进不了共享的 metrics 命令工厂。
+- **`notebook.GetScheduleConfig` 是 Workspace 调度策略的全集**，`GetNotebookScheduleConfig`、`ray.GetRayJobScheduleConfig`、`train.GetTrainScheduleConfig` 都是它的严格子集（10 个 Workspace 上逐字段同值、同 `config_id`），所以只接这一个。它与**管理员专用**的 `workspace.GetScheduleConfig` 只是重名，不是同一个东西。
 - `notebook create` 的 `allow_ssh: true` 是硬编码的：平台据此在 proxy URL 上暴露容器内的 rtunnel 端口，缺了它 proxy 返回 404，Notebook SSH 的预检就完不成。该字段省略时默认 false，与镜像里有没有 SSH 工具无关。
 
 ---
@@ -158,8 +178,9 @@ Referer：`/jobs/modelDeployment`。路由名是**下划线**形式，discovery 
 | `ListServingVersions` | `{inference_serving_id}` | `{inference_servings[]\|list[], total}` | `serving versions` |
 | `ListServingInstances` | `{inference_serving_id, page, page_size}` | `{items[]\|list[]\|instances[], total}` | `serving instances` |
 | `ListServingEvents` | `{page, page_size, filter:{object_type:"INFERENCE_SERVING", object_ids:[id]}}` | `{events[]\|items[]\|list[]}` | `serving events` |
-| `ListServingScaleHistory` | `{inference_serving_id, page, page_size}` | `{items[]\|list[], total}` | — |
-| `GetServingLog` | `{page_size, filter:{podNames[], start_timestamp_ms, end_timestamp_ms}}` | `{logs[]\|items[], total}` | — |
+| `ListServingScaleHistory` | `{inference_serving_id, page, page_size}` | `{scale_history_items[], total}`（`total` 是字符串） | `serving scale-history` |
+| `GetServingLog` | `{page_size, filter:{podNames[], start_timestamp_ms, end_timestamp_ms}}` | `{logs[], total}` | `serving logs` |
+| `GetServingScheduleConfig` | `{workspace_id}` | `{enable_auto_stop, items[{auto_stop_ruleset, gpu_count_min, gpu_count_max}]}` | `resources policy` |
 | `GetServingApiMetric` | `{inference_serving_id, metric_types[], time_range:{start_timestamp, end_timestamp, interval_second}}` | `{metric_groups[]}` | `serving api-metrics` |
 | `GetInferenceServingTerms` | `{inference_serving_id}` | `{terms[]}` | — |
 | `GetServingConfigByWorkspaceId` | `{workspace_id}` | `{configs{}}` | `serving configs` |
@@ -178,6 +199,10 @@ Referer：`/jobs/modelDeployment`。路由名是**下划线**形式，discovery 
 - **`StartServing` / `StopServing` 只收 `{inference_serving_id}`**，请求体里的 `version` 会被拒。这两条曾经迁了 URL 却仍用 v1 的 `code != 0` 检查解包，于是对任何输入都返回 `API error: None`——**迁 URL 而不同时换解包器，会把真错误伪装成假错误。**
 - **`UpdateServing` 没有封装**：它的 `resource_spec_price` 是扁平结构（`cpu_type` / `cpu_count` / `gpu_type` / …），与其它地方嵌套的 `cpu_info` / `gpu_info` 形状不同，安全的 Wrapper 需要基于 `GetServing` 做读改写，且必须先确认省略字段是保留还是清空——当前没有可供受控验证的 serving。
 - **`GetServingApiMetric` 与 `GetTaskMetric` 是两个不相干的指标族**，共享零个指标名。前者是请求流量：`QPS`、`SUCCESS_QPS`、`FAIL_QPS`、`SUCCESS_RATE`、`FAIL_RATE`、`REQUEST_COUNT`、`LATENCY`、`TTFT`(+`_P50`/`_P95`/`_P99`)、`TTLT`(+`_P50`/`_P95`/`_P99`)、`INPUT_TOKENS`、`OUTPUT_TOKENS`。它**接受整个 `metric_types` 列表**（`GetTaskMetric` 不接受），也不需要 compute-group 句柄。返回项带 `metric_type` / `group_name` / `data_unit` / `time_series[{timestamp, data}]`。
+- **`ListServingScaleHistory` 的列表键是 `scale_history_items`**，不是 `items` 也不是 `list`。曾经按 `items` 读，于是任何有扩缩容历史的 serving 都返回空列表——这是一个「读错键就永远看不到数据」的静默失败，而不是报错。
+- **`GetInferenceServingTerms` 不是调用说明。** 它的 `terms` 元素是 `{term, start_time, end_time}`，即**运行期次索引**（第 N 次运行的起止时间，控制台用它把详情页各 tab 圈定到某一次运行），里面没有 endpoint、示例请求或 token。调用信息是 `GetServing` 的 `port` 和 `command`。**查过，刻意不接**，Wrapper 保留但没有命令消费。
+- **`GetServingLog` 对不在日志库里的 pod 名回 `InternalError`**，看着像平台故障，实际含义是「pod 名不对」。
+- `GetServingScheduleConfig` 的回收规则是**按 GPU 档位**给的（每个 `items` 元素带 `gpu_count_min` / `gpu_count_max`），一个 Workspace 会有多条。
 - `DeleteServing` 的 id 不存在时返回 `ResourceNotFound`。
 - 读 Action 逐字接受 v1 请求体、响应字段完全一致；**写侧不能照搬**。
 
@@ -191,6 +216,10 @@ Referer：`/jobs/distributedTraining`。
 | --- | --- | --- | --- |
 | `ListLogicComputeGroups` | `{page_size: -1, page_num: 1, filter:{workspace_id}}` | `{logic_compute_groups[], total}` | `resources availability`、`<workload> quota`、每个 `create` 的组解析、`init`、`cache refresh` |
 | `ListNodeDimension` | `{filter:{workspace_id, logic_compute_group_id}, PageNumber, page_size}` | `{node_dimensions[], total}` | `resources availability`、`resources nodes` |
+| `ListTaskDimension` | `{filter:{workspace_id, logic_compute_group_id?}, PageNumber, page_size}` | `{task_dimensions[], total}` | `resources usage --by task\|project` |
+| `ListUserDimension` | `{filter:{workspace_id}, PageNumber, page_size}` | `{user_dimensions[], total}` | `resources usage --mine` |
+| `GetLogicComputeGroupNodeSpecs` | `{workspace_id, logic_compute_group_id}` | `{node_specs[]}` | `resources nodes` |
+| `GetWorkspaceNodeSpecs` | `{workspace_id}` | `{node_specs[]}` | `resources nodes` |
 | `GetLogicComputeGroupResource` | `{workspace_id, logic_compute_group_id}` | `{logic_resouces{}, gpu_type_stats[], runtime_attributes[]}` | `resources availability` |
 | `GetWorkspaceQuota` | `{workspace_id}` | `{gpu_high_running, gpu_high_running_used, cpu_*, memory_*, is_fair_workspace, …}` | `resources quota` |
 | `GetWorkspaceComputeResource` | `{workspace_id}` | `{logic_resouces{cpu_total, cpu_used, memory_gi_total, memory_gi_used, gpu_total, gpu_used, gpu_low_priority_used}}` | `resources quota` |
@@ -201,11 +230,18 @@ Referer：`/jobs/distributedTraining`。
 - **`ListLogicComputeGroups` 省略 `page_size` 会返回空列表配非零 `total`**，看起来就像这个工作空间没有任何计算组。`page_size: -1` 有效，保持原样。
 - **`ListNodeDimension` 的 `page_size: -1` 只返回 10 条**，必须按 `total` 显式翻页。它的两级 scoping 也最容易踩：`filter` 里只放 `logic_compute_group_id` 返回 `AccessForbidden`，同时放 `workspace_id` 和 `logic_compute_group_id` 才通。
 - **节点行的 GPU 数嵌在 `gpu.total` 里**，不是扁平 `gpu_count`；只读扁平键会让每个节点看起来都是零卡，静默把空闲节点数清零。行里还有 `status`（`READY` 判定）、`tasks_associated` / `task_list`（有没有任务）、`cordon_type`、`is_maint`、`resource_pool`（`fault` 要排除），「完全空闲」需要五项同时成立。
+- **维度族（`ListNodeDimension` / `ListTaskDimension` / `ListUserDimension`）的 scoping 只认嵌套 `filter.workspace_id`**：顶层 `workspace_id` 被直接拒为 `unknown field`，缺 workspace 则 `AccessForbidden`。`filter.logic_compute_group_id` 可选且真的收窄；`filter.task_type` 被静默忽略，`task_name_keyword` / `gpu_type` 有效。
+- **维度族的 `page_size: -1` 和省略 `page_size` 都只回 10 行**（实测 `total=1289` 时仍只给 10），必须按 `total` 显式翻页。三种分页拼法都认，`total` 是 int。
+- **维度族的 `order_by` 元素是 `{field, sort}` 而不是 `{field, order}`**，只有 `created_at` 被采纳且 `sort` 被忽略（恒升序），`{"field":"gpu"}` / `{"field":"cpu"}` 直接 `InternalError`——**排序只能在客户端做**。
+- 维度行只含存活工作负载（`RUNNING` 加短暂的 `COMMITTING`），覆盖所有用户与所有 Workload 类型。**`gpu.used` 是死字段（恒 0）**，但 `gpu.usage_rate` / `cpu.usage_rate` 是活的 0–1 比率。
+- **`ListProjectDimension` 实测是空的**，不是 scoping 写错：10 个可见 Workspace、逐计算组、逐项目 id 都返回成功信封配 `total: 0`，而它的两个同族兄弟在**同一个** `filter.workspace_id` 位置上答出真实数据。所以它是权限地板，没有封装；按项目聚合改为在客户端折叠任务维度的行。
+- **`GetLogicComputeGroupNodeSpecs` / `GetWorkspaceNodeSpecs` 的 scoping 反而在顶层**，套 `filter` 是 `unknown field`；只给组不给 workspace 是 `AccessForbidden`。
+- **`node_specs` 是规格目录，不是节点清单**：一个 292 节点的组只发布 17 种形状，行是「形状 × 作业类型」的笛卡尔积，还会因为 GiB 小数差异重复（68 行原始数据里只有 6 种真实形状）。**任何按行数当节点数的读法都是错的**。字段里 `gpu_type` 恒为空、`gpu_memory_size` 恒为 0（真值在 `gpu_info` 里），discovery 声明的 `node_count` 线上根本不存在。
 - **组资源汇总的键平台拼错成 `logic_resouces`**（少一个 `r`），`GetLogicComputeGroupResource` 与 `GetWorkspaceComputeResource` 同病。GPU 型号在 `gpu_type_stats[0].gpu_info.gpu_type_display`。
 - **`ListLogicComputeGroups` 的标识字段叫 `logic_compute_group_id` 而不是 `id`**；`support_job_type_list` 是 **JSON 编码的字符串**，不是数组（`'["interactive_modeling","hpc_job"]'`）。用 `isinstance(x, list)` 判断会把每个组都读成「没声明」，于是按 Workload 过滤计算组这件事看起来生效了、实际一个都没滤掉。取值域：`interactive_modeling` / `hpc_job` / `ray_job` / `distributed_training` / `inference_serving_customize` / `inference_serving_exclusive`，逐组不同。
 - **`GetWorkspaceQuota` / `GetWorkspaceComputeResource` 要顶层 `workspace_id`**，套 `filter` 反而被拒。配额字段是 `{资源}_{high|low}_{running|total}` 加可选的 `_used` 后缀：高优先级（保障）和低优先级（可回收）是**两套独立的上限**，一个运行中的任务只吃其中一套，混着读会两边都报错。`-1` 表示不限。
 - 两者回答不同的问题：**配额用完了可以被拒，即使机器闲着；机器忙满了也可以被拒，即使配额还有。**
-- `ListUserQuotas` / `GetUserTaskQuota` / `GetWorkspaceTaskQuota` / `GetDefaultUserTaskQuota` 需要工作空间管理员，`GetDefaultUserQuota` 普通成员能读但没有信息量——都没有封装。
+- `GetScheduleConfig` / `ListUserQuotas` / `GetUserTaskQuota` / `GetWorkspaceTaskQuota` / `GetDefaultUserTaskQuota` 需要工作空间管理员，`GetDefaultUserQuota` 普通成员能读但没有信息量——都没有封装。**`workspace.GetScheduleConfig` 不是各 Workload 路由下 `Get*ScheduleConfig` 的汇总入口**：它对普通成员一律 `AccessForbidden`（顶层 `workspace_id` 与 PascalCase 都试过，id 被回显说明 scoping 是通的），而 Workload 路由下的同族 Action 普通成员可读。
 
 ---
 
@@ -220,7 +256,7 @@ Referer：`/jobs/distributedTraining`。
 **参数语义与限制**
 
 - **`GetUserDetail` 只覆盖当前用户**：传空体返回当前账号，传 `user_id` / `id` / `UserId` 一律 `InvalidParameter`。
-- **两个未文档化 Action 的 workspace 参数是 PascalCase `WorkspaceId`**，与本路由其余部分不同。
+- **两个未文档化 Action 的 workspace 参数 Wrapper 写作 PascalCase `WorkspaceId`**（照 discovery 的声明），`workspace_id` 同样有效——网关对大小写和下划线不敏感。
 - **`GetRoutes` 的 `userWorkspaceList` 那个 route group 是 Workspace 枚举的唯一来源**：每个条目的 `path` 是 `ws-…` id，`name` 是显示名，`is_fair_workspace` 是 qz 优先级选择器的唯一数据源，缺了就没法判断该工作空间用哪套优先级。
 - **它替代不了登录时的 `/api/v1/user/routes/default`**：v2 要一个真实的 `WorkspaceId`，而登录握手时一个都还不知道。见 [`browser-api.md` 第 8 节](browser-api.md#8-仍在使用的-v1-端点)。
 - `ListAPIKeys` 可用但随 `user api-keys` 命令一起下线，已无消费者。`user.ListSSH` / `user.GetMyPermissions` 存在但未封装——账号级 SSH 公钥注册表与 Notebook SSH 链路无关。
@@ -239,7 +275,7 @@ Referer：`/jobs/distributedTraining`。
 **参数语义与限制**
 
 - **`ListProjects` 是选择器的行集，`GetProjectForPage` 是项目管理页的行集，两者条数不同是设计如此**：后者会滤掉用户已退出或已结束的项目。不要把这条差异读成「谁坏了」。
-- **`GetProjectDetail` 的 id 键是 PascalCase `ProjectId`**。它的 `remain_budget` / `used_budget` / `resource` 是**本来就在跳的值**，连着读两次不相等是正常的。
+- **`GetProjectDetail` 的 id 键 Wrapper 写作 PascalCase `ProjectId`**，`project_id` 同样有效。它的 `remain_budget` / `used_budget` / `resource` 是**本来就在跳的值**，连着读两次不相等是正常的。
 - CLI 侧翻页固定 `page_size = 100`，直到 `len(items) >= total` 或短页为止；选择器路径用 `page_size: -1` 一次取全。
 - 项目行里对调度有意义的是 `gpu_limit`（是否有项目级 GPU-hour 上限）和 `priority_name`（数字字符串），`space_list[]` 给出项目跨哪些 Workspace。
 
@@ -259,7 +295,7 @@ Referer：`/jobs/interactiveModeling`。
 
 **参数语义与限制**
 
-- **同一个标识符，三种拼法**：`GetImageById` 要 **`ImageId`**，`DeleteImage` 要 **`image_id`**，`UpdateImage` 要 **`id`**。传错不会报 `unknown field`：`UpdateImage` 收到 `image_id` 时**默默忽略**，然后拿空 id 去查库，回一句 `InternalError: 数据库错误, 请联系管理员`。**看到这个错先检查字段名。**
+- **`UpdateImage` 的目标键是裸 `id`，不是 `image_id`。** 这不是大小写问题——网关对大小写和下划线不敏感（`GetImageById` 给 `ImageId` / `image_id` / `Image_Id` 都通），但 `image_id` 是**另一个字段名**，不会被归一化成 `id`。传错不报 `unknown field`：`UpdateImage` 收到 `image_id` 时**默默忽略**，然后拿空 id 去查库，回一句 `InternalError: 数据库错误, 请联系管理员`。**看到这个错先检查字段名。**
 - **`ListImages` 的三种 UI 来源用三种 filter**，不是一个简单的 `source` 字段：
   - 官方镜像：`{source: "SOURCE_OFFICIAL", source_list: [], registry_hint:{workspace_id}}`
   - 公开镜像：`{source_list: ["SOURCE_PRIVATE","SOURCE_PUBLIC"], visibility: "VISIBILITY_PUBLIC", registry_hint:{…}}`
@@ -282,12 +318,13 @@ Referer：`/jobs/modelService?spaceId={workspace_id}`。路由名是**连字符*
 | `ListModelVersions` | `{model_id}` | `{list[], total, next_version}` | `model versions`、`model status` |
 | `ListModelVersionOptions` | `{model_id}` | `{list[], total}` | — |
 | `ListModelCreators` | `{project_id}` | `{list[]\|items[], total}` | — |
-| `ListModelRelatedServings` | `{model_id, version, page, page_size}` | `{serving[]\|inference_servings[]\|list[], total}` | — |
-| `GetHasModelPendingServing` | `{model_id, version}` | `{has_pending_serving}` | — |
+| `ListModelRelatedServings` | `{model_id, version, page, page_size}` | `{serving[], total}` | `model status` |
+| `GetHasModelPendingServing` | `{model_id, version?}` | `{has_pending_serving}` | `model status` |
 | `GetModelPublishPrefill` | `{model_id, version}` | `{model_info{}, technical_specs{}, integration_info{}}` | — |
 | `GetModelPublishStatus` | `{model_id, version}` | `{status, publish_reject_detail, has_published}` | — |
 | `GetRecommendedConfig` | `{model_id, version}` | `{min_node_count, min_gpu_count_per_node, min_cpu_count_per_node, min_memory_size_gib_per_node}` | `model deploy-config` |
 | `CheckModelVLLMCompatible` | `{model_id, version, inference_serving_type}` | `{is_vllm_compatible}` | `model deploy-config` |
+| `GetModelVLLMCompatibleData` | `{model_id, inference_serving_type?}` | `{data:[{version, is_vllm_compatible}]}` | `model status`、`model versions` |
 | `CreateModel` † | `{name, project_id, workspace_id, model_source_path, model_source_type, model_type[], tags[], description}` | `{model_id}` | `model register` |
 
 **参数语义与限制**
@@ -295,7 +332,10 @@ Referer：`/jobs/modelService?spaceId={workspace_id}`。路由名是**连字符*
 - **`ListModelVersions` 与 `ListModelVersionOptions` 名字近似、极易接反**，只能靠响应字段区分：前者多一个 `next_version`，是详情抽屉用的**富**视图（含模型路径、源路径、大小、发布状态、运行中的 serving 数）；后者是部署表单用的**精简**版本列表。
 - **`ListModelVersions` 不接受 `page`。** `ListModelCreators` 接受 `project_id`。
 - **`GetRecommendedConfig` 给的是下限而不是推荐值**：四个 `min_*` 映射到 `serving create --quota gpu,cpu,mem` 和 `--nodes-per-replica`，照抄不等于最优。
-- **`CheckModelVLLMCompatible` 是按版本问**；`GetModelVLLMCompatibleData` 一次回答所有版本，但部署决策需要的是前者。
+- **版本记录里的 `is_vllm_compatible` 是死字段。** 29 个可见模型版本上它无一为 true，而 `GetModelVLLMCompatibleData` 与 `CheckModelVLLMCompatible` 两个 live Action 一致地给出 13 个 true。任何读存量字段的地方都会永远报「不兼容」，**vLLM 兼容性只能问 live**：`GetModelVLLMCompatibleData` 一次回答某模型所有版本，`CheckModelVLLMCompatible` 按版本问。
+- **`ListModelVersions` 的 list 元素是嵌套的** `{model: {...}, running_infrence_serving}`（平台把 inference 拼错了），版本号与规格都在内层。
+- **`ListModelRelatedServings` 的 `page` 与 `page_size` 都必填**（`page_size: -1` 被拒），`version` 也实质必填——省略时 proto 默认 0，返回空列表而不是「所有版本」。条目 `{name, serving_id, status, version, user_name, user_avatar}` 里有可读服务名，但**条目的 `version` 是推理服务自己的版本号，不是模型版本**，印出来会被误读；`status` 是 int，按 serving 状态枚举下标（`4` = RUNNING，用「该版本 status=4 的条数 == `running_infrence_serving`」在 11 个版本上钉死）。
+- **`GetHasModelPendingServing` 的 `version` 可选**，省略即问整个模型；它只在有 PENDING 部署时为 true（DEPLOYING、RUNNING 都是 false），正好补上 `running_infrence_serving` 计数为 0 却已有部署排队的盲区。
 - **`CreateModel` 的 `model_source_path` 必须落在所给 workspace + project 的路径下**，`global_user` 路径会被 `存储路径格式不正确` 拒掉。`model_source_type = 1` 对应 UI 的「路径注册」流程，首个版本号由后端推断。
 - **`filter_by.project_id` 必须是数组**，传裸字符串会被 protobuf 解码拒绝。
 - 列表项是 `{model: {...}, project_name, user_name, latest_version}` 的嵌套形状，扁平化时 `model_id` 优先于内层 `id`。

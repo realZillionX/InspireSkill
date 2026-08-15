@@ -17,6 +17,7 @@ from .hpc_commands import (
     stop_hpc,
 )
 from .hpc_events import events as events_hpc
+from .hpc_logs import hpc_logs
 from .hpc_metrics import hpc_metrics
 
 
@@ -34,6 +35,7 @@ def hpc() -> None:
         inspire hpc quota --workspace CPU资源空间
         inspire hpc create --name prep-a --workspace CPU资源空间 --project CI-情境智能 --group HPC-可上网区资源-2 -q 0,16,64 --image hpc-base:v1 -c "srun python prep.py"
         inspire hpc instances prep-a --workspace CPU资源空间
+        inspire hpc logs prep-a --workspace CPU资源空间 --tail 50
         inspire hpc metrics prep-a --workspace CPU资源空间 --metric cpu,mem,disk_read,disk_write --window 2h
         inspire hpc events prep-a --workspace CPU资源空间 --tail 50
     """
@@ -49,6 +51,7 @@ hpc.add_command(instances_hpc)
 hpc.add_command(stop_hpc)
 hpc.add_command(delete_hpc)
 hpc.add_command(events_hpc)
+hpc.add_command(hpc_logs)
 hpc.add_command(hpc_metrics)
 
 

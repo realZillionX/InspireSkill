@@ -16,6 +16,7 @@ from inspire.platform.web.browser_api.models import (
     get_model_publish_prefill,
     get_model_publish_status,
     get_model_recommended_config,
+    get_model_vllm_compatibility,
     list_model_inference_servings,
     list_model_users,
     list_model_version_records,
@@ -192,6 +193,84 @@ def test_model_version_serving_helpers_use_current_body_shapes(monkeypatch) -> N
         "page": 3,
         "page_size": 5,
     }
+
+
+def test_pending_serving_check_drops_the_version_for_the_whole_model(
+    monkeypatch,
+) -> None:
+    """No version means "any version", so the field has to be absent, not 0.
+
+    The platform reads a missing version as the whole-model question and
+    `version: 0` as a version that no model has -- sending 0 would answer a
+    different question and always answer it "no".
+    """
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch, {"Result": {"has_pending_serving": True}}, record
+    )
+
+    assert check_model_inference_serving_pending(
+        model_id="model-1", session=_FakeSession(), workspace_id="ws-1"
+    ) == {"has_pending_serving": True}
+    assert record["url"].endswith("/api/v2/model-hub?Action=GetHasModelPendingServing")
+    assert record["body"] == {"model_id": "model-1"}
+
+
+def test_vllm_compatibility_maps_every_version_from_one_request(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "Result": {
+                "data": [
+                    {"version": 1, "is_vllm_compatible": True},
+                    {"version": "2", "is_vllm_compatible": False},
+                    {"version": 3},
+                    {"is_vllm_compatible": True},
+                    "not-a-row",
+                ]
+            }
+        },
+        record,
+    )
+
+    compatibility = get_model_vllm_compatibility(
+        "model-1", session=_FakeSession(), workspace_id="ws-1"
+    )
+
+    assert compatibility == {1: True, 2: False, 3: False}
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/model-hub?Action=GetModelVLLMCompatibleData")
+    assert record["body"] == {
+        "model_id": "model-1",
+        "inference_serving_type": "CUSTOM",
+    }
+
+
+def test_vllm_compatibility_returns_empty_when_the_platform_lists_nothing(
+    monkeypatch,
+) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(monkeypatch, {"Result": {"data": None}}, record)
+
+    assert (
+        get_model_vllm_compatibility("model-1", session=_FakeSession()) == {}
+    )
+
+
+def test_vllm_compatibility_raises_instead_of_reporting_incompatible(
+    monkeypatch,
+) -> None:
+    """A refused request must not collapse into "no version is compatible"."""
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {"ResponseMetadata": {"Error": {"Code": "AccessForbidden", "Message": "nope"}}},
+        record,
+    )
+
+    with pytest.raises(ValueError, match="nope"):
+        get_model_vllm_compatibility("model-1", session=_FakeSession())
 
 
 def test_model_publish_helpers_use_version_action(monkeypatch) -> None:

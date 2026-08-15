@@ -15,11 +15,13 @@ from .serving_commands import (
     delete_serving,
     list_serving,
     rollback_serving,
+    scale_history_serving,
     scale_serving,
     status_serving,
     stop_serving,
     versions_serving,
 )
+from .serving_logs import logs_serving
 from .serving_metrics import serving_metrics
 
 
@@ -45,8 +47,10 @@ def serving() -> None:
         inspire serving list --workspace 分布式训练空间
         inspire serving status <serving-name> --workspace 分布式训练空间
         inspire serving scale <serving-name> --workspace 分布式训练空间 --replicas 3
+        inspire serving scale-history <serving-name> --workspace 分布式训练空间
         inspire serving versions <serving-name> --workspace 分布式训练空间
         inspire serving rollback <serving-name> --workspace 分布式训练空间 --version 2
+        inspire serving logs <serving-name> --workspace 分布式训练空间 --tail 50
         inspire serving delete <serving-name> --workspace 分布式训练空间
         inspire serving metrics <serving-name> --workspace 分布式训练空间 --window 30m
         inspire serving api-metrics <serving-name> --workspace 分布式训练空间 --window 30m
@@ -61,8 +65,10 @@ serving.add_command(list_serving)
 serving.add_command(status_serving)
 serving.add_command(stop_serving)
 serving.add_command(scale_serving)
+serving.add_command(scale_history_serving)
 serving.add_command(versions_serving)
 serving.add_command(rollback_serving)
+serving.add_command(logs_serving)
 serving.add_command(delete_serving)
 serving.add_command(configs_serving)
 serving.add_command(serving_metrics)

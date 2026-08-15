@@ -829,6 +829,153 @@ def list_notebook_lifecycle(
     return []
 
 
+# ---------------------------------------------------------------------------
+# Save-size estimate
+# ---------------------------------------------------------------------------
+
+# `EstimateSaveMirrorSize` refuses a notebook that is not RUNNING and says so in
+# the message. Matched on the stable fragment only: the full text ends with the
+# raw notebook handle, which must never reach a caller that prints errors.
+_NON_RUNNING_SAVE_MARKER = "non-running notebook"
+
+
+@dataclass(frozen=True)
+class NotebookImageSizeEstimate:
+    """How much data ``image save`` would have to snapshot.
+
+    ``size_bytes`` is the platform's ``active_snapshot_size``, **in bytes**:
+    every notebook measured answers an exact multiple of 4096, and the values
+    (56 MiB … 688 MiB) only make sense as the byte size of the container's
+    writable layer. It is the delta over the base image, not the size of the
+    resulting image. The wire value is a decimal *string* even though discovery
+    declares ``int64``.
+
+    ``notebook_running`` is False only when the platform declined because the
+    notebook is not RUNNING — the one decline that is a fact about the notebook
+    rather than a failed call. Everything else raises, so a size of ``None``
+    can never be misread as "nothing to save".
+    """
+
+    size_bytes: Optional[int]
+    notebook_running: bool
+
+
+def estimate_notebook_image_size(
+    notebook_id: str,
+    session: Optional[WebSession] = None,
+) -> NotebookImageSizeEstimate:
+    """Estimate what ``notebook.SaveNotebookImage`` would have to snapshot.
+
+    Read-only: this Action only measures, it never starts a save. It answers
+    ``ResourceNotFound: notebook not found`` for an unknown handle and
+    ``InvalidParameter: Cannot save image of non-running notebook`` for a
+    STOPPED one — the latter is the only error folded into a return value.
+    """
+    if not str(notebook_id or "").strip():
+        raise ValueError("estimate_notebook_image_size requires a notebook handle")
+
+    if session is None:
+        session = get_web_session()
+
+    try:
+        payload = _notebook_v2(
+            session, "EstimateSaveMirrorSize", {"notebook_id": notebook_id}, timeout=30
+        )
+    except TransientAPIError:
+        # A ValueError subclass, so it has to be re-raised before the branch below.
+        raise
+    except ValueError as exc:
+        if _NON_RUNNING_SAVE_MARKER in str(exc):
+            return NotebookImageSizeEstimate(size_bytes=None, notebook_running=False)
+        raise
+
+    raw = payload.get("active_snapshot_size")
+    try:
+        size = int(str(raw).strip())
+    except (TypeError, ValueError):
+        # The gateway emits unpopulated fields (a real zero arrives as "0"), so a
+        # missing or unparseable value means the platform did not answer in the
+        # shape we know — it must not read as "this notebook snapshots to 0".
+        raise ValueError(
+            "API error: EstimateSaveMirrorSize returned no active_snapshot_size"
+        ) from None
+    return NotebookImageSizeEstimate(size_bytes=size, notebook_running=True)
+
+
+# ---------------------------------------------------------------------------
+# Realtime metrics
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NotebookResourceSnapshot:
+    """One resource row of a notebook's current utilization.
+
+    ``usage_rate`` is a 0–1 ratio, matching the ``*_usage_rate`` convention of
+    ``GetTaskMetric``. ``unit`` is whatever the platform labelled the row with:
+    ``"GB"`` for Memory, empty for CPU cores and GPU cards.
+    """
+
+    resource: str
+    total: float
+    used: float
+    available: float
+    usage_rate: float
+    unit: str
+
+
+def _coerce_metric_number(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_notebook_realtime_metrics(
+    notebook_id: str,
+    session: Optional[WebSession] = None,
+) -> list[NotebookResourceSnapshot]:
+    """Read a notebook's current CPU / Memory / GPU / GPU memory utilization.
+
+    ``GetRealtimeNotebookMetric`` is the instantaneous counterpart to
+    ``GetTaskMetric``: no time window, no interval, no compute-group handle,
+    and exactly four rows.
+
+    **The handle is mandatory.** Called with an empty ``notebook_id`` the
+    gateway happily answers with *cluster-wide* totals, which would silently
+    read as one notebook holding thousands of GPUs, so an empty handle is
+    rejected here rather than sent.
+
+    A STOPPED notebook is not an error: every row comes back zeroed. Callers
+    that show these numbers have to state the notebook's status themselves —
+    an all-zero snapshot looks identical to a RUNNING but idle notebook.
+    """
+    if not str(notebook_id or "").strip():
+        raise ValueError("get_notebook_realtime_metrics requires a notebook handle")
+
+    if session is None:
+        session = get_web_session()
+
+    payload = _notebook_v2(
+        session, "GetRealtimeNotebookMetric", {"notebook_id": notebook_id}, timeout=30
+    )
+    rows = payload.get("resource_metric_list")
+    if not isinstance(rows, list):
+        return []
+    return [
+        NotebookResourceSnapshot(
+            resource=str(row.get("resource_name") or ""),
+            total=_coerce_metric_number(row.get("total")),
+            used=_coerce_metric_number(row.get("used")),
+            available=_coerce_metric_number(row.get("available")),
+            usage_rate=_coerce_metric_number(row.get("usage_rate")),
+            unit=str(row.get("unit") or ""),
+        )
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
 def wait_for_notebook_running(
     notebook_id: str,
     session: Optional[WebSession] = None,
@@ -880,8 +1027,12 @@ def wait_for_notebook_running(
 __all__ = [
     "ImageInfo",
     "NotebookFailedError",
+    "NotebookImageSizeEstimate",
+    "NotebookResourceSnapshot",
     "create_notebook",
+    "estimate_notebook_image_size",
     "get_notebook_detail",
+    "get_notebook_realtime_metrics",
     "get_resource_prices",
     "list_images",
     "list_notebook_compute_groups",

@@ -4,7 +4,7 @@ Usage:
     inspire image list [--source official|public|private|all]
     inspire image detail <name>
     inspire image register -n "name" -v v1.0
-    inspire image save <notebook-name> --workspace <workspace> -n "name" [--visibility public|private]
+    inspire image save <notebook-name> --workspace <workspace> -n "name" [--visibility public|private] [--dry-run]
     inspire image set-visibility <name> --visibility public|private
     inspire image delete <name>
 """
@@ -33,7 +33,9 @@ def image():
     image, and `delete` only after confirming no active workload depends on
     that image. `image save` starts a medium-length saving process; the
     notebook cannot be operated while saving is in progress, is not stopped
-    after saving completes, and can then be used again.
+    after saving completes, and can then be used again. It prints the platform's
+    estimate of how much data it has to snapshot before it starts; `--dry-run`
+    stops after that estimate.
 
     \b
     Examples:
@@ -41,6 +43,7 @@ def image():
         inspire image list --source public              # List public images
         inspire image list --source private             # List personal-visible images
         inspire image save <notebook-name> --workspace CPU资源空间 -n my-img
+        inspire image save <notebook-name> --workspace CPU资源空间 -n my-img --dry-run
         inspire image save <notebook-name> --workspace CPU资源空间 -n shared --visibility public
         inspire image set-visibility <name> --visibility public
         inspire image register -n my-img -v v1.0        # Register external image

@@ -10,8 +10,15 @@ v2 responses are field-for-field identical to the ``/api/v1/ray_job/*`` ones
 they replace, so the normalization below is unchanged from the v1 wrapper.
 Wire details that differ from sibling domains:
 
-- The resource key is ``ray_job_id`` on every Action. ``job_id`` and ``id`` are
-  both rejected with ``unknown field``, unlike ``train`` / ``hpc``.
+- The resource key is ``ray_job_id`` on every Action *except* ``GetJobLog``.
+  ``job_id`` and ``id`` are both rejected with ``unknown field``, unlike
+  ``train`` / ``hpc``. ``GetJobLog`` is the lone inversion — see
+  :func:`list_ray_job_logs`.
+- **Field-existence probes lie on this route when ``ray_job_id`` is set.** The
+  gateway's authorization middleware leniently pre-reads ``ray_job_id`` and
+  answers ``ResourceNotFound: ray job not found`` *before* the strict proto
+  unmarshal runs, so a nonexistent id masks every ``unknown field`` the body
+  would otherwise report. Probe ``ray`` field contracts with the id omitted.
 - Workspace scoping is a **top-level** ``workspace_id``. The nested ``filter``
   envelope that ``workspace.*`` Actions require is rejected here.
 - There is no ``CreateJobConsole`` variant — ``ray`` answers ``InvalidAction``
@@ -44,12 +51,14 @@ from inspire.platform.web.browser_api.core import (
 from inspire.platform.web.session import WebSession, get_web_session
 
 __all__ = [
+    "RAY_LOG_MAX_WINDOW_MS",
     "RayJobInfo",
     "create_ray_job",
     "delete_ray_job",
     "get_ray_job_detail",
     "list_ray_job_events",
     "list_ray_job_instances",
+    "list_ray_job_logs",
     "list_ray_job_scaling_histories",
     "list_ray_job_users",
     "list_ray_jobs",
@@ -59,6 +68,12 @@ __all__ = [
 
 
 _RAY_JOB_REFERER_PATH = "/jobs/ray"
+
+# The sibling log Actions on this backend (`train` / `hpc` `GetJobLog`) refuse
+# any window wider than a month. `ray` cannot be probed for it — instance-name
+# resolution runs first and rejects every synthetic pod name — so callers clamp
+# defensively rather than discover the ceiling from a live failure.
+RAY_LOG_MAX_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
 
 
 def _ray_referer() -> str:
@@ -148,13 +163,18 @@ def _ray_v2(
         raise ValueError(f"Ray Job {context} failed: {exc}") from exc
 
 
-def _ray_page(payload: dict[str, Any]) -> tuple[list[dict], Optional[int]]:
+def _ray_page(
+    payload: dict[str, Any],
+    list_key: str = "items",
+) -> tuple[list[dict], Optional[int]]:
     """Split a paged ray Result into its item list and total.
 
     ``ray`` reports ``total`` as a string ("3"), so it is coerced here rather
-    than at each call site.
+    than at each call site. The list key is per-Action and never inferred:
+    every Action on this route answers ``items`` except ``GetJobLog``, which
+    answers ``logs``.
     """
-    items = payload.get("items")
+    items = payload.get(list_key)
     if not isinstance(items, list):
         items = []
     items = [item for item in items if isinstance(item, dict)]
@@ -479,19 +499,88 @@ def list_ray_job_instances(
     return items, total if total is not None else len(items)
 
 
+def list_ray_job_logs(
+    *,
+    pod_names: list[str],
+    start_timestamp_ms: int | str,
+    end_timestamp_ms: int | str,
+    page_size: int = 200,
+    session: Optional[WebSession] = None,
+) -> tuple[list[dict], int]:
+    """Fetch aggregated program output for a Ray cluster's pods.
+
+    Action: ``GetJobLog``. This is the one Action on ``/api/v2/ray`` that does
+    **not** take ``ray_job_id`` — the field is not in its contract at all
+    (``unknown field "ray_job_id"``), which inverts the rule every sibling
+    Action follows. Its declared id key is ``job_id``, exactly as ``discovery``
+    says, but that key does not scope anything: sent alone the Action answers
+    ``InternalError``, and sent alongside pod names it neither narrows nor
+    resolves the query. The console omits it for ``ray`` and so do we.
+
+    **The query is scoped by ``filter.podNames``**, which the backend resolves
+    back to exactly one Ray job — a mixed list answers ``InvalidParameter:
+    Invalid instance names, the ray job ids length of instances expect 1``.
+    That resolution is also where the permission check lands, so an empty pod
+    list is not a harmless no-op: the platform answers a clean
+    ``{"logs": [], "total": 0}`` for it, which reads exactly like "this job
+    produced no output". Callers therefore never get to make that mistake —
+    an empty ``pod_names`` raises here instead.
+
+    ``start_timestamp_ms`` / ``end_timestamp_ms`` are string fields carrying
+    epoch milliseconds (an int is rejected with ``invalid value for string
+    field endTimestampMs``), matching ``train`` / ``hpc``. No sorter is sent;
+    records are ordered client-side.
+    """
+    clean_pods = [str(name or "").strip() for name in pod_names if str(name or "").strip()]
+    if not clean_pods:
+        raise ValueError(
+            "Ray job log selection is required: at least one instance name."
+        )
+
+    if session is None:
+        session = get_web_session()
+
+    payload = _ray_v2(
+        session,
+        "GetJobLog",
+        {
+            "page_size": page_size,
+            "filter": {
+                "podNames": clean_pods,
+                "start_timestamp_ms": str(start_timestamp_ms),
+                "end_timestamp_ms": str(end_timestamp_ms),
+            },
+        },
+        context="logs",
+    )
+    logs, total = _ray_page(payload, "logs")
+    return logs, total if total is not None else len(logs)
+
+
 def list_ray_job_scaling_histories(
     ray_job_id: str,
     *,
+    worker_group_name: str = "",
     page_num: int = 1,
     page_size: int = 50,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict], int]:
     """Fetch the elastic-scaling event history for a Ray job.
 
-    The SPA hits ``ListJobScalingHistories`` to render the
-    "扩缩容历史" tab on a Ray detail page — each entry is a worker-group
-    instance count change driven by platform-side load signals. Useful for
-    post-mortem on whether ``min_replicas`` / ``max_replicas`` ever moved.
+    The SPA hits ``ListJobScalingHistories`` to render the "扩缩容历史"
+    popover on a Ray detail page — each entry is a worker-group replica-count
+    change driven by platform-side load signals. This is the only view of
+    whether the elastic range a job was submitted with (``min_replicas`` /
+    ``max_replicas``) was ever exercised.
+
+    Entries carry ``event_time`` (epoch milliseconds), ``event_type``
+    (``initialized`` / ``scale_up`` / ``scale_down``) and the
+    ``replicas_before`` / ``replicas_after`` pair.
+
+    ``worker_group_name`` is a **top-level** filter, not a nested ``filter``
+    envelope — this Action declares neither ``filter`` nor ``sorter``. The
+    console always sends it (empty string when unfiltered), and empty means
+    every group.
     """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
@@ -507,6 +596,7 @@ def list_ray_job_scaling_histories(
             "ray_job_id": ray_job_id,
             "page_num": page_num,
             "page_size": page_size,
+            "worker_group_name": str(worker_group_name or "").strip(),
         },
         context="scaling_histories",
     )

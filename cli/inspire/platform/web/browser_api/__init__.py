@@ -5,10 +5,16 @@ from __future__ import annotations
 from .availability import (
     FullFreeNodeCount,
     GPUAvailability,
+    MemberUsage,
+    NodeSpec,
+    TaskUsage,
     get_accurate_resource_availability,
     get_accurate_gpu_availability,
     get_full_free_node_counts,
     list_compute_groups,
+    list_member_usage,
+    list_node_specs,
+    list_task_usage,
 )
 from .jobs import (
     JobInfo,
@@ -51,10 +57,12 @@ from .files import (
     list_system_storage_types,
 )
 from .hpc_jobs import (
+    HPC_LOG_MAX_WINDOW_MS,
     HPCJobInfo,
     create_hpc_job,
     delete_hpc_job,
     get_hpc_job_detail,
+    list_hpc_instance_events,
     list_hpc_job_instances,
     list_hpc_jobs,
     list_hpc_job_events,
@@ -62,12 +70,14 @@ from .hpc_jobs import (
     stop_hpc_job,
 )
 from .ray_jobs import (
+    RAY_LOG_MAX_WINDOW_MS,
     RayJobInfo,
     create_ray_job,
     delete_ray_job,
     get_ray_job_detail,
     list_ray_job_events,
     list_ray_job_instances,
+    list_ray_job_logs,
     list_ray_job_scaling_histories,
     list_ray_job_users,
     list_ray_jobs,
@@ -85,9 +95,13 @@ from .metrics import (
 from .notebooks import (
     ImageInfo,
     NotebookFailedError,
+    NotebookImageSizeEstimate,
+    NotebookResourceSnapshot,
     create_notebook,
     delete_notebook,
+    estimate_notebook_image_size,
     get_notebook_detail,
+    get_notebook_realtime_metrics,
     get_resource_prices,
     list_images,
     list_notebook_compute_groups,
@@ -139,6 +153,7 @@ from .models import (
     get_model_publish_prefill,
     get_model_publish_status,
     get_model_recommended_config,
+    get_model_vllm_compatibility,
     list_model_inference_servings,
     list_model_users,
     list_model_version_records,
@@ -169,6 +184,13 @@ from .servings import (
     start_serving,
     stop_serving,
 )
+from .schedule_config import (
+    ReclaimCondition,
+    ReclaimRule,
+    WorkloadSchedulePolicy,
+    format_duration,
+    get_workspace_schedule_policy,
+)
 
 __all__ = [
     # Jobs / users
@@ -198,22 +220,26 @@ __all__ = [
     "list_project_file_directories",
     "list_system_storage_types",
     # HPC jobs
+    "HPC_LOG_MAX_WINDOW_MS",
     "HPCJobInfo",
     "create_hpc_job",
     "delete_hpc_job",
     "get_hpc_job_detail",
+    "list_hpc_instance_events",
     "list_hpc_job_instances",
     "list_hpc_jobs",
     "list_hpc_job_events",
     "list_hpc_job_logs",
     "stop_hpc_job",
     # Ray jobs (弹性计算 — CPU decode + GPU inference streaming pipelines)
+    "RAY_LOG_MAX_WINDOW_MS",
     "RayJobInfo",
     "create_ray_job",
     "delete_ray_job",
     "get_ray_job_detail",
     "list_ray_job_events",
     "list_ray_job_instances",
+    "list_ray_job_logs",
     "list_ray_job_scaling_histories",
     "list_ray_job_users",
     "list_ray_jobs",
@@ -229,10 +255,16 @@ __all__ = [
     # Availability
     "FullFreeNodeCount",
     "GPUAvailability",
+    "MemberUsage",
+    "NodeSpec",
+    "TaskUsage",
     "get_accurate_resource_availability",
     "get_accurate_gpu_availability",
     "get_full_free_node_counts",
     "list_compute_groups",
+    "list_member_usage",
+    "list_node_specs",
+    "list_task_usage",
     # Projects
     "ProjectInfo",
     "check_scheduling_health",
@@ -255,9 +287,13 @@ __all__ = [
     # Notebooks
     "ImageInfo",
     "NotebookFailedError",
+    "NotebookImageSizeEstimate",
+    "NotebookResourceSnapshot",
     "create_notebook",
     "delete_notebook",
+    "estimate_notebook_image_size",
     "get_notebook_detail",
+    "get_notebook_realtime_metrics",
     "get_resource_prices",
     "list_images",
     "list_notebook_compute_groups",
@@ -312,6 +348,7 @@ __all__ = [
     "get_model_publish_prefill",
     "get_model_publish_status",
     "get_model_recommended_config",
+    "get_model_vllm_compatibility",
     "list_model_inference_servings",
     "list_model_users",
     "list_model_version_records",
@@ -319,4 +356,10 @@ __all__ = [
     "list_models",
     # User utilities
     "get_user_permissions",
+    # Workspace scheduling policy (idle reclaim + runtime caps)
+    "ReclaimCondition",
+    "ReclaimRule",
+    "WorkloadSchedulePolicy",
+    "format_duration",
+    "get_workspace_schedule_policy",
 ]

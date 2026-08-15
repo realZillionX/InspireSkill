@@ -424,7 +424,18 @@ def list_serving_logs(
     inference_serving_id: str | None = None,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Fetch serving aggregated logs."""
+    """Fetch serving aggregated logs.
+
+    `GetServingLog` is pod-scoped, not serving-scoped: the only selector is
+    `filter.podNames`, so the caller has to list the deployment's instances
+    first. Both timestamps are string fields whose values are epoch
+    milliseconds. Records come back under `logs` with an int `total` that
+    counts the whole window, not the page.
+
+    A pod name the log store does not know answers `InternalError`, including
+    a real pod that belongs to another workload kind — the failure looks like
+    a platform fault but means "wrong pod".
+    """
     if session is None:
         session = get_web_session()
     payload = _serving_v2(
@@ -459,7 +470,16 @@ def list_serving_scale_history(
     page_size: int = 20,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """List serving scale history records."""
+    """List serving scale history records.
+
+    The list key is `scale_history_items`, verified live against the gateway —
+    discovery declares `Items` / `TotalCount` and neither exists in the
+    response, so reading `items` returns an empty history for every serving
+    that has one. `total` arrives as a string here (`"0"`).
+
+    Each row carries `replicas_before_scale` / `replicas_after_scale`,
+    `created_at`, `status`, and an `id`.
+    """
     if session is None:
         session = get_web_session()
     payload = _serving_v2(
@@ -471,7 +491,9 @@ def list_serving_scale_history(
             "page_size": page_size,
         },
     )
-    items = payload.get("items")
+    items = payload.get("scale_history_items")
+    if not isinstance(items, list):
+        items = payload.get("items")
     if not isinstance(items, list):
         items = payload.get("list")
     if not isinstance(items, list):
@@ -489,7 +511,14 @@ def get_serving_terms(
     *,
     session: Optional[WebSession] = None,
 ) -> dict[str, Any]:
-    """Get serving terms / invocation instructions."""
+    """List a serving's service terms (run periods).
+
+    Returns `{terms: [{term, start_time, end_time}]}` — a period index, not
+    invocation instructions: the console uses it to scope a detail tab to one
+    run. There is no endpoint, URL, or sample request in the response, so no
+    CLI command projects it. `InferenceServingId` is required and a handle
+    that does not resolve answers `ResourceNotFound`.
+    """
     if session is None:
         session = get_web_session()
     return _serving_v2(

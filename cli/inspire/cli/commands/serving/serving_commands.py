@@ -589,6 +589,83 @@ def _format_serving_versions(versions: list[dict[str, Any]]) -> str:
     return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
 
+def _scale_replica_count(item: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        raw = item.get(key)
+        if raw in (None, "") or isinstance(raw, bool):
+            continue
+        try:
+            return int(str(raw))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _public_scale_history_entry(item: dict[str, Any]) -> dict[str, Any]:
+    """Project one `ListServingScaleHistory` row onto the replica delta.
+
+    The row's `id` is an internal counter with nothing to look up, so it is
+    dropped; what answers "why did latency move" is when the replica count
+    changed and what it changed from and to.
+    """
+    view: dict[str, Any] = {}
+    before = _scale_replica_count(
+        item, "replicas_before_scale", "replicas_before", "before_replicas"
+    )
+    after = _scale_replica_count(
+        item, "replicas_after_scale", "replicas_after", "after_replicas"
+    )
+    if before is not None:
+        view["replicas_from"] = before
+    if after is not None:
+        view["replicas_to"] = after
+    status = _public_serving_instance_text(item, "status", "state", "phase")
+    if status:
+        view["status"] = status
+    created_at = human_formatter.format_epoch(
+        item.get("created_at") or item.get("updated_at") or ""
+    )
+    if created_at not in ("", "-"):
+        view["created_at"] = scrub_raw_ids(created_at)
+    return view
+
+
+def _format_scale_history(entries: list[dict[str, Any]]) -> str:
+    if not entries:
+        return "No serving scale history found."
+
+    def _replicas(entry: dict[str, Any]) -> str:
+        before = entry.get("replicas_from")
+        after = entry.get("replicas_to")
+        if before is None and after is None:
+            return "-"
+        if before is None:
+            return str(after)
+        if after is None:
+            return str(before)
+        return f"{before} -> {after}"
+
+    rendered_rows = [{**entry, "replicas": _replicas(entry)} for entry in entries]
+    columns = [("created_at", "Created"), ("replicas", "Replicas")]
+    if any(row.get("status") not in (None, "") for row in rendered_rows):
+        columns.append(("status", "Status"))
+    table_rows = [
+        tuple(str(row.get(key, "-") or "-") for key, _label in columns)
+        for row in rendered_rows
+    ]
+    widths = [
+        column_width(label, [row[index] for row in table_rows], max_width=48)
+        for index, (_key, label) in enumerate(columns)
+    ]
+    rendered = render_table(
+        tuple(label for _key, label in columns),
+        table_rows,
+        widths,
+        line_char="─",
+    )
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+
+
 def _config_label(item: dict[str, Any], index: int) -> str:
     name = (
         item.get("name")
@@ -1239,6 +1316,114 @@ def versions_serving(
             return
 
         click.echo(_format_serving_versions(page.items))
+        notice = truncation_notice(page, full_option="--all")
+        if notice:
+            click.echo(notice)
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("scale-history")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum scale events to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every scale event.")
+@pass_context
+def scale_history_serving(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    pick: Optional[int],
+    limit: Optional[int],
+    show_all: bool,
+) -> None:
+    """List when a serving's replica count changed, and to what.
+
+    \b
+    This is the first thing to check when request latency or throughput moved
+    without a redeploy: a replica count that dropped, or an autoscale that
+    never landed, shows up here and nowhere in `versions`. Pair it with
+    `inspire serving api-metrics <name>` to line the change up against the
+    traffic it explains.
+    """
+    try:
+        output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    request_limit = (
+        output_limit if output_limit is not None else DEFAULT_COLLECTION_LIMIT
+    )
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace)
+
+        def _fetch(serving_id: str, live_session):  # noqa: ANN001
+            items, total = browser_api_module.list_serving_scale_history(
+                serving_id,
+                page=1,
+                page_size=request_limit,
+                session=live_session,
+            )
+            if show_all and total > len(items):
+                items, expanded_total = browser_api_module.list_serving_scale_history(
+                    serving_id,
+                    page=1,
+                    page_size=max(total, len(items), 1),
+                    session=live_session,
+                )
+                total = max(total, expanded_total, len(items))
+            return items, total
+
+        items, total = _run_readonly_serving_operation(
+            ctx,
+            name=name,
+            workspace_id=workspace_id,
+            session=session,
+            pick=pick,
+            operation=_fetch,
+        )
+        projected = [_public_scale_history_entry(item) for item in items]
+        page = bound_collection(projected, limit=output_limit, total=total)
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "name": scrub_raw_ids(name),
+                        "items": page.items,
+                        **page.metadata(),
+                    }
+                )
+            )
+            return
+
+        click.echo(_format_scale_history(page.items))
         notice = truncation_notice(page, full_option="--all")
         if notice:
             click.echo(notice)

@@ -28,6 +28,7 @@ __all__ = [
     "get_model_publish_prefill",
     "get_model_publish_status",
     "get_model_recommended_config",
+    "get_model_vllm_compatibility",
     "list_model_inference_servings",
     "list_model_users",
     "list_model_version_records",
@@ -259,8 +260,9 @@ def check_model_vllm_compatible(
 ) -> bool:
     """Whether one model version can be served by vLLM.
 
-    ``GetModelVLLMCompatibleData`` answers the same question for every version
-    at once; this per-version form is the one a deployment decision needs.
+    :func:`get_model_vllm_compatibility` answers the same question for every
+    version at once; this per-version form is the one a single deployment
+    decision needs. The two agree on every version measured.
     """
     if session is None:
         session = get_web_session()
@@ -279,6 +281,54 @@ def check_model_vllm_compatible(
         )
     )
     return payload.get("is_vllm_compatible") is True
+
+
+def get_model_vllm_compatibility(
+    model_id: str,
+    *,
+    inference_serving_type: str = "CUSTOM",
+    session: Optional[WebSession] = None,
+    workspace_id: Optional[str] = None,
+) -> dict[int, bool]:
+    """vLLM compatibility for **every** version of one model, in one request.
+
+    ``Result.data`` is ``[{version, is_vllm_compatible}]``; this returns it
+    keyed by version number.
+
+    This -- not the record itself -- is the source for the flag. The
+    ``is_vllm_compatible`` field stored on each ``ListModelVersions`` record
+    reads ``false`` for every model on the platform, including the 13 of 30 that
+    both this Action and ``CheckModelVLLMCompatible`` call compatible. Reading
+    the stored field means answering "no" to a question nobody asked correctly.
+    """
+    if session is None:
+        session = get_web_session()
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=GetModelVLLMCompatibleData",
+            referer=_referer(workspace_id),
+            body={
+                "model_id": model_id,
+                "inference_serving_type": inference_serving_type,
+            },
+            timeout=30,
+        )
+    )
+    rows = payload.get("data")
+    compatibility: dict[int, bool] = {}
+    if not isinstance(rows, list):
+        return compatibility
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            version = int(str(row.get("version")))
+        except (TypeError, ValueError):
+            continue
+        compatibility[version] = row.get("is_vllm_compatible") is True
+    return compatibility
 
 
 def list_model_versions(
@@ -333,20 +383,35 @@ def list_model_version_records(
 def check_model_inference_serving_pending(
     *,
     model_id: str,
-    version: int | str,
+    version: int | str | None = None,
     session: Optional[WebSession] = None,
     workspace_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Check whether a model version has pending servings before edit/delete."""
+    """Whether a model has a serving queued in `PENDING`.
+
+    Returns ``{has_pending_serving}``. The flag is true exactly when some
+    serving sits in status ``PENDING``: measured against the per-version status
+    distribution, ``DEPLOYING`` and ``RUNNING`` both read false. That makes it
+    the complement of the ``running_infrence_serving`` count on a version
+    record, which counts only ``RUNNING`` -- a queued deployment shows up in
+    neither the count nor the model's own status.
+
+    **Omitting ``version`` asks about the whole model**; the platform treats a
+    missing (or ``0``) version as "any version", and a real version number
+    narrows the answer to that version alone.
+    """
     if session is None:
         session = get_web_session()
+    body: dict[str, Any] = {"model_id": model_id}
+    if version is not None:
+        body["version"] = int(version)
     return _v2_result(
         _request_json(
             session,
             "POST",
             "/api/v2/model-hub?Action=GetHasModelPendingServing",
             referer=_referer(workspace_id),
-            body={"model_id": model_id, "version": int(version)},
+            body=body,
             timeout=30,
         )
     )
@@ -361,7 +426,24 @@ def list_model_inference_servings(
     session: Optional[WebSession] = None,
     workspace_id: Optional[str] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """List servings using one model version (POST /model/inference_servings)."""
+    """List the servings that reference one model version.
+
+    Returns ``(items, total)`` off the ``serving`` key. Each item is
+    ``{name, serving_id, status, user_avatar, user_name, version}`` -- there is
+    no replica count and no timestamp. Two traps:
+
+    - ``status`` is an **int**, indexing the serving status enum
+      (``PENDING``/``PRE_DEPLOYING``/``DEPLOYING``/``FAILED``/``RUNNING``/…);
+      the ``inference_serving`` domain reports the same states as strings.
+    - ``version`` on an item is the **serving's own** revision, not the model
+      version that was asked for; the two differ in practice.
+
+    ``version`` is required in substance: omitting it (proto default ``0``)
+    returns an empty list rather than every version. ``page`` and ``page_size``
+    are required outright -- omitting either is ``InvalidParameter: page or
+    page_size invalid`` -- and ``page_size: -1`` is rejected the same way, so
+    "fetch everything" has to be spelled as a real number.
+    """
     if session is None:
         session = get_web_session()
     payload = _v2_result(

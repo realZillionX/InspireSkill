@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Optional, Sequence, cast
 
 import click
@@ -564,6 +565,92 @@ def _fetch_hpc_instances(
         rows = expanded_rows
         total = max(total, expanded_total, len(rows))
     return rows, total
+
+
+class HPCInstanceSelectionError(ValueError):
+    """A ``--instance`` selector matched no instance in the job."""
+
+
+@dataclass(frozen=True)
+class HPCInstanceView:
+    """One HPC instance, split into what the Agent sees and what the API needs.
+
+    ``handle`` is the namespaced instance name the platform wants in
+    ``ListSlurmdPodEvent`` and ``GetJobLog``. It is a platform handle —
+    ``scrub_raw_ids`` reduces it to ``<redacted>-cluster-slurmd-0`` — so it
+    never reaches output. ``label`` is the Agent-visible identity and matches
+    the Role (plus Rank, when a role has replicas) column of
+    ``inspire hpc instances``.
+    """
+
+    handle: str
+    pod: str
+    role: str
+    label: str
+
+
+def _hpc_instance_role(inst: dict[str, Any]) -> str:
+    for key in ("role", "component", "worker_group_name"):
+        value = inst.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def hpc_instance_views(instances: Sequence[dict[str, Any]]) -> list[HPCInstanceView]:
+    """Project raw instance rows onto the addressable (label, handle) pairs.
+
+    A role that appears once is its own label. A role with replicas takes the
+    Rank suffix, using the same rank ``inspire hpc instances`` prints, so a
+    label read off that table addresses the instance it names.
+    """
+    roles = [_hpc_instance_role(inst) for inst in instances]
+    duplicated = {role for role in roles if role and roles.count(role) > 1}
+    views: list[HPCInstanceView] = []
+    for position, (inst, role) in enumerate(zip(instances, roles)):
+        handle = str(inst.get("name") or "").strip()
+        if not handle:
+            continue
+        pod = handle.rsplit("/", 1)[-1]
+        rank = _hpc_instance_rank(inst, position)
+        if not role:
+            # Without a component the pod has no readable identity of its own;
+            # its rank is all `hpc instances` shows, so address it by that.
+            role = "instance"
+        label = f"{role}-{rank}" if role in duplicated or role == "instance" else role
+        views.append(HPCInstanceView(handle=handle, pod=pod, role=role, label=label))
+    return views
+
+
+def select_hpc_instance_views(
+    views: Sequence[HPCInstanceView],
+    selectors: Sequence[str],
+) -> list[HPCInstanceView]:
+    """Filter instances by the Role / Rank identity printed by `hpc instances`.
+
+    An unmatched selector raises rather than narrowing the scope to nothing:
+    silently returning no pods would make an empty log or event answer look
+    like the platform said "there is nothing here".
+    """
+    if not selectors:
+        return list(views)
+
+    available = sorted({view.label for view in views} | {view.role for view in views})
+    chosen: list[HPCInstanceView] = []
+    for selector in selectors:
+        needle = selector.strip().lower()
+        matched = [
+            view
+            for view in views
+            if needle in (view.label.lower(), view.role.lower())
+        ]
+        if not matched:
+            raise HPCInstanceSelectionError(
+                f"No HPC instance matches '{selector}'. "
+                f"Available: {', '.join(available) or '(none)'}."
+            )
+        chosen.extend(view for view in matched if view not in chosen)
+    return chosen
 
 
 def _hpc_matches_list_filters(
@@ -1449,8 +1536,12 @@ def delete_hpc(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
 
 
 __all__ = [
+    "HPCInstanceSelectionError",
+    "HPCInstanceView",
     "list_hpc",
     "create_hpc",
+    "hpc_instance_views",
+    "select_hpc_instance_views",
     "status_hpc",
     "instances_hpc",
     "stop_hpc",

@@ -6,7 +6,7 @@
 
 Browser API 是启智控制台自己用的接口面：同一台 `qz.sii.edu.cn`、同一个 CAS Session，控制台 SPA 全程走 `/api/v2` 的 Action 网关。官方 CLI `qz` 是这套接口的另一个客户端，不是它的前置依赖；调用它不需要安装任何外部二进制。
 
-当前 CLI 封装 **12 条路由、93 个 Action**，另有 **4 处 v1 端点**因为 v2 装不下或重建更贵而保留（第 8 节）。
+当前 CLI 封装 **12 条路由、105 个 Action**，另有 **4 处 v1 端点**因为 v2 装不下或重建更贵而保留（第 8 节）。
 
 ## 1. 事实源
 
@@ -39,6 +39,7 @@ Referer: {base_url}/{对应控制台页面}
 - **只有 POST、只有 JSON body**，动作名在 query 里。没有 REST 风格的路径参数，没有 GET/DELETE 变体。
 - **认证只需要 `inspire-session` cookie。** `x-inspire-client-source` 头在只读面上非必需，缺失不会触发跳转。
 - **`Referer` 必须与页面域匹配**，由各 Wrapper 按对应控制台页面构造，调用方不要自行拼接。
+- **字段名的大小写与下划线不敏感，但名字本身必须对。** `ImageId` / `image_id` / `Image_Id` 落到同一个字段，`WorkspaceId` / `workspace_id`、`ProjectId` / `project_id` 同理，所以 discovery 里那些 PascalCase 声明不构成陷阱。真正会出事的是**换了一个名字**：`image.UpdateImage` 要的是裸 `id`，`image_id` 是另一个字段而不是它的变体，不会被归一化过去。
 - Base URL、Browser API Prefix 和代理来自当前有效配置；Playwright 登录与后续请求复用同一账号的网络设置。
 - 所有平台请求使用**目标 Account Alias** 的浏览器 SSO Session；跨账号 Notebook 命令不能退回当前活动账号的 Session。
 
@@ -150,18 +151,19 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 这条**只适用于两边同名的那 8 个**，不能推广成「集群级端点一律换 `workspace.*`」——Metrics 就是反例（见 Action 表的 `GetTaskMetric`）。
 
-`workspace.*` 内部也有权限分层：`ListUserQuotas`、`ListWorkspaceParentProjects`、`GetUserTaskQuota`、`GetWorkspaceTaskQuota`、`GetDefaultUserTaskQuota` 需要工作空间管理员，普通成员返回 `You are not the admin of the <workspace_id>`，因此都没有封装。`GetDefaultUserQuota` 普通成员能读，但它描述的是**新成员的默认值**、在可达 Workspace 上一律不限，对调用者没有信息量。
+`workspace.*` 内部也有权限分层：`GetScheduleConfig`、`ListUserQuotas`、`ListWorkspaceParentProjects`、`GetUserTaskQuota`、`GetWorkspaceTaskQuota`、`GetDefaultUserTaskQuota` 需要工作空间管理员，普通成员返回 `You are not the admin of the <workspace_id>`，因此都没有封装。**`workspace.GetScheduleConfig` 不是各 Workload 路由下 `Get*ScheduleConfig` 的汇总入口**——前者是管理员面，后者普通成员可读，名字撞了而已。`GetDefaultUserQuota` 普通成员能读，但它描述的是**新成员的默认值**、在可达 Workspace 上一律不限，对调用者没有信息量。
 
 ## 6. discovery 能信什么
 
 `GET {base_url}/discovery` 返回 `{"Result": {"Version": "<etag>", "Services": [...]}}`，每个 Action 带完整的嵌套参数与响应结构。**不带任何认证头**，且匿名与带 Cookie 的响应逐字节相同——它是静态文档，**不按调用者角色过滤**。
 
-当前 `Version = e1daec0f`，11 个 Service、175 个 Action。CLI 用到的 93 个 Action 里有 **12 个不在 discovery 里**：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`notebook.ListNotebookCreators`、`user.GetPermissions`、`user.GetRoutes`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners`、`image.CreateImage`、`image.UpdateImage`、`model-hub.CreateModel`；另有 `file`、`dataset` 两条**整条路由**不在 discovery 里，却都活着且正在用。
+当前 `Version = e1daec0f`，11 个 Service、175 个 Action。CLI 用到的 105 个 Action 里有 **12 个不在 discovery 里**：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`notebook.ListNotebookCreators`、`user.GetPermissions`、`user.GetRoutes`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners`、`image.CreateImage`、`image.UpdateImage`、`model-hub.CreateModel`；另有 `file`、`dataset` 两条**整条路由**不在 discovery 里，却都活着且正在用。
 
 | 字段 | 可信度 |
 | --- | --- |
 | Action 的**参数**结构 | 基本可信，是查 scoping 位置和字段拼写的第一手材料 |
-| Action 的**响应**结构 | **不可信**。声明的是 `Items` / `TotalCount`，实际网关回的是 `jobs` / `list` / `logic_compute_groups` / `node_dimensions` 加小写 `total`。响应键只能实测 |
+| Action 响应的**顶层列表键与 total** | **不可信**。声明的是 `Items` / `TotalCount`，实际网关回的是 `jobs` / `list` / `logs` / `events` / `scale_history_items` / `logic_compute_groups` / `node_dimensions` 加小写 `total`。只能实测 |
+| 响应**元素内部的属性名** | 基本可信。日志行 `{log_id, message, node, pod_name, time, timestamp_ms, timestamp_str}` 与声明逐字段一致。**错的只有外面那层信封**，里面的形状可以照着写，再用一次真实响应确认 |
 | Service `Name` | 不等于网关路由名，见第 3 节 |
 | Service 全集 | **不完整**（`file`、`dataset` 缺席） |
 | Action 全集 | **不完整**，缺的正好是写操作的 Console 变体和一批 v1 直迁的 Action |
@@ -182,6 +184,17 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 **③ 字段存在性。** 网关先按 proto 解析 body，再校验业务必填项，所以只带一个候选字段打过去：`InvalidParameter: invalid JSON: proto: unknown field "X"` 表示该字段不在合同里，**其它任何报错都表示字段在合同里**（通常是「名称不能为空」之类的必填校验）。因为必填项全缺，这同样创建不出任何东西。这是唯一能测未文档化 Console 变体字段面的办法。
 读到 `InternalError: internal server error` 时**先做对照实验**：`hpc.CreateJobConsole` 对空 body 和对合法字段都回这一句，只有塞进一个确定不存在的字段才会回 `unknown field`——没有对照就无法区分「字段被接受、处理器崩了」和「请求根本没进解析」。
+
+**这把尺子会被资源 id 静默废掉，探字段时不要带 id。** 网关的鉴权中间件在严格 proto 解析**之前**先读一遍资源键，读不到对象就直接返回，于是 body 里其它字段根本没被解析过。`ray.GetJobLog` 上的四路对照：
+
+| body | 回答 | 说明 |
+| --- | --- | --- |
+| `{"nonexistent_field_xyz": "x"}` | `InvalidParameter: … unknown field "nonexistent_field_xyz"` | 尺子正常工作 |
+| `{"ray_job_id": "x"}` | `ResourceNotFound: ray job not found` | 中间件先读 `ray_job_id` 就短路了 |
+| `{"ray_job_id": "x", "nonexistent_field_xyz": "x"}` | `ResourceNotFound` | **不存在的字段被掩盖** |
+| `{"job_id": "x", "nonexistent_field_xyz": "x"}` | `InvalidParameter: … unknown field` | `job_id` 不触发预读，尺子恢复 |
+
+第二行还会直接骗人：它让 `ray_job_id` 看起来在 `GetJobLog` 的合同里，其实**不在**（单独去掉 id 探就会看到 `unknown field "ray_job_id"`）。**探字段一律用不带任何资源 id 的最小 body**；带着 id 得出的「这个字段在合同里」是无效结论。
 
 **④ 猜名字。** 未文档化 Action 的命名规律是 v1 路径去掉资源前缀后的 PascalCase：`GET /project/{id}` → `GetProjectDetail`，`/file/dir/list` → `GetDirList`，`/project/owners` → `GetProjectOwners`。猜不中就换动词（`Get` / `List` / `Create` / `Update` / `Delete`）和单复数重试，一轮十几个名字就能覆盖。
 

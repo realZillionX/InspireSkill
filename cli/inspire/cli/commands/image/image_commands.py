@@ -539,11 +539,26 @@ def register_image_cmd(
 _VISIBILITY_PUBLIC = "VISIBILITY_PUBLIC"
 _VISIBILITY_PRIVATE = "VISIBILITY_PRIVATE"
 
+_SIZE_UNITS: tuple[tuple[str, int], ...] = (
+    ("TiB", 1024**4),
+    ("GiB", 1024**3),
+    ("MiB", 1024**2),
+    ("KiB", 1024),
+)
+
 
 def _parse_visibility_value(visibility: Optional[str]) -> Optional[str]:
     if visibility is None:
         return None
     return _VISIBILITY_PUBLIC if visibility.lower() == "public" else _VISIBILITY_PRIVATE
+
+
+def _format_size_bytes(value: int) -> str:
+    """Render the platform's snapshot estimate, which is a byte count."""
+    for label, divisor in _SIZE_UNITS:
+        if value >= divisor:
+            return f"{value / divisor:.2f} {label}"
+    return f"{value} B"
 
 
 @click.command("save")
@@ -588,6 +603,12 @@ def _parse_visibility_value(visibility: Optional[str]) -> Optional[str]:
     default=None,
     help="Image visibility. Omit to accept the platform default.",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print the estimated snapshot size without saving anything.",
+)
 @pass_context
 def save_image_cmd(
     ctx: Context,
@@ -599,11 +620,14 @@ def save_image_cmd(
     description: str,
     wait: bool,
     visibility: Optional[str],
+    dry_run: bool,
 ) -> None:
     """Save a running notebook as a custom Docker image.
 
     NAME is the notebook name from inspire notebook list. The notebook remains
-    available after the save completes.
+    available after the save completes, but cannot be used while it runs, so
+    the estimated snapshot size is printed first. Use --dry-run to see that
+    estimate on its own.
     """
     notebook = reject_id_at_boundary(
         ctx,
@@ -643,6 +667,66 @@ def save_image_cmd(
 
     requested_visibility = _parse_visibility_value(visibility)
     visibility_label = visibility.lower() if visibility else ""
+    image_label = scrub_raw_ids(f"{name}:{version}")
+    notebook_label = scrub_raw_ids(notebook)
+
+    # Read-only: measures the writable layer, never starts a save. A failed
+    # estimate stays out of the way of the save the user actually asked for,
+    # so `size_bytes is None` means "unknown", never "nothing to snapshot".
+    size_bytes: Optional[int] = None
+    try:
+        estimate = browser_api_module.estimate_notebook_image_size(
+            notebook_id=notebook_id,
+            session=session,
+        )
+    except Exception:
+        estimate = None
+
+    if estimate is not None and not estimate.notebook_running:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            f"Notebook {notebook_label} is not running, so there is nothing to snapshot.",
+            EXIT_VALIDATION_ERROR,
+            hint=f"Start it first: inspire notebook start {notebook} --workspace {workspace}",
+        )
+        return
+    if estimate is not None:
+        size_bytes = estimate.size_bytes
+
+    if dry_run:
+        if size_bytes is None:
+            _handle_error(
+                ctx,
+                "APIError",
+                "Could not estimate the image size.",
+                EXIT_API_ERROR,
+            )
+            return
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "dry_run": True,
+                        "notebook": notebook_label,
+                        "name": image_label,
+                        "estimated_size_bytes": size_bytes,
+                        "estimated_size": _format_size_bytes(size_bytes),
+                    }
+                )
+            )
+            return
+        click.echo(f"Save plan: {image_label}")
+        click.echo(f"Notebook: {notebook_label}")
+        click.echo(f"Estimated snapshot: {_format_size_bytes(size_bytes)}")
+        click.echo("Nothing was saved (--dry-run).")
+        return
+
+    if size_bytes is not None and not ctx.json_output:
+        click.echo(
+            f"Estimated snapshot: {_format_size_bytes(size_bytes)}. "
+            "The notebook cannot be used until the save finishes."
+        )
 
     try:
         result = browser_api_module.save_notebook_as_image(
@@ -662,7 +746,6 @@ def save_image_cmd(
         return
 
     image_id = result.get("image", {}).get("image_id", "") or result.get("image_id", "")
-    image_label = scrub_raw_ids(f"{name}:{version}")
 
     if not image_id:
         try:
@@ -738,6 +821,9 @@ def save_image_cmd(
             "name": image_label,
             "status": "ready" if ready else "saving",
         }
+        if size_bytes is not None:
+            payload["estimated_size_bytes"] = size_bytes
+            payload["estimated_size"] = _format_size_bytes(size_bytes)
         if visibility_warning:
             payload["warning"] = visibility_warning
         click.echo(json_formatter.format_json(payload))
