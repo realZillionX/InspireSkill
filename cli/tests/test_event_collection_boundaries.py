@@ -39,11 +39,11 @@ def test_all_job_instance_names_pages_past_200(monkeypatch) -> None:  # noqa: AN
 
     monkeypatch.setattr(job_events.browser_api_module, "list_job_instances", fake_list)
 
-    names = job_events._list_all_job_instance_names("job-internal", session=object())
+    rows = job_events._list_all_job_instances("job-internal", session=object())
 
     assert calls == [1, 2, 3]
-    assert len(names) == 450
-    assert names[-1] == "worker-449"
+    assert len(rows) == 450
+    assert rows[-1]["name"] == "worker-449"
 
 
 def test_job_instance_events_pages_and_chunks_pod_names(monkeypatch) -> None:  # noqa: ANN001
@@ -82,8 +82,12 @@ def test_job_instance_events_pages_and_chunks_pod_names(monkeypatch) -> None:  #
     ]
 
 
-def test_job_pod_events_name_the_instance_they_came_from(monkeypatch) -> None:  # noqa: ANN001
-    """Several pods land in one timeline; a row that omits its pod is unusable."""
+_POD_HANDLES = [
+    f"job-3cdb13c4-3ec7-466b-81bd-45296e63efd0-worker-{rank}-0" for rank in range(2)
+]
+
+
+def _patch_job_events(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(
         job_events.Config,
         "from_files_and_env",
@@ -94,6 +98,22 @@ def test_job_pod_events_name_the_instance_they_came_from(monkeypatch) -> None:  
         job_events,
         "_run_readonly_web_job_operation",
         lambda **kwargs: kwargs["operation"]("job-internal", object()),
+    )
+    monkeypatch.setattr(
+        job_events.browser_api_module,
+        "list_job_instances",
+        lambda _job_id, **_kwargs: (
+            [
+                {
+                    "name": handle,
+                    "instance_status": "instance_running",
+                    "instance_type": "instance_type_worker",
+                    "rank": rank,
+                }
+                for rank, handle in enumerate(_POD_HANDLES)
+            ],
+            len(_POD_HANDLES),
+        ),
     )
     monkeypatch.setattr(
         job_events,
@@ -110,6 +130,34 @@ def test_job_pod_events_name_the_instance_they_came_from(monkeypatch) -> None:  
         ],
     )
 
+
+def test_job_pod_events_name_the_instance_they_came_from(monkeypatch) -> None:  # noqa: ANN001
+    """Several pods land in one timeline; a row that omits its pod is unusable."""
+    _patch_job_events(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "events",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+            "--all-instances",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    items = _json_data(result.output)["items"]
+    assert [item["instance"] for item in items] == ["rank=0", "rank=1"]
+    assert "worker-0-0" not in result.output
+
+
+def test_job_pod_events_label_an_explicit_selection_too(monkeypatch) -> None:  # noqa: ANN001
+    """`--instance` names the pod on the way in; the rows still answer in Rank."""
+    _patch_job_events(monkeypatch)
+
     result = CliRunner().invoke(
         cli_main,
         [
@@ -120,15 +168,41 @@ def test_job_pod_events_name_the_instance_they_came_from(monkeypatch) -> None:  
             "--workspace",
             "Test Workspace",
             "--instance",
-            "worker-0",
+            _POD_HANDLES[1],
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [item["instance"] for item in _json_data(result.output)["items"]] == ["rank=1"]
+
+
+def test_job_pod_events_survive_an_unreadable_instance_list(monkeypatch) -> None:  # noqa: ANN001
+    """Labels are decoration on this path; the events are the deliverable."""
+    _patch_job_events(monkeypatch)
+    monkeypatch.setattr(
+        job_events.browser_api_module,
+        "list_job_instances",
+        lambda _job_id, **_kwargs: (_ for _ in ()).throw(RuntimeError("platform down")),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "events",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
             "--instance",
-            "worker-1",
+            _POD_HANDLES[0],
         ],
     )
 
     assert result.exit_code == 0, result.output
     items = _json_data(result.output)["items"]
-    assert [item["instance"] for item in items] == ["worker-0", "worker-1"]
+    assert [item["reason"] for item in items] == ["FailedScheduling"]
+    assert "instance" not in items[0]
 
 
 def test_ray_event_api_paginates_with_finite_pages(monkeypatch) -> None:  # noqa: ANN001

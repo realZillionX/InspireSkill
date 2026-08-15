@@ -119,7 +119,7 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 `logs` 在 `job` / `hpc` / `ray` / `serving` 下都有，共用同一套记录与字符预算和同一份 `--json` schema；Notebook 没有 `logs`，它是交互式容器，用 `notebook exec` 或 `notebook shell` 直接读。日志按实例采集后合并成一条时间线，每行带实例标识（`hpc` / `ray` 用 `instances` 打印的角色或序号，`job` / `serving` 用实例名），`--instance` 只读其中一个或几个。日志记录里另有平台填的 `node` 字段，只在 `--json` 里可见，且不是每类工作负载都填，Pod 与节点的对应关系以 `instances` 的 `Node` 列为准。
 
-`events` 的粒度分两档。默认都是工作负载级——控制器与调度器对整个任务说的话。只有 `job` 和 `hpc` 能用 `--instance` / `--all-instances` 切到 Pod 级，那里才有 `FailedScheduling` / `Pulling` / `Started` / `BackOff` 这类逐 Pod 的事实，输出也多一列 `Instance` 指明每行来自哪个实例。Notebook 是单实例，没有这个开关；`ray` 和 `serving` 平台只提供工作负载级事件。
+`events` 的粒度分两档。默认都是工作负载级——控制器与调度器对整个任务说的话。只有 `job` 和 `hpc` 能用 `--instance` / `--all-instances` 切到 Pod 级，那里才有 `FailedScheduling` / `Pulling` / `Started` / `BackOff` 这类逐 Pod 的事实，输出也多一列 `Instance` 指明每行来自哪个实例，标识与各自 `instances` 一致（`hpc` 是角色 / 序号，`job` 是 Rank）。Notebook 是单实例，没有这个开关；`ray` 和 `serving` 平台只提供工作负载级事件。
 
 ## 8. 异常判断
 

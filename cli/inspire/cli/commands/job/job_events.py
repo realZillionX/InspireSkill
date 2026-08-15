@@ -16,7 +16,6 @@ from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_JOB_NOT_FOUND, 
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, run_events_command
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
-from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.jobs import (
@@ -26,6 +25,7 @@ from inspire.platform.web.browser_api.jobs import (
 from .job_commands import (
     WebJobResolutionError,
     _close_web_client,
+    _public_job_instances,
     _reject_job_instance_name,
     _reject_web_job_name_at_boundary,
     _run_readonly_web_job_operation,
@@ -34,28 +34,52 @@ from .job_commands import (
 _JOB_INSTANCE_PAGE_SIZE = 200
 
 
-def _labelled_instance_events(events: list[dict]) -> list[dict]:
+def _job_instance_labels(rows: list[dict]) -> dict[str, str]:
+    """Map each pod handle to the identity `inspire job instances` prints.
+
+    A training pod is named `job-<uuid>-worker-0-0`, which `scrub_raw_ids`
+    reduces to `<redacted>-worker-0-0` — that is why the instance table drops
+    the name and identifies a row by its Rank instead. Events have to answer
+    with the same identity: an `Instance` column spelling `<redacted>-…` would
+    name the pod in a form that appears nowhere else in the CLI.
+    """
+    labels: dict[str, str] = {}
+    for public, raw in zip(_public_job_instances(rows), rows):
+        handle = str(raw.get("name") or "").strip()
+        if not handle:
+            continue
+        label = str(public.get("name") or "").strip()
+        if not label:
+            rank = public.get("rank")
+            label = f"rank={rank}" if rank is not None else ""
+        if label:
+            labels[handle] = label
+    return labels
+
+
+def _labelled_instance_events(events: list[dict], labels: dict[str, str]) -> list[dict]:
     """Name each per-pod row with the instance it belongs to.
 
     `--all-instances` concatenates every pod's events into one timeline, and
-    the only field that says which pod a row came from is ``object_id`` — the
-    same instance name `inspire job instances` prints, dropped by the shared
-    public projection. Attaching it here is what makes "which worker failed to
-    schedule" answerable from the output rather than from a second query.
+    the only field that says which pod a row came from is ``object_id``, which
+    the shared public projection drops. Attaching the label here is what makes
+    "which worker failed to schedule" answerable from the output rather than
+    from a second query. A pod the instance list does not know keeps no label
+    rather than falling back to its handle.
     """
     labelled: list[dict] = []
     for event in events:
         row = dict(event)
-        name = str(row.get("object_id") or "").strip()
-        if name:
-            row["instance"] = scrub_raw_ids(name)
+        label = labels.get(str(row.get("object_id") or "").strip())
+        if label:
+            row["instance"] = label
         labelled.append(row)
     return labelled
 
 
-def _list_all_job_instance_names(job_id: str, *, session) -> list[str]:  # noqa: ANN001
+def _list_all_job_instances(job_id: str, *, session) -> list[dict]:  # noqa: ANN001
     """Page through every instance or fail instead of returning a partial scope."""
-    names: list[str] = []
+    rows: list[dict] = []
     seen: set[str] = set()
     page_num = 1
     while True:
@@ -70,17 +94,35 @@ def _list_all_job_instance_names(job_id: str, *, session) -> list[str]:  # noqa:
             name = str(item.get("name") or "").strip()
             if name and name not in seen:
                 seen.add(name)
-                names.append(name)
+                rows.append(item)
                 added += 1
         if not instances or added == 0:
-            if len(names) >= total:
-                return names
+            if len(rows) >= total:
+                return rows
             raise RuntimeError("Could not retrieve the complete job instance list.")
         if len(instances) < _JOB_INSTANCE_PAGE_SIZE:
-            if len(names) >= total:
-                return names
+            if len(rows) >= total:
+                return rows
             raise RuntimeError("Could not retrieve the complete job instance list.")
         page_num += 1
+
+
+def _instance_labels_for_selection(job_id: str, *, session) -> dict[str, str]:  # noqa: ANN001
+    """Read labels for an explicit `--instance` selection, best effort.
+
+    Completeness is the scope only for `--all-instances`; here the pods are
+    already named by the caller, so a label lookup that fails costs a column,
+    not the answer.
+    """
+    try:
+        instances, _total = browser_api_module.list_job_instances(
+            job_id,
+            limit=_JOB_INSTANCE_PAGE_SIZE,
+            session=session,
+        )
+    except Exception:  # noqa: BLE001 - labels are decoration, events are the deliverable
+        return {}
+    return _job_instance_labels(instances)
 
 
 @click.command("events")
@@ -176,16 +218,19 @@ def events(
         try:
             def _fetch(resolved_id: str, session) -> list[dict]:  # noqa: ANN001
                 if all_instances:
-                    pod_names = _list_all_job_instance_names(
-                        resolved_id,
-                        session=session,
-                    )
+                    rows = _list_all_job_instances(resolved_id, session=session)
+                    pod_names = [
+                        str(row.get("name") or "").strip()
+                        for row in rows
+                        if str(row.get("name") or "").strip()
+                    ]
                     return _labelled_instance_events(
                         list_job_instance_events(
                             resolved_id,
                             pod_names,
                             session=session,
-                        )
+                        ),
+                        _job_instance_labels(rows),
                     )
                 if pods:
                     return _labelled_instance_events(
@@ -193,7 +238,8 @@ def events(
                             resolved_id,
                             pods,
                             session=session,
-                        )
+                        ),
+                        _instance_labels_for_selection(resolved_id, session=session),
                     )
                 return list_job_events(resolved_id, session=session)
 
