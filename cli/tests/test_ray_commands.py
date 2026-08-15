@@ -549,9 +549,9 @@ def test_ray_start_human_output_is_compact(
 def test_ray_start_fails_when_the_job_never_leaves_stopped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Observed live: `StartJob` answers a clean success envelope, `updated_at`
-    # never moves, and a repeat call returns InternalError. Reporting OK there
-    # would be the same class of lie as the old `API error: None`.
+    # `StartJob` answers a success envelope; success is judged by the status
+    # actually moving. Reporting OK off the envelope alone would be the same
+    # class of lie as the old `API error: None`.
     calls = _patch_ray_start(monkeypatch, statuses=[])
 
     result = CliRunner().invoke(
@@ -561,7 +561,11 @@ def test_ray_start_fails_when_the_job_never_leaves_stopped(
 
     assert result.exit_code != 0
     assert "still stopped" in result.output
-    assert "inspire ray create" in result.output
+    # The hint points at the cluster's own events, the only place that says why
+    # a restart did not take. It must not claim the job is unrestartable: a
+    # controlled live run restarted a job that had never reached RUNNING.
+    assert "inspire ray events ray-demo" in result.output
+    assert "cannot be restarted" not in result.output
     # Every attempt was spent before giving up.
     assert calls["detail_reads"] == ray_commands._RAY_START_CONFIRM_ATTEMPTS
 

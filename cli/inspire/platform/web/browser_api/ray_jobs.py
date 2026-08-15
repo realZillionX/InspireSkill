@@ -14,20 +14,34 @@ Wire details that differ from sibling domains:
   ``job_id`` and ``id`` are both rejected with ``unknown field``, unlike
   ``train`` / ``hpc``. ``GetJobLog`` is the lone inversion — see
   :func:`list_ray_job_logs`.
-- **Field-existence probes lie on this route when ``ray_job_id`` is set.** The
+- **A *nonexistent* ``ray_job_id`` silently voids field-existence probes.** The
   gateway's authorization middleware leniently pre-reads ``ray_job_id`` and
   answers ``ResourceNotFound: ray job not found`` *before* the strict proto
-  unmarshal runs, so a nonexistent id masks every ``unknown field`` the body
-  would otherwise report. Probe ``ray`` field contracts with the id omitted.
+  unmarshal runs, so an id that resolves to nothing masks every ``unknown
+  field`` the body would otherwise report. A **real id the caller owns** does
+  not: the pre-read succeeds, the unmarshal runs, and the ruler reads true.
+  Probing against your own live object is therefore the strongest form of this
+  test, not a disqualified one — it is the only form that can also observe what
+  an accepted field *does*.
 - Workspace scoping is a **top-level** ``workspace_id``. The nested ``filter``
   envelope that ``workspace.*`` Actions require is rejected here.
 - There is no ``CreateJobConsole`` variant — ``ray`` answers ``InvalidAction``
   for it, so creation goes through plain ``CreateJob``.
-- ``UpdateJob`` exists but is metadata only: it accepts ``ray_job_id`` / ``name``
-  / ``description`` and rejects ``worker_groups``, ``head_node``,
-  ``entrypoint``, ``min_replicas``, ``replicas``, ``task_priority`` and
-  ``project_id`` with ``unknown field``. It is not the elastic worker-count
-  lever, so it stays unwrapped.
+- ``UpdateJob`` exists but is metadata only, **verified against a live owned
+  job** rather than inferred: ``name`` and ``description`` round-trip through
+  ``GetJob`` (independently — a call carrying one leaves the other intact, and
+  a bare ``{ray_job_id}`` is a no-op), while ``worker_groups``, ``head_node``,
+  ``entrypoint``, ``min_replicas``, ``max_replicas``, ``replicas``,
+  ``task_priority``, ``project_id`` and every replica-count spelling probed
+  alongside them answer ``unknown field``. It is also gated on the job being
+  stopped — a live one answers ``Conflict: Ray Job 正在运行中``. No scaling
+  Action exists next to it either (``ScaleJob``, ``UpdateJobScale``,
+  ``ScaleWorkerGroup``, ``UpdateWorkerGroup``, ``ResizeJob`` and friends are all
+  ``InvalidAction``). The elastic range is fixed at creation, so ``UpdateJob``
+  stays unwrapped: renaming is the only thing it offers, and this CLI addresses
+  Ray jobs by name.
+- **State-machine rejections arrive as ``InternalError``, not ``Conflict``** —
+  see :data:`_STATE_CONFLICT_MARKER`.
 
 Create payload shape was reverse-engineered from the SPA's own submit handler
 (``/assets/constant.BP_zw-df.js``) and is accepted verbatim by v2. Wire
@@ -74,6 +88,22 @@ _RAY_JOB_REFERER_PATH = "/jobs/ray"
 # resolution runs first and rejects every synthetic pod name — so callers clamp
 # defensively rather than discover the ceiling from a live failure.
 RAY_LOG_MAX_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
+
+
+# `ray` refuses an operation the job's status does not allow with
+# `InternalError: RayJob status not allow <verb>`, where its sibling routes use
+# `Conflict`. That matters twice over: `InternalError` is on the transient list,
+# so the wire text reads as "the platform is briefly unwell" when it actually
+# means "this can never work from here", and the message itself says nothing a
+# caller can act on. Verified live on an owned job — `StartJob` on anything but
+# STOPPED and `StopJob` on an already-STOPPED job both answer it, while
+# `UpdateJob` on a live job answers a proper `Conflict`.
+_STATE_CONFLICT_MARKER = "status not allow"
+
+_STATE_CONFLICT_REASONS = {
+    "start": "only a stopped Ray job can be started",
+    "stop": "only a live Ray job can be stopped",
+}
 
 
 def _ray_referer() -> str:
@@ -147,7 +177,9 @@ def _ray_v2(
     """Call one `/api/v2/ray` Action and return its unwrapped ``Result``.
 
     Keeps the ``Ray Job <context> failed`` message shape the v1 wrapper used so
-    command-layer error text is unchanged.
+    command-layer error text is unchanged, except for the status rejection
+    described at :data:`_STATE_CONFLICT_MARKER`, which is restated as the state
+    conflict it is instead of being passed through as a server fault.
     """
     data = _request_json(
         session,
@@ -160,6 +192,11 @@ def _ray_v2(
     try:
         return _v2_result(data)
     except ValueError as exc:
+        if _STATE_CONFLICT_MARKER in str(exc):
+            reason = _STATE_CONFLICT_REASONS.get(
+                context, "the job's current status does not allow it"
+            )
+            raise ValueError(f"Ray Job {context} failed: {reason}.") from exc
         raise ValueError(f"Ray Job {context} failed: {exc}") from exc
 
 
@@ -296,8 +333,11 @@ def start_ray_job(
 
     The counterpart to :func:`stop_ray_job`: the platform keeps the head and
     worker-group spec on the record, so restarting needs nothing but the id.
-    A job that is already RUNNING answers ``Conflict``; the returned payload is
-    the refreshed ``ray_job`` object.
+    Verified live over repeated stop/start cycles on an owned job: the returned
+    ``ray_job`` object matches a fresh ``GetJob`` field for field, and the job
+    leaves STOPPED for PENDING with ``updated_at`` and ``started_at`` both
+    moving. A job that is not STOPPED is refused — see
+    :data:`_STATE_CONFLICT_MARKER` for the shape that refusal arrives in.
     """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
@@ -314,7 +354,11 @@ def stop_ray_job(
     *,
     session: Optional[WebSession] = None,
 ) -> None:
-    """Stop a running Ray job (does not remove the record)."""
+    """Stop a running Ray job (does not remove the record).
+
+    Not idempotent: a job that is already STOPPED is refused in the shape
+    :data:`_STATE_CONFLICT_MARKER` describes.
+    """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
         raise ValueError("Ray job selection is required.")

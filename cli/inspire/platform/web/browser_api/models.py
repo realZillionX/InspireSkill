@@ -24,6 +24,7 @@ __all__ = [
     "check_model_inference_serving_pending",
     "check_model_vllm_compatible",
     "create_model",
+    "delete_model",
     "get_model_detail",
     "get_model_publish_prefill",
     "get_model_publish_status",
@@ -591,6 +592,46 @@ def create_model(
             "/api/v2/model-hub?Action=CreateModel",
             referer=_referer(workspace_id),
             body=body,
+            timeout=60,
+        )
+    )
+
+
+def delete_model(
+    model_id: str,
+    session: Optional[WebSession] = None,
+    workspace_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Delete a model entry and every version it holds.
+
+    Verified end to end against a self-owned model -- register, read back,
+    delete, and confirm the listing no longer carries it -- rather than off the
+    response envelope, which reports success either way.
+
+    Deletion is not version-scoped: there is no per-version Action, so this
+    removes the whole entry and every deployment that still points at any of
+    its versions loses what it was serving. Callers are expected to ask
+    :func:`list_model_inference_servings` and
+    :func:`check_model_inference_serving_pending` first.
+
+    The registered source directory on shared storage is untouched; only the
+    registry entry goes away.
+
+    There is deliberately no editing counterpart. ``model-hub.UpdateModel``
+    exists but is closed to ordinary users -- on a freshly created, self-owned
+    model both the ``model_id`` and the ``id`` spelling answer
+    ``AccessForbidden: Access denied``, which is the permission gate refusing
+    before the body is ever parsed, not a field-name problem to keep guessing at.
+    """
+    if session is None:
+        session = get_web_session()
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=DeleteModel",
+            referer=_referer(workspace_id),
+            body={"model_id": model_id},
             timeout=60,
         )
     )

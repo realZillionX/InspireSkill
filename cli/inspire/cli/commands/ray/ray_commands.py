@@ -737,10 +737,13 @@ def status_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> 
 # ---------------------------------------------------------------------------
 
 
-# `ray.StartJob` can answer a clean success envelope and still leave the job
-# STOPPED, so the command confirms the transition instead of trusting the
-# response. Observed live: the Action returns no error, `updated_at` never
-# moves, and a repeat call answers `InternalError`.
+# A write reports success only once the state has actually moved, never on the
+# strength of the response envelope. Controlled live verification over repeated
+# stop/start cycles found `ray.StartJob` honest — its echoed `ray_job` matches a
+# fresh `GetJob` field for field, and the job leaves STOPPED at once — so this
+# is a guard rather than a workaround, and it costs a single read on the path
+# that succeeds. The attempts below are what remains for a platform that
+# accepts the request and lags, or stops acting on it.
 _RAY_START_CONFIRM_ATTEMPTS = 6
 _RAY_START_CONFIRM_INTERVAL_SECONDS = 2.5
 
@@ -781,11 +784,9 @@ def start_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> N
     driver command; nothing has to be re-specified.
 
     \b
-    The command waits for the job to actually leave STOPPED before reporting
-    success, because the platform can accept the request and then not act on
-    it. If it reports that the job stayed STOPPED, the restart did not happen —
-    submit a fresh job with `inspire ray create` instead. Follow the startup
-    with `inspire ray events <name> --workspace <workspace>`.
+    Only a stopped job can be started; the command reports what the job's
+    status actually became rather than what the platform answered. Follow the
+    startup with `inspire ray events <name> --workspace <workspace>`.
     """
     name = _reject_ray_name_at_boundary(ctx, name)
     try:
@@ -811,8 +812,10 @@ def start_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> N
                 "the platform accepted the start request without acting on it.",
                 EXIT_API_ERROR,
                 hint=(
-                    "A job that never reached RUNNING cannot be restarted. "
-                    "Submit a fresh one with `inspire ray create`."
+                    "A restart normally leaves STOPPED at once. Read "
+                    f"`inspire ray events {scrub_raw_ids(name)} --workspace "
+                    f"{scrub_raw_ids(workspace)}` for why the cluster did not "
+                    "come back."
                 ),
             )
             return

@@ -26,7 +26,10 @@ from inspire.cli.utils.collection_output import (
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.errors import (
+    exit_with_error as _handle_error,
+    require_confirmation,
+)
 from inspire.cli.utils.id_resolver import (
     NAME_PICK_HELP,
     forget_resource_identity,
@@ -363,6 +366,55 @@ def _other_versions_in_use(
             continue
         labels.append(_version_label(version))
     return labels
+
+
+def _model_references(
+    model_id: str,
+    version_data: dict[str, Any],
+    *,
+    session,  # noqa: ANN001
+    workspace_id: Optional[str],
+) -> list[str]:
+    """Name every deployment that would break if this model went away.
+
+    Deletion is not version-scoped, so this asks per version instead of only
+    about the one `model status` reports on. The `running_infrence_serving`
+    count already on each version record is not enough on its own either: it
+    counts running deployments, while a stopped or sleeping serving can be
+    started again and therefore still holds the version. Failed servings are
+    dropped by `_serving_views` -- they hold nothing.
+    """
+    references: list[str] = []
+    for item in _version_items(version_data):
+        inner = _version_inner(item)
+        version = _version_number(inner.get("version") or inner.get("model_version"))
+        if version is None:
+            continue
+        servings, _total = browser_api_module.list_model_inference_servings(
+            model_id=model_id,
+            version=version,
+            page=1,
+            page_size=_SERVING_PAGE_SIZE,
+            session=session,
+            workspace_id=workspace_id,
+        )
+        label = _version_label(version)
+        for serving in _serving_views(servings):
+            status = serving.get("status")
+            suffix = f" ({status})" if status else ""
+            references.append(f"{label} {serving['name']}{suffix}")
+    return references
+
+
+def _in_use_message(name: str, references: list[str], *, pending: bool) -> str:
+    """One line naming what still holds the model, within the output budget."""
+    page = bound_collection(references, limit=DEFAULT_COLLECTION_LIMIT)
+    parts = list(page.items)
+    if page.truncated:
+        parts.append(f"and {page.total - page.shown} more")
+    if pending:
+        parts.append("a deployment is queued on this model")
+    return f"Model {scrub_raw_ids(name)} is still in use: {'; '.join(parts)}."
 
 
 def _model_detail_view(
@@ -1284,7 +1336,178 @@ def register_model(
         _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
 
+@click.command("delete")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--project", default=None, metavar="NAME", help="Project name filter")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Delete without checking whether deployments still reference the model.",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def delete_model_cmd(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    project: Optional[str],
+    yes: bool,
+    force: bool,
+    pick: Optional[int],
+) -> None:
+    """Delete a registered model and every version it holds.
+
+    \b
+    This cannot be undone, and it is not version-scoped: the whole entry goes,
+    so every deployment still pointing at any version of it loses what it was
+    serving. The registered directory on shared storage is left alone -- only
+    the registry entry is removed, and `model register` can recreate it from
+    the same path.
+
+    \b
+    The deployments are checked first, and a model that any serving still
+    holds is refused by name. A failed serving does not count -- it holds
+    nothing -- but a stopped or sleeping one does, because it can be started
+    again. `--force` skips the check instead of answering it.
+    """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="model",
+        list_command="inspire model list --workspace <workspace>",
+    )
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt=f"Delete model '{scrub_raw_ids(name)}' and all of its versions?",
+        message="Model deletion requires confirmation.",
+    )
+
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace, session=session)
+        project_id = _resolve_project_id(
+            config, project, workspace_id=workspace_id, session=session
+        )
+        user_id = _current_user_id(session)
+        model_id = _resolve_model_name(
+            ctx,
+            name,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            user_id=user_id,
+            pick=pick,
+            session=session,
+            require_live=True,
+        )
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+        return
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+        return
+    except Exception as e:
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
+        return
+
+    if not force:
+        try:
+            version_data = browser_api_module.list_model_version_records(
+                model_id=model_id,
+                session=session,
+                workspace_id=workspace_id,
+            )
+            references = _model_references(
+                model_id,
+                version_data,
+                session=session,
+                workspace_id=workspace_id,
+            )
+            # No version goes in: the platform reads a missing version as
+            # "any", which is the only signal that catches a deployment queued
+            # behind a busy quota rather than already running.
+            pending = browser_api_module.check_model_inference_serving_pending(
+                model_id=model_id,
+                session=session,
+                workspace_id=workspace_id,
+            )
+        except SessionExpiredError as e:
+            _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+            return
+        except Exception:
+            # A failed probe is not an empty answer. Refusing here keeps the
+            # command from deleting a model whose deployments it never saw.
+            _handle_error(
+                ctx,
+                "APIError",
+                "Could not check which deployments still use this model.",
+                EXIT_API_ERROR,
+                hint="Retry, or pass --force to delete without the check.",
+            )
+            return
+
+        has_pending = pending.get("has_pending_serving") is True
+        if references or has_pending:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                _in_use_message(name, references, pending=has_pending),
+                EXIT_VALIDATION_ERROR,
+                hint=(
+                    "Delete those servings first, or pass --force to delete the "
+                    "model anyway and leave them pointing at nothing."
+                ),
+            )
+            return
+
+    try:
+        browser_api_module.delete_model(
+            model_id,
+            session=session,
+            workspace_id=workspace_id,
+        )
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+        return
+    except Exception:
+        _handle_error(ctx, "APIError", "Could not delete model.", EXIT_API_ERROR)
+        return
+
+    forget_resource_identity(
+        session=session,
+        resource_type="model",
+        resource_id=model_id,
+        name=name,
+        workspace_id=str(workspace_id or ""),
+        owner_scope="self",
+    )
+
+    if ctx.json_output:
+        click.echo(
+            json_formatter.format_json(
+                {"name": scrub_raw_ids(name), "status": "deleted"}
+            )
+        )
+        return
+
+    click.echo(format_mutation_success("Model", "deleted", name))
+
+
 __all__ = [
+    "delete_model_cmd",
     "deploy_config_model",
     "list_model",
     "register_model",

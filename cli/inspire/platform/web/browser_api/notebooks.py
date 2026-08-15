@@ -484,6 +484,56 @@ def _config_compute_groups_fallback(workspace_id: str | None = None) -> list[dic
 # ---------------------------------------------------------------------------
 
 
+def notebook_name_exists(
+    name: str,
+    *,
+    workspace_id: str,
+    session: Optional[WebSession] = None,
+) -> bool:
+    """Report whether ``name`` is already taken by a notebook in this workspace.
+
+    ``CheckNotebook`` is the console's pre-create probe and is purely
+    read-only: it answers ``{notebook_id, sub_code, sub_msg}`` for a name match
+    anywhere in the workspace — running or stopped, and regardless of who
+    created it — and an empty ``Result`` when the name is free. The match is
+    **case-insensitive and ignores trailing whitespace** (``mostar-prep``,
+    ``MOSTAR-PREP`` and ``mostar-prep `` all report the same notebook), so it
+    catches collisions a case-sensitive comparison would miss. There is no
+    prefix or fuzzy matching.
+
+    **Both arguments are mandatory, and that is the whole trap.** The Action
+    declares them optional and answers "free" whenever the name is empty or the
+    ``workspace_id`` does not hold the notebook, so a caller that forgets the
+    scope gets a confident, wrong "this name is available". They are rejected
+    here rather than sent.
+
+    The platform does **not** enforce the answer: ``CreateNotebook`` accepts a
+    duplicate name and returns a second notebook with the same one (verified
+    2026-08-15 on ``CPU资源空间``). This is advice for the caller, not a
+    constraint the platform will apply on its own.
+
+    Raises on any failure, so a name can never read as free because the call
+    never landed.
+    """
+    clean_name = str(name or "").strip()
+    clean_workspace = str(workspace_id or "").strip()
+    if not clean_name:
+        raise ValueError("notebook_name_exists requires a notebook name")
+    if not clean_workspace:
+        raise ValueError("notebook_name_exists requires a workspace handle")
+
+    if session is None:
+        session = get_web_session()
+
+    payload = _notebook_v2(
+        session,
+        "CheckNotebook",
+        {"name": clean_name, "workspace_id": clean_workspace},
+        timeout=15,
+    )
+    return bool(str(payload.get("notebook_id") or "").strip())
+
+
 def create_notebook(
     name: str,
     project_id: str,
@@ -830,13 +880,21 @@ def list_notebook_lifecycle(
 
 
 # ---------------------------------------------------------------------------
-# Save-size estimate
+# Save-size estimate / save cancellation
 # ---------------------------------------------------------------------------
 
 # `EstimateSaveMirrorSize` refuses a notebook that is not RUNNING and says so in
 # the message. Matched on the stable fragment only: the full text ends with the
 # raw notebook handle, which must never reach a caller that prints errors.
 _NON_RUNNING_SAVE_MARKER = "non-running notebook"
+
+# `CancelSaveMirror` reports "no save is running" as a `Conflict` whose message
+# names the image *and* the raw notebook handle:
+#   Save image <name>:<version> of notebook <notebook_id> is already finished
+#   (status 2), nothing to cancel
+# Matched on the trailing fragment so the handle never has to be carried around
+# to be stripped later.
+_NOTHING_TO_CANCEL_MARKER = "nothing to cancel"
 
 
 @dataclass(frozen=True)
@@ -900,6 +958,55 @@ def estimate_notebook_image_size(
             "API error: EstimateSaveMirrorSize returned no active_snapshot_size"
         ) from None
     return NotebookImageSizeEstimate(size_bytes=size, notebook_running=True)
+
+
+def cancel_notebook_image_save(
+    notebook_id: str,
+    session: Optional[WebSession] = None,
+) -> bool:
+    """Abort the save ``SaveNotebookImage`` started and resume the container.
+
+    This is the other half of ``image save``: while a save runs the notebook is
+    paused and unusable, and until this Action there was no way back. It really
+    does interrupt the work — verified 2026-08-15 by cancelling one save a
+    second after it started and another 38 seconds in, past the point where the
+    platform had already reported ``Committed notebook … awaiting push``. Both
+    times the platform logged ``Cancelled saving notebook … by user request,
+    container resumed`` and the notebook went straight back to RUNNING.
+
+    **The notebook handle alone selects the save.** Discovery declares the full
+    ``SaveNotebookImage`` parameter set here (``name`` / ``version`` /
+    ``description`` / ``accessible`` / ``support_brand_list`` / ``flatten``)
+    because the two Actions share one request message, but a notebook has at
+    most one save in flight and the extra fields are not consulted.
+
+    Returns True when a save was running and has been cancelled, False when the
+    platform answered that this notebook's last save had already finished.
+    Everything else raises, so "nothing was cancelled" can never stand in for a
+    call that failed.
+
+    **Cancelling does not undo the image row.** The half-built image stays in
+    the catalog as ``FAILED`` and has to be deleted separately; the notebook
+    itself keeps the state it had before the save.
+    """
+    if not str(notebook_id or "").strip():
+        raise ValueError("cancel_notebook_image_save requires a notebook handle")
+
+    if session is None:
+        session = get_web_session()
+
+    try:
+        _notebook_v2(
+            session, "CancelSaveMirror", {"notebook_id": notebook_id}, timeout=60
+        )
+    except TransientAPIError:
+        # A ValueError subclass, so it has to be re-raised before the branch below.
+        raise
+    except ValueError as exc:
+        if _NOTHING_TO_CANCEL_MARKER in str(exc):
+            return False
+        raise
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1029,6 +1136,7 @@ __all__ = [
     "NotebookFailedError",
     "NotebookImageSizeEstimate",
     "NotebookResourceSnapshot",
+    "cancel_notebook_image_save",
     "create_notebook",
     "estimate_notebook_image_size",
     "get_notebook_detail",
@@ -1041,6 +1149,7 @@ __all__ = [
     "list_notebook_runs",
     "list_notebook_users",
     "list_notebooks",
+    "notebook_name_exists",
     "start_notebook",
     "stop_notebook",
     "wait_for_notebook_running",

@@ -244,6 +244,81 @@ def test_start_ray_job_surfaces_platform_error(monkeypatch) -> None:
         start_ray_job("ray-42", session=_FakeSession())
 
 
+def test_start_ray_job_restates_the_status_rejection(monkeypatch) -> None:
+    # Live wire text, verified on an owned job: `ray` refuses an operation the
+    # job's status does not allow with `InternalError`, not `Conflict`. Passed
+    # through, a permanent rejection reads as a server fault worth retrying.
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "ResponseMetadata": {
+                "Error": {
+                    "Code": "InternalError",
+                    "Message": "RayJob status not allow start",
+                }
+            }
+        },
+        record,
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        start_ray_job("ray-42", session=_FakeSession())
+
+    assert str(excinfo.value) == (
+        "Ray Job start failed: only a stopped Ray job can be started."
+    )
+    assert "InternalError" not in str(excinfo.value)
+
+
+def test_stop_ray_job_restates_the_status_rejection(monkeypatch) -> None:
+    # `StopJob` is not idempotent: an already-stopped job answers the same
+    # `InternalError` shape as an unstartable one.
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "ResponseMetadata": {
+                "Error": {
+                    "Code": "InternalError",
+                    "Message": "RayJob status not allow stop",
+                }
+            }
+        },
+        record,
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        stop_ray_job("ray-42", session=_FakeSession())
+
+    assert str(excinfo.value) == (
+        "Ray Job stop failed: only a live Ray job can be stopped."
+    )
+
+
+def test_unrelated_internal_error_is_not_restated_as_a_status_rejection(
+    monkeypatch,
+) -> None:
+    # The restatement keys on the status wording, not on the code: a genuine
+    # server fault has to keep reading like one.
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "ResponseMetadata": {
+                "Error": {
+                    "Code": "InternalError",
+                    "Message": "internal server error",
+                }
+            }
+        },
+        record,
+    )
+
+    with pytest.raises(ValueError, match="Ray Job start failed: .*internal server"):
+        start_ray_job("ray-42", session=_FakeSession())
+
+
 def test_stop_ray_job_requires_ray_job_selection() -> None:
     with pytest.raises(ValueError, match="Ray job selection is required\\."):
         stop_ray_job("", session=_FakeSession())

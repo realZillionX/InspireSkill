@@ -223,6 +223,52 @@ def _resolve_created_notebook_id(
     return ""
 
 
+def _reject_taken_notebook_name(
+    ctx: Context,
+    *,
+    name: str,
+    workspace_id: str,
+    session: WebSession,
+) -> None:
+    """Stop before adding a second notebook under a name already in use.
+
+    The platform does not enforce the answer — ``CreateNotebook`` accepts a
+    duplicate name and hands back a second notebook carrying it — but the CLI
+    addresses notebooks by name, so the duplicate turns every later
+    ``inspire notebook <verb> <name>`` into an ambiguity that needs ``--pick``
+    to resolve. Catching it here costs one request and leaves the workspace
+    addressable.
+
+    A pre-check that could not reach the platform is not evidence the name is
+    free, so it steps aside rather than blocking the create the caller asked
+    for.
+    """
+    try:
+        taken = browser_api_module.notebook_name_exists(
+            name,
+            workspace_id=workspace_id,
+            session=session,
+        )
+    except Exception:  # noqa: BLE001 - an advisory check must not block the create
+        logger.debug("Notebook name pre-check failed for %r", name, exc_info=True)
+        return
+
+    if not taken:
+        return
+
+    _handle_error(
+        ctx,
+        "ValidationError",
+        f"A notebook named '{name}' already exists in this workspace.",
+        EXIT_VALIDATION_ERROR,
+        hint=(
+            "Choose a different --name. The platform would accept the duplicate, "
+            "but both notebooks would then answer to the same name and every "
+            "later inspire notebook command would need --pick."
+        ),
+    )
+
+
 def resolve_notebook_project(
     ctx: Context,
     *,
@@ -960,6 +1006,12 @@ def run_notebook_create(
         click.echo(f"Using image: {scrub_raw_ids(selected_image.name)}")
 
     name = _resolve_notebook_name(name, json_output=json_output)
+    _reject_taken_notebook_name(
+        ctx,
+        name=name,
+        workspace_id=workspace_id,
+        session=session,
+    )
     workspace_label = _workspace_label(
         workspace_id=workspace_id,
         session=session,

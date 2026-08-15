@@ -6,7 +6,7 @@
 
 Browser API 是启智控制台自己用的接口面：同一台 `qz.sii.edu.cn`、同一个 CAS Session，控制台 SPA 全程走 `/api/v2` 的 Action 网关。官方 CLI `qz` 是这套接口的另一个客户端，不是它的前置依赖；调用它不需要安装任何外部二进制。
 
-当前 CLI 封装 **12 条路由、105 个 Action**，另有 **4 处 v1 端点**因为 v2 装不下或重建更贵而保留（第 8 节）。
+当前 CLI 封装 **12 条路由、108 个 Action**，另有 **4 处 v1 端点**因为 v2 装不下或重建更贵而保留（第 8 节）。
 
 ## 1. 事实源
 
@@ -157,7 +157,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 `GET {base_url}/discovery` 返回 `{"Result": {"Version": "<etag>", "Services": [...]}}`，每个 Action 带完整的嵌套参数与响应结构。**不带任何认证头**，且匿名与带 Cookie 的响应逐字节相同——它是静态文档，**不按调用者角色过滤**。
 
-当前 `Version = e1daec0f`，11 个 Service、175 个 Action。CLI 用到的 105 个 Action 里有 **12 个不在 discovery 里**：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`notebook.ListNotebookCreators`、`user.GetPermissions`、`user.GetRoutes`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners`、`image.CreateImage`、`image.UpdateImage`、`model-hub.CreateModel`；另有 `file`、`dataset` 两条**整条路由**不在 discovery 里，却都活着且正在用。
+当前 `Version = e1daec0f`，11 个 Service、175 个 Action。CLI 用到的 108 个 Action 里有 **14 个不在 discovery 里**：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`notebook.ListNotebookCreators`、`user.GetPermissions`、`user.GetRoutes`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners`、`image.CreateImage`、`image.UpdateImage`、`model-hub.CreateModel`、`model-hub.DeleteModel`、`notebook.CheckNotebook`；另有 `file`、`dataset` 两条**整条路由**不在 discovery 里，却都活着且正在用。
 
 | 字段 | 可信度 |
 | --- | --- |
@@ -185,16 +185,18 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 **③ 字段存在性。** 网关先按 proto 解析 body，再校验业务必填项，所以只带一个候选字段打过去：`InvalidParameter: invalid JSON: proto: unknown field "X"` 表示该字段不在合同里，**其它任何报错都表示字段在合同里**（通常是「名称不能为空」之类的必填校验）。因为必填项全缺，这同样创建不出任何东西。这是唯一能测未文档化 Console 变体字段面的办法。
 读到 `InternalError: internal server error` 时**先做对照实验**：`hpc.CreateJobConsole` 对空 body 和对合法字段都回这一句，只有塞进一个确定不存在的字段才会回 `unknown field`——没有对照就无法区分「字段被接受、处理器崩了」和「请求根本没进解析」。
 
-**这把尺子会被资源 id 静默废掉，探字段时不要带 id。** 网关的鉴权中间件在严格 proto 解析**之前**先读一遍资源键，读不到对象就直接返回，于是 body 里其它字段根本没被解析过。`ray.GetJobLog` 上的四路对照：
+**一个解析不到对象的资源 id 会静默废掉这把尺子。** 网关的鉴权中间件在严格 proto 解析**之前**先读一遍资源键：读不到对象就直接返回，于是 body 里其它字段根本没进解析；读得到就继续走正常流程。决定成败的不是「带没带 id」，而是**这个 id 指不指向一个真实存在、自己有权访问的对象**。在两条互不相关的路由上都能复现：
 
 | body | 回答 | 说明 |
 | --- | --- | --- |
-| `{"nonexistent_field_xyz": "x"}` | `InvalidParameter: … unknown field "nonexistent_field_xyz"` | 尺子正常工作 |
-| `{"ray_job_id": "x"}` | `ResourceNotFound: ray job not found` | 中间件先读 `ray_job_id` 就短路了 |
-| `{"ray_job_id": "x", "nonexistent_field_xyz": "x"}` | `ResourceNotFound` | **不存在的字段被掩盖** |
-| `{"job_id": "x", "nonexistent_field_xyz": "x"}` | `InvalidParameter: … unknown field` | `job_id` 不触发预读，尺子恢复 |
+| `{"nonexistent_field_xyz": "x"}` | `unknown field "nonexistent_field_xyz"` | 不带 id，尺子正常 |
+| `{"notebook_id": <真实>, "nonexistent_field_xyz": "x"}` | `unknown field "nonexistent_field_xyz"` | **真实 id，尺子照常工作** |
+| `{"notebook_id": "nb-does-not-exist", "nonexistent_field_xyz": "x"}` | `ResourceNotFound: notebook not found` | **假 id，未知字段被掩盖** |
+| `{"ray_job_id": "x", "nonexistent_field_xyz": "x"}` | `ResourceNotFound: ray job not found` | 同上，另一条路由 |
 
-第二行还会直接骗人：它让 `ray_job_id` 看起来在 `GetJobLog` 的合同里，其实**不在**（单独去掉 id 探就会看到 `unknown field "ray_job_id"`）。**探字段一律用不带任何资源 id 的最小 body**；带着 id 得出的「这个字段在合同里」是无效结论。
+第三、四行不只是「测不出来」，它们会**主动骗人**：`{"ray_job_id": "x"}` 打给 `ray.GetJobLog` 答的是 `ResourceNotFound`，看起来 `ray_job_id` 在合同里——其实**不在**，把 id 换成真实值或整个去掉，就会看到 `unknown field "ray_job_id"`。
+
+所以：**要么不带资源 id，要么带一个真实拥有的对象的 id**；用假 id 拼出来的最小 body 得到的任何「这个字段在合同里」都是无效结论。手上有真实对象时，在它上面探是最强的形式——proto 解析真的跑过了。
 
 **④ 猜名字。** 未文档化 Action 的命名规律是 v1 路径去掉资源前缀后的 PascalCase：`GET /project/{id}` → `GetProjectDetail`，`/file/dir/list` → `GetDirList`，`/project/owners` → `GetProjectOwners`。猜不中就换动词（`Get` / `List` / `Create` / `Update` / `Delete`）和单复数重试，一轮十几个名字就能覆盖。
 

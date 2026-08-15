@@ -517,6 +517,230 @@ def validate_datasets_cmd(
         sys.exit(EXIT_VALIDATION_ERROR)
 
 
+# ---------------------------------------------------------------------------
+# applications
+# ---------------------------------------------------------------------------
+
+
+def _application_row(
+    application: plaza_module.DatasetApplication,
+    *,
+    incoming: bool,
+) -> dict[str, Any]:
+    """Project one application down to what identifies and qualifies it."""
+    view: dict[str, Any] = {
+        "name": scrub_raw_ids(application.dataset),
+        "state": scrub_raw_ids(application.state),
+        "authority": scrub_raw_ids(application.authority),
+        "applied_at": scrub_raw_ids(application.applied_at),
+    }
+    if incoming:
+        view["applicant"] = scrub_raw_ids(application.applicant)
+        view["project"] = scrub_raw_ids(application.project)
+    else:
+        view["decided_at"] = scrub_raw_ids(application.decided_at)
+        view["approver"] = scrub_raw_ids(application.approver)
+    return {key: value for key, value in view.items() if value not in ("", None)}
+
+
+def _application_detail_view(
+    application: plaza_module.DatasetApplication,
+) -> dict[str, Any]:
+    view = {
+        "name": scrub_raw_ids(application.dataset),
+        "state": scrub_raw_ids(application.state),
+        "authority": scrub_raw_ids(application.authority),
+        "applicant": scrub_raw_ids(application.applicant),
+        "project": scrub_raw_ids(application.project),
+        "reason": _summarize(application.reason),
+        "approver": scrub_raw_ids(application.approver),
+        "applied_at": scrub_raw_ids(application.applied_at),
+        "decided_at": scrub_raw_ids(application.decided_at),
+    }
+    return {key: value for key, value in view.items() if value not in ("", None)}
+
+
+def _format_application_rows(rows: list[dict[str, Any]], *, incoming: bool) -> str:
+    if not rows:
+        return (
+            "No dataset access applications are waiting for you."
+            if incoming
+            else "You have not applied for access to any dataset."
+        )
+    if incoming:
+        headers = ("Name", "State", "Authority", "Applicant", "Project", "Applied")
+        fields = ("name", "state", "authority", "applicant", "project", "applied_at")
+        max_widths = (36, 10, 18, 16, 28, 20)
+    else:
+        headers = ("Name", "State", "Authority", "Applied", "Decided", "Approver")
+        fields = ("name", "state", "authority", "applied_at", "decided_at", "approver")
+        max_widths = (36, 10, 18, 20, 20, 16)
+    values = [tuple(str(row.get(field, "")) for field in fields) for row in rows]
+    widths = [
+        column_width(header, [row[index] for row in values], max_width=max_width)
+        for index, (header, max_width) in enumerate(zip(headers, max_widths))
+    ]
+    return "\n".join(render_table(headers, values, widths, line_char="─"))
+
+
+def _format_application_detail(view: dict[str, Any]) -> str:
+    labels = (
+        ("Name", "name"),
+        ("State", "state"),
+        ("Authority", "authority"),
+        ("Applicant", "applicant"),
+        ("Project", "project"),
+        ("Approver", "approver"),
+        ("Applied", "applied_at"),
+        ("Decided", "decided_at"),
+        ("Reason", "reason"),
+    )
+    return "\n".join(
+        f"{label}: {view[key]}" for label, key in labels if key in view
+    )
+
+
+@click.command("applications")
+@click.argument("name", required=False, default=None)
+@click.option(
+    "--to-approve",
+    "to_approve",
+    is_flag=True,
+    help="Show applications waiting for your approval instead of the ones you submitted.",
+)
+@click.option(
+    "--keyword",
+    default=None,
+    metavar="KEYWORD",
+    help="Server-side search over the applications listed.",
+)
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum applications to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every application.")
+@pass_context
+def dataset_applications_cmd(
+    ctx: Context,
+    name: Optional[str],
+    to_approve: bool,
+    keyword: Optional[str],
+    limit: Optional[int],
+    show_all: bool,
+) -> None:
+    """Show dataset access applications and where they stand.
+
+    A dataset whose Access reads 'no' in `dataset list` cannot be mounted until
+    access is granted, and applying for it is a web-only flow — this command
+    reads the outcome, it does not submit, approve, or withdraw anything.
+
+    \b
+    States are `pending`, `approved`, `rejected`, and `withdrawn`. An approved
+    application is the point at which `dataset validate <name>:<version>` is
+    worth running again. Pass NAME, the dataset name, for the full record of
+    every application on that one dataset.
+    """
+    try:
+        effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    if name is not None:
+        name = reject_id_at_boundary(
+            ctx,
+            name,
+            resource_type="dataset",
+            list_command=LIST_COMMAND,
+        )
+    session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+    lister = (
+        plaza_module.list_dataset_approvals
+        if to_approve
+        else plaza_module.list_dataset_applications
+    )
+    request_limit = (
+        effective_limit if effective_limit is not None else DEFAULT_COLLECTION_LIMIT
+    )
+
+    try:
+        if name is not None:
+            items = plaza_module.find_dataset_applications(
+                name,
+                incoming=to_approve,
+                session=session,
+                limit=request_limit,
+            )
+            total = len(items)
+        else:
+            items, total = lister(
+                keyword=keyword,
+                page=1,
+                page_size=request_limit,
+                session=session,
+            )
+            if show_all and total > len(items):
+                items, total = lister(
+                    keyword=keyword,
+                    page=1,
+                    page_size=total,
+                    session=session,
+                )
+    except plaza_module.UnknownDatasetApplicationError as e:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            scrub_raw_ids(e),
+            EXIT_VALIDATION_ERROR,
+            hint=(
+                "`inspire dataset applications` lists the ones this account can see."
+            ),
+        )
+        return
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+        return
+    except Exception:
+        _handle_error(
+            ctx,
+            "APIError",
+            "Could not list dataset access applications.",
+            EXIT_API_ERROR,
+        )
+        return
+
+    if name is not None:
+        views = [_application_detail_view(item) for item in items]
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {"name": scrub_raw_ids(name), "items": views}
+                )
+            )
+            return
+        click.echo("\n\n".join(_format_application_detail(view) for view in views))
+        return
+
+    page = bound_collection(
+        [_application_row(item, incoming=to_approve) for item in items],
+        limit=effective_limit,
+        total=total,
+    )
+    if ctx.json_output:
+        click.echo(
+            json_formatter.format_json({"items": page.items, **page.metadata()})
+        )
+        return
+
+    click.echo(_format_application_rows(page.items, incoming=to_approve))
+    notice = truncation_notice(page)
+    if notice:
+        click.echo(notice)
+
+
 @click.command("tags")
 @pass_context
 def list_dataset_tags_cmd(ctx: Context) -> None:
@@ -558,6 +782,7 @@ def list_dataset_tags_cmd(ctx: Context) -> None:
 
 
 __all__ = [
+    "dataset_applications_cmd",
     "list_dataset_tags_cmd",
     "list_datasets_cmd",
     "show_dataset_cmd",

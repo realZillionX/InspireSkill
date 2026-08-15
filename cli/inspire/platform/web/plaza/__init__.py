@@ -14,6 +14,15 @@ Mounting is the other half and belongs to qz:
 
 from __future__ import annotations
 
+from .applications import (
+    APPLICATION_STATES,
+    DatasetApplication,
+    UnknownDatasetApplicationError,
+    find_dataset_applications,
+    get_dataset_application,
+    list_dataset_applications,
+    list_dataset_approvals,
+)
 from .core import (
     CAS_BASE_URL,
     PLAZA_BASE_URL,
@@ -58,4 +67,12 @@ __all__ = [
     "list_datasets",
     "resolve_dataset_by_code",
     "resolve_tag_ids",
+    # Access applications (read-only; applying and approving are web-only)
+    "APPLICATION_STATES",
+    "DatasetApplication",
+    "UnknownDatasetApplicationError",
+    "find_dataset_applications",
+    "get_dataset_application",
+    "list_dataset_applications",
+    "list_dataset_approvals",
 ]

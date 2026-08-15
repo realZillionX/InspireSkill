@@ -46,7 +46,19 @@
 
 - `inspire hpc events` 支持 `--instance` / `--all-instances` 的实例级事件，并把重复发生的事件折叠进 `Count` 列（job 级也生效）。平台在 HPC 事件上从不填 `count`，而是按发生次数逐行重复：一个失败任务 106 行事件里 `--tail 20` 全是同一条 BackOff，折叠之后 20 行才露出真正的死因。只出现一次的行完全不变。
 
+- `inspire image cancel-save`：中止进行中的 Notebook 存镜像并立刻把 Notebook 交还。存镜像是一段该 Notebook 不可操作的等待，此前一旦按下去就没有退路。受控验证过两次——保存开始 1 秒时、以及 38 秒后平台已经打出「已提交镜像层，等待推送」之后，**都能成功中止**，Notebook 回到 RUNNING。代价要知道：半成品镜像会以 `FAILED` 留在镜像目录里，得自己删。
+
+- `inspire model delete`：CLI 此前能注册模型却不能删，与仓库自己的清理纪律矛盾。删除前逐版本核对推理服务占用与排队中的部署，有占用就点名拒绝，`--force` 放行；占用探测失败**拒绝删除**而不是当作没占用。
+
+- `inspire dataset applications`：只读查看数据集权限申请与待我审批的条目，状态显示为可读词。提交与审批仍然只在网页端——那两个动作会以你的名义触达真人审批者，CLI 不接。
+
+- `inspire notebook create` 提交前挡住工作空间内的重名。**平台自己不校验重名**——实测用同一个名字连建两个都成功，而重名会让此后每一条 `notebook <动词> <名字>` 都变成歧义、必须 `--pick`。校验是大小写不敏感的，也会忽略尾部空格。探测失败时让路、不拦创建。
+
 ### 修复
+
+- `job logs` / `hpc logs` / `serving logs` / `ray logs` 的 `--json` 不再把日志正文里的绝对路径洗成 `<redacted>`。共享的路径清洗器是为了别让平台句柄漏进输出，但**日志正文是程序自己的话**：`+ /bin/bash -c ...` 被洗成 `+ <redacted> -c ...`、栈回溯的 `File "/opt/conda/.../site.py"` 被洗成 `File "<redacted>"`，正好抹掉这条命令存在的理由。human 输出一直是原样打印的，所以此前同一条日志在两种输出模式下还不一致。清洗只在日志正文字段上豁免，记录里其它字段照旧。
+
+- `inspire ray start` / `ray stop` 不再把平台的状态机拒绝报成 `InternalError`。`ray` 用 `InternalError: RayJob status not allow <动词>` 表达「从这个状态不可能成功」，而这个错误码在瞬时名单里，于是一个永久性的拒绝被读成「平台暂时不舒服」，还会白烧三次退避重试。同时删掉了 `ray start` 那条被实测证伪的提示——它声称没到过 RUNNING 的任务无法重启，而实测这样的任务连续重启了三次。
 
 - `inspire model status` 的 `vllm_ready` 与 `inspire model versions` 的 vLLM 列不再恒为 no。它们读的是版本记录里的存量 `is_vllm_compatible`，而那个字段是死的——29 个可见模型版本上无一为 true，同时两个 live Action 一致地给出 13 个 true。这不只是显示错误：同一个 CLI 里的 `model deploy-config` 一直问的是 live，于是两处对同一个模型给出相反的答案。现在三处都问平台。
 

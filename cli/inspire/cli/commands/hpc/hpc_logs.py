@@ -32,6 +32,7 @@ from inspire.cli.commands.hpc.hpc_commands import (
 from inspire.cli.commands.job.job_logs import (
     DEFAULT_LOG_CHARACTER_LIMIT,
     DEFAULT_PLATFORM_LOG_RECORDS,
+    LOG_TEXT_KEYS,
     _emit_truncation_hint,
     _format_web_log_line,
     _select_web_logs,
@@ -377,7 +378,8 @@ def hpc_logs(
                     "limit": selection.limit,
                     "character_limit": selection.character_limit,
                     "shown_chars": selection.shown_chars,
-                }
+                },
+                preserve_paths=LOG_TEXT_KEYS,
             )
         )
         return

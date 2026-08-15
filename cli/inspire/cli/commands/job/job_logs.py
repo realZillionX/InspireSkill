@@ -225,8 +225,17 @@ def _format_web_logs(logs: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# A log line is the program's own output, not a platform handle. The default
+# path redaction turns `+ /bin/bash -c ...` into `+ <redacted> -c ...` and a
+# traceback's `File "/opt/conda/.../site.py"` into `File "<redacted>"`, which
+# removes exactly what the command exists to show. The human renderer already
+# prints these paths (it only runs `scrub_raw_ids`), so redacting them in
+# `--json` also made the two output modes disagree about the same line.
+LOG_TEXT_KEYS = frozenset({"message", "log", "content"})
+
+
 def _public_web_logs(logs: list[dict]) -> list[dict[str, Any]]:
-    public = json_formatter.sanitize_json_data(logs)
+    public = json_formatter.sanitize_json_data(logs, preserve_paths=LOG_TEXT_KEYS)
     if not isinstance(public, list):
         return []
     return [dict(item) for item in public if isinstance(item, dict)]
@@ -840,7 +849,8 @@ def _run_job_logs_single_job(
                         "total": selection.total,
                         "limit": selection.limit,
                         "character_limit": selection.character_limit,
-                    }
+                    },
+                    preserve_paths=LOG_TEXT_KEYS,
                 )
             )
             return
@@ -1016,7 +1026,8 @@ def _run_job_logs_web_single_job(
                         "limit": selection.limit,
                         "character_limit": selection.character_limit,
                         "shown_chars": selection.shown_chars,
-                    }
+                    },
+                    preserve_paths=LOG_TEXT_KEYS,
                 )
             )
             return

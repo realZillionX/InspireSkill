@@ -561,6 +561,45 @@ def _format_size_bytes(value: int) -> str:
     return f"{value} B"
 
 
+def _resolve_save_notebook_id(
+    ctx: Context,
+    *,
+    notebook: str,
+    workspace: str,
+    pick: Optional[int],
+    session,  # noqa: ANN001
+) -> str | None:
+    """Resolve the notebook a save command targets, or report and return None.
+
+    Both halves of the save flow address the same object the same way: a
+    notebook name inside one named workspace, resolved live so a cached handle
+    cannot send the request at a notebook that no longer exists.
+    """
+    from inspire.cli.commands.notebook.notebook_lookup import _resolve_notebook_id
+    from inspire.cli.utils.notebook_cli import get_base_url
+
+    try:
+        workspace_id = resolve_workspace_operation_scope(
+            workspace=workspace,
+            session=session,
+        )
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        return None
+
+    notebook_id, _ = _resolve_notebook_id(
+        ctx,
+        session=session,
+        base_url=get_base_url(),
+        identifier=notebook,
+        json_output=ctx.json_output,
+        workspace_ids=[workspace_id],
+        pick=pick,
+        require_live=True,
+    )
+    return notebook_id
+
+
 @click.command("save")
 @click.argument("notebook", metavar="NAME")
 @click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
@@ -627,7 +666,7 @@ def save_image_cmd(
     NAME is the notebook name from inspire notebook list. The notebook remains
     available after the save completes, but cannot be used while it runs, so
     the estimated snapshot size is printed first. Use --dry-run to see that
-    estimate on its own.
+    estimate on its own, and image cancel-save to abort a save already running.
     """
     notebook = reject_id_at_boundary(
         ctx,
@@ -640,30 +679,17 @@ def save_image_cmd(
         hint=WEB_AUTH_HINT,
     )
 
-    # Resolve the notebook name through the notebook
-    # resolver, which rejects handle-shaped normal CLI inputs.
-    from inspire.cli.commands.notebook.notebook_lookup import _resolve_notebook_id
-    from inspire.cli.utils.notebook_cli import get_base_url
-
-    try:
-        workspace_id = resolve_workspace_operation_scope(
-            workspace=workspace,
-            session=session,
-        )
-    except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-        return
-    base_url = get_base_url()
-    notebook_id, _ = _resolve_notebook_id(
+    # Resolved through the notebook resolver, which rejects handle-shaped
+    # normal CLI inputs.
+    notebook_id = _resolve_save_notebook_id(
         ctx,
-        session=session,
-        base_url=base_url,
-        identifier=notebook,
-        json_output=ctx.json_output,
-        workspace_ids=[workspace_id],
+        notebook=notebook,
+        workspace=workspace,
         pick=pick,
-        require_live=True,
+        session=session,
     )
+    if not notebook_id:
+        return
 
     requested_visibility = _parse_visibility_value(visibility)
     visibility_label = visibility.lower() if visibility else ""
@@ -841,6 +867,96 @@ def save_image_cmd(
 
 
 # ---------------------------------------------------------------------------
+# cancel-save
+# ---------------------------------------------------------------------------
+
+_CANCEL_LEFTOVER_NOTE = (
+    "The half-built image stays in the catalog as FAILED. "
+    "Remove it with: inspire image delete <name>:<version>"
+)
+
+
+@click.command("cancel-save")
+@click.argument("notebook", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def cancel_save_image_cmd(
+    ctx: Context,
+    notebook: str,
+    workspace: str,
+    pick: Optional[int],
+) -> None:
+    """Abort an image save that is still running and resume the notebook.
+
+    NAME is the notebook name from inspire notebook list. A save pauses the
+    notebook for as long as it takes; this hands it back. The cancel lands even
+    after the platform has finished committing the layer, and the notebook
+    returns to the state it was in before the save. The half-built image is
+    left behind as FAILED and has to be deleted separately.
+    """
+    notebook = reject_id_at_boundary(
+        ctx,
+        notebook,
+        resource_type="notebook",
+        list_command="inspire notebook list --workspace <workspace|all>",
+    )
+    session = require_web_session(
+        ctx,
+        hint=WEB_AUTH_HINT,
+    )
+
+    notebook_id = _resolve_save_notebook_id(
+        ctx,
+        notebook=notebook,
+        workspace=workspace,
+        pick=pick,
+        session=session,
+    )
+    if not notebook_id:
+        return
+
+    try:
+        cancelled = browser_api_module.cancel_notebook_image_save(
+            notebook_id=notebook_id,
+            session=session,
+        )
+    except Exception:
+        _handle_error(
+            ctx,
+            "APIError",
+            "Could not cancel the image save.",
+            EXIT_API_ERROR,
+        )
+        return
+
+    notebook_label = scrub_raw_ids(notebook)
+
+    if ctx.json_output:
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "notebook": notebook_label,
+                    "status": "cancelled" if cancelled else "not_saving",
+                }
+            )
+        )
+        return
+
+    if not cancelled:
+        click.echo(f"No image save is running for notebook {notebook_label}.")
+        return
+
+    click.echo(format_mutation_success("Image save", "cancelled", notebook_label))
+    click.echo(_CANCEL_LEFTOVER_NOTE)
+
+
+# ---------------------------------------------------------------------------
 # set-visibility
 # ---------------------------------------------------------------------------
 
@@ -1010,6 +1126,7 @@ def delete_image_cmd(
 
 
 __all__ = [
+    "cancel_save_image_cmd",
     "delete_image_cmd",
     "image_detail",
     "list_images_cmd",

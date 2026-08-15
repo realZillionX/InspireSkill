@@ -4,20 +4,20 @@
 >
 > 每条都是 `POST {base_url}/api/v2/{路由}?Action={Action}`，请求体是 JSON，响应取 `ResponseMetadata` / `Result` 信封里的 `Result`。「请求体」列写的是 **CLI 实际发出的键**，不是 discovery 声明的全集；「响应」列写的是**实测的线上键**，discovery 声明的 `Items` / `TotalCount` 在多数 Action 上不是真的。
 
-12 条路由、105 个 Action。`†` 标记的 Action 不在 `discovery` 里，但路由活着、Action 可调；`‡` 标记的整条路由不在 discovery 里。
+12 条路由、108 个 Action。`†` 标记的 Action 不在 `discovery` 里，但路由活着、Action 可调；`‡` 标记的整条路由不在 discovery 里。
 
 | 路由 | 域 | Action 数 | 主要 CLI 命令组 |
 | --- | --- | --- | --- |
 | [`train`](#train--分布式训练) | GPU 训练任务 | 10 | `job` |
 | [`hpc`](#hpc--cpu-slurm-批处理) | CPU Slurm 批处理 | 11 | `hpc` |
 | [`ray`](#ray--弹性计算) | 弹性计算 | 12 | `ray` |
-| [`notebook`](#notebook--交互式建模) | 交互式建模 | 16 | `notebook`、`image` |
+| [`notebook`](#notebook--交互式建模) | 交互式建模 | 18 | `notebook`、`image` |
 | [`inference_serving`](#inference_serving--模型部署) | 模型部署 | 19 | `serving` |
 | [`workspace`](#workspace--工作空间资源) | 计算组、节点、配额、用量 | 9 | `resources`、`<workload> quota`、每个 `create` |
 | [`user`](#user--账号) | 账号身份与权限 | 3 | `account permissions`、所有按当前用户过滤的列表 |
 | [`project`](#project--项目) | 项目 | 4 | `project`、每个 `create` |
 | [`image`](#image--镜像) | 镜像 | 5 | `image` |
-| [`model-hub`](#model-hub--模型仓库) | 模型仓库 | 13 | `model`、`serving create` |
+| [`model-hub`](#model-hub--模型仓库) | 模型仓库 | 14 | `model`、`serving create` |
 | [`file`](#file--文件页-) ‡ | 存储池与目录发现 | 2 | `init --scope project` |
 | [`dataset`](#dataset--官方数据集挂载-) ‡ | 官方数据集挂载 | 1 | `dataset validate`、`--dataset` |
 
@@ -116,11 +116,16 @@ Referer：`/jobs/ray`。
 - **Workspace scoping 是顶层 `workspace_id`**，`filter` 嵌套在这里会被拒。
 - **没有 `CreateJobConsole` 变体**，`ray` 对它答 `InvalidAction`，创建走 `CreateJob`。
 - **`ListJobEvents` 的信封是专用的**：`{ray_job_id, page_num, page_size, sorter}`，没有 `object_type`——传了返回 `参数错误`。事件是 K8s 形状（`reason` / `type` / `message` / `first_timestamp` / `last_timestamp` / `count`），关键信号是提交时的 `CreatedRayCluster`（Normal）和卡在 PENDING 时的 `FailedScheduling`（Warning）。
-- **`StartJob` 会「受理但不执行」。** 对一个 STOPPED 的 Ray Job 调用，第一次返回干净的成功信封而 `updated_at` 纹丝不动，再调一次变成 `InternalError`。照信封写的 Wrapper 会打印「已启动」而什么都没发生，所以 `ray start` **以状态真的离开 `STOPPED` 为准**，轮询确认后才报成功。
+- **`ray` 把状态机拒绝报成 `InternalError: RayJob status not allow <动词>`，而不是 `Conflict`。** 对非 STOPPED 的任务 `StartJob`、对已 STOPPED 的任务 `StopJob` 都走这一条。`InternalError` 在瞬时错误名单里，于是一个「从这个状态永远不可能成功」的拒绝被读成「平台暂时不舒服」，还会白烧三次退避重试。只有 `DeleteJob` 做对了，它给的是 `Conflict: 当前状态（运行中）无法删除`。
+- **`UpdateJob` 只能改停止的任务**：运行中答 `Conflict: Ray Job 正在运行中`；缺 id 答 `InvalidParameter: RayJobId is required`。在一个真实拥有的 STOPPED 任务上逐字段量过，**真正可写的只有 `name` 和 `description`**（局部更新，只发一个不会清掉另一个），另外 27 个候选键——含 `worker_groups` / `head_node` / `min_replicas` / `max_replicas` / `replicas` / `task_priority` 等所有可能的伸缩杠杆——全部 `unknown field`；`ScaleJob` / `UpdateWorkerGroup` / `ResizeJob` 一类的兄弟 Action 也都 `InvalidAction`。**弹性区间在创建时就定死了**，所以 `UpdateJob` 不封装：它只能改名，而一个 Name-only 的 CLI 改名等于让自己的名称索引失效。
+- **早先记的「`StartJob` 受理但不执行」没有复现。** 在一个真实任务上跑了三轮停/启：`StartJob` 回显的 `ray_job` 与随后 `GetJob` 逐字段一致，任务立刻离开 `STOPPED`，`updated_at` 与 `started_at` 都动了。真实存在的只有另一半——**重复调用答 `InternalError`**，那正是上一条的状态机拒绝。`ray start` 仍然轮询确认状态，这是本仓库对写操作的通用纪律，代价只是成功路径上多一次读。
 - **列表行的属主键是 `creator`、优先级键是 `priority_name`**；`created_by` 和 `priority` 恒为 null，只读那两个会让每个任务都没有属主、优先级恒 None。
 - **`UpdateJob` 不是弹性伸缩杠杆**，只收 `ray_job_id` / `name` / `description`；`worker_groups`、`head_node`、`entrypoint`、`min_replicas`、`replicas`、`task_priority`、`project_id` 全被拒。它是改名字，不是改集群，因此没有封装。
 - 实例行是 pod 形状：`instance_id` / `instance_type`（`head` / `worker`）/ `worker_group_name` / `status` / `cpu_count` / `memory_size` / `gpu_count` / `priority_level` / `created_at`。
-- **验证限度**：当前账号在全部可见 Workspace 里没有任何 Ray Job，别人的 Ray Job 每个详情 Action 都 `AccessForbidden`，所以 `GetJobLog` 与 `ListJobScalingHistories` 的**成功路径从未对真实对象跑通**。已经验证的是这两个 Wrapper 构造的请求体被网关接受并走到业务校验（答的是 `Invalid instance names` / `ResourceNotFound`，从不是 `unknown field`）；**响应的行字段来自控制台 SPA 的渲染代码而不是实时响应**，30 天窗口上限在 `ray` 上也无法探测（实例名解析先于窗口校验）。等有真实 Ray Job 时要补一次实测。
+- **`GetJobLog` 的成功路径已在真实任务上跑通**：`Result = {logs, total}`，`total` 是 **int**（与 `ListJobScalingHistories` 的字符串 `total` 相反）。行键是 `log_id` / `message` / `node` / `pod_name` / `time` / `timestamp_ms`（字符串）/ `timestamp_str`，与 discovery 声明的**元素**结构逐字段一致；`time` 带 `+08:00` 偏移，`timestamp_str` 是 Z 归一化形式。
+- `ListJobInstances` 的行比早先记的多几个键：除已列出的之外还有 `name`、`node_name`、`pod_ip`、`started_at`、`priority_name`、`ray_job_id`。
+- **仍未验证**：`ListJobScalingHistories` 的空路径跑通了（`{items: [], total: "0"}`），但**带数据的行没见过**——探针任务的 head 起不来，没有触发任何 `initialized` / `scale_up` 记录，所以行字段仍照 SPA 渲染代码写。`GetJobLog` 的 30 天窗口上限在 `ray` 上同样探不到（实例名解析先于窗口校验），命令防御性 clamp。
+- **账号可见的 295 个镜像里没有一个自带 `ray` 二进制**（官方 `inspire-ubuntu:24.04-base-ascend` 的 head 直接 `ray: command not found` 崩溃循环）。建 Ray Job 的人要自带镜像，这不是 CLI 能兜的。
 
 ---
 
@@ -142,6 +147,8 @@ Referer：`/jobs/interactiveModeling`。
 | `DeleteNotebook` | `{notebook_id}` | `{notebook_id, sub_code, sub_msg}` | `notebook delete` |
 | `SaveNotebookImage` | `{notebook_id, name, version, description}` | **恒为 `{}`**（`Result: null`） | `image save` |
 | `EstimateSaveMirrorSize` | `{notebook_id}` | `{active_snapshot_size}` | `image save`、`image save --dry-run` |
+| `CancelSaveMirror` | `{notebook_id}` | — | `image cancel-save` |
+| `CheckNotebook` | `{name, workspace_id}` | 占用时 `{notebook_id, sub_code, sub_msg}`；空闲时 `Result: null` | `notebook create` 的重名前置校验 |
 | `GetNotebookAccessUrl` | `{notebook_id}` | `{jupyter_url, vscode_url}` | `notebook proxy-url`、`exec` / `shell`、SSH 链路 |
 | `GetRealtimeNotebookMetric` | `{notebook_id}` | `{resource_metric_list[]}` | `notebook metrics --now` |
 | `GetScheduleConfig` | `{WorkspaceId}` | Workspace 调度策略全集（回收 / 定时关机 / 各 Workload 的运行时长） | `resources policy` |
@@ -197,7 +204,14 @@ Referer：`/jobs/modelDeployment`。路由名是**下划线**形式，discovery 
 - **创建必须用 `CreateServingConsole`，不是 discovery 里那个 `CreateServing`。** 后者的 Description 明写「via OpenAPI with simplified config」，契约确实不同：要 `spec_id` 而不是 `resource_spec_price`，`image` 是普通字符串而不是 `mirror_id`，且不收 `description` / `inference_serving_type` / `model_source`。**看到写操作的字段被大面积拒绝时，第一反应应该是「是不是找错 Action 了」，而不是「契约变了」。**
 - **`ScaleServing` 的字段是单数 `replica`**，而 create 和 `UpdateServing` 用复数 `replicas`。
 - **`StartServing` / `StopServing` 只收 `{inference_serving_id}`**，请求体里的 `version` 会被拒。这两条曾经迁了 URL 却仍用 v1 的 `code != 0` 检查解包，于是对任何输入都返回 `API error: None`——**迁 URL 而不同时换解包器，会把真错误伪装成假错误。**
-- **`UpdateServing` 没有封装**：它的 `resource_spec_price` 是扁平结构（`cpu_type` / `cpu_count` / `gpu_type` / …），与其它地方嵌套的 `cpu_info` / `gpu_info` 形状不同，安全的 Wrapper 需要基于 `GetServing` 做读改写，且必须先确认省略字段是保留还是清空——当前没有可供受控验证的 serving。
+- **`UpdateServing` 的语义已受控验证，结论是不封装。** 四条约束叠在一起让它对 Agent 不安全：
+  1. **只能在 `FAILED` 或 `STOPPED` 状态下调用**，运行中答 `InvalidParameter: 参数错误: This serving can only be updated in FAILED or STOPPED status.`
+  2. **`resource_spec_price` 必须是扁平结构**（`cpu_type` / `cpu_count` / `gpu_count` / `memory_size_gib` / `quota_id` / `logic_compute_group_id`），而 `GetServing` 读回的是**嵌套**结构（带 `cpu_info` / `gpu_info` 和一组价格字段）。**读回来的对象不能直接喂回去**——原样发送答 `unknown field "cpu_info"`。
+  3. **它是全量替换，省略的字段会被清空。** 受控验证：发一份完整 body 成功后再发一份只去掉 `command` 的，`command` 立刻变成空串。
+  4. **每次成功都会 bump `version`**（1 → 2），下一次必须带新的 `version`。
+  安全的 Wrapper 因此要把**全部**字段搬运一遍，而 `port_configs` / `runtime_attributes` / `traffic_config` / `custom_mounts` 这些 CLI 根本没有建模的字段一旦漏掉就会被静默清空。改配置重建一个 serving 既便宜又安全，所以不接。单字段的 `ScaleServing` 与 `RollbackServing` 不受这一条影响。
+- **`DeleteServing` 要求先停止**，运行中删除答 `Conflict: 当前状态（运行中）无法删除，请先停止后再删除`——与 `train` / `hpc` 一致。任何清理路径都必须走 `StopServing` → 轮询到 `STOPPED` → `DeleteServing`。
+- **Serving 不一定要 GPU。** `CPU资源空间` 的 `CPU资源-2` 组提供 CPU-only 档位（最小 `0,4,20`），所以 serving 的写面可以零 GPU 成本受控验证。`GetServingConfigByWorkspaceId` 报的 `gpu=1-119` 是自动停机规则的档位范围，不是创建下限。
 - **`GetServingApiMetric` 与 `GetTaskMetric` 是两个不相干的指标族**，共享零个指标名。前者是请求流量：`QPS`、`SUCCESS_QPS`、`FAIL_QPS`、`SUCCESS_RATE`、`FAIL_RATE`、`REQUEST_COUNT`、`LATENCY`、`TTFT`(+`_P50`/`_P95`/`_P99`)、`TTLT`(+`_P50`/`_P95`/`_P99`)、`INPUT_TOKENS`、`OUTPUT_TOKENS`。它**接受整个 `metric_types` 列表**（`GetTaskMetric` 不接受），也不需要 compute-group 句柄。返回项带 `metric_type` / `group_name` / `data_unit` / `time_series[{timestamp, data}]`。
 - **`ListServingScaleHistory` 的列表键是 `scale_history_items`**，不是 `items` 也不是 `list`。曾经按 `items` 读，于是任何有扩缩容历史的 serving 都返回空列表——这是一个「读错键就永远看不到数据」的静默失败，而不是报错。
 - **`GetInferenceServingTerms` 不是调用说明。** 它的 `terms` 元素是 `{term, start_time, end_time}`，即**运行期次索引**（第 N 次运行的起止时间，控制台用它把详情页各 tab 圈定到某一次运行），里面没有 endpoint、示例请求或 token。调用信息是 `GetServing` 的 `port` 和 `command`。**查过，刻意不接**，Wrapper 保留但没有命令消费。
@@ -326,6 +340,7 @@ Referer：`/jobs/modelService?spaceId={workspace_id}`。路由名是**连字符*
 | `CheckModelVLLMCompatible` | `{model_id, version, inference_serving_type}` | `{is_vllm_compatible}` | `model deploy-config` |
 | `GetModelVLLMCompatibleData` | `{model_id, inference_serving_type?}` | `{data:[{version, is_vllm_compatible}]}` | `model status`、`model versions` |
 | `CreateModel` † | `{name, project_id, workspace_id, model_source_path, model_source_type, model_type[], tags[], description}` | `{model_id}` | `model register` |
+| `DeleteModel` † | `{model_id}` | — | `model delete` |
 
 **参数语义与限制**
 

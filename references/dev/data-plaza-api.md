@@ -65,20 +65,22 @@
 
 ### 权限申请流
 
-`hasPermission` 为 false 的数据集只能申请授权，而**申请入口目前只有网页端**，这是 CLI 侧唯一有明确用户价值的未封装面。端点形状（来自 SPA bundle 与三个 GET 的只读实测，写端点未发起过请求）：
+`hasPermission` 为 false 的数据集只能申请授权，而**申请入口只有网页端**。三个只读 GET 已封装成 `inspire dataset applications`，让 CLI 至少能看见申请状态；三个写端点**刻意不接**——它们会以用户的名义触达真人审批者。
 
-| 端点 | 方法 | 输入 | 说明 |
-| --- | --- | --- | --- |
-| `datasetApplyApprove/getDatasetApplyList` | GET | `{page, pageSize, keyword}` | 我提交的申请。行含 `id, datasetName, authorityName, applyTime, approveTime, approveUser, applyDescr, state` |
-| `datasetApplyApprove/getDatasetApproveList` | GET | `{page, pageSize, keyword, role}` | 待我审批。行另含 `applyUser, projectName` |
-| `datasetApplyApprove/intoApproveById` | GET | `{id}` | 单条审批详情，含 `datasetCode` |
-| `datasetApplyApprove/datasetApply` | POST | `{applyUserid, applyUserName, applyDescr, datasetId, projectId, applyType}` | 提交申请 |
-| `datasetApplyApprove/datasetApprove` | POST | `{id, state}` | **一个端点三用**：`1` 同意、`2` 驳回、`-1` 申请人撤回 |
-| `datasetUserRole/createDatasetUserRole` | POST | `{datasetCode, datasetId, projectId, userType, userName, userId, roleId}` | 赋权 |
+| 端点 | 方法 | 输入 | 说明 | CLI |
+| --- | --- | --- | --- | --- |
+| `datasetApplyApprove/getDatasetApplyList` | GET | `page`、`pageSize`、`keyword?` | 我提交的申请。`{list, total, page, pageSize}`，行含 `id, datasetName, authorityName, applyTime, approveTime, approveUser, applyDescr, state` | `dataset applications` |
+| `datasetApplyApprove/getDatasetApproveList` | GET | 同上加 `role?` | 待我审批。行另含 `applyUser, projectName` | `dataset applications --to-approve` |
+| `datasetApplyApprove/intoApproveById` | GET | `id` | 单条审批详情，含 `datasetCode`；id 不存在时 HTTP 200 + `code != 0`、`msg` 为 `申请记录不存在` | `dataset applications <名字>` |
+| `datasetApplyApprove/datasetApply` | POST | `{applyUserid, applyUserName, applyDescr, datasetId, projectId, applyType}` | 提交申请 | **不接** |
+| `datasetApplyApprove/datasetApprove` | POST | `{id, state}` | **一个端点三用**：`1` 同意、`2` 驳回、`-1` 申请人撤回 | **不接** |
+| `datasetUserRole/createDatasetUserRole` | POST | `{datasetCode, datasetId, projectId, userType, userName, userId, roleId}` | 赋权 | **不接** |
 
-`state` 语义：`0` 待审批 / `1` 已通过 / `2` 已驳回 / `-1` 已撤回。
+`state` 语义：`0` 待审批 / `1` 已通过 / `2` 已驳回 / `-1` 已撤回。**`0` 是假值**，用「取真值否则默认」的写法解析会让每一条待审批都渲染成空。
 
-接之前有两个坑：`datasetApply` 除了 `datasetId`（resolver 已有）还要 `projectId`，而**广场侧的项目句柄在 CLI 表面完全不存在**，等于要新引入一个项目名→handle 的广场 resolver（来源是 `project/getProjectListByUser`）；另外撤回与审批共用 `datasetApprove`，受控验证要覆盖三种 `state`。
+将来若要接写侧，有两个坑：`datasetApply` 除了 `datasetId`（resolver 已有）还要 `projectId`，而**广场侧的项目句柄在 CLI 表面完全不存在**，等于要新引入一个项目名→handle 的广场 resolver（来源是 `project/getProjectListByUser`）；另外撤回与审批共用 `datasetApprove`，受控验证要覆盖三种 `state`，而其中两种会作用在别人提交的申请上。
+
+当前账号三个 GET 都回 `total: 0`，属于正常空态，所以**行字段的投影没有 live 验证过**，只有 `intoApproveById` 的错误路径是实测的。
 
 ### 其余未封装端点
 
