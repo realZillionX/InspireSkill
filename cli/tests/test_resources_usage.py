@@ -372,6 +372,35 @@ def test_usage_by_task_sorts_by_capacity_held(monkeypatch: pytest.MonkeyPatch) -
     assert [row["task"] for row in items] == ["huge", "small"]
 
 
+@pytest.mark.parametrize("mode", ([], ["--by", "task"], ["--mine"]))
+def test_usage_refuses_a_workspace_fanout(
+    monkeypatch: pytest.MonkeyPatch, mode: list[str]
+) -> None:
+    """`all` is refused in every mode, before any workspace is swept.
+
+    The rollups bucket per workspace, so a fanout would emit one row per
+    workspace-and-user pair under a shared ranking — a platform-wide leader
+    board that the data cannot support. Quota and scheduling are per workspace
+    anyway, so there is no decision on the other side of the fanout.
+    """
+    from inspire.cli.commands.resources import resources_usage as usage_module
+
+    def _refuse(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("--workspace all must be refused before any sweep")
+
+    _patch_command(monkeypatch, [])
+    monkeypatch.setattr(usage_module.browser_api_module, "list_task_usage", _refuse)
+    monkeypatch.setattr(usage_module.browser_api_module, "list_member_usage", _refuse)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["resources", "usage", "--workspace", "all", *mode],
+    )
+
+    assert result.exit_code != 0
+    assert "--workspace requires one workspace name for this command." in result.output
+
+
 def test_usage_defaults_to_twenty_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_command(
         monkeypatch,

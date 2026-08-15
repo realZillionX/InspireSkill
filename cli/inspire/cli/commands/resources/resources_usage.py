@@ -6,6 +6,13 @@ which on a shared cluster is the question that decides whether to wait, ask, or
 submit somewhere else. This reads the live per-workload dimension and rolls it
 up by user, by project, or leaves it per task.
 
+It takes one workspace and refuses `all`. Quota and scheduling are per
+workspace, so every decision this feeds is too; and because the rollups below
+bucket per workspace, a fanout would emit one row per workspace-and-user pair
+while the shared Workspace column and truncation notice made it read as a
+platform-wide ranking. "Who holds the most across the cluster" is not a
+question this data can answer, so the flag that implies it is gone.
+
 The rollups are computed here rather than requested from the platform on
 purpose. `workspace.ListProjectDimension` answers an empty list to ordinary
 members in every reachable workspace, and `workspace.ListUserDimension` returns
@@ -40,7 +47,10 @@ from inspire.cli.utils.collection_output import (
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
-from inspire.config.workspaces import resolve_workspace_query_scope, workspace_name_map
+from inspire.config.workspaces import (
+    resolve_workspace_operation_scope,
+    workspace_name_map,
+)
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import MemberUsage, TaskUsage
 from inspire.platform.web.session import SessionExpiredError, get_web_session
@@ -171,12 +181,8 @@ def _render(
     rows: list[dict[str, Any]],
     *,
     columns: list[tuple[str, str, str]],
-    show_workspace: bool,
 ) -> str:
     """Render the projected rows using an explicit column allowlist."""
-    if show_workspace:
-        columns = [("workspace", "Workspace", "left"), *columns]
-
     table_rows: list[tuple[str, ...]] = []
     for row in rows:
         cells: list[str] = []
@@ -244,8 +250,8 @@ _COLUMNS: dict[str, list[tuple[str, str, str]]] = {
 @click.option(
     "--workspace",
     required=True,
-    metavar="NAME|all",
-    help="Workspace name or 'all'.",
+    metavar="NAME",
+    help="Workspace name.",
 )
 @click.option(
     "--by",
@@ -291,8 +297,13 @@ def usage_resources(
 
     \b
     `--mine` reads your own footprint directly and costs one request; the
-    workspace-wide views sweep every running workload, so prefer a single
-    workspace over `--workspace all` on a busy cluster.
+    workspace-wide views sweep every running workload in the workspace.
+
+    \b
+    `--workspace` takes one name — `all` is refused. Quota, scheduling and the
+    decision this command feeds (wait, ask, or submit somewhere else) are all
+    per workspace, and the rollups are built per workspace too, so a fanout
+    would rank workspace-and-user pairs while reading as a platform ranking.
 
     \b
     Examples:
@@ -320,40 +331,27 @@ def usage_resources(
 
     try:
         session = get_web_session()
-        workspace_ids, all_workspaces = resolve_workspace_query_scope(
+        workspace_id = resolve_workspace_operation_scope(
             workspace=workspace,
             session=session,
         )
-        workspace_names = workspace_name_map(session)
+        label = _display_name(
+            workspace_name_map(session).get(workspace_id) or workspace,
+            fallback="(workspace name unavailable)",
+        )
 
-        rows: list[dict[str, Any]] = []
-        for workspace_id in workspace_ids:
-            label = _display_name(
-                workspace_names.get(workspace_id)
-                or (workspace if not all_workspaces else ""),
-                fallback="(workspace name unavailable)",
+        rows: list[dict[str, Any]]
+        if mode == "mine":
+            rows = _member_rows(
+                browser_api_module.list_member_usage(workspace_id, session=session),
+                workspace=label,
             )
-            if mode == "mine":
-                rows.extend(
-                    _member_rows(
-                        browser_api_module.list_member_usage(
-                            workspace_id, session=session
-                        ),
-                        workspace=label,
-                    )
-                )
-                continue
-
+        else:
             tasks = browser_api_module.list_task_usage(workspace_id, session=session)
-            if mode == "task":
-                rows.extend(_task_rows(tasks, workspace=label))
-            else:
-                rows.extend(_rollup(tasks, by=mode, workspace=label))
-
-        if not all_workspaces:
-            rows.sort(
-                key=lambda row: (row["gpus"], row.get("nodes", 0), row["cpus"]),
-                reverse=True,
+            rows = (
+                _task_rows(tasks, workspace=label)
+                if mode == "task"
+                else _rollup(tasks, by=mode, workspace=label)
             )
 
         page = bound_collection(rows, limit=effective_limit)
@@ -379,13 +377,7 @@ def usage_resources(
             )
             return
 
-        click.echo(
-            _render(
-                public_rows,
-                columns=_COLUMNS[mode],
-                show_workspace=all_workspaces,
-            )
-        )
+        click.echo(_render(public_rows, columns=_COLUMNS[mode]))
         notice = truncation_notice(page)
         if notice:
             click.echo(notice)
