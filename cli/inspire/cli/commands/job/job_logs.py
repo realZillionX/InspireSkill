@@ -49,6 +49,11 @@ from .job_commands import (
     _resolve_web_job_id,
     _run_readonly_web_job_operation,
 )
+from .job_instances import (
+    JobInstanceSelectionError,
+    job_instance_views,
+    select_job_instance_views,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -929,19 +934,20 @@ def _run_job_logs_web_single_job(
 
         def _load_logs(job_id: str, session: WebSession):
             job_data = browser_api_module.get_job_detail_v2(job_id, session=session)
-            if instance_names:
-                pod_names = list(instance_names)
-            else:
-                instances, _ = browser_api_module.list_job_instances(
-                    job_id,
-                    limit=200,
-                    session=session,
-                )
-                pod_names = [
-                    str(item.get("name") or "").strip()
-                    for item in instances
-                    if str(item.get("name") or "").strip()
-                ]
+            instances, _ = browser_api_module.list_job_instances(
+                job_id,
+                limit=200,
+                session=session,
+            )
+            # The selector speaks the Name column of `inspire job instances`
+            # (`rank=0`), never the pod handle — the handle scrubs to
+            # `<redacted>-worker-0-0` and is printed nowhere, so it was never
+            # a value a caller could have obtained from this CLI.
+            views = select_job_instance_views(
+                job_instance_views(instances),
+                instance_names,
+            )
+            pod_names = [view.handle for view in views]
 
             start_ms, end_ms = _web_log_time_range(job_data, since_minutes)
             if follow or not pod_names:
@@ -1047,6 +1053,8 @@ def _run_job_logs_web_single_job(
         _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
     except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except JobInstanceSelectionError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
     except ValueError as e:
         _handle_error(ctx, "APIError", str(e), EXIT_GENERAL_ERROR)
     except Exception as e:
@@ -1127,8 +1135,12 @@ def _run_job_logs_web_single_job(
     "--instance",
     "instance_names",
     multiple=True,
-    metavar="NAME",
-    help="Instance name to query. Repeat for multiple instances.",
+    metavar="RANK",
+    help=(
+        "Read only this instance, named by the Name column of `inspire job "
+        "instances` — `rank=0`, or just `0`. A role name selects every "
+        "instance in it. Repeat for several. Default: every instance."
+    ),
 )
 @click.option(
     "--window",

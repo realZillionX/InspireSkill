@@ -122,11 +122,9 @@ def test_web_follow_polls_new_logs_and_scrubs_human_output(monkeypatch) -> None:
     assert "job-12345678-1234-1234-1234-123456789abc" not in result.output
 
 
-def test_web_follow_accepts_explicit_instance_without_listing_instances(monkeypatch) -> None:  # noqa: ANN001
+def test_web_follow_resolves_an_explicit_instance_to_its_pod(monkeypatch) -> None:  # noqa: ANN001
+    """`--instance` names the Rank; only the instance list knows its pod."""
     _patch_web_resolution(monkeypatch)
-
-    def fail_list_instances(*args, **kwargs):  # noqa: ANN001
-        raise AssertionError("explicit --instance should skip instance discovery")
 
     captured = {}
 
@@ -134,7 +132,17 @@ def test_web_follow_accepts_explicit_instance_without_listing_instances(monkeypa
         captured.update(kwargs)
         raise KeyboardInterrupt()
 
-    monkeypatch.setattr(job_logs.browser_api_module, "list_job_instances", fail_list_instances)
+    monkeypatch.setattr(
+        job_logs.browser_api_module,
+        "list_job_instances",
+        lambda _job_id, **_kwargs: (
+            [
+                {"name": f"job-abc-worker-{rank}-0", "rank": rank}
+                for rank in range(2)
+            ],
+            2,
+        ),
+    )
     monkeypatch.setattr(job_logs.browser_api_module, "list_train_job_logs", fake_list_train_job_logs)
     monkeypatch.setattr(job_logs.time, "time", lambda: 10)
 
@@ -150,12 +158,46 @@ def test_web_follow_accepts_explicit_instance_without_listing_instances(monkeypa
             "platform",
             "--follow",
             "--instance",
-            "rank-0",
+            "1",
         ],
     )
 
     assert result.exit_code == 0, result.output
-    assert captured["pod_names"] == ["rank-0"]
+    assert captured["pod_names"] == ["job-abc-worker-1-0"]
+
+
+def test_web_logs_reject_an_unknown_instance(monkeypatch) -> None:  # noqa: ANN001
+    _patch_web_resolution(monkeypatch)
+    monkeypatch.setattr(
+        job_logs.browser_api_module,
+        "list_job_instances",
+        lambda _job_id, **_kwargs: ([{"name": "job-abc-worker-0-0", "rank": 0}], 1),
+    )
+    monkeypatch.setattr(
+        job_logs.browser_api_module,
+        "list_train_job_logs",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("an unknown instance must not reach the log store")
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "logs",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+            "--source",
+            "platform",
+            "--instance",
+            "rank=7",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "rank=0" in result.output
 
 
 def test_web_follow_json_is_rejected_before_web_calls(monkeypatch) -> None:  # noqa: ANN001

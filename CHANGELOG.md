@@ -66,6 +66,16 @@
 
 ### 破坏性变更
 
+- **`events` 的默认口径改成和 `logs` 一样：不加参数就给全部。** `job events` / `hpc events` 现在把控制器事件与每个实例的 Pod 事件合成一条时间线，`--all-instances` 随之删除（默认即是），`--instance` 从「切换到 Pod 视图」变成「收窄到某个实例」。
+
+  两条命令此前口径不一致是有原因的，只是那个原因不该由调用方承担：**平台根本没有「工作负载级日志」这一层**（日志端点只按 Pod 名取），所以 `logs` 天生就是全实例聚合；而事件有两套**不相交**的视图——控制器的 `Unschedulable` / `SuccessfulCreatePod` 和 Pod 的 `FailedScheduling` / `Pulling` / `BackOff`——CLI 早先把前者当默认、后者做成开关。于是「这东西为什么没起来」在 logs 上问一次就够，在 events 上要先问一遍、发现没有线索、再加个 flag 问第二遍，而**第二遍才是答案所在的地方**。
+
+  代价照实说：`hpc` 的 `ListSlurmdPodEvent` 一次只收一个实例，默认读全部就是每个 Pod 一次请求（实测单次约 0.3 秒），所以这条路径改成线程池并发（上限 8），结果按输入顺序重组而不是完成顺序。`job` 那一侧一次请求可以带 200 个 Pod，不受影响。
+
+- **`job events` / `job logs` 的 `--instance` 改收 `inspire job instances` 打印的身份**（`rank=0`，或者就写 `0`；角色名选中该角色全部实例），不再收平台 pod 名。
+
+  旧取值形态**从来就没有取得途径**：训练 Pod 的平台名是 `job-<uuid>-worker-0-0`，`scrub_raw_ids` 洗成 `<redacted>-worker-0-0`，`job instances` 正因为这个丢掉 Name 列改印 `rank=N`——也就是说这个选择器唯一合法的值是 CLI 任何地方都不打印的东西。`hpc` 和 `ray` 早就用角色名解决了同一个问题，`job` 这次跟上。选择器认不出来时报错并列出该任务真实有的实例，而不是悄悄退化成空范围（那会读成「这个实例没有事件」）。
+
 - **`inspire resources usage` 不再接受 `--workspace all`**，传了直接报 `--workspace requires one workspace name for this command.`。这个扇出答不出它看起来在答的问题：聚合是在逐 Workspace 的循环里做的，同一个人在每个空间各占一行，所以 `--by user` 给的是「(空间, 人) 组合」的排名而不是人的排名——实测一个人在四个空间分别持有 2122 / 1176 / 888 / 560 卡，排行榜上就是四个不同的条目。截断更糟：总排序被 `if not all_workspaces` 跳过，默认 20 行只会来自最先枚举到的那个空间，而提示照样写 `Showing 20 of 857`。
 
   没有改成真正的跨空间聚合，是因为聚合完也没有对应的决定：配额和调度都按 Workspace 走，这个命令服务的三个动作（等、去找人要、换个地方提交）也都是。跨 Workspace 找地方本来就是 `resources availability` 和 `resources nodes` 的活，它们逐空间一行、拼接是诚实的。随之删掉的还有只为扇出存在的 Workspace 列。

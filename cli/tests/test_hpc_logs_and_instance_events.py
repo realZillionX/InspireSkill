@@ -421,9 +421,10 @@ def _patch_events(
     return seen
 
 
-def test_events_stay_job_level_without_an_instance_flag(
+def test_the_default_merges_controller_and_pod_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The two views are disjoint sets, so reading one answers half the question."""
     seen = _patch_events(
         monkeypatch,
         instance_events=[_pod_event("BackOff", "2")],
@@ -435,8 +436,9 @@ def test_events_stay_job_level_without_an_instance_flag(
     )
 
     assert result.exit_code == 0, result.output
-    assert seen == []
-    assert json.loads(result.output)["data"]["items"][0]["reason"] == "CreatedSlurmCluster"
+    assert seen == [[inst["name"] for inst in _INSTANCES]]
+    items = json.loads(result.output)["data"]["items"]
+    assert [item["reason"] for item in items] == ["CreatedSlurmCluster", "BackOff"]
 
 
 def test_an_instance_selector_switches_to_the_pod_view(
@@ -463,8 +465,15 @@ def test_an_instance_selector_switches_to_the_pod_view(
     assert json.loads(result.output)["data"]["items"][0]["reason"] == "Scheduled"
 
 
-def test_all_instances_covers_every_pod(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen = _patch_events(monkeypatch, instance_events=[])
+def test_an_instance_selector_narrows_the_pod_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Narrowing drops the controller view with it — one role, one question."""
+    seen = _patch_events(
+        monkeypatch,
+        instance_events=[_pod_event("BackOff", "2")],
+        job_events=[_pod_event("CreatedSlurmCluster", "1")],
+    )
 
     result = CliRunner().invoke(
         cli_main,
@@ -475,14 +484,15 @@ def test_all_instances_covers_every_pod(monkeypatch: pytest.MonkeyPatch) -> None
             "prep-a",
             "--workspace",
             "CPU Room",
-            "--all-instances",
             "--instance",
             "slurmd",
         ],
     )
 
     assert result.exit_code == 0, result.output
-    assert seen == [[inst["name"] for inst in _INSTANCES]]
+    assert seen == [[f"{_NS}/hpc-job-136201-cluster-slurmd-0"]]
+    items = json.loads(result.output)["data"]["items"]
+    assert [item["reason"] for item in items] == ["BackOff"]
 
 
 def test_repeated_occurrences_collapse_into_the_count_column(
@@ -508,7 +518,6 @@ def test_repeated_occurrences_collapse_into_the_count_column(
             "prep-a",
             "--workspace",
             "CPU Room",
-            "--all-instances",
         ],
     )
 
@@ -542,7 +551,6 @@ def test_instance_events_are_ordered_so_tail_means_recent(
             "prep-a",
             "--workspace",
             "CPU Room",
-            "--all-instances",
             "--tail",
             "2",
         ],
@@ -576,7 +584,6 @@ def test_pod_events_name_the_instance_they_came_from(
             "prep-a",
             "--workspace",
             "CPU Room",
-            "--all-instances",
         ],
     )
 

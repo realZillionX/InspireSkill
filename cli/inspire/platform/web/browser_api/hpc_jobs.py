@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -311,8 +312,7 @@ def list_hpc_instance_events(
         if session is None:
             session = get_web_session()
 
-        all_events: list[dict] = []
-        for instance_id in clean_ids:
+        def _instance_events(instance_id: str) -> list[dict]:
             page_num = 1
             instance_events: list[dict] = []
             while max_pages is None or page_num <= max_pages:
@@ -348,8 +348,25 @@ def list_hpc_instance_events(
                 ):
                     break
                 page_num += 1
-            all_events.extend(instance_events)
-        return all_events
+            return instance_events
+
+        # This Action takes exactly one instance per request, so a job's whole
+        # event history costs one round trip per pod — and reading every pod is
+        # now the default. Sequentially that is ~0.3s × node count on the
+        # command's critical path; the pool keeps a wide job answering in about
+        # the time a narrow one takes. Results are reassembled in input order,
+        # not completion order.
+        if len(clean_ids) == 1:
+            return _instance_events(clean_ids[0])
+        collected: dict[str, list[dict]] = {}
+        with ThreadPoolExecutor(max_workers=min(len(clean_ids), 8)) as pool:
+            futures = {
+                pool.submit(_instance_events, instance_id): instance_id
+                for instance_id in clean_ids
+            }
+            for future in as_completed(futures):
+                collected[futures[future]] = future.result()
+        return [event for instance_id in clean_ids for event in collected.get(instance_id, [])]
     except (SessionExpiredError, TransientAPIError):
         raise
     except Exception:

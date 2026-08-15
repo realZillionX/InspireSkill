@@ -131,32 +131,48 @@ def _patch_job_events(monkeypatch) -> None:  # noqa: ANN001
     )
 
 
-def test_job_pod_events_name_the_instance_they_came_from(monkeypatch) -> None:  # noqa: ANN001
-    """Several pods land in one timeline; a row that omits its pod is unusable."""
+def test_job_events_merge_controller_and_pod_views(monkeypatch) -> None:  # noqa: ANN001
+    """Two disjoint sets from one Action; the default has to read both."""
     _patch_job_events(monkeypatch)
+    monkeypatch.setattr(
+        job_events,
+        "list_job_events",
+        lambda _job_id, session=None: [  # noqa: ANN001
+            {
+                "reason": "SuccessfulCreatePod",
+                "message": "Created pod",
+                "object_type": "job",
+                "last_timestamp": "0",
+            }
+        ],
+    )
 
     result = CliRunner().invoke(
         cli_main,
-        [
-            "--json",
-            "job",
-            "events",
-            "train-a",
-            "--workspace",
-            "Test Workspace",
-            "--all-instances",
-        ],
+        ["--json", "job", "events", "train-a", "--workspace", "Test Workspace"],
     )
 
     assert result.exit_code == 0, result.output
     items = _json_data(result.output)["items"]
-    assert [item["instance"] for item in items] == ["rank=0", "rank=1"]
+    assert [item["reason"] for item in items] == [
+        "SuccessfulCreatePod",
+        "FailedScheduling",
+        "FailedScheduling",
+    ]
+    assert [item.get("instance") for item in items] == [None, "rank=0", "rank=1"]
     assert "worker-0-0" not in result.output
 
 
-def test_job_pod_events_label_an_explicit_selection_too(monkeypatch) -> None:  # noqa: ANN001
-    """`--instance` names the pod on the way in; the rows still answer in Rank."""
+def test_job_events_narrow_to_one_rank(monkeypatch) -> None:  # noqa: ANN001
+    """`--instance` speaks the Name column of `job instances`, not the pod handle."""
     _patch_job_events(monkeypatch)
+    sent: list[list[str]] = []
+    monkeypatch.setattr(
+        job_events,
+        "list_job_instance_events",
+        lambda _job_id, pods, session=None: sent.append(list(pods))  # noqa: ANN001
+        or [{"reason": "Scheduled", "object_id": pods[0], "last_timestamp": "1"}],
+    )
 
     result = CliRunner().invoke(
         cli_main,
@@ -168,21 +184,24 @@ def test_job_pod_events_label_an_explicit_selection_too(monkeypatch) -> None:  #
             "--workspace",
             "Test Workspace",
             "--instance",
-            _POD_HANDLES[1],
+            "1",
         ],
     )
 
     assert result.exit_code == 0, result.output
+    assert sent == [[_POD_HANDLES[1]]]
     assert [item["instance"] for item in _json_data(result.output)["items"]] == ["rank=1"]
 
 
-def test_job_pod_events_survive_an_unreadable_instance_list(monkeypatch) -> None:  # noqa: ANN001
-    """Labels are decoration on this path; the events are the deliverable."""
+def test_job_events_reject_an_unknown_instance(monkeypatch) -> None:  # noqa: ANN001
+    """An empty pod scope would read as "this instance had no events"."""
     _patch_job_events(monkeypatch)
     monkeypatch.setattr(
-        job_events.browser_api_module,
-        "list_job_instances",
-        lambda _job_id, **_kwargs: (_ for _ in ()).throw(RuntimeError("platform down")),
+        job_events,
+        "list_job_instance_events",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("an unknown selector must not reach the events Action")
+        ),
     )
 
     result = CliRunner().invoke(
@@ -195,14 +214,14 @@ def test_job_pod_events_survive_an_unreadable_instance_list(monkeypatch) -> None
             "--workspace",
             "Test Workspace",
             "--instance",
-            _POD_HANDLES[0],
+            "rank=7",
         ],
     )
 
-    assert result.exit_code == 0, result.output
-    items = _json_data(result.output)["items"]
-    assert [item["reason"] for item in items] == ["FailedScheduling"]
-    assert "instance" not in items[0]
+    assert result.exit_code == 12
+    payload = json.loads(result.output)
+    assert payload["error"]["type"] == "ValidationError"
+    assert "rank=0, rank=1" in payload["error"]["message"]
 
 
 def test_ray_event_api_paginates_with_finite_pages(monkeypatch) -> None:  # noqa: ANN001

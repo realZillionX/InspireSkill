@@ -49,6 +49,22 @@ def _fmt_timestamp(raw: Any) -> str:
     return s
 
 
+def event_sort_key(event: dict) -> tuple[int, int]:
+    """Order a merged event stream oldest-first.
+
+    Controller-level and per-pod events come from different calls (and, on
+    HPC, one call per instance), so the chronology that makes ``--tail`` mean
+    "most recent" has to be imposed here rather than trusted from the
+    platform's own ordering.
+    """
+
+    def _epoch(value: object) -> int:
+        text = str(value or "").strip()
+        return int(text) if text.isdigit() else 0
+
+    return _epoch(event.get("last_timestamp")), _epoch(event.get("first_timestamp"))
+
+
 def _matching_events(
     events: list[dict],
     *,

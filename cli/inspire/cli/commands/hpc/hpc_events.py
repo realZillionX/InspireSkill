@@ -1,9 +1,11 @@
 """`inspire hpc events <name>` — platform events for an HPC job.
 
-Job-level controller events are the default. ``--instance`` / ``--all-instances``
-switch to the per-pod scheduler and kubelet view (``Scheduled`` / ``Pulling`` /
-``Created`` / ``Started`` / ``BackOff`` / ``Failed``), which is where a job that
-never produced a log line explains itself.
+The default is the whole picture: job-level controller events merged with the
+per-pod scheduler and kubelet view (``Scheduled`` / ``Pulling`` / ``Created`` /
+``Started`` / ``BackOff`` / ``Failed``), which is where a job that never
+produced a log line explains itself. The two are disjoint sets from two
+different Actions, so reading only one of them answers half the question.
+``--instance`` narrows to a role.
 
 Instances are addressed by the Role / Rank identity that
 `inspire hpc instances` prints, not by pod name: HPC pod names are platform
@@ -27,7 +29,7 @@ from inspire.cli.commands.hpc.hpc_commands import (
     select_hpc_instance_views,
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, run_events_command
+from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, event_sort_key, run_events_command
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.config import Config, ConfigError
 from inspire.platform.web.browser_api.hpc_jobs import (
@@ -83,14 +85,6 @@ def _collapse_repeated_events(events: list[dict]) -> list[dict]:
     return rows
 
 
-def _event_sort_key(event: dict) -> tuple[int, int]:
-    def _epoch(value: object) -> int:
-        text = str(value or "").strip()
-        return int(text) if text.isdigit() else 0
-
-    return _epoch(event.get("last_timestamp")), _epoch(event.get("first_timestamp"))
-
-
 def _labelled_events(
     events: list[dict],
     views: list[HPCInstanceView],
@@ -101,8 +95,8 @@ def _labelled_events(
     a row says about its origin is ``object_id`` — the namespaced pod handle,
     which `scrub_raw_ids` reduces to `<redacted>-cluster-slurmd-0` and which
     therefore never reaches output. Without the Role / Rank label attached
-    here, `--all-instances` renders as one stream in which no row can be
-    traced back to the instance it came from.
+    here, the merged stream renders as one block in which no row can be traced
+    back to the instance it came from.
     """
     labels = {view.handle: view.label for view in views}
     labels.update({view.pod: view.label for view in views})
@@ -122,12 +116,7 @@ def _instance_events(
     *,
     selectors: tuple[str, ...],
 ) -> list[dict]:
-    """Fetch per-pod events for the selected instances, oldest first.
-
-    ``ListSlurmdPodEvent`` accepts no sorter and answers in an arbitrary order,
-    and several instances are concatenated here besides — so the ordering that
-    makes ``--tail`` mean "most recent" has to be imposed on this side.
-    """
+    """Fetch per-pod events for the selected instances (unordered)."""
     instances, _total = _fetch_hpc_instances(
         job_id,
         limit=_INSTANCE_SCAN_LIMIT,
@@ -140,7 +129,7 @@ def _instance_events(
         live_session,
         job_id=job_id,
     )
-    return sorted(_labelled_events(events, views), key=_event_sort_key)
+    return _labelled_events(events, views)
 
 
 @click.command("events")
@@ -164,17 +153,10 @@ def _instance_events(
     multiple=True,
     metavar="ROLE",
     help=(
-        "Query per-pod events (`Scheduled` / `Pulling` / `Started` / `BackOff`) "
-        "for the instance named by the Role (and Rank, when a role has "
+        "Narrow to one instance, named by the Role (and Rank, when a role has "
         "replicas) column of `inspire hpc instances` — for example slurmd. "
-        "Repeat for several. Without this flag, job-level controller events "
-        "are returned instead."
+        "Repeat for several. Default: controller events plus every instance."
     ),
-)
-@click.option(
-    "--all-instances",
-    is_flag=True,
-    help="Fetch per-pod events for every instance in the job.",
 )
 @click.option(
     "--tail",
@@ -199,7 +181,6 @@ def events(
     pick: Optional[int],
     reason_filter: Optional[str],
     instance_selectors: tuple[str, ...],
-    all_instances: bool,
     tail: int,
     follow: bool,
     interval: int,
@@ -207,12 +188,16 @@ def events(
     """Show platform events for an HPC job.
 
     \b
+    Controller events and every instance's pod events are merged into one
+    timeline, so a job that never started explains itself in one call. Use
+    ``--instance`` to narrow to a single role.
+
+    \b
     Examples:
       inspire hpc events prep-a --workspace CPU资源空间
       inspire --json hpc events prep-a --workspace CPU资源空间
       inspire hpc events prep-a --workspace CPU资源空间 --reason Deleted
       inspire hpc events prep-a --workspace CPU资源空间 --instance slurmd
-      inspire hpc events prep-a --workspace CPU资源空间 --all-instances
       inspire hpc events prep-a --workspace CPU资源空间 --follow
     """
     name = _reject_hpc_name_at_boundary(ctx, name)
@@ -223,13 +208,16 @@ def events(
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
         return
 
-    per_instance = all_instances or bool(instance_selectors)
-    selectors = () if all_instances else instance_selectors
-
     def _fetch(resolved_id: str, live_session) -> list[dict]:  # noqa: ANN001
-        if per_instance:
-            return _instance_events(resolved_id, live_session, selectors=selectors)
-        return list_hpc_job_events(resolved_id, session=live_session)
+        instance_events = _instance_events(
+            resolved_id,
+            live_session,
+            selectors=instance_selectors,
+        )
+        if instance_selectors:
+            return sorted(instance_events, key=event_sort_key)
+        merged = list_hpc_job_events(resolved_id, session=live_session) + instance_events
+        return sorted(merged, key=event_sort_key)
 
     def _fetch_events() -> list[dict]:
         try:
