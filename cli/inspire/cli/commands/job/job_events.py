@@ -16,6 +16,7 @@ from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_JOB_NOT_FOUND, 
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, run_events_command
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
+from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.jobs import (
@@ -31,6 +32,25 @@ from .job_commands import (
 )
 
 _JOB_INSTANCE_PAGE_SIZE = 200
+
+
+def _labelled_instance_events(events: list[dict]) -> list[dict]:
+    """Name each per-pod row with the instance it belongs to.
+
+    `--all-instances` concatenates every pod's events into one timeline, and
+    the only field that says which pod a row came from is ``object_id`` — the
+    same instance name `inspire job instances` prints, dropped by the shared
+    public projection. Attaching it here is what makes "which worker failed to
+    schedule" answerable from the output rather than from a second query.
+    """
+    labelled: list[dict] = []
+    for event in events:
+        row = dict(event)
+        name = str(row.get("object_id") or "").strip()
+        if name:
+            row["instance"] = scrub_raw_ids(name)
+        labelled.append(row)
+    return labelled
 
 
 def _list_all_job_instance_names(job_id: str, *, session) -> list[str]:  # noqa: ANN001
@@ -160,16 +180,20 @@ def events(
                         resolved_id,
                         session=session,
                     )
-                    return list_job_instance_events(
-                        resolved_id,
-                        pod_names,
-                        session=session,
+                    return _labelled_instance_events(
+                        list_job_instance_events(
+                            resolved_id,
+                            pod_names,
+                            session=session,
+                        )
                     )
                 if pods:
-                    return list_job_instance_events(
-                        resolved_id,
-                        pods,
-                        session=session,
+                    return _labelled_instance_events(
+                        list_job_instance_events(
+                            resolved_id,
+                            pods,
+                            session=session,
+                        )
                     )
                 return list_job_events(resolved_id, session=session)
 

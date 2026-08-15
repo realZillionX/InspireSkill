@@ -19,6 +19,7 @@ import click
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_VALIDATION_ERROR, pass_context
 from inspire.cli.commands.hpc.hpc_commands import (
     HPCInstanceSelectionError,
+    HPCInstanceView,
     _fetch_hpc_instances,
     _reject_hpc_name_at_boundary,
     _run_readonly_hpc_operation,
@@ -90,6 +91,31 @@ def _event_sort_key(event: dict) -> tuple[int, int]:
     return _epoch(event.get("last_timestamp")), _epoch(event.get("first_timestamp"))
 
 
+def _labelled_events(
+    events: list[dict],
+    views: list[HPCInstanceView],
+) -> list[dict]:
+    """Name each row with the identity `inspire hpc instances` prints.
+
+    Several instances are concatenated into one timeline, and the only thing
+    a row says about its origin is ``object_id`` — the namespaced pod handle,
+    which `scrub_raw_ids` reduces to `<redacted>-cluster-slurmd-0` and which
+    therefore never reaches output. Without the Role / Rank label attached
+    here, `--all-instances` renders as one stream in which no row can be
+    traced back to the instance it came from.
+    """
+    labels = {view.handle: view.label for view in views}
+    labels.update({view.pod: view.label for view in views})
+    labelled: list[dict] = []
+    for event in events:
+        row = dict(event)
+        label = labels.get(str(row.get("object_id") or "").strip())
+        if label:
+            row["instance"] = label
+        labelled.append(row)
+    return labelled
+
+
 def _instance_events(
     job_id: str,
     live_session,  # noqa: ANN001
@@ -114,7 +140,7 @@ def _instance_events(
         live_session,
         job_id=job_id,
     )
-    return sorted(events, key=_event_sort_key)
+    return sorted(_labelled_events(events, views), key=_event_sort_key)
 
 
 @click.command("events")

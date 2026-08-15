@@ -553,6 +553,58 @@ def test_instance_events_are_ordered_so_tail_means_recent(
     assert [item["reason"] for item in items] == ["Pulled", "BackOff"]
 
 
+def test_pod_events_name_the_instance_they_came_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A merged per-pod window is unreadable if no row says which pod it is."""
+    _patch_events(
+        monkeypatch,
+        instance_events=[
+            _pod_event("Scheduled", "1"),
+            {
+                **_pod_event("BackOff", "2"),
+                "object_id": f"{_NS}/hpc-job-136201-cluster-slurmctld-0",
+            },
+        ],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "hpc",
+            "events",
+            "prep-a",
+            "--workspace",
+            "CPU Room",
+            "--all-instances",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Instance" in result.output
+    assert "slurmd" in result.output
+    assert "slurmctld" in result.output
+    assert "hpc-job-136201-cluster-slurmd-0" not in result.output
+
+
+def test_job_level_events_keep_the_narrow_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Job-level rows have no instance identity; the column would be dashes."""
+    _patch_events(
+        monkeypatch,
+        instance_events=[],
+        job_events=[_pod_event("CreatedSlurmCluster", "1")],
+    )
+
+    result = CliRunner().invoke(
+        cli_main, ["hpc", "events", "prep-a", "--workspace", "CPU Room"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Instance" not in result.output
+
+
 def test_events_reject_an_unknown_instance(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_events(monkeypatch, instance_events=[])
 

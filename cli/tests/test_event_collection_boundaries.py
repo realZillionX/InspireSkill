@@ -82,6 +82,55 @@ def test_job_instance_events_pages_and_chunks_pod_names(monkeypatch) -> None:  #
     ]
 
 
+def test_job_pod_events_name_the_instance_they_came_from(monkeypatch) -> None:  # noqa: ANN001
+    """Several pods land in one timeline; a row that omits its pod is unusable."""
+    monkeypatch.setattr(
+        job_events.Config,
+        "from_files_and_env",
+        lambda **_kwargs: (object(), {}),
+    )
+    monkeypatch.setattr(job_events, "_close_web_client", lambda: None)
+    monkeypatch.setattr(
+        job_events,
+        "_run_readonly_web_job_operation",
+        lambda **kwargs: kwargs["operation"]("job-internal", object()),
+    )
+    monkeypatch.setattr(
+        job_events,
+        "list_job_instance_events",
+        lambda _job_id, pods, session=None: [  # noqa: ANN001
+            {
+                "reason": "FailedScheduling",
+                "message": "0/8 nodes are available",
+                "object_id": pod,
+                "object_type": "instance",
+                "last_timestamp": "1",
+            }
+            for pod in pods
+        ],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "job",
+            "events",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+            "--instance",
+            "worker-0",
+            "--instance",
+            "worker-1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    items = _json_data(result.output)["items"]
+    assert [item["instance"] for item in items] == ["worker-0", "worker-1"]
+
+
 def test_ray_event_api_paginates_with_finite_pages(monkeypatch) -> None:  # noqa: ANN001
     calls: list[int] = []
 

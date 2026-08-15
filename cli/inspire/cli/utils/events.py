@@ -133,6 +133,11 @@ def public_event(event: dict) -> dict[str, Any]:
     )
     projected = {
         "time": _fmt_timestamp(timestamp) if timestamp not in (None, "") else None,
+        # Attached by the command layer for per-pod queries only, and already
+        # public there: the raw `object_id` is a platform handle and stays out
+        # of output. Job- and cluster-level events carry no instance identity,
+        # so the key is simply absent for them.
+        "instance": event.get("instance"),
         "type": event.get("type"),
         "reason": event.get("reason"),
         "message": message,
@@ -150,29 +155,45 @@ def public_event(event: dict) -> dict[str, Any]:
 
 
 def render_events_table(events: list[dict]) -> None:
-    """Print compact event diagnostics to stdout."""
+    """Print compact event diagnostics to stdout.
+
+    The Instance column appears only when the rows carry one — a merged
+    per-pod window is unreadable without it, and adding it to a job-level
+    window would be a column of dashes.
+    """
     if not events:
         click.echo("(no events)")
         return
 
-    def row(event: dict) -> tuple[str, str, str, str, str]:
-        item = public_event(event)
-        return (
-            str(item.get("time") or "-"),
-            str(item.get("type") or "-"),
-            str(item.get("reason") or "-"),
-            str(item.get("count") or "-"),
-            str(item.get("message") or "-").replace("\n", " "),
-        )
+    items = [public_event(event) for event in events]
+    show_instance = any(item.get("instance") for item in items)
 
-    rows = [row(e) for e in events]
-    header = ("Time", "Type", "Reason", "Count", "Message")
+    def row(item: dict[str, Any]) -> tuple[str, ...]:
+        cells = [str(item.get("time") or "-")]
+        if show_instance:
+            cells.append(str(item.get("instance") or "-"))
+        cells.extend(
+            (
+                str(item.get("type") or "-"),
+                str(item.get("reason") or "-"),
+                str(item.get("count") or "-"),
+                str(item.get("message") or "-").replace("\n", " "),
+            )
+        )
+        return tuple(cells)
+
+    rows = [row(item) for item in items]
+    if show_instance:
+        header = ("Time", "Instance", "Type", "Reason", "Count", "Message")
+        max_widths = (19, 28, 10, 32, 7, 80)
+        aligns = ["left", "left", "left", "left", "right", "left"]
+    else:
+        header = ("Time", "Type", "Reason", "Count", "Message")
+        max_widths = (19, 10, 32, 7, 80)
+        aligns = ["left", "left", "left", "right", "left"]
     widths = [
-        column_width(header[0], [row[0] for row in rows], max_width=19),
-        column_width(header[1], [row[1] for row in rows], max_width=10),
-        column_width(header[2], [row[2] for row in rows], max_width=32),
-        column_width(header[3], [row[3] for row in rows], max_width=7),
-        column_width(header[4], [row[4] for row in rows], max_width=80),
+        column_width(title, [row[index] for row in rows], max_width=max_width)
+        for index, (title, max_width) in enumerate(zip(header, max_widths))
     ]
     click.echo(
         "\n".join(
@@ -180,7 +201,7 @@ def render_events_table(events: list[dict]) -> None:
                 header,
                 rows,
                 widths,
-                aligns=["left", "left", "left", "right", "left"],
+                aligns=aligns,
                 line_char="─",
             )
         )
