@@ -28,7 +28,11 @@ from inspire.cli.utils.errors import (
     exit_with_error as _handle_error,
     require_confirmation,
 )
-from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, run_events_command
+from inspire.cli.utils.events import (
+    DEFAULT_EVENT_TAIL,
+    event_sort_key,
+    run_events_command,
+)
 from inspire.cli.utils.id_resolver import (
     NAME_PICK_HELP,
     forget_resource_identity,
@@ -56,6 +60,11 @@ from inspire.config.workspaces import (
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
+from .serving_instances import (
+    ServingInstanceSelectionError,
+    select_serving_instance_views,
+    serving_instance_views,
+)
 from .public_output import (
     public_configs,
     public_operation,
@@ -1538,6 +1547,53 @@ def rollback_serving(
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
+# One page covers any deployment: a serving never has enough replicas to page.
+_INSTANCE_EVENT_FETCH_SIZE = 200
+
+
+def _serving_events(
+    serving_id: str,
+    *,
+    session,  # noqa: ANN001
+    selectors: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """Read deployment events, replica events, or one replica's, in order.
+
+    The two levels are separate calls against the same Action, so the merged
+    chronology is imposed here. Instance rows are labelled with the identity
+    `inspire serving instances` prints, because their `object_id` is the
+    namespaced pod handle and never reaches output.
+    """
+    instances, _total = browser_api_module.list_serving_instances(
+        serving_id,
+        page_size=_INSTANCE_EVENT_FETCH_SIZE,
+        session=session,
+    )
+    views = select_serving_instance_views(serving_instance_views(instances), selectors)
+    labels = {view.handle: view.label for view in views}
+
+    instance_events: list[dict[str, Any]] = []
+    if views:
+        for event in browser_api_module.list_serving_events(
+            serving_id,
+            pod_names=[view.handle for view in views],
+            session=session,
+        ):
+            row = dict(event)
+            label = labels.get(str(row.get("object_id") or "").strip())
+            if label:
+                row["instance"] = label
+            instance_events.append(row)
+
+    if selectors:
+        return sorted(instance_events, key=event_sort_key)
+    merged = (
+        browser_api_module.list_serving_events(serving_id, session=session)
+        + instance_events
+    )
+    return sorted(merged, key=event_sort_key)
+
+
 @click.command("events")
 @click.argument("name", metavar="NAME")
 @click.option("--workspace", metavar="NAME", required=True, help="Workspace name.")
@@ -1562,6 +1618,17 @@ def rollback_serving(
     help="Filter events whose reason contains this substring.",
 )
 @click.option(
+    "--instance",
+    "instance_selectors",
+    multiple=True,
+    metavar="RANK",
+    help=(
+        "Narrow to one replica, named by the Name column of `inspire serving "
+        "instances` — `rank=0`, or just `0`. Repeat for several. Default: "
+        "deployment events plus every replica."
+    ),
+)
+@click.option(
     "--tail",
     type=click.IntRange(1),
     default=DEFAULT_EVENT_TAIL,
@@ -1584,11 +1651,25 @@ def events_serving(
     pick: Optional[int],
     reason_filter: Optional[str],
     type_filter: Optional[str],
+    instance_selectors: tuple[str, ...],
     tail: int,
     follow: bool,
     interval: int,
 ) -> None:
-    """Show lifecycle and scheduling events for an inference serving."""
+    """Show lifecycle and scheduling events for an inference serving.
+
+    \b
+    Deployment events (`CreatingRevision` / `GroupsProgressing` / `Pending`)
+    and every replica's pod events (`Scheduled` / `Pulled` / `Started`) are
+    disjoint sets, and the default merges both into one timeline with an
+    `Instance` column. Use ``--instance`` to narrow to one replica.
+
+    \b
+    Examples:
+      inspire serving events my-serving --workspace CPU资源空间
+      inspire serving events my-serving --workspace CPU资源空间 --instance rank=0
+      inspire --json serving events my-serving --workspace CPU资源空间
+    """
     name = reject_id_at_boundary(
         ctx,
         name,
@@ -1599,21 +1680,29 @@ def events_serving(
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
         workspace_id = _resolve_workspace_id(workspace)
-        run_events_command(
-            ctx,
-            fetch=lambda: _run_readonly_serving_operation(
-                ctx,
-                name=name,
-                workspace_id=workspace_id,
-                session=session,
-                pick=pick,
-                operation=lambda serving_id, live_session: (
-                    browser_api_module.list_serving_events(
+        def _fetch_events() -> list[dict[str, Any]]:
+            # An unknown `--instance` is a usage error; the shared runner would
+            # otherwise repackage it as "could not fetch events".
+            try:
+                return _run_readonly_serving_operation(
+                    ctx,
+                    name=name,
+                    workspace_id=workspace_id,
+                    session=session,
+                    pick=pick,
+                    operation=lambda serving_id, live_session: _serving_events(
                         serving_id,
                         session=live_session,
-                    )
-                ),
-            ),
+                        selectors=instance_selectors,
+                    ),
+                )
+            except ServingInstanceSelectionError as e:
+                _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+                return []
+
+        run_events_command(
+            ctx,
+            fetch=_fetch_events,
             type_filter=type_filter,
             reason_filter=reason_filter,
             tail=tail,

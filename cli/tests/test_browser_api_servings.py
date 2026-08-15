@@ -697,3 +697,55 @@ def test_serving_create_sends_explicit_read_only_and_autoscaling(monkeypatch) ->
     # `False` is a value the caller chose; only `None` means "do not send".
     assert body["is_publicpath_readonly"] is True
     assert body["enable_auto_scaling"] is False
+
+
+def test_serving_instances_read_the_nested_group_rows(monkeypatch) -> None:  # noqa: ANN001
+    """Rows live under `groups[].items[]`; the flat read was silently empty."""
+    record: dict = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "Result": {
+                "groups": [
+                    {"items": [{"name": "frontiers/sv-1-0", "node": "cpu-nat-568"}]},
+                    {"items": [{"name": "frontiers/sv-1-1", "node": "cpu-nat-569"}]},
+                ],
+                "total": "2",
+            }
+        },
+        record,
+    )
+
+    items, total = list_serving_instances("sv-1", session=_FakeSession())
+
+    assert total == 2
+    assert [item["name"] for item in items] == ["frontiers/sv-1-0", "frontiers/sv-1-1"]
+
+
+def test_serving_events_switch_to_the_instance_object_type(monkeypatch) -> None:  # noqa: ANN001
+    """Pod ids need the namespaced name; a bare pod name answers InternalError."""
+    record: dict = {}
+    _install_fake_request(
+        monkeypatch,
+        {"Result": {"events": [{"reason": "Unhealthy"}]}},
+        record,
+    )
+
+    events = list_serving_events(
+        "sv-1",
+        pod_names=["frontiers/sv-1-0", " ", "frontiers/sv-1-0"],
+        session=_FakeSession(),
+    )
+
+    assert [event["reason"] for event in events] == ["Unhealthy"]
+    assert record["body"]["filter"] == {
+        "object_type": "INFERENCE_SERVING_INSTANCE",
+        "object_ids": ["frontiers/sv-1-0"],
+    }
+
+
+def test_serving_events_refuse_an_empty_instance_selection() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="Instance selection is required"):
+        list_serving_events("sv-1", pod_names=[" "], session=_FakeSession())

@@ -790,8 +790,18 @@ def test_serving_events_use_shared_public_projection_and_pick(
     resolutions = _patch_serving_cli_deps(monkeypatch)
     calls: list[str] = []
 
-    def _events(serving_id: str, *, session) -> list[dict[str, Any]]:  # noqa: ANN001
+    def _events(serving_id: str, *, pod_names=None, session=None) -> list[dict[str, Any]]:  # noqa: ANN001
         calls.append(serving_id)
+        if pod_names is not None:
+            return [
+                {
+                    "object_id": pod_names[0],
+                    "object_type": "INFERENCE_SERVING_INSTANCE",
+                    "reason": "Scheduled",
+                    "message": "Successfully assigned",
+                    "last_timestamp": "2026-08-05 10:00:01",
+                }
+            ]
         return [
             {
                 "object_id": "sv-deadbeef",
@@ -805,6 +815,14 @@ def test_serving_events_use_shared_public_projection_and_pick(
         ]
 
     monkeypatch.setattr(browser_api_module, "list_serving_events", _events)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_serving_instances",
+        lambda _sid, **_kwargs: (
+            [{"name": "frontiers/sv-ed52f184-b66b-478a-8620-379033c6dbf3-0", "rank": 0}],
+            1,
+        ),
+    )
 
     result = CliRunner().invoke(
         cli_main,
@@ -821,7 +839,8 @@ def test_serving_events_use_shared_public_projection_and_pick(
     )
 
     assert result.exit_code == 0, result.output
-    assert calls == ["sv-internal"]
+    # Two calls: the deployment view and the replica view.
+    assert calls == ["sv-internal", "sv-internal"]
     assert resolutions == [
         {
             "name": "demo",
@@ -838,7 +857,13 @@ def test_serving_events_use_shared_public_projection_and_pick(
             "reason": "FailedScheduling",
             "message": "Could not place <redacted> on pod-cafebabe.",
             "count": 2,
-        }
+        },
+        {
+            "time": "2026-08-05 10:00:01",
+            "instance": "rank=0",
+            "reason": "Scheduled",
+            "message": "Successfully assigned",
+        },
     ]
     assert "object_id" not in result.output
     assert "sv-deadbeef" not in result.output

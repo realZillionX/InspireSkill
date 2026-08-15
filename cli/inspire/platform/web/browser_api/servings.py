@@ -355,7 +355,20 @@ def list_serving_instances(
     page_size: int = 50,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """List serving pod instances."""
+    """List serving pod instances.
+
+    **The rows are nested.** ``ListServingInstances`` answers
+    ``{groups: [{items: [...]}], total}`` — one group per replica, its pods
+    inside — not the flat ``items`` every sibling Action uses. Reading the top
+    level returns an empty list next to a non-zero ``total``, which is exactly
+    the shape that means "this deployment has no pods yet", so the failure is
+    silent and permanent.
+
+    Rows are pod-shaped: ``name`` (namespaced, ``<project>/<pod>``),
+    ``component_type`` (``LEADER`` / ``WORKER``), ``status``, ``node``,
+    ``ready``, ``restarts``, ``term``, ``created_at`` / ``started_at`` /
+    ``finished_at``, ``running_time_ms``.
+    """
     if session is None:
         session = get_web_session()
     payload = _serving_v2(
@@ -367,13 +380,23 @@ def list_serving_instances(
             "page_size": page_size,
         },
     )
-    items = payload.get("items")
-    if not isinstance(items, list):
-        items = payload.get("list")
-    if not isinstance(items, list):
-        items = payload.get("instances")
-    if not isinstance(items, list):
-        items = []
+    items: list[Any] = []
+    groups = payload.get("groups")
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_items = group.get("items")
+            if isinstance(group_items, list):
+                items.extend(group_items)
+    if not items:
+        # Kept for the flat spellings the sibling Actions use, in case this
+        # one ever grows one.
+        for key in ("items", "list", "instances"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                items = value
+                break
     total_raw = payload.get("total")
     try:
         total = int(str(total_raw)) if total_raw is not None else len(items)
@@ -385,14 +408,39 @@ def list_serving_instances(
 def list_serving_events(
     inference_serving_id: str,
     *,
+    pod_names: Optional[list[str]] = None,
     object_type: str = "INFERENCE_SERVING",
     page: int = 1,
     page_size: int = 200,
     session: Optional[WebSession] = None,
 ) -> list[dict[str, Any]]:
-    """List serving lifecycle / Kubernetes events."""
+    """List serving lifecycle / Kubernetes events.
+
+    One Action covers both levels through ``filter.object_type``, whose enum is
+    ``INFERENCE_SERVING`` / ``INFERENCE_SERVING_INSTANCE`` /
+    ``INFERENCE_SERVERLESS``. The serving level carries the controller's own
+    account (``CreatingRevision`` / ``GroupsProgressing`` / ``Pending``); the
+    instance level carries the scheduler and kubelet view (``Scheduled`` /
+    ``Pulled`` / ``Created`` / ``Started``), and they are disjoint sets.
+
+    ``pod_names`` switches to the instance level and **must be the namespaced
+    names** ``ListServingInstances`` returns (``<project>/<pod>``); the bare
+    pod name answers ``InternalError``, the same trap the HPC endpoints have.
+    """
     if session is None:
         session = get_web_session()
+    if pod_names is not None:
+        clean_pods = list(
+            dict.fromkeys(
+                str(name or "").strip() for name in pod_names if str(name or "").strip()
+            )
+        )
+        if not clean_pods:
+            raise ValueError("Instance selection is required.")
+        object_type = "INFERENCE_SERVING_INSTANCE"
+        object_ids = clean_pods
+    else:
+        object_ids = [inference_serving_id]
     payload = _serving_v2(
         session,
         "ListServingEvents",
@@ -401,7 +449,7 @@ def list_serving_events(
             "page_size": page_size,
             "filter": {
                 "object_type": object_type,
-                "object_ids": [inference_serving_id],
+                "object_ids": object_ids,
             },
         },
     )

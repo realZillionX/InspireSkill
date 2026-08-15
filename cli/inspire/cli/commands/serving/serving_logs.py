@@ -45,6 +45,11 @@ from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
+from .serving_instances import (
+    ServingInstanceSelectionError,
+    select_serving_instance_views,
+    serving_instance_views,
+)
 from .serving_commands import (
     _resolve_workspace_id,
     _run_readonly_serving_operation,
@@ -70,25 +75,6 @@ def _reject_serving_instance_name(ctx: Context, value: str) -> str:
     )
 
 
-def _instance_pod_names(instances: list[dict[str, Any]]) -> list[str]:
-    """Read pod names off serving instance rows, keeping platform spelling.
-
-    These names go straight back to `GetServingLog` as a filter, so they are
-    deliberately not scrubbed here — scrubbing happens on the way out, when
-    the log lines are rendered.
-    """
-    names: list[str] = []
-    for item in instances:
-        if not isinstance(item, dict):
-            continue
-        for key in ("name", "pod_name", "instance_name", "podName"):
-            value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                names.append(value.strip())
-                break
-    return names
-
-
 def _format_serving_logs(logs: list[dict[str, Any]]) -> str:
     if not logs:
         return "No serving logs found."
@@ -108,10 +94,11 @@ def _format_serving_logs(logs: list[dict[str, Any]]) -> str:
     "--instance",
     "instance_names",
     multiple=True,
-    metavar="NAME",
+    metavar="RANK",
     help=(
-        "Instance name to query. Repeat for multiple instances. "
-        "Defaults to every instance of the deployment."
+        "Read only this replica, named by the Name column of `inspire serving "
+        "instances` — `rank=0`, or just `0`. Repeat for several. "
+        "Default: every replica of the deployment."
     ),
 )
 @click.option(
@@ -222,16 +209,20 @@ def logs_serving(
     fetch_size = max(record_limit, tail or 0, head or 0)
 
     def _load(serving_id: str, live_session):  # noqa: ANN001
-        if instance_names:
-            pod_names = list(instance_names)
-        else:
-            instances, _total = browser_api_module.list_serving_instances(
-                serving_id,
-                page=1,
-                page_size=_INSTANCE_FETCH_SIZE,
-                session=live_session,
-            )
-            pod_names = _instance_pod_names(instances)
+        instances, _total = browser_api_module.list_serving_instances(
+            serving_id,
+            page=1,
+            page_size=_INSTANCE_FETCH_SIZE,
+            session=live_session,
+        )
+        # The selector speaks the Name column of `inspire serving instances`
+        # (`rank=0`); the pod handle it maps to is namespaced, which is what
+        # `GetServingLog` requires and what no output ever shows.
+        views = select_serving_instance_views(
+            serving_instance_views(instances),
+            instance_names,
+        )
+        pod_names = [view.handle for view in views]
         if not pod_names:
             return [], 0, pod_names
 
@@ -323,6 +314,8 @@ def logs_serving(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except ServingInstanceSelectionError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
     except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:

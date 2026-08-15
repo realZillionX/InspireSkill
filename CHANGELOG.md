@@ -64,6 +64,10 @@
 
 - `notebook status` 的 `Node` 一并给出该节点的健康状态，被 Cordon 或处于维护窗口时标出。**STOPPED 的 Notebook 不会清空节点对象**，而是把名字置空、状态置成 proto 零值 `UNKNOWN_NODE_STATUS`，照直读会印出一个「状态未知的节点」——投影按空名字判定未落点，这一行随之消失。
 
+- `inspire serving events` 补上实例级：输出多一列 `Instance`（`rank=N`），并支持 `--instance` 收窄。部署级事件是控制器的话（`CreatingRevision` / `GroupsProgressing` / `Pending`），实例级才有 `Scheduled` / `Pulled` / `Started` / **`Unhealthy`**——「副本起来了但健康检查一直不过」这个最常见的部署故障，此前在 CLI 里一个字都看不到。平台侧走同一个 Action 换 `filter.object_type`，Pod 级的 `object_ids` 必须是带命名空间的实例名，裸名答 `InternalError`。
+
+- `serving logs` / `serving events` 的 `--instance` 收 `serving instances` 打印的 `rank=N`（或裸 `0`），与 `job` 同一套规则。
+
 - `inspire ray events` 补上实例级：输出多一列 `Instance`（head / worker 组名），并支持 `--instance` 收窄。**Ray 的事件本来就是两级都给的**——一次 `ListJobEvents` 里既有 `object_type: "job"` 的 `CreatedRayCluster` / `CreatedService`，也有 `object_type: "instance"` 的逐 Pod 行——CLI 此前把 `object_id` 丢掉，于是 17 行事件谁都不知道来自哪个 Pod。收窄走平台的 `filter.object_ids`，不是客户端过滤。
 
   这条推翻了仓库里一条记错的事实：`ray.ListJobEvents` 的 `filter` **是有效的**，此前记的「没有 `object_type`，传了返回 `参数错误`」在真实任务上不成立（拿不存在的任务去探，平台先答 `ResourceNotFound`，看不到字段层的真相）。为定论专门建了一个最小 CPU Ray 集群（1 CPU / 4 GiB，head + 1 worker），量完即 `stop` + `delete`。顺带发现事件时间戳只到秒，同一容器的 `Pulled` / `Created` / `Started` 常常同秒、而平台的同秒次序还随 filter 变，所以排序加了 `id` 作 tiebreaker——否则「倒着取一屏再翻回来」会把因果顺序翻反。
@@ -97,6 +101,10 @@
   `references/notebook.md` 现在承载保存镜像这条动线，`references/image.md` 只留保存之后的可见性与清理并指过去。
 
 ### 修复
+
+- **`inspire serving instances` 从来没列出过任何实例，`serving logs` 也因此从来读不到日志。** `ListServingInstances` 的行是嵌套的——`{groups: [{items: [...]}], total}`，一个副本一个 group——而 Wrapper 按兄弟 Action 的扁平 `items` / `list` / `instances` 读，于是永远拿到空列表配非零 `total`。那正好是「这个部署还没有 Pod」的形状，所以失败静默且永久：`serving instances` 报「没有实例」，`serving logs` 报「没有实例可读」，两条都读起来像部署自己的状态而不是 CLI 的 bug。在一个真实运行中的部署上复核：修好之后实例、落点和日志端点全部通了。
+
+  这是本仓库第三次撞上同一类错误（`ListServingScaleHistory` 的 `scale_history_items`、`ListLogicComputeGroups` 的空列表配非零 `total`）：**「空列表 + 非零 total」永远不能读作「没有数据」。**
 
 - **`job events` / `hpc events` 的实例级事件此前混成一条没有署名的时间线。** 行里唯一指明来源的字段是 `object_id`——平台句柄，按设计不进输出——而公共投影把它丢掉了，于是范围一开到 `--all-instances`，拿到的是一堆看不出归属的 `FailedScheduling`，「哪个 Worker 没排上」恰恰在最需要它的场合答不出来。现在按实例查询时输出多一列 `Instance`（`--json` 里是 `instance` 字段），标识一律取各自 `instances` 已经在打印的那一个：`hpc` 是角色 / 序号（`slurmd`、`launcher`），`job` 是 Rank（`rank=0`）——训练 Pod 叫 `job-<uuid>-worker-0-0`，洗过之后是 `<redacted>-worker-0-0`，那正是 `job instances` 当初丢掉名字改用 Rank 的原因，事件不该再把它捡回来。实例表里认不出的 Pod 宁可不标，也不回退到句柄。工作负载级事件不带这一列，输出与此前逐字节一致。
 

@@ -394,6 +394,9 @@ def _log_record(index: int, *, pod: str = "sv-internal-worker-0-0") -> dict[str,
     }
 
 
+_POD = "sv-ed52f184-b66b-478a-8620-379033c6dbf3"
+
+
 def _patch_log_api(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -525,11 +528,18 @@ def test_serving_logs_rejects_a_malformed_window(
     assert "window" in result.output.lower()
 
 
-def test_serving_logs_instance_option_skips_the_instance_lookup(
+def test_serving_logs_instance_option_resolves_the_rank_to_its_pod(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The selector names the Rank; only the instance list knows the pod."""
     _patch_cli_deps(monkeypatch)
-    seen = _patch_log_api(monkeypatch)
+    seen = _patch_log_api(
+        monkeypatch,
+        instances=[
+            {"name": f"frontiers/{_POD}-0", "rank": 0},
+            {"name": f"frontiers/{_POD}-1", "rank": 1},
+        ],
+    )
 
     result = CliRunner().invoke(
         cli_main,
@@ -541,15 +551,42 @@ def test_serving_logs_instance_option_skips_the_instance_lookup(
             "--workspace",
             "Test Workspace",
             "--instance",
-            "replica-a",
-            "--instance",
-            "replica-b",
+            "1",
         ],
     )
 
     assert result.exit_code == 0, result.output
-    assert seen["instances"] == []
-    assert seen["logs"][0]["pod_names"] == ["replica-a", "replica-b"]
+    assert seen["instances"]
+    assert seen["logs"][0]["pod_names"] == [f"frontiers/{_POD}-1"]
+
+
+def test_serving_logs_reject_an_unknown_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_cli_deps(monkeypatch)
+    _patch_log_api(
+        monkeypatch,
+        instances=[{"name": f"frontiers/{_POD}-0", "rank": 0}],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "serving",
+            "logs",
+            "demo",
+            "--workspace",
+            "Test Workspace",
+            "--instance",
+            "rank=9",
+        ],
+    )
+
+    assert result.exit_code == 12
+    payload = json.loads(result.output)
+    assert payload["error"]["type"] == "ValidationError"
+    assert "rank=0" in payload["error"]["message"]
 
 
 def test_serving_logs_instance_option_is_name_only(
@@ -741,15 +778,17 @@ def test_serving_logs_rejects_raw_handle_before_api(
     assert "sv-12345678" not in result.output
 
 
-def test_instance_pod_names_keeps_platform_spelling() -> None:
-    names = serving_logs_module._instance_pod_names(
+def test_instance_views_keep_the_namespaced_handle_off_the_label() -> None:
+    """`GetServingLog` needs `<project>/<pod>`; output only ever shows the Rank."""
+    from inspire.cli.commands.serving.serving_instances import serving_instance_views
+
+    views = serving_instance_views(
         [
-            {"name": " sv-1-worker-0-0 "},
-            {"pod_name": "sv-1-worker-1-0"},
-            {"instance_name": "sv-1-worker-2-0"},
+            {"name": f" frontiers/{_POD}-0 ", "rank": 0},
+            {"name": f"frontiers/{_POD}-1", "rank": 1},
             {"rank": 3},
-            "not-a-dict",
         ]
     )
 
-    assert names == ["sv-1-worker-0-0", "sv-1-worker-1-0", "sv-1-worker-2-0"]
+    assert [view.handle for view in views] == [f"frontiers/{_POD}-0", f"frontiers/{_POD}-1"]
+    assert [view.label for view in views] == ["rank=0", "rank=1"]

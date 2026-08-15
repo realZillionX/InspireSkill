@@ -189,8 +189,8 @@ Referer：`/jobs/modelDeployment`。路由名是**下划线**形式，discovery 
 | `ListServings` | `{workspace_id, page, page_size, filter_by:{my_serving:true, keyword?, project_id[]?, status[]?, inference_serving_type[]?}}` | `{inference_servings[], total}` | `serving list`、Name Resolver、`cache refresh` |
 | `GetServing` | `{inference_serving_id}` | 完整部署对象：`status` / `replicas` / `node_num_per_replica` / `model_id` / `model_version` / `mirror_id` / `resource_spec_price{}` / `extra_info{node_names[]}` | `serving status`、`serving metrics` |
 | `ListServingVersions` | `{inference_serving_id}` | `{inference_servings[]\|list[], total}` | `serving versions` |
-| `ListServingInstances` | `{inference_serving_id, page, page_size}` | `{items[]\|list[]\|instances[], total}` | `serving instances` |
-| `ListServingEvents` | `{page, page_size, filter:{object_type:"INFERENCE_SERVING", object_ids:[id]}}` | `{events[]\|items[]\|list[]}` | `serving events` |
+| `ListServingInstances` | `{inference_serving_id, page, page_size}` | `{groups[{items[]}], total}` | `serving instances`、`serving logs`、`serving events --instance` |
+| `ListServingEvents` | `{page, page_size, filter:{object_type:"INFERENCE_SERVING"\|"INFERENCE_SERVING_INSTANCE", object_ids:[id\|pod…]}}` | `{events[]\|items[]\|list[]}` | `serving events`、`serving events --instance` |
 | `ListServingScaleHistory` | `{inference_serving_id, page, page_size}` | `{scale_history_items[], total}`（`total` 是字符串） | `serving scale-history` |
 | `GetServingLog` | `{page_size, filter:{podNames[], start_timestamp_ms, end_timestamp_ms}}` | `{logs[], total}` | `serving logs` |
 | `GetServingScheduleConfig` | `{workspace_id}` | `{enable_auto_stop, items[{auto_stop_ruleset, gpu_count_min, gpu_count_max}]}` | `resources policy` |
@@ -222,7 +222,9 @@ Referer：`/jobs/modelDeployment`。路由名是**下划线**形式，discovery 
 - **`ListServingScaleHistory` 的列表键是 `scale_history_items`**，不是 `items` 也不是 `list`。曾经按 `items` 读，于是任何有扩缩容历史的 serving 都返回空列表——这是一个「读错键就永远看不到数据」的静默失败，而不是报错。
 - **`GetInferenceServingTerms` 不是调用说明。** 它的 `terms` 元素是 `{term, start_time, end_time}`，即**运行期次索引**（第 N 次运行的起止时间，控制台用它把详情页各 tab 圈定到某一次运行），里面没有 endpoint、示例请求或 token。调用信息是 `GetServing` 的 `port` 和 `command`。**查过，刻意不接**，Wrapper 保留但没有命令消费。
 - **`GetServingLog` 对不在日志库里的 pod 名回 `InternalError`**，看着像平台故障，实际含义是「pod 名不对」。
-- **节点落点在 `GetServing` 的 `extra_info.node_names[]`，不在顶层**：顶层只有 `node_num_per_replica`（每副本几个节点，是规格）。按顶层读会让每个部署都显示成没落点。pod 级的同一事实在 `ListServingInstances` 行的 `node`。两者都取自 discovery 声明，**尚未在活部署上复核**——本账号当前没有可读的 serving。
+- **`ListServingInstances` 的行是嵌套的**：`{groups: [{items: [...]}], total}`，一个副本一个 group，Pod 在里面——不是兄弟 Action 那种扁平 `items`。按顶层读会拿到空列表配非零 `total`，而那正好是「这个部署还没有 Pod」的形状，所以失败静默且永久。行是 pod 形状：`name`（**带命名空间**，`<project>/<pod>`）、`component_type`（`LEADER` / `WORKER`）、`status`、`node`、`ready`、`restarts`、`term`、`created_at` / `started_at` / `finished_at`、`running_time_ms`。
+- **`ListServingEvents` 一个 Action 管两级**，靠 `filter.object_type` 区分：`INFERENCE_SERVING` 给部署级（`CreatingRevision` / `GroupsProgressing` / `Pending`，来自控制器），`INFERENCE_SERVING_INSTANCE` 给 Pod 级（`Scheduled` / `Pulled` / `Created` / `Started` / `Unhealthy`），两者不相交。**Pod 级的 `object_ids` 必须是带命名空间的实例名**，裸 pod 名答 `InternalError`——和 HPC 那两个端点同病。枚举第三个值 `INFERENCE_SERVERLESS` 未验证。
+- **节点落点在 `GetServing` 的 `extra_info.node_names[]`，不在顶层**：顶层只有 `node_num_per_replica`（每副本几个节点，是规格）。按顶层读会让每个部署都显示成没落点。pod 级的同一事实在 `ListServingInstances` 行的 `node`，已在活部署上复核。
 - `GetServingScheduleConfig` 的回收规则是**按 GPU 档位**给的（每个 `items` 元素带 `gpu_count_min` / `gpu_count_max`），一个 Workspace 会有多条。
 - `DeleteServing` 的 id 不存在时返回 `ResourceNotFound`。
 - 读 Action 逐字接受 v1 请求体、响应字段完全一致；**写侧不能照搬**。
