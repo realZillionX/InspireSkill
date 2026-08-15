@@ -424,11 +424,16 @@ def list_hpc_job_logs(
 
     Action: ``GetJobLog``. Four measured constraints shape the call:
 
-    * **No sorter.** The platform rejects any explicit sorter field, including
-      ``@timestamp``. Rows arrive newest-last in practice, but nothing
-      guarantees it — sort client-side.
-    * **The two timestamps are string fields carrying epoch milliseconds**, and
-      the window may not exceed a month (:data:`HPC_LOG_MAX_WINDOW_MS`).
+    * **The sorter is all-or-nothing.** The only accepted value is the console's
+      own pair, ``[{"field": "@timestamp"}, {"field": "log-id.keyword"}]``;
+      either field on its own answers ``InternalError: 日志排序字段不合法，仅支持
+      按时间 + log-id 排序``. Omitting it entirely is accepted too, and that is
+      what this wrapper does — rows then arrive newest-last in practice with
+      nothing guaranteeing it, so sort client-side.
+    * **The two timestamps are string fields carrying epoch milliseconds**, the
+      window may not exceed a month (:data:`HPC_LOG_MAX_WINDOW_MS`), and start
+      must be older than end — an inverted pair is
+      ``InternalError: 日志查询时间参数不合法``.
     * **``podNames`` wants the namespaced instance names** from
       :func:`list_hpc_job_instances`. Bare pod names come back as
       ``InvalidParameter: Invalid instance names …`` because the platform

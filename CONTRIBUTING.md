@@ -30,6 +30,14 @@ uv run pre-commit install --config ../.pre-commit-config.yaml
 uv run pre-commit run --config ../.pre-commit-config.yaml --all-files
 ```
 
+要用真实的 `inspire` 可执行文件跑 live smoke 时，从本地源码重装必须带 `--no-cache`：
+
+```bash
+uv tool install --force --no-cache .
+```
+
+版本号没变时 `uv` 会直接复用缓存里的构建产物，`--force` 也拦不住——装完的还是上一份代码，而命令照常运行，于是 live 验证会去核对一个并不存在的改动。
+
 ## 事实来源
 
 命令表面以 CLI help 为准。新增、删除或修改命令时，`inspire --help`、`inspire <command-group> --help` 和 `inspire <command-group> <subcommand> --help` 必须反映真实 Agent 入口；日常文档引用 CLI Help，不复制完整命令表。

@@ -110,6 +110,25 @@
 
 ### 修复
 
+- **`hpc create` 会提交一份 Slurm 规格，平台收下、返回 job id，然后什么都不跑。** 节点级（`slurm_cluster_spec`：买几个什么样的节点）和 Slurm 级（`sbatch_script`：程序怎么用这些节点）在平台上互不校验，**控制台也不校验**——它的「最大值」提示来自项目的单任务配额而不是所选规格，而且那几个输入框排在「选择规格」之前，结构上就没法比。受控验证（`CPU资源空间` / `HPC-可上网区资源-2` / `0,4,16`，12 个任务）测出三种形态：
+
+  - `--cpus-per-task` 超过一个节点的核数（一个任务跨不了节点），或者单节点上所有任务的内存超过节点内存 → 任务跑约两分钟后 `FAILED`，**`hpc logs` 是空的、`hpc events` 只有正常的 Pod 生命周期，没有任何一处带上 sbatch 的拒绝原因**。
+  - 任务总数乘每任务 CPU 超过买下的节点总核数 → sbatch 反而**收下**，step 永远排在队里，平台一路报 `RUNNING`，直到 Workspace 自己的运行时长上限（该空间是 10 天）把它停掉。这就是「假装成功但一条命令都没执行」。
+
+  现在这三条在提交前就被拒绝，报出算式和该改哪个参数。**默认值也一起改了**：`--cpus-per-task` / `--memory-per-cpu` 不给时按「一个节点上落几个任务」推导，此前是「一个任务独占整个节点」——于是只调 `--number-of-tasks` 而不动其它参数，必然造出上面第二种永久排队的任务。单任务单节点的默认值与此前逐字节一致。`hpc batch` 走同一个 resolver。
+
+- **`hpc status` 不报 `steps`，于是「跑完了」和「什么都没跑」长得一模一样。** 正文没有 `srun` 的任务照样 `SUCCEEDED`——sbatch 会在第一个节点上执行 body——只是不产生 Slurm step，多节点时其余节点全程空转。`GetJob.steps` 是唯一能区分这件事的字段（`0/0` 对 `1/1`），平台一直在回它，CLI 从来没接。现在人读和 `--json` 都给出 `Steps`；`create` 在正文里找不到 `srun` 时也会警告。顺带修掉一个投影 bug：`-/1` 这种形状会被路径脱敏读成绝对路径，`--json` 里输出成 `-<redacted>`，正好把这个字段抹掉。
+
+- **`hpc create --dry-run --json` 的 `priority` 永远是 `null`。** 计划投影按参数名 `task_priority` 去请求体里取，而请求体里的键叫 `priority`——于是一份真的带着优先级出发的请求，在计划里看起来没有优先级。人读那一行读的是局部变量，所以只有 `--json` 是错的。
+
+- **`priority` 这个键漏掉时，平台答的是 `InternalError: internal server error`。** 它在瞬时错误名单上，于是先白烧三次退避重试，再抛出一条看起来像平台故障的错。`build_hpc_create_payload` 此前把它当可选字段；现在拿不到优先级就直接报「拿不到优先级」，不再把这个键漏出去。同样地，`CreateJobConsole` 回来没有 job id 时不再打印「创建成功」。
+
+- **`sbatch_script.memory_per_node`（控制台「每节点使用内存」）查过了，不接。** 它看起来是个正常字段：平台收下、存住、详情页照原样显示「每节点使用内存：8G」、`GetJob` 完整 round-trip，控制台的执行命令模板写的甚至就是 `#SBATCH --mem=*G`。但平台的脚本生成器只会写 `--mem-per-cpu`——只给 `memory_per_node` 时生成出来的是一行空的 `#SBATCH --mem-per-cpu=`，sbatch 直接拒掉整个脚本。8 GiB、15 GiB、16 GiB 在同一个 16 GiB 节点上全部 `FAILED`，而等价的 `--mem-per-cpu` 任务成功；两个字段同时发则是 `InternalError`。**网页端那个输入框本身就是坏的**，CLI 不复制它。
+
+- HPC 的保留态写进参考：任务结束后会先停在 `SUCCEEDED_RETAINING` / `FAILED_RETAINING`，这段时间 `hpc delete` 答「当前状态（运行中）无法删除」，而 `hpc stop` 返回成功却解除不了保留——只能等它自己转成终态。清理脚本按状态重试，别按 `stop` 的返回值判断。
+
+- **`GetJobLog` 的 sorter 结论此前记反了。** 仓库里写的是「平台拒绝任何显式 sorter」，实测是：控制台那一对 `[@timestamp, log-id.keyword]` 被接受，只发其中一个才报 `InternalError: 日志排序字段不合法，仅支持按时间 + log-id 排序`。另外 `start_timestamp_ms` 必须早于 `end_timestamp_ms`，倒过来报 `日志查询时间参数不合法`——而**控制台自己发的就是倒过来的一对**，所以网页端的聚合日志在这条路径上是坏的，不要照抄。Wrapper 的行为不变（不发 sorter，客户端排序），改的是注释和开发参考里的结论。
+
 - **`inspire serving instances` 从来没列出过任何实例，`serving logs` 也因此从来读不到日志。** `ListServingInstances` 的行是嵌套的——`{groups: [{items: [...]}], total}`，一个副本一个 group——而 Wrapper 按兄弟 Action 的扁平 `items` / `list` / `instances` 读，于是永远拿到空列表配非零 `total`。那正好是「这个部署还没有 Pod」的形状，所以失败静默且永久：`serving instances` 报「没有实例」，`serving logs` 报「没有实例可读」，两条都读起来像部署自己的状态而不是 CLI 的 bug。在一个真实运行中的部署上复核：修好之后实例、落点和日志端点全部通了。
 
   这是本仓库第三次撞上同一类错误（`ListServingScaleHistory` 的 `scale_history_items`、`ListLogicComputeGroups` 的空列表配非零 `total`）：**「空列表 + 非零 total」永远不能读作「没有数据」。**

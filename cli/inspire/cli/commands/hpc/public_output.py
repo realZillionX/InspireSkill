@@ -162,6 +162,24 @@ def _resource(item: object) -> Any:
     return block or None
 
 
+_STEPS_RE = re.compile(r"^[-0-9]+/[-0-9]+$")
+
+
+def _steps(item: object) -> str:
+    """Read the Slurm step counter.
+
+    ``steps`` is a fixed ``done/total`` counter with ``-`` standing in for "not
+    known yet" (``-/-`` → ``-/1`` → ``1/1``), and it is the only field that
+    separates "your program ran" from "the job finished having run nothing".
+    Shape-check it rather than running it through :func:`_text`: this is a
+    counter, not prose, so anything that is not a counter should be dropped
+    instead of printed as one. The JSON path is exempted from filesystem-path
+    redaction at the call site — ``-/1`` otherwise reads as an absolute path.
+    """
+    text = str(_value(item, "steps") or "").strip()
+    return text if _STEPS_RE.match(text) else ""
+
+
 def _timestamp(item: object, keys: tuple[str, ...]) -> str:
     for key in keys:
         text = _text(_value(item, key))
@@ -233,6 +251,7 @@ def public_hpc_status(item: object, *, fallback_name: str = "") -> dict[str, Any
         {
             "name": name or "N/A",
             "status": _text(_value(item, "status")) or "N/A",
+            "steps": _steps(item),
             "project": _nested_name(
                 item,
                 ("project", "project_info", "project_name"),
@@ -317,6 +336,9 @@ def format_hpc_status(view: dict[str, Any]) -> str:
         f"Name: {view.get('name') or 'N/A'}",
         f"Status: {view.get('status') or 'N/A'}",
     ]
+    steps = view.get("steps")
+    if steps not in (None, ""):
+        lines.append(f"Steps: {steps}")
     for key, label in (
         ("project", "Project"),
         ("compute_group", "Compute Group"),

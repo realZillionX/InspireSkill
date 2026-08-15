@@ -58,13 +58,17 @@ HPC 有两层资源模型，不能混：
 | 节点级 | 每个节点的 GPU / CPU / 内存，以及申请多少个节点 |
 | Slurm 级 | 程序如何在这些节点内拆 task、CPU 和内存 |
 
+两层之间**平台不做任何校验**，控制台也不做：`hpc create` 因此在提交前自己挡下三种必然跑不起来的组合——单个任务要的 CPU 超过一个节点、单节点上所有任务的内存超过节点内存、任务总数乘每任务 CPU 超过买下的节点总核数。前两种在平台上的表现是起来后一两分钟内就 `FAILED`，且 `logs` 和 `events` 都不带原因；第三种更隐蔽，平台一直报 `RUNNING`，Slurm 里的 step 却永远排队，直到 Workspace 的运行时长上限把它停掉。`--cpus-per-task` / `--memory-per-cpu` 不给时按「一个节点上落几个任务」推导，所以只调 `--number-of-tasks` 不会再造出上面第三种。
+
+内存只按每 CPU 给（`--memory-per-cpu`，Slurm `--mem-per-cpu`）。网页端另有「每节点使用内存」输入框，**它是坏的**：平台收下并在详情页显示这个值，但生成脚本时只写 `--mem-per-cpu`，于是那一行是空的，任务必然失败。不要在网页端用它，CLI 也不提供对应选项。
+
 关键约束：
 
-- 入口命令只写 Slurm 正文，程序必须显式 `srun` 启动。
+- 入口命令只写 Slurm 正文，程序必须显式 `srun` 启动。**没有 `srun` 的正文照样跑完并报 `SUCCEEDED`**——sbatch 会在第一个节点上执行它——只是不产生 Slurm step，多节点时其余节点全程空转。`hpc status` 的 `Steps` 是唯一能看出这件事的字段：`0/0` 表示没有 step，`1/1` 表示 step 跑完了。
 - Group 使用完整 Compute Group 名称；并非所有 CPU Compute Group 都支持 HPC。
-- 镜像必须带可用 Slurm 运行环境。
-- Slurm 级参数超出节点规格时可能静默排队。
-- `status=SUCCEEDED` 不等于业务产出完整；正式 Entrypoint 要写 Fingerprint，再从同项目 Notebook 回读产物。
+- 镜像必须带可用 Slurm 运行环境；平台的镜像列表不按这一点过滤，选错了不会有任何提示。
+- `status=SUCCEEDED` 不等于业务产出完整；先看 `Steps`，再写 Fingerprint，从同项目 Notebook 回读产物。
+- 结束后有一段 `SUCCEEDED_RETAINING` / `FAILED_RETAINING` 保留态，此时 `hpc delete` 答「当前状态（运行中）无法删除」，`hpc stop` 也解除不了——等它自己转成终态（约一分钟）再删。
 
 ## 5. Ray
 
@@ -130,6 +134,7 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 | `instances` 部分 Pending | 多节点或多副本调度不均 |
 | `logs` 为空但 `RUNNING` | 主进程未输出、日志路径不在 CLI 管理范围、程序没真正启动 |
 | `FAILED` 但无业务报错 | OOM、显存溢出、节点驱逐或控制器失败 |
-| HPC `steps=-/0` | Slurm 正文没有用 `srun` 启动程序 |
+| HPC `Steps` 是 `0/0` 或 `-/0` | Slurm 正文没有用 `srun` 启动程序，只有第一个节点跑了 body |
+| HPC 一直 `RUNNING`、`Steps` 停在 `-/N` | Slurm 级请求超过买下的节点总量，step 在排队；停掉重提，别等 |
 | `SUCCEEDED` 但产物为空 | 程序提前退出、资源贴边或输出路径不对 |
 | Quota Match Failed | Workspace / Group / `gpu,cpu,mem` 三元组不匹配 |

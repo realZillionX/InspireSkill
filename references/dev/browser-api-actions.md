@@ -76,15 +76,17 @@ Referer：`/jobs/highPerformanceComputing`，详情页 `/jobs/hpcDetail/{job_id}
 **参数语义与限制**
 
 - **`ListJobInstances` 的 id 键是驼峰 `jobId`**，与同一路由上其它 Action 的 `job_id` 不一致。它的行里有 pod 级落点 `node`（裸字符串，如 `hpc-compute003`），外加 `component`（`slurmctld` / `slurmd`）。
+- **`GetJob.steps` 是「程序到底跑没跑」的唯一信号**，形如 `已完成/总数`：创建后立刻是 `-/-`，平台**静态解析 entrypoint** 后变成 `-/N`（N = 正文里 `srun` 的个数，没有 `srun` 就是 `-/0`），跑完变成 `N/N`。所以 `SUCCEEDED` + `steps=0/0`（正文没 `srun`，只有第一个节点执行了 body）和 `SUCCEEDED` + `steps=1/1` 在其它任何字段上都长得一模一样。**报 HPC 状态必须把 `steps` 一起报出来。**
 - **`GetJob.nodes` 是 Slurm 集群的实际落点**，discovery 声明为字符串数组，实测停止的任务恒为 `[]`——**空数组要读作「没在跑」而不是「读不到」**。带数据的形状尚未在活任务上复核，pod 级的 `ListJobInstances.node` 是同一事实的已验证来源。
 - **`ListJobEvents` 的分页键也是驼峰**（`pageNum` / `pageSize`），并且平台会回收已完成任务的事件，所以「查不到事件」在保留期过后是正常稳态。
 - **`GetJobLog` 与 `ListSlurmdPodEvent` 的实例名都必须带命名空间**（`<ns>/<pod>`）。日志端裸名报 `InvalidParameter: … the hpc job ids length of instances expect 1, but got 0`；事件端裸名和 `job_id` 都**静默回空**。
-- **`GetJobLog` 拒绝任何显式 sorter**，包括 `@timestamp`；不发 sorter，需要排序就在客户端做。
+- **`GetJobLog` 的 sorter 要么不发，要么发控制台那一对**：`[{field:"@timestamp"}, {field:"log-id.keyword"}]` 被接受，只发其中一个报 `InternalError: 日志排序字段不合法，仅支持按时间 + log-id 排序`。Wrapper 选择不发，排序在客户端做。
+- **`GetJobLog` 的 `start_timestamp_ms` 必须早于 `end_timestamp_ms`**，倒过来报 `InternalError: 日志查询时间参数不合法`。控制台自己发的就是倒序的一对（start 在 end 之后约 12 小时），所以网页端的聚合日志在这条路径上是坏的——CLI 不要照抄。
 - **`GetJobLog` 的时间窗超过一个月报 `InternalError: 日志查询时间区间不能超过1个月`。** 这是个确定性的用户错误，却撞进了 transient 名单——不在客户端 clamp 就会先白烧三次退避重试，再抛出一条看起来像平台故障的错。Wrapper 用 `HPC_LOG_MAX_WINDOW_MS`（30 天）挡在前面。
 - **`GetJobLog` 的 `page_size` 省略或传 `-1` 都只回 100 条**（不是「全部」），`PageNumber` 被彻底忽略，而且 **`page_size=N` 保留的是最旧的 N 条**。所以「最后 N 条」平台点不到，必须先取满窗口再在客户端截尾。*（这一条来自 Wrapper 作者的实测；复核时可见的 HPC 任务日志已过保留期，未能独立复现。）*
 - **`ListSlurmdPodEvent` 的 `page_size` 必发**：省略时回空列表配非零 `total`，与 `ListLogicComputeGroups` 同病。它的行没有 `type` 也没有 `count`——**平台按发生次数逐行重复**（一个实例 `total=106`，去重后只有 20 行），所以读事件前要自己折叠，否则 `--tail 20` 会全是同一条。
 - **列表行的名字键是 `job_name`**，`name` 从来没被填充过——读 `name` 会让每个 HPC 任务都没有名字，列表渲染 N/A 且 Name Resolver 匹配不到任何东西。
-- **`DeleteJob` 要求先停止**，运行中删除返回 `Conflict`；id 不存在返回 `ResourceNotFound`。
+- **`DeleteJob` 要求先停止**，运行中删除返回 `Conflict`；id 不存在返回 `ResourceNotFound`。**`SUCCEEDED_RETAINING` / `FAILED_RETAINING` 也算「运行中」**：任务已经结束，`DeleteJob` 仍答 `Conflict: 当前状态（运行中）无法删除`，而 `StopJob` 对它返回成功却不解除保留态——只能等平台自己释放（实测约一分钟）。清理脚本要按状态离开 `*_RETAINING` 来重试，不要按 `StopJob` 的返回值判断。
 - discovery 对 hpc 的每个 Action 声明的参数与线上不一致（`ListJobs` 声明 `PageNumber`，实发 `page_num`），实测 v1 的请求体逐字被接受。
 
 ---
@@ -461,7 +463,7 @@ POST /api/v2/{notebook|train|hpc|ray|inference_serving}?Action=GetTaskMetric
 
 **`train.CreateJobConsole`** — 必填：`{name, command, framework, project_id, workspace_id, logic_compute_group_id, task_priority, enable_notification, framework_config:[{image_type, image, instance_count, resource_spec_price, cpu, gpu_count, mem_gi, shm_gi?}]}`。可选：`max_running_time_ms`、`exclude_nodes[]`、`auto_fault_tolerance` + `fault_tolerance_max_retry` + `fault_tolerance_retry_interval_sec`、`dataset_info[]`、`envs[]`、`description`、`reserve_on_success_ms`、`reserve_on_fail_ms`、`is_publicpath_readonly`。
 
-**`hpc.CreateJobConsole`** — 必填：`{job_name, logic_compute_group_id, project_id, workspace_id, enable_notification, sbatch_script:{number_of_tasks, cpus_per_task, memory_per_cpu, enable_hyper_threading, entrypoint}, slurm_cluster_spec:{predef_quota_id, cpu, mem_gi, image, image_type, instance_count, spec_price}}`。可选：`priority`、`dataset_info[]`、`description`、`ttl_after_job_finish_seconds`、`is_publicpath_readonly`，以及 `sbatch_script` 里的运行时长四件套。
+**`hpc.CreateJobConsole`** — 必填：`{job_name, logic_compute_group_id, project_id, workspace_id, enable_notification, priority, sbatch_script:{number_of_tasks, cpus_per_task, memory_per_cpu, enable_hyper_threading, entrypoint}, slurm_cluster_spec:{predef_quota_id, cpu, mem_gi, image, image_type, instance_count, spec_price}}`。可选：`dataset_info[]`、`description`、`ttl_after_job_finish_seconds`、`is_publicpath_readonly`，以及 `sbatch_script` 里的运行时长四件套。
 
 **`ray.CreateJob`** — `{name, description, workspace_id, project_id, entrypoint, task_priority, head_node:{mirror_id, image_type, logic_compute_group_id, quota_id, shm_gi?}, worker_groups:[{group_name, mirror_id, image_type, logic_compute_group_id, min_replicas, max_replicas, quota_id, shm_gi?}]}`，可选 `is_publicpath_readonly`。
 
@@ -472,7 +474,9 @@ POST /api/v2/{notebook|train|hpc|ray|inference_serving}?Action=GetTaskMetric
 - **`envs` 的元素是 `{name, value}`，不是 `{key, value}`**，`key` 会被拒为 `unknown field "key"`。**`train.GetJob` 的读投影不回显 `envs`**（容器里明明有变量，读回来是 `[]`），所以不能用读接口核对写了什么。
 - **`is_projectuserspath_readonly` 只有 notebook 有**，而且要项目 Maintainer：普通成员传了会拿到 `AccessForbidden: only project maintainer can enable project users path readonly mount`。
 - **HPC 的最大运行时长不在顶层**。`max_running_time_ms` 和 `max_running_time_minutes` 打顶层都是 `unknown field`；它嵌在 `sbatch_script` 里，而且控制台**同时发两份**：`job_max_time`（`"D-HH:MM:SS"`，即 Slurm `--time`）和 `max_running_time_days` / `_hours` / `_minutes`。`slurm_cluster_spec` 一个都不收。
-- **HPC 的优先级键是 `priority`，不是 `task_priority`。** 拼错时 v2 答 `priority must be set`，读起来像值缺失而不是名字写错。
+- **HPC 的优先级键是 `priority`，不是 `task_priority`，而且它是必填的。** 拼错时 v2 答 `priority must be set`，读起来像值缺失而不是名字写错；**整个键不发**时答的却是 `InternalError: internal server error`——它在 transient 名单上，于是先白烧三次重试，再抛出一条看起来像平台故障的错。CLI 侧宁可自己先报「拿不到优先级」，也不要把这个键漏掉。
+- **`sbatch_script.memory_per_node` 是死字段，而且比 `working_dir` 更能骗人：它完整 round-trip。** 控制台有「每节点使用内存」这个输入框，执行命令模板里写的甚至就是 `#SBATCH --mem=*G`，平台也确实收下、存住、在详情页显示「每节点使用内存：8G」、`GetJob` 原样读回。但**脚本生成器只会写 `--mem-per-cpu`**：只给 `memory_per_node` 时，详情页「执行命令」里那一行是空的 `#SBATCH --mem-per-cpu=`，sbatch 拒掉整个脚本，任务 FAILED 且照例没有任何日志或事件说明原因。同一个 16 GiB 节点上 8 / 15 / 16 GiB 三个值全败，等价的 `memory_per_cpu` 任务成功；两个字段同时发是 `InternalError`。**round-trip 通过不足以判定一个字段可用——要一路核到平台真正拿它去生成什么。**
+- **Slurm 级字段与节点级规格之间没有任何校验，两边都没有。** `sbatch_script` 描述程序怎么用节点，`slurm_cluster_spec` 决定买了什么节点，平台照单全收并返回 `job_id`；控制台也不管——它的「最大值」提示来自项目的单任务配额，不是所选规格，而且 Slurm 那几个输入框排在「选择规格」之前。实测（`HPC-可上网区资源-2`，`0,4,16`，单节点）：`cpus_per_task` 超过节点核数、或 `cpus_per_task × memory_per_cpu` 超过节点内存，任务起来后一两分钟内就 FAILED，**`GetJobLog` 空、`ListJobEvents` 只有正常的 Pod 生命周期，没有任何一处带上 sbatch 的拒绝原因**；而 `number_of_tasks × cpus_per_task` 超过 `instance_count ×` 节点核数时 sbatch 反而**收下**，step 永远排队，平台一直报 RUNNING、`steps` 停在 `-/1`，直到 Workspace 自己的运行时长上限把它停掉。守门只能放在客户端。
 - **`max_running_time_ms` / `reserve_on_fail_ms` / `reserve_on_success_ms` 是字符串类型**，发数字会被直接拒。
 - **`mount_path` / `mounts` 是死字段：接受、存储、不生效。** 元素是 `{real_path, mount_path, volume}`，没有 `read_only`。受控验证里三种 `volume` 写法全部被接受并原样存进 `start_config.mount_path`，但实例起来后 `/mnt/` 是空的，`find / -name 'probe-*'` 零命中。控制台侧也对得上：notebook 和 train 表单的「高级设置」里没有任何自定义挂载入口，递归抓完全部 SPA chunk 也找不到 `real_path` / `mount_path`。**结论不是「契约未知」，是「这个字段当前没有消费者」。**
 - **`hpc` 的 `working_dir` 同类，而且更早暴露**：`CreateJobConsole` 接受它，但 `GetJob` 读回来是 `None`——平台连存都没存。对照组是同一次请求里的 `dataset_info` / `description` / `ttl_after_job_finish_seconds`，三个都完整 round-trip。**写进去读不回来，就不要接。**

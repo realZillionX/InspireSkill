@@ -606,9 +606,13 @@ def _prepare_hpc_item(
     config: Config,
     session: Any,
 ) -> dict[str, Any]:
-    from inspire.cli.commands.hpc.hpc_commands import build_hpc_create_payload
-    from inspire.cli.commands.hpc.hpc_commands import _looks_like_full_slurm_script
-    from inspire.cli.commands.hpc.hpc_commands import _resolve_project_id
+    from inspire.cli.commands.hpc.hpc_commands import (
+        SlurmLayoutError,
+        _looks_like_full_slurm_script,
+        _resolve_project_id,
+        build_hpc_create_payload,
+        resolve_slurm_layout,
+    )
 
     entrypoint = _require_str(item, "entrypoint")
     if _looks_like_full_slurm_script(entrypoint):
@@ -628,12 +632,21 @@ def _prepare_hpc_item(
         schedule_config_type=SCHEDULE_TYPE_HPC,
         group_override=_require_condition_str(item, "group", kind="hpc"),
     )
-    cpus_per_task = _optional_int(item, "cpus_per_task", min_value=1)
-    if cpus_per_task is None:
-        cpus_per_task = max(1, int(quota_spec.cpu_count))
-    memory_per_cpu = _optional_int(item, "memory_per_cpu", min_value=1)
-    if memory_per_cpu is None:
-        memory_per_cpu = max(1, int(quota_spec.memory_gib) // max(1, int(cpus_per_task)))
+    instance_count = _optional_int(item, "instance_count", min_value=1) or 1
+    number_of_tasks = _optional_int(item, "number_of_tasks", min_value=1) or 1
+    # Same pre-flight as `hpc create`: the platform accepts a Slurm layout its
+    # nodes cannot run, and answers with a job id either way.
+    try:
+        layout = resolve_slurm_layout(
+            node_cpu=resolved_quota.cpu_count,
+            node_memory_gib=resolved_quota.memory_gib,
+            instance_count=instance_count,
+            number_of_tasks=number_of_tasks,
+            cpus_per_task=_optional_int(item, "cpus_per_task", min_value=1),
+            memory_per_cpu=_optional_int(item, "memory_per_cpu", min_value=1),
+        )
+    except SlurmLayoutError as e:
+        raise ConfigError(str(e)) from e
     project_id = _resolve_project_id(
         config,
         _require_condition_str(item, "project", kind="hpc"),
@@ -649,16 +662,16 @@ def _prepare_hpc_item(
         image_type=_optional_str(item, "image_type") or "SOURCE_PRIVATE",
         entrypoint=entrypoint,
         quota_id=resolved_quota.quota_id,
-        instance_count=_optional_int(item, "instance_count", min_value=1) or 1,
+        instance_count=instance_count,
         task_priority=resolve_workspace_task_priority(
             _optional_int(item, "priority", min_value=1),
             session=session,
             workspace_id=workspace_id,
             project_id=project_id,
         ),
-        number_of_tasks=_optional_int(item, "number_of_tasks", min_value=1) or 1,
-        cpus_per_task=int(cpus_per_task),
-        memory_per_cpu=int(memory_per_cpu),
+        number_of_tasks=layout.number_of_tasks,
+        cpus_per_task=layout.cpus_per_task,
+        memory_per_cpu=layout.memory_per_cpu,
         enable_hyper_threading=_optional_bool(item, "enable_hyper_threading", default=False),
         resource_spec_price=build_resource_spec_price(quota=resolved_quota),
         enable_notification=_optional_bool(item, "enable_notification", default=False),
