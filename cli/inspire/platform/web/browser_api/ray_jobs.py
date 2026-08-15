@@ -447,25 +447,37 @@ def create_ray_job(
 def list_ray_job_events(
     ray_job_id: str,
     *,
+    pod_names: Optional[list[str]] = None,
     page_num: int = 1,
     page_size: int = 200,
     max_pages: int = 1,
     sort_ascending: bool = True,
     session: Optional[WebSession] = None,
 ) -> list[dict]:
-    """Fetch job-level events for a Ray cluster.
+    """Fetch events for a Ray cluster: controller rows and pod rows together.
 
-    Unlike HPC / train_job events (which take a generic
-    ``{filter:{object_ids, object_type}, sorter:[...]}`` envelope), Ray's
-    events endpoint is bespoke: body is ``{ray_job_id, page_num, page_size,
-    sorter}``. No ``object_type`` — passing one returns ``参数错误``.
+    Ray's envelope is its own — ``{ray_job_id, page_num, page_size, sorter}``,
+    where the resource key is `ray_job_id` and not the `filter.object_ids` pair
+    that carries it on train / HPC. But one call already answers **both**
+    levels: measured on a live two-pod cluster, 3 rows come back with
+    ``object_type: "job"`` (``CreatedRayCluster`` / ``CreatedService``, from
+    ``rayjob-controller``) and 14 with ``object_type: "instance"``, whose
+    ``object_id`` is the pod name. No per-pod fan-out is needed here, unlike
+    ``hpc.ListSlurmdPodEvent``.
 
-    Returned events follow the K8s-event shape: ``reason`` / ``type`` /
-    ``message`` / ``first_timestamp`` / ``last_timestamp`` / ``count``. The
-    critical signals are ``CreatedRayCluster`` (Normal) on submit and
-    ``FailedScheduling`` (Warning) when the scheduler can't bind a pod to a
-    node — the latter is almost always how you diagnose a job stuck in
-    PENDING.
+    ``pod_names`` narrows to those instances through ``filter.object_ids``,
+    which is honoured (and drops the controller rows with it); an id the
+    cluster does not know answers an empty list. ``filter.object_type`` accepts
+    the literal ``instance`` but nothing else useful — ``RAY_JOB_INSTANCE`` and
+    ``ray_job`` both answer zero rows — so the pod list is the filter and the
+    type is left off.
+
+    Rows follow the K8s-event shape (``reason`` / ``type`` / ``message`` /
+    ``count`` / ``first_timestamp`` / ``last_timestamp``) with the reporter in
+    ``source_component`` rather than ``from``. The critical signals are
+    ``CreatedRayCluster`` (Normal) on submit and ``FailedScheduling``
+    (Warning) when the scheduler can't bind a pod to a node — the latter is
+    almost always how you diagnose a job stuck in PENDING.
     """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
@@ -477,21 +489,32 @@ def list_ray_job_events(
     if max_pages < 1:
         raise ValueError("max_pages must be positive")
 
+    clean_pods = list(
+        dict.fromkeys(
+            str(name or "").strip() for name in (pod_names or []) if str(name or "").strip()
+        )
+    )
+    if pod_names is not None and not clean_pods:
+        raise ValueError("Instance selection is required.")
+
     if session is None:
         session = get_web_session()
 
     sort = "ascend" if sort_ascending else "descend"
     events: list[dict] = []
     for current_page in range(page_num, page_num + max_pages):
+        body: dict[str, Any] = {
+            "ray_job_id": ray_job_id,
+            "page_num": current_page,
+            "page_size": page_size,
+            "sorter": [{"field": "last_timestamp", "sort": sort}],
+        }
+        if clean_pods:
+            body["filter"] = {"object_ids": clean_pods}
         payload = _ray_v2(
             session,
             "ListJobEvents",
-            {
-                "ray_job_id": ray_job_id,
-                "page_num": current_page,
-                "page_size": page_size,
-                "sorter": [{"field": "last_timestamp", "sort": sort}],
-            },
+            body,
             context="events",
         )
         page_events, total = _ray_page(payload)

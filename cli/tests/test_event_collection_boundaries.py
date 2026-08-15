@@ -269,10 +269,18 @@ def test_ray_events_uses_bounded_name_scan_and_recent_event_pages(monkeypatch) -
         return "ray-internal"
 
     monkeypatch.setattr(ray_commands, "_resolve_ray_name_in_workspace", fake_resolve)
+    monkeypatch.setattr(
+        ray_commands.browser_api_module,
+        "list_ray_job_instances",
+        lambda _job_id, **_kwargs: ([], 0),
+    )
 
     def fake_events(ray_job_id, **kwargs):  # noqa: ANN001
         captured.update(kwargs)
-        return [{"message": "newest"}, {"message": "older"}]
+        return [
+            {"message": "newest", "last_timestamp": "2"},
+            {"message": "older", "last_timestamp": "1"},
+        ]
 
     monkeypatch.setattr(ray_commands.browser_api_module, "list_ray_job_events", fake_events)
 

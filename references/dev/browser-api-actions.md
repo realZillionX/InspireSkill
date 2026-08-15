@@ -99,7 +99,7 @@ Referer：`/jobs/ray`。
 | `GetJob` | `{ray_job_id}` | 完整任务对象：`status` / `head_node{}` / `worker_groups[]` / `entrypoint` / `creator{}` / `priority_name` | `ray status`、`ray metrics` |
 | `ListJobs` | `{workspace_id, page_num, page_size, filter_by:{user_id:[…]}}` | `{items[], total}`（`total` 是字符串） | `ray list`、Name Resolver、`cache refresh` |
 | `ListJobCreators` | `{workspace_id}` | `{items[]}` | — |
-| `ListJobEvents` | `{ray_job_id, page_num, page_size, sorter:[{field:"last_timestamp", sort}]}` | `{items[], total}` | `ray events` |
+| `ListJobEvents` | `{ray_job_id, page_num, page_size, sorter:[{field:"last_timestamp", sort}], filter:{object_ids[]}?}` | `{items[], total}` | `ray events`、`ray events --instance` |
 | `ListJobInstances` | `{ray_job_id, page_num, page_size}` | `{items[], total}` | `ray instances` |
 | `ListJobScalingHistories` | `{ray_job_id, page_num, page_size, worker_group_name?}` | `{items[], total}`（`total` 是字符串） | `ray scaling` |
 | `GetJobLog` | `{page_size, filter:{podNames[], start_timestamp_ms, end_timestamp_ms}}` | `{logs[], total}` | `ray logs` |
@@ -117,7 +117,9 @@ Referer：`/jobs/ray`。
 - `ListJobScalingHistories` 的行是 `{event_time(epoch ms), event_type ∈ initialized|scale_up|scale_down, replicas_before, replicas_after}`，合同里没有 `filter` 也没有 `sorter`。
 - **Workspace scoping 是顶层 `workspace_id`**，`filter` 嵌套在这里会被拒。
 - **没有 `CreateJobConsole` 变体**，`ray` 对它答 `InvalidAction`，创建走 `CreateJob`。
-- **`ListJobEvents` 的信封是专用的**：`{ray_job_id, page_num, page_size, sorter}`，没有 `object_type`——传了返回 `参数错误`。事件是 K8s 形状（`reason` / `type` / `message` / `first_timestamp` / `last_timestamp` / `count`），关键信号是提交时的 `CreatedRayCluster`（Normal）和卡在 PENDING 时的 `FailedScheduling`（Warning）。
+- **`ListJobEvents` 的信封是专用的**：资源键是 `ray_job_id`，不是 train / HPC 那对 `filter.object_ids`。但**一次调用就同时给两级事件**——在一个真实两 Pod 集群上实测 17 行里 3 行是 `object_type: "job"`（`CreatedRayCluster` / `CreatedService`，来自 `rayjob-controller`），14 行是 `object_type: "instance"`，`object_id` 就是 Pod 名。**不需要像 `hpc.ListSlurmdPodEvent` 那样按实例扇出。**
+- **`filter.object_ids` 有效**，早先记的「没有 `object_type`，传了返回 `参数错误`」已被真实任务证伪：给 Pod 名收窄到那些实例，同时把控制器行一起滤掉；不认识的 id 回空列表。`filter.object_type` 只认字面量 `instance`，`RAY_JOB_INSTANCE` 和 `ray_job` 都回 0 行，所以 Wrapper 只发 `object_ids`。
+- 事件是 K8s 形状（`reason` / `type` / `message` / `first_timestamp` / `last_timestamp` / `count`），但上报方在 `source_component` 而不是 `from`，另有一个单调递增的 `id`。**时间戳只到秒**，同一个容器的 `Pulled` / `Created` / `Started` 常常同秒，平台的同秒次序还随 filter 变，所以客户端排序要拿 `id` 做 tiebreaker，否则「按时间倒着取一屏再翻回来」会把因果顺序翻反。关键信号是提交时的 `CreatedRayCluster`（Normal）和卡在 PENDING 时的 `FailedScheduling`（Warning）。
 - **`ray` 把状态机拒绝报成 `InternalError: RayJob status not allow <动词>`，而不是 `Conflict`。** 对非 STOPPED 的任务 `StartJob`、对已 STOPPED 的任务 `StopJob` 都走这一条。`InternalError` 在瞬时错误名单里，于是一个「从这个状态永远不可能成功」的拒绝被读成「平台暂时不舒服」，还会白烧三次退避重试。只有 `DeleteJob` 做对了，它给的是 `Conflict: 当前状态（运行中）无法删除`。
 - **`UpdateJob` 只能改停止的任务**：运行中答 `Conflict: Ray Job 正在运行中`；缺 id 答 `InvalidParameter: RayJobId is required`。在一个真实拥有的 STOPPED 任务上逐字段量过，**真正可写的只有 `name` 和 `description`**（局部更新，只发一个不会清掉另一个），另外 27 个候选键——含 `worker_groups` / `head_node` / `min_replicas` / `max_replicas` / `replicas` / `task_priority` 等所有可能的伸缩杠杆——全部 `unknown field`；`ScaleJob` / `UpdateWorkerGroup` / `ResizeJob` 一类的兄弟 Action 也都 `InvalidAction`。**弹性区间在创建时就定死了**，所以 `UpdateJob` 不封装：它只能改名，而一个 Name-only 的 CLI 改名等于让自己的名称索引失效。
 - **早先记的「`StartJob` 受理但不执行」没有复现。** 在一个真实任务上跑了三轮停/启：`StartJob` 回显的 `ray_job` 与随后 `GetJob` 逐字段一致，任务立刻离开 `STOPPED`，`updated_at` 与 `started_at` 都动了。真实存在的只有另一半——**重复调用答 `InternalError`**，那正是上一条的状态机拒绝。`ray start` 仍然轮询确认状态，这是本仓库对写操作的通用纪律，代价只是成功路径上多一次读。

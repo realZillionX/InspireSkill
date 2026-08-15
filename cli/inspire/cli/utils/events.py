@@ -49,20 +49,29 @@ def _fmt_timestamp(raw: Any) -> str:
     return s
 
 
-def event_sort_key(event: dict) -> tuple[int, int]:
+def event_sort_key(event: dict) -> tuple[int, int, int]:
     """Order a merged event stream oldest-first.
 
     Controller-level and per-pod events come from different calls (and, on
     HPC, one call per instance), so the chronology that makes ``--tail`` mean
     "most recent" has to be imposed here rather than trusted from the
     platform's own ordering.
+
+    Timestamps are per-second, so a container's `Pulled` / `Created` /
+    `Started` trio usually shares one — hence the ``id`` tiebreaker, which Ray
+    fills with a monotonic counter. Without it the causal order of a same-second
+    burst flips depending on how the rows were fetched.
     """
 
     def _epoch(value: object) -> int:
         text = str(value or "").strip()
         return int(text) if text.isdigit() else 0
 
-    return _epoch(event.get("last_timestamp")), _epoch(event.get("first_timestamp"))
+    return (
+        _epoch(event.get("last_timestamp")),
+        _epoch(event.get("first_timestamp")),
+        _epoch(event.get("id")),
+    )
 
 
 def event_type(event: dict) -> str:

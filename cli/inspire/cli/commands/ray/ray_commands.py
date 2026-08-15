@@ -29,7 +29,11 @@ from inspire.cli.utils.errors import (
     exit_with_error as _handle_error,
     require_confirmation,
 )
-from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, run_events_command
+from inspire.cli.utils.events import (
+    DEFAULT_EVENT_TAIL,
+    event_sort_key,
+    run_events_command,
+)
 from inspire.cli.utils.id_resolver import (
     NAME_PICK_HELP,
     forget_resource_identity,
@@ -1467,16 +1471,57 @@ _RAY_EVENT_PAGE_SIZE = 200
 _RAY_EVENT_MAX_PAGES = 5
 
 
-def _fetch_recent_ray_events(ray_job_id: str, *, session) -> list[dict]:  # noqa: ANN001
+def _labelled_ray_events(
+    events: list[dict],
+    views: Sequence[RayInstanceView],
+) -> list[dict]:
+    """Name each pod row with the identity `inspire ray instances` prints.
+
+    One call returns controller rows and pod rows in the same list, told apart
+    only by ``object_type`` / ``object_id`` — and ``object_id`` is the pod
+    handle, which never reaches output. Controller rows keep no label: they
+    are about the cluster, not about any one pod.
+    """
+    labels = {view.handle: view.label for view in views}
+    labelled: list[dict] = []
+    for event in events:
+        row = dict(event)
+        label = labels.get(str(row.get("object_id") or "").strip())
+        if label:
+            row["instance"] = label
+        labelled.append(row)
+    return labelled
+
+
+def _fetch_recent_ray_events(
+    ray_job_id: str,
+    *,
+    session,  # noqa: ANN001
+    selectors: Sequence[str] = (),
+) -> list[dict]:
     """Fetch a bounded newest-first window and restore chronological output."""
+    instances, _total = browser_api_module.list_ray_job_instances(
+        ray_job_id,
+        limit=_DEFAULT_INSTANCE_SCAN_LIMIT,
+        session=session,
+    )
+    views = ray_instance_views(instances)
+    pod_names = None
+    if selectors:
+        views = select_ray_instance_views(views, selectors)
+        pod_names = [view.handle for view in views]
     events = browser_api_module.list_ray_job_events(
         ray_job_id,
+        pod_names=pod_names,
         page_size=_RAY_EVENT_PAGE_SIZE,
         max_pages=_RAY_EVENT_MAX_PAGES,
         sort_ascending=False,
         session=session,
     )
-    return list(reversed(events))
+    # Fetched newest-first to bound the window, then restored to chronological
+    # order here rather than by reversing: same-second ties come back in an
+    # order that depends on the filter, and reversing would flip them.
+    return sorted(_labelled_ray_events(events, views), key=event_sort_key)
 
 
 @click.command("events")
@@ -1502,6 +1547,18 @@ def _fetch_recent_ray_events(ray_job_id: str, *, session) -> list[dict]:  # noqa
     help="Filter by event reason (e.g. FailedScheduling, CreatedRayCluster).",
 )
 @click.option(
+    "--instance",
+    "instance_selectors",
+    multiple=True,
+    metavar="ROLE",
+    help=(
+        "Narrow to one instance, named by the Role / Type (and Rank, when "
+        "several share one) column of `inspire ray instances` — for example "
+        "head or a worker-group name. Repeat for several. Default: cluster "
+        "events plus every pod."
+    ),
+)
+@click.option(
     "--tail",
     type=click.IntRange(1),
     default=DEFAULT_EVENT_TAIL,
@@ -1524,6 +1581,7 @@ def events_ray(
     pick: Optional[int],
     reason: Optional[str],
     type_filter: Optional[str],
+    instance_selectors: tuple[str, ...],
     tail: int,
     follow: bool,
     interval: int,
@@ -1533,13 +1591,16 @@ def events_ray(
     \b
     Critical for diagnosing stuck PENDING jobs — the `FailedScheduling`
     events spell out exactly why the scheduler can't place a pod
-    (insufficient CPU / GPU, node affinity mismatch, taint, etc.).
+    (insufficient CPU / GPU, node affinity mismatch, taint, etc.). Cluster
+    events and every pod's events arrive in one timeline with an `Instance`
+    column; `--instance` narrows to one role.
 
     \b
     Examples:
         inspire ray events pipeline --workspace CPU资源空间
         inspire ray events pipeline --workspace CPU资源空间 --reason FailedScheduling
         inspire ray events pipeline --workspace CPU资源空间 --type Warning --tail 10
+        inspire ray events pipeline --workspace CPU资源空间 --instance head
         inspire ray events pipeline --workspace CPU资源空间 --follow
         inspire --json ray events pipeline --workspace CPU资源空间
     """
@@ -1547,22 +1608,33 @@ def events_ray(
     try:
         session = get_web_session()
         config, _ = Config.from_files_and_env(require_credentials=False)
+
+        def _fetch_events() -> list[dict]:
+            # An unknown `--instance` is a usage error, and the shared runner
+            # would otherwise repackage it as "could not fetch events".
+            try:
+                return _run_readonly_ray_operation(
+                    ctx,
+                    session=session,
+                    name=name,
+                    workspace=workspace,
+                    limit=_RAY_EVENT_NAME_SCAN_LIMIT,
+                    pick=pick,
+                    operation=lambda ray_job_id, live_session: (
+                        _fetch_recent_ray_events(
+                            ray_job_id,
+                            session=live_session,
+                            selectors=instance_selectors,
+                        )
+                    ),
+                )
+            except RayInstanceSelectionError as e:
+                _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+                return []
+
         run_events_command(
             ctx,
-            fetch=lambda: _run_readonly_ray_operation(
-                ctx,
-                session=session,
-                name=name,
-                workspace=workspace,
-                limit=_RAY_EVENT_NAME_SCAN_LIMIT,
-                pick=pick,
-                operation=lambda ray_job_id, live_session: (
-                    _fetch_recent_ray_events(
-                        ray_job_id,
-                        session=live_session,
-                    )
-                ),
-            ),
+            fetch=_fetch_events,
             type_filter=type_filter,
             reason_filter=reason,
             tail=tail,

@@ -64,6 +64,10 @@
 
 - `notebook status` 的 `Node` 一并给出该节点的健康状态，被 Cordon 或处于维护窗口时标出。**STOPPED 的 Notebook 不会清空节点对象**，而是把名字置空、状态置成 proto 零值 `UNKNOWN_NODE_STATUS`，照直读会印出一个「状态未知的节点」——投影按空名字判定未落点，这一行随之消失。
 
+- `inspire ray events` 补上实例级：输出多一列 `Instance`（head / worker 组名），并支持 `--instance` 收窄。**Ray 的事件本来就是两级都给的**——一次 `ListJobEvents` 里既有 `object_type: "job"` 的 `CreatedRayCluster` / `CreatedService`，也有 `object_type: "instance"` 的逐 Pod 行——CLI 此前把 `object_id` 丢掉，于是 17 行事件谁都不知道来自哪个 Pod。收窄走平台的 `filter.object_ids`，不是客户端过滤。
+
+  这条推翻了仓库里一条记错的事实：`ray.ListJobEvents` 的 `filter` **是有效的**，此前记的「没有 `object_type`，传了返回 `参数错误`」在真实任务上不成立（拿不存在的任务去探，平台先答 `ResourceNotFound`，看不到字段层的真相）。为定论专门建了一个最小 CPU Ray 集群（1 CPU / 4 GiB，head + 1 worker），量完即 `stop` + `delete`。顺带发现事件时间戳只到秒，同一容器的 `Pulled` / `Created` / `Started` 常常同秒、而平台的同秒次序还随 filter 变，所以排序加了 `id` 作 tiebreaker——否则「倒着取一屏再翻回来」会把因果顺序翻反。
+
 - `inspire resources node-events <节点名>...`：**唯一按节点而不是按工作负载组织的事件源**。工作负载的 Events 只说平台对这个任务做了什么，说不了机器本身发生了什么——内核 OOM kill（`kernel-monitor` 上报的 `TaskHung`、`Memory cgroup out of memory`）、Cordon / Uncordon、`Rebooted`、`InvalidDiskCapacity`、`NodeNotSchedulable`。「同一台机器上反复失败」此前在 CLI 里没有任何可查的东西，实测一台 4090 上有 149 条、一台 HPC 计算节点上有 88 条 Warning。
 
   `cluster.*` 这条路由对普通成员基本全是 `AccessForbidden`，**这个 Action 是例外**，本账号读得通。契约有三处得记住：`filter.node_names` 事实上必填（不给 filter 答 `total: 0`，读起来像「集群很安静」而不是「你什么都没问」）；行里的类型字段叫 `event_type` 而不是别处的 `type`，共享渲染与 `--type` 过滤都在一个地方吸收这个差异；平台声明的 `start_last_timestamp` / `end_last_timestamp` 时间窗答 `InternalError`，所以时间收窄留在客户端。节点名不认识时回空列表而不是报错，因此帮助里明说「查不到不等于机器没问题，先核对拼写」。

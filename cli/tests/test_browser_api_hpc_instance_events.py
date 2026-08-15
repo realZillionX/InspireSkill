@@ -91,15 +91,15 @@ def test_pages_until_the_string_total_is_covered(
 
 
 def test_queries_every_instance_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Instances are queried concurrently, so answers key off the id, not order."""
     calls: list[dict[str, Any]] = []
-    _install_responses(
-        monkeypatch,
-        [
-            {"Result": {"events": [_event("A")], "total": "1"}},
-            {"Result": {"events": [_event("B")], "total": "1"}},
-        ],
-        calls,
-    )
+
+    def _fake(session, method, url, *, referer=None, body=None, timeout=30, **kwargs):  # noqa: ANN001
+        calls.append({"url": url, "referer": referer, "body": body})
+        reason = {"ns/pod-0": "A", "ns/pod-1": "B"}[body["instance_id"]]
+        return {"Result": {"events": [_event(reason)], "total": "1"}}
+
+    monkeypatch.setattr(hpc_jobs_module, "_request_json", _fake)
 
     events = list_hpc_instance_events(
         ["ns/pod-0", " ns/pod-1 ", "ns/pod-0", ""],
@@ -107,8 +107,9 @@ def test_queries_every_instance_once(monkeypatch: pytest.MonkeyPatch) -> None:
         page_size=50,
     )
 
+    # Results are reassembled in input order even though the calls race.
     assert [event["reason"] for event in events] == ["A", "B"]
-    assert [call["body"]["instance_id"] for call in calls] == ["ns/pod-0", "ns/pod-1"]
+    assert sorted(call["body"]["instance_id"] for call in calls) == ["ns/pod-0", "ns/pod-1"]
 
 
 def test_reads_the_list_under_alternate_keys(monkeypatch: pytest.MonkeyPatch) -> None:
