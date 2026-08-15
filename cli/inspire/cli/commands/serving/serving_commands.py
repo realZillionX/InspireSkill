@@ -222,7 +222,7 @@ def _resolve_project_id(
     )
 
 
-def _resolve_image_for_create(raw: str, *, session) -> tuple[str, str]:
+def _resolve_image_for_create(raw: str, *, session, workspace_id: str) -> tuple[str, str]:
     """Resolve a visible image label to the `mirror_id` used by the web UI."""
     raw = (raw or "").strip()
     if not raw:
@@ -232,7 +232,9 @@ def _resolve_image_for_create(raw: str, *, session) -> tuple[str, str]:
     target = raw.lower()
     for source in ("private", "public", "official"):
         try:
-            images = browser_api_module.list_images_by_source(source=source, session=session)
+            images = browser_api_module.list_images_by_source(
+                source=source, session=session, workspace_id=workspace_id
+            )
         except Exception as e:  # noqa: BLE001
             logger.debug("Image lookup failed for source %s: %s", source, e)
             continue
@@ -252,8 +254,10 @@ def _resolve_image_for_create(raw: str, *, session) -> tuple[str, str]:
     raise ConfigError(f"Unknown image: {raw!r}.")
 
 
-def _resolve_image_id(raw: str, *, session) -> str:
-    image_id, _display = _resolve_image_for_create(raw, session=session)
+def _resolve_image_id(raw: str, *, session, workspace_id: str) -> str:
+    image_id, _display = _resolve_image_for_create(
+        raw, session=session, workspace_id=workspace_id
+    )
     return image_id
 
 
@@ -2129,7 +2133,9 @@ def create_serving(
                 "Could not infer model version. Pass --model-version explicitly."
             )
 
-        mirror_id, image_label = _resolve_image_for_create(image, session=session)
+        mirror_id, image_label = _resolve_image_for_create(
+            image, session=session, workspace_id=workspace_id
+        )
         resource_spec_price = _build_resource_spec_price(resolved)
         final_priority = resolve_workspace_task_priority(
             priority,

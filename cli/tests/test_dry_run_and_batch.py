@@ -1498,7 +1498,7 @@ def test_ray_batch_entry_carries_the_readonly_guard(
     monkeypatch.setattr(
         browser_api_module,
         "list_images_by_source",
-        lambda source=None, session=None: [
+        lambda source=None, session=None, workspace_id=None: [
             browser_api_module.CustomImageInfo(
                 image_id="image-12345678-1234-1234-1234-123456789abc",
                 url="registry.batch/notebook:latest",
@@ -1558,7 +1558,7 @@ def test_ray_batch_entry_without_the_guard_omits_it(
     monkeypatch.setattr(
         browser_api_module,
         "list_images_by_source",
-        lambda source=None, session=None: [
+        lambda source=None, session=None, workspace_id=None: [
             browser_api_module.CustomImageInfo(
                 image_id="image-12345678-1234-1234-1234-123456789abc",
                 url="registry.batch/notebook:latest",

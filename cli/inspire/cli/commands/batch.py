@@ -1068,6 +1068,7 @@ def _prepare_serving_item(
         "mirror_id": _resolve_serving_image_id(
             _require_condition_str(item, "image", kind="serving"),
             session=session,
+            workspace_id=workspace_id,
         ),
         "command": _require_str(item, "command"),
         "port": _require_int(item, "port", min_value=1),

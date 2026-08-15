@@ -14,6 +14,12 @@ import click
 
 # Shared with `inspire image set-visibility`, which applies the same mapping.
 from inspire.cli.commands.image.image_commands import _parse_visibility_value
+
+# Imported as a module, not as `from ... import _resolve_notebook_id`: the name
+# is resolved per call so tests can patch it on `notebook_lookup` itself, the
+# same way this file reaches the platform through `browser_api_module`. Binding
+# it at import time silently breaks every test that stubs the resolver.
+from inspire.cli.commands.notebook import notebook_lookup as notebook_lookup_module
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -31,6 +37,7 @@ from inspire.cli.utils.id_resolver import (
 )
 from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
+    get_base_url,
     require_web_session,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
@@ -62,16 +69,17 @@ def _resolve_save_notebook_id(
     workspace: str,
     pick: Optional[int],
     session,  # noqa: ANN001
-) -> str | None:
+) -> tuple[str, str] | None:
     """Resolve the notebook a save command targets, or report and return None.
 
     Both halves of the save flow address the same object the same way: a
     notebook name inside one named workspace, resolved live so a cached handle
     cannot send the request at a notebook that no longer exists.
-    """
-    from inspire.cli.commands.notebook.notebook_lookup import _resolve_notebook_id
-    from inspire.cli.utils.notebook_cli import get_base_url
 
+    Returns ``(notebook_id, workspace_id)``. The workspace is not incidental:
+    the saved image lands in *that* workspace's registry, so looking the image
+    up afterwards has to read the same one.
+    """
     try:
         workspace_id = resolve_workspace_operation_scope(
             workspace=workspace,
@@ -81,7 +89,7 @@ def _resolve_save_notebook_id(
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
         return None
 
-    notebook_id, _ = _resolve_notebook_id(
+    notebook_id, _ = notebook_lookup_module._resolve_notebook_id(
         ctx,
         session=session,
         base_url=get_base_url(),
@@ -91,7 +99,7 @@ def _resolve_save_notebook_id(
         pick=pick,
         require_live=True,
     )
-    return notebook_id
+    return notebook_id, workspace_id
 
 
 # ---------------------------------------------------------------------------
@@ -181,15 +189,16 @@ def save_image_cmd(
 
     # Resolved through the notebook resolver, which rejects handle-shaped
     # normal CLI inputs.
-    notebook_id = _resolve_save_notebook_id(
+    resolved = _resolve_save_notebook_id(
         ctx,
         notebook=notebook,
         workspace=workspace,
         pick=pick,
         session=session,
     )
-    if not notebook_id:
+    if not resolved:
         return
+    notebook_id, workspace_id = resolved
 
     requested_visibility = _parse_visibility_value(visibility)
     visibility_label = visibility.lower() if visibility else ""
@@ -279,7 +288,7 @@ def save_image_cmd(
             want_name_1 = f"{name}:{version}"
             matches = []
             for img in browser_api_module.list_images_by_source(
-                source="private", session=session
+                source="private", session=session, workspace_id=workspace_id
             ):
                 img_name = (img.name or "").strip()
                 img_url = (img.url or "").strip()
@@ -411,15 +420,16 @@ def cancel_save_image_cmd(
         hint=WEB_AUTH_HINT,
     )
 
-    notebook_id = _resolve_save_notebook_id(
+    resolved = _resolve_save_notebook_id(
         ctx,
         notebook=notebook,
         workspace=workspace,
         pick=pick,
         session=session,
     )
-    if not notebook_id:
+    if not resolved:
         return
+    notebook_id, workspace_id = resolved
 
     try:
         cancelled = browser_api_module.cancel_notebook_image_save(

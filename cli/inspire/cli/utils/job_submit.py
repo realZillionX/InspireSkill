@@ -305,7 +305,7 @@ def build_training_job_plan(
     # the name is rejected with 无法找到对应镜像.
     framework_config: dict[str, Any] = {
         "image_type": IMAGE_TYPE,
-        "image": resolve_image_url(image, session=session),
+        "image": resolve_image_url(image, session=session, workspace_id=workspace_id),
         "instance_count": int(nodes),
         "resource_spec_price": resource_spec_price,
         "cpu": quota.cpu_count,

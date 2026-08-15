@@ -918,6 +918,42 @@ class NotebookImageSizeEstimate:
     notebook_running: bool
 
 
+def save_notebook_as_image(
+    notebook_id: str,
+    name: str,
+    version: str = "v1",
+    description: str = "",
+    session: Optional[WebSession] = None,
+) -> dict[str, Any]:
+    """Save a running notebook's state as a custom Docker image.
+
+    Goes to ``notebook.SaveNotebookImage``. The Action still refuses a
+    ``visibility`` field, with the same ``unknown field "visibility"`` wording
+    v1 used — to control visibility, call
+    :func:`~inspire.platform.web.browser_api.images.update_image` after this
+    returns.
+
+    **Returns an empty dict, always.** v1 answered a bare ``{"code": 0}`` with
+    no ``data``; v2 answers ``Result: null``. Neither hands back the new
+    image's id, so callers have to find it by listing.
+
+    The produced image lands in the registry of the notebook's own workspace,
+    which is not necessarily the session default — see
+    :func:`estimate_notebook_image_size` and :func:`cancel_notebook_image_save`
+    for the other two halves of this flow.
+    """
+    session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
+
+    body: dict[str, Any] = {
+        "notebook_id": notebook_id,
+        "name": name,
+        "version": version,
+        "description": description,
+    }
+
+    return _notebook_v2(session, "SaveNotebookImage", body, timeout=60)
+
+
 def estimate_notebook_image_size(
     notebook_id: str,
     session: Optional[WebSession] = None,
@@ -1150,6 +1186,7 @@ __all__ = [
     "list_notebook_runs",
     "list_notebook_users",
     "list_notebooks",
+    "save_notebook_as_image",
     "notebook_name_exists",
     "start_notebook",
     "stop_notebook",

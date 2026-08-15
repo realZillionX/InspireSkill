@@ -125,6 +125,8 @@ def test_query_commands_require_explicit_workspace() -> None:
         ["serving", "list"],
         ["serving", "configs"],
         ["account", "permissions"],
+        ["image", "list"],
+        ["image", "detail", "demo"],
     )
     runner = CliRunner()
     for args in cases:

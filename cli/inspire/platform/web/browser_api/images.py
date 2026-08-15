@@ -1,4 +1,9 @@
-"""Browser (web-session) image management APIs (list, detail, create, save, delete)."""
+"""Browser (web-session) image management APIs (list, detail, create, delete).
+
+Saving a notebook as an image is **not** here: all three Actions behind that
+flow live on the ``notebook`` route, so they sit in :mod:`.notebooks` next to
+the rest of the notebook lifecycle.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,6 @@ from typing import Any, Optional
 from inspire.platform.web.browser_api.notebooks import (
     _get_session_and_workspace_id,
     _image_v2,
-    _notebook_v2,
 )
 from inspire.platform.web.session import WebSession, get_web_session
 
@@ -59,6 +63,8 @@ def _image_from_api(item: dict[str, Any]) -> CustomImageInfo:
 def list_images_by_source(
     source: str = "official",
     session: Optional[WebSession] = None,
+    *,
+    workspace_id: Optional[str] = None,
 ) -> list[CustomImageInfo]:
     """List Docker images for any source, returning full metadata.
 
@@ -73,6 +79,12 @@ def list_images_by_source(
             ``"private"`` applies ``visibility=VISIBILITY_PRIVATE`` across both
             private and public source lists.
         session: Existing web session.
+        workspace_id: Which workspace's image registry to read. Images are
+            stored per workspace and every request carries
+            ``registry_hint: {workspace_id}``, so a caller that means one
+            workspace must say so — falling back to the session's active
+            workspace silently reads a different registry. Defaults to the
+            session's workspace when omitted.
     """
     source_map = {
         "official": "SOURCE_OFFICIAL",
@@ -82,7 +94,9 @@ def list_images_by_source(
     }
     api_source = source_map.get(source.lower(), source)
 
-    session, workspace_id = _get_session_and_workspace_id(workspace_id=None, session=session)
+    session, workspace_id = _get_session_and_workspace_id(
+        workspace_id=workspace_id, session=session
+    )
 
     if api_source == "SOURCE_PUBLIC":
         body: dict[str, Any] = {
@@ -184,36 +198,6 @@ def create_image(
     }
 
     return _image_v2(session, "CreateImage", body)
-
-
-def save_notebook_as_image(
-    notebook_id: str,
-    name: str,
-    version: str = "v1",
-    description: str = "",
-    session: Optional[WebSession] = None,
-) -> dict[str, Any]:
-    """Save a running notebook's state as a custom Docker image.
-
-    Goes to ``notebook.SaveNotebookImage``. The Action still refuses a
-    ``visibility`` field, with the same ``unknown field "visibility"`` wording
-    v1 used — to control visibility, call :func:`update_image` after this
-    returns.
-
-    **Returns an empty dict, always.** v1 answered a bare ``{"code": 0}`` with
-    no ``data``; v2 answers ``Result: null``. Neither hands back the new
-    image's id, so callers have to find it by listing.
-    """
-    session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
-
-    body: dict[str, Any] = {
-        "notebook_id": notebook_id,
-        "name": name,
-        "version": version,
-        "description": description,
-    }
-
-    return _notebook_v2(session, "SaveNotebookImage", body, timeout=60)
 
 
 def update_image(
@@ -346,7 +330,6 @@ __all__ = [
     "delete_image",
     "get_image_detail",
     "list_images_by_source",
-    "save_notebook_as_image",
     "update_image",
     "wait_for_image_ready",
 ]

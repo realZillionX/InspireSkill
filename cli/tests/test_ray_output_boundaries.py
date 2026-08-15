@@ -32,7 +32,9 @@ def test_ray_image_lookup_details_only_reach_debug_log(
 
     with caplog.at_level(logging.DEBUG, logger=ray_commands.__name__):
         with pytest.raises(ConfigError, match="Image 'demo:latest' not found"):
-            ray_commands._resolve_image_id("demo:latest", session=object(), ctx=ctx)
+            ray_commands._resolve_image_id(
+                "demo:latest", session=object(), ctx=ctx, workspace_id="ws-test"
+            )
 
     captured = capsys.readouterr()
     assert captured.out == ""

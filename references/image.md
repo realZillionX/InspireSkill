@@ -6,6 +6,8 @@
 
 镜像保存“已经装好的运行环境”，用于 Notebook、Job、HPC、Ray 和 Serving 之间复用。数据集、权重、Checkpoint 和批量产物不进镜像，应放共享盘路径并用 Path Alias 管理。
 
+镜像按 Workspace 的 Registry 存放，不是账号级的单一目录：`notebook save-image --workspace X` 存出的镜像只出现在 X 的 Registry 里。所以 `image list` / `detail` / `register` / `set-visibility` / `delete` 都要求 `--workspace`，它指的是这份 Registry 所属的 Workspace；换一个 Workspace 就是换一份镜像目录，同名镜像在另一个 Workspace 里可能根本不存在。多个 Workspace 可能共用同一份 Registry，需要用哪个 Workspace 名字取镜像时以 `image list` 的实际结果为准。
+
 一个稳定镜像至少满足：
 
 - 状态为 `READY`。

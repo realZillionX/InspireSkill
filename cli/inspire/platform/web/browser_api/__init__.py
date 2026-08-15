@@ -103,6 +103,7 @@ from .notebooks import (
     estimate_notebook_image_size,
     get_notebook_detail,
     get_notebook_realtime_metrics,
+    save_notebook_as_image,
     get_resource_prices,
     list_images,
     list_notebook_compute_groups,
@@ -135,7 +136,6 @@ from .images import (
     delete_image,
     get_image_detail,
     list_images_by_source,
-    save_notebook_as_image,
     update_image,
     wait_for_image_ready,
 )

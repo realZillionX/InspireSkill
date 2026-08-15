@@ -7,7 +7,7 @@ the failure side as well as the answer side.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 
@@ -15,6 +15,7 @@ from inspire.platform.web.browser_api import notebooks as notebooks_module
 from inspire.platform.web.browser_api.notebooks import (
     cancel_notebook_image_save,
     notebook_name_exists,
+    save_notebook_as_image,
 )
 from inspire.platform.web.session import TransientAPIError
 
@@ -162,3 +163,41 @@ def test_notebook_name_exists_raises_instead_of_answering_free(
 
     with pytest.raises(ValueError):
         notebook_name_exists("demo", workspace_id="ws-1", session=_FakeSession())
+
+
+def test_save_notebook_as_image_posts_the_notebook_action(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, Any] = {}
+
+    def fake_notebook_v2(session, action: str, body: Optional[dict] = None, *, timeout: int = 30) -> Any:
+        captured["action"] = action
+        captured["body"] = body
+        captured["timeout"] = timeout
+        # The platform answers `Result: null` here, which unwraps to {}.
+        return {}
+
+    monkeypatch.setattr(notebooks_module, "_notebook_v2", fake_notebook_v2)
+    monkeypatch.setattr(
+        notebooks_module,
+        "_get_session_and_workspace_id",
+        lambda workspace_id, session: (_FakeSession(), "ws-test"),
+    )
+
+    result = save_notebook_as_image(
+        notebook_id="nb-1",
+        name="demo",
+        version="v2",
+        description="saved",
+    )
+
+    # The save lives on the `notebook` service, not `image`.
+    assert captured["action"] == "SaveNotebookImage"
+    assert captured["timeout"] == 60
+    # `visibility` is rejected by the platform; callers use update_image instead.
+    assert captured["body"] == {
+        "notebook_id": "nb-1",
+        "name": "demo",
+        "version": "v2",
+        "description": "saved",
+    }
+    # No image id comes back, so the command layer has to find it by listing.
+    assert result == {}

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import click
 
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
+    EXIT_CONFIG_ERROR,
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
@@ -37,7 +38,41 @@ from inspire.cli.utils.notebook_cli import (
     require_web_session,
 )
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.config import ConfigError
+from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
+
+
+_IMAGE_LIST_COMMAND = "inspire image list --workspace <workspace-name>"
+
+_WORKSPACE_HELP = "Workspace name. Images live in this workspace's image registry."
+
+
+def _resolve_registry_scope(
+    ctx: Context,
+    *,
+    workspace: str,
+    session: Any,
+) -> str | None:
+    """Resolve ``--workspace`` to the image registry a command addresses.
+
+    Images are stored per workspace: every ``ListImages`` / ``CreateImage``
+    request carries ``registry_hint: {workspace_id}``. The session's active
+    workspace is *not* a safe default — this account's is an empty registry
+    while its 67 custom images live in another — so every image command takes
+    the workspace explicitly and threads this id down to the platform call.
+
+    Returns the workspace id, or ``None`` once the failure has been reported.
+    """
+    try:
+        workspace_id = resolve_workspace_operation_scope(
+            workspace=workspace,
+            session=session,
+        )
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        return None
+    return workspace_id
 
 
 def _resolve_image_name(
@@ -46,6 +81,7 @@ def _resolve_image_name(
     *,
     pick: Optional[int] = None,
     session=None,  # noqa: ANN001
+    workspace_id: str,
     require_live: bool = False,
 ) -> str:
     """Resolve a custom-image name (``<name>:<version>`` or bare ``<name>``) to image_id.
@@ -62,7 +98,9 @@ def _resolve_image_name(
         failed_sources: list[str] = []
         for source in ("private", "public", "official"):
             try:
-                imgs = browser_api_module.list_images_by_source(source=source, session=session)
+                imgs = browser_api_module.list_images_by_source(
+                    source=source, session=session, workspace_id=workspace_id
+                )
             except Exception:
                 failed_sources.append(source)
                 continue
@@ -90,10 +128,10 @@ def _resolve_image_name(
         list_candidates=_lister,
         pick_index=pick,
         session=session,
-        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        workspace_id=workspace_id,
         owner_scope="self",
         require_live=require_live,
-        list_command="inspire image list",
+        list_command=_IMAGE_LIST_COMMAND,
     )
 
 
@@ -210,6 +248,7 @@ def _dedupe_images_by_id(
 
 
 @click.command("list")
+@click.option("--workspace", required=True, metavar="NAME", help=_WORKSPACE_HELP)
 @click.option(
     "--source",
     "-s",
@@ -231,11 +270,12 @@ def _dedupe_images_by_id(
 @pass_context
 def list_images_cmd(
     ctx: Context,
+    workspace: str,
     source: str,
     limit: int | None,
     show_all: bool,
 ) -> None:
-    """List visible Docker images."""
+    """List the Docker images visible in one workspace's registry."""
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
     except ValueError as e:
@@ -247,6 +287,11 @@ def list_images_cmd(
         hint=WEB_AUTH_HINT,
     )
 
+    scope = _resolve_registry_scope(ctx, workspace=workspace, session=session)
+    if scope is None:
+        return
+    workspace_id = scope
+
     images: list[browser_api_module.CustomImageInfo] = []
     warnings: list[str] = []
 
@@ -255,7 +300,7 @@ def list_images_cmd(
             for src_key in _ALL_SOURCE_KEYS:
                 try:
                     items = browser_api_module.list_images_by_source(
-                        source=src_key, session=session
+                        source=src_key, session=session, workspace_id=workspace_id
                     )
                 except Exception:
                     warnings.append(f"{src_key} image catalog unavailable.")
@@ -273,7 +318,9 @@ def list_images_cmd(
                 )
                 return
         else:
-            items = browser_api_module.list_images_by_source(source=source, session=session)
+            items = browser_api_module.list_images_by_source(
+                source=source, session=session, workspace_id=workspace_id
+            )
             images.extend(items)
     except Exception:
         _handle_error(
@@ -312,6 +359,7 @@ def list_images_cmd(
 
 @click.command("detail")
 @click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help=_WORKSPACE_HELP)
 @click.option(
     "--pick",
     type=click.IntRange(1),
@@ -322,6 +370,7 @@ def list_images_cmd(
 def image_detail(
     ctx: Context,
     name: str,
+    workspace: str,
     pick: Optional[int],
 ) -> None:
     """Show an image's status, framework, and visibility.
@@ -332,15 +381,19 @@ def image_detail(
         ctx,
         name,
         resource_type="image",
-        list_command="inspire image list",
+        list_command=_IMAGE_LIST_COMMAND,
     )
     session = require_web_session(
         ctx,
         hint=WEB_AUTH_HINT,
     )
 
+    scope = _resolve_registry_scope(ctx, workspace=workspace, session=session)
+    if scope is None:
+        return
+    workspace_id = scope
+
     try:
-        workspace_id = str(getattr(session, "workspace_id", "") or "")
         image = run_with_stale_handle_retry(
             name=name,
             resolve_cached=lambda: _resolve_image_name(
@@ -348,12 +401,14 @@ def image_detail(
                 name,
                 pick=pick,
                 session=session,
+                workspace_id=workspace_id,
             ),
             resolve_live=lambda live_name: _resolve_image_name(
                 ctx,
                 live_name,
                 pick=pick,
                 session=session,
+                workspace_id=workspace_id,
                 require_live=True,
             ),
             operation=lambda image_id: browser_api_module.get_image_detail(
@@ -408,6 +463,7 @@ def image_detail(
     metavar="NAME",
     help="Image name (lowercase, digits, dashes, dots, underscores)",
 )
+@click.option("--workspace", required=True, metavar="NAME", help=_WORKSPACE_HELP)
 @click.option(
     "--version",
     "-v",
@@ -446,6 +502,7 @@ def image_detail(
 def register_image_cmd(
     ctx: Context,
     name: str,
+    workspace: str,
     version: str,
     description: str,
     visibility: str,
@@ -463,15 +520,20 @@ def register_image_cmd(
         hint=WEB_AUTH_HINT,
     )
 
-    visibility_value = (
-        "VISIBILITY_PUBLIC" if visibility.lower() == "public" else "VISIBILITY_PRIVATE"
-    )
+    scope = _resolve_registry_scope(ctx, workspace=workspace, session=session)
+    if scope is None:
+        return
+    workspace_id = scope
+
+    visibility_value = _parse_visibility_value(visibility)
+    assert visibility_value is not None
     add_method_value = 2 if method.lower() == "address" else 0
 
     try:
         result = browser_api_module.create_image(
             name=name,
             version=version,
+            workspace_id=workspace_id,
             description=description,
             visibility=visibility_value,
             add_method=add_method_value,
@@ -496,7 +558,7 @@ def register_image_cmd(
         resource_type="image",
         resource_id=image_id,
         name=image_label,
-        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        workspace_id=workspace_id,
         owner_scope="self",
     )
 
@@ -544,6 +606,7 @@ def register_image_cmd(
 
 @click.command("set-visibility")
 @click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help=_WORKSPACE_HELP)
 @click.option(
     "--pick",
     type=click.IntRange(1),
@@ -561,6 +624,7 @@ def register_image_cmd(
 def set_image_visibility_cmd(
     ctx: Context,
     name: str,
+    workspace: str,
     pick: Optional[int],
     visibility: str,
 ) -> None:
@@ -569,18 +633,24 @@ def set_image_visibility_cmd(
         ctx,
         name,
         resource_type="image",
-        list_command="inspire image list",
+        list_command=_IMAGE_LIST_COMMAND,
     )
     session = require_web_session(
         ctx,
         hint=WEB_AUTH_HINT,
     )
 
+    scope = _resolve_registry_scope(ctx, workspace=workspace, session=session)
+    if scope is None:
+        return
+    workspace_id = scope
+
     image_id = _resolve_image_name(
         ctx,
         name,
         pick=pick,
         session=session,
+                workspace_id=workspace_id,
         require_live=True,
     )
     visibility_value = _parse_visibility_value(visibility)
@@ -606,7 +676,7 @@ def set_image_visibility_cmd(
         resource_type="image",
         resource_id=image_id,
         name=name,
-        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        workspace_id=workspace_id,
         owner_scope="self",
     )
     if ctx.json_output:
@@ -630,6 +700,7 @@ def set_image_visibility_cmd(
 
 @click.command("delete")
 @click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help=_WORKSPACE_HELP)
 @click.option(
     "--yes",
     "-y",
@@ -646,6 +717,7 @@ def set_image_visibility_cmd(
 def delete_image_cmd(
     ctx: Context,
     name: str,
+    workspace: str,
     yes: bool,
     pick: Optional[int],
 ) -> None:
@@ -654,7 +726,7 @@ def delete_image_cmd(
         ctx,
         name,
         resource_type="image",
-        list_command="inspire image list",
+        list_command=_IMAGE_LIST_COMMAND,
     )
     require_confirmation(
         ctx,
@@ -667,11 +739,17 @@ def delete_image_cmd(
         hint=WEB_AUTH_HINT,
     )
 
+    scope = _resolve_registry_scope(ctx, workspace=workspace, session=session)
+    if scope is None:
+        return
+    workspace_id = scope
+
     image_id = _resolve_image_name(
         ctx,
         name,
         pick=pick,
         session=session,
+                workspace_id=workspace_id,
         require_live=True,
     )
 
@@ -691,7 +769,7 @@ def delete_image_cmd(
         resource_type="image",
         resource_id=image_id,
         name=name,
-        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        workspace_id=workspace_id,
         owner_scope="self",
     )
 

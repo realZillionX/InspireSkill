@@ -273,7 +273,7 @@ def _training_plan(monkeypatch: pytest.MonkeyPatch, **extra: Any) -> dict[str, A
     monkeypatch.setattr(
         job_submit,
         "resolve_image_url",
-        lambda raw, *, session=None, debug=False: "registry/train:v1",
+        lambda raw, *, session=None, debug=False, **_kwargs: "registry/train:v1",
     )
     plan = job_submit.build_training_job_plan(
         config=_FakeJobConfig(),
@@ -382,7 +382,7 @@ def _hpc_payload(monkeypatch: pytest.MonkeyPatch, **extra: Any) -> dict[str, Any
     monkeypatch.setattr(
         hpc_commands,
         "resolve_image_url",
-        lambda raw, *, session=None, debug=False: "registry/hpc:v1",
+        lambda raw, *, session=None, debug=False, **_kwargs: "registry/hpc:v1",
     )
     return hpc_commands.build_hpc_create_payload(
         name="demo",
@@ -564,12 +564,12 @@ def _patch_create_runtime(
     monkeypatch.setattr(
         job_submit,
         "resolve_image_url",
-        lambda raw, *, session=None, debug=False: "registry/train:v1",
+        lambda raw, *, session=None, debug=False, **_kwargs: "registry/train:v1",
     )
     monkeypatch.setattr(
         hpc_commands,
         "resolve_image_url",
-        lambda raw, *, session=None, debug=False: "registry/hpc:v1",
+        lambda raw, *, session=None, debug=False, **_kwargs: "registry/hpc:v1",
     )
 
     monkeypatch.setattr(

@@ -922,7 +922,7 @@ def _project_label(config: Config, requested: Optional[str]) -> str:
     return "(project name unavailable)"
 
 
-def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
+def _resolve_image_id(raw: str, *, session, ctx: Context, workspace_id: str) -> str:
     """Turn a visible image name or Docker image URL into the internal mirror handle.
 
     Ray's create body takes an internal mirror handle, not the pullable Docker
@@ -935,7 +935,9 @@ def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
     target = raw.lower()
     for source in ("private", "public", "official"):
         try:
-            images = browser_api_module.list_images_by_source(source=source, session=session)
+            images = browser_api_module.list_images_by_source(
+                source=source, session=session, workspace_id=workspace_id
+            )
         except Exception:  # noqa: BLE001
             if ctx.debug:
                 logger.debug("Ray image lookup via %s failed", source, exc_info=True)
@@ -1407,7 +1409,9 @@ def _assemble_create_body(
 
     head_resolved = _resolve_ray(quota_value, group_value)
     head_node: dict[str, Any] = {
-        "mirror_id": _resolve_image_id(image_value, session=session, ctx=ctx),
+        "mirror_id": _resolve_image_id(
+            image_value, session=session, ctx=ctx, workspace_id=resolved_workspace_id
+        ),
         "image_type": image_type_value,
         "logic_compute_group_id": head_resolved.logic_compute_group_id,
         "quota_id": head_resolved.quota_id,
@@ -1421,7 +1425,9 @@ def _assemble_create_body(
         worker_resolved = _resolve_ray(spec["quota"], spec["group"])
         group_block: dict[str, Any] = {
             "group_name": spec["name"],
-            "mirror_id": _resolve_image_id(spec["image"], session=session, ctx=ctx),
+            "mirror_id": _resolve_image_id(
+                spec["image"], session=session, ctx=ctx, workspace_id=resolved_workspace_id
+            ),
             "image_type": spec["image_type"],
             "logic_compute_group_id": worker_resolved.logic_compute_group_id,
             "min_replicas": spec["min"],

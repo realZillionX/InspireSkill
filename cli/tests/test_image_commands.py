@@ -16,15 +16,21 @@ from inspire.cli.utils.resource_index import (
     ResourceIndex,
     ResourceScope,
 )
+from inspire.config import workspaces as workspaces_module
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.browser_api.images import (
     CustomImageInfo,
     _image_from_api,
     list_images_by_source,
-    save_notebook_as_image,
 )
 
+
+# Images live in a per-workspace registry, so every image command takes the
+# workspace that registry belongs to. `_OTHER_WS` is deliberately *not* the
+# session's active workspace.
+_WS = ["--workspace", "Test Workspace"]
+_OTHER_WS = ["--workspace", "Other Workspace"]
 
 _FORBIDDEN_PUBLIC_KEYS = {
     "id",
@@ -69,10 +75,26 @@ def _assert_safe_failure(output: str, expected: str) -> None:
 
 
 class FakeWebSession:
+    # The session's own workspace is "Test Workspace"; "Other Workspace" is the
+    # one the session is *not* pointed at, which is what --workspace has to
+    # reach for the registry to be addressable at all.
     workspace_id = "ws-test-workspace"
-    all_workspace_ids = ["ws-test-workspace"]
-    all_workspace_names = {"ws-test-workspace": "Test Workspace"}
+    all_workspace_ids = ["ws-test-workspace", "ws-other-workspace"]
+    all_workspace_names = {
+        "ws-test-workspace": "Test Workspace",
+        "ws-other-workspace": "Other Workspace",
+    }
     storage_state = {}
+
+
+@pytest.fixture(autouse=True)
+def _offline_workspace_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve workspace names from the session alone, never over the network."""
+    monkeypatch.setattr(
+        workspaces_module,
+        "_enumerated_workspace_names",
+        lambda _session: {},
+    )
 
 
 def _make_config(tmp_path: Path) -> config_module.Config:
@@ -114,7 +136,7 @@ def _patch_image_candidates(
     monkeypatch.setattr(
         browser_api_module,
         "list_images_by_source",
-        lambda source="official", session=None: list(images),
+        lambda source="official", session=None, workspace_id=None: list(images),
     )
 
 
@@ -285,46 +307,6 @@ def test_list_images_by_source_private_personal_visible(monkeypatch: pytest.Monk
     assert "source" not in captured["body"]["filter"]
 
 
-def test_save_notebook_as_image_posts_the_notebook_action(monkeypatch: pytest.MonkeyPatch):
-    captured: dict[str, Any] = {}
-
-    def fake_notebook_v2(session, action: str, body: Optional[dict] = None, *, timeout: int = 30) -> Any:
-        captured["action"] = action
-        captured["body"] = body
-        captured["timeout"] = timeout
-        # The platform answers `Result: null` here, which unwraps to {}.
-        return {}
-
-    from inspire.platform.web.browser_api import images as images_module
-
-    monkeypatch.setattr(images_module, "_notebook_v2", fake_notebook_v2)
-    monkeypatch.setattr(
-        images_module,
-        "_get_session_and_workspace_id",
-        lambda workspace_id, session: (FakeWebSession(), "ws-test"),
-    )
-
-    result = save_notebook_as_image(
-        notebook_id="nb-1",
-        name="demo",
-        version="v2",
-        description="saved",
-    )
-
-    # The save lives on the `notebook` service, not `image`.
-    assert captured["action"] == "SaveNotebookImage"
-    assert captured["timeout"] == 60
-    # `visibility` is rejected by the platform; callers use update_image instead.
-    assert captured["body"] == {
-        "notebook_id": "nb-1",
-        "name": "demo",
-        "version": "v2",
-        "description": "saved",
-    }
-    # No image id comes back, so the command layer has to find it by listing.
-    assert result == {}
-
-
 # ---------------------------------------------------------------------------
 # CLI smoke tests
 # ---------------------------------------------------------------------------
@@ -369,12 +351,292 @@ def test_image_register_help_keeps_push_workflow_requirements() -> None:
     assert "docker push" in result.output
 
 
+# ---------------------------------------------------------------------------
+# Registry workspace scoping
+# ---------------------------------------------------------------------------
+
+# Every image command addresses one workspace's registry, and says so the same
+# way: a required, single, name-only --workspace.
+_SCOPED_IMAGE_COMMANDS = (
+    ["image", "list"],
+    ["image", "detail", "some-image:v1"],
+    ["image", "register", "-n", "some-image", "-v", "v1"],
+    ["image", "set-visibility", "some-image:v1", "--visibility", "public"],
+    ["image", "delete", "some-image:v1", "--yes"],
+)
+
+_IMAGE_APIS = (
+    "list_images_by_source",
+    "get_image_detail",
+    "create_image",
+    "update_image",
+    "delete_image",
+)
+
+
+@pytest.mark.parametrize("args", _SCOPED_IMAGE_COMMANDS)
+def test_image_commands_share_one_registry_workspace_option(args: list[str]) -> None:
+    help_result = CliRunner().invoke(cli_main, [*args[:2], "--help"])
+
+    assert help_result.exit_code == 0, help_result.output
+    assert "--workspace NAME" in help_result.output
+    assert "image registry" in " ".join(help_result.output.split())
+
+    missing = CliRunner().invoke(cli_main, args)
+
+    assert missing.exit_code == 2, missing.output
+    assert "Missing option '--workspace'" in missing.output
+
+
+@pytest.mark.parametrize("args", _SCOPED_IMAGE_COMMANDS)
+def test_image_commands_reject_an_unknown_workspace(
+    args: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    for api in _IMAGE_APIS:
+        monkeypatch.setattr(
+            browser_api_module,
+            api,
+            lambda **_kwargs: pytest.fail("no image request may run for an unknown workspace"),
+        )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", *args, "--workspace", "No Such Workspace"],
+    )
+
+    assert result.exit_code == 10, result.output
+    error = json.loads(result.output)["error"]
+    assert error["type"] == "ConfigError"
+    assert "Unknown workspace name" in error["message"]
+
+
+@pytest.mark.parametrize("args", _SCOPED_IMAGE_COMMANDS)
+def test_image_commands_reject_workspace_fanout(
+    args: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A registry is a single workspace; `all` is not a registry."""
+    _patch_config_and_session(monkeypatch, tmp_path)
+    for api in _IMAGE_APIS:
+        monkeypatch.setattr(
+            browser_api_module,
+            api,
+            lambda **_kwargs: pytest.fail("no image request may run for a fanout workspace"),
+        )
+
+    result = CliRunner().invoke(cli_main, ["--json", *args, "--workspace", "all"])
+
+    assert result.exit_code == 10, result.output
+    error = json.loads(result.output)["error"]
+    assert error["type"] == "ConfigError"
+    assert "one workspace name" in error["message"]
+
+
+def test_image_list_reads_the_requested_workspace_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two workspaces list two different catalogs from the same session.
+
+    This is the `notebook save-image --workspace X` round trip: without the
+    scope, an image stored in X is invisible whenever the session's active
+    workspace is something else.
+    """
+    _patch_config_and_session(monkeypatch, tmp_path)
+
+    catalog = {
+        "ws-test-workspace": "in-test-ws",
+        "ws-other-workspace": "in-other-ws",
+    }
+    seen: list[str] = []
+
+    def fake_list_by_source(source="official", session=None, workspace_id=None):
+        workspace_id = str(workspace_id or "")
+        if workspace_id not in seen:
+            seen.append(workspace_id)
+        if source != "private":
+            return []
+        return [
+            browser_api_module.CustomImageInfo(
+                image_id=f"img-{workspace_id}",
+                url=f"registry/{catalog[workspace_id]}:v1",
+                name=catalog[workspace_id],
+                framework="PT",
+                version="v1",
+                source="SOURCE_PRIVATE",
+                status="READY",
+                description="",
+                created_at="",
+            )
+        ]
+
+    monkeypatch.setattr(browser_api_module, "list_images_by_source", fake_list_by_source)
+
+    runner = CliRunner()
+    session_workspace = runner.invoke(
+        cli_main, ["--json", "image", "list", *_WS, "--source", "private"]
+    )
+    other_workspace = runner.invoke(
+        cli_main, ["--json", "image", "list", *_OTHER_WS, "--source", "private"]
+    )
+
+    assert session_workspace.exit_code == 0, session_workspace.output
+    assert other_workspace.exit_code == 0, other_workspace.output
+    assert seen == ["ws-test-workspace", "ws-other-workspace"]
+    assert [
+        item["name"] for item in _json_data(session_workspace.output)["items"]
+    ] == ["in-test-ws:v1"]
+    assert [
+        item["name"] for item in _json_data(other_workspace.output)["items"]
+    ] == ["in-other-ws:v1"]
+
+
+def _serve_only_from_other_workspace(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Publish ``in-other-ws:v1`` in the "Other Workspace" registry only."""
+    # The suite-wide resolver short circuit has to step aside: which registry
+    # the name is looked up in is exactly what is under test here.
+    monkeypatch.setattr(
+        image_commands_module,
+        "_resolve_image_name",
+        _REAL_RESOLVE_IMAGE_NAME,
+    )
+    seen: list[str] = []
+
+    def fake_list_by_source(source="official", session=None, workspace_id=None):
+        workspace_id = str(workspace_id or "")
+        if workspace_id not in seen:
+            seen.append(workspace_id)
+        if workspace_id != "ws-other-workspace" or source != "private":
+            return []
+        return [
+            CustomImageInfo(
+                image_id="img-other",
+                url="registry/in-other-ws:v1",
+                name="in-other-ws",
+                framework="PT",
+                version="v1",
+                source="SOURCE_PRIVATE",
+                status="READY",
+                description="",
+                created_at="",
+            )
+        ]
+
+    monkeypatch.setattr(browser_api_module, "list_images_by_source", fake_list_by_source)
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_image_detail",
+        lambda image_id, session=None: CustomImageInfo(
+            image_id=image_id,
+            url="registry/in-other-ws:v1",
+            name="in-other-ws",
+            framework="PT",
+            version="v1",
+            source="SOURCE_PRIVATE",
+            status="READY",
+            description="",
+            created_at="",
+        ),
+    )
+    monkeypatch.setattr(browser_api_module, "update_image", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(browser_api_module, "delete_image", lambda **_kwargs: {})
+    return seen
+
+
+@pytest.mark.parametrize(
+    "args",
+    (
+        ["image", "detail", "in-other-ws:v1"],
+        ["image", "set-visibility", "in-other-ws:v1", "--visibility", "public"],
+        ["image", "delete", "in-other-ws:v1", "--yes"],
+    ),
+)
+def test_image_name_resolution_follows_the_requested_workspace(
+    args: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Names resolve against the named registry, not the session's own."""
+    _patch_config_and_session(monkeypatch, tmp_path)
+    seen = _serve_only_from_other_workspace(monkeypatch)
+
+    found = CliRunner().invoke(cli_main, ["--json", *args, *_OTHER_WS])
+
+    assert found.exit_code == 0, found.output
+    assert seen == ["ws-other-workspace"]
+
+    missing = CliRunner().invoke(cli_main, ["--json", *args, *_WS])
+
+    assert missing.exit_code != 0, missing.output
+    assert seen == ["ws-other-workspace", "ws-test-workspace"]
+
+
+def test_image_register_creates_in_the_requested_workspace_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    captured: dict[str, Any] = {}
+
+    def fake_create_image(**kwargs: Any) -> dict:
+        captured.update(kwargs)
+        return {"image": {"image_id": "img-new", "address": "registry.example/my-img:v1"}}
+
+    monkeypatch.setattr(browser_api_module, "create_image", fake_create_image)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "image", "register", "-n", "my-img", *_OTHER_WS, "-v", "v1"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["workspace_id"] == "ws-other-workspace"
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"),
+    (
+        ([], "VISIBILITY_PRIVATE"),
+        (["--visibility", "private"], "VISIBILITY_PRIVATE"),
+        (["--visibility", "public"], "VISIBILITY_PUBLIC"),
+    ),
+)
+def test_image_register_maps_visibility_like_set_visibility(
+    flag: list[str],
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """`register` and `set-visibility` share one visibility mapping."""
+    _patch_config_and_session(monkeypatch, tmp_path)
+    captured: dict[str, Any] = {}
+
+    def fake_create_image(**kwargs: Any) -> dict:
+        captured.update(kwargs)
+        return {"image": {"image_id": "img-new"}}
+
+    monkeypatch.setattr(browser_api_module, "create_image", fake_create_image)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "image", "register", "-n", "my-img", *_WS, "-v", "v1", *flag],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["visibility"] == expected
+    assert captured["visibility"] == image_commands_module._parse_visibility_value(
+        flag[-1] if flag else "private"
+    )
+
+
 def test_image_list_human_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _patch_config_and_session(monkeypatch, tmp_path)
 
     calls: list[str] = []
 
-    def fake_list_by_source(source="official", session=None):
+    def fake_list_by_source(source="official", session=None, workspace_id=None):
         calls.append(source)
         if source == "official":
             return [
@@ -413,7 +675,7 @@ def test_image_list_human_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["image", "list"])
+    result = runner.invoke(cli_main, ["image", "list", *_WS])
     assert result.exit_code == 0
     assert calls == ["official", "public", "private"]
     assert "pytorch" in result.output
@@ -432,7 +694,7 @@ def test_image_list_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     monkeypatch.setattr(
         browser_api_module,
         "list_images_by_source",
-        lambda source="official", session=None: [
+        lambda source="official", session=None, workspace_id=None: [
             browser_api_module.CustomImageInfo(
                 image_id="img-001",
                 url="registry/pytorch:2.0",
@@ -448,7 +710,7 @@ def test_image_list_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "image", "list"])
+    result = runner.invoke(cli_main, ["--json", "image", "list", *_WS])
     assert result.exit_code == 0
 
     payload = _json_data(result.output)
@@ -471,7 +733,7 @@ def test_image_list_private_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     monkeypatch.setattr(
         browser_api_module,
         "list_images_by_source",
-        lambda source="official", session=None: [
+        lambda source="official", session=None, workspace_id=None: [
             browser_api_module.CustomImageInfo(
                 image_id="img-priv-001",
                 url="registry/my-custom:v1",
@@ -487,7 +749,9 @@ def test_image_list_private_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "image", "list", "--source", "private"])
+    result = runner.invoke(
+        cli_main, ["--json", "image", "list", *_WS, "--source", "private"]
+    )
     assert result.exit_code == 0
 
     payload = _json_data(result.output)
@@ -500,7 +764,7 @@ def test_image_list_private_source(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 def test_image_list_all_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _patch_config_and_session(monkeypatch, tmp_path)
 
-    def fake_list_by_source(source="official", session=None):
+    def fake_list_by_source(source="official", session=None, workspace_id=None):
         if source == "official":
             return [
                 browser_api_module.CustomImageInfo(
@@ -552,7 +816,7 @@ def test_image_list_all_sources(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "image", "list", "--source", "all"])
+    result = runner.invoke(cli_main, ["--json", "image", "list", *_WS, "--source", "all"])
     assert result.exit_code == 0
 
     payload = _json_data(result.output)
@@ -571,7 +835,7 @@ def test_image_list_all_sources_partial_failure(
 ) -> None:
     _patch_config_and_session(monkeypatch, tmp_path)
 
-    def fake_list_by_source(source="official", session=None):
+    def fake_list_by_source(source="official", session=None, workspace_id=None):
         if source == "public":
             raise RuntimeError(
                 "socket hang up at /Users/alice/private.log image_id=img-secret-123"
@@ -609,7 +873,7 @@ def test_image_list_all_sources_partial_failure(
     monkeypatch.setattr(browser_api_module, "list_images_by_source", fake_list_by_source)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "image", "list", "--source", "all"])
+    result = runner.invoke(cli_main, ["--json", "image", "list", *_WS, "--source", "all"])
     assert result.exit_code == 0
 
     payload = _json_data(result.output)
@@ -631,7 +895,7 @@ def test_image_list_all_sources_all_fail(monkeypatch: pytest.MonkeyPatch, tmp_pa
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "image", "list", "--source", "all"])
+    result = runner.invoke(cli_main, ["--json", "image", "list", *_WS, "--source", "all"])
     assert result.exit_code != 0
     assert "Image catalog is unavailable." in result.output
     assert "boom" not in result.output
@@ -653,7 +917,7 @@ def test_image_name_resolver_uses_successful_sources_when_others_fail(
         classmethod(lambda cls, account=None: index),
     )
 
-    def fake_list_by_source(source="official", session=None):
+    def fake_list_by_source(source="official", session=None, workspace_id=None):
         if source != "private":
             raise RuntimeError(f"{source} unavailable")
         return [
@@ -676,6 +940,7 @@ def test_image_name_resolver_uses_successful_sources_when_others_fail(
         Context(),
         "target:v1",
         session=session,
+        workspace_id="ws-test-workspace",
         require_live=True,
     )
 
@@ -725,7 +990,7 @@ def test_destructive_image_lookup_all_sources_fail_preserves_cached_identity(
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "image", "delete", "target:v1", "--yes"],
+        ["--json", "image", "delete", "target:v1", *_WS, "--yes"],
     )
 
     assert result.exit_code != 0
@@ -761,7 +1026,7 @@ def test_image_detail_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "image", "detail", "detail-img:2.0"])
+    result = runner.invoke(cli_main, ["--json", "image", "detail", "detail-img:2.0", *_WS])
     assert result.exit_code == 0
 
     payload = _json_data(result.output)
@@ -799,7 +1064,7 @@ def test_image_detail_human(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["image", "detail", "detail-img:2.0"])
+    result = runner.invoke(cli_main, ["image", "detail", "detail-img:2.0", *_WS])
     assert result.exit_code == 0
     assert result.output.startswith("Name: detail-img:2.0\n")
     assert "Image Detail" not in result.output
@@ -859,7 +1124,7 @@ def test_image_detail_retries_stale_cached_handle_by_name(
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "image", "detail", "detail-img:2.0"],
+        ["--json", "image", "detail", "detail-img:2.0", *_WS],
     )
 
     assert result.exit_code == 0, result.output
@@ -888,7 +1153,7 @@ def test_image_detail_error_hides_internal_failure(
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "image", "detail", "detail-img:2.0"],
+        ["--json", "image", "detail", "detail-img:2.0", *_WS],
     )
 
     assert result.exit_code != 0
@@ -919,7 +1184,18 @@ def test_image_register_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["--json", "image", "register", "-n", "my-img", "-v", "v1.0", "--method", "address"],
+        [
+            "--json",
+            "image",
+            "register",
+            "-n",
+            "my-img",
+            *_WS,
+            "-v",
+            "v1.0",
+            "--method",
+            "address",
+        ],
     )
     assert result.exit_code == 0
 
@@ -947,7 +1223,9 @@ def test_image_register_human_push(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["image", "register", "-n", "test", "-v", "v0.1"])
+    result = runner.invoke(
+        cli_main, ["image", "register", "-n", "test", *_WS, "-v", "v0.1"]
+    )
     assert result.exit_code == 0
     assert result.output.splitlines()[0] == "OK Image registered: test:v0.1"
     assert "img-new-002" not in result.output
@@ -973,7 +1251,7 @@ def test_image_register_json_push_keeps_registry(
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "image", "register", "-n", "test", "-v", "v0.2"],
+        ["--json", "image", "register", "-n", "test", *_WS, "-v", "v0.2"],
     )
 
     assert result.exit_code == 0, result.output
@@ -1002,7 +1280,7 @@ def test_image_register_errors_hide_internal_failure(
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "image", "register", "-n", "test", "-v", "v0.2"],
+        ["--json", "image", "register", "-n", "test", *_WS, "-v", "v0.2"],
     )
 
     assert result.exit_code != 0
@@ -1037,6 +1315,7 @@ def test_image_register_wait_error_hides_internal_failure(
             "register",
             "-n",
             "test",
+            *_WS,
             "-v",
             "v0.2",
             "--wait",
@@ -1072,7 +1351,7 @@ def test_image_set_visibility_command(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["image", "set-visibility", "my-image:v1", "--visibility", "public"],
+        ["image", "set-visibility", "my-image:v1", *_WS, "--visibility", "public"],
     )
     assert result.exit_code == 0
     assert captured == {"image_id": "image-abc-def", "visibility": "VISIBILITY_PUBLIC"}
@@ -1081,7 +1360,7 @@ def test_image_set_visibility_command(
 
     result2 = runner.invoke(
         cli_main,
-        ["image", "set-visibility", "my-image:v1", "--visibility", "private"],
+        ["image", "set-visibility", "my-image:v1", *_WS, "--visibility", "private"],
     )
     assert result2.exit_code == 0
     assert captured == {"image_id": "image-abc-def", "visibility": "VISIBILITY_PRIVATE"}
@@ -1113,6 +1392,7 @@ def test_image_set_visibility_forwards_pick_to_name_resolution(
             "image",
             "set-visibility",
             "my-image:v1",
+            *_WS,
             "--pick",
             "2",
             "--visibility",
@@ -1152,6 +1432,7 @@ def test_image_set_visibility_error_hides_internal_failure(
             "image",
             "set-visibility",
             "my-image:v1",
+            *_WS,
             "--visibility",
             "public",
         ],
@@ -1174,7 +1455,7 @@ def test_image_delete_with_yes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     monkeypatch.setattr(browser_api_module, "delete_image", fake_delete)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["image", "delete", "stale-image:v1", "--yes"])
+    result = runner.invoke(cli_main, ["image", "delete", "stale-image:v1", *_WS, "--yes"])
     assert result.exit_code == 0
     assert result.output == "OK Image deleted: stale-image:v1\n"
     assert "img-del-001" not in result.output
@@ -1192,7 +1473,9 @@ def test_image_delete_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "image", "delete", "stale-image:v2", "--yes"])
+    result = runner.invoke(
+        cli_main, ["--json", "image", "delete", "stale-image:v2", *_WS, "--yes"]
+    )
     assert result.exit_code == 0
 
     payload = _json_data(result.output)
@@ -1220,7 +1503,7 @@ def test_image_delete_error_hides_internal_failure(
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "image", "delete", "stale-image:v2", "--yes"],
+        ["--json", "image", "delete", "stale-image:v2", *_WS, "--yes"],
     )
 
     assert result.exit_code != 0
@@ -1249,7 +1532,7 @@ def test_image_delete_json_requires_confirmation_before_session_or_resolution(
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "image", "delete", "stale-image:v3"],
+        ["--json", "image", "delete", "stale-image:v3", *_WS],
     )
 
     assert result.exit_code == 12, result.output
@@ -1282,7 +1565,9 @@ def test_image_delete_prompts_without_yes(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["image", "delete", "stale-image:v3"], input="n\n")
+    result = runner.invoke(
+        cli_main, ["image", "delete", "stale-image:v3", *_WS], input="n\n"
+    )
 
     assert result.exit_code != 0
     assert "Aborted!" in result.output

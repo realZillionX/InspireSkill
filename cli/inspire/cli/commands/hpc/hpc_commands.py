@@ -361,7 +361,9 @@ def build_hpc_create_payload(
             "mem_gi": int(resource_spec_price.get("memory_size_gib") or 0),
             # The platform matches on the registry URL, not the visible name;
             # sending the name is rejected with 无法找到对应镜像.
-            "image": resolve_image_url(image, session=session),
+            "image": resolve_image_url(
+                image, session=session, workspace_id=workspace_id
+            ),
             "image_type": image_type,
             "instance_count": int(instance_count),
             "spec_price": dict(resource_spec_price),
