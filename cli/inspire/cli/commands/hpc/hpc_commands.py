@@ -387,6 +387,15 @@ def resolve_slurm_layout(
     whole node", which produced the hang above the moment `--number-of-tasks`
     went above 1. For a single task on a single node they are unchanged.
 
+    Scheduling is all these checks cover. At runtime the pod's cgroup is the
+    only wall, it is always the ``--quota`` memory, and it does **not** follow
+    ``memory_per_cpu`` — a job that asked for 12 GiB still committed 15 GiB
+    unimpeded on a 16-GiB node. Exactly filling the Slurm request is therefore
+    no more dangerous than half filling it; what kills a job is the node
+    figure, and `nproc` / `free` inside the container report the *host* (64
+    cores, ~503 GiB), so anything that autosizes from them oversubscribes
+    wildly. That belongs in the workload guide, not in a create-time check.
+
     Memory is always per CPU here. The console has a second input, 每节点使用内存,
     and ``sbatch_script.memory_per_node`` is a real field — the platform stores
     it, echoes it on the detail page, and round-trips it through ``GetJob`` —

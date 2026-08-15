@@ -125,6 +125,8 @@
 
 - **`sbatch_script.memory_per_node`（控制台「每节点使用内存」）查过了，不接。** 它看起来是个正常字段：平台收下、存住、详情页照原样显示「每节点使用内存：8G」、`GetJob` 完整 round-trip，控制台的执行命令模板写的甚至就是 `#SBATCH --mem=*G`。但平台的脚本生成器只会写 `--mem-per-cpu`——只给 `memory_per_node` 时生成出来的是一行空的 `#SBATCH --mem-per-cpu=`，sbatch 直接拒掉整个脚本。8 GiB、15 GiB、16 GiB 在同一个 16 GiB 节点上全部 `FAILED`，而等价的 `--mem-per-cpu` 任务成功；两个字段同时发则是 `InternalError`。**网页端那个输入框本身就是坏的**，CLI 不复制它。
 
+- HPC 容器里的资源观测与真实配额的关系写进参考。一个 `0,4,16` 的 slurmd 容器里 `nproc` 报 **64**、`free -m` 报 **~503 GiB**——那是宿主机；真实约束是 Pod 的 cgroup（`cpu.max` = 4 核硬限流，`memory.max` = 16 GiB）。照 `nproc` / `free` 自动调档的程序（`multiprocessing.cpu_count()`、OpenBLAS 与 PyTorch 的默认线程数）会按 64 核 503 GiB 开工，然后被限流并撞死在内存墙上。另外 **cgroup 的内存上限恒等于 `--quota` 的内存，不随 `--memory-per-cpu` 变**：实测只申请 12 GiB 的任务照样提交了 15 GiB 没被拦，Slurm 这层内存只进记账不设运行时上限。16 GiB 节点上单进程提交 15900 / 16100 MiB 都正常，顶到 16384 MiB 被 OOM 直接 SIGKILL，**日志里连一行错都没有**——这正是「跑着跑着没了、什么都查不到」的来源。
+
 - HPC 的保留态写进参考：任务结束后会先停在 `SUCCEEDED_RETAINING` / `FAILED_RETAINING`，这段时间 `hpc delete` 答「当前状态（运行中）无法删除」，而 `hpc stop` 返回成功却解除不了保留——只能等它自己转成终态。清理脚本按状态重试，别按 `stop` 的返回值判断。
 
 - **`GetJobLog` 的 sorter 结论此前记反了。** 仓库里写的是「平台拒绝任何显式 sorter」，实测是：控制台那一对 `[@timestamp, log-id.keyword]` 被接受，只发其中一个才报 `InternalError: 日志排序字段不合法，仅支持按时间 + log-id 排序`。另外 `start_timestamp_ms` 必须早于 `end_timestamp_ms`，倒过来报 `日志查询时间参数不合法`——而**控制台自己发的就是倒过来的一对**，所以网页端的聚合日志在这条路径上是坏的，不要照抄。Wrapper 的行为不变（不发 sorter，客户端排序），改的是注释和开发参考里的结论。

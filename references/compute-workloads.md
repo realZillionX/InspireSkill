@@ -62,6 +62,10 @@ HPC 有两层资源模型，不能混：
 
 内存只按每 CPU 给（`--memory-per-cpu`，Slurm `--mem-per-cpu`）。网页端另有「每节点使用内存」输入框，**它是坏的**：平台收下并在详情页显示这个值，但生成脚本时只写 `--mem-per-cpu`，于是那一行是空的，任务必然失败。不要在网页端用它，CLI 也不提供对应选项。
 
+**容器里量到的资源不是你的配额，程序不能照着它自动调档。** 一个 `0,4,16` 的 slurmd 容器里 `nproc` 报 **64**、`free -m` 报 **~503 GiB**——那是宿主机的数字。真实约束是 Pod 的 cgroup：`cpu.max` = `400000 100000`（4 核，硬限流），`memory.max` = 16 GiB。任何按 `nproc` / `free` / `multiprocessing.cpu_count()` / OpenBLAS 与 PyTorch 默认线程数自动调档的程序，都会按 64 核和 503 GiB 去开工作进程，然后在 4 核上被限流、被内存墙撞死。**并发度和缓冲区一律显式取自 `SLURM_CPUS_PER_TASK` 和 `--quota` 的内存数**，别让库自己猜。
+
+**内存墙是节点规格，不是你申请的量，而且要留出运行时自身的占用。** cgroup 的 `memory.max` 恒等于 `--quota` 的内存，**不随 `--memory-per-cpu` 变**——实测只申请 12 GiB（`AllocMem=12288`）的任务照样提交了 15 GiB 而没有任何拦截，也就是说 Slurm 这一层的内存只进记账、不设运行时上限。真正会杀你的是那 16 GiB：单进程提交到 15900 MiB、16100 MiB 都正常，**顶到 16384 MiB 直接被 OOM 杀掉，日志里连一行错都没有**（进程被 SIGKILL，什么都来不及打）。所以按 `--quota` 的内存规划，并给解释器、shell 和 slurmd 自身留出几百 MiB；峰值贴着整数顶格的程序，失败形态就是「莫名其妙没输出」。
+
 关键约束：
 
 - 入口命令只写 Slurm 正文，程序必须显式 `srun` 启动。**没有 `srun` 的正文照样跑完并报 `SUCCEEDED`**——sbatch 会在第一个节点上执行它——只是不产生 Slurm step，多节点时其余节点全程空转。`hpc status` 的 `Steps` 是唯一能看出这件事的字段：`0/0` 表示没有 step，`1/1` 表示 step 跑完了。
@@ -136,5 +140,6 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 | `FAILED` 但无业务报错 | OOM、显存溢出、节点驱逐或控制器失败 |
 | HPC `Steps` 是 `0/0` 或 `-/0` | Slurm 正文没有用 `srun` 启动程序，只有第一个节点跑了 body |
 | HPC 一直 `RUNNING`、`Steps` 停在 `-/N` | Slurm 级请求超过买下的节点总量，step 在排队；停掉重提，别等 |
+| HPC 程序中途没了、日志断在半截且无报错 | 撞 Pod cgroup 内存墙被 OOM 杀掉；或程序按 `nproc`（报宿主机 64 核）自动开了几十个工作进程 |
 | `SUCCEEDED` 但产物为空 | 程序提前退出、资源贴边或输出路径不对 |
 | Quota Match Failed | Workspace / Group / `gpu,cpu,mem` 三元组不匹配 |
