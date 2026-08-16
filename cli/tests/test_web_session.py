@@ -678,6 +678,52 @@ def test_build_requests_session_applies_toml_proxy(monkeypatch: pytest.MonkeyPat
     http.close()
 
 
+def test_pooled_requests_session_keeps_one_connection_pool() -> None:
+    # A fresh requests.Session per call hands the connection back after every
+    # request, so a fan-out pays a TCP connect and TLS handshake per row it
+    # reads. The pool has to outlive the call for keep-alive to mean anything.
+    session = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
+        cookies={"session": "abc"},
+        workspace_id="ws-test",
+        created_at=0,
+    )
+    try:
+        first = ws_requests_module.pooled_requests_session(session, "https://qz.sii.edu.cn")
+        second = ws_requests_module.pooled_requests_session(session, "https://qz.sii.edu.cn")
+        assert first is second
+        assert ws_requests_module.build_requests_session(session, "https://qz.sii.edu.cn") is not first
+    finally:
+        ws_requests_module.close_pooled_requests_session()
+
+
+def test_pooled_requests_session_never_answers_with_stale_cookies() -> None:
+    # Only the pool is shared. A refreshed session's cookies must replace the
+    # previous ones outright, not merge with them.
+    first_session = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "old"}]},
+        cookies={"session": "old"},
+        workspace_id="ws-test",
+        created_at=0,
+    )
+    refreshed = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "new"}]},
+        cookies={"session": "new"},
+        workspace_id="ws-test",
+        created_at=1,
+    )
+    try:
+        http = ws_requests_module.pooled_requests_session(first_session, "https://qz.sii.edu.cn")
+        http.cookies.set("drive-by", "from-a-response", domain="qz.sii.edu.cn", path="/")
+
+        http = ws_requests_module.pooled_requests_session(refreshed, "https://qz.sii.edu.cn")
+
+        assert http.cookies.get("session", domain="qz.sii.edu.cn") == "new"
+        assert http.cookies.get("drive-by", domain="qz.sii.edu.cn") is None
+    finally:
+        ws_requests_module.close_pooled_requests_session()
+
+
 def test_request_json_falls_back_to_browser_client(monkeypatch: pytest.MonkeyPatch):
     session = WebSession(
         storage_state={"cookies": [{"name": "session", "value": "abc"}]},
@@ -689,7 +735,7 @@ def test_request_json_falls_back_to_browser_client(monkeypatch: pytest.MonkeyPat
     http = DummyHTTP(DummyResponse(401))
     browser = DummyBrowserClient({"ok": True})
 
-    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: browser)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
 
@@ -712,7 +758,7 @@ def test_request_json_non_json_triggers_fallback(monkeypatch: pytest.MonkeyPatch
     http = DummyHTTP(DummyResponse(200, payload=ValueError("bad json")))
     browser = DummyBrowserClient({"ok": True})
 
-    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: browser)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
 
@@ -746,7 +792,7 @@ def test_request_json_transport_error_triggers_fallback(monkeypatch: pytest.Monk
     http = FailingHTTP()
     browser = DummyBrowserClient({"ok": True})
 
-    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: browser)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
 
@@ -768,7 +814,7 @@ def test_request_json_supports_delete(monkeypatch: pytest.MonkeyPatch):
 
     http = DummyHTTP(DummyResponse(200, payload={"ok": True}))
 
-    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
 
     result = ws.request_json(session, "DELETE", "https://example.test/api/v1/image/image-1")
@@ -901,7 +947,7 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
         return refreshed
 
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: expiring)
-    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(ws, "clear_session_cache", lambda **_kwargs: None)
     monkeypatch.setattr(ws, "get_web_session", fake_get_web_session)

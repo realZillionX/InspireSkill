@@ -73,7 +73,7 @@ def _refresh_expired_session(
     web_session_module._get_browser_client = _SessionBrowserClient
     web_session_module._close_browser_client = lambda: None
     web_session_module.get_web_session = fake_get_web_session
-    web_session_module.build_requests_session = lambda _session, _url: _StubHTTP()
+    web_session_module.pooled_requests_session = lambda _session, _url: _StubHTTP()
 
     barrier.wait()
     assert web_session_module.request_json(

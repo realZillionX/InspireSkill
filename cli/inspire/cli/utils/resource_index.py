@@ -379,6 +379,19 @@ class ResourceIndex:
                     f"DELETE FROM {table} WHERE resource_type NOT IN ({placeholders})",
                     known,
                 )
+            # Same reasoning one level down: `scope_workspace_id` blanks the
+            # workspace for globally scoped kinds, so a row still carrying one
+            # was written before `project` moved out of the per-workspace
+            # scopes. Nothing can refresh it or look it up again; it only
+            # inflates the workspace count `cache status` prints.
+            global_types = sorted(GLOBAL_RESOURCE_TYPES)
+            global_placeholders = ",".join("?" for _ in global_types)
+            for table in ("resource_identity", "resource_scope"):
+                connection.execute(
+                    f"DELETE FROM {table} "
+                    f"WHERE resource_type IN ({global_placeholders}) AND workspace_id != ''",
+                    global_types,
+                )
             connection.execute(
                 """
                 INSERT INTO metadata(key, value) VALUES('schema_version', ?)
@@ -1170,6 +1183,41 @@ class ResourceIndex:
             # in-flight refresh from resurrecting the deleted handle.
             self._bump_scope_revision(connection, scope)
             return changed
+
+    def attempt_due(
+        self,
+        scope: ResourceScope,
+        *,
+        interval_seconds: int,
+        now: float | None = None,
+    ) -> bool:
+        """Whether this scope may be *tried* again, however the last try went.
+
+        Deliberately separate from :meth:`scope_due`, which answers "is what I
+        have still good enough to read". An attempt that raises, or that comes
+        back incomplete, leaves ``last_full_refresh_at`` where it was, so by
+        that question the scope stays due forever and is re-attempted on every
+        wake-up -- ``model`` answered ``InvalidParameter`` for every workspace
+        and was retried every five minutes for days, and a rate-limited quota
+        fan-out re-ran its whole fan-out just as fast. Readers must keep going
+        live in both cases, which is why this cannot be folded into
+        ``scope_due``: this one only paces the refresh engine.
+        """
+        timestamp = float(time.time() if now is None else now)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT last_attempt_at
+                FROM resource_scope
+                WHERE base_url = ? AND subject_id = ? AND resource_type = ?
+                  AND workspace_id = ? AND owner_scope = ?
+                """,
+                self._scope_values(scope),
+            ).fetchone()
+        if row is None:
+            return True
+        last = float(row["last_attempt_at"] or 0)
+        return last <= 0 or timestamp - last >= max(0, int(interval_seconds))
 
     def scope_due(
         self,

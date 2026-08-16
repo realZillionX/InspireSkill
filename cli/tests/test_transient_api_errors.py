@@ -69,7 +69,7 @@ def _session() -> WebSession:
 def _install(monkeypatch, http: _HTTP) -> list[float]:  # noqa: ANN001
     """Point ``request_json`` at *http* and record what it would have slept."""
     slept: list[float] = []
-    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
     monkeypatch.setattr(
         "inspire.platform.web.session.retry.time.sleep",

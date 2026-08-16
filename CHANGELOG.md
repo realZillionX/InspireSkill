@@ -4,6 +4,16 @@
 
 ### 修复
 
+- 每次 HTTP 请求不再新建一个 `requests.Session`，连接因此能复用。此前 `_request_json_once` 每次调用都 `build_requests_session(...)`，用完 `finally: http.close()`，于是每一个请求都要重新建 TCP 连接、重新握手 TLS——走本地 SII 代理连 `qz.sii.edu.cn` 实测每请求约 300 ms，复用连接后约 30 ms。平常一条命令察觉不到，但 Name 缓存把很多操作变成了扇出（Quota 目录每个计算组一次、镜像每个 Workspace 三次、后台刷新一轮几百次），这一项就变成了主要开销。同一份完整的后台刷新，实测网络时间 201.5 s → 97.2 s、整体 202.8 s → 120.4 s；扣掉本来就是传输量瓶颈的镜像，单请求 397 ms → 91 ms。共享的只有连接池，Cookie / Header / 代理设置每次调用照旧重设，所以刷新过 Session 之后不会拿旧凭据作答；需要自己 `close()` 的调用方继续用 `build_requests_session`。
+
+- `cache refresh` 的 `model` 刷新一直在失败，而且每 5 分钟重试一次。它是唯一给 `ListModels` 传 `page_size=-1` 的调用点，而这个 Action 不像 `ListImages` / `ListLogicComputeGroups` 那样接受「-1 表示全要」，回的是 `InvalidParameter: page or page_size invalid`。失败不推进 `last_full_refresh_at`，于是这个 Scope 在「够不够新」这个问题下永远是 due，后台每次醒来都对 10 个 Workspace 各试一次——本机这个账号已经这样白跑了两天多。现在按 `total` 翻页，`list_models()` 的默认值也从注定失败的 `-1` 改成 100。
+
+- 刷新引擎给每个 Scope 加了尝试节流：一个 Scope 两次**尝试**之间至少隔它自己的 TTL，无论上一次是成功、报错还是只读到一半。此前只看「读到的数据够不够新」，而报错和 incomplete 都不推进 `last_full_refresh_at`，所以坏掉的 `model` 每 5 分钟重试、被限流的 Quota 扇出也每 5 分钟重跑整个扇出——恰恰在平台正在推回来的时候跑得最勤。读侧不受影响：`scope_due()` 的语义没动，缓存不新鲜时该走 Live 还是走 Live。`cache refresh --full` 仍然能立刻强制。
+
+- 后台刷新按批量翻页，不再按界面翻页。五个 Workload 的 fetcher 都写死 `page_size = 100`，一个存了约 1400 个任务的 Workspace 因此每 5 分钟要 14 个来回；网关的上限是 `MAX_PAGE_SIZE` 且会自动收敛，所以调到 1000 只会更少请求、不会更少行。实测 `job` 一轮 24 → 11 个请求。
+
+- 打开索引时删掉全局资源类型上残留的按 Workspace 分区行。`project` 在 v7.0.0 前按 Workspace 存，之后 `scope_workspace_id()` 会把它的 Workspace 抹平，于是老库里那些带 Workspace 的 `project` 行既刷不到也查不到，只会让 `cache status` 多报几个 Workspace。和已有的「删掉本版本不认识的资源类型」同一处、同一个理由。
+
 - `resources nodes` 的整节点空闲数不再把调度不上去的节点算进去。`resources availability` 的 `Free Nodes` 一直在排除 `cordon_type` / `is_maint` / `resource_pool=fault`，而同一份 `ListNodeDimension` 数据在 `get_full_free_node_counts` 里只判了 `status=READY` 且无任务——同一个「整节点空闲」在两处有两个定义，而 `resources nodes` 恰恰是提交多节点任务前用来看放不放得下的那个视图。实测这三个字段在现网真的会被置上（`CPU资源空间/HPC-可上网区资源-2` 436 个节点里 101 个带 cordon），只是目前被 cordon 的节点同时也不是 `READY`，所以暂时没有暴露成错数；判据现在收敛到一个 `_node_is_schedulable_and_idle`，两处共用。
 
 ## v7.1.0

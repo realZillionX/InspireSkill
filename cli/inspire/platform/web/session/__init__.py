@@ -36,7 +36,11 @@ from inspire.platform.web.session.browser_launch import (
 )
 from inspire.platform.web.session.proxy import get_playwright_proxy
 from inspire.platform.web.session.refresh_lock import exclusive_session_refresh
-from inspire.platform.web.session.requests import build_requests_session
+from inspire.platform.web.session.requests import (
+    build_requests_session,
+    close_pooled_requests_session,
+    pooled_requests_session,
+)
 from inspire.platform.web.session.retry import (
     retry_after_seconds,
     with_transient_retry,
@@ -52,11 +56,13 @@ __all__ = [
     "build_requests_session",
     "clear_all_session_caches",
     "clear_session_cache",
+    "close_pooled_requests_session",
     "get_credentials",
     "get_playwright_proxy",
     "get_web_session",
     "is_transient_api_error",
     "login_with_playwright",
+    "pooled_requests_session",
     "request_json",
     "with_transient_retry",
 ]
@@ -152,7 +158,10 @@ def _request_json_once(
     global _BROWSER_API_FORCE_BROWSER
 
     if not _BROWSER_API_FORCE_BROWSER:
-        http = build_requests_session(session, url)
+        # Pooled, not per-request: this is the path every browser API call
+        # takes, and a fresh session here would hand back the connection after
+        # each one. See `pooled_requests_session` for what that costs.
+        http = pooled_requests_session(session, url)
         try:
             method_upper = method.upper()
             req_headers = headers or {}
@@ -184,8 +193,6 @@ def _request_json_once(
                 raise SessionExpiredError("Session expired or invalid (non-JSON response)") from e
         except (SessionExpiredError, requests_lib.exceptions.RequestException):
             _BROWSER_API_FORCE_BROWSER = True
-        finally:
-            http.close()
 
     from inspire.platform.web.browser_api.core import _in_asyncio_loop, _run_in_thread
 

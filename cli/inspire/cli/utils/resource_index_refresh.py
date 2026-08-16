@@ -58,6 +58,13 @@ PERIODIC_REFRESH_INTERVAL_SECONDS = min(DEFAULT_TTL_SECONDS.values())
 PERIODIC_REFRESH_STAMP = "resource-index-refresh.stamp"
 PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS = 30 * 60
 
+# A refresh reads whole scopes, not screens of them, so it pages at the bulk
+# size rather than the UI's. At 100 a workspace holding ~1400 of the user's
+# jobs cost 14 round trips every five minutes; the gateway caps `page_size` at
+# `MAX_PAGE_SIZE` and clamps anything above it, so this only ever means fewer
+# requests for the same rows.
+REFRESH_PAGE_SIZE = 1000
+
 
 @dataclass(frozen=True)
 class FetchResult:
@@ -237,22 +244,29 @@ def _image_fetch(session: object, workspace_id: str, exact_name: str) -> FetchRe
 def _model_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
     from inspire.platform.web.browser_api.models import list_models
 
-    items, _ = list_models(
-        workspace_id=workspace_id,
-        keyword=exact_name or None,
-        page_size=-1,
-        session=session,  # type: ignore[arg-type]
-    )
-    records = [
-        ResourceIdentity(
-            resource_id=item.model_id,
-            name=item.name,
-            owner_id=item.user_id,
-            status=item.status,
-            created_at=item.created_at,
+    records: list[ResourceIdentity] = []
+    page = 1
+    while True:
+        items, total = list_models(
+            workspace_id=workspace_id,
+            keyword=exact_name or None,
+            page=page,
+            page_size=REFRESH_PAGE_SIZE,
+            session=session,  # type: ignore[arg-type]
         )
-        for item in items
-    ]
+        records.extend(
+            ResourceIdentity(
+                resource_id=item.model_id,
+                name=item.name,
+                owner_id=item.user_id,
+                status=item.status,
+                created_at=item.created_at,
+            )
+            for item in items
+        )
+        if not items or len(records) >= total or len(items) < REFRESH_PAGE_SIZE:
+            break
+        page += 1
     return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
 
 
@@ -283,7 +297,7 @@ def _job_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResu
     user_id = _current_user_id(session)
     records: list[ResourceIdentity] = []
     page = 1
-    page_size = 100
+    page_size = REFRESH_PAGE_SIZE
     while True:
         items, total = list_jobs(
             workspace_id=workspace_id,
@@ -317,7 +331,7 @@ def _tensorboard_fetch(
     user_id = _current_user_id(session)
     records: list[ResourceIdentity] = []
     page = 1
-    page_size = 100
+    page_size = REFRESH_PAGE_SIZE
     while True:
         items, total = list_tensorboards(
             workspace_id=workspace_id,
@@ -352,7 +366,7 @@ def _hpc_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResu
     user_id = _current_user_id(session)
     records: list[ResourceIdentity] = []
     page = 1
-    page_size = 100
+    page_size = REFRESH_PAGE_SIZE
     total_seen = 0
     while True:
         items, total = list_hpc_jobs(
@@ -385,7 +399,7 @@ def _ray_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResu
     user_id = _current_user_id(session)
     records: list[ResourceIdentity] = []
     page = 1
-    page_size = 100
+    page_size = REFRESH_PAGE_SIZE
     total_seen = 0
     while True:
         items, total = list_ray_jobs(
@@ -417,7 +431,7 @@ def _serving_fetch(session: object, workspace_id: str, exact_name: str) -> Fetch
 
     records: list[ResourceIdentity] = []
     page = 1
-    page_size = 100
+    page_size = REFRESH_PAGE_SIZE
     total_seen = 0
     while True:
         items, total = list_servings(
@@ -699,7 +713,7 @@ def _refresh_one(
                 scope,
                 interval_seconds=interval,
                 require_full=True,
-            )
+            ) and index.attempt_due(scope, interval_seconds=interval)
         except (OSError, sqlite3.Error):
             due = True
         if not due:

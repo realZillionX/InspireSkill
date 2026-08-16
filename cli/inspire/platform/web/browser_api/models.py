@@ -156,7 +156,7 @@ def list_models(
     workspace_id: Optional[str] = None,
     *,
     page: int = 1,
-    page_size: int = -1,
+    page_size: int = 100,
     filter_by: Optional[dict[str, Any]] = None,
     keyword: Optional[str] = None,
     user_id: Optional[str] = None,
@@ -166,7 +166,10 @@ def list_models(
 ) -> tuple[list[ModelInfo], int]:
     """List models via `POST /api/v1/model/list`.
 
-    Returns `(items, total)`. `page_size=-1` mirrors the UI (fetch all).
+    Returns `(items, total)`. Unlike `ListImages` and `ListLogicComputeGroups`,
+    this Action refuses `page_size=-1` with `InvalidParameter: page or
+    page_size invalid` — page through `total` instead of asking for everything
+    at once.
     """
     session, workspace_id = _resolve_workspace(workspace_id, session)
     if user_id is None:

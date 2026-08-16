@@ -356,6 +356,8 @@ Referer：`/jobs/modelService?spaceId={workspace_id}`。路由名是**连字符*
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
 | `ListModels` | `{workspace_id, page, page_size, filter_by:{user_id, keyword?, project_id[]?, model_type[]?}}` | `{list[], total}` | `model list`、`serving create` 的模型解析、`cache refresh` |
+
+`ListModels` 不收 `page_size: -1`，回 `InvalidParameter: page or page_size invalid`。「-1 表示全要」在 `ListImages`、`ListLogicComputeGroups`、`ListProjects` 上成立，这里不成立，要按 `total` 翻页。
 | `GetModelDetail` | `{model_id}` | `{model{}, user_name, project_name, user_avatar}` | `model status` |
 | `ListModelVersions` | `{model_id}` | `{list[], total, next_version}` | `model versions`、`model status` |
 | `ListModelVersionOptions` | `{model_id}` | `{list[], total}` | — |

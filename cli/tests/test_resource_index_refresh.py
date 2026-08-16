@@ -257,6 +257,75 @@ def test_failed_refresh_preserves_existing_rows(tmp_path) -> None:
     assert index.list_scope_status()[0].last_error == "temporary API failure"
 
 
+def test_a_scope_that_keeps_failing_is_not_retried_every_wake_up(tmp_path) -> None:
+    # A fetch that raises leaves last_full_refresh_at where it was, so the
+    # freshness question alone says "due" forever: `model` answered
+    # InvalidParameter for every workspace and burned ten requests every five
+    # minutes for days. The attempt stamp is what paces it back to its TTL.
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    attempts: list[str] = []
+
+    def _fail(_session: object, workspace_id: str, _name: str) -> FetchResult:
+        attempts.append(workspace_id)
+        raise RuntimeError("API error: InvalidParameter: page or page_size invalid")
+
+    def _due_refresh() -> RefreshSummary:
+        return refresh_resource_index(
+            session=_Session(),
+            index=index,
+            resource_types=("model",),
+            force=False,
+            fetchers={"workspace": _workspace_fetch, "model": _fail},
+        )
+
+    assert _due_refresh().error_count == 1
+    assert attempts == ["workspace-one"]
+
+    # The next wake-up, well inside the kind's TTL, must not try again.
+    assert _outcome_count(_due_refresh(), "fresh") == 1
+    assert attempts == ["workspace-one"]
+
+    # An explicit refresh is still the user's to force.
+    forced = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("model",),
+        force=True,
+        fetchers={"workspace": _workspace_fetch, "model": _fail},
+    )
+    assert forced.error_count == 1
+    assert attempts == ["workspace-one", "workspace-one"]
+
+
+def test_a_rate_limited_fan_out_backs_off_instead_of_re_running(tmp_path) -> None:
+    # A partial refresh keeps its rows but never reaches "fully refreshed", so
+    # the freshness question re-runs the whole per-compute-group fan-out on the
+    # next wake-up -- fastest exactly when the platform is pushing back.
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    attempts: list[str] = []
+
+    def _partial(_session: object, workspace_id: str, _name: str) -> FetchResult:
+        attempts.append(workspace_id)
+        return FetchResult(
+            [ResourceIdentity(resource_id="lcg-one:q1", name="1,10,100")],
+            complete=False,
+            error="1 compute group(s) did not answer",
+        )
+
+    def _due_refresh() -> RefreshSummary:
+        return refresh_resource_index(
+            session=_Session(),
+            index=index,
+            resource_types=("quota-job",),
+            force=False,
+            fetchers={"workspace": _workspace_fetch, "quota-job": _partial},
+        )
+
+    assert _outcome_count(_due_refresh(), "partial") == 1
+    assert _outcome_count(_due_refresh(), "fresh") == 1
+    assert attempts == ["workspace-one"]
+
+
 def test_refresh_continues_when_error_recording_fails(tmp_path, monkeypatch) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
 
@@ -706,6 +775,46 @@ def test_opening_the_index_drops_kinds_this_build_no_longer_knows(tmp_path) -> N
         )
     # The kinds that still exist survive the sweep.
     assert len(reopened.lookup(_scope("job", "workspace-one"), "train")) == 1
+
+
+def test_opening_the_index_drops_per_workspace_rows_of_a_global_kind(tmp_path) -> None:
+    """`project` moved to a global scope; the per-workspace rows it left cannot be read."""
+    path = tmp_path / "index.sqlite3"
+    index = ResourceIndex(path)
+    index.reconcile(
+        _scope("project"),
+        [ResourceIdentity(resource_id="proj-1", name="vision")],
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO resource_scope(
+                base_url, subject_id, resource_type, workspace_id, owner_scope,
+                last_refresh_at, last_full_refresh_at, last_error
+            ) VALUES('https://inspire.example', 'user-one', 'project',
+                     'workspace-one', '', 1, 1, '')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO resource_identity(
+                base_url, subject_id, resource_type, workspace_id, owner_scope,
+                resource_id, name, owner_id, status, created_at,
+                observed_at, expires_at
+            ) VALUES('https://inspire.example', 'user-one', 'project',
+                     'workspace-one', '', 'proj-1', 'vision', '', '', '', 1, 9999999999)
+            """
+        )
+
+    reopened = ResourceIndex(path)
+
+    assert [
+        (status.resource_type, status.workspace_id)
+        for status in reopened.list_scope_status()
+        if status.resource_type == "project"
+    ] == [("project", "")]
+    # The globally scoped rows, which lookups actually reach, survive.
+    assert len(reopened.lookup(_scope("project"), "vision")) == 1
 
 
 def test_cache_status_reports_one_kind_at_a_time(tmp_path, monkeypatch) -> None:
