@@ -131,3 +131,38 @@ def test_list_compute_groups_rejects_nonzero_api_code(monkeypatch) -> None:
             workspace_id="workspace-one",
             session=object(),  # type: ignore[arg-type]
         )
+
+
+def _node(name: str, **overrides: object) -> dict:
+    row = {
+        "node_name": name,
+        "logic_compute_group_name": "H200-1号机房",
+        "status": "Ready",
+        "gpu": {"total": 8},
+    }
+    row.update(overrides)
+    return row
+
+
+# One idle-looking node per reason the scheduler will still refuse it.
+_UNSCHEDULABLE_NODES = [
+    _node("cordoned", cordon_type="Manual"),
+    _node("maintenance", is_maint=True),
+    _node("faulted", resource_pool="fault"),
+]
+
+
+def test_free_node_counts_skip_nodes_the_scheduler_cannot_place_on(monkeypatch) -> None:
+    nodes = [_node("free")] + _UNSCHEDULABLE_NODES
+    monkeypatch.setattr(api, "list_node_dimension", lambda *_a, **_k: nodes)
+
+    summary = api._compute_node_summary(nodes)
+    assert summary["ready_nodes"] == 4
+    assert summary["free_nodes"] == 1
+
+    counts = api.get_full_free_node_counts(
+        ["lcg-1"],
+        workspace_id_by_group={"lcg-1": "ws-1"},
+        session=object(),  # type: ignore[arg-type]
+    )
+    assert [(row.ready_nodes, row.full_free_nodes) for row in counts] == [(4, 1)]

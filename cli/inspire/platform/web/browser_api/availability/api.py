@@ -649,6 +649,24 @@ def _node_gpu_total(node: dict) -> int:
         return 0
 
 
+def _node_is_schedulable_and_idle(node: dict) -> bool:
+    """Whether a node row can actually take a new whole-node workload.
+
+    ``READY`` with no tasks is not enough: a cordoned, under-maintenance, or
+    faulted node keeps reporting idle cards it will never schedule onto, so
+    counting it inflates every "can I fit N whole nodes" answer.
+    """
+    if str(node.get("status") or "").upper() != "READY":
+        return False
+    if node.get("task_list") or node.get("tasks_associated"):
+        return False
+    if str(node.get("cordon_type") or "").strip():
+        return False
+    if bool(node.get("is_maint", False)):
+        return False
+    return str(node.get("resource_pool") or "").lower() != "fault"
+
+
 def _compute_node_summary(nodes: list[dict]) -> dict[str, int]:
     total_nodes = 0
     ready_nodes = 0
@@ -663,23 +681,10 @@ def _compute_node_summary(nodes: list[dict]) -> dict[str, int]:
         if gpu_per_node == 0:
             gpu_per_node = gpu_count
 
-        status = str(node.get("status") or "").upper()
-        if status == "READY":
+        if str(node.get("status") or "").upper() == "READY":
             ready_nodes += 1
 
-        task_list = node.get("task_list")
-        tasks_associated = node.get("tasks_associated")
-        has_tasks = bool(task_list or tasks_associated)
-        cordon_type = str(node.get("cordon_type") or "").strip()
-        is_maint = bool(node.get("is_maint", False))
-        resource_pool = str(node.get("resource_pool") or "").lower()
-        if (
-            status == "READY"
-            and not has_tasks
-            and not cordon_type
-            and not is_maint
-            and resource_pool != "fault"
-        ):
+        if _node_is_schedulable_and_idle(node):
             free_nodes += 1
 
     return {
@@ -882,17 +887,14 @@ def get_full_free_node_counts(
                 if not group_name:
                     group_name = str(node.get("logic_compute_group_name") or "")
 
-                status = str(node.get("status") or "").upper()
-                if status != "READY":
+                if str(node.get("status") or "").upper() != "READY":
                     continue
                 ready_nodes += 1
 
                 # A node counts as fully free only when every card is idle and
-                # nothing is scheduled on it.
-                if (
-                    _node_gpu_total(node) == gpu_per_node
-                    and not node.get("tasks_associated")
-                    and not node.get("task_list")
+                # the scheduler can still place work on it.
+                if _node_gpu_total(node) == gpu_per_node and _node_is_schedulable_and_idle(
+                    node
                 ):
                     full_free_nodes += 1
 
