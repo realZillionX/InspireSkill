@@ -185,6 +185,24 @@ discovery 里没有的 15 条路由：`audit`(6)、`billing`(3)、`file`(9)、`i
 
 按第 7 节的判据对其中 102 个只读 Action 逐个探活，**`InvalidAction` 为 0**——全部路由存在。对普通成员，`storage` / `operate-log` 整个服务是 `user is not system admin`，`billing` 三个 Action 读超时或 `InternalError`，`image_plaza.ListImages` 答 `total_count: 0`（目录对本账号是空的，不是没权限），其余可读。
 
+### `/api/v2` 不止 `?Action=` 一种形状
+
+同一份产物里还有 12 条 **REST 风格**的 `/api/v2` 路径，不带 `?Action=`，只认全集合的 Action 清单会把它们当成不存在：
+
+| 路径 | 是什么 |
+| --- | --- |
+| `/api/v2/train_job/remote_cmd` | 训练任务的 PTY WebSocket，就是 `job shell` 现在走 v1 的那条 |
+| `/api/v2/hpc_jobs/instances/exec` | HPC 实例的 PTY |
+| `/api/v2/ray_job/instances/exec` | Ray 实例的 PTY |
+| `/api/v2/inference_servings/instances/exec` | Serving 实例的 PTY |
+| `/api/v2/file/list` / `create_dir` / `delete` / `update_name` | 文件页的目录操作 |
+| `/api/v2/logs/ray_job/download` / `logs/inference_serving/download` | 日志下载 |
+| `/api/v2/project/upload_appendix`、`/api/v2/billing/detail/export` | 附件上传、账单导出 |
+
+四条 PTY 共用控制台里同一个 URL 构造器，参数走 query string（HPC 用 `{job_id, instance_id}`，其余原样传 `{job_id, instance_name}`），进容器执行的是 `command -v bash >/dev/null 2>&1 && exec bash || exec sh`，改窗口大小发 `stty columns N rows M`。**这和 `job_shell.py` 现在对 v1 的用法只差一个前缀。**
+
+**这四条还没验证。** 网关在路由之前先鉴权：普通 GET、带 `Referer` 的 GET、真实的 WebSocket 握手，三种打法对 v1（确知可用）和一条随手编的路径回的都是同一个 401，所以第 7 节那套「按报错区分」的判据在这里失效。要确认只能拿一个自己的运行中任务去握一次手。HPC / Ray / Serving 的 PTY 我们目前完全没有对应命令。
+
 `user.GetMyPermissions`（空请求体）另给一份**按账号的权限表**：`{Services: {服务: {Read, Write, Actions: {Action: bool}}}}`。它只覆盖有 RBAC 网关的 14 个服务（不含 `train` / `notebook` / `workspace` / `project` / `ray` / `hpc`），但在覆盖范围内是权威的，而且列出了连前端产物里都没有的 Action——`job.ListNodeJobs`、`job.GetLcgUsedComputeResourceJobs`、`job.GetProjectQuotaJobs` / `GetUserQuotaJobs` 就是这么找到的。判「我能不能调」先问它，比探针便宜。
 
 ## 7. 探针方法

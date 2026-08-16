@@ -18,6 +18,12 @@ the console has hardcoded. It is a **lower bound** — dynamically assembled
 calls are invisible to a regex — which makes it evidence that an Action exists
 and never evidence that one does not.
 
+It reports two shapes, because `/api/v2` has two. Most of it is
+`?Action=`, but a REST-shaped surface sits beside it (`/api/v2/file/list`,
+`/api/v2/train_job/remote_cmd`, four `.../instances/exec` PTY sockets), and an
+inventory that only knows the Action shape calls those absent — which is
+exactly the sentence we had written down about the remote shell.
+
 ## Use
 
     python3 scripts/scan_v2_surface.py                 # fetch, extract, diff
@@ -56,6 +62,12 @@ from inspire.platform.web.session.requests import build_requests_session  # noqa
 #: `[A-Za-z0-9]+`, not `[A-Za-z]+`: the trailing digit of `GetProjectListV2` is
 #: part of the name, and truncating it invents an Action that does not exist.
 _HARDCODED = re.compile(r"/api/v2/([a-zA-Z0-9_-]+)\?Action=([A-Za-z0-9]+)")
+#: `?Action=` is not the whole of `/api/v2`. A REST-shaped surface lives beside
+#: it — `/api/v2/file/list`, `/api/v2/train_job/remote_cmd`, the four
+#: `.../instances/exec` PTY sockets — and an inventory that only knows the
+#: Action shape reports those as absent. That is how "no v2 counterpart for the
+#: remote shell" got written down: true of Actions, false of `/api/v2`.
+_REST_PATH = re.compile(r'"(/api/v2/[a-z0-9_][a-z0-9_/-]*)"')
 _CHUNK_REF = re.compile(r'"(\./[^"]+\.js)"')
 _ABS_CHUNK_REF = re.compile(r'"(/assets/[^"]+\.js)"')
 _ENTRY = re.compile(r'(?:src|href)="([^"]+\.js)"')
@@ -113,6 +125,20 @@ def extract_actions(texts: dict[str, str]) -> dict[str, set[str]]:
         for route, action in _HARDCODED.findall(text):
             found[route].add(action)
     return found
+
+
+def extract_rest_paths(texts: dict[str, str]) -> set[str]:
+    """`/api/v2` paths the console calls without an `?Action=` at all.
+
+    A bare `/api/v2/<route>` is the prefix the Action calls are built from, so
+    it is dropped; anything with a segment under it is a real endpoint.
+    """
+    paths: set[str] = set()
+    for text in texts.values():
+        for path in _REST_PATH.findall(text):
+            if path.rstrip("/").count("/") > 3:
+                paths.add(path)
+    return paths
 
 
 def discovery_actions(session: WebSession, base_url: str) -> tuple[str, dict[str, set[str]]]:
@@ -173,12 +199,17 @@ def main() -> int:
     cache = pathlib.Path(args.cache) if args.cache else _REPO_ROOT / ".scan-cache"
     texts = fetch_bundles(session, base_url, cache)
     console = extract_actions(texts)
+    rest = extract_rest_paths(texts)
     version, declared = discovery_actions(session, base_url)
 
     total = sum(len(names) for names in console.values())
     print(f"chunks {len(texts)}  console: {len(console)} routes / {total} actions")
     print(f"discovery {version}: {len(declared)} services / "
-          f"{sum(len(v) for v in declared.values())} actions\n")
+          f"{sum(len(v) for v in declared.values())} actions")
+    print(f"REST-shaped /api/v2 paths (no ?Action=): {len(rest)}")
+    for path in sorted(rest):
+        print(f"  {path}")
+    print()
 
     verdicts = probe(session, base_url, console, args.delay) if args.probe else {}
 
@@ -209,6 +240,7 @@ def main() -> int:
                 {
                     "discovery_version": version,
                     "console": {r: sorted(a) for r, a in sorted(console.items())},
+                    "rest_paths": sorted(rest),
                     "discovery": {s: sorted(a) for s, a in sorted(declared.items())},
                     "probe": verdicts,
                 },

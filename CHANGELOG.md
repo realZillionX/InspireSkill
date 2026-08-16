@@ -6,6 +6,8 @@
 
 - `<workload> quota` 增加 `Points/h` 列（`--json` 里是 `points_per_hour`）：该 Quota 行每实例每小时消耗多少点券。数据本来就在配额目录的响应里，只是一直被丢掉。**只有 GPU 计费**——所有 CPU-only 行都是 0，同一份预处理放进 `CPU资源空间` 就不花点券；GPU 按卡型定价，实测 H100 / H200 是 1 点券/卡/小时而 4090 是 0.33，差三倍。按实例计费，`--nodes 2` 跑 8 点券的行是每小时 16。`null` 是「平台没给这行定价」，和 `0`（免费）是两件事。
 
+- `scripts/scan_v2_surface.py` 补上 `/api/v2` 的第二种形状。`?Action=` 之外还有一片 **REST 风格**的路径（当前 12 条），只认 Action 的清单会把它们报成不存在——`job shell` 走 v1 的那条 `/api/v2/train_job/remote_cmd` 就在里面，而我们的边界测试里写着「v2 没有任何 Action 暴露 shell」，这句话对 Action 成立、对 `/api/v2` 不成立。同批还有 HPC / Ray / Serving 三条实例 PTY（我们完全没有对应命令）、文件页的目录操作、日志下载。**这几条都还没验证**：网关在路由之前先鉴权，普通 GET、带 Referer 的 GET、真实 WebSocket 握手三种打法对 v1（确知可用）和一条随手编的路径回的都是同一个 401，要确认只能拿一个自己的运行中任务去握手。已把结论和未验证状态写进 `browser-api.md` 与边界测试的白名单理由。
+
 - `scripts/scan_v2_surface.py`：把控制台前端产物里写死的 `/api/v2/{route}?Action=` 全抓出来，和 `GET /discovery` 对账，`--probe` 再按 `browser-api.md` §7 的判据逐个探活。这是这次唯一抓出我们自己错误结论的东西——配额目录被判成「v2 无对应物」正是因为只查了 discovery，而 `resource-price` 整条路由不在里面。当前 25 条路由 / 187 个 Action，discovery 是 11 / 175。只探 `Get` / `List` / `Search` 开头且不含写动词的 Action，空请求体在校验阶段就被拒，建不出任何东西。
 
 - `resources usage --group <关键词>`：把「谁占着」收窄到计算组，也就是任务真正提交进去的那个单位。整个 Workspace 看着满、你要投的那个组未必满，反过来也一样，所以这个判断本来就该在组这一层做。关键词是子串（`--group H200` 覆盖所有带这个硬件的组），输出顶部列出实际匹配到哪几个，`--json` 里是 `compute_groups`。底层的 `ListTaskDimension` 一直收 `logic_compute_group_id`，只是没有命令用；平台确实认这个过滤（实测 1125 → 183 行）。`--mine` 读的是按项目预聚合的记录，里面没有计算组，两者互斥。

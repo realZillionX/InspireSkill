@@ -31,8 +31,12 @@ _ALLOWED: dict[str, str] = {
         "browser_api wrapper can be used"
     ),
     "cli/utils/job_shell.py": (
-        "`job shell` remote-command WebSocket; no v2 service exposes a shell, "
-        "exec or terminal Action"
+        "`job shell` remote-command WebSocket. No v2 *Action* exposes a shell, "
+        "but `/api/v2/train_job/remote_cmd` does exist -- the console calls it, "
+        "same query parameters, and `/api/v2` carries a whole REST-shaped "
+        "surface next to `?Action=`. Migrating it needs a running job to "
+        "verify the handshake against, since the gateway answers 401 to every "
+        "path alike before it routes, so this stays allowlisted meanwhile"
     ),
 }
 
