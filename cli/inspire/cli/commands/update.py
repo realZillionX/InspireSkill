@@ -1201,6 +1201,7 @@ def _emit_update_success(
     previous_version: str | None = None,
     report_skills: bool = False,
     silent: bool,
+    state_sweep: dict[str, object] | None = None,
 ) -> None:
     """Report a completed update: version, refreshed harnesses, and what's new.
 
@@ -1226,6 +1227,8 @@ def _emit_update_success(
             payload["release_notes"] = [
                 {"version": note_version, "summary": item} for note_version, item in notes
             ]
+        if state_sweep:
+            payload["stale_state"] = state_sweep
         click.echo(json_formatter.format_json(payload))
         return
 
@@ -1272,13 +1275,98 @@ def _emit_update_check(result: dict, *, actual_version: str | None, silent: bool
     )
 
 
+def _sweep_orphan_state(
+    *,
+    silent: bool,
+    assume_yes: bool,
+    json_output: bool,
+) -> dict[str, object] | None:
+    """Offer to delete state files no current code path reads.
+
+    A release that stops using a state file cannot delete it on the way out —
+    the code that knew about it is what got removed. So the sweep runs here,
+    where a version transition is already happening, comparing what is on disk
+    against `state_inventory`'s declaration of what this version owns.
+
+    Never deletes without consent and never prompts where no one can answer:
+    silent mode is the background update check, and JSON mode has no operator,
+    so both report through the return value and delete only under ``--yes``.
+    """
+    from inspire.accounts.state_inventory import find_orphan_state
+
+    try:
+        orphans = find_orphan_state()
+    except OSError as exc:
+        logger.debug("Orphan state scan failed: %s", exc)
+        return None
+    if not orphans:
+        return None
+
+    if silent:
+        logger.debug("Skipping orphan sweep in silent mode: %d found", len(orphans))
+        return None
+
+    found = [f"{o.display}{'/' if o.is_dir else ''}" for o in orphans]
+
+    if not json_output:
+        click.echo()
+        click.echo("Local state left behind by older versions:")
+        for item in found:
+            click.echo(f"  {item}")
+
+    if not assume_yes:
+        hint = "Re-run `inspire update --yes` to delete them."
+        if json_output:
+            return {"found": found, "removed": 0}
+        if not sys.stdin.isatty():
+            click.echo(hint)
+            return {"found": found, "removed": 0}
+        if not click.confirm("\nDelete them?", default=False):
+            click.echo(f"Kept. {hint}")
+            return {"found": found, "removed": 0}
+
+    removed = 0
+    for orphan in orphans:
+        try:
+            if orphan.is_dir:
+                shutil.rmtree(orphan.path)
+            else:
+                orphan.path.unlink()
+        except OSError as exc:
+            if not json_output:
+                click.echo(f"Could not remove {orphan.display}: {exc}", err=True)
+            continue
+        removed += 1
+    if not json_output:
+        click.echo(f"Removed {removed} stale item{'' if removed == 1 else 's'}.")
+    return {"found": found, "removed": removed}
+
+
 @click.command("update")
 @click.option("--check", "check_only", is_flag=True, help="Only check upstream; don't upgrade.")
 @click.option("--silent", is_flag=True, help="Suppress output (used by background checks).")
 @click.option("--cli-only", is_flag=True, help="Upgrade the Python package and runtime only.")
 @click.option("--skill-only", is_flag=True, help="Refresh SKILL.md + references/ only.")
-def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> None:
-    """Check for and install newer InspireSkill versions."""
+@click.option(
+    "-y",
+    "--yes",
+    "assume_yes",
+    is_flag=True,
+    help="Delete state left by older versions without asking.",
+)
+def update(
+    check_only: bool,
+    silent: bool,
+    cli_only: bool,
+    skill_only: bool,
+    assume_yes: bool,
+) -> None:
+    """Check for and install newer InspireSkill versions.
+
+    Also sweeps local state that older versions wrote and no current code path
+    reads. The sweep runs on every upgrade, including one that finds nothing
+    new to install, so it doubles as the way to run it on demand.
+    """
     if cli_only and skill_only:
         raise click.UsageError("--cli-only and --skill-only are mutually exclusive.")
 
@@ -1325,11 +1413,17 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
             ):
                 _emit_update_failure(silent=silent)
                 sys.exit(1)
+            sweep = _sweep_orphan_state(
+                silent=silent,
+                assume_yes=assume_yes,
+                json_output=_current_output_context().json_output,
+            )
             _emit_update_success(
                 expected_version,
                 previous_version=previous_version,
                 report_skills=not cli_only,
                 silent=silent,
+                state_sweep=sweep,
             )
             return
     if not cli_only:
@@ -1361,6 +1455,11 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
         sys.exit(1)
 
     final_version = str(actual_version or pre.get("latest") or __version__)
+    sweep = _sweep_orphan_state(
+        silent=silent,
+        assume_yes=assume_yes,
+        json_output=_current_output_context().json_output,
+    )
     _emit_update_success(
         final_version,
         # --skill-only never moves the CLI version, so there is nothing new to
@@ -1368,4 +1467,5 @@ def update(check_only: bool, silent: bool, cli_only: bool, skill_only: bool) -> 
         previous_version=None if skill_only else previous_version,
         report_skills=not cli_only,
         silent=silent,
+        state_sweep=sweep,
     )

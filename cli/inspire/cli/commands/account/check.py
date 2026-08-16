@@ -167,6 +167,37 @@ def _validate_project_base_url_shape(project_path: Path | None) -> None:
         )
 
 
+def _find_stale_context_project(cfg: Config, session: object) -> str | None:
+    """Return the pinned project name when the platform no longer has it.
+
+    A repository pins `[context] project` once and then never revisits it, so a
+    project that gets deleted or renamed on the platform leaves the repo bound
+    to a name that resolves to nothing — and every `<workload> create` here
+    fails on it. The account-level catalog is no help: it is a cache written by
+    the same `inspire init` run that wrote the pin, so it agrees with the pin
+    and stays wrong. Only a live listing can tell.
+
+    Returns None when there is no pin, when the pin is fine, or when the
+    listing itself failed — a network problem is not evidence of staleness.
+    """
+    pinned = str(getattr(cfg, "context_project", "") or "").strip()
+    if not pinned:
+        return None
+
+    try:
+        projects = browser_api_module.list_all_projects(session=session)
+    except Exception:
+        return None
+
+    live_names = {
+        str(getattr(project, "name", "") or "").strip().casefold()
+        for project in projects
+    }
+    if not live_names or pinned.casefold() in live_names:
+        return None
+    return pinned
+
+
 def _build_base_url_resolution(
     cfg: Config,
     sources: dict[str, str],
@@ -230,6 +261,7 @@ def check(ctx: Context, details: bool) -> None:
 
         auth_ok = True
         auth_error = None
+        stale_project = None
 
         try:
             session = get_web_session()
@@ -237,6 +269,8 @@ def check(ctx: Context, details: bool) -> None:
         except (SessionExpiredError, ValueError) as e:
             auth_ok = False
             auth_error = str(e)
+        else:
+            stale_project = _find_stale_context_project(cfg, session)
 
         # A failed check has to say why without a second run: the reason the
         # login did not go through and the route the request actually took are
@@ -264,6 +298,8 @@ def check(ctx: Context, details: bool) -> None:
             "configured": True,
             "authenticated": auth_ok,
         }
+        if stale_project:
+            result["stale_context_project"] = scrub_raw_ids(stale_project)
         if verbose:
             result["effective_proxy"] = effective_proxy
             if auth_error:
@@ -279,7 +315,7 @@ def check(ctx: Context, details: bool) -> None:
                 result["note"] = default_base_url_hint
 
         if effective_json:
-            click.echo(json_formatter.format_json(result, success=auth_ok))
+            click.echo(json_formatter.format_json(result, success=auth_ok and not stale_project))
         else:
             click.echo(f"Account: {active_account or '-'}")
             click.echo(human_formatter.format_success("Configuration: OK"))
@@ -287,6 +323,15 @@ def check(ctx: Context, details: bool) -> None:
                 click.echo(human_formatter.format_success("Authentication: OK"))
             else:
                 click.echo(human_formatter.format_error("Authentication: FAILED"))
+            if stale_project:
+                click.echo(
+                    human_formatter.format_error(
+                        f"Project context: STALE (this repository is pinned to "
+                        f"{scrub_raw_ids(stale_project)}, which the platform no "
+                        f"longer has)"
+                    )
+                )
+                click.echo("Re-run `inspire init --scope project` to re-pin it.")
 
             if show_details:
                 click.echo(
@@ -317,6 +362,10 @@ def check(ctx: Context, details: bool) -> None:
 
         if not auth_ok:
             sys.exit(EXIT_AUTH_ERROR)
+        if stale_project:
+            # Not an auth problem: the account works, this repository's pin does
+            # not. Every `<workload> create` here would fail on it.
+            sys.exit(EXIT_CONFIG_ERROR)
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)

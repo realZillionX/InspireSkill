@@ -55,6 +55,8 @@ inspire update --skill-only
 
 `inspire update` 会自动识别 `uv tool` / `pipx` 安装来源，升级 CLI 包，刷新 harness skill，并逐步打印进度、刷新到的 harness 列表和新旧版本之间的更新摘要（取自 GitHub Releases，回退到 `main` 的 `CHANGELOG.md`）。`--cli-only` 只升 CLI 包与运行时；`--skill-only` 只刷 `SKILL.md` 和 `references/`。
 
+它同时会扫掉旧版本在 `~/.inspire` 下留着、而当前版本已经不再读的状态文件——停用某个文件的那个版本没法在退场时删掉它，因为知道它存在的代码正是被删掉的那部分，所以这件事只能在版本切换时做。发现内容先按清单打印再问，`--yes` 跳过询问，`--json` 和后台每日检查都只报告不删除。已经是最新版时 `inspire update` 照样扫一遍，所以它也是随时手动跑这件事的入口。`~/.inspire/metrics/` 里的图是明确要过的产物，任何一档都不碰。
+
 ## 3. 卸载
 
 ```bash

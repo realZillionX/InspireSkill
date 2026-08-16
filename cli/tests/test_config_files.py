@@ -26,7 +26,7 @@ from inspire.config import (
 )
 from inspire.cli.commands.init import init
 from inspire.cli.commands.init.env_detect import _detect_env_vars, _generate_toml_content
-from inspire.cli.context import EXIT_AUTH_ERROR
+from inspire.cli.context import EXIT_AUTH_ERROR, EXIT_CONFIG_ERROR
 from inspire.cli.main import main as cli_main
 
 # ===========================================================================
@@ -1886,6 +1886,56 @@ class TestAccountCheckProxyDiagnostics:
         assert "18443" not in result.output
         assert "secret-path" not in result.output
         assert "token" not in result.output
+
+    def test_check_flags_a_context_project_the_platform_no_longer_has(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A repo pins its project once; a deleted project leaves it bound to nothing."""
+        from inspire.cli.commands.account import check as check_module
+
+        cfg = Config(username="u", password="p", base_url="https://qz.sii.edu.cn")
+        cfg.context_project = "退役课题"
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
+
+        class _Project:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+        monkeypatch.setattr(
+            check_module.browser_api_module,
+            "list_all_projects",
+            lambda session=None: [_Project("在役课题")],
+        )
+
+        result = CliRunner().invoke(cli_main, ["--no-env-file", "account", "check"])
+
+        assert result.exit_code == EXIT_CONFIG_ERROR
+        assert "Authentication: OK" in result.output
+        assert "Project context: STALE" in result.output
+        assert "退役课题" in result.output
+        assert "inspire init --scope project" in result.output
+
+    def test_check_stays_quiet_when_the_project_listing_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A network problem is not evidence that the pin went stale."""
+        from inspire.cli.commands.account import check as check_module
+
+        cfg = Config(username="u", password="p", base_url="https://qz.sii.edu.cn")
+        cfg.context_project = "在役课题"
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
+
+        def _boom(session=None):  # noqa: ANN001, ANN202
+            raise RuntimeError("listing unavailable")
+
+        monkeypatch.setattr(check_module.browser_api_module, "list_all_projects", _boom)
+
+        result = CliRunner().invoke(cli_main, ["--no-env-file", "account", "check"])
+
+        assert result.exit_code == 0, result.output
+        assert "STALE" not in result.output
 
     def test_failed_check_explains_itself_without_details(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

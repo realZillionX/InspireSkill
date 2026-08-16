@@ -110,6 +110,12 @@
 
 ### 变更
 
+- **`inspire update` 会扫掉旧版本留下、当前版本已经不读的本地状态。** 停用某个状态文件的那个版本没法在退场时删掉它——知道它存在的代码正是被删掉的那部分——于是这些文件会永远留在 `~/.inspire` 下。本机实测积了五处：`jobs.json.legacy`、`.environment-normalized-v3`、`events/`（34 个文件、956K）、`accounts/<n>/project_list.json`、`accounts/<n>/config.toml.bak-7897`，当前代码里没有一行读它们。
+
+  新增的 `inspire/accounts/state_inventory.py` 是当前版本拥有哪些路径的唯一声明，`update` 拿它和磁盘对账。写了新状态文件却忘了在这里登记，它就会被报成孤儿并提议删除——吵闹但可恢复，好过无声累积。删除前必然先打印清单：交互模式下询问，`--yes` 跳过询问，`--json` 和后台每日检查只报告不删除（前者没有可回答的人，后者没有人）。已经是最新版时 `update` 照样扫，所以它也是随时手动跑这件事的入口。`metrics/` 里的图是用户明确要过的产物，不参与清扫。
+
+- **`inspire account check` 会发现本仓库钉住了一个平台上已经不存在的 Project。** 仓库的 `[context] project` 只在 `inspire init` 时写一次，之后再不复查；平台上把这个 Project 删掉或改名之后，仓库就钉在一个解析不到任何东西的名字上，这里的每一条 `<workload> create` 都会栽在它上面。账号级的 `project_catalog` 帮不上忙——它是写下这个 pin 的同一次 `inspire init` 留下的缓存，和 pin 口径一致地一起错，只有实时列一次才看得出来。判定为失效时报 `Project context: STALE` 并退 `EXIT_CONFIG_ERROR`（不是认证错误：账号是好的，是这个仓库的绑定坏了），指向 `inspire init --scope project`。列表调用本身失败时不作判断——网络问题不是失效的证据。
+
 - **删除 `inspire config` 整个命令组，其中管账号的部分并入 `inspire account`。** `config check` → `account check`，`config context` → `account context`，`config show` 的账号级部分 → 新的 `account show`。归属本来就错了：schema 里 15 个 option 有 10 个是账号作用域（Authentication / API / Proxy / Tunnel），它们全部由 `account add` 写入 `~/.inspire/accounts/<name>/config.toml`，而 `config show` 对其中 8 个只印 `<configured>`——每项只传递「设了没设」这一个 bit，那本来就是一条 `account status`。`config context` 更直接：它列出的 project 和 compute group 就是 `inspire init` 的发现结果写进账号配置的那份缓存，只有 workspace 名单是实时查的。
 
   剩下的 5 个仓库级 option（`job.*`、`notebook.post_start`）不再有查看命令。它们照常生效，只是没有专门的表格：值写在 `./.inspire/config.toml`，同名环境变量默认优先，`[cli] prefer_source = "toml"` 反转优先级。一个只为 5 个键存在的命令组，撑不起顶层一个名字。

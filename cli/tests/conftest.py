@@ -39,6 +39,20 @@ def _silence_normalize_environment(monkeypatch):  # noqa: ANN001
 
 
 @pytest.fixture(autouse=True)
+def _no_orphan_state_sweep(monkeypatch):  # noqa: ANN001
+    """Report no orphaned state unless a test opts in.
+
+    `inspire update` sweeps `~/.inspire` for files no current version reads.
+    Left unstubbed it would scan the real home of whoever runs pytest, so
+    unrelated update tests would fail on that machine's leftovers.
+    `test_state_inventory.py` isolates `Path.home` and undoes this stub.
+    """
+    from inspire.accounts import state_inventory
+
+    monkeypatch.setattr(state_inventory, "find_orphan_state", lambda: [])
+
+
+@pytest.fixture(autouse=True)
 def _isolate_web_session_runtime(monkeypatch):  # noqa: ANN001
     """Keep web-session fallback state from leaking between tests."""
     from inspire.platform.web import session as web_session_module
