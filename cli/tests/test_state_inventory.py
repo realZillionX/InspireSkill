@@ -135,6 +135,29 @@ def test_sweep_is_silent_for_the_background_check(home: Path) -> None:
     assert orphan.exists()
 
 
+def test_sweep_never_breaks_a_successful_upgrade(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scan loads a module this process was not built against.
+
+    By the time the sweep runs, the package on disk is the incoming release.
+    If that module cannot load here, the upgrade already succeeded and must
+    still report success.
+    """
+
+    def _boom() -> list:
+        raise ImportError("new release restructured the package")
+
+    monkeypatch.setattr(state_inventory, "find_orphan_state", _boom)
+
+    assert (
+        update_module._sweep_orphan_state(
+            silent=False, assume_yes=True, json_output=False
+        )
+        is None
+    )
+
+
 def test_sweep_reports_without_deleting_in_json_mode(home: Path) -> None:
     """JSON mode has no operator to confirm, so it reports and keeps."""
     orphan = home / "jobs.json.legacy"

@@ -1291,12 +1291,20 @@ def _sweep_orphan_state(
     Never deletes without consent and never prompts where no one can answer:
     silent mode is the background update check, and JSON mode has no operator,
     so both report through the return value and delete only under ``--yes``.
-    """
-    from inspire.accounts.state_inventory import find_orphan_state
 
+    Imported here rather than at module scope on purpose: by the time this
+    runs, the package on disk is already the new version, so this picks up the
+    incoming release's manifest instead of the running process's. That is the
+    manifest we want — it knows what the new version stopped using — but it
+    means loading a module this process was not built against, so every failure
+    below is swallowed. Sweeping is housekeeping; it must never turn a
+    successful upgrade into a traceback. The next `inspire update` retries.
+    """
     try:
+        from inspire.accounts.state_inventory import find_orphan_state
+
         orphans = find_orphan_state()
-    except OSError as exc:
+    except Exception as exc:  # noqa: BLE001 - see docstring
         logger.debug("Orphan state scan failed: %s", exc)
         return None
     if not orphans:
