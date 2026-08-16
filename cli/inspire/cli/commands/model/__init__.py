@@ -28,10 +28,10 @@ def model() -> None:
     \b
     Examples:
         inspire model list --workspace 分布式训练空间
-        inspire model status qwen-demo --workspace 分布式训练空间 --project CI-情境智能
+        inspire model status qwen-demo --workspace 分布式训练空间 --project <project>
         inspire model versions qwen-demo --workspace 分布式训练空间
         inspire model deploy-config qwen-demo --workspace 分布式训练空间
-        inspire model register --name qwen-demo --source-path /inspire/hdd/project/<topic>/public/models/qwen-demo --workspace 分布式训练空间 --project CI-情境智能
+        inspire model register --name qwen-demo --source-path /inspire/hdd/project/<topic>/public/models/qwen-demo --workspace 分布式训练空间 --project <project>
         inspire model delete qwen-demo --workspace 分布式训练空间 --yes
     """
 

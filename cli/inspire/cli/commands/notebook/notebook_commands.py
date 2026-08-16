@@ -272,18 +272,18 @@ def create_notebook_cmd(
 
     \b
     Examples:
-        inspire notebook create --workspace 分布式训练空间 --project CI-情境智能 \
-          --image sandbox-base:latest --group H200-2号机房 -q 1,20,200
-        inspire notebook create --workspace CPU资源空间 --project CI-情境智能 \
-          --image sandbox-base:latest --group CPU资源-2 -q 0,4,32 --shm-size 64
-        inspire notebook create --workspace 分布式训练空间 --project CI-情境智能 \
-          --image sandbox-base:latest --group H200-2号机房 -q 1,20,200 \
+        inspire notebook create --workspace 分布式训练空间 --project <project> \
+          --image <image> --group H200-2号机房 -q 1,20,200
+        inspire notebook create --workspace CPU资源空间 --project <project> \
+          --image <image> --group CPU资源-2 -q 0,4,32 --shm-size 64
+        inspire notebook create --workspace 分布式训练空间 --project <project> \
+          --image <image> --group H200-2号机房 -q 1,20,200 \
           --post-start-script scripts/notebook_setup.sh
-        inspire notebook create --workspace 分布式训练空间 --project CI-情境智能 \
-          --image sandbox-base:latest --group H200-2号机房 -q 1,20,200 \
+        inspire notebook create --workspace 分布式训练空间 --project <project> \
+          --image <image> --group H200-2号机房 -q 1,20,200 \
           --node qb-prod-gpu1736
-        inspire notebook create --workspace CPU资源空间 --project CI-情境智能 \
-          --image sandbox-base:latest --group CPU资源-2 -q 0,4,32 \
+        inspire notebook create --workspace CPU资源空间 --project <project> \
+          --image <image> --group CPU资源-2 -q 0,4,32 \
           --dataset pixabay-81k:v0 --auto-stop-after 120
     """
     if post_start and post_start_script:

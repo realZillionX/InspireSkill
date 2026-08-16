@@ -133,7 +133,7 @@ def main(
     \b
     Examples:
         inspire job create --name "pr-123" --workspace 分布式训练空间 \
-          --project CI-情境智能 --group H200-2号机房 --quota "4,80,800" \
+          --project <project> --group H200-2号机房 --quota "4,80,800" \
           --command "bash train.sh"
         inspire job status pr-123 --workspace 分布式训练空间
         inspire notebook list --workspace 分布式训练空间

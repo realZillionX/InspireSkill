@@ -112,7 +112,9 @@ def test_slurm_step_runs_apt_simulate_preflight(monkeypatch: pytest.MonkeyPatch)
     # what to do without us explaining apt-graph internals.
     assert "auto-install not supported" in cmd
     assert "manual: apt-get install" in cmd
-    assert "unified-base:v2" in cmd
+    # The alternative is stated as a requirement, not as one image's name: a
+    # concrete image is somebody's mutable asset and goes stale in help text.
+    assert "already ships a slurm client" in cmd
     assert "exit 3" in cmd
 
 

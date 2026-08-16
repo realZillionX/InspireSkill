@@ -43,7 +43,7 @@ def serving() -> None:
     Examples:
         inspire model versions my-model --workspace 分布式训练空间
         inspire serving configs --workspace 分布式训练空间
-        inspire serving create --name demo --model my-model --workspace 分布式训练空间 --project CI-情境智能 --group H200-2号机房 --quota 1,18,200 --image serve-base:v1 --command "python serve.py" --port 8000 --dry-run
+        inspire serving create --name demo --model my-model --workspace 分布式训练空间 --project <project> --group H200-2号机房 --quota 1,18,200 --image <image> --command "python serve.py" --port 8000 --dry-run
         inspire serving list --workspace 分布式训练空间
         inspire serving status <serving-name> --workspace 分布式训练空间
         inspire serving scale <serving-name> --workspace 分布式训练空间 --replicas 3

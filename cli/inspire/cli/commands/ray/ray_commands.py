@@ -1154,10 +1154,10 @@ def create_ray(
           -n av-pipeline \\
           -c 'python driver.py --mode run_and_exit' \\
           --workspace CPU资源空间 \\
-          --project CI-情境智能 \\
-          --image ray-base:v1 \\
+          --project <project> \\
+          --image <image> \\
           --group HPC-可上网区资源-2 --quota 0,4,16 \\
-          --worker 'name=decode;image=ray-base:v1;group=HPC-可上网区资源-2;quota=0,20,80;min=1;max=8;shm-size=32'
+          --worker 'name=decode;image=<image>;group=HPC-可上网区资源-2;quota=0,20,80;min=1;max=8;shm-size=32'
 
     """
     try:

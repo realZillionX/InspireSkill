@@ -1214,8 +1214,8 @@ def create_hpc(
 
     \b
     Examples:
-        inspire hpc create -n preprocess --workspace CPU资源空间 --project CI-情境智能 \
-          --group HPC-可上网区资源-2 -q 0,20,256 --image hpc-base:v1 \
+        inspire hpc create -n preprocess --workspace CPU资源空间 --project <project> \
+          --group HPC-可上网区资源-2 -q 0,20,256 --image <image> \
           -c 'srun bash -lc "python preprocess.py"'
         inspire hpc create -n probe --profile cpu-hpc -c 'srun hostname' --dry-run
         inspire hpc create -n index --profile cpu-hpc --dataset pixabay-81k:v0 \

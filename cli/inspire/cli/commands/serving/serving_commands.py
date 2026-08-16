@@ -815,7 +815,7 @@ def list_serving(
 
     \b
     Examples:
-        inspire serving list --workspace 分布式训练空间 --project CI-情境智能
+        inspire serving list --workspace 分布式训练空间 --project <project>
         inspire serving list --workspace 分布式训练空间 --keyword qwen --status RUNNING
         inspire serving list --workspace all --keyword qwen
     """
@@ -2134,8 +2134,8 @@ def create_serving(
     \b
     Examples:
         inspire serving create --name qwen-demo --model qwen-demo --workspace 分布式训练空间 \
-          --project CI-情境智能 --group H200-2号机房 --quota 1,18,200 \
-          --image serve-base:v1 --command "python serve.py" --port 8000 --dry-run
+          --project <project> --group H200-2号机房 --quota 1,18,200 \
+          --image <image> --command "python serve.py" --port 8000 --dry-run
         inspire serving metrics qwen-demo --workspace 分布式训练空间 --window 30m
     """
     try:

@@ -65,7 +65,7 @@ def notebook():
 
     \b
     Examples:
-        inspire notebook create --workspace CPU资源空间 --group CPU资源-2 -q 0,20,256 --project CI-情境智能 --image unified-base:v2 --name prep-box --wait
+        inspire notebook create --workspace CPU资源空间 --group CPU资源-2 -q 0,20,256 --project <project> --image <image> --name prep-box --wait
         inspire notebook ssh prep-box --workspace CPU资源空间
         inspire notebook ssh prep-box -- hostname
         inspire notebook ssh-config prep-box >> ~/.ssh/config

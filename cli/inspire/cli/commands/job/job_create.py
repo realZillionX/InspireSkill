@@ -646,14 +646,14 @@ def create(
 
     \b
     Examples:
-        inspire job create -n pr-123 --workspace 分布式训练空间 --project CI-情境智能 \
-          --group H200-2号机房 -q 4,80,800 --image sandbox-base:latest --nodes 1 \
+        inspire job create -n pr-123 --workspace 分布式训练空间 --project <project> \
+          --group H200-2号机房 -q 4,80,800 --image <image> --nodes 1 \
           -c "bash repo/train.sh"
-        inspire job create -n test --workspace 分布式训练空间 --project CI-情境智能 \
-          --group H200-2号机房 -q 1,20,200 --image sandbox-base:latest --nodes 1 \
+        inspire job create -n test --workspace 分布式训练空间 --project <project> \
+          --group H200-2号机房 -q 1,20,200 --image <image> --nodes 1 \
           -c "python train.py" --priority 4
-        inspire job create -n eval --workspace 分布式训练空间 --project CI-情境智能 \
-          --group H200-2号机房 -q 1,20,200 --image sandbox-base:latest --nodes 1 \
+        inspire job create -n eval --workspace 分布式训练空间 --project <project> \
+          --group H200-2号机房 -q 1,20,200 --image <image> --nodes 1 \
           --dataset pixabay-81k:v0 --env WANDB_MODE=offline --keep-after-failure 1 \
           -c "python eval.py --data /inspire/dataset/pixabay-81k/v0"
 
