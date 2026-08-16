@@ -70,6 +70,12 @@ Referer：`/jobs/distributedTraining`，详情页 `/jobs/distributedTrainingDeta
 
 ---
 
+**查过、刻意不封装：`ListPreCheckItems` / `GetPreCheckResult`。** 它不是「提交前校验规格」，而是**每个训练任务创建时可选开启**的节点健康检查：创建面收 `enable_troubleshoot` 加一份 `pre_check_items`（取值来自 `ListPreCheckItems({logic_compute_group_id})`，实测 `训练区-H200-1号机房` 只有一项「单机节点基本功能检查」），任务跑起来之后 `GetPreCheckResult({job_id})` 才有东西可读——没开的任务答 `InvalidParameter: train job does not enable troubleshoot precheck`。
+
+**而 `train_enable_troubleshoot` 在全部 10 个可见 Workspace 都是 `False`**，也就是平台侧根本没放开这个能力，接出来只会是一个谁也用不了、我们也验不了的开关。同一份 `notebook.GetScheduleConfig` 里还有三个同族能力位：`train_enable_slow_detect`（`分布式训练空间` / `CI-情境智能` 开）、`train_enable_specified_nodes`（两个 `CI-情境智能*` 开，是真正的节点绑定，与我们已有的 `--exclude-node` 不是一回事）、`train_enable_vccl`（`分布式训练空间` 开）。要接其中任何一个，先读这四个位，别假设某个 Workspace 允许。
+
+---
+
 ## `hpc` — CPU Slurm 批处理
 
 Referer：`/jobs/highPerformanceComputing`，详情页 `/jobs/hpcDetail/{job_id}`。
