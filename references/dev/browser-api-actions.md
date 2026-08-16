@@ -4,7 +4,7 @@
 >
 > 每条都是 `POST {base_url}/api/v2/{路由}?Action={Action}`，请求体是 JSON，响应取 `ResponseMetadata` / `Result` 信封里的 `Result`。「请求体」列写的是 **CLI 实际发出的键**，不是 discovery 声明的全集；「响应」列写的是**实测的线上键**，discovery 声明的 `Items` / `TotalCount` 在多数 Action 上不是真的。
 
-12 条路由、113 个 Action。`†` 标记的 Action 不在 `discovery` 里，但路由活着、Action 可调；`‡` 标记的整条路由不在 discovery 里。
+13 条路由、114 个 Action。`†` 标记的 Action 不在 `discovery` 里，但路由活着、Action 可调；`‡` 标记的整条路由不在 discovery 里。
 
 | 路由 | 域 | Action 数 | 主要 CLI 命令组 |
 | --- | --- | --- | --- |
@@ -18,6 +18,7 @@
 | [`project`](#project--项目) | 项目 | 4 | `project`、每个 `create` |
 | [`image`](#image--镜像) | 镜像 | 5 | `image` |
 | [`model-hub`](#model-hub--模型仓库) | 模型仓库 | 14 | `model`、`serving create` |
+| [`resource-price`](#resource-price--配额目录-) ‡ | 按计算组解析好的配额目录 | 1 | `<workload> quota`、每个 `create` |
 | [`file`](#file--文件页-) ‡ | 存储池与目录发现 | 2 | `init --scope project` |
 | [`dataset`](#dataset--官方数据集挂载-) ‡ | 官方数据集挂载 | 1 | `dataset validate`、`--dataset` |
 
@@ -189,7 +190,7 @@ Referer：`/jobs/interactiveModeling`。
 - **`GetRealtimeNotebookMetric` 收到空 / 缺失的 `notebook_id` 不报错，而是用成功信封返回整个集群的汇总**（实测 CPU total 159682.1、GPU total 7765、已用 1743.12）。任何不做前置校验的调用方都会把这个印成「这一个 Notebook 占了上千张卡」。**Wrapper 必须在发出前拒绝空 handle。**
 - `GetRealtimeNotebookMetric` 的 `resource_metric_list` 固定四行 `{resource_name, total, used, available, usage_rate, unit, spec}`，`usage_rate` 是 0–1 比率，`unit` 只有 Memory 是 `"GB"`，`spec` 恒空，没有 disk / network 行。**STOPPED 的 Notebook 四行全 0 且 HTTP 成功**，与「RUNNING 但空闲」不可区分，所以命令层必须同时打印状态。
 - **`GetRealtimeNotebookMetricByTime` 刻意不接**：它只收 `notebook_id`（`time_range` / `metric_types` 都是 `unknown field`），固定约一小时窗口、5 秒粒度，返回同样拼错的 `time_seris_metric_groups`。`metrics --window 1h` 已经用同样四个指标覆盖同一小时，而 CLI 的输出预算只打 min/max/avg/last 加 sparkline，5 秒与 60 秒的差别在这个粒度上不可见；它又只存在于 `notebook` 路由，进不了共享的 metrics 命令工厂。
-- **规格菜单也在这里，而且只在这里。** 四个 `*_quota` / `predef_train_spec` 字段的值是 **JSON 编码的字符串**（不是数组），元素形如 `{id, cellId, name, cpu_count, memory_size, gpu_count, gpu_type, logic_compute_group_ids, allowed_priority_levels}`。`id` 就是 v1 价格行里的 `quota_id`，实测全部 10 个工作空间 × 4 类 Workload **零 miss**，所以它是把优先级限制 join 到配额目录上的键。`allowed_priority_levels` 取 `null` / `[]`（不限）或 `["low"]`（只能低优先级）；全平台 168 条规格里只有 9 条受限，全是 `分布式训练空间` 训练区的碎卡档（1 / 2 / 4 卡各一条 × `quota` / `predef_train_spec` / `serving_quota` 三份菜单），整节点档不受限。`logic_compute_group_ids` 为空表示对所有组开放；一条受限规格通过它覆盖三个训练区计算组，所以 `<workload> quota` 里会显示成 9 行而不是 3 行。HPC 的 `predef_node_spec` 不在这份记录里。
+- **优先级限制只在这里。** 四个 `*_quota` / `predef_train_spec` 字段的值是 **JSON 编码的字符串**（不是数组），元素形如 `{id, cellId, name, cpu_count, memory_size, gpu_count, gpu_type, logic_compute_group_ids, allowed_priority_levels}`。`id` 就是 `resource-price` 价格行里的 `quota_id`，实测全部 10 个工作空间 × 4 类 Workload **零 miss**，所以它是把优先级限制 join 到配额目录上的键。配额目录本身另有来源（见 `resource-price`），这份记录是工作空间级的一整张表，不按计算组解析；`GetLogicComputeGroupResourceSpecPrices` 才是按组解析好的那份。`allowed_priority_levels` 取 `null` / `[]`（不限）或 `["low"]`（只能低优先级）；全平台 168 条规格里只有 9 条受限，全是 `分布式训练空间` 训练区的碎卡档（1 / 2 / 4 卡各一条 × `quota` / `predef_train_spec` / `serving_quota` 三份菜单），整节点档不受限。`logic_compute_group_ids` 为空表示对所有组开放；一条受限规格通过它覆盖三个训练区计算组，所以 `<workload> quota` 里会显示成 9 行而不是 3 行。HPC 的 `predef_node_spec` 不在这份记录里。
 - **`notebook.GetScheduleConfig` 是 Workspace 调度策略的全集**，`GetNotebookScheduleConfig`、`ray.GetRayJobScheduleConfig`、`train.GetTrainScheduleConfig` 都是它的严格子集（10 个 Workspace 上逐字段同值、同 `config_id`），所以只接这一个。它与**管理员专用**的 `workspace.GetScheduleConfig` 只是重名，不是同一个东西。
 - `notebook create` 的 `allow_ssh: true` 是硬编码的：平台据此在 proxy URL 上暴露容器内的 rtunnel 端口，缺了它 proxy 返回 404，Notebook SSH 的预检就完不成。该字段省略时默认 false，与镜像里有没有 SSH 工具无关。
 
@@ -385,6 +386,24 @@ Referer：`/jobs/modelService?spaceId={workspace_id}`。路由名是**连字符*
 - **`filter_by.project_id` 必须是数组**，传裸字符串会被 protobuf 解码拒绝。
 - 列表项是 `{model: {...}, project_name, user_name, latest_version}` 的嵌套形状，扁平化时 `model_id` 优先于内层 `id`。
 - `DeleteModel` / `UpdateModel` 存在（受控验证时用过 `DeleteModel` 收尾），当前未封装。
+
+---
+
+## `resource-price` — 配额目录 ‡
+
+Referer：`/jobs/interactiveModeling`。**整条路由不在 discovery 里**，控制台一直在用。它挡在每一个 `create` 命令前面：把用户敲的 `-q 1,20,200` 翻成平台要的 `quota_id`，是这个翻译的唯一来源。
+
+| Action | 请求体 | 响应（`Result` 内） | CLI |
+| --- | --- | --- | --- |
+| `GetLogicComputeGroupResourceSpecPrices` | `{workspace_id, logic_compute_group_id, schedule_config_type}` | `{lcg_resource_spec_prices[{quota_id, gpu_count, cpu_count, memory_size_gib, gpu_info{gpu_type, gpu_type_display, brand, gpu_memory_size_gb}, cpu_info{cpu_type}, total_price_per_hour, gpu_price, cpu_price, memory_price}]}` | `<workload> quota`、每个 `create` 的配额解析 |
+
+**参数语义与限制**
+
+- **`schedule_config_type` 取 `SCHEDULE_CONFIG_TYPE_` 加 `DSW`（Notebook）/ `TRAIN` / `HPC` / `RAY_JOB` / `SERVE`**，还有一个 `SERVE_DYNAMIC` 对应 Serverless 推理，CLI 不用。少这个字段答 `unspecified schedule config type`，少 `logic_compute_group_id` 答 `Logic compute group id should not be empty`——两个都必填，**没有工作空间级的形态**。
+- **它已经按计算组解析好了**，这正是它的价值：`notebook.GetScheduleConfig` 的 `*_quota` 菜单是工作空间级的一整张表，要靠 `logic_compute_group_ids` 自己过滤，还要再叠「装得进组内某个节点」和「组真的有可分配容量」两条规则；这个 Action 直接给该组当下真正可用的那几行。两边的 `quota_id` 一一对应，用来 join `allowed_priority_levels`。
+- **`total_price_per_hour` 的单位是点券/小时**，实测等于 GPU 数（1/2/4/8 卡各 1/2/4/8）。同族的 `GetResourceAndInferencePrices`（按资源类型的单价）和 `GetStoragePrices`（按存储产品的单价，`点券/TB/天`）也可读，CLI 目前不接。
+- **空列表是权威回答**，不是失败：该组不跑这类 Workload 时就是 0 行（实测 `训练区-H200-1号机房` 的 `RAY_JOB` / `HPC` 都是 0 行）。请求失败要抛，两者不能同值——它们曾经同值，于是一次被限流的刷新把整个工作空间缓存成了「没有配额」。
+- **本 Action 与 `/api/v1/resource_prices/logic_compute_groups/` 逐字段等价**：请求体相同、响应键相同。10 个工作空间 × 全部计算组 × 5 种 `schedule_config_type` 共 225 组比对，225/225 行集一致，字段集也没有差异。此前判定「v2 没有对应物、只能客户端重算」是照 discovery 下的结论，而 discovery 根本没有这条路由——正是 [`browser-api.md` 第 6 节](browser-api.md#6-discovery-能信什么)警告的那个错误模式。
 
 ---
 

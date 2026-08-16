@@ -6,7 +6,7 @@
 
 Browser API 是启智控制台自己用的接口面：同一台 `qz.sii.edu.cn`、同一个 CAS Session，控制台 SPA 全程走 `/api/v2` 的 Action 网关。官方 CLI `qz` 是这套接口的另一个客户端，不是它的前置依赖；调用它不需要安装任何外部二进制。
 
-当前 CLI 封装 **12 条路由、113 个 Action**，另有 **4 处 v1 端点**因为 v2 装不下或重建更贵而保留（第 8 节）。
+当前 CLI 封装 **13 条路由、114 个 Action**，另有 **3 处 v1 端点**因为 v2 装不下或还没有 Session 可用而保留（第 8 节）。
 
 ## 1. 事实源
 
@@ -158,7 +158,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 `GET {base_url}/discovery` 返回 `{"Result": {"Version": "<etag>", "Services": [...]}}`，每个 Action 带完整的嵌套参数与响应结构。**不带任何认证头**，且匿名与带 Cookie 的响应逐字节相同——它是静态文档，**不按调用者角色过滤**。
 
-当前 `Version = e1daec0f`，11 个 Service、175 个 Action。CLI 用到的 113 个 Action 里有 **18 个不在 discovery 里**：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`notebook.ListNotebookCreators`、`user.GetPermissions`、`user.GetRoutes`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners`、`image.CreateImage`、`image.UpdateImage`、`model-hub.CreateModel`、`model-hub.DeleteModel`、`notebook.CheckNotebook`、`train.CreateTensorboard`、`train.StartTensorboard`、`train.StopTensorboard`、`train.DeleteTensorboard`；另有 `file`、`dataset` 两条**整条路由**不在 discovery 里，却都活着且正在用。
+当前 `Version = e1daec0f`，11 个 Service、175 个 Action。CLI 用到的 114 个 Action 里有 **18 个不在 discovery 里**：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`notebook.ListNotebookCreators`、`user.GetPermissions`、`user.GetRoutes`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners`、`image.CreateImage`、`image.UpdateImage`、`model-hub.CreateModel`、`model-hub.DeleteModel`、`notebook.CheckNotebook`、`train.CreateTensorboard`、`train.StartTensorboard`、`train.StopTensorboard`、`train.DeleteTensorboard`；另有 `resource-price`、`file`、`dataset` 三条**整条路由**不在 discovery 里，却都活着且正在用——其中 `resource-price` 挡在每一个 `create` 前面。
 
 | 字段 | 可信度 |
 | --- | --- |
@@ -173,7 +173,17 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 `Version` 历史上**双向变动过**：早期有 `audit`、`file` 两个 Service 和整套节点运维 Action，之后被移除；`image`、`model-hub` 是后加的；`image` 一度缩到只剩 4 个 Action，`CreateImage` / `UpdateImage` 退回未文档化状态。**不能假设新版本是旧版本的超集。**
 
-**判定「无对应物」的固定错误模式**：只测 discovery 里那个同名 Action 就下结论。`inference_serving` 只测 `CreateServing` 会漏掉 `CreateServingConsole`；`/cluster_nodes/list` 只测 `ListWorkspaceNodes` 会漏掉 `ListNodeDimension`；`/user/quota` 只看 `user` 服务会漏掉 `workspace.*` 下那 10 个配额 Action。**Discovery 只能用来找候选，不能用来否定。**
+**判定「无对应物」的固定错误模式**：只测 discovery 里那个同名 Action 就下结论。`inference_serving` 只测 `CreateServing` 会漏掉 `CreateServingConsole`；`/cluster_nodes/list` 只测 `ListWorkspaceNodes` 会漏掉 `ListNodeDimension`；`/user/quota` 只看 `user` 服务会漏掉 `workspace.*` 下那 10 个配额 Action。**Discovery 只能用来找候选，不能用来否定。** 我们自己栽过一次：`resource_prices/logic_compute_groups/` 被判成「v2 无对应物、只能客户端重算」并据此写进文档，而 `resource-price` 这条路由根本不在 discovery 里，v2 侧的 Action 一直可用且逐字段等价。
+
+### 找候选的第三条路：控制台前端产物
+
+discovery 之外还有一份下界更宽的清单——Web 控制台自己在调什么。抓 `{base_url}/` 的入口 chunk，按 `"./xxx.js"` 递归拉全部产物（当前 322 个 chunk / 18.9 MB），正则提取写死的 `/api/v2/{service}?Action={Action}`。当前结果：**25 条路由、187 个 Action**，比 discovery 多 14 条路由。
+
+正则要写 `[A-Za-z0-9]+` 而不是 `[A-Za-z]+`，否则 `GetProjectListV2` 会被截成 `GetProjectListV`，看起来像一个不存在的 Action。这份清单是**下界**：动态拼接的调用抓不到，所以它能证明「某 Action 存在」，不能证明「不存在」。
+
+discovery 完全没有、而控制台在用的路由：`audit`(6)、`billing`(3)、`file`(9)、`image_plaza`(7)、`job`(8)、`model_plaza`(5)、`operate-log`(1)、`resource-price`(6)、`sandbox`(4)、`sandbox-api-key`(3)、`sandbox-pool`(1)、`sandbox-template`(6)、`serving`(1)、`storage`(10)。按第 7 节的判据对其中 102 个只读 Action 逐个探活，**`InvalidAction` 为 0**——全部路由存在。对普通成员，`storage` / `operate-log` 整个服务是 `user is not system admin`，`billing` 三个 Action 读超时或 `InternalError`，其余可读。
+
+`user.GetMyPermissions`（空请求体）另给一份**按账号的权限表**：`{Services: {服务: {Read, Write, Actions: {Action: bool}}}}`。它只覆盖有 RBAC 网关的 14 个服务（不含 `train` / `notebook` / `workspace` / `project` / `ray` / `hpc`），但在覆盖范围内是权威的，而且列出了连前端产物里都没有的 Action——`job.ListNodeJobs`、`job.GetLcgUsedComputeResourceJobs`、`job.GetProjectQuotaJobs` / `GetUserQuotaJobs` 就是这么找到的。判「我能不能调」先问它，比探针便宜。
 
 ## 7. 探针方法
 
@@ -201,7 +211,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 **④ 猜名字。** 未文档化 Action 的命名规律是 v1 路径去掉资源前缀后的 PascalCase：`GET /project/{id}` → `GetProjectDetail`，`/file/dir/list` → `GetDirList`，`/project/owners` → `GetProjectOwners`。猜不中就换动词（`Get` / `List` / `Create` / `Update` / `Delete`）和单复数重试，一轮十几个名字就能覆盖。
 
-**⑤ 穷举名字找不到，就去看控制台调什么。** 用带 Session 的浏览器打开对应页面录网络请求，比猜名字强得多：平台前端**全程走 v2**，它调什么就说明什么存在。`/resource_prices/logic_compute_groups/` 的候选、`user.ListSSH`、`user.GetMyPermissions` 都是这么找到的。
+**⑤ 穷举名字找不到，就去看控制台调什么。** 用带 Session 的浏览器打开对应页面录网络请求，比猜名字强得多：平台前端**全程走 v2**，它调什么就说明什么存在。`resource-price.GetLogicComputeGroupResourceSpecPrices`、`user.ListSSH`、`user.GetMyPermissions` 都是这么找到的。逐页录请求只覆盖你想得到去打开的那些页面；要一次拿全，按第 6 节的办法扫整个 bundle。
 想从前端 bundle 反推某个表单的字段形状时，**只取 `/assets/index.*.js` 入口不够**——创建表单在惰性加载的 chunk 里，需要从入口递归抓一遍（当前约 322 个 chunk）。
 
 **⑥ 写语义只能受控验证。** 只读探针可以自由复核；创建、启动、停止、保存、删除的语义**不能从只读流量推导**，也不能只看响应信封——`ray.StartJob` 会返回干净的成功信封而什么都不做。写操作的成功以**状态真的变了**为准。
@@ -214,7 +224,6 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 | v1 端点 | 消费者 | 为什么不迁 |
 | --- | --- | --- |
-| `POST /api/v1/resource_prices/logic_compute_groups/` | [`quota_cache.py`](../../cli/inspire/cli/utils/quota_cache.py) → 每一个 `create` 命令和 `<workload> quota` | **可复现，但重建更贵**：2N+1 次调用 vs N 次，且等于在客户端复制一份平台调度端的过滤逻辑。见下文 |
 | `GET /api/v1/user/detail` | [`session/auth.py`](../../cli/inspire/platform/web/session/auth.py) 登录握手 | **Session 自举**：这是判定「登录成功了没有」的探针，此时还没有任何 Session 可供 v2 使用 |
 | `GET /api/v1/user/routes/default` | 同上，发现可见 Workspace | **Session 自举**：字面量 `default` 是「还不知道自己在哪个 Workspace」的占位；v2 的 `user.GetRoutes` 要一个真实的 `WorkspaceId`，登录时还拿不到 |
 | `GET /api/v1/notebook/lab/{notebook_id}/proxy/{port}/` | [`rtunnel.py`](../../cli/inspire/platform/web/browser_api/rtunnel.py)、`notebook proxy-url`、整条 Notebook SSH 链路 | **不是 Action 能表达的东西**：反向代理，不是 JSON 请求/响应。见下文 |
@@ -241,22 +250,6 @@ JupyterLab / VS Code 打开之后还有一种带 token 的等价形式 `/{jupyte
 `notebook` 服务下没有对应 Action：`GetNotebookLab` / `GetLabUrl` / `GetNotebookProxy` / `GetProxyUrl` 均 `InvalidAction`。唯一沾边的 `GetNotebookAccessUrl` 语义不同（它给的是 IDE 网关地址，见 Action 表），**故意不接**。
 
 它与平台用户中心的 SSH 公钥注册表（曾经的 `/ssh/*`）没有任何关系——后者管的是账号级公钥，rtunnel 读的是本机 `~/.ssh/*.pub` 并直接注入容器。
-
-### `resource_prices/logic_compute_groups/`
-
-**它是规格菜单，不是价目表。** 名字里的 `resource_prices` 有误导性——全仓搜 `total_price_per_hour` / `cpu_price` / `gpu_price` 零命中。CLI 只读 `quota_id` 加 `(gpu_count, cpu_count, memory_size_gib)`，外加 serving 读的 `cpu_info.cpu_type` / `gpu_info.gpu_type`。它是把用户敲的 `-q 1,20,200` 翻成平台要的 `quota_id` 的**唯一**来源，挡在每一个 `create` 命令前面。
-
-请求 `{workspace_id, logic_compute_group_id, schedule_config_type}`，`schedule_config_type` 取 `SCHEDULE_CONFIG_TYPE_DSW`（Notebook）/ `_HPC` / `_TRAIN` / `_RAY_JOB`；响应是 `lcg_resource_spec_prices` 列表。走 legacy `{code, data}` 信封，`code != 0` 即失败。
-
-**v2 侧的等价数据要靠客户端重算，规则已经完整复原，三个工作空间 16 个组 16/16 逐组一致**：
-
-1. **`logic_compute_group_ids` 为空 = 对所有组开放。** 漏掉这条会得出灾难性的错误结论。
-2. **规格必须装得进组内某个节点**（cpu / memory / gpu 三项都 ≤ 某个 `node_spec`）——要 `workspace.GetLogicComputeGroupNodeSpecs`。
-3. **组必须真的有可分配容量**——要 `workspace.GetLogicComputeGroupResource`。这条最不显眼：两个节点硬件完全相同、`support_job_type_list` 也相同的组，其中一个 `gpu_total: 0`，v1 因此对它返回 0 条。**这是运行时状态，不是静态配置。**
-
-规则 2 和 3 都是**按组**的，于是重建一个工作空间的配额目录要 **2N+1 次 v2 调用**，而 v1 是 **N 次**（实测 3 组→7 vs 3、4 组→9 vs 4、9 组→19 vs 9）。代价还不止请求数：迁过去等于在客户端维护一份平台调度端过滤逻辑的副本，平台改一条规则我们收不到任何信号，只会开始默默地把不能用的档位报给用户、或者把能用的藏起来。
-
-**重新评估这个决定的触发条件是明确的**：平台出现一个**工作空间级、已经按组解析好**的配额 Action（届时 2N+1 变 1）。在那之前没有理由动。
 
 ## 9. 回落纪律
 

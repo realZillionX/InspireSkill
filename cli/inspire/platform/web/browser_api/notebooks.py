@@ -9,7 +9,6 @@ from typing import Any, Callable, Optional
 
 from inspire.config import Config
 from inspire.platform.web.browser_api.core import (
-    _browser_api_path,
     _get_base_url,
     _request_json,
     _v2_result,
@@ -81,34 +80,30 @@ def _get_session_and_workspace_id(
     return session, workspace_id
 
 
-def _request_notebooks_data(
+def _resource_price_v2(
     session: WebSession,
-    method: str,
-    endpoint_path: str,
-    *,
+    action: str,
     body: Optional[dict] = None,
+    *,
     timeout: int = 30,
-    default_data: Any = None,
-) -> Any:
-    """Call a `/api/v1` endpoint that has no v2 counterpart.
+) -> dict[str, Any]:
+    """Call one `/api/v2/resource-price` Action and return its ``Result``.
 
-    Resource pricing is the only caller left: no Action on any v2 route
-    answers `/resource_prices/logic_compute_groups/`. The notebook family is on
-    v2 via :func:`_notebook_v2`, the image family via :func:`_image_v2`.
+    The whole `resource-price` service is absent from discovery, which is why
+    the quota catalog stayed on `/api/v1/resource_prices/logic_compute_groups/`
+    long after the rest of the client moved. It is live, it takes the v1
+    request body unchanged, and it answers under the same
+    ``lcg_resource_spec_prices`` key.
     """
     data = _request_json(
         session,
-        method,
-        _browser_api_path(endpoint_path),
+        "POST",
+        f"/api/v2/resource-price?Action={action}",
         referer=_notebooks_referer(),
-        body=body,
+        body=body or {},
         timeout=timeout,
     )
-
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    return data.get("data", default_data)
+    return _v2_result(data)
 
 
 def _image_v2(
@@ -278,37 +273,35 @@ def get_resource_prices(
     - SCHEDULE_CONFIG_TYPE_TRAIN: training-job framework specs
     - SCHEDULE_CONFIG_TYPE_RAY_JOB: Ray head / worker quotas
       (consumed by `inspire ray create --group/--quota` and worker specs)
+    - SCHEDULE_CONFIG_TYPE_SERVE: serving quotas
 
     A failed request raises. An empty list means the platform answered and
     this group has no specs for this schedule type — the two used to be the
     same value, which is how a rate-limited refresh cached a workspace as
     having no quotas at all.
+
+    This is the one quota-critical request that stayed on `/api/v1` because
+    `resource-price` is absent from discovery. It is not: the v2 Action takes
+    the same body and answers the same rows, measured across every visible
+    workspace, every compute group and all five schedule types — 225 pairs,
+    225 identical, and identical field sets.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
     )
 
-    body = {
-        "workspace_id": workspace_id,
-        "schedule_config_type": schedule_config_type,
-        "logic_compute_group_id": logic_compute_group_id,
-    }
-
-    data = _request_notebooks_data(
+    payload = _resource_price_v2(
         session,
-        "POST",
-        "/resource_prices/logic_compute_groups/",
-        body=body,
-        timeout=30,
-        default_data=[],
+        "GetLogicComputeGroupResourceSpecPrices",
+        {
+            "workspace_id": workspace_id,
+            "schedule_config_type": schedule_config_type,
+            "logic_compute_group_id": logic_compute_group_id,
+        },
     )
 
-    if isinstance(data, list):
-        return data
-    # The API nests results under 'lcg_resource_spec_prices'
-    return data.get(
-        "lcg_resource_spec_prices", data.get("resource_spec_prices", data.get("list", []))
-    )
+    prices = payload.get("lcg_resource_spec_prices")
+    return prices if isinstance(prices, list) else []
 
 
 def list_notebook_compute_groups(

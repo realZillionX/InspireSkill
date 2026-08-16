@@ -14,6 +14,8 @@
 
 - 打开索引时删掉全局资源类型上残留的按 Workspace 分区行。`project` 在 v7.0.0 前按 Workspace 存，之后 `scope_workspace_id()` 会把它的 Workspace 抹平，于是老库里那些带 Workspace 的 `project` 行既刷不到也查不到，只会让 `cache status` 多报几个 Workspace。和已有的「删掉本版本不认识的资源类型」同一处、同一个理由。
 
+- 配额目录从 `/api/v1/resource_prices/logic_compute_groups/` 迁到 v2 的 `resource-price?Action=GetLogicComputeGroupResourceSpecPrices`。这是挡在每一个 `create` 前面的那个请求——把 `-q 1,20,200` 翻成平台要的 `quota_id`，也是 `<workload> quota` 的数据源，此前是仅存的几处 v1 依赖里唯一一处在关键路径上的。此前判定「v2 没有对应物」是照 `/discovery` 下的结论，而 `resource-price` 整条路由根本不在 discovery 里——正是我们自己文档里写着的那个错误模式。两侧请求体相同、响应键相同：10 个 Workspace × 全部计算组 × 5 种 `schedule_config_type` 共 225 组比对，225/225 行集一致，字段集无差异。随之删掉最后一个 v1 转发助手。
+
 - `resources nodes` 的整节点空闲数不再把调度不上去的节点算进去。`resources availability` 的 `Free Nodes` 一直在排除 `cordon_type` / `is_maint` / `resource_pool=fault`，而同一份 `ListNodeDimension` 数据在 `get_full_free_node_counts` 里只判了 `status=READY` 且无任务——同一个「整节点空闲」在两处有两个定义，而 `resources nodes` 恰恰是提交多节点任务前用来看放不放得下的那个视图。实测这三个字段在现网真的会被置上（`CPU资源空间/HPC-可上网区资源-2` 436 个节点里 101 个带 cordon），只是目前被 cordon 的节点同时也不是 `READY`，所以暂时没有暴露成错数；判据现在收敛到一个 `_node_is_schedulable_and_idle`，两处共用。
 
 ## v7.1.0
