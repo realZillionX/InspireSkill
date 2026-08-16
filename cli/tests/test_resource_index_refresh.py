@@ -1727,3 +1727,55 @@ def test_dedupe_preserves_every_identity_field() -> None:
         if field.name in {"resource_id", "name"}:
             continue
         assert getattr(deduped, field.name) == getattr(record, field.name), field.name
+
+
+def test_cache_status_flags_a_refreshed_scope_that_holds_nothing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """In date, fully refreshed, and unable to answer anything is not `ready`.
+
+    This is the shape a quota catalog was in when it answered "no quota rows"
+    for every compute group and `create` refused every `--quota` the platform
+    would have taken -- while `cache status` called it the healthiest state
+    there is.
+    """
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    index.reconcile(_scope("quota-job", "workspace-one"), [], now=100)
+
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 101)
+    payload = cache_commands._status_payload(index)
+
+    # By resource, not by position: the payload also carries rows this index
+    # knows nothing about, so `items[0]` is somebody else's row.
+    row = next(r for r in payload["items"] if r["resource"] == "quota-job")
+    assert row["cached_names"] == 0
+    assert row["state"] == "empty"
+
+
+def test_cache_status_keeps_ready_when_only_one_workspace_is_empty(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A workspace really can have none of something; the resource still works.
+
+    The verdict is drawn across the whole resource for exactly this reason --
+    per scope it would fire on every account that has a workspace with no
+    notebooks in it, which is most of them.
+    """
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    index.reconcile(
+        _scope("notebook", "workspace-one"),
+        [ResourceIdentity(resource_id="nb-one", name="probe")],
+        now=100,
+    )
+    index.reconcile(_scope("notebook", "workspace-two"), [], now=100)
+
+    monkeypatch.setattr(cache_commands.time, "time", lambda: 101)
+    payload = cache_commands._status_payload(index)
+
+    row = next(r for r in payload["items"] if r["resource"] == "notebook")
+    assert row["cached_names"] == 1
+    assert row["state"] == "ready"

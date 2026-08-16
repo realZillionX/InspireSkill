@@ -48,6 +48,8 @@
 
 ### 修复
 
+- `cache status` 不再把「刷新过、在有效期内、却一个名字都拿不出来」印成 `ready`。这正是配额目录出事时的状态——每个 `create` 都被拒，而看板显示的是最健康的那一档，故障因此完全看不出来。现在这种资源报 `empty`。判定只按整个资源画，不按单个 Scope：一个 Workspace 里没有 Notebook 是正常的，按 Scope 判会对几乎每个账号误报。
+
 - `job shell` 从 `/api/v1/train_job/remote_cmd` 迁到 `/api/v2/train_job/remote_cmd`，这是最后一处非自举的 v1 依赖，边界测试的白名单因此只剩 `session/auth.py` 一条。此前留着的理由写的是「v2 没有任何 Action 暴露 shell」——对 Action 成立，对 `/api/v2` 不成立：PTY 走的是网关 REST 形状的那一半，不带 `?Action=`，所以按 Action 名做的清单一直把它报成不存在。用一个 1 卡低优的一次性任务实测：v1 与 v2 各握一次手、各发一条 `echo`，**两边逐字节相同**（各 45 字节），验完即删。等价所以不留回落。
 
 - **`<workload> quota` 和每一个 `create` 会因为一份空缓存全线报「没有配额」。** 实测 `job quota` 在全部三个工作空间返回 `No quota rows found.`，而平台侧行都在——也就是说 CLI 建不出任何 Workload。根因在 `CachedPricesLoader`：Scope 只要标着「已完整刷新」，读到的记录哪怕一条没有也照样当答案，于是每个计算组都权威地回空。真实触发是 Scope 键变过之后遗留的 150 条记录读不到，而 Scope 仍标着完整。

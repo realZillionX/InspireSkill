@@ -64,6 +64,8 @@ CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解
 
 `cache status` 里 Workload 那几行常态就是 `partial`：后台只读了最新的一头，没做完整扫描。这不是故障，`error` 才是。
 
+`empty` 是另一个要看的信号：这个资源**刷新过、还在有效期内，却一个名字都拿不出来**。单个 Workspace 空是正常的（那个空间就是没有 Notebook），所以这个判定只按整个资源画——全局一条都没有，而刷新又声称跑过。配额目录出过一次这个状态，当时 `cache status` 把它印成 `ready`，于是「每个 `create` 都被拒」这件事在看板上完全看不出来。撞到 `empty` 先 `cache refresh --resource <kind> --full`，还空就是真出事了。
+
 空结果只在平台成功回答时才是事实。Quota 目录是「Workspace 里每个 Compute Group 一次请求」的扇出，任何一组没答上（限流、超时、5xx），这一轮就记成 incomplete：已读到的行照常缓存，读不到的那些保留上一轮的旧行，Scope 不算完整刷新。`cache refresh` 会在汇总里报 `N incomplete` 并列出原因，`cache status` 把原因留在该 Scope 的 `error` 上，下一次完整刷新才清掉。因此 `No quota rows found.` 和 `(workspace has no quotas)` 现在只可能来自平台真的返回空；上游没答复时命令直接报 API 错误。命中限流时先重试，持续不缓解再针对性 `inspire cache refresh --resource quota-<workload> --workspace <name> --full`。
 
 ## 4. Quota 语义

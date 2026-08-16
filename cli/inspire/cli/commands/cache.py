@@ -102,11 +102,17 @@ def _public_error(value: object) -> str:
 
 
 def _reports_nothing(row: dict[str, object]) -> bool:
-    """Whether a status row carries neither names nor a problem worth reading."""
+    """Whether a status row carries neither names nor a problem worth reading.
+
+    Only a scope nothing has ever touched is noise. A scope that *was*
+    refreshed and still holds nothing is the opposite of noise -- see the
+    ``empty`` branch in :func:`_scope_state` for what it once cost.
+    """
     return (
         not row.get("cached_names")
         and not row.get("errors")
         and row.get("state") == "empty"
+        and row.get("updated") == "never"
     )
 
 
@@ -184,9 +190,21 @@ def _status_payload(
             for row in rows
             if isinstance((value := row.get("cached_names")), int)
         ]
+        cached_names = sum(item_counts)
+        if state == "ready" and not cached_names:
+            # Refreshed, in date, and holding nothing anywhere. `ready` read as
+            # the healthiest state there is, which is how a quota catalog that
+            # answered nothing for every compute group -- and so refused every
+            # `--quota` the platform would have taken -- sat in plain sight.
+            #
+            # Per workspace this would be normal (a workspace really can have
+            # no notebooks), so the verdict is only drawn across the whole
+            # resource: nothing cached anywhere, after a refresh that claimed
+            # to have run.
+            state = "empty"
         summary: dict[str, object] = {
             "resource": resource,
-            "cached_names": sum(item_counts),
+            "cached_names": cached_names,
             "state": state,
             "updated": _age(min(refresh_times), now=now) if refresh_times else "never",
         }
