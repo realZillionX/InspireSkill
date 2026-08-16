@@ -276,7 +276,8 @@ Referer：`/jobs/distributedTraining`。
 - **维度族（`ListNodeDimension` / `ListTaskDimension` / `ListUserDimension`）的 scoping 只认嵌套 `filter.workspace_id`**：顶层 `workspace_id` 被直接拒为 `unknown field`，缺 workspace 则 `AccessForbidden`。`filter.logic_compute_group_id` 可选且真的收窄；`filter.task_type` 被静默忽略，`task_name_keyword` / `gpu_type` 有效。
 - **维度族的 `page_size: -1` 和省略 `page_size` 都只回 10 行**（实测 `total=1289` 时仍只给 10），必须按 `total` 显式翻页。三种分页拼法都认，`total` 是 int。
 - **维度族的 `order_by` 元素是 `{field, sort}` 而不是 `{field, order}`**，只有 `created_at` 被采纳且 `sort` 被忽略（恒升序），`{"field":"gpu"}` / `{"field":"cpu"}` 直接 `InternalError`——**排序只能在客户端做**。
-- 维度行只含存活工作负载（`RUNNING` 加短暂的 `COMMITTING`），覆盖所有用户与所有 Workload 类型。**`gpu.used` 是死字段（恒 0）**，但 `gpu.usage_rate` / `cpu.usage_rate` 是活的 0–1 比率。
+- 维度行只含存活工作负载（`RUNNING` 加短暂的 `COMMITTING`），覆盖所有用户与所有 Workload 类型。**`gpu.used` 是死字段（恒 0）**，但 `gpu.usage_rate` / `cpu.usage_rate` 是活的 0–1 比率。TensorBoard 不在维度里（`train.GetLcgUsedComputeResourceJobs` 才有），不过它一张卡都不占。
+- **`task_dimensions[].priority` 和 `train.GetJob` 的 `priority` 是两把不同的刻度，别混。** 维度行给的是**提交值**（`--priority` 的 1–10 档，实测线上取到 1 / 3 / 4 / 6 / 8 / 10），`resources usage` 的 `Reclaimable` 用的就是它；`GetJob` 回的是平台**存储值**（本账号四个任务实测提交 10 全部存成 35，配 `priority_level: HIGH`）。两者之间**没有验证过的换算**——四个数据点只覆盖一档，所以 CLI 不做反查，`job status` 原样回显存储值并同时给出 `priority_level`，那一列才是可解读的部分。
 - **`ListProjectDimension` 实测是空的**，不是 scoping 写错：10 个可见 Workspace、逐计算组、逐项目 id 都返回成功信封配 `total: 0`，而它的两个同族兄弟在**同一个** `filter.workspace_id` 位置上答出真实数据。所以它是权限地板，没有封装；按项目聚合改为在客户端折叠任务维度的行。
 - **`GetLogicComputeGroupNodeSpecs` / `GetWorkspaceNodeSpecs` 的 scoping 反而在顶层**，套 `filter` 是 `unknown field`；只给组不给 workspace 是 `AccessForbidden`。
 - **`node_specs` 是规格目录，不是节点清单**：一个 292 节点的组只发布 17 种形状，行是「形状 × 作业类型」的笛卡尔积，还会因为 GiB 小数差异重复（68 行原始数据里只有 6 种真实形状）。**任何按行数当节点数的读法都是错的**。字段里 `gpu_type` 恒为空、`gpu_memory_size` 恒为 0（真值在 `gpu_info` 里），discovery 声明的 `node_count` 线上根本不存在。
