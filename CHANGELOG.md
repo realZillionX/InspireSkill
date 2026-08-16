@@ -144,6 +144,16 @@
 
 - **`inspire init` 写出的账号模板里，`${{VARNAME}}` 多了一层大括号。** `[remote_env]` 那段注释教用户用 `"${VARNAME}"` 从本地环境取值，但模板是按字面量写盘的，用户照抄注释就会拼出一个取不到值的变量名。
 
+- **`image register` 的默认模式永远不会成功。** `--method push` 发的是 `add_method=0`，平台一律回 `InvalidParameter: no image uploaded`——那是控制台的「文件上传」，要先真的传一个镜像 tar，而 CLI 根本没实现上传。真正能用的是 `--method address` 走的 `add_method=2`，也就是控制台的「本地推送」：平台留一个 `<name>:<version>` 的位置并回一个镜像地址，你 `docker push` 上去。两个名字正好接反了，而 `docker tag` / `docker push` 提示偏偏只在那个必然失败的模式里打印。
+
+  现在只保留这一条能走通的路：`--method` 整个删掉，命令固定申请槽位，并把 `docker login` / `tag` / `push` 三行连同「推上去之前镜像一直是 FAILED」一起打出来——不打这三行的话，这条命令留下的就是一个没人知道怎么用的空位置。login 的主机名从平台回的地址里取，三行自洽。
+
+- **`image detail/delete/set-visibility` 传一个不带版本的名字，回的是「找不到」。** 镜像的身份是 `name:version`，`mostar-u1-runtime` 这种裸名永远匹配不上，可 `_resolve_image_name` 的 docstring 一直写着「裸名会匹配任意版本并走歧义列表」——没有的事。现在报出这个名字下真实存在的版本（`Existing: ...:v1, ...:v2, ...:v3`），并且只报一次：原本那条通用「找不到」被压住，否则一个错误会印两段。真不存在的名字仍然回「找不到」。
+
+- **`image list` 没有关键字过滤，而一个 registry 里有五千多个镜像。** 控制台镜像列表自带名称搜索，CLI 这边只能靠 `--limit` / `--all` 翻页，等于找不到。新增 `--keyword`，大小写不敏感的子串匹配。
+
+- **`notebook save-image` 把平台给的原因吞了。** 最常见的失败是 `Conflict: Duplicated image name and version: <name>:<version>`——换个 `-v` 就好——CLI 只说「Could not save notebook as an image.」。现在把平台点名的原因带出来，重名时还给出改版本号的完整命令。`image register` 的失败同样带原因。异常原文仍然不整段外抛，只回显认得出的那一截，因为它同时带着请求体。
+
 - **镜像的 Visibility 一栏读的是 `source`，不是 `visibility`。** 这两个字段都在每条镜像记录里，含义完全不同：`source` 是镜像被构建进哪个 registry 命名空间，`visibility` 才是谁能看见它、才是 `set-visibility` 写的那个字段、也才是 `--source public` / `--source private` 实际筛选的依据。从 Notebook 存出来的个人镜像一律是 `SOURCE_PUBLIC` + `VISIBILITY_PRIVATE`，于是 `image list --source private`（网页端「个人可见镜像」）把整张表的 Visibility 全标成 `public`——正好和事实相反。`image list`、`image detail` 和 `notebook save-image` 的回读现在都取 `visibility`；官方镜像自己没有这个字段，仍按 `source` 认。
 
 - **`image list --source` 少了一整类：网页镜像选择器有四个页签，CLI 只有三个。** 「项目可见镜像」（`VISIBILITY_PROJECT`）在 CLI 里既列不出来也设不了，`--source all` 也扫不到——`CPU资源空间` 里有 2 个这样的镜像，此前按名字根本解析不到。`--source` 增加 `project`，`image set-visibility` 和 `notebook save-image --visibility` 同步增加 `project` 一档。

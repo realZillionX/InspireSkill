@@ -64,7 +64,15 @@ _NODE_EVENT_MAX_PAGES = 5
     show_default=True,
     help="Maximum recent events to display.",
 )
-@click.option("--follow", "-f", is_flag=True, help="Follow the timeline and print new events.")
+@click.option(
+    "--follow",
+    "-f",
+    is_flag=True,
+    help=(
+        "Follow the timeline and print new events. Runs until interrupted; it never exits on its own, "
+        "not even once the node reaches a terminal state."
+    ),
+)
 @click.option(
     "--interval",
     type=click.IntRange(1),

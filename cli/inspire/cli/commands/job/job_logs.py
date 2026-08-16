@@ -44,6 +44,7 @@ from inspire.platform.web.session import SessionExpiredError, WebSession, get_we
 from .job_commands import (
     WebJobResolutionError,
     WebJobValidationError,
+    _JOB_TERMINAL_STATUSES,
     _close_web_client,
     _reject_web_job_name_at_boundary,
     _reject_job_instance_name,
@@ -414,11 +415,17 @@ def _follow_logs_via_web(
     page_size: int,
     session: WebSession,
     poll_interval: float = 2.0,
+    status_interval: float = 10.0,
 ) -> None:
     seen: set[tuple[int, str, str, int]] = set()
     seen_order: deque[tuple[int, str, str, int]] = deque()
     first_fetch = True
     truncation_announced = False
+    # The SSH path has always ended the follow when the job ends; the platform
+    # path used to poll a finished job forever, which is what a caller running
+    # `--follow` in a background terminal actually sees.
+    last_status_check = time.time()
+    draining = False
 
     def remember(item: dict) -> None:
         identity = _web_log_identity(item)
@@ -428,6 +435,15 @@ def _follow_logs_via_web(
         seen_order.append(identity)
         if len(seen_order) > _FOLLOW_SEEN_LIMIT:
             seen.discard(seen_order.popleft())
+
+    def terminal_status() -> Optional[str]:
+        try:
+            detail = browser_api_module.get_job_detail_v2(job_id, session=session)
+        except Exception as e:  # a transient read must not end the follow
+            logger.debug("Follow status refresh failed: %s", e, exc_info=True)
+            return None
+        status = detail.get("status", "")
+        return status if status in _JOB_TERMINAL_STATUSES else None
 
     try:
         while True:
@@ -464,6 +480,23 @@ def _follow_logs_via_web(
 
             for item in ordered:
                 remember(item)
+
+            if draining:
+                return
+
+            now = time.time()
+            if now - last_status_check >= status_interval:
+                last_status_check = now
+                final_status = terminal_status()
+                if final_status is not None:
+                    click.echo(
+                        f"Job reached {scrub_raw_ids(final_status)}; "
+                        "no further log records will arrive.",
+                        err=True,
+                    )
+                    # One last pass picks up records written between the final
+                    # log fetch and the status read.
+                    draining = True
 
             time.sleep(poll_interval)
     except KeyboardInterrupt:
@@ -557,14 +590,6 @@ def _follow_logs_via_ssh(
     api_logger.setLevel(logging.CRITICAL)
 
     session = get_web_session()
-    terminal_statuses = {
-        "SUCCEEDED",
-        "FAILED",
-        "CANCELLED",
-        "job_succeeded",
-        "job_failed",
-        "job_cancelled",
-    }
     final_status = None
     status_check_interval = 5
 
@@ -662,7 +687,7 @@ def _follow_logs_via_ssh(
                     job_data = browser_api_module.get_job_detail_v2(job_id, session=session)
                     current_status = job_data.get("status", "UNKNOWN")
 
-                    if current_status in terminal_statuses:
+                    if current_status in _JOB_TERMINAL_STATUSES:
                         final_status = current_status
                         time.sleep(3)
                         stdout.close()
@@ -1120,7 +1145,9 @@ def _run_job_logs_web_single_job(
     is_flag=True,
     help=(
         "Follow new log content; platform logs are polled and SSH logs use tail -f. "
-        "Initial output is bounded and long updates are shortened."
+        "Initial output is bounded and long updates are shortened. Returns once the "
+        "job reaches a terminal state, so a job that is already terminal prints its "
+        "tail and exits rather than following anything."
     ),
 )
 @click.option(

@@ -901,6 +901,46 @@ def test_job_wait_json_suppresses_intermediate_status_documents(
     assert json.loads(result.output)["data"]["status"] == "SUCCEEDED"
 
 
+@pytest.mark.parametrize("stopped_status", ["job_stopped", "job_cancelled", "CANCELLED"])
+def test_job_wait_returns_at_once_on_a_stopped_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stopped_status: str
+) -> None:
+    """A stopped job is terminal: `job` has no `start`, so waiting can only time out.
+
+    `job wait` used to omit `job_stopped` from its own terminal set and polled a
+    dead job for the full four-hour default.
+    """
+    patch_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.job import job_commands
+
+    monkeypatch.setattr(job_commands, "_resolve_web_job_id", lambda **kwargs: TEST_JOB_ID)
+    monkeypatch.setattr(job_commands, "get_web_session", web_session_module.get_web_session)
+
+    polls = {"count": 0}
+
+    def get_job_detail_v2(job_id: str, *, session: object) -> Dict[str, Any]:
+        del session
+        polls["count"] += 1
+        return {"job_id": job_id, "name": "wait-job", "status": stopped_status}
+
+    monkeypatch.setattr(job_commands.browser_api_module, "get_job_detail_v2", get_job_detail_v2)
+
+    def no_sleep(_seconds: float) -> None:
+        raise AssertionError("job wait polled a terminal job")
+
+    monkeypatch.setattr(job_commands.time, "sleep", no_sleep)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["job", "wait", "wait-job", "--workspace", "Test Workspace", "--interval", "1"],
+    )
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert result.exit_code != EXIT_TIMEOUT
+    assert stopped_status in result.output
+    assert polls["count"] == 1
+
+
 def test_job_list_watch_json_is_rejected_with_one_json_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

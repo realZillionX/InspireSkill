@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 from typing import Any, Optional
 
 import click
@@ -84,14 +86,17 @@ def _resolve_image_name(
     workspace_id: str,
     require_live: bool = False,
 ) -> str:
-    """Resolve a custom-image name (``<name>:<version>`` or bare ``<name>``) to image_id.
+    """Resolve a custom-image name ``<name>:<version>`` to image_id.
 
-    Custom images are identified by ``name:version`` on the platform; a plain
-    name without ``:`` matches any version but can be ambiguous and will
-    fall through to the shared ambiguity UI.
+    Images are addressed by ``name:version`` — the version is part of the
+    identity, not an optional suffix. A bare name is answered with the
+    versions that do exist rather than a bare "not found", because that is
+    the whole of what the user is missing.
     """
     if session is None:
         session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+
+    versions_for_bare_name: list[str] = []
 
     def _lister():
         bucket = []
@@ -106,6 +111,8 @@ def _resolve_image_name(
                 continue
             for i in imgs:
                 full = f"{i.name}" if ":" in (i.name or "") else f"{i.name}:{i.version}" if i.version else i.name
+                if ":" not in name and full.split(":", 1)[0] == name:
+                    versions_for_bare_name.append(full)
                 bucket.append(
                     {
                         "name": full,
@@ -121,18 +128,45 @@ def _resolve_image_name(
             raise RuntimeError("Image catalog lookup is incomplete.")
         return bucket
 
-    return resolve_by_name(
-        ctx,
-        name=name,
-        resource_type="image",
-        list_candidates=_lister,
-        pick_index=pick,
-        session=session,
-        workspace_id=workspace_id,
-        owner_scope="self",
-        require_live=require_live,
-        list_command=_IMAGE_LIST_COMMAND,
-    )
+    def _resolve() -> str:
+        return resolve_by_name(
+            ctx,
+            name=name,
+            resource_type="image",
+            list_candidates=_lister,
+            pick_index=pick,
+            session=session,
+            workspace_id=workspace_id,
+            owner_scope="self",
+            require_live=require_live,
+            list_command=_IMAGE_LIST_COMMAND,
+        )
+
+    if ":" in name:
+        return _resolve()
+
+    # `name:version` is the identity, so a bare name is a near miss rather
+    # than an unknown image. Hold the generic "not found" until it is clear
+    # the better answer — which versions exist — is unavailable; emitting
+    # both would print two error blocks for one mistake.
+    held = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(held):
+            resolved = _resolve()
+    except SystemExit:
+        if versions_for_bare_name:
+            listed = ", ".join(sorted(set(versions_for_bare_name))[:10])
+            _handle_error(
+                ctx,
+                "NotFound",
+                f"Image {scrub_raw_ids(name)!r} needs a version.",
+                EXIT_CONFIG_ERROR,
+                hint=f"Existing: {scrub_raw_ids(listed)}",
+            )
+        click.echo(held.getvalue(), nl=False, err=True)
+        raise
+    click.echo(held.getvalue(), nl=False, err=True)
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +188,31 @@ _VISIBILITY_BY_NAME = {
     "project": _VISIBILITY_PROJECT,
     "private": _VISIBILITY_PRIVATE,
 }
+
+# `CreateImage.add_method`. 2 is the console's 本地推送: it reserves
+# ``<name>:<version>`` and answers with the address to docker-push to. 0 is
+# 文件上传 and answers ``InvalidParameter: no image uploaded`` unless a file
+# upload preceded it, which this CLI does not implement.
+IMAGE_ADD_METHOD_LOCAL_PUSH = 2
+
+# Short, safe platform reasons worth repeating to the user. The exception text
+# also carries the request payload, so only the recognised tail is echoed.
+_PLATFORM_REASON_PREFIXES = (
+    "Conflict:",
+    "InvalidParameter:",
+    "AccessForbidden:",
+    "ResourceNotFound:",
+)
+
+
+def _platform_reason(error: Exception) -> str:
+    """Return `: <platform reason>` when the platform named one, else `.`."""
+    text = scrub_raw_ids(error)
+    for prefix in _PLATFORM_REASON_PREFIXES:
+        index = text.find(prefix)
+        if index != -1:
+            return f": {text[index:].strip()}"
+    return "."
 
 
 def _parse_visibility_value(visibility: Optional[str]) -> Optional[str]:
@@ -281,6 +340,16 @@ def _dedupe_images_by_id(
     help="Image source filter",
 )
 @click.option(
+    "--keyword",
+    default=None,
+    metavar="KEYWORD",
+    help=(
+        "Case-insensitive substring filter on the image name, matching the "
+        "console's name search. A registry holds thousands of images, so "
+        "paging to one by hand is not a plan."
+    ),
+)
+@click.option(
     "--limit",
     "-n",
     type=click.IntRange(1),
@@ -293,6 +362,7 @@ def list_images_cmd(
     ctx: Context,
     workspace: str,
     source: str,
+    keyword: str | None,
     limit: int | None,
     show_all: bool,
 ) -> None:
@@ -353,6 +423,9 @@ def list_images_cmd(
         return
 
     results = [_image_summary(image) for image in images]
+    if keyword:
+        needle = keyword.strip().casefold()
+        results = [row for row in results if needle in row["name"].casefold()]
     page = bound_collection(results, limit=effective_limit)
     if ctx.json_output:
         payload: dict[str, object] = {
@@ -507,17 +580,12 @@ def image_detail(
     help="Image visibility",
 )
 @click.option(
-    "--method",
-    type=click.Choice(["push", "address"], case_sensitive=False),
-    default="push",
-    show_default=True,
-    help="'push': create a slot then docker-push your image; "
-    "'address': register an image already hosted elsewhere",
-)
-@click.option(
     "--wait/--no-wait",
     default=False,
-    help="Wait for image to reach READY status",
+    help=(
+        "Wait for the pushed image to reach READY. Only useful once the "
+        "docker push below has finished; an unpushed slot never gets there."
+    ),
 )
 @pass_context
 def register_image_cmd(
@@ -527,14 +595,18 @@ def register_image_cmd(
     version: str,
     description: str,
     visibility: str,
-    method: str,
     wait: bool,
 ) -> None:
-    """Register an external Docker image on the platform.
+    """Claim a registry slot for an image you will docker-push yourself.
 
-    Push mode prints the registry-specific docker tag and docker push commands.
-    Address mode registers an image already hosted in a registry. Use notebook
-    save-image for a running notebook.
+    This is the platform's 本地推送 flow: it reserves ``<name>:<version>`` and
+    answers with the address to push to, which this command prints along with
+    the docker commands. The image stays FAILED until that push lands — the
+    slot is a reservation, not an image.
+
+    The platform's other route, 文件上传 (upload an image tar), needs a file
+    upload this CLI does not implement; use the web console for that. To turn a
+    prepared notebook into an image use ``inspire notebook save-image``.
     """
     session = require_web_session(
         ctx,
@@ -548,7 +620,6 @@ def register_image_cmd(
 
     visibility_value = _parse_visibility_value(visibility)
     assert visibility_value is not None
-    add_method_value = 2 if method.lower() == "address" else 0
 
     try:
         result = browser_api_module.create_image(
@@ -557,14 +628,15 @@ def register_image_cmd(
             workspace_id=workspace_id,
             description=description,
             visibility=visibility_value,
-            add_method=add_method_value,
+            add_method=IMAGE_ADD_METHOD_LOCAL_PUSH,
             session=session,
         )
-    except Exception:
+    except Exception as e:
+        detail = _platform_reason(e)
         _handle_error(
             ctx,
             "APIError",
-            "Could not register image.",
+            f"Could not register image{detail}",
             EXIT_API_ERROR,
         )
         return
@@ -600,9 +672,9 @@ def register_image_cmd(
     if ctx.json_output:
         payload = {
             "name": image_label,
-            "status": "ready" if ready else "registered",
+            "status": "ready" if ready else "awaiting-push",
         }
-        if registry_url and method.lower() == "push":
+        if registry_url:
             payload["registry"] = scrub_raw_ids(registry_url)
         click.echo(json_formatter.format_json(payload))
         return
@@ -610,14 +682,18 @@ def register_image_cmd(
     click.echo(
         format_mutation_success(
             "Image",
-            "ready" if ready else "registered",
+            "ready" if ready else "slot reserved",
             image_label,
         )
     )
-    if registry_url and method.lower() == "push":
+    if registry_url:
         safe_registry_url = scrub_raw_ids(registry_url)
+        # Without these three lines the slot is unusable, so they are the
+        # point of the command rather than a footnote.
+        click.echo(f"docker login {safe_registry_url.split('/', 1)[0]}")
         click.echo(f"docker tag <local-image> {safe_registry_url}")
         click.echo(f"docker push {safe_registry_url}")
+        click.echo("The image stays FAILED until that push completes.")
 
 
 # ---------------------------------------------------------------------------

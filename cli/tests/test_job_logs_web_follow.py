@@ -200,6 +200,54 @@ def test_web_logs_reject_an_unknown_instance(monkeypatch) -> None:  # noqa: ANN0
     assert "rank=0" in result.output
 
 
+def test_web_follow_stops_once_the_job_is_terminal(monkeypatch) -> None:  # noqa: ANN001
+    """Following a finished job used to poll forever; only the SSH path ever ended."""
+    _patch_web_resolution(monkeypatch)
+    monkeypatch.setattr(
+        job_logs.browser_api_module,
+        "get_job_detail_v2",
+        lambda job_id, *, session: {"created_at": "1000", "status": "job_stopped"},
+    )
+
+    calls = []
+
+    def fake_list_train_job_logs(**kwargs):  # noqa: ANN001
+        calls.append(kwargs)
+        return ([{"timestamp_ms": "1000", "timestamp_str": "t1", "pod_name": "worker-0",
+                  "message": "line"}], 1)
+
+    # Every read advances the clock past the status-check interval, so the very
+    # first poll is followed by a status read.
+    ticks = {"now": 0.0}
+
+    def fake_time() -> float:
+        ticks["now"] += 60.0
+        return ticks["now"]
+
+    monkeypatch.setattr(job_logs.browser_api_module, "list_train_job_logs", fake_list_train_job_logs)
+    monkeypatch.setattr(job_logs.time, "time", fake_time)
+    monkeypatch.setattr(job_logs.time, "sleep", lambda _s: None)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "logs",
+            "train-a",
+            "--workspace",
+            "Test Workspace",
+            "--source",
+            "platform",
+            "--follow",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Job reached job_stopped" in result.output
+    # The first poll prints the tail, the drain poll catches trailing records.
+    assert len(calls) == 2
+
+
 def test_web_follow_json_is_rejected_before_web_calls(monkeypatch) -> None:  # noqa: ANN001
     def fail_config(**kwargs):  # noqa: ANN001
         raise AssertionError("json follow validation should run before web setup")

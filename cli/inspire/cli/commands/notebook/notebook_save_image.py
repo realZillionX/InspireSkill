@@ -13,7 +13,10 @@ from typing import Optional
 import click
 
 # Shared with `inspire image set-visibility`, which applies the same mapping.
-from inspire.cli.commands.image.image_commands import _parse_visibility_value
+from inspire.cli.commands.image.image_commands import (
+    _parse_visibility_value,
+    _platform_reason,
+)
 
 # Imported as a module, not as `from ... import _resolve_notebook_id`: the name
 # is resolved per call so tests can patch it on `notebook_lookup` itself, the
@@ -271,12 +274,22 @@ def save_image_cmd(
             description=description,
             session=session,
         )
-    except Exception:
+    except Exception as e:
+        # The platform names the reason, and the most common one — this
+        # name:version already exists — is fixed by one flag. Swallowing it
+        # left the user with nothing to act on.
+        detail = _platform_reason(e)
         _handle_error(
             ctx,
             "APIError",
-            "Could not save notebook as an image.",
+            f"Could not save notebook as an image{detail}",
             EXIT_API_ERROR,
+            hint=(
+                f"Pick a free version: inspire notebook save-image {notebook_label} "
+                f"--workspace {workspace} -n {name} -v <version>"
+                if "Duplicated image name and version" in scrub_raw_ids(e)
+                else None
+            ),
         )
         return
 

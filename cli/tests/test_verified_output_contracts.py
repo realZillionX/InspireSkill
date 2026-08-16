@@ -24,6 +24,11 @@ notebook_lifecycle_module = importlib.import_module(
     "inspire.cli.commands.notebook.notebook_lifecycle"
 )
 
+# Captured before conftest's autouse fixture swaps it for a passthrough.
+_REAL_RESOLVE_IMAGE_NAME = importlib.import_module(
+    "inspire.cli.commands.image.image_commands"
+)._resolve_image_name
+
 
 # ---------------------------------------------------------------------------
 # Job logs: nanosecond ordering
@@ -625,3 +630,167 @@ def test_jupyter_terminal_shell_returns_on_the_same_marker(
     written = stdout.buffer.getvalue()  # type: ignore[attr-defined]
     assert b"tick=1" in written
     assert job_shell.SHELL_EXIT_MARKER.encode() not in written
+
+
+# ---------------------------------------------------------------------------
+# image register: only one add_method the CLI can actually drive
+# ---------------------------------------------------------------------------
+
+
+def test_register_uses_the_add_method_that_works() -> None:
+    """`add_method=0` answers `InvalidParameter: no image uploaded`.
+
+    That is the console's 文件上传 route and needs a file upload this CLI does
+    not implement; 2 is 本地推送, which reserves the slot and returns the
+    address to push to. The CLI used to default to 0.
+    """
+    from inspire.cli.commands.image.image_commands import IMAGE_ADD_METHOD_LOCAL_PUSH
+
+    assert IMAGE_ADD_METHOD_LOCAL_PUSH == 2
+
+
+def test_platform_reason_is_repeated_without_the_payload() -> None:
+    from inspire.cli.commands.image.image_commands import _platform_reason
+
+    conflict = RuntimeError(
+        "request payload {'name': 'x'} failed: "
+        "API error: Conflict: Duplicated image name and version: x:v1"
+    )
+    assert _platform_reason(conflict) == (
+        ": Conflict: Duplicated image name and version: x:v1"
+    )
+    # Nothing recognisable: say nothing rather than echo the request body.
+    assert _platform_reason(RuntimeError("socket hang up")) == "."
+
+
+# ---------------------------------------------------------------------------
+# image name resolution: version is part of the identity
+# ---------------------------------------------------------------------------
+
+
+def _patch_image_catalog(monkeypatch: pytest.MonkeyPatch, names: list[tuple[str, str]]):
+    from inspire.cli.commands.image import image_commands
+    from inspire.platform.web.browser_api import CustomImageInfo
+
+    def fake_list(source="official", session=None, workspace_id=None):
+        if source != "private":
+            return []
+        return [
+            CustomImageInfo(
+                image_id=f"img-{n}-{v}",
+                url=f"registry/{n}:{v}",
+                name=n,
+                framework="",
+                version=v,
+                source="SOURCE_PUBLIC",
+                status="SUCCESS",
+                description="",
+                created_at="0",
+                visibility="VISIBILITY_PRIVATE",
+            )
+            for n, v in names
+        ]
+
+    monkeypatch.setattr(
+        image_commands.browser_api_module, "list_images_by_source", fake_list
+    )
+    monkeypatch.setattr(
+        image_commands, "require_web_session", lambda ctx, hint=None: object()
+    )
+    monkeypatch.setattr(
+        image_commands, "_resolve_registry_scope", lambda ctx, **kwargs: "ws-1"
+    )
+
+
+def _resolve_bare(
+    monkeypatch: pytest.MonkeyPatch, name: str, catalog: list[tuple[str, str]]
+) -> tuple[int, str]:
+    """Call the real resolver and return (exit code, stderr).
+
+    conftest replaces `_resolve_image_name` with a passthrough for the whole
+    suite, so the resolver is exercised through the reference captured at
+    import time rather than through the CLI.
+    """
+    import io as _io
+    from contextlib import redirect_stderr
+
+    from inspire.cli.context import Context
+
+    _patch_image_catalog(monkeypatch, catalog)
+
+    captured = _io.StringIO()
+    try:
+        with redirect_stderr(captured):
+            _REAL_RESOLVE_IMAGE_NAME(
+                Context(), name, session=object(), workspace_id="ws-1"
+            )
+    except SystemExit as exit_info:
+        return int(exit_info.code or 0), captured.getvalue()
+    return 0, captured.getvalue()
+
+
+def test_bare_image_name_lists_the_versions_that_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare name used to answer a flat "not found"."""
+    code, err = _resolve_bare(
+        monkeypatch, "runtime", [("runtime", "v1"), ("runtime", "v2"), ("other", "v1")]
+    )
+
+    assert code != 0
+    assert "needs a version" in err
+    assert "runtime:v1" in err and "runtime:v2" in err
+    # One mistake, one error block.
+    assert err.count("Error:") == 1
+    assert "No image with name" not in err
+
+
+def test_unknown_image_name_still_says_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    code, err = _resolve_bare(monkeypatch, "nope", [("runtime", "v1")])
+
+    assert code != 0
+    assert "No image with name" in err
+    assert "needs a version" not in err
+
+
+def test_exact_name_version_still_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    from inspire.cli.context import Context
+
+    _patch_image_catalog(monkeypatch, [("runtime", "v1"), ("runtime", "v2")])
+
+    assert (
+        _REAL_RESOLVE_IMAGE_NAME(
+            Context(), "runtime:v2", session=object(), workspace_id="ws-1"
+        )
+        == "img-runtime-v2"
+    )
+
+
+def test_image_list_keyword_filters_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A registry holds thousands of images; the console has a name search."""
+    from inspire.cli.main import main as cli_main
+
+    _patch_image_catalog(
+        monkeypatch, [("runtime-a", "v1"), ("runtime-b", "v1"), ("other", "v1")]
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "image",
+            "list",
+            "--workspace",
+            "CPU资源空间",
+            "--source",
+            "private",
+            "--keyword",
+            "RUNTIME-A",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "runtime-a:v1" in result.output
+    assert "runtime-b" not in result.output
+    assert "other" not in result.output

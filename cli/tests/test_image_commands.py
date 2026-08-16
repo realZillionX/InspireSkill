@@ -346,9 +346,12 @@ def test_image_register_help_keeps_push_workflow_requirements() -> None:
     result = CliRunner().invoke(cli_main, ["image", "register", "--help"])
 
     assert result.exit_code == 0, result.output
-    assert "registry-specific" in result.output
-    assert "docker tag" in result.output
-    assert "docker push" in result.output
+    # There is one flow the CLI can drive: reserve a slot, then you push.
+    assert "docker-push" in result.output
+    assert "stays FAILED until that push" in result.output
+    # The file-upload route needs an upload this CLI does not implement, so it
+    # is described as web-only rather than offered as a mode that always errors.
+    assert "--method" not in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1183,7 +1186,12 @@ def test_image_register_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         captured["name"] = name
         captured["version"] = version
         captured["add_method"] = add_method
-        return {"image": {"image_id": "img-new-001", "address": "registry.example/img-new-001"}}
+        return {
+            "image": {
+                "image_id": "img-new-001",
+                "address": "registry.example/inspire-studio/my-img:v1.0",
+            }
+        }
 
     monkeypatch.setattr(browser_api_module, "create_image", fake_create_image)
 
@@ -1199,8 +1207,6 @@ def test_image_register_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
             *_WS,
             "-v",
             "v1.0",
-            "--method",
-            "address",
         ],
     )
     assert result.exit_code == 0
@@ -1208,7 +1214,8 @@ def test_image_register_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     payload = _json_data(result.output)
     assert payload == {
         "name": "my-img:v1.0",
-        "status": "registered",
+        "status": "awaiting-push",
+        "registry": "registry.example/inspire-studio/my-img:v1.0",
     }
     _assert_compact_public_payload(payload)
     assert "img-new-001" not in result.output
@@ -1233,11 +1240,15 @@ def test_image_register_human_push(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         cli_main, ["image", "register", "-n", "test", *_WS, "-v", "v0.1"]
     )
     assert result.exit_code == 0
-    assert result.output.splitlines()[0] == "OK Image registered: test:v0.1"
+    assert result.output.splitlines()[0] == "OK Image slot reserved: test:v0.1"
     assert "img-new-002" not in result.output
+    # Login host is derived from the address, so the three lines are usable
+    # as-is instead of sending the reader back to the console.
+    assert "docker login registry.example" in result.output
     assert "docker tag" in result.output
     assert "docker push" in result.output
     assert "registry.example/my-img:v0.1" in result.output
+    assert "stays FAILED until that push completes" in result.output
 
 
 def test_image_register_json_push_keeps_registry(
@@ -1263,7 +1274,7 @@ def test_image_register_json_push_keeps_registry(
     assert result.exit_code == 0, result.output
     assert _json_data(result.output) == {
         "name": "test:v0.2",
-        "status": "registered",
+        "status": "awaiting-push",
         "registry": "registry.example/my-img:v0.2",
     }
     assert "img-new-003" not in result.output
