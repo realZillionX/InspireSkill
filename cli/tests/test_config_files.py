@@ -22,10 +22,6 @@ from inspire.config import (
 )
 from inspire.config import (
     CONFIG_OPTIONS,
-    get_categories,
-    get_options_by_category,
-    get_options_by_scope,
-    get_option_by_env,
     get_option_by_toml,
 )
 from inspire.cli.commands.init import init
@@ -41,6 +37,10 @@ from inspire.cli.main import main as cli_main
 class TestConfigSchema:
     """Tests for config schema module."""
 
+    @staticmethod
+    def _by_scope(scope: str) -> list:
+        return [opt for opt in CONFIG_OPTIONS if opt.scope == scope]
+
     def test_config_options_not_empty(self) -> None:
         """Test that CONFIG_OPTIONS has entries."""
         assert len(CONFIG_OPTIONS) > 0
@@ -51,14 +51,21 @@ class TestConfigSchema:
             assert opt.env_var, f"Option missing env_var: {opt}"
             assert opt.toml_key, f"Option missing toml_key: {opt}"
             assert opt.field_name, f"Option missing field_name: {opt}"
-            assert opt.description, f"Option missing description: {opt}"
-            assert opt.category, f"Option missing category: {opt}"
 
-    def test_get_option_by_env(self) -> None:
-        """Test getting option by env var."""
-        opt = get_option_by_env("INSPIRE_USERNAME")
-        assert opt is not None
-        assert opt.toml_key == "auth.username"
+    def test_every_option_maps_to_a_loader_field(self) -> None:
+        """The schema and the loader's defaults must describe the same keys.
+
+        Defaults live only in `_default_config_values()`. An option whose
+        `field_name` is missing there would parse and then be dropped on the
+        floor, which is exactly how a duplicated default drifts unnoticed.
+        """
+        from inspire.config.load_common import _default_config_values
+
+        known_fields = set(_default_config_values())
+        for opt in CONFIG_OPTIONS:
+            assert opt.field_name in known_fields, (
+                f"{opt.env_var} maps to unknown Config field {opt.field_name!r}"
+            )
 
     def test_get_option_by_toml(self) -> None:
         """Test getting option by TOML key."""
@@ -71,24 +78,7 @@ class TestConfigSchema:
 
     def test_get_option_not_found(self) -> None:
         """Test getting non-existent option."""
-        assert get_option_by_env("NONEXISTENT_VAR") is None
         assert get_option_by_toml("nonexistent.key") is None
-
-    def test_get_categories(self) -> None:
-        """Test getting all categories."""
-        categories = get_categories()
-        assert len(categories) > 0
-        assert "Authentication" in categories
-        assert "API" in categories
-        assert "Proxy" in categories
-        assert "Workspaces" not in categories
-
-    def test_get_options_by_category(self) -> None:
-        """Test getting options by category."""
-        auth_opts = get_options_by_category("Authentication")
-        assert len(auth_opts) >= 2  # username and password
-        for opt in auth_opts:
-            assert opt.category == "Authentication"
 
     def test_scope_field_on_config_option(self) -> None:
         """Test that ConfigOption has scope field with valid values."""
@@ -99,30 +89,37 @@ class TestConfigSchema:
                 "project",
             ), f"Option {opt.env_var} has invalid scope: {opt.scope}"
 
-    def test_global_scope_options(self) -> None:
-        """Test that expected options have global scope."""
-        global_opts = get_options_by_scope("global")
-        global_env_vars = [opt.env_var for opt in global_opts]
+    def test_scopes_partition_every_option(self) -> None:
+        """Every option belongs to exactly one scope."""
+        account_opts = self._by_scope("global")
+        project_opts = self._by_scope("project")
 
-        # API settings should be global
-        assert "INSPIRE_BASE_URL" in global_env_vars
-        assert "INSPIRE_BROWSER_API_PREFIX" in global_env_vars
-        assert "INSPIRE_REQUESTS_HTTP_PROXY" in global_env_vars
-        assert "INSPIRE_PLAYWRIGHT_PROXY" in global_env_vars
+        assert len(account_opts) > 0
+        assert len(project_opts) > 0
+        assert len(account_opts) + len(project_opts) == len(CONFIG_OPTIONS)
 
-        # Password should remain global-scope for security defaults
-        assert "INSPIRE_PASSWORD" in global_env_vars
+    def test_account_scope_options(self) -> None:
+        """Test that expected options have account scope."""
+        account_env_vars = [opt.env_var for opt in self._by_scope("global")]
+
+        # API settings should be account-scoped
+        assert "INSPIRE_BASE_URL" in account_env_vars
+        assert "INSPIRE_BROWSER_API_PREFIX" in account_env_vars
+        assert "INSPIRE_REQUESTS_HTTP_PROXY" in account_env_vars
+        assert "INSPIRE_PLAYWRIGHT_PROXY" in account_env_vars
+
+        # Password should remain account-scoped for security defaults
+        assert "INSPIRE_PASSWORD" in account_env_vars
 
     def test_project_scope_options(self) -> None:
         """Test that expected options have project scope."""
-        project_opts = get_options_by_scope("project")
-        project_env_vars = [opt.env_var for opt in project_opts]
-        global_env_vars = [opt.env_var for opt in get_options_by_scope("global")]
+        project_env_vars = [opt.env_var for opt in self._by_scope("project")]
+        account_env_vars = [opt.env_var for opt in self._by_scope("global")]
 
         # Identity (username/password) lives at the active account only.
         # Switching accounts uses `inspire account use`, not a per-repo TOML.
-        assert "INSPIRE_USERNAME" in global_env_vars
-        assert "INSPIRE_PASSWORD" in global_env_vars
+        assert "INSPIRE_USERNAME" in account_env_vars
+        assert "INSPIRE_PASSWORD" in account_env_vars
         assert "INSPIRE_USERNAME" not in project_env_vars
         assert "INSPIRE_PASSWORD" not in project_env_vars
 
@@ -130,23 +127,6 @@ class TestConfigSchema:
         assert "INSPIRE_SHM_SIZE" in project_env_vars
         assert "INSPIRE_JOB_ENABLE_NOTIFICATION" in project_env_vars
         assert "INSPIRE_NOTEBOOK_POST_START" in project_env_vars
-
-    def test_get_options_by_scope(self) -> None:
-        """Test get_options_by_scope helper function."""
-        global_opts = get_options_by_scope("global")
-        project_opts = get_options_by_scope("project")
-
-        assert len(global_opts) > 0
-        assert len(project_opts) > 0
-
-        # All returned options should have correct scope
-        for opt in global_opts:
-            assert opt.scope == "global"
-        for opt in project_opts:
-            assert opt.scope == "project"
-
-        # Together they should cover all options
-        assert len(global_opts) + len(project_opts) == len(CONFIG_OPTIONS)
 
 
 # ===========================================================================

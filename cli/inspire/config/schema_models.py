@@ -8,27 +8,26 @@ from typing import Any, Callable
 
 @dataclass
 class ConfigOption:
-    """A single configuration option with metadata.
+    """One settable key, in all three of the spellings the CLI accepts.
+
+    Defaults are not recorded here. They live in
+    ``load_common._default_config_values()``, which is what the loader actually
+    reads; a copy on this dataclass was a second source of truth that silently
+    drifted.
 
     Attributes:
         env_var: Environment variable name
         toml_key: TOML configuration key (e.g., "auth.username")
         field_name: Config dataclass field name (e.g., "username")
-        description: Human-readable description
-        default: Default value (None if required)
-        category: Configuration category for grouping
-        secret: If True, value should be hidden in output
+        secret: If True, never write the value into a generated config file
         parser: Optional function to parse string value to correct type
-        scope: Configuration scope - "global" for user/machine-specific settings,
+        scope: Configuration scope - "global" for account-wide settings,
                "project" for per-codebase settings
     """
 
     env_var: str
     toml_key: str
     field_name: str
-    description: str
-    default: Any | None
-    category: str
     secret: bool = False
     parser: Callable[[str], Any] | None = None
     scope: str = "project"

@@ -122,6 +122,8 @@
 
 - **`account context` 不再列 `accounts`。** 那一段和同组的 `inspire account list` 逐字重复。
 
+- **删掉 config schema 上没人读的三个字段和四个查询函数。** 两个视图命令删掉之后，`ConfigOption.description`、`.category`、`.default` 和 `get_categories` / `get_options_by_category` / `get_option_by_env` / `get_options_by_scope` / `CATEGORY_ORDER` 全部零消费者——它们唯一的读者就是那两张表。其中 `.default` 不只是死代码，而是第二份事实来源：真正生效的默认值在 `load_common._default_config_values()` 里，两处各写一遍，上面那条 `base_url` 的修复就得同时改两个文件才不漏。现在只有一处。补了一条不变量测试：每个 option 的 `field_name` 必须在 loader 的默认值表里存在，否则解析完会被直接丢掉——正是这类漂移的失败形态。
+
 - **占位主机报错现在说得出是哪个主机。** 原消息印的是完整 URL，而 URL 在出口会被脱敏成 `<redacted>`，于是用户拿到一条「检测到占位主机」却看不出哪里不对的错误。改成印匹配到的主机名（`api.example.com` 这类固定文档占位符，本身不敏感）。
 
 - **删除 `inspire config env`。** `config env use .env` 和 `inspire init --scope project --env-file .env` 调的是同一个函数，纯重复；模板生成器 `config env [--template]` 只是把 schema 里的 description 重排成注释，没有回答任何 `--help` 回答不了的问题。`show` 的 `--format env` 和 `--compact` 随命令组一起消失：前者对账号级 10 项只会印 `# INSPIRE_USERNAME=<configured; redacted>`，后者的语义已经是 `account show` 的默认行为。
