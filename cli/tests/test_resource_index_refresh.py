@@ -10,7 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from inspire.accounts import create_account, set_current_account
-from inspire.cli.context import EXIT_API_ERROR
+from inspire.cli.context import EXIT_API_ERROR, EXIT_VALIDATION_ERROR
 from inspire.cli.utils.resource_index import (
     DEFAULT_TTL_SECONDS,
     ResourceIdentity,
@@ -255,6 +255,155 @@ def test_failed_refresh_preserves_existing_rows(tmp_path) -> None:
         item.resource_id for item in index.lookup(scope, "train", fresh_only=False)
     ] == ["job-one"]
     assert index.list_scope_status()[0].last_error == "temporary API failure"
+
+
+def _job_pages(pages: list[list[tuple[str, str]]], total: int) -> tuple[list[int], object]:
+    """A paged `job` reader over canned pages, recording which pages were read."""
+    read: list[int] = []
+
+    def _read_page(_session, _workspace_id, _exact_name, page, _page_size):  # noqa: ANN001
+        read.append(page)
+        rows = pages[page - 1] if page - 1 < len(pages) else []
+        return [
+            ResourceIdentity(resource_id=job_id, name=name) for job_id, name in rows
+        ], total
+
+    return read, _read_page
+
+
+def test_the_background_pass_stops_once_a_page_holds_nothing_new(
+    tmp_path, monkeypatch
+) -> None:
+    # 1400 of the user's jobs re-read in full every five minutes was 6.3 MB a
+    # cycle for names that had not moved. Newest-first lists let the pass stop
+    # at the first page it already knows.
+    from inspire.cli.utils import resource_index_refresh as refresh_module
+
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope("job", "workspace-one")
+    index.reconcile(
+        scope,
+        [ResourceIdentity(resource_id="job-1", name="train-1")],
+    )
+    read, read_page = _job_pages([[("job-1", "train-1")], [("job-0", "train-0")]], 1)
+    monkeypatch.setitem(refresh_module.WORKLOAD_PAGES, "job", read_page)
+    monkeypatch.setattr(refresh_module, "INCREMENTAL_PAGE_SIZE", 1)
+
+    fetch = refresh_module._incremental_workload_fetcher(
+        "job", index=index, session=_Session()
+    )
+    result = fetch(_Session(), "workspace-one", "")
+
+    assert read == [1]
+    # Never complete: a head-only read must not be allowed to tombstone a tail
+    # it did not look at.
+    assert result.complete is False
+
+
+def test_the_background_pass_keeps_paging_while_the_index_is_behind(
+    tmp_path, monkeypatch
+) -> None:
+    from inspire.cli.utils import resource_index_refresh as refresh_module
+
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    read, read_page = _job_pages(
+        [[("job-3", "train-3")], [("job-2", "train-2")], [("job-1", "train-1")]], 3
+    )
+    monkeypatch.setitem(refresh_module.WORKLOAD_PAGES, "job", read_page)
+    monkeypatch.setattr(refresh_module, "INCREMENTAL_PAGE_SIZE", 1)
+
+    fetch = refresh_module._incremental_workload_fetcher(
+        "job", index=index, session=_Session()
+    )
+    result = fetch(_Session(), "workspace-one", "")
+
+    assert read == [1, 2, 3]
+    assert sorted(record.resource_id for record in result.records) == [
+        "job-1",
+        "job-2",
+        "job-3",
+    ]
+
+
+def test_the_background_pass_never_tombstones_a_workload_it_did_not_look_at(
+    tmp_path, monkeypatch
+) -> None:
+    from inspire.cli.utils import resource_index_refresh as refresh_module
+
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope("job", "workspace-one")
+    index.reconcile(
+        scope,
+        [
+            ResourceIdentity(resource_id="job-old", name="ancient"),
+            ResourceIdentity(resource_id="job-new", name="recent"),
+        ],
+    )
+    _read, read_page = _job_pages([[("job-new", "recent")]], 2)
+    monkeypatch.setitem(refresh_module.WORKLOAD_PAGES, "job", read_page)
+    monkeypatch.setitem(refresh_module.RESOURCE_FETCHERS, "workspace", _workspace_fetch)
+    monkeypatch.setattr(refresh_module, "INCREMENTAL_PAGE_SIZE", 100)
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("job",),
+        force=True,
+        incremental=True,
+    )
+
+    assert _outcome_count(summary, "partial") == 1
+    # `ancient` was never on the page that was read, and is still resolvable.
+    assert [item.resource_id for item in index.lookup(scope, "ancient")] == ["job-old"]
+
+
+def test_a_hand_typed_refresh_still_reconciles_the_whole_scope(
+    tmp_path, monkeypatch
+) -> None:
+    from inspire.cli.utils import resource_index_refresh as refresh_module
+
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope("job", "workspace-one")
+    index.reconcile(
+        scope,
+        [
+            ResourceIdentity(resource_id="job-gone", name="deleted-on-the-web"),
+            ResourceIdentity(resource_id="job-live", name="running"),
+        ],
+    )
+    _read, read_page = _job_pages([[("job-live", "running")]], 1)
+    monkeypatch.setitem(refresh_module.WORKLOAD_PAGES, "job", read_page)
+    monkeypatch.setitem(refresh_module.RESOURCE_FETCHERS, "workspace", _workspace_fetch)
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("job",),
+        force=True,
+        incremental=False,
+    )
+
+    assert _outcome_count(summary, "refreshed") == 1
+    assert index.lookup(scope, "deleted-on-the-web") == []
+    assert [item.resource_id for item in index.lookup(scope, "running")] == ["job-live"]
+
+
+def test_cache_refresh_refuses_to_sweep_everything_by_default(tmp_path, monkeypatch) -> None:
+    from inspire.cli.main import main
+
+    cache_commands = import_module("inspire.cli.commands.cache")
+    monkeypatch.setattr(
+        cache_commands,
+        "refresh_resource_index",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a bare refresh must not reach the platform")
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["cache", "refresh"])
+
+    assert result.exit_code == EXIT_VALIDATION_ERROR
+    assert "--resource" in result.output
 
 
 def test_image_catalog_is_read_once_per_registry_not_once_per_workspace(
@@ -1086,7 +1235,7 @@ def test_cache_refresh_json_failure_is_compact(tmp_path, monkeypatch) -> None:
         ),
     )
 
-    result = CliRunner().invoke(main, ["--json", "cache", "refresh"])
+    result = CliRunner().invoke(main, ["--json", "cache", "refresh", "--resource", "job"])
 
     assert result.exit_code == EXIT_API_ERROR
     assert json.loads(result.output) == {
@@ -1150,7 +1299,7 @@ def test_cache_refresh_workspace_metavar_accepts_name_or_all() -> None:
     [
         ["cache", "status"],
         ["cache", "clear", "--yes"],
-        ["cache", "refresh"],
+        ["cache", "refresh", "--resource", "job"],
     ],
 )
 def test_cache_commands_normalize_database_errors(

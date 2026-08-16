@@ -29,6 +29,7 @@ from inspire.cli.utils.resource_index import (
     DEFAULT_TTL_SECONDS,
     ResourceIndex,
     ResourceIndexDatabaseError,
+    ScopeStatus,
 )
 from inspire.cli.utils.resource_index_refresh import (
     RESOURCE_TYPES,
@@ -109,6 +110,19 @@ def _reports_nothing(row: dict[str, object]) -> bool:
     )
 
 
+def _touched_at(status: ScopeStatus) -> float:
+    """When this scope last learned anything, complete scan or not.
+
+    Workload names are kept warm by an incremental background pass that reads
+    the newest end of each list and merges, so their scopes stay short of a
+    full scan by design. Reporting them off ``last_full_refresh_at`` alone
+    printed a scope refreshed a minute ago as ``never``.
+    """
+    if status.last_full_refresh_at > 0:
+        return status.last_full_refresh_at
+    return status.last_refresh_at
+
+
 def _status_payload(
     index: ResourceIndex,
     *,
@@ -128,7 +142,7 @@ def _status_payload(
         row: dict[str, object] = {
             "resource": status.resource_type,
             "cached_names": status.active_count,
-            "updated": _age(status.last_full_refresh_at, now=now),
+            "updated": _age(_touched_at(status), now=now),
         }
         workspace_name = names.get(status.workspace_id, "")
         if workspace_name:
@@ -160,9 +174,10 @@ def _status_payload(
             key=lambda value: state_rank.get(value, 1),
         )
         refresh_times = [
-            status.last_full_refresh_at
+            touched
             for status in statuses
-            if status.resource_type == resource and status.last_full_refresh_at > 0
+            if status.resource_type == resource
+            and (touched := _touched_at(status)) > 0
         ]
         item_counts = [
             value
@@ -307,12 +322,40 @@ def refresh_cache(
     quiet: bool,
     account: str | None,
 ) -> None:
-    """Refresh cached name mappings."""
+    """Refresh one named slice of the cache.
+
+    Say what to refresh. Every kind in every workspace is a few hundred
+    requests and reads catalogs that only move when an admin edits them, so
+    there is no bare form of this command — and normally nothing to run at
+    all, because workload names are kept warm in the background.
+
+    Reach for it when you know something changed under the cache: an admin
+    edited a compute group's specs, or an image was deleted from the web UI.
+
+    \b
+    Examples:
+        inspire cache refresh --resource notebook --workspace 分布式训练空间
+        inspire cache refresh --resource quota-job --workspace CPU资源空间 --full
+        inspire cache refresh --resource image --name pytorch:2.1
+    """
     account = (
         str(account or "").strip()
         or os.environ.get("INSPIRE_RESOURCE_INDEX_REFRESH_ACCOUNT", "").strip()
         or None
     )
+    if not due and not (resources or workspaces or name):
+        exit_with_error(
+            ctx,
+            "ValidationError",
+            "Say which part of the cache to refresh.",
+            EXIT_VALIDATION_ERROR,
+            hint=(
+                "Narrow it with --resource <kind> and/or --workspace <name>, "
+                "e.g. `inspire cache refresh --resource notebook --workspace "
+                "<name>`. Run `inspire cache status` first to see which scope "
+                "is actually stale."
+            ),
+        )
     selected = tuple(resource.lower() for resource in resources) or RESOURCE_TYPES
     exact_name = str(name or "").strip()
     validated_workspaces = tuple(
@@ -350,6 +393,11 @@ def refresh_cache(
             workspace_names=validated_workspaces or None,
             exact_name=exact_name,
             force=force,
+            # Only the background pass reads incrementally. Anyone who typed
+            # this command asked for a complete scan of what they named, which
+            # is also the only thing that can drop a workload the platform no
+            # longer lists.
+            incremental=due,
         )
     except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
         _exit_cache_database_error(ctx)

@@ -50,7 +50,13 @@
 
 CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解析；普通 `list`、`status`、`events`、`metrics` 和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。怀疑缓存过期时用 `inspire cache status|refresh|clear` 管理；清空缓存不会删除任何平台资源。三条命令都支持 `--resource <kind>` 只针对一类，可重复，不带才是全部。kind 分四组：平台目录 `workspace` / `project` / `compute-group` / `image` / `model`，Workload `notebook` / `job` / `hpc` / `ray` / `serving`，Quota 目录 `quota-<workload>`，以及 Notebook 显卡型号那层 `notebook-gpu`。最后这个只能 `status` 和 `clear`，不能 `refresh`——它是用到才探一个组，没有可以整批拉的列表接口。
 
-缓存年龄按东西变多快分三档：Workload 名字 5 分钟，账号结构（`workspace` / `project` / `compute-group` / `model`）1 天，目录类（`image` 和 `quota-<workload>`）7 天。TTL 同时是「这份缓存还能不能读」和「后台多久去补一次」：过期只会让一次解析回落到 Live，那总是安全的；长档换来的风险在另一个方向——平台已经删掉的规格或镜像，可能还会被缓存报出来直到 Scope 过期。管理员刚改过计算组规格、或者刚在网页上删过镜像，用 `inspire cache refresh --resource <kind> [--workspace <name>] --full` 立刻对齐。
+缓存年龄按东西变多快分三档：Workload 名字 5 分钟，账号结构（`workspace` / `project` / `compute-group` / `model`）1 天，目录类（`image` 和 `quota-<workload>`）7 天。TTL 同时是「这份缓存还能不能读」和「后台多久去补一次」：过期只会让一次解析回落到 Live，那总是安全的；长档换来的风险在另一个方向——平台已经删掉的规格或镜像，可能还会被缓存报出来直到 Scope 过期。
+
+后台补 Workload 名字时只读列表最新的那一头（平台按创建时间倒序返回），读到一页全是已知的就停，而且只合并、不对账。所以后台绝不会删掉缓存里的行：平台那边消失的任务是靠 TTL 自己掉出去的——没人再刷新它的有效期，5 分钟后就查不到了；用 CLI 删的当场就打上墓碑。代价是「网页上删掉的任务名还能解析 5 分钟」，换来的是这一趟从 86 个请求 / 8 MB 降到 70 个 / 2.1 MB。
+
+**`inspire cache refresh` 必须说明刷什么**，不带 `--resource` / `--workspace` / `--name` 会直接报错。全量刷一遍是几百个请求，而且读的是几乎不动的目录；正常情况下你根本不需要跑它——Workload 名字后台一直在补，其余的解析一次就自己缓存了。真正要跑的场合只有一种：你知道缓存底下的东西变了，比如管理员刚改过计算组规格、或者刚在网页上删过镜像。这时候先 `inspire cache status` 看哪个 Scope 真的不对，再 `inspire cache refresh --resource <kind> --workspace <name> --full` 只刷那一块。手敲的这一次是完整对账，会把平台不再列出的行清掉。
+
+`cache status` 里 Workload 那几行常态就是 `partial`：后台只读了最新的一头，没做完整扫描。这不是故障，`error` 才是。
 
 空结果只在平台成功回答时才是事实。Quota 目录是「Workspace 里每个 Compute Group 一次请求」的扇出，任何一组没答上（限流、超时、5xx），这一轮就记成 incomplete：已读到的行照常缓存，读不到的那些保留上一轮的旧行，Scope 不算完整刷新。`cache refresh` 会在汇总里报 `N incomplete` 并列出原因，`cache status` 把原因留在该 Scope 的 `error` 上，下一次完整刷新才清掉。因此 `No quota rows found.` 和 `(workspace has no quotas)` 现在只可能来自平台真的返回空；上游没答复时命令直接报 API 错误。命中限流时先重试，持续不缓解再针对性 `inspire cache refresh --resource quota-<workload> --workspace <name> --full`。
 

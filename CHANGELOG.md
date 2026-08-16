@@ -16,6 +16,14 @@
 
 - `project list` 的 `remaining_budget` 是**当前账号**的额度，不是项目的，而列名没说。实测同一个项目里项目还剩 233,107 而本账号只有 337——差 690 倍，按前者做决定会直接撞上「预算不足」。现在分成两列：`My Budget` / `my_remaining_budget` 是决定你的任务能不能起的那个数，`Project Budget` / `project_remaining_budget` 是全体成员共用的池子。平台不给成员额度时两列相同。**`--json` 的 `remaining_budget` 键随之消失**，脚本按新键名取。
 
+- **`inspire cache refresh` 不再有裸形式**：不带 `--resource` / `--workspace` / `--name` 会直接报错并给出收窄的写法。刷一遍全部是几百个请求，读的还是几乎不动的目录，而正常情况下这条命令根本不需要跑——Workload 名字后台一直在补，其余的解析一次就自己缓存了。真正要跑的场合只有一种：你知道缓存底下的东西变了（管理员改过计算组规格、镜像在网页上被删了）。先 `cache status` 看哪个 Scope 真的不对，再只刷那一块。
+
+- 后台补 Workload 名字改成增量：只读列表最新的那一头（平台按创建时间倒序返回，`job` / `hpc` / `tensorboard` 已逐一实测），读到一页全是已知的就停，而且**只合并、不对账**。此前每 5 分钟把 10 个 Workspace 里全部 1458 个历史任务重新拉一遍，只为了缓存名字——一趟 6.3 MB，折合每小时 76 MB。现在这一趟 86 个请求 / 35.8 s / 8 MB → **70 个请求 / 5.3 s / 2.1 MB**。
+
+  后台因此永远不会删掉缓存里的行。平台那边消失的任务靠 TTL 自己掉出去——没人再刷新它的 `expires_at`，5 分钟后就查不到了；用 CLI 删的当场打墓碑。代价是「网页上删掉的任务名还能解析 5 分钟」，而完整对账（能立刻清掉平台不再列出的行）改成只有手敲 `cache refresh` 时才做。冷缓存不受影响：`known` 为空时增量那一趟本来就会一直翻到 `total`，第一次仍然是完整的。
+
+  `cache status` 里 Workload 那几行因此常态显示 `partial`——后台只读了最新的一头，没做完整扫描。同一处顺便修掉一个假话：这些 Scope 的 `updated` 此前只看 `last_full_refresh_at`，于是一分钟前刚补过的 Scope 被印成 `never`。
+
 - 缓存 TTL 从两档改成三档，按东西实际变多快排：Workload 名字（`job` / `hpc` / `ray` / `serving` / `notebook` / `tensorboard`）仍是 5 分钟；账号结构（`workspace` / `project` / `compute-group` / `model`）从 30 分钟拉到 1 天；目录类（`image` 和 `quota-<workload>`）从 30 分钟拉到 7 天。Quota 行是管理员在计算组上配的硬件档位，镜像目录是共享 Registry 的内容，两者都几乎不动，却恰好是这里最贵的两项读取——Quota 是「每个计算组 × 每个 Workload 一次请求」的扇出，镜像是每个 Registry 好几兆的目录。TTL 同时是读有效期：过期只会让一次解析回落到 Live，那总是安全的；长档换来的风险在另一个方向——平台已经删掉的规格或镜像可能还会被缓存报出来直到 Scope 过期，`cache refresh --resource <kind> [--workspace <name>] --full` 是随时可用的对齐手段。
 
 ### 修复
