@@ -144,7 +144,7 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 节点归属分两层，两层都是 Live 事实，任务离开运行态就清空：`status` 给任务级的节点清单（`job` 的 `Nodes` / `Pinned Nodes` / `Excluded Nodes`、`hpc` 与 `serving` 的 `Nodes`、`notebook` 的 `Node` 带节点健康），`instances` 给 Pod 级的 `Node` 列。多节点任务定位掉队的那一个 Worker 用 `instances`，因为只有它把 rank 和节点对上；`ray` 的节点归属只有 `instances` 这一层，`ray status` 的 `head_node` / `worker_groups` 是规格不是落点。**空的节点清单读作「还没被调度」，不是「查不到」。**
 
-`shell` 在 `job` / `hpc` / `ray` 下有：把本地 stdin 接到实例里的远端 PTY，`exit` 退出、`Ctrl+]` 断开而不结束 shell。默认进哪个实例按 Workload 定：**HPC 进 `launcher`**——`srun` 在那儿跑，也只有那个 Pod 看得见你的进程，`slurmctld` 是调度器本身，要去得 `--instance slurmctld`；**Ray 进 head**——驱动在那儿，`ray status` 和集群自己的日志也在那儿。`serving` 平台侧也有实例 PTY，还没验证过，CLI 不提供。
+`shell` 在 `job` / `hpc` / `ray` / `serving` 下都有：把本地 stdin 接到实例里的远端 PTY，`exit` 退出、`Ctrl+]` 断开而不结束 shell。默认进哪个实例按 Workload 定：**HPC 进 `launcher`**——`srun` 在那儿跑，也只有那个 Pod 看得见你的进程，`slurmctld` 是调度器本身，要去得 `--instance slurmctld`；**Ray 进 head**——驱动在那儿，`ray status` 和集群自己的日志也在那儿；**Serving 进第一个运行中的副本**——每个副本跑的是同一个镜像和命令，除非就是某个副本在出问题，那就用 `--instance` 点名。
 
 `logs` 在 `job` / `hpc` / `ray` / `serving` 下都有，共用同一套记录与字符预算和同一份 `--json` schema；Notebook 没有 `logs`，它是交互式容器，用 `notebook exec` 或 `notebook shell` 直接读。日志按实例采集后合并成一条时间线，每行带实例标识（`hpc` / `ray` 用 `instances` 打印的角色或序号，`job` 与 `serving` 用 Rank），`--instance` 只读其中一个或几个。**平台侧根本没有「工作负载级日志」这一层**——日志端点只按 Pod 名取，所以全实例聚合不是选择而是唯一形态。日志记录里另有平台填的 `node` 字段，只在 `--json` 里可见，且不是每类工作负载都填，Pod 与节点的对应关系以 `instances` 的 `Node` 列为准。
 

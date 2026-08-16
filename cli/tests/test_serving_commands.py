@@ -1575,3 +1575,22 @@ def test_serving_workload_level_and_instance_contradict_each_other(
 
     assert result.exit_code == 12
     assert json.loads(result.output)["error"]["type"] == "InvalidUsage"
+
+
+def test_serving_create_never_doubles_a_tag_already_in_the_image_name() -> None:
+    """`ImageInfo.name` already carries the tag for platform-published images.
+
+    Appending `version` to it produced
+    `sandbox-base:ubuntu24.04-py3.12-1.0.0:ubuntu24.04-py3.12-1.0.0`. The
+    create itself was unaffected -- the payload carries `mirror_id` -- but
+    `--dry-run` and the JSON echo reported an image reference that resolves to
+    nothing, which is the string someone copies into a script.
+    """
+    from inspire.cli.commands.serving.serving_commands import _with_tag
+
+    assert _with_tag("sandbox-base:u24", "u24") == "sandbox-base:u24"
+    # A bare name still gets its tag.
+    assert _with_tag("sandbox-base", "u24") == "sandbox-base:u24"
+    # A different tag is not a duplicate and must survive.
+    assert _with_tag("sandbox-base:u22", "u24") == "sandbox-base:u22:u24"
+    assert _with_tag("sandbox-base", "") == "sandbox-base"

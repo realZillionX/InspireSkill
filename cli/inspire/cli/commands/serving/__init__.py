@@ -10,6 +10,7 @@ from inspire.cli.commands.workload_profile import make_profile_command
 
 from .serving_api_metrics import serving_api_metrics
 from .serving_commands import (
+    shell_serving,
     configs_serving,
     create_serving,
     delete_serving,
@@ -73,6 +74,7 @@ serving.add_command(delete_serving)
 serving.add_command(configs_serving)
 serving.add_command(serving_metrics)
 serving.add_command(serving_api_metrics)
+serving.add_command(shell_serving)
 
 
 __all__ = ["serving"]

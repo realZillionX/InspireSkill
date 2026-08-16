@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import logging
 import re
 from typing import Any, Optional, cast
@@ -58,6 +59,7 @@ from inspire.config.workspaces import (
     workspace_label,
     workspace_name_map,
 )
+from inspire.cli.utils.job_shell import JobShellError, open_job_shell
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
@@ -232,6 +234,22 @@ def _resolve_project_id(
     )
 
 
+def _with_tag(name: str, version: str) -> str:
+    """Join an image name and its tag without doubling one that is already there.
+
+    ``ImageInfo.name`` already carries the tag for the images the platform
+    publishes -- `sandbox-base:ubuntu24.04-py3.12-1.0.0` with `version` set to
+    `ubuntu24.04-py3.12-1.0.0` -- so appending it again produced
+    `sandbox-base:ubuntu24.04-py3.12-1.0.0:ubuntu24.04-py3.12-1.0.0`. The
+    create itself was fine (the payload carries `mirror_id`), but `--dry-run`
+    and the JSON echo reported an image reference that resolves to nothing,
+    which is exactly the string someone copies into a script.
+    """
+    if not version or name.endswith(f":{version}"):
+        return name
+    return f"{name}:{version}"
+
+
 def _resolve_image_for_create(raw: str, *, session, workspace_id: str) -> tuple[str, str]:
     """Resolve a visible image label to the `mirror_id` used by the web UI."""
     raw = (raw or "").strip()
@@ -254,11 +272,15 @@ def _resolve_image_for_create(raw: str, *, session, workspace_id: str) -> tuple[
                 str(img.name or "").strip(),
             }
             if img.name and img.version:
-                labels.add(f"{img.name}:{img.version}")
+                labels.add(_with_tag(img.name, img.version))
             if target in {label.lower() for label in labels if label}:
                 image_id = str(img.image_id or "").strip()
                 if image_id:
-                    display = f"{img.name}:{img.version}" if img.name and img.version else raw
+                    display = (
+                        _with_tag(img.name, img.version)
+                        if img.name and img.version
+                        else raw
+                    )
                     return image_id, display
                 break
     raise ConfigError(f"Unknown image: {raw!r}.")
@@ -2411,3 +2433,99 @@ __all__ = [
     "versions_serving",
     "configs_serving",
 ]
+
+
+@click.command("shell")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
+@click.option(
+    "--instance",
+    "instance",
+    default=None,
+    metavar="NAME",
+    help="Open this instance, as named by `inspire serving instances`.",
+)
+@pass_context
+def shell_serving(
+    ctx: Context,
+    name: str,
+    workspace: str,
+    pick: Optional[int],
+    instance: Optional[str],
+) -> None:
+    """Open an interactive shell inside a running serving instance.
+
+    Needs a terminal: this attaches your stdin to a remote PTY. Leave with
+    `exit`, or press Ctrl+] to drop the session without ending the shell.
+
+    \b
+    Every replica runs the same image and command, so the first running one is
+    as good as any unless a specific replica is the one misbehaving; name it
+    with `--instance`.
+
+    \b
+    Examples:
+        inspire serving shell qwen-chat --workspace 分布式训练空间
+        inspire serving shell qwen-chat --workspace 分布式训练空间 --instance rank=1
+    """
+    try:
+        session = get_web_session()
+        workspace_id = select_workspace_id(
+            explicit_workspace_name=workspace, session=session
+        )
+        serving_id, instances = _run_readonly_serving_operation(
+            ctx,
+            name=name,
+            workspace_id=workspace_id,
+            session=session,
+            pick=pick,
+            operation=lambda resolved_id: (
+                resolved_id,
+                browser_api_module.list_serving_instances(
+                    resolved_id, page=1, page_size=200, session=session
+                )[0],
+            ),
+        )
+
+        running = [
+            row
+            for row in instances
+            if "running" in str(row.get("status") or "").lower()
+        ]
+        views = serving_instance_views(running)
+        if not views:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                "No running instances found for this serving.",
+                EXIT_VALIDATION_ERROR,
+            )
+            return
+
+        selected = (
+            select_serving_instance_views(views, [instance])[0] if instance else views[0]
+        )
+
+        if not ctx.json_output:
+            click.echo(
+                f"Opening shell: {scrub_raw_ids(name)} / {selected.label}", err=True
+            )
+            click.echo("Press Ctrl-] to disconnect.", err=True)
+
+        sys.exit(
+            open_job_shell(
+                job_id=serving_id,
+                instance_name=selected.handle,
+                session=session,
+                workload="serving",
+            )
+        )
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+    except JobShellError as e:
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", scrub_raw_ids(e), EXIT_VALIDATION_ERROR)

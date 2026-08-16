@@ -4,6 +4,10 @@
 
 ### 新增
 
+- `inspire serving shell`：进 Serving 实例的交互式 shell，默认进第一个运行中的副本（副本跑的是同一个镜像和命令，除非就是某个副本在出问题，那就 `--instance` 点名）。四条实例 PTY 至此齐了。
+
+  **Serving 连句柄参数都不叫 `job_id`，叫 `inference_serving_id`。** 这是拿 `job_id` 打了两次被拒才发现的——错的键不给报错，只把握手拒成一个光秃秃的 `HTTP/1.1 200 OK`。`_PTY_ROUTES` 因此把句柄键也参数化了。
+
 - 记录两条 `file` 服务的实测结论（只有文档，没有行为变更）：
 
   **`GetSftpgoConnectionInfo` 是一条不需要计算资源的共享盘读写通道。** `{storage_name}`（池名转小写）换回一台 WebDAV 服务器，根下就是容器里那套 `/inspire/<池>/…` 全命名空间。写侧在自己的个人目录下做过完整往返：`PUT` 201 → `GET` 200（内容逐字节一致）→ `DELETE` 204 → `GET` 404，探针文件已清除。目前 CLI 的文件流转只有 `notebook scp`，要一台运行中的 Notebook 加容器内 sshd 加 rtunnel，这条路把三样都省掉。**响应里的 `auth` 是明文凭据**，须与 Notebook Proxy 的 token 同等对待——不进日志、不进报错、不进 `--json`、不进文档。尚未封装。
@@ -47,6 +51,8 @@
 - 缓存 TTL 从两档改成三档，按东西实际变多快排：Workload 名字（`job` / `hpc` / `ray` / `serving` / `notebook` / `tensorboard`）仍是 5 分钟；账号结构（`workspace` / `project` / `compute-group` / `model`）从 30 分钟拉到 1 天；目录类（`image` 和 `quota-<workload>`）从 30 分钟拉到 7 天。Quota 行是管理员在计算组上配的硬件档位，镜像目录是共享 Registry 的内容，两者都几乎不动，却恰好是这里最贵的两项读取——Quota 是「每个计算组 × 每个 Workload 一次请求」的扇出，镜像是每个 Registry 好几兆的目录。TTL 同时是读有效期：过期只会让一次解析回落到 Live，那总是安全的；长档换来的风险在另一个方向——平台已经删掉的规格或镜像可能还会被缓存报出来直到 Scope 过期，`cache refresh --resource <kind> [--workspace <name>] --full` 是随时可用的对齐手段。
 
 ### 修复
+
+- `serving create` 回显的镜像引用把 tag 拼了两遍：`sandbox-base:ubuntu24.04-py3.12-1.0.0:ubuntu24.04-py3.12-1.0.0`。`ImageInfo.name` 对平台发布的镜像本来就带着 tag，代码又接了一次 `version`。创建本身没坏（请求体走的是 `mirror_id`），坏的是 `--dry-run` 和 `--json` 报出一个解析不到任何东西的引用——而那正是有人会抄进脚本的那个字符串。
 
 - `cache refresh --resource model` 把 9 个 Workspace 上挂了两天的陈年错误清掉了（底层那个 `page_size=-1` 的 bug 早已修好，只是每个 Workspace 要各自刷一次才清）。没有代码变更。
 

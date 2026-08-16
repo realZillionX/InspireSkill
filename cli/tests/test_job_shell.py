@@ -796,17 +796,23 @@ def test_remote_shell_url_uses_the_right_instance_key_per_workload(monkeypatch) 
         "wss://qz.sii.edu.cn/api/v2/ray_job/instances/exec?"
         "job_id=rj-1&instance_id=rj-1-head-x"
     )
+    # Serving does not even call its handle `job_id`, and sending that name
+    # gets the handshake refused with a bare 200 instead of the 101 upgrade.
+    assert job_shell.build_remote_cmd_ws_url("sv-1", "proj/sv-1-0", workload="serving") == (
+        "wss://qz.sii.edu.cn/api/v2/inference_servings/instances/exec?"
+        "inference_serving_id=sv-1&instance_id=proj%2Fsv-1-0"
+    )
 
 
-def test_remote_shell_refuses_a_workload_with_no_verified_endpoint(monkeypatch) -> None:  # noqa: ANN001
-    """`serving` has a console endpoint that nobody has verified.
+def test_remote_shell_refuses_a_workload_it_has_no_measured_route_for(monkeypatch) -> None:  # noqa: ANN001
+    """Every route here was measured; an unknown one is refused, not guessed.
 
-    Guessing its instance key would reproduce one of the two failures the
-    wrong key produces elsewhere -- a socket that upgrades and then stays
-    silent, or a handshake refused with a bare 200 -- both of which read as a
-    hung shell rather than an unsupported command.
+    Guessing a key reproduces one of the two failures a wrong key produces --
+    a socket that upgrades and then stays silent, or a handshake refused with
+    a bare 200 -- both of which read as a hung shell rather than as an
+    unsupported command.
     """
     monkeypatch.setattr(job_shell, "_get_base_url", lambda: "https://qz.sii.edu.cn")
 
-    with pytest.raises(job_shell.JobShellError, match="serving"):
-        job_shell.build_remote_cmd_ws_url("x", "y", workload="serving")
+    with pytest.raises(job_shell.JobShellError, match="notebook"):
+        job_shell.build_remote_cmd_ws_url("x", "y", workload="notebook")

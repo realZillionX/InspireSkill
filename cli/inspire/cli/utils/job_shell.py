@@ -224,25 +224,30 @@ def select_job_instance(
 # an inventory built from Action names reports them as absent, which is how
 # the train one stayed on v1 long after everything else moved.
 #
-# **The instance parameter is not the same name on every route**, and the
-# console remaps it per workload for a reason. Only the train route takes
-# `instance_name`; `hpc` and `ray` take `instance_id`, and getting it wrong
-# fails in two different silent-ish ways, neither of them an error message:
+# **Neither query parameter is the same name on every route.** The console
+# remaps both per workload and so must we -- serving does not even call its
+# handle `job_id`. Every combination was measured against a running workload
+# of that type; getting one wrong fails in two ways, neither an error message:
 #
-#   hpc + instance_name  -> socket upgrades, then returns nothing at all.
-#                           No error, no close frame, just a shell that never
-#                           speaks. Measured: `instance_id` 53 bytes, 0 here.
-#   ray + instance_name  -> handshake refused with a bare `HTTP/1.1 200 OK`
-#                           instead of the 101 upgrade.
+#   hpc + instance_name      -> socket upgrades, then returns nothing at all.
+#                               No error, no close frame, just a shell that
+#                               never speaks. (`instance_id` gave 53 bytes.)
+#   ray/serving + wrong key  -> handshake refused with a bare `HTTP/1.1 200 OK`
+#                               instead of the 101 upgrade.
 #
-# `inference_servings/instances/exec` is in the same console table and has no
-# CLI consumer yet. It is unverified, so it is not listed: guessing its key
-# would reproduce one of the two failures above.
+# So a shell that hangs or refuses is the first thing to suspect if a new
+# workload is added here by analogy rather than by measurement.
 REMOTE_CMD_PATH = "/api/v2/train_job/remote_cmd"
-_PTY_ROUTES: dict[str, tuple[str, str]] = {
-    "job": (REMOTE_CMD_PATH, "instance_name"),
-    "hpc": ("/api/v2/hpc_jobs/instances/exec", "instance_id"),
-    "ray": ("/api/v2/ray_job/instances/exec", "instance_id"),
+#: workload -> (path, handle parameter, instance parameter)
+_PTY_ROUTES: dict[str, tuple[str, str, str]] = {
+    "job": (REMOTE_CMD_PATH, "job_id", "instance_name"),
+    "hpc": ("/api/v2/hpc_jobs/instances/exec", "job_id", "instance_id"),
+    "ray": ("/api/v2/ray_job/instances/exec", "job_id", "instance_id"),
+    "serving": (
+        "/api/v2/inference_servings/instances/exec",
+        "inference_serving_id",
+        "instance_id",
+    ),
 }
 
 
@@ -257,14 +262,14 @@ def build_remote_cmd_ws_url(
     could only hide a real failure of the first.
     """
     try:
-        path, instance_key = _PTY_ROUTES[workload]
+        path, handle_key, instance_key = _PTY_ROUTES[workload]
     except KeyError:
         raise JobShellError(f"No remote shell endpoint for workload {workload!r}.") from None
     base_url = _get_base_url().rstrip("/")
     parsed = urlsplit(base_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
     netloc = parsed.netloc
-    query = urlencode({"job_id": job_id, instance_key: instance_name})
+    query = urlencode({handle_key: job_id, instance_key: instance_name})
     return f"{scheme}://{netloc}{path}?{query}"
 
 
