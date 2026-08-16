@@ -1914,7 +1914,10 @@ class TestAccountCheckProxyDiagnostics:
         assert "Authentication: OK" in result.output
         assert "Project context: STALE" in result.output
         assert "退役课题" in result.output
+        # Both repairs, because a repo that never should have been pinned wants
+        # the binding gone rather than pointed at a different project.
         assert "inspire init --scope project" in result.output
+        assert "delete ./.inspire/" in result.output
 
     def test_check_stays_quiet_when_the_project_listing_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

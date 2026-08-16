@@ -331,7 +331,14 @@ def check(ctx: Context, details: bool) -> None:
                         f"longer has)"
                     )
                 )
-                click.echo("Re-run `inspire init --scope project` to re-pin it.")
+                # Two different repairs, and the wrong one is easy to reach for:
+                # a repo that never should have been pinned — a CLI, a skill, a
+                # docs tree — wants the binding gone, not pointed somewhere else.
+                click.echo(
+                    "Re-pin with `inspire init --scope project`, or delete "
+                    "./.inspire/ if this repository does not run workloads on "
+                    "the platform."
+                )
 
             if show_details:
                 click.echo(
