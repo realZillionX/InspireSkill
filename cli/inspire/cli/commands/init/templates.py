@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from inspire.config import (
+    DEFAULT_BASE_URL,
     Config,
     ConfigOption,
 )
@@ -39,7 +40,7 @@ def _require_writable_global_path() -> Path:
     return global_path
 
 
-ACCOUNT_CONFIG_TEMPLATE = """# Inspire CLI Account Configuration
+ACCOUNT_CONFIG_TEMPLATE = f"""# Inspire CLI Account Configuration
 # Account-level values are shared by every repository that uses this account.
 # `inspire init` discovery may also write account-level default path aliases
 # here. Repo-wide project settings live in ./.inspire/config.toml; account-
@@ -54,7 +55,7 @@ username = "your_username"
 # password - use INSPIRE_PASSWORD env var
 
 [api]
-base_url = "https://api.example.com"
+base_url = "{DEFAULT_BASE_URL}"
 
 [proxy]
 # Proxy is OPTIONAL. Leave commented if your network can reach *.sii.edu.cn directly.
@@ -86,7 +87,7 @@ PROJECT_CONFIG_TEMPLATE = """# Inspire CLI Project Configuration
 # Values here are overridden by environment variables.
 
 [context]
-# project = "CI-情境智能"
+# project = "<project>"
 
 [path_aliases]
 # Remote path aliases for notebook exec/shell/scp. Plain `inspire init` writes
@@ -112,10 +113,10 @@ PROJECT_CONFIG_TEMPLATE = """# Inspire CLI Project Configuration
 [profiles.notebook.example]
 # Workload condition profile used only when passed as --profile example.
 # workspace = "分布式训练空间"
-# project = "CI-情境智能"
+# project = "<project>"
 # group = "H200-2号机房"
 # quota = "1,20,200"
-# image = "unified-base:v2"
+# image = "<image>"
 
 [remote_env]
 # Environment variables exported before notebook commands and jobs run in this repo.

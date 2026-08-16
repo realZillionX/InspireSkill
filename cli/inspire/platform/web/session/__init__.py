@@ -9,6 +9,7 @@ from typing import Optional
 
 import requests as requests_lib
 
+from inspire.config.models import DEFAULT_BASE_URL
 from inspire.platform.web.session.browser_client import _BrowserRequestClient  # noqa: F401
 from inspire.platform.web.session.browser_client import (
     _close_browser_client,
@@ -245,7 +246,7 @@ def get_credentials() -> tuple[str, str]:
 def login_with_playwright(
     username: str,
     password: str,
-    base_url: str = "https://api.example.com",
+    base_url: str = DEFAULT_BASE_URL,
     headless: bool = True,
 ) -> WebSession:
     return _login_with_playwright(

@@ -6,6 +6,7 @@ from inspire.config.env import build_env_exports
 from inspire.config.load import config_from_files_and_env, get_config_paths
 from inspire.config.models import (
     CONFIG_FILENAME,
+    DEFAULT_BASE_URL,
     PROJECT_ACCOUNT_CONFIG_DIR,
     PROJECT_CONFIG_DIR,
     SOURCE_DEFAULT,
@@ -45,6 +46,7 @@ from inspire.config.schema_models import (  # noqa: F401
 __all__ = [
     "CATEGORY_ORDER",
     "CONFIG_FILENAME",
+    "DEFAULT_BASE_URL",
     "CONFIG_OPTIONS",
     "PROJECT_ACCOUNT_CONFIG_DIR",
     "PROJECT_CONFIG_DIR",

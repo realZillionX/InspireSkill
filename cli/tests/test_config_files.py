@@ -251,7 +251,7 @@ class TestLayeredConfig:
 
         cfg, sources = Config.from_files_and_env(require_credentials=False)
 
-        assert cfg.base_url == "https://api.example.com"
+        assert cfg.base_url == "https://qz.sii.edu.cn"
         assert cfg.job_fault_tolerance_max_retry == 10
         assert sources["base_url"] == SOURCE_DEFAULT
         assert sources["job_fault_tolerance_max_retry"] == SOURCE_DEFAULT

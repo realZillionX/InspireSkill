@@ -11,6 +11,13 @@ CONFIG_FILENAME = "config.toml"
 PROJECT_CONFIG_DIR = ".inspire"  # ./.inspire/accounts/<account>/config.toml
 PROJECT_ACCOUNT_CONFIG_DIR = "accounts"
 
+# The only Inspire deployment anyone points this CLI at. `base_url` stays
+# configurable for staging hosts, but the default has to be a host that
+# actually answers: a placeholder default made `inspire config check` report
+# "placeholder host" to users whose only mistake was not running
+# `inspire account add` yet.
+DEFAULT_BASE_URL = "https://qz.sii.edu.cn"
+
 
 class ConfigError(Exception):
     """Configuration error - missing or invalid settings."""
@@ -33,7 +40,7 @@ class Config:
     password: str
 
     # Optional with defaults
-    base_url: str = "https://api.example.com"
+    base_url: str = DEFAULT_BASE_URL
 
     # API path prefixes (None = use code defaults)
     browser_api_prefix: Optional[str] = None

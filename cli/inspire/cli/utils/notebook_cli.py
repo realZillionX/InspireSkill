@@ -10,7 +10,7 @@ import os
 
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR
 from inspire.platform.web import session as web_session_module
-from inspire.config import Config, ConfigError
+from inspire.config import DEFAULT_BASE_URL, Config, ConfigError
 from inspire.cli.utils.errors import exit_with_error
 
 
@@ -31,7 +31,7 @@ def get_base_url(account: str | None = None) -> str:
             config, _ = Config.from_files_and_env(require_credentials=False)
         return config.base_url
     except Exception:
-        return os.environ.get("INSPIRE_BASE_URL", "https://api.example.com")
+        return os.environ.get("INSPIRE_BASE_URL", DEFAULT_BASE_URL)
 
 
 def resolve_json_output(ctx: Context, json_output: bool) -> bool:

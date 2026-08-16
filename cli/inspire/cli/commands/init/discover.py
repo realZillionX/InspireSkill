@@ -23,6 +23,8 @@ from inspire.platform.web.browser_api.core import _set_base_url
 logger = logging.getLogger(__name__)
 
 _USERNAME_PLACEHOLDERS = frozenset({"your_username"})
+# Older account configs shipped this placeholder as their [api] base_url.
+# Newly written ones carry the real default, so this only rescues files on disk.
 _BASE_URL_PLACEHOLDER = "https://api.example.com"
 _ACCOUNT_CONFIG_KEYS = frozenset(
     {

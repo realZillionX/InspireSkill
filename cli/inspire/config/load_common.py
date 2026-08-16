@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from inspire.config.models import SOURCE_DEFAULT
+from inspire.config.models import DEFAULT_BASE_URL, SOURCE_DEFAULT
 
 _DEFAULTS_FIELD_MAP = {
     "notebook_post_start": "notebook_post_start",
@@ -29,7 +29,7 @@ def _default_config_values() -> dict[str, Any]:
     return {
         "username": "",
         "password": "",
-        "base_url": "https://api.example.com",
+        "base_url": DEFAULT_BASE_URL,
         "browser_api_prefix": None,
         "requests_http_proxy": None,
         "requests_https_proxy": None,

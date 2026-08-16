@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from inspire.config.models import DEFAULT_BASE_URL
 from inspire.config.schema_models import (
     ConfigOption,
 )
@@ -12,7 +13,7 @@ API_OPTIONS: list[ConfigOption] = [
         toml_key="api.base_url",
         field_name="base_url",
         description="API base URL",
-        default="https://api.example.com",
+        default=DEFAULT_BASE_URL,
         category="API",
         scope="global",
     ),

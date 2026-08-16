@@ -12,7 +12,7 @@ from http.cookiejar import Cookie
 from typing import Any, Optional, cast
 from urllib.parse import urljoin
 
-from inspire.config import Config
+from inspire.config import DEFAULT_BASE_URL, Config
 
 from .models import DEFAULT_WORKSPACE_ID, WebSession
 from .browser_launch import (
@@ -696,7 +696,7 @@ def get_credentials(account: Optional[str] = None) -> tuple[str, str]:
 def login_with_playwright(
     username: str,
     password: str,
-    base_url: str = "https://api.example.com",
+    base_url: str = DEFAULT_BASE_URL,
     headless: bool = True,
     account: Optional[str] = None,
 ) -> WebSession:

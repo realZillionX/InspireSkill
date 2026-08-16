@@ -23,11 +23,10 @@ from inspire.accounts import (
     validate_name,
 )
 from inspire.cli.commands.account.add import (
-    DEFAULT_BASE_URL,
     _render_config as _render_account_config,
 )
 from inspire.cli.env_bootstrap import write_shared_project_env_file
-from inspire.config import Config
+from inspire.config import DEFAULT_BASE_URL, Config
 from inspire.config.toml import _project_config_write_path
 
 from .discover import _init_discover_mode

@@ -18,9 +18,8 @@ from inspire.platform.web.session import (
     get_playwright_proxy,
     request_json,
 )
+from inspire.config.models import DEFAULT_BASE_URL
 from inspire.platform.web.session.browser_launch import chromium_launch_kwargs
-
-DEFAULT_BASE_URL = "https://api.example.com"
 
 # Default browser API prefix (fallback if not configured)
 DEFAULT_BROWSER_API_PREFIX = "/api/v1"

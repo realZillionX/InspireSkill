@@ -110,6 +110,10 @@
 
 ### 修复
 
+- **`base_url` 的默认值是一个 `config check` 自己判为非法的占位主机。** `https://api.example.com` 在七处被硬编码成 base_url 的默认或兜底值，而 `config check` 又把 `example.com` 列为占位主机直接报错——同一个值既是默认值又是错误条件。后果落在最不该出错的地方：全新用户按 issue 模板跑第一条 `inspire config check`，拿到的是「Placeholder host values detected」，值还被脱敏成 `<redacted>` 看不出哪里不对，而真正该给的「Missing platform credentials. Run `inspire account add`」永远不会触发，因为占位检查排在凭据检查前面。真值 `https://qz.sii.edu.cn` 此前只存在于 `account add` 的交互 prompt 里。现在它是 `inspire.config` 里唯一的 `DEFAULT_BASE_URL`，配置默认值、运行时兜底、登录入口和 `inspire init` 写出的账号模板全部引用它；`example.com` 只剩下识别用户手输占位值和修补旧配置文件两个用途。`base_url` 本身仍可配置。
+
+- **`inspire init` 写出的账号模板里，`${{VARNAME}}` 多了一层大括号。** `[remote_env]` 那段注释教用户用 `"${VARNAME}"` 从本地环境取值，但模板是按字面量写盘的，用户照抄注释就会拼出一个取不到值的变量名。
+
 - **镜像的 Visibility 一栏读的是 `source`，不是 `visibility`。** 这两个字段都在每条镜像记录里，含义完全不同：`source` 是镜像被构建进哪个 registry 命名空间，`visibility` 才是谁能看见它、才是 `set-visibility` 写的那个字段、也才是 `--source public` / `--source private` 实际筛选的依据。从 Notebook 存出来的个人镜像一律是 `SOURCE_PUBLIC` + `VISIBILITY_PRIVATE`，于是 `image list --source private`（网页端「个人可见镜像」）把整张表的 Visibility 全标成 `public`——正好和事实相反。`image list`、`image detail` 和 `notebook save-image` 的回读现在都取 `visibility`；官方镜像自己没有这个字段，仍按 `source` 认。
 
 - **`image list --source` 少了一整类：网页镜像选择器有四个页签，CLI 只有三个。** 「项目可见镜像」（`VISIBILITY_PROJECT`）在 CLI 里既列不出来也设不了，`--source all` 也扫不到——`CPU资源空间` 里有 2 个这样的镜像，此前按名字根本解析不到。`--source` 增加 `project`，`image set-visibility` 和 `notebook save-image --visibility` 同步增加 `project` 一档。
