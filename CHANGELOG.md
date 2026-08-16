@@ -6,6 +6,10 @@
 
 - `<workload> quota` 增加 `Points/h` 列（`--json` 里是 `points_per_hour`）：该 Quota 行每实例每小时消耗多少点券。数据本来就在配额目录的响应里，只是一直被丢掉。**只有 GPU 计费**——所有 CPU-only 行都是 0，同一份预处理放进 `CPU资源空间` 就不花点券；GPU 按卡型定价，实测 H100 / H200 是 1 点券/卡/小时而 4090 是 0.33，差三倍。按实例计费，`--nodes 2` 跑 8 点券的行是每小时 16。`null` 是「平台没给这行定价」，和 `0`（免费）是两件事。
 
+- `resources usage --group <关键词>`：把「谁占着」收窄到计算组，也就是任务真正提交进去的那个单位。整个 Workspace 看着满、你要投的那个组未必满，反过来也一样，所以这个判断本来就该在组这一层做。关键词是子串（`--group H200` 覆盖所有带这个硬件的组），输出顶部列出实际匹配到哪几个，`--json` 里是 `compute_groups`。底层的 `ListTaskDimension` 一直收 `logic_compute_group_id`，只是没有命令用；平台确实认这个过滤（实测 1125 → 183 行）。`--mine` 读的是按项目预聚合的记录，里面没有计算组，两者互斥。
+
+  同族的 `job.GetLcgUsedComputeResourceJobs` 看着更像是为这件事准备的，实测不值得接：对同一个组两边逐条吻合（同样 183 个任务 id、同样 1400 张卡），而任务维度还额外带着用户、项目和 GPU 利用率——那个 Action 没有。它唯一多出来的行是 TensorBoard，而 TensorBoard 一张卡都不占。
+
 - `project detail` 增加点券花在哪儿：`Spent` 拆成 `on training` / `on inference` / `on storage` / `on private workspace`（`project.GetProjectBudgetUsageOverview`）。此前只有总额和余额，中间那笔差额去了哪没人答得上。逐项目实测它的 `remain` 与 `GetProjectDetail` 的 `remain_budget` 一致，所以这是同一个数的展开，不是第二个说法；这一次请求失败不影响详情本身照常打印。
 
 ### 变更

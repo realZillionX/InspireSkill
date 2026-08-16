@@ -469,6 +469,101 @@ def test_usage_mine_uses_the_single_request_source(
     assert data["items"][0]["gpu_nodes"] == 1
 
 
+def _patch_groups(monkeypatch: pytest.MonkeyPatch, groups: list[dict]) -> None:
+    from inspire.cli.commands.resources import resources_usage as usage_module
+
+    monkeypatch.setattr(
+        usage_module.browser_api_module,
+        "list_compute_groups",
+        lambda **_kwargs: groups,
+        raising=False,
+    )
+
+
+_GROUPS = [
+    {"logic_compute_group_id": "lcg-a", "name": "训练区-H200-1号机房"},
+    {"logic_compute_group_id": "lcg-b", "name": "训练区-H200-3号机房"},
+    {"logic_compute_group_id": "lcg-c", "name": "开发区-H100-183核"},
+]
+
+
+def test_usage_group_asks_the_platform_per_matching_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The keyword is a substring, and each match is scoped server-side."""
+    from inspire.cli.commands.resources import resources_usage as usage_module
+
+    _patch_command(monkeypatch, [])
+    _patch_groups(monkeypatch, _GROUPS)
+    asked: list[object] = []
+
+    def _tasks(_workspace_id, *, logic_compute_group_id=None, **_kwargs):  # noqa: ANN001
+        asked.append(logic_compute_group_id)
+        return [
+            _task(
+                name=f"t-{logic_compute_group_id}",
+                user="Ada",
+                project="Vision",
+                gpus=8,
+                nodes=(f"n-{logic_compute_group_id}",),
+            )
+        ]
+
+    monkeypatch.setattr(usage_module.browser_api_module, "list_task_usage", _tasks)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "resources", "usage", "--workspace", "Default WS", "--group", "H200"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert asked == ["lcg-a", "lcg-b"]
+    data = json.loads(result.output)["data"]
+    assert data["compute_groups"] == ["训练区-H200-1号机房", "训练区-H200-3号机房"]
+    # Both groups' tasks belong to Ada, so the rollup folds them into one row.
+    assert data["items"][0]["gpus"] == 16
+
+
+def test_usage_group_refuses_a_keyword_that_matches_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Silently answering for the whole workspace would read as an empty group."""
+    from inspire.cli.commands.resources import resources_usage as usage_module
+
+    _patch_command(
+        monkeypatch,
+        [_task(name="a", user="Ada", project="Vision", gpus=8, nodes=("n1",))],
+    )
+    _patch_groups(monkeypatch, _GROUPS)
+    monkeypatch.setattr(
+        usage_module.browser_api_module,
+        "list_task_usage",
+        lambda *_a, **_k: pytest.fail("must not sweep the workspace"),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["resources", "usage", "--workspace", "Default WS", "--group", "MI300"],
+    )
+
+    assert result.exit_code != 0
+    assert "MI300" in result.output
+
+
+def test_usage_rejects_group_with_mine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The per-project record `--mine` reads carries no compute group at all."""
+    _patch_command(monkeypatch, [])
+    _patch_groups(monkeypatch, _GROUPS)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["resources", "usage", "--workspace", "Default WS", "--mine", "--group", "H200"],
+    )
+
+    assert result.exit_code != 0
+    assert "--group" in result.output
+
+
 def test_usage_rejects_by_with_mine(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_command(monkeypatch, [])
 

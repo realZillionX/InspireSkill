@@ -20,6 +20,14 @@ only the caller's own rows — asking for another member's id answers empty
 rather than denying — so the task dimension is the only workspace-wide source.
 `--mine` still reads the user dimension, because the caller's own footprint is
 one pre-aggregated request there instead of a full sweep of the workspace.
+
+`--group` narrows to the unit a workload is actually submitted to, by passing
+`logic_compute_group_id` to the same Action. `job.GetLcgUsedComputeResourceJobs`
+looks like the purpose-built answer for this and is not worth the second
+source: measured against one group, the two agree exactly — same 183 task ids,
+same 1400 GPUs held — and the task dimension additionally carries the user,
+the project and the GPU-busy rate, which that Action omits. Its only extra rows
+are TensorBoards, which hold no GPU at all.
 """
 
 from __future__ import annotations
@@ -136,6 +144,37 @@ def _rollup(
         reverse=True,
     )
     return rows
+
+
+def _resolve_group_ids(
+    *,
+    session: Any,
+    workspace_id: str,
+    keyword: str,
+) -> list[tuple[str, str]]:
+    """Match a compute-group keyword the way the sibling commands do.
+
+    Substring, not exact: `--group H200` is one question about a hardware
+    generation, and answering it for only one of the three groups that carry
+    that hardware would be a different, quieter answer.
+    """
+    groups = browser_api_module.list_compute_groups(
+        workspace_id=workspace_id, session=session
+    )
+    needle = keyword.casefold()
+    matched: list[tuple[str, str]] = []
+    for item in groups:
+        if not isinstance(item, dict):
+            continue
+        group_id = str(
+            item.get("logic_compute_group_id") or item.get("id") or ""
+        ).strip()
+        name = str(
+            item.get("name") or item.get("logic_compute_group_name") or ""
+        ).strip()
+        if group_id and name and needle in name.casefold():
+            matched.append((group_id, name))
+    return matched
 
 
 def _task_rows(tasks: list[TaskUsage], *, workspace: str) -> list[dict[str, Any]]:
@@ -264,6 +303,15 @@ _COLUMNS: dict[str, list[tuple[str, str, str]]] = {
     ),
 )
 @click.option(
+    "--group",
+    default=None,
+    metavar="NAME",
+    help=(
+        "Only count workloads in compute groups whose name contains this "
+        "keyword -- the unit a workload is actually submitted to."
+    ),
+)
+@click.option(
     "--mine",
     is_flag=True,
     help="Show only your own footprint, split by project (single request).",
@@ -281,6 +329,7 @@ def usage_resources(
     ctx: Context,
     workspace: str,
     by: Optional[str],
+    group: Optional[str],
     mine: bool,
     limit: Optional[int],
     show_all: bool,
@@ -296,6 +345,13 @@ def usage_resources(
     worth raising.
 
     \b
+    `--group` narrows to one compute group, which is the unit a workload is
+    submitted to and therefore the unit the wait-or-ask decision is made in:
+    a workspace can look busy while the group you would submit to is not, and
+    the other way round. The keyword is a substring, so `--group H200` covers
+    every group carrying that hardware.
+
+    \b
     `--mine` reads your own footprint directly and costs one request; the
     workspace-wide views sweep every running workload in the workspace.
 
@@ -309,6 +365,7 @@ def usage_resources(
     Examples:
         inspire resources usage --workspace 分布式训练空间
         inspire resources usage --workspace 分布式训练空间 --by project
+        inspire resources usage --workspace 分布式训练空间 --group H200-1号机房
         inspire resources usage --workspace 分布式训练空间 --by task -n 5
         inspire resources usage --workspace CPU资源空间 --mine
     """
@@ -317,6 +374,17 @@ def usage_resources(
             ctx,
             "ValidationError",
             "Use either --by or --mine, not both.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+
+    if mine and group:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            "--mine reads a pre-aggregated per-project record that carries no "
+            "compute group, so it cannot be narrowed with --group. Use "
+            "--by task --group <name> and read your own rows.",
             EXIT_VALIDATION_ERROR,
         )
         return
@@ -340,6 +408,24 @@ def usage_resources(
             fallback="(workspace name unavailable)",
         )
 
+        matched_groups: list[tuple[str, str]] = []
+        if group:
+            matched_groups = _resolve_group_ids(
+                session=session,
+                workspace_id=workspace_id,
+                keyword=group,
+            )
+            if not matched_groups:
+                _handle_error(
+                    ctx,
+                    "ValidationError",
+                    f"No compute group in {label} matches {group!r}. "
+                    f"Run `inspire resources availability --workspace {workspace}` "
+                    "for the names this workspace has.",
+                    EXIT_VALIDATION_ERROR,
+                )
+                return
+
         rows: list[dict[str, Any]]
         if mode == "mine":
             rows = _member_rows(
@@ -347,7 +433,18 @@ def usage_resources(
                 workspace=label,
             )
         else:
-            tasks = browser_api_module.list_task_usage(workspace_id, session=session)
+            if matched_groups:
+                tasks = [
+                    task
+                    for group_id, _name in matched_groups
+                    for task in browser_api_module.list_task_usage(
+                        workspace_id,
+                        logic_compute_group_id=group_id,
+                        session=session,
+                    )
+                ]
+            else:
+                tasks = browser_api_module.list_task_usage(workspace_id, session=session)
             rows = (
                 _task_rows(tasks, workspace=label)
                 if mode == "task"
@@ -358,24 +455,28 @@ def usage_resources(
         public_rows = page.items
 
         if ctx.json_output:
-            click.echo(
-                json_formatter.format_json(
-                    {
-                        "by": mode,
-                        "items": public_rows,
-                        **page.metadata(),
-                    }
-                )
-            )
+            payload: dict[str, Any] = {"by": mode}
+            if matched_groups:
+                payload["compute_groups"] = [
+                    _display_name(name) for _group_id, name in matched_groups
+                ]
+            payload["items"] = public_rows
+            click.echo(json_formatter.format_json({**payload, **page.metadata()}))
             return
 
         if not rows:
-            click.echo(
-                "You are not holding any compute in this workspace."
-                if mode == "mine"
-                else "No live workloads in this workspace."
-            )
+            if mode == "mine":
+                click.echo("You are not holding any compute in this workspace.")
+            elif matched_groups:
+                names = ", ".join(_display_name(name) for _gid, name in matched_groups)
+                click.echo(f"No live workloads in {names}.")
+            else:
+                click.echo("No live workloads in this workspace.")
             return
+
+        if matched_groups:
+            names = ", ".join(_display_name(name) for _gid, name in matched_groups)
+            click.echo(f"Compute group: {names}")
 
         click.echo(_render(public_rows, columns=_COLUMNS[mode]))
         notice = truncation_notice(page)
