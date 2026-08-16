@@ -103,14 +103,25 @@ def _stub_quota_browser(
     )
 
 
-def _make_price(*, qid: str, gpu: int, cpu: int, mem: int, gpu_type: str = "") -> dict:
-    return {
+def _make_price(
+    *,
+    qid: str,
+    gpu: int,
+    cpu: int,
+    mem: int,
+    gpu_type: str = "",
+    points: float | None = None,
+) -> dict:
+    price = {
         "quota_id": qid,
         "cpu_count": cpu,
         "memory_size_gib": mem,
         "gpu_count": gpu,
         "gpu_info": {"gpu_type_display": gpu_type or "CPU"},
     }
+    if points is not None:
+        price["total_price_per_hour"] = points
+    return price
 
 
 def test_job_quota_refuses_a_workspace_fanout(
@@ -218,6 +229,7 @@ def test_quota_json_rows_carry_quota_and_no_ids(
         "quota",
         "priority",
         "allowed_priority_levels",
+        "points_per_hour",
     }
     assert row["workspace"] == "CPU资源空间"
     assert row["compute_group"] == "CPU资源-2"
@@ -228,6 +240,52 @@ def test_quota_json_rows_carry_quota_and_no_ids(
     _assert_compact_public_payload(payload)
     assert "lcg-secret" not in result.output
     assert "q-1" not in result.output
+
+
+def test_quota_reports_the_点券_cost_and_keeps_free_apart_from_unpriced(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A CPU row really is free; a row the platform did not price is not."""
+    _patch_config(monkeypatch, tmp_path)
+    _stub_quota_browser(
+        monkeypatch,
+        groups_by_ws={
+            _WS_CPU: [{"logic_compute_group_id": "lcg-1", "name": "CPU资源-2"}],
+        },
+        prices_fn=lambda **_: [
+            _make_price(qid="q-cpu", gpu=0, cpu=4, mem=16, points=0),
+            _make_price(qid="q-h200", gpu=8, cpu=160, mem=1800, gpu_type="H200", points=8),
+            _make_price(qid="q-4090", gpu=1, cpu=10, mem=100, gpu_type="4090", points=0.33),
+            _make_price(qid="q-quiet", gpu=2, cpu=20, mem=200, gpu_type="H200"),
+        ],
+    )
+
+    payload = _json_data(
+        CliRunner()
+        .invoke(cli_main, ["--json", "job", "quota", "--workspace", "CPU资源空间"])
+        .output
+    )
+    by_quota = {row["quota"]: row["points_per_hour"] for row in payload["items"]}
+    assert by_quota["0,4,16"] == 0
+    assert by_quota["8,160,1800"] == 8
+    assert by_quota["1,10,100"] == 0.33
+    # Absent, not zero: reading silence as free advertises a GPU row as costing
+    # nothing exactly when the platform declined to say.
+    assert by_quota["2,20,200"] is None
+
+    result = CliRunner().invoke(cli_main, ["job", "quota", "--workspace", "CPU资源空间"])
+    assert result.exit_code == 0, result.output
+    assert "Points/h" in result.output
+    cells = {
+        parts[2]: parts[4]
+        for parts in (line.split() for line in result.output.splitlines())
+        if len(parts) == 5 and "," in parts[2]
+    }
+    assert cells["8,160,1800"] == "8"
+    assert cells["1,10,100"] == "0.33"
+    assert cells["0,4,16"] == "0"
+    assert cells["2,20,200"] == "-"
+    assert "点券" in result.output
 
 
 def _stub_restricted_train_zone(monkeypatch: pytest.MonkeyPatch, **kwargs) -> None:
@@ -289,7 +347,7 @@ def test_quota_human_output_shows_the_published_priority_per_row(
     rows = {
         (parts[0], parts[2]): parts[3]
         for parts in (line.split() for line in result.output.splitlines())
-        if len(parts) == 4 and "," in parts[2]
+        if len(parts) == 5 and "," in parts[2]
     }
     assert rows[("训练区-H200-1号机房", "1,20,200")] == "low"
     assert rows[("训练区-H200-1号机房", "2,40,400")] == "low"

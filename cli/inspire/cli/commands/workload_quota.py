@@ -76,6 +76,30 @@ def _extract_memory_gib(price: dict[str, Any]) -> int:
         return 0
 
 
+def _extract_points_per_hour(price: dict[str, Any]) -> float | None:
+    """Read the row's 点券 (compute credit) cost per instance-hour.
+
+    ``0`` and "the platform did not price this row" are different answers:
+    every CPU-only row really is free, so collapsing a missing field into
+    zero would advertise a GPU row as free the one time the field is absent.
+    """
+    value = price.get("total_price_per_hour")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_points(value: object) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return "-"
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    return f"{value:g}"
+
+
 def _query_workspace_quotas(
     *,
     session,  # noqa: ANN001
@@ -138,6 +162,7 @@ def _query_workspace_quotas(
                         "quota": "",
                         "priority": "",
                         "allowed_priority_levels": None,
+                        "points_per_hour": None,
                     }
                 )
             continue
@@ -175,6 +200,7 @@ def _query_workspace_quotas(
                     # `null` is "the platform did not answer", `[]` is "no
                     # restriction"; a consumer that collapses them is wrong.
                     "allowed_priority_levels": list(levels) if levels is not None else None,
+                    "points_per_hour": _extract_points_per_hour(price),
                 }
             )
     return rows
@@ -238,6 +264,12 @@ def make_quota_command(workload: str) -> click.Command:
         The Priority column is the workspace's own statement about which task
         priorities each row accepts: 'any', 'low' (only --priority 1), or
         'unknown' when the platform did not answer.
+
+        \b
+        Points/h is what the row costs in 点券 per instance-hour. Only GPUs are
+        charged, so every CPU-only row is 0 and the same work is free in a CPU
+        workspace; per card the rate differs by model (H100 / H200 cost about
+        three times a 4090).
         """
         try:
             effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
@@ -296,6 +328,7 @@ def make_quota_command(workload: str) -> click.Command:
                     "GPU Type",
                     "Quota",
                     "Priority",
+                    "Points/h",
                 )
                 table_rows = [
                     (
@@ -304,17 +337,19 @@ def make_quota_command(workload: str) -> click.Command:
                         row["gpu_type"] or "CPU",
                         row["quota"] or "-",
                         row["priority"] or "-",
+                        _format_points(row.get("points_per_hour")),
                     )
                     for row in rows
                 ]
             else:
-                headers = ("Compute Group", "GPU Type", "Quota", "Priority")
+                headers = ("Compute Group", "GPU Type", "Quota", "Priority", "Points/h")
                 table_rows = [
                     (
                         row["compute_group"],
                         row["gpu_type"] or "CPU",
                         row["quota"] or "-",
                         row["priority"] or "-",
+                        _format_points(row.get("points_per_hour")),
                     )
                     for row in rows
                 ]
@@ -350,6 +385,14 @@ def make_quota_command(workload: str) -> click.Command:
                     "Priority is the task priority the platform publishes for that quota "
                     f"row; '{PRIORITY_LEVELS_ANY_DISPLAY}' means unrestricted, 'low' means "
                     "only --priority 1 (preemptible) will be accepted."
+                )
+            # `is not None`, not truthiness: an all-zero CPU workspace is
+            # exactly where "only GPUs are charged" is the useful sentence.
+            if any(row.get("points_per_hour") is not None for row in rows):
+                click.echo(
+                    "Points/h is 点券 per instance-hour, so a run costs it once per "
+                    "instance: --nodes 2 on an 8-point row is 16 per hour. Only GPUs "
+                    "are charged -- every CPU-only row is 0."
                 )
         except ConfigError as e:
             _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)

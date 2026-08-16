@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### 新增
+
+- `<workload> quota` 增加 `Points/h` 列（`--json` 里是 `points_per_hour`）：该 Quota 行每实例每小时消耗多少点券。数据本来就在配额目录的响应里，只是一直被丢掉。**只有 GPU 计费**——所有 CPU-only 行都是 0，同一份预处理放进 `CPU资源空间` 就不花点券；GPU 按卡型定价，实测 H100 / H200 是 1 点券/卡/小时而 4090 是 0.33，差三倍。按实例计费，`--nodes 2` 跑 8 点券的行是每小时 16。`null` 是「平台没给这行定价」，和 `0`（免费）是两件事。
+
 ### 修复
 
 - 每次 HTTP 请求不再新建一个 `requests.Session`，连接因此能复用。此前 `_request_json_once` 每次调用都 `build_requests_session(...)`，用完 `finally: http.close()`，于是每一个请求都要重新建 TCP 连接、重新握手 TLS——走本地 SII 代理连 `qz.sii.edu.cn` 实测每请求约 300 ms，复用连接后约 30 ms。平常一条命令察觉不到，但 Name 缓存把很多操作变成了扇出（Quota 目录每个计算组一次、镜像每个 Workspace 三次、后台刷新一轮几百次），这一项就变成了主要开销。同一份完整的后台刷新，实测网络时间 201.5 s → 97.2 s、整体 202.8 s → 120.4 s；扣掉本来就是传输量瓶颈的镜像，单请求 397 ms → 91 ms。共享的只有连接池，Cookie / Header / 代理设置每次调用照旧重设，所以刷新过 Session 之后不会拿旧凭据作答；需要自己 `close()` 的调用方继续用 `build_requests_session`。
