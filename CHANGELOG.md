@@ -4,6 +4,10 @@
 
 ### 新增
 
+- `inspire hpc shell`：进 HPC 实例的交互式 shell，和 `job shell` 同一套（`exit` 退出、`Ctrl+]` 断开）。**默认进 `launcher`**——`srun` 在那儿跑，也只有那个 Pod 看得见你的进程；`slurmctld` 是调度器本身，`--instance slurmctld` 才去。走 `/api/v2/hpc_jobs/instances/exec`，同样是网关 REST 形状的那一半。
+
+  **参数名不能照搬 train 那条**：它只认 `instance_id`，给 `instance_name` 会照常 upgrade 然后一个字节都不回——没有报错、没有 close 帧，只是一个永远不说话的 shell。实测 `instance_id` 回 53 字节、`instance_name` 回 0。`ray` / `serving` 平台侧也有实例 PTY，但没验证过，`build_remote_cmd_ws_url` 对它们直接抛错而不是猜一个参数名。
+
 - `<workload> quota` 增加 `Points/h` 列（`--json` 里是 `points_per_hour`）：该 Quota 行每实例每小时消耗多少点券。数据本来就在配额目录的响应里，只是一直被丢掉。**只有 GPU 计费**——所有 CPU-only 行都是 0，同一份预处理放进 `CPU资源空间` 就不花点券；GPU 按卡型定价，实测 H100 / H200 是 1 点券/卡/小时而 4090 是 0.33，差三倍。按实例计费，`--nodes 2` 跑 8 点券的行是每小时 16。`null` 是「平台没给这行定价」，和 `0`（免费）是两件事。
 
 - `scripts/scan_v2_surface.py` 补上 `/api/v2` 的第二种形状。`?Action=` 之外还有一片 **REST 风格**的路径（当前 12 条），只认 Action 的清单会把它们报成不存在——`job shell` 走 v1 的那条 `/api/v2/train_job/remote_cmd` 就在里面，而我们的边界测试里写着「v2 没有任何 Action 暴露 shell」，这句话对 Action 成立、对 `/api/v2` 不成立。同批还有 HPC / Ray / Serving 三条实例 PTY（我们完全没有对应命令）、文件页的目录操作、日志下载。**这几条都还没验证**：网关在路由之前先鉴权，普通 GET、带 Referer 的 GET、真实 WebSocket 握手三种打法对 v1（确知可用）和一条随手编的路径回的都是同一个 401，要确认只能拿一个自己的运行中任务去握手。已把结论和未验证状态写进 `browser-api.md` 与边界测试的白名单理由。

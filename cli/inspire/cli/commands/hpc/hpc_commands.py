@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence, cast
 
@@ -64,6 +65,7 @@ from inspire.config.workspaces import (
     workspace_label,
     workspace_name_map,
 )
+from inspire.cli.utils.job_shell import JobShellError, open_job_shell
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import DatasetMount
 from inspire.platform.web.session import SessionExpiredError, get_web_session
@@ -1756,3 +1758,96 @@ __all__ = [
     "stop_hpc",
     "delete_hpc",
 ]
+
+
+@click.command("shell")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
+@click.option(
+    "--instance",
+    "instance",
+    default=None,
+    metavar="ROLE",
+    help="Open this Role / Rank, as printed by `inspire hpc instances`.",
+)
+@pass_context
+def shell_hpc(
+    ctx: Context,
+    name: str,
+    workspace: str,
+    pick: Optional[int],
+    instance: Optional[str],
+) -> None:
+    """Open an interactive shell inside a running HPC instance.
+
+    Needs a terminal: this attaches your stdin to a remote PTY. Leave with
+    `exit`, or press Ctrl+] to drop the session without ending the shell.
+
+    \b
+    Defaults to the `launcher`, which is where `srun` runs and therefore the
+    only pod that sees your job's processes. `slurmctld` is the scheduler
+    itself; a shell there answers questions about the queue, not the workload.
+
+    \b
+    Examples:
+        inspire hpc shell preprocess --workspace CPU资源空间
+        inspire hpc shell preprocess --workspace CPU资源空间 --instance slurmctld
+    """
+    try:
+        session = get_web_session()
+        job_id, instances = _run_readonly_hpc_operation(
+            ctx,
+            session=session,
+            name=name,
+            workspace=workspace,
+            limit=200,
+            pick=pick,
+            operation=lambda resolved_id: (
+                resolved_id,
+                _fetch_hpc_instances(
+                    resolved_id, limit=200, session=session, show_all=True
+                )[0],
+            ),
+        )
+
+        views = hpc_instance_views(
+            [row for row in instances if "run" in str(row.get("status") or "").lower()]
+        )
+        if not views:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                "No running instances found for this HPC job.",
+                EXIT_VALIDATION_ERROR,
+            )
+            return
+
+        if instance:
+            selected = select_hpc_instance_views(views, [instance])[0]
+        else:
+            launchers = [view for view in views if view.role == "launcher"]
+            selected = (launchers or views)[0]
+
+        if not ctx.json_output:
+            click.echo(
+                f"Opening shell: {scrub_raw_ids(name)} / {selected.label}", err=True
+            )
+            click.echo("Press Ctrl-] to disconnect.", err=True)
+
+        sys.exit(
+            open_job_shell(
+                job_id=job_id,
+                instance_name=selected.handle,
+                session=session,
+                workload="hpc",
+            )
+        )
+    except HPCInstanceSelectionError as e:
+        _handle_error(ctx, "ValidationError", scrub_raw_ids(e), EXIT_VALIDATION_ERROR)
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+    except JobShellError as e:
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)

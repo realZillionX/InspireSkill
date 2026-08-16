@@ -192,7 +192,7 @@ discovery 里没有的 15 条路由：`audit`(6)、`billing`(3)、`file`(9)、`i
 | 路径 | 是什么 |
 | --- | --- |
 | `/api/v2/train_job/remote_cmd` | 训练任务的 PTY WebSocket，`job shell` 走的就是它 ✅ 已迁 |
-| `/api/v2/hpc_jobs/instances/exec` | HPC 实例的 PTY |
+| `/api/v2/hpc_jobs/instances/exec` | HPC 实例的 PTY，`hpc shell` 走它 ✅ 已验 |
 | `/api/v2/ray_job/instances/exec` | Ray 实例的 PTY |
 | `/api/v2/inference_servings/instances/exec` | Serving 实例的 PTY |
 | `/api/v2/file/list` / `create_dir` / `delete` / `update_name` | 文件页的目录操作 |
@@ -205,7 +205,9 @@ discovery 里没有的 15 条路由：`audit`(6)、`billing`(3)、`file`(9)、`i
 
 `train_job/remote_cmd` 已经这样验过并迁完：建一个 1 卡低优的一次性任务，v1 与 v2 各握一次手、各发一条 `echo`，**两边逐字节相同**（各 45 字节），验完即删。因为等价所以不留回落——第二条路径在这里只能藏住第一条的真实失败。
 
-HPC / Ray / Serving 那三条 PTY 我们目前没有对应命令，也**还没验证**：要验就得各起一个对应类型的运行中工作负载。
+HPC 那条同样验过了，但**参数名不能照搬**：`hpc_jobs/instances/exec` 只认 `instance_id`，给它 `instance_name` 会照常 upgrade 然后**一个字节都不回**——没有报错、没有 close 帧，只是一个永远不说话的 shell。实测 `instance_id` 回 53 字节、`instance_name` 回 0。控制台那个按 Workload 重映射参数的动作是必需的，不是风格。
+
+`ray_job/instances/exec` 和 `inference_servings/instances/exec` 仍未验证，要验得各起一个对应类型的运行中工作负载。`build_remote_cmd_ws_url` 对这两个 Workload 直接抛错而不是猜一个参数名——猜错的表现正是上面那个「upgrade 成功但永远不说话」，读起来像卡死而不是不支持。
 
 `user.GetMyPermissions`（空请求体）另给一份**按账号的权限表**：`{Services: {服务: {Read, Write, Actions: {Action: bool}}}}`。它只覆盖有 RBAC 网关的 14 个服务（不含 `train` / `notebook` / `workspace` / `project` / `ray` / `hpc`），但在覆盖范围内是权威的，而且列出了连前端产物里都没有的 Action——`job.ListNodeJobs`、`job.GetLcgUsedComputeResourceJobs`、`job.GetProjectQuotaJobs` / `GetUserQuotaJobs` 就是这么找到的。判「我能不能调」先问它，比探针便宜。
 

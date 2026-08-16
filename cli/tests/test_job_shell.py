@@ -771,3 +771,37 @@ def test_websocket_recv_exact_consumes_buffer_before_socket() -> None:
 
     assert client._recv_exact(3) == b"abc"
     assert client._recv_buffer == b""
+
+
+def test_remote_shell_url_uses_the_right_instance_key_per_workload(monkeypatch) -> None:  # noqa: ANN001
+    """HPC answers only to `instance_id`, and answers nothing at all otherwise.
+
+    Handing `hpc_jobs/instances/exec` an `instance_name` upgrades the socket
+    and then returns zero bytes -- no error, no close frame, just a shell that
+    never speaks. Measured against a running HPC job: `instance_id` echoed 53
+    bytes back, `instance_name` echoed 0. So the key is part of the contract,
+    not a spelling preference.
+    """
+    monkeypatch.setattr(job_shell, "_get_base_url", lambda: "https://qz.sii.edu.cn")
+
+    assert job_shell.build_remote_cmd_ws_url("job-1", "worker-0", workload="job") == (
+        "wss://qz.sii.edu.cn/api/v2/train_job/remote_cmd?"
+        "job_id=job-1&instance_name=worker-0"
+    )
+    assert job_shell.build_remote_cmd_ws_url("hpc-1", "proj/pod-0", workload="hpc") == (
+        "wss://qz.sii.edu.cn/api/v2/hpc_jobs/instances/exec?"
+        "job_id=hpc-1&instance_id=proj%2Fpod-0"
+    )
+
+
+def test_remote_shell_refuses_a_workload_with_no_verified_endpoint(monkeypatch) -> None:  # noqa: ANN001
+    """`ray` and `serving` have console endpoints that nobody has verified.
+
+    Guessing one would produce a socket that upgrades and stays silent, which
+    reads as a hung shell rather than an unsupported command.
+    """
+    monkeypatch.setattr(job_shell, "_get_base_url", lambda: "https://qz.sii.edu.cn")
+
+    for workload in ("ray", "serving"):
+        with pytest.raises(job_shell.JobShellError, match=workload):
+            job_shell.build_remote_cmd_ws_url("x", "y", workload=workload)

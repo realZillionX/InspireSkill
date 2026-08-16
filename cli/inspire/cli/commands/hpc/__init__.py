@@ -9,6 +9,7 @@ from inspire.cli.commands.workload_quota import make_quota_command
 from inspire.cli.commands.workload_profile import make_profile_command
 
 from .hpc_commands import (
+    shell_hpc,
     create_hpc,
     delete_hpc,
     instances_hpc,
@@ -51,6 +52,7 @@ hpc.add_command(instances_hpc)
 hpc.add_command(stop_hpc)
 hpc.add_command(delete_hpc)
 hpc.add_command(events_hpc)
+hpc.add_command(shell_hpc)
 hpc.add_command(hpc_logs)
 hpc.add_command(hpc_metrics)
 

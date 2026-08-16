@@ -222,26 +222,45 @@ def select_job_instance(
 
 # The PTY sockets are the REST-shaped half of `/api/v2` -- no `?Action=`, so
 # an inventory built from Action names reports them as absent, which is how
-# this endpoint stayed on v1 long after everything else moved. The console
-# picks one of four by workload from a single URL builder; only the train one
-# has a CLI consumer today.
+# the train one stayed on v1 long after everything else moved.
+#
+# **The instance parameter is not the same name on both.** The console remaps
+# it per workload and so must we: `hpc_jobs/instances/exec` answers only to
+# `instance_id`, and handing it `instance_name` upgrades the socket and then
+# returns nothing at all -- no error, no close, just a shell that never speaks.
+# Measured against a running HPC job: `instance_id` echoed 53 bytes,
+# `instance_name` echoed 0.
+#
+# `ray_job/instances/exec` and `inference_servings/instances/exec` exist in the
+# same console table and have no CLI consumer yet; neither is verified, so
+# neither is listed here.
 REMOTE_CMD_PATH = "/api/v2/train_job/remote_cmd"
+_PTY_ROUTES: dict[str, tuple[str, str]] = {
+    "job": (REMOTE_CMD_PATH, "instance_name"),
+    "hpc": ("/api/v2/hpc_jobs/instances/exec", "instance_id"),
+}
 
 
-def build_remote_cmd_ws_url(job_id: str, instance_name: str) -> str:
-    """Build the train-job remote shell websocket URL.
+def build_remote_cmd_ws_url(
+    job_id: str, instance_name: str, *, workload: str = "job"
+) -> str:
+    """Build a workload's remote shell websocket URL.
 
-    v1 and v2 take the same two query parameters and answer identically:
-    measured against a running job, `echo` round-tripped byte-for-byte
-    through both. No fallback, therefore -- a second path here could only
-    hide a real failure of the first.
+    For `job`, v1 and v2 take the same two query parameters and answer
+    identically: measured against a running job, `echo` round-tripped
+    byte-for-byte through both. No fallback, therefore -- a second path here
+    could only hide a real failure of the first.
     """
+    try:
+        path, instance_key = _PTY_ROUTES[workload]
+    except KeyError:
+        raise JobShellError(f"No remote shell endpoint for workload {workload!r}.") from None
     base_url = _get_base_url().rstrip("/")
     parsed = urlsplit(base_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
     netloc = parsed.netloc
-    query = urlencode({"job_id": job_id, "instance_name": instance_name})
-    return f"{scheme}://{netloc}{REMOTE_CMD_PATH}?{query}"
+    query = urlencode({"job_id": job_id, instance_key: instance_name})
+    return f"{scheme}://{netloc}{path}?{query}"
 
 
 def _cookie_value(session: WebSession, name: str) -> str | None:
@@ -505,6 +524,7 @@ def run_remote_shell(
     job_id: str,
     instance_name: str,
     session: WebSession,
+    workload: str = "job",
     stdin=None,  # noqa: ANN001
     stdout=None,  # noqa: ANN001
     websocket_cls: type[_WebSocketClient] = _WebSocketClient,
@@ -513,7 +533,7 @@ def run_remote_shell(
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     stdout_buffer = getattr(stdout, "buffer", stdout)
-    ws_url = build_remote_cmd_ws_url(job_id, instance_name)
+    ws_url = build_remote_cmd_ws_url(job_id, instance_name, workload=workload)
     headers = build_remote_cmd_headers(session)
     old_term = None
     raw_mode = bool(getattr(stdin, "isatty", lambda: False)())
@@ -579,6 +599,7 @@ def open_job_shell(
     job_id: str,
     instance_name: str,
     session: WebSession | None = None,
+    workload: str = "job",
     websocket_cls: type[_WebSocketClient] = _WebSocketClient,
 ) -> int:
     """Open a job shell, refreshing the web session once after a 401 handshake."""
@@ -588,6 +609,7 @@ def open_job_shell(
             job_id=job_id,
             instance_name=instance_name,
             session=active_session,
+            workload=workload,
             websocket_cls=websocket_cls,
         )
     except JobShellAuthError:
@@ -596,5 +618,6 @@ def open_job_shell(
             job_id=job_id,
             instance_name=instance_name,
             session=refreshed,
+            workload=workload,
             websocket_cls=websocket_cls,
         )
