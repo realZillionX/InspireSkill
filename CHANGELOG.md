@@ -245,6 +245,10 @@
 
 ### 维护
 
+- 手册补上「资源能留多久」和「谁能起高优」这两条一直只在 CLI help 里的规则。`inspire resources policy` 此前只有命令自己的 help 提过，手册里从头到尾没有出场，于是空闲回收在文档里只是「回收策略」这四个字；现在 [`resources.md`](references/resources.md) 说明它逐行给出的 `Reclaim` / `Idle Rule` / `Time Limit` 各是什么，并点明触发条件是 GPU 利用率而不是有没有人连着（`分布式训练空间` 实测：Job「GPU 低于 40% 持续 3 小时」，Notebook「GPU 低于 15% 持续 3 小时，或运行超过 18 小时」），`-` 是「没声明策略」而不是「没有限制」。[`notebook.md`](references/notebook.md) 的 `--auto-stop` 段和 [`compute-workloads.md`](references/compute-workloads.md) 的 Job 边界各自指过去——夜里挂着不吃卡的 Notebook 第二天不在了，是规则生效不是故障。
+
+  优先级那一半的问题是位置错了：`1=LOW` / `4=HIGH` 的公平调度合同只写在 `compute-workloads.md` 的 GPU Job 一节，而 `SKILL.md` 把「优先级」路由到 `resources.md`，于是那边只能读到一句没有前提的「公平调度 Workspace 里就是 `--priority 1`」。合同移到 `resources.md`，Job 一节留一行摘要并指过去。同时把 `分布式训练空间` 的实际形状写成表：开发区四档全部不限，训练区 1 / 2 / 4 卡只调度低优先级、只有 8 卡整节点才不受限——要一个不会被抢占的小规格任务就去开发区，在训练区想拿高优先级只能整节点起。`--priority` 的 help 也补上一句指向 `<workload> quota` 的 `Priority` 列，此前它只讲两套合同和项目封顶，逐行限制要等到创建预检才知道。
+
 - Browser API 文档重写。`references/dev/browser-api-v1.md` 和 `browser-api-v2.md` 被删除，替换为三份可独立阅读的参考：[`browser-api.md`](references/dev/browser-api.md)（请求契约、响应信封、认证与 Session、分页、Workspace scoping、错误码、探针方法、仍在用的 v1 端点、回落纪律、输出边界、变更验收）、[`browser-api-actions.md`](references/dev/browser-api-actions.md)（12 条路由 93 个 Action 的请求体、响应键、参数语义、CLI 映射与限制，加上五个创建 Action 的字段合同）、[`data-plaza-api.md`](references/dev/data-plaza-api.md)（数据广场是另一个平台，独立成篇）。
 
   旧的两份是按迁移顺序累积的工程日志：v1 那份的「当前公开命令映射」有十行只写着「全部已迁 v2」，v2 那份把契约、踩坑记录和迁移复盘混在同一节里，而两份都必须对照才能读懂任何一条。新文档按「维护者要查什么」组织，不再记录迁移过程；已废弃的 v1 域一并移除，只保留四处仍有消费者的 v1 端点及其保留理由。

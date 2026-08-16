@@ -16,7 +16,9 @@ from inspire.task_priority import (
 TASK_PRIORITY_HELP = (
     "Task priority. Fair-scheduling workspaces accept 1=LOW (preemptible) or "
     "4=HIGH (default: 4); other workspaces accept 1-10 (default: 10). "
-    "The selected project's platform policy may cap the requested value."
+    "The selected project's platform policy may cap the requested value, and "
+    "individual quota rows may accept LOW only -- see the Priority column of "
+    "this workload's `quota` command."
 )
 
 

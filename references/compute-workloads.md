@@ -44,8 +44,9 @@ Job 的关键边界：
 - 需要项目级持久默认值时写 `[job]` 配置段；提交前用 `job create --dry-run` 检查 Shared Memory、通知和容错的最终生效值。
 - 多节点训练要关注每个 Pod 的 GPU、显存、CPU 和网络曲线是否同步；某个 Worker 长期低负载通常比日志更早暴露问题。
 - 排除坏节点是“不要调度到这些 Ready 节点”，不是固定节点；候选节点来自所选 Compute Group。
+- Workspace 会按空闲规则回收运行中的任务，判据是 GPU 利用率：`分布式训练空间` 对 Job 声明的是「GPU 低于 40% 持续 3 小时」。长时间不吃卡的阶段（大规模数据预处理、CPU 侧评测、等待外部服务）留在 GPU Job 里会被无声收走，提交前用 `inspire resources policy --workspace <名字>` 读当前规则。
 
-优先级是 Workspace 能力限定的调度信号。qz 公平调度 Workspace 只接受 `1=LOW`（可抢占）或 `4=HIGH`（稳定且可抢占 LOW），默认 4；其他 Workspace 保留 `1–10`，默认 10。CLI 按当前 Workspace 的公平调度标记自动选择优先级合同，项目策略仍可能降低最终优先级。任务需要稳定训练但显示 LOW 时，先 stop，再按当前 Workspace 和项目策略重提。
+优先级合同——公平调度 Workspace 只接受 `1=LOW`（可抢占）或 `4=HIGH`（默认，稳定档），其他 Workspace 是 `1–10`（默认 10），项目策略还可能再压低一档——见 [`resources.md`](resources.md)。任务需要稳定训练但 Status 显示 LOW 时，先 stop，再按当前 Workspace 和项目策略重提。
 
 平台还会逐行限制 Quota 能用的优先级，`job quota` 的 `Priority` 列显示这条声明：`low` 的行只接受 `--priority 1`（可抢占），`any` 不受这层限制，`unknown` 表示这次没读到。`job create` 在发出创建请求前按这一列预检并说明改法，细节见 [`resources.md`](resources.md)。限制按每个 Job Instance 的 Quota 判断，不按 `quota.gpu × --nodes` 的总卡数判断；例如 2 个 4 GPU Instance 仍是两个碎卡实例。提交后用 Status / Events 核实解析后的优先级和调度结果。
 

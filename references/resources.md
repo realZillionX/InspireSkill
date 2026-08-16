@@ -40,6 +40,8 @@
 
 `Available` 是平台上当前未被占用的 GPU，`Low Pri` 是低优任务占用、可被高优任务抢占的 GPU，`High Pri` 是 `Available + Low Pri`。判断高优任务时不要只看 `Available`，但 `High Pri` 也只是可抢占容量上限；提交后仍以 Events 为准。
 
+`resources policy` 回答另一个方向的问题：拿到手的资源能留多久。每个 Workspace 按 Workload 声明空闲回收规则和运行时长上限，这条命令逐行给出 `Reclaim`（调度器会不会自己收走）、`Idle Rule`（触发条件）和 `Time Limit`（硬上限——Job 是 `max` 运行时长，Notebook 是 `daily` 关机点）。**触发条件是 GPU 利用率，不是有没有人连着**：实测 `分布式训练空间` 对 Job 声明「GPU 低于 40% 持续 3 小时」，对 Notebook 声明「GPU 低于 15% 持续 3 小时，或运行超过 18 小时」，Serving 的规则还按 GPU 档位分条给。所以长时间不吃卡的阶段留在 GPU Workload 里会被无声收走，而这不是故障。`-` 表示这个 Workspace 对该 Workload **没有声明策略**，不等于没有限制，两者结论相反。留任务过夜、跑长训练或让 Serving 常驻之前先读这张表。
+
 余量不够时用 `resources usage` 看余量去了哪儿：它按用户、项目或任务列出存活工作负载持有的算力，以及其中有多少真的在忙（`GPU Busy`）。一大片 GPU 配一个很低的 `GPU Busy` 是资源停着而不是在用，这正是值得去要一下的情况；`--mine` 只看自己的占用，是一次预聚合请求，比扫全 Workspace 便宜。
 
 **`resources` 的每条命令、`<workload> quota` 和 `serving configs` 都只接受一个 Workspace，不接受 `all`。** 配额上限、计算组余量、回收策略和当前占用全部是按 Workspace 定义的事实，它们服务的决定——等、去要、换个地方提交、按什么规格提交——也全部是按 Workspace 做的。跨空间扫一遍不会多回答一个问题，只会把逐空间的行拼在一起再按输出预算截断，让「前 N 名」变成「最先枚举到的那个空间的前 N 名」。要在多个 Workspace 之间比较，就逐个跑，各自读各自的事实。CLI 里还接受 `--workspace all` 的只剩「按名字找东西」那一类：`<workload> list` 和 `account permissions`——不知道东西在哪个空间时，本来就没法先给出空间名。
@@ -56,9 +58,20 @@ CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解
 
 三元组必须在当前可见规格里唯一匹配。同一个三元组出现在多个 Compute Group 里是正常现象；先用查询命令按 Group 关键词收窄，再在 `create` 或 Profile 中写完整 Group 名称消歧。
 
+### 优先级合同
+
+`--priority` 有两套合同，由 Workspace 是否开启公平调度决定；CLI 按当前 Workspace 的标记自动选择，不需要也不接受手动指定用哪套：
+
+| Workspace | 可选值 | 默认 |
+| --- | --- | --- |
+| 公平调度（`分布式训练空间` 是） | `1=LOW` 或 `4=HIGH`，中间值平台不认 | `4` |
+| 其他 | `1–10` | `10` |
+
+低优先级任务可以被更高优先级抢占，这是它换来「有空就能起」的代价；公平调度 Workspace 里 `4=HIGH` 就是稳定档。Project 策略还可能把最终优先级再压低一档，所以提交后要从 Status / Events 核实平台真正解析出的值，不要以传入值为准。
+
 ### Quota 行的优先级限制
 
-有些 Quota 行只接受低优先级。这是平台按 Workspace 逐行声明的调度事实，`<workload> quota` 的 `Priority` 列直接显示它，不再从 Compute Group 名称推断：
+在合同允许的范围之内，有些 Quota 行只接受低优先级。这是平台按 Workspace 逐行声明的调度事实，`<workload> quota` 的 `Priority` 列直接显示它，不再从 Compute Group 名称推断：
 
 | `Priority` | 含义 |
 | --- | --- |
@@ -70,7 +83,16 @@ CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解
 
 `job` / `notebook` / `serving` 的 `create` 在发出创建请求前按这一列预检：所选行只接受低优先级而 `--priority` 更高时直接报错并说明改法；`unknown` 不阻断创建，因为一次读取失败不等于平台拒绝。
 
-限制按每个 Workload 实例或节点选择的 Quota 判断，不按任务聚合后的 GPU 总数判断。比如每节点 4 GPU、`--nodes 2` 仍是两个碎卡实例，不会因为总计 8 GPU 变成整节点请求；`--nodes` 只放大实例数，不改变单行 Quota 的调度语义。同一个 Compute Group 里更大的整节点行往往就是 `any`。
+限制按每个 Workload 实例或节点选择的 Quota 判断，不按任务聚合后的 GPU 总数判断。比如每节点 4 GPU、`--nodes 2` 仍是两个碎卡实例，不会因为总计 8 GPU 变成整节点请求；`--nodes` 只放大实例数，不改变单行 Quota 的调度语义。
+
+实测这层限制目前只出现在 `分布式训练空间`，形状是「碎卡只给低优，整节点才给高优」，并且开发区和训练区两片计算组的规则不同：
+
+| Compute Group | `1` / `2` / `4` 卡行 | `8` 卡整节点行 |
+| --- | --- | --- |
+| `开发区-*` | `any` | `any` |
+| `训练区-*` | `low` | `any` |
+
+也就是说：要一个不会被抢占的小规格 GPU 任务，就去开发区；在训练区想拿高优先级，只能整节点起。Notebook、Job 和 Serving 在这个 Workspace 里读到的是同一份限制。这是当前实测结果而不是平台承诺，创建前仍以 `<workload> quota` 的 `Priority` 列为准。
 
 具体可用 GPU 型号、机房和 `gpu,cpu,mem` 三元组仍以当前 Workload 的 Live Quota Row 为准；创建 Workload 或写 Profile 时从同一行复制完整 `group` 和 `quota`。提交后再从 Status / Events 核实平台解析出的优先级、排队和抢占结果。
 
@@ -104,5 +126,6 @@ Profile 是调度条件组 Alias，只保存 `workspace`、`project`、`group`�
 | RUNNING 但业务没推进 | 看 Metrics 是否有 GPU / CPU / I/O 负载，再回到日志和产物 |
 | 多节点某个 Worker 掉队 | 先看 Per-Instance Metrics 和 Instances，再看该 Worker 日志 |
 | 同一台机器上反复失败 | `resources node-events <节点名>` 看这台机器自己的事实 |
+| 任务或 Notebook 无故消失、被停 | 先看 Events 有没有抢占记录，再用 `resources policy` 对空闲回收规则和运行时长上限 |
 
 工作负载的 Events 只说平台对**这个任务**做了什么，说不了机器本身发生了什么。`resources node-events <节点名>` 是唯一按节点组织的事件源：内核 OOM kill、`TaskHung`、Cordon / Uncordon、重启、`NodeNotSchedulable`。节点名从 `<workload> instances` 的 `Node` 列或 `<workload> status` 拿；可以一次给多个节点，输出多一列 `Node`。`--from` 按上报组件收窄（`kubelet` / `kernel-monitor` / `node-controller`）。**查不到事件不等于机器没问题**，先核对节点名拼写。
