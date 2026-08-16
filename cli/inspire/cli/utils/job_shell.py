@@ -22,7 +22,7 @@ from urllib.parse import urlencode, urlsplit
 import click
 
 from inspire.cli.utils.terminal_io import write_stream_output
-from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url
+from inspire.platform.web.browser_api.core import _get_base_url
 from inspire.platform.web.session import WebSession, get_web_session
 from inspire.platform.web.session.proxy import get_rtunnel_proxy_override
 
@@ -220,15 +220,28 @@ def select_job_instance(
     )
 
 
+# The PTY sockets are the REST-shaped half of `/api/v2` -- no `?Action=`, so
+# an inventory built from Action names reports them as absent, which is how
+# this endpoint stayed on v1 long after everything else moved. The console
+# picks one of four by workload from a single URL builder; only the train one
+# has a CLI consumer today.
+REMOTE_CMD_PATH = "/api/v2/train_job/remote_cmd"
+
+
 def build_remote_cmd_ws_url(job_id: str, instance_name: str) -> str:
-    """Build the train-job remote shell websocket URL."""
+    """Build the train-job remote shell websocket URL.
+
+    v1 and v2 take the same two query parameters and answer identically:
+    measured against a running job, `echo` round-tripped byte-for-byte
+    through both. No fallback, therefore -- a second path here could only
+    hide a real failure of the first.
+    """
     base_url = _get_base_url().rstrip("/")
     parsed = urlsplit(base_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
     netloc = parsed.netloc
-    path = _browser_api_path("/train_job/remote_cmd")
     query = urlencode({"job_id": job_id, "instance_name": instance_name})
-    return f"{scheme}://{netloc}{path}?{query}"
+    return f"{scheme}://{netloc}{REMOTE_CMD_PATH}?{query}"
 
 
 def _cookie_value(session: WebSession, name: str) -> str | None:

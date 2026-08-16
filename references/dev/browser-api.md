@@ -191,7 +191,7 @@ discovery 里没有的 15 条路由：`audit`(6)、`billing`(3)、`file`(9)、`i
 
 | 路径 | 是什么 |
 | --- | --- |
-| `/api/v2/train_job/remote_cmd` | 训练任务的 PTY WebSocket，就是 `job shell` 现在走 v1 的那条 |
+| `/api/v2/train_job/remote_cmd` | 训练任务的 PTY WebSocket，`job shell` 走的就是它 ✅ 已迁 |
 | `/api/v2/hpc_jobs/instances/exec` | HPC 实例的 PTY |
 | `/api/v2/ray_job/instances/exec` | Ray 实例的 PTY |
 | `/api/v2/inference_servings/instances/exec` | Serving 实例的 PTY |
@@ -201,7 +201,11 @@ discovery 里没有的 15 条路由：`audit`(6)、`billing`(3)、`file`(9)、`i
 
 四条 PTY 共用控制台里同一个 URL 构造器，参数走 query string（HPC 用 `{job_id, instance_id}`，其余原样传 `{job_id, instance_name}`），进容器执行的是 `command -v bash >/dev/null 2>&1 && exec bash || exec sh`，改窗口大小发 `stty columns N rows M`。**这和 `job_shell.py` 现在对 v1 的用法只差一个前缀。**
 
-**这四条还没验证。** 网关在路由之前先鉴权：普通 GET、带 `Referer` 的 GET、真实的 WebSocket 握手，三种打法对 v1（确知可用）和一条随手编的路径回的都是同一个 401，所以第 7 节那套「按报错区分」的判据在这里失效。要确认只能拿一个自己的运行中任务去握一次手。HPC / Ray / Serving 的 PTY 我们目前完全没有对应命令。
+**这几条只能拿一个自己的运行中任务去握手验证。** 网关在路由之前先鉴权：普通 GET、带 `Referer` 的 GET、真实的 WebSocket 握手，三种打法对 v1（确知可用）和一条随手编的路径回的都是同一个 401，所以第 7 节那套「按报错区分」的判据在这里整个失效。
+
+`train_job/remote_cmd` 已经这样验过并迁完：建一个 1 卡低优的一次性任务，v1 与 v2 各握一次手、各发一条 `echo`，**两边逐字节相同**（各 45 字节），验完即删。因为等价所以不留回落——第二条路径在这里只能藏住第一条的真实失败。
+
+HPC / Ray / Serving 那三条 PTY 我们目前没有对应命令，也**还没验证**：要验就得各起一个对应类型的运行中工作负载。
 
 `user.GetMyPermissions`（空请求体）另给一份**按账号的权限表**：`{Services: {服务: {Read, Write, Actions: {Action: bool}}}}`。它只覆盖有 RBAC 网关的 14 个服务（不含 `train` / `notebook` / `workspace` / `project` / `ray` / `hpc`），但在覆盖范围内是权威的，而且列出了连前端产物里都没有的 Action——`job.ListNodeJobs`、`job.GetLcgUsedComputeResourceJobs`、`job.GetProjectQuotaJobs` / `GetUserQuotaJobs` 就是这么找到的。判「我能不能调」先问它，比探针便宜。
 

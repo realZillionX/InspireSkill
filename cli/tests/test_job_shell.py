@@ -55,13 +55,15 @@ def test_list_job_instances_uses_v2_action_api(monkeypatch) -> None:  # noqa: AN
 
 def test_build_remote_cmd_url_and_headers(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(job_shell, "_get_base_url", lambda: "https://qz.sii.edu.cn")
-    monkeypatch.setattr(job_shell, "_browser_api_path", lambda path: f"/api/v1{path}")
 
     url = job_shell.build_remote_cmd_ws_url("job-abc", "worker-0")
     headers = job_shell.build_remote_cmd_headers(_FakeSession())
 
+    # v2, and no `?Action=`: the PTY sockets are the REST-shaped half of the
+    # gateway, which is why an Action-name inventory kept reporting this one
+    # as having no v2 counterpart.
     assert url == (
-        "wss://qz.sii.edu.cn/api/v1/train_job/remote_cmd?"
+        "wss://qz.sii.edu.cn/api/v2/train_job/remote_cmd?"
         "job_id=job-abc&instance_name=worker-0"
     )
     assert headers["Origin"] == "https://qz.sii.edu.cn"
