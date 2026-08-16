@@ -177,11 +177,13 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 ### 找候选的第三条路：控制台前端产物
 
-discovery 之外还有一份下界更宽的清单——Web 控制台自己在调什么。抓 `{base_url}/` 的入口 chunk，按 `"./xxx.js"` 递归拉全部产物（当前 322 个 chunk / 18.9 MB），正则提取写死的 `/api/v2/{service}?Action={Action}`。当前结果：**25 条路由、187 个 Action**，比 discovery 多 14 条路由。
+discovery 之外还有一份下界更宽的清单——Web 控制台自己在调什么。[`scripts/scan_v2_surface.py`](../../scripts/scan_v2_surface.py) 把这条路固化了：抓 `{base_url}/` 的入口 chunk，按 `"./xxx.js"` 递归拉全部产物（当前 322 个 chunk / 18.9 MB），正则提取写死的 `/api/v2/{service}?Action={Action}`，再和 discovery 对账；`--probe` 顺带按第 7 节的判据逐个探活。当前结果：**25 条路由、187 个 Action**，discovery 是 11 个 Service、175 个 Action。
 
 正则要写 `[A-Za-z0-9]+` 而不是 `[A-Za-z]+`，否则 `GetProjectListV2` 会被截成 `GetProjectListV`，看起来像一个不存在的 Action。这份清单是**下界**：动态拼接的调用抓不到，所以它能证明「某 Action 存在」，不能证明「不存在」。
 
-discovery 完全没有、而控制台在用的路由：`audit`(6)、`billing`(3)、`file`(9)、`image_plaza`(7)、`job`(8)、`model_plaza`(5)、`operate-log`(1)、`resource-price`(6)、`sandbox`(4)、`sandbox-api-key`(3)、`sandbox-pool`(1)、`sandbox-template`(6)、`serving`(1)、`storage`(10)。按第 7 节的判据对其中 102 个只读 Action 逐个探活，**`InvalidAction` 为 0**——全部路由存在。对普通成员，`storage` / `operate-log` 整个服务是 `user is not system admin`，`billing` 三个 Action 读超时或 `InternalError`，其余可读。
+discovery 里没有的 15 条路由：`audit`(6)、`billing`(3)、`file`(9)、`image_plaza`(7)、`inference_serving`(3)、`job`(1)、`model_plaza`(5)、`operate-log`(1)、`resource-price`(6)、`sandbox`(4)、`sandbox-api-key`(3)、`sandbox-pool`(1)、`sandbox-template`(6)、`serving`(1)、`storage`(10)。**`inference_serving` 是假阳性**——discovery 把它拼成 `inference-serving`，网关只认下划线，正是第 3 节那条路由名陷阱；对账脚本按字符串比，不会替你看穿这个。
+
+按第 7 节的判据对其中 102 个只读 Action 逐个探活，**`InvalidAction` 为 0**——全部路由存在。对普通成员，`storage` / `operate-log` 整个服务是 `user is not system admin`，`billing` 三个 Action 读超时或 `InternalError`，`image_plaza.ListImages` 答 `total_count: 0`（目录对本账号是空的，不是没权限），其余可读。
 
 `user.GetMyPermissions`（空请求体）另给一份**按账号的权限表**：`{Services: {服务: {Read, Write, Actions: {Action: bool}}}}`。它只覆盖有 RBAC 网关的 14 个服务（不含 `train` / `notebook` / `workspace` / `project` / `ray` / `hpc`），但在覆盖范围内是权威的，而且列出了连前端产物里都没有的 Action——`job.ListNodeJobs`、`job.GetLcgUsedComputeResourceJobs`、`job.GetProjectQuotaJobs` / `GetUserQuotaJobs` 就是这么找到的。判「我能不能调」先问它，比探针便宜。
 

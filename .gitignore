@@ -33,3 +33,6 @@ CLAUDE.md
 *.pem
 *.key
 .claude/
+
+# scripts/scan_v2_surface.py chunk cache
+.scan-cache/
