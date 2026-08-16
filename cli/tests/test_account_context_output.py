@@ -3,15 +3,14 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from inspire.cli.commands.config import context as context_module
-from inspire.cli.commands.config.context import show_context
-from inspire.cli.commands.config.context import _render_human
+from inspire.cli.commands.account import context as context_module
+from inspire.cli.commands.account.context import _render_human, context as context_command
 from inspire.cli.context import EXIT_VALIDATION_ERROR
 from inspire.cli.main import main as cli_main
 from inspire.config import Config
 
 
-def test_config_context_renders_compact_name_lines(capsys):
+def test_account_context_renders_compact_name_lines(capsys):
     _render_human(
         {
             "active": {"account": "default", "project": None, "workspace": None},
@@ -38,8 +37,8 @@ def test_config_context_renders_compact_name_lines(capsys):
     assert "internal-gpu-type" not in output
 
 
-def test_config_context_help_only_describes_name_inputs() -> None:
-    result = CliRunner().invoke(show_context, ["--help"])
+def test_account_context_help_only_describes_name_inputs() -> None:
+    result = CliRunner().invoke(context_command, ["--help"])
 
     assert result.exit_code == 0
     assert "Pass the displayed names" in result.output
@@ -91,14 +90,14 @@ def _patch_large_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("inspire.platform.web.session.get_web_session", object)
 
 
-def test_config_context_default_json_is_bounded_and_name_only(
+def test_account_context_default_json_is_bounded_and_name_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_large_context(monkeypatch)
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "--no-env-file", "config", "context"],
+        ["--json", "--no-env-file", "account", "context"],
     )
 
     assert result.exit_code == 0, result.output
@@ -120,7 +119,7 @@ def test_config_context_default_json_is_bounded_and_name_only(
     assert "GPU-" not in result.output
 
 
-def test_config_context_limit_and_all_control_each_discovery_list(
+def test_account_context_limit_and_all_control_each_discovery_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_large_context(monkeypatch)
@@ -128,7 +127,7 @@ def test_config_context_limit_and_all_control_each_discovery_list(
 
     limited = runner.invoke(
         cli_main,
-        ["--no-env-file", "config", "context", "--limit", "2"],
+        ["--no-env-file", "account", "context", "--limit", "2"],
     )
     assert limited.exit_code == 0, limited.output
     assert "Project 00" in limited.output
@@ -138,7 +137,7 @@ def test_config_context_limit_and_all_control_each_discovery_list(
 
     unbounded = runner.invoke(
         cli_main,
-        ["--json", "--no-env-file", "config", "context", "--all"],
+        ["--json", "--no-env-file", "account", "context", "--all"],
     )
     assert unbounded.exit_code == 0, unbounded.output
     data = json.loads(unbounded.output)["data"]
@@ -149,13 +148,13 @@ def test_config_context_limit_and_all_control_each_discovery_list(
     assert "truncated" not in data
 
 
-def test_config_context_rejects_limit_with_all_as_single_json_document() -> None:
+def test_account_context_rejects_limit_with_all_as_single_json_document() -> None:
     result = CliRunner().invoke(
         cli_main,
         [
             "--json",
             "--no-env-file",
-            "config",
+            "account",
             "context",
             "--limit",
             "2",
@@ -170,7 +169,7 @@ def test_config_context_rejects_limit_with_all_as_single_json_document() -> None
     assert "either --limit or --all" in payload["error"]["message"]
 
 
-def test_config_context_reports_actionable_workspace_discovery_failure(
+def test_account_context_reports_actionable_workspace_discovery_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = Config(username="login-user", password="secret")
@@ -188,7 +187,7 @@ def test_config_context_reports_actionable_workspace_discovery_failure(
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "--no-env-file", "config", "context"],
+        ["--json", "--no-env-file", "account", "context"],
     )
 
     assert result.exit_code == 0, result.output
@@ -203,6 +202,6 @@ def test_config_context_reports_actionable_workspace_discovery_failure(
         "compute_groups": [],
         "accounts": ["primary"],
         "warnings": [
-            "Workspace names are unavailable. Run `inspire config check` and retry."
+            "Workspace names are unavailable. Run `inspire account check` and retry."
         ],
     }

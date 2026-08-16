@@ -533,7 +533,7 @@ def _resolve_notebook_target(
             "No workspace available for notebook lookup.",
             EXIT_CONFIG_ERROR,
             hint=(
-                "Run `inspire config context` to list visible workspace names, "
+                "Run `inspire account context` to list visible workspace names, "
                 "or pass --workspace <workspace-name> explicitly."
             ),
         )

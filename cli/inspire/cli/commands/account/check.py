@@ -1,4 +1,4 @@
-"""Config check command – validates environment and authentication."""
+"""Account check command – validates account config and authentication."""
 
 from __future__ import annotations
 
@@ -165,7 +165,7 @@ def _validate_project_base_url_shape(project_path: Path | None) -> None:
 def _build_base_url_resolution(
     cfg: Config,
     sources: dict[str, str],
-    global_path: Path | None,
+    account_path: Path | None,
     project_path: Path | None,
 ) -> dict[str, object]:
     env_base_url = os.environ.get("INSPIRE_BASE_URL")
@@ -175,7 +175,7 @@ def _build_base_url_resolution(
         "prefer_source": getattr(cfg, "prefer_source", "env"),
         "precedence": _describe_precedence(getattr(cfg, "prefer_source", "env")),
         "env_present": bool(env_base_url),
-        "global_config_present": bool(global_path),
+        "account_config_present": bool(account_path),
         "project_config_present": bool(project_path),
     }
 
@@ -192,11 +192,17 @@ def _build_base_url_resolution(
     help="Show source precedence, proxy routing, and config-file presence.",
 )
 @pass_context
-def check_config(ctx: Context, details: bool) -> None:
-    """Check configuration files and platform authentication.
+def check(ctx: Context, details: bool) -> None:
+    """Check the active account's settings and platform authentication.
 
     Verifies required account settings, validates host-shaped values, and
     confirms the active account can authenticate to the platform.
+
+    \b
+    Examples:
+        inspire account check
+        inspire account check --details
+        inspire --json account check
     """
     effective_json = ctx.json_output
     show_details = details
@@ -205,7 +211,7 @@ def check_config(ctx: Context, details: bool) -> None:
         cfg, sources = Config.from_files_and_env(
             require_credentials=False,
         )
-        global_path, project_path = Config.get_config_paths()
+        account_path, project_path = Config.get_config_paths()
         _validate_project_base_url_shape(project_path)
 
         placeholder_issues = _find_placeholder_host_issues(cfg, sources)
@@ -231,7 +237,7 @@ def check_config(ctx: Context, details: bool) -> None:
             auth_ok = False
             auth_error = str(e)
 
-        base_url_resolution = _build_base_url_resolution(cfg, sources, global_path, project_path)
+        base_url_resolution = _build_base_url_resolution(cfg, sources, account_path, project_path)
         default_base_url_hint = None
         if base_url_resolution["source"] == SOURCE_DEFAULT:
             default_base_url_hint = (
@@ -277,7 +283,7 @@ def check_config(ctx: Context, details: bool) -> None:
                 )
                 click.echo(
                     "Config files: "
-                    f"global={'yes' if global_path else 'no'} "
+                    f"account={'yes' if account_path else 'no'} "
                     f"project={'yes' if project_path else 'no'}"
                 )
                 if default_base_url_hint:

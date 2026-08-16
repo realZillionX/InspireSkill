@@ -108,6 +108,18 @@
 
   `references/notebook.md` 现在承载保存镜像这条动线，`references/image.md` 只留保存之后的可见性与清理并指过去。
 
+### 变更
+
+- **`inspire config` 里四条命令有三条管的是账号，不是配置，全部并入 `inspire account`。** `config check` → `account check`，`config context` → `account context`，`config show` 里的账号级部分 → 新的 `account show`。归属本来就错了：schema 里 15 个 option 有 10 个是账号作用域（Authentication / API / Proxy / Tunnel），它们全部由 `account add` 写入 `~/.inspire/accounts/<name>/config.toml`，而 `config show` 对其中 8 个只印 `<configured>`——每项只传递「设了没设」这一个 bit，那本来就是一条 `account status`。`config context` 更直接：它列出的 project 和 compute group 就是 `inspire init` 的发现结果写进账号配置的那份缓存，只有 workspace 名单是实时查的。
+
+  `inspire config show` 保留，但收窄到它唯一无可替代的职责：本仓库的 Workload 默认值（`job.*`、`notebook.post_start`）以及每个值来自哪一层。这些值跨仓库共享层、账号覆盖层、`.env` 和环境变量四层解析，生效值经常不在你会去翻的那个文件里，`cat` 回答不了。
+
+  `account show` 还接过了有效代理诊断（原 `config show --filter Proxy`）：账号 `[proxy]` 块、Shell 的 `http_proxy` / `NO_PROXY`，合并之后 requests / playwright / rtunnel 三条链路各自走直连还是走代理。这一段任何配置文件里都没有，且现在即使账号没配任何 proxy 也照印——「账号文件里什么都没设」和「请求仍然在走 Shell 代理」可以同时成立，正是这时候最需要看到它。
+
+- **删除 `inspire config env`。** `config env use .env` 和 `inspire init --scope project --env-file .env` 调的是同一个函数，纯重复；模板生成器 `config env [--template]` 只是把 schema 里的 description 重排成注释，没有回答任何 `--help` 回答不了的问题。同时删掉 `config show` 的 `--format env`：它对账号级的 10 项只会印 `# INSPIRE_USERNAME=<configured; redacted>`，模板出口没了之后更没有存在理由。`--compact` 一并删除，因为「只印显式配置过的」已经是默认行为。
+
+- **来源标签 `global` 改叫 `account`。** 这一层读的就是 `~/.inspire/accounts/<name>/config.toml`，叫 `global` 与另一个同名概念（`inspire init --scope global`）撞车。`--json` 里 `source` 字段和 `account check --details` 的 `Config files:` 一行同步改口。
+
 ### 修复
 
 - **`base_url` 的默认值是一个 `config check` 自己判为非法的占位主机。** `https://api.example.com` 在七处被硬编码成 base_url 的默认或兜底值，而 `config check` 又把 `example.com` 列为占位主机直接报错——同一个值既是默认值又是错误条件。后果落在最不该出错的地方：全新用户按 issue 模板跑第一条 `inspire config check`，拿到的是「Placeholder host values detected」，值还被脱敏成 `<redacted>` 看不出哪里不对，而真正该给的「Missing platform credentials. Run `inspire account add`」永远不会触发，因为占位检查排在凭据检查前面。真值 `https://qz.sii.edu.cn` 此前只存在于 `account add` 的交互 prompt 里。现在它是 `inspire.config` 里唯一的 `DEFAULT_BASE_URL`，配置默认值、运行时兜底、登录入口和 `inspire init` 写出的账号模板全部引用它；`example.com` 只剩下识别用户手输占位值和修补旧配置文件两个用途。`base_url` 本身仍可配置。

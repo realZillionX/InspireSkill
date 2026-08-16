@@ -134,7 +134,7 @@ def patch_config_and_auth(
     import importlib
 
     quota_resolver_module = importlib.import_module("inspire.cli.utils.quota_resolver")
-    config_check_module = importlib.import_module("inspire.cli.commands.config.check")
+    config_check_module = importlib.import_module("inspire.cli.commands.account.check")
     job_commands_module = importlib.import_module("inspire.cli.commands.job.job_commands")
     job_create_module = importlib.import_module("inspire.cli.commands.job.job_create")
     workspaces_module = importlib.import_module("inspire.platform.web.browser_api.workspaces")
@@ -1630,7 +1630,7 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
     )
 
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
     effective_proxy = {
         "target": "my-inspire.internal",
@@ -1671,14 +1671,14 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["config", "check"])
+    result = runner.invoke(cli_main, ["account", "check"])
 
     assert result.exit_code == EXIT_AUTH_ERROR
     assert "Authentication: FAILED" in result.output
     assert "Effective runtime proxy" not in result.output
     assert "source=system_env" not in result.output
 
-    detailed = runner.invoke(cli_main, ["config", "check", "--details"])
+    detailed = runner.invoke(cli_main, ["account", "check", "--details"])
     assert detailed.exit_code == EXIT_AUTH_ERROR
     assert "Effective runtime proxy" in detailed.output
     assert "source=system_env" in detailed.output
@@ -1691,7 +1691,7 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
     detailed_json = runner.invoke(
         cli_main,
-        ["--json", "config", "check", "--details"],
+        ["--json", "account", "check", "--details"],
     )
     assert detailed_json.exit_code == EXIT_AUTH_ERROR
     payload = json.loads(detailed_json.output)
@@ -1714,7 +1714,7 @@ def test_config_check_config_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check", "--details"])
+    result = runner.invoke(cli_main, ["--json", "account", "check", "--details"])
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     payload = json.loads(result.output)
@@ -1750,7 +1750,7 @@ base_url = "https://my-inspire.internal"
     monkeypatch.setattr(
         config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
     effective_proxy = {
         "target": "my-inspire.internal",
@@ -1783,7 +1783,7 @@ base_url = "https://my-inspire.internal"
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check", "--details"])
+    result = runner.invoke(cli_main, ["--json", "account", "check", "--details"])
 
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
@@ -1793,7 +1793,7 @@ base_url = "https://my-inspire.internal"
     assert resolution["prefer_source"] == "toml"
     assert resolution["env_present"] is True
     assert resolution["project_config_present"] is True
-    assert resolution["global_config_present"] is True
+    assert resolution["account_config_present"] is True
     assert "value" not in resolution
     assert str(project_config) not in result.output
     assert str(global_config) not in result.output
@@ -1834,7 +1834,7 @@ def test_config_check_accepts_local_json_alias(
     monkeypatch.setattr(
         config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
     monkeypatch.setattr(config_check_module, "get_web_session", lambda: object())
     monkeypatch.setattr(
@@ -1844,7 +1844,7 @@ def test_config_check_accepts_local_json_alias(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check"])
+    result = runner.invoke(cli_main, ["--json", "account", "check"])
 
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
@@ -1873,7 +1873,7 @@ def test_config_check_rejects_placeholder_base_url(
     monkeypatch.setattr(
         config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
     monkeypatch.setattr(
         config_check_module,
@@ -1882,7 +1882,7 @@ def test_config_check_rejects_placeholder_base_url(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check"])
+    result = runner.invoke(cli_main, ["--json", "account", "check"])
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     payload = json.loads(result.output)
@@ -1915,7 +1915,7 @@ def test_config_check_rejects_top_level_project_base_url_key(
     monkeypatch.setattr(
         config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
     monkeypatch.setattr(
         config_check_module,
@@ -1924,7 +1924,7 @@ def test_config_check_rejects_top_level_project_base_url_key(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check"])
+    result = runner.invoke(cli_main, ["--json", "account", "check"])
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     payload = json.loads(result.output)
@@ -1952,7 +1952,7 @@ def test_config_check_allows_path_default_for_browser_api_prefix(
     monkeypatch.setattr(
         config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
     monkeypatch.setattr(config_check_module, "get_web_session", lambda: object())
     monkeypatch.setattr(
@@ -1962,7 +1962,7 @@ def test_config_check_allows_path_default_for_browser_api_prefix(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["config", "check"])
+    result = runner.invoke(cli_main, ["account", "check"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert "Configuration: OK" in result.output
@@ -2015,7 +2015,7 @@ def test_config_show_respects_global_json_flag(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "show"])
+    result = runner.invoke(cli_main, ["--json", "account", "show"])
 
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)

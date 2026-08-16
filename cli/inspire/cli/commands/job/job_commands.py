@@ -192,7 +192,7 @@ def _resolve_explicit_workspace(workspace: Optional[str], session) -> Optional[s
     if _looks_like_workspace_id(workspace):
         raise ConfigError(
             "--workspace takes a workspace name. "
-            "See `inspire config context` for available names."
+            "See `inspire account context` for available names."
         )
     return select_workspace_id(explicit_workspace_name=workspace, session=session)
 

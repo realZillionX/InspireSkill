@@ -320,7 +320,7 @@ def refresh_cache(
             ctx,
             workspace,
             resource_type="workspace",
-            list_command="inspire config context",
+            list_command="inspire account context",
         )
         for workspace in workspaces
     )

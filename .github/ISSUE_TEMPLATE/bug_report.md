@@ -42,5 +42,5 @@ assignees: ""
 
 ```bash
 inspire --help
-inspire config check
+inspire account check
 ```

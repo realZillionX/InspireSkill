@@ -83,9 +83,9 @@ curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scri
 
 ```bash
 inspire account add <name>
-inspire config show --compact
-inspire --json config show
-inspire config check
+inspire account show
+inspire --json account show
+inspire account check
 ```
 
 `inspire account add` 会询问平台登录 username、password、base URL 和代理。username 使用登录页接受的手机号、学号或邮箱，不是网页右上角中文显示名。配置写入 `~/.inspire/accounts/<name>/config.toml`。
@@ -101,7 +101,7 @@ http://127.0.0.1:7897
 账号级 proxy 是标准入口，也会优先于通用 Shell 代理。CLI 也会继承 `http_proxy` / `HTTP_PROXY`、`https_proxy` / `HTTPS_PROXY` 和 `all_proxy` / `ALL_PROXY`；因此即使账号配置里没有 proxy，这些变量也可能改变登录和平台请求的实际链路。用下面的命令查看脱敏后的有效代理来源、目标路由和 `NO_PROXY` 匹配结果：
 
 ```bash
-inspire config show --compact --filter Proxy
+inspire account show --filter Proxy
 ```
 
 平台请求的通用 Shell HTTP(S) 代理来源会遵守 `NO_PROXY` / `no_proxy`。如果当前网络应直连 SII，可把 `.sii.edu.cn` 加入 bypass；确认是 Shell 代理干扰时，也可只对本次命令取消大小写两组变量：

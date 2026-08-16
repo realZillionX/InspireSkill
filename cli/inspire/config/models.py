@@ -13,7 +13,7 @@ PROJECT_ACCOUNT_CONFIG_DIR = "accounts"
 
 # The only Inspire deployment anyone points this CLI at. `base_url` stays
 # configurable for staging hosts, but the default has to be a host that
-# actually answers: a placeholder default made `inspire config check` report
+# actually answers: a placeholder default made `inspire account check` report
 # "placeholder host" to users whose only mistake was not running
 # `inspire account add` yet.
 DEFAULT_BASE_URL = "https://qz.sii.edu.cn"
@@ -25,7 +25,7 @@ class ConfigError(Exception):
 
 # Source tracking for config values
 SOURCE_DEFAULT = "default"
-SOURCE_GLOBAL = "global"
+SOURCE_ACCOUNT = "account"
 SOURCE_PROJECT = "project"
 SOURCE_ENV = "env"
 SOURCE_ENV_FILE = "env-file"
@@ -89,7 +89,7 @@ class Config:
     profiles: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
 
     # Display-only project context from project config. These names are shown
-    # by `inspire config context`; create commands still require explicit
+    # by `inspire account context`; create commands still require explicit
     # arguments or workload profiles.
     context_project: Optional[str] = None
     context_workspace: Optional[str] = None

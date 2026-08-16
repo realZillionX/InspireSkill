@@ -61,7 +61,7 @@ def _validate_workspace_selector(ctx: Context, workspace: str | None) -> str | N
         ctx,
         workspace,
         resource_type="workspace",
-        list_command="inspire config context",
+        list_command="inspire account context",
     )
     try:
         return validate_workspace_operation_name(workspace)

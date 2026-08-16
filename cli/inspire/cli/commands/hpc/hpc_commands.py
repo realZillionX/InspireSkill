@@ -1041,7 +1041,7 @@ def list_hpc(
     help=(
         "Full compute group name copied from the same quota row as --quota. "
         "Required unless supplied by --profile "
-        "(e.g. 'HPC-可上网区资源-2'; see 'inspire config context')."
+        "(e.g. 'HPC-可上网区资源-2'; see 'inspire account context')."
     ),
 )
 @click.option(

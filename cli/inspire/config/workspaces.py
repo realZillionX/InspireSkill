@@ -254,7 +254,7 @@ def select_workspace_id(
 def workspace_required_hint(config: Any | None = None) -> str:
     del config
     return (
-        "pass --workspace <workspace-name>. Run `inspire config context` "
+        "pass --workspace <workspace-name>. Run `inspire account context` "
         "to list visible workspace names"
     )
 

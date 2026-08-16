@@ -277,7 +277,7 @@ Referer：`/jobs/distributedTraining`。
 
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
-| `GetUserDetail` | `{}` | `{id, name, name_en, email, avatar_url, global_role, created_at, extra_info{}}` | 所有「按当前用户过滤」的列表：`job/hpc/ray/notebook/serving/model list`、`config check` |
+| `GetUserDetail` | `{}` | `{id, name, name_en, email, avatar_url, global_role, created_at, extra_info{}}` | 所有「按当前用户过滤」的列表：`job/hpc/ray/notebook/serving/model list`、`account check` |
 | `GetPermissions` † | `{WorkspaceId}` | `{permissions[]}`（如 `"job.trainingJob.create"`） | `account permissions` |
 | `GetRoutes` † | `{WorkspaceId}` | `{routes[{name, routes[{path, name, is_fair_workspace}]}]}` | Workspace 枚举、优先级选择、`init`、`cache refresh` |
 

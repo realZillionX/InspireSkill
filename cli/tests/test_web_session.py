@@ -423,7 +423,7 @@ def test_login_not_complete_message_prioritizes_platform_error() -> None:
     assert "Platform reported: 账号或密码错误" in message
     assert "platform login name" not in message
     assert "CAPTCHA" not in message
-    assert "inspire config show --compact" in message
+    assert "inspire account show" in message
     assert "last auth check status=401" in message
     assert "Shell HTTP_PROXY/HTTPS_PROXY/ALL_PROXY is configured" in message
     assert "CAS/Keycloak redirects may match NO_PROXY differently" in message

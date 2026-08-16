@@ -231,7 +231,7 @@ def test_workspace_required_hint_points_to_live_context() -> None:
     cfg = _cfg()
     msg = workspace_required_hint(cfg)
     assert "--workspace <workspace-name>" in msg
-    assert "inspire config context" in msg
+    assert "inspire account context" in msg
 
 
 def test_config_model_has_no_workspace_map() -> None:

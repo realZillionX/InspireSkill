@@ -72,7 +72,7 @@ from inspire.platform.web.session import (
 )
 
 _REFERENCE_FIELDS = {
-    "workspace": ("workspace", "inspire config context"),
+    "workspace": ("workspace", "inspire account context"),
     "project": ("project", "inspire project list --workspace <workspace-name>"),
     "group": (
         "compute group",
