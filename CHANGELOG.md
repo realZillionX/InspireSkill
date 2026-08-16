@@ -114,6 +114,10 @@
 
 - **`image list --source` 少了一整类：网页镜像选择器有四个页签，CLI 只有三个。** 「项目可见镜像」（`VISIBILITY_PROJECT`）在 CLI 里既列不出来也设不了，`--source all` 也扫不到——`CPU资源空间` 里有 2 个这样的镜像，此前按名字根本解析不到。`--source` 增加 `project`，`image set-visibility` 和 `notebook save-image --visibility` 同步增加 `project` 一档。
 
+- **在 `job shell` / 受限 Notebook 的 `notebook shell` 里敲 `exit`，远端 shell 结束了，本地进程永远不退。** 网关不会因为远端 shell 死掉就关连接——实测敲完 `exit` 之后 40 秒内既没有 close frame 也没有 EOF，一个字节都不再来，于是客户端一直阻塞在 `select` 上。唯一能脱身的是 `Ctrl+]`，而它在任何一处 help 里都没写过。
+
+  现在 shell 自己宣告退出：bootstrap 不再 `exec` 那个 shell，而是把它当子进程跑，父进程在它结束后 `printf` 一个标记。标记字面量在 bootstrap 里被引号拆成两段，所以终端回显的那行命令不含连续的标记，只有 shell 自己的 `printf` 会吐出来——这是敢直接匹配它的前提。客户端跨帧扫描这个标记（只扣下真正构成标记前缀的那几个字节，否则每次按键回显都会被延迟），看到就干净退出，标记本身不进终端。`job shell` 和 JupyterTerminal 那条走同一套。两条命令的 help 也写上了 `exit` 和 `Ctrl+]`。
+
 - **公开镜像删不掉，而 `image delete` 只说「Could not delete image.」。** 平台在镜像转 public 之后就不再把创建者当属主：`AccessForbidden: 您没有权限删除该镜像。`——既删不掉也改不回 private，只有平台管理员能清理。旧消息读起来像一次可以重试的失败。现在报出这是单向操作，`set-visibility` 的 help 和 [`references/image.md`](references/image.md) 也写清楚了这一点：放开可见性之前先确认这个镜像值得长期留着。
 
 - **`job logs` 会打乱同一毫秒内的输出。** 平台的 `time` 是纳秒精度，`timestamp_ms` 是四舍五入到毫秒的；排序用的是后者，于是一次 `nvidia-smi --format=csv` 的表头和数据行并列成同一个键，日志存储怎么给就怎么印——实测数据行印在了表头前面，`ls` 的三行也被打散。现在按 `time` 的亚毫秒部分排序。

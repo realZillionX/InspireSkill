@@ -426,3 +426,202 @@ def test_public_image_delete_refusal_names_the_one_way_door(
     assert "neither deleted nor made private again" in result.output
     # The platform's raw refusal carries the request payload.
     assert "AccessForbidden" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Interactive shells: the remote exit has to end the local process
+# ---------------------------------------------------------------------------
+
+
+def test_shell_exit_marker_is_not_echoed_by_the_bootstrap() -> None:
+    """The terminal echoes the bootstrap line, so the literal must be split.
+
+    If the contiguous marker rode in on the command line, the watcher would
+    trip on that echo and close the shell the instant it opened.
+    """
+    from inspire.cli.utils.job_shell import SHELL_BOOTSTRAP, SHELL_EXIT_MARKER
+
+    assert SHELL_EXIT_MARKER not in SHELL_BOOTSTRAP
+    # …and the shell still prints it contiguously.
+    assert SHELL_BOOTSTRAP.rstrip().endswith("'")
+    assert "exec bash" not in SHELL_BOOTSTRAP, "exec leaves nobody to announce the exit"
+
+
+def test_shell_exit_watcher_reports_exit_and_hides_the_marker() -> None:
+    from inspire.cli.utils.job_shell import SHELL_EXIT_MARKER, ShellExitWatcher
+
+    watcher = ShellExitWatcher()
+    visible, done = watcher.feed(b"tick=1\r\n")
+    assert visible == b"tick=1\r\n" and not done
+
+    visible, done = watcher.feed(b"exit\r\n" + SHELL_EXIT_MARKER.encode())
+    assert done
+    assert visible == b"exit\r\n"
+    assert SHELL_EXIT_MARKER.encode() not in visible
+
+
+def test_shell_exit_watcher_spans_frame_boundaries() -> None:
+    """A marker split across two websocket frames still has to be caught."""
+    from inspire.cli.utils.job_shell import SHELL_EXIT_MARKER, ShellExitWatcher
+
+    marker = SHELL_EXIT_MARKER.encode()
+    watcher = ShellExitWatcher()
+
+    first, done = watcher.feed(b"bye\n" + marker[:9])
+    assert not done
+    assert first == b"bye\n"  # the partial marker is withheld, not printed
+
+    second, done = watcher.feed(marker[9:])
+    assert done
+    assert second == b""
+
+
+def test_shell_exit_watcher_releases_withheld_bytes_that_were_not_a_marker() -> None:
+    from inspire.cli.utils.job_shell import ShellExitWatcher
+
+    watcher = ShellExitWatcher()
+    first, _ = watcher.feed(b"INSPIRE_SHELL_")
+    second, done = watcher.feed(b"NOT_THE_MARKER\n")
+
+    assert not done
+    assert first + second + watcher.flush() == b"INSPIRE_SHELL_NOT_THE_MARKER\n"
+
+
+def test_jupyter_bootstrap_also_announces_its_exit() -> None:
+    """`notebook shell` on a restricted machine runs the same loop shape."""
+    from inspire.cli.utils.job_shell import SHELL_EXIT_MARKER
+    from inspire.platform.web.browser_api.jupyter_terminal import build_shell_bootstrap
+
+    bootstrap = build_shell_bootstrap(cwd="/inspire/hdd/x", env_exports="")
+
+    assert "exec $SHELL" not in bootstrap
+    assert "$SHELL -l;" in bootstrap
+    assert SHELL_EXIT_MARKER not in bootstrap
+    assert bootstrap.startswith("cd ")
+
+
+class _ScriptedWebSocket:
+    """A websocket that replays frames and never closes, like the gateway.
+
+    Selectable through a real socketpair so the shell loops' `select` works.
+    """
+
+    def __init__(self, frames: list[bytes]) -> None:
+        import socket as _socket
+
+        self._frames = list(frames)
+        self._reader, self._writer = _socket.socketpair()
+        for _ in self._frames:
+            self._writer.send(b"x")
+        self.sent: list[str] = []
+
+    # The loops construct this as `cls(url, headers)`.
+    @classmethod
+    def factory(cls, frames: list[bytes]):
+        made: dict[str, _ScriptedWebSocket] = {}
+
+        def build(_url, _headers, **_kwargs):
+            made["ws"] = cls(frames)
+            return made["ws"]
+
+        build.made = made  # type: ignore[attr-defined]
+        return build
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self._reader.close()
+        self._writer.close()
+        return False
+
+    def fileno(self) -> int:
+        return self._reader.fileno()
+
+    def send_text(self, text: str) -> None:
+        self.sent.append(text)
+
+    def recv_frame(self):
+        if not self._frames:
+            raise EOFError
+        self._reader.recv(1)
+        return 0x2, self._frames.pop(0)
+
+
+def test_job_shell_returns_when_the_remote_shell_announces_its_exit() -> None:
+    """The gateway holds the socket open, so the marker is the only signal."""
+    import io
+
+    from inspire.cli.utils.job_shell import SHELL_EXIT_MARKER, run_remote_shell
+
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    # A closed stdin keeps it out of the select set; this exercises the read
+    # side, which is where the marker has to be noticed.
+    stdin = _ClosedStdin()
+    build = _ScriptedWebSocket.factory(
+        [b"tick=1\r\n", b"exit\r\n" + SHELL_EXIT_MARKER.encode()]
+    )
+
+    code = run_remote_shell(
+        job_id="job-1",
+        instance_name="worker-0",
+        session=_ShellSession(),
+        stdin=stdin,
+        stdout=stdout,
+        websocket_cls=build,  # type: ignore[arg-type]
+    )
+
+    assert code == 0
+    stdout.flush()
+    written = stdout.buffer.getvalue()  # type: ignore[attr-defined]
+    assert b"tick=1" in written
+    assert SHELL_EXIT_MARKER.encode() not in written
+
+
+class _ShellSession:
+    base_url = "https://qz.sii.edu.cn"
+    storage_state = {"cookies": [{"name": "inspire-session", "value": "ok"}]}
+    cookies: dict[str, str] = {}
+    workspace_id = "ws-1"
+
+
+class _ClosedStdin:
+    closed = True
+
+    def isatty(self) -> bool:
+        return False
+
+
+def test_jupyter_terminal_shell_returns_on_the_same_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`notebook shell` on a restricted machine shares the hang and the fix."""
+    import io
+    import json as _json
+
+    from inspire.cli.utils import job_shell
+    from inspire.platform.web.browser_api import jupyter_terminal
+
+    frames = [
+        _json.dumps(["stdout", "tick=1\r\n"]).encode(),
+        _json.dumps(
+            ["stdout", "exit\r\n" + job_shell.SHELL_EXIT_MARKER]
+        ).encode(),
+    ]
+    build = _ScriptedWebSocket.factory(frames)
+    monkeypatch.setattr(job_shell, "_WebSocketClient", build)
+
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+    code = jupyter_terminal._run_jupyter_terminal_shell(
+        ws_url="wss://qz.sii.edu.cn/terminals/1",
+        session=_ShellSession(),  # type: ignore[arg-type]
+        bootstrap="$SHELL -l\r",
+        stdin=_ClosedStdin(),
+        stdout=stdout,
+    )
+
+    assert code == 0
+    stdout.flush()
+    written = stdout.buffer.getvalue()  # type: ignore[attr-defined]
+    assert b"tick=1" in written
+    assert job_shell.SHELL_EXIT_MARKER.encode() not in written

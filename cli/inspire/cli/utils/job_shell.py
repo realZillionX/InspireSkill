@@ -27,8 +27,70 @@ from inspire.platform.web.session import WebSession, get_web_session
 from inspire.platform.web.session.proxy import get_rtunnel_proxy_override
 
 RUNNING_INSTANCE_STATUS = "instance_running"
-SHELL_BOOTSTRAP = "command -v bash >/dev/null 2>&1 && exec bash || exec sh\n"
 CTRL_RIGHT_BRACKET = b"\x1d"
+
+# Typing `exit` ends the remote shell, but the gateway keeps the websocket
+# open and sends nothing further — verified 2026-08-15 against a running H100
+# instance, which stayed silent for 40s with no close frame. So the shell has
+# to announce its own exit: run it as a child instead of `exec`ing it, and
+# have the surviving parent print a marker.
+#
+# The literal is split across two quoted strings so the bootstrap line the
+# terminal echoes back never contains the contiguous marker — only the
+# shell's own `printf` emits it, which is what makes matching it safe.
+SHELL_EXIT_MARKER = "INSPIRE_SHELL_CLOSED_7f31a0"
+
+
+def shell_exit_announce(marker: str = SHELL_EXIT_MARKER) -> str:
+    """Return the `printf` that emits the exit marker without echoing it."""
+    head, tail = marker[:15], marker[15:]
+    return f"printf '%s' '{head}''{tail}'"
+
+
+SHELL_BOOTSTRAP = (
+    f"command -v bash >/dev/null 2>&1 && bash || sh; {shell_exit_announce()}\n"
+)
+
+SHELL_ESCAPE_NOTE = "Leave the shell with `exit`, or press Ctrl+] to drop the session."
+
+
+class ShellExitWatcher:
+    """Scan a remote output stream for the shell's own exit marker.
+
+    Keeps the trailing bytes of each chunk so a marker split across two
+    websocket frames is still recognised, and withholds the marker itself from
+    what reaches the terminal.
+    """
+
+    def __init__(self, marker: str = SHELL_EXIT_MARKER) -> None:
+        self._marker = marker.encode()
+        self._tail = b""
+
+    def feed(self, payload: bytes) -> tuple[bytes, bool]:
+        """Return the bytes safe to print, and whether the shell has exited.
+
+        Withheld bytes carry over into the next call, so the returned slice is
+        always taken from the combined buffer rather than from ``payload``.
+        Only a suffix that is genuinely a partial marker is held back — this
+        sits in the path of every keystroke echo, so withholding a fixed-size
+        tail would make an interactive shell feel laggy.
+        """
+        buffer = self._tail + payload
+        index = buffer.find(self._marker)
+        if index != -1:
+            self._tail = b""
+            return buffer[:index], True
+        keep = 0
+        for size in range(min(len(self._marker) - 1, len(buffer)), 0, -1):
+            if buffer.endswith(self._marker[:size]):
+                keep = size
+                break
+        self._tail = buffer[len(buffer) - keep:] if keep else b""
+        return buffer[: len(buffer) - keep], False
+
+    def flush(self) -> bytes:
+        pending, self._tail = self._tail, b""
+        return pending
 
 
 class JobShellError(RuntimeError):
@@ -462,6 +524,7 @@ def run_remote_shell(
             signal.signal(signal.SIGWINCH, resize_handler)
         try:
             stdin_open = True
+            exit_watcher = ShellExitWatcher()
             while True:
                 readers = [ws]
                 if stdin_open and not getattr(stdin, "closed", False):
@@ -478,7 +541,11 @@ def run_remote_shell(
                         ws._send_frame(0xA, payload)
                         continue
                     if opcode in {0x1, 0x2}:
-                        write_stream_output(stdout_buffer, payload)
+                        visible, shell_exited = exit_watcher.feed(payload)
+                        if visible:
+                            write_stream_output(stdout_buffer, visible)
+                        if shell_exited:
+                            return 0
                 if stdin in ready:
                     data = os.read(stdin.fileno(), 4096)
                     if not data:

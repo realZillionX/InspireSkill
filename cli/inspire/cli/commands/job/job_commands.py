@@ -1797,6 +1797,9 @@ def shell(
 ) -> None:
     """Open an interactive shell inside a running training-job instance.
 
+    Needs a terminal: this attaches your stdin to a remote PTY. Leave with
+    `exit`, or press Ctrl+] to drop the session without ending the shell.
+
     \b
     Examples:
         inspire job shell my-training-run --workspace 分布式训练空间

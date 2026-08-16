@@ -138,7 +138,7 @@ def bridge_ssh(
     SSH-capable notebooks use cached SSH, so a freshly created one needs
     `inspire notebook connection refresh <name> --workspace <workspace>` once.
     Restricted H100/H200 notebooks open a JupyterTerminal-backed shell and need
-    no setup.
+    no setup; leave that one with `exit`, or press Ctrl+] to drop the session.
 
     \b
     Example:
