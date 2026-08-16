@@ -26,7 +26,11 @@
 
 - `notebook status`、`job status`、`hpc status` 显示实例挂了哪些官方数据集，以及各自在容器里的路径。此前 CLI 能设不能读：建的时候可以 `--dataset`，建完想知道「这里面到底有什么数据」只能回网页看。平台在 `GetNotebook` / `GetJob` 里一直回显这份信息，只是没接。它同时给出容器路径而不是平台内部存储路径——后者命名的是用户既不寻址也用不上的内部布局。
 
-- `inspire job tensorboards`：平台会为训练任务单独跑 TensorBoard，此前 CLI 完全看不见它们。值得做成命令的不是那个网页地址（Agent 没有浏览器，这个 CLI 也早就删掉了「打开一个网页」这类命令），而是 Summary Path——event 文件写在共享盘上的目录，同项目任意 Notebook 直接就能读。于是「平台为这次训练开了 TensorBoard」从一条没法用的信息变成了可执行的路径。
+- `inspire tensorboard create|list|status|start|stop|delete|tags|scalars`：TensorBoard 从「Job 底下一条只读列表」变成完整的命令组，因为它在平台上本来就是一等对象——计算组在 `support_job_type_list` 里单独声明 `tensorboard`，控制台给它独立页签，它既能挂在训练任务上也能对任意一个 summary 目录单独建。写侧的四个 Action（`Create` / `Start` / `Stop` / `Delete`）不在 discovery 里，是探针探出来的。
+
+  **真正的收获是 `tags` 和 `scalars`。** board 的 `url` 不是内部路径，而是一个真的能打的 TensorBoard 应用，同一个 Session cookie 直接认，于是 `data/runs` 和 `data/plugin/scalars/*` 都能读成 JSON。Agent 因此可以自己建一个 board 指向训练目录，然后把 loss 曲线、eval 指标当数字读回来——首尾值、step 区间、最小最大值，`--points N` 再要最后 N 个点——不需要浏览器，也不需要有人替它去看一眼图。点按 step 排序而不是按 event 文件顺序，因为续训和多 worker 写出来的序列在文件里是交错的。
+
+  规格由平台固定成 1 CPU / 2 GiB，所以没有 quota 也没有镜像要选；唯一的放置输入是计算组，而且必须声明 `tensorboard`——`分布式训练空间` 里有几个训练组没有声明，CLI 在发请求前就挡下来。自动停机上限 72 小时。`create` 另外挡住两件平台会照单全收、但收完这个 board 就废了的事：不给名字（建出来的行 Name-only 的 CLI 再也指不到）和不给 summary 路径（建出来什么都读不到）。
 
 - `inspire dataset tags`：列出 `dataset list --tag` 接受的全部 52 个标签及其所属模态。标签名是固定的中文词（`视频生成`、`具身智能`……），猜不出来，此前唯一的发现路径是故意填错一个再去看报错里的候选。
 

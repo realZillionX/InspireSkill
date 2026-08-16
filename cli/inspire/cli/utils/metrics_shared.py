@@ -172,7 +172,7 @@ def _fmt_value(metric: str, value: float) -> str:
     return f"{value / last[1]:.2f} {last[0]}"
 
 
-def _sparkline(values: list[float], width: int = 40) -> str:
+def render_sparkline(values: list[float], width: int = 40) -> str:
     if not values:
         return ""
     step = max(1, len(values) // width)
@@ -359,7 +359,7 @@ def _format_text_summary(
                     per_ts.setdefault(s.timestamp, []).append(s.value)
             timestamps = sorted(per_ts)
             spark_vals = [sum(per_ts[t]) / len(per_ts[t]) for t in timestamps]
-            lines.append(f"  {_sparkline(spark_vals)}")
+            lines.append(f"  {render_sparkline(spark_vals)}")
             lines.append("")
 
     return "\n".join(lines).rstrip()

@@ -4,11 +4,11 @@
 >
 > 每条都是 `POST {base_url}/api/v2/{路由}?Action={Action}`，请求体是 JSON，响应取 `ResponseMetadata` / `Result` 信封里的 `Result`。「请求体」列写的是 **CLI 实际发出的键**，不是 discovery 声明的全集；「响应」列写的是**实测的线上键**，discovery 声明的 `Items` / `TotalCount` 在多数 Action 上不是真的。
 
-12 条路由、108 个 Action。`†` 标记的 Action 不在 `discovery` 里，但路由活着、Action 可调；`‡` 标记的整条路由不在 discovery 里。
+12 条路由、113 个 Action。`†` 标记的 Action 不在 `discovery` 里，但路由活着、Action 可调；`‡` 标记的整条路由不在 discovery 里。
 
 | 路由 | 域 | Action 数 | 主要 CLI 命令组 |
 | --- | --- | --- | --- |
-| [`train`](#train--分布式训练) | GPU 训练任务 | 10 | `job` |
+| [`train`](#train--分布式训练) | GPU 训练任务、TensorBoard | 15 | `job`、`tensorboard` |
 | [`hpc`](#hpc--cpu-slurm-批处理) | CPU Slurm 批处理 | 11 | `hpc` |
 | [`ray`](#ray--弹性计算) | 弹性计算 | 12 | `ray` |
 | [`notebook`](#notebook--交互式建模) | 交互式建模 | 18 | `notebook`、`image` |
@@ -22,6 +22,8 @@
 | [`dataset`](#dataset--官方数据集挂载-) ‡ | 官方数据集挂载 | 1 | `dataset validate`、`--dataset` |
 
 **没有 CLI 消费者的 Wrapper**（存在、有测试覆盖，但当前没有命令调用）：`notebook.ListNotebookLifecycles`、`notebook.ListNotebookCreators`、`ray.ListJobCreators`、`inference_serving.GetInferenceServingTerms`、`model-hub.ListModelVersionOptions`、`model-hub.ListModelCreators`、`model-hub.GetModelPublishPrefill`、`model-hub.GetModelPublishStatus`、`project.GetProjectForPage`。它们在表里照常列出，CLI 列写「—」。
+
+**查过、刻意不封装**：`train.ListTensorboardUsers`（`{workspace_id}` → `{items[]}`，整个 Workspace 建过 board 的 158 个人）答的是控制台那个「创建人」下拉框，对一个只看自己资源的 CLI 没有消费者，因此没有 Wrapper，也不在表里。
 
 ---
 
@@ -37,17 +39,29 @@ Referer：`/jobs/distributedTraining`，详情页 `/jobs/distributedTrainingDeta
 | `ListJobInstances` | `{job_id, page_num, page_size}` | `{items[], total}` | `job instances`、`job shell`、`job logs`、`job events` |
 | `ListJobEvents` | `{PageNumber\|page_num, page_size, filter:{object_type, object_ids[]}}` | `{events[], total}` | `job events` |
 | `GetJobLog` | `{page_size, filter:{podNames[], start_timestamp_ms, end_timestamp_ms}}` | `{logs[], total}` | `job logs` |
-| `ListTensorboards` | `{workspace_id, created_by, PageNumber, page_size}` | `{items[], total}` | `job tensorboards` |
 | `StopJob` | `{job_id}` | `{code, message}` | `job stop` |
 | `DeleteJob` | `{job_id}` | — | `job delete` |
 | `GetTaskMetric` | 见 [Metrics](#metrics--gettaskmetric) | `{time_seris_metric_groups[]}` | `job metrics` |
+| `ListTensorboards` | `{workspace_id, created_by, PageNumber, page_size, status?, keyword?}` | `{items[], total}` | `tensorboard list`、Name Resolver、`cache refresh` |
+| `GetTensorboard` | `{tb_id}` | 完整 board 对象：`name` / `status` / `tb_summary_path` / `url` / `job_id` / `job_name` / `auto_stop_time_ms` / `running_time_ms` / `project_name` / `logic_compute_group_name` / `priority*` | `tensorboard status`、`tags`、`scalars`、启停轮询 |
+| `CreateTensorboard` † | `{name, workspace_id, project_id, logic_compute_group_id, tb_summary_path, auto_stop_time_ms, job_id?}` | **恒为 `{}`** | `tensorboard create` |
+| `StartTensorboard` † | `{tb_id}` | — | `tensorboard start` |
+| `StopTensorboard` † | `{tb_id}` | — | `tensorboard stop` |
+| `DeleteTensorboard` † | `{tb_id}` | — | `tensorboard delete` |
 
 **参数语义与限制**
 
 - **`ListJobEvents` 一个 Action 管两种事件**，靠 `filter.object_type` 区分：`"job"` 给控制器级事件（`SetPodTemplateSchedulerName`、`Unschedulable`），`"instance"` 给 pod 级事件（`FailedScheduling` / `Scheduled` / `Pulling` / `Started`，更丰富）。`object_ids` 在前者是 `[job_id]`，在后者是 pod 名列表，**按 200 个一批**分块。
 - 另有一个同名易混的 `ListJobInstanceEvents`（参数 `job_id` + `instance_name`）：它无论返回多少条，`total` 都是 `"0"`，**需要分页的调用方不要用它**，`browser_api` 也没有封装。
 - **`GetJobLog` 的两个时间戳是字符串字段**，值却是 epoch 毫秒；后端拒绝任何宽于一个月的窗口。不接受 sorter。
-- **`ListTensorboards` 有两处不可猜**：分页参数只认 PascalCase `PageNumber`（`page` / `page_num` 被静默忽略并返回空列表）；**不带 `created_by` 时返回整个 Workspace 的 `total` 配一个空 `items`**——读起来像「你一个都没有」，实际是那批行不归你读。行里真正有用的是 `tb_summary_path`（共享盘上的 event 目录，任何同项目 Notebook 都能读），不是 `url`（平台内部路径，要浏览器才有意义）。`status` 是 `tb_status_running` / `tb_status_stopped`，CLI 去掉前缀。
+- **TensorBoard 是这条路由上的第二个对象**，不是 Job 的字段：整个面共 7 个 Action，discovery 里只有读侧三个（`ListTensorboards` / `GetTensorboard` / `ListTensorboardUsers`），写侧四个（`Create` / `Start` / `Stop` / `Delete`）全靠探针发现。**没有 `CreateTensorboardConsole` 变体**（`InvalidAction`），也没有 `Update` / `Restart` / `Check` / `GetTensorboardLog` / `ListTensorboardEvents` / `ListTensorboardInstances` / `GetTensorboardAccessUrl` / `GetTensorboardScheduleConfig`——逐个探过，全是 `InvalidAction`。计算组的 `support_job_type_list` 里另有一个前面没记过的取值 **`tensorboard`**，逐组不同。
+- **`CreateTensorboard` 的必填字段名和它的报错名不是同一个词。** 缺字段时它说 `tensorboard_auto_stop_time_ms is required`，但线上的字段是 **`auto_stop_time_ms`**，而且是**字符串**（传 int 报 `invalid value for string field autoStopTimeMs`）；照报错原样发 `tensorboard_auto_stop_time_ms` 会被当成未知字段丢掉，然后再报同一句 required，死循环。**这个 Action 的 unmarshaller 忽略未知字段**，所以不能靠 `unknown field` 反推契约，只能照 `GetTensorboard` 的响应字段表拼。上限 72 小时（`must less than 72h0m0s`）。
+- **`CreateTensorboard` 会愉快地建出一个没法用的 board。** `name` 可以省——建出来的行没有名字，Name-only 的 CLI 从此再也指不到它；`tb_summary_path` 也可以省——建出来的 board 什么都读不到。`workspace_id` 缺了报 `ResourceNotFound: record not found`，`project_id` 缺了报 `InternalError`，`logic_compute_group_id` 缺了报 `ResourceNotFound: 已选择的计算类型组不存在`。真正可选的只有 `job_id`：带上就挂在那个训练任务下（响应里回填 `job_name`），不带就是独立 board。**Wrapper 因此把 `name` 和 `tb_summary_path` 也挡成必填。**
+- **`CreateTensorboard` 不返回 id**（`Result` 恒为 `{}`），新建的 board 只能回头用 `ListTensorboards` 按名字找。`priority_name` / `task_priority` 都不是杠杆：前者被静默忽略，后者是 int32 字段，新建 board 一律落在 `NORMAL` / `4`。规格也不可选，平台固定 1 CPU / 2 GiB。
+- **`GetTensorboard` 对不认识的 `tb_id` 答 `InvalidParameter: 用户不存在。`**——一条谈用户的消息，实际含义是这个 board 不归你或不存在。**不要读成账号问题。**
+- **`DeleteTensorboard` 要求先停止**，运行中答 `Conflict: 当前状态（运行中）无法删除，请先停止后再删除`。`StopTensorboard` 对已停止的 board 返回成功（幂等）。状态取值 `tb_status_creating` / `tb_status_running` / `tb_status_stopped`，CLI 去掉前缀。
+- **`ListTensorboards` 有两处不可猜**：分页参数只认 PascalCase `PageNumber`（`page` / `page_num` 被静默忽略并返回空列表）；**不带 `created_by` 时 `total` 数的是整个 Workspace，`items` 却只有你读得到的那几行**（实测 `total=1626` 配 1 行），两个数对不上。`status` 只收单个裸值（`tb_status_running`），传数组报 `invalid value for string field status`；`keyword` 按名字子串匹配，真实生效。**`job_id` 这个键被受理但滤不出东西**，按任务收窄只能在客户端做。
+- **行里的 `url` 是一个真的能打的 TensorBoard 应用**，不是只有浏览器才有意义的内部路径：同一个 `inspire-session` cookie 直接认，`data/runs`、`data/plugin/scalars/tags`、`data/plugin/scalars/scalars?run=&tag=` 都返回 JSON（scalars 是 `[[wall_time, step, value], …]`）。新建的 board 给绝对地址 `https://notebook-inspire.sii.edu.cn/tensorboard/{tb_id}/`，老行给站内路径 `/api/v1/train_job/tensorboard/{tb_id}/`，两种都活、都同样认证，Wrapper 统一补全成绝对地址。**这是「Agent 能不能自己看训练曲线」的全部答案**，所以 `url` 不投影给用户，改由 `tensorboard tags` / `scalars` 代读。
 - **`DeleteJob` 要求先停止**，运行中删除返回 `Conflict: 当前状态（运行中）无法删除`。找不到资源时它返回 **`AccessForbidden`**，不是 `ResourceNotFound`（与 `hpc.DeleteJob` 相反）。
 - `ListJobs` 的 `total` 当前是 int，但 `hpc` / `ray` 同名字段是 string，一律走 `_coerce_total()`。
 - `JobInfo` 从 `framework_config[0]` 读规格：`gpu_count` / `cpu` / `mem_gi` / `shm_gi` / `instance_count`，GPU 型号在 `instance_spec_price_info.gpu_info.gpu_type_display`。
@@ -266,7 +280,7 @@ Referer：`/jobs/distributedTraining`。
 - **`GetLogicComputeGroupNodeSpecs` / `GetWorkspaceNodeSpecs` 的 scoping 反而在顶层**，套 `filter` 是 `unknown field`；只给组不给 workspace 是 `AccessForbidden`。
 - **`node_specs` 是规格目录，不是节点清单**：一个 292 节点的组只发布 17 种形状，行是「形状 × 作业类型」的笛卡尔积，还会因为 GiB 小数差异重复（68 行原始数据里只有 6 种真实形状）。**任何按行数当节点数的读法都是错的**。字段里 `gpu_type` 恒为空、`gpu_memory_size` 恒为 0（真值在 `gpu_info` 里），discovery 声明的 `node_count` 线上根本不存在。
 - **组资源汇总的键平台拼错成 `logic_resouces`**（少一个 `r`），`GetLogicComputeGroupResource` 与 `GetWorkspaceComputeResource` 同病。GPU 型号在 `gpu_type_stats[0].gpu_info.gpu_type_display`。
-- **`ListLogicComputeGroups` 的标识字段叫 `logic_compute_group_id` 而不是 `id`**；`support_job_type_list` 是 **JSON 编码的字符串**，不是数组（`'["interactive_modeling","hpc_job"]'`）。用 `isinstance(x, list)` 判断会把每个组都读成「没声明」，于是按 Workload 过滤计算组这件事看起来生效了、实际一个都没滤掉。取值域：`interactive_modeling` / `hpc_job` / `ray_job` / `distributed_training` / `inference_serving_customize` / `inference_serving_exclusive`，逐组不同。
+- **`ListLogicComputeGroups` 的标识字段叫 `logic_compute_group_id` 而不是 `id`**；`support_job_type_list` 是 **JSON 编码的字符串**，不是数组（`'["interactive_modeling","hpc_job"]'`）。用 `isinstance(x, list)` 判断会把每个组都读成「没声明」，于是按 Workload 过滤计算组这件事看起来生效了、实际一个都没滤掉。取值域：`interactive_modeling` / `hpc_job` / `ray_job` / `distributed_training` / `tensorboard` / `inference_serving_customize` / `inference_serving_exclusive`，逐组不同——`tensorboard` 是真正的过滤条件，`分布式训练空间` 里就有训练组没有声明它。
 - **`GetWorkspaceQuota` / `GetWorkspaceComputeResource` 要顶层 `workspace_id`**，套 `filter` 反而被拒。配额字段是 `{资源}_{high|low}_{running|total}` 加可选的 `_used` 后缀：高优先级（保障）和低优先级（可回收）是**两套独立的上限**，一个运行中的任务只吃其中一套，混着读会两边都报错。`-1` 表示不限。
 - 两者回答不同的问题：**配额用完了可以被拒，即使机器闲着；机器忙满了也可以被拒，即使配额还有。**
 - `GetScheduleConfig` / `ListUserQuotas` / `GetUserTaskQuota` / `GetWorkspaceTaskQuota` / `GetDefaultUserTaskQuota` 需要工作空间管理员，`GetDefaultUserQuota` 普通成员能读但没有信息量——都没有封装。**`workspace.GetScheduleConfig` 不是各 Workload 路由下 `Get*ScheduleConfig` 的汇总入口**：它对普通成员一律 `AccessForbidden`（顶层 `workspace_id` 与 PascalCase 都试过，id 被回显说明 scoping 是通的），而 Workload 路由下的同族 Action 普通成员可读。

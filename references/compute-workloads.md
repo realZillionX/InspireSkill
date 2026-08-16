@@ -38,7 +38,7 @@ Job 的关键边界：
 - 日志和工作目录依赖共享盘约定；训练 Repo 建议在 `me:<repo>`，启动命令里使用相对共享盘路径或让脚本自己切目录。
 - Shared Memory 是每个 Job Instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader Workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置。
 - 环境变量由平台注入，不必再拼进启动命令；值可能是凭据，CLI 输出只回显变量名。
-- 平台会为训练任务单独跑 TensorBoard，`job tensorboards` 列出当前账号的那些。真正能用的字段是 Summary Path——event 文件在共享盘上的目录，同项目任意 Notebook 直接读，不需要浏览器。
+- 训练曲线走独立的 `inspire tensorboard` 命令组，不是 Job 的附属字段，见本文第 8 节。
 - 任务结束后容器默认立即释放。需要事后进容器看现场时，在创建时设置成功 / 失败保留时长，任务会停在保留态等待，过期自动释放；这是排查失败训练最省事的路径，比重跑一次便宜。
 - 状态变化通知（`--enable-notification`，收件人固定为当前用户绑定的飞书账号）和自动容错默认关闭，除非明确启用。
 - 需要项目级持久默认值时写 `[job]` 配置段；提交前用 `job create --dry-run` 检查 Shared Memory、通知和容错的最终生效值。
@@ -121,8 +121,9 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 | `metrics` | 已启动任务是否仍在有效工作，Pod / Task / Replica 是否均衡 |
 | `instances` | 实际运行单元是否齐全，是否有部分 Pending 或异常；每个 Pod 落在哪个节点 |
 | `status` | 平台状态、优先级、基础摘要、落在哪些节点 |
+| `inspire tensorboard scalars` | 训练本身写出来的曲线：loss 还在不在降、eval 指标有没有走平（见第 8 节） |
 
-卡住或失败先看 Events；已启动但健康度不明看 Metrics；程序行为看 Logs；产物完整性回到共享盘文件和 Fingerprint。
+卡住或失败先看 Events；已启动但健康度不明看 Metrics；程序行为看 Logs；产物完整性回到共享盘文件和 Fingerprint。上面五个都在回答「平台侧这个任务怎么样」，回答不了「模型训得怎么样」——那是 TensorBoard 那一条。
 
 **等待只对还会自己往前走的状态有意义。** `PENDING` / `QUEUING` / `RUNNING` 会动，终态不会：Job 和 HPC 没有 `start`，`job stop` 留下的 `job_stopped` 与 `SUCCEEDED` / `FAILED` / `CANCELLED` 一样是终点，要再跑只能重新 `create`；能从停止态拉回来的只有 Notebook、Ray 和 Serving，它们各有 `start`。所以开始等之前先 `status` 读一次当前状态，别对着一个已经停掉的任务等它变回运行中。`job wait` 和 `job logs --follow` 在任务进入终态时返回；`events --follow` 和 `job list --watch` 不会自己结束，任务结束了也不会，只能被中断——不要把这两条挂在后台终端上当「等任务跑完」用。
 
@@ -132,7 +133,20 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 `events` 与 `logs` 的默认口径一致：不加参数就是这个工作负载能拿到的全部，`--instance` 收窄到某个实例，`--workload-level` 反过来只留控制器那一半（两者互斥）。四类的默认都把两套不相交的视图合成一条时间线——控制器事件说「任务为什么没被创建、为什么整体排不上」，Pod 事件说「哪个实例没被调度、镜像拉没拉下来、容器起没起来」（`FailedScheduling` / `Pulling` / `Started` / `BackOff`）——并多出一列 `Instance` 指明每行来自哪个实例，控制器行在这一列是 `-`。实例标识与各自 `instances` 一致：`hpc` 与 `ray` 是角色 / 序号，`job` 与 `serving` 是 Rank。取数代价各不相同但对调用方不可见：`job` 一次请求带 200 个 Pod，`ray` 一次调用本来就同时返回两级，`serving` 两级各一次调用，`hpc` 一个实例一次请求、并发取。Notebook 是单实例，两个开关都没有。**排查顺序建议先看默认的合并视图**：只有已经知道问题出在整体调度、不在某个 Pod 上时，`--workload-level` 才值得用——它省掉的是实例那几次请求，不是一次判断。
 
-## 8. 异常判断
+## 8. TensorBoard
+
+TensorBoard 是平台上的一等对象，不是 Job 的字段：计算组在 `support_job_type_list` 里单独声明 `tensorboard` 这个任务类型，控制台给它独立页签，它既可以挂在某个训练任务上，也可以对任意一个 summary 目录单独建。命令组是 `inspire tensorboard`，`metrics` 那套读的是资源占用，这里读的是训练本身写出来的曲线。
+
+- **规格固定 1 CPU / 2 GiB**，所以没有 Quota 要选、没有镜像要挑；唯一的放置输入是计算组，而且这个组必须声明 `tensorboard`——`分布式训练空间` 里有几个训练组没有声明，选中会被平台拒。
+- **`--summary-path` 是全部**：board 直接读共享盘上已有的 event 文件，训练侧不需要为它改任何东西；同一个目录反复建 board 不会影响文件。
+- **`--job` 只是归属记号**，让 board 出现在那个任务的行上，不会替你推导 summary 路径。
+- **自动停机上限 72 小时**（`--auto-stop-hours`，默认 24），到点自停；`stop` 后 `start` 会重新开始计时，summary 路径和窗口都不用重填。
+- **`tags` 和 `scalars` 直接读运行中的 board**：`tags` 给出 run 和 scalar tag，`scalars` 给出每条曲线的首尾值、step 区间、最小最大值，`--points N` 再加最后 N 个 `(step, value)`。这一层让 Agent 不需要浏览器也能判断 loss 还在不在降、eval 指标有没有走平、某次训练是不是发散了。
+- **点按 step 排序，不按 event 文件顺序**：续训和多 worker 写出来的序列在文件里是交错的，"最后一个点"问的是 step。
+- **运行中的 board 没有任何 tag，和路径写错长得完全一样**——两种情况都只是空列表，要靠核对 `--summary-path` 区分。
+- 删除 board 不动共享盘上的 event 文件，指向同一目录重建一个 board 读到的是同一份数据；运行中的 board 拒绝删除，先 `stop`。
+
+## 9. 异常判断
 
 | 现象 | 优先怀疑 |
 | --- | --- |

@@ -6,7 +6,7 @@
 
 Browser API 是启智控制台自己用的接口面：同一台 `qz.sii.edu.cn`、同一个 CAS Session，控制台 SPA 全程走 `/api/v2` 的 Action 网关。官方 CLI `qz` 是这套接口的另一个客户端，不是它的前置依赖；调用它不需要安装任何外部二进制。
 
-当前 CLI 封装 **12 条路由、108 个 Action**，另有 **4 处 v1 端点**因为 v2 装不下或重建更贵而保留（第 8 节）。
+当前 CLI 封装 **12 条路由、113 个 Action**，另有 **4 处 v1 端点**因为 v2 装不下或重建更贵而保留（第 8 节）。
 
 ## 1. 事实源
 
@@ -117,6 +117,7 @@ Referer: {base_url}/{对应控制台页面}
 ## 4. 分页与 total
 
 - **分页参数三种写法等价**：网关同时接受 `PageNumber` / `page_num` / `page`，三者都真实生效。唯一例外是 `train.ListTensorboards`——它**只认 PascalCase 的 `PageNumber`**，`page` 和 `page_num` 被静默忽略并返回空列表。
+- **未知字段一般报 `unknown field`，但不是每个 Action 都报。** `train.CreateTensorboard` 的 unmarshaller 静默丢弃它们，所以「逐个字段试，看哪个不被拒」这个探针方法在它身上得出的是全通过——**对写侧 Action 用这个方法之前，先发一个确定不存在的键确认它真的会拒。**
 - **`notebook.ListRunIndex` 无分页**，传 `PageNumber` 直接报错。
 - **`page_size: -1`（取全部）逐 Action 不同**：`workspace.ListLogicComputeGroups` 认，`image.ListImages` 认，`workspace.ListNodeDimension` **不认**（只回 10 条，必须按 `total` 显式翻页）。不能类推。
 - **省略 `page_size` 可能是灾难**：`ListLogicComputeGroups` 省略时返回空列表却带非零 `total`，读起来就像这个 Workspace 里没有任何计算组。
@@ -157,7 +158,7 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 
 `GET {base_url}/discovery` 返回 `{"Result": {"Version": "<etag>", "Services": [...]}}`，每个 Action 带完整的嵌套参数与响应结构。**不带任何认证头**，且匿名与带 Cookie 的响应逐字节相同——它是静态文档，**不按调用者角色过滤**。
 
-当前 `Version = e1daec0f`，11 个 Service、175 个 Action。CLI 用到的 108 个 Action 里有 **14 个不在 discovery 里**：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`notebook.ListNotebookCreators`、`user.GetPermissions`、`user.GetRoutes`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners`、`image.CreateImage`、`image.UpdateImage`、`model-hub.CreateModel`、`model-hub.DeleteModel`、`notebook.CheckNotebook`；另有 `file`、`dataset` 两条**整条路由**不在 discovery 里，却都活着且正在用。
+当前 `Version = e1daec0f`，11 个 Service、175 个 Action。CLI 用到的 113 个 Action 里有 **18 个不在 discovery 里**：`train.CreateJobConsole`、`hpc.CreateJobConsole`、`inference_serving.CreateServingConsole`、`notebook.ListNotebookCreators`、`user.GetPermissions`、`user.GetRoutes`、`project.ListProjects`、`project.GetProjectDetail`、`project.GetProjectOwners`、`image.CreateImage`、`image.UpdateImage`、`model-hub.CreateModel`、`model-hub.DeleteModel`、`notebook.CheckNotebook`、`train.CreateTensorboard`、`train.StartTensorboard`、`train.StopTensorboard`、`train.DeleteTensorboard`；另有 `file`、`dataset` 两条**整条路由**不在 discovery 里，却都活着且正在用。
 
 | 字段 | 可信度 |
 | --- | --- |
@@ -219,6 +220,8 @@ discovery 里 8 个 Action 在两个 Service 下同名且描述几乎一致，�
 | `GET /api/v1/notebook/lab/{notebook_id}/proxy/{port}/` | [`rtunnel.py`](../../cli/inspire/platform/web/browser_api/rtunnel.py)、`notebook proxy-url`、整条 Notebook SSH 链路 | **不是 Action 能表达的东西**：反向代理，不是 JSON 请求/响应。见下文 |
 
 `/train_job/remote_cmd`（`job shell` 的双向 PTY WebSocket）同理属于「v2 装不下」，它在 [`job_shell.py`](../../cli/inspire/cli/utils/job_shell.py) 里构造，是 `test_browser_api_boundary.py` 的两条 `_ALLOWED` 之一（另一条是 `session/auth.py`）。v2 是「POST + `?Action=` + JSON 信封」的网关，装不下流式连接，所以这里不存在「还没迁完」，而是**不该迁**。
+
+**这张表不收 TensorBoard 的 `/api/v1/train_job/tensorboard/{tb_id}/`**：`tensorboard tags` / `scalars` 确实会 GET 它，但那个地址是 `GetTensorboard` 的 `url` 字段**原样回来的值**，不是 CLI 拼的路径——早期的 board 给这一种，新建的 board 给 `https://notebook-inspire.sii.edu.cn/tensorboard/{tb_id}/`，两种都活。所以它不是一条「留着没迁的端点」，而是一条随行数据；`browser_api/tensorboards.py` 只负责在它是站内路径时补上 base，边界测试也因此不需要例外。
 
 ### Notebook Proxy
 

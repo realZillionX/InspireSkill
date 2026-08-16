@@ -72,6 +72,7 @@ GROUP_JOB_TYPES_BY_WORKLOAD: dict[str, frozenset[str]] = {
     "hpc": frozenset({"hpc_job"}),
     "ray": frozenset({"ray_job"}),
     "serving": frozenset({"inference_serving_customize", "inference_serving_exclusive"}),
+    "tensorboard": frozenset({"tensorboard"}),
 }
 
 

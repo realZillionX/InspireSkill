@@ -42,6 +42,7 @@ DEFAULT_TTL_SECONDS: dict[str, int] = {
     "ray": 5 * 60,
     "serving": 5 * 60,
     "notebook": 5 * 60,
+    "tensorboard": 5 * 60,
 }
 
 # One resource type per workload: a compute group exposes a different quota

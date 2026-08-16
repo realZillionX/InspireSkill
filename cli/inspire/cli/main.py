@@ -37,6 +37,7 @@ from inspire.cli.commands import (
     model,
     ray,
     serving,
+    tensorboard,
     uninstall,
     update,
 )
@@ -240,6 +241,7 @@ main.add_command(hpc)
 main.add_command(model)
 main.add_command(ray)
 main.add_command(serving)
+main.add_command(tensorboard)
 main.add_command(uninstall)
 main.add_command(update)
 main.add_command(ensure_playwright_runtime)

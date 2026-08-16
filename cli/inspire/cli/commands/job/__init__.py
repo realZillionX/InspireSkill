@@ -22,7 +22,6 @@ from .job_create import create
 from .job_events import events
 from .job_logs import logs
 from .job_metrics import job_metrics
-from .job_tensorboards import job_tensorboards
 
 
 @click.group()
@@ -60,7 +59,6 @@ job.add_command(delete)
 job.add_command(wait)
 job.add_command(show_command)
 job.add_command(job_metrics)
-job.add_command(job_tensorboards)
 
 
 __all__ = ["job"]

@@ -646,6 +646,7 @@ def _looks_like_platform_id(value: str) -> bool:
         "quota-",
         "ssh-",
         "spec-",
+        "tb-",
         "user-",
     )
     for prefix in sorted(id_prefixes, key=len, reverse=True):

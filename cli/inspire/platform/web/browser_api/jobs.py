@@ -24,7 +24,6 @@ from inspire.platform.web.session import (
 
 __all__ = [
     "JobInfo",
-    "TensorboardInfo",
     "create_training_job",
     "delete_job",
     "get_current_user",
@@ -34,7 +33,6 @@ __all__ = [
     "list_job_instance_events",
     "list_train_job_logs",
     "list_jobs",
-    "list_tensorboards",
     "stop_training_job",
 ]
 
@@ -483,82 +481,3 @@ def delete_job(
             timeout=30,
         )
     )
-
-
-@dataclass
-class TensorboardInfo:
-    """One TensorBoard the platform is running for a training job.
-
-    The web address is deliberately not carried here. What an Agent can act on
-    is `summary_path`: the shared-disk directory the event files are written
-    to, which is readable from any notebook in the same project without a
-    browser.
-    """
-
-    name: str
-    status: str
-    job_name: str
-    summary_path: str
-    compute_group_name: str
-    created_at: str
-
-    @classmethod
-    def from_api_response(cls, data: dict[str, Any]) -> "TensorboardInfo":
-        return cls(
-            name=str(data.get("name") or "").strip(),
-            # `tb_status_running` / `tb_status_stopped`; the prefix is noise in
-            # a command whose every row is a TensorBoard.
-            status=str(data.get("status") or "").strip().removeprefix("tb_status_"),
-            job_name=str(data.get("job_name") or "").strip(),
-            summary_path=str(data.get("tb_summary_path") or "").strip(),
-            compute_group_name=str(data.get("logic_compute_group_name") or "").strip(),
-            created_at=str(data.get("created_at") or "").strip(),
-        )
-
-
-def list_tensorboards(
-    workspace_id: Optional[str] = None,
-    created_by: Optional[str] = None,
-    page_num: int = 1,
-    page_size: int = 50,
-    session: Optional[WebSession] = None,
-) -> tuple[list[TensorboardInfo], int]:
-    """List the current user's TensorBoards in one workspace.
-
-    Two things about this Action are not guessable. Its page parameter is the
-    PascalCase `PageNumber` -- `page` and `page_num` are both ignored -- and
-    without `created_by` it answers `total` for the whole workspace with an
-    empty `items`, which reads exactly like "you have none" rather than "that
-    row set is not yours to read".
-    """
-    if session is None:
-        session = get_web_session()
-    if workspace_id is None:
-        raise ValueError("Workspace selection is required.")
-    if created_by is None:
-        current_user = get_current_user(session=session)
-        created_by = str(current_user.get("id") or current_user.get("user_id") or "").strip()
-        if not created_by:
-            raise ValueError("Current user could not be resolved for TensorBoard listing.")
-
-    payload = _v2_result(
-        _request_json(
-            session,
-            "POST",
-            "/api/v2/train?Action=ListTensorboards",
-            referer=f"{_get_base_url()}/jobs/distributedTraining",
-            body={
-                "workspace_id": workspace_id,
-                "created_by": created_by,
-                "PageNumber": page_num,
-                "page_size": page_size,
-            },
-            timeout=30,
-        )
-    )
-    items = payload.get("items")
-    items = items if isinstance(items, list) else []
-    boards = [
-        TensorboardInfo.from_api_response(item) for item in items if isinstance(item, dict)
-    ]
-    return boards, _coerce_total(payload.get("total"), len(boards))

@@ -685,6 +685,7 @@ def test_destructive_commands_share_yes_help() -> None:
         ["serving", "delete"],
         ["serving", "profile", "delete"],
         ["image", "delete"],
+        ["tensorboard", "delete"],
     ):
         result = CliRunner().invoke(cli_main, [*path, "--help"])
 

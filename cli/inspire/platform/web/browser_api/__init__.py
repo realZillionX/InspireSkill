@@ -21,7 +21,6 @@ from .availability import (
 )
 from .jobs import (
     JobInfo,
-    TensorboardInfo,
     create_training_job,
     delete_job,
     get_current_user,
@@ -30,9 +29,22 @@ from .jobs import (
     list_job_instances,
     list_job_instance_events,
     list_jobs,
-    list_tensorboards,
     list_train_job_logs,
     stop_training_job,
+)
+from .tensorboards import (
+    MAX_AUTO_STOP_MS,
+    TensorboardInfo,
+    create_tensorboard,
+    delete_tensorboard,
+    get_tensorboard,
+    list_tensorboards,
+    read_tensorboard_runs,
+    read_tensorboard_scalar_series,
+    read_tensorboard_scalar_tags,
+    start_tensorboard,
+    stop_tensorboard,
+    tensorboard_app_url,
 )
 from .projects import (
     ProjectInfo,
@@ -201,7 +213,6 @@ from .schedule_config import (
 __all__ = [
     # Jobs / users
     "JobInfo",
-    "TensorboardInfo",
     "create_training_job",
     "delete_job",
     "get_current_user",
@@ -210,9 +221,21 @@ __all__ = [
     "list_job_instances",
     "list_job_instance_events",
     "list_jobs",
-    "list_tensorboards",
     "list_train_job_logs",
     "stop_training_job",
+    # TensorBoard
+    "MAX_AUTO_STOP_MS",
+    "TensorboardInfo",
+    "create_tensorboard",
+    "delete_tensorboard",
+    "get_tensorboard",
+    "list_tensorboards",
+    "read_tensorboard_runs",
+    "read_tensorboard_scalar_series",
+    "read_tensorboard_scalar_tags",
+    "start_tensorboard",
+    "stop_tensorboard",
+    "tensorboard_app_url",
     # Official dataset mounts
     "CONTAINER_DATASET_ROOT",
     "DatasetMount",

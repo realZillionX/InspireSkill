@@ -1,6 +1,6 @@
 ---
 name: inspire
-description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire CLI: install/update/uninstall, accounts, local SII proxy setup, INSPIRE.md project onboarding and upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, Image, Model Registry, observation, cleanup, and Inspire CLI Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
+description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire CLI: install/update/uninstall, accounts, local SII proxy setup, INSPIRE.md project onboarding and upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, TensorBoard, Image, Model Registry, observation, cleanup, and Inspire CLI Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
 ---
 
 # Inspire Skill
@@ -16,7 +16,7 @@ description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire C
 | 调度条件 | `workspace`、`project`、`group`、`quota`、GPU / CPU / 内存 / Shared Memory 和 `image`，决定任务在哪里、以什么规格运行。 |
 | 远端文件 | 代码、数据、权重、Checkpoint 和产物的共享盘路径；Path Alias 只描述文件在哪里。数据广场的官方数据集是另一条来源，由创建时的 `--dataset` 只读挂载，不归 Path Alias 管。 |
 | 工作负载 | 交互调试用 Notebook；固定 GPU 后台任务用 Job；CPU Slurm 批处理用 HPC；弹性 Worker、常驻或流式任务用 Ray；模型 HTTP 服务用 Serving。 |
-| 观察收尾 | Events 看调度，Job Logs 看程序，Metrics / Instances 看实际工作单元，Status 看平台状态；其它 Workload 的应用日志按对应 Help 和共享盘约定处理。最后核验业务健康和产物，再清理资源。 |
+| 观察收尾 | Events 看调度，Job Logs 看程序，Metrics / Instances 看实际工作单元，Status 看平台状态；训练曲线本身用 TensorBoard（`inspire tensorboard`）读，其它 Workload 的应用日志按对应 Help 和共享盘约定处理。最后核验业务健康和产物，再清理资源。 |
 
 创建 Workload 时显式绑定 `workspace`、`project`、`group`、`quota` 和 `image`，或引用保存这五项的 Workload Profile；这些调度字段没有隐式默认值。选择资源时从同一条 Live Quota Row 复制完整 `group` 和 `quota`。GPU Job Shared Memory 是实例级资源，不能超过所选 Quota 的实例内存；细节见 [`references/compute-workloads.md`](references/compute-workloads.md)。Workload Profile 保存调度条件，Path Alias 保存远端路径，两者不能互相替代。
 
@@ -66,7 +66,7 @@ Workspace 判断：
 | 数据广场检索、官方数据集挂载、版本与访问权限 | [`references/dataset.md`](references/dataset.md) |
 | 联网准备、SII 内部源、依赖安装、镜像固化 | [`references/internal-sources.md`](references/internal-sources.md) |
 | Notebook 创建、连接、跨账号解析、`exec` / `shell` / `scp`、IDE URL、文件流转 | [`references/notebook.md`](references/notebook.md) |
-| GPU Job、CPU HPC、Ray、Serving，及提交后的观察、优先级与异常 | [`references/compute-workloads.md`](references/compute-workloads.md) |
+| GPU Job、CPU HPC、Ray、Serving、TensorBoard，及提交后的观察、优先级与异常 | [`references/compute-workloads.md`](references/compute-workloads.md) |
 | CPU 准备、数据处理、GPU 训练、部署或交付的阶段化计划 | [`references/workflows.md`](references/workflows.md) |
 | Image 选择、保存、注册、可见性和清理 | [`references/image.md`](references/image.md) |
 | Model Registry、Model Version 与 Serving 的关系 | [`references/model.md`](references/model.md) |

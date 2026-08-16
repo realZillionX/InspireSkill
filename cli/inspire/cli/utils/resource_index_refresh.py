@@ -42,6 +42,7 @@ RESOURCE_TYPES = (
     "ray",
     "serving",
     "notebook",
+    "tensorboard",
     *QUOTA_RESOURCE_TYPES,
 )
 WORKSPACE_RESOURCE_TYPES = tuple(
@@ -308,6 +309,43 @@ def _job_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResu
     return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
 
 
+def _tensorboard_fetch(
+    session: object, workspace_id: str, exact_name: str
+) -> FetchResult:
+    from inspire.platform.web.browser_api.tensorboards import list_tensorboards
+
+    user_id = _current_user_id(session)
+    records: list[ResourceIdentity] = []
+    page = 1
+    page_size = 100
+    while True:
+        items, total = list_tensorboards(
+            workspace_id=workspace_id,
+            created_by=user_id,
+            keyword=exact_name or None,
+            page_num=page,
+            page_size=page_size,
+            session=session,  # type: ignore[arg-type]
+        )
+        records.extend(
+            ResourceIdentity(
+                resource_id=item.tb_id,
+                name=item.name,
+                owner_id=user_id,
+                status=item.status,
+                created_at=item.created_at,
+            )
+            for item in items
+            # A board may be created without a name; it can never be addressed
+            # by one either, so caching it would only add a nameless row.
+            if item.name
+        )
+        if not items or len(records) >= total or len(items) < page_size:
+            break
+        page += 1
+    return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
+
+
 def _hpc_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
     from inspire.platform.web.browser_api.hpc_jobs import list_hpc_jobs
 
@@ -501,6 +539,7 @@ RESOURCE_FETCHERS: Mapping[str, Fetcher] = {
     "ray": _ray_fetch,
     "serving": _serving_fetch,
     "notebook": _notebook_fetch,
+    "tensorboard": _tensorboard_fetch,
     **{
         quota_resource_type(workload): _quota_fetcher(workload)
         for workload in QUOTA_WORKLOADS
