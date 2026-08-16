@@ -16,7 +16,7 @@ description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire C
 | 调度条件 | `workspace`、`project`、`group`、`quota`、GPU / CPU / 内存 / Shared Memory 和 `image`，决定任务在哪里、以什么规格运行。 |
 | 远端文件 | 代码、数据、权重、Checkpoint 和产物的共享盘路径；Path Alias 只描述文件在哪里。数据广场的官方数据集是另一条来源，由创建时的 `--dataset` 只读挂载，不归 Path Alias 管。 |
 | 工作负载 | 交互调试用 Notebook；固定 GPU 后台任务用 Job；CPU Slurm 批处理用 HPC；弹性 Worker、常驻或流式任务用 Ray；模型 HTTP 服务用 Serving。 |
-| 观察收尾 | Events 看调度，Job Logs 看程序，Metrics / Instances 看实际工作单元，Status 看平台状态；训练曲线本身用 TensorBoard（`inspire tensorboard`）读，其它 Workload 的应用日志按对应 Help 和共享盘约定处理。最后核验业务健康和产物，再清理资源。 |
+| 观察收尾 | Events 看调度，Logs 看程序（Job / HPC / Ray / Serving 都有，Notebook 用 `exec` / `shell` 读），Metrics / Instances 看实际工作单元，Status 看平台状态和落点；训练曲线本身用 TensorBoard（`inspire tensorboard`）读。最后核验业务健康和产物，再清理资源。 |
 
 创建 Workload 时显式绑定 `workspace`、`project`、`group`、`quota` 和 `image`，或引用保存这五项的 Workload Profile；这些调度字段没有隐式默认值。选择资源时从同一条 Live Quota Row 复制完整 `group` 和 `quota`。GPU Job Shared Memory 是实例级资源，不能超过所选 Quota 的实例内存；细节见 [`references/compute-workloads.md`](references/compute-workloads.md)。Workload Profile 保存调度条件，Path Alias 保存远端路径，两者不能互相替代。
 

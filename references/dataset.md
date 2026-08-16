@@ -8,7 +8,7 @@
 
 因此判断顺序固定：先在数据广场确认数据集和版本存在且当前账号有权限，再回到启智创建 Workload。`inspire dataset` 覆盖前半段，`--dataset` 覆盖后半段。
 
-申请权限只能在数据广场网页端完成，CLI 不提供申请入口。
+**申请权限只能在数据广场网页端完成。** 提交申请和审批别人的申请都会以你的名义触达真人审批者，CLI 不接这两个动作；能读的只有结果——`inspire dataset applications` 列出自己提交过的申请及其状态（`pending` / `approved` / `rejected` / `withdrawn`），`--to-approve` 换成待自己审批的那一批。看到某条转成 `approved`，就是重新跑 `dataset validate <名字>:<版本>` 的时机。
 
 ## 2. 数据集用名字寻址，不用数字 ID
 
@@ -26,10 +26,10 @@
 
 | 字段 | 含义 | 影响 |
 | --- | --- | --- |
-| Access | 当前账号是否有权挂载 | 无权限时创建会被拒为 `无访问权限`，约五分之一的数据集属于这种 |
+| Access | 当前账号是否有权挂载 | 无权限时创建会被拒为 `无访问权限`，约五分之一的数据集属于这种；申请进度用 `dataset applications` 看 |
 | State | 数据集状态 | `active` 可用；`processing` / `wanted` / `error` 都不可挂载 |
 | Grade | 数据分级 `S2` / `S3` / `S4` | 决定合规要求，不影响命令 |
-| Tags | 领域标签 | 五个分类：文本、图像、音频、视频、多模态 |
+| Tags | 领域标签 | 52 个固定标签，分属文本、图像、音频、视频、多模态五种模态；全量用 `dataset tags` 列 |
 
 版本另有自己的状态，`downloading` 和 `pending_upload` 表示数据还没落盘。数据集 `active` 不代表每个版本都可用。
 

@@ -24,7 +24,7 @@
 
 | 信息 | 先做什么 | 向用户问清什么 |
 | --- | --- | --- |
-| Project | `inspire project list` 列出可见候选（项目是全局对象，不按 Workspace 划分） | 本仓库归属哪个平台 Project？多候选时必须让用户指认 |
+| Project | `inspire project list` 列出可见候选（项目是全局对象，不按 Workspace 划分），`inspire project detail <名字>` 看某个候选的详情，`inspire project owners` 给出可以找谁要权限 | 本仓库归属哪个平台 Project？多候选时必须让用户指认 |
 | Workspace | 无需查询：`CPU资源空间`（CPU、联网准备）和 `分布式训练空间`（GPU）是所有用户默认可用的公共 Workspace | 项目是否还有专属 Workspace（项目空间、国产卡分区等）？**专属 Workspace 只能由用户亲自指认**；确认后记录它的职责和适用任务 |
 | Paths | 查看共享盘现状，例如用已有 Notebook `ls` 项目目录 | 默认存储池选哪个（`ssd` / `hdd` / `qb-ilm` / `qb-ilm2`）？远端代码 checkout、公共数据、权重、Checkpoint 是否已有约定路径？老项目沿用现有约定，新项目让用户定 |
 | Image | `inspire image list` 查项目可见镜像 | 项目是否已有验证过的基底镜像？名称是什么、覆盖哪些依赖？没有时记为待建立，后续按 [`internal-sources.md`](internal-sources.md) 和 [`notebook.md`](notebook.md) 建立后回填 |
@@ -59,6 +59,14 @@ inspire notebook path list
 `<workload> create` 省略某个参数时会落到仓库级默认值（`job.shm_size`、`notebook.post_start` 等），写在 `./.inspire/config.toml`；同名环境变量默认优先，`[cli] prefer_source = "toml"` 可以反转这个优先级。
 
 账号覆盖层按账号隔离：同一仓库的新成员或新账号需要各自跑一次 `inspire init --scope project`；`INSPIRE.md` 和仓库共享层则随 Git 共享。
+
+### 绑定失效
+
+`[context] project` 只在初始化时写一次，之后再不复查。平台上把这个 Project 删掉或改名之后，仓库就钉在一个解析不到任何东西的名字上，这里的每一条 `<workload> create` 都会栽在它上面——而账号级的 Project 缓存帮不上忙，它是写下这个 pin 的同一次初始化留下的，和 pin 一起错。
+
+`inspire account check` 会实时列一次项目目录来判断这件事，失效时报 `Project context: STALE` 并以配置错误退出（**不是认证错误**：账号是好的，坏的是这个仓库的绑定）。列表调用本身失败时不作判断——网络问题不是失效的证据。
+
+两种修法，别拿错：仓库确实还归属某个平台 Project 时重新绑定，`inspire init --scope project`；而 CLI、Skill、文档这类**本来就不该有绑定**的通用工具源码仓库要的是解绑，把 `./.inspire/` 删掉（见第 1 节的判断条件）。
 
 ## 4. INSPIRE.md 资产合同
 
@@ -116,6 +124,7 @@ inspire notebook path list
 | 注册了新的 Model、沉淀了新的正式产物 | 记录身份、来源和消费者 |
 | 资产退役 | 按生命周期审计消费者后删除条目和远端资产 |
 | 平台侧 Project、Workspace 或共享盘布局变化 | 重跑 `inspire init --scope project`，再核对 `INSPIRE.md` |
+| `inspire account check` 报 `Project context: STALE` | 按第 3 节「绑定失效」重新绑定或解绑；不要绕过它继续提交 Workload |
 
 两条判断规则：
 

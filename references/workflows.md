@@ -1,6 +1,6 @@
 # 项目工作流
 
-一个项目跨越 CPU 准备、数据处理、GPU 训练、部署或交付时看本页。这里给阶段化决策和验收点，不维护命令模板；具体命令表面回到 CLI Help，单领域边界分别看 Project Context、Resources、Internal Sources、Paths、Notebook、Image、Compute Workloads 和 Model References。
+一个项目跨越 CPU 准备、数据处理、GPU 训练、部署或交付时看本页。这里给阶段化决策和验收点，不维护命令模板；具体命令表面回到 CLI Help，单领域边界分别看 Project Context、Resources、Internal Sources、Paths、Dataset、Notebook、Image、Compute Workloads 和 Model References。
 
 ## 1. 总体框架
 
@@ -45,7 +45,7 @@
 - 目标 GPU Quota 和 Compute Group 实时可用。
 - 单节点 Probe 已验证 CUDA、NCCL、数据路径和入口脚本。
 
-正式多节点训练看三条线：Events 判断调度，Logs 判断程序，Metrics 判断资源是否真的工作。多节点中某个 Pod 长期低 GPU / 低网络时，不要只盯 `RUNNING`，回到该 Worker 日志和数据加载路径。
+正式多节点训练看四条线：Events 判断调度，Logs 判断程序，Metrics 判断资源是否真的工作，TensorBoard 判断模型本身训得怎么样。前三条都在回答「平台侧这个任务还好吗」，回答不了「loss 还在不在降」——那要对着训练写出的 summary 目录建一个 board，用 `inspire tensorboard scalars` 把曲线当数字读回来，不需要开浏览器。多节点中某个 Pod 长期低 GPU / 低网络时，不要只盯 `RUNNING`，回到该 Worker 日志和数据加载路径。
 
 ## 5. 部署或交付
 
@@ -53,6 +53,7 @@
 
 - 服务实例齐全，没有长期 Pending。
 - Metrics 显示请求或模型加载后的资源曲线合理。
+- `api-metrics` 显示请求真的到达且在成功——资源曲线区分不了「没人调用」和「一直调用一直失败」。
 - `/health`、`/v1/models` 或业务 Smoke Test 通过。
 - 无 Key 请求被拒绝，带 Key 请求成功。
 - 模型版本、镜像版本、启动命令和端口写入 `INSPIRE.md` 的复现合同。

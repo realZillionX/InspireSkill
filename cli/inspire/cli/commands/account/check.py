@@ -25,7 +25,7 @@ from inspire.config import (
     SOURCE_DEFAULT,
 )
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import SessionExpiredError, WebSession, get_web_session
 from inspire.platform.web.session.proxy import describe_effective_proxy_config
 
 from .proxy_output import (
@@ -167,7 +167,7 @@ def _validate_project_base_url_shape(project_path: Path | None) -> None:
         )
 
 
-def _find_stale_context_project(cfg: Config, session: object) -> str | None:
+def _find_stale_context_project(cfg: Config, session: WebSession) -> str | None:
     """Return the pinned project name when the platform no longer has it.
 
     A repository pins `[context] project` once and then never revisits it, so a

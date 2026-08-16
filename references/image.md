@@ -33,15 +33,21 @@
 
 `image list --source` 用的是同一组名字，它筛的是可见性而非镜像来源——只有 `official` 是真的按来源筛。想按名字解析一个镜像却解析不到时，先确认它是不是在没查过的那一档里。
 
+一个 Registry 里有几千个镜像，靠 `--limit` / `--all` 翻页找不到东西：用 `--keyword` 做名称子串匹配（大小写不敏感），对应网页镜像列表自带的那个搜索框。
+
 **改成 public 是单向操作。** 平台不再把创建者当成公开镜像的属主：既不能改回 private，也不能删除，只有平台管理员能清理。所以确认要长期共享、名字也定下来了再放开；试验性镜像留在 private 或 project。
 
 保存出的镜像成为项目基底或被后续 Workload 长期复用时，把名称、用途和覆盖的依赖回填到 `INSPIRE.md`（见 [`project-context.md`](project-context.md)）。
 
 ## 4. Register 边界
 
-`image register` 适合外部镜像，不适合保存运行中的 Notebook——后者走 `notebook save-image`。Push 工作流是平台给出 Registry 槽位，Agent 推镜像；Address 工作流是登记已有 Registry 地址。
+`image register` 适合外部镜像，不适合保存运行中的 Notebook——后者走 `notebook save-image`。
 
-注册后一直无法 `READY` 时，优先怀疑 Registry 权限、镜像地址不完整、Tag 不存在或目标 Workspace 无法访问该 Registry。
+它只有一条路径：平台按 `<name>:<version>` 留一个 Registry 槽位并回一个镜像地址，你自己 `docker push` 上去。命令会连同 `docker login` / `tag` / `push` 三行一起打印，登录主机名取自平台回的地址。**槽位不是镜像**——推上去之前这条记录一直是 `FAILED`，那是正常的中间态，不是注册失败。`--wait` 只有在 push 已经落地之后才有意义，一个没推过的槽位永远等不到 `READY`。
+
+网页控制台另有一条「文件上传」路径（上传镜像 tar），CLI 不实现文件上传，需要它就去网页端。
+
+注册后一直无法 `READY` 时，优先怀疑 push 根本没执行、Registry 权限、镜像地址不完整、Tag 不存在或目标 Workspace 无法访问该 Registry。
 
 ## 5. 清理原则
 

@@ -1,6 +1,6 @@
-# Job、HPC、Ray 与 Serving
+# Job、HPC、Ray、Serving 与 TensorBoard
 
-在 GPU Job、CPU HPC、Ray 和 Serving 之间选型，或提交后观察 Events / Logs / Metrics / Instances / Status 时看本页。资源目录和 Profile 看 [`resources.md`](resources.md)，镜像看 [`image.md`](image.md)，模型仓库看 [`model.md`](model.md)。命令语法和参数以 CLI Help 为准。
+在 GPU Job、CPU HPC、Ray 和 Serving 之间选型，矩阵提交一批任务，或提交后观察 Events / Logs / Metrics / Instances / Status 和训练曲线时看本页。资源目录和 Profile 看 [`resources.md`](resources.md)，镜像看 [`image.md`](image.md)，模型仓库看 [`model.md`](model.md)，官方数据集看 [`dataset.md`](dataset.md)。命令语法和参数以 CLI Help 为准。
 
 ## 1. 先选工作负载类型
 
@@ -38,7 +38,7 @@ Job 的关键边界：
 - 日志和工作目录依赖共享盘约定；训练 Repo 建议在 `me:<repo>`，启动命令里使用相对共享盘路径或让脚本自己切目录。
 - Shared Memory 是每个 Job Instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader Workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置。
 - 环境变量由平台注入，不必再拼进启动命令；值可能是凭据，CLI 输出只回显变量名。
-- 训练曲线走独立的 `inspire tensorboard` 命令组，不是 Job 的附属字段，见本文第 8 节。
+- 训练曲线走独立的 `inspire tensorboard` 命令组，不是 Job 的附属字段，见本文第 9 节。
 - 任务结束后容器默认立即释放。需要事后进容器看现场时，在创建时设置成功 / 失败保留时长，任务会停在保留态等待，过期自动释放；这是排查失败训练最省事的路径，比重跑一次便宜。
 - 状态变化通知（`--enable-notification`，收件人固定为当前用户绑定的飞书账号）和自动容错默认关闭，除非明确启用。
 - 需要项目级持久默认值时写 `[job]` 配置段；提交前用 `job create --dry-run` 检查 Shared Memory、通知和容错的最终生效值。
@@ -86,7 +86,9 @@ Ray 特有风险：
 - Worker 的 `min` / `max` 决定资源占用上限；长守护任务要接受手动 stop 的运维模型。
 - 如果只是固定规模训练或固定 CPU 批处理，回到 Job / HPC。
 
-创建后用 `ray events` 看调度、`ray instances` 看 Head 与实际 Worker、`ray metrics` 看各组负载；结束后先 `ray stop`，确认不再需要再 `ray delete`。重复配置用 `ray profile`，矩阵提交用 `ray batch`。
+创建后用 `ray events` 看调度、`ray instances` 看 Head 与实际 Worker、`ray logs` 看程序输出、`ray metrics` 看各组负载；结束后先 `ray stop`，确认不再需要再 `ray delete`。重复配置用 `ray profile`，矩阵提交用 `ray batch`。
+
+弹性本身用 `ray scaling` 看：每行是平台对某个 Worker Group 做的一次副本数变更，从 `initialized` 起，之后每次 `scale_up` / `scale_down`。**空的历史表示这个弹性区间从来没被用到**——组一直跑在起始副本数上，那通常说明 `min` / `max` 设了却没有触发条件，或者这个任务本来就不需要 Ray。`--group` 收窄到某一组，组名与 `ray status` 和 `ray instances` 的 Role 列一致。
 
 停掉的 Ray Job 保留完整集群规格，`ray start` 用原样的 Head、Worker Group 和 Driver 命令拉回来，不需要重新指定。平台在这里会「受理但不执行」——请求返回成功而任务纹丝不动，所以 `ray start` 以状态真的离开 `STOPPED` 为准，没动就报失败。从未真正 `RUNNING` 过的 Job 通常起不来，重建比重试可靠。
 
@@ -106,13 +108,25 @@ Serving 面向模型部署服务。通常先用 Model Registry 找到模型和�
 
 LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类型；普通 Custom Serving 不要推导它们的字段。
 
-当前 Custom Serving 生命周期是：`serving configs` / `serving quota` 选配置，`serving create` 或 `serving batch` 创建，`serving list/status/events/instances/metrics` 观察，`serving stop` / `serving start` 控制，最后 `serving delete` 清理。重复调度条件用 `serving profile`。
+当前 Custom Serving 生命周期是：`serving configs` / `serving quota` 选配置，`serving create` 或 `serving batch` 创建，`serving list/status/events/instances/logs/metrics` 观察，`serving stop` / `serving start` 控制，最后 `serving delete` 清理。重复调度条件用 `serving profile`。
 
 副本数用 `serving scale` 调整，其余配置原样保留；每个副本各占一份完整规格，扩容前先看 `resources availability`。历史配置用 `serving versions` 列出，`serving rollback --version` 按某个历史版本重新部署——副本会被替换，在途请求和重启一样会断。
 
+**没有重新部署过、延迟或吞吐却变了，先看 `serving scale-history`。** 它按时间列出副本数每一次变化和变成了多少；掉下去的副本数、或者一次没落地的自动伸缩，只会出现在这里，`versions` 里一个字都没有。把它和 `api-metrics` 的时间线对齐，就能确认这次变化解释不解释得了那段流量。
+
 两套指标不要混：`serving metrics` 看 GPU / CPU / 内存这类资源占用，`serving api-metrics` 看请求量、成功率和延迟。「没人调用」和「一直调用一直失败」只有后者分得清。
 
-## 7. 观察闭环
+部署起不来时事件比日志先有线索，而且要看到实例级那一半：`Unhealthy` 是「副本起来了但健康检查一直不过」这个最常见故障的唯一署名，它只出现在实例级事件里，部署级只会说 `GroupsProgressing` / `Pending`。默认的 `serving events` 已经把两级合成一条时间线，不用再加开关。
+
+## 7. 矩阵提交（Batch）
+
+同一组调度条件要提交一批只差名称、命令或输入输出路径的 Workload 时，用 `<workload> batch <文件>` 而不是循环调 `create`。五类都有：`job` / `hpc` / `notebook` / `ray` / `serving`。文件是 JSON 或 TOML，顶层是该 Workload 的条目列表，可选的 `defaults`、`profiles` 和 `matrix` 用来消重复；展开后的每一条必须自带 `create` 的全部必填字段，调度条件可以由条目里的 `profile = "<名字>"` 提供。
+
+**Batch 条目的字段与 `create` 严格对齐**，不是它的弱化版：数据集挂载、环境变量、描述、成功 / 失败保留时长、容错重试间隔、运行时长上限、状态通知和只读挂载都能写进条目。`dataset` 收一条 `"<名字>:<版本>"` 或一个列表，`env` 除了 `KEY=VALUE` 列表还接受表——TOML 和 JSON 表达映射比拼接字符串自然。`ray` 和 `serving` 的条目不收数据集（平台拒绝该字段）。
+
+先跑 `--dry-run`：它展开矩阵、逐条解析并打印计划而不提交任何东西，是唯一能在提交前核对最终生效值的入口。数据集在条目准备阶段就完成校验，所以一个拼错的 spec 会在任何东西提交之前中止整个 Batch，而不是等前几条已经跑起来才发现。
+
+## 8. 观察闭环
 
 | 工具 | 主要回答 |
 | --- | --- |
@@ -120,8 +134,9 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 | `logs` | 程序自身报错、训练进度、业务输出 |
 | `metrics` | 已启动任务是否仍在有效工作，Pod / Task / Replica 是否均衡 |
 | `instances` | 实际运行单元是否齐全，是否有部分 Pending 或异常；每个 Pod 落在哪个节点 |
-| `status` | 平台状态、优先级、基础摘要、落在哪些节点 |
-| `inspire tensorboard scalars` | 训练本身写出来的曲线：loss 还在不在降、eval 指标有没有走平（见第 8 节） |
+| `status` | 平台状态、优先级、基础摘要、落在哪些节点、挂了哪些官方数据集 |
+| `job command` | 这个任务当初到底是用什么命令跑起来的——复现实验和对比两次运行时先读它 |
+| `inspire tensorboard scalars` | 训练本身写出来的曲线：loss 还在不在降、eval 指标有没有走平（见第 9 节） |
 
 卡住或失败先看 Events；已启动但健康度不明看 Metrics；程序行为看 Logs；产物完整性回到共享盘文件和 Fingerprint。上面五个都在回答「平台侧这个任务怎么样」，回答不了「模型训得怎么样」——那是 TensorBoard 那一条。
 
@@ -133,7 +148,7 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 `events` 与 `logs` 的默认口径一致：不加参数就是这个工作负载能拿到的全部，`--instance` 收窄到某个实例，`--workload-level` 反过来只留控制器那一半（两者互斥）。四类的默认都把两套不相交的视图合成一条时间线——控制器事件说「任务为什么没被创建、为什么整体排不上」，Pod 事件说「哪个实例没被调度、镜像拉没拉下来、容器起没起来」（`FailedScheduling` / `Pulling` / `Started` / `BackOff`）——并多出一列 `Instance` 指明每行来自哪个实例，控制器行在这一列是 `-`。实例标识与各自 `instances` 一致：`hpc` 与 `ray` 是角色 / 序号，`job` 与 `serving` 是 Rank。取数代价各不相同但对调用方不可见：`job` 一次请求带 200 个 Pod，`ray` 一次调用本来就同时返回两级，`serving` 两级各一次调用，`hpc` 一个实例一次请求、并发取。Notebook 是单实例，两个开关都没有。**排查顺序建议先看默认的合并视图**：只有已经知道问题出在整体调度、不在某个 Pod 上时，`--workload-level` 才值得用——它省掉的是实例那几次请求，不是一次判断。
 
-## 8. TensorBoard
+## 9. TensorBoard
 
 TensorBoard 是平台上的一等对象，不是 Job 的字段：计算组在 `support_job_type_list` 里单独声明 `tensorboard` 这个任务类型，控制台给它独立页签，它既可以挂在某个训练任务上，也可以对任意一个 summary 目录单独建。命令组是 `inspire tensorboard`，`metrics` 那套读的是资源占用，这里读的是训练本身写出来的曲线。
 
@@ -146,7 +161,7 @@ TensorBoard 是平台上的一等对象，不是 Job 的字段：计算组在 `s
 - **运行中的 board 没有任何 tag，和路径写错长得完全一样**——两种情况都只是空列表，要靠核对 `--summary-path` 区分。
 - 删除 board 不动共享盘上的 event 文件，指向同一目录重建一个 board 读到的是同一份数据；运行中的 board 拒绝删除，先 `stop`。
 
-## 9. 异常判断
+## 10. 异常判断
 
 | 现象 | 优先怀疑 |
 | --- | --- |

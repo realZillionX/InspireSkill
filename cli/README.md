@@ -16,7 +16,7 @@ where offered, and consult the installed command help for the current syntax.
 Project documentation:
 
 - [Project overview](https://github.com/realZillionX/InspireSkill/blob/main/README.md)
-- [Current command index](https://github.com/realZillionX/InspireSkill/blob/main/README.md#命令索引)
+- [Capability overview](https://github.com/realZillionX/InspireSkill/blob/main/README.md#能力一览)
 - [Agent Skill](https://github.com/realZillionX/InspireSkill/blob/main/SKILL.md)
 - [Usage references](https://github.com/realZillionX/InspireSkill/tree/main/references)
 - [Development guide](https://github.com/realZillionX/InspireSkill/blob/main/CONTRIBUTING.md)

@@ -28,6 +28,8 @@ Notebook 是交互工作台，不只是“开一个终端”。
 
 共享盘默认可写。需要防止误写项目公共目录或项目成员目录时，创建时用只读挂载开关把它们降级为 `ro`；项目成员目录那一档还要求当前账号是项目 Maintainer，否则平台直接拒绝创建。两者默认都不开启，行为与不传时一致。
 
+**名字在一个 Workspace 里必须唯一，这条得自己守。** 平台不校验重名——同一个名字连建两个都会成功——而 CLI 全程按名字寻址，重名之后每一条 `notebook <动词> <名字>` 都变成歧义、必须 `--pick` 才能落到具体那一个。`notebook create` 因此在提交前先查一遍同 Workspace 的现有名字（大小写不敏感，忽略尾部空格）并挡下重名；探测失败时让路、不拦创建。
+
 `--auto-stop` 只表达空闲自动停止请求，不覆盖平台管理员设置的自动回收规则或 Workspace 生命周期上限——那些规则用 `inspire resources policy --workspace <名字>` 读，`分布式训练空间` 对 Notebook 声明的是「GPU 低于 15% 持续 3 小时，或运行超过 18 小时」，所以夜里挂着但不吃卡的 Notebook 第二天不在了是规则生效，不是故障。定时停止是另一回事：它是平台侧的运行时长计时器，到点停机，与空闲无关。长时间训练、批量推理或守护任务应改用 Job、Ray 或 Serving 这类匹配的 Workload。需要在 Notebook 中验证长任务入口时，只跑短 Probe，并把正式命令迁移到后台 Workload。
 
 手动 Pin 节点只用于排查坏节点、复现实验或平台同学明确指定节点；传入所选 Compute Group 中显示的节点名。实际落在哪个节点由 `notebook status` 的 `Node` 给出，后面跟着该节点的健康状态，被 Cordon 或处于维护窗口时一并标出——正在跑不代表下次重启还能落回来。停止的 Notebook 不占节点，这一行随之消失。
@@ -52,6 +54,8 @@ Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的
 `--workspace` 主要用于首次解析或同名 Notebook 消歧；连接缓存建立后，后续命令通常可按名称使用。缓存是性能和连接复用工具，不是平台事实来源。
 
 受限 Notebook 的 `exec` 每次使用独立临时 Jupyter Terminal，命令结束后立即回收，不共享 `cwd`、环境变量或 Shell 状态。
+
+交互会话用完敲 `exit` 正常退出（`job shell` 同理）。`Ctrl+]` 是强制断开的转义键，用于远端已经不响应、`exit` 也回不来的情况。
 
 ### 跨账号 Notebook 连接
 
@@ -136,12 +140,15 @@ inspire notebook proxy-url <name> --workspace <workspace> --port 7860
 
 | 工具 | 主要回答 |
 | --- | --- |
+| `status` | 平台状态、落在哪个节点及该节点健康、优先级、还能跑多久、挂了哪些官方数据集 |
 | `events` | 平台为什么还没调度、为什么启动失败、生命周期走到哪 |
 | `lifecycle` | 每次启动到停止的运行周期 |
 | `metrics` | GPU / CPU / 内存 / I/O 是否真的在工作 |
 | `exec` / `shell` | 进容器查进程、文件、日志和应用状态 |
 
 Notebook 卡在 `PENDING`、`CREATING` 或启动失败时先看 Events；显示 `RUNNING` 但业务不推进时看 Metrics，再回到应用日志和产物路径。
+
+`metrics` 默认给历史时间序列，回答「这段时间它在不在工作」；判断「此刻还占不占着卡」用 `--now` 的当下快照。定时停止设的计时器由 `status` 的 `Auto-stop In` 回读，这是唯一的回读入口。Notebook 没有 `logs`——它是交互式容器，程序输出在 `exec` / `shell` 里读。
 
 ## 8. 大文件操作
 
