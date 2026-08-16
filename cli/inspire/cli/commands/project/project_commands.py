@@ -80,7 +80,12 @@ def _project_to_dict(proj: browser_api_module.ProjectInfo) -> dict:
     view: dict[str, object] = {
         "name": scrub_raw_ids(proj.name),
         "priority": scrub_raw_ids(proj.priority_level or proj.priority_name),
-        "remaining_budget": _public_number(proj.member_remain_budget),
+        # Two different numbers, and the one this account is actually capped by
+        # is the member one. They can differ by three orders of magnitude, so
+        # publishing only one of them under the bare name `remaining_budget`
+        # answered a different question than the one the reader asked.
+        "my_remaining_budget": _public_number(proj.member_remain_budget),
+        "project_remaining_budget": _public_number(proj.remain_budget),
     }
     return {
         key: value
@@ -96,35 +101,54 @@ def _format_project_list(projects: list[dict]) -> str:
         (
             str(project.get("name") or ""),
             str(project.get("priority") or "-"),
-            _format_budget(project.get("remaining_budget")),
+            _format_budget(project.get("my_remaining_budget")),
+            _format_budget(project.get("project_remaining_budget")),
         )
         for project in projects
     ]
     widths = [
         column_width("Name", [row[0] for row in rows], max_width=48),
         column_width("Priority", [row[1] for row in rows], max_width=12),
-        column_width("Budget", [row[2] for row in rows], max_width=16),
+        column_width("My Budget", [row[2] for row in rows], max_width=16),
+        column_width("Project Budget", [row[3] for row in rows], max_width=16),
     ]
     return "\n".join(
         render_table(
-            ("Name", "Priority", "Budget"),
+            ("Name", "Priority", "My Budget", "Project Budget"),
             rows,
             widths,
-            aligns=["left", "left", "right"],
+            aligns=["left", "left", "right", "right"],
             line_char="─",
         )
     )
 
 
-def _project_detail_view(data: dict) -> dict[str, object]:
+def _spent_number(value: object) -> int | float | str | None:
+    """Read one field of the budget-usage record.
+
+    Every value arrives thousands-separated (`"233,114.18"`), so the commas
+    have to go before it is a number to anyone downstream.
+    """
+    if isinstance(value, str):
+        return _public_number(value.replace(",", ""))
+    return _public_number(value)
+
+
+def _project_detail_view(data: dict, usage: dict | None = None) -> dict[str, object]:
     owner_value = data.get("creator")
     owner: dict[str, object] = owner_value if isinstance(owner_value, dict) else {}
+    spent: dict = usage if isinstance(usage, dict) else {}
     view: dict[str, object] = {
         "name": _public_text(data.get("name") or data.get("en_name")),
         "english_name": _public_text(data.get("en_name")),
         "description": _public_text(data.get("description")),
         "budget": _public_number(data.get("budget")),
         "remaining_budget": _public_number(data.get("remain_budget")),
+        "spent_budget": _spent_number(spent.get("used")),
+        "spent_on_training": _spent_number(spent.get("train")),
+        "spent_on_inference": _spent_number(spent.get("inference")),
+        "spent_on_storage": _spent_number(spent.get("storage")),
+        "spent_on_private_workspace": _spent_number(spent.get("private_workspace")),
         "priority": _public_text(
             data.get("priority_name") or data.get("priority_level")
         ),
@@ -147,6 +171,11 @@ def _format_project_detail(project: dict[str, object]) -> str:
         ("Description", "description"),
         ("Budget", "budget"),
         ("Remaining budget", "remaining_budget"),
+        ("Spent", "spent_budget"),
+        ("  on training", "spent_on_training"),
+        ("  on inference", "spent_on_inference"),
+        ("  on storage", "spent_on_storage"),
+        ("  on private workspace", "spent_on_private_workspace"),
         ("Priority", "priority"),
         ("Created", "created_at"),
         ("Creator", "creator"),
@@ -346,7 +375,14 @@ def detail_project_cmd(
         _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
         return
 
-    view = _project_detail_view(data)
+    # The breakdown is one extra request and only enriches what is already
+    # printed, so a project that will not answer it still gets its detail.
+    try:
+        usage = browser_api_module.get_project_budget_usage(project_id, session=session)
+    except Exception:
+        usage = None
+
+    view = _project_detail_view(data, usage)
     if ctx.json_output:
         click.echo(json_formatter.format_json(view))
         return

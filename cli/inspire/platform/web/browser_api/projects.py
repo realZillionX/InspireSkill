@@ -67,8 +67,12 @@ class ProjectInfo:
     name: str
     workspace_id: str
     en_name: str = ""
-    # Quota fields
+    # Quota fields. The two budgets are different quantities and routinely
+    # differ by orders of magnitude: one project here has 233k left overall
+    # while the caller's own allowance inside it is 338. The member one is
+    # what decides whether this account's next job runs.
     member_remain_budget: float = 0.0  # Remaining budget for current user
+    remain_budget: float = 0.0  # Remaining budget of the project itself
     gpu_limit: bool = False  # Whether project-level GPU-hour limits are enforced
     priority_level: str = ""  # Priority level (HIGH, NORMAL, etc.)
     priority_name: str = ""  # Priority name (numeric string like "10", "4")
@@ -137,6 +141,7 @@ def _project_info_from_item(item: dict[str, Any], *, workspace_id: str = "") -> 
         workspace_id=resolved_workspace_id,
         en_name=item.get("en_name", ""),
         member_remain_budget=member_remain_budget,
+        remain_budget=remain_budget,
         gpu_limit=bool(item.get("gpu_limit", False)),
         priority_level=item.get("priority_level", ""),
         priority_name=item.get("priority_name", ""),
@@ -446,6 +451,38 @@ def get_project_detail(
         session,
         "GetProjectDetail",
         {"ProjectId": project_id},
+        referer=f"{_get_base_url()}/projects",
+        timeout=15,
+    )
+
+
+def get_project_budget_usage(
+    project_id: str,
+    *,
+    workspace_id: str = "",
+    session: Optional[WebSession] = None,
+) -> dict:
+    """Break a project's spent budget down by what spent it.
+
+    Action: `project.GetProjectBudgetUsageOverview`. `GetProjectDetail` gives
+    the total and the remainder but not where the difference went; this splits
+    `used` into `train` / `inference` / `storage` / `private_workspace`. Its
+    `remain` agrees with `GetProjectDetail`'s `remain_budget` on every visible
+    project, so it adds detail rather than a second opinion.
+
+    Every value is a **thousands-separated string** (`"233,114.18"`), not a
+    number. The sibling `GetProjectMemberBudgetUsage` needs MAINTAINER and
+    answers an empty record to ordinary members, so it is not wrapped.
+    """
+    if session is None:
+        session = get_web_session()
+    body: dict[str, Any] = {"project_id": project_id}
+    if workspace_id:
+        body["workspace_id"] = workspace_id
+    return _project_v2(
+        session,
+        "GetProjectBudgetUsageOverview",
+        body,
         referer=f"{_get_base_url()}/projects",
         timeout=15,
     )

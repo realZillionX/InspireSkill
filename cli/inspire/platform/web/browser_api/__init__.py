@@ -49,6 +49,7 @@ from .tensorboards import (
 from .projects import (
     ProjectInfo,
     check_scheduling_health,
+    get_project_budget_usage,
     get_project_detail,
     list_all_projects,
     list_project_owners,
@@ -300,6 +301,7 @@ __all__ = [
     # Projects
     "ProjectInfo",
     "check_scheduling_health",
+    "get_project_budget_usage",
     "get_project_detail",
     "list_all_projects",
     "list_project_owners",

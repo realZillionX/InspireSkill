@@ -48,6 +48,8 @@
 
 CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解析；普通 `list`、`status`、`events`、`metrics` 和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。怀疑缓存过期时用 `inspire cache status|refresh|clear` 管理；清空缓存不会删除任何平台资源。三条命令都支持 `--resource <kind>` 只针对一类，可重复，不带才是全部。kind 分四组：平台目录 `workspace` / `project` / `compute-group` / `image` / `model`，Workload `notebook` / `job` / `hpc` / `ray` / `serving`，Quota 目录 `quota-<workload>`，以及 Notebook 显卡型号那层 `notebook-gpu`。最后这个只能 `status` 和 `clear`，不能 `refresh`——它是用到才探一个组，没有可以整批拉的列表接口。
 
+缓存年龄按东西变多快分三档：Workload 名字 5 分钟，账号结构（`workspace` / `project` / `compute-group` / `model`）1 天，目录类（`image` 和 `quota-<workload>`）7 天。TTL 同时是「这份缓存还能不能读」和「后台多久去补一次」：过期只会让一次解析回落到 Live，那总是安全的；长档换来的风险在另一个方向——平台已经删掉的规格或镜像，可能还会被缓存报出来直到 Scope 过期。管理员刚改过计算组规格、或者刚在网页上删过镜像，用 `inspire cache refresh --resource <kind> [--workspace <name>] --full` 立刻对齐。
+
 空结果只在平台成功回答时才是事实。Quota 目录是「Workspace 里每个 Compute Group 一次请求」的扇出，任何一组没答上（限流、超时、5xx），这一轮就记成 incomplete：已读到的行照常缓存，读不到的那些保留上一轮的旧行，Scope 不算完整刷新。`cache refresh` 会在汇总里报 `N incomplete` 并列出原因，`cache status` 把原因留在该 Scope 的 `error` 上，下一次完整刷新才清掉。因此 `No quota rows found.` 和 `(workspace has no quotas)` 现在只可能来自平台真的返回空；上游没答复时命令直接报 API 错误。命中限流时先重试，持续不缓解再针对性 `inspire cache refresh --resource quota-<workload> --workspace <name> --full`。
 
 ## 4. Quota 语义
@@ -100,7 +102,20 @@ CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解
 
 **只有 GPU 计费**：所有 CPU-only 行都是 `0`，同一份数据预处理放进 `CPU资源空间` 就不花点券。GPU 按卡型定价，实测 H100 / H200 是 1 点券/卡/小时，4090 是 0.33——差三倍，能跑在 4090 上的活没必要占 H200。
 
-`null`（表里显示 `-`）是「平台没有给这一行定价」，不是免费；两者不能当作同一件事。项目当前的点券余额看 `project detail`。
+`null`（表里显示 `-`）是「平台没有给这一行定价」，不是免费；两者不能当作同一件事。
+
+### 点券余额有两个，别混
+
+`project list` 给两列，它们是不同的量，而且经常差几个数量级——实测同一个项目里项目余额 233,107、当前账号的额度只有 337：
+
+| 列 | `--json` 键 | 含义 |
+| --- | --- | --- |
+| `My Budget` | `my_remaining_budget` | **当前账号**在这个项目里还能花多少。这是决定你下一个任务能不能起的那个数 |
+| `Project Budget` | `project_remaining_budget` | 项目整体还剩多少，所有成员共用 |
+
+平台不给成员额度时两列相同，此时 `My Budget` 是拿项目余额顶上的，不代表平台真的按人分了额度。
+
+`project detail` 再给花在哪儿：`Spent` 拆成 `on training` / `on inference` / `on storage` / `on private workspace`。逐项目实测它的 `Remaining budget` 与拆分口径一致，所以这是同一个数的展开，不是第二个说法。成员逐人的额度表要 Maintainer 权限，普通成员读到空记录，CLI 不接。
 
 具体可用 GPU 型号、机房和 `gpu,cpu,mem` 三元组仍以当前 Workload 的 Live Quota Row 为准；创建 Workload 或写 Profile 时从同一行复制完整 `group` 和 `quota`。提交后再从 Status / Events 核实平台解析出的优先级、排队和抢占结果。
 

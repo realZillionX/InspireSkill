@@ -75,8 +75,26 @@ def test_project_info_keeps_member_budget_fallback_and_consumed_fields() -> None
     )
 
     assert project.en_name == "demo"
+    # No member figure in the record, so the project's stands in for it.
     assert project.member_remain_budget == 12.5
-    assert {"budget", "remain_budget"}.isdisjoint(project.__dataclass_fields__)
+    assert project.remain_budget == 12.5
+    # The ceiling is not a remainder and nothing reads it.
+    assert "budget" not in project.__dataclass_fields__
+
+
+def test_project_info_keeps_the_two_budgets_apart() -> None:
+    """The member allowance is not the project's, and can be far smaller."""
+    project = projects_module._project_info_from_item(
+        {
+            "id": "project-internal",
+            "name": "Demo",
+            "remain_budget": "233112.73",
+            "member_remain_budget": "337.79",
+        }
+    )
+
+    assert project.member_remain_budget == 337.79
+    assert project.remain_budget == 233112.73
 
 
 def test_project_list_reads_the_global_catalog_once(monkeypatch):

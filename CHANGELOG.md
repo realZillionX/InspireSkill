@@ -6,7 +6,21 @@
 
 - `<workload> quota` 增加 `Points/h` 列（`--json` 里是 `points_per_hour`）：该 Quota 行每实例每小时消耗多少点券。数据本来就在配额目录的响应里，只是一直被丢掉。**只有 GPU 计费**——所有 CPU-only 行都是 0，同一份预处理放进 `CPU资源空间` 就不花点券；GPU 按卡型定价，实测 H100 / H200 是 1 点券/卡/小时而 4090 是 0.33，差三倍。按实例计费，`--nodes 2` 跑 8 点券的行是每小时 16。`null` 是「平台没给这行定价」，和 `0`（免费）是两件事。
 
+- `project detail` 增加点券花在哪儿：`Spent` 拆成 `on training` / `on inference` / `on storage` / `on private workspace`（`project.GetProjectBudgetUsageOverview`）。此前只有总额和余额，中间那笔差额去了哪没人答得上。逐项目实测它的 `remain` 与 `GetProjectDetail` 的 `remain_budget` 一致，所以这是同一个数的展开，不是第二个说法；这一次请求失败不影响详情本身照常打印。
+
+### 变更
+
+- `project list` 的 `remaining_budget` 是**当前账号**的额度，不是项目的，而列名没说。实测同一个项目里项目还剩 233,107 而本账号只有 337——差 690 倍，按前者做决定会直接撞上「预算不足」。现在分成两列：`My Budget` / `my_remaining_budget` 是决定你的任务能不能起的那个数，`Project Budget` / `project_remaining_budget` 是全体成员共用的池子。平台不给成员额度时两列相同。**`--json` 的 `remaining_budget` 键随之消失**，脚本按新键名取。
+
+- 缓存 TTL 从两档改成三档，按东西实际变多快排：Workload 名字（`job` / `hpc` / `ray` / `serving` / `notebook` / `tensorboard`）仍是 5 分钟；账号结构（`workspace` / `project` / `compute-group` / `model`）从 30 分钟拉到 1 天；目录类（`image` 和 `quota-<workload>`）从 30 分钟拉到 7 天。Quota 行是管理员在计算组上配的硬件档位，镜像目录是共享 Registry 的内容，两者都几乎不动，却恰好是这里最贵的两项读取——Quota 是「每个计算组 × 每个 Workload 一次请求」的扇出，镜像是每个 Registry 好几兆的目录。TTL 同时是读有效期：过期只会让一次解析回落到 Live，那总是安全的；长档换来的风险在另一个方向——平台已经删掉的规格或镜像可能还会被缓存报出来直到 Scope 过期，`cache refresh --resource <kind> [--workspace <name>] --full` 是随时可用的对齐手段。
+
 ### 修复
+
+- 镜像目录按 Registry 读一次，不再按 Workspace 各读一遍。`registry_hint: {workspace_id}` 指的是一个 Registry，不是一份按 Workspace 切分的目录，多个 Workspace 正常共用同一个：实测本账号 10 个 Workspace 只有两份目录，7 个用 `qbHarbor`、3 个国产卡空间用 `sjHarbor`，组内 `image_id` 集合逐字节相同。此前后台每轮把那份约 5400 个镜像的目录重复下载 7 遍——一轮完整刷新 51 MB 里的 42 MB、120 s 里的 68 s 都是它。现在先用一行探针（`page_size: 1`，读响应里的 `registry_id`，约 80 ms）问出每个 Workspace 属于哪个 Registry，同一个 Registry 只读一次：`image` 一轮 30 个请求 / 42.0 MB / 82.9 s → 16 个请求 / 6.2 MB / 11.8 s。探针答不出来的 Workspace（Registry 里一个公开镜像都没有）照旧单独读，绝不会被当成和别人同一份。
+
+  `inspire image --help` 此前写着「An image saved by `notebook save-image --workspace X` is only visible under `--workspace X`」，这是错的：同一个 Registry 上的任何一个 Workspace 都看得到它。真正会挡住人的是 Registry 边界，而这条线基本沿着卡的类型走——国产卡空间和 NVIDIA 空间读的是两份不相交的目录。
+
+- 测试不再读运行 pytest 那台机器上真实的 `~/.inspire/` 名称索引。任何一次名称解析都会为当前账号打开索引，没有重定向时那就是开发者自己的库：`test_workload_quota_and_resources` 明明把平台打了桩，却会拿到开发者自己的计算组，同一个测试通不通取决于他最近跑没跑过 CLI——TTL 拉长之后这件事立刻暴露出来。conftest 里加一条 autouse 重定向，和已有的几条「别碰真实 home」同一个理由。
 
 - 每次 HTTP 请求不再新建一个 `requests.Session`，连接因此能复用。此前 `_request_json_once` 每次调用都 `build_requests_session(...)`，用完 `finally: http.close()`，于是每一个请求都要重新建 TCP 连接、重新握手 TLS——走本地 SII 代理连 `qz.sii.edu.cn` 实测每请求约 300 ms，复用连接后约 30 ms。平常一条命令察觉不到，但 Name 缓存把很多操作变成了扇出（Quota 目录每个计算组一次、镜像每个 Workspace 三次、后台刷新一轮几百次），这一项就变成了主要开销。同一份完整的后台刷新，实测网络时间 201.5 s → 97.2 s、整体 202.8 s → 120.4 s；扣掉本来就是传输量瓶颈的镜像，单请求 397 ms → 91 ms。共享的只有连接池，Cookie / Header / 代理设置每次调用照旧重设，所以刷新过 Session 之后不会拿旧凭据作答；需要自己 `close()` 的调用方继续用 `build_requests_session`。
 
