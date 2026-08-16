@@ -470,6 +470,7 @@ def list_task_usage(
                 node_names=_occupied_nodes(row, "nodes_occupied"),
                 created_at=str(row.get("created_at") or ""),
                 running_time_ms=int(_coerce_total(row.get("running_time_ms"), 0)),
+                priority=int(_coerce_total(row.get("priority"), 0)),
             )
         )
     return usages

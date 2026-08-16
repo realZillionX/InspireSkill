@@ -61,6 +61,7 @@ from inspire.config.workspaces import (
 )
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import MemberUsage, TaskUsage
+from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 _REDACTED_ID_RE = re.compile(r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)")
@@ -71,6 +72,45 @@ _BY_CHOICES = ("user", "project", "task")
 def _display_name(value: object, *, fallback: str = "-") -> str:
     text = _REDACTED_ID_RE.sub(" ", scrub_raw_ids(value))
     return " ".join(text.split()) or fallback
+
+
+def _fair_scheduling_or_unknown(session: Any, workspace_id: str) -> Optional[bool]:
+    """The workspace's priority contract, or ``None`` when it cannot be read.
+
+    Which values count as preemptible depends on the contract, so an
+    unresolved one has to stay unresolved: guessing would label a holder's
+    cards takeable when they are not. It must not take the report down with
+    it either — every other column here is still answerable.
+    """
+    try:
+        return is_fair_scheduling_workspace(session, workspace_id)
+    except Exception:
+        return None
+
+
+def _is_low_priority(priority: int, *, fair_scheduling: bool) -> bool:
+    """Whether a task was submitted at a priority a higher one can preempt.
+
+    Two contracts, matching `--priority`: a fair-scheduling workspace takes
+    1=LOW or 4=HIGH and collapses anything under 4 to LOW, everywhere else the
+    scale is 1..10 and the platform's own group-level low-priority figure was
+    reproduced exactly by ``<= 3`` across every group of a non-fair workspace.
+
+    ``0`` means the row carried no priority, which is not "low" — treating an
+    unanswered field as preemptible would invent capacity nobody can take.
+
+    This is the priority the task was **submitted** at, so it says what the
+    holder asked for, not what the scheduler currently treats it as. The
+    per-group authority on how much is actually preemptible stays
+    `resources availability`'s `Reclaimable`, which the platform computes
+    itself. The two agreed exactly across every group of a non-fair
+    workspace and did not in a fair-scheduling one, where the residual also
+    moved between calls, so this column attributes holdings by what was
+    asked for and does not claim to reproduce that total.
+    """
+    if priority <= 0:
+        return False
+    return priority < 4 if fair_scheduling else priority <= 3
 
 
 def _amount(value: float) -> str:
@@ -90,6 +130,7 @@ def _rollup(
     *,
     by: str,
     workspace: str,
+    fair_scheduling: Optional[bool],
 ) -> list[dict[str, Any]]:
     """Fold live workloads into one row per user or per project."""
     buckets: dict[str, dict[str, Any]] = {}
@@ -102,6 +143,7 @@ def _rollup(
                 "workspace": workspace,
                 by: key,
                 "gpus": 0,
+                "low_priority_gpus": 0,
                 "cpus": 0.0,
                 "memory_gib": 0.0,
                 "tasks": 0,
@@ -111,6 +153,10 @@ def _rollup(
             },
         )
         bucket["gpus"] += task.gpus
+        if fair_scheduling is not None and _is_low_priority(
+            task.priority, fair_scheduling=fair_scheduling
+        ):
+            bucket["low_priority_gpus"] += task.gpus
         bucket["cpus"] += task.cpus
         bucket["memory_gib"] += task.memory_gib
         bucket["tasks"] += 1
@@ -129,6 +175,11 @@ def _rollup(
             "workspace": bucket["workspace"],
             by: bucket[by],
             "gpus": gpus,
+            # `None`, not 0: an unreadable contract is not "nothing is
+            # preemptible", and the two would drive opposite decisions.
+            "low_priority_gpus": (
+                bucket["low_priority_gpus"] if fair_scheduling is not None else None
+            ),
             "cpus": round(bucket["cpus"], 1),
             "memory_gib": round(bucket["memory_gib"], 1),
             "nodes": len(bucket["_nodes"]),
@@ -187,6 +238,7 @@ def _task_rows(tasks: list[TaskUsage], *, workspace: str) -> list[dict[str, Any]
             "user": _display_name(task.user_name),
             "project": _display_name(task.project_name, fallback=""),
             "gpus": task.gpus,
+            "priority": task.priority or None,
             "cpus": round(task.cpus, 1),
             "memory_gib": round(task.memory_gib, 1),
             "nodes": len(task.node_names),
@@ -250,19 +302,19 @@ _COLUMNS: dict[str, list[tuple[str, str, str]]] = {
     "user": [
         ("user", "User", "left"),
         ("gpus", "GPUs", "right"),
+        ("low_priority_gpus", "Reclaimable", "right"),
         ("cpus", "CPUs", "right"),
         ("memory_gib", "Mem GiB", "right"),
         ("nodes", "Nodes", "right"),
         ("tasks", "Tasks", "right"),
-        ("gpu_usage_rate", "GPU Busy", "right"),
     ],
     "project": [
         ("project", "Project", "left"),
         ("gpus", "GPUs", "right"),
+        ("low_priority_gpus", "Reclaimable", "right"),
         ("cpus", "CPUs", "right"),
         ("memory_gib", "Mem GiB", "right"),
         ("nodes", "Nodes", "right"),
-        ("tasks", "Tasks", "right"),
         ("users", "Users", "right"),
     ],
     "task": [
@@ -270,8 +322,8 @@ _COLUMNS: dict[str, list[tuple[str, str, str]]] = {
         ("type", "Type", "left"),
         ("user", "User", "left"),
         ("gpus", "GPUs", "right"),
+        ("priority", "Prio", "right"),
         ("nodes", "Nodes", "right"),
-        ("gpu_usage_rate", "GPU Busy", "right"),
     ],
     "mine": [
         ("project", "Project", "left"),
@@ -339,10 +391,12 @@ def usage_resources(
     \b
     Every row is a live allocation, so this is the counterpart to
     `resources availability`: that command reports what is left, this one
-    reports where the rest went. `GPU Busy` is how much of the held GPU
-    allocation is actually working — a large `GPUs` next to a low `GPU Busy`
-    is capacity parked rather than used, which is what makes a request for it
-    worth raising.
+    reports where the rest went. `Reclaimable` is how much of a holder's GPUs
+    sit on tasks submitted at a preemptible priority — the part a
+    higher-priority submission can take rather than wait for. The rest is held outright, and
+    how busy it is does not change that, which is why utilisation is not a
+    column here; `--json` still carries `gpu_usage_rate` for the separate
+    argument that parked capacity should be released.
 
     \b
     `--group` narrows to one compute group, which is the unit a workload is
@@ -448,7 +502,12 @@ def usage_resources(
             rows = (
                 _task_rows(tasks, workspace=label)
                 if mode == "task"
-                else _rollup(tasks, by=mode, workspace=label)
+                else _rollup(
+                    tasks,
+                    by=mode,
+                    workspace=label,
+                    fair_scheduling=_fair_scheduling_or_unknown(session, workspace_id),
+                )
             )
 
         page = bound_collection(rows, limit=effective_limit)

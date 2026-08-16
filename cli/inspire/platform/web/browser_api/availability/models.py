@@ -58,6 +58,12 @@ class TaskUsage:
     ``gpu_usage_rate`` / ``cpu_usage_rate`` are 0..1 fractions of the *held*
     allocation that is actually busy, so a large ``gpus`` next to a near-zero
     rate is capacity parked rather than used.
+
+    ``priority`` is the value the task was **submitted** at, on the 1..10 scale
+    ``--priority`` takes, not the number the scheduler stores internally. It is
+    the field that separates the cards a higher-priority submission could take
+    from the ones it could not, which utilisation does not: a holder is the
+    holder whether or not the cards are busy.
     """
 
     task_id: str
@@ -74,6 +80,7 @@ class TaskUsage:
     node_names: tuple[str, ...]
     created_at: str
     running_time_ms: int
+    priority: int = 0  # 0 = the platform did not report one
 
 
 @dataclass(frozen=True)

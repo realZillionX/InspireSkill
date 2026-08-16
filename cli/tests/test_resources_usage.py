@@ -42,6 +42,7 @@ def _task(
     nodes: tuple[str, ...],
     gpu_usage_rate: float = 0.5,
     cpus: float = 0.0,
+    priority: int = 4,
 ) -> TaskUsage:
     return TaskUsage(
         task_id=f"job-{name}",
@@ -58,6 +59,7 @@ def _task(
         node_names=nodes,
         created_at="2026-08-15 10:00:00 +0800 CST",
         running_time_ms=1000,
+        priority=priority,
     )
 
 
@@ -176,6 +178,7 @@ def test_task_dimension_projects_nested_blocks(monkeypatch: pytest.MonkeyPatch) 
                         "nodes_occupied": {"count": 1, "nodes": ["gpu-1"]},
                         "created_at": "2026-08-15 10:00:00 +0800 CST",
                         "running_time_ms": "1234",
+                        "priority": 1,
                     }
                 ],
                 "total": 1,
@@ -192,6 +195,9 @@ def test_task_dimension_projects_nested_blocks(monkeypatch: pytest.MonkeyPatch) 
     assert usage.gpu_usage_rate == 0.9
     assert usage.node_names == ("gpu-1",)
     assert usage.running_time_ms == 1234
+    # The submitted priority, which is what separates the cards a
+    # higher-priority job could take from the ones it could not.
+    assert usage.priority == 1
 
 
 def test_task_dimension_never_folds_a_transient_failure_into_no_usage(
@@ -467,6 +473,90 @@ def test_usage_mine_uses_the_single_request_source(
     assert data["by"] == "mine"
     assert data["items"][0]["project"] == "Vision"
     assert data["items"][0]["gpu_nodes"] == 1
+
+
+def _patch_fair(monkeypatch: pytest.MonkeyPatch, value: object) -> None:
+    """Pin the workspace priority contract; an exception means "unreadable"."""
+    from inspire.cli.commands.resources import resources_usage as usage_module
+
+    def _answer(_session, _workspace_id):  # noqa: ANN001
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(usage_module, "is_fair_scheduling_workspace", _answer)
+
+
+def test_usage_counts_reclaimable_gpus_by_the_workspace_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A holder is the holder; only the low-priority part can be taken."""
+    tasks = [
+        _task(name="lo", user="Ada", project="V", gpus=8, nodes=("n1",), priority=1),
+        _task(name="hi", user="Ada", project="V", gpus=16, nodes=("n2",), priority=4),
+        _task(name="legacy", user="Ada", project="V", gpus=4, nodes=("n3",), priority=6),
+    ]
+    _patch_command(monkeypatch, tasks)
+    _patch_fair(monkeypatch, True)
+
+    data = json.loads(
+        CliRunner()
+        .invoke(cli_main, ["--json", "resources", "usage", "--workspace", "Default WS"])
+        .output
+    )["data"]
+    row = data["items"][0]
+    assert row["gpus"] == 28
+    # Fair scheduling: everything under 4 is LOW, 4 and above is not.
+    assert row["low_priority_gpus"] == 8
+
+    # The same holdings in a 1..10 workspace, where the low band reaches 3.
+    _patch_fair(monkeypatch, False)
+    data = json.loads(
+        CliRunner()
+        .invoke(cli_main, ["--json", "resources", "usage", "--workspace", "Default WS"])
+        .output
+    )["data"]
+    assert data["items"][0]["low_priority_gpus"] == 8
+
+
+def test_usage_reports_an_unreadable_contract_as_unknown_not_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero reclaimable and "cannot tell" drive opposite decisions."""
+    _patch_command(
+        monkeypatch,
+        [_task(name="a", user="Ada", project="V", gpus=8, nodes=("n1",), priority=1)],
+    )
+    _patch_fair(monkeypatch, RuntimeError("policy unavailable"))
+
+    result = CliRunner().invoke(
+        cli_main, ["--json", "resources", "usage", "--workspace", "Default WS"]
+    )
+
+    assert result.exit_code == 0, result.output
+    row = json.loads(result.output)["data"]["items"][0]
+    assert row["gpus"] == 8
+    assert row["low_priority_gpus"] is None
+
+
+def test_usage_never_reads_a_missing_priority_as_preemptible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`priority: 0` is "the row did not say", and inventing takeable capacity
+    from silence is the one error that sends someone to argue for cards that
+    were never available."""
+    _patch_command(
+        monkeypatch,
+        [_task(name="a", user="Ada", project="V", gpus=8, nodes=("n1",), priority=0)],
+    )
+    _patch_fair(monkeypatch, True)
+
+    data = json.loads(
+        CliRunner()
+        .invoke(cli_main, ["--json", "resources", "usage", "--workspace", "Default WS"])
+        .output
+    )["data"]
+    assert data["items"][0]["low_priority_gpus"] == 0
 
 
 def _patch_groups(monkeypatch: pytest.MonkeyPatch, groups: list[dict]) -> None:
