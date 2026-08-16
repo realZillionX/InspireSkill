@@ -27,16 +27,35 @@ from inspire.accounts import account_dir, current_account
 SCHEMA_VERSION = 4
 RESOURCE_INDEX_FILENAME = "resource-index.sqlite3"
 
-# Two tiers. Workloads come and go under the user's own hand, so they carry the
-# shorter TTL; platform catalog data only moves when an admin changes something.
+# Three tiers, paced by how fast each kind actually moves.
+#
+# Workloads come and go under the user's own hand, minute to minute, and they
+# are what a name is usually resolved against — 5 minutes.
+#
+# Account structure changes when a person is added to a workspace or project,
+# or when an admin edits a compute group: rare, but the user is present for it
+# — a day.
+#
+# The catalogs are hardware facts. Quota rows are the shapes an admin
+# configured on a compute group and image catalogs are a shared registry's
+# contents; both are also by far the most expensive things here to read (a
+# quota refresh is one request per compute group per workload, an image
+# refresh a multi-megabyte catalog per registry). A week.
+#
+# A TTL is read validity as well as refresh cadence: past it a lookup misses
+# and the command goes live, which is always safe. What the long tiers do
+# trade is the other direction — a spec or image the platform dropped can
+# still be quoted from cache until the scope expires. `cache refresh
+# --resource <kind> [--workspace <name>] --full` forces the issue.
+#
 # The shortest value here also paces the background refresh, so lowering it
 # costs a background process per account that often.
 DEFAULT_TTL_SECONDS: dict[str, int] = {
-    "workspace": 30 * 60,
-    "project": 30 * 60,
-    "compute-group": 30 * 60,
-    "image": 30 * 60,
-    "model": 30 * 60,
+    "workspace": 24 * 60 * 60,
+    "project": 24 * 60 * 60,
+    "compute-group": 24 * 60 * 60,
+    "model": 24 * 60 * 60,
+    "image": 7 * 24 * 60 * 60,
     "job": 5 * 60,
     "hpc": 5 * 60,
     "ray": 5 * 60,
@@ -54,7 +73,7 @@ QUOTA_RESOURCE_TYPES: tuple[str, ...] = tuple(
 )
 
 DEFAULT_TTL_SECONDS.update(
-    {resource_type: 30 * 60 for resource_type in QUOTA_RESOURCE_TYPES}
+    {resource_type: 7 * 24 * 60 * 60 for resource_type in QUOTA_RESOURCE_TYPES}
 )
 
 

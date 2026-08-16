@@ -7,6 +7,7 @@ import time
 import pytest
 
 from inspire.accounts import create_account, set_current_account
+from inspire.cli.utils import resource_index as resource_index_module
 from inspire.cli.utils.resource_index import (
     ResourceIdentity,
     ResourceIndex,
@@ -671,6 +672,11 @@ def test_scope_for_session_requires_stable_account_identity() -> None:
 
 
 def test_account_indexes_are_isolated_and_private(tmp_path, monkeypatch) -> None:
+    # The per-account path *is* what this test is about, so it takes the real
+    # one back from the suite-wide redirect and isolates HOME instead.
+    monkeypatch.setattr(
+        resource_index_module, "resource_index_path", resource_index_path
+    )
     monkeypatch.setenv("HOME", str(tmp_path))
     create_account("alpha", "[inspire]\n")
     create_account("beta", "[inspire]\n")

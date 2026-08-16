@@ -6,7 +6,9 @@
 
 镜像保存“已经装好的运行环境”，用于 Notebook、Job、HPC、Ray 和 Serving 之间复用。数据集、权重、Checkpoint 和批量产物不进镜像，应放共享盘路径并用 Path Alias 管理。
 
-镜像按 Workspace 的 Registry 存放，不是账号级的单一目录：`notebook save-image --workspace X` 存出的镜像只出现在 X 的 Registry 里。所以 `image list` / `detail` / `register` / `set-visibility` / `delete` 都要求 `--workspace`，它指的是这份 Registry 所属的 Workspace；换一个 Workspace 就是换一份镜像目录，同名镜像在另一个 Workspace 里可能根本不存在。多个 Workspace 可能共用同一份 Registry，需要用哪个 Workspace 名字取镜像时以 `image list` 的实际结果为准。
+镜像存在 Registry 里，不是存在 Workspace 里，**多个 Workspace 正常共用同一份 Registry**。`image list` / `detail` / `register` / `set-visibility` / `delete` 都要 `--workspace`，因为平台只认 `registry_hint: {workspace_id}` 这一种指定 Registry 的方式——它是一个指向 Registry 的路标，不是分区。所以 `notebook save-image --workspace X` 存出的镜像，在**同一个 Registry 上的每一个 Workspace** 里都看得到，不必回到 X。
+
+真正会挡住你的是 Registry 边界，而 Registry 边界基本沿着卡的类型走。实测本账号 10 个 Workspace 只有两份目录：`CI-PPU` / `CI-情境智能-国产卡-ssd3` / `昇腾卡公共空间` 用 `sjHarbor`（7 官方 + 288 公开 + 0 个人），其余 7 个用 `qbHarbor`（17 + 5355 + 67），两份的 `image_id` 集合交集为空。跨过这条线，同名镜像可能根本不存在。哪个 Workspace 名字通到哪份目录，以 `image list` 的实际结果为准。
 
 一个稳定镜像至少满足：
 

@@ -257,6 +257,93 @@ def test_failed_refresh_preserves_existing_rows(tmp_path) -> None:
     assert index.list_scope_status()[0].last_error == "temporary API failure"
 
 
+def test_image_catalog_is_read_once_per_registry_not_once_per_workspace(
+    tmp_path, monkeypatch
+) -> None:
+    # `registry_hint: {workspace_id}` names a registry, and workspaces share
+    # them: seven of this account's ten answer for one registry and three for
+    # another, with identical image_id sets inside each group. Reading per
+    # workspace downloaded the same ~5,400-image catalog seven times a cycle.
+    from inspire.cli.utils import resource_index_refresh as refresh_module
+
+    registry_of = {"ws-a": "qbHarbor", "ws-b": "qbHarbor", "ws-c": "sjHarbor"}
+    probes: list[str] = []
+    catalog_reads: list[str] = []
+
+    def _registry(workspace_id, session=None):  # noqa: ANN001
+        probes.append(workspace_id)
+        return registry_of[workspace_id]
+
+    def _catalog(_session: object, workspace_id: str) -> list[ResourceIdentity]:
+        catalog_reads.append(workspace_id)
+        name = "shared:v1" if registry_of[workspace_id] == "qbHarbor" else "domestic:v1"
+        return [ResourceIdentity(resource_id=f"img-{name}", name=name)]
+
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.images.image_registry_id", _registry
+    )
+    monkeypatch.setattr(refresh_module, "_image_catalog", _catalog)
+
+    fetch = refresh_module._image_fetcher()
+    results = [fetch(object(), workspace_id, "") for workspace_id in registry_of]
+
+    assert probes == ["ws-a", "ws-b", "ws-c"]
+    assert catalog_reads == ["ws-a", "ws-c"]
+    assert [record.name for result in results for record in result.records] == [
+        "shared:v1",
+        "shared:v1",
+        "domestic:v1",
+    ]
+
+
+def test_a_registry_that_cannot_be_identified_is_still_read(tmp_path, monkeypatch) -> None:
+    # An empty probe means "I could not tell which registry this is", which is
+    # never a reason to hand back some other workspace's catalog.
+    from inspire.cli.utils import resource_index_refresh as refresh_module
+
+    catalog_reads: list[str] = []
+
+    def _catalog(_session: object, workspace_id: str) -> list[ResourceIdentity]:
+        catalog_reads.append(workspace_id)
+        return [ResourceIdentity(resource_id=f"img-{workspace_id}", name=f"{workspace_id}:v1")]
+
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.images.image_registry_id",
+        lambda workspace_id, session=None: "",  # noqa: ANN001
+    )
+    monkeypatch.setattr(refresh_module, "_image_catalog", _catalog)
+
+    fetch = refresh_module._image_fetcher()
+    for workspace_id in ("ws-a", "ws-b"):
+        fetch(object(), workspace_id, "")
+
+    assert catalog_reads == ["ws-a", "ws-b"]
+
+
+def test_a_failing_registry_probe_never_blocks_the_image_refresh(
+    tmp_path, monkeypatch
+) -> None:
+    from inspire.cli.utils import resource_index_refresh as refresh_module
+
+    def _boom(workspace_id, session=None):  # noqa: ANN001
+        raise RuntimeError("API error: Throttling")
+
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.images.image_registry_id", _boom
+    )
+    monkeypatch.setattr(
+        refresh_module,
+        "_image_catalog",
+        lambda _session, workspace_id: [
+            ResourceIdentity(resource_id="img-1", name="torch:v1")
+        ],
+    )
+
+    result = refresh_module._image_fetcher()(object(), "ws-a", "")
+
+    assert [record.name for record in result.records] == ["torch:v1"]
+
+
 def test_a_scope_that_keeps_failing_is_not_retried_every_wake_up(tmp_path) -> None:
     # A fetch that raises leaves last_full_refresh_at where it was, so the
     # freshness question alone says "due" forever: `model` answered

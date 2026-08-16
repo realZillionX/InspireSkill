@@ -218,7 +218,7 @@ def _compute_group_fetch(
     )
 
 
-def _image_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+def _image_catalog(session: object, workspace_id: str) -> list[ResourceIdentity]:
     from inspire.platform.web.browser_api.notebooks import list_images
 
     records: list[ResourceIdentity] = []
@@ -238,7 +238,50 @@ def _image_fetch(session: object, workspace_id: str, exact_name: str) -> FetchRe
                     name=label,
                 )
             )
-    return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
+    return _dedupe_records(records)
+
+
+def _image_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+    return FetchResult(_filter_exact(_image_catalog(session, workspace_id), exact_name))
+
+
+def _image_fetcher() -> Fetcher:
+    """Build an image fetcher that reads each registry once, not each workspace.
+
+    ``registry_hint: {workspace_id}`` names a registry, and workspaces share
+    them: measured here, seven workspaces answer for ``qbHarbor`` and three
+    国产卡 ones for ``sjHarbor``, with identical ``image_id`` sets inside each
+    group. Fetching per workspace therefore downloaded the same ~5,400-image
+    catalog seven times every cycle -- 42 MB of the 51 MB a full refresh moved,
+    and 68 s of its 120 s.
+
+    So each workspace is asked which registry it reads (one row, ~80 ms) and
+    the catalog behind a registry already seen is reused verbatim. A workspace
+    whose registry cannot be identified -- one with no publicly visible image
+    at all -- is read on its own rather than assumed to match anyone.
+
+    The memo lives for one refresh run. Across runs the scopes are what carry
+    the answer forward, each with its own TTL.
+    """
+    by_registry: dict[str, list[ResourceIdentity]] = {}
+
+    def _fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+        from inspire.platform.web.browser_api.images import image_registry_id
+
+        try:
+            registry = image_registry_id(workspace_id, session=session)  # type: ignore[arg-type]
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:  # noqa: BLE001 - the probe is an optimization, not the read
+            registry = ""
+        if registry and registry in by_registry:
+            return FetchResult(_filter_exact(by_registry[registry], exact_name))
+        records = _image_catalog(session, workspace_id)
+        if registry:
+            by_registry[registry] = records
+        return FetchResult(_filter_exact(records, exact_name))
+
+    return _fetch
 
 
 def _model_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
@@ -846,7 +889,13 @@ def refresh_resource_index(
     if exact_name and len(selected_types) != 1:
         raise ValueError("--name requires exactly one --resource.")
 
-    registry = fetchers or RESOURCE_FETCHERS
+    if fetchers is None:
+        # A fresh image fetcher per run: its registry memo must not outlive the
+        # refresh that filled it, or a second run would reuse a catalog nobody
+        # re-read.
+        registry: Mapping[str, Fetcher] = {**RESOURCE_FETCHERS, "image": _image_fetcher()}
+    else:
+        registry = fetchers
     workspace_fetcher = registry["workspace"]
     workspace_scope = scope_for_session(session, resource_type="workspace")
     workspace_types = tuple(

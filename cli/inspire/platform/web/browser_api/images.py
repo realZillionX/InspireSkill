@@ -86,12 +86,13 @@ def list_images_by_source(
             ``"official"`` is a real source; the other three are
             ``visibility`` values applied across both source lists.
         session: Existing web session.
-        workspace_id: Which workspace's image registry to read. Images are
-            stored per workspace and every request carries
-            ``registry_hint: {workspace_id}``, so a caller that means one
-            workspace must say so — falling back to the session's active
-            workspace silently reads a different registry. Defaults to the
-            session's workspace when omitted.
+        workspace_id: Which registry to read, named by a workspace that uses
+            it — every request carries ``registry_hint: {workspace_id}``.
+            Workspaces share registries, so this selects a catalog rather than
+            a per-workspace slice, but the catalogs behind two workspaces can
+            still be disjoint; a caller that means one registry must say so
+            rather than falling back to the session's active workspace.
+            Defaults to the session's workspace when omitted.
     """
     # Three of the four categories are visibility filters over the same two
     # source lists; only 官方镜像 selects on `source`.
@@ -131,6 +132,47 @@ def list_images_by_source(
     data = _image_v2(session, "ListImages", body)
     items = data.get("images", [])
     return [_image_from_api(item) for item in items]
+
+
+def image_registry_id(
+    workspace_id: str,
+    session: Optional[WebSession] = None,
+) -> str:
+    """Return the id of the registry a workspace reads images from.
+
+    ``registry_hint: {workspace_id}`` names a *registry*, not a per-workspace
+    catalog, and several workspaces share one: measured on this platform,
+    seven workspaces answer for ``qbHarbor`` and three国产卡 ones for
+    ``sjHarbor``, with byte-identical ``image_id`` sets inside each group.
+    Anything that would otherwise read the same catalog once per workspace can
+    ask here first and read it once per registry instead.
+
+    The probe is one row (``page_size: 1``), which the gateway honours and
+    answers in well under a tenth of a second. An empty answer means this
+    workspace's registry cannot be identified this way -- a registry with no
+    publicly visible image at all -- and callers must fall back to reading per
+    workspace rather than guessing two registries are the same.
+    """
+    session, workspace_id = _get_session_and_workspace_id(
+        workspace_id=workspace_id, session=session
+    )
+    data = _image_v2(
+        session,
+        "ListImages",
+        {
+            "page": 0,
+            "page_size": 1,
+            "filter": {
+                "source_list": ["SOURCE_PRIVATE", "SOURCE_PUBLIC"],
+                "visibility": "VISIBILITY_PUBLIC",
+                "registry_hint": {"workspace_id": workspace_id},
+            },
+        },
+    )
+    images = data.get("images") or []
+    if not images or not isinstance(images[0], dict):
+        return ""
+    return str(images[0].get("registry_id") or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +370,7 @@ __all__ = [
     "create_image",
     "delete_image",
     "get_image_detail",
+    "image_registry_id",
     "list_images_by_source",
     "update_image",
     "wait_for_image_ready",

@@ -47,7 +47,7 @@ from inspire.platform.web import browser_api as browser_api_module
 
 _IMAGE_LIST_COMMAND = "inspire image list --workspace <workspace-name>"
 
-_WORKSPACE_HELP = "Workspace name. Images live in this workspace's image registry."
+_WORKSPACE_HELP = "Workspace name, naming which image registry to read."
 
 
 def _resolve_registry_scope(
@@ -58,11 +58,14 @@ def _resolve_registry_scope(
 ) -> str | None:
     """Resolve ``--workspace`` to the image registry a command addresses.
 
-    Images are stored per workspace: every ``ListImages`` / ``CreateImage``
-    request carries ``registry_hint: {workspace_id}``. The session's active
-    workspace is *not* a safe default — this account's is an empty registry
-    while its 67 custom images live in another — so every image command takes
-    the workspace explicitly and threads this id down to the platform call.
+    A workspace id is how the platform is told which registry to read: every
+    ``ListImages`` / ``CreateImage`` request carries ``registry_hint:
+    {workspace_id}``. It is a hint at a registry, not a partition — several
+    workspaces answer for the same one, and only a registry boundary actually
+    hides an image. The session's active workspace is still *not* a safe
+    default: this account's reaches an empty registry while its 67 custom
+    images live in another, so every image command takes the workspace
+    explicitly and threads this id down to the platform call.
 
     Returns the workspace id, or ``None`` once the failure has been reported.
     """
