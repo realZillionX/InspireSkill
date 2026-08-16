@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v7.1.0
 
 ### 新增
 
@@ -19,8 +19,6 @@
 - `inspire ray start`：停掉的 Ray Job 保留完整集群规格，此前 CLI 有 `stop` 却没有 `start`，停了就只能重建。平台在这里会「受理但不执行」——请求返回成功而任务纹丝不动，再调一次变成 `InternalError`，所以命令以状态真的离开 `STOPPED` 为准，没动就报失败。
 
 - `inspire serving scale|versions|rollback|api-metrics`：副本伸缩、部署历史、按历史版本重新部署，以及请求量 / 成功率 / 延迟 / TTFT。`api-metrics` 和既有的 `serving metrics` 是两套不相交的指标——后者看资源占用，只有前者能把「没人调用」和「一直调用一直失败」分开。
-
-- `inspire resources quota`：Workspace 的配额上限、当前占用和集群物理容量并排显示。两者都会拒绝任务但失败形态不同——配额用尽停在 `QUOTA_PENDING`，集群占满停在 `PENDING` 并伴随 `FailedScheduling`，此前 CLI 回答不了「这个规模到底放不放得下」。
 
 - `inspire model deploy-config`：某个模型版本能被部署的最小节点规格，正好是 `serving create --quota` 的下限，同时给出 vLLM 兼容判断。
 
@@ -82,11 +80,9 @@
 
 ### 破坏性变更
 
-- **移除 `inspire resources quota`。** 它要解释的 `QUOTA_PENDING` 在这个平台上不会因为 Workspace 天花板发生：10 个可见 Workspace 逐个实测，GPU 上限要么是 `unlimited`（4 个），要么是整个集群容量的两倍（分布式训练空间 10000/20000 对 5589 张卡、CI-情境智能 4236/8472 对 1536、可上网GPU资源 2894/5788 对 1438），要么是 0（CI-PPU、专属资源开发空间——那是「这个空间根本没有你的份」，不是配给）；CPU 和内存则处处 `unlimited`。也就是说 `Quota Free` 这一列——整条命令存在的理由——永远要么是 `-`，要么是一个比整个集群还大的数，**先耗尽的永远是硬件**。剩下那列 `Cluster Used/Total` 是 Workspace 级汇总，而任务是提交到某个计算组的，`resources availability` 给的按组余量严格更可用。随之删除 `browser_api.workspaces` 里的 `WorkspaceQuotaUsage` / `get_workspace_quota_usage` / `UNLIMITED_QUOTA`；`GetWorkspaceQuota` 与 `GetWorkspaceComputeResource` 两个 Action 就此没有 CLI 消费者。
-
 - **`inspire project` 整组不再接受 `--workspace`。** 项目根本不按 Workspace 划分：`ListProjects` 不带 `workspace_id` 就是全局目录，`GetProjectDetail` 只认项目自己的 id，那个 `--workspace` 是个过滤器却被写成了 `required=True`。实测这个账号全局 4 个项目，扇出 10 个 Workspace 拿回来的还是同样 4 个——扇出唯一多产出的是一列 `Workspace`，而它是靠「逐空间查一遍看谁答得出来」反推的（全局调用里 `space_list` 是空的），10 个请求换一列截断到看不清的文字。现在 `project list` 一次调用给出全部项目，`Workspace` 列随扇出一起删除；`project detail <名字>` 直接寻址，名称候选也从全局目录取——按 Workspace 收窄只会把一个在别处可见的项目报成「找不到」。
 
-- **`--workspace all` 收敛到「按名字找东西」这一类。** 还接受扇出的只剩 `<workload> list`（`job` / `notebook` / `hpc` / `ray` / `serving` / `model`）和 `account permissions`——不知道东西在哪个 Workspace 时，本来就没法先给出空间名。`resources availability` / `resources nodes` / `resources policy` / `resources usage`、`<workload> quota`、`serving configs` 一律改为要一个 Workspace 名字：档位目录、计算组余量、回收策略、部署配置面和当前占用都是按 Workspace 定义的事实，扇出不会多回答一个问题，只会把逐空间的行拼起来再按输出预算截断，把「前 N 名」悄悄变成「最先枚举到的那个空间的前 N 名」。随之删掉的还有只为扇出存在的 `Workspace` 列与 `show_workspace` 分支，以及 `get_accurate_resource_availability` 的 `all_workspaces` 参数和它的多空间目标解析。
+- **`--workspace all` 收敛到「按名字找东西」这一类。** 还接受扇出的只剩 `<workload> list`（`job` / `notebook` / `hpc` / `ray` / `serving` / `model`）和 `account permissions`——不知道东西在哪个 Workspace 时，本来就没法先给出空间名。`resources availability` / `resources nodes`、`<workload> quota`、`serving configs` 一律改为要一个 Workspace 名字（本轮新增的 `resources policy` / `resources usage` 从一开始就按这条规则发布）：档位目录、计算组余量、回收策略、部署配置面和当前占用都是按 Workspace 定义的事实，扇出不会多回答一个问题，只会把逐空间的行拼起来再按输出预算截断，把「前 N 名」悄悄变成「最先枚举到的那个空间的前 N 名」。随之删掉的还有只为扇出存在的 `Workspace` 列与 `show_workspace` 分支，以及 `get_accurate_resource_availability` 的 `all_workspaces` 参数和它的多空间目标解析。
 
   **跨 Workspace 的扇出保留在它真正有意义的地方**：`<workload> list`（不知道东西在哪个空间时按名字找）、`<workload> quota`、`serving configs`、`account permissions`、`cache refresh`。分界线是拼接诚不诚实——这些命令逐空间给一行或一段，`Workspace` 列能分辨归属；`resources` 给的是本来就该逐个读的单空间事实。
 
@@ -99,10 +95,6 @@
 - **`job events` / `job logs` 的 `--instance` 改收 `inspire job instances` 打印的身份**（`rank=0`，或者就写 `0`；角色名选中该角色全部实例），不再收平台 pod 名。
 
   旧取值形态**从来就没有取得途径**：训练 Pod 的平台名是 `job-<uuid>-worker-0-0`，`scrub_raw_ids` 洗成 `<redacted>-worker-0-0`，`job instances` 正因为这个丢掉 Name 列改印 `rank=N`——也就是说这个选择器唯一合法的值是 CLI 任何地方都不打印的东西。`hpc` 和 `ray` 早就用角色名解决了同一个问题，`job` 这次跟上。选择器认不出来时报错并列出该任务真实有的实例，而不是悄悄退化成空范围（那会读成「这个实例没有事件」）。
-
-- **`inspire resources usage` 不再接受 `--workspace all`**，传了直接报 `--workspace requires one workspace name for this command.`。这个扇出答不出它看起来在答的问题：聚合是在逐 Workspace 的循环里做的，同一个人在每个空间各占一行，所以 `--by user` 给的是「(空间, 人) 组合」的排名而不是人的排名——实测一个人在四个空间分别持有 2122 / 1176 / 888 / 560 卡，排行榜上就是四个不同的条目。截断更糟：总排序被 `if not all_workspaces` 跳过，默认 20 行只会来自最先枚举到的那个空间，而提示照样写 `Showing 20 of 857`。
-
-  没有改成真正的跨空间聚合，是因为聚合完也没有对应的决定：配额和调度都按 Workspace 走，这个命令服务的三个动作（等、去找人要、换个地方提交）也都是。跨 Workspace 找地方本来就是 `resources availability` 和 `resources nodes` 的活，它们逐空间一行、拼接是诚实的。随之删掉的还有只为扇出存在的 Workspace 列。
 
 - `inspire image save` 移到 `inspire notebook save-image`。选项、输出、退出码和 `--json` schema 一个字没变，只换了命令路径，**不保留别名**，所以脚本和 Agent 合同要跟着改。（同组的取消命令是本轮新增的，从未以 `image cancel-save` 发布过，只会以 `notebook cancel-save-image` 出现。）
 
@@ -122,13 +114,13 @@
 
 - **`inspire account check` 会发现本仓库钉住了一个平台上已经不存在的 Project。** 仓库的 `[context] project` 只在 `inspire init` 时写一次，之后再不复查；平台上把这个 Project 删掉或改名之后，仓库就钉在一个解析不到任何东西的名字上，这里的每一条 `<workload> create` 都会栽在它上面。账号级的 `project_catalog` 帮不上忙——它是写下这个 pin 的同一次 `inspire init` 留下的缓存，和 pin 口径一致地一起错，只有实时列一次才看得出来。判定为失效时报 `Project context: STALE` 并退 `EXIT_CONFIG_ERROR`（不是认证错误：账号是好的，是这个仓库的绑定坏了）。提示同时给出两种修法：重新绑定用 `inspire init --scope project`，而本来就不该有绑定的仓库应该把 `./.inspire/` 删掉——[`project-context.md`](references/project-context.md) 早就写明 CLI、Skill、文档这类通用工具源码仓库不做项目初始化，这类仓库要的是解绑而不是改绑。列表调用本身失败时不作判断——网络问题不是失效的证据。
 
-- **删除 `inspire config` 整个命令组，其中管账号的部分并入 `inspire account`。** `config check` → `account check`，`config context` → `account context`，`config show` 的账号级部分 → 新的 `account show`。归属本来就错了：schema 里 15 个 option 有 10 个是账号作用域（Authentication / API / Proxy / Tunnel），它们全部由 `account add` 写入 `~/.inspire/accounts/<name>/config.toml`，而 `config show` 对其中 8 个只印 `<configured>`——每项只传递「设了没设」这一个 bit，那本来就是一条 `account status`。`config context` 更直接：它列出的 project 和 compute group 就是 `inspire init` 的发现结果写进账号配置的那份缓存，只有 workspace 名单是实时查的。
+- **删除 `inspire config` 整个命令组，其中管账号的部分并入 `inspire account`。** `config check` → `account check`，`config context` → `account context`；`config show` **没有替代命令**，理由见下一条。归属本来就错了：schema 里 15 个 option 有 10 个是账号作用域（Authentication / API / Proxy / Tunnel），它们全部由 `account add` 写入 `~/.inspire/accounts/<name>/config.toml`。`config context` 更直接：它列出的 project 和 compute group 就是 `inspire init` 的发现结果写进账号配置的那份缓存，只有 workspace 名单是实时查的。
 
   剩下的 5 个仓库级 option（`job.*`、`notebook.post_start`）不再有查看命令。它们照常生效，只是没有专门的表格：值写在 `./.inspire/config.toml`，同名环境变量默认优先，`[cli] prefer_source = "toml"` 反转优先级。一个只为 5 个键存在的命令组，撑不起顶层一个名字。
 
   有效代理诊断（原 `config show --filter Proxy`）落在 `account check --details`：账号 `[proxy]` 块、Shell 的 `http_proxy` / `NO_PROXY`，合并之后 requests / playwright / rtunnel 三条链路各自走直连还是走代理。这一段任何配置文件里都没有。
 
-- **不再有 `inspire account show`。** 它印的那张表每一行要么恒真，要么被别的输出覆盖：`INSPIRE_USERNAME` / `INSPIRE_PASSWORD` 只会显示 `<configured>`，因为没配的话 `account check` 早就带着「Run `inspire account add`」失败了；`INSPIRE_BASE_URL` 现在有正确默认值，永远显示已配置；4 个 Proxy 行说「账号文件里有代理」，而紧挨着的有效代理段落说的是「这个代理到底赢没赢」——后者严格更强。一张每行 1 bit 且这 1 bit 你已经知道的表，不是信息。
+- **`config show` 的账号视图没有替代命令，因为那张表不是信息。** 它每一行要么恒真，要么被别的输出覆盖：`INSPIRE_USERNAME` / `INSPIRE_PASSWORD` 只会显示 `<configured>`，因为没配的话 `account check` 早就带着「Run `inspire account add`」失败了；`INSPIRE_BASE_URL` 现在有正确默认值，永远显示已配置；4 个 Proxy 行说「账号文件里有代理」，而 `account check` 的有效代理段落说的是「这个代理到底赢没赢」——后者严格更强。一张每行 1 bit 且这 1 bit 你已经知道的表，不值得占一个命令名。
 
 - **`account check` 失败时自己把话说完。** 此前不带 `--details` 的失败只会印一行 `Authentication: FAILED`，理由和实际路由都要再跑一次才看得到——而这一次失败往往就是网络或代理出的问题，重跑的成本正好落在最不该付的时候。现在失败时无条件附上认证错误原因和有效代理路由（照旧全部脱敏），`--details` 仍然额外给来源优先级和配置文件存在性。输出同时补上当前账号名，因为「我到底在用哪个账号」是排查的第一个问题。
 
@@ -138,7 +130,7 @@
 
 - **占位主机报错现在说得出是哪个主机。** 原消息印的是完整 URL，而 URL 在出口会被脱敏成 `<redacted>`，于是用户拿到一条「检测到占位主机」却看不出哪里不对的错误。改成印匹配到的主机名（`api.example.com` 这类固定文档占位符，本身不敏感）。
 
-- **删除 `inspire config env`。** `config env use .env` 和 `inspire init --scope project --env-file .env` 调的是同一个函数，纯重复；模板生成器 `config env [--template]` 只是把 schema 里的 description 重排成注释，没有回答任何 `--help` 回答不了的问题。`show` 的 `--format env` 和 `--compact` 随命令组一起消失：前者对账号级 10 项只会印 `# INSPIRE_USERNAME=<configured; redacted>`，后者的语义已经是 `account show` 的默认行为。
+- **删除 `inspire config env`。** `config env use .env` 和 `inspire init --scope project --env-file .env` 调的是同一个函数，纯重复；模板生成器 `config env [--template]` 只是把 schema 里的 description 重排成注释，没有回答任何 `--help` 回答不了的问题。`show` 的 `--format env` 和 `--compact` 随命令组一起消失：前者对账号级 10 项只会印 `# INSPIRE_USERNAME=<configured; redacted>`，后者只是同一张无信息量的表再压一遍行。
 
 - **来源标签 `global` 改叫 `account`。** 这一层读的就是 `~/.inspire/accounts/<name>/config.toml`，叫 `global` 与另一个同名概念（`inspire init --scope global`）撞车。`--json` 里 `source` 字段和 `account check --details` 的 `Config files:` 一行同步改口。
 
@@ -266,6 +258,12 @@
   - Notebook 命令查不到当前账号 ID 时，限流不再被报成 `AuthenticationError`——那会把用户支去重新登录，而实际只需要等一会儿。
 
 ### 维护
+
+- **`inspire resources usage` 不接受 `--workspace all`**，传了直接报 `--workspace requires one workspace name for this command.`。开发中做过这个扇出，量完发现它答不出看起来在答的问题：聚合是在逐 Workspace 的循环里做的，同一个人在每个空间各占一行，所以 `--by user` 给的是「(空间, 人) 组合」的排名而不是人的排名——实测一个人在四个空间分别持有 2122 / 1176 / 888 / 560 卡，排行榜上就是四个不同的条目。截断更糟：总排序被跳过，默认 20 行只会来自最先枚举到的那个空间，而提示照样写 `Showing 20 of 857`。
+
+  没有改成真正的跨空间聚合，是因为聚合完也没有对应的决定：配额和调度都按 Workspace 走，这个命令服务的三个动作（等、去找人要、换个地方提交）也都是。跨 Workspace 找地方本来就是 `resources availability` 和 `resources nodes` 的活，它们逐空间一行、拼接是诚实的。
+
+- **CLI 不提供读 Workspace 配额天花板的命令，这是量过之后的结论。** 10 个可见 Workspace 逐个实测：GPU 上限要么是 `unlimited`（4 个），要么是整个集群容量的两倍（`分布式训练空间` 10000/20000 对 5589 张卡、`CI-情境智能` 4236/8472 对 1536、`可上网GPU资源` 2894/5788 对 1438），要么是 0（`CI-PPU`、`专属资源开发空间`——那是「这个空间根本没有你的份」，不是配给）；CPU 和内存则处处 `unlimited`。也就是说这条命令唯一有意义的那一列「配额余量」永远要么是 `-`，要么是一个比整个集群还大的数，**先耗尽的永远是硬件**——`QUOTA_PENDING` 不会因为这个天花板发生。Workspace 级汇总也答不出提交决定：任务是提交到某个计算组的，`resources availability` 给的按组余量严格更可用。结论写进 [`resources.md`](references/resources.md)；`workspace.GetWorkspaceQuota` 与 `GetWorkspaceComputeResource` 两个 Action 因此没有 CLI 消费者，对应的 `WorkspaceQuotaUsage` / `get_workspace_quota_usage` / `UNLIMITED_QUOTA` 一并从 `browser_api.workspaces` 删除。
 
 - 手册补上「资源能留多久」和「谁能起高优」这两条一直只在 CLI help 里的规则。`inspire resources policy` 此前只有命令自己的 help 提过，手册里从头到尾没有出场，于是空闲回收在文档里只是「回收策略」这四个字；现在 [`resources.md`](references/resources.md) 说明它逐行给出的 `Reclaim` / `Idle Rule` / `Time Limit` 各是什么，并点明触发条件是 GPU 利用率而不是有没有人连着（`分布式训练空间` 实测：Job「GPU 低于 40% 持续 3 小时」，Notebook「GPU 低于 15% 持续 3 小时，或运行超过 18 小时」），`-` 是「没声明策略」而不是「没有限制」。[`notebook.md`](references/notebook.md) 的 `--auto-stop` 段和 [`compute-workloads.md`](references/compute-workloads.md) 的 Job 边界各自指过去——夜里挂着不吃卡的 Notebook 第二天不在了，是规则生效不是故障。
 
