@@ -4,9 +4,11 @@
 
 ### 新增
 
+- `inspire ray shell`：进 Ray 实例的交互式 shell，默认进 **head**——驱动在那儿，`ray status` 和集群自己的日志也在那儿；要看某个 worker group 的进程用 `--instance <Role-Rank>`。走 `/api/v2/ray_job/instances/exec`。
+
 - `inspire hpc shell`：进 HPC 实例的交互式 shell，和 `job shell` 同一套（`exit` 退出、`Ctrl+]` 断开）。**默认进 `launcher`**——`srun` 在那儿跑，也只有那个 Pod 看得见你的进程；`slurmctld` 是调度器本身，`--instance slurmctld` 才去。走 `/api/v2/hpc_jobs/instances/exec`，同样是网关 REST 形状的那一半。
 
-  **参数名不能照搬 train 那条**：它只认 `instance_id`，给 `instance_name` 会照常 upgrade 然后一个字节都不回——没有报错、没有 close 帧，只是一个永远不说话的 shell。实测 `instance_id` 回 53 字节、`instance_name` 回 0。`ray` / `serving` 平台侧也有实例 PTY，但没验证过，`build_remote_cmd_ws_url` 对它们直接抛错而不是猜一个参数名。
+  **参数名不能照搬 train 那条**：`hpc` 和 `ray` 都只认 `instance_id`，用错的两种失败都不给报错——`hpc` 收到 `instance_name` 会照常 upgrade 然后一个字节都不回（实测 `instance_id` 回 53 字节，这边回 0），`ray` 则直接把握手拒成一个光秃秃的 `HTTP/1.1 200 OK`。`serving` 平台侧也有实例 PTY，没验证过，`build_remote_cmd_ws_url` 对它直接抛错而不是猜一个参数名。
 
 - `<workload> quota` 增加 `Points/h` 列（`--json` 里是 `points_per_hour`）：该 Quota 行每实例每小时消耗多少点券。数据本来就在配额目录的响应里，只是一直被丢掉。**只有 GPU 计费**——所有 CPU-only 行都是 0，同一份预处理放进 `CPU资源空间` 就不花点券；GPU 按卡型定价，实测 H100 / H200 是 1 点券/卡/小时而 4090 是 0.33，差三倍。按实例计费，`--nodes 2` 跑 8 点券的行是每小时 16。`null` 是「平台没给这行定价」，和 `0`（免费）是两件事。
 

@@ -15,6 +15,7 @@ from inspire.cli.commands.workload_quota import make_quota_command
 from inspire.cli.commands.workload_profile import make_profile_command
 
 from .ray_commands import (
+    shell_ray,
     create_ray,
     delete_ray,
     events_ray,
@@ -66,6 +67,7 @@ ray.add_command(instances_ray)
 ray.add_command(logs_ray)
 ray.add_command(scaling_ray)
 ray.add_command(ray_metrics)
+ray.add_command(shell_ray)
 
 
 __all__ = ["ray"]

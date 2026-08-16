@@ -792,16 +792,21 @@ def test_remote_shell_url_uses_the_right_instance_key_per_workload(monkeypatch) 
         "wss://qz.sii.edu.cn/api/v2/hpc_jobs/instances/exec?"
         "job_id=hpc-1&instance_id=proj%2Fpod-0"
     )
+    assert job_shell.build_remote_cmd_ws_url("rj-1", "rj-1-head-x", workload="ray") == (
+        "wss://qz.sii.edu.cn/api/v2/ray_job/instances/exec?"
+        "job_id=rj-1&instance_id=rj-1-head-x"
+    )
 
 
 def test_remote_shell_refuses_a_workload_with_no_verified_endpoint(monkeypatch) -> None:  # noqa: ANN001
-    """`ray` and `serving` have console endpoints that nobody has verified.
+    """`serving` has a console endpoint that nobody has verified.
 
-    Guessing one would produce a socket that upgrades and stays silent, which
-    reads as a hung shell rather than an unsupported command.
+    Guessing its instance key would reproduce one of the two failures the
+    wrong key produces elsewhere -- a socket that upgrades and then stays
+    silent, or a handshake refused with a bare 200 -- both of which read as a
+    hung shell rather than an unsupported command.
     """
     monkeypatch.setattr(job_shell, "_get_base_url", lambda: "https://qz.sii.edu.cn")
 
-    for workload in ("ray", "serving"):
-        with pytest.raises(job_shell.JobShellError, match=workload):
-            job_shell.build_remote_cmd_ws_url("x", "y", workload=workload)
+    with pytest.raises(job_shell.JobShellError, match="serving"):
+        job_shell.build_remote_cmd_ws_url("x", "y", workload="serving")

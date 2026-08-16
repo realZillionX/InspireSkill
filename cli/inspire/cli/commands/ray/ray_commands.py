@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Optional, Sequence, cast
@@ -61,6 +62,7 @@ from inspire.config.workspaces import (
     workspace_label,
     workspace_name_map,
 )
+from inspire.cli.utils.job_shell import JobShellError, open_job_shell
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
@@ -1878,3 +1880,99 @@ def delete_ray(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("shell")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
+@click.option(
+    "--instance",
+    "instance",
+    default=None,
+    metavar="ROLE",
+    help="Open this Role / Rank, as printed by `inspire ray instances`.",
+)
+@pass_context
+def shell_ray(
+    ctx: Context,
+    name: str,
+    workspace: str,
+    pick: Optional[int],
+    instance: Optional[str],
+) -> None:
+    """Open an interactive shell inside a running Ray instance.
+
+    Needs a terminal: this attaches your stdin to a remote PTY. Leave with
+    `exit`, or press Ctrl+] to drop the session without ending the shell.
+
+    \b
+    Defaults to the head, which runs the driver and is where `ray status` and
+    the cluster's own logs live. Pick a worker by its Role / Rank when the
+    question is about one group's processes rather than the cluster's.
+
+    \b
+    Examples:
+        inspire ray shell av-pipeline --workspace CPU资源空间
+        inspire ray shell av-pipeline --workspace CPU资源空间 --instance decode-0
+    """
+    try:
+        session = get_web_session()
+        ray_job_id, instances = _run_readonly_ray_operation(
+            ctx,
+            session=session,
+            name=name,
+            workspace=workspace,
+            limit=200,
+            pick=pick,
+            operation=lambda resolved_id: (
+                resolved_id,
+                _fetch_ray_instances(
+                    resolved_id, limit=200, session=session, show_all=True
+                )[0],
+            ),
+        )
+
+        running = [
+            row
+            for row in instances
+            if "run" in str(row.get("status") or row.get("instance_status") or "").lower()
+        ]
+        views = ray_instance_views(running)
+        if not views:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                "No running instances found for this Ray job.",
+                EXIT_VALIDATION_ERROR,
+            )
+            return
+
+        if instance:
+            selected = select_ray_instance_views(views, [instance])[0]
+        else:
+            heads = [view for view in views if view.kind.lower() == "head"]
+            selected = (heads or views)[0]
+
+        if not ctx.json_output:
+            click.echo(
+                f"Opening shell: {scrub_raw_ids(name)} / {selected.label}", err=True
+            )
+            click.echo("Press Ctrl-] to disconnect.", err=True)
+
+        sys.exit(
+            open_job_shell(
+                job_id=ray_job_id,
+                instance_name=selected.handle,
+                session=session,
+                workload="ray",
+            )
+        )
+    except RayInstanceSelectionError as e:
+        _handle_error(ctx, "ValidationError", scrub_raw_ids(e), EXIT_VALIDATION_ERROR)
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+    except JobShellError as e:
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)

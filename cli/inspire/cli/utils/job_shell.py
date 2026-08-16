@@ -224,20 +224,25 @@ def select_job_instance(
 # an inventory built from Action names reports them as absent, which is how
 # the train one stayed on v1 long after everything else moved.
 #
-# **The instance parameter is not the same name on both.** The console remaps
-# it per workload and so must we: `hpc_jobs/instances/exec` answers only to
-# `instance_id`, and handing it `instance_name` upgrades the socket and then
-# returns nothing at all -- no error, no close, just a shell that never speaks.
-# Measured against a running HPC job: `instance_id` echoed 53 bytes,
-# `instance_name` echoed 0.
+# **The instance parameter is not the same name on every route**, and the
+# console remaps it per workload for a reason. Only the train route takes
+# `instance_name`; `hpc` and `ray` take `instance_id`, and getting it wrong
+# fails in two different silent-ish ways, neither of them an error message:
 #
-# `ray_job/instances/exec` and `inference_servings/instances/exec` exist in the
-# same console table and have no CLI consumer yet; neither is verified, so
-# neither is listed here.
+#   hpc + instance_name  -> socket upgrades, then returns nothing at all.
+#                           No error, no close frame, just a shell that never
+#                           speaks. Measured: `instance_id` 53 bytes, 0 here.
+#   ray + instance_name  -> handshake refused with a bare `HTTP/1.1 200 OK`
+#                           instead of the 101 upgrade.
+#
+# `inference_servings/instances/exec` is in the same console table and has no
+# CLI consumer yet. It is unverified, so it is not listed: guessing its key
+# would reproduce one of the two failures above.
 REMOTE_CMD_PATH = "/api/v2/train_job/remote_cmd"
 _PTY_ROUTES: dict[str, tuple[str, str]] = {
     "job": (REMOTE_CMD_PATH, "instance_name"),
     "hpc": ("/api/v2/hpc_jobs/instances/exec", "instance_id"),
+    "ray": ("/api/v2/ray_job/instances/exec", "instance_id"),
 }
 
 
