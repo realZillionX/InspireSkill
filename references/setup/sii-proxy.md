@@ -135,4 +135,4 @@ inspire account check
 
 1. Clash Verge 规则包含 `DOMAIN-SUFFIX,sii.edu.cn,SII Proxy`。
 2. `SII Proxy` 组选择了可用代理节点或当前网络可用的 `DIRECT`。
-3. `inspire account show --filter Proxy` 显示的账号级 proxy、Shell proxy、有效路由和 `NO_PROXY` 匹配符合预期。
+3. `inspire account check --details` 显示的有效代理来源、路由和 `NO_PROXY` 匹配符合预期。

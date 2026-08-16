@@ -26,12 +26,11 @@ _CONTEXT_COLLECTION_KEYS = (
     "projects",
     "workspaces",
     "compute_groups",
-    "accounts",
 )
 
 
 def _collect_context(cfg: Config) -> dict[str, Any]:
-    from inspire.accounts import current_account, list_accounts
+    from inspire.accounts import current_account
 
     warnings: list[str] = []
     active_account = scrub_raw_ids(current_account() or "") or None
@@ -108,7 +107,6 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
         "projects": projects_view,
         "workspaces": workspaces_view,
         "compute_groups": compute_groups_view,
-        "accounts": sorted(scrub_raw_ids(account) for account in list_accounts()),
     }
     if warnings:
         data["warnings"] = warnings
@@ -162,10 +160,6 @@ def _render_human(data: dict[str, Any]) -> None:
             workspace_text = str(workspace or "")
         suffix = f" workspace={workspace_text}" if workspace_text else ""
         click.echo(f"compute-group {group['name']}{suffix}")
-
-    accounts: list[str] = data["accounts"]
-    for name in accounts:
-        click.echo(f"account {name}")
 
     truncation = data.get("truncated")
     if isinstance(truncation, dict) and truncation:

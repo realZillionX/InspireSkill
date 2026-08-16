@@ -1673,21 +1673,36 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     runner = CliRunner()
     result = runner.invoke(cli_main, ["account", "check"])
 
+    # A failed check explains itself on the first run: the reason and the route
+    # the request took, both redacted, without needing `--details`.
     assert result.exit_code == EXIT_AUTH_ERROR
     assert "Authentication: FAILED" in result.output
-    assert "Effective runtime proxy" not in result.output
-    assert "source=system_env" not in result.output
+    assert "Effective runtime proxy" in result.output
+    assert "source=system_env" in result.output
+    for secret in (
+        "my-inspire.internal",
+        "proxy.internal",
+        "8080",
+        "auth.internal",
+        "/inspire/private/session.json",
+        "alice",
+    ):
+        assert secret not in result.output
 
     detailed = runner.invoke(cli_main, ["account", "check", "--details"])
     assert detailed.exit_code == EXIT_AUTH_ERROR
     assert "Effective runtime proxy" in detailed.output
     assert "source=system_env" in detailed.output
-    assert "my-inspire.internal" not in detailed.output
-    assert "proxy.internal" not in detailed.output
-    assert "8080" not in detailed.output
-    assert "auth.internal" not in detailed.output
-    assert "/inspire/private/session.json" not in detailed.output
-    assert "alice" not in detailed.output
+    assert "Config files:" in detailed.output
+    for secret in (
+        "my-inspire.internal",
+        "proxy.internal",
+        "8080",
+        "auth.internal",
+        "/inspire/private/session.json",
+        "alice",
+    ):
+        assert secret not in detailed.output
 
     detailed_json = runner.invoke(
         cli_main,
@@ -1836,6 +1851,7 @@ def test_config_check_accepts_local_json_alias(
     )
     from inspire.cli.commands.account import check as config_check_module
 
+    monkeypatch.setattr("inspire.accounts.current_account", lambda: "test-account")
     monkeypatch.setattr(config_check_module, "get_web_session", lambda: object())
     monkeypatch.setattr(
         config_check_module.browser_api_module,
@@ -1850,6 +1866,7 @@ def test_config_check_accepts_local_json_alias(
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert payload["data"] == {
+        "account": "test-account",
         "configured": True,
         "authenticated": True,
     }
@@ -1994,36 +2011,6 @@ def test_init_json_global_contract_via_top_level_flag(
     assert payload["success"] is True
     assert payload["data"] == {"status": "updated"}
     assert str(tmp_path) not in result.output
-
-
-def test_config_show_respects_global_json_flag(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    config = make_test_config(tmp_path)
-
-    def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
-        return config, {"username": config_module.SOURCE_ENV}
-
-    def fake_get_config_paths(cls):  # type: ignore[override]
-        return None, None
-
-    monkeypatch.setattr(
-        config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
-    )
-    monkeypatch.setattr(
-        config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "account", "show"])
-
-    assert result.exit_code == EXIT_SUCCESS
-    payload = json.loads(result.output)
-    assert payload["success"] is True
-    assert "config_files" not in payload["data"]
-    assert "INSPIRE_USERNAME" in payload["data"]["values"]
-    assert payload["data"]["values"]["INSPIRE_USERNAME"] == "<configured>"
-    assert config.username not in result.output
 
 
 def test_notebook_list_all_workspaces_combines_results(

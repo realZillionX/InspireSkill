@@ -324,7 +324,7 @@ def _login_not_complete_message(
             ]
         )
     lines.append(
-        "Run `inspire account show` to confirm the active account, base URL, and "
+        "Run `inspire account check --details` to confirm the active account, base URL, and "
         "proxy settings. Re-run with `inspire --debug init` if you need a debug report."
     )
     if proxy_source and "system_env" in proxy_source:

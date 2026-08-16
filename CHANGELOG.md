@@ -114,7 +114,15 @@
 
   剩下的 5 个仓库级 option（`job.*`、`notebook.post_start`）不再有查看命令。它们照常生效，只是没有专门的表格：值写在 `./.inspire/config.toml`，同名环境变量默认优先，`[cli] prefer_source = "toml"` 反转优先级。一个只为 5 个键存在的命令组，撑不起顶层一个名字。
 
-  `account show` 接过了有效代理诊断（原 `config show --filter Proxy`）：账号 `[proxy]` 块、Shell 的 `http_proxy` / `NO_PROXY`，合并之后 requests / playwright / rtunnel 三条链路各自走直连还是走代理。这一段任何配置文件里都没有，且现在即使账号没配任何 proxy 也照印——「账号文件里什么都没设」和「请求仍然在走 Shell 代理」可以同时成立，正是这时候最需要看到它。
+  有效代理诊断（原 `config show --filter Proxy`）落在 `account check --details`：账号 `[proxy]` 块、Shell 的 `http_proxy` / `NO_PROXY`，合并之后 requests / playwright / rtunnel 三条链路各自走直连还是走代理。这一段任何配置文件里都没有。
+
+- **不再有 `inspire account show`。** 它印的那张表每一行要么恒真，要么被别的输出覆盖：`INSPIRE_USERNAME` / `INSPIRE_PASSWORD` 只会显示 `<configured>`，因为没配的话 `account check` 早就带着「Run `inspire account add`」失败了；`INSPIRE_BASE_URL` 现在有正确默认值，永远显示已配置；4 个 Proxy 行说「账号文件里有代理」，而紧挨着的有效代理段落说的是「这个代理到底赢没赢」——后者严格更强。一张每行 1 bit 且这 1 bit 你已经知道的表，不是信息。
+
+- **`account check` 失败时自己把话说完。** 此前不带 `--details` 的失败只会印一行 `Authentication: FAILED`，理由和实际路由都要再跑一次才看得到——而这一次失败往往就是网络或代理出的问题，重跑的成本正好落在最不该付的时候。现在失败时无条件附上认证错误原因和有效代理路由（照旧全部脱敏），`--details` 仍然额外给来源优先级和配置文件存在性。输出同时补上当前账号名，因为「我到底在用哪个账号」是排查的第一个问题。
+
+- **`account context` 不再列 `accounts`。** 那一段和同组的 `inspire account list` 逐字重复。
+
+- **占位主机报错现在说得出是哪个主机。** 原消息印的是完整 URL，而 URL 在出口会被脱敏成 `<redacted>`，于是用户拿到一条「检测到占位主机」却看不出哪里不对的错误。改成印匹配到的主机名（`api.example.com` 这类固定文档占位符，本身不敏感）。
 
 - **删除 `inspire config env`。** `config env use .env` 和 `inspire init --scope project --env-file .env` 调的是同一个函数，纯重复；模板生成器 `config env [--template]` 只是把 schema 里的 description 重排成注释，没有回答任何 `--help` 回答不了的问题。`show` 的 `--format env` 和 `--compact` 随命令组一起消失：前者对账号级 10 项只会印 `# INSPIRE_USERNAME=<configured; redacted>`，后者的语义已经是 `account show` 的默认行为。
 

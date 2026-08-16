@@ -105,7 +105,7 @@ inspire uninstall --purge-runtime # 连共享的 Playwright 浏览器缓存一�
 
 ```bash
 inspire account add <name>
-inspire account show
+inspire account check
 inspire init
 cd /path/to/your-repo
 inspire init --scope project

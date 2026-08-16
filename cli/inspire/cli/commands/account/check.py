@@ -18,6 +18,7 @@ from inspire.cli.context import (
 )
 from inspire.cli.formatters import human_formatter, json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import (
     Config,
     ConfigError,
@@ -123,11 +124,15 @@ def _find_placeholder_host_issues(cfg: Config, sources: dict[str, str]) -> list[
 
 
 def _format_placeholder_issue_message(issues: list[dict[str, str]]) -> str:
+    # Name the matched host, not the raw value: the value is a full URL and
+    # gets scrubbed to `<redacted>` on its way out, which left the user staring
+    # at an error that would not say what was wrong. The matched host is one of
+    # a fixed set of documentation placeholders and is safe to print.
     lines = ["Placeholder host values detected in configuration:"]
     for issue in issues:
         lines.append(
-            f"  - {issue['env_var']} ({issue['field']}): "
-            f"{issue['value']} [source: {issue['source']}]"
+            f"  - {issue['env_var']} points at {issue['host']} "
+            f"[source: {issue['source']}]"
         )
     lines.append("Use real host values in config files or environment variables.")
     lines.append("Path-only API prefixes are allowed.")
@@ -204,6 +209,8 @@ def check(ctx: Context, details: bool) -> None:
         inspire account check --details
         inspire --json account check
     """
+    from inspire.accounts import current_account
+
     effective_json = ctx.json_output
     show_details = details
 
@@ -211,6 +218,7 @@ def check(ctx: Context, details: bool) -> None:
         cfg, sources = Config.from_files_and_env(
             require_credentials=False,
         )
+        active_account = scrub_raw_ids(current_account() or "") or None
         account_path, project_path = Config.get_config_paths()
         _validate_project_base_url_shape(project_path)
 
@@ -219,13 +227,6 @@ def check(ctx: Context, details: bool) -> None:
             raise ConfigError(_format_placeholder_issue_message(placeholder_issues))
 
         _validate_required_credentials(cfg)
-        effective_proxy = (
-            public_effective_proxy_summary(
-                describe_effective_proxy_config(base_url=cfg.base_url)
-            )
-            if show_details
-            else None
-        )
 
         auth_ok = True
         auth_error = None
@@ -237,6 +238,19 @@ def check(ctx: Context, details: bool) -> None:
             auth_ok = False
             auth_error = str(e)
 
+        # A failed check has to say why without a second run: the reason the
+        # login did not go through and the route the request actually took are
+        # the two things you need, and asking for `--details` after the fact
+        # means re-running against a platform that just refused you.
+        verbose = show_details or not auth_ok
+        effective_proxy = (
+            public_effective_proxy_summary(
+                describe_effective_proxy_config(base_url=cfg.base_url)
+            )
+            if verbose
+            else None
+        )
+
         base_url_resolution = _build_base_url_resolution(cfg, sources, account_path, project_path)
         default_base_url_hint = None
         if base_url_resolution["source"] == SOURCE_DEFAULT:
@@ -246,18 +260,12 @@ def check(ctx: Context, details: bool) -> None:
             )
 
         result: dict[str, object] = {
+            "account": active_account,
             "configured": True,
             "authenticated": auth_ok,
         }
-        if show_details:
-            result.update(
-                {
-                    "base_url_resolution": base_url_resolution,
-                    "effective_proxy": effective_proxy,
-                }
-            )
-            if default_base_url_hint:
-                result["note"] = default_base_url_hint
+        if verbose:
+            result["effective_proxy"] = effective_proxy
             if auth_error:
                 result["authentication_error"] = json_formatter.sanitize_text(
                     auth_error,
@@ -265,10 +273,15 @@ def check(ctx: Context, details: bool) -> None:
                     redact_urls=True,
                     redact_platform_paths=True,
                 )
+        if show_details:
+            result["base_url_resolution"] = base_url_resolution
+            if default_base_url_hint:
+                result["note"] = default_base_url_hint
 
         if effective_json:
             click.echo(json_formatter.format_json(result, success=auth_ok))
         else:
+            click.echo(f"Account: {active_account or '-'}")
             click.echo(human_formatter.format_success("Configuration: OK"))
             if auth_ok:
                 click.echo(human_formatter.format_success("Authentication: OK"))
@@ -288,19 +301,19 @@ def check(ctx: Context, details: bool) -> None:
                 )
                 if default_base_url_hint:
                     click.echo(click.style(f"Note: {default_base_url_hint}", fg="yellow"))
-                if effective_proxy is not None:
-                    for line in format_effective_proxy_lines(effective_proxy):
-                        click.echo(line)
-                if auth_error:
-                    click.echo(
-                        "Authentication error: "
-                        + json_formatter.sanitize_text(
-                            auth_error,
-                            redact_paths=True,
-                            redact_urls=True,
-                            redact_platform_paths=True,
-                        )
+            if auth_error:
+                click.echo(
+                    "Authentication error: "
+                    + json_formatter.sanitize_text(
+                        auth_error,
+                        redact_paths=True,
+                        redact_urls=True,
+                        redact_platform_paths=True,
                     )
+                )
+            if effective_proxy is not None:
+                for line in format_effective_proxy_lines(effective_proxy):
+                    click.echo(line)
 
         if not auth_ok:
             sys.exit(EXIT_AUTH_ERROR)

@@ -30,7 +30,7 @@ from inspire.config import (
 )
 from inspire.cli.commands.init import init
 from inspire.cli.commands.init.env_detect import _detect_env_vars, _generate_toml_content
-from inspire.cli.commands.account import account as account_command
+from inspire.cli.context import EXIT_AUTH_ERROR
 from inspire.cli.main import main as cli_main
 
 # ===========================================================================
@@ -499,7 +499,6 @@ class TestAccountConfigLayer:
         assert result.exit_code == 0
         assert result.output == (
             "active account=alice project=CI-情境智能 workspace=CPU资源空间\n"
-            "account alice\n"
         )
 
     def test_shared_project_config_loads_with_active_account(
@@ -1779,100 +1778,30 @@ class TestInitHelpers:
         assert 'base_url = "https://example.com/path?foo=bar&baz=\\"test\\""' in toml_content
 
 # ===========================================================================
-# Account show command tests
+# Account check proxy diagnostics
 # ===========================================================================
 
 
-class TestAccountShowCommand:
-    """Tests for inspire account show."""
+class TestAccountCheckProxyDiagnostics:
+    """`account check` is the only view of effective proxy routing.
+
+    Every proxy value it touches can carry credentials, so these assert the
+    redaction contract as much as the routing itself.
+    """
 
     @staticmethod
-    def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Keep the view off the developer machine's real ~/.inspire."""
+    def _isolate(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        cfg: Config,
+    ) -> None:
+        """Answer the live probe locally and keep the view off the real ~/.inspire."""
+        from inspire.cli.commands.account import check as check_module
+
         fake_home = tmp_path / "__home"
         fake_home.mkdir(exist_ok=True)
         monkeypatch.setattr(Path, "home", lambda: fake_home)
         monkeypatch.setattr("inspire.accounts.current_account", lambda: "test-account")
-        monkeypatch.chdir(tmp_path)
-
-    def test_account_show_reports_presence_without_values(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._isolate(tmp_path, monkeypatch)
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
-        monkeypatch.setenv(
-            "INSPIRE_BASE_URL",
-            "https://internal.example/private?token=secret",
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(account_command, ["show"])
-
-        assert result.exit_code == 0, result.output
-        assert "Account: test-account" in result.output
-        assert "INSPIRE_USERNAME" in result.output
-        assert "<configured>" in result.output
-        assert "testuser" not in result.output
-        assert "internal.example" not in result.output
-        assert "[env]" not in result.output
-
-        detailed = runner.invoke(account_command, ["show", "--details"])
-        assert detailed.exit_code == 0, detailed.output
-        assert "[env]" in detailed.output
-
-    def test_account_show_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._isolate(tmp_path, monkeypatch)
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
-        monkeypatch.setenv(
-            "INSPIRE_BASE_URL",
-            "https://internal.example/private?token=secret",
-        )
-
-        result = CliRunner().invoke(cli_main, ["--json", "account", "show"])
-
-        assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
-        assert payload["success"] is True
-        data = payload["data"]
-        assert "config_file" not in data
-        assert data["account"] == "test-account"
-        assert data["values"]["INSPIRE_USERNAME"] == "<configured>"
-        assert data["values"]["INSPIRE_PASSWORD"] == "********"
-        assert "testuser" not in result.output
-        assert "internal.example" not in result.output
-
-    def test_account_show_omits_project_scope_options(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Repository workload defaults belong to `config show`, not here."""
-        self._isolate(tmp_path, monkeypatch)
-
-        result = CliRunner().invoke(cli_main, ["--json", "account", "show", "--details"])
-
-        assert result.exit_code == 0, result.output
-        values = json.loads(result.output)["data"]["values"]
-        assert "INSPIRE_BASE_URL" in values
-        assert "INSPIRE_SHM_SIZE" not in values
-        assert "INSPIRE_NOTEBOOK_POST_START" not in values
-
-    def test_account_show_filter(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._isolate(tmp_path, monkeypatch)
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
-
-        result = CliRunner().invoke(account_command, ["show", "--filter", "auth"])
-
-        assert result.exit_code == 0, result.output
-        assert "Authentication" in result.output
-
-    def test_account_show_displays_effective_shell_proxy(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Runtime shell proxies remain visible even when config proxy fields are unset."""
-        self._isolate(tmp_path, monkeypatch)
-        cfg = Config(username="", password="", base_url="https://qz.sii.edu.cn")
         monkeypatch.setattr(
             Config,
             "from_files_and_env",
@@ -1883,19 +1812,42 @@ class TestAccountShowCommand:
             "get_config_paths",
             classmethod(lambda cls: (None, None)),
         )
-        monkeypatch.delenv("http_proxy", raising=False)
-        monkeypatch.delenv("HTTP_PROXY", raising=False)
-        monkeypatch.delenv("https_proxy", raising=False)
-        monkeypatch.delenv("no_proxy", raising=False)
-        monkeypatch.delenv("all_proxy", raising=False)
-        monkeypatch.delenv("ALL_PROXY", raising=False)
+        monkeypatch.setattr(check_module, "get_web_session", lambda: object())
+        monkeypatch.setattr(
+            check_module.browser_api_module,
+            "get_current_user",
+            lambda session=None: {"name": "test-account"},
+        )
+        monkeypatch.chdir(tmp_path)
+
+    @staticmethod
+    def _clear_shell_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in (
+            "http_proxy",
+            "HTTP_PROXY",
+            "https_proxy",
+            "HTTPS_PROXY",
+            "no_proxy",
+            "NO_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_check_displays_effective_shell_proxy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shell proxies stay visible even when the account file sets none."""
+        cfg = Config(username="u", password="p", base_url="https://qz.sii.edu.cn")
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
         monkeypatch.setenv(
             "HTTPS_PROXY",
             "http://alice:secret@proxy.example:18443/proxy-secret-path?token=value",
         )
         monkeypatch.setenv("NO_PROXY", ".example.org")
 
-        result = CliRunner().invoke(account_command, ["show", "--filter", "Proxy"])
+        result = CliRunner().invoke(cli_main, ["--no-env-file", "account", "check", "--details"])
 
         assert result.exit_code == 0, result.output
         assert "Effective runtime proxy" in result.output
@@ -1910,75 +1862,76 @@ class TestAccountShowCommand:
         assert "proxy-secret-path" not in result.output
         assert "token" not in result.output
 
-    def test_account_show_json_includes_effective_proxy(
+    def test_check_json_includes_effective_proxy_without_target(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._isolate(tmp_path, monkeypatch)
-        cfg = Config(username="", password="", base_url="https://qz.sii.edu.cn")
-        monkeypatch.setattr(
-            Config,
-            "from_files_and_env",
-            classmethod(lambda cls, **kwargs: (cfg, {})),
-        )
-        monkeypatch.setattr(
-            Config,
-            "get_config_paths",
-            classmethod(lambda cls: (None, None)),
-        )
-        monkeypatch.delenv("http_proxy", raising=False)
-        monkeypatch.delenv("HTTP_PROXY", raising=False)
-        monkeypatch.delenv("https_proxy", raising=False)
-        monkeypatch.delenv("no_proxy", raising=False)
-        monkeypatch.delenv("NO_PROXY", raising=False)
-        monkeypatch.delenv("all_proxy", raising=False)
-        monkeypatch.delenv("ALL_PROXY", raising=False)
+        cfg = Config(username="u", password="p", base_url="https://qz.sii.edu.cn")
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:18443")
 
-        result = CliRunner().invoke(cli_main, ["--json", "account", "show", "--filter", "Proxy"])
+        result = CliRunner().invoke(
+            cli_main, ["--json", "--no-env-file", "account", "check", "--details"]
+        )
 
         assert result.exit_code == 0, result.output
         data = json.loads(result.output)["data"]
-        assert "values" in data
         assert "target" not in data["effective_proxy"]
         assert data["effective_proxy"]["requests"]["source"] == "system_env"
         assert data["effective_proxy"]["playwright"]["source"] == "requests:system_env"
         assert "proxy.example" not in result.output
         assert "qz.sii.edu.cn" not in result.output
 
-    def test_account_show_redacts_configured_proxy_credentials(
+    def test_check_never_prints_configured_proxy_credentials(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._isolate(tmp_path, monkeypatch)
         cfg = Config(
-            username="",
-            password="",
+            username="u",
+            password="p",
             base_url="https://qz.sii.edu.cn",
             requests_https_proxy=(
                 "http://proxy-user:proxy-password@proxy.example:18443/secret-path?token=value"
             ),
         )
-        monkeypatch.setattr(
-            Config,
-            "from_files_and_env",
-            classmethod(lambda cls, **kwargs: (cfg, {"requests_https_proxy": SOURCE_ACCOUNT})),
-        )
-        monkeypatch.setattr(
-            Config,
-            "get_config_paths",
-            classmethod(lambda cls: (None, None)),
-        )
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
 
-        result = CliRunner().invoke(account_command, ["show", "--filter", "Proxy"])
+        result = CliRunner().invoke(cli_main, ["--no-env-file", "account", "check", "--details"])
 
         assert result.exit_code == 0, result.output
-        assert "INSPIRE_REQUESTS_HTTPS_PROXY" in result.output
-        assert "<configured>" in result.output
+        assert "source=toml" in result.output
         assert "proxy-user" not in result.output
         assert "proxy-password" not in result.output
         assert "proxy.example" not in result.output
         assert "18443" not in result.output
         assert "secret-path" not in result.output
         assert "token" not in result.output
+
+    def test_failed_check_explains_itself_without_details(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed check must not require a second run to say why."""
+        from inspire.cli.commands.account import check as check_module
+        from inspire.platform.web.session import SessionExpiredError
+
+        cfg = Config(username="u", password="p", base_url="https://qz.sii.edu.cn")
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:18443")
+
+        def _expired(session=None):  # noqa: ANN001, ANN202
+            raise SessionExpiredError("session expired")
+
+        monkeypatch.setattr(check_module.browser_api_module, "get_current_user", _expired)
+
+        result = CliRunner().invoke(cli_main, ["--no-env-file", "account", "check"])
+
+        assert result.exit_code == EXIT_AUTH_ERROR
+        assert "Authentication: FAILED" in result.output
+        assert "session expired" in result.output
+        assert "Effective runtime proxy" in result.output
+        assert "source=system_env" in result.output
+        assert "proxy.example" not in result.output
 
 
 # ===========================================================================
@@ -2014,7 +1967,7 @@ class TestProjectEnvFile:
         self._repo_with_env_file(tmp_path, monkeypatch)
         monkeypatch.delenv("INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY", raising=False)
 
-        result = CliRunner().invoke(cli_main, ["--json", "account", "show"])
+        result = CliRunner().invoke(cli_main, ["--json", "account", "list"])
         assert result.exit_code == 0, result.output
 
         cfg, sources = Config.from_files_and_env(require_credentials=False)
@@ -2027,7 +1980,7 @@ class TestProjectEnvFile:
         self._repo_with_env_file(tmp_path, monkeypatch)
         monkeypatch.setenv("INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY", "456")
 
-        result = CliRunner().invoke(cli_main, ["--json", "account", "show"])
+        result = CliRunner().invoke(cli_main, ["--json", "account", "list"])
         assert result.exit_code == 0, result.output
 
         cfg, sources = Config.from_files_and_env(require_credentials=False)
@@ -2193,18 +2146,3 @@ prefer_source = "invalid"
 
         with pytest.raises(ConfigError, match="Invalid prefer_source value"):
             Config.from_files_and_env(require_credentials=False)
-
-    def test_account_show_json_includes_prefer_source(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
-    ) -> None:
-        """`prefer_source` is a repo-level toggle, so the account view reports it."""
-        project_dir = tmp_path / ".inspire"
-        project_dir.mkdir()
-        (project_dir / "config.toml").write_text('[cli]\nprefer_source = "toml"\n')
-        monkeypatch.chdir(tmp_path)
-
-        result = CliRunner().invoke(cli_main, ["--json", "account", "show", "--details"])
-
-        assert result.exit_code == 0, result.output
-        data = json.loads(result.output)["data"]
-        assert data["prefer_source"] == "toml"

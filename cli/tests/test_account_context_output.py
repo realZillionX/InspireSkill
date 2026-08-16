@@ -23,7 +23,6 @@ def test_account_context_renders_compact_name_lines(capsys):
                     "workspace": "CPU资源空间",
                 }
             ],
-            "accounts": [],
         }
     )
 
@@ -77,10 +76,6 @@ def _patch_large_context(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr("inspire.accounts.current_account", lambda: "primary")
     monkeypatch.setattr(
-        "inspire.accounts.list_accounts",
-        lambda: [f"Account {index:02d}" for index in range(25)],
-    )
-    monkeypatch.setattr(
         "inspire.config.workspaces.workspace_name_map",
         lambda _session: {
             f"internal-workspace-{index}": f"Workspace {index:02d}"
@@ -106,14 +101,12 @@ def test_account_context_default_json_is_bounded_and_name_only(
     assert len(data["projects"]) == 20
     assert len(data["workspaces"]) == 20
     assert len(data["compute_groups"]) == 20
-    assert len(data["accounts"]) == 20
     assert all(set(item) == {"name"} for item in data["projects"])
     assert all(set(item) <= {"name", "workspace"} for item in data["compute_groups"])
     assert data["truncated"] == {
         "projects": {"shown": 20, "total": 25},
         "workspaces": {"shown": 20, "total": 25},
         "compute_groups": {"shown": 20, "total": 25},
-        "accounts": {"shown": 20, "total": 25},
     }
     assert "/internal/project/" not in result.output
     assert "GPU-" not in result.output
@@ -144,7 +137,6 @@ def test_account_context_limit_and_all_control_each_discovery_list(
     assert len(data["projects"]) == 25
     assert len(data["workspaces"]) == 25
     assert len(data["compute_groups"]) == 25
-    assert len(data["accounts"]) == 25
     assert "truncated" not in data
 
 
@@ -179,7 +171,6 @@ def test_account_context_reports_actionable_workspace_discovery_failure(
         classmethod(lambda cls, **_: (cfg, {})),
     )
     monkeypatch.setattr("inspire.accounts.current_account", lambda: "primary")
-    monkeypatch.setattr("inspire.accounts.list_accounts", lambda: ["primary"])
     monkeypatch.setattr(
         "inspire.platform.web.session.get_web_session",
         lambda: (_ for _ in ()).throw(RuntimeError("/private/session.json")),
@@ -200,7 +191,6 @@ def test_account_context_reports_actionable_workspace_discovery_failure(
         "projects": [],
         "workspaces": [],
         "compute_groups": [],
-        "accounts": ["primary"],
         "warnings": [
             "Workspace names are unavailable. Run `inspire account check` and retry."
         ],
