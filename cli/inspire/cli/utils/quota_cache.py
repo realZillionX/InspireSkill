@@ -330,6 +330,10 @@ class CachedPricesLoader:
     Callers that treat an empty live response as a stale-handle signal consult
     it, because an empty *cached* response is an authoritative "this group has
     no quotas for this workload", not evidence of a dead group handle.
+
+    That authority is per group and stops there. A scope holding nothing for
+    *any* group is read as a miss and refetched -- see `_load_cached_catalog`
+    for why the one workspace that really has no quotas pays for it.
     """
 
     def __init__(
@@ -390,6 +394,19 @@ class CachedPricesLoader:
             by_group.setdefault(record.owner_id, []).extend(
                 prices_from_records([record])
             )
+        if not by_group:
+            # A scope marked complete that holds nothing for *any* group is a
+            # cache accident, not a workspace without quotas, and answering
+            # from it is the worst failure this cache can produce: every
+            # `<workload> quota` prints "No quota rows found." and every
+            # `create` refuses a `--quota` the platform would have accepted.
+            # It has happened -- 150 rows left unreadable by a scope-keying
+            # change, with the scope still flagged fully refreshed.
+            #
+            # A genuinely quota-less workspace pays a per-group fetch for this.
+            # That is the right side to be wrong on: the cost is N requests,
+            # and the alternative cost is a CLI that cannot create anything.
+            return None
         self._cached_by_group = by_group
         return by_group
 

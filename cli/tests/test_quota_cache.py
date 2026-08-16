@@ -201,6 +201,46 @@ def test_group_with_no_quotas_is_authoritatively_empty(monkeypatch, tmp_path) ->
     assert price_calls == before
 
 
+def test_a_complete_but_totally_empty_scope_is_not_an_answer(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    """The failure that bricks `create`: nothing cached, reported as authority.
+
+    A scope-keying change once left 150 quota rows unreadable while the scope
+    stayed flagged fully refreshed. Every group then answered "no quotas" from
+    cache, so `<workload> quota` printed nothing and `create` refused every
+    `--quota` the platform would have taken. Per-group empties stay
+    authoritative; an entire catalog with nothing in it does not.
+    """
+    price_calls = _patch_platform(monkeypatch, {"lcg-a": [_price("q-8", 8, 160, 1800)]})
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    warm_quota_catalog(
+        session=_session(),
+        index=index,
+        workspace_id="workspace-one",
+        workload="notebook",
+    )
+    # Drop the rows but leave the scope marked complete and fresh, which is
+    # exactly the state the orphaned rows produced.
+    scope = quota_scope_for_session(
+        _session(), workspace_id="workspace-one", workload="notebook"
+    )
+    assert scope is not None
+    with index._connect() as connection:  # noqa: SLF001 - simulating the orphaned rows
+        connection.execute("DELETE FROM resource_identity")
+    assert index.list_identities(scope) == []
+
+    price_calls.clear()
+    loader = CachedPricesLoader(
+        session=_session(),  # type: ignore[arg-type]
+        workspace_id="workspace-one",
+        schedule_config_type=SCHEDULE_TYPE_BY_WORKLOAD["notebook"],
+        cache_index=index,
+    )
+
+    assert loader("lcg-a")[0]["quota_id"] == "q-8"
+    assert price_calls == ["lcg-a"]
+    assert loader.served_from_cache == set()
+
+
 def test_cold_scope_falls_through_to_live_per_group(monkeypatch, tmp_path) -> None:  # noqa: ANN001
     price_calls = _patch_platform(monkeypatch, {"lcg-a": [_price("q-8", 8, 160, 1800)]})
     index = ResourceIndex(tmp_path / "index.sqlite3")
@@ -405,14 +445,18 @@ def test_cached_empty_group_does_not_trigger_stale_group_retry(
     monkeypatch,  # noqa: ANN001
     tmp_path,  # noqa: ANN001
 ) -> None:
-    """An empty cached catalog is authoritative, not a dead-handle signal.
+    """An empty cached group is authoritative, not a dead-handle signal.
 
     A compute group with no quotas for this workload returns an empty list.
     From the live API that is one of the symptoms of a compute group handle
     that died, so the resolver re-lists groups and retries. Served from the
     cache it means exactly what it says, and must cost nothing.
+
+    The catalog has to hold rows for *some* group: a scope with nothing in it
+    at all is a cache accident rather than a workspace answer, and the loader
+    deliberately goes back to the platform for that one.
     """
-    price_calls = _patch_platform(monkeypatch, {})
+    price_calls = _patch_platform(monkeypatch, {"lcg-a": [_price("q-8", 8, 160, 1800)]})
     index = ResourceIndex(tmp_path / "index.sqlite3")
     warm_quota_catalog(
         session=_session(),

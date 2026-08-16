@@ -36,6 +36,10 @@
 
 ### 修复
 
+- **`<workload> quota` 和每一个 `create` 会因为一份空缓存全线报「没有配额」。** 实测 `job quota` 在全部三个工作空间返回 `No quota rows found.`，而平台侧行都在——也就是说 CLI 建不出任何 Workload。根因在 `CachedPricesLoader`：Scope 只要标着「已完整刷新」，读到的记录哪怕一条没有也照样当答案，于是每个计算组都权威地回空。真实触发是 Scope 键变过之后遗留的 150 条记录读不到，而 Scope 仍标着完整。
+
+  整份目录一行都没有不是工作空间的回答，是缓存出了事故，现在读作未命中并回落 Live。**单个计算组的空依旧权威**——那是「这个组不跑这类 Workload」的正常事实。代价是真的一行配额都没有的工作空间每次要按组回源，这一侧值得错：多几个请求，换的是不会有一个建不了东西的 CLI。已用真实缓存复现：同一个坏状态下未修复版报空、修复版正常。
+
 - 镜像目录按 Registry 读一次，不再按 Workspace 各读一遍。`registry_hint: {workspace_id}` 指的是一个 Registry，不是一份按 Workspace 切分的目录，多个 Workspace 正常共用同一个：实测本账号 10 个 Workspace 只有两份目录，7 个用 `qbHarbor`、3 个国产卡空间用 `sjHarbor`，组内 `image_id` 集合逐字节相同。此前后台每轮把那份约 5400 个镜像的目录重复下载 7 遍——一轮完整刷新 51 MB 里的 42 MB、120 s 里的 68 s 都是它。现在先用一行探针（`page_size: 1`，读响应里的 `registry_id`，约 80 ms）问出每个 Workspace 属于哪个 Registry，同一个 Registry 只读一次：`image` 一轮 30 个请求 / 42.0 MB / 82.9 s → 16 个请求 / 6.2 MB / 11.8 s。探针答不出来的 Workspace（Registry 里一个公开镜像都没有）照旧单独读，绝不会被当成和别人同一份。
 
   `inspire image --help` 此前写着「An image saved by `notebook save-image --workspace X` is only visible under `--workspace X`」，这是错的：同一个 Registry 上的任何一个 Workspace 都看得到它。真正会挡住人的是 Registry 边界，而这条线基本沿着卡的类型走——国产卡空间和 NVIDIA 空间读的是两份不相交的目录。
