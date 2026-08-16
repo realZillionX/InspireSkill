@@ -1,9 +1,8 @@
-"""Shared rendering for the two config views.
+"""Rendering for ``inspire account show``.
 
-``inspire account show`` renders account-scope options and ``inspire config
-show`` renders project-scope ones. They differ only in which slice of the
-schema they select and what header they print, so the value formatting,
-source attribution, and redaction rules live here.
+Only account-scope options surface here. Repository-scope keys resolve across
+four layers and are read by the workload commands themselves; they have no
+inspection view.
 """
 
 from __future__ import annotations
@@ -36,6 +35,9 @@ SOURCE_LABELS: dict[str, tuple[str, str]] = {
 # Categories whose values identify a person or a route into the platform. The
 # view reports whether they are set, never what they are set to.
 _PRESENCE_ONLY_CATEGORIES = {"API", "Authentication", "Proxy"}
+
+# The schema's name for keys that live in ~/.inspire/accounts/<name>/config.toml.
+_ACCOUNT_SCOPE = "global"
 
 _CategoryGroup = tuple[str, list[ConfigOption]]
 
@@ -84,13 +86,13 @@ def is_explicitly_configured(
     return is_set and option_source(sources, option) != SOURCE_DEFAULT
 
 
-def matching_categories(*, scope: str, filter_category: str | None) -> list[str]:
-    """Categories in *scope* that ``--filter`` selects, before any value check.
+def matching_categories(filter_category: str | None) -> list[str]:
+    """Account-scope categories that ``--filter`` selects, before any value check.
 
     Kept separate from :func:`select_groups` so callers can tell "that category
     does not exist" apart from "nothing in it is configured".
     """
-    scoped = get_options_by_scope(scope)
+    scoped = get_options_by_scope(_ACCOUNT_SCOPE)
     categories = [c for c in get_categories() if any(opt.category == c for opt in scoped)]
     if not filter_category:
         return categories
@@ -102,18 +104,17 @@ def select_groups(
     cfg: Config,
     sources: dict[str, str],
     *,
-    scope: str,
     filter_category: str | None,
     details: bool,
 ) -> list[_CategoryGroup]:
-    """Group the *scope* slice of the schema into the categories to render.
+    """Group the account-scope schema into the categories to render.
 
     Without ``--details`` only explicitly configured options survive, so the
     default view answers "what did I actually set" rather than reprinting the
     schema.
     """
-    scoped = get_options_by_scope(scope)
-    categories = matching_categories(scope=scope, filter_category=filter_category)
+    scoped = get_options_by_scope(_ACCOUNT_SCOPE)
+    categories = matching_categories(filter_category)
 
     groups: list[_CategoryGroup] = []
     for category in categories:

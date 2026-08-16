@@ -56,11 +56,7 @@ inspire account context
 inspire notebook path list
 ```
 
-`<workload> create` 省略某个参数时会落到仓库级默认值（`job.shm_size`、`notebook.post_start` 等）。这些值跨仓库共享层、账号覆盖层、`.env` 和环境变量四层解析，生效值经常不在你会去翻的那个文件里，所以查的时候用命令而不是打开文件：
-
-```bash
-inspire config show --details
-```
+`<workload> create` 省略某个参数时会落到仓库级默认值（`job.shm_size`、`notebook.post_start` 等），写在 `./.inspire/config.toml`；同名环境变量默认优先，`[cli] prefer_source = "toml"` 可以反转这个优先级。
 
 账号覆盖层按账号隔离：同一仓库的新成员或新账号需要各自跑一次 `inspire init --scope project`；`INSPIRE.md` 和仓库共享层则随 Git 共享。
 

@@ -110,13 +110,13 @@
 
 ### 变更
 
-- **`inspire config` 里四条命令有三条管的是账号，不是配置，全部并入 `inspire account`。** `config check` → `account check`，`config context` → `account context`，`config show` 里的账号级部分 → 新的 `account show`。归属本来就错了：schema 里 15 个 option 有 10 个是账号作用域（Authentication / API / Proxy / Tunnel），它们全部由 `account add` 写入 `~/.inspire/accounts/<name>/config.toml`，而 `config show` 对其中 8 个只印 `<configured>`——每项只传递「设了没设」这一个 bit，那本来就是一条 `account status`。`config context` 更直接：它列出的 project 和 compute group 就是 `inspire init` 的发现结果写进账号配置的那份缓存，只有 workspace 名单是实时查的。
+- **删除 `inspire config` 整个命令组，其中管账号的部分并入 `inspire account`。** `config check` → `account check`，`config context` → `account context`，`config show` 的账号级部分 → 新的 `account show`。归属本来就错了：schema 里 15 个 option 有 10 个是账号作用域（Authentication / API / Proxy / Tunnel），它们全部由 `account add` 写入 `~/.inspire/accounts/<name>/config.toml`，而 `config show` 对其中 8 个只印 `<configured>`——每项只传递「设了没设」这一个 bit，那本来就是一条 `account status`。`config context` 更直接：它列出的 project 和 compute group 就是 `inspire init` 的发现结果写进账号配置的那份缓存，只有 workspace 名单是实时查的。
 
-  `inspire config show` 保留，但收窄到它唯一无可替代的职责：本仓库的 Workload 默认值（`job.*`、`notebook.post_start`）以及每个值来自哪一层。这些值跨仓库共享层、账号覆盖层、`.env` 和环境变量四层解析，生效值经常不在你会去翻的那个文件里，`cat` 回答不了。
+  剩下的 5 个仓库级 option（`job.*`、`notebook.post_start`）不再有查看命令。它们照常生效，只是没有专门的表格：值写在 `./.inspire/config.toml`，同名环境变量默认优先，`[cli] prefer_source = "toml"` 反转优先级。一个只为 5 个键存在的命令组，撑不起顶层一个名字。
 
-  `account show` 还接过了有效代理诊断（原 `config show --filter Proxy`）：账号 `[proxy]` 块、Shell 的 `http_proxy` / `NO_PROXY`，合并之后 requests / playwright / rtunnel 三条链路各自走直连还是走代理。这一段任何配置文件里都没有，且现在即使账号没配任何 proxy 也照印——「账号文件里什么都没设」和「请求仍然在走 Shell 代理」可以同时成立，正是这时候最需要看到它。
+  `account show` 接过了有效代理诊断（原 `config show --filter Proxy`）：账号 `[proxy]` 块、Shell 的 `http_proxy` / `NO_PROXY`，合并之后 requests / playwright / rtunnel 三条链路各自走直连还是走代理。这一段任何配置文件里都没有，且现在即使账号没配任何 proxy 也照印——「账号文件里什么都没设」和「请求仍然在走 Shell 代理」可以同时成立，正是这时候最需要看到它。
 
-- **删除 `inspire config env`。** `config env use .env` 和 `inspire init --scope project --env-file .env` 调的是同一个函数，纯重复；模板生成器 `config env [--template]` 只是把 schema 里的 description 重排成注释，没有回答任何 `--help` 回答不了的问题。同时删掉 `config show` 的 `--format env`：它对账号级的 10 项只会印 `# INSPIRE_USERNAME=<configured; redacted>`，模板出口没了之后更没有存在理由。`--compact` 一并删除，因为「只印显式配置过的」已经是默认行为。
+- **删除 `inspire config env`。** `config env use .env` 和 `inspire init --scope project --env-file .env` 调的是同一个函数，纯重复；模板生成器 `config env [--template]` 只是把 schema 里的 description 重排成注释，没有回答任何 `--help` 回答不了的问题。`show` 的 `--format env` 和 `--compact` 随命令组一起消失：前者对账号级 10 项只会印 `# INSPIRE_USERNAME=<configured; redacted>`，后者的语义已经是 `account show` 的默认行为。
 
 - **来源标签 `global` 改叫 `account`。** 这一层读的就是 `~/.inspire/accounts/<name>/config.toml`，叫 `global` 与另一个同名概念（`inspire init --scope global`）撞车。`--json` 里 `source` 字段和 `account check --details` 的 `Config files:` 一行同步改口。
 

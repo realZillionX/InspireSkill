@@ -14,13 +14,6 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
-from inspire.cli.utils.config_display import (
-    echo_groups,
-    echo_source_legend,
-    json_values,
-    matching_categories,
-    select_groups,
-)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
@@ -29,6 +22,13 @@ from inspire.platform.web.session.proxy import describe_effective_proxy_config
 from .proxy_output import (
     format_effective_proxy_lines,
     public_effective_proxy_summary,
+)
+from .settings_view import (
+    echo_groups,
+    echo_source_legend,
+    json_values,
+    matching_categories,
+    select_groups,
 )
 
 
@@ -66,9 +66,7 @@ def show(ctx: Context, filter_category: str | None, details: bool) -> None:
 
     try:
         cfg, sources = Config.from_files_and_env(require_credentials=False)
-        if filter_category and not matching_categories(
-            scope="global", filter_category=filter_category
-        ):
+        if filter_category and not matching_categories(filter_category):
             _handle_error(
                 ctx,
                 "ValidationError",
@@ -83,7 +81,6 @@ def show(ctx: Context, filter_category: str | None, details: bool) -> None:
         groups = select_groups(
             cfg,
             sources,
-            scope="global",
             filter_category=filter_category,
             details=details,
         )

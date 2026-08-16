@@ -4,7 +4,6 @@ from inspire.cli.commands.account import account
 from inspire.cli.commands.cache import cache
 from inspire.cli.commands.job import job
 from inspire.cli.commands.resources import resources
-from inspire.cli.commands.config import config
 from inspire.cli.commands.dataset import dataset
 from inspire.cli.commands.notebook import notebook
 from inspire.cli.commands.init import init
@@ -22,7 +21,6 @@ __all__ = [
     "cache",
     "job",
     "resources",
-    "config",
     "dataset",
     "notebook",
     "init",

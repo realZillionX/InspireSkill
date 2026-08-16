@@ -31,7 +31,6 @@ from inspire.config import (
 from inspire.cli.commands.init import init
 from inspire.cli.commands.init.env_detect import _detect_env_vars, _generate_toml_content
 from inspire.cli.commands.account import account as account_command
-from inspire.cli.commands.config import config as config_command
 from inspire.cli.main import main as cli_main
 
 # ===========================================================================
@@ -1983,152 +1982,57 @@ class TestAccountShowCommand:
 
 
 # ===========================================================================
-# Config show command tests
-# ===========================================================================
-
-
-class TestConfigShowCommand:
-    """Tests for inspire config show – repository workload defaults only."""
-
-    @staticmethod
-    def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        fake_home = tmp_path / "__home"
-        fake_home.mkdir(exist_ok=True)
-        monkeypatch.setattr(Path, "home", lambda: fake_home)
-        monkeypatch.chdir(tmp_path)
-
-    def test_config_show_reports_configured_project_defaults(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._isolate(tmp_path, monkeypatch)
-        monkeypatch.setenv("INSPIRE_SHM_SIZE", "64")
-
-        runner = CliRunner()
-        result = runner.invoke(config_command, ["show"])
-
-        assert result.exit_code == 0, result.output
-        assert "INSPIRE_SHM_SIZE" in result.output
-        assert "64" in result.output
-        assert "[env]" not in result.output
-
-        detailed = runner.invoke(config_command, ["show", "--details"])
-        assert detailed.exit_code == 0, detailed.output
-        assert "[env]" in detailed.output
-        assert "Precedence: environment wins" in detailed.output
-
-    def test_config_show_says_so_when_nothing_is_configured(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._isolate(tmp_path, monkeypatch)
-        for var in (
-            "INSPIRE_SHM_SIZE",
-            "INSPIRE_JOB_AUTO_FAULT_TOLERANCE",
-            "INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY",
-            "INSPIRE_JOB_ENABLE_NOTIFICATION",
-            "INSPIRE_NOTEBOOK_POST_START",
-        ):
-            monkeypatch.delenv(var, raising=False)
-
-        result = CliRunner().invoke(config_command, ["show"])
-
-        assert result.exit_code == 0, result.output
-        assert "No workload defaults configured" in result.output
-
-    def test_config_show_omits_account_scope_options(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Identity, API, and proxy belong to `account show`, not here."""
-        self._isolate(tmp_path, monkeypatch)
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.setenv(
-            "INSPIRE_BASE_URL",
-            "https://internal.example/private?token=secret",
-        )
-
-        result = CliRunner().invoke(cli_main, ["--json", "config", "show", "--details"])
-
-        assert result.exit_code == 0, result.output
-        data = json.loads(result.output)["data"]
-        values = data["values"]
-        assert "INSPIRE_SHM_SIZE" in values
-        assert "INSPIRE_USERNAME" not in values
-        assert "INSPIRE_BASE_URL" not in values
-        assert "INSPIRE_REQUESTS_HTTPS_PROXY" not in values
-        assert "effective_proxy" not in data
-        assert "testuser" not in result.output
-        assert "internal.example" not in result.output
-
-
-# ===========================================================================
 # Project dotenv tests
 # ===========================================================================
 
 
 class TestProjectEnvFile:
-    """The `[cli] env_file` layer registered by `inspire init --env-file`."""
+    """The `[cli] env_file` layer registered by `inspire init --env-file`.
+
+    Asserted against the loader rather than a CLI view: repository-scope keys
+    have no inspection command, and the layering is what matters here.
+    """
+
+    @staticmethod
+    def _repo_with_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_home = tmp_path / "__home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.chdir(tmp_path)
+
+        (tmp_path / ".env").write_text(
+            "INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY=123\n",
+            encoding="utf-8",
+        )
+        project_config = tmp_path / ".inspire" / "config.toml"
+        project_config.parent.mkdir()
+        project_config.write_text('[cli]\nenv_file = ".env"\n', encoding="utf-8")
 
     def test_cli_loads_project_env_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        fake_home = tmp_path / "__home"
-        fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", lambda: fake_home)
-        monkeypatch.chdir(tmp_path)
+        self._repo_with_env_file(tmp_path, monkeypatch)
         monkeypatch.delenv("INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY", raising=False)
 
-        (tmp_path / ".env").write_text(
-            "INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY=123\n",
-            encoding="utf-8",
-        )
-        project_config = tmp_path / ".inspire" / "config.toml"
-        project_config.parent.mkdir()
-        project_config.write_text('[cli]\nenv_file = ".env"\n', encoding="utf-8")
-
-        result = CliRunner().invoke(
-            cli_main,
-            ["--json", "config", "show", "--details"],
-        )
-
+        result = CliRunner().invoke(cli_main, ["--json", "account", "show"])
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)["data"]
-        assert "env_file" not in data
-        assert data["env_file_present"] is True
-        assert str(tmp_path / ".env") not in result.output
-        assert data["values"]["INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY"]["value"] == "123"
-        assert (
-            data["values"]["INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY"]["source"]
-            == SOURCE_ENV_FILE
-        )
+
+        cfg, sources = Config.from_files_and_env(require_credentials=False)
+        assert cfg.job_fault_tolerance_max_retry == 123
+        assert sources["job_fault_tolerance_max_retry"] == SOURCE_ENV_FILE
 
     def test_real_env_overrides_project_env_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        fake_home = tmp_path / "__home"
-        fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", lambda: fake_home)
-        monkeypatch.chdir(tmp_path)
+        self._repo_with_env_file(tmp_path, monkeypatch)
         monkeypatch.setenv("INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY", "456")
 
-        (tmp_path / ".env").write_text(
-            "INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY=123\n",
-            encoding="utf-8",
-        )
-        project_config = tmp_path / ".inspire" / "config.toml"
-        project_config.parent.mkdir()
-        project_config.write_text('[cli]\nenv_file = ".env"\n', encoding="utf-8")
-
-        result = CliRunner().invoke(
-            cli_main,
-            ["--json", "config", "show", "--details"],
-        )
-
+        result = CliRunner().invoke(cli_main, ["--json", "account", "show"])
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)["data"]
-        assert data["values"]["INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY"]["value"] == "456"
-        assert (
-            data["values"]["INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY"]["source"]
-            == SOURCE_ENV
-        )
+
+        cfg, sources = Config.from_files_and_env(require_credentials=False)
+        assert cfg.job_fault_tolerance_max_retry == 456
+        assert sources["job_fault_tolerance_max_retry"] == SOURCE_ENV
 
 
 # ===========================================================================
@@ -2290,62 +2194,17 @@ prefer_source = "invalid"
         with pytest.raises(ConfigError, match="Invalid prefer_source value"):
             Config.from_files_and_env(require_credentials=False)
 
-    def test_config_show_displays_precedence(
+    def test_account_show_json_includes_prefer_source(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
     ) -> None:
-        """Test that config show displays the precedence mode."""
+        """`prefer_source` is a repo-level toggle, so the account view reports it."""
         project_dir = tmp_path / ".inspire"
         project_dir.mkdir()
-        project_config = project_dir / "config.toml"
-        project_config.write_text(
-            """
-[cli]
-prefer_source = "toml"
-"""
-        )
+        (project_dir / "config.toml").write_text('[cli]\nprefer_source = "toml"\n')
         monkeypatch.chdir(tmp_path)
 
-        runner = CliRunner()
-        result = runner.invoke(config_command, ["show", "--details"])
+        result = CliRunner().invoke(cli_main, ["--json", "account", "show", "--details"])
 
-        assert result.exit_code == 0
-        assert "Precedence:" in result.output
-        assert "project TOML wins" in result.output
-
-    def test_config_show_displays_default_precedence(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
-    ) -> None:
-        """Test that config show displays default precedence when no prefer_source set."""
-        monkeypatch.chdir(tmp_path)
-
-        runner = CliRunner()
-        result = runner.invoke(config_command, ["show", "--details"])
-
-        assert result.exit_code == 0
-        assert "Precedence:" in result.output
-        assert "environment wins" in result.output
-
-    def test_config_show_json_includes_prefer_source(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
-    ) -> None:
-        """The root JSON mode includes prefer_source."""
-        project_dir = tmp_path / ".inspire"
-        project_dir.mkdir()
-        project_config = project_dir / "config.toml"
-        project_config.write_text(
-            """
-[cli]
-prefer_source = "toml"
-"""
-        )
-        monkeypatch.chdir(tmp_path)
-
-        runner = CliRunner()
-        result = runner.invoke(
-            cli_main,
-            ["--json", "config", "show", "--details"],
-        )
-
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         data = json.loads(result.output)["data"]
         assert data["prefer_source"] == "toml"
