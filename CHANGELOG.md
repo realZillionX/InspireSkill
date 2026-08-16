@@ -4,6 +4,12 @@
 
 ### 新增
 
+- 记录两条 `file` 服务的实测结论（只有文档，没有行为变更）：
+
+  **`GetSftpgoConnectionInfo` 是一条不需要计算资源的共享盘读写通道。** `{storage_name}`（池名转小写）换回一台 WebDAV 服务器，根下就是容器里那套 `/inspire/<池>/…` 全命名空间。写侧在自己的个人目录下做过完整往返：`PUT` 201 → `GET` 200（内容逐字节一致）→ `DELETE` 204 → `GET` 404，探针文件已清除。目前 CLI 的文件流转只有 `notebook scp`，要一台运行中的 Notebook 加容器内 sshd 加 rtunnel，这条路把三样都省掉。**响应里的 `auth` 是明文凭据**，须与 Notebook Proxy 的 token 同等对待——不进日志、不进报错、不进 `--json`、不进文档。尚未封装。
+
+  **`CreateCopy` 不是服务端复制，是一张要审批的申请。** 控制台里它叫「新建数据传输」，表单只有 `source_path` / `target_path` / `overwrite`，提交按钮写的是「提交审批」，和旁边的 `audit` 服务是一条链。`ListFileCopyTasks` 是用户级的（不认 workspace / filter），本账号 0 条。
+
 - `inspire ray shell`：进 Ray 实例的交互式 shell，默认进 **head**——驱动在那儿，`ray status` 和集群自己的日志也在那儿；要看某个 worker group 的进程用 `--instance <Role-Rank>`。走 `/api/v2/ray_job/instances/exec`。
 
 - `inspire hpc shell`：进 HPC 实例的交互式 shell，和 `job shell` 同一套（`exit` 退出、`Ctrl+]` 断开）。**默认进 `launcher`**——`srun` 在那儿跑，也只有那个 Pod 看得见你的进程；`slurmctld` 是调度器本身，`--instance slurmctld` 才去。走 `/api/v2/hpc_jobs/instances/exec`，同样是网关 REST 形状的那一半。

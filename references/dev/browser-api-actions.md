@@ -410,18 +410,38 @@ Referer：`/jobs/interactiveModeling`。**整条路由不在 discovery 里**，�
 
 ## `file` — 文件页 ‡
 
-Referer：`/jobs/files?spaceId={workspace_id}`。**整条路由不在 discovery 里**（历史上出现过又被删掉），但活着，两个 Action 逐字接受 v1 请求体。
+Referer：`/jobs/files?spaceId={workspace_id}`（`GetSftpgoConnectionInfo` 在用户中心页下）。**整条路由不在 discovery 里**（历史上出现过又被删掉），但活着，前两个 Action 逐字接受 v1 请求体。
 
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
 | `GetSystemStorageTypeList` | `{filter:{workspace_id}}` | `{system_storages[{name, cluster_id}]}` | `init --scope project` 的存储池发现 |
 | `GetDirList` | `{filter:{workspace_id, system_storage_type, name, cluster_id?}}` | `{files[{directory}]}` | 同上，逐存储池列项目目录 |
+| `GetSftpgoConnectionInfo` † | `{storage_name}`（小写池名，可选 `usage`） | `{address, webdav_port, auth}` ⚠️ **`auth` 是明文凭据** | — |
+| `ListFileCopyTasks` † | `{page, page_size}` | `{items, total}` | — |
 
 **参数语义与限制**
 
 - **`filter.name` 是前端的类别键**，不是文件名：`project` / `global_public` / `global_user`。
 - **`system_storage_type` 取 `GetSystemStorageTypeList` 返回的存储池名**；`share-` 前缀的存储池在项目目录发现里被跳过。
 - **与 v1 唯一的差异是行顺序**：12 个存储池和目录列表都会换序，排序后完全相等。当前调用方都不依赖顺序，**新调用方也不要依赖**。
+
+### `GetSftpgoConnectionInfo`：一条不需要计算资源的共享盘读写通道
+
+`{storage_name}` 取 `GetSystemStorageTypeList` 里的池名**转小写**（`hdd` / `ssd` / `qb-ilm` / `share-*` …；不认 `workspace_id`，也不认 `filter`，两者都被拒为 `unknown field`），返回 `{address, webdav_port, auth}`。名字里的 sftpgo 有误导性——sftpgo 同时提供 WebDAV，控制台走的就是 WebDAV，连接失败时它自己的报错写的是「获取 WebDAV 连接信息失败」。
+
+**`auth` 是 base64 的 `用户名:密码`，是一对可以直接用的明文凭据。** 它必须和 Notebook Proxy 的 token 同等对待：不进日志、不进报错、不进 `--json`、不进任何文档。本页只记形状，不记取值。
+
+实测（`hdd` / `ssd` 两个池）：`https://{address}:{webdav_port}` 是一台读写都通的 WebDAV 服务器，根下就是容器里那套 `/inspire/<池>/…` 全命名空间——`/inspire/hdd/project/<项目>/`、`/inspire/ssd/project/<项目>/<个人目录>/` 逐级 `PROPFIND` 都是 207。写侧在自己的个人目录下做过一次完整往返：`PUT` 201 → `GET` 200（内容逐字节一致）→ `DELETE` 204 → `GET` 404。
+
+**这条路不需要任何工作负载在跑。** 目前 CLI 的文件流转只有 `notebook scp`，它要一台运行中的 Notebook 加容器内 sshd 加 rtunnel；WebDAV 把这三样都省掉。尚未封装。
+
+### `CreateCopy` 不是复制，是一张要审批的申请
+
+控制台里它叫「新建数据传输」，表单只有三项——`source_path`、`target_path`、`overwrite`（默认勾选）——而提交按钮写的是**「提交审批」**。所以它和旁边的 `audit` 服务是一条链上的，不是一个即时的服务端 `cp`。同族的 `WithdrawFileCopyTask` / `DeleteFileCopyTask` 都只收 `{task_id}`。
+
+`ListFileCopyTasks` 是**用户级**的：不认 `workspace_id`、也不认 `filter`（都被拒为 `unknown field`），只收分页。本账号 0 条，所以响应行的字段形状未知。
+
+- **`CheckPermission` 只给 `{file_path}` 会返回一条字段全空的记录**（`file_path` 和 `name` 都是空串、`size` 为 `"0"`），不报错——读起来像「这个路径存在但什么都没有」。它显然还要存储上下文，形状未探明；在探明之前不要拿它判断任何东西。
 
 ---
 
