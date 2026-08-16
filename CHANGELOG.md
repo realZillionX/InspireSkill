@@ -140,6 +140,12 @@
 
 ### 修复
 
+- **`job wait` 把「已经停掉」读成「还会动」，对着一个永远不会再变的任务轮询四个小时。** 它自己抄了一份终态集合，抄的时候漏掉 `job_stopped`——`job stop` 停下来的任务就停在这个状态。命令打完一行 `Status: job_stopped` 之后再没有任何输出，直到默认四小时超时才报 `Timeout`。而 `job` 根本没有 `start`：终态就是终点，要再跑只能重新 `job create`，所以这段等待从第一秒起就注定失败。`--help` 里那句「until it reaches a terminal state (SUCCEEDED, FAILED, or CANCELLED)」是同一个错误的另一半——它把 STOPPED 明确排除在终态之外，等于告诉调用方一个停掉的任务还值得等下去。终态集合现在只有 `_JOB_TERMINAL_STATUSES` 一处定义，`job wait` 和 `job logs --follow --source ssh`（漏的是同一个值）都引用它；help 改成写清真实终态、退出码，以及「只对 PENDING / QUEUING / RUNNING 等待」。
+
+- **`job logs --follow` 读平台日志时从不看任务状态，任务结束后继续空转。** 同一条命令的 SSH 路径一直会在任务进终态时收尾，平台路径——也就是默认路径——只是 `while True` 地轮询，一个已经结束的任务会让它永远挂在那里，不再输出任何东西。现在它同样按终态收尾，收尾前多取一轮日志接住最后几行，并说明为什么停了。
+
+- **`events --follow` 和 `job list --watch` 的 help 没说它们不会自己结束。** 这两条确实是「跑到被中断为止」，任务结束也不退出；`--watch --active` 更是连一个已经终态的任务都不会再出现。此前 help 只有「Follow the event timeline and print new events」和「Continuously refresh job list」，把它们挂进后台当「等任务跑完」用是很自然的误读。六条 `events --follow`（`job` / `hpc` / `notebook` / `ray` / `serving` / `resources node-events`）和 `job list --watch` 现在都写明这一点，手册也补上了「等待只对还会自己往前走的状态有意义」这条判据和各 Workload 有没有 `start` 的对照。
+
 - **`base_url` 的默认值是一个 `config check` 自己判为非法的占位主机。** `https://api.example.com` 在七处被硬编码成 base_url 的默认或兜底值，而 `config check` 又把 `example.com` 列为占位主机直接报错——同一个值既是默认值又是错误条件。后果落在最不该出错的地方：全新用户按 issue 模板跑第一条 `inspire config check`，拿到的是「Placeholder host values detected」，值还被脱敏成 `<redacted>` 看不出哪里不对，而真正该给的「Missing platform credentials. Run `inspire account add`」永远不会触发，因为占位检查排在凭据检查前面。真值 `https://qz.sii.edu.cn` 此前只存在于 `account add` 的交互 prompt 里。现在它是 `inspire.config` 里唯一的 `DEFAULT_BASE_URL`，配置默认值、运行时兜底、登录入口和 `inspire init` 写出的账号模板全部引用它；`example.com` 只剩下识别用户手输占位值和修补旧配置文件两个用途。`base_url` 本身仍可配置。
 
 - **`inspire init` 写出的账号模板里，`${{VARNAME}}` 多了一层大括号。** `[remote_env]` 那段注释教用户用 `"${VARNAME}"` 从本地环境取值，但模板是按字面量写盘的，用户照抄注释就会拼出一个取不到值的变量名。

@@ -124,6 +124,8 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 卡住或失败先看 Events；已启动但健康度不明看 Metrics；程序行为看 Logs；产物完整性回到共享盘文件和 Fingerprint。
 
+**等待只对还会自己往前走的状态有意义。** `PENDING` / `QUEUING` / `RUNNING` 会动，终态不会：Job 和 HPC 没有 `start`，`job stop` 留下的 `job_stopped` 与 `SUCCEEDED` / `FAILED` / `CANCELLED` 一样是终点，要再跑只能重新 `create`；能从停止态拉回来的只有 Notebook、Ray 和 Serving，它们各有 `start`。所以开始等之前先 `status` 读一次当前状态，别对着一个已经停掉的任务等它变回运行中。`job wait` 和 `job logs --follow` 在任务进入终态时返回；`events --follow` 和 `job list --watch` 不会自己结束，任务结束了也不会，只能被中断——不要把这两条挂在后台终端上当「等任务跑完」用。
+
 节点归属分两层，两层都是 Live 事实，任务离开运行态就清空：`status` 给任务级的节点清单（`job` 的 `Nodes` / `Pinned Nodes` / `Excluded Nodes`、`hpc` 与 `serving` 的 `Nodes`、`notebook` 的 `Node` 带节点健康），`instances` 给 Pod 级的 `Node` 列。多节点任务定位掉队的那一个 Worker 用 `instances`，因为只有它把 rank 和节点对上；`ray` 的节点归属只有 `instances` 这一层，`ray status` 的 `head_node` / `worker_groups` 是规格不是落点。**空的节点清单读作「还没被调度」，不是「查不到」。**
 
 `logs` 在 `job` / `hpc` / `ray` / `serving` 下都有，共用同一套记录与字符预算和同一份 `--json` schema；Notebook 没有 `logs`，它是交互式容器，用 `notebook exec` 或 `notebook shell` 直接读。日志按实例采集后合并成一条时间线，每行带实例标识（`hpc` / `ray` 用 `instances` 打印的角色或序号，`job` 与 `serving` 用 Rank），`--instance` 只读其中一个或几个。**平台侧根本没有「工作负载级日志」这一层**——日志端点只按 Pod 名取，所以全实例聚合不是选择而是唯一形态。日志记录里另有平台填的 `node` 字段，只在 `--json` 里可见，且不是每类工作负载都填，Pod 与节点的对应关系以 `instances` 的 `Node` 列为准。
@@ -144,3 +146,4 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 | HPC 程序中途没了、日志断在半截且无报错 | 撞 Pod cgroup 内存墙被 OOM 杀掉；或程序按 `nproc`（报宿主机 64 核）自动开了几十个工作进程 |
 | `SUCCEEDED` 但产物为空 | 程序提前退出、资源贴边或输出路径不对 |
 | Quota Match Failed | Workspace / Group / `gpu,cpu,mem` 三元组不匹配 |
+| 挂在后台的等待命令长期没有任何输出 | 任务早已是终态，等不到它变回运行中；先 `status` 读一次，再决定重新 `create` 还是收工 |
