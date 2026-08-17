@@ -32,7 +32,9 @@ if (-not $SkipSkill) {
     $skillTarget = Join-Path $HOME '.codex\skills\inspire'
     New-Item -ItemType Directory -Force -Path $skillTarget | Out-Null
     Copy-Item (Join-Path $repoRoot 'SKILL.md') (Join-Path $skillTarget 'SKILL.md') -Force
-    Copy-Item (Join-Path $repoRoot 'references') (Join-Path $skillTarget 'references') -Recurse -Force
+    $referencesTarget = Join-Path $skillTarget 'references'
+    New-Item -ItemType Directory -Force -Path $referencesTarget | Out-Null
+    Copy-Item (Join-Path $repoRoot 'references\*') $referencesTarget -Recurse -Force
     $agentDir = Join-Path $skillTarget 'agents'
     New-Item -ItemType Directory -Force -Path $agentDir | Out-Null
     @'

@@ -69,7 +69,8 @@ def _get_proxy_command(bridge: BridgeProfile, rtunnel_bin: Path, quiet: bool = F
         # Windows OpenSSH invokes ProxyCommand through cmd.exe. Proxy settings
         # are inherited from the SSH process, so POSIX VAR=value prefixes and
         # `sh -c` cannot be used here.
-        quote = lambda value: '"' + str(value).replace('"', '\\"') + '"'
+        def quote(value):
+            return '"' + str(value).replace('"', '\\"') + '"'
         base_cmd = f"{quote(rtunnel_bin)} {quote(ws_url)} {quote('stdio://%h:%p')}"
         if quiet:
             return f"{base_cmd} 2>NUL"
