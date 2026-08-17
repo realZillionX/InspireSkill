@@ -188,7 +188,7 @@ Referer：`/jobs/interactiveModeling`。
 - **`ListNotebookEvents` 的事件字段是平台自有形状**，不是 K8s 形状：`content`（正文）、`created_at`（epoch-ms 字符串）、`event_id`。共享渲染器把 `content → message`、`created_at → last_timestamp` / `first_timestamp`。事件按从旧到新返回，Wrapper 默认自动翻页到 `total`（安全上限 100 页）。
 - **找不到资源时返回 `ResourceNotFound`，HTTP 仍是 200**，不再是 v1 的传输层 404。依赖 404 判断「不存在」的调用方必须同时认这个码。
 - **`node{}` 是整个节点对象，不只是 GPU 型号**：`name`（如 `cpu-nat-351`）、`status`、`cordon_type`、`is_maint`、`resource_pool`、`cpu_count` / `memory_size` / `gpu_count` 都在里面。**STOPPED 的 Notebook 不清空这个对象，而是把 `name` 置空、`status` 置成 proto 零值 `UNKNOWN_NODE_STATUS`**（同族还有 `unknown_node_type` / `unknown_credit_score`）——只判空对象会把「没在跑」读成「有一个状态未知的节点」。同一份落点还有第二个来源 `extra_info`（`NodeName` / `HostIP` / `PodName` / `ContainerID`），停止时同样是空串而不是缺键。
-- **`SaveNotebookImage` 不收 `visibility`**（`unknown field "visibility"`），要改可见性只能存完再调 `image.UpdateImage`。它**不返回新镜像的 id**，调用方只能靠列表去找。同一层还有 `EstimateSaveMirrorSize` 和 `CancelSaveMirror`，当前未封装。
+- **`SaveNotebookImage` 不收 `visibility`**（`unknown field "visibility"`），要改可见性只能存完再调 `image.UpdateImage`。它**不返回新镜像的 id**，调用方只能靠列表去找。
 - **`GetNotebookAccessUrl` 是 IDE 网关地址，不是 Notebook Proxy。** 两个 URL 归一化后指向同一个网关（两个 IDE 共用同一套 runtime 与 token），任取其一即可。STOPPED 的 Notebook 上它返回两个空字符串，此时回落 Playwright 抓取（那条也会失败，语义不变）。实测 **0.57 秒 vs 6.4–36 秒**。
 - **解析顺序是 缓存/热候选 → `GetNotebookAccessUrl` → Playwright**，收口在 `resolve_notebook_vscode_ide_url`。`refresh=True` 时 API 这一档**也走**：refresh 的语义是「别信缓存」，不是「一定要抓」。
 - **`exec` / `shell` 全程不起浏览器**：lab URL 取**原始 `jupyter_url`**（不能用 `_ide_gateway_url` 归一化后的形式——terminal 的 REST 与 WebSocket 路由挂在 Jupyter server base 上），`_xsrf` 靠对 `jupyter_url` 发一次普通 GET 拿 cookie，建/删 terminal 是 `POST` / `DELETE api/terminals` 并把 `_xsrf` 放进 `X-XSRFToken` 头。命令结束后回收本次创建的 Terminal。
