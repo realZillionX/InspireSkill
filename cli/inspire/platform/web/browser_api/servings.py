@@ -4,7 +4,7 @@ Browser API fills in everything the UI needs on the `/jobs/modelDeployment` page
 listing, create / detail / stop / delete, configs per workspace, and the
 user+project pickers for the create dialog. The whole domain goes through
 `/api/v2/inference_serving`; that contract is in
-`references/dev/browser-api-actions.md`. Every Action here was checked against a
+`references/dev/browser-api.md`. Every Action here was checked against a
 live serving before being wired up. Creation goes through the undocumented
 `CreateServingConsole`; see
 `create_serving`.

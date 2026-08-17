@@ -329,9 +329,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 - [`references/workflows.md`](references/workflows.md)：CPU 准备、数据处理、分布式训练三阶段项目流程。
 - [`references/image.md`](references/image.md)：镜像职责、保存 / 注册边界、可见性和清理原则。
 - [`references/model.md`](references/model.md)：Model Registry 与 Serving 的职责边界、注册限制和版本判断。
-- [`references/dev/browser-api.md`](references/dev/browser-api.md)：CLI 维护参考，覆盖请求契约、响应信封、认证与 Session、分页与 scoping、探针方法、仍在用的 v1 端点和变更验收。
-- [`references/dev/browser-api-actions.md`](references/dev/browser-api-actions.md)：CLI 维护参考，13 条路由 114 个 Action 的请求体、响应、参数语义、CLI 映射与限制。
-- [`references/dev/data-plaza-api.md`](references/dev/data-plaza-api.md)：CLI 维护参考，数据广场（`aip.sii.edu.cn`）的 CAS 握手、信封与目录端点。
+- [`references/dev/browser-api.md`](references/dev/browser-api.md)：CLI 维护参考，唯一一份接口文档——请求契约与信封、认证与 Session、分页与 scoping、探针方法、13 条路由 114 个 Action 的逐条参数与响应表、创建面字段合同、数据广场（`aip.sii.edu.cn`）与变更验收。
 - [`CONTRIBUTING.md`](CONTRIBUTING.md)：开发、测试和贡献约定。
 - [`cli/`](cli/)：CLI 源码；入口 `cli/inspire/cli/main.py`。
 - [`scripts/install.sh`](scripts/install.sh)：Curl Pipe Bash 安装器。

@@ -4,7 +4,7 @@ Reverse-engineered from the current `/jobs/modelService` page. Model registry
 browsing and registration use the web-session Browser API; the route is
 `/api/v2/model-hub` (hyphenated -- the underscore spelling 404s). The Action
 contract and the controlled-verification discipline behind it are documented in
-`references/dev/browser-api-actions.md`.
+`references/dev/browser-api.md`.
 """
 
 from __future__ import annotations

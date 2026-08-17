@@ -14,6 +14,10 @@
 
   连带清理：`_v2_result()` 移进 session 层（登录也要用它，而 session 不能反向 import `browser_api`）；`INSPIRE_BROWSER_API_PREFIX` / `api.browser_api_prefix` **配置项删除**——它最后只对 Notebook lab 一处生效，设成别的值只会把那一处弄坏，旧 `config.toml` 里残留这个键会被静默忽略；六处 docstring 还报着 `POST /api/v1/model/list` 这类早已不存在的地址，连同 `browser-api.md` 的「仍在使用的 v1 端点」整节一起重写。边界测试也换了两条更强的不变量：**全树零 `/api/v1` 字面量**（不再是白名单），以及 `/api/v2` 字面量只许出现在 `browser_api/`（例外两条：`job_shell.py` 的四条实例 PTY、`session/auth.py` 的登录自举）。
 
+- **Browser API 文档合并成一份。** `browser-api.md` / `browser-api-actions.md` / `data-plaza-api.md` 三份 977 行合成一份 962 行，其中 589 行是表格——协议、探针方法、13 条路由 114 个 Action 的逐条参数与响应、创建面字段合同、非 Action 的那半边网关、数据广场，全在同一页里按章节走。数据广场此前单开一份，理由是「不是启智的一部分」；但它由同一层 Web Session 驱动、`dataset.ValidateDataset` 又要靠它的 code 才挂得上，分开看反而要在两份文档之间来回跳。
+
+  **散落的 bullet 叙述改成表**：原来「参数语义与限制」下几十条并列的自然段，现在按「项 / 事实 / 读错的后果」三列排开，一条陷阱一行。**删掉的是迁移过程记录**——「曾经判定 X、后来发现是错的」这类只对当时的人有用，结论保留、过程删掉；`UpdateModel`、`GetUserQuotaJobs` 这些只在正文里出现过一次的名字用脚本对着老文档逐个查过，一个没丢。
+
 - **`scan_v2_surface.py` 此前漏报了一整类路径。** REST 形状的提取锚在收尾的双引号上，而控制台有将近一半这类地址是模板字符串拼的（`` `${base}/api/v2/notebook/lab/${id}/` ``），于是 21 条只报出 12 条。**Notebook lab 就在漏掉的 9 条里**——也就是说当初判它「v2 没有对应物」时，本该发现它的工具正好看不见它。现在插值段按一个路径段匹配并归一成 `{}`，`/api/v2/notebook/{lab,code,events,open}`、`file/download`、两处附件下载、模型发布上传随之进入清单。
 
 - **升级提醒改成对所有人都印**，不再需要 `INSPIRE_SHOW_UPDATE_NOTICE=1` 才开（这个环境变量随之删除）。它自 v6.3.0 起是 opt-in 且默认关着，理由是「别让升级元数据污染命令输出」——但代价是**没有任何人被告知过有新版本**，包括维护者自己。真正要守的那条不变量由另外两道闸守着，两道都还在：提醒只走 stderr（stdout 永远只有命令本身被要求的东西），并且 `--json` 下完全不印，所以「输出是单一 JSON 文档」这条合同没动。要整条关掉仍然是 `INSPIRE_SKIP_UPDATE_CHECK=1`。
