@@ -78,7 +78,14 @@ InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命�
     Set-ExecutionPolicy -Scope Process Bypass
     .\scripts\install.ps1
 
-前置：Python 3.10+（带 `py.exe`）和 Windows OpenSSH Client。安装器以可编辑方式安装当前 fork，并写入 Codex Skill。首次安装会下载 Playwright Chromium；不需要浏览器登录时可传 `-SkipPlaywright`。
+Requirements:
+
+- Python 3.10+ with `py.exe` or `python.exe` on `PATH`.
+- Windows OpenSSH Client (`ssh` and `scp`).
+- Git, when cloning this repository for installation.
+- Internet access for Python dependencies and the first Playwright Chromium download. Use `-SkipPlaywright` when browser login is not needed.
+
+The installer performs an editable install of the current fork and writes the Codex Skill.
 
 前置：`bash` / `curl` / `tar` / Python 3.10+ / 已装 `uv`（推荐）或 `pipx` 任一。
 

@@ -618,11 +618,11 @@ def test_update_reports_progress_refreshed_harnesses_and_release_notes(
     )
 
     assert capsys.readouterr().out.splitlines() == [
-        "› Checking for updates...",
-        "› Updating CLI...",
-        "› Refreshing agent skills...",
-        "› Verifying installation...",
-        "› Preparing browser runtime...",
+        "> Checking for updates...",
+        "> Updating CLI...",
+        "> Refreshing agent skills...",
+        "> Verifying installation...",
+        "> Preparing browser runtime...",
         "InspireSkill updated to v5.2.3.",
         "Skills refreshed: claude, codex.",
         "What's new (v5.2.1 → v5.2.3):",
@@ -647,7 +647,7 @@ def test_update_cli_only_does_not_claim_a_skill_refresh(
 
     output = capsys.readouterr().out
     assert "Skills refreshed" not in output
-    assert "› Refreshing agent skills..." not in output
+    assert "> Refreshing agent skills..." not in output
     assert "What's new (v5.2.1 → v5.2.3):" in output
 
 
@@ -695,9 +695,9 @@ def test_update_reports_release_notes_after_the_self_upgrade_handoff(
     )
 
     assert capsys.readouterr().out.splitlines() == [
-        "› Checking for updates...",
-        "› Updating CLI...",
-        "› Completing setup...",
+        "> Checking for updates...",
+        "> Updating CLI...",
+        "> Completing setup...",
         "InspireSkill updated to v5.2.3.",
         "Skills refreshed: claude, codex.",
         "What's new (v5.2.1 → v5.2.3):",

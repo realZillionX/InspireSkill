@@ -230,7 +230,7 @@ def _emit_stage(message: str, *, silent: bool) -> None:
     """
     if silent or _current_output_context().json_output:
         return
-    click.secho(f"› {message}", fg="blue")
+    click.secho(f"> {message}", fg="blue")
 
 
 def _emit_update_failure(*, silent: bool, check_only: bool = False) -> None:
