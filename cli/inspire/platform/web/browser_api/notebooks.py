@@ -916,6 +916,7 @@ def save_notebook_as_image(
     name: str,
     version: str = "v1",
     description: str = "",
+    flatten: bool = False,
     session: Optional[WebSession] = None,
 ) -> dict[str, Any]:
     """Save a running notebook's state as a custom Docker image.
@@ -925,6 +926,29 @@ def save_notebook_as_image(
     v1 used — to control visibility, call
     :func:`~inspire.platform.web.browser_api.images.update_image` after this
     returns.
+
+    ``flatten`` squashes the result into a **single layer** instead of stacking
+    a new one on the base image's. It is a live field, not a declared-only one
+    — verified 2026-08-17 by saving one freshly created notebook twice and
+    reading both manifests out of the Harbor behind ``docker-qb.sii.edu.cn``:
+
+    ==================  ======  ==========  ==========
+    image               layers  size        save took
+    ==================  ======  ==========  ==========
+    base image           7      162.91 MB   —
+    ``flatten=False``    8      331.78 MB   33.4 s
+    ``flatten=True``     1      286.90 MB   55.5 s
+    ==================  ======  ==========  ==========
+
+    The layered save reproduces the base image's 7 layers digest-for-digest and
+    appends one; the flattened save merges everything and comes out **smaller**
+    (-13.5%), because content that a later layer overwrote or deleted stops
+    being carried. The extra 22 seconds land on the *image*, not the notebook:
+    both saves handed the container back at t≈33 s, so flattening does not
+    widen the window in which the notebook is unusable.
+
+    It is sent on every call, matching the console — the field is a required
+    switch on its save dialog, defaulting to off.
 
     **Returns an empty dict, always.** v1 answered a bare ``{"code": 0}`` with
     no ``data``; v2 answers ``Result: null``. Neither hands back the new
@@ -942,6 +966,7 @@ def save_notebook_as_image(
         "name": name,
         "version": version,
         "description": description,
+        "flatten": flatten,
     }
 
     return _notebook_v2(session, "SaveNotebookImage", body, timeout=60)

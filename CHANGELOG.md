@@ -4,6 +4,16 @@
 
 ### 新增
 
+- `inspire notebook save-image --flatten`：把保存出来的镜像压成单层，而不是在起点镜像上再堆一层（[#71](https://github.com/realZillionX/InspireSkill/issues/71)）。默认仍是分层保存。
+
+  **先验了它是不是真生效**，因为 discovery 声明过、网关收下了，都不等于平台照做——这仓库已经记过两个「接受、不生效」的死字段。拿一台新建的 CPU Notebook 连存两次，再从 `docker-qb.sii.edu.cn` 那台 Harbor 把两份 manifest 读回来比对：分层保存是基底那 7 层逐个 digest 原样保留再追加一层、共 8 层 331.78 MB；压平保存是 **1 层 286.90 MB**。
+
+  **压平反而更小**（-13.5%），因为被后面层覆盖或删掉的内容不再随镜像走。而多出来的 22 秒（33.4 s → 55.5 s）落在镜像的 `CREATING` 上，**不落在 Notebook 上**——两次都在 t≈33 秒把容器还回来，所以这个开关不会让 Notebook 多停一秒，命令的提示也照这个说。压平出来的镜像另建了一台 Notebook 确认能起，验完连镜像带 Notebook 都已删除。
+
+  同一个 Action 上还查到 `accessible`(int32) 和 `support_brand_list` 也在合同里。`accessible` 只有两档（个人可见 / 公开可见），顶不掉 CLI 三档可见性存完再调 `image.UpdateImage` 那一步，因此没有顺手换过去。
+
+  另有一个同名易混的 `flatten_mode`（`FLATTEN_OFF` / `FLATTEN_ON` / `FLATTEN_AUTO`）在 `CreateNotebook` 的合同里，管的是「停机自动保存时压平」这条独立链路。**控制台里那组单选是 `disabled` 的**，平台侧没放开，所以刻意不接，只把结论记进 Action 表。
+
 - `inspire serving shell`：进 Serving 实例的交互式 shell，默认进第一个运行中的副本（副本跑的是同一个镜像和命令，除非就是某个副本在出问题，那就 `--instance` 点名）。四条实例 PTY 至此齐了。
 
   **Serving 连句柄参数都不叫 `job_id`，叫 `inference_serving_id`。** 这是拿 `job_id` 打了两次被拒才发现的——错的键不给报错，只把握手拒成一个光秃秃的 `HTTP/1.1 200 OK`。`_PTY_ROUTES` 因此把句柄键也参数化了。

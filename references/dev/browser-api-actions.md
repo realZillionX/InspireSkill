@@ -172,7 +172,7 @@ Referer：`/jobs/interactiveModeling`。
 | `StartNotebook` | `{notebook_id}` | `{notebook_id, sub_code, sub_msg}` | `notebook start` |
 | `StopNotebook` | `{notebook_id}` | `{notebook_id, sub_code, sub_msg}` | `notebook stop` |
 | `DeleteNotebook` | `{notebook_id}` | `{notebook_id, sub_code, sub_msg}` | `notebook delete` |
-| `SaveNotebookImage` | `{notebook_id, name, version, description}` | **恒为 `{}`**（`Result: null`） | `notebook save-image` |
+| `SaveNotebookImage` | `{notebook_id, name, version, description, flatten}` | **恒为 `{}`**（`Result: null`） | `notebook save-image` |
 | `EstimateSaveMirrorSize` | `{notebook_id}` | `{active_snapshot_size}` | `notebook save-image`、`--dry-run` |
 | `CancelSaveMirror` | `{notebook_id}` | — | `notebook cancel-save-image` |
 | `CheckNotebook` | `{name, workspace_id}` | 占用时 `{notebook_id, sub_code, sub_msg}`；空闲时 `Result: null` | `notebook create` 的重名前置校验 |
@@ -188,7 +188,18 @@ Referer：`/jobs/interactiveModeling`。
 - **`ListNotebookEvents` 的事件字段是平台自有形状**，不是 K8s 形状：`content`（正文）、`created_at`（epoch-ms 字符串）、`event_id`。共享渲染器把 `content → message`、`created_at → last_timestamp` / `first_timestamp`。事件按从旧到新返回，Wrapper 默认自动翻页到 `total`（安全上限 100 页）。
 - **找不到资源时返回 `ResourceNotFound`，HTTP 仍是 200**，不再是 v1 的传输层 404。依赖 404 判断「不存在」的调用方必须同时认这个码。
 - **`node{}` 是整个节点对象，不只是 GPU 型号**：`name`（如 `cpu-nat-351`）、`status`、`cordon_type`、`is_maint`、`resource_pool`、`cpu_count` / `memory_size` / `gpu_count` 都在里面。**STOPPED 的 Notebook 不清空这个对象，而是把 `name` 置空、`status` 置成 proto 零值 `UNKNOWN_NODE_STATUS`**（同族还有 `unknown_node_type` / `unknown_credit_score`）——只判空对象会把「没在跑」读成「有一个状态未知的节点」。同一份落点还有第二个来源 `extra_info`（`NodeName` / `HostIP` / `PodName` / `ContainerID`），停止时同样是空串而不是缺键。
-- **`SaveNotebookImage` 不收 `visibility`**（`unknown field "visibility"`），要改可见性只能存完再调 `image.UpdateImage`。它**不返回新镜像的 id**，调用方只能靠列表去找。
+- **`SaveNotebookImage` 不收 `visibility`**（`unknown field "visibility"`），要改可见性只能存完再调 `image.UpdateImage`。它**不返回新镜像的 id**，调用方只能靠列表去找。字段面比 CLI 发的那几个宽：discovery 声明 `notebook_id`（唯一必填）/ `name` / `version` / `description` / `accessible`(int32) / `support_brand_list` / `flatten`(bool)，逐个探过全在合同里（拿一台自己的 STOPPED Notebook 当尺子，body 不带 `name`，创建不出东西）。**`accessible` 只有两档**（1 个人可见 / 2 公开可见），CLI 的可见性有三档，所以它替代不了存完再 `UpdateImage` 那一步。
+- **`flatten` 是真生效的字段，不是声明了没接的死字段。** 2026-08-17 拿一台新建的 CPU Notebook 连存两次，再从 `docker-qb.sii.edu.cn` 那台 Harbor 读回两份 manifest 比对（`/service/token?service=harbor-registry&scope=repository:<repo>:pull` 换匿名 token 即可读，容器内可达；`docker.sii.shaipower.online` 那个名字在 Notebook 网段 443 拒连）：
+
+  | 镜像 | 层数 | 体积 | 保存耗时 |
+  | --- | --- | --- | --- |
+  | 基底 `sandbox-base` | 7 | 162.91 MB | — |
+  | `flatten=false` | 8 | 331.78 MB | 33.4 s |
+  | `flatten=true` | **1** | 286.90 MB | 55.5 s |
+
+  分层保存把基底 7 层逐个 digest 原样保留再追加一层；压平保存合并成一层且**更小**（-13.5%），被后层覆盖或删除的内容不再随镜像走。多出来的 22 秒落在镜像的 `CREATING` 上，不落在 Notebook 上——两次都在 t≈33 秒回到 `RUNNING`。压平出来的镜像能正常起 Notebook（建过一台验证，已删）。顺带两个数：全新 Notebook 什么都不做，提交层也有 168.9 MB（平台自己往可写层注入的 runtime）；`EstimateSaveMirrorSize` 对它报 523321344 B，是未压缩的可写层大小，不是镜像层大小。
+
+- **控制台调的不是 `SaveNotebookImage`，是 `SaveMirror`**（`/api/v2/notebook?Action=SaveMirror`，discovery 里没有，活着）。两条都在，且是两个不同的 handler：`SaveNotebookImage` 空 body 答 `InvalidParameter: NotebookId is required` 并做严格 proto 解析，`SaveMirror` 空 body 答 `InternalError: 非法的镜像名称或版本`，而且**未知字段一声不吭**——拿一个瞎编的字段打回同一句话，和 `CreateTensorboard` 一样是宽松 unmarshaller，**不能靠它反推合同**。CLI 留在 `SaveNotebookImage`：它在 discovery 里、报错能用来测字段，`flatten` 也已在它上面验过生效。
 - **`GetNotebookAccessUrl` 是 IDE 网关地址，不是 Notebook Proxy。** 两个 URL 归一化后指向同一个网关（两个 IDE 共用同一套 runtime 与 token），任取其一即可。STOPPED 的 Notebook 上它返回两个空字符串，此时回落 Playwright 抓取（那条也会失败，语义不变）。实测 **0.57 秒 vs 6.4–36 秒**。
 - **解析顺序是 缓存/热候选 → `GetNotebookAccessUrl` → Playwright**，收口在 `resolve_notebook_vscode_ide_url`。`refresh=True` 时 API 这一档**也走**：refresh 的语义是「别信缓存」，不是「一定要抓」。
 - **`exec` / `shell` 全程不起浏览器**：lab URL 取**原始 `jupyter_url`**（不能用 `_ide_gateway_url` 归一化后的形式——terminal 的 REST 与 WebSocket 路由挂在 Jupyter server base 上），`_xsrf` 靠对 `jupyter_url` 发一次普通 GET 拿 cookie，建/删 terminal 是 `POST` / `DELETE api/terminals` 并把 `_xsrf` 放进 `X-XSRFToken` 头。命令结束后回收本次创建的 Terminal。
@@ -522,6 +533,8 @@ POST /api/v2/{notebook|train|hpc|ray|inference_serving}?Action=GetTaskMetric
 ### 各创建 Action 的实发请求体
 
 **`notebook.CreateNotebook`** — 必填：`{workspace_id, name, project_id, project_name, auto_stop, allow_ssh, mirror_id, mirror_url, logic_compute_group_id, quota_id, cpu_count, gpu_count, memory_size, shared_memory_size}`。可选（不传就完全不出现在 body 里）：`resource_spec_price`（GPU Notebook 必需）、`task_priority`、`node_id`、`dataset_info[]`、`enable_notification`、`stop_hour` + `stop_minute`、`is_publicpath_readonly`、`is_projectuserspath_readonly`。
+
+**这里还有第二个 `flatten`，别和 `save-image` 那个混。** `flatten_mode`（`FLATTEN_OFF` / `FLATTEN_ON` / `FLATTEN_AUTO`，控制台标签「停机自动保存时压平镜像」）在合同里——三个取值逐个探过都过了 proto 解析——但**控制台里这组单选带 `disabled`**，也就是平台侧没放开这个能力，和 `train_enable_troubleshoot` 是同一类。接出来只会是一个谁也用不了、我们也验不了的开关，所以刻意不接。它管的是「停机自动保存」这条独立链路，不是 `notebook save-image --flatten`。
 
 **`train.CreateJobConsole`** — 必填：`{name, command, framework, project_id, workspace_id, logic_compute_group_id, task_priority, enable_notification, framework_config:[{image_type, image, instance_count, resource_spec_price, cpu, gpu_count, mem_gi, shm_gi?}]}`。可选：`max_running_time_ms`、`exclude_nodes[]`、`auto_fault_tolerance` + `fault_tolerance_max_retry` + `fault_tolerance_retry_interval_sec`、`dataset_info[]`、`envs[]`、`description`、`reserve_on_success_ms`、`reserve_on_fail_ms`、`is_publicpath_readonly`。
 

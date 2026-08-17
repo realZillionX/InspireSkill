@@ -195,7 +195,7 @@ def _patch_save_command(
 
     saves: list[dict[str, Any]] = []
 
-    def fake_save(notebook_id, name, version="v1", description="", session=None):  # noqa: ANN001
+    def fake_save(notebook_id, name, version="v1", description="", flatten=False, session=None):  # noqa: ANN001
         saves.append({"notebook_id": notebook_id, "name": name, "version": version})
         return {"image": {"image_id": "img-saved-001"}}
 
@@ -244,6 +244,7 @@ def test_dry_run_json_reports_bytes_and_a_readable_size(
         "dry_run": True,
         "notebook": "demo-notebook",
         "name": "saved-img:v1",
+        "flatten": False,
         "estimated_size_bytes": 59_084_800,
         "estimated_size": "56.35 MiB",
     }

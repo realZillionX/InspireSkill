@@ -193,11 +193,33 @@ def test_save_notebook_as_image_posts_the_notebook_action(monkeypatch: pytest.Mo
     assert captured["action"] == "SaveNotebookImage"
     assert captured["timeout"] == 60
     # `visibility` is rejected by the platform; callers use update_image instead.
+    # `flatten` goes out on every save, as it does from the console, and a
+    # caller that did not ask for it must get the layered save.
     assert captured["body"] == {
         "notebook_id": "nb-1",
         "name": "demo",
         "version": "v2",
         "description": "saved",
+        "flatten": False,
     }
     # No image id comes back, so the command layer has to find it by listing.
     assert result == {}
+
+
+def test_save_notebook_as_image_sends_flatten(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, Any] = {}
+
+    def fake_notebook_v2(session, action: str, body: Optional[dict] = None, *, timeout: int = 30) -> Any:
+        captured["body"] = body
+        return {}
+
+    monkeypatch.setattr(notebooks_module, "_notebook_v2", fake_notebook_v2)
+    monkeypatch.setattr(
+        notebooks_module,
+        "_get_session_and_workspace_id",
+        lambda workspace_id, session: (_FakeSession(), "ws-test"),
+    )
+
+    save_notebook_as_image(notebook_id="nb-1", name="demo", flatten=True)
+
+    assert captured["body"]["flatten"] is True

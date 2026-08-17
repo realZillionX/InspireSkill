@@ -101,7 +101,7 @@ def test_save_image_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     captured: dict[str, Any] = {}
 
     def fake_save(
-        notebook_id, name, version="v1", description="", session=None
+        notebook_id, name, version="v1", description="", flatten=False, session=None
     ) -> dict:
         captured["notebook_id"] = notebook_id
         captured["name"] = name
@@ -126,10 +126,80 @@ def test_save_image_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert result.exit_code == 0
 
     payload = _json_data(result.output)
-    assert payload == {"name": "saved-img:v1", "status": "saving"}
+    assert payload == {"name": "saved-img:v1", "status": "saving", "flatten": False}
     _assert_compact_public_payload(payload)
     assert "img-saved-001" not in result.output
     assert captured["notebook_id"] == "notebook-abc"
+
+
+def test_save_image_flatten_reaches_the_platform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`--flatten` is the whole point of the flag: it has to be sent."""
+    _patch_config_and_session(monkeypatch, tmp_path)
+
+    captured: dict[str, Any] = {}
+
+    def fake_save(
+        notebook_id, name, version="v1", description="", flatten=False, session=None
+    ) -> dict:
+        captured["flatten"] = flatten
+        return {"image": {"image_id": "img-flat-001"}}
+
+    monkeypatch.setattr(browser_api_module, "save_notebook_as_image", fake_save)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main,
+        [
+            "--json",
+            "notebook",
+            "save-image",
+            "demo-notebook",
+            "--workspace",
+            "Test Workspace",
+            "-n",
+            "saved-img",
+            "--flatten",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["flatten"] is True
+    assert _json_data(result.output)["flatten"] is True
+
+
+def test_save_image_without_the_flag_keeps_the_layered_save(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Flattening is the deviation, so the default has to stay layered."""
+    _patch_config_and_session(monkeypatch, tmp_path)
+
+    captured: dict[str, Any] = {}
+
+    def fake_save(
+        notebook_id, name, version="v1", description="", flatten=False, session=None
+    ) -> dict:
+        captured["flatten"] = flatten
+        return {"image": {"image_id": "img-layered-001"}}
+
+    monkeypatch.setattr(browser_api_module, "save_notebook_as_image", fake_save)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "notebook",
+            "save-image",
+            "demo-notebook",
+            "--workspace",
+            "Test Workspace",
+            "-n",
+            "saved-img",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["flatten"] is False
+    # Nothing is said about layers unless the caller asked for flattening.
+    assert "single layer" not in result.output
 
 
 def test_save_image_forwards_pick_to_notebook_name_resolution(
@@ -150,7 +220,7 @@ def test_save_image_forwards_pick_to_notebook_name_resolution(
     monkeypatch.setattr(
         browser_api_module,
         "save_notebook_as_image",
-        lambda notebook_id, name, version="v1", description="", session=None: {
+        lambda notebook_id, name, version="v1", description="", flatten=False, session=None: {
             "image": {"image_id": "img-saved-002"}
         },
     )
@@ -184,7 +254,7 @@ def test_save_image_public_visibility_calls_update_image(
     update_captured: dict[str, Any] = {}
 
     def fake_save(
-        notebook_id, name, version="v1", description="", session=None
+        notebook_id, name, version="v1", description="", flatten=False, session=None
     ) -> dict:
         return {"image": {"image_id": "img-pub-001"}}
 
@@ -224,7 +294,7 @@ def test_save_image_private_visibility_calls_update_image(
     seen_visibility: dict[str, Any] = {}
 
     def fake_save(
-        notebook_id, name, version="v1", description="", session=None
+        notebook_id, name, version="v1", description="", flatten=False, session=None
     ) -> dict:
         return {"image": {"image_id": "img-priv-001"}}
 
@@ -294,6 +364,7 @@ def test_save_image_visibility_warning_is_compact_and_safe(
     assert _json_data(result.output) == {
         "name": "saved-img:v1",
         "status": "saving",
+        "flatten": False,
         "warning": (
             "Visibility was not updated. Retry with: "
             "inspire image set-visibility saved-img:v1 --visibility public"
@@ -344,7 +415,7 @@ def test_save_image_fallback_resolves_image_id_via_list(
     monkeypatch.setattr(
         browser_api_module,
         "save_notebook_as_image",
-        lambda notebook_id, name, version="v1", description="", session=None: {"image": {}},
+        lambda notebook_id, name, version="v1", description="", flatten=False, session=None: {"image": {}},
     )
     monkeypatch.setattr(
         browser_api_module,
@@ -413,7 +484,7 @@ def test_save_image_unknown_when_fallback_fails(
     monkeypatch.setattr(
         browser_api_module,
         "save_notebook_as_image",
-        lambda notebook_id, name, version="v1", description="", session=None: {"image": {}},
+        lambda notebook_id, name, version="v1", description="", flatten=False, session=None: {"image": {}},
     )
 
     def _raise(source="official", session=None):

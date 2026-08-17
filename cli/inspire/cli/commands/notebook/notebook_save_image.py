@@ -153,6 +153,15 @@ def _resolve_save_notebook_id(
     help="Image visibility. Omit to accept the platform default.",
 )
 @click.option(
+    "--flatten/--no-flatten",
+    default=False,
+    help=(
+        "Squash the image into a single layer instead of stacking one on the "
+        "base image's. Costs extra time in the image build, not in the "
+        "notebook pause."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     default=False,
@@ -169,6 +178,7 @@ def save_image_cmd(
     description: str,
     wait: bool,
     visibility: Optional[str],
+    flatten: bool,
     dry_run: bool,
 ) -> None:
     """Save a running notebook as a custom Docker image.
@@ -178,6 +188,11 @@ def save_image_cmd(
     the estimated snapshot size is printed first. Use --dry-run to see that
     estimate on its own, and notebook cancel-save-image to abort a save already
     running.
+
+    Each save stacks another layer on the image it started from, so an
+    environment grown by saving, restarting and saving again keeps piling them
+    up. --flatten collapses the result to one layer, which also drops whatever
+    a later layer had overwritten or deleted.
     """
     notebook = reject_id_at_boundary(
         ctx,
@@ -248,6 +263,7 @@ def save_image_cmd(
                         "dry_run": True,
                         "notebook": notebook_label,
                         "name": image_label,
+                        "flatten": flatten,
                         "estimated_size_bytes": size_bytes,
                         "estimated_size": _format_size_bytes(size_bytes),
                     }
@@ -256,6 +272,7 @@ def save_image_cmd(
             return
         click.echo(f"Save plan: {image_label}")
         click.echo(f"Notebook: {notebook_label}")
+        click.echo(f"Layers: {'flattened to one' if flatten else 'stacked on the base image'}")
         click.echo(f"Estimated snapshot: {_format_size_bytes(size_bytes)}")
         click.echo("Nothing was saved (--dry-run).")
         return
@@ -265,6 +282,13 @@ def save_image_cmd(
             f"Estimated snapshot: {_format_size_bytes(size_bytes)}. "
             "The notebook cannot be used until the save finishes."
         )
+    if flatten and not ctx.json_output:
+        # The pause is the same either way; only the image takes longer to be
+        # READY, so the wait this warns about is not the notebook's.
+        click.echo(
+            "Flattening to a single layer. The notebook comes back at the same "
+            "point, but the image takes longer to finish building."
+        )
 
     try:
         result = browser_api_module.save_notebook_as_image(
@@ -272,6 +296,7 @@ def save_image_cmd(
             name=name,
             version=version,
             description=description,
+            flatten=flatten,
             session=session,
         )
     except Exception as e:
@@ -368,6 +393,7 @@ def save_image_cmd(
         payload: dict[str, object] = {
             "name": image_label,
             "status": "ready" if ready else "saving",
+            "flatten": flatten,
         }
         if size_bytes is not None:
             payload["estimated_size_bytes"] = size_bytes
