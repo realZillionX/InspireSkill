@@ -558,7 +558,7 @@ def exec_command(
 ) -> None:
     """Execute a notebook command; SSH when allowed, otherwise JupyterTerminal.
 
-    NOTEBOOK is the notebook name. Each call runs an independent remote shell command;
+    NAME is the notebook name. Each call runs an independent remote shell command;
     use one quoted command string when cwd, environment variables, or shell
     state must stay together.
 

@@ -77,7 +77,6 @@ def add(
     \b
     Examples:
         inspire account add alice
-
         inspire account add alice \\
           --username user-abc123 --password "$INSPIRE_PW" \\
           --use --non-interactive

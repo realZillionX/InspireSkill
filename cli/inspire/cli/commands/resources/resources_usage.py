@@ -393,10 +393,11 @@ def usage_resources(
     `resources availability`: that command reports what is left, this one
     reports where the rest went. `Reclaimable` is how much of a holder's GPUs
     sit on tasks submitted at a preemptible priority — the part a
-    higher-priority submission can take rather than wait for. The rest is held outright, and
-    how busy it is does not change that, which is why utilisation is not a
-    column here; `--json` still carries `gpu_usage_rate` for the separate
-    argument that parked capacity should be released.
+    higher-priority submission can take rather than wait for. The rest is
+    held outright, and how busy it is does not change that, which is why
+    utilisation is not a column here; `--json` still carries
+    `gpu_usage_rate` for the separate argument that parked capacity should
+    be released.
 
     \b
     `--group` narrows to one compute group, which is the unit a workload is

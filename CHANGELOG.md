@@ -34,6 +34,20 @@
 
 - **PyPI 响应被截断会让整个检查带着 traceback 崩掉**，而不是回落到 GitHub 上的 `pyproject.toml`。`http.client.IncompleteRead` 是 `HTTPException` 而**不是** `OSError`，所以它穿过了 `fetch_latest_version_info` 那个 `except (URLError, TimeoutError, OSError, JSONDecodeError)`。本机 `~/Library/Logs/inspire-skill-update-check.log` 里就留着这么一次崩溃。两个分支的 except 都补上 `http.client.HTTPException`，回落链因此真的能用——模块开头承诺的「失败时完全无副作用」现在对前台的 `update --check` 也成立，此前只有后台那条路径靠外层的兜底 `except Exception` 撑着。
 
+- **13 条多行示例在 `--help` 里被压成了一整行。** 根因是 docstring 里的续行写成了单个 `\`——在非 raw 字符串里那是 **Python 的续行符**，两行在 Click 拿到之前就已经被拼掉，只留下续行处那串缩进空格。渲染出来是 `--workspace 分布式训练空间           --project <project>`，一行拖到两百多字符。涉及 `inspire`(根)、`job create`、`notebook create`、`hpc create`、`serving create`。写法本来就有正确的样板：`ray create` 用的是 `\\`，这批照它改。
+
+  **`account add` 是另一个原因，症状相同**：它的 `\\` 一直是对的，但两条示例之间空了一行——而 Click 的 `\b` 只保护**紧跟其后的那一个段落**，空行之后就是新段落，于是第二条被照常重排。删掉那个空行即可。
+
+  同一类还有 **`hpc create` 的「两层」要点列表整个缺 `\b`**，四行带缩进的 `*` 列表被 Click 重排成一段连续文本（`Two independent layers:   * Node-level: ... per     node; ...`），是这次可读性最差的一处。
+
+- **`notebook metrics` 的正文整体多缩进 8 格。** 它的 help 是拼出来的：`metrics_shared.py` 里工厂函数的 docstring（嵌在函数里，缩进 8 格）后面直接追加一段 0 缩进的 `--now` 说明。`inspect.cleandoc` 脱的是**各行的公共缩进**，被这段 0 缩进的尾巴一压就成了 0，共享那四行于是原样带着 8 格印出来。改成先 `cleandoc` 再拼。同一份 docstring 在 `job` / `hpc` / `ray` / `serving` 上一直是正常的——只有 notebook 这条走了拼接。
+
+- **`serving create` 的 `--replicas` 和 `--nodes-per-replica` 没有 help**，`--help` 里这两行只有一个 `[default: 1; x>=1]`。补的说明按 `browser-api.md` 已经记下的语义写：`node_num_per_replica` 是「每副本几个节点」的规格，`GetRecommendedConfig` 的四个 `min_*` 正是它和 `--quota` 的下限——也就是 `inspire model deploy-config` 印的那张表。
+
+- **三处 docstring 讲的是一个用法行里不存在的参数名。** `notebook exec` / `notebook scp` / `notebook install-deps` 正文都写 `NOTEBOOK is the notebook name`，而 Click 印出来的用法行是 `NAME`。仓库里其余同类命令（`save-image`、`cancel-save-image`）写的就是 `NAME is the notebook name`，按这个改齐。顺带把 `resources usage` 里一行手工换行到 90 字符、明显长出邻行一截的正文重新折回。
+
+  **验收是全量渲染前后逐字对比**：182 条命令的 `--help` 各渲染一遍，前后只有上述 10 处 hunk 变化，没有一处旁落。另有两项自动核查这次**没有再查出问题**，结论记在这里免得重跑：help 文本里的 284 条 `inspire ...` 示例拿 Click 命令树逐条解析（未知子命令、未知选项、位置参数个数）全部通过；help 里写着 `default: N` 的选项对着真实 `default` 逐个比对，差异全部是 `--limit` 这类「Click 侧 `None`、取值在下游兜底 20/100」的有意设计，以及 `job wait --timeout` 的 `14400` 秒即正文说的 4 小时。
+
 ## v7.1.1
 
 ### 新增

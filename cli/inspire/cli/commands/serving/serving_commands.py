@@ -2096,8 +2096,26 @@ def configs_serving(
     metavar="NAME",
     help="Serving condition profile providing workspace/project/group/quota/image.",
 )
-@click.option("--replicas", type=click.IntRange(1), default=1, show_default=True)
-@click.option("--nodes-per-replica", type=click.IntRange(1), default=1, show_default=True)
+@click.option(
+    "--replicas",
+    type=click.IntRange(1),
+    default=1,
+    show_default=True,
+    help=(
+        "How many replicas to serve behind the endpoint. Each one costs the full "
+        "--quota, and the count can be changed later with 'inspire serving scale'."
+    ),
+)
+@click.option(
+    "--nodes-per-replica",
+    type=click.IntRange(1),
+    default=1,
+    show_default=True,
+    help=(
+        "Nodes a single replica spans, for a model too large for one node. "
+        "'inspire model deploy-config <model>' reports the floor for this and --quota."
+    ),
+)
 @click.option(
     "--shm-size",
     type=click.IntRange(1),
@@ -2163,8 +2181,8 @@ def create_serving(
 
     \b
     Examples:
-        inspire serving create --name qwen-demo --model qwen-demo --workspace 分布式训练空间 \
-          --project <project> --group H200-2号机房 --quota 1,18,200 \
+        inspire serving create --name qwen-demo --model qwen-demo --workspace 分布式训练空间 \\
+          --project <project> --group H200-2号机房 --quota 1,18,200 \\
           --image <image> --command "python serve.py" --port 8000 --dry-run
         inspire serving metrics qwen-demo --workspace 分布式训练空间 --window 30m
     """
