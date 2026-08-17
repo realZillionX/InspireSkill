@@ -217,72 +217,11 @@ def test_debug_error_keeps_json_output_clean(monkeypatch, tmp_path: Path) -> Non
     assert len(list(log_dir.glob("inspire-debug-*.log"))) == 1
 
 
-def test_debug_does_not_expand_config_show_output(
+def test_debug_does_not_expand_account_check_output(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    log_dir = tmp_path / "debug-logs"
-    monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
-    cfg = Config(
-        username="alice",
-        password="secret",
-        base_url="https://inspire.example",
-    )
-    sources = {
-        "username": SOURCE_ENV,
-        "password": SOURCE_ENV,
-        "base_url": SOURCE_ENV,
-    }
-    monkeypatch.setattr(
-        Config,
-        "from_files_and_env",
-        classmethod(lambda cls, **_kwargs: (cfg, sources)),
-    )
-    monkeypatch.setattr(
-        Config,
-        "get_config_paths",
-        classmethod(lambda cls: (tmp_path / "global.toml", tmp_path / "project.toml")),
-    )
-
-    runner = CliRunner()
-    plain_human = runner.invoke(
-        cli_main,
-        ["--no-env-file", "config", "show"],
-    )
-    debug_human = runner.invoke(
-        cli_main,
-        ["--debug", "--no-env-file", "config", "show"],
-    )
-    plain_json = runner.invoke(
-        cli_main,
-        ["--json", "--no-env-file", "config", "show"],
-    )
-    debug_json = runner.invoke(
-        cli_main,
-        ["--debug", "--json", "--no-env-file", "config", "show"],
-    )
-    clear_debug_logging()
-
-    assert plain_human.exit_code == 0, plain_human.output
-    assert debug_human.exit_code == 0, debug_human.output
-    assert debug_human.output == plain_human.output
-    assert "Files:" not in debug_human.output
-    assert "Precedence:" not in debug_human.output
-
-    assert plain_json.exit_code == 0, plain_json.output
-    assert debug_json.exit_code == 0, debug_json.output
-    assert json.loads(debug_json.output) == json.loads(plain_json.output)
-    data = json.loads(debug_json.output)["data"]
-    assert set(data) == {"values"}
-    assert data["values"]["INSPIRE_USERNAME"] == "<configured>"
-    assert "alice" not in debug_json.output
-
-
-def test_debug_does_not_expand_config_check_output(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    from inspire.cli.commands.config import check as check_module
+    from inspire.cli.commands.account import check as check_module
 
     log_dir = tmp_path / "debug-logs"
     monkeypatch.setenv("INSPIRE_DEBUG_LOG_DIR", str(log_dir))
@@ -301,6 +240,7 @@ def test_debug_does_not_expand_config_check_output(
         "get_config_paths",
         classmethod(lambda cls: (tmp_path / "global.toml", tmp_path / "project.toml")),
     )
+    monkeypatch.setattr("inspire.accounts.current_account", lambda: "test-account")
     monkeypatch.setattr(check_module, "get_web_session", lambda: object())
     monkeypatch.setattr(
         check_module.browser_api_module,
@@ -311,19 +251,19 @@ def test_debug_does_not_expand_config_check_output(
     runner = CliRunner()
     plain_human = runner.invoke(
         cli_main,
-        ["--no-env-file", "config", "check"],
+        ["--no-env-file", "account", "check"],
     )
     debug_human = runner.invoke(
         cli_main,
-        ["--debug", "--no-env-file", "config", "check"],
+        ["--debug", "--no-env-file", "account", "check"],
     )
     plain_json = runner.invoke(
         cli_main,
-        ["--json", "--no-env-file", "config", "check"],
+        ["--json", "--no-env-file", "account", "check"],
     )
     debug_json = runner.invoke(
         cli_main,
-        ["--debug", "--json", "--no-env-file", "config", "check"],
+        ["--debug", "--json", "--no-env-file", "account", "check"],
     )
     clear_debug_logging()
 
@@ -337,6 +277,7 @@ def test_debug_does_not_expand_config_check_output(
     assert debug_json.exit_code == 0, debug_json.output
     assert json.loads(debug_json.output) == json.loads(plain_json.output)
     assert json.loads(debug_json.output)["data"] == {
+        "account": "test-account",
         "configured": True,
         "authenticated": True,
     }

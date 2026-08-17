@@ -93,6 +93,30 @@ def test_events_human_output_is_compact_and_scrubs_ids() -> None:
     assert "scheduler" not in result.output
     assert _RAW_JOB_ID not in result.output
     assert "object_id" not in result.output
+    assert "Instance" not in result.output
+
+
+def test_per_instance_events_carry_the_instance_in_both_output_modes() -> None:
+    labelled = {**_event(), "instance": "slurmd-1"}
+
+    @click.command()
+    def human() -> None:
+        render_events_table([labelled, _event()])
+
+    @click.command()
+    def machine() -> None:
+        ctx = Context()
+        ctx.json_output = True
+        emit_events(ctx=ctx, events=[labelled])
+
+    rendered = CliRunner().invoke(human)
+    assert rendered.exit_code == 0, rendered.output
+    assert "Instance" in rendered.output
+    assert "slurmd-1" in rendered.output
+
+    payload = CliRunner().invoke(machine)
+    assert payload.exit_code == 0, payload.output
+    assert json.loads(payload.output)["data"]["items"][0]["instance"] == "slurmd-1"
 
 
 def test_event_messages_scrub_paths_and_url_credentials() -> None:

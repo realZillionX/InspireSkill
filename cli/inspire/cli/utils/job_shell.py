@@ -20,7 +20,7 @@ from urllib.parse import urlencode, urlsplit
 import click
 
 from inspire.cli.utils.terminal_io import write_stream_output
-from inspire.platform.web.browser_api.core import _browser_api_path, _get_base_url
+from inspire.platform.web.browser_api.core import _get_base_url
 from inspire.platform.web.session import WebSession, get_web_session
 from inspire.platform.web.session.proxy import get_rtunnel_proxy_override
 
@@ -29,8 +29,70 @@ if sys.platform != "win32":
     import tty
 
 RUNNING_INSTANCE_STATUS = "instance_running"
-SHELL_BOOTSTRAP = "command -v bash >/dev/null 2>&1 && exec bash || exec sh\n"
 CTRL_RIGHT_BRACKET = b"\x1d"
+
+# Typing `exit` ends the remote shell, but the gateway keeps the websocket
+# open and sends nothing further — verified 2026-08-15 against a running H100
+# instance, which stayed silent for 40s with no close frame. So the shell has
+# to announce its own exit: run it as a child instead of `exec`ing it, and
+# have the surviving parent print a marker.
+#
+# The literal is split across two quoted strings so the bootstrap line the
+# terminal echoes back never contains the contiguous marker — only the
+# shell's own `printf` emits it, which is what makes matching it safe.
+SHELL_EXIT_MARKER = "INSPIRE_SHELL_CLOSED_7f31a0"
+
+
+def shell_exit_announce(marker: str = SHELL_EXIT_MARKER) -> str:
+    """Return the `printf` that emits the exit marker without echoing it."""
+    head, tail = marker[:15], marker[15:]
+    return f"printf '%s' '{head}''{tail}'"
+
+
+SHELL_BOOTSTRAP = (
+    f"command -v bash >/dev/null 2>&1 && bash || sh; {shell_exit_announce()}\n"
+)
+
+SHELL_ESCAPE_NOTE = "Leave the shell with `exit`, or press Ctrl+] to drop the session."
+
+
+class ShellExitWatcher:
+    """Scan a remote output stream for the shell's own exit marker.
+
+    Keeps the trailing bytes of each chunk so a marker split across two
+    websocket frames is still recognised, and withholds the marker itself from
+    what reaches the terminal.
+    """
+
+    def __init__(self, marker: str = SHELL_EXIT_MARKER) -> None:
+        self._marker = marker.encode()
+        self._tail = b""
+
+    def feed(self, payload: bytes) -> tuple[bytes, bool]:
+        """Return the bytes safe to print, and whether the shell has exited.
+
+        Withheld bytes carry over into the next call, so the returned slice is
+        always taken from the combined buffer rather than from ``payload``.
+        Only a suffix that is genuinely a partial marker is held back — this
+        sits in the path of every keystroke echo, so withholding a fixed-size
+        tail would make an interactive shell feel laggy.
+        """
+        buffer = self._tail + payload
+        index = buffer.find(self._marker)
+        if index != -1:
+            self._tail = b""
+            return buffer[:index], True
+        keep = 0
+        for size in range(min(len(self._marker) - 1, len(buffer)), 0, -1):
+            if buffer.endswith(self._marker[:size]):
+                keep = size
+                break
+        self._tail = buffer[len(buffer) - keep:] if keep else b""
+        return buffer[: len(buffer) - keep], False
+
+    def flush(self) -> bytes:
+        pending, self._tail = self._tail, b""
+        return pending
 
 
 class JobShellError(RuntimeError):
@@ -160,14 +222,54 @@ def select_job_instance(
     )
 
 
-def build_remote_cmd_ws_url(job_id: str, instance_name: str) -> str:
-    """Build the train-job remote shell websocket URL."""
+# The PTY sockets are the REST-shaped half of `/api/v2` -- no `?Action=`, so
+# an inventory built from Action names reports them as absent. They exist; an
+# Action-shaped inventory is simply the wrong instrument for them.
+#
+# **Neither query parameter is the same name on every route.** The console
+# remaps both per workload and so must we -- serving does not even call its
+# handle `job_id`. Every combination was measured against a running workload
+# of that type; getting one wrong fails in two ways, neither an error message:
+#
+#   hpc + instance_name      -> socket upgrades, then returns nothing at all.
+#                               No error, no close frame, just a shell that
+#                               never speaks. (`instance_id` gave 53 bytes.)
+#   ray/serving + wrong key  -> handshake refused with a bare `HTTP/1.1 200 OK`
+#                               instead of the 101 upgrade.
+#
+# So a shell that hangs or refuses is the first thing to suspect if a new
+# workload is added here by analogy rather than by measurement.
+REMOTE_CMD_PATH = "/api/v2/train_job/remote_cmd"
+#: workload -> (path, handle parameter, instance parameter)
+_PTY_ROUTES: dict[str, tuple[str, str, str]] = {
+    "job": (REMOTE_CMD_PATH, "job_id", "instance_name"),
+    "hpc": ("/api/v2/hpc_jobs/instances/exec", "job_id", "instance_id"),
+    "ray": ("/api/v2/ray_job/instances/exec", "job_id", "instance_id"),
+    "serving": (
+        "/api/v2/inference_servings/instances/exec",
+        "inference_serving_id",
+        "instance_id",
+    ),
+}
+
+
+def build_remote_cmd_ws_url(
+    job_id: str, instance_name: str, *, workload: str = "job"
+) -> str:
+    """Build a workload's remote shell websocket URL.
+
+    One path per workload, no fallback -- a second path here could only hide a
+    real failure of the first.
+    """
+    try:
+        path, handle_key, instance_key = _PTY_ROUTES[workload]
+    except KeyError:
+        raise JobShellError(f"No remote shell endpoint for workload {workload!r}.") from None
     base_url = _get_base_url().rstrip("/")
     parsed = urlsplit(base_url)
     scheme = "wss" if parsed.scheme == "https" else "ws"
     netloc = parsed.netloc
-    path = _browser_api_path("/train_job/remote_cmd")
-    query = urlencode({"job_id": job_id, "instance_name": instance_name})
+    query = urlencode({handle_key: job_id, instance_key: instance_name})
     return f"{scheme}://{netloc}{path}?{query}"
 
 
@@ -432,6 +534,7 @@ def run_remote_shell(
     job_id: str,
     instance_name: str,
     session: WebSession,
+    workload: str = "job",
     stdin=None,  # noqa: ANN001
     stdout=None,  # noqa: ANN001
     websocket_cls: type[_WebSocketClient] = _WebSocketClient,
@@ -443,7 +546,7 @@ def run_remote_shell(
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     stdout_buffer = getattr(stdout, "buffer", stdout)
-    ws_url = build_remote_cmd_ws_url(job_id, instance_name)
+    ws_url = build_remote_cmd_ws_url(job_id, instance_name, workload=workload)
     headers = build_remote_cmd_headers(session)
     old_term = None
     raw_mode = bool(getattr(stdin, "isatty", lambda: False)())
@@ -467,6 +570,7 @@ def run_remote_shell(
             signal.signal(signal.SIGWINCH, resize_handler)
         try:
             stdin_open = True
+            exit_watcher = ShellExitWatcher()
             while True:
                 readers = [ws]
                 if stdin_open and not getattr(stdin, "closed", False):
@@ -483,7 +587,11 @@ def run_remote_shell(
                         ws._send_frame(0xA, payload)
                         continue
                     if opcode in {0x1, 0x2}:
-                        write_stream_output(stdout_buffer, payload)
+                        visible, shell_exited = exit_watcher.feed(payload)
+                        if visible:
+                            write_stream_output(stdout_buffer, visible)
+                        if shell_exited:
+                            return 0
                 if stdin in ready:
                     data = os.read(stdin.fileno(), 4096)
                     if not data:
@@ -504,6 +612,7 @@ def open_job_shell(
     job_id: str,
     instance_name: str,
     session: WebSession | None = None,
+    workload: str = "job",
     websocket_cls: type[_WebSocketClient] = _WebSocketClient,
 ) -> int:
     """Open a job shell, refreshing the web session once after a 401 handshake."""
@@ -513,6 +622,7 @@ def open_job_shell(
             job_id=job_id,
             instance_name=instance_name,
             session=active_session,
+            workload=workload,
             websocket_cls=websocket_cls,
         )
     except JobShellAuthError:
@@ -521,5 +631,6 @@ def open_job_shell(
             job_id=job_id,
             instance_name=instance_name,
             session=refreshed,
+            workload=workload,
             websocket_cls=websocket_cls,
         )

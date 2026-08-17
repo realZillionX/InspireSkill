@@ -5,17 +5,41 @@ running hybrid CPU-decode / GPU-inference streaming pipelines (what the UI
 labels "弹性计算"). This route is web-session only, so we hit it the same way
 the SPA does, with stored Playwright cookies and a matching ``Referer``.
 
-Every Action here was verified against a live job before being wired up; the
-v2 responses are field-for-field identical to the ``/api/v1/ray_job/*`` ones
-they replace, so the normalization below is unchanged from the v1 wrapper.
+Every Action here was verified against a live job before being wired up.
 Wire details that differ from sibling domains:
 
-- The resource key is ``ray_job_id`` on every Action. ``job_id`` and ``id`` are
-  both rejected with ``unknown field``, unlike ``train`` / ``hpc``.
+- The resource key is ``ray_job_id`` on every Action *except* ``GetJobLog``.
+  ``job_id`` and ``id`` are both rejected with ``unknown field``, unlike
+  ``train`` / ``hpc``. ``GetJobLog`` is the lone inversion — see
+  :func:`list_ray_job_logs`.
+- **A *nonexistent* ``ray_job_id`` silently voids field-existence probes.** The
+  gateway's authorization middleware leniently pre-reads ``ray_job_id`` and
+  answers ``ResourceNotFound: ray job not found`` *before* the strict proto
+  unmarshal runs, so an id that resolves to nothing masks every ``unknown
+  field`` the body would otherwise report. A **real id the caller owns** does
+  not: the pre-read succeeds, the unmarshal runs, and the ruler reads true.
+  Probing against your own live object is therefore the strongest form of this
+  test, not a disqualified one — it is the only form that can also observe what
+  an accepted field *does*.
 - Workspace scoping is a **top-level** ``workspace_id``. The nested ``filter``
   envelope that ``workspace.*`` Actions require is rejected here.
 - There is no ``CreateJobConsole`` variant — ``ray`` answers ``InvalidAction``
   for it, so creation goes through plain ``CreateJob``.
+- ``UpdateJob`` exists but is metadata only, **verified against a live owned
+  job** rather than inferred: ``name`` and ``description`` round-trip through
+  ``GetJob`` (independently — a call carrying one leaves the other intact, and
+  a bare ``{ray_job_id}`` is a no-op), while ``worker_groups``, ``head_node``,
+  ``entrypoint``, ``min_replicas``, ``max_replicas``, ``replicas``,
+  ``task_priority``, ``project_id`` and every replica-count spelling probed
+  alongside them answer ``unknown field``. It is also gated on the job being
+  stopped — a live one answers ``Conflict: Ray Job 正在运行中``. No scaling
+  Action exists next to it either (``ScaleJob``, ``UpdateJobScale``,
+  ``ScaleWorkerGroup``, ``UpdateWorkerGroup``, ``ResizeJob`` and friends are all
+  ``InvalidAction``). The elastic range is fixed at creation, so ``UpdateJob``
+  stays unwrapped: renaming is the only thing it offers, and this CLI addresses
+  Ray jobs by name.
+- **State-machine rejections arrive as ``InternalError``, not ``Conflict``** —
+  see :data:`_STATE_CONFLICT_MARKER`.
 
 Create payload shape was reverse-engineered from the SPA's own submit handler
 (``/assets/constant.BP_zw-df.js``) and is accepted verbatim by v2. Wire
@@ -39,20 +63,45 @@ from inspire.platform.web.browser_api.core import (
 from inspire.platform.web.session import WebSession, get_web_session
 
 __all__ = [
+    "RAY_LOG_MAX_WINDOW_MS",
     "RayJobInfo",
     "create_ray_job",
     "delete_ray_job",
     "get_ray_job_detail",
     "list_ray_job_events",
     "list_ray_job_instances",
+    "list_ray_job_logs",
     "list_ray_job_scaling_histories",
     "list_ray_job_users",
     "list_ray_jobs",
+    "start_ray_job",
     "stop_ray_job",
 ]
 
 
 _RAY_JOB_REFERER_PATH = "/jobs/ray"
+
+# The sibling log Actions on this backend (`train` / `hpc` `GetJobLog`) refuse
+# any window wider than a month. `ray` cannot be probed for it — instance-name
+# resolution runs first and rejects every synthetic pod name — so callers clamp
+# defensively rather than discover the ceiling from a live failure.
+RAY_LOG_MAX_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
+
+
+# `ray` refuses an operation the job's status does not allow with
+# `InternalError: RayJob status not allow <verb>`, where its sibling routes use
+# `Conflict`. That matters twice over: `InternalError` is on the transient list,
+# so the wire text reads as "the platform is briefly unwell" when it actually
+# means "this can never work from here", and the message itself says nothing a
+# caller can act on. Verified live on an owned job — `StartJob` on anything but
+# STOPPED and `StopJob` on an already-STOPPED job both answer it, while
+# `UpdateJob` on a live job answers a proper `Conflict`.
+_STATE_CONFLICT_MARKER = "status not allow"
+
+_STATE_CONFLICT_REASONS = {
+    "start": "only a stopped Ray job can be started",
+    "stop": "only a live Ray job can be stopped",
+}
 
 
 def _ray_referer() -> str:
@@ -125,8 +174,10 @@ def _ray_v2(
 ) -> dict[str, Any]:
     """Call one `/api/v2/ray` Action and return its unwrapped ``Result``.
 
-    Keeps the ``Ray Job <context> failed`` message shape the v1 wrapper used so
-    command-layer error text is unchanged.
+    Errors surface as ``Ray Job <context> failed``, which is the shape the
+    command layer's error text expects. The one exception is the status
+    rejection described at :data:`_STATE_CONFLICT_MARKER`, restated as the
+    state conflict it is instead of passed through as a server fault.
     """
     data = _request_json(
         session,
@@ -139,16 +190,26 @@ def _ray_v2(
     try:
         return _v2_result(data)
     except ValueError as exc:
+        if _STATE_CONFLICT_MARKER in str(exc):
+            reason = _STATE_CONFLICT_REASONS.get(
+                context, "the job's current status does not allow it"
+            )
+            raise ValueError(f"Ray Job {context} failed: {reason}.") from exc
         raise ValueError(f"Ray Job {context} failed: {exc}") from exc
 
 
-def _ray_page(payload: dict[str, Any]) -> tuple[list[dict], Optional[int]]:
+def _ray_page(
+    payload: dict[str, Any],
+    list_key: str = "items",
+) -> tuple[list[dict], Optional[int]]:
     """Split a paged ray Result into its item list and total.
 
     ``ray`` reports ``total`` as a string ("3"), so it is coerced here rather
-    than at each call site.
+    than at each call site. The list key is per-Action and never inferred:
+    every Action on this route answers ``items`` except ``GetJobLog``, which
+    answers ``logs``.
     """
-    items = payload.get("items")
+    items = payload.get(list_key)
     if not isinstance(items, list):
         items = []
     items = [item for item in items if isinstance(item, dict)]
@@ -261,12 +322,41 @@ def get_ray_job_detail(
     )
 
 
+def start_ray_job(
+    ray_job_id: str,
+    *,
+    session: Optional[WebSession] = None,
+) -> dict[str, Any]:
+    """Restart a stopped Ray job from its stored configuration.
+
+    The counterpart to :func:`stop_ray_job`: the platform keeps the head and
+    worker-group spec on the record, so restarting needs nothing but the id.
+    Verified live over repeated stop/start cycles on an owned job: the returned
+    ``ray_job`` object matches a fresh ``GetJob`` field for field, and the job
+    leaves STOPPED for PENDING with ``updated_at`` and ``started_at`` both
+    moving. A job that is not STOPPED is refused — see
+    :data:`_STATE_CONFLICT_MARKER` for the shape that refusal arrives in.
+    """
+    ray_job_id = str(ray_job_id or "").strip()
+    if not ray_job_id:
+        raise ValueError("Ray job selection is required.")
+
+    if session is None:
+        session = get_web_session()
+
+    return _ray_v2(session, "StartJob", {"ray_job_id": ray_job_id}, context="start")
+
+
 def stop_ray_job(
     ray_job_id: str,
     *,
     session: Optional[WebSession] = None,
 ) -> None:
-    """Stop a running Ray job (does not remove the record)."""
+    """Stop a running Ray job (does not remove the record).
+
+    Not idempotent: a job that is already STOPPED is refused in the shape
+    :data:`_STATE_CONFLICT_MARKER` describes.
+    """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
         raise ValueError("Ray job selection is required.")
@@ -355,25 +445,37 @@ def create_ray_job(
 def list_ray_job_events(
     ray_job_id: str,
     *,
+    pod_names: Optional[list[str]] = None,
     page_num: int = 1,
     page_size: int = 200,
     max_pages: int = 1,
     sort_ascending: bool = True,
     session: Optional[WebSession] = None,
 ) -> list[dict]:
-    """Fetch job-level events for a Ray cluster.
+    """Fetch events for a Ray cluster: controller rows and pod rows together.
 
-    Unlike HPC / train_job events (which take a generic
-    ``{filter:{object_ids, object_type}, sorter:[...]}`` envelope), Ray's
-    events endpoint is bespoke: body is ``{ray_job_id, page_num, page_size,
-    sorter}``. No ``object_type`` — passing one returns ``参数错误``.
+    Ray's envelope is its own — ``{ray_job_id, page_num, page_size, sorter}``,
+    where the resource key is `ray_job_id` and not the `filter.object_ids` pair
+    that carries it on train / HPC. But one call already answers **both**
+    levels: measured on a live two-pod cluster, 3 rows come back with
+    ``object_type: "job"`` (``CreatedRayCluster`` / ``CreatedService``, from
+    ``rayjob-controller``) and 14 with ``object_type: "instance"``, whose
+    ``object_id`` is the pod name. No per-pod fan-out is needed here, unlike
+    ``hpc.ListSlurmdPodEvent``.
 
-    Returned events follow the K8s-event shape: ``reason`` / ``type`` /
-    ``message`` / ``first_timestamp`` / ``last_timestamp`` / ``count``. The
-    critical signals are ``CreatedRayCluster`` (Normal) on submit and
-    ``FailedScheduling`` (Warning) when the scheduler can't bind a pod to a
-    node — the latter is almost always how you diagnose a job stuck in
-    PENDING.
+    ``pod_names`` narrows to those instances through ``filter.object_ids``,
+    which is honoured (and drops the controller rows with it); an id the
+    cluster does not know answers an empty list. ``filter.object_type`` accepts
+    the literal ``instance`` but nothing else useful — ``RAY_JOB_INSTANCE`` and
+    ``ray_job`` both answer zero rows — so the pod list is the filter and the
+    type is left off.
+
+    Rows follow the K8s-event shape (``reason`` / ``type`` / ``message`` /
+    ``count`` / ``first_timestamp`` / ``last_timestamp``) with the reporter in
+    ``source_component`` rather than ``from``. The critical signals are
+    ``CreatedRayCluster`` (Normal) on submit and ``FailedScheduling``
+    (Warning) when the scheduler can't bind a pod to a node — the latter is
+    almost always how you diagnose a job stuck in PENDING.
     """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
@@ -385,21 +487,32 @@ def list_ray_job_events(
     if max_pages < 1:
         raise ValueError("max_pages must be positive")
 
+    clean_pods = list(
+        dict.fromkeys(
+            str(name or "").strip() for name in (pod_names or []) if str(name or "").strip()
+        )
+    )
+    if pod_names is not None and not clean_pods:
+        raise ValueError("Instance selection is required.")
+
     if session is None:
         session = get_web_session()
 
     sort = "ascend" if sort_ascending else "descend"
     events: list[dict] = []
     for current_page in range(page_num, page_num + max_pages):
+        body: dict[str, Any] = {
+            "ray_job_id": ray_job_id,
+            "page_num": current_page,
+            "page_size": page_size,
+            "sorter": [{"field": "last_timestamp", "sort": sort}],
+        }
+        if clean_pods:
+            body["filter"] = {"object_ids": clean_pods}
         payload = _ray_v2(
             session,
             "ListJobEvents",
-            {
-                "ray_job_id": ray_job_id,
-                "page_num": current_page,
-                "page_size": page_size,
-                "sorter": [{"field": "last_timestamp", "sort": sort}],
-            },
+            body,
             context="events",
         )
         page_events, total = _ray_page(payload)
@@ -451,19 +564,88 @@ def list_ray_job_instances(
     return items, total if total is not None else len(items)
 
 
+def list_ray_job_logs(
+    *,
+    pod_names: list[str],
+    start_timestamp_ms: int | str,
+    end_timestamp_ms: int | str,
+    page_size: int = 200,
+    session: Optional[WebSession] = None,
+) -> tuple[list[dict], int]:
+    """Fetch aggregated program output for a Ray cluster's pods.
+
+    Action: ``GetJobLog``. This is the one Action on ``/api/v2/ray`` that does
+    **not** take ``ray_job_id`` — the field is not in its contract at all
+    (``unknown field "ray_job_id"``), which inverts the rule every sibling
+    Action follows. Its declared id key is ``job_id``, exactly as ``discovery``
+    says, but that key does not scope anything: sent alone the Action answers
+    ``InternalError``, and sent alongside pod names it neither narrows nor
+    resolves the query. The console omits it for ``ray`` and so do we.
+
+    **The query is scoped by ``filter.podNames``**, which the backend resolves
+    back to exactly one Ray job — a mixed list answers ``InvalidParameter:
+    Invalid instance names, the ray job ids length of instances expect 1``.
+    That resolution is also where the permission check lands, so an empty pod
+    list is not a harmless no-op: the platform answers a clean
+    ``{"logs": [], "total": 0}`` for it, which reads exactly like "this job
+    produced no output". Callers therefore never get to make that mistake —
+    an empty ``pod_names`` raises here instead.
+
+    ``start_timestamp_ms`` / ``end_timestamp_ms`` are string fields carrying
+    epoch milliseconds (an int is rejected with ``invalid value for string
+    field endTimestampMs``), matching ``train`` / ``hpc``. No sorter is sent;
+    records are ordered client-side.
+    """
+    clean_pods = [str(name or "").strip() for name in pod_names if str(name or "").strip()]
+    if not clean_pods:
+        raise ValueError(
+            "Ray job log selection is required: at least one instance name."
+        )
+
+    if session is None:
+        session = get_web_session()
+
+    payload = _ray_v2(
+        session,
+        "GetJobLog",
+        {
+            "page_size": page_size,
+            "filter": {
+                "podNames": clean_pods,
+                "start_timestamp_ms": str(start_timestamp_ms),
+                "end_timestamp_ms": str(end_timestamp_ms),
+            },
+        },
+        context="logs",
+    )
+    logs, total = _ray_page(payload, "logs")
+    return logs, total if total is not None else len(logs)
+
+
 def list_ray_job_scaling_histories(
     ray_job_id: str,
     *,
+    worker_group_name: str = "",
     page_num: int = 1,
     page_size: int = 50,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict], int]:
     """Fetch the elastic-scaling event history for a Ray job.
 
-    The SPA hits ``ListJobScalingHistories`` to render the
-    "扩缩容历史" tab on a Ray detail page — each entry is a worker-group
-    instance count change driven by platform-side load signals. Useful for
-    post-mortem on whether ``min_replicas`` / ``max_replicas`` ever moved.
+    The SPA hits ``ListJobScalingHistories`` to render the "扩缩容历史"
+    popover on a Ray detail page — each entry is a worker-group replica-count
+    change driven by platform-side load signals. This is the only view of
+    whether the elastic range a job was submitted with (``min_replicas`` /
+    ``max_replicas``) was ever exercised.
+
+    Entries carry ``event_time`` (epoch milliseconds), ``event_type``
+    (``initialized`` / ``scale_up`` / ``scale_down``) and the
+    ``replicas_before`` / ``replicas_after`` pair.
+
+    ``worker_group_name`` is a **top-level** filter, not a nested ``filter``
+    envelope — this Action declares neither ``filter`` nor ``sorter``. The
+    console always sends it (empty string when unfiltered), and empty means
+    every group.
     """
     ray_job_id = str(ray_job_id or "").strip()
     if not ray_job_id:
@@ -479,6 +661,7 @@ def list_ray_job_scaling_histories(
             "ray_job_id": ray_job_id,
             "page_num": page_num,
             "page_size": page_size,
+            "worker_group_name": str(worker_group_name or "").strip(),
         },
         context="scaling_histories",
     )

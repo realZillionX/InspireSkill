@@ -114,11 +114,11 @@ inspire uninstall --purge-runtime # 连共享的 Playwright 浏览器缓存一�
 
 ```bash
 inspire account add <name>
-inspire config show --compact
+inspire account check
 inspire init
 cd /path/to/your-repo
 inspire init --scope project
-inspire resources availability --workspace all --include-cpu
+inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
 `inspire init` 默认做账号级全局发现，写入平台 Catalog 和默认 Path Alias；`--scope project` 用于当前仓库的 Project Context 和 Path Alias 覆盖。
@@ -129,7 +129,138 @@ inspire resources availability --workspace all --include-cpu
 
 # 能力一览
 
-<table> <tr> <td width="50%"> <h4>📝 Notebook 统一入口</h4> 全链路命令化：<code>create / list / status / start / stop / ssh / connection / ssh-config / exec / shell / scp / install-deps / proxy-url / path / metrics / events / lifecycle</code>。容器里部署好的服务用 <code>proxy-url --port</code> 拿到外部地址直接请求。显卡不是 <code>H100</code> / <code>H200</code> 的 Notebook 可使用 OpenSSH / SCP / SSH Config；<code>H100</code> / <code>H200</code> 受限 Notebook 使用 JupyterTerminal 执行命令，文件流转以 <code>/inspire/...</code> 共享路径为边界，并通过支持 SSH 的 Notebook 使用 <code>notebook scp</code> 或外部 <code>rsync</code> 完成本地上传/下载。连接类命令会跨账号解析本地已缓存的 Notebook Connection，不要求先切 Active Account。</td> <td width="50%"> <h4>🚀 HPC 任务分派</h4> <code>inspire hpc create -c &lt;slurm-body&gt;</code> 只写 Slurm 正文 + 显式 <code>srun</code>，平台自动补 <code>#SBATCH</code> 头。两层独立：节点资源用 <code>--quota gpu,cpu,mem</code>（CLI 自动解析到平台 Quota Row），Slurm 调度用 <code>--number-of-tasks / --cpus-per-task / --memory-per-cpu</code>。</td> </tr> <tr> <td> <h4>🏃 GPU 后台任务（平台名：分布式训练）</h4> 平台官方把 <code>job</code> 这一路叫“分布式训练” / Distributed Training；提交 Job 时只要求 GPU 计算资源和启动命令，不强制程序必须是训练。<code>inspire job</code> 可用于一张卡、多卡、单节点、多节点等后台 GPU 任务：分布式训练 / 批量推理 / 并发 Worker Pool 都走这里（<code>hpc</code> 对应 CPU Slurm）。提交统一使用 <code>job create</code>，可用 <code>--enable-notification</code> 开启当前用户绑定飞书账号的状态通知；需要跟日志时用 <code>job logs &lt;name&gt; --workspace &lt;workspace&gt; --follow</code>，健康度用 <code>job metrics &lt;name&gt; --workspace &lt;workspace&gt;</code> 看 GPU、显存、CPU、内存、I/O 和多 Pod 负载是否同步。</td> <td> <h4>📊 资源情报</h4> <code>resources availability --workspace all --include-cpu</code> / <code>resources nodes --workspace all</code> / <code>&lt;workload&gt; quota --workspace &lt;name&gt;</code>：三板斧定位哪个集群有空，支持透支式申请。余量和规格始终读 Live 数据；<code>inspire cache status / refresh / clear</code> 管的是本地加速缓存——Name 解析索引、Quota 目录和 Notebook 显卡型号，三条命令都支持 <code>--resource &lt;kind&gt;</code> 分类操作。</td> </tr> <tr> <td> <h4>🗂 镜像管理</h4> <code>image list / detail / save / register / set-visibility / delete</code>，创建 Notebook、Job、HPC、Ray 或 Serving 时显式传 <code>--image</code>；<code>hpc create --image-type</code> 明确可见性。</td> <td> <h4>🛰 模型部署（Serving）</h4> <code>inspire serving create / list / status / start / stop / configs / events / instances / metrics</code>：覆盖模型部署服务的创建、列表、状态、启停、可用配置、事件、实例和资源指标；创建前用 <code>serving quota --workspace &lt;workspace&gt;</code> 选 Quota。</td> </tr> <tr> <td> <h4>📦 模型注册表（Model）</h4> <code>inspire model list / register / status / versions</code>：浏览或注册 Workspace 下的模型 + 每个模型的历史版本，带 vLLM 兼容标记 / 创建时间；之前只能在平台网页里翻。</td> <td> <h4>👤 权限</h4> <code>inspire account permissions --workspace &lt;workspace&gt;</code>：看清当前账号在某 Workspace 下实际授予的权限码（<code>job.trainingJob.create</code> 等），提交前先确认自己有没有这个动作的权限。</td> </tr> <tr> <td width="50%"> <h4>📈 指标、事件 & 生命周期</h4> <code>notebook metrics</code> / <code>job metrics</code> / <code>hpc metrics</code> / <code>ray metrics</code> / <code>serving metrics</code> 读取平台 <code>资源视图</code> 的历史时间序列，默认输出 PNG 趋势图，<code>--no-plot --sparkline</code> 适合终端快速判断；<code>job events</code> / <code>hpc events</code> / <code>notebook events</code> / <code>ray events</code> / <code>serving events</code> 拉平台 Events，<code>job instances</code> / <code>hpc instances</code> / <code>ray instances</code> / <code>serving instances</code> 看 Live Pod / Component 清单，<code>notebook lifecycle &lt;name&gt;</code> 看一个实例的多次启停记录。</td> <td width="50%"> <h4>🗝 多账号（一账号一目录）</h4> <code>inspire account add / list / use / rename / current / remove</code>：每个账号的 <code>config.toml</code>、SSH Tunnel Bridges 和登录缓存都在独立目录 <code>~/.inspire/accounts/&lt;name&gt;/</code>，活动账号由 <code>~/.inspire/current</code> 一行决定。不再有 <code>[accounts."&lt;user&gt;"]</code> 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。Notebook 连接类命令的 <code>--account &lt;name&gt;</code> 使用本地 Account Alias，不是平台登录用户名；<code>all</code> 是跨账号扫描 Selector。</td> </tr> </table>
+按能力域折叠，点开你关心的那一个。命令组、子命令、参数和默认值一律以 `inspire <group> <subcommand> --help` 为准。
+
+<details>
+<summary><b>📝 Notebook 统一入口</b> —— 交互工作台、连接、文件流转、把跑通的环境固化成镜像</summary>
+
+全链路命令化：`create / list / status / start / stop / ssh / connection / ssh-config / exec / shell / scp / install-deps / proxy-url / path / metrics / events / lifecycle / save-image / cancel-save-image`。容器里部署好的服务用 `proxy-url --port` 拿到外部地址直接请求。
+
+把跑通的环境固化成镜像是 Notebook 自己的生命周期事件：`save-image` 会先报平台估算的快照体积（`--dry-run` 只估不存），保存期间该 Notebook 不可操作，中途要拿回来用 `cancel-save-image`——已经打出「等待推送」之后取消仍然生效。默认是在起点镜像上再堆一层，反复迭代的环境层数会一路累积，`--flatten` 把结果压成单层：实测**压平反而更小**（8 层 331.78 MB → 1 层 286.90 MB），多出来的时间落在镜像构建上而不落在 Notebook 上，两种保存都在同一时刻把容器还给你。
+
+显卡不是 `H100` / `H200` 的 Notebook 可使用 OpenSSH / SCP / SSH Config；`H100` / `H200` 受限 Notebook 使用 JupyterTerminal 执行命令，文件流转以 `/inspire/...` 共享路径为边界，并通过支持 SSH 的 Notebook 使用 `notebook scp` 或外部 `rsync` 完成本地上传/下载。连接类命令会跨账号解析本地已缓存的 Notebook Connection，不要求先切 Active Account。
+
+</details>
+
+<details>
+<summary><b>🏃 GPU 后台任务（平台名：分布式训练）</b> —— 一张卡到多节点，后台 GPU 任务都走这里</summary>
+
+平台官方把 `job` 这一路叫“分布式训练” / Distributed Training；提交 Job 时只要求 GPU 计算资源和启动命令，不强制程序必须是训练。`inspire job` 可用于一张卡、多卡、单节点、多节点等后台 GPU 任务：分布式训练 / 批量推理 / 并发 Worker Pool 都走这里（`hpc` 对应 CPU Slurm）。
+
+提交统一使用 `job create`，可用 `--enable-notification` 开启当前用户绑定飞书账号的状态通知；需要跟日志时用 `job logs <name> --workspace <workspace> --follow`，健康度用 `job metrics <name> --workspace <workspace>` 看 GPU、显存、CPU、内存、I/O 和多 Pod 负载是否同步。
+
+</details>
+
+<details>
+<summary><b>🚀 HPC 任务分派</b> —— 只写 Slurm 正文，两层规格由 CLI 在提交前挡下</summary>
+
+`inspire hpc create -c <slurm-body>` 只写 Slurm 正文 + 显式 `srun`，平台自动补 `#SBATCH` 头。两层独立：节点资源用 `--quota gpu,cpu,mem`（CLI 自动解析到平台 Quota Row），Slurm 调度用 `--number-of-tasks / --cpus-per-task / --memory-per-cpu`。
+
+两层之间平台和网页端都不校验，规格不匹配时要么 `FAILED` 且日志和事件里都没有原因，要么一直 `RUNNING` 却什么都没跑，所以 `hpc create` 在提交前自己挡下这些组合。`hpc status` 的 `Steps` 是判断「程序到底跑没跑」的字段——正文忘了 `srun` 的任务照样报成功，但 `Steps` 是 `0/0`。
+
+</details>
+
+<details>
+<summary><b>🧬 弹性计算（Ray）</b> —— Head 加可伸缩 Worker Group，以及弹性到底动没动过</summary>
+
+`inspire ray create / list / status / start / stop / delete / events / instances / shell / logs / metrics / scaling`：一个 Head 加多个可伸缩 Worker Group。停掉的 Job 保留完整集群规格，`ray start` 原样拉回来，不需要重新指定；平台在这里会「受理但不执行」，所以命令以状态真的离开 `STOPPED` 为准，没动就报失败。
+
+弹性是 Ray 存在的理由，而「`min` / `max` 到底动没动过」要用 `ray scaling` 才看得到：它按时间列出每个 Worker Group 的每一次副本数变更，空的历史说明这个弹性区间从来没被用到。
+
+</details>
+
+<details>
+<summary><b>🛰 模型部署（Serving）</b> —— 部署、伸缩、回滚，以及只有请求侧才看得见的那一半</summary>
+
+`inspire serving create / list / status / start / stop / scale / scale-history / versions / rollback / configs / events / instances / shell / logs / metrics / api-metrics`：覆盖模型部署服务的创建、列表、状态、启停、副本伸缩与伸缩历史、部署历史与回滚、可用配置、事件、实例、日志和指标；创建前用 `serving quota --workspace <workspace>` 选 Quota，用 `model deploy-config` 确认规格下限。
+
+`metrics` 看资源占用，`api-metrics` 看请求量、成功率和延迟——只有后者能把「没人调用」和「一直调用一直失败」分开。没重新部署过而延迟变了，先看 `scale-history`：掉下去的副本数、没落地的自动伸缩只出现在这里，`versions` 里一个字都没有。
+
+</details>
+
+<details>
+<summary><b>📉 TensorBoard</b> —— 把 loss 和 eval 曲线当数字读回来，不需要有人去看一眼图</summary>
+
+`inspire tensorboard create / list / status / start / stop / delete / tags / scalars`：TensorBoard 在平台上是一等对象——计算组单独声明 `tensorboard` 任务类型，board 既能挂在训练任务上，也能对任意一个 summary 目录单独建；规格由平台固定成 1 CPU / 2 GiB，没有 Quota 也没有镜像要选。
+
+关键是 `tags` 和 `scalars` 直接读运行中的 board：Agent 自己建一个 board 指向训练目录，再把 loss 和 eval 曲线当数字读回来——首尾值、step 区间、最小最大值，`--points N` 给最后 N 个点——不需要浏览器，也不需要有人替它去看一眼图。`metrics` 回答「这个任务在平台侧还健康吗」，这里回答「模型训得怎么样」。
+
+</details>
+
+<details>
+<summary><b>📈 指标、事件、日志、实例 & 远端 PTY</b> —— 「这东西为什么没起来」分几层查</summary>
+
+`notebook metrics` / `job metrics` / `hpc metrics` / `ray metrics` / `serving metrics` 读取平台 `资源视图` 的历史时间序列，默认输出 PNG 趋势图，`--no-plot --sparkline` 适合终端快速判断。
+
+`job events` / `hpc events` / `notebook events` / `ray events` / `serving events` 拉平台 Events——不加参数就把控制器事件和每个 Pod 的事件合成一条时间线（`--instance` 收窄到某个实例，`--workload-level` 反过来只留控制器那一半），因为「这东西为什么没起来」的答案通常在 Pod 那一半。
+
+`job logs` / `hpc logs` / `ray logs` / `serving logs` 读程序自己的输出，四条共用同一套预算和同一份 JSON schema；`job instances` / `hpc instances` / `ray instances` / `serving instances` 看 Live Pod / Component 清单和每个 Pod 落在哪个节点，`notebook lifecycle <name>` 看一个实例的多次启停记录。
+
+读完还要进去看的时候，`job shell` / `hpc shell` / `ray shell` / `serving shell` 把本地 stdin 接到实例里的远端 PTY（`exit` 退出、`Ctrl+]` 断开），默认进哪个实例按 Workload 定——HPC 进 `launcher`（`srun` 在那儿跑），Ray 进 head（驱动和 `ray status` 在那儿），Serving 进第一个运行中的副本，要点名用 `--instance`。
+
+节点归属还有任务级的一层：`job` / `hpc` / `serving status` 直接列出落点节点（`job` 另给创建时的 Pin 与排除节点），`notebook status` 的 `Node` 附带该节点的健康状态。排查坏节点、复现实验、定位掉队的 Worker 都从这里开始。
+
+</details>
+
+<details>
+<summary><b>📊 资源情报</b> —— 哪个组有空、余量去哪了、能抢回来多少、拿到手能留多久</summary>
+
+`resources availability --workspace <name> --include-cpu` / `resources nodes --workspace <name>` / `resources usage --workspace <name>` / `resources policy --workspace <name>` / `<workload> quota --workspace <name>`：定位一个 Workspace 里哪个计算组有空，支持透支式申请。`<workload> quota` 回答「有哪些合法档位」，`availability` 回答「这些档位现在还有没有空」，`usage` 回答「余量去哪了、其中哪些能抢回来」——它的 `Reclaimable` 列是持有者手里有多少卡落在以可抢占优先级提交的任务上，`--group <关键词>` 把这个判断收窄到任务真正提交进去的那个计算组，`policy` 回答「拿到手能留多久——空闲多久被回收、有没有运行时长上限」。
+
+`<workload> quota` 的 `Priority` 列还给出这一行接受哪些任务优先级：`分布式训练空间` 的训练区碎卡档只调度低优先级（可被抢占），整节点档才不受限，创建时 CLI 按这一列先做预检，不用等平台拒绝；`Points/h` 列给出这一行每实例每小时烧多少点券——只有 GPU 计费，CPU-only 的行一律是 `0`，而 GPU 按卡型定价（实测 H100 / H200 是 1 点券/卡/小时，4090 是 0.33）。
+
+这些命令一律一次只看一个 Workspace——档位、余量、回收策略和占用都是按 Workspace 定义的事实，跨空间扫一遍答不出任何一个可执行的决定；还接受 `--workspace all` 的只剩「按名字找东西」那一类（`<workload> list` / `account permissions`），因为不知道东西在哪个空间时本来就给不出空间名。
+
+机器本身发生了什么是另一层：`resources node-events <节点名>` 是平台上唯一按节点而不是按工作负载组织的事件源，内核 OOM kill、Cordon / Uncordon、重启、`NodeNotSchedulable` 都在这里，「同一台机器上反复失败」此前在 CLI 里无处可查。
+
+余量和规格始终读 Live 数据；`inspire cache status / refresh / clear` 管的是本地加速缓存——Name 解析索引、Quota 目录和 Notebook 显卡型号，三条命令都支持 `--resource <kind>` 分类操作。正常情况下 `refresh` 根本不需要跑（Workload 名字后台一直在补，其余的解析一次就自己缓存了），所以它**不接受裸形式**，必须用 `--resource` / `--workspace` / `--name` 说明刷哪一块；`cache status` 里 Workload 那几行常态是 `partial`（后台只读最新的一头），要看的信号是 `empty`——刷过、还在有效期内、却一个名字都拿不出来。
+
+</details>
+
+<details>
+<summary><b>🗂 镜像管理</b> —— Registry 边界沿着卡的类型走，可见性有一道单向门</summary>
+
+`image list / detail / register / set-visibility / delete`，创建 Notebook、Job、HPC、Ray 或 Serving 时显式传 `--image`；`hpc create --image-type` 明确可见性。
+
+镜像存在 Registry 里而不是 Workspace 里，**多个 Workspace 正常共用同一份 Registry**——这一组都要 `--workspace`，因为那是平台唯一的指定 Registry 的方式，它是路标不是分区，所以 `notebook save-image --workspace X` 存出的镜像在同一个 Registry 上的每个 Workspace 里都看得到。真正会挡住人的是 Registry 边界，而这条线基本沿着卡的类型走：国产卡空间和 NVIDIA 空间读的是两份不相交的目录。一个 Registry 动辄几千个镜像，用 `image list --keyword` 按名字搜。
+
+把跑通的 Notebook 固化成镜像不在这一组——那是 Notebook 的生命周期事件，走 `notebook save-image`。可见性有 `private` / `project` / `public` 三档，**改成 public 是单向门**：之后既删不掉也改不回私有，只有平台管理员能清理。
+
+</details>
+
+<details>
+<summary><b>📦 模型注册表（Model）</b> —— 模型版本、部署规格下限、删之前的占用核对</summary>
+
+`inspire model list / register / status / versions / deploy-config / delete`：浏览或注册 Workspace 下的模型 + 每个模型的历史版本，带 vLLM 兼容标记 / 创建时间；`deploy-config` 给出某个版本装得下权重的最小节点规格，正好是 `serving create --quota` 的下限。
+
+`status` 还会说出哪些推理服务仍占着这个版本，换版本或删模型不用再盲操作；`delete` 删整个条目连同全部版本，删之前逐版本核对占用，有服务还可能起来就点名拒绝。之前只能在平台网页里翻。
+
+</details>
+
+<details>
+<summary><b>📚 官方数据集</b> —— 数据广场检索与 <code>--dataset</code> 只读挂载</summary>
+
+`inspire dataset list / show / tags / validate / applications`：数据广场是和启智并列的独立平台，只共用同一套 SSO，启智那侧没有检索接口。CLI 用现有登录态走一次 CAS 握手，直接检索目录、读版本、看当前账号有没有挂载权限。
+
+确认后在 `notebook / job / hpc create` 上用 `--dataset <数据集名>:<版本名>` 只读挂载到 `/inspire/dataset/<数据集名>/<版本名>`，创建前平台逐条校验，不会先建出一个缺数据的 Workload。数据集用名字寻址，数据广场内部的数字 ID 拿去挂载会被拒。`--tag` 认的是固定中文词，全量用 `dataset tags` 列（52 个，分属五种模态），猜不出来；没有挂载权限时申请仍然只在网页端，但 `dataset applications` 能读到申请走到哪一步。
+
+</details>
+
+<details>
+<summary><b>👤 权限</b> —— 提交前先确认自己有没有这个动作的权限</summary>
+
+`inspire account permissions --workspace <workspace>`：看清当前账号在某 Workspace 下实际授予的权限码（`job.trainingJob.create` 等），提交前先确认自己有没有这个动作的权限。
+
+</details>
+
+<details>
+<summary><b>🗝 多账号（一账号一目录）</b> —— 切账号 = 改一个文件</summary>
+
+`inspire account add / list / use / rename / current / remove`：每个账号的 `config.toml`、SSH Tunnel Bridges 和登录缓存都在独立目录 `~/.inspire/accounts/<name>/`，活动账号由 `~/.inspire/current` 一行决定。
+
+不再有 `[accounts."<user>"]` 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。Notebook 连接类命令的 `--account <name>` 使用本地 Account Alias，不是平台登录用户名；`all` 是跨账号扫描 Selector。
+
+</details>
 
 ---
 
@@ -200,17 +331,18 @@ inspire resources availability --workspace all --include-cpu
 - [`references/project-context.md`](references/project-context.md)：项目初始化问询（Project / Workspace / Paths / Image）、`INSPIRE.md` 资产合同和项目信息持续维护。
 - [`references/resources.md`](references/resources.md)：Workspace、Compute Group、规格三元组、实时资源和 Workload Profile 边界。
 - [`references/paths.md`](references/paths.md)：共享盘作用域、存储池、挂载隔离、Path Alias 和远端路径边界。
+- [`references/dataset.md`](references/dataset.md)：数据广场检索、官方数据集的版本与访问权限、`--dataset` 只读挂载语义。
 - [`references/internal-sources.md`](references/internal-sources.md)：联网准备动线、SII 内部源入口和镜像固化策略。
 - [`references/notebook.md`](references/notebook.md)：Notebook 作为交互工作台、连接方式、文件流转、Proxy 和观察边界。
-- [`references/compute-workloads.md`](references/compute-workloads.md)：GPU Job、CPU HPC、Ray、Serving 的适用边界、调度语义和观察闭环。
+- [`references/compute-workloads.md`](references/compute-workloads.md)：GPU Job、CPU HPC、Ray、Serving、TensorBoard 的适用边界、调度语义和观察闭环。
 - [`references/workflows.md`](references/workflows.md)：CPU 准备、数据处理、分布式训练三阶段项目流程。
 - [`references/image.md`](references/image.md)：镜像职责、保存 / 注册边界、可见性和清理原则。
 - [`references/model.md`](references/model.md)：Model Registry 与 Serving 的职责边界、注册限制和版本判断。
-- [`references/dev/browser-api-v1.md`](references/dev/browser-api-v1.md)：CLI 维护参考，覆盖 `/api/v1` 域、认证不变量和公开命令映射。
-- [`references/dev/browser-api-v2.md`](references/dev/browser-api-v2.md)：CLI 维护参考，覆盖 `/api/v2` 请求契约、权限边界与迁移约束。
+- [`references/dev/browser-api.md`](references/dev/browser-api.md)：CLI 维护参考，唯一一份接口文档——请求契约与信封、认证与 Session、分页与 scoping、探针方法、13 条路由 114 个 Action 的逐条参数与响应表、创建面字段合同、数据广场（`aip.sii.edu.cn`）与变更验收。
 - [`CONTRIBUTING.md`](CONTRIBUTING.md)：开发、测试和贡献约定。
 - [`cli/`](cli/)：CLI 源码；入口 `cli/inspire/cli/main.py`。
 - [`scripts/install.sh`](scripts/install.sh)：Curl Pipe Bash 安装器。
+- [`scripts/scan_v2_surface.py`](scripts/scan_v2_surface.py)：CLI 维护工具，把控制台前端产物里写死的 `/api/v2` 接口面抓出来和 `discovery` 对账，`--probe` 逐个探活。
 
 ---
 

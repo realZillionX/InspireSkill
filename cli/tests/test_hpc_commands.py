@@ -134,7 +134,7 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     [
         ("list", "NAME|all"),
         ("create", "NAME"),
-        ("quota", "NAME|all"),
+        ("quota", "NAME"),
         ("status", "NAME"),
         ("instances", "NAME"),
         ("stop", "NAME"),
@@ -860,7 +860,7 @@ def test_hpc_instances_requires_workspace_and_uses_num(
     assert "HPC Instances" not in result.output
     assert "Total:" not in result.output
     assert "hpc-job-001-launcher-deadbeef" not in result.output
-    assert "cpu-node-a" not in result.output
+    assert "cpu-node-a" in result.output
     assert "backend" not in result.output
 
     json_result = runner.invoke(
@@ -885,6 +885,7 @@ def test_hpc_instances_requires_workspace_and_uses_num(
                 "status": "Running",
                 "role": "launcher",
                 "type": "pod",
+                "node": "cpu-node-a",
                 "resource": "8 CPU, 64 GiB, 0 GPU",
                 "rank": 0,
             }
@@ -1087,3 +1088,188 @@ def test_hpc_stop_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     }
     assert "stopped" not in payload["data"]
     assert api.calls["stop_hpc_job"] == "hpc-job-999"
+
+
+def _hpc_create_argv(*extra: str) -> list[str]:
+    return [
+        "hpc",
+        "create",
+        "-n",
+        "hpc-demo",
+        "-c",
+        "srun python train.py",
+        "--group",
+        "CG-123",
+        "--quota",
+        "0,4,16",
+        "--workspace",
+        "cpu-room",
+        "--project",
+        "alias-project",
+        "--image",
+        "registry.local/hpc:latest",
+        *extra,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        # A task cannot span nodes: the platform accepts this and the job ends
+        # FAILED with nothing in logs or events saying why.
+        (("--cpus-per-task", "8"), "exceeds the 4 CPU of one node"),
+        # Same silent FAILED, reached through memory instead.
+        (("--memory-per-cpu", "64"), "asks for 256 GiB there against 16 GiB"),
+        # This one is worse: sbatch accepts it, the step queues forever, and the
+        # platform reports RUNNING until the workspace's runtime cap fires.
+        (("--number-of-tasks", "8"), "Slurm queues that step forever"),
+    ],
+)
+def test_hpc_create_refuses_slurm_layouts_the_nodes_cannot_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    extra: tuple[str, ...],
+    expected: str,
+) -> None:
+    api = patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    result = CliRunner().invoke(cli_main, _hpc_create_argv(*extra))
+
+    assert result.exit_code != 0
+    assert expected in result.output
+    assert "create_hpc_job" not in api.calls
+
+
+def test_hpc_create_accepts_the_layouts_that_fit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Exactly filling a node is fine, and so is spreading tasks over nodes."""
+    api = patch_hpc_config_and_auth(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(
+        cli_main, _hpc_create_argv("--number-of-tasks", "4", "--cpus-per-task", "1")
+    )
+    assert result.exit_code == 0, result.output
+    assert api.calls["create_hpc_job"]["sbatch_script"]["cpus_per_task"] == 1
+
+    result = CliRunner().invoke(
+        cli_main, _hpc_create_argv("--number-of-tasks", "2", "--instance-count", "2")
+    )
+    assert result.exit_code == 0, result.output
+    assert api.calls["create_hpc_job"]["sbatch_script"]["cpus_per_task"] == 4
+
+
+def test_hpc_create_defaults_split_the_node_across_tasks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`--number-of-tasks` alone used to build a job that queued forever."""
+    api = patch_hpc_config_and_auth(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(cli_main, _hpc_create_argv("--number-of-tasks", "4"))
+
+    assert result.exit_code == 0, result.output
+    sbatch = api.calls["create_hpc_job"]["sbatch_script"]
+    assert sbatch["cpus_per_task"] == 1
+    assert sbatch["memory_per_cpu"] == "4G"
+
+
+def test_hpc_create_warns_when_the_body_never_calls_srun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The job still succeeds, so this is a warning — but it runs no Slurm step."""
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    argv = _hpc_create_argv()
+    argv[argv.index("-c") + 1] = "python train.py"
+
+    result = CliRunner().invoke(cli_main, argv)
+
+    assert result.exit_code == 0, result.output
+    assert "never calls srun" in result.output
+    assert "Steps: 0/0" in result.output
+
+
+def test_hpc_create_dry_run_json_reports_the_priority_it_will_send(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The plan read the argument name, not the payload key, so it was always null."""
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(cli_main, ["--json", *_hpc_create_argv("--dry-run")])
+
+    assert result.exit_code == 0, result.output
+    plan = json.loads(result.output)["data"]
+    assert plan["priority"] == 10
+    assert plan["memory_per_cpu"] == "4G"
+
+
+def test_hpc_status_reports_the_step_counter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`SUCCEEDED` with `0/0` means the body ran but no Slurm step ever did."""
+    api = patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.hpc import hpc_commands as hpc_mod
+
+    monkeypatch.setattr(hpc_mod, "_resolve_hpc_name_in_workspace", lambda *a, **kw: "hpc-job-999")
+    monkeypatch.setattr(
+        hpc_mod.browser_api_module,
+        "get_hpc_job_detail",
+        lambda job_id, session=None: {
+            "job_name": "hpc-demo",
+            "status": "SUCCEEDED",
+            "steps": "0/0",
+        },
+    )
+    del api
+
+    human = CliRunner().invoke(cli_main, ["hpc", "status", "hpc-demo", "--workspace", "cpu-room"])
+    assert human.exit_code == 0, human.output
+    assert "Steps: 0/0" in human.output
+
+    payload = CliRunner().invoke(
+        cli_main, ["--json", "hpc", "status", "hpc-demo", "--workspace", "cpu-room"]
+    )
+    assert payload.exit_code == 0, payload.output
+    assert json.loads(payload.output)["data"]["steps"] == "0/0"
+
+
+def test_hpc_status_step_counter_survives_the_path_redactor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`-/1` reads as an absolute path to the scrubber and used to come out `-<redacted>`."""
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.hpc import hpc_commands as hpc_mod
+
+    monkeypatch.setattr(hpc_mod, "_resolve_hpc_name_in_workspace", lambda *a, **kw: "hpc-job-999")
+    monkeypatch.setattr(
+        hpc_mod.browser_api_module,
+        "get_hpc_job_detail",
+        lambda job_id, session=None: {
+            "job_name": "hpc-demo",
+            "status": "RUNNING",
+            "steps": "-/1",
+        },
+    )
+
+    result = CliRunner().invoke(
+        cli_main, ["--json", "hpc", "status", "hpc-demo", "--workspace", "cpu-room"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"]["steps"] == "-/1"
+
+
+def test_hpc_create_reports_a_response_without_a_job_id_as_a_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.hpc import hpc_commands as hpc_mod
+
+    monkeypatch.setattr(
+        hpc_mod.browser_api_module,
+        "create_hpc_job",
+        lambda *, payload, session=None: {"sub_code": 1, "sub_msg": "quota exhausted"},
+    )
+
+    result = CliRunner().invoke(cli_main, _hpc_create_argv())
+
+    assert result.exit_code != 0
+    assert "no job id" in result.output

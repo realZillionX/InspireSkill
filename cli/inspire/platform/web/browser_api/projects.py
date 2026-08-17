@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from inspire.platform.web.browser_api.core import (
+    _coerce_total,
     _get_base_url,
     _request_json,
     _v2_result,
@@ -44,8 +45,7 @@ def _project_v2(
     """Call one `/api/v2/project` Action and return its unwrapped ``Result``.
 
     Discovery publishes only ``GetProjectForPage``; ``ListProjects``,
-    ``GetProjectDetail`` and ``GetProjectOwners`` are live but undocumented,
-    and take the v1 request bodies unchanged.
+    ``GetProjectDetail`` and ``GetProjectOwners`` are live but undocumented.
     """
     data = _request_json(
         session,
@@ -66,8 +66,12 @@ class ProjectInfo:
     name: str
     workspace_id: str
     en_name: str = ""
-    # Quota fields
+    # Quota fields. The two budgets are different quantities and routinely
+    # differ by orders of magnitude: one project here has 233k left overall
+    # while the caller's own allowance inside it is 338. The member one is
+    # what decides whether this account's next job runs.
     member_remain_budget: float = 0.0  # Remaining budget for current user
+    remain_budget: float = 0.0  # Remaining budget of the project itself
     gpu_limit: bool = False  # Whether project-level GPU-hour limits are enforced
     priority_level: str = ""  # Priority level (HIGH, NORMAL, etc.)
     priority_name: str = ""  # Priority name (numeric string like "10", "4")
@@ -136,6 +140,7 @@ def _project_info_from_item(item: dict[str, Any], *, workspace_id: str = "") -> 
         workspace_id=resolved_workspace_id,
         en_name=item.get("en_name", ""),
         member_remain_budget=member_remain_budget,
+        remain_budget=remain_budget,
         gpu_limit=bool(item.get("gpu_limit", False)),
         priority_level=item.get("priority_level", ""),
         priority_name=item.get("priority_name", ""),
@@ -143,12 +148,6 @@ def _project_info_from_item(item: dict[str, Any], *, workspace_id: str = "") -> 
         workspace_names=tuple(workspace_names),
     )
 
-
-def _coerce_total(value: Any, fallback: int) -> int:
-    try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return fallback
 
 
 def _list_project_items(
@@ -234,11 +233,9 @@ def list_project_selector_records(
     """List raw project records with their total, one page at a time.
 
     Backs the project drop-downs in the notebook / train / model / serving
-    forms. This used to call ``POST /api/v1/project/list_v2``, which returned
-    the same rows through a lossier projection — ``created_at``, ``updated_at``,
-    ``status``, ``notebook`` and ``training_job`` all came back empty, and
-    ``gpu_limit`` / ``hpc`` / ``hpc_limit`` were missing outright.
-    ``ListProjects`` fills every one of them.
+    forms. ``ListProjects`` fills in the whole row — ``created_at``,
+    ``updated_at``, ``status``, ``notebook``, ``training_job``, ``gpu_limit``,
+    ``hpc`` and ``hpc_limit`` all arrive populated.
     """
     if session is None:
         session = get_web_session()
@@ -451,6 +448,38 @@ def get_project_detail(
         session,
         "GetProjectDetail",
         {"ProjectId": project_id},
+        referer=f"{_get_base_url()}/projects",
+        timeout=15,
+    )
+
+
+def get_project_budget_usage(
+    project_id: str,
+    *,
+    workspace_id: str = "",
+    session: Optional[WebSession] = None,
+) -> dict:
+    """Break a project's spent budget down by what spent it.
+
+    Action: `project.GetProjectBudgetUsageOverview`. `GetProjectDetail` gives
+    the total and the remainder but not where the difference went; this splits
+    `used` into `train` / `inference` / `storage` / `private_workspace`. Its
+    `remain` agrees with `GetProjectDetail`'s `remain_budget` on every visible
+    project, so it adds detail rather than a second opinion.
+
+    Every value is a **thousands-separated string** (`"233,114.18"`), not a
+    number. The sibling `GetProjectMemberBudgetUsage` needs MAINTAINER and
+    answers an empty record to ordinary members, so it is not wrapped.
+    """
+    if session is None:
+        session = get_web_session()
+    body: dict[str, Any] = {"project_id": project_id}
+    if workspace_id:
+        body["workspace_id"] = workspace_id
+    return _project_v2(
+        session,
+        "GetProjectBudgetUsageOverview",
+        body,
         referer=f"{_get_base_url()}/projects",
         timeout=15,
     )

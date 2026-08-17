@@ -125,6 +125,8 @@ def test_query_commands_require_explicit_workspace() -> None:
         ["serving", "list"],
         ["serving", "configs"],
         ["account", "permissions"],
+        ["image", "list"],
+        ["image", "detail", "demo"],
     )
     runner = CliRunner()
     for args in cases:
@@ -142,7 +144,6 @@ def test_query_commands_require_explicit_workspace() -> None:
         ["notebook", "list"],
         ["serving", "list"],
         ["model", "list"],
-        ["serving", "configs"],
         ["account", "permissions"],
     ),
 )
@@ -166,7 +167,6 @@ def test_workspace_collection_commands_share_query_contract(path: list[str]) -> 
         ["notebook", "list"],
         ["serving", "list"],
         ["model", "list"],
-        ["serving", "configs"],
         ["account", "permissions"],
     ),
 )
@@ -618,6 +618,8 @@ def test_events_help_orders_common_options_consistently(
         ["notebook", "events"],
         ["notebook", "lifecycle"],
         ["notebook", "metrics"],
+        ["notebook", "save-image"],
+        ["notebook", "cancel-save-image"],
         ["job", "status"],
         ["job", "stop"],
         ["job", "delete"],
@@ -633,7 +635,6 @@ def test_events_help_orders_common_options_consistently(
         ["serving", "delete"],
         ["serving", "metrics"],
         ["image", "detail"],
-        ["image", "save"],
         ["image", "set-visibility"],
         ["image", "delete"],
     ),
@@ -649,7 +650,8 @@ def test_resource_arguments_use_name_metavar(path: list[str]) -> None:
     "path",
     (
         ["notebook", "lifecycle"],
-        ["image", "save"],
+        ["notebook", "save-image"],
+        ["notebook", "cancel-save-image"],
         ["image", "set-visibility"],
     ),
 )
@@ -683,6 +685,7 @@ def test_destructive_commands_share_yes_help() -> None:
         ["serving", "delete"],
         ["serving", "profile", "delete"],
         ["image", "delete"],
+        ["tensorboard", "delete"],
     ):
         result = CliRunner().invoke(cli_main, [*path, "--help"])
 
@@ -861,7 +864,7 @@ def test_workload_create_help_orders_common_scheduling_selectors(
 
 def test_image_and_model_help_expose_current_visibility_and_source_options() -> None:
     runner = CliRunner()
-    save_result = runner.invoke(cli_main, ["image", "save", "--help"])
+    save_result = runner.invoke(cli_main, ["notebook", "save-image", "--help"])
     visibility_result = runner.invoke(
         cli_main,
         ["image", "set-visibility", "--help"],
@@ -870,9 +873,10 @@ def test_image_and_model_help_expose_current_visibility_and_source_options() -> 
 
     assert save_result.exit_code == 0
     assert "--workspace NAME" in save_result.output
-    assert "--visibility [private|public]" in save_result.output
+    # Three visibilities, matching the web picker's 个人可见 / 项目可见 / 公开可见.
+    assert "--visibility [private|project|public]" in save_result.output
     assert visibility_result.exit_code == 0
-    assert "--visibility [private|public]" in visibility_result.output
+    assert "--visibility [private|project|public]" in visibility_result.output
     assert register_result.exit_code == 0
     assert "--source-path PATH" in register_result.output
 

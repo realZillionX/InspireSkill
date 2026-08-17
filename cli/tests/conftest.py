@@ -39,6 +39,20 @@ def _silence_normalize_environment(monkeypatch):  # noqa: ANN001
 
 
 @pytest.fixture(autouse=True)
+def _no_orphan_state_sweep(monkeypatch):  # noqa: ANN001
+    """Report no orphaned state unless a test opts in.
+
+    `inspire update` sweeps `~/.inspire` for files no current version reads.
+    Left unstubbed it would scan the real home of whoever runs pytest, so
+    unrelated update tests would fail on that machine's leftovers.
+    `test_state_inventory.py` isolates `Path.home` and undoes this stub.
+    """
+    from inspire.accounts import state_inventory
+
+    monkeypatch.setattr(state_inventory, "find_orphan_state", lambda: [])
+
+
+@pytest.fixture(autouse=True)
 def _isolate_web_session_runtime(monkeypatch):  # noqa: ANN001
     """Keep web-session fallback state from leaking between tests."""
     from inspire.platform.web import session as web_session_module
@@ -82,6 +96,30 @@ def _stub_notebook_gpu_probe(monkeypatch, tmp_path):  # noqa: ANN001
 
     monkeypatch.setattr(transport, "notebook_gpu_model", lambda **_kwargs: "")
     monkeypatch.setattr(gpu_model, "CACHE_FILE", tmp_path / "notebook-gpu-models.json")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_resource_index(monkeypatch, tmp_path):  # noqa: ANN001
+    """Keep `ResourceIndex.for_account()` off the real `~/.inspire/`.
+
+    Anything that resolves a name — every quota loader, every `--image`, every
+    workload lookup — opens the index for the active account, and without a
+    redirect that is the index belonging to whoever runs pytest. The suite then
+    quietly depends on that machine's cache: `test_workload_quota_and_resources`
+    stubbed the platform, but a developer whose real quota scope happened to be
+    fresh got their own compute groups back instead of the stub, and the same
+    test passed or failed depending on how recently they had run the CLI.
+
+    Tests that want an index point `ResourceIndex` at their own path, which
+    goes nowhere near this.
+    """
+    from inspire.cli.utils import resource_index as resource_index_module
+
+    def _scratch_path(account=None):  # noqa: ANN001
+        name = str(account or "").strip() or "default"
+        return tmp_path / "resource-index" / name / resource_index_module.RESOURCE_INDEX_FILENAME
+
+    monkeypatch.setattr(resource_index_module, "resource_index_path", _scratch_path)
 
 
 @pytest.fixture(autouse=True)

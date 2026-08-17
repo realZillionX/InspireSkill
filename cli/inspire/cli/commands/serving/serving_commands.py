@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import logging
 import re
 from typing import Any, Optional, cast
@@ -28,7 +29,11 @@ from inspire.cli.utils.errors import (
     exit_with_error as _handle_error,
     require_confirmation,
 )
-from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, run_events_command
+from inspire.cli.utils.events import (
+    DEFAULT_EVENT_TAIL,
+    event_sort_key,
+    run_events_command,
+)
 from inspire.cli.utils.id_resolver import (
     NAME_PICK_HELP,
     forget_resource_identity,
@@ -48,14 +53,21 @@ from inspire.cli.utils.task_priority import (
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import (
+    resolve_workspace_operation_scope,
     resolve_workspace_query_scope,
     select_workspace_id,
     workspace_label,
     workspace_name_map,
 )
+from inspire.cli.utils.job_shell import JobShellError, open_job_shell
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
+from .serving_instances import (
+    ServingInstanceSelectionError,
+    select_serving_instance_views,
+    serving_instance_views,
+)
 from .public_output import (
     public_configs,
     public_operation,
@@ -222,7 +234,23 @@ def _resolve_project_id(
     )
 
 
-def _resolve_image_for_create(raw: str, *, session) -> tuple[str, str]:
+def _with_tag(name: str, version: str) -> str:
+    """Join an image name and its tag without doubling one that is already there.
+
+    ``ImageInfo.name`` already carries the tag for the images the platform
+    publishes -- `sandbox-base:ubuntu24.04-py3.12-1.0.0` with `version` set to
+    `ubuntu24.04-py3.12-1.0.0` -- so appending it again produced
+    `sandbox-base:ubuntu24.04-py3.12-1.0.0:ubuntu24.04-py3.12-1.0.0`. The
+    create itself was fine (the payload carries `mirror_id`), but `--dry-run`
+    and the JSON echo reported an image reference that resolves to nothing,
+    which is exactly the string someone copies into a script.
+    """
+    if not version or name.endswith(f":{version}"):
+        return name
+    return f"{name}:{version}"
+
+
+def _resolve_image_for_create(raw: str, *, session, workspace_id: str) -> tuple[str, str]:
     """Resolve a visible image label to the `mirror_id` used by the web UI."""
     raw = (raw or "").strip()
     if not raw:
@@ -232,7 +260,9 @@ def _resolve_image_for_create(raw: str, *, session) -> tuple[str, str]:
     target = raw.lower()
     for source in ("private", "public", "official"):
         try:
-            images = browser_api_module.list_images_by_source(source=source, session=session)
+            images = browser_api_module.list_images_by_source(
+                source=source, session=session, workspace_id=workspace_id
+            )
         except Exception as e:  # noqa: BLE001
             logger.debug("Image lookup failed for source %s: %s", source, e)
             continue
@@ -242,18 +272,24 @@ def _resolve_image_for_create(raw: str, *, session) -> tuple[str, str]:
                 str(img.name or "").strip(),
             }
             if img.name and img.version:
-                labels.add(f"{img.name}:{img.version}")
+                labels.add(_with_tag(img.name, img.version))
             if target in {label.lower() for label in labels if label}:
                 image_id = str(img.image_id or "").strip()
                 if image_id:
-                    display = f"{img.name}:{img.version}" if img.name and img.version else raw
+                    display = (
+                        _with_tag(img.name, img.version)
+                        if img.name and img.version
+                        else raw
+                    )
                     return image_id, display
                 break
     raise ConfigError(f"Unknown image: {raw!r}.")
 
 
-def _resolve_image_id(raw: str, *, session) -> str:
-    image_id, _display = _resolve_image_for_create(raw, session=session)
+def _resolve_image_id(raw: str, *, session, workspace_id: str) -> str:
+    image_id, _display = _resolve_image_for_create(
+        raw, session=session, workspace_id=workspace_id
+    )
     return image_id
 
 
@@ -468,6 +504,7 @@ def _public_serving_instances(
             ("status", ("status", "instance_status", "phase", "state")),
             ("role", ("role", "instance_type", "component")),
             ("type", ("type",)),
+            ("node", ("node", "node_name", "host_name")),
         ):
             value = _public_serving_instance_text(raw, *candidates)
             if value:
@@ -492,6 +529,7 @@ def _format_serving_instances(instances: list[dict[str, Any]]) -> str:
         for key, label in (
             ("role", "Role"),
             ("type", "Type"),
+            ("node", "Node"),
             ("resource", "Resource"),
             ("rank", "Rank"),
         )
@@ -517,6 +555,151 @@ def _format_serving_instances(instances: list[dict[str, Any]]) -> str:
         tuple(label for _, label in columns),
         table_rows,
         widths,
+    )
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+
+
+def _public_serving_version(item: dict[str, Any]) -> dict[str, Any]:
+    """Project one `ListServingVersions` row onto rollback-relevant fields."""
+    view: dict[str, Any] = {}
+    raw_version = item.get("version")
+    if raw_version not in (None, ""):
+        try:
+            view["version"] = int(str(raw_version))
+        except (TypeError, ValueError):
+            view["version"] = scrub_raw_ids(raw_version)
+    for key, candidates in (
+        ("status", ("status", "phase")),
+        ("model", ("model_name", "model_display_name")),
+        ("command", ("command",)),
+        ("created_at", ("created_at", "updated_at")),
+    ):
+        value = _public_serving_instance_text(item, *candidates)
+        if value:
+            view[key] = value
+    for key, candidates in (
+        ("replicas", ("replicas", "replica_count")),
+        ("port", ("port",)),
+    ):
+        for candidate in candidates:
+            raw = item.get(candidate)
+            if raw not in (None, ""):
+                try:
+                    view[key] = int(str(raw))
+                except (TypeError, ValueError):
+                    pass
+                break
+    resource = _serving_resource_label(item)
+    if resource:
+        view["resource"] = resource
+    return view
+
+
+def _format_serving_versions(versions: list[dict[str, Any]]) -> str:
+    if not versions:
+        return "No serving versions found."
+    columns = [("version", "Version")]
+    columns.extend(
+        (key, label)
+        for key, label in (
+            ("status", "Status"),
+            ("model", "Model"),
+            ("replicas", "Replicas"),
+            ("resource", "Resource"),
+            ("created_at", "Created"),
+        )
+        if any(item.get(key) not in (None, "") for item in versions)
+    )
+    table_rows = [
+        tuple(str(item.get(key, "-") or "-") for key, _label in columns)
+        for item in versions
+    ]
+    widths = [
+        column_width(label, [row[index] for row in table_rows], max_width=48)
+        for index, (_key, label) in enumerate(columns)
+    ]
+    rendered = render_table(
+        tuple(label for _key, label in columns),
+        table_rows,
+        widths,
+        line_char="─",
+    )
+    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+
+
+def _scale_replica_count(item: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        raw = item.get(key)
+        if raw in (None, "") or isinstance(raw, bool):
+            continue
+        try:
+            return int(str(raw))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _public_scale_history_entry(item: dict[str, Any]) -> dict[str, Any]:
+    """Project one `ListServingScaleHistory` row onto the replica delta.
+
+    The row's `id` is an internal counter with nothing to look up, so it is
+    dropped; what answers "why did latency move" is when the replica count
+    changed and what it changed from and to.
+    """
+    view: dict[str, Any] = {}
+    before = _scale_replica_count(
+        item, "replicas_before_scale", "replicas_before", "before_replicas"
+    )
+    after = _scale_replica_count(
+        item, "replicas_after_scale", "replicas_after", "after_replicas"
+    )
+    if before is not None:
+        view["replicas_from"] = before
+    if after is not None:
+        view["replicas_to"] = after
+    status = _public_serving_instance_text(item, "status", "state", "phase")
+    if status:
+        view["status"] = status
+    created_at = human_formatter.format_epoch(
+        item.get("created_at") or item.get("updated_at") or ""
+    )
+    if created_at not in ("", "-"):
+        view["created_at"] = scrub_raw_ids(created_at)
+    return view
+
+
+def _format_scale_history(entries: list[dict[str, Any]]) -> str:
+    if not entries:
+        return "No serving scale history found."
+
+    def _replicas(entry: dict[str, Any]) -> str:
+        before = entry.get("replicas_from")
+        after = entry.get("replicas_to")
+        if before is None and after is None:
+            return "-"
+        if before is None:
+            return str(after)
+        if after is None:
+            return str(before)
+        return f"{before} -> {after}"
+
+    rendered_rows = [{**entry, "replicas": _replicas(entry)} for entry in entries]
+    columns = [("created_at", "Created"), ("replicas", "Replicas")]
+    if any(row.get("status") not in (None, "") for row in rendered_rows):
+        columns.append(("status", "Status"))
+    table_rows = [
+        tuple(str(row.get(key, "-") or "-") for key, _label in columns)
+        for row in rendered_rows
+    ]
+    widths = [
+        column_width(label, [row[index] for row in table_rows], max_width=48)
+        for index, (_key, label) in enumerate(columns)
+    ]
+    rendered = render_table(
+        tuple(label for _key, label in columns),
+        table_rows,
+        widths,
+        line_char="─",
     )
     return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
 
@@ -654,7 +837,7 @@ def list_serving(
 
     \b
     Examples:
-        inspire serving list --workspace 分布式训练空间 --project CI-情境智能
+        inspire serving list --workspace 分布式训练空间 --project <project>
         inspire serving list --workspace 分布式训练空间 --keyword qwen --status RUNNING
         inspire serving list --workspace all --keyword qwen
     """
@@ -894,14 +1077,18 @@ def status_serving(
             ("image", "Image"),
             ("model", "Model"),
             ("resource", "Resource"),
+            ("nodes", "Nodes"),
             ("command", "Command"),
             ("port", "Port"),
             ("created_at", "Created"),
             ("updated_at", "Updated"),
         ):
             value = detail.get(key)
-            if value not in (None, ""):
-                lines.append(f"{label}: {value}")
+            if value in (None, ""):
+                continue
+            lines.append(
+                f"{label}: {', '.join(value) if isinstance(value, list) else value}"
+            )
         click.echo("\n".join(lines))
 
     except ConfigError as e:
@@ -1018,6 +1205,425 @@ def stop_serving(
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
+@click.command("scale")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--replicas",
+    type=click.IntRange(0),
+    required=True,
+    help="Target replica count for the deployment.",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def scale_serving(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    replicas: int,
+    pick: Optional[int],
+) -> None:
+    """Change how many replicas an inference serving runs.
+
+    \b
+    Scaling reuses the deployment's existing image, command, port and resource
+    spec — only the replica count moves. Each replica costs the serving's full
+    quota, so check `inspire resources quota --workspace <workspace>` before
+    scaling up. Watch the result with
+    `inspire serving instances <name> --workspace <workspace>`.
+    """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace)
+        inference_serving_id = _resolve_serving_name(
+            ctx,
+            name,
+            workspace_id=workspace_id,
+            pick=pick,
+            require_live=True,
+        )
+        browser_api_module.scale_serving(
+            inference_serving_id,
+            replica=replicas,
+            session=session,
+        )
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    public_operation(name, "scaled", replicas=replicas)
+                )
+            )
+            return
+        click.echo(
+            human_formatter.format_mutation_success(
+                "Serving", f"scaled to {replicas} replica(s)", name
+            )
+        )
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("versions")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum versions to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every version.")
+@pass_context
+def versions_serving(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    pick: Optional[int],
+    limit: Optional[int],
+    show_all: bool,
+) -> None:
+    """List a serving's deployment history.
+
+    \b
+    Each row is one configuration the deployment has run under. The version
+    number is what `inspire serving rollback --version` takes.
+    """
+    try:
+        output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace)
+        items, total = _run_readonly_serving_operation(
+            ctx,
+            name=name,
+            workspace_id=workspace_id,
+            session=session,
+            pick=pick,
+            operation=lambda serving_id, live_session: (
+                browser_api_module.list_serving_versions(
+                    serving_id,
+                    session=live_session,
+                )
+            ),
+        )
+        projected = [_public_serving_version(item) for item in items]
+        page = bound_collection(projected, limit=output_limit, total=total)
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "name": scrub_raw_ids(name),
+                        "items": page.items,
+                        **page.metadata(),
+                    }
+                )
+            )
+            return
+
+        click.echo(_format_serving_versions(page.items))
+        notice = truncation_notice(page, full_option="--all")
+        if notice:
+            click.echo(notice)
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("scale-history")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@click.option(
+    "--limit",
+    "-n",
+    type=click.IntRange(1),
+    default=None,
+    help="Maximum scale events to display (default: 20).",
+)
+@click.option("--all", "show_all", is_flag=True, help="Show every scale event.")
+@pass_context
+def scale_history_serving(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    pick: Optional[int],
+    limit: Optional[int],
+    show_all: bool,
+) -> None:
+    """List when a serving's replica count changed, and to what.
+
+    \b
+    This is the first thing to check when request latency or throughput moved
+    without a redeploy: a replica count that dropped, or an autoscale that
+    never landed, shows up here and nowhere in `versions`. Pair it with
+    `inspire serving api-metrics <name>` to line the change up against the
+    traffic it explains.
+    """
+    try:
+        output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+
+    request_limit = (
+        output_limit if output_limit is not None else DEFAULT_COLLECTION_LIMIT
+    )
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace)
+
+        def _fetch(serving_id: str, live_session):  # noqa: ANN001
+            items, total = browser_api_module.list_serving_scale_history(
+                serving_id,
+                page=1,
+                page_size=request_limit,
+                session=live_session,
+            )
+            if show_all and total > len(items):
+                items, expanded_total = browser_api_module.list_serving_scale_history(
+                    serving_id,
+                    page=1,
+                    page_size=max(total, len(items), 1),
+                    session=live_session,
+                )
+                total = max(total, expanded_total, len(items))
+            return items, total
+
+        items, total = _run_readonly_serving_operation(
+            ctx,
+            name=name,
+            workspace_id=workspace_id,
+            session=session,
+            pick=pick,
+            operation=_fetch,
+        )
+        projected = [_public_scale_history_entry(item) for item in items]
+        page = bound_collection(projected, limit=output_limit, total=total)
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {
+                        "name": scrub_raw_ids(name),
+                        "items": page.items,
+                        **page.metadata(),
+                    }
+                )
+            )
+            return
+
+        click.echo(_format_scale_history(page.items))
+        notice = truncation_notice(page, full_option="--all")
+        if notice:
+            click.echo(notice)
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("rollback")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--version",
+    type=click.IntRange(1),
+    required=True,
+    help="Version to roll back to, from `inspire serving versions <name>`.",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def rollback_serving(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    version: int,
+    yes: bool,
+    pick: Optional[int],
+) -> None:
+    """Redeploy an inference serving under an earlier version's configuration.
+
+    \b
+    Pick the target with `inspire serving versions <name> --workspace
+    <workspace>`. The running replicas are replaced, so in-flight requests are
+    interrupted the same way a restart interrupts them.
+    """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="serving",
+        list_command="inspire serving list --workspace <workspace>",
+    )
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt=(
+            f"Roll inference serving '{scrub_raw_ids(name)}' back to version "
+            f"{version}? Running replicas are replaced."
+        ),
+        message="Inference serving rollback requires confirmation.",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace)
+        inference_serving_id = _resolve_serving_name(
+            ctx,
+            name,
+            workspace_id=workspace_id,
+            pick=pick,
+            require_live=True,
+        )
+        browser_api_module.rollback_serving(
+            inference_serving_id,
+            version=version,
+            session=session,
+        )
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    public_operation(name, "rolled back", version=version)
+                )
+            )
+            return
+        click.echo(
+            human_formatter.format_mutation_success(
+                "Serving", f"rolled back to version {version}", name
+            )
+        )
+
+    except click.Abort:
+        raise
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+# One page covers any deployment: a serving never has enough replicas to page.
+_INSTANCE_EVENT_FETCH_SIZE = 200
+
+
+def _serving_events(
+    serving_id: str,
+    *,
+    session,  # noqa: ANN001
+    selectors: tuple[str, ...] = (),
+    workload_level: bool = False,
+) -> list[dict[str, Any]]:
+    """Read deployment events, replica events, or one replica's, in order.
+
+    The two levels are separate calls against the same Action, so the merged
+    chronology is imposed here. Instance rows are labelled with the identity
+    `inspire serving instances` prints, because their `object_id` is the
+    namespaced pod handle and never reaches output.
+    """
+    if workload_level:
+        return sorted(
+            browser_api_module.list_serving_events(serving_id, session=session),
+            key=event_sort_key,
+        )
+
+    instances, _total = browser_api_module.list_serving_instances(
+        serving_id,
+        page_size=_INSTANCE_EVENT_FETCH_SIZE,
+        session=session,
+    )
+    views = select_serving_instance_views(serving_instance_views(instances), selectors)
+    labels = {view.handle: view.label for view in views}
+
+    instance_events: list[dict[str, Any]] = []
+    if views:
+        for event in browser_api_module.list_serving_events(
+            serving_id,
+            pod_names=[view.handle for view in views],
+            session=session,
+        ):
+            row = dict(event)
+            label = labels.get(str(row.get("object_id") or "").strip())
+            if label:
+                row["instance"] = label
+            instance_events.append(row)
+
+    if selectors:
+        return sorted(instance_events, key=event_sort_key)
+    merged = (
+        browser_api_module.list_serving_events(serving_id, session=session)
+        + instance_events
+    )
+    return sorted(merged, key=event_sort_key)
+
+
 @click.command("events")
 @click.argument("name", metavar="NAME")
 @click.option("--workspace", metavar="NAME", required=True, help="Workspace name.")
@@ -1042,13 +1648,41 @@ def stop_serving(
     help="Filter events whose reason contains this substring.",
 )
 @click.option(
+    "--instance",
+    "instance_selectors",
+    multiple=True,
+    metavar="RANK",
+    help=(
+        "Narrow to one replica, named by the Name column of `inspire serving "
+        "instances` — `rank=0`, or just `0`. Repeat for several. Default: "
+        "deployment events plus every replica."
+    ),
+)
+@click.option(
+    "--workload-level",
+    "workload_level",
+    is_flag=True,
+    help=(
+        "Only the controller's own events about the deployment as a whole. "
+        "Cannot be combined with --instance."
+    ),
+)
+@click.option(
     "--tail",
     type=click.IntRange(1),
     default=DEFAULT_EVENT_TAIL,
     show_default=True,
     help="Maximum recent events to display.",
 )
-@click.option("--follow", "-f", is_flag=True, help="Follow and print new events.")
+@click.option(
+    "--follow",
+    "-f",
+    is_flag=True,
+    help=(
+        "Follow and print new events. Runs until interrupted; it never exits on its own, "
+        "not even once the serving reaches a terminal state."
+    ),
+)
 @click.option(
     "--interval",
     type=click.IntRange(1),
@@ -1064,36 +1698,71 @@ def events_serving(
     pick: Optional[int],
     reason_filter: Optional[str],
     type_filter: Optional[str],
+    instance_selectors: tuple[str, ...],
+    workload_level: bool,
     tail: int,
     follow: bool,
     interval: int,
 ) -> None:
-    """Show lifecycle and scheduling events for an inference serving."""
+    """Show lifecycle and scheduling events for an inference serving.
+
+    \b
+    Deployment events (`CreatingRevision` / `GroupsProgressing` / `Pending`)
+    and every replica's pod events (`Scheduled` / `Pulled` / `Started`) are
+    disjoint sets, and the default merges both into one timeline with an
+    `Instance` column. Use ``--instance`` to narrow to one replica, or
+    ``--workload-level`` to keep only the controller's half.
+
+    \b
+    Examples:
+      inspire serving events my-serving --workspace CPU资源空间
+      inspire serving events my-serving --workspace CPU资源空间 --instance rank=0
+      inspire serving events my-serving --workspace CPU资源空间 --workload-level
+      inspire --json serving events my-serving --workspace CPU资源空间
+    """
     name = reject_id_at_boundary(
         ctx,
         name,
         resource_type="serving",
         list_command="inspire serving list --workspace <workspace>",
     )
+    if workload_level and instance_selectors:
+        _handle_error(
+            ctx,
+            "InvalidUsage",
+            "--workload-level and --instance cannot be used together.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
         workspace_id = _resolve_workspace_id(workspace)
-        run_events_command(
-            ctx,
-            fetch=lambda: _run_readonly_serving_operation(
-                ctx,
-                name=name,
-                workspace_id=workspace_id,
-                session=session,
-                pick=pick,
-                operation=lambda serving_id, live_session: (
-                    browser_api_module.list_serving_events(
+
+        def _fetch_events() -> list[dict[str, Any]]:
+            # An unknown `--instance` is a usage error; the shared runner would
+            # otherwise repackage it as "could not fetch events".
+            try:
+                return _run_readonly_serving_operation(
+                    ctx,
+                    name=name,
+                    workspace_id=workspace_id,
+                    session=session,
+                    pick=pick,
+                    operation=lambda serving_id, live_session: _serving_events(
                         serving_id,
                         session=live_session,
-                    )
-                ),
-            ),
+                        selectors=instance_selectors,
+                        workload_level=workload_level,
+                    ),
+                )
+            except ServingInstanceSelectionError as e:
+                _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+                return []
+
+        run_events_command(
+            ctx,
+            fetch=_fetch_events,
             type_filter=type_filter,
             reason_filter=reason_filter,
             tail=tail,
@@ -1291,8 +1960,8 @@ def delete_serving(
 @click.option(
     "--workspace",
     required=True,
-    metavar="NAME|all",
-    help="Workspace name or 'all'.",
+    metavar="NAME",
+    help="Workspace name.",
 )
 @click.option(
     "--limit",
@@ -1324,61 +1993,31 @@ def configs_serving(
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
-        workspace_ids, all_workspaces = resolve_workspace_query_scope(
+        workspace_id = resolve_workspace_operation_scope(
             workspace=workspace,
             session=session,
         )
-        workspace_names = workspace_name_map(session)
-        if all_workspaces:
-            items: list[dict[str, Any]] = []
-            for workspace_id in workspace_ids:
-                public_data = public_configs(
-                    browser_api_module.get_serving_configs(
-                        workspace_id=workspace_id,
-                        session=session,
-                    )
-                )
-                workspace_name = scrub_raw_ids(
-                    workspace_names.get(workspace_id) or "(workspace name unavailable)"
-                )
-                for item in public_data.get("items", []):
-                    scoped_item = {
-                        "workspace": workspace_name,
-                        **item,
-                    }
-                    if "auto_stop" in public_data:
-                        scoped_item["auto_stop"] = public_data["auto_stop"]
-                    items.append(scoped_item)
-            page = bound_collection(items, limit=effective_limit)
-            output = {
-                "items": page.items,
-                **page.metadata(),
+        data = browser_api_module.get_serving_configs(
+            workspace_id=workspace_id,
+            session=session,
+        )
+        public_data = public_configs(data)
+        items = [
+            {
+                **item,
+                **(
+                    {"auto_stop": public_data["auto_stop"]}
+                    if "auto_stop" in public_data
+                    else {}
+                ),
             }
-        else:
-            data = browser_api_module.get_serving_configs(
-                workspace_id=workspace_ids[0],
-                session=session,
-            )
-            public_data = public_configs(data)
-            items = [
-                {
-                    **item,
-                    **(
-                        {"auto_stop": public_data["auto_stop"]}
-                        if "auto_stop" in public_data
-                        else {}
-                    ),
-                }
-                for item in public_data.get("items", [])
-            ]
-            page = bound_collection(
-                items,
-                limit=effective_limit,
-            )
-            output = {
-                "items": page.items,
-                **page.metadata(),
-            }
+            for item in public_data.get("items", [])
+        ]
+        page = bound_collection(items, limit=effective_limit)
+        output = {
+            "items": page.items,
+            **page.metadata(),
+        }
 
         if ctx.json_output:
             click.echo(json_formatter.format_json(output))
@@ -1473,6 +2112,23 @@ def configs_serving(
     help="Optional domain prefix: lowercase letters, digits, and hyphens",
 )
 @click.option("--description", default="", help="Serving description")
+@click.option(
+    "--auto-scaling/--no-auto-scaling",
+    "auto_scaling",
+    default=None,
+    help=(
+        "Let the platform move the replica count with load "
+        "(平台 弹性伸缩). Omit to leave the platform default."
+    ),
+)
+@click.option(
+    "--public-path-readonly/--no-public-path-readonly",
+    default=None,
+    help=(
+        "Mount the project's public path read-only inside the serving container "
+        "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
+    ),
+)
 @click.option("--dry-run", is_flag=True, default=False, help="Print the resolved plan without creating")
 @pass_context
 def create_serving(
@@ -1494,6 +2150,8 @@ def create_serving(
     priority: Optional[int],
     custom_domain: Optional[str],
     description: str,
+    auto_scaling: Optional[bool],
+    public_path_readonly: Optional[bool],
     dry_run: bool,
 ) -> None:
     """Create an inference serving from a registered model.
@@ -1506,8 +2164,8 @@ def create_serving(
     \b
     Examples:
         inspire serving create --name qwen-demo --model qwen-demo --workspace 分布式训练空间 \
-          --project CI-情境智能 --group H200-2号机房 --quota 1,18,200 \
-          --image serve-base:v1 --command "python serve.py" --port 8000 --dry-run
+          --project <project> --group H200-2号机房 --quota 1,18,200 \
+          --image <image> --command "python serve.py" --port 8000 --dry-run
         inspire serving metrics qwen-demo --workspace 分布式训练空间 --window 30m
     """
     try:
@@ -1515,6 +2173,7 @@ def create_serving(
             QuotaMatchError,
             QuotaParseError,
             SCHEDULE_TYPE_SERVING,
+            ensure_priority_allowed,
             parse_quota,
             resolve_quota,
         )
@@ -1600,7 +2259,9 @@ def create_serving(
                 "Could not infer model version. Pass --model-version explicitly."
             )
 
-        mirror_id, image_label = _resolve_image_for_create(image, session=session)
+        mirror_id, image_label = _resolve_image_for_create(
+            image, session=session, workspace_id=workspace_id
+        )
         resource_spec_price = _build_resource_spec_price(resolved)
         final_priority = resolve_workspace_task_priority(
             priority,
@@ -1608,6 +2269,15 @@ def create_serving(
             workspace_id=workspace_id,
             project_id=project_id,
         )
+        try:
+            ensure_priority_allowed(
+                resolved, final_priority, quota_command="inspire serving quota"
+            )
+        except QuotaMatchError as exc:
+            # Reported directly rather than raised: the outer `except Exception`
+            # would file a validation failure as an APIError.
+            _handle_error(ctx, "ValidationError", str(exc), EXIT_VALIDATION_ERROR)
+            return
         payload = {
             "name": name,
             "logic_compute_group_id": resolved.logic_compute_group_id,
@@ -1627,6 +2297,12 @@ def create_serving(
         }
         if custom_domain:
             payload["custom_domain"] = custom_domain
+        # Only an explicit flag reaches the wire; the platform keeps owning the
+        # default so an untouched create stays byte-for-byte what it was.
+        if auto_scaling is not None:
+            payload["enable_auto_scaling"] = bool(auto_scaling)
+        if public_path_readonly is not None:
+            payload["is_publicpath_readonly"] = bool(public_path_readonly)
 
         if dry_run:
             plan = sanitize_public_data(
@@ -1652,6 +2328,8 @@ def create_serving(
                     "shared_memory_gib": shm_size,
                     "priority": final_priority,
                     "custom_domain": custom_domain,
+                    "auto_scaling": auto_scaling,
+                    "public_path_readonly": public_path_readonly,
                 },
                 omit_urls=True,
             )
@@ -1684,6 +2362,16 @@ def create_serving(
                     click.echo(
                         f"Domain: {sanitize_public_text(custom_domain, omit_urls=True)}"
                     )
+                if auto_scaling is not None:
+                    click.echo(
+                        "Auto scaling: enabled" if auto_scaling else "Auto scaling: disabled"
+                    )
+                if public_path_readonly is not None:
+                    click.echo(
+                        "Public path: read-only"
+                        if public_path_readonly
+                        else "Public path: writable"
+                    )
             return
 
         result = browser_api_module.create_serving(
@@ -1703,6 +2391,8 @@ def create_serving(
             task_priority=final_priority,
             custom_domain=custom_domain,
             resource_spec_price=resource_spec_price,
+            is_publicpath_readonly=public_path_readonly,
+            enable_auto_scaling=auto_scaling,
             session=session,
         )
         serving_id = _created_serving_id(result)
@@ -1736,7 +2426,106 @@ __all__ = [
     "create_serving",
     "delete_serving",
     "list_serving",
+    "rollback_serving",
+    "scale_serving",
     "status_serving",
     "stop_serving",
+    "versions_serving",
     "configs_serving",
 ]
+
+
+@click.command("shell")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
+@click.option(
+    "--instance",
+    "instance",
+    default=None,
+    metavar="NAME",
+    help="Open this instance, as named by `inspire serving instances`.",
+)
+@pass_context
+def shell_serving(
+    ctx: Context,
+    name: str,
+    workspace: str,
+    pick: Optional[int],
+    instance: Optional[str],
+) -> None:
+    """Open an interactive shell inside a running serving instance.
+
+    Needs a terminal: this attaches your stdin to a remote PTY. Leave with
+    `exit`, or press Ctrl+] to drop the session without ending the shell.
+
+    \b
+    Every replica runs the same image and command, so the first running one is
+    as good as any unless a specific replica is the one misbehaving; name it
+    with `--instance`.
+
+    \b
+    Examples:
+        inspire serving shell qwen-chat --workspace 分布式训练空间
+        inspire serving shell qwen-chat --workspace 分布式训练空间 --instance rank=1
+    """
+    try:
+        session = get_web_session()
+        workspace_id = select_workspace_id(
+            explicit_workspace_name=workspace, session=session
+        )
+        serving_id, instances = _run_readonly_serving_operation(
+            ctx,
+            name=name,
+            workspace_id=workspace_id,
+            session=session,
+            pick=pick,
+            operation=lambda resolved_id: (
+                resolved_id,
+                browser_api_module.list_serving_instances(
+                    resolved_id, page=1, page_size=200, session=session
+                )[0],
+            ),
+        )
+
+        running = [
+            row
+            for row in instances
+            if "running" in str(row.get("status") or "").lower()
+        ]
+        views = serving_instance_views(running)
+        if not views:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                "No running instances found for this serving.",
+                EXIT_VALIDATION_ERROR,
+            )
+            return
+
+        selected = (
+            select_serving_instance_views(views, [instance])[0] if instance else views[0]
+        )
+
+        if not ctx.json_output:
+            click.echo(
+                f"Opening shell: {scrub_raw_ids(name)} / {selected.label}", err=True
+            )
+            click.echo("Press Ctrl-] to disconnect.", err=True)
+
+        sys.exit(
+            open_job_shell(
+                job_id=serving_id,
+                instance_name=selected.handle,
+                session=session,
+                workload="serving",
+            )
+        )
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+    except JobShellError as e:
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+    except ValueError as e:
+        _handle_error(ctx, "ValidationError", scrub_raw_ids(e), EXIT_VALIDATION_ERROR)

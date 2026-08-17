@@ -266,6 +266,58 @@ def test_job_create_dry_run_resolves_plan_without_create_api(
     assert api.training_calls == []
 
 
+def test_job_create_reports_a_rate_limited_catalog_not_an_empty_one(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Issue #68: `(workspace has no quotas)` was the visible face of the bug."""
+    from inspire.cli.utils.quota_resolver import resolve_quota as real_resolve_quota
+    from inspire.platform.web.session import TransientAPIError
+
+    # Bound before the shared harness swaps in its stub, so this exercises the
+    # real resolver against a rate-limited price loader.
+    _patch_submit_deps(monkeypatch, tmp_path)
+    job_create_module = importlib.import_module("inspire.cli.commands.job.job_create")
+
+    def _real_resolve(**kwargs):  # noqa: ANN202
+        return real_resolve_quota(
+            **kwargs,
+            groups=[{"logic_compute_group_id": "lcg-a", "name": "H200 Room"}],
+            prices_loader=lambda _group_id: (_ for _ in ()).throw(
+                TransientAPIError("API returned 429: Too Many Requests", status=429)
+            ),
+        )
+
+    monkeypatch.setattr(job_create_module, "resolve_quota", _real_resolve)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "create",
+            "--name",
+            "quota-cache-repro",
+            "--quota",
+            "1,10,100",
+            "--command",
+            "echo ok",
+            "--workspace",
+            "cpu",
+            "--project",
+            "Project One",
+            "--group",
+            "H200 Room",
+            "--image",
+            "registry.local/train:latest",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "workspace has no quotas" not in result.output
+    assert "429" in result.output
+
+
 @pytest.mark.parametrize(
     ("config_default", "flag", "expected"),
     (
@@ -1237,3 +1289,313 @@ def test_batch_hpc_requires_fields_after_expansion(
     assert result.exit_code != 0
     assert "missing required condition field: image" in result.output
     assert api.hpc_calls == []
+
+
+def _patch_batch_dataset_resolution(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Record what the batch path asks the platform to validate."""
+    batch_module = importlib.import_module("inspire.cli.commands.batch")
+    seen: list[Any] = []
+
+    def fake_resolve(mounts, *, workspace_id, session=None):  # noqa: ANN001, ANN202
+        seen.append((list(mounts), workspace_id))
+        return [
+            {
+                "dataset_id": m.dataset,
+                "version_id": m.version,
+                "path": f"store/{m.dataset}/{m.version}",
+            }
+            for m in mounts
+        ]
+
+    monkeypatch.setattr(batch_module, "resolve_dataset_info", fake_resolve)
+    return seen
+
+
+def test_job_batch_entry_carries_datasets_env_and_reservations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    seen = _patch_batch_dataset_resolution(monkeypatch)
+    batch_path = tmp_path / "batch.toml"
+    batch_path.write_text(
+        """
+[profiles.job.h200]
+quota = "1,20,200"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/train:latest"
+
+[defaults]
+type = "job"
+profile = "h200"
+nodes = 1
+
+[[jobs]]
+name = "train"
+command = "python train.py"
+dataset = ["pixabay-81k:v0", "videoufo:v1"]
+env = { HF_HOME = "/tmp/hf", RANK = 0 }
+description = "batch smoke"
+keep_after_success = 1
+keep_after_failure = 2
+public_path_readonly = true
+auto_fault_tolerance = true
+fault_tolerance_retry_interval = 30
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli_main, ["--json", "job", "batch", str(batch_path)])
+
+    assert result.exit_code == 0, result.output
+    assert len(api.training_calls) == 1
+    payload = api.training_calls[0]
+    assert payload["dataset_info"] == [
+        {"dataset_id": "pixabay-81k", "version_id": "v0", "path": "store/pixabay-81k/v0"},
+        {"dataset_id": "videoufo", "version_id": "v1", "path": "store/videoufo/v1"},
+    ]
+    assert payload["envs"] == [
+        {"name": "HF_HOME", "value": "/tmp/hf"},
+        {"name": "RANK", "value": "0"},
+    ]
+    assert payload["description"] == "batch smoke"
+    assert payload["reserve_on_success_ms"] == str(1 * 3600 * 1000)
+    assert payload["reserve_on_fail_ms"] == str(2 * 3600 * 1000)
+    assert payload["is_publicpath_readonly"] is True
+    assert payload["fault_tolerance_retry_interval_sec"] == 30
+    # The workspace the mounts were validated against is the item's own.
+    assert [spec.dataset for spec, _ in [(m, w) for mounts, w in seen for m in mounts]] == [
+        "pixabay-81k",
+        "videoufo",
+    ]
+
+
+def test_job_batch_entry_without_new_fields_sends_todays_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An entry that never mentions the new keys must not gain new payload keys."""
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    _patch_batch_dataset_resolution(monkeypatch)
+    batch_path = tmp_path / "batch.json"
+    _write_job_batch(batch_path, count=1)
+
+    result = CliRunner().invoke(cli_main, ["--json", "job", "batch", str(batch_path)])
+
+    assert result.exit_code == 0, result.output
+    payload = api.training_calls[0]
+    for absent in (
+        "dataset_info",
+        "envs",
+        "description",
+        "reserve_on_success_ms",
+        "reserve_on_fail_ms",
+        "is_publicpath_readonly",
+        "fault_tolerance_retry_interval_sec",
+    ):
+        assert absent not in payload, f"{absent} leaked into an entry that never set it"
+
+
+def test_hpc_batch_entry_carries_dataset_and_retention(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    _patch_batch_dataset_resolution(monkeypatch)
+    batch_path = tmp_path / "batch.toml"
+    batch_path.write_text(
+        """
+[profiles.hpc.cpu]
+quota = "0,20,100"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/hpc:latest"
+
+[defaults]
+type = "hpc"
+profile = "cpu"
+
+[[jobs]]
+name = "prep"
+entrypoint = "srun python prep.py"
+dataset = "pixabay-81k:v0"
+description = "hpc smoke"
+keep_after_finish = 0.5
+max_time = 3
+public_path_readonly = true
+enable_notification = true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli_main, ["--json", "hpc", "batch", str(batch_path)])
+
+    assert result.exit_code == 0, result.output
+    payload = api.hpc_calls[0]
+    assert payload["dataset_info"] == [
+        {"dataset_id": "pixabay-81k", "version_id": "v0", "path": "store/pixabay-81k/v0"}
+    ]
+    assert payload["description"] == "hpc smoke"
+    assert payload["ttl_after_job_finish_seconds"] == 1800
+    assert payload["is_publicpath_readonly"] is True
+    assert payload["enable_notification"] is True
+    assert payload["sbatch_script"]["job_max_time"] == "0-03:00:00"
+
+
+def test_batch_rejects_a_malformed_dataset_spec_before_submitting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    _patch_batch_dataset_resolution(monkeypatch)
+    batch_path = tmp_path / "batch.toml"
+    batch_path.write_text(
+        """
+[profiles.job.h200]
+quota = "1,20,200"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/train:latest"
+
+[defaults]
+type = "job"
+profile = "h200"
+nodes = 1
+
+[[jobs]]
+name = "train"
+command = "python train.py"
+dataset = "pixabay-81k"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli_main, ["job", "batch", str(batch_path)])
+
+    assert result.exit_code != 0
+    assert "<dataset>:<version>" in result.output
+    assert api.training_calls == []
+
+
+def test_ray_batch_entry_carries_the_readonly_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A batch entry must be able to say everything `ray create` can."""
+    _patch_submit_deps(monkeypatch, tmp_path)
+    batch_module = importlib.import_module("inspire.cli.commands.batch")
+    bodies: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        browser_api_module,
+        "create_ray_job",
+        lambda body, session=None: bodies.append(body) or {"ray_job_id": "ray-1"},
+    )
+    # Ray resolves the image through the per-source catalogues, not `list_images`.
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_images_by_source",
+        lambda source=None, session=None, workspace_id=None: [
+            browser_api_module.CustomImageInfo(
+                image_id="image-12345678-1234-1234-1234-123456789abc",
+                url="registry.batch/notebook:latest",
+                name="registry.batch/notebook:latest",
+                framework="",
+                version="",
+                source="public",
+                status="SUCCESS",
+                description="",
+                created_at="",
+            )
+        ],
+    )
+    monkeypatch.setattr(batch_module, "get_web_session", lambda: FakeWebSession())
+    batch_path = tmp_path / "batch.toml"
+    batch_path.write_text(
+        """
+[profiles.ray.cpu]
+quota = "0,20,80"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/notebook:latest"
+
+[defaults]
+type = "ray"
+profile = "cpu"
+
+[[jobs]]
+name = "pipeline"
+command = "python driver.py"
+public_path_readonly = true
+workers = ["name=w;image=registry.batch/notebook:latest;group=H200 Room;quota=0,20,80;min=1;max=2"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli_main, ["--json", "ray", "batch", str(batch_path)])
+
+    assert result.exit_code == 0, result.output
+    assert bodies and bodies[0]["is_publicpath_readonly"] is True
+
+
+def test_ray_batch_entry_without_the_guard_omits_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_submit_deps(monkeypatch, tmp_path)
+    batch_module = importlib.import_module("inspire.cli.commands.batch")
+    bodies: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        browser_api_module,
+        "create_ray_job",
+        lambda body, session=None: bodies.append(body) or {"ray_job_id": "ray-1"},
+    )
+    # Ray resolves the image through the per-source catalogues, not `list_images`.
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_images_by_source",
+        lambda source=None, session=None, workspace_id=None: [
+            browser_api_module.CustomImageInfo(
+                image_id="image-12345678-1234-1234-1234-123456789abc",
+                url="registry.batch/notebook:latest",
+                name="registry.batch/notebook:latest",
+                framework="",
+                version="",
+                source="public",
+                status="SUCCESS",
+                description="",
+                created_at="",
+            )
+        ],
+    )
+    monkeypatch.setattr(batch_module, "get_web_session", lambda: FakeWebSession())
+    batch_path = tmp_path / "batch.toml"
+    batch_path.write_text(
+        """
+[profiles.ray.cpu]
+quota = "0,20,80"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/notebook:latest"
+
+[defaults]
+type = "ray"
+profile = "cpu"
+
+[[jobs]]
+name = "pipeline"
+command = "python driver.py"
+workers = ["name=w;image=registry.batch/notebook:latest;group=H200 Room;quota=0,20,80;min=1;max=2"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli_main, ["--json", "ray", "batch", str(batch_path)])
+
+    assert result.exit_code == 0, result.output
+    assert bodies and "is_publicpath_readonly" not in bodies[0]

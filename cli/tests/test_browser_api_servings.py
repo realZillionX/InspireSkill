@@ -32,9 +32,12 @@ from inspire.platform.web.browser_api.servings import (
     list_serving_user_project,
     list_serving_versions,
     list_servings,
+    rollback_serving,
+    scale_serving,
     start_serving,
     stop_serving,
 )
+from inspire.platform.web.browser_api.servings import get_serving_api_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -499,3 +502,250 @@ def test_delete_serving_uses_delete_serving_action(monkeypatch) -> None:
     assert record["method"] == "POST"
     assert record["url"].endswith("/api/v2/inference_serving?Action=DeleteServing")
     assert record["body"] == {"inference_serving_id": "sv-1"}
+
+
+# ---------------------------------------------------------------------------
+# scale / rollback / API metrics
+# ---------------------------------------------------------------------------
+
+
+def test_scale_serving_sends_singular_replica_field(monkeypatch) -> None:
+    # `ScaleServing` takes `replica`, singular. The plural `replicas` that
+    # `CreateServingConsole` uses is a different field on a different Action.
+    record: dict[str, Any] = {}
+    _install_fake_request(monkeypatch, {"Result": {}}, record)
+
+    scale_serving("sv-1", replica=3, session=_FakeSession())
+
+    assert record["method"] == "POST"
+    assert record["url"].endswith("/api/v2/inference_serving?Action=ScaleServing")
+    assert record["body"] == {"inference_serving_id": "sv-1", "replica": 3}
+
+
+def test_scale_serving_accepts_zero_replicas(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(monkeypatch, {"Result": {}}, record)
+
+    scale_serving("sv-1", replica=0, session=_FakeSession())
+
+    assert record["body"]["replica"] == 0
+
+
+def test_rollback_serving_posts_id_and_version(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch, {"Result": {"inference_serving_id": "sv-1"}}, record
+    )
+
+    result = rollback_serving("sv-1", version=2, session=_FakeSession())
+
+    assert record["url"].endswith("/api/v2/inference_serving?Action=RollbackServing")
+    assert record["body"] == {"inference_serving_id": "sv-1", "version": 2}
+    assert result == {"inference_serving_id": "sv-1"}
+
+
+def test_serving_writes_unwrap_through_v2_result(monkeypatch) -> None:
+    # A v1-style envelope check would swallow this as `API error: None`, which
+    # is exactly how start / stop were silently broken before.
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "ResponseMetadata": {
+                "Error": {"Code": "InvalidParameter", "Message": "replica too large"}
+            }
+        },
+        record,
+    )
+
+    with pytest.raises(ValueError, match="InvalidParameter: replica too large"):
+        scale_serving("sv-1", replica=99, session=_FakeSession())
+
+    with pytest.raises(ValueError, match="InvalidParameter"):
+        rollback_serving("sv-1", version=1, session=_FakeSession())
+
+
+def test_get_serving_api_metrics_sends_every_metric_in_one_request(monkeypatch) -> None:
+    # Unlike `GetTaskMetric`, this Action honours the whole list, so there is
+    # no per-metric fan-out, and it needs no compute-group handle.
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "Result": {
+                "metric_groups": [
+                    {
+                        "metric_type": "QPS",
+                        "data_unit": "req/s",
+                        "time_series": [{"timestamp": "1", "data": 1.5}],
+                    },
+                    "not-a-dict",
+                ]
+            }
+        },
+        record,
+    )
+
+    groups = get_serving_api_metrics(
+        "sv-1",
+        metric_types=["QPS", "LATENCY"],
+        start_timestamp=100,
+        end_timestamp=200,
+        interval_second=60,
+        session=_FakeSession(),
+    )
+
+    assert record["url"].endswith("/api/v2/inference_serving?Action=GetServingApiMetric")
+    assert record["body"] == {
+        "inference_serving_id": "sv-1",
+        "metric_types": ["QPS", "LATENCY"],
+        "time_range": {
+            "start_timestamp": 100,
+            "end_timestamp": 200,
+            "interval_second": 60,
+        },
+    }
+    assert [g["metric_type"] for g in groups] == ["QPS"]
+
+
+def test_get_serving_api_metrics_rejects_resource_metric_names() -> None:
+    # The two metric families share no name; `gpu_usage_rate` belongs to
+    # `GetTaskMetric` and would be rejected on the wire.
+    with pytest.raises(ValueError, match="unknown serving API metric"):
+        get_serving_api_metrics(
+            "sv-1",
+            metric_types=["gpu_usage_rate"],
+            start_timestamp=1,
+            end_timestamp=2,
+            session=_FakeSession(),
+        )
+
+
+def test_get_serving_api_metrics_requires_at_least_one_metric() -> None:
+    with pytest.raises(ValueError, match="no metric_types provided"):
+        get_serving_api_metrics(
+            "sv-1",
+            metric_types=[],
+            start_timestamp=1,
+            end_timestamp=2,
+            session=_FakeSession(),
+        )
+
+
+def test_get_serving_api_metrics_returns_empty_without_metric_groups(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(monkeypatch, {"Result": {}}, record)
+
+    assert (
+        get_serving_api_metrics(
+            "sv-1",
+            metric_types=["QPS"],
+            start_timestamp=1,
+            end_timestamp=2,
+            session=_FakeSession(),
+        )
+        == []
+    )
+
+
+# ---------------------------------------------------------------------------
+# create-time options
+# ---------------------------------------------------------------------------
+
+
+def _create_serving_body(monkeypatch, **extra: Any) -> dict[str, Any]:
+    record: dict[str, Any] = {}
+    _install_fake_request(monkeypatch, {"Result": {}}, record)
+    create_serving(
+        workspace_id="ws-1",
+        project_id="project-1",
+        name="demo-svc",
+        logic_compute_group_id="lcg-1",
+        model_id="model-1",
+        model_version=1,
+        mirror_id="image-1",
+        command="python serve.py",
+        port=8000,
+        task_priority=1,
+        resource_spec_price={"cpu_count": 4},
+        session=_FakeSession(),
+        **extra,
+    )
+    body = record["body"]
+    assert isinstance(body, dict)
+    return body
+
+
+def test_serving_create_read_only_and_autoscaling_stay_off_the_wire_when_unset(
+    monkeypatch,
+) -> None:
+    # Sending `false` would change every create that never asked for them; the
+    # platform keeps owning the default.
+    body = _create_serving_body(monkeypatch)
+
+    assert "is_publicpath_readonly" not in body
+    assert "enable_auto_scaling" not in body
+
+
+def test_serving_create_sends_explicit_read_only_and_autoscaling(monkeypatch) -> None:
+    body = _create_serving_body(
+        monkeypatch,
+        is_publicpath_readonly=True,
+        enable_auto_scaling=False,
+    )
+
+    # `False` is a value the caller chose; only `None` means "do not send".
+    assert body["is_publicpath_readonly"] is True
+    assert body["enable_auto_scaling"] is False
+
+
+def test_serving_instances_read_the_nested_group_rows(monkeypatch) -> None:  # noqa: ANN001
+    """Rows live under `groups[].items[]`; the flat read was silently empty."""
+    record: dict = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "Result": {
+                "groups": [
+                    {"items": [{"name": "frontiers/sv-1-0", "node": "cpu-nat-568"}]},
+                    {"items": [{"name": "frontiers/sv-1-1", "node": "cpu-nat-569"}]},
+                ],
+                "total": "2",
+            }
+        },
+        record,
+    )
+
+    items, total = list_serving_instances("sv-1", session=_FakeSession())
+
+    assert total == 2
+    assert [item["name"] for item in items] == ["frontiers/sv-1-0", "frontiers/sv-1-1"]
+
+
+def test_serving_events_switch_to_the_instance_object_type(monkeypatch) -> None:  # noqa: ANN001
+    """Pod ids need the namespaced name; a bare pod name answers InternalError."""
+    record: dict = {}
+    _install_fake_request(
+        monkeypatch,
+        {"Result": {"events": [{"reason": "Unhealthy"}]}},
+        record,
+    )
+
+    events = list_serving_events(
+        "sv-1",
+        pod_names=["frontiers/sv-1-0", " ", "frontiers/sv-1-0"],
+        session=_FakeSession(),
+    )
+
+    assert [event["reason"] for event in events] == ["Unhealthy"]
+    assert record["body"]["filter"] == {
+        "object_type": "INFERENCE_SERVING_INSTANCE",
+        "object_ids": ["frontiers/sv-1-0"],
+    }
+
+
+def test_serving_events_refuse_an_empty_instance_selection() -> None:
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="Instance selection is required"):
+        list_serving_events("sv-1", pod_names=[" "], session=_FakeSession())

@@ -78,6 +78,24 @@ def _patch_runtime(
         "get_current_user",
         lambda session=None: {"id": "user-secret-123"},
     )
+    # Deployment lookups every `model status` / `model versions` run makes.
+    # Individual tests override these; the defaults answer "platform says
+    # nothing is deployed", which is not the same as "we did not ask".
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_model_vllm_compatibility",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "check_model_inference_serving_pending",
+        lambda **kwargs: {"has_pending_serving": False},
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_model_inference_servings",
+        lambda **kwargs: ([], 0),
+    )
     return config
 
 
@@ -413,6 +431,11 @@ def test_model_status_json_removes_paths_ids_and_raw_records(
             "next_version": 5,
         },
     )
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_model_vllm_compatibility",
+        lambda *args, **kwargs: {4: True},
+    )
 
     result = CliRunner().invoke(
         cli_main,
@@ -432,6 +455,8 @@ def test_model_status_json_removes_paths_ids_and_raw_records(
         "published": True,
         "project": "模型项目",
         "owner": "Alice",
+        "pending_serving": False,
+        "servings": [],
     }
     _assert_compact_public_payload(payload)
     assert "path" not in payload
@@ -571,6 +596,11 @@ def test_model_versions_json_only_keeps_actionable_fields(
             "next_version": 3,
             "payload": {"trace": "secret"},
         },
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_model_vllm_compatibility",
+        lambda *args, **kwargs: {1: True, 2: False},
     )
 
     result = CliRunner().invoke(
@@ -786,3 +816,572 @@ def test_project_alias_with_platform_id_value_is_rejected(
             workspace_id=_WORKSPACE_ID,
             session=_Session(),
         )
+
+
+# ---------------------------------------------------------------------------
+# deploy-config
+# ---------------------------------------------------------------------------
+
+
+def _patch_deploy_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    latest_version: str = "3",
+    recommended: dict[str, Any] | None = None,
+    vllm: bool = True,
+) -> dict[str, Any]:
+    _patch_runtime(monkeypatch, tmp_path)
+    calls: dict[str, Any] = {}
+
+    model = browser_api_module.ModelInfo(
+        model_id="model-secret-123",
+        name="qwen-demo",
+        latest_version=latest_version,
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_models",
+        lambda **_kwargs: ([model], 1),
+    )
+    monkeypatch.setattr(
+        model_commands_module,
+        "_resolve_model_name",
+        lambda *_args, **_kwargs: "model-secret-123",
+    )
+
+    def _recommended(model_id, *, version, session=None, workspace_id=None):
+        calls["recommended"] = {"model_id": model_id, "version": version}
+        return (
+            recommended
+            if recommended is not None
+            else {
+                "min_node_count": 1,
+                "min_gpu_count_per_node": 1,
+                "min_cpu_count_per_node": 2,
+                "min_memory_size_gib_per_node": 16,
+            }
+        )
+
+    def _vllm(model_id, *, version, inference_serving_type="CUSTOM", session=None, workspace_id=None):
+        calls["vllm"] = {"model_id": model_id, "version": version}
+        return vllm
+
+    monkeypatch.setattr(
+        browser_api_module, "get_model_recommended_config", _recommended
+    )
+    monkeypatch.setattr(browser_api_module, "check_model_vllm_compatible", _vllm)
+    return calls
+
+
+def test_model_deploy_config_json_is_a_serving_create_input(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_deploy_config(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "deploy-config", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = _json_data(result.output)
+    assert data["model"] == "qwen-demo"
+    assert data["version"] == 3
+    assert data["vllm_compatible"] is True
+    # The floor is reported in the exact spelling `serving create --quota`
+    # takes, so an Agent does not have to reassemble it.
+    assert data["min_quota"] == "1,2,16"
+    assert data["min_nodes"] == 1
+    _assert_compact_public_payload(data)
+    assert "model-secret-123" not in result.output
+
+
+def test_model_deploy_config_defaults_to_the_latest_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = _patch_deploy_config(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(
+        cli_main, ["model", "deploy-config", "qwen-demo", "--workspace", "训练空间"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["recommended"]["version"] == 3
+    assert calls["vllm"]["version"] == 3
+
+
+def test_model_deploy_config_explicit_version_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = _patch_deploy_config(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "model",
+            "deploy-config",
+            "qwen-demo",
+            "--workspace",
+            "训练空间",
+            "--version",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls["recommended"]["version"] == 1
+
+
+def test_model_deploy_config_requires_a_version_it_can_resolve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_deploy_config(monkeypatch, tmp_path, latest_version="")
+
+    result = CliRunner().invoke(
+        cli_main, ["model", "deploy-config", "qwen-demo", "--workspace", "训练空间"]
+    )
+
+    assert result.exit_code != 0
+    assert "--version" in result.output
+
+
+def test_model_deploy_config_omits_a_quota_it_cannot_complete(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A partial floor must not be rendered as a `--quota` triple; a guessed
+    # zero would read as "no GPU needed".
+    _patch_deploy_config(
+        monkeypatch,
+        tmp_path,
+        recommended={"min_node_count": 2, "min_gpu_count_per_node": 8},
+        vllm=False,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "deploy-config", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = _json_data(result.output)
+    assert "min_quota" not in data
+    assert data["min_gpu_per_node"] == 8
+    assert data["min_nodes"] == 2
+    assert data["vllm_compatible"] is False
+
+
+def test_model_deploy_config_rejects_a_platform_handle_before_any_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_model_recommended_config",
+        lambda *_args, **_kwargs: pytest.fail(
+            "raw handle must be rejected before the Browser API call"
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "model",
+            "deploy-config",
+            "model-12345678-1234-1234-1234-123456789abc",
+            "--workspace",
+            "训练空间",
+        ],
+    )
+
+    assert result.exit_code != 0
+
+
+def _status_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    versions: list[dict[str, Any]],
+) -> None:
+    """Wire `model status` up to one model whose version records are given."""
+    _patch_runtime(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        model_commands_module,
+        "_resolve_model_name",
+        lambda *args, **kwargs: "model-secret-serving",
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_model_detail",
+        lambda **kwargs: {"model": {"name": "qwen-demo", "status": 2}},
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_model_version_records",
+        lambda **kwargs: {"list": versions, "total": len(versions)},
+    )
+
+
+def test_model_status_names_the_servings_holding_the_reported_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Name and readable status only -- and only the servings still holding it.
+
+    The platform hands back `serving_id`, `user_avatar` and a scalar
+    `user_name` beside the name, plus every serving that ever referenced the
+    version. A failed serving holds nothing and cannot be restarted, so it is
+    not an answer to "is anyone using this".
+    """
+    _status_runtime(
+        monkeypatch,
+        tmp_path,
+        versions=[{"model": {"version": 4, "status": 2}}],
+    )
+    requests: list[dict[str, Any]] = []
+
+    def _servings(**kwargs):
+        requests.append(kwargs)
+        return (
+            [
+                {
+                    "name": "qwen-prod",
+                    "serving_id": "sv-secret-1",
+                    "status": 4,
+                    "user_avatar": "https://avatars.invalid/secret.svg",
+                    "user_name": "253108120116",
+                    "version": 7,
+                },
+                {
+                    "name": "qwen-rollout",
+                    "serving_id": "sv-secret-2",
+                    "status": 2,
+                    "user_name": "usr_391",
+                    "version": 1,
+                },
+                {
+                    "name": "qwen-dead",
+                    "serving_id": "sv-secret-3",
+                    "status": 3,
+                    "user_name": "student-42",
+                    "version": 1,
+                },
+                {
+                    "name": "qwen-asleep",
+                    "serving_id": "sv-secret-4",
+                    "status": 7,
+                    "version": 1,
+                },
+            ],
+            4,
+        )
+
+    monkeypatch.setattr(browser_api_module, "list_model_inference_servings", _servings)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "status", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _json_data(result.output)
+    assert payload["servings"] == [
+        {"name": "qwen-prod", "status": "RUNNING"},
+        {"name": "qwen-rollout", "status": "DEPLOYING"},
+        {"name": "qwen-asleep", "status": "STOPPED"},
+    ]
+    # The reported version, not the serving's own revision, is what was asked.
+    assert requests[0]["version"] == 4
+    _assert_compact_public_payload(payload)
+    for secret in (
+        "sv-secret-1",
+        "avatars.invalid",
+        "253108120116",
+        "usr_391",
+        "student-42",
+        "qwen-dead",
+    ):
+        assert secret not in result.output
+
+
+def test_model_status_human_view_lists_servings_under_their_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _status_runtime(
+        monkeypatch,
+        tmp_path,
+        versions=[{"model": {"version": 4, "status": 2}}],
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_model_inference_servings",
+        lambda **kwargs: ([{"name": "qwen-prod", "status": 4}], 1),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["model", "status", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Serving on V4: qwen-prod (RUNNING)" in result.output
+    assert "Pending deployment: no" in result.output
+
+
+def test_model_status_says_none_rather_than_going_quiet(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An empty answer is a real answer and has to be printed as one."""
+    _status_runtime(
+        monkeypatch,
+        tmp_path,
+        versions=[{"model": {"version": 4, "status": 2}}],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["model", "status", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Servings on V4: none" in result.output
+
+
+def test_model_status_reports_a_pending_deployment_the_running_count_misses(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A queued deployment counts as zero running servings on every version.
+
+    This is the case the version records cannot express: `model versions` shows
+    `Servings 0` while a deployment is waiting to start on the model.
+    """
+    _status_runtime(
+        monkeypatch,
+        tmp_path,
+        versions=[
+            {"model": {"version": 1, "status": 2}, "running_infrence_serving": "0"}
+        ],
+    )
+    pending_requests: list[dict[str, Any]] = []
+
+    def _pending(**kwargs):
+        pending_requests.append(kwargs)
+        return {"has_pending_serving": True}
+
+    monkeypatch.setattr(
+        browser_api_module, "check_model_inference_serving_pending", _pending
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "status", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _json_data(result.output)["pending_serving"] is True
+    # Whole-model question: a version would narrow it back to one version.
+    assert "version" not in pending_requests[0]
+
+
+def test_model_status_flags_other_versions_that_still_run_servings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Deleting a model takes every version's deployments, not just the newest."""
+    _status_runtime(
+        monkeypatch,
+        tmp_path,
+        versions=[
+            {"model": {"version": 1, "status": 2}, "running_infrence_serving": "2"},
+            {"model": {"version": 2, "status": 2}, "running_infrence_serving": "0"},
+            {"model": {"version": 3, "status": 2}, "running_infrence_serving": 1},
+        ],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "status", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _json_data(result.output)
+    assert payload["version"] == "V3"
+    assert payload["other_versions_in_use"] == ["V1"]
+
+
+def test_model_status_omits_other_versions_when_only_the_newest_is_used(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _status_runtime(
+        monkeypatch,
+        tmp_path,
+        versions=[
+            {"model": {"version": 1, "status": 2}, "running_infrence_serving": "0"},
+            {"model": {"version": 2, "status": 2}, "running_infrence_serving": "3"},
+        ],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "status", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "other_versions_in_use" not in _json_data(result.output)
+
+
+def test_model_status_bounds_the_serving_list_to_the_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _status_runtime(
+        monkeypatch,
+        tmp_path,
+        versions=[{"model": {"version": 1, "status": 2}}],
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_model_inference_servings",
+        lambda **kwargs: (
+            [{"name": f"svc-{index}", "status": 4} for index in range(25)],
+            25,
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "status", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = _json_data(result.output)
+    assert len(payload["servings"]) == 20
+    assert payload["servings_shown"] == 20
+    assert payload["servings_total"] == 25
+    assert payload["servings_truncated"] is True
+
+
+def test_model_status_fails_loudly_when_the_serving_lookup_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A refused lookup must never read as "nothing is deployed"."""
+    _status_runtime(
+        monkeypatch,
+        tmp_path,
+        versions=[{"model": {"version": 1, "status": 2}}],
+    )
+
+    def _refuse(**_kwargs):
+        raise ValueError("AccessForbidden: nope")
+
+    monkeypatch.setattr(browser_api_module, "list_model_inference_servings", _refuse)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "status", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code != 0
+    assert "servings" not in result.output
+    assert "APIError" in result.output
+
+
+def test_model_status_takes_vllm_readiness_from_the_live_check(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The stored flag on a version record reads false for every model.
+
+    Trusting it made `model status` contradict `model deploy-config`, which has
+    always asked the platform.
+    """
+    _status_runtime(
+        monkeypatch,
+        tmp_path,
+        versions=[{"model": {"version": 2, "status": 2, "is_vllm_compatible": False}}],
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_model_vllm_compatibility",
+        lambda *args, **kwargs: {2: True},
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "status", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _json_data(result.output)["vllm_ready"] is True
+
+
+def test_model_status_omits_vllm_readiness_the_platform_did_not_answer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _status_runtime(
+        monkeypatch,
+        tmp_path,
+        versions=[{"model": {"version": 2, "status": 2, "is_vllm_compatible": True}}],
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_model_vllm_compatibility",
+        lambda *args, **kwargs: {1: True},
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "model", "status", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "vllm_ready" not in _json_data(result.output)
+
+
+def test_model_versions_takes_vllm_readiness_from_the_live_check(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_runtime(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        model_commands_module,
+        "_resolve_model_name",
+        lambda *args, **kwargs: "model-secret-vllm",
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_model_version_records",
+        lambda **kwargs: {
+            "list": [
+                {"model": {"version": 1, "status": 2, "is_vllm_compatible": False}},
+                {"model": {"version": 2, "status": 2, "is_vllm_compatible": False}},
+            ],
+            "total": 2,
+        },
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_model_vllm_compatibility",
+        lambda *args, **kwargs: {1: True},
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["model", "versions", "qwen-demo", "--workspace", "训练空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = [
+        line.split()
+        for line in result.output.splitlines()
+        if line[:1] == "V" and line[1:2].isdigit()
+    ]
+    assert rows[0][:2] == ["V1", "SUCCESS"]
+    assert rows[0][2] == "yes"
+    # V2 was not in the answer; an unknown flag prints as unknown, not as "no".
+    assert rows[1][2] == "-"

@@ -589,7 +589,7 @@ def resolve_cached_notebook_target(
             ctx,
             workspace,
             resource_type="workspace",
-            list_command="inspire config context",
+            list_command="inspire account context",
         )
     if pick is not None and pick < 1:
         _handle_pick_out_of_range(

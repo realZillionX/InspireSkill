@@ -1,14 +1,14 @@
 """Configuration schema for Inspire CLI.
 
-Defines all environment variables and TOML configuration keys with metadata for documentation,
-validation, and config file generation.
+Maps every settable key across its three spellings — environment variable,
+TOML key, and ``Config`` field — so the loader and ``inspire init`` agree on
+what exists. Defaults live in ``load_common._default_config_values()``.
 
-The option list is split across smaller per-category modules for readability.
+The option list is split across smaller per-area modules for readability.
 """
 
 from __future__ import annotations
 
-from inspire.config.schema_categories import CATEGORY_ORDER  # noqa: F401
 from inspire.config.schema_models import (  # noqa: F401
     ConfigOption,
     _parse_bool,
@@ -23,7 +23,6 @@ from inspire.config.options.project import (
     NOTEBOOK_OPTIONS,
 )
 
-# All configuration options organized by category.
 CONFIG_OPTIONS: list[ConfigOption] = [
     *AUTH_OPTIONS,
     *API_OPTIONS,
@@ -34,39 +33,9 @@ CONFIG_OPTIONS: list[ConfigOption] = [
 ]
 
 
-def get_options_by_category(category: str) -> list[ConfigOption]:
-    """Get all configuration options for a category."""
-    return [opt for opt in CONFIG_OPTIONS if opt.category == category]
-
-
-def get_option_by_env(env_var: str) -> ConfigOption | None:
-    """Get configuration option by environment variable name."""
-    for opt in CONFIG_OPTIONS:
-        if opt.env_var == env_var:
-            return opt
-    return None
-
-
 def get_option_by_toml(toml_key: str) -> ConfigOption | None:
     """Get configuration option by TOML key."""
     for opt in CONFIG_OPTIONS:
         if opt.toml_key == toml_key:
             return opt
     return None
-
-
-def get_categories() -> list[str]:
-    """Get all unique categories in order."""
-    return [cat for cat in CATEGORY_ORDER if any(opt.category == cat for opt in CONFIG_OPTIONS)]
-
-
-def get_options_by_scope(scope: str) -> list[ConfigOption]:
-    """Get all configuration options for a given scope.
-
-    Args:
-        scope: Either "global" or "project"
-
-    Returns:
-        List of ConfigOption with matching scope
-    """
-    return [opt for opt in CONFIG_OPTIONS if opt.scope == scope]

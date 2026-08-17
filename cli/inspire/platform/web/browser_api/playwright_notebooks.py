@@ -13,7 +13,7 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
 
 from inspire.platform.web.browser_api.core import (
-    _browser_api_path,
+    NOTEBOOK_LAB_PATH,
     _get_base_url,
     _in_asyncio_loop,
     _launch_browser,
@@ -126,9 +126,8 @@ def open_notebook_lab(
     timeout_ms = requested_timeout_ms if prefer_direct else max(requested_timeout_ms, 10000)
     timeout_s = max(timeout_ms / 1000.0, 1.0)
     started_at = time.time()
-    notebook_lab_pattern = _browser_api_path("/notebook/lab/")
-    notebook_lab_prefix = _browser_api_path("/notebook/lab").rstrip("/")
-    direct_lab_url = f"{base_url}{notebook_lab_prefix}/{notebook_id}"
+    notebook_lab_pattern = f"{NOTEBOOK_LAB_PATH}/"
+    direct_lab_url = f"{base_url}{NOTEBOOK_LAB_PATH}/{notebook_id}"
 
     def open_direct(*, fast: bool) -> object | None:
         elapsed_ms = int((time.time() - started_at) * 1000)
@@ -210,7 +209,7 @@ def build_jupyter_proxy_url(lab_url: str, *, port: int) -> str:
     parsed = urlsplit(lab_url)
     query_token = parse_qs(parsed.query).get("token", [None])[0]
 
-    notebook_lab_pattern = _browser_api_path("/notebook/lab/")
+    notebook_lab_pattern = f"{NOTEBOOK_LAB_PATH}/"
     if notebook_lab_pattern.lstrip("/") in lab_url:
         base_path = parsed.path
         if not base_path.endswith("/"):

@@ -4,22 +4,23 @@ Each step does its own *in-shell* probing before running anything destructive,
 so:
 
   * Hitting `install-deps` twice is safe (second run is a no-op).
-  * The unified-base:v2 image — which already ships slurm + ray — short-circuits
-    everything; nothing is reinstalled.
+  * An image that already ships slurm + ray short-circuits everything; nothing
+    is reinstalled.
   * If the container's distro doesn't match what we know how to drive
     (jammy / noble), we bail with a clear message instead of letting apt fall
     over half-way through.
 
 Run inside a notebook you already have a cached SSH connection to, then
-``image save`` to derive a project base image with all the runtimes you need.
+``notebook save-image`` to derive a project base image with all the runtimes
+you need.
 
 Scope:
 
-* ``--slurm`` — apt-installs ``slurm-wlm slurm-client munge hwloc libpmix2``,
-  matching unified-base:v2. Slurm config and munge key are *not* touched; the
-  platform injects ``/etc/slurm/slurm.conf`` at ``hpc create`` time.
-* ``--ray`` — pip-installs a version-pinned ``ray`` (default ``2.55.1`` to
-  match unified-base:v2). Override with ``--ray-version``.
+* ``--slurm`` — apt-installs ``slurm-wlm slurm-client munge hwloc libpmix2``.
+  Slurm config and munge key are *not* touched; the platform injects
+  ``/etc/slurm/slurm.conf`` at ``hpc create`` time.
+* ``--ray`` — pip-installs a version-pinned ``ray``. Override the pin with
+  ``--ray-version``.
 
 Distributed-training stacks (deepspeed/accelerate/torch/transformers) are
 project-specific; install those with ``inspire notebook exec`` directly.
@@ -79,8 +80,7 @@ def _build_slurm_step() -> str:
     been built with cross-distro libs pinned), we abort with a clear
     error instead of letting the real install crash mid-way and leave
     apt in a broken state. ``srun`` already on PATH short-circuits the
-    whole step so unified-base:v2 / vtb-* / videothinkbench-hpc-slurm-*
-    are all no-ops.
+    whole step, so any image that already ships a Slurm client is a no-op.
     """
     pkgs = " ".join(_SLURM_APT_PACKAGES)
     return (
@@ -102,7 +102,7 @@ def _build_slurm_step() -> str:
         "then "
         '  echo "[install-deps] auto-install not supported on this image (apt failed dependency check)." >&2; '
         f'  echo "[install-deps] manual: apt-get install -y --no-install-recommends {pkgs}" >&2; '
-        '  echo "[install-deps] or use docker.sii.shaipower.online/inspire-studio/unified-base:v2 as the base image (slurm preinstalled)." >&2; '
+        '  echo "[install-deps] or start from an image that already ships a slurm client." >&2; '
         "  exit 3; "
         "fi; "
         # Real install only after a clean simulate.
@@ -303,9 +303,9 @@ def _run_step(
     "--slurm/--no-slurm",
     default=False,
     help=(
-        "apt-install the Slurm client + dependencies that match "
-        "unified-base:v2. Required for `inspire hpc create` to use the "
-        "saved image. Skipped automatically when srun + sbatch already exist."
+        "apt-install the Slurm client and its dependencies. Required for "
+        "`inspire hpc create` to use the saved image. Skipped automatically "
+        "when srun + sbatch already exist."
     ),
 )
 @click.option(
@@ -328,7 +328,7 @@ def _run_step(
     default=DEFAULT_PIP_INDEX_URL,
     show_default=True,
     help=(
-        "PyPI index for pip steps. Default mirrors unified-base:v2. "
+        "PyPI index for pip steps. "
         "Pass an empty string to skip the explicit --index-url flag and "
         "let pip pick up whatever the image already configures (/etc/pip.conf etc); "
         "pass 'https://pypi.org/simple' to force upstream PyPI. "
@@ -367,7 +367,7 @@ def install_deps_cmd(
     or 分布式训练空间 GPU jobs. Public downloads need internet; use CPU资源空间
     for those. SII internal mirrors may work directly inside GPU or
     internal-only groups. After the checks pass, save the notebook as an image
-    with `inspire image save`.
+    with `inspire notebook save-image`.
 
     \b
     Examples:
@@ -375,8 +375,8 @@ def install_deps_cmd(
         inspire notebook install-deps cpu-box --slurm --ray
         inspire notebook install-deps cpu-box --ray --ray-version 2.40.0
 
-    Designed to run once on a fresh notebook before `inspire image save`,
-    so the resulting image is ready for `inspire hpc create` /
+    Designed to run once on a fresh notebook before `inspire notebook
+    save-image`, so the resulting image is ready for `inspire hpc create` /
     `inspire ray create` without further setup. Each step probes the
     container first and skips itself if the requested runtime is already
     in place — hitting this command twice is safe.

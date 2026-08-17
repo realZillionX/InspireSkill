@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from inspire.cli.formatters.human_formatter import format_epoch
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.platform.web.browser_api.datasets import mounted_dataset_views
 
 _URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s\"'<>]+", re.IGNORECASE)
 _PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
@@ -173,6 +175,30 @@ def _timestamp(item: object, keys: tuple[str, ...]) -> str:
     return ""
 
 
+def _node_names(item: object, key: str) -> list[str]:
+    """Read one node-name list off a detail payload.
+
+    ``node_infos`` carries the live placement as ``[{"node_name": …}]`` and is
+    empty until the scheduler has placed the job; ``specified_nodes`` and
+    ``exclude_nodes`` are the request-side pins and echo back as bare strings.
+    Node names are infrastructure identity, not platform handles, so they pass
+    ``_text`` unscrubbed — which is the whole point of reporting them.
+    """
+    raw = _value(item, key)
+    if not isinstance(raw, list):
+        return []
+    names: list[str] = []
+    for entry in raw:
+        name = (
+            _text(entry.get("node_name") or entry.get("name"))
+            if isinstance(entry, dict)
+            else _text(entry)
+        )
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def public_job_status(item: object, *, fallback_name: str = "") -> dict[str, Any]:
     """Project one job detail payload onto stable, name-only fields."""
     name = _nested_name(item, ("name", "job_name")) or _text(fallback_name)
@@ -225,9 +251,13 @@ def public_job_status(item: object, *, fallback_name: str = "") -> dict[str, Any
             ),
             "compute_group": compute_group,
             "resource": _resource(item),
+            "nodes": _node_names(item, "node_infos"),
+            "pinned_nodes": _node_names(item, "specified_nodes"),
+            "excluded_nodes": _node_names(item, "exclude_nodes"),
             "priority": priority,
             "priority_level": priority_level,
             "sub_status": _text(_value(item, "sub_status")),
+            "datasets": mounted_dataset_views(_value(item, "dataset_info")),
             "created_at": _timestamp(item, ("created_at", "create_time")),
             "updated_at": _timestamp(item, ("updated_at", "update_time")),
             "finished_at": _timestamp(
@@ -298,16 +328,33 @@ def format_job_status(view: dict[str, Any]) -> str:
     if resource:
         lines.append(f"Resource: {resource}")
     for key, label in (
+        ("nodes", "Nodes"),
+        ("pinned_nodes", "Pinned Nodes"),
+        ("excluded_nodes", "Excluded Nodes"),
+    ):
+        names = view.get(key)
+        if names:
+            lines.append(f"{label}: {', '.join(names)}")
+    for mount in view.get("datasets") or []:
+        lines.append(f"Dataset: {mount['name']}:{mount['version']} -> {mount['path']}")
+    for key, label in (
         ("priority", "Priority"),
         ("priority_level", "Priority Level"),
         ("sub_status", "Sub-status"),
+    ):
+        value = view.get(key)
+        if value not in (None, ""):
+            lines.append(f"{label}: {value}")
+    # The view keeps epoch millis for machine consumers; a human reading
+    # `job status` should see the same wall-clock format `job list` prints.
+    for key, label in (
         ("created_at", "Created"),
         ("updated_at", "Updated"),
         ("finished_at", "Finished"),
     ):
         value = view.get(key)
         if value not in (None, ""):
-            lines.append(f"{label}: {value}")
+            lines.append(f"{label}: {format_epoch(value)}")
     return "\n".join(lines)
 
 

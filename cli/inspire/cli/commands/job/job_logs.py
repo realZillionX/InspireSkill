@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import time
 from collections import deque
@@ -43,11 +44,17 @@ from inspire.platform.web.session import SessionExpiredError, WebSession, get_we
 from .job_commands import (
     WebJobResolutionError,
     WebJobValidationError,
+    _JOB_TERMINAL_STATUSES,
     _close_web_client,
     _reject_web_job_name_at_boundary,
     _reject_job_instance_name,
     _resolve_web_job_id,
     _run_readonly_web_job_operation,
+)
+from .job_instances import (
+    JobInstanceSelectionError,
+    job_instance_views,
+    select_job_instance_views,
 )
 
 
@@ -189,10 +196,29 @@ def _web_log_time_range(job_data: dict, since_minutes: int | None) -> tuple[int,
     return start_ms, max(end_ms, start_ms + 1)
 
 
-def _web_log_sort_key(item: dict) -> tuple[int, str]:
+_SUBSECOND_RE = re.compile(r"\.(\d+)")
+
+
+def _web_log_sub_ms(item: dict) -> int:
+    """Return the sub-millisecond part of a record's `time`, in nanoseconds.
+
+    The platform stamps `time` with nanosecond precision but rounds
+    `timestamp_ms` to milliseconds, so a burst of lines written inside the
+    same millisecond ties on `timestamp_ms` and comes back in whatever order
+    the log store felt like. Ordering on the finer field keeps a job's stdout
+    in the order the job actually wrote it — a CSV header before its row.
+    """
+    match = _SUBSECOND_RE.search(str(item.get("time") or ""))
+    if not match:
+        return 0
+    digits = match.group(1)[:9].ljust(9, "0")
+    return int(digits) % 1_000_000
+
+
+def _web_log_sort_key(item: dict) -> tuple[int, int, str]:
     timestamp_ms = _coerce_epoch_ms(item.get("timestamp_ms")) or 0
     log_id = str(item.get("log_id") or "")
-    return timestamp_ms, log_id
+    return timestamp_ms, _web_log_sub_ms(item), log_id
 
 
 def _web_log_identity(item: dict) -> tuple[int, str, str, int]:
@@ -225,8 +251,17 @@ def _format_web_logs(logs: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# A log line is the program's own output, not a platform handle. The default
+# path redaction turns `+ /bin/bash -c ...` into `+ <redacted> -c ...` and a
+# traceback's `File "/opt/conda/.../site.py"` into `File "<redacted>"`, which
+# removes exactly what the command exists to show. The human renderer already
+# prints these paths (it only runs `scrub_raw_ids`), so redacting them in
+# `--json` also made the two output modes disagree about the same line.
+LOG_TEXT_KEYS = frozenset({"message", "log", "content"})
+
+
 def _public_web_logs(logs: list[dict]) -> list[dict[str, Any]]:
-    public = json_formatter.sanitize_json_data(logs)
+    public = json_formatter.sanitize_json_data(logs, preserve_paths=LOG_TEXT_KEYS)
     if not isinstance(public, list):
         return []
     return [dict(item) for item in public if isinstance(item, dict)]
@@ -380,11 +415,17 @@ def _follow_logs_via_web(
     page_size: int,
     session: WebSession,
     poll_interval: float = 2.0,
+    status_interval: float = 10.0,
 ) -> None:
     seen: set[tuple[int, str, str, int]] = set()
     seen_order: deque[tuple[int, str, str, int]] = deque()
     first_fetch = True
     truncation_announced = False
+    # The SSH path has always ended the follow when the job ends; the platform
+    # path used to poll a finished job forever, which is what a caller running
+    # `--follow` in a background terminal actually sees.
+    last_status_check = time.time()
+    draining = False
 
     def remember(item: dict) -> None:
         identity = _web_log_identity(item)
@@ -394,6 +435,15 @@ def _follow_logs_via_web(
         seen_order.append(identity)
         if len(seen_order) > _FOLLOW_SEEN_LIMIT:
             seen.discard(seen_order.popleft())
+
+    def terminal_status() -> Optional[str]:
+        try:
+            detail = browser_api_module.get_job_detail_v2(job_id, session=session)
+        except Exception as e:  # a transient read must not end the follow
+            logger.debug("Follow status refresh failed: %s", e, exc_info=True)
+            return None
+        status = detail.get("status", "")
+        return status if status in _JOB_TERMINAL_STATUSES else None
 
     try:
         while True:
@@ -430,6 +480,23 @@ def _follow_logs_via_web(
 
             for item in ordered:
                 remember(item)
+
+            if draining:
+                return
+
+            now = time.time()
+            if now - last_status_check >= status_interval:
+                last_status_check = now
+                final_status = terminal_status()
+                if final_status is not None:
+                    click.echo(
+                        f"Job reached {scrub_raw_ids(final_status)}; "
+                        "no further log records will arrive.",
+                        err=True,
+                    )
+                    # One last pass picks up records written between the final
+                    # log fetch and the status read.
+                    draining = True
 
             time.sleep(poll_interval)
     except KeyboardInterrupt:
@@ -523,14 +590,6 @@ def _follow_logs_via_ssh(
     api_logger.setLevel(logging.CRITICAL)
 
     session = get_web_session()
-    terminal_statuses = {
-        "SUCCEEDED",
-        "FAILED",
-        "CANCELLED",
-        "job_succeeded",
-        "job_failed",
-        "job_cancelled",
-    }
     final_status = None
     status_check_interval = 5
 
@@ -628,7 +687,7 @@ def _follow_logs_via_ssh(
                     job_data = browser_api_module.get_job_detail_v2(job_id, session=session)
                     current_status = job_data.get("status", "UNKNOWN")
 
-                    if current_status in terminal_statuses:
+                    if current_status in _JOB_TERMINAL_STATUSES:
                         final_status = current_status
                         time.sleep(3)
                         stdout.close()
@@ -840,7 +899,8 @@ def _run_job_logs_single_job(
                         "total": selection.total,
                         "limit": selection.limit,
                         "character_limit": selection.character_limit,
-                    }
+                    },
+                    preserve_paths=LOG_TEXT_KEYS,
                 )
             )
             return
@@ -919,19 +979,20 @@ def _run_job_logs_web_single_job(
 
         def _load_logs(job_id: str, session: WebSession):
             job_data = browser_api_module.get_job_detail_v2(job_id, session=session)
-            if instance_names:
-                pod_names = list(instance_names)
-            else:
-                instances, _ = browser_api_module.list_job_instances(
-                    job_id,
-                    limit=200,
-                    session=session,
-                )
-                pod_names = [
-                    str(item.get("name") or "").strip()
-                    for item in instances
-                    if str(item.get("name") or "").strip()
-                ]
+            instances, _ = browser_api_module.list_job_instances(
+                job_id,
+                limit=200,
+                session=session,
+            )
+            # The selector speaks the Name column of `inspire job instances`
+            # (`rank=0`), never the pod handle — the handle scrubs to
+            # `<redacted>-worker-0-0` and is printed nowhere, so it was never
+            # a value a caller could have obtained from this CLI.
+            views = select_job_instance_views(
+                job_instance_views(instances),
+                instance_names,
+            )
+            pod_names = [view.handle for view in views]
 
             start_ms, end_ms = _web_log_time_range(job_data, since_minutes)
             if follow or not pod_names:
@@ -1016,7 +1077,8 @@ def _run_job_logs_web_single_job(
                         "limit": selection.limit,
                         "character_limit": selection.character_limit,
                         "shown_chars": selection.shown_chars,
-                    }
+                    },
+                    preserve_paths=LOG_TEXT_KEYS,
                 )
             )
             return
@@ -1036,6 +1098,8 @@ def _run_job_logs_web_single_job(
         _handle_error(ctx, "JobNotFound", str(e), EXIT_JOB_NOT_FOUND)
     except SessionExpiredError as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except JobInstanceSelectionError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
     except ValueError as e:
         _handle_error(ctx, "APIError", str(e), EXIT_GENERAL_ERROR)
     except Exception as e:
@@ -1081,7 +1145,9 @@ def _run_job_logs_web_single_job(
     is_flag=True,
     help=(
         "Follow new log content; platform logs are polled and SSH logs use tail -f. "
-        "Initial output is bounded and long updates are shortened."
+        "Initial output is bounded and long updates are shortened. Returns once the "
+        "job reaches a terminal state, so a job that is already terminal prints its "
+        "tail and exits rather than following anything."
     ),
 )
 @click.option(
@@ -1116,8 +1182,12 @@ def _run_job_logs_web_single_job(
     "--instance",
     "instance_names",
     multiple=True,
-    metavar="NAME",
-    help="Instance name to query. Repeat for multiple instances.",
+    metavar="RANK",
+    help=(
+        "Read only this instance, named by the Name column of `inspire job "
+        "instances` — `rank=0`, or just `0`. A role name selects every "
+        "instance in it. Repeat for several. Default: every instance."
+    ),
 )
 @click.option(
     "--window",

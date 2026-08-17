@@ -76,7 +76,7 @@ def _validate_profile_fields(
             ctx,
             workspace,
             resource_type="workspace",
-            list_command="inspire config context",
+            list_command="inspire account context",
         ),
         "project": reject_id_at_boundary(
             ctx,

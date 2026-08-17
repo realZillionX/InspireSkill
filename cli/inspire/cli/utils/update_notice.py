@@ -2,14 +2,17 @@
 
 The startup hook in `inspire.cli.main` calls `maybe_notify_update()` and
 `maybe_spawn_check()` on every invocation. Both must be cheap and
-completely side-effect-free on failure. Automatic checks stay silent;
-the optional notice is only enabled with ``INSPIRE_SHOW_UPDATE_NOTICE=1``.
+completely side-effect-free on failure. The version check itself is always
+silent; the one-line notice prints whenever a newer version is known, on
+stderr so stdout stays clean. ``INSPIRE_SKIP_UPDATE_CHECK=1`` turns both off,
+and the caller suppresses the notice under ``--json``.
 
 Cache file: ~/.inspire/update-status.json
 Source of truth: cli/pyproject.toml on `main` (parsed via raw.githubusercontent.com).
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -43,7 +46,6 @@ FETCH_TIMEOUT = 6  # seconds — foreground check is bounded
 
 _VERSION_RE = re.compile(r'^\s*version\s*=\s*"([^"]+)"', re.MULTILINE)
 _SKIP_ENV = "INSPIRE_SKIP_UPDATE_CHECK"
-_SHOW_NOTICE_ENV = "INSPIRE_SHOW_UPDATE_NOTICE"
 
 
 def _now_iso() -> str:
@@ -126,7 +128,16 @@ def fetch_latest_version_info() -> tuple[str | None, str]:
         version = payload.get("info", {}).get("version")
         if isinstance(version, str) and version.strip():
             return version.strip(), PYPI_JSON_URL
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        json.JSONDecodeError,
+        # A truncated response raises http.client.IncompleteRead, which is an
+        # HTTPException and therefore not an OSError — without this the check
+        # dies with a traceback instead of falling through to GitHub.
+        http.client.HTTPException,
+    ):
         pass
 
     req = urllib.request.Request(
@@ -136,7 +147,7 @@ def fetch_latest_version_info() -> tuple[str | None, str]:
     try:
         with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
             body = resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, TimeoutError, OSError):
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):
         return None, RAW_PYPROJECT_URL
     return _parse_version(body), RAW_PYPROJECT_URL
 
@@ -156,12 +167,15 @@ def run_check(write: bool = True, *, current_version: str | None = None) -> dict
 
 
 def maybe_notify_update() -> None:
-    """Optionally print a one-line upgrade reminder for interactive users.
+    """Print a one-line upgrade reminder whenever a newer version is known.
 
-    Startup output is silent by default so update metadata never contaminates
-    command output. Set ``INSPIRE_SHOW_UPDATE_NOTICE=1`` to opt in.
+    This fires for everyone — terminal, pipe, CI or Agent — because a reminder
+    nobody is shown is the same as no reminder at all. It goes to stderr, so
+    stdout stays exactly what the command was asked for; the caller additionally
+    suppresses it under ``--json``, and ``INSPIRE_SKIP_UPDATE_CHECK=1`` turns
+    the whole update path off.
     """
-    if os.environ.get(_SKIP_ENV) == "1" or os.environ.get(_SHOW_NOTICE_ENV) != "1":
+    if os.environ.get(_SKIP_ENV) == "1":
         return
     cache = _read_cache()
     if not cache:

@@ -13,7 +13,7 @@ from inspire.config import (
     Config,
     ConfigError,
     SOURCE_DEFAULT,
-    SOURCE_GLOBAL,
+    SOURCE_ACCOUNT,
     SOURCE_PROJECT,
     SOURCE_ENV,
     SOURCE_ENV_FILE,
@@ -22,17 +22,11 @@ from inspire.config import (
 )
 from inspire.config import (
     CONFIG_OPTIONS,
-    get_categories,
-    get_options_by_category,
-    get_options_by_scope,
-    get_option_by_env,
     get_option_by_toml,
 )
 from inspire.cli.commands.init import init
 from inspire.cli.commands.init.env_detect import _detect_env_vars, _generate_toml_content
-from inspire.cli.commands.config import config as config_command
-from inspire.cli.commands.config.env_cmd import _render_env_template
-from inspire.cli.context import EXIT_CONFIG_ERROR
+from inspire.cli.context import EXIT_AUTH_ERROR, EXIT_CONFIG_ERROR
 from inspire.cli.main import main as cli_main
 
 # ===========================================================================
@@ -42,6 +36,10 @@ from inspire.cli.main import main as cli_main
 
 class TestConfigSchema:
     """Tests for config schema module."""
+
+    @staticmethod
+    def _by_scope(scope: str) -> list:
+        return [opt for opt in CONFIG_OPTIONS if opt.scope == scope]
 
     def test_config_options_not_empty(self) -> None:
         """Test that CONFIG_OPTIONS has entries."""
@@ -53,14 +51,21 @@ class TestConfigSchema:
             assert opt.env_var, f"Option missing env_var: {opt}"
             assert opt.toml_key, f"Option missing toml_key: {opt}"
             assert opt.field_name, f"Option missing field_name: {opt}"
-            assert opt.description, f"Option missing description: {opt}"
-            assert opt.category, f"Option missing category: {opt}"
 
-    def test_get_option_by_env(self) -> None:
-        """Test getting option by env var."""
-        opt = get_option_by_env("INSPIRE_USERNAME")
-        assert opt is not None
-        assert opt.toml_key == "auth.username"
+    def test_every_option_maps_to_a_loader_field(self) -> None:
+        """The schema and the loader's defaults must describe the same keys.
+
+        Defaults live only in `_default_config_values()`. An option whose
+        `field_name` is missing there would parse and then be dropped on the
+        floor, which is exactly how a duplicated default drifts unnoticed.
+        """
+        from inspire.config.load_common import _default_config_values
+
+        known_fields = set(_default_config_values())
+        for opt in CONFIG_OPTIONS:
+            assert opt.field_name in known_fields, (
+                f"{opt.env_var} maps to unknown Config field {opt.field_name!r}"
+            )
 
     def test_get_option_by_toml(self) -> None:
         """Test getting option by TOML key."""
@@ -73,24 +78,7 @@ class TestConfigSchema:
 
     def test_get_option_not_found(self) -> None:
         """Test getting non-existent option."""
-        assert get_option_by_env("NONEXISTENT_VAR") is None
         assert get_option_by_toml("nonexistent.key") is None
-
-    def test_get_categories(self) -> None:
-        """Test getting all categories."""
-        categories = get_categories()
-        assert len(categories) > 0
-        assert "Authentication" in categories
-        assert "API" in categories
-        assert "Proxy" in categories
-        assert "Workspaces" not in categories
-
-    def test_get_options_by_category(self) -> None:
-        """Test getting options by category."""
-        auth_opts = get_options_by_category("Authentication")
-        assert len(auth_opts) >= 2  # username and password
-        for opt in auth_opts:
-            assert opt.category == "Authentication"
 
     def test_scope_field_on_config_option(self) -> None:
         """Test that ConfigOption has scope field with valid values."""
@@ -101,30 +89,36 @@ class TestConfigSchema:
                 "project",
             ), f"Option {opt.env_var} has invalid scope: {opt.scope}"
 
-    def test_global_scope_options(self) -> None:
-        """Test that expected options have global scope."""
-        global_opts = get_options_by_scope("global")
-        global_env_vars = [opt.env_var for opt in global_opts]
+    def test_scopes_partition_every_option(self) -> None:
+        """Every option belongs to exactly one scope."""
+        account_opts = self._by_scope("global")
+        project_opts = self._by_scope("project")
 
-        # API settings should be global
-        assert "INSPIRE_BASE_URL" in global_env_vars
-        assert "INSPIRE_BROWSER_API_PREFIX" in global_env_vars
-        assert "INSPIRE_REQUESTS_HTTP_PROXY" in global_env_vars
-        assert "INSPIRE_PLAYWRIGHT_PROXY" in global_env_vars
+        assert len(account_opts) > 0
+        assert len(project_opts) > 0
+        assert len(account_opts) + len(project_opts) == len(CONFIG_OPTIONS)
 
-        # Password should remain global-scope for security defaults
-        assert "INSPIRE_PASSWORD" in global_env_vars
+    def test_account_scope_options(self) -> None:
+        """Test that expected options have account scope."""
+        account_env_vars = [opt.env_var for opt in self._by_scope("global")]
+
+        # API settings should be account-scoped
+        assert "INSPIRE_BASE_URL" in account_env_vars
+        assert "INSPIRE_REQUESTS_HTTP_PROXY" in account_env_vars
+        assert "INSPIRE_PLAYWRIGHT_PROXY" in account_env_vars
+
+        # Password should remain account-scoped for security defaults
+        assert "INSPIRE_PASSWORD" in account_env_vars
 
     def test_project_scope_options(self) -> None:
         """Test that expected options have project scope."""
-        project_opts = get_options_by_scope("project")
-        project_env_vars = [opt.env_var for opt in project_opts]
-        global_env_vars = [opt.env_var for opt in get_options_by_scope("global")]
+        project_env_vars = [opt.env_var for opt in self._by_scope("project")]
+        account_env_vars = [opt.env_var for opt in self._by_scope("global")]
 
         # Identity (username/password) lives at the active account only.
         # Switching accounts uses `inspire account use`, not a per-repo TOML.
-        assert "INSPIRE_USERNAME" in global_env_vars
-        assert "INSPIRE_PASSWORD" in global_env_vars
+        assert "INSPIRE_USERNAME" in account_env_vars
+        assert "INSPIRE_PASSWORD" in account_env_vars
         assert "INSPIRE_USERNAME" not in project_env_vars
         assert "INSPIRE_PASSWORD" not in project_env_vars
 
@@ -132,23 +126,6 @@ class TestConfigSchema:
         assert "INSPIRE_SHM_SIZE" in project_env_vars
         assert "INSPIRE_JOB_ENABLE_NOTIFICATION" in project_env_vars
         assert "INSPIRE_NOTEBOOK_POST_START" in project_env_vars
-
-    def test_get_options_by_scope(self) -> None:
-        """Test get_options_by_scope helper function."""
-        global_opts = get_options_by_scope("global")
-        project_opts = get_options_by_scope("project")
-
-        assert len(global_opts) > 0
-        assert len(project_opts) > 0
-
-        # All returned options should have correct scope
-        for opt in global_opts:
-            assert opt.scope == "global"
-        for opt in project_opts:
-            assert opt.scope == "project"
-
-        # Together they should cover all options
-        assert len(global_opts) + len(project_opts) == len(CONFIG_OPTIONS)
 
 
 # ===========================================================================
@@ -251,7 +228,7 @@ class TestLayeredConfig:
 
         cfg, sources = Config.from_files_and_env(require_credentials=False)
 
-        assert cfg.base_url == "https://api.example.com"
+        assert cfg.base_url == "https://qz.sii.edu.cn"
         assert cfg.job_fault_tolerance_max_retry == 10
         assert sources["base_url"] == SOURCE_DEFAULT
         assert sources["job_fault_tolerance_max_retry"] == SOURCE_DEFAULT
@@ -427,8 +404,8 @@ class TestAccountConfigLayer:
         assert cfg.username == "alice-platform"
         assert cfg.password == "pw"
         assert cfg.base_url == "https://alice.example.com"
-        assert sources["username"] == SOURCE_GLOBAL
-        assert sources["base_url"] == SOURCE_GLOBAL
+        assert sources["username"] == SOURCE_ACCOUNT
+        assert sources["base_url"] == SOURCE_ACCOUNT
 
     def test_account_project_catalog_preserves_path_user(
         self, home: Path, clean_env: None
@@ -445,7 +422,7 @@ class TestAccountConfigLayer:
         cfg, sources = Config.from_files_and_env(require_credentials=False)
 
         assert cfg.project_catalog["CI-情境智能"]["path_user"] == "tongjingqi-CZXS25110029"
-        assert sources["project_catalog"] == SOURCE_GLOBAL
+        assert sources["project_catalog"] == SOURCE_ACCOUNT
 
     def test_account_path_aliases_load_as_defaults(
         self, home: Path, clean_env: None
@@ -462,7 +439,7 @@ class TestAccountConfigLayer:
 
         assert cfg.path_aliases["me"] == "/inspire/ssd/project/topic/alice/"
         assert cfg.path_aliases["public"] == "/inspire/ssd/project/topic/public/"
-        assert sources["path_aliases"] == SOURCE_GLOBAL
+        assert sources["path_aliases"] == SOURCE_ACCOUNT
 
     def test_project_context_is_loaded_for_display(
         self, home: Path, clean_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -497,11 +474,10 @@ class TestAccountConfigLayer:
             "inspire.platform.web.session.get_web_session",
             object,
         )
-        result = CliRunner().invoke(cli_main, ["config", "context"])
+        result = CliRunner().invoke(cli_main, ["account", "context"])
         assert result.exit_code == 0
         assert result.output == (
             "active account=alice project=CI-情境智能 workspace=CPU资源空间\n"
-            "account alice\n"
         )
 
     def test_shared_project_config_loads_with_active_account(
@@ -673,7 +649,7 @@ class TestAccountConfigLayer:
         assert cfg.playwright_proxy == "http://127.0.0.1:7897"
         assert cfg.rtunnel_proxy == "http://127.0.0.1:7897"
         assert sources["requests_http_proxy"] == SOURCE_ENV
-        assert sources["requests_https_proxy"] == SOURCE_GLOBAL
+        assert sources["requests_https_proxy"] == SOURCE_ACCOUNT
 
     def test_remote_env_loads_from_account_layer(
         self, home: Path, clean_env: None
@@ -689,7 +665,7 @@ class TestAccountConfigLayer:
             "WANDB_API_KEY": "account-key",
             "UV_PYTHON_INSTALL_DIR": "/opt/uv",
         }
-        assert sources["remote_env"] == SOURCE_GLOBAL
+        assert sources["remote_env"] == SOURCE_ACCOUNT
 
     def test_remote_env_project_merges_with_account(
         self, home: Path, clean_env: None, tmp_path: Path
@@ -782,8 +758,8 @@ class TestAccountConfigLayer:
         assert cfg.username == "bob"
         assert cfg.base_url == "https://bob.example.com"
         assert cfg.path_aliases["me"] == "/inspire/ssd/project/topic/bob/"
-        assert sources["username"] == SOURCE_GLOBAL
-        assert sources["base_url"] == SOURCE_GLOBAL
+        assert sources["username"] == SOURCE_ACCOUNT
+        assert sources["base_url"] == SOURCE_ACCOUNT
         assert sources["path_aliases"] == SOURCE_PROJECT
         assert (home / ".inspire" / "current").read_text() == "alice\n"
 
@@ -830,7 +806,7 @@ class TestAccountConfigLayer:
 
         assert cfg.username == "alice"
         assert cfg.base_url == "https://alice.example.com"
-        assert sources["base_url"] == SOURCE_GLOBAL
+        assert sources["base_url"] == SOURCE_ACCOUNT
         assert account_path == account_config
         assert project_path is None
 
@@ -1781,102 +1757,30 @@ class TestInitHelpers:
         assert 'base_url = "https://example.com/path?foo=bar&baz=\\"test\\""' in toml_content
 
 # ===========================================================================
-# Config show command tests
+# Account check proxy diagnostics
 # ===========================================================================
 
 
-class TestConfigShowCommand:
-    """Tests for inspire config show command."""
+class TestAccountCheckProxyDiagnostics:
+    """`account check` is the only view of effective proxy routing.
 
-    def test_config_show_table(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test config show table output."""
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
-        monkeypatch.setenv(
-            "INSPIRE_BASE_URL",
-            "https://internal.example/private?token=secret",
-        )
-        monkeypatch.chdir(tmp_path)
+    Every proxy value it touches can carry credentials, so these assert the
+    redaction contract as much as the routing itself.
+    """
 
-        runner = CliRunner()
-        result = runner.invoke(config_command, ["show"])
-
-        assert result.exit_code == 0
-        assert "Configuration" in result.output
-        assert "INSPIRE_USERNAME" in result.output
-        assert "<configured>" in result.output
-        assert "testuser" not in result.output
-        assert "internal.example" not in result.output
-        assert "[env]" not in result.output
-
-        detailed = runner.invoke(config_command, ["show", "--details"])
-        assert detailed.exit_code == 0
-        assert "[env]" in detailed.output
-
-    def test_config_show_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test config show JSON output."""
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
-        monkeypatch.setenv(
-            "INSPIRE_BASE_URL",
-            "https://internal.example/private?token=secret",
-        )
-        monkeypatch.chdir(tmp_path)
-
-        runner = CliRunner()
-        result = runner.invoke(cli_main, ["--json", "config", "show"])
-
-        assert result.exit_code == 0
-        payload = json.loads(result.output)
-        assert payload["success"] is True
-        data = payload["data"]
-        assert "config_files" not in data
-        assert data["values"]["INSPIRE_USERNAME"] == "<configured>"
-        assert data["values"]["INSPIRE_PASSWORD"] == "********"
-        assert "testuser" not in result.output
-        assert "internal.example" not in result.output
-
-    def test_config_show_env_hides_login_and_endpoint(
-        self,
+    @staticmethod
+    def _isolate(
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        cfg: Config,
     ) -> None:
-        monkeypatch.setenv("INSPIRE_USERNAME", "platform-login")
-        monkeypatch.setenv(
-            "INSPIRE_BASE_URL",
-            "https://internal.example/private?token=secret",
-        )
-        monkeypatch.chdir(tmp_path)
+        """Answer the live probe locally and keep the view off the real ~/.inspire."""
+        from inspire.cli.commands.account import check as check_module
 
-        result = CliRunner().invoke(
-            config_command,
-            ["show", "--format", "env", "--compact"],
-        )
-
-        assert result.exit_code == 0, result.output
-        assert "# INSPIRE_USERNAME=<configured; redacted>" in result.output
-        assert "# INSPIRE_BASE_URL=<configured; redacted>" in result.output
-        assert "platform-login" not in result.output
-        assert "internal.example" not in result.output
-        assert "token=secret" not in result.output
-
-    def test_config_show_filter(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test config show with category filter."""
-        monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
-        monkeypatch.setenv("INSPIRE_PASSWORD", "testpass")
-        monkeypatch.chdir(tmp_path)
-
-        runner = CliRunner()
-        result = runner.invoke(config_command, ["show", "--filter", "auth"])
-
-        assert result.exit_code == 0
-        assert "Authentication" in result.output
-
-    def test_config_show_compact_displays_effective_shell_proxy(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Runtime shell proxies remain visible even when config proxy fields are unset."""
-        cfg = Config(username="", password="", base_url="https://qz.sii.edu.cn")
+        fake_home = tmp_path / "__home"
+        fake_home.mkdir(exist_ok=True)
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.setattr("inspire.accounts.current_account", lambda: "test-account")
         monkeypatch.setattr(
             Config,
             "from_files_and_env",
@@ -1887,25 +1791,44 @@ class TestConfigShowCommand:
             "get_config_paths",
             classmethod(lambda cls: (None, None)),
         )
-        monkeypatch.delenv("http_proxy", raising=False)
-        monkeypatch.delenv("HTTP_PROXY", raising=False)
-        monkeypatch.delenv("https_proxy", raising=False)
-        monkeypatch.delenv("no_proxy", raising=False)
-        monkeypatch.delenv("all_proxy", raising=False)
-        monkeypatch.delenv("ALL_PROXY", raising=False)
+        monkeypatch.setattr(check_module, "get_web_session", lambda: object())
+        monkeypatch.setattr(
+            check_module.browser_api_module,
+            "get_current_user",
+            lambda session=None: {"name": "test-account"},
+        )
+        monkeypatch.chdir(tmp_path)
+
+    @staticmethod
+    def _clear_shell_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in (
+            "http_proxy",
+            "HTTP_PROXY",
+            "https_proxy",
+            "HTTPS_PROXY",
+            "no_proxy",
+            "NO_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_check_displays_effective_shell_proxy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shell proxies stay visible even when the account file sets none."""
+        cfg = Config(username="u", password="p", base_url="https://qz.sii.edu.cn")
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
         monkeypatch.setenv(
             "HTTPS_PROXY",
             "http://alice:secret@proxy.example:18443/proxy-secret-path?token=value",
         )
         monkeypatch.setenv("NO_PROXY", ".example.org")
-        monkeypatch.chdir(tmp_path)
 
-        result = CliRunner().invoke(
-            config_command,
-            ["show", "--compact", "--filter", "Proxy"],
-        )
+        result = CliRunner().invoke(cli_main, ["--no-env-file", "account", "check", "--details"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "Effective runtime proxy" in result.output
         assert "source=system_env" in result.output
         assert "route=proxy" in result.output
@@ -1918,75 +1841,44 @@ class TestConfigShowCommand:
         assert "proxy-secret-path" not in result.output
         assert "token" not in result.output
 
-    def test_config_show_json_includes_effective_proxy(
+    def test_check_json_includes_effective_proxy_without_target(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        cfg = Config(username="", password="", base_url="https://qz.sii.edu.cn")
-        monkeypatch.setattr(
-            Config,
-            "from_files_and_env",
-            classmethod(lambda cls, **kwargs: (cfg, {})),
-        )
-        monkeypatch.setattr(
-            Config,
-            "get_config_paths",
-            classmethod(lambda cls: (None, None)),
-        )
-        monkeypatch.delenv("http_proxy", raising=False)
-        monkeypatch.delenv("HTTP_PROXY", raising=False)
-        monkeypatch.delenv("https_proxy", raising=False)
-        monkeypatch.delenv("no_proxy", raising=False)
-        monkeypatch.delenv("NO_PROXY", raising=False)
-        monkeypatch.delenv("all_proxy", raising=False)
-        monkeypatch.delenv("ALL_PROXY", raising=False)
+        cfg = Config(username="u", password="p", base_url="https://qz.sii.edu.cn")
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:18443")
-        monkeypatch.chdir(tmp_path)
 
         result = CliRunner().invoke(
-            cli_main,
-            ["--json", "config", "show", "--filter", "Proxy"],
+            cli_main, ["--json", "--no-env-file", "account", "check", "--details"]
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         data = json.loads(result.output)["data"]
-        assert "values" in data
         assert "target" not in data["effective_proxy"]
         assert data["effective_proxy"]["requests"]["source"] == "system_env"
         assert data["effective_proxy"]["playwright"]["source"] == "requests:system_env"
         assert "proxy.example" not in result.output
         assert "qz.sii.edu.cn" not in result.output
 
-    def test_config_show_redacts_configured_proxy_credentials(
+    def test_check_never_prints_configured_proxy_credentials(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         cfg = Config(
-            username="",
-            password="",
+            username="u",
+            password="p",
             base_url="https://qz.sii.edu.cn",
             requests_https_proxy=(
                 "http://proxy-user:proxy-password@proxy.example:18443/secret-path?token=value"
             ),
         )
-        monkeypatch.setattr(
-            Config,
-            "from_files_and_env",
-            classmethod(lambda cls, **kwargs: (cfg, {"requests_https_proxy": SOURCE_GLOBAL})),
-        )
-        monkeypatch.setattr(
-            Config,
-            "get_config_paths",
-            classmethod(lambda cls: (None, None)),
-        )
-        monkeypatch.chdir(tmp_path)
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
 
-        result = CliRunner().invoke(
-            config_command,
-            ["show", "--compact", "--filter", "Proxy"],
-        )
+        result = CliRunner().invoke(cli_main, ["--no-env-file", "account", "check", "--details"])
 
-        assert result.exit_code == 0
-        assert "INSPIRE_REQUESTS_HTTPS_PROXY" in result.output
-        assert "<configured>" in result.output
+        assert result.exit_code == 0, result.output
+        assert "source=toml" in result.output
         assert "proxy-user" not in result.output
         assert "proxy-password" not in result.output
         assert "proxy.example" not in result.output
@@ -1994,229 +1886,138 @@ class TestConfigShowCommand:
         assert "secret-path" not in result.output
         assert "token" not in result.output
 
-    def test_config_show_env_omits_effective_runtime_proxy(
+    def test_check_flags_a_context_project_the_platform_no_longer_has(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        cfg = Config(
-            username="",
-            password="",
-            base_url="https://qz.sii.edu.cn",
-            requests_https_proxy="http://user:password@configured.example:18443/private",
-        )
-        monkeypatch.setattr(
-            Config,
-            "from_files_and_env",
-            classmethod(lambda cls, **kwargs: (cfg, {})),
-        )
-        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:18443")
-        monkeypatch.chdir(tmp_path)
+        """A repo pins its project once; a deleted project leaves it bound to nothing."""
+        from inspire.cli.commands.account import check as check_module
 
-        result = CliRunner().invoke(
-            config_command,
-            ["show", "--format", "env", "--compact", "--filter", "Proxy"],
-        )
+        cfg = Config(username="u", password="p", base_url="https://qz.sii.edu.cn")
+        cfg.context_project = "退役课题"
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
 
-        assert result.exit_code == 0
-        assert "Effective runtime proxy" not in result.output
-        assert "proxy.example" not in result.output
-        assert "# INSPIRE_REQUESTS_HTTPS_PROXY=<configured; redacted>" in result.output
-        assert "user" not in result.output
-        assert "password" not in result.output
-        assert "configured.example" not in result.output
-
-
-# ===========================================================================
-# Config env command tests
-# ===========================================================================
-
-
-class TestConfigEnvCommand:
-    """Tests for inspire config env command."""
-
-    def test_config_env_minimal(self) -> None:
-        """Test config env minimal template."""
-        runner = CliRunner()
-        result = runner.invoke(config_command, ["env"])
-
-        assert result.exit_code == 0
-        assert "# Inspire CLI environment variables" in result.output
-        assert "INSPIRE_USERNAME" in result.output
-        # Minimal should include essential categories
-        assert "# Authentication" in result.output
-        assert "# API" in result.output
-
-    def test_config_env_full(self) -> None:
-        """Test config env full template."""
-        runner = CliRunner()
-        result = runner.invoke(config_command, ["env", "--template", "full"])
-
-        assert result.exit_code == 0
-        # Full template should include all categories
-        assert "# Job" in result.output
-        assert "# Notebook" in result.output
-
-    def test_config_env_output_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Test config env writing to file."""
-        monkeypatch.chdir(tmp_path)
-        output_file = tmp_path / ".env.example"
-
-        runner = CliRunner()
-        result = runner.invoke(config_command, ["env", "--output", str(output_file)])
-
-        assert result.exit_code == 0
-        assert output_file.exists()
-        content = output_file.read_text()
-        assert "INSPIRE_USERNAME" in content
-        assert result.output == "Created dotenv template.\n"
-        assert str(output_file) not in result.output
-
-    def test_config_env_use_writes_shared_project_config(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-
-        result = CliRunner().invoke(config_command, ["env", "use", ".env"])
-
-        assert result.exit_code == 0, result.output
-        shared_config = tmp_path / ".inspire" / "config.toml"
-        assert shared_config.exists()
-        assert '[cli]\nenv_file = ".env"' in shared_config.read_text(encoding="utf-8")
-        assert result.output == "Registered project env file.\n"
-        assert str(tmp_path) not in result.output
-
-    def test_config_env_json_outputs_are_compact(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.chdir(tmp_path)
-        runner = CliRunner()
-
-        stdout_result = runner.invoke(
-            cli_main,
-            ["--json", "--no-env-file", "config", "env"],
-        )
-        file_result = runner.invoke(
-            cli_main,
-            [
-                "--json",
-                "--no-env-file",
-                "config",
-                "env",
-                "--output",
-                ".env.example",
-            ],
-        )
-        use_result = runner.invoke(
-            cli_main,
-            ["--json", "--no-env-file", "config", "env", "use", ".env"],
-        )
-
-        assert stdout_result.exit_code == 0, stdout_result.output
-        assert json.loads(stdout_result.output) == {
-            "success": True,
-            "data": {"template": _render_env_template("minimal")},
-        }
-        assert file_result.exit_code == 0, file_result.output
-        assert json.loads(file_result.output) == {
-            "success": True,
-            "data": {"status": "created"},
-        }
-        assert use_result.exit_code == 0, use_result.output
-        assert json.loads(use_result.output) == {
-            "success": True,
-            "data": {"status": "registered"},
-        }
-
-    def test_config_env_use_json_error_is_actionable(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        from inspire.cli.commands.config import env_cmd
+        class _Project:
+            def __init__(self, name: str) -> None:
+                self.name = name
 
         monkeypatch.setattr(
-            env_cmd,
-            "write_shared_project_env_file",
-            lambda _value: (_ for _ in ()).throw(OSError("permission denied")),
+            check_module.browser_api_module,
+            "list_all_projects",
+            lambda session=None: [_Project("在役课题")],
         )
 
-        result = CliRunner().invoke(
-            cli_main,
-            ["--json", "--no-env-file", "config", "env", "use", ".env"],
-        )
+        result = CliRunner().invoke(cli_main, ["--no-env-file", "account", "check"])
 
         assert result.exit_code == EXIT_CONFIG_ERROR
-        assert json.loads(result.output) == {
-            "success": False,
-            "error": {
-                "type": "ConfigError",
-                "code": EXIT_CONFIG_ERROR,
-                "message": "Could not register project env file: permission denied",
-                "hint": "Check the project configuration and retry.",
-            },
-        }
+        assert "Authentication: OK" in result.output
+        assert "Project context: STALE" in result.output
+        assert "退役课题" in result.output
+        # Both repairs, because a repo that never should have been pinned wants
+        # the binding gone rather than pointed at a different project.
+        assert "inspire init --scope project" in result.output
+        assert "delete ./.inspire/" in result.output
+
+    def test_check_stays_quiet_when_the_project_listing_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A network problem is not evidence that the pin went stale."""
+        from inspire.cli.commands.account import check as check_module
+
+        cfg = Config(username="u", password="p", base_url="https://qz.sii.edu.cn")
+        cfg.context_project = "在役课题"
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
+
+        def _boom(session=None):  # noqa: ANN001, ANN202
+            raise RuntimeError("listing unavailable")
+
+        monkeypatch.setattr(check_module.browser_api_module, "list_all_projects", _boom)
+
+        result = CliRunner().invoke(cli_main, ["--no-env-file", "account", "check"])
+
+        assert result.exit_code == 0, result.output
+        assert "STALE" not in result.output
+
+    def test_failed_check_explains_itself_without_details(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed check must not require a second run to say why."""
+        from inspire.cli.commands.account import check as check_module
+        from inspire.platform.web.session import SessionExpiredError
+
+        cfg = Config(username="u", password="p", base_url="https://qz.sii.edu.cn")
+        self._isolate(tmp_path, monkeypatch, cfg)
+        self._clear_shell_proxies(monkeypatch)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:18443")
+
+        def _expired(session=None):  # noqa: ANN001, ANN202
+            raise SessionExpiredError("session expired")
+
+        monkeypatch.setattr(check_module.browser_api_module, "get_current_user", _expired)
+
+        result = CliRunner().invoke(cli_main, ["--no-env-file", "account", "check"])
+
+        assert result.exit_code == EXIT_AUTH_ERROR
+        assert "Authentication: FAILED" in result.output
+        assert "session expired" in result.output
+        assert "Effective runtime proxy" in result.output
+        assert "source=system_env" in result.output
+        assert "proxy.example" not in result.output
+
+
+# ===========================================================================
+# Project dotenv tests
+# ===========================================================================
+
+
+class TestProjectEnvFile:
+    """The `[cli] env_file` layer registered by `inspire init --env-file`.
+
+    Asserted against the loader rather than a CLI view: repository-scope keys
+    have no inspection command, and the layering is what matters here.
+    """
+
+    @staticmethod
+    def _repo_with_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_home = tmp_path / "__home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.chdir(tmp_path)
+
+        (tmp_path / ".env").write_text(
+            "INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY=123\n",
+            encoding="utf-8",
+        )
+        project_config = tmp_path / ".inspire" / "config.toml"
+        project_config.parent.mkdir()
+        project_config.write_text('[cli]\nenv_file = ".env"\n', encoding="utf-8")
 
     def test_cli_loads_project_env_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        fake_home = tmp_path / "__home"
-        fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", lambda: fake_home)
-        monkeypatch.chdir(tmp_path)
+        self._repo_with_env_file(tmp_path, monkeypatch)
         monkeypatch.delenv("INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY", raising=False)
 
-        (tmp_path / ".env").write_text(
-            "INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY=123\n",
-            encoding="utf-8",
-        )
-        project_config = tmp_path / ".inspire" / "config.toml"
-        project_config.parent.mkdir()
-        project_config.write_text('[cli]\nenv_file = ".env"\n', encoding="utf-8")
-
-        result = CliRunner().invoke(
-            cli_main,
-            ["--json", "config", "show", "--details"],
-        )
-
+        result = CliRunner().invoke(cli_main, ["--json", "account", "list"])
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)["data"]
-        assert "env_file" not in data
-        assert str(tmp_path / ".env") not in result.output
-        assert data["values"]["INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY"]["value"] == "123"
-        assert (
-            data["values"]["INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY"]["source"]
-            == SOURCE_ENV_FILE
-        )
+
+        cfg, sources = Config.from_files_and_env(require_credentials=False)
+        assert cfg.job_fault_tolerance_max_retry == 123
+        assert sources["job_fault_tolerance_max_retry"] == SOURCE_ENV_FILE
 
     def test_real_env_overrides_project_env_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        fake_home = tmp_path / "__home"
-        fake_home.mkdir()
-        monkeypatch.setattr(Path, "home", lambda: fake_home)
-        monkeypatch.chdir(tmp_path)
+        self._repo_with_env_file(tmp_path, monkeypatch)
         monkeypatch.setenv("INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY", "456")
 
-        (tmp_path / ".env").write_text(
-            "INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY=123\n",
-            encoding="utf-8",
-        )
-        project_config = tmp_path / ".inspire" / "config.toml"
-        project_config.parent.mkdir()
-        project_config.write_text('[cli]\nenv_file = ".env"\n', encoding="utf-8")
-
-        result = CliRunner().invoke(
-            cli_main,
-            ["--json", "config", "show", "--details"],
-        )
-
+        result = CliRunner().invoke(cli_main, ["--json", "account", "list"])
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)["data"]
-        assert data["values"]["INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY"]["value"] == "456"
-        assert (
-            data["values"]["INSPIRE_JOB_FAULT_TOLERANCE_MAX_RETRY"]["source"]
-            == SOURCE_ENV
-        )
+
+        cfg, sources = Config.from_files_and_env(require_credentials=False)
+        assert cfg.job_fault_tolerance_max_retry == 456
+        assert sources["job_fault_tolerance_max_retry"] == SOURCE_ENV
 
 
 # ===========================================================================
@@ -2377,63 +2178,3 @@ prefer_source = "invalid"
 
         with pytest.raises(ConfigError, match="Invalid prefer_source value"):
             Config.from_files_and_env(require_credentials=False)
-
-    def test_config_show_displays_precedence(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
-    ) -> None:
-        """Test that config show displays the precedence mode."""
-        project_dir = tmp_path / ".inspire"
-        project_dir.mkdir()
-        project_config = project_dir / "config.toml"
-        project_config.write_text(
-            """
-[cli]
-prefer_source = "toml"
-"""
-        )
-        monkeypatch.chdir(tmp_path)
-
-        runner = CliRunner()
-        result = runner.invoke(config_command, ["show", "--details"])
-
-        assert result.exit_code == 0
-        assert "Precedence:" in result.output
-        assert "project TOML wins" in result.output
-
-    def test_config_show_displays_default_precedence(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
-    ) -> None:
-        """Test that config show displays default precedence when no prefer_source set."""
-        monkeypatch.chdir(tmp_path)
-
-        runner = CliRunner()
-        result = runner.invoke(config_command, ["show", "--details"])
-
-        assert result.exit_code == 0
-        assert "Precedence:" in result.output
-        assert "environment wins" in result.output
-
-    def test_config_show_json_includes_prefer_source(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
-    ) -> None:
-        """The root JSON mode includes prefer_source."""
-        project_dir = tmp_path / ".inspire"
-        project_dir.mkdir()
-        project_config = project_dir / "config.toml"
-        project_config.write_text(
-            """
-[cli]
-prefer_source = "toml"
-"""
-        )
-        monkeypatch.chdir(tmp_path)
-
-        runner = CliRunner()
-        result = runner.invoke(
-            cli_main,
-            ["--json", "config", "show", "--details"],
-        )
-
-        assert result.exit_code == 0
-        data = json.loads(result.output)["data"]
-        assert data["prefer_source"] == "toml"

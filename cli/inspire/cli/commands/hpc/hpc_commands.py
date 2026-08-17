@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, cast
+import re
+import sys
+from dataclasses import dataclass
+from typing import Any, Optional, Sequence, cast
 
 import click
 
@@ -21,6 +24,14 @@ from inspire.cli.utils.collection_output import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
+)
+from inspire.cli.utils.dataset_mounts import (
+    DatasetSpecError,
+    dataset_mount_views,
+    dataset_option,
+    describe_dataset_mounts,
+    parse_dataset_specs_or_usage_error,
+    resolve_dataset_info,
 )
 from inspire.cli.utils.errors import (
     exit_with_error as _handle_error,
@@ -54,7 +65,9 @@ from inspire.config.workspaces import (
     workspace_label,
     workspace_name_map,
 )
+from inspire.cli.utils.job_shell import JobShellError, open_job_shell
 from inspire.platform.web import browser_api as browser_api_module
+from inspire.platform.web.browser_api import DatasetMount
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 from .public_output import (
@@ -234,6 +247,25 @@ def _looks_like_full_slurm_script(entrypoint: str) -> bool:
     return stripped.startswith("#!") or "#SBATCH" in entrypoint
 
 
+def _missing_srun_warning(entrypoint: str) -> str:
+    """Warn about a body that will finish SUCCEEDED without a Slurm step.
+
+    Measured: a body without ``srun`` still runs — sbatch executes it on the
+    first node — so the job ends SUCCEEDED and its logs carry the output. What
+    it never does is create a step, which `GetJob` reports as ``steps: 0/0``
+    against ``1/1`` for the same body launched with ``srun``. On one node that
+    difference is invisible in the result; on several it means every node but
+    the first sat idle. This stays a warning rather than an error because the
+    body did run.
+    """
+    if re.search(r"(^|[;&|(\s])srun([\s;&|)]|$)", entrypoint):
+        return ""
+    return (
+        "Warning: the entrypoint never calls srun, so Slurm creates no step "
+        "(hpc status will read 'Steps: 0/0') and only the first node runs the body."
+    )
+
+
 def _hpc_plan_payload(
     *,
     name: str,
@@ -241,10 +273,11 @@ def _hpc_plan_payload(
     project_label: str,
     workspace_label: str,
     compute_group_name: str,
+    dataset_mounts: Sequence[DatasetMount] = (),
 ) -> dict[str, Any]:
     sbatch = create_kwargs.get("sbatch_script") or {}
     cluster = create_kwargs.get("slurm_cluster_spec") or {}
-    return {
+    payload: dict[str, Any] = {
         "dry_run": True,
         "name": name,
         "workspace": workspace_label,
@@ -262,8 +295,169 @@ def _hpc_plan_payload(
         "cpus_per_task": sbatch.get("cpus_per_task"),
         "memory_per_cpu": sbatch.get("memory_per_cpu"),
         "enable_hyper_threading": sbatch.get("enable_hyper_threading"),
-        "priority": create_kwargs.get("task_priority"),
+        # `priority`, not `task_priority`: the latter is the *argument* name,
+        # and reading it out of the payload left every `--dry-run --json` plan
+        # reporting `"priority": null` while a real priority was on its way.
+        "priority": create_kwargs.get("priority"),
+        "enable_notification": create_kwargs.get("enable_notification"),
     }
+    if dataset_mounts:
+        payload["datasets"] = dataset_mount_views(dataset_mounts)
+    if sbatch.get("job_max_time"):
+        payload["max_time"] = sbatch.get("job_max_time")
+    for key in ("description", "ttl_after_job_finish_seconds"):
+        if key in create_kwargs:
+            payload[key] = create_kwargs[key]
+    if "is_publicpath_readonly" in create_kwargs:
+        payload["public_path_readonly"] = create_kwargs["is_publicpath_readonly"]
+    return payload
+
+
+def _slurm_time_fields(max_time_hours: float | None) -> dict[str, Any]:
+    """Build the `sbatch_script` runtime cap the console sends.
+
+    最大运行时长 is not a top-level field: the console writes it into
+    `sbatch_script` twice, once as the Slurm ``--time`` string
+    ``D-HH:MM:SS`` and once as the day/hour/minute breakdown, and sends both.
+    """
+    if max_time_hours is None:
+        return {}
+    total_seconds = int(round(max_time_hours * 3600))
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return {
+        "job_max_time": f"{days}-{hours:02d}:{minutes:02d}:{seconds:02d}",
+        "max_running_time_days": days,
+        "max_running_time_hours": hours,
+        "max_running_time_minutes": minutes,
+    }
+
+
+class SlurmLayoutError(ValueError):
+    """A Slurm subdivision the platform accepts but Slurm can never run."""
+
+
+@dataclass(frozen=True)
+class SlurmLayout:
+    """How one node-level allocation is carved up for Slurm."""
+
+    number_of_tasks: int
+    cpus_per_task: int
+    memory_per_cpu: int
+
+
+def resolve_slurm_layout(
+    *,
+    node_cpu: int,
+    node_memory_gib: int,
+    instance_count: int,
+    number_of_tasks: int,
+    cpus_per_task: int | None,
+    memory_per_cpu: int | None,
+) -> SlurmLayout:
+    """Fill in the Slurm subdivision and refuse the ones that cannot run.
+
+    The two layers are independent on the wire — ``slurm_cluster_spec`` buys
+    nodes, ``sbatch_script`` describes how the program uses them — and
+    **nothing on the platform checks one against the other**. Neither does the
+    console: its `最大值` hints come from the project's per-task quota, not from
+    the selected node spec, and it lets the Slurm fields be filled before a
+    spec is even chosen. `CreateJobConsole` accepts every combination below and
+    answers with a job id, which is why a wrong spec reads as a successful
+    submit. Measured on `HPC-可上网区资源-2`, quota `0,4,16`, one node unless
+    stated, each failure mode isolated from the others:
+
+    * ``cpus_per_task=8, memory_per_cpu=1`` (8 GiB, well inside the node) —
+      FAILED a minute or two after it starts running. `hpc logs` is empty,
+      `hpc events` shows only the normal pod lifecycle, and no surface anywhere
+      carries the sbatch rejection.
+    * ``cpus_per_task=4, memory_per_cpu=64`` — same shape, same silence,
+      reached through memory instead.
+    * ``number_of_tasks=8, cpus_per_task=4`` — sbatch *accepts* it and the
+      step queues forever. The platform reports RUNNING with `steps` stuck at
+      `-/1`, so it burns the workspace's whole runtime cap having run nothing.
+
+    A task cannot span nodes, so the binding constraint is per node: with
+    ``instance_count`` nodes, Slurm packs at most ``ceil(tasks / nodes)`` tasks
+    onto one node, and that node has to hold their CPU and their memory. Both
+    positive controls confirm the bound is inclusive: ``number_of_tasks=4,
+    cpus_per_task=1`` fills the node exactly and succeeds, and
+    ``number_of_tasks=2, cpus_per_task=4`` over two nodes succeeds.
+
+    Defaults follow the same arithmetic instead of the old "one task owns the
+    whole node", which produced the hang above the moment `--number-of-tasks`
+    went above 1. For a single task on a single node they are unchanged.
+
+    Scheduling is all these checks cover. At runtime the pod's cgroup is the
+    only wall, it is always the ``--quota`` memory, and it does **not** follow
+    ``memory_per_cpu`` — a job that asked for 12 GiB still committed 15 GiB
+    unimpeded on a 16-GiB node. Exactly filling the Slurm request is therefore
+    no more dangerous than half filling it; what kills a job is the node
+    figure, and `nproc` / `free` inside the container report the *host* (64
+    cores, ~503 GiB), so anything that autosizes from them oversubscribes
+    wildly. That belongs in the workload guide, not in a create-time check.
+
+    Memory is always per CPU here. The console has a second input, 每节点使用内存,
+    and ``sbatch_script.memory_per_node`` is a real field — the platform stores
+    it, echoes it on the detail page, and round-trips it through ``GetJob`` —
+    but its script generator only ever emits ``--mem-per-cpu``. Sending
+    ``memory_per_node`` therefore writes a bare ``#SBATCH --mem-per-cpu=`` into
+    the script and sbatch rejects the whole thing: 8 GiB, 15 GiB and 16 GiB on
+    a 16-GiB node all FAILED with the same silence, while the equivalent
+    ``--mem-per-cpu`` job succeeded. Sending both fields is a plain
+    ``InternalError``. The field is not adopted.
+    """
+    node_cpu = max(1, int(node_cpu))
+    node_memory_gib = max(1, int(node_memory_gib))
+    instance_count = max(1, int(instance_count))
+    number_of_tasks = max(1, int(number_of_tasks))
+    tasks_per_node = -(-number_of_tasks // instance_count)
+
+    if cpus_per_task is None:
+        cpus_per_task = max(1, node_cpu // tasks_per_node)
+    cpus_per_task = int(cpus_per_task)
+    if memory_per_cpu is None:
+        memory_per_cpu = max(1, node_memory_gib // (tasks_per_node * cpus_per_task))
+    memory_per_cpu = int(memory_per_cpu)
+
+    layout_text = (
+        f"{number_of_tasks} task(s) x {cpus_per_task} CPU over {instance_count} node(s) "
+        f"puts {tasks_per_node} task(s) on one {node_cpu}-CPU {node_memory_gib}-GiB node"
+    )
+
+    if cpus_per_task > node_cpu:
+        raise SlurmLayoutError(
+            f"--cpus-per-task {cpus_per_task} exceeds the {node_cpu} CPU of one node in "
+            f"--quota. A task cannot span nodes, so Slurm fails the job on submit and the "
+            f"platform reports FAILED with no log and no event explaining it. Lower "
+            f"--cpus-per-task to at most {node_cpu}, or pick a wider --quota row."
+        )
+    if tasks_per_node * cpus_per_task > node_cpu:
+        raise SlurmLayoutError(
+            f"{layout_text}, which needs {tasks_per_node * cpus_per_task} CPU. Slurm queues "
+            f"that step forever while the platform reports RUNNING, so the job burns its "
+            f"whole runtime having run nothing. Lower --number-of-tasks or --cpus-per-task, "
+            f"or raise --instance-count to at least "
+            f"{-(-number_of_tasks * cpus_per_task // node_cpu)}."
+        )
+
+    needed_gib = tasks_per_node * cpus_per_task * memory_per_cpu
+    if needed_gib > node_memory_gib:
+        raise SlurmLayoutError(
+            f"{layout_text}, and --memory-per-cpu {memory_per_cpu} asks for "
+            f"{needed_gib} GiB there against {node_memory_gib} GiB. Slurm fails the job "
+            f"on submit and the platform reports FAILED with no log and no event "
+            f"explaining it. Lower --memory-per-cpu to at most "
+            f"{node_memory_gib // (tasks_per_node * cpus_per_task)}, or pick a wider "
+            f"--quota row."
+        )
+
+    return SlurmLayout(
+        number_of_tasks=number_of_tasks,
+        cpus_per_task=cpus_per_task,
+        memory_per_cpu=memory_per_cpu,
+    )
 
 
 def build_hpc_create_payload(
@@ -283,21 +477,37 @@ def build_hpc_create_payload(
     memory_per_cpu: int,
     enable_hyper_threading: bool,
     resource_spec_price: dict[str, Any],
+    enable_notification: bool = False,
+    max_time_hours: float | None = None,
+    dataset_info: list[dict[str, str]] | None = None,
+    description: str | None = None,
+    keep_after_finish_hours: float | None = None,
+    public_path_readonly: bool | None = None,
     session: Any = None,
 ) -> dict[str, Any]:
-    """Build the current Web UI v2 HPC create payload."""
+    """Build the current Web UI v2 HPC create payload.
+
+    Optional arguments stay out of the body unless the caller sets them, so a
+    payload built without them is byte-for-byte the one this command has always
+    sent. ``enable_notification`` is the exception: it has always been part of
+    the body, so it keeps being sent and only its value is now selectable.
+    """
     payload: dict[str, Any] = {
         "job_name": name,
         "logic_compute_group_id": logic_compute_group_id,
         "project_id": project_id,
         "workspace_id": workspace_id,
-        "enable_notification": False,
+        "enable_notification": bool(enable_notification),
         "sbatch_script": {
             "number_of_tasks": int(number_of_tasks),
             "cpus_per_task": int(cpus_per_task),
+            # Always `memory_per_cpu`. `memory_per_node` is stored and echoed
+            # by the platform but never reaches the generated script, which
+            # then carries an empty `#SBATCH --mem-per-cpu=` and fails.
             "memory_per_cpu": f"{int(memory_per_cpu)}G",
             "enable_hyper_threading": bool(enable_hyper_threading),
             "entrypoint": entrypoint,
+            **_slurm_time_fields(max_time_hours),
         },
         "slurm_cluster_spec": {
             "predef_quota_id": quota_id,
@@ -305,17 +515,36 @@ def build_hpc_create_payload(
             "mem_gi": int(resource_spec_price.get("memory_size_gib") or 0),
             # The platform matches on the registry URL, not the visible name;
             # sending the name is rejected with 无法找到对应镜像.
-            "image": resolve_image_url(image, session=session),
+            "image": resolve_image_url(
+                image, session=session, workspace_id=workspace_id
+            ),
             "image_type": image_type,
             "instance_count": int(instance_count),
             "spec_price": dict(resource_spec_price),
         },
     }
-    if task_priority is not None:
-        # `priority`, not `task_priority`: v2 CreateJobConsole rejects the
-        # latter with "priority must be set", which reads like the value is
-        # missing rather than misnamed.
-        payload["priority"] = int(task_priority)
+    if task_priority is None:
+        # Not optional in practice: a body without `priority` comes back as
+        # `InternalError: internal server error`, which is on the transient
+        # list, so the transport burns three retries and then reports what
+        # reads like a platform outage rather than a missing field.
+        raise ValueError(
+            "HPC create requires a task priority; the platform answers a payload "
+            "without one with an internal error."
+        )
+    # `priority`, not `task_priority`: v2 CreateJobConsole rejects the latter
+    # with "priority must be set", which reads like the value is missing rather
+    # than misnamed.
+    payload["priority"] = int(task_priority)
+
+    if dataset_info:
+        payload["dataset_info"] = [dict(entry) for entry in dataset_info]
+    if description is not None:
+        payload["description"] = description
+    if keep_after_finish_hours is not None:
+        payload["ttl_after_job_finish_seconds"] = int(round(keep_after_finish_hours * 3600))
+    if public_path_readonly is not None:
+        payload["is_publicpath_readonly"] = bool(public_path_readonly)
     return payload
 
 
@@ -425,6 +654,7 @@ def _public_hpc_instances(
             ("status", ("status", "instance_status", "phase", "state")),
             ("role", ("role", "component", "worker_group_name")),
             ("type", ("type", "instance_type")),
+            ("node", ("node", "node_name", "host_name")),
         ):
             value = _public_hpc_instance_text(inst, *candidates)
             if value:
@@ -449,6 +679,7 @@ def _format_hpc_instances(instances: list[dict[str, Any]]) -> str:
         for key, label in (
             ("role", "Role"),
             ("type", "Type"),
+            ("node", "Node"),
             ("resource", "Resource"),
             ("rank", "Rank"),
         )
@@ -500,6 +731,92 @@ def _fetch_hpc_instances(
         rows = expanded_rows
         total = max(total, expanded_total, len(rows))
     return rows, total
+
+
+class HPCInstanceSelectionError(ValueError):
+    """A ``--instance`` selector matched no instance in the job."""
+
+
+@dataclass(frozen=True)
+class HPCInstanceView:
+    """One HPC instance, split into what the Agent sees and what the API needs.
+
+    ``handle`` is the namespaced instance name the platform wants in
+    ``ListSlurmdPodEvent`` and ``GetJobLog``. It is a platform handle —
+    ``scrub_raw_ids`` reduces it to ``<redacted>-cluster-slurmd-0`` — so it
+    never reaches output. ``label`` is the Agent-visible identity and matches
+    the Role (plus Rank, when a role has replicas) column of
+    ``inspire hpc instances``.
+    """
+
+    handle: str
+    pod: str
+    role: str
+    label: str
+
+
+def _hpc_instance_role(inst: dict[str, Any]) -> str:
+    for key in ("role", "component", "worker_group_name"):
+        value = inst.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def hpc_instance_views(instances: Sequence[dict[str, Any]]) -> list[HPCInstanceView]:
+    """Project raw instance rows onto the addressable (label, handle) pairs.
+
+    A role that appears once is its own label. A role with replicas takes the
+    Rank suffix, using the same rank ``inspire hpc instances`` prints, so a
+    label read off that table addresses the instance it names.
+    """
+    roles = [_hpc_instance_role(inst) for inst in instances]
+    duplicated = {role for role in roles if role and roles.count(role) > 1}
+    views: list[HPCInstanceView] = []
+    for position, (inst, role) in enumerate(zip(instances, roles)):
+        handle = str(inst.get("name") or "").strip()
+        if not handle:
+            continue
+        pod = handle.rsplit("/", 1)[-1]
+        rank = _hpc_instance_rank(inst, position)
+        if not role:
+            # Without a component the pod has no readable identity of its own;
+            # its rank is all `hpc instances` shows, so address it by that.
+            role = "instance"
+        label = f"{role}-{rank}" if role in duplicated or role == "instance" else role
+        views.append(HPCInstanceView(handle=handle, pod=pod, role=role, label=label))
+    return views
+
+
+def select_hpc_instance_views(
+    views: Sequence[HPCInstanceView],
+    selectors: Sequence[str],
+) -> list[HPCInstanceView]:
+    """Filter instances by the Role / Rank identity printed by `hpc instances`.
+
+    An unmatched selector raises rather than narrowing the scope to nothing:
+    silently returning no pods would make an empty log or event answer look
+    like the platform said "there is nothing here".
+    """
+    if not selectors:
+        return list(views)
+
+    available = sorted({view.label for view in views} | {view.role for view in views})
+    chosen: list[HPCInstanceView] = []
+    for selector in selectors:
+        needle = selector.strip().lower()
+        matched = [
+            view
+            for view in views
+            if needle in (view.label.lower(), view.role.lower())
+        ]
+        if not matched:
+            raise HPCInstanceSelectionError(
+                f"No HPC instance matches '{selector}'. "
+                f"Available: {', '.join(available) or '(none)'}."
+            )
+        chosen.extend(view for view in matched if view not in chosen)
+    return chosen
 
 
 def _hpc_matches_list_filters(
@@ -726,7 +1043,7 @@ def list_hpc(
     help=(
         "Full compute group name copied from the same quota row as --quota. "
         "Required unless supplied by --profile "
-        "(e.g. 'HPC-可上网区资源-2'; see 'inspire config context')."
+        "(e.g. 'HPC-可上网区资源-2'; see 'inspire account context')."
     ),
 )
 @click.option(
@@ -780,19 +1097,69 @@ def list_hpc(
     "--cpus-per-task",
     type=click.IntRange(1),
     default=None,
-    help="Slurm --cpus-per-task value. Default: derive from --quota CPU count.",
+    help=(
+        "Slurm --cpus-per-task value. Default: the --quota CPU count divided by "
+        "the tasks that land on one node."
+    ),
 )
 @click.option(
     "--memory-per-cpu",
     type=click.IntRange(1),
     default=None,
-    help="Slurm --mem-per-cpu in GiB. Default: derive from --quota memory / CPU.",
+    help=(
+        "Slurm --mem-per-cpu in GiB. Default: the --quota memory divided across "
+        "the CPUs one node's tasks use."
+    ),
 )
 @click.option(
     "--enable-hyper-threading/--disable-hyper-threading",
     default=False,
     show_default=True,
     help="Enable hyper-threading",
+)
+@click.option(
+    "--max-time",
+    type=click.FloatRange(min=0, min_open=True),
+    default=None,
+    metavar="HOURS",
+    help=(
+        "Max runtime in hours, sent as the Slurm '--time' cap. Omit to leave "
+        "the workspace default; the workspace also enforces its own ceiling."
+    ),
+)
+@click.option(
+    "--keep-after-finish",
+    type=click.FloatRange(min=0, min_open=True),
+    default=None,
+    metavar="HOURS",
+    help=(
+        "Keep the job's containers this many hours after it finishes, so they "
+        "can still be inspected. Omit to let the platform release them as usual."
+    ),
+)
+@dataset_option()
+@click.option(
+    "--description",
+    default=None,
+    metavar="TEXT",
+    help="Free-text description stored with the job on the platform.",
+)
+@click.option(
+    "--enable-notification/--no-enable-notification",
+    default=False,
+    show_default=True,
+    help=(
+        "Send Feishu notifications to the current user when this job changes "
+        "state (running / succeeded / failed)."
+    ),
+)
+@click.option(
+    "--public-path-readonly/--no-public-path-readonly",
+    default=None,
+    help=(
+        "Mount the project's public path read-only inside the containers "
+        "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
+    ),
 )
 @click.option(
     "--dry-run",
@@ -820,6 +1187,12 @@ def create_hpc(
     cpus_per_task: Optional[int],
     memory_per_cpu: Optional[int],
     enable_hyper_threading: bool,
+    max_time: Optional[float],
+    keep_after_finish: Optional[float],
+    datasets: tuple[str, ...],
+    description: Optional[str],
+    enable_notification: bool,
+    public_path_readonly: Optional[bool],
     dry_run: bool,
 ) -> None:
     """Create a CPU Slurm / HPC batch job.
@@ -830,16 +1203,28 @@ def create_hpc(
       * Slurm-level: --number-of-tasks / --cpus-per-task / --memory-per-cpu
         describe how your program runs inside those nodes.
 
+    Nothing on the platform checks the second layer against the first, and a
+    mismatch is silent: too much CPU or memory per task ends as FAILED with no
+    log and no event, and too many tasks for the nodes you bought sits in
+    RUNNING forever having run nothing. Those combinations are refused here
+    before the submit.
+
     ``-c/--entrypoint`` must be the Slurm script body. Do not include
-    ``#SBATCH`` headers; use ``srun`` to launch the program.
+    ``#SBATCH`` headers; use ``srun`` to launch the program — without it the
+    job still reports SUCCEEDED, but `hpc status` shows ``Steps: 0/0`` and only
+    the first node ever ran anything.
 
     \b
     Examples:
-        inspire hpc create -n preprocess --workspace CPU资源空间 --project CI-情境智能 \
-          --group HPC-可上网区资源-2 -q 0,20,256 --image hpc-base:v1 \
+        inspire hpc create -n preprocess --workspace CPU资源空间 --project <project> \
+          --group HPC-可上网区资源-2 -q 0,20,256 --image <image> \
           -c 'srun bash -lc "python preprocess.py"'
         inspire hpc create -n probe --profile cpu-hpc -c 'srun hostname' --dry-run
+        inspire hpc create -n index --profile cpu-hpc --dataset pixabay-81k:v0 \
+          --max-time 4 --keep-after-finish 0.5 \
+          -c 'srun bash -lc "python index.py /inspire/dataset/pixabay-81k/v0"'
     """
+    dataset_mounts = parse_dataset_specs_or_usage_error(datasets)
     try:
         from inspire.cli.utils.quota_resolver import (
             QuotaMatchError,
@@ -945,13 +1330,30 @@ def create_hpc(
         resolved_compute_group_id = resolved_quota.logic_compute_group_id
         resource_spec_price = build_resource_spec_price(quota=resolved_quota)
 
-        # Slurm subdivision defaults: assume one task spans the whole node
-        # unless the user explicitly carves it up. Total memory per task =
-        # node memory; mem-per-cpu = total / cpus-per-task.
-        if cpus_per_task is None:
-            cpus_per_task = max(1, int(quota_spec.cpu_count))
-        if memory_per_cpu is None:
-            memory_per_cpu = max(1, int(quota_spec.memory_gib) // max(1, int(cpus_per_task)))
+        try:
+            layout = resolve_slurm_layout(
+                node_cpu=resolved_quota.cpu_count,
+                node_memory_gib=resolved_quota.memory_gib,
+                instance_count=instance_count,
+                number_of_tasks=number_of_tasks,
+                cpus_per_task=cpus_per_task,
+                memory_per_cpu=memory_per_cpu,
+            )
+        except SlurmLayoutError as e:
+            _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+            return
+
+        # The platform resolves and checks every mount before the job is
+        # submitted, exactly as the console's 校验数据 button does.
+        try:
+            dataset_info = resolve_dataset_info(
+                dataset_mounts,
+                workspace_id=resolved_workspace_id,
+                session=session,
+            )
+        except DatasetSpecError as e:
+            _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+            return
 
         create_kwargs = build_hpc_create_payload(
             name=name,
@@ -964,11 +1366,17 @@ def create_hpc(
             quota_id=quota_id,
             instance_count=instance_count,
             task_priority=final_priority,
-            number_of_tasks=number_of_tasks,
-            cpus_per_task=cpus_per_task,
-            memory_per_cpu=memory_per_cpu,
+            number_of_tasks=layout.number_of_tasks,
+            cpus_per_task=layout.cpus_per_task,
+            memory_per_cpu=layout.memory_per_cpu,
             enable_hyper_threading=enable_hyper_threading,
             resource_spec_price=resource_spec_price,
+            enable_notification=enable_notification,
+            max_time_hours=max_time,
+            dataset_info=dataset_info,
+            description=description,
+            keep_after_finish_hours=keep_after_finish,
+            public_path_readonly=public_path_readonly,
             session=session,
         )
 
@@ -982,6 +1390,7 @@ def create_hpc(
                 project_label=project_text,
                 workspace_label=workspace_text,
                 compute_group_name=resolved_quota.compute_group_name,
+                dataset_mounts=dataset_mounts,
             )
             if ctx.json_output:
                 click.echo(json_formatter.format_json(payload))
@@ -991,11 +1400,34 @@ def create_hpc(
             click.echo(f"Workspace: {scrub_raw_ids(workspace_text)}")
             click.echo(f"Compute: {scrub_raw_ids(resolved_quota.compute_group_name)}")
             click.echo(f"Resource: {quota_spec.display()}")
+            click.echo(
+                f"Slurm: {layout.number_of_tasks} task(s), "
+                f"{layout.cpus_per_task} CPU/task, "
+                f"{layout.memory_per_cpu} GiB/CPU"
+            )
             if final_priority is not None:
                 click.echo(f"Priority: {final_priority}")
             if instance_count > 1:
                 click.echo(f"Nodes: {instance_count}")
+            for line in describe_dataset_mounts(dataset_mounts):
+                click.echo(f"Dataset: {line}")
+            max_time_text = (create_kwargs.get("sbatch_script") or {}).get("job_max_time")
+            if max_time_text:
+                click.echo(f"Max time: {max_time_text} (day-hh:mm:ss)")
+            if keep_after_finish is not None:
+                click.echo(f"Keep after finish: {keep_after_finish} h")
+            if description is not None:
+                click.echo(f"Description: {scrub_raw_ids(description)}")
+            if enable_notification:
+                click.echo("Notifications: enabled")
+            if public_path_readonly is not None:
+                click.echo(
+                    "Public path: read-only" if public_path_readonly else "Public path: writable"
+                )
             click.echo(f"Command: {scrub_raw_ids(entrypoint)}")
+            srun_warning = _missing_srun_warning(entrypoint)
+            if srun_warning:
+                click.echo(srun_warning, err=True)
             return
 
         data = browser_api_module.create_hpc_job(
@@ -1003,26 +1435,42 @@ def create_hpc(
             session=session,
         )
         created_id = _created_hpc_job_id(data)
-        if created_id:
-            remember_resource_identity(
-                session=session,
-                resource_type="hpc",
-                resource_id=created_id,
-                name=name,
-                workspace_id=resolved_workspace_id,
-                owner_scope="self",
-                status=str(data.get("status") or ""),
+        if not created_id:
+            # `CreateJobConsole` answers `{job_id, sub_code, sub_msg}`. Without
+            # a job id there is nothing to report as created, and printing the
+            # success line anyway is exactly the "submitted fine, ran nothing"
+            # reading this command exists to avoid.
+            _handle_error(
+                ctx,
+                "APIError",
+                "HPC create returned no job id; the job was not created.",
+                EXIT_API_ERROR,
+                hint=str(data.get("sub_msg") or "") or None,
             )
+            return
+        remember_resource_identity(
+            session=session,
+            resource_type="hpc",
+            resource_id=created_id,
+            name=name,
+            workspace_id=resolved_workspace_id,
+            owner_scope="self",
+            status=str(data.get("status") or ""),
+        )
 
         if ctx.json_output:
-            click.echo(
-                json_formatter.format_json(
-                    {"name": name, "status": "created"}
-                )
-            )
+            created: dict[str, Any] = {"name": name, "status": "created"}
+            if dataset_mounts:
+                created["datasets"] = dataset_mount_views(dataset_mounts)
+            click.echo(json_formatter.format_json(created))
             return
 
         click.echo(human_formatter.format_mutation_success("HPC", "created", name))
+        for line in describe_dataset_mounts(dataset_mounts):
+            click.echo(f"Dataset: {line}")
+        srun_warning = _missing_srun_warning(entrypoint)
+        if srun_warning:
+            click.echo(srun_warning, err=True)
 
     except TaskPriorityError as e:
         _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
@@ -1067,7 +1515,10 @@ def status_hpc(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> 
 
         detail = public_hpc_status(data, fallback_name=name)
         if ctx.json_output:
-            click.echo(json_formatter.format_json(detail))
+            # `steps` is a `done/total` counter, and the path redactor reads the
+            # `-/1` form as an absolute path and returns `-<redacted>` — which
+            # hides exactly the field that says whether anything ran.
+            click.echo(json_formatter.format_json(detail, preserve_paths={"steps"}))
             return
 
         click.echo(format_hpc_status(detail))
@@ -1296,10 +1747,107 @@ def delete_hpc(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
 
 
 __all__ = [
+    "HPCInstanceSelectionError",
+    "HPCInstanceView",
     "list_hpc",
     "create_hpc",
+    "hpc_instance_views",
+    "select_hpc_instance_views",
     "status_hpc",
     "instances_hpc",
     "stop_hpc",
     "delete_hpc",
 ]
+
+
+@click.command("shell")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
+@click.option(
+    "--instance",
+    "instance",
+    default=None,
+    metavar="ROLE",
+    help="Open this Role / Rank, as printed by `inspire hpc instances`.",
+)
+@pass_context
+def shell_hpc(
+    ctx: Context,
+    name: str,
+    workspace: str,
+    pick: Optional[int],
+    instance: Optional[str],
+) -> None:
+    """Open an interactive shell inside a running HPC instance.
+
+    Needs a terminal: this attaches your stdin to a remote PTY. Leave with
+    `exit`, or press Ctrl+] to drop the session without ending the shell.
+
+    \b
+    Defaults to the `launcher`, which is where `srun` runs and therefore the
+    only pod that sees your job's processes. `slurmctld` is the scheduler
+    itself; a shell there answers questions about the queue, not the workload.
+
+    \b
+    Examples:
+        inspire hpc shell preprocess --workspace CPU资源空间
+        inspire hpc shell preprocess --workspace CPU资源空间 --instance slurmctld
+    """
+    try:
+        session = get_web_session()
+        job_id, instances = _run_readonly_hpc_operation(
+            ctx,
+            session=session,
+            name=name,
+            workspace=workspace,
+            limit=200,
+            pick=pick,
+            operation=lambda resolved_id: (
+                resolved_id,
+                _fetch_hpc_instances(
+                    resolved_id, limit=200, session=session, show_all=True
+                )[0],
+            ),
+        )
+
+        views = hpc_instance_views(
+            [row for row in instances if "run" in str(row.get("status") or "").lower()]
+        )
+        if not views:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                "No running instances found for this HPC job.",
+                EXIT_VALIDATION_ERROR,
+            )
+            return
+
+        if instance:
+            selected = select_hpc_instance_views(views, [instance])[0]
+        else:
+            launchers = [view for view in views if view.role == "launcher"]
+            selected = (launchers or views)[0]
+
+        if not ctx.json_output:
+            click.echo(
+                f"Opening shell: {scrub_raw_ids(name)} / {selected.label}", err=True
+            )
+            click.echo("Press Ctrl-] to disconnect.", err=True)
+
+        sys.exit(
+            open_job_shell(
+                job_id=job_id,
+                instance_name=selected.handle,
+                session=session,
+                workload="hpc",
+            )
+        )
+    except HPCInstanceSelectionError as e:
+        _handle_error(ctx, "ValidationError", scrub_raw_ids(e), EXIT_VALIDATION_ERROR)
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+    except JobShellError as e:
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)

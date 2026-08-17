@@ -8,6 +8,7 @@ total when the caller is paginating. Complements the wire-format tests in
 
 from __future__ import annotations
 
+import inspect
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -169,9 +170,10 @@ def test_serving_configs_single_workspace_keeps_compact_schema(
     assert "config-secret" not in result.output
 
 
-def test_serving_configs_workspace_all_fans_out_with_workspace_names(
+def test_serving_configs_refuses_a_workspace_fanout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The config surface is declared per workspace and read one at a time."""
     config = config_module.Config(username="user", password="pass")
 
     class _AllWorkspaceSession:
@@ -179,7 +181,6 @@ def test_serving_configs_workspace_all_fans_out_with_workspace_names(
         all_workspace_ids = ["ws-a", "ws-b"]
         all_workspace_names = {"ws-a": "Serving East", "ws-b": "Serving West"}
 
-    calls: list[str] = []
     monkeypatch.setattr(
         config_module.Config,
         "from_files_and_env",
@@ -190,63 +191,16 @@ def test_serving_configs_workspace_all_fans_out_with_workspace_names(
         "get_web_session",
         lambda: _AllWorkspaceSession(),
     )
-
-    def fake_configs(*, workspace_id, session=None):  # noqa: ANN001,ARG001
-        calls.append(workspace_id)
-        return {
-            "configs": {
-                "enable_auto_stop": workspace_id == "ws-a",
-                "items": [
-                    {
-                        "id": f"config-secret-{workspace_id}",
-                        "name": f"choice-{workspace_id[-1]}",
-                        "gpu_count_min": 1,
-                        "gpu_count_max": 2,
-                    }
-                ],
-            }
-        }
-
-    monkeypatch.setattr(browser_api_module, "get_serving_configs", fake_configs)
-
-    result = CliRunner().invoke(
-        cli_main,
-        ["--json", "serving", "configs", "--workspace", "all"],
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_serving_configs",
+        lambda **_: pytest.fail("--workspace all must be refused before any request"),
     )
 
-    assert result.exit_code == 0, result.output
-    assert calls == ["ws-a", "ws-b"]
-    assert json.loads(result.output)["data"] == {
-        "items": [
-            {
-                "workspace": "Serving East",
-                "name": "choice-a",
-                "gpu_count_min": 1,
-                "gpu_count_max": 2,
-                "auto_stop": True,
-            },
-            {
-                "workspace": "Serving West",
-                "name": "choice-b",
-                "gpu_count_min": 1,
-                "gpu_count_max": 2,
-                "auto_stop": False,
-            },
-        ],
-    }
-    assert "config-secret" not in result.output
-    assert "ws-a" not in result.output
-    assert "ws-b" not in result.output
+    result = CliRunner().invoke(cli_main, ["serving", "configs", "--workspace", "all"])
 
-    human = CliRunner().invoke(
-        cli_main,
-        ["serving", "configs", "--workspace", "all"],
-    )
-    assert human.exit_code == 0, human.output
-    assert "Serving East: gpu=1-2, auto-stop=enabled" in human.output
-    assert "Serving West: gpu=1-2, auto-stop=disabled" in human.output
-    assert "ws-a" not in human.output
-    assert "ws-b" not in human.output
+    assert result.exit_code != 0
+    assert "--workspace requires one workspace name for this command." in result.output
 
 
 def test_serving_status_projection_renders_nested_web_detail() -> None:
@@ -600,7 +554,10 @@ def test_serving_raw_handle_is_rejected_before_detail_api(monkeypatch) -> None: 
     assert "handle" not in result.output.lower()
 
 
-@pytest.mark.parametrize("subcommand", ("start", "events", "instances"))
+@pytest.mark.parametrize(
+    "subcommand",
+    ("start", "events", "instances", "scale", "versions", "rollback", "api-metrics"),
+)
 def test_new_serving_commands_share_name_workspace_and_pick_help(
     subcommand: str,
 ) -> None:
@@ -629,11 +586,11 @@ def test_serving_workspace_metavars_are_name_oriented() -> None:
         path
         for path, metavar in metavars.items()
         if metavar == "NAME|all"
-    } == {"list", "configs", "quota"}
+    } == {"list"}
     assert all(
         metavar == "NAME"
         for path, metavar in metavars.items()
-        if path not in {"list", "configs", "quota"}
+        if path != "list"
     )
 
 
@@ -643,6 +600,8 @@ def test_serving_workspace_metavars_are_name_oriented() -> None:
         ("start", "start_serving"),
         ("events", "list_serving_events"),
         ("instances", "list_serving_instances"),
+        ("scale", "scale_serving"),
+        ("versions", "list_serving_versions"),
     ),
 )
 def test_new_serving_commands_reject_raw_handle_before_api(
@@ -660,7 +619,14 @@ def test_new_serving_commands_reject_raw_handle_before_api(
 
     result = CliRunner().invoke(
         cli_main,
-        ["serving", subcommand, "sv-12345678", "--workspace", "Test Workspace"],
+        [
+            "serving",
+            subcommand,
+            "sv-12345678",
+            "--workspace",
+            "Test Workspace",
+            *(["--replicas", "2"] if subcommand == "scale" else []),
+        ],
     )
 
     assert result.exit_code != 0
@@ -777,8 +743,18 @@ def test_serving_events_use_shared_public_projection_and_pick(
     resolutions = _patch_serving_cli_deps(monkeypatch)
     calls: list[str] = []
 
-    def _events(serving_id: str, *, session) -> list[dict[str, Any]]:  # noqa: ANN001
+    def _events(serving_id: str, *, pod_names=None, session=None) -> list[dict[str, Any]]:  # noqa: ANN001
         calls.append(serving_id)
+        if pod_names is not None:
+            return [
+                {
+                    "object_id": pod_names[0],
+                    "object_type": "INFERENCE_SERVING_INSTANCE",
+                    "reason": "Scheduled",
+                    "message": "Successfully assigned",
+                    "last_timestamp": "2026-08-05 10:00:01",
+                }
+            ]
         return [
             {
                 "object_id": "sv-deadbeef",
@@ -792,6 +768,14 @@ def test_serving_events_use_shared_public_projection_and_pick(
         ]
 
     monkeypatch.setattr(browser_api_module, "list_serving_events", _events)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_serving_instances",
+        lambda _sid, **_kwargs: (
+            [{"name": "frontiers/sv-ed52f184-b66b-478a-8620-379033c6dbf3-0", "rank": 0}],
+            1,
+        ),
+    )
 
     result = CliRunner().invoke(
         cli_main,
@@ -808,7 +792,8 @@ def test_serving_events_use_shared_public_projection_and_pick(
     )
 
     assert result.exit_code == 0, result.output
-    assert calls == ["sv-internal"]
+    # Two calls: the deployment view and the replica view.
+    assert calls == ["sv-internal", "sv-internal"]
     assert resolutions == [
         {
             "name": "demo",
@@ -825,7 +810,13 @@ def test_serving_events_use_shared_public_projection_and_pick(
             "reason": "FailedScheduling",
             "message": "Could not place <redacted> on pod-cafebabe.",
             "count": 2,
-        }
+        },
+        {
+            "time": "2026-08-05 10:00:01",
+            "instance": "rank=0",
+            "reason": "Scheduled",
+            "message": "Successfully assigned",
+        },
     ]
     assert "object_id" not in result.output
     assert "sv-deadbeef" not in result.output
@@ -1177,3 +1168,429 @@ def test_serving_create_rejects_invalid_custom_domain() -> None:
 
     assert result.exit_code != 0
     assert "Invalid value for '--custom-domain'" in result.output
+
+
+# ---------------------------------------------------------------------------
+# scale / versions / rollback
+# ---------------------------------------------------------------------------
+
+
+def test_serving_scale_is_name_only_and_forwards_pick(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolutions = _patch_serving_cli_deps(monkeypatch)
+    calls: dict[str, Any] = {}
+
+    def fake_scale(serving_id: str, *, replica: int, session=None) -> dict[str, Any]:
+        calls["serving_id"] = serving_id
+        calls["replica"] = replica
+        return {}
+
+    monkeypatch.setattr(browser_api_module, "scale_serving", fake_scale)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "serving",
+            "scale",
+            "demo-svc",
+            "--workspace",
+            "Serving空间",
+            "--replicas",
+            "3",
+            "--pick",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {
+        "success": True,
+        "data": {"name": "demo-svc", "status": "scaled", "replicas": 3},
+    }
+    assert calls == {"serving_id": "sv-internal", "replica": 3}
+    # Scaling mutates a live deployment, so the handle has to come from a fresh
+    # lookup rather than a possibly stale cache entry.
+    assert resolutions[-1]["require_live"] is True
+    assert resolutions[-1]["pick"] == 2
+
+
+def test_serving_scale_human_output_is_compact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_cli_deps(monkeypatch)
+    monkeypatch.setattr(
+        browser_api_module,
+        "scale_serving",
+        lambda serving_id, *, replica, session=None: {},
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["serving", "scale", "demo-svc", "--workspace", "Serving空间", "--replicas", "0"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output == "OK Serving scaled to 0 replica(s): demo-svc\n"
+
+
+def test_serving_scale_requires_a_replica_count() -> None:
+    result = CliRunner().invoke(
+        cli_main, ["serving", "scale", "demo-svc", "--workspace", "Serving空间"]
+    )
+
+    assert result.exit_code == 2
+    assert "--replicas" in result.output
+
+
+def test_serving_versions_are_bounded_and_name_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_cli_deps(monkeypatch)
+    versions = [
+        {
+            "inference_serving_id": "sv-internal",
+            "version": index,
+            "status": "SUCCEEDED",
+            "replicas": 1,
+            "created_at": "2026-04-20 10:00:00",
+        }
+        for index in range(1, 26)
+    ]
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_serving_versions",
+        lambda serving_id, session=None: (versions, len(versions)),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "serving", "versions", "demo-svc", "--workspace", "Serving空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["shown"] == DEFAULT_COLLECTION_LIMIT
+    assert data["total"] == 25
+    assert data["truncated"] is True
+    assert data["items"][0]["version"] == 1
+    # The rollback target is a version number; the platform handle is not part
+    # of the contract.
+    assert "sv-internal" not in result.output
+
+
+def test_serving_rollback_prompts_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_serving_cli_deps(monkeypatch)
+    monkeypatch.setattr(
+        browser_api_module,
+        "rollback_serving",
+        lambda *_args, **_kwargs: pytest.fail("rollback must be confirmed first"),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["serving", "rollback", "demo-svc", "--workspace", "Serving空间", "--version", "2"],
+        input="n\n",
+    )
+
+    assert result.exit_code != 0
+    assert "version 2" in result.output
+
+
+def test_serving_rollback_yes_skips_prompt_and_sends_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_cli_deps(monkeypatch)
+    calls: dict[str, Any] = {}
+
+    def fake_rollback(serving_id: str, *, version: int, session=None) -> dict[str, Any]:
+        calls["serving_id"] = serving_id
+        calls["version"] = version
+        return {}
+
+    monkeypatch.setattr(browser_api_module, "rollback_serving", fake_rollback)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "serving",
+            "rollback",
+            "demo-svc",
+            "--workspace",
+            "Serving空间",
+            "--version",
+            "2",
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {
+        "success": True,
+        "data": {"name": "demo-svc", "status": "rolled back", "version": 2},
+    }
+    assert calls == {"serving_id": "sv-internal", "version": 2}
+
+
+# ---------------------------------------------------------------------------
+# create: auto scaling and read-only public path
+# ---------------------------------------------------------------------------
+
+
+def test_serving_create_help_documents_the_new_optional_flags() -> None:
+    result = CliRunner().invoke(cli_main, ["serving", "create", "--help"])
+
+    assert result.exit_code == 0, result.output
+    joined = " ".join(result.output.split())
+    assert "--auto-scaling / --no-auto-scaling" in joined
+    assert "--public-path-readonly / --no-public-path-readonly" in joined
+    # Both must read as opt-in; the platform still owns the unset case.
+    assert joined.count("Omit to leave the platform default.") >= 2
+
+
+@pytest.mark.parametrize(
+    ("flag", "field"),
+    (
+        ("--auto-scaling", "enable_auto_scaling"),
+        ("--no-auto-scaling", "enable_auto_scaling"),
+        ("--public-path-readonly", "is_publicpath_readonly"),
+        ("--no-public-path-readonly", "is_publicpath_readonly"),
+    ),
+)
+def test_serving_create_flags_map_onto_the_create_action_fields(
+    flag: str, field: str
+) -> None:
+    parameters = {
+        parameter.name: parameter
+        for parameter in serving_commands_module.create_serving.params
+    }
+    option = parameters["auto_scaling" if "auto-scaling" in flag else "public_path_readonly"]
+
+    assert flag in option.secondary_opts or flag in option.opts
+    # Default `None` is what keeps an untouched create byte-for-byte unchanged.
+    assert option.default is None
+    assert field in inspect.signature(browser_api_module.create_serving).parameters
+
+
+# ---------------------------------------------------------------------------
+# published per-quota priority restrictions, enforced before the create call
+# ---------------------------------------------------------------------------
+
+
+def _patch_serving_create_deps(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    allowed_priority_levels: tuple[str, ...] | None,
+    priority: int,
+) -> None:
+    from inspire.cli.utils import quota_resolver as quota_resolver_module
+
+    config = config_module.Config(username="user", password="pass")
+    config.profiles = {}
+    monkeypatch.setattr(
+        config_module.Config,
+        "from_files_and_env",
+        classmethod(lambda cls, **_kwargs: (config, {})),
+    )
+    monkeypatch.setattr(serving_commands_module, "get_web_session", lambda: FakeSession())
+    monkeypatch.setattr(
+        serving_commands_module, "select_workspace_id", lambda **_kwargs: "ws-1"
+    )
+    monkeypatch.setattr(
+        serving_commands_module, "_resolve_project_id", lambda **_kwargs: "project-1"
+    )
+    monkeypatch.setattr(
+        serving_commands_module.browser_api_module,
+        "get_current_user",
+        lambda **_kwargs: {"id": "user-1"},
+    )
+    monkeypatch.setattr(
+        quota_resolver_module,
+        "resolve_quota",
+        lambda **_kwargs: quota_resolver_module.ResolvedQuota(
+            quota_id="quota-1",
+            logic_compute_group_id="lcg-1",
+            compute_group_name="训练区-H200-1号机房",
+            gpu_count=1,
+            cpu_count=20,
+            memory_gib=200,
+            gpu_type="H200",
+            raw_price={
+                "cpu_info": {"cpu_type": "CPU_TYPE_INTEL"},
+                "gpu_info": {"gpu_type": "NVIDIA_H200_SXM_141G"},
+            },
+            allowed_priority_levels=allowed_priority_levels,
+        ),
+    )
+    monkeypatch.setattr(
+        serving_commands_module,
+        "_resolve_model_for_create",
+        lambda **_kwargs: ("model-1", 3, "qwen-demo"),
+    )
+    monkeypatch.setattr(
+        serving_commands_module,
+        "_resolve_image_for_create",
+        lambda *_args, **_kwargs: ("mirror-1", "serve-base:v1"),
+    )
+    monkeypatch.setattr(
+        serving_commands_module,
+        "resolve_workspace_task_priority",
+        lambda *_args, **_kwargs: priority,
+    )
+
+
+def _serving_create_args() -> list[str]:
+    return [
+        "serving",
+        "create",
+        "--name",
+        "probe",
+        "--model",
+        "qwen-demo",
+        "--command",
+        "python serve.py",
+        "--port",
+        "8000",
+        "--workspace",
+        "Serving空间",
+        "--project",
+        "Project One",
+        "--group",
+        "训练区-H200-1号机房",
+        "--quota",
+        "1,20,200",
+        "--image",
+        "serve-base:v1",
+        "--dry-run",
+    ]
+
+
+def test_serving_create_refuses_a_priority_the_quota_row_does_not_allow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_create_deps(
+        monkeypatch, allowed_priority_levels=("low",), priority=4
+    )
+
+    result = CliRunner().invoke(cli_main, _serving_create_args())
+
+    assert result.exit_code == EXIT_VALIDATION_ERROR, result.output
+    assert "LOW-priority only" in result.output
+    assert "inspire serving quota" in result.output
+    assert "Create plan" not in result.output
+
+
+def test_serving_create_accepts_the_priority_the_quota_row_publishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_create_deps(
+        monkeypatch, allowed_priority_levels=("low",), priority=1
+    )
+
+    result = CliRunner().invoke(cli_main, _serving_create_args())
+
+    assert result.exit_code == 0, result.output
+    assert "Create plan" in result.output
+
+
+@pytest.mark.parametrize("levels", [None, ()])
+def test_serving_create_is_not_blocked_by_an_unread_or_empty_priority_menu(
+    monkeypatch: pytest.MonkeyPatch, levels: tuple[str, ...] | None
+) -> None:
+    _patch_serving_create_deps(monkeypatch, allowed_priority_levels=levels, priority=4)
+
+    result = CliRunner().invoke(cli_main, _serving_create_args())
+
+    assert result.exit_code == 0, result.output
+    assert "Create plan" in result.output
+
+
+def test_serving_workload_level_skips_the_instance_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deployment view is the old default, and costs one request again."""
+    _patch_serving_cli_deps(monkeypatch)
+
+    def _events(serving_id: str, *, pod_names=None, session=None) -> list[dict[str, Any]]:  # noqa: ANN001
+        assert pod_names is None
+        return [
+            {
+                "object_id": "sv-deadbeef",
+                "object_type": "INFERENCE_SERVING",
+                "reason": "GroupsProgressing",
+                "message": "Replicas are progressing",
+                "last_timestamp": "1",
+            }
+        ]
+
+    monkeypatch.setattr(browser_api_module, "list_serving_events", _events)
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_serving_instances",
+        lambda *_args, **_kwargs: pytest.fail(
+            "--workload-level must not enumerate instances"
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "serving",
+            "events",
+            "demo",
+            "--workspace",
+            "Test Workspace",
+            "--workload-level",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    items = json.loads(result.output)["data"]["items"]
+    assert [item["reason"] for item in items] == ["GroupsProgressing"]
+    assert all("instance" not in item for item in items)
+
+
+def test_serving_workload_level_and_instance_contradict_each_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_serving_cli_deps(monkeypatch)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "serving",
+            "events",
+            "demo",
+            "--workspace",
+            "Test Workspace",
+            "--workload-level",
+            "--instance",
+            "rank=0",
+        ],
+    )
+
+    assert result.exit_code == 12
+    assert json.loads(result.output)["error"]["type"] == "InvalidUsage"
+
+
+def test_serving_create_never_doubles_a_tag_already_in_the_image_name() -> None:
+    """`ImageInfo.name` already carries the tag for platform-published images.
+
+    Appending `version` to it produced
+    `sandbox-base:ubuntu24.04-py3.12-1.0.0:ubuntu24.04-py3.12-1.0.0`. The
+    create itself was unaffected -- the payload carries `mirror_id` -- but
+    `--dry-run` and the JSON echo reported an image reference that resolves to
+    nothing, which is the string someone copies into a script.
+    """
+    from inspire.cli.commands.serving.serving_commands import _with_tag
+
+    assert _with_tag("sandbox-base:u24", "u24") == "sandbox-base:u24"
+    # A bare name still gets its tag.
+    assert _with_tag("sandbox-base", "u24") == "sandbox-base:u24"
+    # A different tag is not a duplicate and must survive.
+    assert _with_tag("sandbox-base:u22", "u24") == "sandbox-base:u22:u24"
+    assert _with_tag("sandbox-base", "") == "sandbox-base"

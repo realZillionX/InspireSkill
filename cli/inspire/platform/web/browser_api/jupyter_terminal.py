@@ -108,11 +108,19 @@ def build_jupyter_terminal_ws_url(lab_url: str, term_name: str) -> str:
 
 
 def build_shell_bootstrap(*, cwd: str | None, env_exports: str) -> str:
+    """Build the login-shell bootstrap for an interactive JupyterTerminal.
+
+    The shell runs as a child rather than via ``exec`` so that the surviving
+    parent can announce the exit — the gateway keeps the websocket open after
+    the shell is gone, so nothing else tells the client to stop reading. See
+    ``job_shell.SHELL_EXIT_MARKER``.
+    """
+    from inspire.cli.utils.job_shell import shell_exit_announce
+
+    tail = f"$SHELL -l; {shell_exit_announce()}\r"
     if cwd:
-        return f"{env_exports}cd {shlex.quote(cwd)} && exec $SHELL -l\r"
-    if env_exports:
-        return f"{env_exports}exec $SHELL -l\r"
-    return "exec $SHELL -l\r"
+        return f"{env_exports}cd {shlex.quote(cwd)} && {tail}"
+    return f"{env_exports}{tail}"
 
 
 def run_command_capture_in_notebook(
@@ -337,6 +345,7 @@ def _run_jupyter_terminal_shell(
 ) -> int:
     from inspire.cli.utils.job_shell import (
         CTRL_RIGHT_BRACKET,
+        ShellExitWatcher,
         _WebSocketClient,
         _stty_command,
     )
@@ -370,6 +379,7 @@ def _run_jupyter_terminal_shell(
             signal.signal(signal.SIGWINCH, resize_handler)
         try:
             stdin_open = True
+            exit_watcher = ShellExitWatcher()
             while True:
                 readers = [ws]
                 if stdin_open and not getattr(stdin, "closed", False):
@@ -390,13 +400,20 @@ def _run_jupyter_terminal_shell(
                         try:
                             msg = json.loads(text)
                         except json.JSONDecodeError:
-                            write_stream_output(stdout_buffer, payload)
-                            continue
-                        if isinstance(msg, list) and len(msg) >= 2 and msg[0] == "stdout":
-                            write_stream_output(
-                                stdout_buffer,
-                                str(msg[1] or "").encode(),
-                            )
+                            stream = payload
+                        else:
+                            if not (
+                                isinstance(msg, list)
+                                and len(msg) >= 2
+                                and msg[0] == "stdout"
+                            ):
+                                continue
+                            stream = str(msg[1] or "").encode()
+                        visible, shell_exited = exit_watcher.feed(stream)
+                        if visible:
+                            write_stream_output(stdout_buffer, visible)
+                        if shell_exited:
+                            return 0
                 if stdin in ready:
                     data = os.read(stdin.fileno(), 4096)
                     if not data:

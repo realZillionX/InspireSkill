@@ -73,17 +73,17 @@ def _refresh_expired_session(
     web_session_module._get_browser_client = _SessionBrowserClient
     web_session_module._close_browser_client = lambda: None
     web_session_module.get_web_session = fake_get_web_session
-    web_session_module.build_requests_session = lambda _session, _url: _StubHTTP()
+    web_session_module.pooled_requests_session = lambda _session, _url: _StubHTTP()
 
     barrier.wait()
     assert web_session_module.request_json(
         session,
         "GET",
-        "https://example.test/api/v1/user/detail",
+        "https://example.test/api/v2/user?Action=GetUserDetail",
     ) == {"ok": True}
     # Reauthentication must return the process to the plain HTTP request path
     # rather than leaving it pinned to the browser fallback.
-    assert _http_calls == ["https://example.test/api/v1/user/detail"]
+    assert _http_calls == ["https://example.test/api/v2/user?Action=GetUserDetail"]
 
 
 def test_concurrent_expired_session_requests_share_one_refresh(

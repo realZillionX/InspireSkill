@@ -26,12 +26,11 @@ _CONTEXT_COLLECTION_KEYS = (
     "projects",
     "workspaces",
     "compute_groups",
-    "accounts",
 )
 
 
 def _collect_context(cfg: Config) -> dict[str, Any]:
-    from inspire.accounts import current_account, list_accounts
+    from inspire.accounts import current_account
 
     warnings: list[str] = []
     active_account = scrub_raw_ids(current_account() or "") or None
@@ -65,7 +64,7 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
     except Exception:
         ws_name_for_id = {}
         warnings.append(
-            "Workspace names are unavailable. Run `inspire config check` and retry."
+            "Workspace names are unavailable. Run `inspire account check` and retry."
         )
     workspaces_view = sorted(set(ws_name_for_id.values()))
 
@@ -108,7 +107,6 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
         "projects": projects_view,
         "workspaces": workspaces_view,
         "compute_groups": compute_groups_view,
-        "accounts": sorted(scrub_raw_ids(account) for account in list_accounts()),
     }
     if warnings:
         data["warnings"] = warnings
@@ -163,10 +161,6 @@ def _render_human(data: dict[str, Any]) -> None:
         suffix = f" workspace={workspace_text}" if workspace_text else ""
         click.echo(f"compute-group {group['name']}{suffix}")
 
-    accounts: list[str] = data["accounts"]
-    for name in accounts:
-        click.echo(f"account {name}")
-
     truncation = data.get("truncated")
     if isinstance(truncation, dict) and truncation:
         parts = [
@@ -193,7 +187,7 @@ def _render_human(data: dict[str, Any]) -> None:
 )
 @click.option("--all", "show_all", is_flag=True, help="Show every discovered name.")
 @pass_context
-def show_context(ctx: Context, limit: int | None, show_all: bool) -> None:
+def context(ctx: Context, limit: int | None, show_all: bool) -> None:
     """List names available to the active account.
 
     Pass the displayed names to ``--workspace``, ``--project``, and
@@ -201,10 +195,10 @@ def show_context(ctx: Context, limit: int | None, show_all: bool) -> None:
 
     \b
     Examples:
-        inspire config context
-        inspire config context --limit 10
-        inspire config context --all
-        inspire --json config context
+        inspire account context
+        inspire account context --limit 10
+        inspire account context --all
+        inspire --json account context
     """
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)

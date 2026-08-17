@@ -1,8 +1,8 @@
 """Shared helpers for browser (web-session) APIs.
 
-The Inspire web UI exposes additional SSO-only endpoints under a configurable prefix.
-Domain modules (browser_api_*.py) use this module to avoid copy/pasting URL, prefix,
-Playwright, and asyncio-thread bridging logic.
+The Inspire web UI exposes SSO-only endpoints under `/api/v2`. Domain modules
+(browser_api_*.py) use this module to avoid copy/pasting URL, Playwright, and
+asyncio-thread bridging logic.
 """
 
 from __future__ import annotations
@@ -12,20 +12,28 @@ import os
 import threading
 from typing import Any, Optional
 
-from inspire.platform.web.session import WebSession, get_playwright_proxy, request_json
+from inspire.platform.web.session import (
+    WebSession,
+    get_playwright_proxy,
+    request_json,
+)
+from inspire.platform.web.session.envelope import (  # noqa: F401 - re-exported
+    _is_transient_v2_error_code,
+    _v2_result,
+)
+from inspire.config.models import DEFAULT_BASE_URL
 from inspire.platform.web.session.browser_launch import chromium_launch_kwargs
 
-DEFAULT_BASE_URL = "https://api.example.com"
+# The platform's JupyterLab entry point, and the one part of `/api/v2` that is
+# not an Action: `notebook.GetNotebookLab` / `GetLabUrl` / `GetNotebookProxy` /
+# `GetProxyUrl` are all `InvalidAction`. A GET answers `301` to the tokenized
+# notebook-gateway URL that actually serves the lab, and the console's own
+# JupyterLab iframe points here.
+NOTEBOOK_LAB_PATH = "/api/v2/notebook/lab"
 
-# Default browser API prefix (fallback if not configured)
-DEFAULT_BROWSER_API_PREFIX = "/api/v1"
-
-# Cached base URL and browser API prefix (loaded once at module import)
+# Cached base URL (loaded once at module import)
 _cached_base_url: str | None = None
 _cached_base_url_key: tuple[str | None, str | None] | None = None
-# Cached browser API prefix (loaded once at module import)
-_cached_browser_api_prefix: str | None = None
-_cached_browser_api_prefix_key: tuple[str | None, str | None] | None = None
 
 
 def _active_account_key() -> str | None:
@@ -41,19 +49,12 @@ def _base_url_cache_key() -> tuple[str | None, str | None]:
     return (_active_account_key(), os.environ.get("INSPIRE_BASE_URL"))
 
 
-def _browser_api_prefix_cache_key() -> tuple[str | None, str | None]:
-    return (_active_account_key(), os.environ.get("INSPIRE_BROWSER_API_PREFIX"))
-
-
 def clear_browser_api_runtime_cache() -> None:
     """Clear account-sensitive browser API runtime caches."""
     global _cached_base_url, _cached_base_url_key
-    global _cached_browser_api_prefix, _cached_browser_api_prefix_key
 
     _cached_base_url = None
     _cached_base_url_key = None
-    _cached_browser_api_prefix = None
-    _cached_browser_api_prefix_key = None
 
 
 def _get_base_url() -> str:
@@ -93,87 +94,47 @@ def _set_base_url(url: str) -> None:
     _cached_base_url_key = _base_url_cache_key()
 
 
-def _get_browser_api_prefix() -> str:
-    """Get the browser API prefix from config or environment.
+# The gateway rejects `page_size` above this with
+# `InvalidParameter: page or page_size too large`. It is per-service — `hpc`
+# enforces it, `ray` currently does not — so callers cap unconditionally
+# rather than learning it from a failure.
+MAX_PAGE_SIZE = 5000
 
-    Returns:
-        Browser API prefix (e.g., "/api/v1" or custom)
+
+def _coerce_total(value: Any, fallback: int) -> int:
+    """Read a paging `total` that may arrive as an int or a string.
+
+    v2 is inconsistent about this per Action: `notebook.ListNotebooks` answers
+    with an int while `hpc.ListJobs` answers with `"202"`. An isinstance check
+    against int therefore silently swaps the real total for whatever fallback
+    the caller passed, which reads as "this page was the whole list".
     """
-    global _cached_browser_api_prefix, _cached_browser_api_prefix_key
-
-    cache_key = _browser_api_prefix_cache_key()
-    if (
-        _cached_browser_api_prefix is not None
-        and _cached_browser_api_prefix_key == cache_key
-    ):
-        return _cached_browser_api_prefix
-
-    # Check environment variable first (highest priority)
-    env_prefix = os.environ.get("INSPIRE_BROWSER_API_PREFIX")
-    if env_prefix:
-        _cached_browser_api_prefix = env_prefix
-        _cached_browser_api_prefix_key = cache_key
-        return _cached_browser_api_prefix
-
-    # Try to load from config files
     try:
-        from inspire.config import Config
-
-        config, _ = Config.from_files_and_env(require_credentials=False)
-        if config.browser_api_prefix:
-            _cached_browser_api_prefix = config.browser_api_prefix
-            _cached_browser_api_prefix_key = cache_key
-            return _cached_browser_api_prefix
-    except Exception:
-        pass
-
-    # Use default
-    _cached_browser_api_prefix = DEFAULT_BROWSER_API_PREFIX
-    _cached_browser_api_prefix_key = cache_key
-    return _cached_browser_api_prefix
+        return int(str(value))
+    except (TypeError, ValueError):
+        return fallback
 
 
-def _browser_api_path(endpoint_path: str) -> str:
-    """Build a browser API path with configurable prefix.
+def _clamped_page_size(body: Optional[dict]) -> Optional[dict]:
+    """Hold `page_size` at the gateway ceiling.
 
-    Args:
-        endpoint_path: The endpoint path (e.g., "/train_job/list")
+    Above :data:`MAX_PAGE_SIZE` the gateway answers `InvalidParameter: page or
+    page_size too large`, and it enforces that per service — `hpc` rejects
+    10000 while `ray` accepts it today. Clamping here rather than in each
+    wrapper means no caller has to learn the ceiling from a failure, and it
+    costs nothing: a request above the ceiling could never have returned more
+    rows than one at it.
 
-    Returns:
-        Full path with prefix (e.g., "/api/v1/train_job/list")
+    ``-1`` means "every row" and the gateway honours it, so it is left alone.
     """
-    endpoint = endpoint_path.lstrip("/")
-    prefix = _get_browser_api_prefix().rstrip("/")
-    return f"{prefix}/{endpoint}"
-
-
-def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
-    """Unwrap the `/api/v2` AWS-style envelope.
-
-    v2 reports business errors inside ``ResponseMetadata.Error`` while the HTTP
-    status stays 200, so success can never be inferred from the status code.
-    Falls back to the legacy ``code``/``data`` envelope for responses that have
-    not moved to v2 yet. Callers pick their own list key out of the result;
-    there is no cross-Action convention for it.
-    """
-    metadata = data.get("ResponseMetadata")
-    if isinstance(metadata, dict):
-        error = metadata.get("Error")
-        if isinstance(error, dict):
-            code = error.get("Code") or "Error"
-            message = error.get("Message") or "unknown error"
-            raise ValueError(f"API error: {code}: {message}")
-    elif data.get("code") not in (None, 0):
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("Result")
-    if isinstance(payload, dict):
-        return payload
-    if payload is None:
-        nested_payload = data.get("data")
-        if isinstance(nested_payload, dict):
-            return nested_payload
-    return {}
+    if not isinstance(body, dict):
+        return body
+    requested = body.get("page_size")
+    if not isinstance(requested, int) or isinstance(requested, bool):
+        return body
+    if requested <= MAX_PAGE_SIZE:
+        return body
+    return {**body, "page_size": MAX_PAGE_SIZE}
 
 
 def _request_json(
@@ -192,7 +153,7 @@ def _request_json(
         method,
         url,
         headers=headers,
-        body=body,
+        body=_clamped_page_size(body),
         timeout=timeout,
     )
 

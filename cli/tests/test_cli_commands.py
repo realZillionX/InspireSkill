@@ -17,6 +17,7 @@ from inspire.cli.context import (
 )
 
 from inspire import config as config_module
+from inspire.cli.formatters.human_formatter import format_epoch
 from inspire.cli.commands.notebook import notebook_commands as notebook_cmd_module
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
@@ -133,7 +134,7 @@ def patch_config_and_auth(
     import importlib
 
     quota_resolver_module = importlib.import_module("inspire.cli.utils.quota_resolver")
-    config_check_module = importlib.import_module("inspire.cli.commands.config.check")
+    config_check_module = importlib.import_module("inspire.cli.commands.account.check")
     job_commands_module = importlib.import_module("inspire.cli.commands.job.job_commands")
     job_create_module = importlib.import_module("inspire.cli.commands.job.job_create")
     workspaces_module = importlib.import_module("inspire.platform.web.browser_api.workspaces")
@@ -268,7 +269,7 @@ def test_job_help_smoke(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     ("command", "metavar"),
     [
         ("create", "NAME"),
-        ("quota", "NAME|all"),
+        ("quota", "NAME"),
         ("status", "NAME"),
         ("logs", "NAME"),
         ("events", "NAME"),
@@ -565,8 +566,11 @@ def test_job_status_human_output_is_compact_and_name_only(
     assert "Priority: 5" in result.output
     assert "Priority Level: HIGH" in result.output
     assert "Sub-status: READY" in result.output
-    assert "Created: 1770000000" in result.output
-    assert "Updated: 1770000100" in result.output
+    # Human status renders wall-clock, the same as `job list`; the raw epoch
+    # stays in the JSON projection for machine consumers.
+    assert f"Created: {format_epoch('1770000000')}" in result.output
+    assert f"Updated: {format_epoch('1770000100')}" in result.output
+    assert "Created: 1770000000" not in result.output
     assert TEST_JOB_ID not in result.output
     assert "project-internal" not in result.output
     assert "quota-internal" not in result.output
@@ -895,6 +899,46 @@ def test_job_wait_json_suppresses_intermediate_status_documents(
     assert result.exit_code == EXIT_SUCCESS
     assert result.output.count("\n") == 1
     assert json.loads(result.output)["data"]["status"] == "SUCCEEDED"
+
+
+@pytest.mark.parametrize("stopped_status", ["job_stopped", "job_cancelled", "CANCELLED"])
+def test_job_wait_returns_at_once_on_a_stopped_job(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stopped_status: str
+) -> None:
+    """A stopped job is terminal: `job` has no `start`, so waiting can only time out.
+
+    `job wait` used to omit `job_stopped` from its own terminal set and polled a
+    dead job for the full four-hour default.
+    """
+    patch_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.job import job_commands
+
+    monkeypatch.setattr(job_commands, "_resolve_web_job_id", lambda **kwargs: TEST_JOB_ID)
+    monkeypatch.setattr(job_commands, "get_web_session", web_session_module.get_web_session)
+
+    polls = {"count": 0}
+
+    def get_job_detail_v2(job_id: str, *, session: object) -> Dict[str, Any]:
+        del session
+        polls["count"] += 1
+        return {"job_id": job_id, "name": "wait-job", "status": stopped_status}
+
+    monkeypatch.setattr(job_commands.browser_api_module, "get_job_detail_v2", get_job_detail_v2)
+
+    def no_sleep(_seconds: float) -> None:
+        raise AssertionError("job wait polled a terminal job")
+
+    monkeypatch.setattr(job_commands.time, "sleep", no_sleep)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["job", "wait", "wait-job", "--workspace", "Test Workspace", "--interval", "1"],
+    )
+
+    assert result.exit_code != EXIT_SUCCESS
+    assert result.exit_code != EXIT_TIMEOUT
+    assert stopped_status in result.output
+    assert polls["count"] == 1
 
 
 def test_job_list_watch_json_is_rejected_with_one_json_error(
@@ -1507,6 +1551,11 @@ def test_nodes_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             )
         ],
     )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_node_specs",
+        lambda workspace_id, logic_compute_group_id=None, session=None, **_kwargs: [],  # noqa: ARG005
+    )
     runner = CliRunner()
 
     result = runner.invoke(
@@ -1526,12 +1575,13 @@ def test_nodes_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
                 "ready_nodes": 8,
                 "full_free_nodes": 3,
                 "full_free_gpus": 12,
+                "node_specs": [],
             }
         ]
     }
 
 
-def test_resources_list_all_workspaces_and_cpu_json(
+def test_resources_list_one_workspace_and_cpu_json(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     patch_config_and_auth(monkeypatch, tmp_path, include_compute_groups=True)
@@ -1586,14 +1636,22 @@ def test_resources_list_all_workspaces_and_cpu_json(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["--json", "resources", "availability", "--workspace", "all", "--include-cpu"],
+        [
+            "--json",
+            "resources",
+            "availability",
+            "--workspace",
+            "分布式训练空间",
+            "--include-cpu",
+        ],
     )
     assert result.exit_code == 0
 
     payload = json.loads(result.output)
     rows = payload["data"]["items"]
     assert payload["success"] is True
-    assert captured["all_workspaces"] is True
+    assert "all_workspaces" not in captured
+    assert captured["workspace_id"] == "ws-gpu"
     assert captured["include_cpu"] is True
     assert {row["kind"] for row in rows} == {"gpu", "cpu"}
     assert any(row["workspace"] == "分布式训练空间" for row in rows)
@@ -1612,7 +1670,7 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
         config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
     )
 
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
     effective_proxy = {
         "target": "my-inspire.internal",
@@ -1653,27 +1711,42 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["config", "check"])
+    result = runner.invoke(cli_main, ["account", "check"])
 
+    # A failed check explains itself on the first run: the reason and the route
+    # the request took, both redacted, without needing `--details`.
     assert result.exit_code == EXIT_AUTH_ERROR
     assert "Authentication: FAILED" in result.output
-    assert "Effective runtime proxy" not in result.output
-    assert "source=system_env" not in result.output
+    assert "Effective runtime proxy" in result.output
+    assert "source=system_env" in result.output
+    for secret in (
+        "my-inspire.internal",
+        "proxy.internal",
+        "8080",
+        "auth.internal",
+        "/inspire/private/session.json",
+        "alice",
+    ):
+        assert secret not in result.output
 
-    detailed = runner.invoke(cli_main, ["config", "check", "--details"])
+    detailed = runner.invoke(cli_main, ["account", "check", "--details"])
     assert detailed.exit_code == EXIT_AUTH_ERROR
     assert "Effective runtime proxy" in detailed.output
     assert "source=system_env" in detailed.output
-    assert "my-inspire.internal" not in detailed.output
-    assert "proxy.internal" not in detailed.output
-    assert "8080" not in detailed.output
-    assert "auth.internal" not in detailed.output
-    assert "/inspire/private/session.json" not in detailed.output
-    assert "alice" not in detailed.output
+    assert "Config files:" in detailed.output
+    for secret in (
+        "my-inspire.internal",
+        "proxy.internal",
+        "8080",
+        "auth.internal",
+        "/inspire/private/session.json",
+        "alice",
+    ):
+        assert secret not in detailed.output
 
     detailed_json = runner.invoke(
         cli_main,
-        ["--json", "config", "check", "--details"],
+        ["--json", "account", "check", "--details"],
     )
     assert detailed_json.exit_code == EXIT_AUTH_ERROR
     payload = json.loads(detailed_json.output)
@@ -1696,7 +1769,7 @@ def test_config_check_config_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check", "--details"])
+    result = runner.invoke(cli_main, ["--json", "account", "check", "--details"])
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     payload = json.loads(result.output)
@@ -1732,7 +1805,7 @@ base_url = "https://my-inspire.internal"
     monkeypatch.setattr(
         config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
     effective_proxy = {
         "target": "my-inspire.internal",
@@ -1765,7 +1838,7 @@ base_url = "https://my-inspire.internal"
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check", "--details"])
+    result = runner.invoke(cli_main, ["--json", "account", "check", "--details"])
 
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
@@ -1775,7 +1848,7 @@ base_url = "https://my-inspire.internal"
     assert resolution["prefer_source"] == "toml"
     assert resolution["env_present"] is True
     assert resolution["project_config_present"] is True
-    assert resolution["global_config_present"] is True
+    assert resolution["account_config_present"] is True
     assert "value" not in resolution
     assert str(project_config) not in result.output
     assert str(global_config) not in result.output
@@ -1816,8 +1889,9 @@ def test_config_check_accepts_local_json_alias(
     monkeypatch.setattr(
         config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
+    monkeypatch.setattr("inspire.accounts.current_account", lambda: "test-account")
     monkeypatch.setattr(config_check_module, "get_web_session", lambda: object())
     monkeypatch.setattr(
         config_check_module.browser_api_module,
@@ -1826,12 +1900,13 @@ def test_config_check_accepts_local_json_alias(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check"])
+    result = runner.invoke(cli_main, ["--json", "account", "check"])
 
     assert result.exit_code == EXIT_SUCCESS
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert payload["data"] == {
+        "account": "test-account",
         "configured": True,
         "authenticated": True,
     }
@@ -1855,7 +1930,7 @@ def test_config_check_rejects_placeholder_base_url(
     monkeypatch.setattr(
         config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
     monkeypatch.setattr(
         config_check_module,
@@ -1864,7 +1939,7 @@ def test_config_check_rejects_placeholder_base_url(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check"])
+    result = runner.invoke(cli_main, ["--json", "account", "check"])
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     payload = json.loads(result.output)
@@ -1897,7 +1972,7 @@ def test_config_check_rejects_top_level_project_base_url_key(
     monkeypatch.setattr(
         config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
     monkeypatch.setattr(
         config_check_module,
@@ -1906,7 +1981,7 @@ def test_config_check_rejects_top_level_project_base_url_key(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "check"])
+    result = runner.invoke(cli_main, ["--json", "account", "check"])
 
     assert result.exit_code == EXIT_CONFIG_ERROR
     payload = json.loads(result.output)
@@ -1915,12 +1990,11 @@ def test_config_check_rejects_top_level_project_base_url_key(
     assert "[api]" in payload["error"]["message"]
 
 
-def test_config_check_allows_path_default_for_browser_api_prefix(
+def test_config_check_accepts_a_custom_base_url(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_test_config(tmp_path)
     config.base_url = "https://my-inspire.internal"
-    config.browser_api_prefix = "/api/v1"
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
         return config, {"base_url": config_module.SOURCE_ENV}
@@ -1934,7 +2008,7 @@ def test_config_check_allows_path_default_for_browser_api_prefix(
     monkeypatch.setattr(
         config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
-    from inspire.cli.commands.config import check as config_check_module
+    from inspire.cli.commands.account import check as config_check_module
 
     monkeypatch.setattr(config_check_module, "get_web_session", lambda: object())
     monkeypatch.setattr(
@@ -1944,7 +2018,7 @@ def test_config_check_allows_path_default_for_browser_api_prefix(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["config", "check"])
+    result = runner.invoke(cli_main, ["account", "check"])
 
     assert result.exit_code == EXIT_SUCCESS
     assert "Configuration: OK" in result.output
@@ -1976,36 +2050,6 @@ def test_init_json_global_contract_via_top_level_flag(
     assert payload["success"] is True
     assert payload["data"] == {"status": "updated"}
     assert str(tmp_path) not in result.output
-
-
-def test_config_show_respects_global_json_flag(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    config = make_test_config(tmp_path)
-
-    def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
-        return config, {"username": config_module.SOURCE_ENV}
-
-    def fake_get_config_paths(cls):  # type: ignore[override]
-        return None, None
-
-    monkeypatch.setattr(
-        config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
-    )
-    monkeypatch.setattr(
-        config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "config", "show"])
-
-    assert result.exit_code == EXIT_SUCCESS
-    payload = json.loads(result.output)
-    assert payload["success"] is True
-    assert "config_files" not in payload["data"]
-    assert "INSPIRE_USERNAME" in payload["data"]["values"]
-    assert payload["data"]["values"]["INSPIRE_USERNAME"] == "<configured>"
-    assert config.username not in result.output
 
 
 def test_notebook_list_all_workspaces_combines_results(

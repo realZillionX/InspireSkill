@@ -1,11 +1,10 @@
 """Browser API wrappers for the model registry.
 
 Reverse-engineered from the current `/jobs/modelService` page. Model registry
-browsing and registration use the web-session Browser API. See
-the controlled browser/live-smoke workflow documented in
-`references/dev/browser-api-v1.md`.
-
-Model Hub is on `/api/v2/model-hub`.
+browsing and registration use the web-session Browser API; the route is
+`/api/v2/model-hub` (hyphenated -- the underscore spelling 404s). The Action
+contract and the controlled-verification discipline behind it are documented in
+`references/dev/browser-api.md`.
 """
 
 from __future__ import annotations
@@ -23,10 +22,14 @@ from inspire.platform.web.session import WebSession, get_web_session
 __all__ = [
     "ModelInfo",
     "check_model_inference_serving_pending",
+    "check_model_vllm_compatible",
     "create_model",
+    "delete_model",
     "get_model_detail",
     "get_model_publish_prefill",
     "get_model_publish_status",
+    "get_model_recommended_config",
+    "get_model_vllm_compatibility",
     "list_model_inference_servings",
     "list_model_users",
     "list_model_version_records",
@@ -153,7 +156,7 @@ def list_models(
     workspace_id: Optional[str] = None,
     *,
     page: int = 1,
-    page_size: int = -1,
+    page_size: int = 100,
     filter_by: Optional[dict[str, Any]] = None,
     keyword: Optional[str] = None,
     user_id: Optional[str] = None,
@@ -161,9 +164,12 @@ def list_models(
     model_types: Optional[Iterable[str]] = None,
     session: Optional[WebSession] = None,
 ) -> tuple[list[ModelInfo], int]:
-    """List models via `POST /api/v1/model/list`.
+    """List models (`model-hub.ListModels`).
 
-    Returns `(items, total)`. `page_size=-1` mirrors the UI (fetch all).
+    Returns `(items, total)`. Unlike `ListImages` and `ListLogicComputeGroups`,
+    this Action refuses `page_size=-1` with `InvalidParameter: page or
+    page_size invalid` — page through `total` instead of asking for everything
+    at once.
     """
     session, workspace_id = _resolve_workspace(workspace_id, session)
     if user_id is None:
@@ -200,7 +206,7 @@ def get_model_detail(
     session: Optional[WebSession] = None,
     workspace_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Get model detail via `POST /api/v1/model/detail`.
+    """Get model detail (`model-hub.GetModelDetail`).
 
     Returns the raw `data` dict — typically
     `{model: {...}, project_name, user_avatar, user_name}`.
@@ -217,6 +223,116 @@ def get_model_detail(
             timeout=30,
         )
     )
+
+
+def get_model_recommended_config(
+    model_id: str,
+    *,
+    version: int,
+    session: Optional[WebSession] = None,
+    workspace_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Minimum viable deployment shape for a model version.
+
+    Backs the deployment form's spec suggestion. Returns
+    ``{min_node_count, min_gpu_count_per_node, min_cpu_count_per_node,
+    min_memory_size_gib_per_node}`` -- a floor, not a recommendation to match
+    exactly; the numbers map onto ``serving create --quota gpu,cpu,mem`` and
+    ``--nodes-per-replica``.
+    """
+    if session is None:
+        session = get_web_session()
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=GetRecommendedConfig",
+            referer=_referer(workspace_id),
+            body={"model_id": model_id, "version": int(version)},
+            timeout=30,
+        )
+    )
+
+
+def check_model_vllm_compatible(
+    model_id: str,
+    *,
+    version: int,
+    inference_serving_type: str = "CUSTOM",
+    session: Optional[WebSession] = None,
+    workspace_id: Optional[str] = None,
+) -> bool:
+    """Whether one model version can be served by vLLM.
+
+    :func:`get_model_vllm_compatibility` answers the same question for every
+    version at once; this per-version form is the one a single deployment
+    decision needs. The two agree on every version measured.
+    """
+    if session is None:
+        session = get_web_session()
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=CheckModelVLLMCompatible",
+            referer=_referer(workspace_id),
+            body={
+                "model_id": model_id,
+                "version": int(version),
+                "inference_serving_type": inference_serving_type,
+            },
+            timeout=30,
+        )
+    )
+    return payload.get("is_vllm_compatible") is True
+
+
+def get_model_vllm_compatibility(
+    model_id: str,
+    *,
+    inference_serving_type: str = "CUSTOM",
+    session: Optional[WebSession] = None,
+    workspace_id: Optional[str] = None,
+) -> dict[int, bool]:
+    """vLLM compatibility for **every** version of one model, in one request.
+
+    ``Result.data`` is ``[{version, is_vllm_compatible}]``; this returns it
+    keyed by version number.
+
+    This -- not the record itself -- is the source for the flag. The
+    ``is_vllm_compatible`` field stored on each ``ListModelVersions`` record
+    reads ``false`` for every model on the platform, including the 13 of 30 that
+    both this Action and ``CheckModelVLLMCompatible`` call compatible. Reading
+    the stored field means answering "no" to a question nobody asked correctly.
+    """
+    if session is None:
+        session = get_web_session()
+    payload = _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=GetModelVLLMCompatibleData",
+            referer=_referer(workspace_id),
+            body={
+                "model_id": model_id,
+                "inference_serving_type": inference_serving_type,
+            },
+            timeout=30,
+        )
+    )
+    rows = payload.get("data")
+    compatibility: dict[int, bool] = {}
+    if not isinstance(rows, list):
+        return compatibility
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            version = int(str(row.get("version")))
+        except (TypeError, ValueError):
+            continue
+        compatibility[version] = row.get("is_vllm_compatible") is True
+    return compatibility
 
 
 def list_model_versions(
@@ -249,7 +365,7 @@ def list_model_version_records(
     session: Optional[WebSession] = None,
     workspace_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """List detailed version records via `GET /api/v1/model/{model_id}`.
+    """List detailed version records (`model-hub.ListModelVersions`).
 
     This is the richer endpoint behind the model detail drawer. It includes
     model paths, source paths, sizes, publish status, and running-serving count.
@@ -271,20 +387,35 @@ def list_model_version_records(
 def check_model_inference_serving_pending(
     *,
     model_id: str,
-    version: int | str,
+    version: int | str | None = None,
     session: Optional[WebSession] = None,
     workspace_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Check whether a model version has pending servings before edit/delete."""
+    """Whether a model has a serving queued in `PENDING`.
+
+    Returns ``{has_pending_serving}``. The flag is true exactly when some
+    serving sits in status ``PENDING``: measured against the per-version status
+    distribution, ``DEPLOYING`` and ``RUNNING`` both read false. That makes it
+    the complement of the ``running_infrence_serving`` count on a version
+    record, which counts only ``RUNNING`` -- a queued deployment shows up in
+    neither the count nor the model's own status.
+
+    **Omitting ``version`` asks about the whole model**; the platform treats a
+    missing (or ``0``) version as "any version", and a real version number
+    narrows the answer to that version alone.
+    """
     if session is None:
         session = get_web_session()
+    body: dict[str, Any] = {"model_id": model_id}
+    if version is not None:
+        body["version"] = int(version)
     return _v2_result(
         _request_json(
             session,
             "POST",
             "/api/v2/model-hub?Action=GetHasModelPendingServing",
             referer=_referer(workspace_id),
-            body={"model_id": model_id, "version": int(version)},
+            body=body,
             timeout=30,
         )
     )
@@ -299,7 +430,24 @@ def list_model_inference_servings(
     session: Optional[WebSession] = None,
     workspace_id: Optional[str] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """List servings using one model version (POST /model/inference_servings)."""
+    """List the servings that reference one model version.
+
+    Returns ``(items, total)`` off the ``serving`` key. Each item is
+    ``{name, serving_id, status, user_avatar, user_name, version}`` -- there is
+    no replica count and no timestamp. Two traps:
+
+    - ``status`` is an **int**, indexing the serving status enum
+      (``PENDING``/``PRE_DEPLOYING``/``DEPLOYING``/``FAILED``/``RUNNING``/…);
+      the ``inference_serving`` domain reports the same states as strings.
+    - ``version`` on an item is the **serving's own** revision, not the model
+      version that was asked for; the two differ in practice.
+
+    ``version`` is required in substance: omitting it (proto default ``0``)
+    returns an empty list rather than every version. ``page`` and ``page_size``
+    are required outright -- omitting either is ``InvalidParameter: page or
+    page_size invalid`` -- and ``page_size: -1`` is rejected the same way, so
+    "fetch everything" has to be spelled as a real number.
+    """
     if session is None:
         session = get_web_session()
     payload = _v2_result(
@@ -423,10 +571,10 @@ def create_model(
     The first version is inferred by the backend. `model_source_type=1` matches
     the UI path-registration flow for a platform-visible directory.
 
-    Goes to `model-hub.CreateModel`, which is live but absent from discovery
-    and takes the v1 body unchanged. `model_source_path` must sit under the
-    given workspace *and* project; anything else — a `global_user` path
-    included — is rejected with `存储路径格式不正确`.
+    Goes to `model-hub.CreateModel`, which is live but absent from discovery.
+    `model_source_path` must sit under the given workspace *and* project;
+    anything else — a `global_user` path included — is rejected with
+    `存储路径格式不正确`.
     """
     if session is None:
         session = get_web_session()
@@ -447,6 +595,46 @@ def create_model(
             "/api/v2/model-hub?Action=CreateModel",
             referer=_referer(workspace_id),
             body=body,
+            timeout=60,
+        )
+    )
+
+
+def delete_model(
+    model_id: str,
+    session: Optional[WebSession] = None,
+    workspace_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Delete a model entry and every version it holds.
+
+    Verified end to end against a self-owned model -- register, read back,
+    delete, and confirm the listing no longer carries it -- rather than off the
+    response envelope, which reports success either way.
+
+    Deletion is not version-scoped: there is no per-version Action, so this
+    removes the whole entry and every deployment that still points at any of
+    its versions loses what it was serving. Callers are expected to ask
+    :func:`list_model_inference_servings` and
+    :func:`check_model_inference_serving_pending` first.
+
+    The registered source directory on shared storage is untouched; only the
+    registry entry goes away.
+
+    There is deliberately no editing counterpart. ``model-hub.UpdateModel``
+    exists but is closed to ordinary users -- on a freshly created, self-owned
+    model both the ``model_id`` and the ``id`` spelling answer
+    ``AccessForbidden: Access denied``, which is the permission gate refusing
+    before the body is ever parsed, not a field-name problem to keep guessing at.
+    """
+    if session is None:
+        session = get_web_session()
+    return _v2_result(
+        _request_json(
+            session,
+            "POST",
+            "/api/v2/model-hub?Action=DeleteModel",
+            referer=_referer(workspace_id),
+            body={"model_id": model_id},
             timeout=60,
         )
     )

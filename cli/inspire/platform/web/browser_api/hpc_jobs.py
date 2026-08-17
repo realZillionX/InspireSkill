@@ -2,27 +2,44 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from inspire.platform.web.browser_api.core import (
+    _coerce_total,
     _get_base_url,
     _request_json,
     _v2_result,
 )
-from inspire.platform.web.session import WebSession, get_web_session
+from inspire.platform.web.session import (
+    SessionExpiredError,
+    TransientAPIError,
+    WebSession,
+    get_web_session,
+)
 
 __all__ = [
+    "HPC_LOG_MAX_WINDOW_MS",
     "HPCJobInfo",
     "create_hpc_job",
     "delete_hpc_job",
     "get_hpc_job_detail",
+    "list_hpc_instance_events",
     "list_hpc_job_instances",
     "list_hpc_jobs",
     "list_hpc_job_events",
     "list_hpc_job_logs",
     "stop_hpc_job",
 ]
+
+# ``hpc.GetJobLog`` refuses any window wider than one month with
+# ``InternalError: 日志查询时间区间不能超过1个月``. ``InternalError`` is on the
+# transient list, so an over-wide window does not fail fast: the transport
+# burns its three retries first and only then surfaces a message that reads
+# like a platform outage. Callers clamp before sending; 31 days is accepted
+# and 40 is not, so the ceiling sits one day inside the accepted range.
+HPC_LOG_MAX_WINDOW_MS = 30 * 24 * 60 * 60 * 1000
 
 
 @dataclass
@@ -188,9 +205,10 @@ def list_hpc_jobs(
     if not isinstance(jobs_data, list):
         jobs_data = []
 
-    total = payload.get("total")
-    if not isinstance(total, int):
-        total = len(jobs_data)
+    # `hpc.ListJobs` reports `total` as a **string** ("202"), so an isinstance
+    # check against int silently replaces the real total with the page length.
+    # Every caller then concludes it has seen everything after one page.
+    total = _coerce_total(payload.get("total"), len(jobs_data))
 
     jobs = [HPCJobInfo.from_api_response(item) for item in jobs_data if isinstance(item, dict)]
     return jobs, total
@@ -206,9 +224,10 @@ def list_hpc_job_events(
     :func:`list_hpc_job_instances` for the component inventory shown on the
     job detail page.
 
-    Returns ``[]`` on any error. The platform garbage-collects events for
-    completed jobs, so a not-found answer is a normal steady state after event
-    retention expires.
+    Returns ``[]`` when the platform answers with nothing: it garbage-collects
+    events for completed jobs, so a not-found answer is a normal steady state
+    after event retention expires. An expired session or a rate-limited
+    platform raises instead, so "no events" is never an invented answer.
     """
     try:
         if session is None:
@@ -234,6 +253,122 @@ def list_hpc_job_events(
             if isinstance(events, list):
                 return events
         return []
+    except (SessionExpiredError, TransientAPIError):
+        raise
+    except Exception:
+        return []
+
+
+def list_hpc_instance_events(
+    instance_ids: list[str],
+    session: Optional[WebSession] = None,
+    *,
+    job_id: str | None = None,
+    page_size: int = 200,
+    max_pages: int | None = None,
+) -> list[dict]:
+    """List per-pod platform events for HPC job instances.
+
+    Action: ``ListSlurmdPodEvent``. It takes exactly one ``instance_id`` per
+    request — the namespaced instance name from
+    :func:`list_hpc_job_instances` (``<namespace>/<pod>``). The bare pod name
+    and the job id both resolve to an empty list rather than an error, so the
+    caller must pass the name through unmodified.
+
+    Two paging facts, both measured:
+
+    * ``page_size`` is mandatory in practice. Omitting it returns an empty
+      ``events`` list next to a non-zero ``total`` — the shape that reads as
+      "this instance has no events" while the platform is saying the opposite.
+    * paging itself works, and all three spellings (``PageNumber`` /
+      ``page_num`` / ``page``) are honoured. This is the opposite of
+      ``hpc.ListJobEvents``, which wants camelCase ``pageNum``.
+
+    Rows are raw Kubernetes event occurrences: ``reason`` / ``message`` /
+    ``from`` / ``first_timestamp`` / ``last_timestamp`` / ``age`` /
+    ``object_id`` / ``object_type`` (``HPC_JOB_INSTANCE``). There is no
+    ``type`` and no ``count`` — the platform repeats an identical row once per
+    occurrence instead of aggregating it, so a pod with 20 distinct events can
+    answer with 106 rows. Collapsing that is a presentation decision and stays
+    in the command layer.
+
+    Best-effort like :func:`list_hpc_job_events`: an expired session or a
+    rate-limited platform raises rather than reading as "no events".
+    """
+    clean_ids = list(
+        dict.fromkeys(
+            str(value or "").strip() for value in instance_ids if str(value or "").strip()
+        )
+    )
+    if not clean_ids:
+        return []
+    if page_size < 1 and page_size != -1:
+        raise ValueError("page_size must be positive")
+    if max_pages is not None and max_pages < 1:
+        raise ValueError("max_pages must be positive")
+
+    detail = f"/jobs/hpcDetail/{job_id}" if job_id else "/jobs/highPerformanceComputing"
+    try:
+        if session is None:
+            session = get_web_session()
+
+        def _instance_events(instance_id: str) -> list[dict]:
+            page_num = 1
+            instance_events: list[dict] = []
+            while max_pages is None or page_num <= max_pages:
+                payload = _v2_result(
+                    _request_json(
+                        session,
+                        "POST",
+                        "/api/v2/hpc?Action=ListSlurmdPodEvent",
+                        referer=f"{_get_base_url()}{detail}",
+                        body={
+                            "instance_id": instance_id,
+                            "page_size": page_size,
+                            "PageNumber": page_num,
+                        },
+                        timeout=30,
+                    )
+                )
+                page_events: list[dict] = []
+                for key in ("events", "items", "list"):
+                    value = payload.get(key)
+                    if isinstance(value, list):
+                        page_events = value
+                        break
+                instance_events.extend(item for item in page_events if isinstance(item, dict))
+
+                # `total` arrives as a string ("106") on this Action.
+                total = _coerce_total(payload.get("total"), -1)
+                if (
+                    page_size == -1
+                    or not page_events
+                    or len(page_events) < page_size
+                    or (total >= 0 and len(instance_events) >= total)
+                ):
+                    break
+                page_num += 1
+            return instance_events
+
+        # This Action takes exactly one instance per request, so a job's whole
+        # event history costs one round trip per pod — and reading every pod is
+        # now the default. Sequentially that is ~0.3s × node count on the
+        # command's critical path; the pool keeps a wide job answering in about
+        # the time a narrow one takes. Results are reassembled in input order,
+        # not completion order.
+        if len(clean_ids) == 1:
+            return _instance_events(clean_ids[0])
+        collected: dict[str, list[dict]] = {}
+        with ThreadPoolExecutor(max_workers=min(len(clean_ids), 8)) as pool:
+            futures = {
+                pool.submit(_instance_events, instance_id): instance_id
+                for instance_id in clean_ids
+            }
+            for future in as_completed(futures):
+                collected[futures[future]] = future.result()
+        return [event for instance_id in clean_ids for event in collected.get(instance_id, [])]
+    except (SessionExpiredError, TransientAPIError):
+        raise
     except Exception:
         return []
 
@@ -246,8 +381,8 @@ def list_hpc_job_instances(
 ) -> tuple[list[dict[str, Any]], int]:
     """List pod/component instances for an HPC job.
 
-    Endpoint: ``POST /api/v1/hpc_jobs/instances/list`` with body
-    ``{jobId, page_num, page_size}``.
+    Action: ``ListJobInstances``, with body ``{jobId, page_num, page_size}`` --
+    this one keeps the camelCase ``jobId``, unlike its neighbours.
     """
     job_id = str(job_id or "").strip()
     if not job_id:
@@ -272,12 +407,8 @@ def list_hpc_job_instances(
         items = payload.get("list")
     if not isinstance(items, list):
         items = []
-    total_raw = payload.get("total")
-    try:
-        total = int(str(total_raw)) if total_raw is not None else len(items)
-    except ValueError:
-        total = len(items)
-    return [item for item in items if isinstance(item, dict)], total
+    rows = [item for item in items if isinstance(item, dict)]
+    return rows, _coerce_total(payload.get("total"), len(rows))
 
 
 def list_hpc_job_logs(
@@ -289,10 +420,28 @@ def list_hpc_job_logs(
     job_id: str | None = None,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Fetch aggregated HPC logs via ``POST /api/v1/logs/hpc``.
+    """Fetch aggregated HPC logs for one job's pods.
 
-    The platform rejects explicit sorter fields on this endpoint, including
-    ``@timestamp``. Send no sorter and sort client-side if needed.
+    Action: ``GetJobLog``. Four measured constraints shape the call:
+
+    * **The sorter is all-or-nothing.** The only accepted value is the console's
+      own pair, ``[{"field": "@timestamp"}, {"field": "log-id.keyword"}]``;
+      either field on its own answers ``InternalError: 日志排序字段不合法，仅支持
+      按时间 + log-id 排序``. Omitting it entirely is accepted too, and that is
+      what this wrapper does — rows then arrive newest-last in practice with
+      nothing guaranteeing it, so sort client-side.
+    * **The two timestamps are string fields carrying epoch milliseconds**, the
+      window may not exceed a month (:data:`HPC_LOG_MAX_WINDOW_MS`), and start
+      must be older than end — an inverted pair is
+      ``InternalError: 日志查询时间参数不合法``.
+    * **``podNames`` wants the namespaced instance names** from
+      :func:`list_hpc_job_instances`. Bare pod names come back as
+      ``InvalidParameter: Invalid instance names …`` because the platform
+      resolves them to exactly one HPC job id, and they resolve to none.
+    * **``page_size`` is the only lever, and ``-1`` is not "everything" here.**
+      Omitting it or sending ``-1`` both cap the answer at 100 rows while
+      ``total`` reports the real count; ``PageNumber`` is ignored outright. To
+      read past 100 rows, re-request with ``page_size`` at least ``total``.
     """
     if session is None:
         session = get_web_session()
@@ -319,12 +468,8 @@ def list_hpc_job_logs(
         logs = payload.get("items")
     if not isinstance(logs, list):
         logs = []
-    total_raw = payload.get("total")
-    try:
-        total = int(str(total_raw)) if total_raw is not None else len(logs)
-    except ValueError:
-        total = len(logs)
-    return [item for item in logs if isinstance(item, dict)], total
+    rows = [item for item in logs if isinstance(item, dict)]
+    return rows, _coerce_total(payload.get("total"), len(rows))
 
 
 def delete_hpc_job(
@@ -333,9 +478,7 @@ def delete_hpc_job(
 ) -> dict:
     """Permanently delete an HPC job entry from the platform.
 
-    Action: ``DeleteJob``. v1 needed the REST-style
-    ``DELETE /api/v1/hpc_jobs/{id}`` because ``POST /hpc_jobs/delete`` was a
-    404; v2 has a first-class Action, so the special case is gone.
+    Action: ``DeleteJob``.
 
     Destructive: the entry disappears from the UI — if the job is still
     running, ``stop`` it first. An id that does not resolve comes back as

@@ -20,6 +20,9 @@ from inspire.config import ConfigError
 notebook_cli_module = importlib.import_module("inspire.cli.utils.notebook_cli")
 
 
+# `all` survives only where the question is "which workspace holds the thing
+# I am naming" — you cannot pass a workspace you do not yet know. Everything
+# here is a search over objects you own, not a reading of a workspace fact.
 _COLLECTION_PATHS = (
     ("job", "list"),
     ("notebook", "list"),
@@ -27,16 +30,32 @@ _COLLECTION_PATHS = (
     ("ray", "list"),
     ("serving", "list"),
     ("model", "list"),
-    ("project", "list"),
+    ("account", "permissions"),
+)
+
+# Facts that are declared per workspace: the compute-group availability, the
+# free-node count, the quota catalog, the serving config surface, the reclaim
+# policy, who holds the cards. Every decision they feed is per workspace too,
+# so each takes exactly one name.
+_SINGLE_WORKSPACE_RESOURCE_PATHS = (
     ("resources", "availability"),
     ("resources", "nodes"),
+    ("resources", "policy"),
+    ("resources", "usage"),
     ("serving", "configs"),
-    ("account", "permissions"),
     ("job", "quota"),
     ("notebook", "quota"),
     ("hpc", "quota"),
     ("ray", "quota"),
     ("serving", "quota"),
+)
+
+# A project is global. It is not scoped to a workspace, so no project command
+# takes one — not even as a filter.
+_WORKSPACE_FREE_PATHS = (
+    ("project", "list"),
+    ("project", "detail"),
+    ("project", "owners"),
 )
 
 _SINGLE_RESOURCE_PATHS = (
@@ -104,6 +123,27 @@ def test_workload_collections_accept_workspace_name_or_all(
 
     assert workspace.required
     assert workspace.help == "Workspace name or 'all'."
+
+
+@pytest.mark.parametrize("path", _SINGLE_WORKSPACE_RESOURCE_PATHS)
+def test_resource_reads_take_one_workspace(path: tuple[str, str]) -> None:
+    workspace = _option(_resolve_command(path), "workspace")
+
+    assert workspace.required
+    assert workspace.metavar == "NAME"
+    assert workspace.help == "Workspace name."
+
+
+@pytest.mark.parametrize("path", _WORKSPACE_FREE_PATHS)
+def test_project_commands_have_no_workspace_option(path: tuple[str, str]) -> None:
+    """A workspace filter on a global object can only hide rows, never scope."""
+    command = _resolve_command(path)
+
+    assert not [
+        parameter
+        for parameter in command.params
+        if isinstance(parameter, click.Option) and parameter.name == "workspace"
+    ]
 
 
 @pytest.mark.parametrize("path", _SINGLE_RESOURCE_PATHS)

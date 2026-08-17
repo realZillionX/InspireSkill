@@ -9,12 +9,16 @@ from typing import Any, Callable, Optional
 
 from inspire.config import Config
 from inspire.platform.web.browser_api.core import (
-    _browser_api_path,
     _get_base_url,
     _request_json,
     _v2_result,
 )
-from inspire.platform.web.session import DEFAULT_WORKSPACE_ID, WebSession, get_web_session
+from inspire.platform.web.session import (
+    DEFAULT_WORKSPACE_ID,
+    TransientAPIError,
+    WebSession,
+    get_web_session,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -76,34 +80,29 @@ def _get_session_and_workspace_id(
     return session, workspace_id
 
 
-def _request_notebooks_data(
+def _resource_price_v2(
     session: WebSession,
-    method: str,
-    endpoint_path: str,
-    *,
+    action: str,
     body: Optional[dict] = None,
+    *,
     timeout: int = 30,
-    default_data: Any = None,
-) -> Any:
-    """Call a `/api/v1` endpoint that has no v2 counterpart.
+) -> dict[str, Any]:
+    """Call one `/api/v2/resource-price` Action and return its ``Result``.
 
-    Resource pricing is the only caller left: no Action on any v2 route
-    answers `/resource_prices/logic_compute_groups/`. The notebook family is on
-    v2 via :func:`_notebook_v2`, the image family via :func:`_image_v2`.
+    The whole `resource-price` service is **absent from discovery** and live
+    anyway — this route is the standing counter-example to reading discovery as
+    an inventory, and the quota catalog in front of every `create` sits on it.
+    The list key is ``lcg_resource_spec_prices``.
     """
     data = _request_json(
         session,
-        method,
-        _browser_api_path(endpoint_path),
+        "POST",
+        f"/api/v2/resource-price?Action={action}",
         referer=_notebooks_referer(),
-        body=body,
+        body=body or {},
         timeout=timeout,
     )
-
-    if data.get("code") != 0:
-        raise ValueError(f"API error: {data.get('message')}")
-
-    return data.get("data", default_data)
+    return _v2_result(data)
 
 
 def _image_v2(
@@ -117,7 +116,7 @@ def _image_v2(
 
     Only `DeleteImage`, `GetImageById`, `ListImageBrands` and `ListImages` are
     published in discovery; `CreateImage` and `UpdateImage` are live but
-    undocumented, and all six take the v1 request bodies unchanged.
+    undocumented.
     """
     data = _request_json(
         session,
@@ -139,8 +138,8 @@ def _notebook_v2(
 ) -> dict[str, Any]:
     """Call one `/api/v2/notebook` Action and return its unwrapped ``Result``.
 
-    Keeps the ``API error: ...`` message shape the v1 helper raised so the
-    command layer's error handling is unchanged.
+    Errors surface as ``API error: ...``, the shape the command layer's error
+    handling expects.
     """
     data = _request_json(
         session,
@@ -273,46 +272,56 @@ def get_resource_prices(
     - SCHEDULE_CONFIG_TYPE_TRAIN: training-job framework specs
     - SCHEDULE_CONFIG_TYPE_RAY_JOB: Ray head / worker quotas
       (consumed by `inspire ray create --group/--quota` and worker specs)
+    - SCHEDULE_CONFIG_TYPE_SERVE: serving quotas
+
+    A failed request raises. An empty list means the platform answered and
+    this group has no specs for this schedule type — the two used to be the
+    same value, which is how a rate-limited refresh cached a workspace as
+    having no quotas at all.
+
+    This is the request in front of every `create`, measured across every
+    visible workspace, every compute group and all five schedule types — 225
+    (workspace, group, schedule type) triples, all answering consistent rows
+    with identical field sets.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
     )
 
-    body = {
-        "workspace_id": workspace_id,
-        "schedule_config_type": schedule_config_type,
-        "logic_compute_group_id": logic_compute_group_id,
-    }
-
-    try:
-        data = _request_notebooks_data(
-            session,
-            "POST",
-            "/resource_prices/logic_compute_groups/",
-            body=body,
-            timeout=30,
-            default_data=[],
-        )
-    except ValueError:
-        return []
-
-    if isinstance(data, list):
-        return data
-    # The API nests results under 'lcg_resource_spec_prices'
-    return data.get(
-        "lcg_resource_spec_prices", data.get("resource_spec_prices", data.get("list", []))
+    payload = _resource_price_v2(
+        session,
+        "GetLogicComputeGroupResourceSpecPrices",
+        {
+            "workspace_id": workspace_id,
+            "schedule_config_type": schedule_config_type,
+            "logic_compute_group_id": logic_compute_group_id,
+        },
     )
+
+    prices = payload.get("lcg_resource_spec_prices")
+    return prices if isinstance(prices, list) else []
 
 
 def list_notebook_compute_groups(
     workspace_id: Optional[str] = None,
     session: Optional[WebSession] = None,
+    *,
+    allow_config_fallback: bool = True,
 ) -> list[dict]:
     """List compute groups available for notebook creation.
 
     Use the workspace-wide ``logic_compute_groups/list`` endpoint as the
     source of truth, with an InspireSkill-config-based fallback for offline
     or misconfigured environments.
+
+    A failure the platform will recover from is raised rather than answered
+    with the config list: everything downstream fans out one request per
+    compute group, so a short list quietly becomes a short quota catalog. The
+    same goes for a failure with no fallback to offer — an empty list here
+    reads as "this workspace has no compute groups", and that has to be
+    something the platform actually said. Callers building authoritative
+    state pass ``allow_config_fallback=False`` so config.toml can never stand
+    in for the platform.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
@@ -327,10 +336,16 @@ def list_notebook_compute_groups(
         data = _list_groups(workspace_id=workspace_id, session=session)
         if isinstance(data, list) and data:
             return data
+    except TransientAPIError:
+        raise
     except Exception as exc:  # noqa: BLE001 — fallback path must remain available
         api_error = exc
 
-    fallback = _config_compute_groups_fallback(workspace_id=workspace_id)
+    fallback = (
+        _config_compute_groups_fallback(workspace_id=workspace_id)
+        if allow_config_fallback
+        else []
+    )
     if fallback:
         reason = f"API error: {api_error!r}" if api_error else "API returned empty list"
         _log.warning(
@@ -344,11 +359,7 @@ def list_notebook_compute_groups(
         return fallback
 
     if api_error is not None:
-        _log.warning(
-            "list_notebook_compute_groups: %r and no config.toml fallback "
-            "available; returning empty list.",
-            api_error,
-        )
+        raise api_error
     return []
 
 
@@ -386,10 +397,9 @@ def list_notebooks(
     it. Pagination policy stays with the caller — this is a 1:1 wrapper around
     the platform call.
 
-    The filter envelope is the same one v1 took, and v2 accepts it verbatim:
-    ``filter_by`` carries the user / keyword / status selection while
-    ``workspace_id`` stays top-level. The nested ``filter`` object that
-    ``workspace.*`` Actions require is rejected here.
+    The filter envelope is ``filter_by`` for the user / keyword / status
+    selection with ``workspace_id`` top-level. The nested ``filter`` object
+    that ``workspace.*`` Actions require is rejected here.
     """
     if not user_ids:
         raise ValueError("Cannot list notebooks without a current-user filter.")
@@ -464,6 +474,56 @@ def _config_compute_groups_fallback(workspace_id: str | None = None) -> list[dic
 # ---------------------------------------------------------------------------
 
 
+def notebook_name_exists(
+    name: str,
+    *,
+    workspace_id: str,
+    session: Optional[WebSession] = None,
+) -> bool:
+    """Report whether ``name`` is already taken by a notebook in this workspace.
+
+    ``CheckNotebook`` is the console's pre-create probe and is purely
+    read-only: it answers ``{notebook_id, sub_code, sub_msg}`` for a name match
+    anywhere in the workspace — running or stopped, and regardless of who
+    created it — and an empty ``Result`` when the name is free. The match is
+    **case-insensitive and ignores trailing whitespace** (``mostar-prep``,
+    ``MOSTAR-PREP`` and ``mostar-prep `` all report the same notebook), so it
+    catches collisions a case-sensitive comparison would miss. There is no
+    prefix or fuzzy matching.
+
+    **Both arguments are mandatory, and that is the whole trap.** The Action
+    declares them optional and answers "free" whenever the name is empty or the
+    ``workspace_id`` does not hold the notebook, so a caller that forgets the
+    scope gets a confident, wrong "this name is available". They are rejected
+    here rather than sent.
+
+    The platform does **not** enforce the answer: ``CreateNotebook`` accepts a
+    duplicate name and returns a second notebook with the same one (verified
+    2026-08-15 on ``CPU资源空间``). This is advice for the caller, not a
+    constraint the platform will apply on its own.
+
+    Raises on any failure, so a name can never read as free because the call
+    never landed.
+    """
+    clean_name = str(name or "").strip()
+    clean_workspace = str(workspace_id or "").strip()
+    if not clean_name:
+        raise ValueError("notebook_name_exists requires a notebook name")
+    if not clean_workspace:
+        raise ValueError("notebook_name_exists requires a workspace handle")
+
+    if session is None:
+        session = get_web_session()
+
+    payload = _notebook_v2(
+        session,
+        "CheckNotebook",
+        {"name": clean_name, "workspace_id": clean_workspace},
+        timeout=15,
+    )
+    return bool(str(payload.get("notebook_id") or "").strip())
+
+
 def create_notebook(
     name: str,
     project_id: str,
@@ -482,12 +542,24 @@ def create_notebook(
     task_priority: Optional[int] = None,
     resource_spec_price: Optional[dict] = None,
     node_id: Optional[str] = None,
+    dataset_info: Optional[list[dict[str, str]]] = None,
+    enable_notification: Optional[bool] = None,
+    stop_hour: Optional[int] = None,
+    stop_minute: Optional[int] = None,
+    is_publicpath_readonly: Optional[bool] = None,
+    is_projectuserspath_readonly: Optional[bool] = None,
 ) -> dict:
     """Create a new notebook instance.
 
     The request body must match the exact structure the platform UI sends.
     Captured via Playwright network interception — the proto rejects unknown
     fields, so only send fields the backend expects.
+
+    Every optional argument stays out of the body unless the caller asks for
+    it: an omitted argument must leave the request byte-for-byte identical to
+    one built without it, so the platform keeps applying its own default. That
+    holds for the two read-only guards as well, even though read-only is the
+    safer value.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
@@ -531,6 +603,27 @@ def create_notebook(
     if node_id:
         body["node_id"] = node_id
 
+    # `dataset_info` entries carry the storage path `dataset.ValidateDataset`
+    # resolved, alongside the dataset and version codes; the container sees
+    # each mount at /inspire/dataset/<dataset>/<version>.
+    if dataset_info:
+        body["dataset_info"] = [dict(entry) for entry in dataset_info]
+
+    if enable_notification is not None:
+        body["enable_notification"] = bool(enable_notification)
+
+    # The platform reads the stop timer as hours + minutes and only honours it
+    # while `auto_stop` is on, so both halves are sent together.
+    if stop_hour is not None:
+        body["stop_hour"] = int(stop_hour)
+    if stop_minute is not None:
+        body["stop_minute"] = int(stop_minute)
+
+    if is_publicpath_readonly is not None:
+        body["is_publicpath_readonly"] = bool(is_publicpath_readonly)
+    if is_projectuserspath_readonly is not None:
+        body["is_projectuserspath_readonly"] = bool(is_projectuserspath_readonly)
+
     return _notebook_v2(session, "CreateNotebook", body)
 
 
@@ -540,9 +633,7 @@ def stop_notebook(
 ) -> dict:
     """Stop a running notebook instance.
 
-    v1 multiplexed start/stop through ``/notebook/operate`` with an
-    ``operation`` enum; v2 splits them into their own Actions and takes only
-    the id.
+    Action: ``StopNotebook``, which takes only the id.
     """
     session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
 
@@ -565,9 +656,7 @@ def delete_notebook(
 ) -> dict:
     """Permanently delete a notebook instance.
 
-    v1 needed the REST-style ``DELETE /api/v1/notebook/{id}`` because
-    ``/notebook/operate`` only accepted ``START`` / ``STOP``; v2 has a first
-    class ``DeleteNotebook`` Action, so the special case is gone.
+    Action: ``DeleteNotebook``.
 
     Destructive — the entry disappears from the platform UI and cannot be
     recovered. If the notebook is running, stop it first.
@@ -776,6 +865,270 @@ def list_notebook_lifecycle(
     return []
 
 
+# ---------------------------------------------------------------------------
+# Save-size estimate / save cancellation
+# ---------------------------------------------------------------------------
+
+# `EstimateSaveMirrorSize` refuses a notebook that is not RUNNING and says so in
+# the message. Matched on the stable fragment only: the full text ends with the
+# raw notebook handle, which must never reach a caller that prints errors.
+_NON_RUNNING_SAVE_MARKER = "non-running notebook"
+
+# `CancelSaveMirror` reports "no save is running" as a `Conflict` whose message
+# names the image *and* the raw notebook handle:
+#   Save image <name>:<version> of notebook <notebook_id> is already finished
+#   (status 2), nothing to cancel
+# Matched on the trailing fragment so the handle never has to be carried around
+# to be stripped later.
+_NOTHING_TO_CANCEL_MARKER = "nothing to cancel"
+
+
+@dataclass(frozen=True)
+class NotebookImageSizeEstimate:
+    """How much data ``notebook save-image`` would have to snapshot.
+
+    ``size_bytes`` is the platform's ``active_snapshot_size``, **in bytes**:
+    every notebook measured answers an exact multiple of 4096, and the values
+    (56 MiB … 688 MiB) only make sense as the byte size of the container's
+    writable layer. It is the delta over the base image, not the size of the
+    resulting image. The wire value is a decimal *string* even though discovery
+    declares ``int64``.
+
+    ``notebook_running`` is False only when the platform declined because the
+    notebook is not RUNNING — the one decline that is a fact about the notebook
+    rather than a failed call. Everything else raises, so a size of ``None``
+    can never be misread as "nothing to save".
+    """
+
+    size_bytes: Optional[int]
+    notebook_running: bool
+
+
+def save_notebook_as_image(
+    notebook_id: str,
+    name: str,
+    version: str = "v1",
+    description: str = "",
+    flatten: bool = False,
+    session: Optional[WebSession] = None,
+) -> dict[str, Any]:
+    """Save a running notebook's state as a custom Docker image.
+
+    Goes to ``notebook.SaveNotebookImage``. The Action refuses a ``visibility``
+    field with ``unknown field "visibility"`` — to control visibility, call
+    :func:`~inspire.platform.web.browser_api.images.update_image` after this
+    returns.
+
+    ``flatten`` squashes the result into a **single layer** instead of stacking
+    a new one on the base image's. It is a live field, not a declared-only one
+    — verified 2026-08-17 by saving one freshly created notebook twice and
+    reading both manifests out of the Harbor behind ``docker-qb.sii.edu.cn``:
+
+    ==================  ======  ==========  ==========
+    image               layers  size        save took
+    ==================  ======  ==========  ==========
+    base image           7      162.91 MB   —
+    ``flatten=False``    8      331.78 MB   33.4 s
+    ``flatten=True``     1      286.90 MB   55.5 s
+    ==================  ======  ==========  ==========
+
+    The layered save reproduces the base image's 7 layers digest-for-digest and
+    appends one; the flattened save merges everything and comes out **smaller**
+    (-13.5%), because content that a later layer overwrote or deleted stops
+    being carried. The extra 22 seconds land on the *image*, not the notebook:
+    both saves handed the container back at t≈33 s, so flattening does not
+    widen the window in which the notebook is unusable.
+
+    It is sent on every call, matching the console — the field is a required
+    switch on its save dialog, defaulting to off.
+
+    **Returns an empty dict, always.** The Action answers ``Result: null``; it
+    never hands back the new image's id, so callers have to find it by listing.
+
+    The produced image lands in the registry of the notebook's own workspace,
+    which is not necessarily the session default — see
+    :func:`estimate_notebook_image_size` and :func:`cancel_notebook_image_save`
+    for the other two halves of this flow.
+    """
+    session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
+
+    body: dict[str, Any] = {
+        "notebook_id": notebook_id,
+        "name": name,
+        "version": version,
+        "description": description,
+        "flatten": flatten,
+    }
+
+    return _notebook_v2(session, "SaveNotebookImage", body, timeout=60)
+
+
+def estimate_notebook_image_size(
+    notebook_id: str,
+    session: Optional[WebSession] = None,
+) -> NotebookImageSizeEstimate:
+    """Estimate what ``notebook.SaveNotebookImage`` would have to snapshot.
+
+    Read-only: this Action only measures, it never starts a save. It answers
+    ``ResourceNotFound: notebook not found`` for an unknown handle and
+    ``InvalidParameter: Cannot save image of non-running notebook`` for a
+    STOPPED one — the latter is the only error folded into a return value.
+    """
+    if not str(notebook_id or "").strip():
+        raise ValueError("estimate_notebook_image_size requires a notebook handle")
+
+    if session is None:
+        session = get_web_session()
+
+    try:
+        payload = _notebook_v2(
+            session, "EstimateSaveMirrorSize", {"notebook_id": notebook_id}, timeout=30
+        )
+    except TransientAPIError:
+        # A ValueError subclass, so it has to be re-raised before the branch below.
+        raise
+    except ValueError as exc:
+        if _NON_RUNNING_SAVE_MARKER in str(exc):
+            return NotebookImageSizeEstimate(size_bytes=None, notebook_running=False)
+        raise
+
+    raw = payload.get("active_snapshot_size")
+    try:
+        size = int(str(raw).strip())
+    except (TypeError, ValueError):
+        # The gateway emits unpopulated fields (a real zero arrives as "0"), so a
+        # missing or unparseable value means the platform did not answer in the
+        # shape we know — it must not read as "this notebook snapshots to 0".
+        raise ValueError(
+            "API error: EstimateSaveMirrorSize returned no active_snapshot_size"
+        ) from None
+    return NotebookImageSizeEstimate(size_bytes=size, notebook_running=True)
+
+
+def cancel_notebook_image_save(
+    notebook_id: str,
+    session: Optional[WebSession] = None,
+) -> bool:
+    """Abort the save ``SaveNotebookImage`` started and resume the container.
+
+    This is the other half of ``notebook save-image``: while a save runs the
+    notebook is paused and unusable, and until this Action there was no way
+    back. It really does interrupt the work — verified 2026-08-15 by cancelling
+    one save a second after it started and another 38 seconds in, past the
+    point where the platform had already reported ``Committed notebook …
+    awaiting push``. Both times the platform logged ``Cancelled saving notebook
+    … by user request, container resumed`` and the notebook went straight back
+    to RUNNING.
+
+    **The notebook handle alone selects the save.** Discovery declares the full
+    ``SaveNotebookImage`` parameter set here (``name`` / ``version`` /
+    ``description`` / ``accessible`` / ``support_brand_list`` / ``flatten``)
+    because the two Actions share one request message, but a notebook has at
+    most one save in flight and the extra fields are not consulted.
+
+    Returns True when a save was running and has been cancelled, False when the
+    platform answered that this notebook's last save had already finished.
+    Everything else raises, so "nothing was cancelled" can never stand in for a
+    call that failed.
+
+    **Cancelling does not undo the image row.** The half-built image stays in
+    the catalog as ``FAILED`` and has to be deleted separately; the notebook
+    itself keeps the state it had before the save.
+    """
+    if not str(notebook_id or "").strip():
+        raise ValueError("cancel_notebook_image_save requires a notebook handle")
+
+    if session is None:
+        session = get_web_session()
+
+    try:
+        _notebook_v2(
+            session, "CancelSaveMirror", {"notebook_id": notebook_id}, timeout=60
+        )
+    except TransientAPIError:
+        # A ValueError subclass, so it has to be re-raised before the branch below.
+        raise
+    except ValueError as exc:
+        if _NOTHING_TO_CANCEL_MARKER in str(exc):
+            return False
+        raise
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Realtime metrics
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NotebookResourceSnapshot:
+    """One resource row of a notebook's current utilization.
+
+    ``usage_rate`` is a 0–1 ratio, matching the ``*_usage_rate`` convention of
+    ``GetTaskMetric``. ``unit`` is whatever the platform labelled the row with:
+    ``"GB"`` for Memory, empty for CPU cores and GPU cards.
+    """
+
+    resource: str
+    total: float
+    used: float
+    available: float
+    usage_rate: float
+    unit: str
+
+
+def _coerce_metric_number(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_notebook_realtime_metrics(
+    notebook_id: str,
+    session: Optional[WebSession] = None,
+) -> list[NotebookResourceSnapshot]:
+    """Read a notebook's current CPU / Memory / GPU / GPU memory utilization.
+
+    ``GetRealtimeNotebookMetric`` is the instantaneous counterpart to
+    ``GetTaskMetric``: no time window, no interval, no compute-group handle,
+    and exactly four rows.
+
+    **The handle is mandatory.** Called with an empty ``notebook_id`` the
+    gateway happily answers with *cluster-wide* totals, which would silently
+    read as one notebook holding thousands of GPUs, so an empty handle is
+    rejected here rather than sent.
+
+    A STOPPED notebook is not an error: every row comes back zeroed. Callers
+    that show these numbers have to state the notebook's status themselves —
+    an all-zero snapshot looks identical to a RUNNING but idle notebook.
+    """
+    if not str(notebook_id or "").strip():
+        raise ValueError("get_notebook_realtime_metrics requires a notebook handle")
+
+    if session is None:
+        session = get_web_session()
+
+    payload = _notebook_v2(
+        session, "GetRealtimeNotebookMetric", {"notebook_id": notebook_id}, timeout=30
+    )
+    rows = payload.get("resource_metric_list")
+    if not isinstance(rows, list):
+        return []
+    return [
+        NotebookResourceSnapshot(
+            resource=str(row.get("resource_name") or ""),
+            total=_coerce_metric_number(row.get("total")),
+            used=_coerce_metric_number(row.get("used")),
+            available=_coerce_metric_number(row.get("available")),
+            usage_rate=_coerce_metric_number(row.get("usage_rate")),
+            unit=str(row.get("unit") or ""),
+        )
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
 def wait_for_notebook_running(
     notebook_id: str,
     session: Optional[WebSession] = None,
@@ -792,10 +1145,14 @@ def wait_for_notebook_running(
     last_status = None
     last_progress_at = 0.0
     last_reported_status = None
+    # The handle cannot go in the timeout message: the CLI scrubs raw ids out
+    # of anything user-facing, so interpolating it produced "Notebook ''".
+    notebook_label = ""
 
     while True:
         notebook = get_notebook_detail(notebook_id=notebook_id, session=session)
         status = (notebook.get("status") or "").upper()
+        notebook_label = str(notebook.get("name") or "").strip() or notebook_label
         if status:
             last_status = status
 
@@ -816,8 +1173,9 @@ def wait_for_notebook_running(
             last_progress_at = now
 
         if now - start >= timeout:
+            subject = f"Notebook '{notebook_label}'" if notebook_label else "The notebook"
             raise TimeoutError(
-                f"Notebook '{notebook_id}' did not reach RUNNING within {timeout}s "
+                f"{subject} did not reach RUNNING within {timeout}s "
                 f"(last status: {last_status or 'unknown'})"
             )
 
@@ -827,8 +1185,13 @@ def wait_for_notebook_running(
 __all__ = [
     "ImageInfo",
     "NotebookFailedError",
+    "NotebookImageSizeEstimate",
+    "NotebookResourceSnapshot",
+    "cancel_notebook_image_save",
     "create_notebook",
+    "estimate_notebook_image_size",
     "get_notebook_detail",
+    "get_notebook_realtime_metrics",
     "get_resource_prices",
     "list_images",
     "list_notebook_compute_groups",
@@ -837,6 +1200,8 @@ __all__ = [
     "list_notebook_runs",
     "list_notebook_users",
     "list_notebooks",
+    "save_notebook_as_image",
+    "notebook_name_exists",
     "start_notebook",
     "stop_notebook",
     "wait_for_notebook_running",

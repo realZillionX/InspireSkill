@@ -505,6 +505,7 @@ def test_update_runs_global_runtime_setup_after_cli_upgrade(
         silent=True,
         cli_only=False,
         skill_only=False,
+        assume_yes=False,
     )
 
     assert calls == ["cli:4.1.1", "skills", "audit", "runtime"]
@@ -542,6 +543,7 @@ def test_update_delegates_post_upgrade_work_to_new_executable(
         silent=True,
         cli_only=False,
         skill_only=False,
+        assume_yes=False,
     )
 
     assert calls == ["cli:5.2.3", "post:5.2.3"]
@@ -612,6 +614,7 @@ def test_update_reports_progress_refreshed_harnesses_and_release_notes(
         silent=False,
         cli_only=False,
         skill_only=False,
+        assume_yes=False,
     )
 
     assert capsys.readouterr().out.splitlines() == [
@@ -639,6 +642,7 @@ def test_update_cli_only_does_not_claim_a_skill_refresh(
         silent=False,
         cli_only=True,
         skill_only=False,
+        assume_yes=False,
     )
 
     output = capsys.readouterr().out
@@ -658,6 +662,7 @@ def test_update_skill_only_reports_harnesses_without_release_notes(
         silent=False,
         cli_only=False,
         skill_only=True,
+        assume_yes=False,
     )
 
     output = capsys.readouterr().out
@@ -686,6 +691,7 @@ def test_update_reports_release_notes_after_the_self_upgrade_handoff(
         silent=False,
         cli_only=False,
         skill_only=False,
+        assume_yes=False,
     )
 
     assert capsys.readouterr().out.splitlines() == [
@@ -866,6 +872,7 @@ def test_update_failure_output_is_one_compact_actionable_hint(
             silent=False,
             cli_only=False,
             skill_only=False,
+            assume_yes=False,
         )
 
     captured = capsys.readouterr()
@@ -896,6 +903,7 @@ def test_update_silent_mode_is_fully_quiet(
         silent=True,
         cli_only=False,
         skill_only=False,
+        assume_yes=False,
     )
 
     captured = capsys.readouterr()

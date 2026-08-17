@@ -29,6 +29,7 @@ from inspire.cli.utils.resource_index import (
     DEFAULT_TTL_SECONDS,
     ResourceIndex,
     ResourceIndexDatabaseError,
+    ScopeStatus,
 )
 from inspire.cli.utils.resource_index_refresh import (
     RESOURCE_TYPES,
@@ -101,12 +102,31 @@ def _public_error(value: object) -> str:
 
 
 def _reports_nothing(row: dict[str, object]) -> bool:
-    """Whether a status row carries neither names nor a problem worth reading."""
+    """Whether a status row carries neither names nor a problem worth reading.
+
+    Only a scope nothing has ever touched is noise. A scope that *was*
+    refreshed and still holds nothing is the opposite of noise -- see the
+    ``empty`` branch in :func:`_scope_state` for what it once cost.
+    """
     return (
         not row.get("cached_names")
         and not row.get("errors")
         and row.get("state") == "empty"
+        and row.get("updated") == "never"
     )
+
+
+def _touched_at(status: ScopeStatus) -> float:
+    """When this scope last learned anything, complete scan or not.
+
+    Workload names are kept warm by an incremental background pass that reads
+    the newest end of each list and merges, so their scopes stay short of a
+    full scan by design. Reporting them off ``last_full_refresh_at`` alone
+    printed a scope refreshed a minute ago as ``never``.
+    """
+    if status.last_full_refresh_at > 0:
+        return status.last_full_refresh_at
+    return status.last_refresh_at
 
 
 def _status_payload(
@@ -128,7 +148,7 @@ def _status_payload(
         row: dict[str, object] = {
             "resource": status.resource_type,
             "cached_names": status.active_count,
-            "updated": _age(status.last_full_refresh_at, now=now),
+            "updated": _age(_touched_at(status), now=now),
         }
         workspace_name = names.get(status.workspace_id, "")
         if workspace_name:
@@ -160,18 +180,31 @@ def _status_payload(
             key=lambda value: state_rank.get(value, 1),
         )
         refresh_times = [
-            status.last_full_refresh_at
+            touched
             for status in statuses
-            if status.resource_type == resource and status.last_full_refresh_at > 0
+            if status.resource_type == resource
+            and (touched := _touched_at(status)) > 0
         ]
         item_counts = [
             value
             for row in rows
             if isinstance((value := row.get("cached_names")), int)
         ]
+        cached_names = sum(item_counts)
+        if state == "ready" and not cached_names:
+            # Refreshed, in date, and holding nothing anywhere. `ready` read as
+            # the healthiest state there is, which is how a quota catalog that
+            # answered nothing for every compute group -- and so refused every
+            # `--quota` the platform would have taken -- sat in plain sight.
+            #
+            # Per workspace this would be normal (a workspace really can have
+            # no notebooks), so the verdict is only drawn across the whole
+            # resource: nothing cached anywhere, after a refresh that claimed
+            # to have run.
+            state = "empty"
         summary: dict[str, object] = {
             "resource": resource,
-            "cached_names": sum(item_counts),
+            "cached_names": cached_names,
             "state": state,
             "updated": _age(min(refresh_times), now=now) if refresh_times else "never",
         }
@@ -230,9 +263,12 @@ def _refresh_payload(
         "fresh": sum(result.outcome == "fresh" for result in results),
         "stale": sum(result.outcome == "stale" for result in results),
         "busy": sum(result.outcome == "busy" for result in results),
+        "partial": sum(result.outcome == "partial" for result in results),
         "errors": sum(result.outcome == "error" for result in results),
         "names_cached": sum(
-            result.item_count for result in results if result.outcome == "refreshed"
+            result.item_count
+            for result in results
+            if result.outcome in {"refreshed", "partial"}
         ),
     }
     failures = [
@@ -246,6 +282,20 @@ def _refresh_payload(
     ]
     if failures:
         payload["failures"] = failures
+    # A partial scope is not a failure -- the rows it did read are cached and
+    # the ones it could not read are still the previously cached ones -- but it
+    # is not the whole catalog either, and silence would read as "complete".
+    incomplete = [
+        {
+            **({"workspace": scrub_raw_ids(result.workspace_name)} if result.workspace_name else {}),
+            "resource": result.resource_type,
+            "reason": _public_error(result.error),
+        }
+        for result in results
+        if result.outcome == "partial"
+    ]
+    if incomplete:
+        payload["incomplete"] = incomplete
     return payload
 
 
@@ -290,12 +340,40 @@ def refresh_cache(
     quiet: bool,
     account: str | None,
 ) -> None:
-    """Refresh cached name mappings."""
+    """Refresh one named slice of the cache.
+
+    Say what to refresh. Every kind in every workspace is a few hundred
+    requests and reads catalogs that only move when an admin edits them, so
+    there is no bare form of this command — and normally nothing to run at
+    all, because workload names are kept warm in the background.
+
+    Reach for it when you know something changed under the cache: an admin
+    edited a compute group's specs, or an image was deleted from the web UI.
+
+    \b
+    Examples:
+        inspire cache refresh --resource notebook --workspace 分布式训练空间
+        inspire cache refresh --resource quota-job --workspace CPU资源空间 --full
+        inspire cache refresh --resource image --name pytorch:2.1
+    """
     account = (
         str(account or "").strip()
         or os.environ.get("INSPIRE_RESOURCE_INDEX_REFRESH_ACCOUNT", "").strip()
         or None
     )
+    if not due and not (resources or workspaces or name):
+        exit_with_error(
+            ctx,
+            "ValidationError",
+            "Say which part of the cache to refresh.",
+            EXIT_VALIDATION_ERROR,
+            hint=(
+                "Narrow it with --resource <kind> and/or --workspace <name>, "
+                "e.g. `inspire cache refresh --resource notebook --workspace "
+                "<name>`. Run `inspire cache status` first to see which scope "
+                "is actually stale."
+            ),
+        )
     selected = tuple(resource.lower() for resource in resources) or RESOURCE_TYPES
     exact_name = str(name or "").strip()
     validated_workspaces = tuple(
@@ -303,7 +381,7 @@ def refresh_cache(
             ctx,
             workspace,
             resource_type="workspace",
-            list_command="inspire config context",
+            list_command="inspire account context",
         )
         for workspace in workspaces
     )
@@ -333,6 +411,11 @@ def refresh_cache(
             workspace_names=validated_workspaces or None,
             exact_name=exact_name,
             force=force,
+            # Only the background pass reads incrementally. Anyone who typed
+            # this command asked for a complete scan of what they named, which
+            # is also the only thing that can drop a workload the platform no
+            # longer lists.
+            incremental=due,
         )
     except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
         _exit_cache_database_error(ctx)
@@ -367,18 +450,20 @@ def refresh_cache(
             ("fresh", "fresh"),
             ("stale", "superseded"),
             ("busy", "busy"),
+            ("partial", "incomplete"),
             ("errors", "errors"),
         ):
             if payload[key]:
                 parts.append(f"{payload[key]} {label}")
         click.echo(", ".join(parts) + ".")
         for result in summary.results:
-            if result.outcome != "error":
+            if result.outcome not in {"error", "partial"}:
                 continue
             label = result.resource_type
             if result.workspace_name:
                 label += f" @ {scrub_raw_ids(result.workspace_name)}"
-            click.echo(f"Error: {label}: {_public_error(result.error)}", err=True)
+            prefix = "Error" if result.outcome == "error" else "Incomplete"
+            click.echo(f"{prefix}: {label}: {_public_error(result.error)}", err=True)
 
     if summary.error_count:
         raise SystemExit(EXIT_API_ERROR)

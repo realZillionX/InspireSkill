@@ -28,7 +28,7 @@ from inspire.cli.commands import (
     cache,
     job,
     resources,
-    config,
+    dataset,
     notebook,
     init,
     image,
@@ -37,6 +37,7 @@ from inspire.cli.commands import (
     model,
     ray,
     serving,
+    tensorboard,
     uninstall,
     update,
 )
@@ -120,7 +121,7 @@ def main(
 
     \b
     Normal workflow:
-        1. `inspire config context` lists usable resource names.
+        1. `inspire account context` lists usable resource names.
         2. `inspire <kind> quota --workspace <name|all>` lists valid quotas.
         3. `inspire <kind> create ...` creates a workload.
         4. `status`, `events`, `logs`, and `metrics` inspect it.
@@ -132,7 +133,7 @@ def main(
     \b
     Examples:
         inspire job create --name "pr-123" --workspace 分布式训练空间 \
-          --project CI-情境智能 --group H200-2号机房 --quota "4,80,800" \
+          --project <project> --group H200-2号机房 --quota "4,80,800" \
           --command "bash train.sh"
         inspire job status pr-123 --workspace 分布式训练空间
         inspire notebook list --workspace 分布式训练空间
@@ -151,8 +152,9 @@ def main(
     else:
         clear_debug_logging()
 
-    # Keep the background update check detached and silent. An interactive
-    # notice is opt-in and is never allowed to contaminate JSON output.
+    # Keep the background update check detached and silent. The upgrade notice
+    # itself fires for everyone (stderr only) but is never allowed to
+    # contaminate JSON output.
     # `uninstall` is excluded for a different reason than `update`: the check
     # writes ~/.inspire/update-status.json, which the uninstall is on its way
     # to delete, and a detached child would outlive the venv it runs from.
@@ -231,7 +233,7 @@ main.add_command(account)
 main.add_command(cache)
 main.add_command(job)
 main.add_command(resources)
-main.add_command(config)
+main.add_command(dataset)
 main.add_command(notebook)
 main.add_command(init)
 main.add_command(image)
@@ -240,6 +242,7 @@ main.add_command(hpc)
 main.add_command(model)
 main.add_command(ray)
 main.add_command(serving)
+main.add_command(tensorboard)
 main.add_command(uninstall)
 main.add_command(update)
 main.add_command(ensure_playwright_runtime)

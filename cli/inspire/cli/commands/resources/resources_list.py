@@ -26,7 +26,7 @@ from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
-from inspire.config.workspaces import resolve_workspace_query_scope
+from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
@@ -40,15 +40,15 @@ def _resolve_workspace_scope(
     config: Optional[Config],
     session,
     workspace: Optional[str],
-) -> tuple[list[str], dict[str, str], bool]:
+) -> tuple[str, dict[str, str]]:
     workspace_names = dict(session.all_workspace_names or {})
     if config is None:
         raise ConfigError("Workspace selection requires a loaded config.")
-    workspace_ids, all_workspaces = resolve_workspace_query_scope(
+    workspace_id = resolve_workspace_operation_scope(
         workspace=workspace,
         session=session,
     )
-    return workspace_ids, workspace_names, all_workspaces
+    return workspace_id, workspace_names
 
 
 def _format_metric(value: float | int) -> str:
@@ -105,133 +105,49 @@ def _public_availability_row(availability) -> dict[str, object]:  # noqa: ANN001
 def _format_accurate_availability_table(availability, *, include_cpu: bool) -> None:
     gpu_rows = [a for a in availability if getattr(a, "resource_kind", "gpu") == "gpu"]
     cpu_rows = [a for a in availability if getattr(a, "resource_kind", "gpu") == "cpu"]
-    workspace_names = {
-        _display_name(getattr(a, "workspace_name", ""), fallback="")
-        for a in availability
-    }
-    show_workspace = len(workspace_names - {""}) > 1
 
     sections: list[str] = []
 
     if gpu_rows:
-        gpu_widths = [16, 25, 18, 10, 12, 8, 8, 10] if show_workspace else [
-            25,
-            18,
-            10,
-            12,
-            8,
-            8,
-            10,
-        ]
-        gpu_headers = (
+        gpu_table_rows = [
             (
-                "Workspace",
-                "Compute Group",
-                "GPU",
-                "Available",
-                "Reclaimable",
-                "Used",
-                "Total",
-                "Free Nodes",
+                _display_name(row.group_name),
+                _display_name(row.gpu_type),
+                row.available_gpus,
+                row.high_priority_available_gpus,
+                row.used_gpus,
+                row.total_gpus,
+                row.free_nodes,
             )
-            if show_workspace
-            else (
-                "Compute Group",
-                "GPU",
-                "Available",
-                "Reclaimable",
-                "Used",
-                "Total",
-                "Free Nodes",
+            for row in sorted(
+                gpu_rows,
+                key=lambda x: (x.available_gpus, x.high_priority_available_gpus),
+                reverse=True,
             )
-        )
-        gpu_aligns = (
-            ["left", "left", "left", "right", "right", "right", "right", "right"]
-            if show_workspace
-            else ["left", "left", "right", "right", "right", "right", "right"]
-        )
-        gpu_table_rows: list[tuple[object, ...]] = []
-
-        sorted_gpu_rows = sorted(
-            gpu_rows,
-            key=lambda x: (x.available_gpus, x.high_priority_available_gpus),
-            reverse=True,
-        )
-        for row in sorted_gpu_rows:
-            if show_workspace:
-                gpu_table_rows.append(
-                    (
-                        _display_name(row.workspace_name, fallback=""),
-                        _display_name(row.group_name),
-                        _display_name(row.gpu_type),
-                        row.available_gpus,
-                        row.high_priority_available_gpus,
-                        row.used_gpus,
-                        row.total_gpus,
-                        row.free_nodes,
-                    )
-                )
-            else:
-                gpu_table_rows.append(
-                    (
-                        _display_name(row.group_name),
-                        _display_name(row.gpu_type),
-                        row.available_gpus,
-                        row.high_priority_available_gpus,
-                        row.used_gpus,
-                        row.total_gpus,
-                        row.free_nodes,
-                    )
-                )
+        ]
         sections.append(
             "\n".join(
                 render_table(
-                    gpu_headers,
+                    (
+                        "Compute Group",
+                        "GPU",
+                        "Available",
+                        "Reclaimable",
+                        "Used",
+                        "Total",
+                        "Free Nodes",
+                    ),
                     gpu_table_rows,
-                    gpu_widths,
-                    aligns=gpu_aligns,
+                    [25, 18, 10, 12, 8, 8, 10],
+                    aligns=["left", "left", "right", "right", "right", "right", "right"],
                     line_char="─",
                 )
             )
         )
 
     if include_cpu and cpu_rows:
-        cpu_widths = (
-            [16, 25, 12, 10, 10, 14, 12, 12]
-            if show_workspace
-            else [25, 12, 10, 10, 14, 12, 12]
-        )
-        cpu_headers = (
+        cpu_table_rows = [
             (
-                "Workspace",
-                "Compute Group",
-                "CPU Available",
-                "CPU Used",
-                "CPU Total",
-                "Memory Available",
-                "Memory Used",
-                "Memory Total",
-            )
-            if show_workspace
-            else (
-                "Compute Group",
-                "CPU Available",
-                "CPU Used",
-                "CPU Total",
-                "Memory Available",
-                "Memory Used",
-                "Memory Total",
-            )
-        )
-        cpu_aligns = (
-            ["left", "left", "right", "right", "right", "right", "right", "right"]
-            if show_workspace
-            else ["left", "right", "right", "right", "right", "right", "right"]
-        )
-        cpu_table_rows: list[tuple[object, ...]] = []
-
-        for row in sorted(cpu_rows, key=lambda item: item.cpu_available, reverse=True):
-            values = (
                 _display_name(row.group_name),
                 _format_metric(row.cpu_available),
                 _format_metric(row.cpu_used),
@@ -240,19 +156,23 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
                 f"{_format_metric(row.memory_used_gib)} GiB",
                 f"{_format_metric(row.memory_total_gib)} GiB",
             )
-            if show_workspace:
-                cpu_table_rows.append(
-                    (_display_name(row.workspace_name, fallback=""), *values)
-                )
-            else:
-                cpu_table_rows.append(values)
+            for row in sorted(cpu_rows, key=lambda item: item.cpu_available, reverse=True)
+        ]
         sections.append(
             "\n".join(
                 render_table(
-                    cpu_headers,
+                    (
+                        "Compute Group",
+                        "CPU Available",
+                        "CPU Used",
+                        "CPU Total",
+                        "Memory Available",
+                        "Memory Used",
+                        "Memory Total",
+                    ),
                     cpu_table_rows,
-                    cpu_widths,
-                    aligns=cpu_aligns,
+                    [25, 12, 10, 10, 14, 12, 12],
+                    aligns=["left", "right", "right", "right", "right", "right", "right"],
                     line_char="─",
                 )
             )
@@ -280,18 +200,16 @@ def _list_accurate_resources(
             config = None
 
         session = get_web_session()
-        workspace_ids, workspace_names, explicit_workspace_selected = _resolve_workspace_scope(
+        workspace_id, workspace_names = _resolve_workspace_scope(
             config=config,
             session=session,
             workspace=workspace,
         )
-        target_workspace_id = workspace_ids[0] if not explicit_workspace_selected else None
 
         availability = browser_api_module.get_accurate_resource_availability(
-            workspace_id=target_workspace_id,
+            workspace_id=workspace_id,
             session=session,
             include_cpu=include_cpu,
-            all_workspaces=explicit_workspace_selected,
         )
 
         group_filter = (group or "").strip().lower()
@@ -364,8 +282,8 @@ def run_resources_list(
 @click.option(
     "--workspace",
     required=True,
-    metavar="NAME|all",
-    help="Workspace name or 'all'.",
+    metavar="NAME",
+    help="Workspace name.",
 )
 @click.option(
     "--group",

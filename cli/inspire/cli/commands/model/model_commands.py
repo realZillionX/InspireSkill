@@ -26,7 +26,10 @@ from inspire.cli.utils.collection_output import (
     resolve_collection_limit,
     truncation_notice,
 )
-from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.utils.errors import (
+    exit_with_error as _handle_error,
+    require_confirmation,
+)
 from inspire.cli.utils.id_resolver import (
     NAME_PICK_HELP,
     forget_resource_identity,
@@ -92,6 +95,67 @@ def _status_label(value: Any) -> str:
     else:
         raw = str(value).strip()
     return mapping.get(raw, raw or "-")
+
+
+# `model-hub` reports a serving's state as an int indexing the serving status
+# enum, while the `inference_serving` domain reports the same states as the
+# strings below. Index 4 is pinned by measurement, not by reading the enum:
+# across every model version that has servings, the count of status-4 entries
+# equals the version record's own `running_infrence_serving` (11/11).
+_SERVING_STATUS_LABELS = (
+    "PENDING",
+    "PRE_DEPLOYING",
+    "DEPLOYING",
+    "FAILED",
+    "RUNNING",
+    "SLEEPING",
+    "STOPPING",
+    "STOPPED",
+    "QUOTA_PENDING",
+)
+# A failed serving no longer holds the model version: it is not running, and
+# starting it is not an option. Everything else is a live consumer -- `STOPPED`
+# and `SLEEPING` servings can be started again, so they still break if the
+# model goes away.
+_RELEASED_SERVING_STATUSES = frozenset({"FAILED"})
+# One page covers every model version observed on the platform, and the Action
+# rejects `page_size: -1`, so "everything" has to be a real number.
+_SERVING_PAGE_SIZE = 100
+
+
+def _serving_status_label(value: Any) -> str:
+    if isinstance(value, bool) or value is None or value == "":
+        return ""
+    try:
+        index = int(str(value).strip())
+    except (TypeError, ValueError):
+        return scrub_raw_ids(value).strip()
+    if 0 <= index < len(_SERVING_STATUS_LABELS):
+        return _SERVING_STATUS_LABELS[index]
+    return str(index)
+
+
+def _serving_views(items: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Project related servings down to what identifies and qualifies them.
+
+    The platform hands back `serving_id` and `user_avatar` alongside the name;
+    neither reaches public output. The item's own `version` is dropped too --
+    it is the serving's revision, not the model version that was asked about,
+    and printing it beside a model version would read as the same number.
+    """
+    views: list[dict[str, str]] = []
+    for item in items:
+        name = scrub_raw_ids(item.get("name") or "").strip()
+        if not name:
+            continue
+        status = _serving_status_label(item.get("status"))
+        if status in _RELEASED_SERVING_STATUSES:
+            continue
+        view = {"name": name}
+        if status:
+            view["status"] = status
+        views.append(view)
+    return views
 
 
 def _format_size_gi(value: Any) -> str:
@@ -258,10 +322,107 @@ def _latest_version(data: Any) -> dict[str, Any]:
     return _version_inner(latest)
 
 
+def _version_number(value: Any) -> Optional[int]:
+    text = str(value or "").strip()
+    if text[:1].casefold() == "v":
+        text = text[1:]
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _reported_version(data: dict[str, Any], version_data: dict[str, Any]) -> Optional[int]:
+    """The version number `model status` reports on, as an int."""
+    model_payload = data.get("model")
+    inner: dict[str, Any] = model_payload if isinstance(model_payload, dict) else data
+    latest = _latest_version(version_data)
+    return _version_number(latest.get("version") or inner.get("version"))
+
+
+def _running_serving_count(item: dict[str, Any]) -> int:
+    try:
+        return int(str(item.get("running_infrence_serving") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _other_versions_in_use(
+    version_data: dict[str, Any], *, reported: Optional[int]
+) -> list[str]:
+    """Versions other than the reported one that still carry running servings.
+
+    Free -- the count is already on each version record `model status` fetched.
+    It matters because the serving list below only covers one version: deleting
+    the model takes every version's deployments with it.
+    """
+    labels: list[str] = []
+    for item in _version_items(version_data):
+        inner = _version_inner(item)
+        version = _version_number(inner.get("version") or inner.get("model_version"))
+        if version is None or version == reported:
+            continue
+        if _running_serving_count(item) <= 0:
+            continue
+        labels.append(_version_label(version))
+    return labels
+
+
+def _model_references(
+    model_id: str,
+    version_data: dict[str, Any],
+    *,
+    session,  # noqa: ANN001
+    workspace_id: Optional[str],
+) -> list[str]:
+    """Name every deployment that would break if this model went away.
+
+    Deletion is not version-scoped, so this asks per version instead of only
+    about the one `model status` reports on. The `running_infrence_serving`
+    count already on each version record is not enough on its own either: it
+    counts running deployments, while a stopped or sleeping serving can be
+    started again and therefore still holds the version. Failed servings are
+    dropped by `_serving_views` -- they hold nothing.
+    """
+    references: list[str] = []
+    for item in _version_items(version_data):
+        inner = _version_inner(item)
+        version = _version_number(inner.get("version") or inner.get("model_version"))
+        if version is None:
+            continue
+        servings, _total = browser_api_module.list_model_inference_servings(
+            model_id=model_id,
+            version=version,
+            page=1,
+            page_size=_SERVING_PAGE_SIZE,
+            session=session,
+            workspace_id=workspace_id,
+        )
+        label = _version_label(version)
+        for serving in _serving_views(servings):
+            status = serving.get("status")
+            suffix = f" ({status})" if status else ""
+            references.append(f"{label} {serving['name']}{suffix}")
+    return references
+
+
+def _in_use_message(name: str, references: list[str], *, pending: bool) -> str:
+    """One line naming what still holds the model, within the output budget."""
+    page = bound_collection(references, limit=DEFAULT_COLLECTION_LIMIT)
+    parts = list(page.items)
+    if page.truncated:
+        parts.append(f"and {page.total - page.shown} more")
+    if pending:
+        parts.append("a deployment is queued on this model")
+    return f"Model {scrub_raw_ids(name)} is still in use: {'; '.join(parts)}."
+
+
 def _model_detail_view(
     name: str,
     data: dict[str, Any],
     version_data: dict[str, Any],
+    *,
+    vllm_compatibility: Optional[dict[int, bool]] = None,
 ) -> dict[str, Any]:
     model_payload = data.get("model")
     inner: dict[str, Any] = model_payload if isinstance(model_payload, dict) else data
@@ -276,9 +437,6 @@ def _model_detail_view(
         "description": scrub_raw_ids(inner.get("description") or ""),
         "type": _string_values(inner.get("model_type")),
         "tags": _string_values(inner.get("tags")),
-        "vllm_ready": bool(
-            latest.get("is_vllm_compatible", inner.get("is_vllm_compatible"))
-        ),
         "published": bool(inner.get("has_published")),
         "project": scrub_raw_ids(data.get("project_name") or ""),
         "owner": _explicit_identity_name(data, inner),
@@ -289,6 +447,10 @@ def _model_detail_view(
             format_epoch(inner.get("updated_at")) if inner.get("updated_at") else ""
         ),
     }
+    compatibility = vllm_compatibility or {}
+    version_number = _version_number(version)
+    if version_number is not None and version_number in compatibility:
+        view["vllm_ready"] = compatibility[version_number]
     return {
         key: value
         for key, value in view.items()
@@ -296,7 +458,12 @@ def _model_detail_view(
     }
 
 
-def _model_version_views(data: dict[str, Any]) -> list[dict[str, Any]]:
+def _model_version_views(
+    data: dict[str, Any],
+    *,
+    vllm_compatibility: Optional[dict[int, bool]] = None,
+) -> list[dict[str, Any]]:
+    compatibility = vllm_compatibility or {}
     views: list[dict[str, Any]] = []
     for item in _version_items(data):
         inner = _version_inner(item)
@@ -309,8 +476,10 @@ def _model_version_views(data: dict[str, Any]) -> list[dict[str, Any]]:
                 or inner.get("model_size_gb")
                 or inner.get("size")
             ),
-            "vllm_ready": bool(inner.get("is_vllm_compatible")),
         }
+        version_number = _version_number(version)
+        if version_number is not None and version_number in compatibility:
+            view["vllm_ready"] = compatibility[version_number]
         running = item.get("running_infrence_serving")
         if running not in (None, ""):
             view["running_servings"] = running
@@ -338,6 +507,8 @@ def _format_model_detail(view: dict[str, Any]) -> str:
         ("Owner", "owner"),
         ("Created", "created_at"),
         ("Updated", "updated_at"),
+        ("Pending deployment", "pending_serving"),
+        ("Other versions in use", "other_versions_in_use"),
     )
     lines: list[str] = []
     for label, key in labels:
@@ -349,6 +520,15 @@ def _format_model_detail(view: dict[str, Any]) -> str:
         elif isinstance(value, bool):
             value = "yes" if value else "no"
         lines.append(f"{label}: {value}")
+    if "servings" in view:
+        servings = view["servings"]
+        version = view.get("version") or "this version"
+        if not servings:
+            lines.append(f"Servings on {version}: none")
+        for serving in servings:
+            status = serving.get("status")
+            suffix = f" ({status})" if status else ""
+            lines.append(f"Serving on {version}: {serving['name']}{suffix}")
     return "\n".join(lines)
 
 
@@ -360,7 +540,9 @@ def _format_model_versions(versions: list[dict[str, Any]]) -> str:
             str(version.get("version") or ""),
             str(version.get("status") or ""),
             str(version.get("size") or ""),
-            "yes" if version.get("vllm_ready") else "no",
+            ("yes" if version["vllm_ready"] else "no")
+            if "vllm_ready" in version
+            else "-",
             str(version.get("running_servings") or ""),
         )
         for version in versions
@@ -615,8 +797,18 @@ def status_model(
 ) -> None:
     """Show detail of one registered model by name.
 
+    \b
     Includes latest version status, tags, model type, vLLM readiness,
     publication flag, owner, project, and timestamps when present.
+
+    \b
+    Read the deployment lines before deleting a model or repointing a serving:
+    `Serving on Vn` names the servings that still hold that version (failed ones
+    are left out -- they hold nothing), `Pending deployment` covers the whole
+    model and catches a deployment that is queued but not yet running, and
+    `Other versions in use` flags versions this view does not detail. None of
+    the three shows up in `model versions`, whose Servings column counts
+    running deployments on each version and nothing else.
     """
     name = reject_id_at_boundary(
         ctx,
@@ -684,12 +876,205 @@ def status_model(
             owner_scope="self",
         )
 
-        view = _model_detail_view(name, data, version_data)
+        compatibility = browser_api_module.get_model_vllm_compatibility(
+            model_id,
+            session=session,
+            workspace_id=workspace_id,
+        )
+        view = _model_detail_view(
+            name,
+            data,
+            version_data,
+            vllm_compatibility=compatibility,
+        )
+        # Whole-model question, so no version goes in: the platform reads a
+        # missing version as "any". It is the only signal that catches a
+        # deployment queued behind a busy quota.
+        pending = browser_api_module.check_model_inference_serving_pending(
+            model_id=model_id,
+            session=session,
+            workspace_id=workspace_id,
+        )
+        view["pending_serving"] = pending.get("has_pending_serving") is True
+        reported_version = _reported_version(data, version_data)
+        if reported_version is not None:
+            servings, _total = browser_api_module.list_model_inference_servings(
+                model_id=model_id,
+                version=reported_version,
+                page=1,
+                page_size=_SERVING_PAGE_SIZE,
+                session=session,
+                workspace_id=workspace_id,
+            )
+            page = bound_collection(
+                _serving_views(servings), limit=DEFAULT_COLLECTION_LIMIT
+            )
+            view["servings"] = page.items
+            view.update(
+                {f"servings_{key}": value for key, value in page.metadata().items()}
+            )
+        in_use = _other_versions_in_use(version_data, reported=reported_version)
+        if in_use:
+            view["other_versions_in_use"] = in_use
+
         if ctx.json_output:
             click.echo(json_formatter.format_json(view))
             return
 
         click.echo(_format_model_detail(view))
+
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
+
+
+@click.command("deploy-config")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--project", default=None, metavar="NAME", help="Project name filter")
+@click.option(
+    "--version",
+    "version",
+    type=click.IntRange(1),
+    default=None,
+    help="Model version (default: the latest version from the model list).",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def deploy_config_model(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    project: Optional[str],
+    version: Optional[int],
+    pick: Optional[int],
+) -> None:
+    """Show the minimum resources a model version needs to be deployed.
+
+    \b
+    Read this before `serving create`: the platform reports the smallest node
+    shape that will hold the weights, which is exactly the floor for
+    `--quota gpu,cpu,mem` and `--nodes-per-replica`. A `serving quota` triple
+    below this floor is what an out-of-memory deployment looks like before it
+    starts. vLLM compatibility is reported alongside because it decides
+    whether a vLLM startup command is an option at all.
+
+    \b
+    Examples:
+        inspire model deploy-config qwen-demo --workspace 分布式训练空间
+        inspire --json model deploy-config qwen-demo --workspace 分布式训练空间 --version 2
+    """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="model",
+        list_command="inspire model list --workspace <workspace>",
+    )
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace, session=session)
+        project_id = _resolve_project_id(
+            config, project, workspace_id=workspace_id, session=session
+        )
+        user_id = _current_user_id(session)
+
+        items, _total = browser_api_module.list_models(
+            workspace_id=workspace_id,
+            page=1,
+            page_size=100,
+            keyword=name,
+            project_ids=[project_id] if project_id else None,
+            user_id=user_id,
+            session=session,
+        )
+        model_id = _resolve_model_name(
+            ctx,
+            name,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            user_id=user_id,
+            pick=pick,
+            session=session,
+            require_live=True,
+        )
+        resolved_version = version
+        if resolved_version is None:
+            for item in items:
+                if item.model_id == model_id and item.latest_version:
+                    try:
+                        resolved_version = int(item.latest_version)
+                    except ValueError:
+                        resolved_version = None
+                    break
+        if resolved_version is None:
+            raise ConfigError(
+                "Could not infer the model version. Pass --version explicitly."
+            )
+
+        recommended = browser_api_module.get_model_recommended_config(
+            model_id,
+            version=resolved_version,
+            session=session,
+            workspace_id=workspace_id,
+        )
+        vllm_compatible = browser_api_module.check_model_vllm_compatible(
+            model_id,
+            version=resolved_version,
+            session=session,
+            workspace_id=workspace_id,
+        )
+
+        def _count(key: str) -> Optional[int]:
+            raw = recommended.get(key)
+            if raw in (None, ""):
+                return None
+            try:
+                return int(float(str(raw)))
+            except (TypeError, ValueError):
+                return None
+
+        nodes = _count("min_node_count")
+        gpu = _count("min_gpu_count_per_node")
+        cpu = _count("min_cpu_count_per_node")
+        memory = _count("min_memory_size_gib_per_node")
+        view: dict[str, Any] = {
+            "model": scrub_raw_ids(name),
+            "version": resolved_version,
+            "vllm_compatible": vllm_compatible,
+        }
+        if nodes is not None:
+            view["min_nodes"] = nodes
+        if gpu is not None:
+            view["min_gpu_per_node"] = gpu
+        if cpu is not None:
+            view["min_cpu_per_node"] = cpu
+        if memory is not None:
+            view["min_memory_gib_per_node"] = memory
+        if None not in (gpu, cpu, memory):
+            view["min_quota"] = f"{gpu},{cpu},{memory}"
+
+        if ctx.json_output:
+            click.echo(json_formatter.format_json(view))
+            return
+
+        lines = [
+            f"Model: {view['model']} v{resolved_version}",
+            f"vLLM compatible: {'yes' if vllm_compatible else 'no'}",
+        ]
+        if "min_quota" in view:
+            lines.append(f"Minimum --quota: {view['min_quota']} (gpu,cpu,mem)")
+        if nodes is not None:
+            lines.append(f"Minimum --nodes-per-replica: {nodes}")
+        click.echo("\n".join(lines))
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
@@ -729,9 +1114,16 @@ def versions_model(
 ) -> None:
     """List all versions of one registered model by name.
 
+    \b
     Use this before `serving create` when you need a specific
     `--model-version`; omit the version on serving create to use the latest
     version shown by model listing.
+
+    \b
+    The Servings column counts *running* deployments on that version. A queued
+    deployment counts as zero here and so does a stopped one; `model status`
+    names the servings on the version it reports and flags a pending
+    deployment anywhere in the model.
     """
     name = reject_id_at_boundary(
         ctx,
@@ -800,7 +1192,12 @@ def versions_model(
             owner_scope="self",
         )
 
-        versions = _model_version_views(data)
+        compatibility = browser_api_module.get_model_vllm_compatibility(
+            model_id,
+            session=session,
+            workspace_id=workspace_id,
+        )
+        versions = _model_version_views(data, vllm_compatibility=compatibility)
         page = bound_collection(versions, limit=effective_limit)
         if ctx.json_output:
             click.echo(
@@ -939,4 +1336,181 @@ def register_model(
         _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
 
 
-__all__ = ["list_model", "register_model", "status_model", "versions_model"]
+@click.command("delete")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--project", default=None, metavar="NAME", help="Project name filter")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip the interactive confirmation prompt.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Delete without checking whether deployments still reference the model.",
+)
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def delete_model_cmd(
+    ctx: Context,
+    name: str,
+    workspace: Optional[str],
+    project: Optional[str],
+    yes: bool,
+    force: bool,
+    pick: Optional[int],
+) -> None:
+    """Delete a registered model and every version it holds.
+
+    \b
+    This cannot be undone, and it is not version-scoped: the whole entry goes,
+    so every deployment still pointing at any version of it loses what it was
+    serving. The registered directory on shared storage is left alone -- only
+    the registry entry is removed, and `model register` can recreate it from
+    the same path.
+
+    \b
+    The deployments are checked first, and a model that any serving still
+    holds is refused by name. A failed serving does not count -- it holds
+    nothing -- but a stopped or sleeping one does, because it can be started
+    again. `--force` skips the check instead of answering it.
+    """
+    name = reject_id_at_boundary(
+        ctx,
+        name,
+        resource_type="model",
+        list_command="inspire model list --workspace <workspace>",
+    )
+    require_confirmation(
+        ctx,
+        yes=yes,
+        prompt=f"Delete model '{scrub_raw_ids(name)}' and all of its versions?",
+        message="Model deletion requires confirmation.",
+    )
+
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        workspace_id = _resolve_workspace_id(workspace, session=session)
+        project_id = _resolve_project_id(
+            config, project, workspace_id=workspace_id, session=session
+        )
+        user_id = _current_user_id(session)
+        model_id = _resolve_model_name(
+            ctx,
+            name,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            user_id=user_id,
+            pick=pick,
+            session=session,
+            require_live=True,
+        )
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+        return
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+        return
+    except Exception as e:
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
+        return
+
+    if not force:
+        try:
+            version_data = browser_api_module.list_model_version_records(
+                model_id=model_id,
+                session=session,
+                workspace_id=workspace_id,
+            )
+            references = _model_references(
+                model_id,
+                version_data,
+                session=session,
+                workspace_id=workspace_id,
+            )
+            # No version goes in: the platform reads a missing version as
+            # "any", which is the only signal that catches a deployment queued
+            # behind a busy quota rather than already running.
+            pending = browser_api_module.check_model_inference_serving_pending(
+                model_id=model_id,
+                session=session,
+                workspace_id=workspace_id,
+            )
+        except SessionExpiredError as e:
+            _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+            return
+        except Exception:
+            # A failed probe is not an empty answer. Refusing here keeps the
+            # command from deleting a model whose deployments it never saw.
+            _handle_error(
+                ctx,
+                "APIError",
+                "Could not check which deployments still use this model.",
+                EXIT_API_ERROR,
+                hint="Retry, or pass --force to delete without the check.",
+            )
+            return
+
+        has_pending = pending.get("has_pending_serving") is True
+        if references or has_pending:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                _in_use_message(name, references, pending=has_pending),
+                EXIT_VALIDATION_ERROR,
+                hint=(
+                    "Delete those servings first, or pass --force to delete the "
+                    "model anyway and leave them pointing at nothing."
+                ),
+            )
+            return
+
+    try:
+        browser_api_module.delete_model(
+            model_id,
+            session=session,
+            workspace_id=workspace_id,
+        )
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)
+        return
+    except Exception:
+        _handle_error(ctx, "APIError", "Could not delete model.", EXIT_API_ERROR)
+        return
+
+    forget_resource_identity(
+        session=session,
+        resource_type="model",
+        resource_id=model_id,
+        name=name,
+        workspace_id=str(workspace_id or ""),
+        owner_scope="self",
+    )
+
+    if ctx.json_output:
+        click.echo(
+            json_formatter.format_json(
+                {"name": scrub_raw_ids(name), "status": "deleted"}
+            )
+        )
+        return
+
+    click.echo(format_mutation_success("Model", "deleted", name))
+
+
+__all__ = [
+    "delete_model_cmd",
+    "deploy_config_model",
+    "list_model",
+    "register_model",
+    "status_model",
+    "versions_model",
+]

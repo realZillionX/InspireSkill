@@ -49,6 +49,41 @@ def _fmt_timestamp(raw: Any) -> str:
     return s
 
 
+def event_sort_key(event: dict) -> tuple[int, int, int]:
+    """Order a merged event stream oldest-first.
+
+    Controller-level and per-pod events come from different calls (and, on
+    HPC, one call per instance), so the chronology that makes ``--tail`` mean
+    "most recent" has to be imposed here rather than trusted from the
+    platform's own ordering.
+
+    Timestamps are per-second, so a container's `Pulled` / `Created` /
+    `Started` trio usually shares one — hence the ``id`` tiebreaker, which Ray
+    fills with a monotonic counter. Without it the causal order of a same-second
+    burst flips depending on how the rows were fetched.
+    """
+
+    def _epoch(value: object) -> int:
+        text = str(value or "").strip()
+        return int(text) if text.isdigit() else 0
+
+    return (
+        _epoch(event.get("last_timestamp")),
+        _epoch(event.get("first_timestamp")),
+        _epoch(event.get("id")),
+    )
+
+
+def event_type(event: dict) -> str:
+    """Read the Normal / Warning field under either spelling.
+
+    Node events call it ``event_type``; every workload Action calls it
+    ``type``. The difference has to be absorbed in one place, or `--type
+    Warning` silently empties the node stream instead of filtering it.
+    """
+    return str(event.get("type") or event.get("event_type") or "")
+
+
 def _matching_events(
     events: list[dict],
     *,
@@ -60,7 +95,7 @@ def _matching_events(
     out = events
     if type_filter:
         needle = type_filter.lower()
-        out = [e for e in out if str(e.get("type", "")).lower() == needle]
+        out = [e for e in out if event_type(e).lower() == needle]
     if reason_filter:
         needle = reason_filter.lower()
         out = [e for e in out if needle in str(e.get("reason", "")).lower()]
@@ -69,9 +104,10 @@ def _matching_events(
         out = [
             e
             for e in out
-            if any(
+            if needle in event_type(e).lower()
+            or any(
                 needle in str(e.get(key, "")).lower()
-                for key in ("reason", "message", "from", "type", "content")
+                for key in ("reason", "message", "from", "content")
             )
         ]
     return out
@@ -133,7 +169,14 @@ def public_event(event: dict) -> dict[str, Any]:
     )
     projected = {
         "time": _fmt_timestamp(timestamp) if timestamp not in (None, "") else None,
-        "type": event.get("type"),
+        # Who the row is about, when the row is about something narrower than
+        # the workload. `instance` is attached by the command layer for per-pod
+        # queries (the raw `object_id` is a handle and stays out of output);
+        # `node` comes from node events, where the platform names the node
+        # itself. Workload-level rows carry neither, so both keys are absent.
+        "node": event.get("node_name") or event.get("node"),
+        "instance": event.get("instance"),
+        "type": event_type(event),
         "reason": event.get("reason"),
         "message": message,
         "count": event.get("count"),
@@ -149,30 +192,74 @@ def public_event(event: dict) -> dict[str, Any]:
     }
 
 
+# The optional subject column: who a row is about, when that is narrower than
+# the workload. At most one of these is present in any single stream.
+_SUBJECT_COLUMNS = (("node", "Node", 24), ("instance", "Instance", 28))
+
+# Kubernetes-shaped classification, which only the workload event streams
+# carry. Notebook lifecycle events are `{time, message}` and nothing else, so
+# for them these would be three columns of dashes.
+_CLASSIFICATION_COLUMNS = (
+    ("type", "Type", 10, "left"),
+    ("reason", "Reason", 32, "left"),
+    ("count", "Count", 7, "right"),
+)
+
+
 def render_events_table(events: list[dict]) -> None:
-    """Print compact event diagnostics to stdout."""
+    """Print compact event diagnostics to stdout.
+
+    A column appears only when the rows carry it — a merged per-pod or
+    multi-node window is unreadable without its subject, while a notebook's
+    lifecycle window would only gain columns of dashes.
+    """
     if not events:
         click.echo("(no events)")
         return
 
-    def row(event: dict) -> tuple[str, str, str, str, str]:
-        item = public_event(event)
-        return (
-            str(item.get("time") or "-"),
-            str(item.get("type") or "-"),
-            str(item.get("reason") or "-"),
-            str(item.get("count") or "-"),
-            str(item.get("message") or "-").replace("\n", " "),
-        )
+    items = [public_event(event) for event in events]
+    subjects = [
+        (key, title, width)
+        for key, title, width in _SUBJECT_COLUMNS
+        if any(item.get(key) for item in items)
+    ]
+    classification = [
+        (key, title, width, align)
+        for key, title, width, align in _CLASSIFICATION_COLUMNS
+        if any(item.get(key) for item in items)
+    ]
 
-    rows = [row(e) for e in events]
-    header = ("Time", "Type", "Reason", "Count", "Message")
+    def row(item: dict[str, Any]) -> tuple[str, ...]:
+        cells = [str(item.get("time") or "-")]
+        cells.extend(str(item.get(key) or "-") for key, _title, _width in subjects)
+        cells.extend(
+            str(item.get(key) or "-") for key, _title, _width, _align in classification
+        )
+        cells.append(str(item.get("message") or "-").replace("\n", " "))
+        return tuple(cells)
+
+    rows = [row(item) for item in items]
+    header = (
+        "Time",
+        *(title for _key, title, _width in subjects),
+        *(title for _key, title, _width, _align in classification),
+        "Message",
+    )
+    max_widths = (
+        19,
+        *(width for _key, _title, width in subjects),
+        *(width for _key, _title, width, _align in classification),
+        80,
+    )
+    aligns = [
+        "left",
+        *("left" for _ in subjects),
+        *(align for _key, _title, _width, align in classification),
+        "left",
+    ]
     widths = [
-        column_width(header[0], [row[0] for row in rows], max_width=19),
-        column_width(header[1], [row[1] for row in rows], max_width=10),
-        column_width(header[2], [row[2] for row in rows], max_width=32),
-        column_width(header[3], [row[3] for row in rows], max_width=7),
-        column_width(header[4], [row[4] for row in rows], max_width=80),
+        column_width(title, [row[index] for row in rows], max_width=max_width)
+        for index, (title, max_width) in enumerate(zip(header, max_widths))
     ]
     click.echo(
         "\n".join(
@@ -180,7 +267,7 @@ def render_events_table(events: list[dict]) -> None:
                 header,
                 rows,
                 widths,
-                aligns=["left", "left", "left", "right", "left"],
+                aligns=aligns,
                 line_char="─",
             )
         )

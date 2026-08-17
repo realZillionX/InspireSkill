@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from inspire.config.models import SOURCE_GLOBAL, ConfigError
+from inspire.config.models import SOURCE_ACCOUNT, ConfigError
 from inspire.config.toml import _flatten_toml, _load_toml, _toml_key_to_field
 
 from .load_common import _apply_defaults_overrides, _normalize_project_catalog, _parse_alias_map
@@ -67,7 +67,7 @@ def _apply_account_layer(
     """Apply the selected account's ``config.toml``.
 
     Returns the path that was read, or ``None`` if no account config applies.
-    The source label is ``SOURCE_GLOBAL`` because this is the account-wide
+    The source label is ``SOURCE_ACCOUNT`` because this is the account-wide
     configuration layer.
     """
     account_path = _resolve_account_config_path(account)
@@ -96,29 +96,29 @@ def _apply_account_layer(
         field_name = _toml_key_to_field(toml_key)
         if field_name and field_name in config_dict:
             config_dict[field_name] = value
-            sources[field_name] = SOURCE_GLOBAL
+            sources[field_name] = SOURCE_ACCOUNT
 
     if compute_groups:
         config_dict["compute_groups"] = compute_groups
-        sources["compute_groups"] = SOURCE_GLOBAL
+        sources["compute_groups"] = SOURCE_ACCOUNT
     if remote_env:
         config_dict["remote_env"] = remote_env
-        sources["remote_env"] = SOURCE_GLOBAL
+        sources["remote_env"] = SOURCE_ACCOUNT
     if path_aliases:
         config_dict["path_aliases"] = path_aliases
-        sources["path_aliases"] = SOURCE_GLOBAL
+        sources["path_aliases"] = SOURCE_ACCOUNT
     if projects:
         config_dict["projects"] = projects
-        sources["projects"] = SOURCE_GLOBAL
+        sources["projects"] = SOURCE_ACCOUNT
     if project_catalog:
         config_dict["project_catalog"] = project_catalog
-        sources["project_catalog"] = SOURCE_GLOBAL
+        sources["project_catalog"] = SOURCE_ACCOUNT
 
     _apply_defaults_overrides(
         defaults=defaults,
         config_dict=config_dict,
         sources=sources,
-        source_name=SOURCE_GLOBAL,
+        source_name=SOURCE_ACCOUNT,
     )
     return account_path
 

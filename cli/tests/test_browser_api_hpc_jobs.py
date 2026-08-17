@@ -107,3 +107,58 @@ def test_list_hpc_job_logs_omits_sorter(monkeypatch: pytest.MonkeyPatch) -> None
         },
     }
     assert "sorter" not in record["body"]
+
+
+def test_list_hpc_jobs_reads_a_string_total(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`hpc.ListJobs` answers `total` as a string; the page length is not the total."""
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {"Result": {"jobs": [{"job_id": "j-1", "job_name": "one"}], "total": "202"}},
+        record,
+    )
+
+    jobs, total = hpc_jobs_module.list_hpc_jobs(
+        workspace_id="ws-1",
+        created_by="user-1",
+        session=_FakeSession(),
+    )
+
+    assert len(jobs) == 1
+    assert total == 202
+
+
+def test_list_hpc_jobs_falls_back_when_total_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {"Result": {"jobs": [{"job_id": "j-1", "job_name": "one"}], "total": None}},
+        record,
+    )
+
+    _jobs, total = hpc_jobs_module.list_hpc_jobs(
+        workspace_id="ws-1",
+        created_by="user-1",
+        session=_FakeSession(),
+    )
+
+    assert total == 1
+
+
+def test_list_hpc_jobs_passes_page_size_through_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gateway ceiling is enforced in the transport, not in each wrapper."""
+    record: dict[str, Any] = {}
+    _install_fake_request(monkeypatch, {"Result": {"jobs": [], "total": "0"}}, record)
+
+    hpc_jobs_module.list_hpc_jobs(
+        workspace_id="ws-1",
+        created_by="user-1",
+        page_size=50,
+        session=_FakeSession(),
+    )
+
+    assert record["body"]["page_size"] == 50

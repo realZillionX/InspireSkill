@@ -4,15 +4,19 @@ Browser API fills in everything the UI needs on the `/jobs/modelDeployment` page
 listing, create / detail / stop / delete, configs per workspace, and the
 user+project pickers for the create dialog. The whole domain goes through
 `/api/v2/inference_serving`; that contract is in
-`references/dev/browser-api-v2.md`. Every migrated Action was checked against a
-live serving first — the v1 request bodies are accepted verbatim and the
-responses are field-for-field identical, so the normalization is unchanged.
-Creation goes through the undocumented `CreateServingConsole`; see
+`references/dev/browser-api.md`. Every Action here was checked against a
+live serving before being wired up. Creation goes through the undocumented
+`CreateServingConsole`; see
 `create_serving`.
 
 The list keys differ per Action and are spelled out at each call site:
 `inference_servings` for listing and versions, `groups` for instances,
-`events`, `logs`, `scale_history_items`, `terms`.
+`events`, `logs`, `scale_history_items`, `terms`, `metric_groups`.
+
+Every write here unwraps through `_v2_result()`. That is not optional: v2 has
+no `code` field, so a hand-written `code != 0` check turns every real error
+into `API error: None`, which is exactly how `StartServing` / `StopServing`
+were silently broken once already.
 """
 
 from __future__ import annotations
@@ -28,9 +32,11 @@ from inspire.platform.web.browser_api.core import (
 from inspire.platform.web.session import WebSession, get_web_session
 
 __all__ = [
+    "SERVING_API_METRIC_TYPES",
     "ServingInfo",
     "list_servings",
     "list_serving_user_project",
+    "get_serving_api_metrics",
     "get_serving_configs",
     "get_serving_detail",
     "get_serving_terms",
@@ -40,10 +46,35 @@ __all__ = [
     "list_serving_logs",
     "list_serving_scale_history",
     "list_serving_versions",
+    "rollback_serving",
+    "scale_serving",
     "stop_serving",
     "start_serving",
     "delete_serving",
 ]
+
+# `GetServingApiMetric` metric_types, from discovery. These are request-traffic
+# metrics (QPS, latency, tokens), a different family from the resource metrics
+# `GetTaskMetric` serves -- the two share no metric name.
+SERVING_API_METRIC_TYPES: tuple[str, ...] = (
+    "QPS",
+    "SUCCESS_QPS",
+    "FAIL_QPS",
+    "SUCCESS_RATE",
+    "FAIL_RATE",
+    "REQUEST_COUNT",
+    "LATENCY",
+    "TTFT",
+    "TTFT_P50",
+    "TTFT_P95",
+    "TTFT_P99",
+    "TTLT",
+    "TTLT_P50",
+    "TTLT_P95",
+    "TTLT_P99",
+    "INPUT_TOKENS",
+    "OUTPUT_TOKENS",
+)
 
 
 _REFERER_PATH = "/jobs/modelDeployment"
@@ -268,8 +299,8 @@ def get_serving_configs(
 ) -> dict[str, Any]:
     """Serving-time configs for a workspace (image / quota presets).
 
-    Calls `GET /api/v1/inference_servings/configs/workspace/{workspace_id}`.
-    Returns the raw `data` dict, typically `{configs: [...]}`.
+    Action: `GetServingConfigByWorkspaceId`. Returns the raw `Result` dict,
+    typically `{configs: [...]}`.
     """
     session, workspace_id = _resolve_workspace(workspace_id, session)
     return _serving_v2(
@@ -283,7 +314,7 @@ def get_serving_detail(
 ) -> dict[str, Any]:
     """Browser API variant of serving detail.
 
-    Calls `GET /api/v1/inference_servings/{id}`, matching the current web UI.
+    Action: `GetServing`, the same one the console's detail page calls.
     """
     if session is None:
         session = get_web_session()
@@ -323,7 +354,20 @@ def list_serving_instances(
     page_size: int = 50,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """List serving pod instances."""
+    """List serving pod instances.
+
+    **The rows are nested.** ``ListServingInstances`` answers
+    ``{groups: [{items: [...]}], total}`` — one group per replica, its pods
+    inside — not the flat ``items`` every sibling Action uses. Reading the top
+    level returns an empty list next to a non-zero ``total``, which is exactly
+    the shape that means "this deployment has no pods yet", so the failure is
+    silent and permanent.
+
+    Rows are pod-shaped: ``name`` (namespaced, ``<project>/<pod>``),
+    ``component_type`` (``LEADER`` / ``WORKER``), ``status``, ``node``,
+    ``ready``, ``restarts``, ``term``, ``created_at`` / ``started_at`` /
+    ``finished_at``, ``running_time_ms``.
+    """
     if session is None:
         session = get_web_session()
     payload = _serving_v2(
@@ -335,13 +379,23 @@ def list_serving_instances(
             "page_size": page_size,
         },
     )
-    items = payload.get("items")
-    if not isinstance(items, list):
-        items = payload.get("list")
-    if not isinstance(items, list):
-        items = payload.get("instances")
-    if not isinstance(items, list):
-        items = []
+    items: list[Any] = []
+    groups = payload.get("groups")
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_items = group.get("items")
+            if isinstance(group_items, list):
+                items.extend(group_items)
+    if not items:
+        # Kept for the flat spellings the sibling Actions use, in case this
+        # one ever grows one.
+        for key in ("items", "list", "instances"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                items = value
+                break
     total_raw = payload.get("total")
     try:
         total = int(str(total_raw)) if total_raw is not None else len(items)
@@ -353,14 +407,39 @@ def list_serving_instances(
 def list_serving_events(
     inference_serving_id: str,
     *,
+    pod_names: Optional[list[str]] = None,
     object_type: str = "INFERENCE_SERVING",
     page: int = 1,
     page_size: int = 200,
     session: Optional[WebSession] = None,
 ) -> list[dict[str, Any]]:
-    """List serving lifecycle / Kubernetes events."""
+    """List serving lifecycle / Kubernetes events.
+
+    One Action covers both levels through ``filter.object_type``, whose enum is
+    ``INFERENCE_SERVING`` / ``INFERENCE_SERVING_INSTANCE`` /
+    ``INFERENCE_SERVERLESS``. The serving level carries the controller's own
+    account (``CreatingRevision`` / ``GroupsProgressing`` / ``Pending``); the
+    instance level carries the scheduler and kubelet view (``Scheduled`` /
+    ``Pulled`` / ``Created`` / ``Started``), and they are disjoint sets.
+
+    ``pod_names`` switches to the instance level and **must be the namespaced
+    names** ``ListServingInstances`` returns (``<project>/<pod>``); the bare
+    pod name answers ``InternalError``, the same trap the HPC endpoints have.
+    """
     if session is None:
         session = get_web_session()
+    if pod_names is not None:
+        clean_pods = list(
+            dict.fromkeys(
+                str(name or "").strip() for name in pod_names if str(name or "").strip()
+            )
+        )
+        if not clean_pods:
+            raise ValueError("Instance selection is required.")
+        object_type = "INFERENCE_SERVING_INSTANCE"
+        object_ids = clean_pods
+    else:
+        object_ids = [inference_serving_id]
     payload = _serving_v2(
         session,
         "ListServingEvents",
@@ -369,7 +448,7 @@ def list_serving_events(
             "page_size": page_size,
             "filter": {
                 "object_type": object_type,
-                "object_ids": [inference_serving_id],
+                "object_ids": object_ids,
             },
         },
     )
@@ -392,7 +471,18 @@ def list_serving_logs(
     inference_serving_id: str | None = None,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Fetch serving aggregated logs."""
+    """Fetch serving aggregated logs.
+
+    `GetServingLog` is pod-scoped, not serving-scoped: the only selector is
+    `filter.podNames`, so the caller has to list the deployment's instances
+    first. Both timestamps are string fields whose values are epoch
+    milliseconds. Records come back under `logs` with an int `total` that
+    counts the whole window, not the page.
+
+    A pod name the log store does not know answers `InternalError`, including
+    a real pod that belongs to another workload kind — the failure looks like
+    a platform fault but means "wrong pod".
+    """
     if session is None:
         session = get_web_session()
     payload = _serving_v2(
@@ -427,7 +517,16 @@ def list_serving_scale_history(
     page_size: int = 20,
     session: Optional[WebSession] = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """List serving scale history records."""
+    """List serving scale history records.
+
+    The list key is `scale_history_items`, verified live against the gateway —
+    discovery declares `Items` / `TotalCount` and neither exists in the
+    response, so reading `items` returns an empty history for every serving
+    that has one. `total` arrives as a string here (`"0"`).
+
+    Each row carries `replicas_before_scale` / `replicas_after_scale`,
+    `created_at`, `status`, and an `id`.
+    """
     if session is None:
         session = get_web_session()
     payload = _serving_v2(
@@ -439,7 +538,9 @@ def list_serving_scale_history(
             "page_size": page_size,
         },
     )
-    items = payload.get("items")
+    items = payload.get("scale_history_items")
+    if not isinstance(items, list):
+        items = payload.get("items")
     if not isinstance(items, list):
         items = payload.get("list")
     if not isinstance(items, list):
@@ -457,7 +558,14 @@ def get_serving_terms(
     *,
     session: Optional[WebSession] = None,
 ) -> dict[str, Any]:
-    """Get serving terms / invocation instructions."""
+    """List a serving's service terms (run periods).
+
+    Returns `{terms: [{term, start_time, end_time}]}` — a period index, not
+    invocation instructions: the console uses it to scope a detail tab to one
+    run. There is no endpoint, URL, or sample request in the response, so no
+    CLI command projects it. `InferenceServingId` is required and a handle
+    that does not resolve answers `ResourceNotFound`.
+    """
     if session is None:
         session = get_web_session()
     return _serving_v2(
@@ -487,6 +595,8 @@ def create_serving(
     custom_domain: str | None = None,
     inference_serving_type: str = "CUSTOM",
     model_source: str | None = None,
+    is_publicpath_readonly: bool | None = None,
+    enable_auto_scaling: bool | None = None,
     session: Optional[WebSession] = None,
 ) -> dict[str, Any]:
     """Create a custom model deployment via the Browser API.
@@ -495,6 +605,11 @@ def create_serving(
     particular, images are sent by `mirror_id`, and resource specs are sent as
     a nested `resource_spec_price` proto-style object rather than a flat
     `spec_id`.
+
+    `is_publicpath_readonly` and `enable_auto_scaling` are omitted unless the
+    caller passes them, so a create that does not ask for them is byte-for-byte
+    what it was before they existed. `queue_id`, `dataset_info`, `envs` and
+    `scale_status` are **rejected** by this Action and have no counterpart.
     """
     if session is None:
         session = get_web_session()
@@ -521,6 +636,10 @@ def create_serving(
         body["shm_gi"] = int(shm_gi)
     if model_source:
         body["model_source"] = model_source
+    if is_publicpath_readonly is not None:
+        body["is_publicpath_readonly"] = bool(is_publicpath_readonly)
+    if enable_auto_scaling is not None:
+        body["enable_auto_scaling"] = bool(enable_auto_scaling)
 
     # `CreateServingConsole`, not the `CreateServing` that discovery lists.
     # The documented one is described as "via OpenAPI with simplified config"
@@ -531,6 +650,93 @@ def create_serving(
     return _serving_v2(session, "CreateServingConsole", body, timeout=60)
 
 
+def scale_serving(
+    inference_serving_id: str,
+    *,
+    replica: int,
+    session: Optional[WebSession] = None,
+) -> dict[str, Any]:
+    """Change a serving's replica count via ``Action=ScaleServing``.
+
+    The field is ``replica``, singular -- ``replicas`` (the plural spelling
+    ``CreateServingConsole`` and ``UpdateServing`` both use) is rejected here.
+    """
+    if session is None:
+        session = get_web_session()
+    return _serving_v2(
+        session,
+        "ScaleServing",
+        {"inference_serving_id": inference_serving_id, "replica": int(replica)},
+    )
+
+
+def rollback_serving(
+    inference_serving_id: str,
+    *,
+    version: int,
+    session: Optional[WebSession] = None,
+) -> dict[str, Any]:
+    """Roll a serving back to an earlier version via ``Action=RollbackServing``.
+
+    ``version`` is the deployment version number from ``ListServingVersions``.
+    """
+    if session is None:
+        session = get_web_session()
+    return _serving_v2(
+        session,
+        "RollbackServing",
+        {"inference_serving_id": inference_serving_id, "version": int(version)},
+        timeout=60,
+    )
+
+
+def get_serving_api_metrics(
+    inference_serving_id: str,
+    *,
+    metric_types: Iterable[str],
+    start_timestamp: int,
+    end_timestamp: int,
+    interval_second: int = 60,
+    session: Optional[WebSession] = None,
+) -> list[dict[str, Any]]:
+    """Query request-traffic time series via ``Action=GetServingApiMetric``.
+
+    Returns the raw ``metric_groups`` list; each entry carries ``metric_type``,
+    ``group_name``, ``data_unit`` and a ``time_series`` of
+    ``{timestamp, data}``. Unlike ``GetTaskMetric`` this Action accepts the
+    whole ``metric_types`` list in one request, and it needs no compute-group
+    handle.
+    """
+    if session is None:
+        session = get_web_session()
+    metrics = [str(m).strip() for m in metric_types if str(m).strip()]
+    if not metrics:
+        raise ValueError("no metric_types provided")
+    unknown = [m for m in metrics if m not in SERVING_API_METRIC_TYPES]
+    if unknown:
+        raise ValueError(
+            f"unknown serving API metric(s): {', '.join(unknown)} "
+            f"(valid: {', '.join(SERVING_API_METRIC_TYPES)})"
+        )
+    payload = _serving_v2(
+        session,
+        "GetServingApiMetric",
+        {
+            "inference_serving_id": inference_serving_id,
+            "metric_types": metrics,
+            "time_range": {
+                "start_timestamp": int(start_timestamp),
+                "end_timestamp": int(end_timestamp),
+                "interval_second": int(interval_second),
+            },
+        },
+    )
+    groups = payload.get("metric_groups")
+    if not isinstance(groups, list):
+        return []
+    return [item for item in groups if isinstance(item, dict)]
+
+
 def _serving_action(
     *,
     action: str,
@@ -539,10 +745,10 @@ def _serving_action(
 ) -> dict[str, Any]:
     if session is None:
         session = get_web_session()
-    # No `version` here: v2 rejects it with `unknown field "version"`. The v1
-    # envelope checker used to swallow that as "API error: None", which is why
-    # start / stop failed for every input before this call moved to
-    # `_serving_v2`.
+    # No `version` here: the gateway rejects it with `unknown field "version"`,
+    # and only `_serving_v2` surfaces that -- a hand-written envelope check
+    # reports it as "API error: None", which is how start / stop once failed
+    # for every input.
     return _serving_v2(
         session,
         action,
@@ -580,9 +786,7 @@ def delete_serving(
 ) -> dict[str, Any]:
     """Delete a model deployment entry via ``Action=DeleteServing``.
 
-    v1 needed a REST-style ``DELETE /inference_servings/{id}``; v2 has a
-    first-class Action. An id that does not resolve answers
-    ``ResourceNotFound``.
+    An id that does not resolve answers ``ResourceNotFound``.
     """
     if session is None:
         session = get_web_session()

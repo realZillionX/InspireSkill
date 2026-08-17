@@ -98,6 +98,10 @@ _JOB_ACTIVE_STATUSES = {
     "RUNNING",
     "job_running",
 }
+# A job never leaves any of these on its own, and `job` has no `start`: the
+# only way back to a running job is a new `job create`. Anything that waits on
+# a job must stop at this set, `job_stopped` included -- a job stopped by hand
+# or reclaimed by the workspace idle rule is as final as one that failed.
 _JOB_TERMINAL_STATUSES = {
     "SUCCEEDED",
     "job_succeeded",
@@ -192,7 +196,7 @@ def _resolve_explicit_workspace(workspace: Optional[str], session) -> Optional[s
     if _looks_like_workspace_id(workspace):
         raise ConfigError(
             "--workspace takes a workspace name. "
-            "See `inspire config context` for available names."
+            "See `inspire account context` for available names."
         )
     return select_workspace_id(explicit_workspace_name=workspace, session=session)
 
@@ -373,6 +377,7 @@ def _public_job_instances(instances: list[dict]) -> list[dict]:
             ("status", ("status", "instance_status", "phase", "state")),
             ("role", ("role", "component", "worker_group_name")),
             ("type", ("type", "instance_type")),
+            ("node", ("node", "node_name", "host_name")),
         ):
             value = _public_instance_text(item, *candidates)
             if value:
@@ -543,6 +548,7 @@ def _format_job_instances(instances: list[dict]) -> str:
         for key, label in (
             ("role", "Role"),
             ("type", "Type"),
+            ("node", "Node"),
             ("resource", "Resource"),
             ("rank", "Rank"),
         )
@@ -1123,7 +1129,16 @@ def _watch_jobs(
     is_flag=True,
     help="Show only active jobs (exclude failed, cancelled, stopped)",
 )
-@click.option("--watch", "-w", is_flag=True, help="Continuously refresh job list")
+@click.option(
+    "--watch",
+    "-w",
+    is_flag=True,
+    help=(
+        "Continuously refresh the job list. Runs until interrupted; it never exits "
+        "on its own, and with --active a job that is already terminal will never "
+        "reappear."
+    ),
+)
 @click.option(
     "--interval",
     type=click.IntRange(1),
@@ -1594,8 +1609,18 @@ def wait(
 ) -> None:
     """Wait for a job to complete.
 
-    Polls the job status until it reaches a terminal state
-    (SUCCEEDED, FAILED, or CANCELLED).
+    \b
+    Polls until the job reaches a terminal state and returns as soon as it
+    does. Terminal means SUCCEEDED, FAILED, CANCELLED or STOPPED
+    (``job_succeeded`` / ``job_failed`` / ``job_cancelled`` / ``job_stopped``
+    on the wire). Exits 0 only on SUCCEEDED.
+
+    \b
+    Only wait on a job that can still move: PENDING, QUEUING or RUNNING. A job
+    that is already terminal is never coming back -- ``job`` has no ``start``,
+    so a stopped job is as final as a failed one, and the only way to a running
+    job again is a new ``job create``. Read the state once with ``job status``
+    before waiting on it.
 
     \b
     Example:
@@ -1621,14 +1646,6 @@ def wait(
         finally:
             _close_web_client()
 
-        terminal_statuses = {
-            "SUCCEEDED",
-            "FAILED",
-            "CANCELLED",
-            "job_succeeded",
-            "job_failed",
-            "job_cancelled",
-        }
         start_time = time.time()
         last_status = None
         pending_job_data: dict | None = initial_job_data
@@ -1668,7 +1685,7 @@ def wait(
                         click.echo(f"Status: {scrub_raw_ids(current_status)}")
                     last_status = current_status
 
-                if current_status in terminal_statuses:
+                if current_status in _JOB_TERMINAL_STATUSES:
                     detail = public_job_status(job_data, fallback_name=job)
                     if ctx.json_output:
                         click.echo(json_formatter.format_json(detail))
@@ -1794,6 +1811,9 @@ def shell(
     workspace: Optional[str],
 ) -> None:
     """Open an interactive shell inside a running training-job instance.
+
+    Needs a terminal: this attaches your stdin to a remote PTY. Leave with
+    `exit`, or press Ctrl+] to drop the session without ending the shell.
 
     \b
     Examples:

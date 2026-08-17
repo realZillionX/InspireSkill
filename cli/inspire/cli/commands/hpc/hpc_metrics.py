@@ -16,8 +16,8 @@ from inspire.platform.web.session import WebSession
 
 
 def _resolve_hpc_lcg(task_id: str, session: WebSession) -> Optional[str]:
-    # Reuses the migrated detail wrapper rather than re-issuing the request;
-    # this used to call GET /api/v1/hpc_jobs/{id} directly.
+    # Reuses the detail wrapper rather than re-issuing the request: platform
+    # requests belong in browser_api/, and a second copy here would drift.
     payload = browser_api_module.get_hpc_job_detail(task_id, session)
     if not isinstance(payload, dict):
         return None

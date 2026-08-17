@@ -128,11 +128,11 @@ function main(config, profileName) {
 ```bash
 lsof -iTCP:<mixed-port> -sTCP:LISTEN
 curl -sS -o /dev/null -w "sii: %{http_code}\n" -x http://127.0.0.1:<mixed-port> https://qz.sii.edu.cn
-inspire config check
+inspire account check
 ```
 
 `qz.sii.edu.cn` 访问失败时，依次确认：
 
 1. Clash Verge 规则包含 `DOMAIN-SUFFIX,sii.edu.cn,SII Proxy`。
 2. `SII Proxy` 组选择了可用代理节点或当前网络可用的 `DIRECT`。
-3. `inspire config show --compact --filter Proxy` 显示的账号级 proxy、Shell proxy、有效路由和 `NO_PROXY` 匹配符合预期。
+3. `inspire account check --details` 显示的有效代理来源、路由和 `NO_PROXY` 匹配符合预期。

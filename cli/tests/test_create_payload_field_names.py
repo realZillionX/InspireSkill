@@ -41,7 +41,7 @@ _CATALOGUE = {
 def catalogue(monkeypatch: pytest.MonkeyPatch):
     calls: list[str] = []
 
-    def fake_list(*, source: str, session: Any):  # noqa: ANN001
+    def fake_list(*, source: str, session: Any, workspace_id=None):  # noqa: ANN001
         calls.append(source)
         return _CATALOGUE.get(source, [])
 
@@ -55,14 +55,14 @@ def test_display_name_resolves_to_registry_url(catalogue) -> None:
     # The platform matches on the URL; a display name is rejected with
     # 无法找到对应镜像.
     assert (
-        resolve_image_url("ngc-pytorch:25.02-cuda12.8.0-py3", session=object())
+        resolve_image_url("ngc-pytorch:25.02-cuda12.8.0-py3", session=object(), workspace_id="ws-test")
         == "docker.example/base/ngc-pytorch:25.02-cuda12.8.0-py3"
     )
 
 
 def test_registry_url_passes_through_without_a_lookup(catalogue) -> None:
     url = "docker.example/inspire-studio/not-in-catalogue:v1"
-    assert resolve_image_url(url, session=object()) == url
+    assert resolve_image_url(url, session=object(), workspace_id="ws-test") == url
     # `--image` accepts NAME|URL, and a URL the catalogue does not list still
     # has to reach the platform, so no catalogue call is made at all.
     assert catalogue == []
@@ -70,21 +70,21 @@ def test_registry_url_passes_through_without_a_lookup(catalogue) -> None:
 
 def test_unknown_display_name_is_a_config_error(catalogue) -> None:
     with pytest.raises(ConfigError, match="not found in official/public/private"):
-        resolve_image_url("no-such-image:v9", session=object())
+        resolve_image_url("no-such-image:v9", session=object(), workspace_id="ws-test")
 
 
 def test_job_payload_sends_url_not_name(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         image_resolver,
         "resolve_image_url",
-        lambda raw, *, session=None, debug=False: "docker.example/base/resolved:v1",
+        lambda raw, *, session=None, debug=False, **_kwargs: "docker.example/base/resolved:v1",
     )
     import inspire.cli.utils.job_submit as job_submit
 
     monkeypatch.setattr(
         job_submit,
         "resolve_image_url",
-        lambda raw, *, session=None, debug=False: "docker.example/base/resolved:v1",
+        lambda raw, *, session=None, debug=False, **_kwargs: "docker.example/base/resolved:v1",
     )
 
     from inspire.cli.utils.quota_resolver import ResolvedQuota
@@ -131,7 +131,7 @@ def test_hpc_payload_uses_priority_not_task_priority(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         hpc_commands,
         "resolve_image_url",
-        lambda raw, *, session=None, debug=False: "docker.example/base/resolved:v1",
+        lambda raw, *, session=None, debug=False, **_kwargs: "docker.example/base/resolved:v1",
     )
 
     payload = hpc_commands.build_hpc_create_payload(

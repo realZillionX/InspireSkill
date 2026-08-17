@@ -29,6 +29,13 @@ from inspire.cli.utils.collection_output import (
     resolve_collection_limit,
     truncation_notice,
 )
+from inspire.cli.utils.dataset_mounts import (
+    DatasetMount,
+    DatasetSpecError,
+    dataset_mount_views,
+    parse_dataset_specs,
+    resolve_dataset_info,
+)
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.project_resolver import project_name_candidates
@@ -58,10 +65,14 @@ from inspire.config.workload_profiles import (
 from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NotebookFailedError
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import (
+    SessionExpiredError,
+    TransientAPIError,
+    get_web_session,
+)
 
 _REFERENCE_FIELDS = {
-    "workspace": ("workspace", "inspire config context"),
+    "workspace": ("workspace", "inspire account context"),
     "project": ("project", "inspire project list --workspace <workspace-name>"),
     "group": (
         "compute group",
@@ -84,8 +95,15 @@ _PUBLIC_FIELDS_BY_KIND = {
         ("enable_notification", "notifications"),
         ("auto_fault_tolerance", "auto_fault_tolerance"),
         ("fault_tolerance_max_retry", "fault_tolerance_max_retry"),
+        ("fault_tolerance_retry_interval", "fault_tolerance_retry_interval_seconds"),
         ("exclude_nodes", "exclude_nodes"),
         ("shm_size", "shared_memory_gib"),
+        # Applied by `_prepare_training_item` and therefore part of the plan:
+        # a dry run that hides them cannot be used to check a matrix.
+        ("description", "description"),
+        ("keep_after_success", "keep_after_success_hours"),
+        ("keep_after_failure", "keep_after_failure_hours"),
+        ("public_path_readonly", "public_path_readonly"),
         ("command", "command"),
     ),
     "hpc": (
@@ -100,6 +118,10 @@ _PUBLIC_FIELDS_BY_KIND = {
         ("priority", "priority"),
         ("shm_size", "shared_memory_gib"),
         ("auto_stop", "auto_stop"),
+        ("auto_stop_after", "auto_stop_after_minutes"),
+        ("enable_notification", "notifications"),
+        ("public_path_readonly", "public_path_readonly"),
+        ("project_path_readonly", "project_path_readonly"),
         ("wait", "wait"),
         ("post_start", "post_start"),
     ),
@@ -279,6 +301,80 @@ def _optional_bool(item: dict[str, Any], key: str, *, default: bool = False) -> 
     return _require_bool(item, key)
 
 
+def _tristate_bool(item: dict[str, Any], key: str) -> bool | None:
+    """Read a switch that must stay absent from the payload unless it is set.
+
+    The create commands express these as `--flag/--no-flag` with no default, so
+    an entry that never mentions the key has to produce the same request body it
+    produced before the key existed. `_optional_bool` cannot say that: its
+    absent case is a real ``False``.
+    """
+    if key not in item or item[key] is None:
+        return None
+    return _require_bool(item, key)
+
+
+def _optional_dataset_mounts(item: dict[str, Any], key: str = "dataset") -> list[DatasetMount]:
+    """Parse `dataset` entries, accepting one spec or a list of them."""
+    try:
+        return parse_dataset_specs(_optional_str_list(item, key))
+    except DatasetSpecError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+def _optional_env_assignments(item: dict[str, Any], key: str = "env") -> list[dict[str, str]]:
+    """Parse `env` as either a `KEY=VALUE` list or a mapping.
+
+    TOML and JSON both express a mapping more naturally than a list of joined
+    strings, so both are accepted; the command line only has the list form.
+    """
+    if key not in item or item[key] is None:
+        return []
+    value = item[key]
+    if isinstance(value, dict):
+        pairs = []
+        for name, raw in value.items():
+            if not isinstance(name, str) or not name.strip():
+                raise ConfigError(f"Batch item field {key} has an empty variable name.")
+            if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+                raise ConfigError(
+                    f"Batch item field {key}.{name} must be a string, integer or float."
+                )
+            pairs.append(f"{name}={raw}")
+    else:
+        pairs = _optional_str_list(item, key)
+    try:
+        return job_submit.parse_env_assignments(pairs)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+def _optional_hours(item: dict[str, Any], key: str) -> float | None:
+    if key not in item or item[key] is None:
+        return None
+    return _require_float(item, key, min_value=0)
+
+
+def _resolved_dataset_info(
+    mounts: list[DatasetMount],
+    *,
+    workspace_id: str,
+    session: Any,
+) -> list[dict[str, str]] | None:
+    """Resolve batch dataset mounts, reporting a rejection as a config error.
+
+    Resolution happens while the item is being prepared, so a bad spec stops the
+    whole batch before anything is submitted rather than after the first few
+    items are already running.
+    """
+    if not mounts:
+        return None
+    try:
+        return resolve_dataset_info(mounts, workspace_id=workspace_id, session=session)
+    except DatasetSpecError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
 def _optional_int(item: dict[str, Any], key: str, *, min_value: int | None = None) -> int | None:
     if key not in item or item[key] is None:
         return None
@@ -378,6 +474,22 @@ def _public_batch_plan(
         else:
             output[key] = value
     return json_formatter.sanitize_json_data(output)
+
+
+def _plan_mount_and_env_views(item: dict[str, Any]) -> dict[str, Any]:
+    """Render the dataset and env parts of a plan the way `create` does.
+
+    Env carries values that can be tokens, so only the names are reported —
+    the same rule `inspire job create --dry-run` follows.
+    """
+    views: dict[str, Any] = {}
+    mounts = _optional_dataset_mounts(item)
+    if mounts:
+        views["datasets"] = dataset_mount_views(mounts)
+    envs = _optional_env_assignments(item)
+    if envs:
+        views["env"] = [entry["name"] for entry in envs]
+    return views
 
 
 def _submitted_batch_item(name: str) -> dict[str, str]:
@@ -499,6 +611,19 @@ def _prepare_training_item(
         ),
         exclude_nodes=_optional_str_list(item, "exclude_nodes"),
         shm_size=_optional_int(item, "shm_size", min_value=1),
+        dataset_info=_resolved_dataset_info(
+            _optional_dataset_mounts(item),
+            workspace_id=workspace_id,
+            session=session,
+        ),
+        envs=_optional_env_assignments(item) or None,
+        description=_optional_str(item, "description"),
+        keep_after_success_hours=_optional_hours(item, "keep_after_success"),
+        keep_after_failure_hours=_optional_hours(item, "keep_after_failure"),
+        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
+        fault_tolerance_retry_interval_sec=_optional_int(
+            item, "fault_tolerance_retry_interval", min_value=1
+        ),
         session=session,
     )
 
@@ -509,9 +634,13 @@ def _prepare_hpc_item(
     config: Config,
     session: Any,
 ) -> dict[str, Any]:
-    from inspire.cli.commands.hpc.hpc_commands import build_hpc_create_payload
-    from inspire.cli.commands.hpc.hpc_commands import _looks_like_full_slurm_script
-    from inspire.cli.commands.hpc.hpc_commands import _resolve_project_id
+    from inspire.cli.commands.hpc.hpc_commands import (
+        SlurmLayoutError,
+        _looks_like_full_slurm_script,
+        _resolve_project_id,
+        build_hpc_create_payload,
+        resolve_slurm_layout,
+    )
 
     entrypoint = _require_str(item, "entrypoint")
     if _looks_like_full_slurm_script(entrypoint):
@@ -531,12 +660,21 @@ def _prepare_hpc_item(
         schedule_config_type=SCHEDULE_TYPE_HPC,
         group_override=_require_condition_str(item, "group", kind="hpc"),
     )
-    cpus_per_task = _optional_int(item, "cpus_per_task", min_value=1)
-    if cpus_per_task is None:
-        cpus_per_task = max(1, int(quota_spec.cpu_count))
-    memory_per_cpu = _optional_int(item, "memory_per_cpu", min_value=1)
-    if memory_per_cpu is None:
-        memory_per_cpu = max(1, int(quota_spec.memory_gib) // max(1, int(cpus_per_task)))
+    instance_count = _optional_int(item, "instance_count", min_value=1) or 1
+    number_of_tasks = _optional_int(item, "number_of_tasks", min_value=1) or 1
+    # Same pre-flight as `hpc create`: the platform accepts a Slurm layout its
+    # nodes cannot run, and answers with a job id either way.
+    try:
+        layout = resolve_slurm_layout(
+            node_cpu=resolved_quota.cpu_count,
+            node_memory_gib=resolved_quota.memory_gib,
+            instance_count=instance_count,
+            number_of_tasks=number_of_tasks,
+            cpus_per_task=_optional_int(item, "cpus_per_task", min_value=1),
+            memory_per_cpu=_optional_int(item, "memory_per_cpu", min_value=1),
+        )
+    except SlurmLayoutError as e:
+        raise ConfigError(str(e)) from e
     project_id = _resolve_project_id(
         config,
         _require_condition_str(item, "project", kind="hpc"),
@@ -552,18 +690,29 @@ def _prepare_hpc_item(
         image_type=_optional_str(item, "image_type") or "SOURCE_PRIVATE",
         entrypoint=entrypoint,
         quota_id=resolved_quota.quota_id,
-        instance_count=_optional_int(item, "instance_count", min_value=1) or 1,
+        instance_count=instance_count,
         task_priority=resolve_workspace_task_priority(
             _optional_int(item, "priority", min_value=1),
             session=session,
             workspace_id=workspace_id,
             project_id=project_id,
         ),
-        number_of_tasks=_optional_int(item, "number_of_tasks", min_value=1) or 1,
-        cpus_per_task=int(cpus_per_task),
-        memory_per_cpu=int(memory_per_cpu),
+        number_of_tasks=layout.number_of_tasks,
+        cpus_per_task=layout.cpus_per_task,
+        memory_per_cpu=layout.memory_per_cpu,
         enable_hyper_threading=_optional_bool(item, "enable_hyper_threading", default=False),
         resource_spec_price=build_resource_spec_price(quota=resolved_quota),
+        enable_notification=_optional_bool(item, "enable_notification", default=False),
+        max_time_hours=_optional_max_time_hours(item),
+        dataset_info=_resolved_dataset_info(
+            _optional_dataset_mounts(item),
+            workspace_id=workspace_id,
+            session=session,
+        ),
+        description=_optional_str(item, "description"),
+        keep_after_finish_hours=_optional_hours(item, "keep_after_finish"),
+        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
+        session=session,
     )
 
 def _project_request_value(config: Config, requested: str) -> str:
@@ -622,6 +771,10 @@ def _select_notebook_image(*, workspace_id: str, requested: str, session: Any):
                     source=source,
                     session=session,
                 )
+            except TransientAPIError:
+                # "not found" below would be a verdict on a catalog that was
+                # never listed. Say the platform did not answer instead.
+                raise
             except Exception:
                 continue
             images = images + extra_images
@@ -639,7 +792,10 @@ def _prepare_notebook_item(
     config: Config,
     session: Any,
 ) -> dict[str, Any]:
-    from inspire.cli.commands.notebook.notebook_create_flow import format_quota_display
+    from inspire.cli.commands.notebook.notebook_create_flow import (
+        _split_auto_stop_after,
+        format_quota_display,
+    )
 
     quota_spec = parse_quota(_require_condition_str(item, "quota", kind="notebook"))
     workspace_name = _require_condition_str(item, "workspace", kind="notebook")
@@ -696,6 +852,30 @@ def _prepare_notebook_item(
         "task_priority": task_priority,
         "resource_spec_price": resource_spec_price,
     }
+
+    dataset_info = _resolved_dataset_info(
+        _optional_dataset_mounts(item),
+        workspace_id=workspace_id,
+        session=session,
+    )
+    if dataset_info is not None:
+        create_kwargs["dataset_info"] = dataset_info
+    auto_stop_after = _optional_int(item, "auto_stop_after", min_value=2)
+    if auto_stop_after is not None:
+        stop_hour, stop_minute = _split_auto_stop_after(auto_stop_after)
+        create_kwargs["stop_hour"] = stop_hour
+        create_kwargs["stop_minute"] = stop_minute
+        # The timer only runs when auto-stop is armed, exactly as the create
+        # command couples them.
+        create_kwargs["auto_stop"] = True
+    for key, payload_key in (
+        ("enable_notification", "enable_notification"),
+        ("public_path_readonly", "is_publicpath_readonly"),
+        ("project_path_readonly", "is_projectuserspath_readonly"),
+    ):
+        value = _tristate_bool(item, key)
+        if value is not None:
+            create_kwargs[payload_key] = value
 
     post_start = _optional_str(item, "post_start")
     post_start_script_raw = _optional_str(item, "post_start_script")
@@ -852,6 +1032,7 @@ def _prepare_ray_item(
         group=_require_condition_str(item, "group", kind="ray"),
         quota=_require_condition_str(item, "quota", kind="ray"),
         shm_size=_optional_int(item, "shm_size", min_value=1),
+        public_path_readonly=_tristate_bool(item, "public_path_readonly"),
         workers=_ray_worker_specs(
             item,
             ctx=ctx,
@@ -918,7 +1099,7 @@ def _prepare_serving_item(
     if final_model_version is None:
         raise ConfigError("Could not infer model version. Set model_version in the batch item.")
 
-    return {
+    payload: dict[str, Any] = {
         "name": _require_str(item, "name"),
         "workspace_id": workspace_id,
         "project_id": project_id,
@@ -928,6 +1109,7 @@ def _prepare_serving_item(
         "mirror_id": _resolve_serving_image_id(
             _require_condition_str(item, "image", kind="serving"),
             session=session,
+            workspace_id=workspace_id,
         ),
         "command": _require_str(item, "command"),
         "port": _require_int(item, "port", min_value=1),
@@ -944,6 +1126,34 @@ def _prepare_serving_item(
         "custom_domain": _optional_str(item, "custom_domain"),
         "resource_spec_price": _build_serving_resource_spec_price(resolved),
     }
+    for key, kwarg in (
+        ("public_path_readonly", "is_publicpath_readonly"),
+        ("auto_scaling", "enable_auto_scaling"),
+    ):
+        value = _tristate_bool(item, key)
+        if value is not None:
+            payload[kwarg] = value
+    return payload
+
+
+def _plan_value_text(value: Any) -> str:
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, dict):
+        return ", ".join(f"{key}={_plan_value_text(sub)}" for key, sub in value.items())
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_plan_value_text(entry) for entry in value)
+    return str(value)
+
+
+def _echo_batch_plan(item: dict[str, Any]) -> None:
+    """Print one expanded item the way `<workload> create --dry-run` would."""
+    click.echo(f"Plan: {scrub_raw_ids(str(item.get('name') or '-'))}")
+    for key, value in item.items():
+        if key == "name" or value in (None, "", [], {}):
+            continue
+        label = key.replace("_", " ").capitalize()
+        click.echo(f"  {label}: {scrub_raw_ids(_plan_value_text(value))}")
 
 
 def _emit_batch_result(
@@ -951,6 +1161,7 @@ def _emit_batch_result(
     *,
     outputs: list[dict[str, Any]],
     output_limit: int | None,
+    dry_run: bool = False,
 ) -> None:
     public_outputs = [json_formatter.sanitize_json_data(item) for item in outputs]
     page = bound_collection(public_outputs, limit=output_limit)
@@ -965,9 +1176,17 @@ def _emit_batch_result(
         )
         return
 
-    for item in page.items:
-        name = item.get("name") or "-"
-        click.echo(f"- {scrub_raw_ids(str(name))}")
+    # A submit result is a list of what now exists, so names are the answer. A
+    # dry run is asked for the plan, and its help says it prints one.
+    if dry_run:
+        for index, item in enumerate(page.items):
+            if index:
+                click.echo("")
+            _echo_batch_plan(item)
+    else:
+        for item in page.items:
+            name = item.get("name") or "-"
+            click.echo(f"- {scrub_raw_ids(str(name))}")
     notice = truncation_notice(page, full_option="--all")
     if notice:
         click.echo(notice)
@@ -1055,7 +1274,11 @@ def job_batch(
         name, command, quota, workspace, project, group, image
         Optional fields use create-command defaults: priority, framework,
         nodes, max_time, auto_fault_tolerance, fault_tolerance_max_retry,
-        enable_notification, exclude_nodes, shm_size
+        fault_tolerance_retry_interval, enable_notification, exclude_nodes,
+        shm_size, dataset, env, description, keep_after_success,
+        keep_after_failure, public_path_readonly
+        `dataset` takes one "<name>:<version>" or a list of them; `env` takes
+        either a "KEY=VALUE" list or a table.
 
     \b
     Examples:
@@ -1114,6 +1337,7 @@ def job_batch(
                             "notifications": plan.create_kwargs.get("enable_notification"),
                             "exclude_nodes": job_submit.training_plan_exclude_nodes(plan),
                             "shared_memory_gib": plan.shm_size_gib,
+                            **_plan_mount_and_env_views(item),
                         },
                     )
                 )
@@ -1129,6 +1353,7 @@ def job_batch(
             ctx,
             outputs=outputs,
             output_limit=output_limit,
+            dry_run=dry_run,
         )
     except Exception as e:
         _handle_batch_exception(ctx, e)
@@ -1175,6 +1400,11 @@ def hpc_batch(
     \b
     Required fields after expansion:
         name, entrypoint, quota, workspace, project, group, image
+        Optional fields use create-command defaults: priority, image_type,
+        instance_count, number_of_tasks, cpus_per_task, memory_per_cpu,
+        enable_hyper_threading, max_time, keep_after_finish, dataset,
+        description, enable_notification, public_path_readonly
+        `dataset` takes one "<name>:<version>" or a list of them.
 
     \b
     Examples:
@@ -1228,6 +1458,7 @@ def hpc_batch(
             ctx,
             outputs=outputs,
             output_limit=output_limit,
+            dry_run=dry_run,
         )
     except Exception as e:
         _handle_batch_exception(ctx, e)
@@ -1276,6 +1507,12 @@ def notebook_batch(
     \b
     Required fields after expansion:
         name, quota, workspace, project, group, image
+        Optional fields use create-command defaults: priority, shm_size,
+        auto_stop, auto_stop_after, wait, post_start, post_start_script,
+        dataset, enable_notification, public_path_readonly,
+        project_path_readonly
+        `dataset` takes one "<name>:<version>" or a list of them;
+        `auto_stop_after` is in minutes and arms auto_stop.
 
     \b
     Examples:
@@ -1334,6 +1571,7 @@ def notebook_batch(
             ctx,
             outputs=outputs,
             output_limit=output_limit,
+            dry_run=dry_run,
         )
     except Exception as e:
         _handle_batch_exception(ctx, e)
@@ -1381,6 +1619,10 @@ def ray_batch(
     \b
     Required fields after expansion:
         name, command, workspace, project, image, group, quota, workers
+        Optional fields use create-command defaults: priority, description,
+        image_type, shm_size, public_path_readonly
+        Ray takes no dataset mounts: the platform rejects them, and the
+        console form has no 官方数据集 section either.
 
     \b
     Examples:
@@ -1431,6 +1673,7 @@ def ray_batch(
             ctx,
             outputs=outputs,
             output_limit=output_limit,
+            dry_run=dry_run,
         )
     except Exception as e:
         _handle_batch_exception(ctx, e)
@@ -1480,6 +1723,10 @@ def serving_batch(
     \b
     Required fields after expansion:
         name, model, workspace, project, group, quota, image, command, port
+        Optional fields use create-command defaults: priority, description,
+        replicas, nodes_per_replica, shm_size, custom_domain, auto_scaling,
+        public_path_readonly
+        Serving takes no dataset mounts: the platform rejects them.
 
     \b
     Examples:
@@ -1538,6 +1785,7 @@ def serving_batch(
             ctx,
             outputs=outputs,
             output_limit=output_limit,
+            dry_run=dry_run,
         )
     except Exception as e:
         _handle_batch_exception(ctx, e)

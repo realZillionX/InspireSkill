@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Optional
+import contextlib
+import io
+from typing import Any, Optional
 
 import click
 
@@ -43,34 +45,77 @@ from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
 
 
+_IMAGE_LIST_COMMAND = "inspire image list --workspace <workspace-name>"
+
+_WORKSPACE_HELP = "Workspace name, naming which image registry to read."
+
+
+def _resolve_registry_scope(
+    ctx: Context,
+    *,
+    workspace: str,
+    session: Any,
+) -> str | None:
+    """Resolve ``--workspace`` to the image registry a command addresses.
+
+    A workspace id is how the platform is told which registry to read: every
+    ``ListImages`` / ``CreateImage`` request carries ``registry_hint:
+    {workspace_id}``. It is a hint at a registry, not a partition — several
+    workspaces answer for the same one, and only a registry boundary actually
+    hides an image. The session's active workspace is still *not* a safe
+    default: this account's reaches an empty registry while its 67 custom
+    images live in another, so every image command takes the workspace
+    explicitly and threads this id down to the platform call.
+
+    Returns the workspace id, or ``None`` once the failure has been reported.
+    """
+    try:
+        workspace_id = resolve_workspace_operation_scope(
+            workspace=workspace,
+            session=session,
+        )
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        return None
+    return workspace_id
+
+
 def _resolve_image_name(
     ctx: Context,
     name: str,
     *,
     pick: Optional[int] = None,
     session=None,  # noqa: ANN001
+    workspace_id: str,
     require_live: bool = False,
 ) -> str:
-    """Resolve a custom-image name (``<name>:<version>`` or bare ``<name>``) to image_id.
+    """Resolve a custom-image name ``<name>:<version>`` to image_id.
 
-    Custom images are identified by ``name:version`` on the platform; a plain
-    name without ``:`` matches any version but can be ambiguous and will
-    fall through to the shared ambiguity UI.
+    Images are addressed by ``name:version`` — the version is part of the
+    identity, not an optional suffix. A bare name is answered with the
+    versions that do exist rather than a bare "not found", because that is
+    the whole of what the user is missing.
     """
     if session is None:
         session = require_web_session(ctx, hint=WEB_AUTH_HINT)
 
+    versions_for_bare_name: list[str] = []
+
     def _lister():
         bucket = []
         failed_sources: list[str] = []
-        for source in ("private", "public", "official"):
+        for source in _ALL_SOURCE_KEYS:
             try:
-                imgs = browser_api_module.list_images_by_source(source=source, session=session)
+                imgs = browser_api_module.list_images_by_source(
+                    source=source, session=session, workspace_id=workspace_id
+                )
             except Exception:
                 failed_sources.append(source)
                 continue
             for i in imgs:
                 full = f"{i.name}" if ":" in (i.name or "") else f"{i.name}:{i.version}" if i.version else i.name
+                if ":" not in name and full.split(":", 1)[0] == name:
+                    versions_for_bare_name.append(full)
                 bucket.append(
                     {
                         "name": full,
@@ -86,26 +131,97 @@ def _resolve_image_name(
             raise RuntimeError("Image catalog lookup is incomplete.")
         return bucket
 
-    return resolve_by_name(
-        ctx,
-        name=name,
-        resource_type="image",
-        list_candidates=_lister,
-        pick_index=pick,
-        session=session,
-        workspace_id=str(getattr(session, "workspace_id", "") or ""),
-        owner_scope="self",
-        require_live=require_live,
-        list_command="inspire image list",
-    )
+    def _resolve() -> str:
+        return resolve_by_name(
+            ctx,
+            name=name,
+            resource_type="image",
+            list_candidates=_lister,
+            pick_index=pick,
+            session=session,
+            workspace_id=workspace_id,
+            owner_scope="self",
+            require_live=require_live,
+            list_command=_IMAGE_LIST_COMMAND,
+        )
+
+    if ":" in name:
+        return _resolve()
+
+    # `name:version` is the identity, so a bare name is a near miss rather
+    # than an unknown image. Hold the generic "not found" until it is clear
+    # the better answer — which versions exist — is unavailable; emitting
+    # both would print two error blocks for one mistake.
+    held = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(held):
+            resolved = _resolve()
+    except SystemExit:
+        if versions_for_bare_name:
+            listed = ", ".join(sorted(set(versions_for_bare_name))[:10])
+            _handle_error(
+                ctx,
+                "NotFound",
+                f"Image {scrub_raw_ids(name)!r} needs a version.",
+                EXIT_CONFIG_ERROR,
+                hint=f"Existing: {scrub_raw_ids(listed)}",
+            )
+        click.echo(held.getvalue(), nl=False, err=True)
+        raise
+    click.echo(held.getvalue(), nl=False, err=True)
+    return resolved
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-_PUBLIC_SOURCE_CHOICES = ("official", "public", "private", "all")
-_ALL_SOURCE_KEYS = ("official", "public", "private")
+# The web image picker offers four tabs — 官方镜像 / 个人可见镜像 / 项目可见镜像 /
+# 公开可见镜像 — so an image catalogue that stops at three leaves the
+# project-visible ones unreachable by name.
+_PUBLIC_SOURCE_CHOICES = ("official", "public", "project", "private", "all")
+_ALL_SOURCE_KEYS = ("official", "public", "project", "private")
+
+_VISIBILITY_PUBLIC = "VISIBILITY_PUBLIC"
+_VISIBILITY_PROJECT = "VISIBILITY_PROJECT"
+_VISIBILITY_PRIVATE = "VISIBILITY_PRIVATE"
+
+_VISIBILITY_BY_NAME = {
+    "public": _VISIBILITY_PUBLIC,
+    "project": _VISIBILITY_PROJECT,
+    "private": _VISIBILITY_PRIVATE,
+}
+
+# `CreateImage.add_method`. 2 is the console's 本地推送: it reserves
+# ``<name>:<version>`` and answers with the address to docker-push to. 0 is
+# 文件上传 and answers ``InvalidParameter: no image uploaded`` unless a file
+# upload preceded it, which this CLI does not implement.
+IMAGE_ADD_METHOD_LOCAL_PUSH = 2
+
+# Short, safe platform reasons worth repeating to the user. The exception text
+# also carries the request payload, so only the recognised tail is echoed.
+_PLATFORM_REASON_PREFIXES = (
+    "Conflict:",
+    "InvalidParameter:",
+    "AccessForbidden:",
+    "ResourceNotFound:",
+)
+
+
+def _platform_reason(error: Exception) -> str:
+    """Return `: <platform reason>` when the platform named one, else `.`."""
+    text = scrub_raw_ids(error)
+    for prefix in _PLATFORM_REASON_PREFIXES:
+        index = text.find(prefix)
+        if index != -1:
+            return f": {text[index:].strip()}"
+    return "."
+
+
+def _parse_visibility_value(visibility: Optional[str]) -> Optional[str]:
+    if visibility is None:
+        return None
+    return _VISIBILITY_BY_NAME.get(visibility.lower(), _VISIBILITY_PRIVATE)
 
 
 def _parse_source_value(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
@@ -124,12 +240,23 @@ def _image_label(img: browser_api_module.CustomImageInfo) -> str:
     return name
 
 
-def _image_visibility(source: str) -> str:
+def _image_visibility(img: browser_api_module.CustomImageInfo) -> str:
+    """Return who can see the image: official / public / private.
+
+    `visibility` is the field ``set-visibility`` writes and the field the
+    ``--source public`` / ``--source private`` filters select on; `source` is
+    only the registry namespace and reads SOURCE_PUBLIC for personal images
+    too, so it cannot answer this. Official images carry no `visibility`, so
+    they are still recognised by `source`.
+    """
+    source = str(img.source or "").strip()
+    if source == "SOURCE_OFFICIAL":
+        return "official"
     return {
-        "SOURCE_OFFICIAL": "official",
-        "SOURCE_PUBLIC": "public",
-        "SOURCE_PRIVATE": "private",
-    }.get(str(source or "").strip(), "")
+        _VISIBILITY_PUBLIC: "public",
+        _VISIBILITY_PROJECT: "project",
+        _VISIBILITY_PRIVATE: "private",
+    }.get(str(img.visibility or "").strip(), "")
 
 
 def _image_summary(img: browser_api_module.CustomImageInfo) -> dict[str, str]:
@@ -138,7 +265,7 @@ def _image_summary(img: browser_api_module.CustomImageInfo) -> dict[str, str]:
         "name": scrub_raw_ids(_image_label(img)),
         "status": scrub_raw_ids(img.status),
         "framework": scrub_raw_ids(img.framework),
-        "visibility": _image_visibility(img.source),
+        "visibility": _image_visibility(img),
     }
 
 
@@ -204,15 +331,26 @@ def _dedupe_images_by_id(
 
 
 @click.command("list")
+@click.option("--workspace", required=True, metavar="NAME", help=_WORKSPACE_HELP)
 @click.option(
     "--source",
     "-s",
     type=str,
     callback=_parse_source_value,
-    metavar="[official|public|private|all]",
+    metavar="[official|public|project|private|all]",
     default="all",
     show_default=True,
     help="Image source filter",
+)
+@click.option(
+    "--keyword",
+    default=None,
+    metavar="KEYWORD",
+    help=(
+        "Case-insensitive substring filter on the image name, matching the "
+        "console's name search. A registry holds thousands of images, so "
+        "paging to one by hand is not a plan."
+    ),
 )
 @click.option(
     "--limit",
@@ -225,11 +363,13 @@ def _dedupe_images_by_id(
 @pass_context
 def list_images_cmd(
     ctx: Context,
+    workspace: str,
     source: str,
+    keyword: str | None,
     limit: int | None,
     show_all: bool,
 ) -> None:
-    """List visible Docker images."""
+    """List the Docker images visible in one workspace's registry."""
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
     except ValueError as e:
@@ -241,6 +381,11 @@ def list_images_cmd(
         hint=WEB_AUTH_HINT,
     )
 
+    scope = _resolve_registry_scope(ctx, workspace=workspace, session=session)
+    if scope is None:
+        return
+    workspace_id = scope
+
     images: list[browser_api_module.CustomImageInfo] = []
     warnings: list[str] = []
 
@@ -249,7 +394,7 @@ def list_images_cmd(
             for src_key in _ALL_SOURCE_KEYS:
                 try:
                     items = browser_api_module.list_images_by_source(
-                        source=src_key, session=session
+                        source=src_key, session=session, workspace_id=workspace_id
                     )
                 except Exception:
                     warnings.append(f"{src_key} image catalog unavailable.")
@@ -267,7 +412,9 @@ def list_images_cmd(
                 )
                 return
         else:
-            items = browser_api_module.list_images_by_source(source=source, session=session)
+            items = browser_api_module.list_images_by_source(
+                source=source, session=session, workspace_id=workspace_id
+            )
             images.extend(items)
     except Exception:
         _handle_error(
@@ -279,6 +426,9 @@ def list_images_cmd(
         return
 
     results = [_image_summary(image) for image in images]
+    if keyword:
+        needle = keyword.strip().casefold()
+        results = [row for row in results if needle in row["name"].casefold()]
     page = bound_collection(results, limit=effective_limit)
     if ctx.json_output:
         payload: dict[str, object] = {
@@ -306,6 +456,7 @@ def list_images_cmd(
 
 @click.command("detail")
 @click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help=_WORKSPACE_HELP)
 @click.option(
     "--pick",
     type=click.IntRange(1),
@@ -316,6 +467,7 @@ def list_images_cmd(
 def image_detail(
     ctx: Context,
     name: str,
+    workspace: str,
     pick: Optional[int],
 ) -> None:
     """Show an image's status, framework, and visibility.
@@ -326,15 +478,19 @@ def image_detail(
         ctx,
         name,
         resource_type="image",
-        list_command="inspire image list",
+        list_command=_IMAGE_LIST_COMMAND,
     )
     session = require_web_session(
         ctx,
         hint=WEB_AUTH_HINT,
     )
 
+    scope = _resolve_registry_scope(ctx, workspace=workspace, session=session)
+    if scope is None:
+        return
+    workspace_id = scope
+
     try:
-        workspace_id = str(getattr(session, "workspace_id", "") or "")
         image = run_with_stale_handle_retry(
             name=name,
             resolve_cached=lambda: _resolve_image_name(
@@ -342,12 +498,14 @@ def image_detail(
                 name,
                 pick=pick,
                 session=session,
+                workspace_id=workspace_id,
             ),
             resolve_live=lambda live_name: _resolve_image_name(
                 ctx,
                 live_name,
                 pick=pick,
                 session=session,
+                workspace_id=workspace_id,
                 require_live=True,
             ),
             operation=lambda image_id: browser_api_module.get_image_detail(
@@ -402,6 +560,7 @@ def image_detail(
     metavar="NAME",
     help="Image name (lowercase, digits, dashes, dots, underscores)",
 )
+@click.option("--workspace", required=True, metavar="NAME", help=_WORKSPACE_HELP)
 @click.option(
     "--version",
     "-v",
@@ -418,64 +577,69 @@ def image_detail(
 )
 @click.option(
     "--visibility",
-    type=click.Choice(["private", "public"], case_sensitive=False),
+    type=click.Choice(["private", "project", "public"], case_sensitive=False),
     default="private",
     show_default=True,
     help="Image visibility",
 )
 @click.option(
-    "--method",
-    type=click.Choice(["push", "address"], case_sensitive=False),
-    default="push",
-    show_default=True,
-    help="'push': create a slot then docker-push your image; "
-    "'address': register an image already hosted elsewhere",
-)
-@click.option(
     "--wait/--no-wait",
     default=False,
-    help="Wait for image to reach READY status",
+    help=(
+        "Wait for the pushed image to reach READY. Only useful once the "
+        "docker push below has finished; an unpushed slot never gets there."
+    ),
 )
 @pass_context
 def register_image_cmd(
     ctx: Context,
     name: str,
+    workspace: str,
     version: str,
     description: str,
     visibility: str,
-    method: str,
     wait: bool,
 ) -> None:
-    """Register an external Docker image on the platform.
+    """Claim a registry slot for an image you will docker-push yourself.
 
-    Push mode prints the registry-specific docker tag and docker push commands.
-    Address mode registers an image already hosted in a registry. Use image
-    save for a running notebook.
+    This is the platform's 本地推送 flow: it reserves ``<name>:<version>`` and
+    answers with the address to push to, which this command prints along with
+    the docker commands. The image stays FAILED until that push lands — the
+    slot is a reservation, not an image.
+
+    The platform's other route, 文件上传 (upload an image tar), needs a file
+    upload this CLI does not implement; use the web console for that. To turn a
+    prepared notebook into an image use ``inspire notebook save-image``.
     """
     session = require_web_session(
         ctx,
         hint=WEB_AUTH_HINT,
     )
 
-    visibility_value = (
-        "VISIBILITY_PUBLIC" if visibility.lower() == "public" else "VISIBILITY_PRIVATE"
-    )
-    add_method_value = 2 if method.lower() == "address" else 0
+    scope = _resolve_registry_scope(ctx, workspace=workspace, session=session)
+    if scope is None:
+        return
+    workspace_id = scope
+
+    visibility_value = _parse_visibility_value(visibility)
+    assert visibility_value is not None
 
     try:
         result = browser_api_module.create_image(
             name=name,
             version=version,
+            workspace_id=workspace_id,
             description=description,
             visibility=visibility_value,
-            add_method=add_method_value,
+            add_method=IMAGE_ADD_METHOD_LOCAL_PUSH,
             session=session,
         )
-    except Exception:
+    except Exception as e:
+        detail = _platform_reason(e)
         _handle_error(
             ctx,
             "APIError",
-            "Could not register image.",
+            f"Could not register image{detail}",
             EXIT_API_ERROR,
         )
         return
@@ -490,7 +654,7 @@ def register_image_cmd(
         resource_type="image",
         resource_id=image_id,
         name=image_label,
-        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        workspace_id=workspace_id,
         owner_scope="self",
     )
 
@@ -511,9 +675,9 @@ def register_image_cmd(
     if ctx.json_output:
         payload = {
             "name": image_label,
-            "status": "ready" if ready else "registered",
+            "status": "ready" if ready else "awaiting-push",
         }
-        if registry_url and method.lower() == "push":
+        if registry_url:
             payload["registry"] = scrub_raw_ids(registry_url)
         click.echo(json_formatter.format_json(payload))
         return
@@ -521,237 +685,18 @@ def register_image_cmd(
     click.echo(
         format_mutation_success(
             "Image",
-            "ready" if ready else "registered",
+            "ready" if ready else "slot reserved",
             image_label,
         )
     )
-    if registry_url and method.lower() == "push":
+    if registry_url:
         safe_registry_url = scrub_raw_ids(registry_url)
+        # Without these three lines the slot is unusable, so they are the
+        # point of the command rather than a footnote.
+        click.echo(f"docker login {safe_registry_url.split('/', 1)[0]}")
         click.echo(f"docker tag <local-image> {safe_registry_url}")
         click.echo(f"docker push {safe_registry_url}")
-
-
-# ---------------------------------------------------------------------------
-# save
-# ---------------------------------------------------------------------------
-
-
-_VISIBILITY_PUBLIC = "VISIBILITY_PUBLIC"
-_VISIBILITY_PRIVATE = "VISIBILITY_PRIVATE"
-
-
-def _parse_visibility_value(visibility: Optional[str]) -> Optional[str]:
-    if visibility is None:
-        return None
-    return _VISIBILITY_PUBLIC if visibility.lower() == "public" else _VISIBILITY_PRIVATE
-
-
-@click.command("save")
-@click.argument("notebook", metavar="NAME")
-@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
-@click.option(
-    "--pick",
-    type=click.IntRange(1),
-    default=None,
-    help=NAME_PICK_HELP,
-)
-@click.option(
-    "--name",
-    "-n",
-    required=True,
-    metavar="NAME",
-    help="Name for the saved image",
-)
-@click.option(
-    "--version",
-    "-v",
-    default="v1",
-    metavar="VERSION",
-    show_default=True,
-    help="Image version tag",
-)
-@click.option(
-    "--description",
-    "-d",
-    default="",
-    metavar="DESCRIPTION",
-    help="Image description",
-)
-@click.option(
-    "--wait/--no-wait",
-    default=False,
-    help="Wait for image to reach READY status",
-)
-@click.option(
-    "--visibility",
-    type=click.Choice(["private", "public"], case_sensitive=False),
-    default=None,
-    help="Image visibility. Omit to accept the platform default.",
-)
-@pass_context
-def save_image_cmd(
-    ctx: Context,
-    notebook: str,
-    workspace: str,
-    pick: Optional[int],
-    name: str,
-    version: str,
-    description: str,
-    wait: bool,
-    visibility: Optional[str],
-) -> None:
-    """Save a running notebook as a custom Docker image.
-
-    NAME is the notebook name from inspire notebook list. The notebook remains
-    available after the save completes.
-    """
-    notebook = reject_id_at_boundary(
-        ctx,
-        notebook,
-        resource_type="notebook",
-        list_command="inspire notebook list --workspace <workspace|all>",
-    )
-    session = require_web_session(
-        ctx,
-        hint=WEB_AUTH_HINT,
-    )
-
-    # Resolve the notebook name through the notebook
-    # resolver, which rejects handle-shaped normal CLI inputs.
-    from inspire.cli.commands.notebook.notebook_lookup import _resolve_notebook_id
-    from inspire.cli.utils.notebook_cli import get_base_url
-
-    try:
-        workspace_id = resolve_workspace_operation_scope(
-            workspace=workspace,
-            session=session,
-        )
-    except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-        return
-    base_url = get_base_url()
-    notebook_id, _ = _resolve_notebook_id(
-        ctx,
-        session=session,
-        base_url=base_url,
-        identifier=notebook,
-        json_output=ctx.json_output,
-        workspace_ids=[workspace_id],
-        pick=pick,
-        require_live=True,
-    )
-
-    requested_visibility = _parse_visibility_value(visibility)
-    visibility_label = visibility.lower() if visibility else ""
-
-    try:
-        result = browser_api_module.save_notebook_as_image(
-            notebook_id=notebook_id,
-            name=name,
-            version=version,
-            description=description,
-            session=session,
-        )
-    except Exception:
-        _handle_error(
-            ctx,
-            "APIError",
-            "Could not save notebook as an image.",
-            EXIT_API_ERROR,
-        )
-        return
-
-    image_id = result.get("image", {}).get("image_id", "") or result.get("image_id", "")
-    image_label = scrub_raw_ids(f"{name}:{version}")
-
-    if not image_id:
-        try:
-            want_suffix_1 = f"/{name}:{version}"
-            want_name_1 = f"{name}:{version}"
-            matches = []
-            for img in browser_api_module.list_images_by_source(
-                source="private", session=session
-            ):
-                img_name = (img.name or "").strip()
-                img_url = (img.url or "").strip()
-                img_version = (img.version or "").strip()
-                # The API sometimes puts name as "foo" + version "v1", other
-                # times name as "foo:v1"; URL always ends in "/<ns>/foo:v1".
-                if (
-                    (img_name == name and img_version == version)
-                    or img_name == want_name_1
-                    or img_url.endswith(want_suffix_1)
-                ):
-                    matches.append(img)
-            if matches:
-                matches.sort(key=lambda img: img.created_at or "", reverse=True)
-                image_id = matches[0].image_id
-        except Exception:
-            pass
-
-    remember_resource_identity(
-        session=session,
-        resource_type="image",
-        resource_id=image_id,
-        name=image_label,
-        workspace_id=str(getattr(session, "workspace_id", "") or ""),
-        owner_scope="self",
-    )
-
-    visibility_warning: str | None = None
-    if requested_visibility and image_id:
-        try:
-            browser_api_module.update_image(
-                image_id=image_id,
-                visibility=requested_visibility,
-                session=session,
-            )
-        except Exception:
-            visibility_warning = (
-                "Visibility was not updated. Retry with: "
-                f"inspire image set-visibility {image_label} "
-                f"--visibility {visibility_label}"
-            )
-    elif requested_visibility and not image_id:
-        visibility_warning = (
-            "Set visibility after the image appears with: "
-            f"inspire image set-visibility {image_label} "
-            f"--visibility {visibility_label}"
-        )
-
-    ready = False
-    if wait and image_id:
-        try:
-            browser_api_module.wait_for_image_ready(image_id=image_id, session=session)
-            ready = True
-        except (TimeoutError, ValueError):
-            _handle_error(
-                ctx,
-                "APIError",
-                "Image did not become ready.",
-                EXIT_API_ERROR,
-            )
-            return
-
-    if ctx.json_output:
-        payload: dict[str, object] = {
-            "name": image_label,
-            "status": "ready" if ready else "saving",
-        }
-        if visibility_warning:
-            payload["warning"] = visibility_warning
-        click.echo(json_formatter.format_json(payload))
-        return
-
-    click.echo(
-        format_mutation_success(
-            "Image",
-            "ready" if ready else "saving",
-            image_label,
-        )
-    )
-    if visibility_warning:
-        click.echo(f"Warning: {visibility_warning}", err=True)
+        click.echo("The image stays FAILED until that push completes.")
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +706,7 @@ def save_image_cmd(
 
 @click.command("set-visibility")
 @click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help=_WORKSPACE_HELP)
 @click.option(
     "--pick",
     type=click.IntRange(1),
@@ -769,7 +715,7 @@ def save_image_cmd(
 )
 @click.option(
     "--visibility",
-    type=click.Choice(["private", "public"], case_sensitive=False),
+    type=click.Choice(["private", "project", "public"], case_sensitive=False),
     required=True,
     default=None,
     help="Target visibility.",
@@ -778,26 +724,39 @@ def save_image_cmd(
 def set_image_visibility_cmd(
     ctx: Context,
     name: str,
+    workspace: str,
     pick: Optional[int],
     visibility: str,
 ) -> None:
-    """Set a custom image's visibility."""
+    """Set a custom image's visibility: private, project, or public.
+
+    Going public is one-way. The platform stops treating the creator as the
+    owner of a public image, so it can no longer be made private again nor
+    deleted — only a platform administrator can remove it. Widen the audience
+    only once the image is worth keeping.
+    """
     name = reject_id_at_boundary(
         ctx,
         name,
         resource_type="image",
-        list_command="inspire image list",
+        list_command=_IMAGE_LIST_COMMAND,
     )
     session = require_web_session(
         ctx,
         hint=WEB_AUTH_HINT,
     )
 
+    scope = _resolve_registry_scope(ctx, workspace=workspace, session=session)
+    if scope is None:
+        return
+    workspace_id = scope
+
     image_id = _resolve_image_name(
         ctx,
         name,
         pick=pick,
         session=session,
+                workspace_id=workspace_id,
         require_live=True,
     )
     visibility_value = _parse_visibility_value(visibility)
@@ -823,7 +782,7 @@ def set_image_visibility_cmd(
         resource_type="image",
         resource_id=image_id,
         name=name,
-        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        workspace_id=workspace_id,
         owner_scope="self",
     )
     if ctx.json_output:
@@ -847,6 +806,7 @@ def set_image_visibility_cmd(
 
 @click.command("delete")
 @click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help=_WORKSPACE_HELP)
 @click.option(
     "--yes",
     "-y",
@@ -863,6 +823,7 @@ def set_image_visibility_cmd(
 def delete_image_cmd(
     ctx: Context,
     name: str,
+    workspace: str,
     yes: bool,
     pick: Optional[int],
 ) -> None:
@@ -871,7 +832,7 @@ def delete_image_cmd(
         ctx,
         name,
         resource_type="image",
-        list_command="inspire image list",
+        list_command=_IMAGE_LIST_COMMAND,
     )
     require_confirmation(
         ctx,
@@ -884,22 +845,46 @@ def delete_image_cmd(
         hint=WEB_AUTH_HINT,
     )
 
+    scope = _resolve_registry_scope(ctx, workspace=workspace, session=session)
+    if scope is None:
+        return
+    workspace_id = scope
+
     image_id = _resolve_image_name(
         ctx,
         name,
         pick=pick,
         session=session,
+                workspace_id=workspace_id,
         require_live=True,
     )
 
     try:
         browser_api_module.delete_image(image_id=image_id, session=session)
-    except Exception:
+    except Exception as e:
+        # "AccessForbidden" is the one-way door, not a transient failure: once
+        # an image is public the platform stops treating its creator as its
+        # owner, so it can be neither deleted nor made private again. Saying
+        # so beats a retry loop against a permission that will never appear.
+        # The exception text itself stays out of the message — it carries the
+        # request payload.
+        forbidden = "AccessForbidden" in str(e)
         _handle_error(
             ctx,
             "APIError",
-            "Could not delete image.",
+            (
+                "Cannot delete a public image."
+                if forbidden
+                else "Could not delete image."
+            ),
             EXIT_API_ERROR,
+            hint=(
+                "Its creator loses ownership once it is public: it can be "
+                "neither deleted nor made private again. Ask a platform "
+                "administrator to remove it."
+                if forbidden
+                else None
+            ),
         )
         return
 
@@ -908,7 +893,7 @@ def delete_image_cmd(
         resource_type="image",
         resource_id=image_id,
         name=name,
-        workspace_id=str(getattr(session, "workspace_id", "") or ""),
+        workspace_id=workspace_id,
         owner_scope="self",
     )
 
@@ -928,6 +913,5 @@ __all__ = [
     "image_detail",
     "list_images_cmd",
     "register_image_cmd",
-    "save_image_cmd",
     "set_image_visibility_cmd",
 ]

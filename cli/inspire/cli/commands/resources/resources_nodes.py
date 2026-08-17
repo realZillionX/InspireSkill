@@ -26,8 +26,9 @@ from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
-from inspire.config.workspaces import resolve_workspace_query_scope
+from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
+from inspire.platform.web.browser_api import NodeSpec
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 _REDACTED_ID_RE = re.compile(
@@ -45,14 +46,10 @@ def _resolve_workspace_scope(
     config: Optional[Config],
     session,
     workspace: Optional[str],
-) -> tuple[Optional[str], bool]:
+) -> str:
     if config is None:
         raise ConfigError("Workspace selection requires a loaded config.")
-    workspace_ids, all_workspaces = resolve_workspace_query_scope(
-        workspace=workspace,
-        session=session,
-    )
-    return (None if all_workspaces else workspace_ids[0], all_workspaces)
+    return resolve_workspace_operation_scope(workspace=workspace, session=session)
 
 
 def _public_group(row: dict) -> dict[str, object]:
@@ -64,6 +61,18 @@ def _public_group(row: dict) -> dict[str, object]:
         "ready_nodes": row["ready_nodes"],
         "full_free_nodes": row["full_free_nodes"],
         "full_free_gpus": row["full_free_gpus"],
+        "node_specs": row["node_specs"],
+    }
+
+
+def _public_spec(spec: NodeSpec) -> dict[str, object]:
+    return {
+        "node_type": spec.node_type,
+        "gpu_type": spec.gpu_type,
+        "gpu_count": spec.gpu_count,
+        "cpu_count": spec.cpu_count,
+        "memory_gib": spec.memory_gib,
+        "job_types": list(spec.job_types),
     }
 
 
@@ -71,8 +80,8 @@ def _public_group(row: dict) -> dict[str, object]:
 @click.option(
     "--workspace",
     required=True,
-    metavar="NAME|all",
-    help="Workspace name or 'all'.",
+    metavar="NAME",
+    help="Workspace name.",
 )
 @click.option(
     "--group",
@@ -115,6 +124,11 @@ def list_nodes(
     when a workload needs whole nodes instead of scattered free GPUs.
 
     \b
+    `Node Spec` is the largest single node the group can schedule onto, which
+    is the ceiling a `--quota gpu,cpu,mem` triple has to fit under. Groups with
+    mixed hardware report every distinct shape under `--json`.
+
+    \b
     Examples:
         inspire resources nodes --workspace 分布式训练空间
         inspire resources nodes --workspace all --group H200
@@ -142,7 +156,7 @@ def list_nodes(
         except Exception:
             config = None
         session = get_web_session()
-        workspace_id, all_workspaces = _resolve_workspace_scope(
+        workspace_id = _resolve_workspace_scope(
             config=config,
             session=session,
             workspace=workspace,
@@ -153,7 +167,6 @@ def list_nodes(
             workspace_id=workspace_id,
             session=session,
             include_cpu=False,
-            all_workspaces=all_workspaces,
         )
         accurate_map = {a.group_id: a.available_gpus for a in accurate_availability}
         name_map = {a.group_id: a.group_name for a in accurate_availability}
@@ -163,10 +176,11 @@ def list_nodes(
         }
 
         group_ids = [a.group_id for a in accurate_availability]
+        workspace_id_map = {a.group_id: a.workspace_id for a in accurate_availability}
         counts = browser_api_module.get_full_free_node_counts(
             group_ids,
             gpu_per_node=8,
-            workspace_id_by_group={a.group_id: a.workspace_id for a in accurate_availability},
+            workspace_id_by_group=workspace_id_map,
             session=session,
         )
 
@@ -181,6 +195,14 @@ def list_nodes(
                 continue
             # Use accurate available GPUs if available, otherwise fall back to computed
             free_gpus = accurate_map.get(c.group_id, c.full_free_nodes * c.gpu_per_node)
+            # Free-node counts say how much is idle but never what the idle
+            # hardware is, so a `--quota gpu,cpu,mem` triple could not be
+            # checked against the group it would be submitted to.
+            specs = browser_api_module.list_node_specs(
+                workspace_id_map.get(c.group_id, ""),
+                logic_compute_group_id=c.group_id,
+                session=session,
+            )
             filtered.append(
                 {
                     "group_id": c.group_id,
@@ -191,6 +213,8 @@ def list_nodes(
                     "ready_nodes": c.ready_nodes,
                     "full_free_nodes": c.full_free_nodes,
                     "full_free_gpus": free_gpus,
+                    "node_specs": [_public_spec(spec) for spec in specs],
+                    "node_spec_label": specs[0].label if specs else "",
                 }
             )
 
@@ -222,46 +246,21 @@ def list_nodes(
             click.echo("No compute groups match.")
             return
 
-        show_workspace = (
-            len({row["workspace_name"] for row in shown_rows if row["workspace_name"]}) > 1
-        )
-        if show_workspace:
-            headers: tuple[str, ...] = (
-                "Workspace",
-                "Group",
-                "Full Free",
-                "Ready",
-                "Total",
-                "Free GPUs",
+        headers = ("Group", "Node Spec", "Full Free", "Ready", "Total", "Free GPUs")
+        widths = [25, 22, 10, 8, 8, 10]
+        aligns = ["left", "left", "right", "right", "right", "right"]
+
+        table_rows: list[tuple[object, ...]] = [
+            (
+                _display_name(row["group_name"]),
+                row["node_spec_label"] or "-",
+                row["full_free_nodes"],
+                row["ready_nodes"],
+                row["total_nodes"],
+                row["full_free_gpus"],
             )
-            widths = [16, 25, 10, 8, 8, 10]
-            aligns = ["left", "left", "right", "right", "right", "right"]
-        else:
-            headers = ("Group", "Full Free", "Ready", "Total", "Free GPUs")
-            widths = [25, 10, 8, 8, 10]
-            aligns = ["left", "right", "right", "right", "right"]
-
-        table_rows: list[tuple[object, ...]] = []
-        for row in shown_rows:
-            name = _display_name(row["group_name"])
-            full_free = row["full_free_nodes"]
-            ready = row["ready_nodes"]
-            total = row["total_nodes"]
-            free_gpus = row["full_free_gpus"]
-
-            if show_workspace:
-                table_rows.append(
-                    (
-                        _display_name(row["workspace_name"], fallback=""),
-                        name,
-                        full_free,
-                        ready,
-                        total,
-                        free_gpus,
-                    )
-                )
-            else:
-                table_rows.append((name, full_free, ready, total, free_gpus))
+            for row in shown_rows
+        ]
         click.echo(
             "\n".join(render_table(headers, table_rows, widths, aligns=aligns, line_char="─"))
         )

@@ -6,6 +6,9 @@ The ``/api/v2/ray`` Actions were verified against a live job on the
 list; top-level ``workspace_id`` rather than the ``workspace.*`` ``filter``
 envelope; error handling via ``ResponseMetadata.Error``) so future refactors
 can't silently change the wire format and break a live workspace.
+
+``GetJobLog`` is the one Action that does not follow the ``ray_job_id`` rule;
+it lives in ``test_browser_api_ray_logs.py`` with the reason spelled out.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from inspire.platform.web.browser_api.ray_jobs import (
     list_ray_job_scaling_histories,
     list_ray_job_users,
     list_ray_jobs,
+    start_ray_job,
     stop_ray_job,
 )
 
@@ -200,6 +204,119 @@ def test_delete_ray_job_posts_expected_body(monkeypatch) -> None:
 
     assert record["url"].endswith("/api/v2/ray?Action=DeleteJob")
     assert record["body"] == {"ray_job_id": "ray-42"}
+
+
+def test_start_ray_job_posts_expected_body(monkeypatch) -> None:
+    # `StartJob` is the counterpart to `StopJob`: the platform keeps the head
+    # and worker-group spec on the record, so restarting needs nothing else.
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {"Result": {"ray_job": {"ray_job_id": "ray-42", "status": "PENDING"}}},
+        record,
+    )
+
+    result = start_ray_job("ray-42", session=_FakeSession())
+
+    assert record["url"].endswith("/api/v2/ray?Action=StartJob")
+    assert record["body"] == {"ray_job_id": "ray-42"}
+    assert result == {"ray_job": {"ray_job_id": "ray-42", "status": "PENDING"}}
+
+
+def test_start_ray_job_requires_ray_job_selection() -> None:
+    with pytest.raises(ValueError, match="Ray job selection is required\\."):
+        start_ray_job("  ", session=_FakeSession())
+
+
+def test_start_ray_job_surfaces_platform_error(monkeypatch) -> None:
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "ResponseMetadata": {
+                "Error": {"Code": "Conflict", "Message": "job is already running"}
+            }
+        },
+        record,
+    )
+
+    with pytest.raises(ValueError, match="Ray Job start failed: .*Conflict"):
+        start_ray_job("ray-42", session=_FakeSession())
+
+
+def test_start_ray_job_restates_the_status_rejection(monkeypatch) -> None:
+    # Live wire text, verified on an owned job: `ray` refuses an operation the
+    # job's status does not allow with `InternalError`, not `Conflict`. Passed
+    # through, a permanent rejection reads as a server fault worth retrying.
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "ResponseMetadata": {
+                "Error": {
+                    "Code": "InternalError",
+                    "Message": "RayJob status not allow start",
+                }
+            }
+        },
+        record,
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        start_ray_job("ray-42", session=_FakeSession())
+
+    assert str(excinfo.value) == (
+        "Ray Job start failed: only a stopped Ray job can be started."
+    )
+    assert "InternalError" not in str(excinfo.value)
+
+
+def test_stop_ray_job_restates_the_status_rejection(monkeypatch) -> None:
+    # `StopJob` is not idempotent: an already-stopped job answers the same
+    # `InternalError` shape as an unstartable one.
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "ResponseMetadata": {
+                "Error": {
+                    "Code": "InternalError",
+                    "Message": "RayJob status not allow stop",
+                }
+            }
+        },
+        record,
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        stop_ray_job("ray-42", session=_FakeSession())
+
+    assert str(excinfo.value) == (
+        "Ray Job stop failed: only a live Ray job can be stopped."
+    )
+
+
+def test_unrelated_internal_error_is_not_restated_as_a_status_rejection(
+    monkeypatch,
+) -> None:
+    # The restatement keys on the status wording, not on the code: a genuine
+    # server fault has to keep reading like one.
+    record: dict[str, Any] = {}
+    _install_fake_request(
+        monkeypatch,
+        {
+            "ResponseMetadata": {
+                "Error": {
+                    "Code": "InternalError",
+                    "Message": "internal server error",
+                }
+            }
+        },
+        record,
+    )
+
+    with pytest.raises(ValueError, match="Ray Job start failed: .*internal server"):
+        start_ray_job("ray-42", session=_FakeSession())
 
 
 def test_stop_ray_job_requires_ray_job_selection() -> None:
@@ -400,6 +517,7 @@ def test_list_ray_job_scaling_histories_posts_expected_body(monkeypatch) -> None
         "ray_job_id": "ray-42",
         "page_num": 2,
         "page_size": 25,
+        "worker_group_name": "",
     }
 
 

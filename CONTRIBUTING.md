@@ -30,6 +30,14 @@ uv run pre-commit install --config ../.pre-commit-config.yaml
 uv run pre-commit run --config ../.pre-commit-config.yaml --all-files
 ```
 
+要用真实的 `inspire` 可执行文件跑 live smoke 时，从本地源码重装必须带 `--no-cache`：
+
+```bash
+uv tool install --force --no-cache .
+```
+
+版本号没变时 `uv` 会直接复用缓存里的构建产物，`--force` 也拦不住——装完的还是上一份代码，而命令照常运行，于是 live 验证会去核对一个并不存在的改动。
+
 ## 事实来源
 
 命令表面以 CLI help 为准。新增、删除或修改命令时，`inspire --help`、`inspire <command-group> --help` 和 `inspire <command-group> <subcommand> --help` 必须反映真实 Agent 入口；日常文档引用 CLI Help，不复制完整命令表。
@@ -60,7 +68,7 @@ Path alias 只表示远端路径。`me`、`public`、`global-me` 和存储池前
 
 公网和 SII 内部源分开判断。公网下载、外部 Git、Hugging Face 权重和外部数据源通常放在 `CPU资源空间` 的可上网 notebook；PIP、Apt、Conda、npm、Maven、Docker 镜像仓库、OSS 和 NTP 等内部源优先在目标 notebook 中按实际可达性配置，`分布式训练空间` 等 GPU 空间也可以直接跑通依赖。
 
-运行环境跑通后要保存成镜像。`image save` 会触发一段中等时长的镜像保存过程，过程中不可操作该 notebook；保存完毕后 notebook 不会被自动停止，仍可继续连接和使用。保存出的镜像才是后续 notebook / job / HPC / Ray / serving 应复用的稳定环境。
+运行环境跑通后要保存成镜像。保存是 notebook 的生命周期事件，不是镜像目录操作：`notebook save-image` 会触发一段中等时长的镜像保存过程，过程中不可操作该 notebook；保存完毕后 notebook 不会被自动停止，仍可继续连接和使用。保存出的镜像才是后续 notebook / job / HPC / Ray / serving 应复用的稳定环境。
 
 观察优先用平台事件、指标和实例视图。失败先看 `events`，程序输出看 `logs`，资源是否真的工作看 `metrics`，实际运行单元看 `instances`。需要进入容器看瞬时状态时用 `exec` 或 `shell`，不要为一个观察问题保留旁路命令。
 

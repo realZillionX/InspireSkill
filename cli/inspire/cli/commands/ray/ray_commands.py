@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional, cast
+import sys
+import time
+from dataclasses import dataclass
+from typing import Any, Optional, Sequence, cast
 
 import click
 
@@ -27,7 +30,11 @@ from inspire.cli.utils.errors import (
     exit_with_error as _handle_error,
     require_confirmation,
 )
-from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, run_events_command
+from inspire.cli.utils.events import (
+    DEFAULT_EVENT_TAIL,
+    event_sort_key,
+    run_events_command,
+)
 from inspire.cli.utils.id_resolver import (
     NAME_PICK_HELP,
     forget_resource_identity,
@@ -55,6 +62,7 @@ from inspire.config.workspaces import (
     workspace_label,
     workspace_name_map,
 )
+from inspire.cli.utils.job_shell import JobShellError, open_job_shell
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
@@ -301,6 +309,7 @@ def _public_ray_instances(
             ("status", ("status", "instance_status", "phase", "state")),
             ("role", ("role", "worker_group_name", "component")),
             ("type", ("type", "instance_type")),
+            ("node", ("node_name", "node", "host_name")),
         ):
             value = _public_ray_instance_text(inst, *candidates)
             if value:
@@ -324,6 +333,7 @@ def _format_ray_instances(instances: list[dict[str, Any]]) -> str:
         for key, label in (
             ("role", "Role"),
             ("type", "Type"),
+            ("node", "Node"),
             ("resource", "Resource"),
             ("rank", "Rank"),
         )
@@ -351,6 +361,116 @@ def _format_ray_instances(instances: list[dict[str, Any]]) -> str:
         widths,
     )
     return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+
+
+class RayInstanceSelectionError(ValueError):
+    """A ``--instance`` selector matched no instance in the Ray cluster."""
+
+
+@dataclass(frozen=True)
+class RayInstanceView:
+    """One Ray pod, split into what the Agent sees and what the API needs.
+
+    ``handle`` is the pod name ``GetJobLog`` scopes on. It is a platform
+    handle — ``scrub_raw_ids`` reduces it to noise — so it never reaches
+    output. ``label`` is the Agent-visible identity and matches the Role /
+    Type (plus Rank, when several pods share one) columns of
+    ``inspire ray instances``.
+    """
+
+    handle: str
+    role: str
+    kind: str
+    label: str
+
+
+def _ray_instance_kind(inst: dict[str, Any]) -> str:
+    """Read head / worker off the row, matching the Type column."""
+    return _public_ray_instance_text(inst, "type", "instance_type")
+
+
+def _ray_instance_role(inst: dict[str, Any]) -> str:
+    """Read the worker-group identity off the row, matching the Role column."""
+    return _public_ray_instance_text(inst, "role", "worker_group_name", "component")
+
+
+def ray_instance_views(
+    instances: Sequence[dict[str, Any]],
+) -> list[RayInstanceView]:
+    """Project raw pod rows onto the addressable (label, handle) pairs.
+
+    Ray's readable identity is two-level: every pod is a ``head`` or a
+    ``worker``, and every worker also belongs to a named worker group. Both
+    are worth selecting on — "what did the head driver print" and "what did
+    the decode group print" are the two questions this view exists to answer —
+    so an identity that appears once becomes its own label and one with
+    replicas takes the Rank suffix ``inspire ray instances`` already prints.
+    """
+    identities = [
+        _ray_instance_role(inst) or _ray_instance_kind(inst) or "instance"
+        for inst in instances
+    ]
+    duplicated = {name for name in identities if identities.count(name) > 1}
+    views: list[RayInstanceView] = []
+    for position, (inst, identity) in enumerate(zip(instances, identities)):
+        # Raw on purpose: this is the pod name `GetJobLog` scopes on, so it
+        # must not go through `scrub_raw_ids` the way the printed fields do.
+        handle = next(
+            (
+                str(inst.get(key) or "").strip()
+                for key in ("name", "instance_name", "pod_name")
+                if str(inst.get(key) or "").strip()
+            ),
+            "",
+        )
+        if not handle:
+            continue
+        rank = _ray_instance_rank(inst, position)
+        label = f"{identity}-{rank}" if identity in duplicated else identity
+        views.append(
+            RayInstanceView(
+                handle=handle,
+                role=_ray_instance_role(inst),
+                kind=_ray_instance_kind(inst),
+                label=label,
+            )
+        )
+    return views
+
+
+def select_ray_instance_views(
+    views: Sequence[RayInstanceView],
+    selectors: Sequence[str],
+) -> list[RayInstanceView]:
+    """Filter pods by the Role / Type / Rank identity ``ray instances`` prints.
+
+    An unmatched selector raises rather than narrowing the scope to nothing:
+    ``ray.GetJobLog`` answers an empty pod list with a clean empty result, so
+    silently dropping every pod would read as "this cluster printed nothing".
+    """
+    if not selectors:
+        return list(views)
+
+    available = sorted(
+        {view.label for view in views}
+        | {view.role for view in views if view.role}
+        | {view.kind for view in views if view.kind}
+    )
+    chosen: list[RayInstanceView] = []
+    for selector in selectors:
+        needle = selector.strip().lower()
+        matched = [
+            view
+            for view in views
+            if needle in (view.label.lower(), view.role.lower(), view.kind.lower())
+        ]
+        if not matched:
+            raise RayInstanceSelectionError(
+                f"No Ray instance matches '{selector}'. "
+                f"Available: {', '.join(available) or '(none)'}."
+            )
+        chosen.extend(view for view in matched if view not in chosen)
+    return chosen
 
 
 def _fetch_ray_instances(
@@ -625,6 +745,104 @@ def status_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> 
 # ---------------------------------------------------------------------------
 
 
+# A write reports success only once the state has actually moved, never on the
+# strength of the response envelope. Controlled live verification over repeated
+# stop/start cycles found `ray.StartJob` honest — its echoed `ray_job` matches a
+# fresh `GetJob` field for field, and the job leaves STOPPED at once — so this
+# is a guard rather than a workaround, and it costs a single read on the path
+# that succeeds. The attempts below are what remains for a platform that
+# accepts the request and lags, or stops acting on it.
+_RAY_START_CONFIRM_ATTEMPTS = 6
+_RAY_START_CONFIRM_INTERVAL_SECONDS = 2.5
+
+
+def _confirm_ray_left_stopped(
+    ray_job_id: str,
+    *,
+    session,  # noqa: ANN001
+) -> str:
+    """Poll briefly for the job to leave STOPPED; return the observed status."""
+    status = ""
+    for attempt in range(_RAY_START_CONFIRM_ATTEMPTS):
+        if attempt:
+            time.sleep(_RAY_START_CONFIRM_INTERVAL_SECONDS)
+        detail = browser_api_module.get_ray_job_detail(ray_job_id, session=session)
+        status = str(detail.get("status") or "").strip()
+        if status and status.upper() != "STOPPED":
+            return status
+    return status
+
+
+@click.command("start")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option(
+    "--pick",
+    type=click.IntRange(1),
+    default=None,
+    help=NAME_PICK_HELP,
+)
+@pass_context
+def start_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
+    """Restart a stopped Ray (弹性计算) job.
+
+    \b
+    The platform keeps the head and worker-group spec on the record, so a job
+    stopped with `inspire ray stop` comes back with the same cluster shape and
+    driver command; nothing has to be re-specified.
+
+    \b
+    Only a stopped job can be started; the command reports what the job's
+    status actually became rather than what the platform answered. Follow the
+    startup with `inspire ray events <name> --workspace <workspace>`.
+    """
+    name = _reject_ray_name_at_boundary(ctx, name)
+    try:
+        config, _ = Config.from_files_and_env(require_credentials=False)
+        session = get_web_session()
+        ray_job_id = _resolve_ray_name_in_workspace(
+            ctx,
+            session=session,
+            name=name,
+            workspace=workspace,
+            limit=10000,
+            pick=pick,
+            require_live=True,
+        )
+        browser_api_module.start_ray_job(ray_job_id, session=session)
+        status = _confirm_ray_left_stopped(ray_job_id, session=session)
+
+        if not status or status.upper() == "STOPPED":
+            _handle_error(
+                ctx,
+                "APIError",
+                f"Ray job {scrub_raw_ids(name)!r} is still stopped; "
+                "the platform accepted the start request without acting on it.",
+                EXIT_API_ERROR,
+                hint=(
+                    "A restart normally leaves STOPPED at once. Read "
+                    f"`inspire ray events {scrub_raw_ids(name)} --workspace "
+                    f"{scrub_raw_ids(workspace)}` for why the cluster did not "
+                    "come back."
+                ),
+            )
+            return
+
+        if ctx.json_output:
+            click.echo(
+                json_formatter.format_json(
+                    {"name": name, "status": "started", "job_status": status}
+                ),
+            )
+            return
+        click.echo(human_formatter.format_mutation_success("Ray", "started", name))
+
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
 @click.command("stop")
 @click.argument("name", metavar="NAME")
 @click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
@@ -636,7 +854,12 @@ def status_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> 
 )
 @pass_context
 def stop_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
-    """Stop a running Ray (弹性计算) job."""
+    """Stop a running Ray (弹性计算) job.
+
+    \b
+    The record survives; `inspire ray start <name>` brings the same cluster
+    back. Use `inspire ray delete` to remove the record entirely.
+    """
     name = _reject_ray_name_at_boundary(ctx, name)
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
@@ -707,7 +930,7 @@ def _project_label(config: Config, requested: Optional[str]) -> str:
     return "(project name unavailable)"
 
 
-def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
+def _resolve_image_id(raw: str, *, session, ctx: Context, workspace_id: str) -> str:
     """Turn a visible image name or Docker image URL into the internal mirror handle.
 
     Ray's create body takes an internal mirror handle, not the pullable Docker
@@ -720,7 +943,9 @@ def _resolve_image_id(raw: str, *, session, ctx: Context) -> str:
     target = raw.lower()
     for source in ("private", "public", "official"):
         try:
-            images = browser_api_module.list_images_by_source(source=source, session=session)
+            images = browser_api_module.list_images_by_source(
+                source=source, session=session, workspace_id=workspace_id
+            )
         except Exception:  # noqa: BLE001
             if ctx.debug:
                 logger.debug("Ray image lookup via %s failed", source, exc_info=True)
@@ -886,6 +1111,14 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
     ),
 )
 @click.option(
+    "--public-path-readonly/--no-public-path-readonly",
+    default=None,
+    help=(
+        "Mount the project's public path read-only inside every Ray container "
+        "(平台 高级设置·项目Public只读挂载). Omit to leave the platform default."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Resolve names, images, quotas, and worker groups, then print the plan without submitting.",
@@ -906,6 +1139,7 @@ def create_ray(
     quota: Optional[str],
     shm_size: Optional[int],
     workers: tuple[str, ...],
+    public_path_readonly: Optional[bool],
     dry_run: bool,
 ) -> None:
     """Create a Ray (弹性计算) job with one head and one or more worker groups.
@@ -922,10 +1156,10 @@ def create_ray(
           -n av-pipeline \\
           -c 'python driver.py --mode run_and_exit' \\
           --workspace CPU资源空间 \\
-          --project CI-情境智能 \\
-          --image ray-base:v1 \\
+          --project <project> \\
+          --image <image> \\
           --group HPC-可上网区资源-2 --quota 0,4,16 \\
-          --worker 'name=decode;image=ray-base:v1;group=HPC-可上网区资源-2;quota=0,20,80;min=1;max=8;shm-size=32'
+          --worker 'name=decode;image=<image>;group=HPC-可上网区资源-2;quota=0,20,80;min=1;max=8;shm-size=32'
 
     """
     try:
@@ -965,6 +1199,7 @@ def create_ray(
             quota=quota,
             shm_size=shm_size,
             workers=workers,
+            public_path_readonly=public_path_readonly,
         )
 
         if dry_run:
@@ -1014,6 +1249,8 @@ def create_ray(
                 plan["description"] = description
             if shm_size is not None:
                 plan["shared_memory_gib"] = shm_size
+            if public_path_readonly is not None:
+                plan["public_path_readonly"] = bool(public_path_readonly)
             if ctx.json_output:
                 click.echo(json_formatter.format_json(plan))
                 return
@@ -1027,6 +1264,12 @@ def create_ray(
             if shm_size is not None:
                 click.echo(f"Shared memory: {shm_size} GiB")
             click.echo(f"Image: {scrub_raw_ids(image)}")
+            if public_path_readonly is not None:
+                click.echo(
+                    "Public path: read-only"
+                    if public_path_readonly
+                    else "Public path: writable"
+                )
             click.echo(f"Command: {scrub_raw_ids(body.get('entrypoint'))}")
             click.echo(f"Workers: {len(worker_plans)}")
             for worker in worker_plans:
@@ -1103,6 +1346,7 @@ def _assemble_create_body(
     quota: Optional[str],
     shm_size: Optional[int],
     workers: tuple[str, ...],
+    public_path_readonly: Optional[bool] = None,
 ) -> dict[str, Any]:
     from inspire.cli.utils.quota_resolver import (
         QuotaMatchError,
@@ -1173,7 +1417,9 @@ def _assemble_create_body(
 
     head_resolved = _resolve_ray(quota_value, group_value)
     head_node: dict[str, Any] = {
-        "mirror_id": _resolve_image_id(image_value, session=session, ctx=ctx),
+        "mirror_id": _resolve_image_id(
+            image_value, session=session, ctx=ctx, workspace_id=resolved_workspace_id
+        ),
         "image_type": image_type_value,
         "logic_compute_group_id": head_resolved.logic_compute_group_id,
         "quota_id": head_resolved.quota_id,
@@ -1187,7 +1433,9 @@ def _assemble_create_body(
         worker_resolved = _resolve_ray(spec["quota"], spec["group"])
         group_block: dict[str, Any] = {
             "group_name": spec["name"],
-            "mirror_id": _resolve_image_id(spec["image"], session=session, ctx=ctx),
+            "mirror_id": _resolve_image_id(
+                spec["image"], session=session, ctx=ctx, workspace_id=resolved_workspace_id
+            ),
             "image_type": spec["image_type"],
             "logic_compute_group_id": worker_resolved.logic_compute_group_id,
             "min_replicas": spec["min"],
@@ -1207,6 +1455,10 @@ def _assemble_create_body(
         "head_node": head_node,
         "worker_groups": worker_groups,
     }
+    # Only an explicit flag reaches the wire: the platform owns the default and
+    # sending `false` would change every create that never asked.
+    if public_path_readonly is not None:
+        body["is_publicpath_readonly"] = bool(public_path_readonly)
     body["task_priority"] = resolve_workspace_task_priority(
         priority,
         session=session,
@@ -1221,16 +1473,76 @@ _RAY_EVENT_PAGE_SIZE = 200
 _RAY_EVENT_MAX_PAGES = 5
 
 
-def _fetch_recent_ray_events(ray_job_id: str, *, session) -> list[dict]:  # noqa: ANN001
-    """Fetch a bounded newest-first window and restore chronological output."""
+def _labelled_ray_events(
+    events: list[dict],
+    views: Sequence[RayInstanceView],
+) -> list[dict]:
+    """Name each pod row with the identity `inspire ray instances` prints.
+
+    One call returns controller rows and pod rows in the same list, told apart
+    only by ``object_type`` / ``object_id`` — and ``object_id`` is the pod
+    handle, which never reaches output. Controller rows keep no label: they
+    are about the cluster, not about any one pod.
+    """
+    labels = {view.handle: view.label for view in views}
+    labelled: list[dict] = []
+    for event in events:
+        row = dict(event)
+        label = labels.get(str(row.get("object_id") or "").strip())
+        if label:
+            row["instance"] = label
+        labelled.append(row)
+    return labelled
+
+
+def _fetch_recent_ray_events(
+    ray_job_id: str,
+    *,
+    session,  # noqa: ANN001
+    selectors: Sequence[str] = (),
+    workload_level: bool = False,
+) -> list[dict]:
+    """Fetch a bounded newest-first window and restore chronological output.
+
+    The cluster level is a client-side split, not a second call: one
+    ``ListJobEvents`` already returns both, told apart by ``object_type``.
+    """
+    if workload_level:
+        events = browser_api_module.list_ray_job_events(
+            ray_job_id,
+            page_size=_RAY_EVENT_PAGE_SIZE,
+            max_pages=_RAY_EVENT_MAX_PAGES,
+            sort_ascending=False,
+            session=session,
+        )
+        cluster_rows = [
+            event
+            for event in events
+            if str(event.get("object_type") or "").strip().lower() != "instance"
+        ]
+        return sorted(cluster_rows, key=event_sort_key)
+    instances, _total = browser_api_module.list_ray_job_instances(
+        ray_job_id,
+        limit=_DEFAULT_INSTANCE_SCAN_LIMIT,
+        session=session,
+    )
+    views = ray_instance_views(instances)
+    pod_names = None
+    if selectors:
+        views = select_ray_instance_views(views, selectors)
+        pod_names = [view.handle for view in views]
     events = browser_api_module.list_ray_job_events(
         ray_job_id,
+        pod_names=pod_names,
         page_size=_RAY_EVENT_PAGE_SIZE,
         max_pages=_RAY_EVENT_MAX_PAGES,
         sort_ascending=False,
         session=session,
     )
-    return list(reversed(events))
+    # Fetched newest-first to bound the window, then restored to chronological
+    # order here rather than by reversing: same-second ties come back in an
+    # order that depends on the filter, and reversing would flip them.
+    return sorted(_labelled_ray_events(events, views), key=event_sort_key)
 
 
 @click.command("events")
@@ -1256,13 +1568,42 @@ def _fetch_recent_ray_events(ray_job_id: str, *, session) -> list[dict]:  # noqa
     help="Filter by event reason (e.g. FailedScheduling, CreatedRayCluster).",
 )
 @click.option(
+    "--instance",
+    "instance_selectors",
+    multiple=True,
+    metavar="ROLE",
+    help=(
+        "Narrow to one instance, named by the Role / Type (and Rank, when "
+        "several share one) column of `inspire ray instances` — for example "
+        "head or a worker-group name. Repeat for several. Default: cluster "
+        "events plus every pod."
+    ),
+)
+@click.option(
+    "--workload-level",
+    "workload_level",
+    is_flag=True,
+    help=(
+        "Only the controller's own events about the cluster as a whole. "
+        "Cannot be combined with --instance."
+    ),
+)
+@click.option(
     "--tail",
     type=click.IntRange(1),
     default=DEFAULT_EVENT_TAIL,
     show_default=True,
     help="Maximum recent events to display.",
 )
-@click.option("--follow", "-f", is_flag=True, help="Follow the event timeline and print new events.")
+@click.option(
+    "--follow",
+    "-f",
+    is_flag=True,
+    help=(
+        "Follow the event timeline and print new events. Runs until interrupted; it never exits on its own, "
+        "not even once the job reaches a terminal state."
+    ),
+)
 @click.option(
     "--interval",
     type=click.IntRange(1),
@@ -1278,6 +1619,8 @@ def events_ray(
     pick: Optional[int],
     reason: Optional[str],
     type_filter: Optional[str],
+    instance_selectors: tuple[str, ...],
+    workload_level: bool,
     tail: int,
     follow: bool,
     interval: int,
@@ -1287,36 +1630,61 @@ def events_ray(
     \b
     Critical for diagnosing stuck PENDING jobs — the `FailedScheduling`
     events spell out exactly why the scheduler can't place a pod
-    (insufficient CPU / GPU, node affinity mismatch, taint, etc.).
+    (insufficient CPU / GPU, node affinity mismatch, taint, etc.). Cluster
+    events and every pod's events arrive in one timeline with an `Instance`
+    column; `--instance` narrows to one role and `--workload-level` keeps only
+    the controller's half.
 
     \b
     Examples:
         inspire ray events pipeline --workspace CPU资源空间
         inspire ray events pipeline --workspace CPU资源空间 --reason FailedScheduling
         inspire ray events pipeline --workspace CPU资源空间 --type Warning --tail 10
+        inspire ray events pipeline --workspace CPU资源空间 --instance head
+        inspire ray events pipeline --workspace CPU资源空间 --workload-level
         inspire ray events pipeline --workspace CPU资源空间 --follow
         inspire --json ray events pipeline --workspace CPU资源空间
     """
     name = _reject_ray_name_at_boundary(ctx, name)
+    if workload_level and instance_selectors:
+        _handle_error(
+            ctx,
+            "InvalidUsage",
+            "--workload-level and --instance cannot be used together.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
     try:
         session = get_web_session()
         config, _ = Config.from_files_and_env(require_credentials=False)
+
+        def _fetch_events() -> list[dict]:
+            # An unknown `--instance` is a usage error, and the shared runner
+            # would otherwise repackage it as "could not fetch events".
+            try:
+                return _run_readonly_ray_operation(
+                    ctx,
+                    session=session,
+                    name=name,
+                    workspace=workspace,
+                    limit=_RAY_EVENT_NAME_SCAN_LIMIT,
+                    pick=pick,
+                    operation=lambda ray_job_id, live_session: (
+                        _fetch_recent_ray_events(
+                            ray_job_id,
+                            session=live_session,
+                            selectors=instance_selectors,
+                            workload_level=workload_level,
+                        )
+                    ),
+                )
+            except RayInstanceSelectionError as e:
+                _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+                return []
+
         run_events_command(
             ctx,
-            fetch=lambda: _run_readonly_ray_operation(
-                ctx,
-                session=session,
-                name=name,
-                workspace=workspace,
-                limit=_RAY_EVENT_NAME_SCAN_LIMIT,
-                pick=pick,
-                operation=lambda ray_job_id, live_session: (
-                    _fetch_recent_ray_events(
-                        ray_job_id,
-                        session=live_session,
-                    )
-                ),
-            ),
+            fetch=_fetch_events,
             type_filter=type_filter,
             reason_filter=reason,
             tail=tail,
@@ -1512,3 +1880,99 @@ def delete_ray(ctx: Context, name: str, workspace: str, yes: bool, pick: Optiona
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+@click.command("shell")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
+@click.option("--pick", type=click.IntRange(1), default=None, help=NAME_PICK_HELP)
+@click.option(
+    "--instance",
+    "instance",
+    default=None,
+    metavar="ROLE",
+    help="Open this Role / Rank, as printed by `inspire ray instances`.",
+)
+@pass_context
+def shell_ray(
+    ctx: Context,
+    name: str,
+    workspace: str,
+    pick: Optional[int],
+    instance: Optional[str],
+) -> None:
+    """Open an interactive shell inside a running Ray instance.
+
+    Needs a terminal: this attaches your stdin to a remote PTY. Leave with
+    `exit`, or press Ctrl+] to drop the session without ending the shell.
+
+    \b
+    Defaults to the head, which runs the driver and is where `ray status` and
+    the cluster's own logs live. Pick a worker by its Role / Rank when the
+    question is about one group's processes rather than the cluster's.
+
+    \b
+    Examples:
+        inspire ray shell av-pipeline --workspace CPU资源空间
+        inspire ray shell av-pipeline --workspace CPU资源空间 --instance decode-0
+    """
+    try:
+        session = get_web_session()
+        ray_job_id, instances = _run_readonly_ray_operation(
+            ctx,
+            session=session,
+            name=name,
+            workspace=workspace,
+            limit=200,
+            pick=pick,
+            operation=lambda resolved_id: (
+                resolved_id,
+                _fetch_ray_instances(
+                    resolved_id, limit=200, session=session, show_all=True
+                )[0],
+            ),
+        )
+
+        running = [
+            row
+            for row in instances
+            if "run" in str(row.get("status") or row.get("instance_status") or "").lower()
+        ]
+        views = ray_instance_views(running)
+        if not views:
+            _handle_error(
+                ctx,
+                "ValidationError",
+                "No running instances found for this Ray job.",
+                EXIT_VALIDATION_ERROR,
+            )
+            return
+
+        if instance:
+            selected = select_ray_instance_views(views, [instance])[0]
+        else:
+            heads = [view for view in views if view.kind.lower() == "head"]
+            selected = (heads or views)[0]
+
+        if not ctx.json_output:
+            click.echo(
+                f"Opening shell: {scrub_raw_ids(name)} / {selected.label}", err=True
+            )
+            click.echo("Press Ctrl-] to disconnect.", err=True)
+
+        sys.exit(
+            open_job_shell(
+                job_id=ray_job_id,
+                instance_name=selected.handle,
+                session=session,
+                workload="ray",
+            )
+        )
+    except RayInstanceSelectionError as e:
+        _handle_error(ctx, "ValidationError", scrub_raw_ids(e), EXIT_VALIDATION_ERROR)
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", scrub_raw_ids(e), EXIT_CONFIG_ERROR)
+    except JobShellError as e:
+        _handle_error(ctx, "APIError", scrub_raw_ids(e), EXIT_API_ERROR)
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", scrub_raw_ids(e), EXIT_AUTH_ERROR)

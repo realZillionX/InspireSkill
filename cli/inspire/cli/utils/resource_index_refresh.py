@@ -42,6 +42,7 @@ RESOURCE_TYPES = (
     "ray",
     "serving",
     "notebook",
+    "tensorboard",
     *QUOTA_RESOURCE_TYPES,
 )
 WORKSPACE_RESOURCE_TYPES = tuple(
@@ -57,11 +58,32 @@ PERIODIC_REFRESH_INTERVAL_SECONDS = min(DEFAULT_TTL_SECONDS.values())
 PERIODIC_REFRESH_STAMP = "resource-index-refresh.stamp"
 PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS = 30 * 60
 
+# A refresh reads whole scopes, not screens of them, so it pages at the bulk
+# size rather than the UI's. At 100 a workspace holding ~1400 of the user's
+# jobs cost 14 round trips every five minutes; the gateway caps `page_size` at
+# `MAX_PAGE_SIZE` and clamps anything above it, so this only ever means fewer
+# requests for the same rows.
+REFRESH_PAGE_SIZE = 1000
+
+# The incremental pass wants the opposite of a bulk scan: a small first page,
+# so that "nothing new here" costs almost nothing. It normally reads exactly
+# one of these per workspace.
+INCREMENTAL_PAGE_SIZE = 100
+
 
 @dataclass(frozen=True)
 class FetchResult:
+    """What one fetcher saw, and whether that was all of it.
+
+    ``complete=False`` is the difference between "these are the rows" and
+    "these are the rows I could read". Only the former may reconcile a scope
+    and tombstone what it did not see; the latter merges, keeps the older
+    rows, and carries ``error`` so the reason survives into ``cache status``.
+    """
+
     records: list[ResourceIdentity]
     complete: bool = True
+    error: str = ""
 
 
 @dataclass(frozen=True)
@@ -81,8 +103,25 @@ class RefreshSummary:
     def error_count(self) -> int:
         return sum(result.outcome == "error" for result in self.results)
 
+    @property
+    def partial_count(self) -> int:
+        """Scopes that cached what they could read and kept the rest.
+
+        Separate from ``error_count``: nothing about the cache is broken and
+        the previously cached rows are intact, so the command still succeeds.
+        What the user needs to know is that the scope is not authoritative
+        yet, which the printed summary and ``cache status`` both say.
+        """
+        return sum(result.outcome == "partial" for result in self.results)
+
 
 Fetcher = Callable[[object, str, str], FetchResult]
+
+# One page of one workload list: (session, workspace, name, page, page_size) ->
+# (records, platform total).
+WorkloadPage = Callable[
+    [object, str, str, int, int], "tuple[list[ResourceIdentity], int]"
+]
 
 
 def _record_refresh_error(
@@ -190,7 +229,7 @@ def _compute_group_fetch(
     )
 
 
-def _image_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+def _image_catalog(session: object, workspace_id: str) -> list[ResourceIdentity]:
     from inspire.platform.web.browser_api.notebooks import list_images
 
     records: list[ResourceIdentity] = []
@@ -210,28 +249,78 @@ def _image_fetch(session: object, workspace_id: str, exact_name: str) -> FetchRe
                     name=label,
                 )
             )
-    return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
+    return _dedupe_records(records)
+
+
+def _image_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+    return FetchResult(_filter_exact(_image_catalog(session, workspace_id), exact_name))
+
+
+def _image_fetcher() -> Fetcher:
+    """Build an image fetcher that reads each registry once, not each workspace.
+
+    ``registry_hint: {workspace_id}`` names a registry, and workspaces share
+    them: measured here, seven workspaces answer for ``qbHarbor`` and three
+    国产卡 ones for ``sjHarbor``, with identical ``image_id`` sets inside each
+    group. Fetching per workspace therefore downloaded the same ~5,400-image
+    catalog seven times every cycle -- 42 MB of the 51 MB a full refresh moved,
+    and 68 s of its 120 s.
+
+    So each workspace is asked which registry it reads (one row, ~80 ms) and
+    the catalog behind a registry already seen is reused verbatim. A workspace
+    whose registry cannot be identified -- one with no publicly visible image
+    at all -- is read on its own rather than assumed to match anyone.
+
+    The memo lives for one refresh run. Across runs the scopes are what carry
+    the answer forward, each with its own TTL.
+    """
+    by_registry: dict[str, list[ResourceIdentity]] = {}
+
+    def _fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+        from inspire.platform.web.browser_api.images import image_registry_id
+
+        try:
+            registry = image_registry_id(workspace_id, session=session)  # type: ignore[arg-type]
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:  # noqa: BLE001 - the probe is an optimization, not the read
+            registry = ""
+        if registry and registry in by_registry:
+            return FetchResult(_filter_exact(by_registry[registry], exact_name))
+        records = _image_catalog(session, workspace_id)
+        if registry:
+            by_registry[registry] = records
+        return FetchResult(_filter_exact(records, exact_name))
+
+    return _fetch
 
 
 def _model_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
     from inspire.platform.web.browser_api.models import list_models
 
-    items, _ = list_models(
-        workspace_id=workspace_id,
-        keyword=exact_name or None,
-        page_size=-1,
-        session=session,  # type: ignore[arg-type]
-    )
-    records = [
-        ResourceIdentity(
-            resource_id=item.model_id,
-            name=item.name,
-            owner_id=item.user_id,
-            status=item.status,
-            created_at=item.created_at,
+    records: list[ResourceIdentity] = []
+    page = 1
+    while True:
+        items, total = list_models(
+            workspace_id=workspace_id,
+            keyword=exact_name or None,
+            page=page,
+            page_size=REFRESH_PAGE_SIZE,
+            session=session,  # type: ignore[arg-type]
         )
-        for item in items
-    ]
+        records.extend(
+            ResourceIdentity(
+                resource_id=item.model_id,
+                name=item.name,
+                owner_id=item.user_id,
+                status=item.status,
+                created_at=item.created_at,
+            )
+            for item in items
+        )
+        if not items or len(records) >= total or len(items) < REFRESH_PAGE_SIZE:
+            break
+        page += 1
     return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
 
 
@@ -256,133 +345,248 @@ def _current_user_id(session: object) -> str:
     return str(value).strip()
 
 
-def _job_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+def _job_page(
+    session: object, workspace_id: str, exact_name: str, page: int, page_size: int
+) -> tuple[list[ResourceIdentity], int]:
     from inspire.platform.web.browser_api.jobs import list_jobs
 
+    items, total = list_jobs(
+        workspace_id=workspace_id,
+        created_by=_current_user_id(session),
+        keyword=exact_name or None,
+        page_num=page,
+        page_size=page_size,
+        session=session,  # type: ignore[arg-type]
+    )
+    return [
+        ResourceIdentity(
+            resource_id=item.job_id,
+            name=item.name,
+            owner_id=item.created_by_id,
+            status=item.status,
+            created_at=item.created_at,
+        )
+        for item in items
+    ], total
+
+
+def _tensorboard_page(
+    session: object, workspace_id: str, exact_name: str, page: int, page_size: int
+) -> tuple[list[ResourceIdentity], int]:
+    from inspire.platform.web.browser_api.tensorboards import list_tensorboards
+
     user_id = _current_user_id(session)
-    records: list[ResourceIdentity] = []
-    page = 1
-    page_size = 100
-    while True:
-        items, total = list_jobs(
-            workspace_id=workspace_id,
-            created_by=user_id,
-            keyword=exact_name or None,
-            page_num=page,
-            page_size=page_size,
-            session=session,  # type: ignore[arg-type]
+    items, total = list_tensorboards(
+        workspace_id=workspace_id,
+        created_by=user_id,
+        keyword=exact_name or None,
+        page_num=page,
+        page_size=page_size,
+        session=session,  # type: ignore[arg-type]
+    )
+    return [
+        ResourceIdentity(
+            resource_id=item.tb_id,
+            name=item.name,
+            owner_id=user_id,
+            status=item.status,
+            created_at=item.created_at,
         )
-        records.extend(
-            ResourceIdentity(
-                resource_id=item.job_id,
-                name=item.name,
-                owner_id=item.created_by_id,
-                status=item.status,
-                created_at=item.created_at,
-            )
-            for item in items
-        )
-        if not items or len(records) >= total or len(items) < page_size:
-            break
-        page += 1
-    return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
+        for item in items
+        # A board may be created without a name; it can never be addressed
+        # by one either, so caching it would only add a nameless row.
+        if item.name
+    ], total
 
 
-def _hpc_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+def _hpc_page(
+    session: object, workspace_id: str, exact_name: str, page: int, page_size: int
+) -> tuple[list[ResourceIdentity], int]:
     from inspire.platform.web.browser_api.hpc_jobs import list_hpc_jobs
 
-    user_id = _current_user_id(session)
-    records: list[ResourceIdentity] = []
-    page = 1
-    page_size = 100
-    total_seen = 0
-    while True:
-        items, total = list_hpc_jobs(
-            workspace_id=workspace_id,
-            created_by=user_id,
-            page_num=page,
-            page_size=page_size,
-            session=session,  # type: ignore[arg-type]
+    del exact_name  # `hpc.ListJobs` takes no keyword filter.
+    items, total = list_hpc_jobs(
+        workspace_id=workspace_id,
+        created_by=_current_user_id(session),
+        page_num=page,
+        page_size=page_size,
+        session=session,  # type: ignore[arg-type]
+    )
+    return [
+        ResourceIdentity(
+            resource_id=item.job_id,
+            name=item.name,
+            owner_id=item.created_by_id,
+            status=item.status,
+            created_at=item.created_at,
         )
-        total_seen += len(items)
-        records.extend(
-            ResourceIdentity(
-                resource_id=item.job_id,
-                name=item.name,
-                owner_id=item.created_by_id,
-                status=item.status,
-                created_at=item.created_at,
-            )
-            for item in items
-        )
-        if not items or total_seen >= total or len(items) < page_size:
-            break
-        page += 1
-    return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
+        for item in items
+    ], total
 
 
-def _ray_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+def _ray_page(
+    session: object, workspace_id: str, exact_name: str, page: int, page_size: int
+) -> tuple[list[ResourceIdentity], int]:
     from inspire.platform.web.browser_api.ray_jobs import list_ray_jobs
 
-    user_id = _current_user_id(session)
-    records: list[ResourceIdentity] = []
-    page = 1
-    page_size = 100
-    total_seen = 0
-    while True:
-        items, total = list_ray_jobs(
-            workspace_id=workspace_id,
-            user_ids=[user_id],
-            page_num=page,
-            page_size=page_size,
-            session=session,  # type: ignore[arg-type]
+    del exact_name  # `ray.ListJobs` takes no keyword filter.
+    items, total = list_ray_jobs(
+        workspace_id=workspace_id,
+        user_ids=[_current_user_id(session)],
+        page_num=page,
+        page_size=page_size,
+        session=session,  # type: ignore[arg-type]
+    )
+    return [
+        ResourceIdentity(
+            resource_id=item.ray_job_id,
+            name=item.name,
+            owner_id=item.created_by_id,
+            status=item.status,
+            created_at=item.created_at,
         )
-        total_seen += len(items)
-        records.extend(
-            ResourceIdentity(
-                resource_id=item.ray_job_id,
-                name=item.name,
-                owner_id=item.created_by_id,
-                status=item.status,
-                created_at=item.created_at,
-            )
-            for item in items
-        )
-        if not items or total_seen >= total or len(items) < page_size:
-            break
-        page += 1
-    return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
+        for item in items
+    ], total
 
 
-def _serving_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+def _serving_page(
+    session: object, workspace_id: str, exact_name: str, page: int, page_size: int
+) -> tuple[list[ResourceIdentity], int]:
     from inspire.platform.web.browser_api.servings import list_servings
 
+    items, total = list_servings(
+        workspace_id=workspace_id,
+        page=page,
+        page_size=page_size,
+        keyword=exact_name or None,
+        session=session,  # type: ignore[arg-type]
+    )
+    return [
+        ResourceIdentity(
+            resource_id=item.inference_serving_id,
+            name=item.name,
+            status=item.status,
+            created_at=item.created_at,
+        )
+        for item in items
+    ], total
+
+
+WORKLOAD_PAGES: Mapping[str, WorkloadPage] = {
+    "job": _job_page,
+    "hpc": _hpc_page,
+    "ray": _ray_page,
+    "serving": _serving_page,
+    "tensorboard": _tensorboard_page,
+}
+
+
+def _read_pages(
+    read_page: WorkloadPage,
+    session: object,
+    workspace_id: str,
+    exact_name: str,
+    *,
+    page_size: int,
+    known: frozenset[str] | None,
+) -> list[ResourceIdentity]:
+    """Page through one workload list, stopping as early as the mode allows.
+
+    ``known`` switches the stop rule. Without it this is a full scan: read
+    until the platform's ``total`` is accounted for, which is what lets the
+    caller reconcile the scope and tombstone whatever it did not see.
+
+    With it the read is incremental. These lists answer newest-first (verified
+    for ``job``, ``hpc`` and ``tensorboard``), so once a page holds nothing the
+    index is missing and the index already holds at least as many rows as the
+    platform reports, everything past it is rows we already have. A workspace
+    holding ~1400 jobs cost 6.3 MB every five minutes to re-read in full; the
+    incremental pass normally stops after one small page.
+    """
     records: list[ResourceIdentity] = []
+    seen: set[str] = set()
+    fetched = 0
     page = 1
-    page_size = 100
-    total_seen = 0
     while True:
-        items, total = list_servings(
-            workspace_id=workspace_id,
-            page=page,
-            page_size=page_size,
-            keyword=exact_name or None,
-            session=session,  # type: ignore[arg-type]
-        )
-        total_seen += len(items)
-        records.extend(
-            ResourceIdentity(
-                resource_id=item.inference_serving_id,
-                name=item.name,
-                status=item.status,
-                created_at=item.created_at,
-            )
-            for item in items
-        )
-        if not items or total_seen >= total or len(items) < page_size:
+        items, total = read_page(session, workspace_id, exact_name, page, page_size)
+        fetched += len(items)
+        fresh_ids = False
+        for record in items:
+            resource_id = str(record.resource_id or "").strip()
+            if resource_id and resource_id not in seen:
+                seen.add(resource_id)
+                records.append(record)
+            if known is not None and resource_id and resource_id not in known:
+                fresh_ids = True
+        if not items or len(items) < page_size or fetched >= total:
+            break
+        if known is not None and not fresh_ids and len(known) >= total:
             break
         page += 1
-    return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
+    return records
+
+
+def _workload_fetcher(resource_type: str) -> Fetcher:
+    """Read one workload list in full, so the scope can be reconciled."""
+
+    def _fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
+        records = _read_pages(
+            WORKLOAD_PAGES[resource_type],
+            session,
+            workspace_id,
+            exact_name,
+            page_size=REFRESH_PAGE_SIZE,
+            known=None,
+        )
+        return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
+
+    return _fetch
+
+
+def _incremental_workload_fetcher(
+    resource_type: str,
+    *,
+    index: ResourceIndex,
+    session: object,
+) -> Fetcher:
+    """Read only the head of one workload list, and never claim it is all of it.
+
+    ``complete=False`` is the whole point: the pass looked at the newest rows
+    and nothing else, so it merges and the refresh engine is never allowed to
+    tombstone from it. Rows the platform dropped still leave -- nothing
+    refreshes their ``expires_at``, so they fall out one TTL after the last
+    time they were seen -- and a delete through the CLI tombstones on the spot.
+    A complete scan is what `inspire cache refresh` is for.
+    """
+
+    def _fetch(session_arg: object, workspace_id: str, exact_name: str) -> FetchResult:
+        scope = _workspace_bound_scope(
+            session,
+            resource_type=resource_type,
+            workspace_id=workspace_id,
+        )
+        known: frozenset[str] | None = None
+        if scope is not None:
+            try:
+                known = frozenset(
+                    item.resource_id for item in index.list_identities(scope)
+                )
+            except (OSError, sqlite3.Error):
+                known = None
+        records = _read_pages(
+            WORKLOAD_PAGES[resource_type],
+            session_arg,
+            workspace_id,
+            exact_name,
+            page_size=INCREMENTAL_PAGE_SIZE,
+            known=known,
+        )
+        return FetchResult(
+            _filter_exact(_dedupe_records(records), exact_name),
+            complete=False,
+        )
+
+    return _fetch
 
 
 def _notebook_fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
@@ -445,19 +649,27 @@ def _quota_fetcher(workload: str) -> Fetcher:
     The scope is a whole workspace catalog, so this fans out over every
     compute group. That is the same 1+N the lazy path would pay on a cold
     cache, done once for everything instead of once per group asked about.
+
+    A fan-out that wide meets the platform's rate limiter, so it reports
+    partial results as partial: a group that did not answer must never be
+    cached as a group with no quotas.
     """
 
     def _fetch(session: object, workspace_id: str, exact_name: str) -> FetchResult:
         from inspire.cli.utils.quota_cache import fetch_quota_catalog
 
-        records = fetch_quota_catalog(
+        catalog = fetch_quota_catalog(
             session,
             workspace_id=workspace_id,
             workload=workload,
         )
         # Quota names repeat across compute groups on purpose; that ambiguity
         # is what `--group` disambiguates, so records are not deduped by name.
-        return FetchResult(_filter_exact(records, exact_name))
+        return FetchResult(
+            _filter_exact(catalog.records, exact_name),
+            complete=catalog.complete,
+            error=catalog.error,
+        )
 
     return _fetch
 
@@ -468,11 +680,11 @@ RESOURCE_FETCHERS: Mapping[str, Fetcher] = {
     "compute-group": _compute_group_fetch,
     "image": _image_fetch,
     "model": _model_fetch,
-    "job": _job_fetch,
-    "hpc": _hpc_fetch,
-    "ray": _ray_fetch,
-    "serving": _serving_fetch,
     "notebook": _notebook_fetch,
+    **{
+        resource_type: _workload_fetcher(resource_type)
+        for resource_type in WORKLOAD_PAGES
+    },
     **{
         quota_resource_type(workload): _quota_fetcher(workload)
         for workload in QUOTA_WORKLOADS
@@ -632,7 +844,7 @@ def _refresh_one(
                 scope,
                 interval_seconds=interval,
                 require_full=True,
-            )
+            ) and index.attempt_due(scope, interval_seconds=interval)
         except (OSError, sqlite3.Error):
             due = True
         if not due:
@@ -664,6 +876,35 @@ def _refresh_one(
                     else fetcher(session, workspace_id, exact_name)
                 )
                 records = _dedupe_records(fetched.records)
+                if not fetched.complete:
+                    # Merge, never replace or reconcile: rows this pass could
+                    # not see are rows it knows nothing about, not rows the
+                    # platform removed. That holds for a `--name` refresh too
+                    # -- the group that did not answer may be exactly the one
+                    # holding that name. The scope stays short of a full
+                    # refresh, so readers that demand one keep going live.
+                    count = index.upsert(
+                        scope,
+                        records,
+                        ttl_seconds=interval,
+                        expected_revision=expected_revision,
+                        expected_generation=expected_generation,
+                        attempted_at=attempted_at,
+                    )
+                    if fetched.error:
+                        _record_refresh_error(
+                            index,
+                            scope,
+                            fetched.error,
+                            attempted_at=attempted_at,
+                        )
+                    return RefreshResult(
+                        resource_type,
+                        workspace_name,
+                        count,
+                        "partial",
+                        scrub_raw_ids(fetched.error),
+                    )
                 if exact_name:
                     count = index.replace_name(
                         scope,
@@ -674,17 +915,8 @@ def _refresh_one(
                         expected_generation=expected_generation,
                         attempted_at=attempted_at,
                     )
-                elif fetched.complete:
-                    count = index.reconcile(
-                        scope,
-                        records,
-                        ttl_seconds=interval,
-                        expected_revision=expected_revision,
-                        expected_generation=expected_generation,
-                        attempted_at=attempted_at,
-                    )
                 else:
-                    count = index.upsert(
+                    count = index.reconcile(
                         scope,
                         records,
                         ttl_seconds=interval,
@@ -735,9 +967,16 @@ def refresh_resource_index(
     workspace_names: Sequence[str] | None = None,
     exact_name: str = "",
     force: bool = False,
+    incremental: bool = False,
     fetchers: Mapping[str, Fetcher] | None = None,
 ) -> RefreshSummary:
-    """Refresh selected resource scopes and return a name-only summary."""
+    """Refresh selected resource scopes and return a name-only summary.
+
+    ``incremental`` is the background pass: workload lists are read from the
+    newest end only and merged, never reconciled. A complete scan — the one
+    that can tombstone a workload the platform no longer lists — is what a
+    hand-typed ``inspire cache refresh`` does.
+    """
     selected_types = tuple(resource_types or RESOURCE_TYPES)
     unknown = sorted(set(selected_types) - set(RESOURCE_TYPES))
     if unknown:
@@ -745,7 +984,23 @@ def refresh_resource_index(
     if exact_name and len(selected_types) != 1:
         raise ValueError("--name requires exactly one --resource.")
 
-    registry = fetchers or RESOURCE_FETCHERS
+    if fetchers is None:
+        # A fresh image fetcher per run: its registry memo must not outlive the
+        # refresh that filled it, or a second run would reuse a catalog nobody
+        # re-read.
+        built: dict[str, Fetcher] = {**RESOURCE_FETCHERS, "image": _image_fetcher()}
+        if incremental:
+            built.update(
+                {
+                    resource_type: _incremental_workload_fetcher(
+                        resource_type, index=index, session=session
+                    )
+                    for resource_type in WORKLOAD_PAGES
+                }
+            )
+        registry: Mapping[str, Fetcher] = built
+    else:
+        registry = fetchers
     workspace_fetcher = registry["workspace"]
     workspace_scope = scope_for_session(session, resource_type="workspace")
     workspace_types = tuple(

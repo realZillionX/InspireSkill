@@ -55,6 +55,8 @@ inspire update --skill-only
 
 `inspire update` 会自动识别 `uv tool` / `pipx` 安装来源，升级 CLI 包，刷新 harness skill，并逐步打印进度、刷新到的 harness 列表和新旧版本之间的更新摘要（取自 GitHub Releases，回退到 `main` 的 `CHANGELOG.md`）。`--cli-only` 只升 CLI 包与运行时；`--skill-only` 只刷 `SKILL.md` 和 `references/`。
 
+它同时会扫掉旧版本在 `~/.inspire` 下留着、而当前版本已经不再读的状态文件——停用某个文件的那个版本没法在退场时删掉它，因为知道它存在的代码正是被删掉的那部分，所以这件事只能在版本切换时做。发现内容先按清单打印再问，`--yes` 跳过询问，`--json` 和后台每日检查都只报告不删除。已经是最新版时 `inspire update` 照样扫一遍，所以它也是随时手动跑这件事的入口。`~/.inspire/metrics/` 里的图是明确要过的产物，任何一档都不碰。
+
 ## 3. 卸载
 
 ```bash
@@ -83,9 +85,7 @@ curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scri
 
 ```bash
 inspire account add <name>
-inspire config show --compact
-inspire --json config show
-inspire config check
+inspire account check
 ```
 
 `inspire account add` 会询问平台登录 username、password、base URL 和代理。username 使用登录页接受的手机号、学号或邮箱，不是网页右上角中文显示名。配置写入 `~/.inspire/accounts/<name>/config.toml`。
@@ -101,7 +101,7 @@ http://127.0.0.1:7897
 账号级 proxy 是标准入口，也会优先于通用 Shell 代理。CLI 也会继承 `http_proxy` / `HTTP_PROXY`、`https_proxy` / `HTTPS_PROXY` 和 `all_proxy` / `ALL_PROXY`；因此即使账号配置里没有 proxy，这些变量也可能改变登录和平台请求的实际链路。用下面的命令查看脱敏后的有效代理来源、目标路由和 `NO_PROXY` 匹配结果：
 
 ```bash
-inspire config show --compact --filter Proxy
+inspire account check --details
 ```
 
 平台请求的通用 Shell HTTP(S) 代理来源会遵守 `NO_PROXY` / `no_proxy`。如果当前网络应直连 SII，可把 `.sii.edu.cn` 加入 bypass；确认是 Shell 代理干扰时，也可只对本次命令取消大小写两组变量：
@@ -119,7 +119,7 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
 
 ```bash
 inspire init
-inspire resources availability --workspace all --include-cpu
+inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
 全局发现是账号级动作，和具体仓库无关。把某个项目工作区接入启智（`inspire init --scope project`、问清 Project / Workspace / Paths / Image、创建和维护 `INSPIRE.md`）是另一件事，见 [`../project-context.md`](../project-context.md)。

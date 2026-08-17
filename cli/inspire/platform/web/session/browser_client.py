@@ -8,9 +8,15 @@ import threading
 from typing import Any, Optional, cast
 from weakref import WeakSet
 
-from .models import SessionExpiredError, WebSession
+from .models import (
+    TRANSIENT_HTTP_STATUSES,
+    SessionExpiredError,
+    TransientAPIError,
+    WebSession,
+)
 from .browser_launch import chromium_launch_kwargs
 from .proxy import get_playwright_proxy
+from .retry import retry_after_seconds
 
 class _BrowserRequestClient:
     def __init__(self, session: WebSession) -> None:
@@ -69,7 +75,14 @@ class _BrowserRequestClient:
                 body_text = resp.text()
             except Exception:
                 body_text = ""
-            raise ValueError(f"API returned {resp.status}: {body_text}")
+            message = f"API returned {resp.status}: {body_text}"
+            if resp.status in TRANSIENT_HTTP_STATUSES:
+                raise TransientAPIError(
+                    message,
+                    status=resp.status,
+                    retry_after=retry_after_seconds(resp.headers),
+                )
+            raise ValueError(message)
 
         return resp.json()
 

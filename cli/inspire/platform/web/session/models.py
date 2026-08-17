@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,58 @@ SESSION_TTL = 3600  # 1 hour
 
 class SessionExpiredError(Exception):
     """Raised when the web session has expired (401 from server)."""
+
+
+# Statuses that say the platform did not answer, not that the answer is no.
+# 429 is the one seen in the wild: the browser APIs answer one
+# ``(workspace, compute group)`` per request, so any workspace-wide fan-out
+# runs straight into the rate limiter.
+TRANSIENT_HTTP_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+class TransientAPIError(ValueError):
+    """A request the platform refused for a reason that will pass.
+
+    Rate limiting, request timeouts and server faults carry no information
+    about whether a resource exists, how many there are, or whether a compute
+    group has quotas. Treating one as data is how an empty list ends up cached
+    as fact.
+
+    It subclasses ``ValueError`` because that is what this whole layer already
+    raises for a failed request, so every existing ``except ValueError``
+    boundary keeps mapping it to the same user-facing API error. What it adds
+    is the ability for the few places that *decide* something from a response
+    to tell "the platform said no" apart from "the platform did not answer".
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        retry_after: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
+
+
+_API_STATUS_RE = re.compile(r"\bAPI returned (\d{3})\b")
+
+
+def is_transient_api_error(error: BaseException) -> bool:
+    """Whether *error* is a platform failure that says nothing about the data.
+
+    Recognizes the typed error and, for callers holding an exception raised
+    outside the transport (a caller-supplied loader, a test double), the
+    ``API returned <status>: …`` text the transport has always produced.
+    """
+    if isinstance(error, TransientAPIError):
+        return True
+    match = _API_STATUS_RE.search(str(error or ""))
+    if match is None:
+        return False
+    return int(match.group(1)) in TRANSIENT_HTTP_STATUSES
 
 
 # Sentinel for "workspace not yet detected from the authenticated browser session".
@@ -170,7 +223,7 @@ def _is_valid_session_cache_payload(data: object) -> bool:
 class WebSession:
     """Captured web session for web-ui APIs.
 
-    We store Playwright `storage_state` because the web-ui APIs behind `/api/v1/*`
+    We store Playwright `storage_state` because the web-ui APIs behind `/api/v2/*`
     are protected by Keycloak/CAS SSO and can require more than just a couple
     of cookies.
     """

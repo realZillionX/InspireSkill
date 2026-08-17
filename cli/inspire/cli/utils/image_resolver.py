@@ -51,6 +51,7 @@ def resolve_image_url(
     raw: Optional[str],
     *,
     session: Any,
+    workspace_id: Optional[str] = None,
     debug: bool = False,
 ) -> str:
     """Return the registry URL for a visible image name.
@@ -74,7 +75,9 @@ def resolve_image_url(
     target = value.lower()
     for source in _CATALOGUE_ORDER:
         try:
-            images = list_images_by_source(source=source, session=session)
+            images = list_images_by_source(
+                source=source, session=session, workspace_id=workspace_id
+            )
         except Exception:  # noqa: BLE001 - one catalogue failing is not fatal
             if debug:
                 logger.debug("Image lookup via %s failed", source, exc_info=True)

@@ -61,9 +61,8 @@ def _file_v2(
     """Call one `/api/v2/file` Action and return its unwrapped ``Result``.
 
     The whole `file` service is absent from discovery — discovery once listed
-    it, then dropped it — but the route is live and both Actions take the v1
-    request bodies unchanged. Row order is not preserved from v1, so callers
-    must not depend on it.
+    it, then dropped it — but the route is live. Row order is not stable
+    across calls, so callers must not depend on it.
     """
     data = _request_json(
         session,

@@ -1,4 +1,9 @@
-"""Browser (web-session) image management APIs (list, detail, create, save, delete)."""
+"""Browser (web-session) image management APIs (list, detail, create, delete).
+
+Saving a notebook as an image is **not** here: all three Actions behind that
+flow live on the ``notebook`` route, so they sit in :mod:`.notebooks` next to
+the rest of the notebook lifecycle.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,6 @@ from typing import Any, Optional
 from inspire.platform.web.browser_api.notebooks import (
     _get_session_and_workspace_id,
     _image_v2,
-    _notebook_v2,
 )
 from inspire.platform.web.session import WebSession, get_web_session
 
@@ -32,6 +36,11 @@ class CustomImageInfo:
     status: str  # READY / BUILDING / FAILED
     description: str
     created_at: str
+    # Who can see the image, which is not what `source` says: `source` is the
+    # registry namespace it was built into and never changes, while
+    # `visibility` is the field `UpdateImage` flips. A personal image saved
+    # from a notebook reads SOURCE_PUBLIC + VISIBILITY_PRIVATE.
+    visibility: str = ""  # VISIBILITY_PRIVATE / VISIBILITY_PUBLIC
 
 
 def _image_from_api(item: dict[str, Any]) -> CustomImageInfo:
@@ -48,6 +57,7 @@ def _image_from_api(item: dict[str, Any]) -> CustomImageInfo:
         status=item.get("status", ""),
         description=item.get("description", ""),
         created_at=item.get("created_at", ""),
+        visibility=item.get("visibility", ""),
     )
 
 
@@ -59,6 +69,8 @@ def _image_from_api(item: dict[str, Any]) -> CustomImageInfo:
 def list_images_by_source(
     source: str = "official",
     session: Optional[WebSession] = None,
+    *,
+    workspace_id: Optional[str] = None,
 ) -> list[CustomImageInfo]:
     """List Docker images for any source, returning full metadata.
 
@@ -68,39 +80,41 @@ def list_images_by_source(
     and ``created_at`` populated from the raw API response.
 
     Args:
-        source: One of ``"official"`` / ``"public"`` / ``"private"``, matching the
-            three categories shown in the web UI (官方镜像 / 公开镜像 / 个人可见镜像).
-            ``"private"`` applies ``visibility=VISIBILITY_PRIVATE`` across both
-            private and public source lists.
+        source: One of ``"official"`` / ``"public"`` / ``"project"`` /
+            ``"private"``, matching the four tabs the web image picker shows
+            (官方镜像 / 公开可见镜像 / 项目可见镜像 / 个人可见镜像). Only
+            ``"official"`` is a real source; the other three are
+            ``visibility`` values applied across both source lists.
         session: Existing web session.
+        workspace_id: Which registry to read, named by a workspace that uses
+            it — every request carries ``registry_hint: {workspace_id}``.
+            Workspaces share registries, so this selects a catalog rather than
+            a per-workspace slice, but the catalogs behind two workspaces can
+            still be disjoint; a caller that means one registry must say so
+            rather than falling back to the session's active workspace.
+            Defaults to the session's workspace when omitted.
     """
-    source_map = {
-        "official": "SOURCE_OFFICIAL",
-        "public": "SOURCE_PUBLIC",
-        # UI "个人可见镜像": private visibility across both private/public sources.
-        "private": "SOURCE_PERSONAL_VISIBLE",
+    # Three of the four categories are visibility filters over the same two
+    # source lists; only 官方镜像 selects on `source`.
+    visibility_map = {
+        "public": "VISIBILITY_PUBLIC",
+        "project": "VISIBILITY_PROJECT",
+        "private": "VISIBILITY_PRIVATE",
     }
-    api_source = source_map.get(source.lower(), source)
+    normalized = source.lower()
+    visibility = visibility_map.get(normalized)
 
-    session, workspace_id = _get_session_and_workspace_id(workspace_id=None, session=session)
+    session, workspace_id = _get_session_and_workspace_id(
+        workspace_id=workspace_id, session=session
+    )
 
-    if api_source == "SOURCE_PUBLIC":
+    if visibility is not None:
         body: dict[str, Any] = {
             "page": 0,
             "page_size": -1,
             "filter": {
                 "source_list": ["SOURCE_PRIVATE", "SOURCE_PUBLIC"],
-                "visibility": "VISIBILITY_PUBLIC",
-                "registry_hint": {"workspace_id": workspace_id},
-            },
-        }
-    elif api_source == "SOURCE_PERSONAL_VISIBLE":
-        body = {
-            "page": 0,
-            "page_size": -1,
-            "filter": {
-                "source_list": ["SOURCE_PRIVATE", "SOURCE_PUBLIC"],
-                "visibility": "VISIBILITY_PRIVATE",
+                "visibility": visibility,
                 "registry_hint": {"workspace_id": workspace_id},
             },
         }
@@ -109,7 +123,7 @@ def list_images_by_source(
             "page": 0,
             "page_size": -1,
             "filter": {
-                "source": api_source,
+                "source": "SOURCE_OFFICIAL" if normalized == "official" else source,
                 "source_list": [],
                 "registry_hint": {"workspace_id": workspace_id},
             },
@@ -118,6 +132,47 @@ def list_images_by_source(
     data = _image_v2(session, "ListImages", body)
     items = data.get("images", [])
     return [_image_from_api(item) for item in items]
+
+
+def image_registry_id(
+    workspace_id: str,
+    session: Optional[WebSession] = None,
+) -> str:
+    """Return the id of the registry a workspace reads images from.
+
+    ``registry_hint: {workspace_id}`` names a *registry*, not a per-workspace
+    catalog, and several workspaces share one: measured on this platform,
+    seven workspaces answer for ``qbHarbor`` and three国产卡 ones for
+    ``sjHarbor``, with byte-identical ``image_id`` sets inside each group.
+    Anything that would otherwise read the same catalog once per workspace can
+    ask here first and read it once per registry instead.
+
+    The probe is one row (``page_size: 1``), which the gateway honours and
+    answers in well under a tenth of a second. An empty answer means this
+    workspace's registry cannot be identified this way -- a registry with no
+    publicly visible image at all -- and callers must fall back to reading per
+    workspace rather than guessing two registries are the same.
+    """
+    session, workspace_id = _get_session_and_workspace_id(
+        workspace_id=workspace_id, session=session
+    )
+    data = _image_v2(
+        session,
+        "ListImages",
+        {
+            "page": 0,
+            "page_size": 1,
+            "filter": {
+                "source_list": ["SOURCE_PRIVATE", "SOURCE_PUBLIC"],
+                "visibility": "VISIBILITY_PUBLIC",
+                "registry_hint": {"workspace_id": workspace_id},
+            },
+        },
+    )
+    images = data.get("images") or []
+    if not images or not isinstance(images[0], dict):
+        return ""
+    return str(images[0].get("registry_id") or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -184,36 +239,6 @@ def create_image(
     }
 
     return _image_v2(session, "CreateImage", body)
-
-
-def save_notebook_as_image(
-    notebook_id: str,
-    name: str,
-    version: str = "v1",
-    description: str = "",
-    session: Optional[WebSession] = None,
-) -> dict[str, Any]:
-    """Save a running notebook's state as a custom Docker image.
-
-    Goes to ``notebook.SaveNotebookImage``. The Action still refuses a
-    ``visibility`` field, with the same ``unknown field "visibility"`` wording
-    v1 used — to control visibility, call :func:`update_image` after this
-    returns.
-
-    **Returns an empty dict, always.** v1 answered a bare ``{"code": 0}`` with
-    no ``data``; v2 answers ``Result: null``. Neither hands back the new
-    image's id, so callers have to find it by listing.
-    """
-    session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
-
-    body: dict[str, Any] = {
-        "notebook_id": notebook_id,
-        "name": name,
-        "version": version,
-        "description": description,
-    }
-
-    return _notebook_v2(session, "SaveNotebookImage", body, timeout=60)
 
 
 def update_image(
@@ -298,7 +323,7 @@ def wait_for_image_ready(
 ) -> CustomImageInfo:
     """Wait for a custom image to reach a terminal success state.
 
-    The platform uses ``SUCCESS`` for ``inspire image save``-produced images
+    The platform uses ``SUCCESS`` for ``notebook save-image``-produced images
     (2026-04 observation — not ``READY`` like ``create_image`` does for
     externally-registered images). Both are accepted here, as are any
     ``SUCCEEDED`` variants, so the wait works for both flows.
@@ -345,8 +370,8 @@ __all__ = [
     "create_image",
     "delete_image",
     "get_image_detail",
+    "image_registry_id",
     "list_images_by_source",
-    "save_notebook_as_image",
     "update_image",
     "wait_for_image_ready",
 ]

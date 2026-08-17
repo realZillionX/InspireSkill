@@ -55,13 +55,15 @@ def test_list_job_instances_uses_v2_action_api(monkeypatch) -> None:  # noqa: AN
 
 def test_build_remote_cmd_url_and_headers(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(job_shell, "_get_base_url", lambda: "https://qz.sii.edu.cn")
-    monkeypatch.setattr(job_shell, "_browser_api_path", lambda path: f"/api/v1{path}")
 
     url = job_shell.build_remote_cmd_ws_url("job-abc", "worker-0")
     headers = job_shell.build_remote_cmd_headers(_FakeSession())
 
+    # v2, and no `?Action=`: the PTY sockets are the REST-shaped half of the
+    # gateway, which is why an Action-name inventory kept reporting this one
+    # as having no v2 counterpart.
     assert url == (
-        "wss://qz.sii.edu.cn/api/v1/train_job/remote_cmd?"
+        "wss://qz.sii.edu.cn/api/v2/train_job/remote_cmd?"
         "job_id=job-abc&instance_name=worker-0"
     )
     assert headers["Origin"] == "https://qz.sii.edu.cn"
@@ -343,7 +345,7 @@ def test_job_instances_requires_workspace_and_uses_limit(monkeypatch) -> None:  
     assert "Job Instances" not in result.output
     assert "Total:" not in result.output
     assert "job-abc-worker-deadbeef" not in result.output
-    assert "node-a" not in result.output
+    assert "node-a" in result.output
     assert "backend" not in result.output
 
 
@@ -769,3 +771,48 @@ def test_websocket_recv_exact_consumes_buffer_before_socket() -> None:
 
     assert client._recv_exact(3) == b"abc"
     assert client._recv_buffer == b""
+
+
+def test_remote_shell_url_uses_the_right_instance_key_per_workload(monkeypatch) -> None:  # noqa: ANN001
+    """HPC answers only to `instance_id`, and answers nothing at all otherwise.
+
+    Handing `hpc_jobs/instances/exec` an `instance_name` upgrades the socket
+    and then returns zero bytes -- no error, no close frame, just a shell that
+    never speaks. Measured against a running HPC job: `instance_id` echoed 53
+    bytes back, `instance_name` echoed 0. So the key is part of the contract,
+    not a spelling preference.
+    """
+    monkeypatch.setattr(job_shell, "_get_base_url", lambda: "https://qz.sii.edu.cn")
+
+    assert job_shell.build_remote_cmd_ws_url("job-1", "worker-0", workload="job") == (
+        "wss://qz.sii.edu.cn/api/v2/train_job/remote_cmd?"
+        "job_id=job-1&instance_name=worker-0"
+    )
+    assert job_shell.build_remote_cmd_ws_url("hpc-1", "proj/pod-0", workload="hpc") == (
+        "wss://qz.sii.edu.cn/api/v2/hpc_jobs/instances/exec?"
+        "job_id=hpc-1&instance_id=proj%2Fpod-0"
+    )
+    assert job_shell.build_remote_cmd_ws_url("rj-1", "rj-1-head-x", workload="ray") == (
+        "wss://qz.sii.edu.cn/api/v2/ray_job/instances/exec?"
+        "job_id=rj-1&instance_id=rj-1-head-x"
+    )
+    # Serving does not even call its handle `job_id`, and sending that name
+    # gets the handshake refused with a bare 200 instead of the 101 upgrade.
+    assert job_shell.build_remote_cmd_ws_url("sv-1", "proj/sv-1-0", workload="serving") == (
+        "wss://qz.sii.edu.cn/api/v2/inference_servings/instances/exec?"
+        "inference_serving_id=sv-1&instance_id=proj%2Fsv-1-0"
+    )
+
+
+def test_remote_shell_refuses_a_workload_it_has_no_measured_route_for(monkeypatch) -> None:  # noqa: ANN001
+    """Every route here was measured; an unknown one is refused, not guessed.
+
+    Guessing a key reproduces one of the two failures a wrong key produces --
+    a socket that upgrades and then stays silent, or a handshake refused with
+    a bare 200 -- both of which read as a hung shell rather than as an
+    unsupported command.
+    """
+    monkeypatch.setattr(job_shell, "_get_base_url", lambda: "https://qz.sii.edu.cn")
+
+    with pytest.raises(job_shell.JobShellError, match="notebook"):
+        job_shell.build_remote_cmd_ws_url("x", "y", workload="notebook")

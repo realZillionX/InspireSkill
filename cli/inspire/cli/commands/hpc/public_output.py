@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.platform.web.browser_api.datasets import mounted_dataset_views
 
 _URL_RE = re.compile(r"\b(?:https?|wss?)://[^\s\"'<>]+", re.IGNORECASE)
 _PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
@@ -161,12 +162,53 @@ def _resource(item: object) -> Any:
     return block or None
 
 
+_STEPS_RE = re.compile(r"^[-0-9]+/[-0-9]+$")
+
+
+def _steps(item: object) -> str:
+    """Read the Slurm step counter.
+
+    ``steps`` is a fixed ``done/total`` counter with ``-`` standing in for "not
+    known yet" (``-/-`` → ``-/1`` → ``1/1``), and it is the only field that
+    separates "your program ran" from "the job finished having run nothing".
+    Shape-check it rather than running it through :func:`_text`: this is a
+    counter, not prose, so anything that is not a counter should be dropped
+    instead of printed as one. The JSON path is exempted from filesystem-path
+    redaction at the call site — ``-/1`` otherwise reads as an absolute path.
+    """
+    text = str(_value(item, "steps") or "").strip()
+    return text if _STEPS_RE.match(text) else ""
+
+
 def _timestamp(item: object, keys: tuple[str, ...]) -> str:
     for key in keys:
         text = _text(_value(item, key))
         if text:
             return text
     return ""
+
+
+def _node_names(item: object, key: str) -> list[str]:
+    """Read the live Slurm placement off an HPC detail payload.
+
+    ``nodes`` is empty until the cluster is up and empties again on stop, so an
+    absent list means "not placed", never "unknown". Node names are
+    infrastructure identity rather than platform handles and pass ``_text``
+    unscrubbed.
+    """
+    raw = _value(item, key)
+    if not isinstance(raw, list):
+        return []
+    names: list[str] = []
+    for entry in raw:
+        name = (
+            _text(entry.get("node_name") or entry.get("name"))
+            if isinstance(entry, dict)
+            else _text(entry)
+        )
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def public_hpc_status(item: object, *, fallback_name: str = "") -> dict[str, Any]:
@@ -209,15 +251,18 @@ def public_hpc_status(item: object, *, fallback_name: str = "") -> dict[str, Any
         {
             "name": name or "N/A",
             "status": _text(_value(item, "status")) or "N/A",
+            "steps": _steps(item),
             "project": _nested_name(
                 item,
                 ("project", "project_info", "project_name"),
             ),
             "compute_group": compute_group,
             "resource": _resource(item),
+            "nodes": _node_names(item, "nodes"),
             "priority": priority,
             "priority_level": priority_level,
             "sub_status": _text(_value(item, "sub_status")),
+            "datasets": mounted_dataset_views(_value(item, "dataset_info")),
             "created_at": _timestamp(item, ("created_at", "create_time")),
             "updated_at": _timestamp(item, ("updated_at", "update_time")),
             "finished_at": _timestamp(
@@ -291,6 +336,9 @@ def format_hpc_status(view: dict[str, Any]) -> str:
         f"Name: {view.get('name') or 'N/A'}",
         f"Status: {view.get('status') or 'N/A'}",
     ]
+    steps = view.get("steps")
+    if steps not in (None, ""):
+        lines.append(f"Steps: {steps}")
     for key, label in (
         ("project", "Project"),
         ("compute_group", "Compute Group"),
@@ -301,6 +349,11 @@ def format_hpc_status(view: dict[str, Any]) -> str:
     resource = _format_resource(view.get("resource"))
     if resource:
         lines.append(f"Resource: {resource}")
+    nodes = view.get("nodes")
+    if nodes:
+        lines.append(f"Nodes: {', '.join(nodes)}")
+    for mount in view.get("datasets") or []:
+        lines.append(f"Dataset: {mount['name']}:{mount['version']} -> {mount['path']}")
     for key, label in (
         ("priority", "Priority"),
         ("priority_level", "Priority Level"),

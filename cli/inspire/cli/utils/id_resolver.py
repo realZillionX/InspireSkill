@@ -18,6 +18,10 @@ from inspire.cli.utils.resource_index import (
     scope_for_session,
     scope_workspace_id,
 )
+from inspire.platform.web.session.models import (
+    TRANSIENT_HTTP_STATUSES,
+    is_transient_api_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -536,9 +540,15 @@ def is_stale_handle_error(error: BaseException) -> bool:
     """Return whether *error* explicitly identifies a stale platform handle.
 
     Only explicit not-found signals are retryable. Authentication failures,
-    timeouts, and server-side failures are deliberately excluded even when
-    their text contains words such as ``invalid`` or ``not found``.
+    rate limiting, timeouts, and server-side failures are deliberately
+    excluded even when their text contains words such as ``invalid`` or
+    ``not found``: a platform that did not answer has not said the handle is
+    gone, and tombstoning a live resource on a ``429`` would be exactly the
+    wrong conclusion.
     """
+    if is_transient_api_error(error):
+        return False
+
     error_name = type(error).__name__
     if error_name in _AUTH_ERROR_NAMES or error_name in _TIMEOUT_ERROR_NAMES:
         return False
@@ -553,7 +563,7 @@ def is_stale_handle_error(error: BaseException) -> bool:
 
     status = _status_code_from_error(error)
     if status is not None:
-        if status in {401, 403} or status >= 500:
+        if status in TRANSIENT_HTTP_STATUSES or status in {401, 403} or status >= 500:
             return False
         if status == 404:
             return True
@@ -636,6 +646,7 @@ def _looks_like_platform_id(value: str) -> bool:
         "quota-",
         "ssh-",
         "spec-",
+        "tb-",
         "user-",
     )
     for prefix in sorted(id_prefixes, key=len, reverse=True):

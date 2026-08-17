@@ -33,9 +33,8 @@ def get_user_permissions(
 
     Returns a flat list of permission codes (e.g. `"job.trainingJob.create"`).
 
-    `GetPermissions` is absent from discovery but live, and answers the v1
-    `/user/permissions/{workspace_id}` payload verbatim. The workspace moves
-    from the URL into a `WorkspaceId` body field.
+    `GetPermissions` is absent from discovery but live. The workspace goes in
+    the body as `WorkspaceId`.
     """
     if session is None:
         session = get_web_session()

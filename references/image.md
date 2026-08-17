@@ -1,10 +1,14 @@
 # Image 管理
 
-选择已有镜像、从 Notebook 固化环境、注册外部镜像、调整可见性或清理镜像时看本页。Notebook 内准备依赖看 [`notebook.md`](notebook.md)；联网准备和内部源看 [`internal-sources.md`](internal-sources.md)。命令语法和参数以 CLI Help 为准。
+选择已有镜像、注册外部镜像、调整可见性或清理镜像时看本页。**把跑通的 Notebook 固化成镜像不在本页**：那是 Notebook 的生命周期动作（`notebook save-image` / `cancel-save-image`），看 [`notebook.md`](notebook.md)；本页只讲保存出来的镜像之后怎么用、怎么共享、怎么清理。Notebook 内准备依赖同样看 [`notebook.md`](notebook.md)；联网准备和内部源看 [`internal-sources.md`](internal-sources.md)。命令语法和参数以 CLI Help 为准。
 
 ## 1. 镜像的职责
 
 镜像保存“已经装好的运行环境”，用于 Notebook、Job、HPC、Ray 和 Serving 之间复用。数据集、权重、Checkpoint 和批量产物不进镜像，应放共享盘路径并用 Path Alias 管理。
+
+镜像存在 Registry 里，不是存在 Workspace 里，**多个 Workspace 正常共用同一份 Registry**。`image list` / `detail` / `register` / `set-visibility` / `delete` 都要 `--workspace`，因为平台只认 `registry_hint: {workspace_id}` 这一种指定 Registry 的方式——它是一个指向 Registry 的路标，不是分区。所以 `notebook save-image --workspace X` 存出的镜像，在**同一个 Registry 上的每一个 Workspace** 里都看得到，不必回到 X。
+
+真正会挡住你的是 Registry 边界，而 Registry 边界基本沿着卡的类型走。实测本账号 10 个 Workspace 只有两份目录：`CI-PPU` / `CI-情境智能-国产卡-ssd3` / `昇腾卡公共空间` 用 `sjHarbor`（7 官方 + 288 公开 + 0 个人），其余 7 个用 `qbHarbor`（17 + 5355 + 67），两份的 `image_id` 集合交集为空。跨过这条线，同名镜像可能根本不存在。哪个 Workspace 名字通到哪份目录，以 `image list` 的实际结果为准。
 
 一个稳定镜像至少满足：
 
@@ -18,26 +22,34 @@
 | 目标 | 路径 | 判断 |
 | --- | --- | --- |
 | 使用官方或已有自定义镜像 | `image list` / `image detail` | 镜像存在、状态可调度、权限可见 |
-| 固化运行中的 Notebook | `image save` | 依赖是在平台 Notebook 里装好的 |
+| 固化运行中的 Notebook | `notebook save-image`（见 [`notebook.md`](notebook.md)） | 依赖是在平台 Notebook 里装好的 |
 | 纳入外部 Docker 镜像 | `image register` | 镜像在本地、CI 或外部 Registry 构建完成 |
 | 调整共享范围 | `image set-visibility` | 协作者需要复用，或实验镜像应收回私有 |
 | 删除镜像 | `image delete` | 确认没有活跃 Workload 或协作者依赖 |
 
 镜像刚保存或刚注册时，不要只看创建命令成功；必须等到 `READY` 后再用于调度。
 
-## 3. Save 边界
+## 3. 可见性边界
 
-`image save` 适合把 Notebook 里跑通的环境固化成项目基底。保存过程会占用 Notebook 一段时间，期间不可操作该 Notebook；保存完成后 Notebook 不会自动停止。
+可见性有三档，对应网页镜像选择器的三个自定义页签：`private`（个人可见）、`project`（项目可见）、`public`（公开可见）；官方镜像是第四类，不由用户设置。默认按风险选：敏感依赖、个人实验和含内部调试文件的镜像保持 private；团队要复用且确认无 secret 后再放宽。`notebook save-image --visibility` 在保存时表达同一个选择，之后仍可用 `image set-visibility` 改。
 
-默认可见性按风险选：敏感依赖、个人实验和含内部调试文件的镜像保持 private；团队要复用且确认无 secret 后再 public。
+`image list --source` 用的是同一组名字，它筛的是可见性而非镜像来源——只有 `official` 是真的按来源筛。想按名字解析一个镜像却解析不到时，先确认它是不是在没查过的那一档里。
+
+一个 Registry 里有几千个镜像，靠 `--limit` / `--all` 翻页找不到东西：用 `--keyword` 做名称子串匹配（大小写不敏感），对应网页镜像列表自带的那个搜索框。
+
+**改成 public 是单向操作。** 平台不再把创建者当成公开镜像的属主：既不能改回 private，也不能删除，只有平台管理员能清理。所以确认要长期共享、名字也定下来了再放开；试验性镜像留在 private 或 project。
 
 保存出的镜像成为项目基底或被后续 Workload 长期复用时，把名称、用途和覆盖的依赖回填到 `INSPIRE.md`（见 [`project-context.md`](project-context.md)）。
 
 ## 4. Register 边界
 
-`image register` 适合外部镜像，不适合保存运行中的 Notebook。Push 工作流是平台给出 Registry 槽位，Agent 推镜像；Address 工作流是登记已有 Registry 地址。
+`image register` 适合外部镜像，不适合保存运行中的 Notebook——后者走 `notebook save-image`。
 
-注册后一直无法 `READY` 时，优先怀疑 Registry 权限、镜像地址不完整、Tag 不存在或目标 Workspace 无法访问该 Registry。
+它只有一条路径：平台按 `<name>:<version>` 留一个 Registry 槽位并回一个镜像地址，你自己 `docker push` 上去。命令会连同 `docker login` / `tag` / `push` 三行一起打印，登录主机名取自平台回的地址。**槽位不是镜像**——推上去之前这条记录一直是 `FAILED`，那是正常的中间态，不是注册失败。`--wait` 只有在 push 已经落地之后才有意义，一个没推过的槽位永远等不到 `READY`。
+
+网页控制台另有一条「文件上传」路径（上传镜像 tar），CLI 不实现文件上传，需要它就去网页端。
+
+注册后一直无法 `READY` 时，优先怀疑 push 根本没执行、Registry 权限、镜像地址不完整、Tag 不存在或目标 Workspace 无法访问该 Registry。
 
 ## 5. 清理原则
 
@@ -46,3 +58,5 @@
 - 没有 Running 或 Pending 的 Notebook、Job、HPC、Ray 或 Serving 依赖它。
 - Batch 文件、Profile 或协作约定不再引用它。
 - 协作者不再用这个版本复现实验。
+
+被取消的保存会在目录里留下一条 `FAILED` 镜像记录，取消命令本身不清理它；确认不再需要后用 `image delete` 单独删掉。

@@ -196,6 +196,55 @@ def test_workspace_routes_from_payload_extracts_workspace_list() -> None:
     }
 
 
+def test_workspace_routes_from_payload_reads_the_v2_envelope() -> None:
+    """Login discovery is `user.GetRoutes`, so the routes arrive under `Result`."""
+    payload = {
+        "ResponseMetadata": {"Action": "GetRoutes"},
+        "Result": {
+            "routes": [
+                {
+                    "name": "userWorkspaceList",
+                    "routes": [
+                        {
+                            "name": "CPU资源空间",
+                            "path": "ws-11111111-1111-1111-1111-111111111111",
+                            "is_fair_workspace": True,
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+
+    ids, names, fair_scheduling = ws_auth._workspace_routes_from_payload(payload)
+
+    assert ids == ["ws-11111111-1111-1111-1111-111111111111"]
+    assert names == {"ws-11111111-1111-1111-1111-111111111111": "CPU资源空间"}
+    assert fair_scheduling == {"ws-11111111-1111-1111-1111-111111111111": True}
+
+
+def test_workspace_routes_from_payload_raises_on_a_v2_error_envelope() -> None:
+    """A refused request must not read as "this account has no workspaces"."""
+    payload = {
+        "ResponseMetadata": {
+            "Error": {"Code": "InvalidParameter", "Message": "WorkspaceId is required"}
+        }
+    }
+
+    with pytest.raises(ValueError, match="WorkspaceId is required"):
+        ws_auth._workspace_routes_from_payload(payload)
+
+
+def test_bootstrap_calls_are_v2_actions() -> None:
+    """The two requests that run before a session exists have no v1 form left."""
+    assert ws_auth.USER_DETAIL_PATH == "/api/v2/user?Action=GetUserDetail"
+    assert ws_auth.USER_ROUTES_PATH == "/api/v2/user?Action=GetRoutes"
+    # The literal `default` is the placeholder for "no workspace known yet"; the
+    # gateway accepts it and answers the same rows a real id does. An empty
+    # string or a missing key is rejected with `WorkspaceId is required`.
+    assert ws_auth.BOOTSTRAP_ROUTES_BODY == {"WorkspaceId": "default"}
+
+
 def test_web_session_round_trip_preserves_workspace_capabilities() -> None:
     session = WebSession(
         storage_state={
@@ -423,7 +472,7 @@ def test_login_not_complete_message_prioritizes_platform_error() -> None:
     assert "Platform reported: 账号或密码错误" in message
     assert "platform login name" not in message
     assert "CAPTCHA" not in message
-    assert "inspire config show --compact" in message
+    assert "inspire account check --details" in message
     assert "last auth check status=401" in message
     assert "Shell HTTP_PROXY/HTTPS_PROXY/ALL_PROXY is configured" in message
     assert "CAS/Keycloak redirects may match NO_PROXY differently" in message
@@ -670,12 +719,58 @@ def test_build_requests_session_applies_toml_proxy(monkeypatch: pytest.MonkeyPat
         ),
     )
 
-    http = ws_requests_module.build_requests_session(session, "https://qz.sii.edu.cn/api/v1/test")
+    http = ws_requests_module.build_requests_session(session, "https://qz.sii.edu.cn/api/v2/test")
 
     assert http.proxies["http"] == "http://127.0.0.1:7897"
     assert http.proxies["https"] == "http://127.0.0.1:7897"
     assert http.trust_env is False
     http.close()
+
+
+def test_pooled_requests_session_keeps_one_connection_pool() -> None:
+    # A fresh requests.Session per call hands the connection back after every
+    # request, so a fan-out pays a TCP connect and TLS handshake per row it
+    # reads. The pool has to outlive the call for keep-alive to mean anything.
+    session = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
+        cookies={"session": "abc"},
+        workspace_id="ws-test",
+        created_at=0,
+    )
+    try:
+        first = ws_requests_module.pooled_requests_session(session, "https://qz.sii.edu.cn")
+        second = ws_requests_module.pooled_requests_session(session, "https://qz.sii.edu.cn")
+        assert first is second
+        assert ws_requests_module.build_requests_session(session, "https://qz.sii.edu.cn") is not first
+    finally:
+        ws_requests_module.close_pooled_requests_session()
+
+
+def test_pooled_requests_session_never_answers_with_stale_cookies() -> None:
+    # Only the pool is shared. A refreshed session's cookies must replace the
+    # previous ones outright, not merge with them.
+    first_session = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "old"}]},
+        cookies={"session": "old"},
+        workspace_id="ws-test",
+        created_at=0,
+    )
+    refreshed = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "new"}]},
+        cookies={"session": "new"},
+        workspace_id="ws-test",
+        created_at=1,
+    )
+    try:
+        http = ws_requests_module.pooled_requests_session(first_session, "https://qz.sii.edu.cn")
+        http.cookies.set("drive-by", "from-a-response", domain="qz.sii.edu.cn", path="/")
+
+        http = ws_requests_module.pooled_requests_session(refreshed, "https://qz.sii.edu.cn")
+
+        assert http.cookies.get("session", domain="qz.sii.edu.cn") == "new"
+        assert http.cookies.get("drive-by", domain="qz.sii.edu.cn") is None
+    finally:
+        ws_requests_module.close_pooled_requests_session()
 
 
 def test_request_json_falls_back_to_browser_client(monkeypatch: pytest.MonkeyPatch):
@@ -689,7 +784,7 @@ def test_request_json_falls_back_to_browser_client(monkeypatch: pytest.MonkeyPat
     http = DummyHTTP(DummyResponse(401))
     browser = DummyBrowserClient({"ok": True})
 
-    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: browser)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
 
@@ -712,7 +807,7 @@ def test_request_json_non_json_triggers_fallback(monkeypatch: pytest.MonkeyPatch
     http = DummyHTTP(DummyResponse(200, payload=ValueError("bad json")))
     browser = DummyBrowserClient({"ok": True})
 
-    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: browser)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
 
@@ -746,7 +841,7 @@ def test_request_json_transport_error_triggers_fallback(monkeypatch: pytest.Monk
     http = FailingHTTP()
     browser = DummyBrowserClient({"ok": True})
 
-    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: browser)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
 
@@ -768,13 +863,13 @@ def test_request_json_supports_delete(monkeypatch: pytest.MonkeyPatch):
 
     http = DummyHTTP(DummyResponse(200, payload={"ok": True}))
 
-    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
 
-    result = ws.request_json(session, "DELETE", "https://example.test/api/v1/image/image-1")
+    result = ws.request_json(session, "DELETE", "https://example.test/api/v2/image?Action=DeleteImage")
 
     assert result == {"ok": True}
-    assert http.calls == [("DELETE", "https://example.test/api/v1/image/image-1", {}, 30)]
+    assert http.calls == [("DELETE", "https://example.test/api/v2/image?Action=DeleteImage", {}, 30)]
 
 
 def test_request_json_browser_runtime_error_uses_standard_hint(
@@ -901,7 +996,7 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
         return refreshed
 
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: expiring)
-    monkeypatch.setattr(ws, "build_requests_session", lambda _session, _url: http)
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(ws, "clear_session_cache", lambda **_kwargs: None)
     monkeypatch.setattr(ws, "get_web_session", fake_get_web_session)
@@ -949,7 +1044,7 @@ def test_browser_request_context_supports_delete():
     client._closed = False
     client.session_fingerprint = "test"
 
-    result = client.request_json("DELETE", "https://example.test/api/v1/image/image-1")
+    result = client.request_json("DELETE", "https://example.test/api/v2/image?Action=DeleteImage")
 
     assert result == {"ok": True}
     assert context.request.calls
