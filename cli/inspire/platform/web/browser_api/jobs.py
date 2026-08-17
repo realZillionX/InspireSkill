@@ -272,9 +272,7 @@ def list_job_events(
     events (e.g. ``FailedScheduling`` / ``Scheduled`` from the K8s scheduler on
     specific pods), use :func:`list_job_instance_events` instead.
 
-    v1 split these across two endpoints — ``/train_job/job_event_list`` took a
-    bare ``job_id`` while ``/train_job/events/list`` took the filter envelope.
-    v2 collapses both into this one Action; only ``object_type`` differs.
+    One Action covers both levels; only ``object_type`` differs.
 
     Best-effort: returns ``[]`` when the platform answers but has nothing to
     report, or fails in a way specific to this job. An expired session or a

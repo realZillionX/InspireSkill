@@ -478,9 +478,7 @@ def delete_hpc_job(
 ) -> dict:
     """Permanently delete an HPC job entry from the platform.
 
-    Action: ``DeleteJob``. v1 needed the REST-style
-    ``DELETE /api/v1/hpc_jobs/{id}`` because ``POST /hpc_jobs/delete`` was a
-    404; v2 has a first-class Action, so the special case is gone.
+    Action: ``DeleteJob``.
 
     Destructive: the entry disappears from the UI — if the job is still
     running, ``stop`` it first. An id that does not resolve comes back as

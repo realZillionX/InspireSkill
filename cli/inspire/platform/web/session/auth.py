@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 
 from inspire.config import DEFAULT_BASE_URL, Config
 
+from .envelope import _v2_result
 from .models import DEFAULT_WORKSPACE_ID, WebSession
 from .browser_launch import (
     chromium_launch_kwargs,
@@ -354,13 +355,27 @@ _WORKSPACE_ID_PATTERN = re.compile(
 )
 
 
+# The two Actions a session needs before it has a session. Both are ordinary
+# `/api/v2` Actions that ask for nothing but the CAS cookie -- which is exactly
+# what the login flow is holding at this point -- so "we are still bootstrapping"
+# was never a reason to keep a v1 path alive.
+#
+# `GetRoutes` takes the literal `default` for the same reason the v1 path spelled
+# it that way: this is the request that *discovers* the workspaces, so there is
+# no real id to send yet. The gateway accepts it and answers the full
+# `userWorkspaceList`; a real workspace id answers byte-for-byte the same.
+USER_DETAIL_PATH = "/api/v2/user?Action=GetUserDetail"
+USER_ROUTES_PATH = "/api/v2/user?Action=GetRoutes"
+BOOTSTRAP_ROUTES_BODY = {"WorkspaceId": "default"}
+
+
 def _workspace_routes_from_payload(
     payload: dict[str, Any],
 ) -> tuple[list[str], dict[str, str], dict[str, bool]]:
     workspace_ids: list[str] = []
     workspace_names: dict[str, str] = {}
     fair_scheduling: dict[str, bool] = {}
-    for route_group in (payload.get("data") or {}).get("routes") or []:
+    for route_group in (_v2_result(payload) or {}).get("routes") or []:
         if not isinstance(route_group, dict):
             continue
         if route_group.get("name") != "userWorkspaceList":
@@ -611,9 +626,10 @@ def _login_with_cas_requests(
 
     api_headers = {"Accept": "application/json", "Referer": f"{base_url.rstrip('/')}/login"}
     user_detail: dict | None = None
-    user_detail_resp = http.get(
-        f"{base_url.rstrip('/')}/api/v1/user/detail",
+    user_detail_resp = http.post(
+        f"{base_url.rstrip('/')}{USER_DETAIL_PATH}",
         headers=api_headers,
+        json={},
         timeout=15,
     )
     if user_detail_resp.status_code != 200:
@@ -626,18 +642,21 @@ def _login_with_cas_requests(
         if 400 <= user_detail_resp.status_code < 500:
             raise _CasLoginFailure(error)
         raise ValueError(error)
-    payload = user_detail_resp.json()
-    data = payload.get("data")
-    if isinstance(data, dict):
-        user_detail = data
+    try:
+        detail = _v2_result(user_detail_resp.json())
+    except Exception:
+        detail = {}
+    if detail:
+        user_detail = detail
 
     all_workspace_ids: list[str] = []
     all_workspace_names: dict[str, str] = {}
     all_workspace_fair_scheduling: dict[str, bool] = {}
     try:
-        routes_resp = http.get(
-            f"{base_url.rstrip('/')}/api/v1/user/routes/default",
+        routes_resp = http.post(
+            f"{base_url.rstrip('/')}{USER_ROUTES_PATH}",
             headers=api_headers,
+            json=BOOTSTRAP_ROUTES_BODY,
             timeout=15,
         )
         if routes_resp.status_code == 200:
@@ -833,9 +852,10 @@ def login_with_playwright(
             }
             while time.time() < deadline:
                 try:
-                    resp = context.request.get(
-                        f"{base_url}/api/v1/user/detail",
+                    resp = context.request.post(
+                        f"{base_url}{USER_DETAIL_PATH}",
                         headers=headers,
+                        data={},
                         timeout=10000,
                     )
                     last_status = resp.status
@@ -878,46 +898,46 @@ def login_with_playwright(
             "Referer": f"{base_url}/login",
         }
         try:
-            user_detail_resp = context.request.get(
-                f"{base_url}/api/v1/user/detail",
+            user_detail_resp = context.request.post(
+                f"{base_url}{USER_DETAIL_PATH}",
                 headers=request_headers,
+                data={},
                 timeout=10000,
             )
             if user_detail_resp.status == 200:
-                payload = user_detail_resp.json()
-                data = payload.get("data")
-                if isinstance(data, dict):
-                    user_detail = data
+                detail = _v2_result(user_detail_resp.json())
+                if detail:
+                    user_detail = detail
         except Exception:
             user_detail = None
 
-        # Discover all workspace IDs via /api/v1/user/routes/default.
-        # The response contains a "userWorkspaceList" route with all workspaces
-        # the user can access, each with name (display name) and path (ws-... ID).
+        # Discover all workspace IDs via `user.GetRoutes`. The response contains
+        # a "userWorkspaceList" route with all workspaces the user can access,
+        # each with name (display name) and path (ws-... ID).
         all_workspace_ids: list[str] = []
         all_workspace_names: dict[str, str] = {}
         all_workspace_fair_scheduling: dict[str, bool] = {}
-        for routes_workspace_id in ("default",):
-            try:
-                routes_resp = context.request.get(
-                    f"{base_url}/api/v1/user/routes/{routes_workspace_id}",
-                    headers=request_headers,
-                    timeout=15000,
+        try:
+            routes_resp = context.request.post(
+                f"{base_url}{USER_ROUTES_PATH}",
+                headers=request_headers,
+                data=BOOTSTRAP_ROUTES_BODY,
+                timeout=15000,
+            )
+            if routes_resp.status == 200:
+                route_ids, route_names, route_fair_scheduling = (
+                    _workspace_routes_from_payload(routes_resp.json())
                 )
-                if routes_resp.status == 200:
-                    route_ids, route_names, route_fair_scheduling = (
-                        _workspace_routes_from_payload(routes_resp.json())
-                    )
-                    _merge_workspace_routes(
-                        all_workspace_ids,
-                        all_workspace_names,
-                        all_workspace_fair_scheduling,
-                        route_ids,
-                        route_names,
-                        route_fair_scheduling,
-                    )
-            except Exception:
-                pass
+                _merge_workspace_routes(
+                    all_workspace_ids,
+                    all_workspace_names,
+                    all_workspace_fair_scheduling,
+                    route_ids,
+                    route_names,
+                    route_fair_scheduling,
+                )
+        except Exception:
+            pass
 
         workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
 

@@ -108,7 +108,7 @@ Referer：`/jobs/highPerformanceComputing`，详情页 `/jobs/hpcDetail/{job_id}
 - **`ListSlurmdPodEvent` 的 `page_size` 必发**：省略时回空列表配非零 `total`，与 `ListLogicComputeGroups` 同病。它的行没有 `type` 也没有 `count`——**平台按发生次数逐行重复**（一个实例 `total=106`，去重后只有 20 行），所以读事件前要自己折叠，否则 `--tail 20` 会全是同一条。
 - **列表行的名字键是 `job_name`**，`name` 从来没被填充过——读 `name` 会让每个 HPC 任务都没有名字，列表渲染 N/A 且 Name Resolver 匹配不到任何东西。
 - **`DeleteJob` 要求先停止**，运行中删除返回 `Conflict`；id 不存在返回 `ResourceNotFound`。**`SUCCEEDED_RETAINING` / `FAILED_RETAINING` 也算「运行中」**：任务已经结束，`DeleteJob` 仍答 `Conflict: 当前状态（运行中）无法删除`，而 `StopJob` 对它返回成功却不解除保留态——只能等平台自己释放（实测约一分钟）。清理脚本要按状态离开 `*_RETAINING` 来重试，不要按 `StopJob` 的返回值判断。
-- discovery 对 hpc 的每个 Action 声明的参数与线上不一致（`ListJobs` 声明 `PageNumber`，实发 `page_num`），实测 v1 的请求体逐字被接受。
+- discovery 对 hpc 的每个 Action 声明的参数与线上不一致（`ListJobs` 声明 `PageNumber`，实发 `page_num`）；以实发为准。
 
 ---
 
@@ -186,7 +186,7 @@ Referer：`/jobs/interactiveModeling`。
 - **分页列表键是 `list`，不是 `items`**（与 `ray` 相反），`total` 是 int（与 `hpc` 相反）。**逐 Action 实测，不要类推。**
 - **`ListRunIndex` 无分页**，传 `PageNumber` 直接报错。`end_time = ""` 的那条是当前运行周期，按 `index` 从旧到新排。控制台的「生命周期」页就是用它渲染的——`ListNotebookLifecycles` 对绝大多数 Notebook 返回空列表。
 - **`ListNotebookEvents` 的事件字段是平台自有形状**，不是 K8s 形状：`content`（正文）、`created_at`（epoch-ms 字符串）、`event_id`。共享渲染器把 `content → message`、`created_at → last_timestamp` / `first_timestamp`。事件按从旧到新返回，Wrapper 默认自动翻页到 `total`（安全上限 100 页）。
-- **找不到资源时返回 `ResourceNotFound`，HTTP 仍是 200**，不再是 v1 的传输层 404。依赖 404 判断「不存在」的调用方必须同时认这个码。
+- **找不到资源时返回 `ResourceNotFound`，HTTP 仍是 200**，不是传输层 404。靠状态码判断「不存在」的调用方在这里会读到「找到了」。
 - **`node{}` 是整个节点对象，不只是 GPU 型号**：`name`（如 `cpu-nat-351`）、`status`、`cordon_type`、`is_maint`、`resource_pool`、`cpu_count` / `memory_size` / `gpu_count` 都在里面。**STOPPED 的 Notebook 不清空这个对象，而是把 `name` 置空、`status` 置成 proto 零值 `UNKNOWN_NODE_STATUS`**（同族还有 `unknown_node_type` / `unknown_credit_score`）——只判空对象会把「没在跑」读成「有一个状态未知的节点」。同一份落点还有第二个来源 `extra_info`（`NodeName` / `HostIP` / `PodName` / `ContainerID`），停止时同样是空串而不是缺键。
 - **`SaveNotebookImage` 不收 `visibility`**（`unknown field "visibility"`），要改可见性只能存完再调 `image.UpdateImage`。它**不返回新镜像的 id**，调用方只能靠列表去找。字段面比 CLI 发的那几个宽：discovery 声明 `notebook_id`（唯一必填）/ `name` / `version` / `description` / `accessible`(int32) / `support_brand_list` / `flatten`(bool)，逐个探过全在合同里（拿一台自己的 STOPPED Notebook 当尺子，body 不带 `name`，创建不出东西）。**`accessible` 只有两档**（1 个人可见 / 2 公开可见），CLI 的可见性有三档，所以它替代不了存完再 `UpdateImage` 那一步。
 - **`flatten` 是真生效的字段，不是声明了没接的死字段。** 2026-08-17 拿一台新建的 CPU Notebook 连存两次，再从 `docker-qb.sii.edu.cn` 那台 Harbor 读回两份 manifest 比对（`/service/token?service=harbor-registry&scope=repository:<repo>:pull` 换匿名 token 即可读，容器内可达；`docker.sii.shaipower.online` 那个名字在 Notebook 网段 443 拒连）：
@@ -243,7 +243,7 @@ Referer：`/jobs/modelDeployment`。路由名是**下划线**形式，discovery 
 
 - **创建必须用 `CreateServingConsole`，不是 discovery 里那个 `CreateServing`。** 后者的 Description 明写「via OpenAPI with simplified config」，契约确实不同：要 `spec_id` 而不是 `resource_spec_price`，`image` 是普通字符串而不是 `mirror_id`，且不收 `description` / `inference_serving_type` / `model_source`。**看到写操作的字段被大面积拒绝时，第一反应应该是「是不是找错 Action 了」，而不是「契约变了」。**
 - **`ScaleServing` 的字段是单数 `replica`**，而 create 和 `UpdateServing` 用复数 `replicas`。
-- **`StartServing` / `StopServing` 只收 `{inference_serving_id}`**，请求体里的 `version` 会被拒。这两条曾经迁了 URL 却仍用 v1 的 `code != 0` 检查解包，于是对任何输入都返回 `API error: None`——**迁 URL 而不同时换解包器，会把真错误伪装成假错误。**
+- **`StartServing` / `StopServing` 只收 `{inference_serving_id}`**，请求体里的 `version` 会被拒。这两条曾经用手写的 `code != 0` 检查解包，于是对任何输入都返回 `API error: None`——**解包不走 `_v2_result()`，会把真错误伪装成假错误。**
 - **`UpdateServing` 的语义已受控验证，结论是不封装。** 四条约束叠在一起让它对 Agent 不安全：
   1. **只能在 `FAILED` 或 `STOPPED` 状态下调用**，运行中答 `InvalidParameter: 参数错误: This serving can only be updated in FAILED or STOPPED status.`
   2. **`resource_spec_price` 必须是扁平结构**（`cpu_type` / `cpu_count` / `gpu_count` / `memory_size_gib` / `quota_id` / `logic_compute_group_id`），而 `GetServing` 读回的是**嵌套**结构（带 `cpu_info` / `gpu_info` 和一组价格字段）。**读回来的对象不能直接喂回去**——原样发送答 `unknown field "cpu_info"`。
@@ -261,7 +261,6 @@ Referer：`/jobs/modelDeployment`。路由名是**下划线**形式，discovery 
 - **节点落点在 `GetServing` 的 `extra_info.node_names[]`，不在顶层**：顶层只有 `node_num_per_replica`（每副本几个节点，是规格）。按顶层读会让每个部署都显示成没落点。pod 级的同一事实在 `ListServingInstances` 行的 `node`，已在活部署上复核。
 - `GetServingScheduleConfig` 的回收规则是**按 GPU 档位**给的（每个 `items` 元素带 `gpu_count_min` / `gpu_count_max`），一个 Workspace 会有多条。
 - `DeleteServing` 的 id 不存在时返回 `ResourceNotFound`。
-- 读 Action 逐字接受 v1 请求体、响应字段完全一致；**写侧不能照搬**。
 
 ---
 
@@ -319,7 +318,7 @@ Referer：`/jobs/distributedTraining`。
 - **`GetUserDetail` 只覆盖当前用户**：传空体返回当前账号，传 `user_id` / `id` / `UserId` 一律 `InvalidParameter`。
 - **两个未文档化 Action 的 workspace 参数 Wrapper 写作 PascalCase `WorkspaceId`**（照 discovery 的声明），`workspace_id` 同样有效——网关对大小写和下划线不敏感。
 - **`GetRoutes` 的 `userWorkspaceList` 那个 route group 是 Workspace 枚举的唯一来源**：每个条目的 `path` 是 `ws-…` id，`name` 是显示名，`is_fair_workspace` 是 qz 优先级选择器的唯一数据源，缺了就没法判断该工作空间用哪套优先级。
-- **它替代不了登录时的 `/api/v1/user/routes/default`**：v2 要一个真实的 `WorkspaceId`，而登录握手时一个都还不知道。见 [`browser-api.md` 第 8 节](browser-api.md#8-仍在使用的-v1-端点)。
+- **登录自举就用它**：`WorkspaceId` 传字面量 `"default"` 网关照收，答的是完整的 `userWorkspaceList`——和传一个真实 Workspace id 的响应逐字节相同（5794 字节 0 差异）。空串或省略才报 `InvalidParameter: WorkspaceId is required`。这正是登录握手时的处境：还一个 id 都不知道。
 - `ListAPIKeys` 可用但随 `user api-keys` 命令一起下线，已无消费者。`user.ListSSH` / `user.GetMyPermissions` 存在但未封装——账号级 SSH 公钥注册表与 Notebook SSH 链路无关。
 
 ---
@@ -362,7 +361,7 @@ Referer：`/jobs/interactiveModeling`。
   - 公开镜像：`{source_list: ["SOURCE_PRIVATE","SOURCE_PUBLIC"], visibility: "VISIBILITY_PUBLIC", registry_hint:{…}}`
   - 个人可见：同上但 `visibility: "VISIBILITY_PRIVATE"`
 - **镜像地址在 `address` 字段**，不是 `url`。创建 Workload 时平台匹配的是**注册表 URL 而不是可见名**，发名字会被拒为 `无法找到对应镜像`。
-- **`add_method`**：`0` = 本地推送（`docker push`，v1 和 v2 给出同一个 `no image uploaded` 拒绝），`2` = 注册已有镜像地址。
+- **`add_method`**：`0` = 本地推送（`docker push`，网关直接拒 `no image uploaded`），`2` = 注册已有镜像地址。
 - **就绪状态有两套**：`image register` 产出的镜像走 `READY`，`notebook save-image` 产出的走 `SUCCESS`。终态失败包括 `FAILED` / `FAILURE` / `ERROR` / `CANCELLED` / `TIMEOUT` / `ABORTED` / `INTERRUPTED`——漏掉任何一个都会让轮询挂到超时而不是快速失败。
 - 「把 Notebook 存成镜像」不在这条路由，在 `notebook.SaveNotebookImage`——CLI 侧对应 `notebook save-image`，`image` 组只管已经存在的镜像。
 
@@ -421,13 +420,13 @@ Referer：`/jobs/interactiveModeling`。**整条路由不在 discovery 里**，�
 - **它已经按计算组解析好了**，这正是它的价值：`notebook.GetScheduleConfig` 的 `*_quota` 菜单是工作空间级的一整张表，要靠 `logic_compute_group_ids` 自己过滤，还要再叠「装得进组内某个节点」和「组真的有可分配容量」两条规则；这个 Action 直接给该组当下真正可用的那几行。两边的 `quota_id` 一一对应，用来 join `allowed_priority_levels`。
 - **`total_price_per_hour` 的单位是点券/小时**，实测等于 GPU 数（1/2/4/8 卡各 1/2/4/8）。同族的 `GetResourceAndInferencePrices`（按资源类型的单价）和 `GetStoragePrices`（按存储产品的单价，`点券/TB/天`）也可读，CLI 目前不接。
 - **空列表是权威回答**，不是失败：该组不跑这类 Workload 时就是 0 行（实测 `训练区-H200-1号机房` 的 `RAY_JOB` / `HPC` 都是 0 行）。请求失败要抛，两者不能同值——它们曾经同值，于是一次被限流的刷新把整个工作空间缓存成了「没有配额」。
-- **本 Action 与 `/api/v1/resource_prices/logic_compute_groups/` 逐字段等价**：请求体相同、响应键相同。10 个工作空间 × 全部计算组 × 5 种 `schedule_config_type` 共 225 组比对，225/225 行集一致，字段集也没有差异。此前判定「v2 没有对应物、只能客户端重算」是照 discovery 下的结论，而 discovery 根本没有这条路由——正是 [`browser-api.md` 第 6 节](browser-api.md#6-discovery-能信什么)警告的那个错误模式。
+- **这是挡在每一个 `create` 前面的那个请求**，覆盖 10 个工作空间 × 全部计算组 × 5 种 `schedule_config_type` 共 225 组实测。整条 `resource-price` 路由**不在 discovery 里**，曾经据此判定「没有对应物、只能客户端重算」——正是 [`browser-api.md` 第 6 节](browser-api.md#6-discovery-能信什么)警告的那个错误模式。
 
 ---
 
 ## `file` — 文件页 ‡
 
-Referer：`/jobs/files?spaceId={workspace_id}`（`GetSftpgoConnectionInfo` 在用户中心页下）。**整条路由不在 discovery 里**（历史上出现过又被删掉），但活着，前两个 Action 逐字接受 v1 请求体。
+Referer：`/jobs/files?spaceId={workspace_id}`（`GetSftpgoConnectionInfo` 在用户中心页下）。**整条路由不在 discovery 里**（历史上出现过又被删掉），但活着。
 
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
@@ -440,7 +439,7 @@ Referer：`/jobs/files?spaceId={workspace_id}`（`GetSftpgoConnectionInfo` 在�
 
 - **`filter.name` 是前端的类别键**，不是文件名：`project` / `global_public` / `global_user`。
 - **`system_storage_type` 取 `GetSystemStorageTypeList` 返回的存储池名**；`share-` 前缀的存储池在项目目录发现里被跳过。
-- **与 v1 唯一的差异是行顺序**：12 个存储池和目录列表都会换序，排序后完全相等。当前调用方都不依赖顺序，**新调用方也不要依赖**。
+- **行顺序不稳定**：12 个存储池和目录列表都会换序。当前调用方都不依赖顺序，**新调用方也不要依赖**。
 
 ### `GetSftpgoConnectionInfo`：一条不需要计算资源的共享盘读写通道
 
@@ -483,7 +482,7 @@ Referer：`/jobs/interactiveModeling?spaceId={workspace_id}`。**整条路由不
 
 ## Metrics — `GetTaskMetric`
 
-v1 用一个集群级端点服务所有 Workload；v2 **没有集群级端点**，每个 service 各有一份 `GetTaskMetric`，接受逐字相同的请求体。
+**没有集群级端点**：每个 service 各有一份 `GetTaskMetric`，请求体逐字相同。
 
 ```jsonc
 POST /api/v2/{notebook|train|hpc|ray|inference_serving}?Action=GetTaskMetric
@@ -556,7 +555,7 @@ POST /api/v2/{notebook|train|hpc|ray|inference_serving}?Action=GetTaskMetric
 - **`mount_path` / `mounts` 是死字段：接受、存储、不生效。** 元素是 `{real_path, mount_path, volume}`，没有 `read_only`。受控验证里三种 `volume` 写法全部被接受并原样存进 `start_config.mount_path`，但实例起来后 `/mnt/` 是空的，`find / -name 'probe-*'` 零命中。控制台侧也对得上：notebook 和 train 表单的「高级设置」里没有任何自定义挂载入口，递归抓完全部 SPA chunk 也找不到 `real_path` / `mount_path`。**结论不是「契约未知」，是「这个字段当前没有消费者」。**
 - **`hpc` 的 `working_dir` 同类，而且更早暴露**：`CreateJobConsole` 接受它，但 `GetJob` 读回来是 `None`——平台连存都没存。对照组是同一次请求里的 `dataset_info` / `description` / `ttl_after_job_finish_seconds`，三个都完整 round-trip。**写进去读不回来，就不要接。**
 - **`train_enable_*` 是 Workspace 能力开关，不是可传的参数。** `GetTrainScheduleConfig` 返回 `train_enable_pre_check` / `train_enable_troubleshoot` / `train_enable_specified_nodes` / `train_enable_slow_detect` / `train_enable_vccl`，控制台据此决定渲染哪些控件。`enable_slow_detect` / `enable_vccl` 虽然被 `CreateJobConsole` 接受，但表单里没有对应控件，是平台侧行为而不是用户可选项，CLI 不暴露。**判断某个字段该不该接时，先看这组开关，再看控制台是否真的渲染了控件，两者缺一不可。**
-- **`resource_spec_price` 是嵌套的 proto 风格对象**：`{cpu_type, cpu_count, gpu_type, gpu_count, memory_size_gib, logic_compute_group_id, quota_id}`；CPU 档位省略 `gpu_type`。它由 `quota_id` 那一行的原始 price 对象构造，来源是仍在 v1 的规格菜单端点。
+- **`resource_spec_price` 是嵌套的 proto 风格对象**：`{cpu_type, cpu_count, gpu_type, gpu_count, memory_size_gib, logic_compute_group_id, quota_id}`；CPU 档位省略 `gpu_type`。它由 `quota_id` 那一行的原始 price 对象构造，来源是 `resource-price` 的规格菜单 Action。
 - **镜像一律发注册表 URL 或 `mirror_id`，不发可见名**，否则 `无法找到对应镜像`。`image_type` 取 `SOURCE_PUBLIC` / `SOURCE_PRIVATE` / `SOURCE_OFFICIAL`。
 - **Shared Memory 是实例级资源**：`shm_gi`（train / ray）和 `shared_memory_size`（notebook）不能超过所选 Quota 的实例内存。
 - **可选字段一律「不传就不出现在 body 里」**，包括两个只读挂载开关——即使只读是更安全的值。一个没有指定该选项的创建请求必须与该选项存在之前逐字节相同，平台的默认值由平台自己决定。

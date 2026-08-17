@@ -469,14 +469,12 @@ class TestAccountUseCommand:
 
         browser_core._cached_base_url = "https://alice.example"  # type: ignore[attr-defined]
         browser_core._cached_base_url_key = ("alice", None)  # type: ignore[attr-defined]
-        browser_core._cached_browser_api_prefix = "/alice"  # type: ignore[attr-defined]
-        browser_core._cached_browser_api_prefix_key = ("alice", None)  # type: ignore[attr-defined]
 
         result = runner.invoke(account, ["use", "bob"])
 
         assert result.exit_code == 0, result.output
         assert browser_core._cached_base_url is None
-        assert browser_core._cached_browser_api_prefix is None
+        assert browser_core._cached_base_url_key is None
 
     def test_use_preserves_switched_away_account_disk_caches(
         self, home: Path, runner: CliRunner

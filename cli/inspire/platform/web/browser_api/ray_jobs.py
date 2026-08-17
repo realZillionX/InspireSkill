@@ -5,9 +5,7 @@ running hybrid CPU-decode / GPU-inference streaming pipelines (what the UI
 labels "弹性计算"). This route is web-session only, so we hit it the same way
 the SPA does, with stored Playwright cookies and a matching ``Referer``.
 
-Every Action here was verified against a live job before being wired up; the
-v2 responses are field-for-field identical to the ``/api/v1/ray_job/*`` ones
-they replace, so the normalization below is unchanged from the v1 wrapper.
+Every Action here was verified against a live job before being wired up.
 Wire details that differ from sibling domains:
 
 - The resource key is ``ray_job_id`` on every Action *except* ``GetJobLog``.
@@ -176,10 +174,10 @@ def _ray_v2(
 ) -> dict[str, Any]:
     """Call one `/api/v2/ray` Action and return its unwrapped ``Result``.
 
-    Keeps the ``Ray Job <context> failed`` message shape the v1 wrapper used so
-    command-layer error text is unchanged, except for the status rejection
-    described at :data:`_STATE_CONFLICT_MARKER`, which is restated as the state
-    conflict it is instead of being passed through as a server fault.
+    Errors surface as ``Ray Job <context> failed``, which is the shape the
+    command layer's error text expects. The one exception is the status
+    rejection described at :data:`_STATE_CONFLICT_MARKER`, restated as the
+    state conflict it is instead of passed through as a server fault.
     """
     data = _request_json(
         session,

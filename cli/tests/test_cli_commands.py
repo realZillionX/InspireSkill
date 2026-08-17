@@ -1990,12 +1990,11 @@ def test_config_check_rejects_top_level_project_base_url_key(
     assert "[api]" in payload["error"]["message"]
 
 
-def test_config_check_allows_path_default_for_browser_api_prefix(
+def test_config_check_accepts_a_custom_base_url(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_test_config(tmp_path)
     config.base_url = "https://my-inspire.internal"
-    config.browser_api_prefix = "/api/v1"
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
         return config, {"base_url": config_module.SOURCE_ENV}

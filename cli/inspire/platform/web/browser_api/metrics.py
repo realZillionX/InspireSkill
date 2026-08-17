@@ -1,8 +1,8 @@
 """Cluster resource metrics (time-series) queries.
 
-Backs the web UI "资源视图" tab. v1 served every workload from one cluster-wide
-endpoint; v2 splits it per service, so the route is chosen from `task_type`.
-Browser API time-series endpoint used by notebook/job/HPC/serving/Ray pages.
+Backs the web UI "资源视图" tab. Each service owns its own metrics Action, so
+the route is chosen from `task_type`. Used by the notebook / job / HPC /
+serving / Ray pages.
 
 The UI fans out one request per metric_type (confirmed empirically 2026-04:
 sending a list of 5 metric types in one call only returns results for the
@@ -116,11 +116,10 @@ class MetricGroup:
         )
 
 
-# v1 served every workload's metrics from one cluster-wide endpoint. v2 has no
-# such endpoint: each service owns a `GetTaskMetric` Action that takes the same
-# per-task filter. `workspace.GetOverviewResourceMetricByTime` is NOT the
-# counterpart -- it is a workspace-level overview and answers AccessForbidden
-# to ordinary members.
+# There is no cluster-wide metrics endpoint: each service owns a `GetTaskMetric`
+# Action taking the same per-task filter. `workspace.GetOverviewResourceMetricByTime`
+# is NOT one -- it is a workspace-level overview and answers AccessForbidden to
+# ordinary members.
 _METRIC_ROUTE_BY_TASK_TYPE: dict[str, str] = {
     "interactive_modeling": "notebook",
     "distributed_training": "train",

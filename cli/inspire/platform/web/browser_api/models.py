@@ -571,10 +571,10 @@ def create_model(
     The first version is inferred by the backend. `model_source_type=1` matches
     the UI path-registration flow for a platform-visible directory.
 
-    Goes to `model-hub.CreateModel`, which is live but absent from discovery
-    and takes the v1 body unchanged. `model_source_path` must sit under the
-    given workspace *and* project; anything else — a `global_user` path
-    included — is rejected with `存储路径格式不正确`.
+    Goes to `model-hub.CreateModel`, which is live but absent from discovery.
+    `model_source_path` must sit under the given workspace *and* project;
+    anything else — a `global_user` path included — is rejected with
+    `存储路径格式不正确`.
     """
     if session is None:
         session = get_web_session()

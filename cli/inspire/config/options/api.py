@@ -13,12 +13,6 @@ API_OPTIONS: list[ConfigOption] = [
         field_name="base_url",
         scope="global",
     ),
-    ConfigOption(
-        env_var="INSPIRE_BROWSER_API_PREFIX",
-        toml_key="api.browser_api_prefix",
-        field_name="browser_api_prefix",
-        scope="global",
-    ),
 ]
 
 PROXY_OPTIONS: list[ConfigOption] = [

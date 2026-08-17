@@ -196,6 +196,55 @@ def test_workspace_routes_from_payload_extracts_workspace_list() -> None:
     }
 
 
+def test_workspace_routes_from_payload_reads_the_v2_envelope() -> None:
+    """Login discovery is `user.GetRoutes`, so the routes arrive under `Result`."""
+    payload = {
+        "ResponseMetadata": {"Action": "GetRoutes"},
+        "Result": {
+            "routes": [
+                {
+                    "name": "userWorkspaceList",
+                    "routes": [
+                        {
+                            "name": "CPU资源空间",
+                            "path": "ws-11111111-1111-1111-1111-111111111111",
+                            "is_fair_workspace": True,
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+
+    ids, names, fair_scheduling = ws_auth._workspace_routes_from_payload(payload)
+
+    assert ids == ["ws-11111111-1111-1111-1111-111111111111"]
+    assert names == {"ws-11111111-1111-1111-1111-111111111111": "CPU资源空间"}
+    assert fair_scheduling == {"ws-11111111-1111-1111-1111-111111111111": True}
+
+
+def test_workspace_routes_from_payload_raises_on_a_v2_error_envelope() -> None:
+    """A refused request must not read as "this account has no workspaces"."""
+    payload = {
+        "ResponseMetadata": {
+            "Error": {"Code": "InvalidParameter", "Message": "WorkspaceId is required"}
+        }
+    }
+
+    with pytest.raises(ValueError, match="WorkspaceId is required"):
+        ws_auth._workspace_routes_from_payload(payload)
+
+
+def test_bootstrap_calls_are_v2_actions() -> None:
+    """The two requests that run before a session exists have no v1 form left."""
+    assert ws_auth.USER_DETAIL_PATH == "/api/v2/user?Action=GetUserDetail"
+    assert ws_auth.USER_ROUTES_PATH == "/api/v2/user?Action=GetRoutes"
+    # The literal `default` is the placeholder for "no workspace known yet"; the
+    # gateway accepts it and answers the same rows a real id does. An empty
+    # string or a missing key is rejected with `WorkspaceId is required`.
+    assert ws_auth.BOOTSTRAP_ROUTES_BODY == {"WorkspaceId": "default"}
+
+
 def test_web_session_round_trip_preserves_workspace_capabilities() -> None:
     session = WebSession(
         storage_state={
@@ -670,7 +719,7 @@ def test_build_requests_session_applies_toml_proxy(monkeypatch: pytest.MonkeyPat
         ),
     )
 
-    http = ws_requests_module.build_requests_session(session, "https://qz.sii.edu.cn/api/v1/test")
+    http = ws_requests_module.build_requests_session(session, "https://qz.sii.edu.cn/api/v2/test")
 
     assert http.proxies["http"] == "http://127.0.0.1:7897"
     assert http.proxies["https"] == "http://127.0.0.1:7897"
@@ -817,10 +866,10 @@ def test_request_json_supports_delete(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
 
-    result = ws.request_json(session, "DELETE", "https://example.test/api/v1/image/image-1")
+    result = ws.request_json(session, "DELETE", "https://example.test/api/v2/image?Action=DeleteImage")
 
     assert result == {"ok": True}
-    assert http.calls == [("DELETE", "https://example.test/api/v1/image/image-1", {}, 30)]
+    assert http.calls == [("DELETE", "https://example.test/api/v2/image?Action=DeleteImage", {}, 30)]
 
 
 def test_request_json_browser_runtime_error_uses_standard_hint(
@@ -995,7 +1044,7 @@ def test_browser_request_context_supports_delete():
     client._closed = False
     client.session_fingerprint = "test"
 
-    result = client.request_json("DELETE", "https://example.test/api/v1/image/image-1")
+    result = client.request_json("DELETE", "https://example.test/api/v2/image?Action=DeleteImage")
 
     assert result == {"ok": True}
     assert context.request.calls

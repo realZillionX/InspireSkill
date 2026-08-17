@@ -23,7 +23,7 @@ else:
 
 
 from inspire.platform.web.browser_api.core import (
-    _browser_api_path,
+    NOTEBOOK_LAB_PATH,
     _get_base_url,
     _in_asyncio_loop,
     _launch_browser,
@@ -850,7 +850,7 @@ def probe_existing_rtunnel_proxy_url(
 ) -> str | None:
     """Return the existing proxy URL if it looks reachable (otherwise None)."""
     base_url = _get_base_url().rstrip("/")
-    notebook_lab_path = _browser_api_path(f"/notebook/lab/{notebook_id}/proxy/{port}/")
+    notebook_lab_path = f"{NOTEBOOK_LAB_PATH}/{notebook_id}/proxy/{port}/"
     known_proxy_url = f"{base_url}{notebook_lab_path}"
 
     resolved_account = _resolve_rtunnel_account(explicit=account, session=session)
@@ -961,7 +961,7 @@ def _jupyter_server_base(lab_url: str) -> str:
 
     Only strips ``/lab`` when it is the **final** path segment (the
     JupyterLab UI route), not when ``/lab/`` appears mid-path as part
-    of the platform's proxy path (e.g. ``/api/v1/notebook/lab/{id}/``).
+    of the platform's proxy path (e.g. ``/api/v2/notebook/lab/{id}/``).
     """
     from urllib.parse import urlsplit, urlunsplit
 

@@ -80,9 +80,8 @@ def try_enumerate_workspaces(
 
     Primary method: ``user.GetRoutes``, which returns a ``userWorkspaceList``
     route group containing all workspaces the user can access. The Action is
-    absent from discovery but live, and answers the v1
-    ``/user/routes/{workspace_id}`` payload verbatim — ``is_fair_workspace``
-    included.
+    absent from discovery but live, and carries ``is_fair_workspace`` on each
+    entry.
 
     Returns workspace id, name, and fair-scheduling capability dictionaries.
     Returns an empty list only when the live API successfully reports no

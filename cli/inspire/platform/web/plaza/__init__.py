@@ -3,7 +3,7 @@
 The dataset catalogue lives in its own application, off the qz console and
 behind its own session cookie, so it gets its own package rather than another
 module under :mod:`inspire.platform.web.browser_api` — everything there is the
-qz host, one CAS session and the ``/api/v1`` … ``/api/v2`` envelopes. What the
+qz host, one CAS session and the ``/api/v2`` Action envelope. What the
 two share is the platform web session, which is why this sits beside them
 under :mod:`inspire.platform.web`.
 

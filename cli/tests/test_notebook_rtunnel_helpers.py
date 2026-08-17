@@ -54,13 +54,13 @@ from inspire.platform.web.browser_api.rtunnel import (
         ),
         # Proxy-style: /notebook/lab/<id>/lab (JupyterLab route is the final /lab)
         (
-            "https://example.com/api/v1/notebook/lab/nb-123/lab",
-            "https://example.com/api/v1/notebook/lab/nb-123/",
+            "https://example.com/api/v2/notebook/lab/nb-123/lab",
+            "https://example.com/api/v2/notebook/lab/nb-123/",
         ),
         # Direct navigation URL (no /lab suffix) — no stripping
         (
-            "https://example.com/api/v1/notebook/lab/nb-123/",
-            "https://example.com/api/v1/notebook/lab/nb-123/",
+            "https://example.com/api/v2/notebook/lab/nb-123/",
+            "https://example.com/api/v2/notebook/lab/nb-123/",
         ),
         # Query parameters and fragments are stripped
         (
@@ -152,9 +152,9 @@ def test_create_terminal_via_api_proxy_url() -> None:
     """API URL should be derived from the server base, not the lab path."""
     resp = _DummyResponse(200, {"name": "2"})
     ctx = _DummyContext(_DummyRequest(resp))
-    result = _create_terminal_via_api(ctx, "https://example.com/api/v1/notebook/lab/nb-123/lab")
+    result = _create_terminal_via_api(ctx, "https://example.com/api/v2/notebook/lab/nb-123/lab")
     assert result == "2"
-    assert ctx.request.calls[0][0] == "https://example.com/api/v1/notebook/lab/nb-123/api/terminals"
+    assert ctx.request.calls[0][0] == "https://example.com/api/v2/notebook/lab/nb-123/api/terminals"
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +230,7 @@ def test_extract_jupyter_token_from_path() -> None:
 
 
 def test_extract_jupyter_token_missing() -> None:
-    lab_url = "https://example.com/api/v1/notebook/lab/nb-123/"
+    lab_url = "https://example.com/api/v2/notebook/lab/nb-123/"
     assert _extract_jupyter_token(lab_url) is None
 
 
@@ -244,9 +244,9 @@ def test_build_terminal_websocket_url_https() -> None:
 
 
 def test_build_terminal_websocket_url_http_without_token() -> None:
-    lab_url = "http://example.com/api/v1/notebook/lab/nb-123/"
+    lab_url = "http://example.com/api/v2/notebook/lab/nb-123/"
     ws_url = _build_terminal_websocket_url(lab_url, "term-a")
-    assert ws_url == "ws://example.com/api/v1/notebook/lab/nb-123/terminals/websocket/term-a"
+    assert ws_url == "ws://example.com/api/v2/notebook/lab/nb-123/terminals/websocket/term-a"
 
 
 def test_send_terminal_command_via_websocket_success() -> None:

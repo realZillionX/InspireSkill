@@ -17,8 +17,8 @@ from inspire.platform.web.session import WebSession
 
 
 def _resolve_job_lcg(task_id: str, session: WebSession) -> Optional[str]:
-    # Reuses the migrated detail wrapper rather than re-issuing the request;
-    # this used to call /api/v1/train_job/detail directly.
+    # Reuses the detail wrapper rather than re-issuing the request: platform
+    # requests belong in browser_api/, and a second copy here would drift.
     payload = browser_api_module.get_job_detail_v2(task_id, session)
     if not isinstance(payload, dict):
         return None

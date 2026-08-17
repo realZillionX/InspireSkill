@@ -20,9 +20,10 @@ and never evidence that one does not.
 
 It reports two shapes, because `/api/v2` has two. Most of it is
 `?Action=`, but a REST-shaped surface sits beside it (`/api/v2/file/list`,
-`/api/v2/train_job/remote_cmd`, four `.../instances/exec` PTY sockets), and an
-inventory that only knows the Action shape calls those absent — which is
-exactly the sentence we had written down about the remote shell.
+`/api/v2/train_job/remote_cmd`, four `.../instances/exec` PTY sockets,
+`/api/v2/notebook/lab/{id}`), and an inventory that only knows the Action shape
+calls those absent — which is exactly the sentence we had written down about
+the remote shell, and again about the Notebook lab entry point.
 
 ## Use
 
@@ -64,10 +65,20 @@ from inspire.platform.web.session.requests import build_requests_session  # noqa
 _HARDCODED = re.compile(r"/api/v2/([a-zA-Z0-9_-]+)\?Action=([A-Za-z0-9]+)")
 #: `?Action=` is not the whole of `/api/v2`. A REST-shaped surface lives beside
 #: it — `/api/v2/file/list`, `/api/v2/train_job/remote_cmd`, the four
-#: `.../instances/exec` PTY sockets — and an inventory that only knows the
-#: Action shape reports those as absent. That is how "no v2 counterpart for the
-#: remote shell" got written down: true of Actions, false of `/api/v2`.
-_REST_PATH = re.compile(r'"(/api/v2/[a-z0-9_][a-z0-9_/-]*)"')
+#: `.../instances/exec` PTY sockets, `/api/v2/notebook/lab/{id}` — and an
+#: inventory that only knows the Action shape reports those as absent. That is
+#: how "no v2 counterpart for the remote shell" got written down: true of
+#: Actions, false of `/api/v2`.
+#:
+#: Half of them are built in template literals with an interpolated id in the
+#: middle (`` `${base}/api/v2/notebook/lab/${id}/` ``), so a pattern anchored on
+#: a closing double quote never sees them — that alone hid 9 paths, the Notebook
+#: lab entry point among them. Interpolations are matched as segments and
+#: normalized to `{}`.
+_REST_PATH = re.compile(
+    r"/api/v2/(?:\$\{[^{}]*\}|[a-z0-9_.-]+)(?:/(?:\$\{[^{}]*\}|[a-z0-9_.-]+))*/?"
+)
+_INTERPOLATION = re.compile(r"\$\{[^{}]*\}")
 _CHUNK_REF = re.compile(r'"(\./[^"]+\.js)"')
 _ABS_CHUNK_REF = re.compile(r'"(/assets/[^"]+\.js)"')
 _ENTRY = re.compile(r'(?:src|href)="([^"]+\.js)"')
@@ -131,11 +142,14 @@ def extract_rest_paths(texts: dict[str, str]) -> set[str]:
     """`/api/v2` paths the console calls without an `?Action=` at all.
 
     A bare `/api/v2/<route>` is the prefix the Action calls are built from, so
-    it is dropped; anything with a segment under it is a real endpoint.
+    it is dropped; anything with a segment under it is a real endpoint. An
+    interpolated segment comes back as `{}` so that two call sites spelling the
+    same id differently collapse to one path.
     """
     paths: set[str] = set()
     for text in texts.values():
         for path in _REST_PATH.findall(text):
+            path = _INTERPOLATION.sub("{}", path)
             if path.rstrip("/").count("/") > 3:
                 paths.add(path)
     return paths

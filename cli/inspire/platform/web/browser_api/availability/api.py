@@ -94,7 +94,7 @@ def get_quota_priority_levels(
     workspace`` to an ordinary member. The notebook Action is member-readable.
 
     Each menu arrives **JSON-encoded as a string**, not as an array, and each
-    element's ``id`` is the handle the v1 price rows spell ``quota_id`` — that
+    element's ``id`` is the handle the price rows spell ``quota_id`` — that
     is the join, and it is exact: measured across every visible workspace and
     workload, all 96+ live price rows found their spec. The payload is
     ``allowed_priority_levels``: ``null`` or ``[]`` for a spec the workspace
@@ -265,7 +265,6 @@ def list_node_dimension(
 
     Each row carries live state (``status``, ``tasks_associated``,
     ``cordon_type``, ``resource_pool``) with GPU counts nested under ``gpu``.
-    The v1 endpoints this replaces were either 404 or admin-only.
     """
     if session is None:
         session = get_web_session()
@@ -857,10 +856,9 @@ def get_full_free_node_counts(
 ) -> list[FullFreeNodeCount]:
     """Get per-group counts of fully-free nodes.
 
-    Backed by ``workspace.ListNodeDimension``. The v1 endpoint this replaces,
-    ``/cluster_nodes/list``, answers ``You are not the admin of any workspace``
-    to ordinary members, so `inspire resources nodes` failed outright for them
-    and the free-node column elsewhere silently read zero.
+    Backed by ``workspace.ListNodeDimension``, which ordinary members can read
+    — the admin-only node listings cannot, and reading one of those is how the
+    free-node column silently read zero for them.
     """
     if session is None:
         session = get_web_session()

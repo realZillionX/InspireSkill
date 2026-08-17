@@ -1,8 +1,8 @@
 """Shared helpers for browser (web-session) APIs.
 
-The Inspire web UI exposes additional SSO-only endpoints under a configurable prefix.
-Domain modules (browser_api_*.py) use this module to avoid copy/pasting URL, prefix,
-Playwright, and asyncio-thread bridging logic.
+The Inspire web UI exposes SSO-only endpoints under `/api/v2`. Domain modules
+(browser_api_*.py) use this module to avoid copy/pasting URL, Playwright, and
+asyncio-thread bridging logic.
 """
 
 from __future__ import annotations
@@ -13,23 +13,27 @@ import threading
 from typing import Any, Optional
 
 from inspire.platform.web.session import (
-    TransientAPIError,
     WebSession,
     get_playwright_proxy,
     request_json,
 )
+from inspire.platform.web.session.envelope import (  # noqa: F401 - re-exported
+    _is_transient_v2_error_code,
+    _v2_result,
+)
 from inspire.config.models import DEFAULT_BASE_URL
 from inspire.platform.web.session.browser_launch import chromium_launch_kwargs
 
-# Default browser API prefix (fallback if not configured)
-DEFAULT_BROWSER_API_PREFIX = "/api/v1"
+# The platform's JupyterLab entry point, and the one part of `/api/v2` that is
+# not an Action: `notebook.GetNotebookLab` / `GetLabUrl` / `GetNotebookProxy` /
+# `GetProxyUrl` are all `InvalidAction`. A GET answers `301` to the tokenized
+# notebook-gateway URL that actually serves the lab, and the console's own
+# JupyterLab iframe points here.
+NOTEBOOK_LAB_PATH = "/api/v2/notebook/lab"
 
-# Cached base URL and browser API prefix (loaded once at module import)
+# Cached base URL (loaded once at module import)
 _cached_base_url: str | None = None
 _cached_base_url_key: tuple[str | None, str | None] | None = None
-# Cached browser API prefix (loaded once at module import)
-_cached_browser_api_prefix: str | None = None
-_cached_browser_api_prefix_key: tuple[str | None, str | None] | None = None
 
 
 def _active_account_key() -> str | None:
@@ -45,19 +49,12 @@ def _base_url_cache_key() -> tuple[str | None, str | None]:
     return (_active_account_key(), os.environ.get("INSPIRE_BASE_URL"))
 
 
-def _browser_api_prefix_cache_key() -> tuple[str | None, str | None]:
-    return (_active_account_key(), os.environ.get("INSPIRE_BROWSER_API_PREFIX"))
-
-
 def clear_browser_api_runtime_cache() -> None:
     """Clear account-sensitive browser API runtime caches."""
     global _cached_base_url, _cached_base_url_key
-    global _cached_browser_api_prefix, _cached_browser_api_prefix_key
 
     _cached_base_url = None
     _cached_base_url_key = None
-    _cached_browser_api_prefix = None
-    _cached_browser_api_prefix_key = None
 
 
 def _get_base_url() -> str:
@@ -95,115 +92,6 @@ def _set_base_url(url: str) -> None:
 
     _cached_base_url = url.rstrip("/")
     _cached_base_url_key = _base_url_cache_key()
-
-
-def _get_browser_api_prefix() -> str:
-    """Get the browser API prefix from config or environment.
-
-    Returns:
-        Browser API prefix (e.g., "/api/v1" or custom)
-    """
-    global _cached_browser_api_prefix, _cached_browser_api_prefix_key
-
-    cache_key = _browser_api_prefix_cache_key()
-    if (
-        _cached_browser_api_prefix is not None
-        and _cached_browser_api_prefix_key == cache_key
-    ):
-        return _cached_browser_api_prefix
-
-    # Check environment variable first (highest priority)
-    env_prefix = os.environ.get("INSPIRE_BROWSER_API_PREFIX")
-    if env_prefix:
-        _cached_browser_api_prefix = env_prefix
-        _cached_browser_api_prefix_key = cache_key
-        return _cached_browser_api_prefix
-
-    # Try to load from config files
-    try:
-        from inspire.config import Config
-
-        config, _ = Config.from_files_and_env(require_credentials=False)
-        if config.browser_api_prefix:
-            _cached_browser_api_prefix = config.browser_api_prefix
-            _cached_browser_api_prefix_key = cache_key
-            return _cached_browser_api_prefix
-    except Exception:
-        pass
-
-    # Use default
-    _cached_browser_api_prefix = DEFAULT_BROWSER_API_PREFIX
-    _cached_browser_api_prefix_key = cache_key
-    return _cached_browser_api_prefix
-
-
-def _browser_api_path(endpoint_path: str) -> str:
-    """Build a browser API path with configurable prefix.
-
-    Args:
-        endpoint_path: The endpoint path (e.g., "/train_job/list")
-
-    Returns:
-        Full path with prefix (e.g., "/api/v1/train_job/list")
-    """
-    endpoint = endpoint_path.lstrip("/")
-    prefix = _get_browser_api_prefix().rstrip("/")
-    return f"{prefix}/{endpoint}"
-
-
-# v2 carries throttling and server faults in the envelope, under HTTP 200.
-# An error announced this way is still the platform declining to answer, and
-# must not read as "the answer is empty".
-_TRANSIENT_V2_ERROR_CODES = frozenset(
-    {
-        "internalerror",
-        "internalfailure",
-        "internalservererror",
-        "requesttimeout",
-        "serviceunavailable",
-        "slowdown",
-        "throttling",
-        "throttlingexception",
-        "toomanyrequests",
-        "toomanyrequestsexception",
-    }
-)
-
-
-def _is_transient_v2_error_code(code: str) -> bool:
-    return str(code or "").strip().lower().replace("_", "") in _TRANSIENT_V2_ERROR_CODES
-
-
-def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
-    """Unwrap the `/api/v2` AWS-style envelope.
-
-    v2 reports business errors inside ``ResponseMetadata.Error`` while the HTTP
-    status stays 200, so success can never be inferred from the status code.
-    Falls back to the legacy ``code``/``data`` envelope for responses that have
-    not moved to v2 yet. Callers pick their own list key out of the result;
-    there is no cross-Action convention for it.
-    """
-    metadata = data.get("ResponseMetadata")
-    if isinstance(metadata, dict):
-        error = metadata.get("Error")
-        if isinstance(error, dict):
-            code = error.get("Code") or "Error"
-            message = error.get("Message") or "unknown error"
-            text = f"API error: {code}: {message}"
-            if _is_transient_v2_error_code(code):
-                raise TransientAPIError(text)
-            raise ValueError(text)
-    elif data.get("code") not in (None, 0):
-        raise ValueError(f"API error: {data.get('message')}")
-
-    payload = data.get("Result")
-    if isinstance(payload, dict):
-        return payload
-    if payload is None:
-        nested_payload = data.get("data")
-        if isinstance(nested_payload, dict):
-            return nested_payload
-    return {}
 
 
 # The gateway rejects `page_size` above this with

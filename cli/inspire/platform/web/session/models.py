@@ -223,7 +223,7 @@ def _is_valid_session_cache_payload(data: object) -> bool:
 class WebSession:
     """Captured web session for web-ui APIs.
 
-    We store Playwright `storage_state` because the web-ui APIs behind `/api/v1/*`
+    We store Playwright `storage_state` because the web-ui APIs behind `/api/v2/*`
     are protected by Keycloak/CAS SSO and can require more than just a couple
     of cookies.
     """

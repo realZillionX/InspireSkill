@@ -89,7 +89,7 @@ def test_probe_uses_cached_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _session()
     base_url = "https://qz.example"
     notebook_id = "notebook-123"
-    known_url = f"{base_url}/api/v1/notebook/lab/{notebook_id}/proxy/31337/"
+    known_url = f"{base_url}/api/v2/notebook/lab/{notebook_id}/proxy/31337/"
     cached_url = "https://nat.example/ws/x/vscode/notebook-123/token/proxy/31337/?token=t"
 
     monkeypatch.setattr(rtunnel_module, "_get_base_url", lambda: base_url)
@@ -194,7 +194,7 @@ def test_probe_uses_tunnel_profile_and_rewrites_proxy_port(
     session = _session()
     base_url = "https://qz.example"
     notebook_id = "notebook-abc"
-    known_url = f"{base_url}/api/v1/notebook/lab/{notebook_id}/proxy/31337/"
+    known_url = f"{base_url}/api/v2/notebook/lab/{notebook_id}/proxy/31337/"
     bridge_url = "https://nat.example/ws/demo/user/vscode/notebook-abc/aaa/proxy/22222/?token=abc"
     rewritten = "https://nat.example/ws/demo/user/vscode/notebook-abc/aaa/proxy/31337/?token=abc"
 
@@ -236,7 +236,7 @@ def test_probe_rejects_html_response(monkeypatch: pytest.MonkeyPatch) -> None:
     session = _session()
     base_url = "https://qz.example"
     notebook_id = "nb-html"
-    known_url = f"{base_url}/api/v1/notebook/lab/{notebook_id}/proxy/31337/"
+    known_url = f"{base_url}/api/v2/notebook/lab/{notebook_id}/proxy/31337/"
 
     monkeypatch.setattr(rtunnel_module, "_get_base_url", lambda: base_url)
     monkeypatch.setattr(
@@ -271,7 +271,7 @@ def test_probe_reads_only_stream_prefix(monkeypatch: pytest.MonkeyPatch) -> None
     session = _session()
     base_url = "https://qz.example"
     notebook_id = "nb-stream"
-    known_url = f"{base_url}/api/v1/notebook/lab/{notebook_id}/proxy/31337/"
+    known_url = f"{base_url}/api/v2/notebook/lab/{notebook_id}/proxy/31337/"
 
     class StreamingResponse:
         status_code = 200

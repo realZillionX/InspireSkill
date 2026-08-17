@@ -79,11 +79,11 @@ def _refresh_expired_session(
     assert web_session_module.request_json(
         session,
         "GET",
-        "https://example.test/api/v1/user/detail",
+        "https://example.test/api/v2/user?Action=GetUserDetail",
     ) == {"ok": True}
     # Reauthentication must return the process to the plain HTTP request path
     # rather than leaving it pinned to the browser fallback.
-    assert _http_calls == ["https://example.test/api/v1/user/detail"]
+    assert _http_calls == ["https://example.test/api/v2/user?Action=GetUserDetail"]
 
 
 def test_concurrent_expired_session_requests_share_one_refresh(

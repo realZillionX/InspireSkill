@@ -4,10 +4,9 @@ Browser API fills in everything the UI needs on the `/jobs/modelDeployment` page
 listing, create / detail / stop / delete, configs per workspace, and the
 user+project pickers for the create dialog. The whole domain goes through
 `/api/v2/inference_serving`; that contract is in
-`references/dev/browser-api-actions.md`. Every migrated Action was checked against a
-live serving first — the v1 request bodies are accepted verbatim and the
-responses are field-for-field identical, so the normalization is unchanged.
-Creation goes through the undocumented `CreateServingConsole`; see
+`references/dev/browser-api-actions.md`. Every Action here was checked against a
+live serving before being wired up. Creation goes through the undocumented
+`CreateServingConsole`; see
 `create_serving`.
 
 The list keys differ per Action and are spelled out at each call site:
@@ -15,9 +14,9 @@ The list keys differ per Action and are spelled out at each call site:
 `events`, `logs`, `scale_history_items`, `terms`, `metric_groups`.
 
 Every write here unwraps through `_v2_result()`. That is not optional: v2 has
-no `code` field, so a v1-style envelope check turns every real error into
-`API error: None`, which is exactly how `StartServing` / `StopServing` were
-silently broken once already.
+no `code` field, so a hand-written `code != 0` check turns every real error
+into `API error: None`, which is exactly how `StartServing` / `StopServing`
+were silently broken once already.
 """
 
 from __future__ import annotations
@@ -746,10 +745,10 @@ def _serving_action(
 ) -> dict[str, Any]:
     if session is None:
         session = get_web_session()
-    # No `version` here: v2 rejects it with `unknown field "version"`. The v1
-    # envelope checker used to swallow that as "API error: None", which is why
-    # start / stop failed for every input before this call moved to
-    # `_serving_v2`.
+    # No `version` here: the gateway rejects it with `unknown field "version"`,
+    # and only `_serving_v2` surfaces that -- a hand-written envelope check
+    # reports it as "API error: None", which is how start / stop once failed
+    # for every input.
     return _serving_v2(
         session,
         action,
@@ -787,9 +786,7 @@ def delete_serving(
 ) -> dict[str, Any]:
     """Delete a model deployment entry via ``Action=DeleteServing``.
 
-    v1 needed a REST-style ``DELETE /inference_servings/{id}``; v2 has a
-    first-class Action. An id that does not resolve answers
-    ``ResourceNotFound``.
+    An id that does not resolve answers ``ResourceNotFound``.
     """
     if session is None:
         session = get_web_session()

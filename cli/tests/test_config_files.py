@@ -104,7 +104,6 @@ class TestConfigSchema:
 
         # API settings should be account-scoped
         assert "INSPIRE_BASE_URL" in account_env_vars
-        assert "INSPIRE_BROWSER_API_PREFIX" in account_env_vars
         assert "INSPIRE_REQUESTS_HTTP_PROXY" in account_env_vars
         assert "INSPIRE_PLAYWRIGHT_PROXY" in account_env_vars
 

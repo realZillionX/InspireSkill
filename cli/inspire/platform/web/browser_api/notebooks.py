@@ -89,11 +89,10 @@ def _resource_price_v2(
 ) -> dict[str, Any]:
     """Call one `/api/v2/resource-price` Action and return its ``Result``.
 
-    The whole `resource-price` service is absent from discovery, which is why
-    the quota catalog stayed on `/api/v1/resource_prices/logic_compute_groups/`
-    long after the rest of the client moved. It is live, it takes the v1
-    request body unchanged, and it answers under the same
-    ``lcg_resource_spec_prices`` key.
+    The whole `resource-price` service is **absent from discovery** and live
+    anyway — this route is the standing counter-example to reading discovery as
+    an inventory, and the quota catalog in front of every `create` sits on it.
+    The list key is ``lcg_resource_spec_prices``.
     """
     data = _request_json(
         session,
@@ -117,7 +116,7 @@ def _image_v2(
 
     Only `DeleteImage`, `GetImageById`, `ListImageBrands` and `ListImages` are
     published in discovery; `CreateImage` and `UpdateImage` are live but
-    undocumented, and all six take the v1 request bodies unchanged.
+    undocumented.
     """
     data = _request_json(
         session,
@@ -139,8 +138,8 @@ def _notebook_v2(
 ) -> dict[str, Any]:
     """Call one `/api/v2/notebook` Action and return its unwrapped ``Result``.
 
-    Keeps the ``API error: ...`` message shape the v1 helper raised so the
-    command layer's error handling is unchanged.
+    Errors surface as ``API error: ...``, the shape the command layer's error
+    handling expects.
     """
     data = _request_json(
         session,
@@ -280,10 +279,10 @@ def get_resource_prices(
     same value, which is how a rate-limited refresh cached a workspace as
     having no quotas at all.
 
-    This is the request in front of every `create`, and it is on v2: the Action
-    takes the v1 body unchanged and answers the same rows, measured across every
+    This is the request in front of every `create`, measured across every
     visible workspace, every compute group and all five schedule types — 225
-    pairs, 225 identical, identical field sets.
+    (workspace, group, schedule type) triples, all answering consistent rows
+    with identical field sets.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
@@ -398,10 +397,9 @@ def list_notebooks(
     it. Pagination policy stays with the caller — this is a 1:1 wrapper around
     the platform call.
 
-    The filter envelope is the same one v1 took, and v2 accepts it verbatim:
-    ``filter_by`` carries the user / keyword / status selection while
-    ``workspace_id`` stays top-level. The nested ``filter`` object that
-    ``workspace.*`` Actions require is rejected here.
+    The filter envelope is ``filter_by`` for the user / keyword / status
+    selection with ``workspace_id`` top-level. The nested ``filter`` object
+    that ``workspace.*`` Actions require is rejected here.
     """
     if not user_ids:
         raise ValueError("Cannot list notebooks without a current-user filter.")
@@ -635,9 +633,7 @@ def stop_notebook(
 ) -> dict:
     """Stop a running notebook instance.
 
-    v1 multiplexed start/stop through ``/notebook/operate`` with an
-    ``operation`` enum; v2 splits them into their own Actions and takes only
-    the id.
+    Action: ``StopNotebook``, which takes only the id.
     """
     session, _ = _get_session_and_workspace_id(workspace_id=None, session=session)
 
@@ -660,9 +656,7 @@ def delete_notebook(
 ) -> dict:
     """Permanently delete a notebook instance.
 
-    v1 needed the REST-style ``DELETE /api/v1/notebook/{id}`` because
-    ``/notebook/operate`` only accepted ``START`` / ``STOP``; v2 has a first
-    class ``DeleteNotebook`` Action, so the special case is gone.
+    Action: ``DeleteNotebook``.
 
     Destructive — the entry disappears from the platform UI and cannot be
     recovered. If the notebook is running, stop it first.
@@ -920,9 +914,8 @@ def save_notebook_as_image(
 ) -> dict[str, Any]:
     """Save a running notebook's state as a custom Docker image.
 
-    Goes to ``notebook.SaveNotebookImage``. The Action still refuses a
-    ``visibility`` field, with the same ``unknown field "visibility"`` wording
-    v1 used — to control visibility, call
+    Goes to ``notebook.SaveNotebookImage``. The Action refuses a ``visibility``
+    field with ``unknown field "visibility"`` — to control visibility, call
     :func:`~inspire.platform.web.browser_api.images.update_image` after this
     returns.
 
@@ -949,9 +942,8 @@ def save_notebook_as_image(
     It is sent on every call, matching the console — the field is a required
     switch on its save dialog, defaulting to off.
 
-    **Returns an empty dict, always.** v1 answered a bare ``{"code": 0}`` with
-    no ``data``; v2 answers ``Result: null``. Neither hands back the new
-    image's id, so callers have to find it by listing.
+    **Returns an empty dict, always.** The Action answers ``Result: null``; it
+    never hands back the new image's id, so callers have to find it by listing.
 
     The produced image lands in the registry of the notebook's own workspace,
     which is not necessarily the session default — see

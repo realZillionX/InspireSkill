@@ -45,8 +45,7 @@ def _project_v2(
     """Call one `/api/v2/project` Action and return its unwrapped ``Result``.
 
     Discovery publishes only ``GetProjectForPage``; ``ListProjects``,
-    ``GetProjectDetail`` and ``GetProjectOwners`` are live but undocumented,
-    and take the v1 request bodies unchanged.
+    ``GetProjectDetail`` and ``GetProjectOwners`` are live but undocumented.
     """
     data = _request_json(
         session,
@@ -234,11 +233,9 @@ def list_project_selector_records(
     """List raw project records with their total, one page at a time.
 
     Backs the project drop-downs in the notebook / train / model / serving
-    forms. This used to call ``POST /api/v1/project/list_v2``, which returned
-    the same rows through a lossier projection — ``created_at``, ``updated_at``,
-    ``status``, ``notebook`` and ``training_job`` all came back empty, and
-    ``gpu_limit`` / ``hpc`` / ``hpc_limit`` were missing outright.
-    ``ListProjects`` fills every one of them.
+    forms. ``ListProjects`` fills in the whole row — ``created_at``,
+    ``updated_at``, ``status``, ``notebook``, ``training_job``, ``gpu_limit``,
+    ``hpc`` and ``hpc_limit`` all arrive populated.
     """
     if session is None:
         session = get_web_session()

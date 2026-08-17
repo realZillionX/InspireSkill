@@ -221,8 +221,8 @@ def select_job_instance(
 
 
 # The PTY sockets are the REST-shaped half of `/api/v2` -- no `?Action=`, so
-# an inventory built from Action names reports them as absent, which is how
-# the train one stayed on v1 long after everything else moved.
+# an inventory built from Action names reports them as absent. They exist; an
+# Action-shaped inventory is simply the wrong instrument for them.
 #
 # **Neither query parameter is the same name on every route.** The console
 # remaps both per workload and so must we -- serving does not even call its
@@ -256,10 +256,8 @@ def build_remote_cmd_ws_url(
 ) -> str:
     """Build a workload's remote shell websocket URL.
 
-    For `job`, v1 and v2 take the same two query parameters and answer
-    identically: measured against a running job, `echo` round-tripped
-    byte-for-byte through both. No fallback, therefore -- a second path here
-    could only hide a real failure of the first.
+    One path per workload, no fallback -- a second path here could only hide a
+    real failure of the first.
     """
     try:
         path, handle_key, instance_key = _PTY_ROUTES[workload]

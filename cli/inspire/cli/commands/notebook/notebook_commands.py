@@ -705,8 +705,8 @@ def notebook_status(
         )
     except ValueError as e:
         message = str(e)
-        # v1 surfaced a missing notebook as a transport 404; v2 answers 200
-        # with `ResourceNotFound` in the envelope. Both map to the same
+        # A missing notebook comes back as `ResourceNotFound` inside an HTTP 200
+        # envelope; a transport 404 says the same thing. Both map to the same
         # public error.
         if "API returned 404" in message or "ResourceNotFound" in message:
             _handle_error(

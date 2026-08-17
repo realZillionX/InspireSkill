@@ -42,9 +42,6 @@ class Config:
     # Optional with defaults
     base_url: str = DEFAULT_BASE_URL
 
-    # API path prefixes (None = use code defaults)
-    browser_api_prefix: Optional[str] = None
-
     # Proxy settings ([proxy] in TOML)
     requests_http_proxy: Optional[str] = None
     requests_https_proxy: Optional[str] = None

@@ -6,7 +6,7 @@
 
 Browser API 是启智控制台自己用的接口面：同一台 `qz.sii.edu.cn`、同一个 CAS Session，控制台 SPA 全程走 `/api/v2` 的 Action 网关。官方 CLI `qz` 是这套接口的另一个客户端，不是它的前置依赖；调用它不需要安装任何外部二进制。
 
-当前 CLI 封装 **13 条路由、114 个 Action**，另有 **3 处 v1 端点**因为 v2 装不下或还没有 Session 可用而保留（第 8 节）。
+当前 CLI 封装 **13 条路由、114 个 Action**，**没有任何 v1 依赖**——登录自举和 Notebook Lab 是最后两处，都已迁完并实测等价。`/api/v2` 里还有一片不带 `?Action=` 的 REST 路径，CLI 用到其中两处（第 8 节）。
 
 ## 1. 事实源
 
@@ -21,7 +21,7 @@ Browser API 是启智控制台自己用的接口面：同一台 `qz.sii.edu.cn`�
 | 5 | `GET {base_url}/discovery` | 候选 Action 名与参数形状。**是线索，不是合同**（第 6 节） |
 | 6 | 当前 Click Help | 公开 CLI 合同 |
 
-`test_browser_api_boundary.py` 保证平台路径只在 `browser_api/` 内构造：命令层出现 `_browser_api_path` 或 `/api/v1` 字面量会直接让 CI 失败，例外必须写进该测试的 `_ALLOWED` 并注明理由（当前只有 `session/auth.py` 一条，见第 8 节）。
+`test_browser_api_boundary.py` 守两条：**全树不得出现 `/api/v1` 字面量**（不是白名单，是零），以及平台路径只在 `browser_api/` 内构造——`browser_api/` 之外出现 `/api/v2` 字面量会让 CI 失败，例外写在该测试的 `_ALLOWED` 里并注明理由（当前两条：`job_shell.py` 的 PTY、`session/auth.py` 的登录自举）。两条都按 AST 判定，注释和 docstring 不算。
 
 本页与 [`browser-api-actions.md`](browser-api-actions.md) 只收**有当前消费者、且可复现**的事实。未闭合的调查、已删除的 v1 域、迁移过程记录都不进入。
 
@@ -40,7 +40,7 @@ Referer: {base_url}/{对应控制台页面}
 - **认证只需要 `inspire-session` cookie。** `x-inspire-client-source` 头在只读面上非必需，缺失不会触发跳转。
 - **`Referer` 必须与页面域匹配**，由各 Wrapper 按对应控制台页面构造，调用方不要自行拼接。
 - **字段名的大小写与下划线不敏感，但名字本身必须对。** `ImageId` / `image_id` / `Image_Id` 落到同一个字段，`WorkspaceId` / `workspace_id`、`ProjectId` / `project_id` 同理，所以 discovery 里那些 PascalCase 声明不构成陷阱。真正会出事的是**换了一个名字**：`image.UpdateImage` 要的是裸 `id`，`image_id` 是另一个字段而不是它的变体，不会被归一化过去。
-- Base URL、Browser API Prefix 和代理来自当前有效配置；Playwright 登录与后续请求复用同一账号的网络设置。
+- Base URL 和代理来自当前有效配置；Playwright 登录与后续请求复用同一账号的网络设置。**路径前缀不可配置**——它只会作用到 Notebook lab 那一条，改掉只能把那一条弄坏。
 - 所有平台请求使用**目标 Account Alias** 的浏览器 SSO Session；跨账号 Notebook 命令不能退回当前活动账号的 Session。
 
 ### 响应信封
@@ -52,7 +52,7 @@ Referer: {base_url}/{对应控制台页面}
 {"ResponseMetadata": {"Error": {"Code": "…", "Message": "…"}}}            // 业务错误
 ```
 
-解包唯一入口是 [`core.py`](../../cli/inspire/platform/web/browser_api/core.py) 的 `_v2_result()`：它先看 `ResponseMetadata.Error`，再取 `Result`；`Result` 为 `null` 时回退 legacy `data`，取不到就给 `{}`。**不能用状态码判断成败，也不能自己写信封检查**——照 v1 的 `code != 0` 写会把每一个真错误变成 `API error: None`。
+解包唯一入口是 [`core.py`](../../cli/inspire/platform/web/browser_api/core.py) 的 `_v2_result()`：它先看 `ResponseMetadata.Error`，再取 `Result`；`Result` 为 `null` 时回退 legacy `data`，取不到就给 `{}`。**不能用状态码判断成败，也不能自己写信封检查**——手写一个 `code != 0` 会把每一个真错误变成 `API error: None`。
 
 `Result` 里的**列表键逐 Action 不同，没有跨 Action 约定**，解包器必须按 Action 显式声明，见 Action 表的「响应」列。
 
@@ -65,7 +65,7 @@ Referer: {base_url}/{对应控制台页面}
 | Code | 含义 | 处置 |
 | --- | --- | --- |
 | `InvalidAction` | 该 Action 在这条路由上不存在 | 路由是活的，换 Action 名；`404 page not found` 才是路由不存在 |
-| `InvalidParameter` | 请求体不符合合同（含 `proto: unknown field "X"`、必填缺失、`page or page_size too large`） | 我们自己写错了，**不回落 v1** |
+| `InvalidParameter` | 请求体不符合合同（含 `proto: unknown field "X"`、必填缺失、`page or page_size too large`） | 我们自己写错了，改请求体，不要绕开 |
 | `AccessForbidden` | 真的没权限，**或者** scoping 没写全 | 先按第 5 节把 scoping 补全再下结论 |
 | `ResourceNotFound` | 对象不存在 | `notebook`/`hpc`/`serving` 的找不到就是它；`train.DeleteJob` 反而给 `AccessForbidden` |
 | `Conflict` | 状态不允许该操作（运行中删除、已运行再启动） | 先 `stop` 或先轮询状态 |
@@ -187,21 +187,28 @@ discovery 里没有的 15 条路由：`audit`(6)、`billing`(3)、`file`(9)、`i
 
 ### `/api/v2` 不止 `?Action=` 一种形状
 
-同一份产物里还有 12 条 **REST 风格**的 `/api/v2` 路径，不带 `?Action=`，只认全集合的 Action 清单会把它们当成不存在：
+同一份产物里还有 21 条 **REST 风格**的 `/api/v2` 路径，不带 `?Action=`，只认全集合的 Action 清单会把它们当成不存在：
 
 | 路径 | 是什么 |
 | --- | --- |
-| `/api/v2/train_job/remote_cmd` | 训练任务的 PTY WebSocket，`job shell` 走的就是它 ✅ 已迁 |
+| `/api/v2/train_job/remote_cmd` | 训练任务的 PTY WebSocket，`job shell` 走的就是它 ✅ 已验 |
 | `/api/v2/hpc_jobs/instances/exec` | HPC 实例的 PTY，`hpc shell` 走它 ✅ 已验 |
 | `/api/v2/ray_job/instances/exec` | Ray 实例的 PTY，`ray shell` 走它 ✅ 已验 |
 | `/api/v2/inference_servings/instances/exec` | Serving 实例的 PTY，`serving shell` 走它 ✅ 已验 |
-| `/api/v2/file/list` / `create_dir` / `delete` / `update_name` | 文件页的目录操作 |
+| `/api/v2/notebook/lab/{}/` | JupyterLab 入口，301 到带 token 的网关地址；`notebook ssh` / `proxy-url` 全链路的起点 ✅ 已验（第 8 节） |
+| `/api/v2/notebook/code/{}/`、`/api/v2/notebook/open/inspire_code/{}` | VS Code 与 inspire_code 的同类入口，未接 |
+| `/api/v2/notebook/events/{}` | Notebook 事件流，未接（事件走 `notebook` 的 Action） |
+| `/api/v2/file/list` / `create_dir` / `delete` / `update_name`、`/api/v2/file/download/{}` | 文件页的目录操作与下载 |
 | `/api/v2/logs/ray_job/download` / `logs/inference_serving/download` | 日志下载 |
-| `/api/v2/project/upload_appendix`、`/api/v2/billing/detail/export` | 附件上传、账单导出 |
+| `/api/v2/project/upload_appendix`、`/api/v2/project/{}/download_appendix/{}` | 项目附件 |
+| `/api/v2/audit/{}/upload_appendix`、`/api/v2/audit/{}/download_appendix/{}` | 审批附件 |
+| `/api/v2/model/{}/version/{}/publish/upload`、`/api/v2/billing/detail/export` | 模型发布上传、账单导出 |
+
+**其中 9 条是靠模板字符串拼出来的**（`` `${base}/api/v2/notebook/lab/${id}/` ``），扫描器起初只认收尾是双引号的字面量，因此一条都没看见——Notebook lab 就在这 9 条里。这不是「平台没有」，是**取样方法漏了一整类**；`scan_v2_surface.py` 现在把插值段当作一个路径段匹配并归一成 `{}`。
 
 四条 PTY 共用控制台里同一个 URL 构造器，参数走 query string，但**两个参数名逐 Workload 重映射**（下表），进容器执行的是 `command -v bash >/dev/null 2>&1 && exec bash || exec sh`，改窗口大小发 `stty columns N rows M`。
 
-**这几条只能拿一个自己的运行中任务去握手验证。** 网关在路由之前先鉴权：普通 GET、带 `Referer` 的 GET、真实的 WebSocket 握手，三种打法对 v1（确知可用）和一条随手编的路径回的都是同一个 401，所以第 7 节那套「按报错区分」的判据在这里整个失效。
+**这几条只能拿一个自己的运行中任务去握手验证。** 网关在路由之前先鉴权：普通 GET、带 `Referer` 的 GET、真实的 WebSocket 握手，三种打法对一条确知可用的路径和一条随手编的路径回的都是同一个 401，所以第 7 节那套「按报错区分」的判据在这里整个失效。
 
 `train_job/remote_cmd` 已经这样验过并迁完：建一个 1 卡低优的一次性任务，v1 与 v2 各握一次手、各发一条 `echo`，**两边逐字节相同**（各 45 字节），验完即删。因为等价所以不留回落——第二条路径在这里只能藏住第一条的真实失败。
 
@@ -258,60 +265,40 @@ Serving 连句柄都不叫 `job_id`，是第一次拿 `job_id` 去打才发现�
 
 **⑦ 写进去要读得回来。** 一个字段被 `Create*` 接受，不代表它生效。判定方法是同一次请求里放几个已知会 round-trip 的字段做对照组，创建后用 `Get*` 读回来比对，必要时进容器看实际效果。当前已确认两个「接受、不生效」的死字段，见 Action 表的创建字段合同。
 
-## 8. 仍在使用的 v1 端点
+## 8. `/api/v2` 里不是 Action 的那部分
 
-这张表只收**有当前消费者、且实测确认过**的端点。每条都注明它为什么留着——「v2 装不下」和「换过去更贵」是两类，处置方式不同。
+网关有两种形状（第 6 节）。CLI 用到 REST 那一半的两处，都不是「还没迁完」，而是本来就装不进 `?Action=` + JSON 信封里。
 
-| v1 端点 | 消费者 | 为什么不迁 |
-| --- | --- | --- |
-| `GET /api/v1/user/detail` | [`session/auth.py`](../../cli/inspire/platform/web/session/auth.py) 登录握手 | **Session 自举**：这是判定「登录成功了没有」的探针，此时还没有任何 Session 可供 v2 使用 |
-| `GET /api/v1/user/routes/default` | 同上，发现可见 Workspace | **Session 自举**：字面量 `default` 是「还不知道自己在哪个 Workspace」的占位；v2 的 `user.GetRoutes` 要一个真实的 `WorkspaceId`，登录时还拿不到 |
-| `GET /api/v1/notebook/lab/{notebook_id}/proxy/{port}/` | [`rtunnel.py`](../../cli/inspire/platform/web/browser_api/rtunnel.py)、`notebook proxy-url`、整条 Notebook SSH 链路 | **不是 Action 能表达的东西**：反向代理，不是 JSON 请求/响应。见下文 |
+**四条实例 PTY WebSocket** 在 [`job_shell.py`](../../cli/inspire/cli/utils/job_shell.py) 里构造，路径、参数名和踩坑记在第 6 节。它们是边界测试 `_ALLOWED` 的一条（另一条是 `session/auth.py` 的登录自举）。
 
-**这张表不收四条实例 PTY WebSocket**：它们在 [`job_shell.py`](../../cli/inspire/cli/utils/job_shell.py) 里构造，全部走 `/api/v2`——网关 REST 形状的那一半，不带 `?Action=`（第 6 节）。按 Action 名做的清单会把它们报成不存在，这不代表它们还在 v1 上。
+**TensorBoard 的 `url` 是随行数据，不是我们拼的路径。** `tensorboard tags` / `scalars` 会 GET 它，但那个地址是 `GetTensorboard` 原样回来的字段——早期的 board 给站内路径 `/api/v1/train_job/tensorboard/{tb_id}/`，新建的给 `https://notebook-inspire.sii.edu.cn/tensorboard/{tb_id}/`，**两种都活**。`browser_api/tensorboards.py` 只负责在它是站内路径时补上 base。所以这是本客户端唯一还会碰到 `/api/v1` 字面量的地方，而它来自平台，不来自我们。
 
-**这张表不收 TensorBoard 的 `/api/v1/train_job/tensorboard/{tb_id}/`**：`tensorboard tags` / `scalars` 确实会 GET 它，但那个地址是 `GetTensorboard` 的 `url` 字段**原样回来的值**，不是 CLI 拼的路径——早期的 board 给这一种，新建的 board 给 `https://notebook-inspire.sii.edu.cn/tensorboard/{tb_id}/`，两种都活。所以它不是一条「留着没迁的端点」，而是一条随行数据；`browser_api/tensorboards.py` 只负责在它是站内路径时补上 base，边界测试也因此不需要例外。
-
-### Notebook Proxy
-
-平台自带的一条反向代理路径，把 Notebook **容器内部**监听的某个 HTTP 端口，从 `qz.sii.edu.cn` 这个已登录的域名转出来：
+### Notebook Lab 与反向代理
 
 ```
-{base_url}/api/v1/notebook/lab/{notebook_id}/proxy/{port}/
+{base_url}/api/v2/notebook/lab/{notebook_id}
 ```
 
-JupyterLab / VS Code 打开之后还有一种带 token 的等价形式 `/{jupyter|vscode}/<notebook>/<token>/proxy/<port>/`，token 段必须当敏感信息处理（`rtunnel.py` 的 `redact_proxy_url` 专门负责在日志与报错里抹掉它）。
+GET 它答 `301`，Location 是带 token 的网关地址 `https://<gateway>/ws-…/project-…/user-…/jupyter/<notebook>/<token>/lab`，跟过去就是 JupyterLab 本体。控制台自己的 JupyterLab iframe 指的就是这条路径。CLI 走 `_resolve_direct_lab_url` 跟这一跳，`build_jupyter_proxy_url` 再从**跳完的结果**上派生代理地址。
 
-两个消费者，第二个是关键：
+**`/proxy/{port}/` 只在带 token 的网关地址上有效。** 平台域上的 `{base_url}/api/v2/notebook/lab/{id}/proxy/{port}/` 返回 `404 page not found`（v1 前缀同样如此，两种前缀实测一致），所以不存在免 token 的形式——token 段必须当敏感信息处理，`rtunnel.py` 的 `redact_proxy_url` 专门负责在日志与报错里抹掉它。
+
+这条代理把 Notebook **容器内部**监听的 HTTP 端口转出来，两个消费者，第二个是关键：
 
 1. `inspire notebook proxy-url --port N`——**返回**容器里那个 HTTP 服务（TensorBoard、Gradio、Streamlit、推理端点）的外部地址，供调用方直接请求；它不打开任何东西。H100 / H200 受限 Notebook 上默认拒绝，要 `--allow-restricted` 才放行。
-2. **整条 SSH 链路都架在它上面。** 受限环境不接受直连，所以 InspireSkill 在容器里起一个 sshd（默认 22222 端口），再通过这条 HTTP 代理去够它——`_wait_for_rtunnel` 轮询的就是这个 proxy URL。`notebook ssh` / `scp` / `ssh-config` 以及外部 OpenSSH 工具能用，全靠这一条。
+2. **整条 SSH 链路都架在它上面。** 受限环境不接受直连，所以 InspireSkill 在容器里起一个 sshd（默认 22222 端口），再通过这条 HTTP 代理去够它——`_wait_for_rtunnel` 轮询的就是这个带 token 的 proxy URL。`notebook ssh` / `scp` / `ssh-config` 以及外部 OpenSSH 工具能用，全靠这一条。
 
 `notebook` 服务下没有对应 Action：`GetNotebookLab` / `GetLabUrl` / `GetNotebookProxy` / `GetProxyUrl` 均 `InvalidAction`。唯一沾边的 `GetNotebookAccessUrl` 语义不同（它给的是 IDE 网关地址，见 Action 表），**故意不接**。
 
 它与平台用户中心的 SSH 公钥注册表（曾经的 `/ssh/*`）没有任何关系——后者管的是账号级公钥，rtunnel 读的是本机 `~/.ssh/*.pub` 并直接注入容器。
 
-## 9. 回落纪律
-
-v1 与 v2 并存期间，**只有「v2 这条路由不通」才回落 v1**：网关 404 `page not found`、405、5xx，或响应非 JSON。
-
-不回落的情况，逐条都有理由：
-
-- **`AccessForbidden` 不回落。** v2 的权限判断更严格且更正确；回落等于用 v1 的宽松答案盖掉 v2 的正确答案。
-- **`InvalidParameter` 不回落。** 这是我们自己请求写错了，回落只会让错误一直不被发现。
-- **429 绝不回落。** 平台正在要求降速，回落等于把请求量翻倍。限流靠退避重试处理，重试耗尽后让调用方看见。
-
-同一端点的回落告警每进程只提示一次；批量命令会对十几个工作空间循环调同一个端点，逐次提示会刷屏。
-
-**v2 相对 v1 没有可测量的延迟或吞吐优势**：等价端点单请求中位延迟基本持平，个别 v1 更快；并发压测下两者状态码和 wall time 无差异。任何以「v2 更快」为由的改造都缺乏依据——留在 v2 的理由是接口面和长期可用性（`image`、`model-hub` 只在 v2 存在，平台在 v2 上迭代）。
-
-## 10. 输出边界
+## 9. 输出边界
 
 - **Browser API 的平台原始响应不得直接穿透到公共输出。** 命令层必须先解析、投影和清洗，Human 与 JSON 输出使用显式 Allowlist。
 - CLI 对 Agent 的稳定资源身份只有 **Name 和 Alias**；不透明句柄（`ws-`、`project-`、`lcg-`、`quota_id`、`mirror_id`、`notebook_id`、`job_id`）只存在于 `browser_api/` 和 Session 层。
-- **唯一的例外是 `notebook proxy-url`**：它走 `format_json(…, preserve_raw={"url"})` 这个显式开关打印完整网关 URL。理由是这个地址的每一段都是平台句柄，默认的 `scrub_raw_ids` 会把它整条洗成 `<redacted>`，洗完就不通了。代价必须说清楚：**这个地址等同于凭据**，内嵌的短期 token 让持有者对该 Notebook 的访问权与你相同，而它会进 Agent 对话记录和 shell 历史。没有免 token 的形式——平台域上的 `/api/v1/notebook/lab/{id}/proxy/{port}/` 返回 `404 page not found`，只有带 token 的网关 URL 真的会去连容器端口（端口没人监听时返回 500 `connect ECONNREFUSED`，`--check` 据此报 `no_service` 而不是 `blocked`）。
+- **唯一的例外是 `notebook proxy-url`**：它走 `format_json(…, preserve_raw={"url"})` 这个显式开关打印完整网关 URL。理由是这个地址的每一段都是平台句柄，默认的 `scrub_raw_ids` 会把它整条洗成 `<redacted>`，洗完就不通了。代价必须说清楚：**这个地址等同于凭据**，内嵌的短期 token 让持有者对该 Notebook 的访问权与你相同，而它会进 Agent 对话记录和 shell 历史。没有免 token 的形式——平台域上的 `/api/v2/notebook/lab/{id}/proxy/{port}/` 返回 `404 page not found`，只有带 token 的网关 URL 真的会去连容器端口（端口没人监听时返回 500 `connect ECONNREFUSED`，`--check` 据此报 `no_service` 而不是 `blocked`）。
 
-## 11. 变更验收
+## 10. 变更验收
 
 改动 Browser API 至少完成：
 
@@ -320,9 +307,8 @@ v1 与 v2 并存期间，**只有「v2 这条路由不通」才回落 v1**：网
 3. Workspace scoping 放在 discovery 声明的位置，并确认返回的不是 scoping 造成的 `AccessForbidden`。
 4. 命令使用 Name 输入，同名时提供可读候选与 `--pick`；Human 与 JSON 输出使用显式 Allowlist。
 5. 请求失败与「平台返回空」在返回值上可区分，且有测试覆盖失败那一侧；扇出型 Wrapper 还要能表达「部分成功」。
-6. 回落条件符合第 9 节，`AccessForbidden`、`InvalidParameter`、429 都不回落。
-7. 写操作经过受控验证，且**成功以状态真的变了为准，不以响应信封为准**。
-8. 判某个 v1 端点「没有对应物」之前，第 7 节的探针跑完整了。
-9. 对应命令 Help、Wrapper 测试和 [`browser-api-actions.md`](browser-api-actions.md) 的表格同步更新。
+6. 写操作经过受控验证，且**成功以状态真的变了为准，不以响应信封为准**。
+7. 判某条平台能力「v2 没有对应物」之前，第 7 节的探针跑完整了——discovery 缺一条路由不构成结论。
+8. 对应命令 Help、Wrapper 测试和 [`browser-api-actions.md`](browser-api-actions.md) 的表格同步更新。
 
 未闭合的调查结果不进入长期 Reference。
