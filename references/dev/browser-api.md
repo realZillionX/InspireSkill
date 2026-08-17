@@ -271,7 +271,11 @@ Serving 连句柄都不叫 `job_id`，是第一次拿 `job_id` 去打才发现�
 
 **四条实例 PTY WebSocket** 在 [`job_shell.py`](../../cli/inspire/cli/utils/job_shell.py) 里构造，路径、参数名和踩坑记在第 6 节。它们是边界测试 `_ALLOWED` 的一条（另一条是 `session/auth.py` 的登录自举）。
 
-**TensorBoard 的 `url` 是随行数据，不是我们拼的路径。** `tensorboard tags` / `scalars` 会 GET 它，但那个地址是 `GetTensorboard` 原样回来的字段——早期的 board 给站内路径 `/api/v1/train_job/tensorboard/{tb_id}/`，新建的给 `https://notebook-inspire.sii.edu.cn/tensorboard/{tb_id}/`，**两种都活**。`browser_api/tensorboards.py` 只负责在它是站内路径时补上 base。所以这是本客户端唯一还会碰到 `/api/v1` 字面量的地方，而它来自平台，不来自我们。
+**TensorBoard 的 `url` 是随行数据，不是我们拼的路径。** `tensorboard tags` / `scalars` 会 GET 它，但那个地址是 `GetTensorboard` 原样回来的字段。**今天新建的 board 一律给绝对地址** `https://notebook-inspire.sii.edu.cn/tensorboard/{tb_id}/`（2026-08-17 现建一台确认），站内路径 `/api/v1/train_job/tensorboard/{tb_id}/` 是老行才有的形状。`browser_api/tensorboards.py` 只负责在它是站内路径时补上 base——所以这是本客户端唯一还会碰到 `/api/v1` 字面量的地方，而它来自平台，不来自我们。
+
+**站内路径有 v2 形状，而且指向同一个 board。** 同一台运行中的 board，三个地址逐字节相同：绝对地址、`/api/v1/train_job/tensorboard/{id}/`、`/api/v2/train_job/tensorboard/{id}/`——根路径都是 226898 字节的同一份 HTML，`data/runs` 都是 `[]`。不存在的 id 在两个前缀下同样答 `{"code":100003,"message":"Tensorboard not found."}`（50 字节），而随手编的路由两个前缀都答 `404 page not found`，所以那不是兜底。**注意它答的是 legacy `code`/`message` 信封，不是 v2 的 `ResponseMetadata`**——这条是反向代理透传，不是 Action 网关。
+
+这不构成待迁项：路径由平台给，我们只是原样打过去。要迁只能是把平台给的地址重写掉，那比透传更糟。
 
 ### Notebook Lab 与反向代理
 
