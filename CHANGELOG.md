@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### 变更
+
+- **升级提醒改成对所有人都印**，不再需要 `INSPIRE_SHOW_UPDATE_NOTICE=1` 才开（这个环境变量随之删除）。它自 v6.3.0 起是 opt-in 且默认关着，理由是「别让升级元数据污染命令输出」——但代价是**没有任何人被告知过有新版本**，包括维护者自己。真正要守的那条不变量由另外两道闸守着，两道都还在：提醒只走 stderr（stdout 永远只有命令本身被要求的东西），并且 `--json` 下完全不印，所以「输出是单一 JSON 文档」这条合同没动。要整条关掉仍然是 `INSPIRE_SKIP_UPDATE_CHECK=1`。
+
+### 修复
+
+- **`inspire update --check` 恰好在有新版本可升的时候报「检查失败」。** 实测本机 v7.1.0 对着刚发布的 v7.1.1：版本缓存正确写下了 `latest: 7.1.1`，而命令印的是 `✗ InspireSkill check failed.` 并以 1 退出——也就是这条命令唯一有意义的那个结果被它自己当成了故障。根因是检查路径把 `latest` 喂给了 `_audit_update_state`，而那个审计里的版本比较是**升级完之后**的验收器（「装完了，可执行文件真的变成新版本了吗」），于是「你还在旧版本上」这个正确答案被判成审计不通过。现在检查路径不传 `expected_version`，审计只保留它真正该管的那部分：可执行文件在不在 PATH 上、版本读不读得出来、全局 uv tool 有没有被钉在本地源、检测到的 harness 里有没有 `SKILL.md`。
+
+  连带影响是每日那个 launchd agent（跑的正是 `update --check --silent`）一直在静默地以 1 退出——`launchctl list` 里那一列就是 `1`。`--check` 此前没有任何测试覆盖（现有的 8 处调用一律传 `check_only=False`），这个 bug 因此活了下来；现在三种情形各有一条测试：有新版本、已是最新、装坏了。
+
+- **PyPI 响应被截断会让整个检查带着 traceback 崩掉**，而不是回落到 GitHub 上的 `pyproject.toml`。`http.client.IncompleteRead` 是 `HTTPException` 而**不是** `OSError`，所以它穿过了 `fetch_latest_version_info` 那个 `except (URLError, TimeoutError, OSError, JSONDecodeError)`。本机 `~/Library/Logs/inspire-skill-update-check.log` 里就留着这么一次崩溃。两个分支的 except 都补上 `http.client.HTTPException`，回落链因此真的能用——模块开头承诺的「失败时完全无副作用」现在对前台的 `update --check` 也成立，此前只有后台那条路径靠外层的兜底 `except Exception` 撑着。
+
 ## v7.1.1
 
 ### 新增

@@ -152,8 +152,9 @@ def main(
     else:
         clear_debug_logging()
 
-    # Keep the background update check detached and silent. An interactive
-    # notice is opt-in and is never allowed to contaminate JSON output.
+    # Keep the background update check detached and silent. The upgrade notice
+    # itself fires for everyone (stderr only) but is never allowed to
+    # contaminate JSON output.
     # `uninstall` is excluded for a different reason than `update`: the check
     # writes ~/.inspire/update-status.json, which the uninstall is on its way
     # to delete, and a detached child would outlive the venv it runs from.

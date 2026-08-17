@@ -1382,8 +1382,16 @@ def update(
     if check_only:
         _emit_stage("Checking for updates...", silent=silent)
         result = run_check(write=True)
+        # `expected_version` stays None here on purpose. The audit's version
+        # comparison is a *post-upgrade* verifier ("did the executable actually
+        # become the version we just installed?"), so feeding it the latest
+        # published version makes "an update is available" — the one thing this
+        # command exists to report — come back as `check failed`. What the audit
+        # still earns its keep for is a broken install: executable not on PATH,
+        # unparseable version, a global uv tool pinned to a local source, or a
+        # detected harness with no SKILL.md.
         audit_ok, actual_version = _audit_update_state(
-            expected_version=result.get("latest"),
+            expected_version=None,
             check_cli=True,
             check_skills=True,
             silent=silent,
