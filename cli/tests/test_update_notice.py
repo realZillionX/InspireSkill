@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.client
+import importlib
 import urllib.error
 from unittest.mock import patch
 
@@ -8,6 +9,14 @@ from click.testing import CliRunner
 
 from inspire.cli.main import main
 from inspire.cli.utils import update_notice
+
+# `inspire.cli.commands.__init__` does `from ...update import update`, so the
+# package attribute `update` is the click Command, not the module. Patch by
+# module object rather than by dotted string: on Python 3.10 mock resolves such
+# a string to the shadowing Command and raises AttributeError, while 3.11+
+# resolves it to the module — a green local run and a red 3.10 CI.
+_update = importlib.import_module("inspire.cli.commands.update")
+_main = importlib.import_module("inspire.cli.main")
 
 
 def _stub_cache(monkeypatch, latest: str = "2.0.0", current: str = "1.0.0") -> None:  # type: ignore[no-untyped-def]
@@ -68,8 +77,8 @@ def test_update_notice_stays_quiet_when_already_current(monkeypatch, capsys) -> 
 def test_json_output_still_suppresses_the_notice() -> None:
     """`--json` must stay a single JSON document, so the notice is skipped there."""
     with (
-        patch("inspire.cli.main.maybe_notify_update") as notify,
-        patch("inspire.cli.main.maybe_spawn_check"),
+        patch.object(_main, "maybe_notify_update") as notify,
+        patch.object(_main, "maybe_spawn_check"),
     ):
         CliRunner().invoke(main, ["--json", "cache", "status"])
 
@@ -79,8 +88,8 @@ def test_json_output_still_suppresses_the_notice() -> None:
 def test_plain_output_reaches_the_notice_hook() -> None:
     """Counterpart to the `--json` case: the hook is wired up on the normal path."""
     with (
-        patch("inspire.cli.main.maybe_notify_update") as notify,
-        patch("inspire.cli.main.maybe_spawn_check"),
+        patch.object(_main, "maybe_notify_update") as notify,
+        patch.object(_main, "maybe_spawn_check"),
     ):
         CliRunner().invoke(main, ["cache", "status"])
 
@@ -90,10 +99,10 @@ def test_plain_output_reaches_the_notice_hook() -> None:
 def _invoke_check(installed: str, latest: str):  # type: ignore[no-untyped-def]
     """Run `inspire update --check` with the platform and install state stubbed."""
     with (
-        patch("inspire.cli.commands.update.run_check") as run_check,
-        patch("inspire.cli.commands.update._read_inspire_version") as read_version,
-        patch("inspire.cli.commands.update._uv_tool_info", return_value=None),
-        patch("inspire.cli.commands.update._audit_installed_skills", return_value=True),
+        patch.object(_update, "run_check") as run_check,
+        patch.object(_update, "_read_inspire_version") as read_version,
+        patch.object(_update, "_uv_tool_info", return_value=None),
+        patch.object(_update, "_audit_installed_skills", return_value=True),
     ):
         run_check.return_value = {
             "current": installed,
@@ -131,13 +140,14 @@ def test_update_check_still_reports_up_to_date() -> None:
 def test_update_check_still_fails_when_the_install_is_broken() -> None:
     """Dropping the version comparison must not stop the audit catching a bad install."""
     with (
-        patch("inspire.cli.commands.update.run_check") as run_check,
-        patch(
-            "inspire.cli.commands.update._read_inspire_version",
+        patch.object(_update, "run_check") as run_check,
+        patch.object(
+            _update,
+            "_read_inspire_version",
             return_value=(None, None, "not on PATH"),
         ),
-        patch("inspire.cli.commands.update._uv_tool_info", return_value=None),
-        patch("inspire.cli.commands.update._audit_installed_skills", return_value=True),
+        patch.object(_update, "_uv_tool_info", return_value=None),
+        patch.object(_update, "_audit_installed_skills", return_value=True),
     ):
         run_check.return_value = {
             "current": "7.1.0",
