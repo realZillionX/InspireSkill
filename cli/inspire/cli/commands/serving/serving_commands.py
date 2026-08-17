@@ -1233,7 +1233,7 @@ def scale_serving(
     \b
     Scaling reuses the deployment's existing image, command, port and resource
     spec — only the replica count moves. Each replica costs the serving's full
-    quota, so check `inspire resources quota --workspace <workspace>` before
+    quota, so check `inspire serving quota --workspace <workspace>` before
     scaling up. Watch the result with
     `inspire serving instances <name> --workspace <workspace>`.
     """

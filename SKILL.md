@@ -62,6 +62,7 @@ Workspace 判断：
 | 本机 Clash Verge 的 `*.sii.edu.cn`、`SII Proxy` / `DIRECT` 分流 | [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md) |
 | 项目初始化、`INSPIRE.md`、Project / Workspace / Paths / Image 问询、项目信息持续维护 | [`references/project-context.md`](references/project-context.md) |
 | Workspace、Compute Group、Quota、实时资源、优先级、Workload Profile | [`references/resources.md`](references/resources.md) |
+| 项目归属、负责人、预算与平台优先级（`inspire project`，全局对象、不按 Workspace 划分） | [`references/project-context.md`](references/project-context.md) |
 | 共享盘、存储池、挂载隔离、Path Alias | [`references/paths.md`](references/paths.md) |
 | 数据广场检索、官方数据集挂载、版本与访问权限 | [`references/dataset.md`](references/dataset.md) |
 | 联网准备、SII 内部源、依赖安装、镜像固化 | [`references/internal-sources.md`](references/internal-sources.md) |

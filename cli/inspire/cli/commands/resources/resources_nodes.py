@@ -131,7 +131,7 @@ def list_nodes(
     \b
     Examples:
         inspire resources nodes --workspace 分布式训练空间
-        inspire resources nodes --workspace all --group H200
+        inspire resources nodes --workspace 分布式训练空间 --group H200
         inspire resources nodes --workspace 分布式训练空间 --min-nodes 2
     """
     try:

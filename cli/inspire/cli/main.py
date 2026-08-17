@@ -122,7 +122,7 @@ def main(
     \b
     Normal workflow:
         1. `inspire account context` lists usable resource names.
-        2. `inspire <kind> quota --workspace <name|all>` lists valid quotas.
+        2. `inspire <kind> quota --workspace <name>` lists valid quotas.
         3. `inspire <kind> create ...` creates a workload.
         4. `status`, `events`, `logs`, and `metrics` inspect it.
 

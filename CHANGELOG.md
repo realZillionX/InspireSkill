@@ -14,6 +14,10 @@
 
   连带清理：`_v2_result()` 移进 session 层（登录也要用它，而 session 不能反向 import `browser_api`）；`INSPIRE_BROWSER_API_PREFIX` / `api.browser_api_prefix` **配置项删除**——它最后只对 Notebook lab 一处生效，设成别的值只会把那一处弄坏，旧 `config.toml` 里残留这个键会被静默忽略；六处 docstring 还报着 `POST /api/v1/model/list` 这类早已不存在的地址，连同 `browser-api.md` 的「仍在使用的 v1 端点」整节一起重写。边界测试也换了两条更强的不变量：**全树零 `/api/v1` 字面量**（不再是白名单），以及 `/api/v2` 字面量只许出现在 `browser_api/`（例外两条：`job_shell.py` 的四条实例 PTY、`session/auth.py` 的登录自举）。
 
+- **`--help` 里有四条跑不通的示例。** `resources availability` 的正文写着「Requires `--workspace <name|all>`」、示例直接给了 `--workspace all --include-cpu`，而运行时答 `--workspace requires one workspace name for this command.`；`resources nodes` 和 `resources policy` 各有一条同样的 `--workspace all` 示例；`project list` 的示例带 `--workspace all`，而这条命令**根本没有 `--workspace`**（项目是全局对象）。`SKILL.md` 写的是「命令语法和参数始终回到 CLI Help」，所以 Help 里一条抄下来就报错的示例比文档过期更糟。同批修掉两处指向不存在的 `inspire resources quota` 的引用（真实命令是 `<workload> quota`）。
+
+- **README 的命令枚举补齐到真实命令面。** 用 Click 的命令树逐组对过，11 个枚举了子命令的组现在**逐字匹配**：Notebook 补 `delete` / `ssh-proxy`（给 OpenSSH `ProxyCommand` 用的裸流转发，`ssh-config` 生成的配置就指向它）/ `batch` / `profile` / `quota`，Serving 补 `delete`，Job 与 HPC 从「只提 create」改成完整命令面并点出 `job wait` / `job command`，Ray 与 Account 补齐 `batch` / `profile` / `quota` / `check` / `context`。新增 `inspire project` 一节——它是**全局对象、不按 Workspace 划分**，此前在 README 和 `SKILL.md` 的索引里都完全没有出现。
+
 - **Browser API 文档合并成一份。** `browser-api.md` / `browser-api-actions.md` / `data-plaza-api.md` 三份 977 行合成一份 962 行，其中 589 行是表格——协议、探针方法、13 条路由 114 个 Action 的逐条参数与响应、创建面字段合同、非 Action 的那半边网关、数据广场，全在同一页里按章节走。数据广场此前单开一份，理由是「不是启智的一部分」；但它由同一层 Web Session 驱动、`dataset.ValidateDataset` 又要靠它的 code 才挂得上，分开看反而要在两份文档之间来回跳。
 
   **散落的 bullet 叙述改成表**：原来「参数语义与限制」下几十条并列的自然段，现在按「项 / 事实 / 读错的后果」三列排开，一条陷阱一行。**删掉的是迁移过程记录**——「曾经判定 X、后来发现是错的」这类只对当时的人有用，结论保留、过程删掉；`UpdateModel`、`GetUserQuotaJobs` 这些只在正文里出现过一次的名字用脚本对着老文档逐个查过，一个没丢。
