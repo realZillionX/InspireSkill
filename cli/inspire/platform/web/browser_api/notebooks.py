@@ -280,11 +280,10 @@ def get_resource_prices(
     same value, which is how a rate-limited refresh cached a workspace as
     having no quotas at all.
 
-    This is the one quota-critical request that stayed on `/api/v1` because
-    `resource-price` is absent from discovery. It is not: the v2 Action takes
-    the same body and answers the same rows, measured across every visible
-    workspace, every compute group and all five schedule types — 225 pairs,
-    225 identical, and identical field sets.
+    This is the request in front of every `create`, and it is on v2: the Action
+    takes the v1 body unchanged and answers the same rows, measured across every
+    visible workspace, every compute group and all five schedule types — 225
+    pairs, 225 identical, identical field sets.
     """
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session

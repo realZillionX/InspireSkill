@@ -21,7 +21,7 @@ Browser API 是启智控制台自己用的接口面：同一台 `qz.sii.edu.cn`�
 | 5 | `GET {base_url}/discovery` | 候选 Action 名与参数形状。**是线索，不是合同**（第 6 节） |
 | 6 | 当前 Click Help | 公开 CLI 合同 |
 
-`test_browser_api_boundary.py` 保证平台路径只在 `browser_api/` 内构造：命令层出现 `_browser_api_path` 或 `/api/v1` 字面量会直接让 CI 失败，例外必须写进该测试的 `_ALLOWED` 并注明理由（当前只有两条，见第 8 节）。
+`test_browser_api_boundary.py` 保证平台路径只在 `browser_api/` 内构造：命令层出现 `_browser_api_path` 或 `/api/v1` 字面量会直接让 CI 失败，例外必须写进该测试的 `_ALLOWED` 并注明理由（当前只有 `session/auth.py` 一条，见第 8 节）。
 
 本页与 [`browser-api-actions.md`](browser-api-actions.md) 只收**有当前消费者、且可复现**的事实。未闭合的调查、已删除的 v1 域、迁移过程记录都不进入。
 
@@ -199,7 +199,7 @@ discovery 里没有的 15 条路由：`audit`(6)、`billing`(3)、`file`(9)、`i
 | `/api/v2/logs/ray_job/download` / `logs/inference_serving/download` | 日志下载 |
 | `/api/v2/project/upload_appendix`、`/api/v2/billing/detail/export` | 附件上传、账单导出 |
 
-四条 PTY 共用控制台里同一个 URL 构造器，参数走 query string（HPC 用 `{job_id, instance_id}`，其余原样传 `{job_id, instance_name}`），进容器执行的是 `command -v bash >/dev/null 2>&1 && exec bash || exec sh`，改窗口大小发 `stty columns N rows M`。**这和 `job_shell.py` 现在对 v1 的用法只差一个前缀。**
+四条 PTY 共用控制台里同一个 URL 构造器，参数走 query string，但**两个参数名逐 Workload 重映射**（下表），进容器执行的是 `command -v bash >/dev/null 2>&1 && exec bash || exec sh`，改窗口大小发 `stty columns N rows M`。
 
 **这几条只能拿一个自己的运行中任务去握手验证。** 网关在路由之前先鉴权：普通 GET、带 `Referer` 的 GET、真实的 WebSocket 握手，三种打法对 v1（确知可用）和一条随手编的路径回的都是同一个 401，所以第 7 节那套「按报错区分」的判据在这里整个失效。
 
@@ -268,7 +268,7 @@ Serving 连句柄都不叫 `job_id`，是第一次拿 `job_id` 去打才发现�
 | `GET /api/v1/user/routes/default` | 同上，发现可见 Workspace | **Session 自举**：字面量 `default` 是「还不知道自己在哪个 Workspace」的占位；v2 的 `user.GetRoutes` 要一个真实的 `WorkspaceId`，登录时还拿不到 |
 | `GET /api/v1/notebook/lab/{notebook_id}/proxy/{port}/` | [`rtunnel.py`](../../cli/inspire/platform/web/browser_api/rtunnel.py)、`notebook proxy-url`、整条 Notebook SSH 链路 | **不是 Action 能表达的东西**：反向代理，不是 JSON 请求/响应。见下文 |
 
-`/train_job/remote_cmd`（`job shell` 的双向 PTY WebSocket）同理属于「v2 装不下」，它在 [`job_shell.py`](../../cli/inspire/cli/utils/job_shell.py) 里构造，是 `test_browser_api_boundary.py` 的两条 `_ALLOWED` 之一（另一条是 `session/auth.py`）。v2 是「POST + `?Action=` + JSON 信封」的网关，装不下流式连接，所以这里不存在「还没迁完」，而是**不该迁**。
+**这张表不收四条实例 PTY WebSocket**：它们在 [`job_shell.py`](../../cli/inspire/cli/utils/job_shell.py) 里构造，全部走 `/api/v2`——网关 REST 形状的那一半，不带 `?Action=`（第 6 节）。按 Action 名做的清单会把它们报成不存在，这不代表它们还在 v1 上。
 
 **这张表不收 TensorBoard 的 `/api/v1/train_job/tensorboard/{tb_id}/`**：`tensorboard tags` / `scalars` 确实会 GET 它，但那个地址是 `GetTensorboard` 的 `url` 字段**原样回来的值**，不是 CLI 拼的路径——早期的 board 给这一种，新建的 board 给 `https://notebook-inspire.sii.edu.cn/tensorboard/{tb_id}/`，两种都活。所以它不是一条「留着没迁的端点」，而是一条随行数据；`browser_api/tensorboards.py` 只负责在它是站内路径时补上 base，边界测试也因此不需要例外。
 

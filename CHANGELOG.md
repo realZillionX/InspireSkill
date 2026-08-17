@@ -12,6 +12,8 @@
 
   连带影响是每日那个 launchd agent（跑的正是 `update --check --silent`）一直在静默地以 1 退出——`launchctl list` 里那一列就是 `1`。`--check` 此前没有任何测试覆盖（现有的 8 处调用一律传 `check_only=False`），这个 bug 因此活了下来；现在三种情形各有一条测试：有新版本、已是最新、装坏了。
 
+- **文档和 docstring 里还留着六处已经迁走的 v1 地址**（只有文档，没有行为变更）。grep `/api/v1` 现在会得到六个假阳性：`models` 三处报着 `POST /api/v1/model/list` 这类早已不存在的地址，`servings` 两处、`hpc_jobs` 一处同理，而代码发的都是 v2 Action。`browser-api.md` 也有两处过时：第 8 节仍写着 `train_job/remote_cmd` 是边界测试 `_ALLOWED` 的两条之一（v7.1.1 迁完之后只剩 `session/auth.py` 一条），第 6 节那句「和 `job_shell.py` 现在对 v1 的用法只差一个前缀」随之作废，同一段里 PTY 参数名的口径还和下方实测表冲突（ray 是 `instance_id`、serving 是 `inference_serving_id`），现在一律以表为准。**实际还在用的 v1 只有第 8 节表里那三条**：`user/detail`、`user/routes/default` 两条 Session 自举，加 Notebook 反向代理。
+
 - **PyPI 响应被截断会让整个检查带着 traceback 崩掉**，而不是回落到 GitHub 上的 `pyproject.toml`。`http.client.IncompleteRead` 是 `HTTPException` 而**不是** `OSError`，所以它穿过了 `fetch_latest_version_info` 那个 `except (URLError, TimeoutError, OSError, JSONDecodeError)`。本机 `~/Library/Logs/inspire-skill-update-check.log` 里就留着这么一次崩溃。两个分支的 except 都补上 `http.client.HTTPException`，回落链因此真的能用——模块开头承诺的「失败时完全无副作用」现在对前台的 `update --check` 也成立，此前只有后台那条路径靠外层的兜底 `except Exception` 撑着。
 
 ## v7.1.1

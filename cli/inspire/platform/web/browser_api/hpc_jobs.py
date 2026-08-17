@@ -381,8 +381,8 @@ def list_hpc_job_instances(
 ) -> tuple[list[dict[str, Any]], int]:
     """List pod/component instances for an HPC job.
 
-    Endpoint: ``POST /api/v1/hpc_jobs/instances/list`` with body
-    ``{jobId, page_num, page_size}``.
+    Action: ``ListJobInstances``, with body ``{jobId, page_num, page_size}`` --
+    this one keeps the camelCase ``jobId``, unlike its neighbours.
     """
     job_id = str(job_id or "").strip()
     if not job_id:

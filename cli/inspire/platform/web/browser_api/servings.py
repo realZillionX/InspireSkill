@@ -300,8 +300,8 @@ def get_serving_configs(
 ) -> dict[str, Any]:
     """Serving-time configs for a workspace (image / quota presets).
 
-    Calls `GET /api/v1/inference_servings/configs/workspace/{workspace_id}`.
-    Returns the raw `data` dict, typically `{configs: [...]}`.
+    Action: `GetServingConfigByWorkspaceId`. Returns the raw `Result` dict,
+    typically `{configs: [...]}`.
     """
     session, workspace_id = _resolve_workspace(workspace_id, session)
     return _serving_v2(
@@ -315,7 +315,7 @@ def get_serving_detail(
 ) -> dict[str, Any]:
     """Browser API variant of serving detail.
 
-    Calls `GET /api/v1/inference_servings/{id}`, matching the current web UI.
+    Action: `GetServing`, the same one the console's detail page calls.
     """
     if session is None:
         session = get_web_session()

@@ -164,7 +164,7 @@ def list_models(
     model_types: Optional[Iterable[str]] = None,
     session: Optional[WebSession] = None,
 ) -> tuple[list[ModelInfo], int]:
-    """List models via `POST /api/v1/model/list`.
+    """List models (`model-hub.ListModels`).
 
     Returns `(items, total)`. Unlike `ListImages` and `ListLogicComputeGroups`,
     this Action refuses `page_size=-1` with `InvalidParameter: page or
@@ -206,7 +206,7 @@ def get_model_detail(
     session: Optional[WebSession] = None,
     workspace_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Get model detail via `POST /api/v1/model/detail`.
+    """Get model detail (`model-hub.GetModelDetail`).
 
     Returns the raw `data` dict — typically
     `{model: {...}, project_name, user_avatar, user_name}`.
@@ -365,7 +365,7 @@ def list_model_version_records(
     session: Optional[WebSession] = None,
     workspace_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """List detailed version records via `GET /api/v1/model/{model_id}`.
+    """List detailed version records (`model-hub.ListModelVersions`).
 
     This is the richer endpoint behind the model detail drawer. It includes
     model paths, source paths, sizes, publish status, and running-serving count.
