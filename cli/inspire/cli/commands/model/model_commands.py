@@ -799,14 +799,7 @@ def status_model(
 
     Includes latest version status, tags, model type, vLLM readiness, publication flag, owner, project, and timestamps when present.
 
-    \b
-    Read the deployment lines before deleting a model or repointing a serving:
-    `Serving on Vn` names the servings that still hold that version (failed ones
-    are left out -- they hold nothing), `Pending deployment` covers the whole
-    model and catches a deployment that is queued but not yet running, and
-    `Other versions in use` flags versions this view does not detail. None of
-    the three shows up in `model versions`, whose Servings column counts
-    running deployments on each version and nothing else.
+    Read the deployment lines before deleting a model or repointing a serving: `Serving on Vn` names the servings that still hold that version (failed ones are left out -- they hold nothing), `Pending deployment` covers the whole model and catches a deployment that is queued but not yet running, and `Other versions in use` flags versions this view does not detail. None of the three shows up in `model versions`, whose Servings column counts running deployments on each version and nothing else.
     """
     name = reject_id_at_boundary(
         ctx,

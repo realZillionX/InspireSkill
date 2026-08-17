@@ -197,11 +197,7 @@ def scaling_ray(
 ) -> None:
     """Show elastic worker-group replica changes for a Ray job.
 
-    \b
-    Each row is one replica-count change the platform made to a worker group:
-    the `initialized` entry the group started from, then every `scale_up` /
-    `scale_down` after it. An empty history means the elastic range was never
-    exercised — the group ran at the replica count it started with.
+    Each row is one replica-count change the platform made to a worker group: the `initialized` entry the group started from, then every `scale_up` / `scale_down` after it. An empty history means the elastic range was never exercised — the group ran at the replica count it started with.
 
     Rows are printed oldest-first; when the history is longer than the budget the most recent changes are the ones kept.
 
