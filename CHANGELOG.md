@@ -44,7 +44,13 @@
 
 - **`serving create` 的 `--replicas` 和 `--nodes-per-replica` 没有 help**，`--help` 里这两行只有一个 `[default: 1; x>=1]`。补的说明按 `browser-api.md` 已经记下的语义写：`node_num_per_replica` 是「每副本几个节点」的规格，`GetRecommendedConfig` 的四个 `min_*` 正是它和 `--quota` 的下限——也就是 `inspire model deploy-config` 印的那张表。
 
-- **三处 docstring 讲的是一个用法行里不存在的参数名。** `notebook exec` / `notebook scp` / `notebook install-deps` 正文都写 `NOTEBOOK is the notebook name`，而 Click 印出来的用法行是 `NAME`。仓库里其余同类命令（`save-image`、`cancel-save-image`）写的就是 `NAME is the notebook name`，按这个改齐。顺带把 `resources usage` 里一行手工换行到 90 字符、明显长出邻行一截的正文重新折回。
+- **三处 docstring 讲的是一个用法行里不存在的参数名。** `notebook exec` / `notebook scp` / `notebook install-deps` 正文都写 `NOTEBOOK is the notebook name`，而 Click 印出来的用法行是 `NAME`。仓库里其余同类命令（`save-image`、`cancel-save-image`）写的就是 `NAME is the notebook name`，按这个改齐。
+
+- **`--help` 的正文不再手工折行了：55 段正文从 `\b` 里放出来，交回 Click 按终端宽度重排。** 此前有 59 处正文段落包在 `\b` 里、硬折在约 75 列。`\b` 的作用是**关掉重排**，所以那些段落到哪个终端上都是 75 列——120 列的终端上留一半空白，70 列的终端上由终端自己在边缘断行，而且**续行会掉到第 0 列**，丢掉 Click 那两格缩进。手工折行本身就是在给 `\b` 擦屁股：实测「无 `\b` + 每段一行」在 70 / 100 / 120 列下都排得整齐、缩进保持，正是这个仓库「不在固定列宽硬折 prose」的写法。
+
+  **`\b` 该留的地方一处没动**：示例块、`*` 要点列表、`Required fields after expansion:` 这类字段表共 **85 处**全部保留——它们靠的正是 `\b` 关掉重排。改动只针对纯正文段落，判据是「首行不以 `:` 结尾、不以 `*` / `-` / `inspire` 开头、且段内没有缩进行」。
+
+  **验收是逐字比对**：把 182 条命令的 help 正文与 921 条 help 字符串各自把空白全部归一化后前后对比，**0 处字词变化**——只有折行位置变了。示例仍是 284 条全部解析通过，`\b` 结构块 85 处、`\b` 包正文 0 处。2783 tests / ruff / mypy 全过。
 
   **验收是全量渲染前后逐字对比**：182 条命令的 `--help` 各渲染一遍，前后只有上述 10 处 hunk 变化，没有一处旁落。另有两项自动核查这次**没有再查出问题**，结论记在这里免得重跑：help 文本里的 284 条 `inspire ...` 示例拿 Click 命令树逐条解析（未知子命令、未知选项、位置参数个数）全部通过；help 里写着 `default: N` 的选项对着真实 `default` 逐个比对，差异全部是 `--limit` 这类「Click 侧 `None`、取值在下游兜底 20/100」的有意设计，以及 `job wait --timeout` 的 `14400` 秒即正文说的 4 小时。
 

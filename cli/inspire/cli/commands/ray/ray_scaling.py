@@ -203,9 +203,7 @@ def scaling_ray(
     `scale_down` after it. An empty history means the elastic range was never
     exercised — the group ran at the replica count it started with.
 
-    \b
-    Rows are printed oldest-first; when the history is longer than the budget
-    the most recent changes are the ones kept.
+    Rows are printed oldest-first; when the history is longer than the budget the most recent changes are the ones kept.
 
     \b
     Examples:

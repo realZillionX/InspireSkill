@@ -414,11 +414,7 @@ def delete_notebook_cmd(
 ) -> None:
     """Permanently delete a notebook instance.
 
-    \b
-    The instance disappears from the platform UI. This cannot be undone;
-    if the notebook is still running, stop it first. The local cached SSH
-    connection is NOT removed — run `inspire notebook connection forget <notebook>`
-    to clean up.
+    The instance disappears from the platform UI. This cannot be undone; if the notebook is still running, stop it first. The local cached SSH connection is NOT removed — run `inspire notebook connection forget <notebook>` to clean up.
 
     \b
     Examples:

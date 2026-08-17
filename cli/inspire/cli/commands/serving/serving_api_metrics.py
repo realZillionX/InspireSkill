@@ -222,11 +222,7 @@ def serving_api_metrics(
 ) -> None:
     """Query request traffic for an inference serving.
 
-    \b
-    Use it once a deployment is RUNNING to tell "nobody is calling it" apart
-    from "it is being called and failing": QPS shows arrival rate, SUCCESS_RATE
-    shows how many make it, and LATENCY / TTFT show how slow they are. For GPU,
-    CPU and memory utilization use `inspire serving metrics <name>` instead.
+    Use it once a deployment is RUNNING to tell "nobody is calling it" apart from "it is being called and failing": QPS shows arrival rate, SUCCESS_RATE shows how many make it, and LATENCY / TTFT show how slow they are. For GPU, CPU and memory utilization use `inspire serving metrics <name>` instead.
 
     \b
     Examples:

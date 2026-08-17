@@ -24,10 +24,7 @@ def resources() -> None:
     under each workload group: `notebook quota`, `job quota`, `hpc quota`,
     `ray quota`, and `serving quota`.
 
-    \b
-    Every command here reads a fact that the platform declares per workspace,
-    so each takes one workspace name. Comparing two workspaces means running it
-    twice.
+    Every command here reads a fact that the platform declares per workspace, so each takes one workspace name. Comparing two workspaces means running it twice.
 
     \b
     Examples:

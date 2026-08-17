@@ -1230,12 +1230,7 @@ def scale_serving(
 ) -> None:
     """Change how many replicas an inference serving runs.
 
-    \b
-    Scaling reuses the deployment's existing image, command, port and resource
-    spec — only the replica count moves. Each replica costs the serving's full
-    quota, so check `inspire serving quota --workspace <workspace>` before
-    scaling up. Watch the result with
-    `inspire serving instances <name> --workspace <workspace>`.
+    Scaling reuses the deployment's existing image, command, port and resource spec — only the replica count moves. Each replica costs the serving's full quota, so check `inspire serving quota --workspace <workspace>` before scaling up. Watch the result with `inspire serving instances <name> --workspace <workspace>`.
     """
     name = reject_id_at_boundary(
         ctx,
@@ -1309,9 +1304,7 @@ def versions_serving(
 ) -> None:
     """List a serving's deployment history.
 
-    \b
-    Each row is one configuration the deployment has run under. The version
-    number is what `inspire serving rollback --version` takes.
+    Each row is one configuration the deployment has run under. The version number is what `inspire serving rollback --version` takes.
     """
     try:
         output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
@@ -1398,12 +1391,7 @@ def scale_history_serving(
 ) -> None:
     """List when a serving's replica count changed, and to what.
 
-    \b
-    This is the first thing to check when request latency or throughput moved
-    without a redeploy: a replica count that dropped, or an autoscale that
-    never landed, shows up here and nowhere in `versions`. Pair it with
-    `inspire serving api-metrics <name>` to line the change up against the
-    traffic it explains.
+    This is the first thing to check when request latency or throughput moved without a redeploy: a replica count that dropped, or an autoscale that never landed, shows up here and nowhere in `versions`. Pair it with `inspire serving api-metrics <name>` to line the change up against the traffic it explains.
     """
     try:
         output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
@@ -1510,10 +1498,7 @@ def rollback_serving(
 ) -> None:
     """Redeploy an inference serving under an earlier version's configuration.
 
-    \b
-    Pick the target with `inspire serving versions <name> --workspace
-    <workspace>`. The running replicas are replaced, so in-flight requests are
-    interrupted the same way a restart interrupts them.
+    Pick the target with `inspire serving versions <name> --workspace <workspace>`. The running replicas are replaced, so in-flight requests are interrupted the same way a restart interrupts them.
     """
     name = reject_id_at_boundary(
         ctx,
@@ -1706,12 +1691,7 @@ def events_serving(
 ) -> None:
     """Show lifecycle and scheduling events for an inference serving.
 
-    \b
-    Deployment events (`CreatingRevision` / `GroupsProgressing` / `Pending`)
-    and every replica's pod events (`Scheduled` / `Pulled` / `Started`) are
-    disjoint sets, and the default merges both into one timeline with an
-    `Instance` column. Use ``--instance`` to narrow to one replica, or
-    ``--workload-level`` to keep only the controller's half.
+    Deployment events (`CreatingRevision` / `GroupsProgressing` / `Pending`) and every replica's pod events (`Scheduled` / `Pulled` / `Started`) are disjoint sets, and the default merges both into one timeline with an `Instance` column. Use ``--instance`` to narrow to one replica, or ``--workload-level`` to keep only the controller's half.
 
     \b
     Examples:
@@ -2477,10 +2457,7 @@ def shell_serving(
     Needs a terminal: this attaches your stdin to a remote PTY. Leave with
     `exit`, or press Ctrl+] to drop the session without ending the shell.
 
-    \b
-    Every replica runs the same image and command, so the first running one is
-    as good as any unless a specific replica is the one misbehaving; name it
-    with `--instance`.
+    Every replica runs the same image and command, so the first running one is as good as any unless a specific replica is the one misbehaving; name it with `--instance`.
 
     \b
     Examples:

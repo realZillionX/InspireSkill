@@ -265,11 +265,7 @@ def make_quota_command(workload: str) -> click.Command:
         priorities each row accepts: 'any', 'low' (only --priority 1), or
         'unknown' when the platform did not answer.
 
-        \b
-        Points/h is what the row costs in 点券 per instance-hour. Only GPUs are
-        charged, so every CPU-only row is 0 and the same work is free in a CPU
-        workspace; per card the rate differs by model (H100 / H200 cost about
-        three times a 4090).
+        Points/h is what the row costs in 点券 per instance-hour. Only GPUs are charged, so every CPU-only row is 0 and the same work is free in a CPU workspace; per card the rate differs by model (H100 / H200 cost about three times a 4090).
         """
         try:
             effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)

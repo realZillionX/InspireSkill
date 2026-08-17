@@ -510,20 +510,11 @@ def create_tensorboard_cmd(
 ) -> None:
     """Start a TensorBoard on one summary directory.
 
-    \b
-    The instance is fixed at 1 CPU / 2 GiB, so there is no quota to pick — a
-    compute group is the only placement input, and it has to advertise the
-    tensorboard job type. The board reads whatever event files already exist
-    under `--summary-path`; nothing has to be re-written for it.
+    The instance is fixed at 1 CPU / 2 GiB, so there is no quota to pick — a compute group is the only placement input, and it has to advertise the tensorboard job type. The board reads whatever event files already exist under `--summary-path`; nothing has to be re-written for it.
 
-    \b
-    `--job` only records which training run the board belongs to, so it shows
-    up on that job's row in the console. It does not derive the summary path:
-    pass the directory your training code writes events to either way.
+    `--job` only records which training run the board belongs to, so it shows up on that job's row in the console. It does not derive the summary path: pass the directory your training code writes events to either way.
 
-    \b
-    The board stops itself after `--auto-stop-hours` (platform maximum 72).
-    Read it with `inspire tensorboard tags` and `inspire tensorboard scalars`.
+    The board stops itself after `--auto-stop-hours` (platform maximum 72). Read it with `inspire tensorboard tags` and `inspire tensorboard scalars`.
 
     \b
     Examples:
@@ -799,10 +790,7 @@ def delete_tensorboard_cmd(
 ) -> None:
     """Delete a stopped TensorBoard record.
 
-    \b
-    The event files on the shared disk are untouched — only the board that was
-    serving them goes away, and a new board on the same `--summary-path` reads
-    exactly the same data. A running board is refused; `stop` it first.
+    The event files on the shared disk are untouched — only the board that was serving them goes away, and a new board on the same `--summary-path` reads exactly the same data. A running board is refused; `stop` it first.
     """
     name = reject_tensorboard_id(ctx, name)
     require_confirmation(
