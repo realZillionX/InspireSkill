@@ -797,9 +797,16 @@ def status_model(
 ) -> None:
     """Show detail of one registered model by name.
 
-    Includes latest version status, tags, model type, vLLM readiness, publication flag, owner, project, and timestamps when present.
+    Includes latest version status, tags, model type, vLLM readiness,
+    publication flag, owner, project, and timestamps when present.
 
-    Read the deployment lines before deleting a model or repointing a serving: `Serving on Vn` names the servings that still hold that version (failed ones are left out -- they hold nothing), `Pending deployment` covers the whole model and catches a deployment that is queued but not yet running, and `Other versions in use` flags versions this view does not detail. None of the three shows up in `model versions`, whose Servings column counts running deployments on each version and nothing else.
+    Read the deployment lines before deleting a model or repointing a serving:
+    `Serving on Vn` names the servings that still hold that version (failed
+    ones are left out -- they hold nothing), `Pending deployment` covers the
+    whole model and catches a deployment that is queued but not yet running,
+    and `Other versions in use` flags versions this view does not detail. None
+    of the three shows up in `model versions`, whose Servings column counts
+    running deployments on each version and nothing else.
     """
     name = reject_id_at_boundary(
         ctx,
@@ -950,7 +957,12 @@ def deploy_config_model(
 ) -> None:
     """Show the minimum resources a model version needs to be deployed.
 
-    Read this before `serving create`: the platform reports the smallest node shape that will hold the weights, which is exactly the floor for `--quota gpu,cpu,mem` and `--nodes-per-replica`. A `serving quota` triple below this floor is what an out-of-memory deployment looks like before it starts. vLLM compatibility is reported alongside because it decides whether a vLLM startup command is an option at all.
+    Read this before `serving create`: the platform reports the smallest node
+    shape that will hold the weights, which is exactly the floor for `--quota
+    gpu,cpu,mem` and `--nodes-per-replica`. A `serving quota` triple below this
+    floor is what an out-of-memory deployment looks like before it starts. vLLM
+    compatibility is reported alongside because it decides whether a vLLM
+    startup command is an option at all.
 
     \b
     Examples:
@@ -1099,9 +1111,14 @@ def versions_model(
 ) -> None:
     """List all versions of one registered model by name.
 
-    Use this before `serving create` when you need a specific `--model-version`; omit the version on serving create to use the latest version shown by model listing.
+    Use this before `serving create` when you need a specific
+    `--model-version`; omit the version on serving create to use the latest
+    version shown by model listing.
 
-    The Servings column counts *running* deployments on that version. A queued deployment counts as zero here and so does a stopped one; `model status` names the servings on the version it reports and flags a pending deployment anywhere in the model.
+    The Servings column counts *running* deployments on that version. A queued
+    deployment counts as zero here and so does a stopped one; `model status`
+    names the servings on the version it reports and flags a pending deployment
+    anywhere in the model.
     """
     name = reject_id_at_boundary(
         ctx,
@@ -1347,9 +1364,16 @@ def delete_model_cmd(
 ) -> None:
     """Delete a registered model and every version it holds.
 
-    This cannot be undone, and it is not version-scoped: the whole entry goes, so every deployment still pointing at any version of it loses what it was serving. The registered directory on shared storage is left alone -- only the registry entry is removed, and `model register` can recreate it from the same path.
+    This cannot be undone, and it is not version-scoped: the whole entry goes,
+    so every deployment still pointing at any version of it loses what it was
+    serving. The registered directory on shared storage is left alone -- only
+    the registry entry is removed, and `model register` can recreate it from
+    the same path.
 
-    The deployments are checked first, and a model that any serving still holds is refused by name. A failed serving does not count -- it holds nothing -- but a stopped or sleeping one does, because it can be started again. `--force` skips the check instead of answering it.
+    The deployments are checked first, and a model that any serving still holds
+    is refused by name. A failed serving does not count -- it holds nothing --
+    but a stopped or sleeping one does, because it can be started again.
+    `--force` skips the check instead of answering it.
     """
     name = reject_id_at_boundary(
         ctx,

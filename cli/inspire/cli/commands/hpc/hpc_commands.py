@@ -1688,7 +1688,8 @@ def stop_hpc(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> No
 def delete_hpc(ctx: Context, name: str, workspace: str, yes: bool, pick: Optional[int]) -> None:
     """Permanently delete an HPC job entry (pass the job name).
 
-    The entry disappears from the platform HPC list. This cannot be undone; if the job is still running, `stop` it first.
+    The entry disappears from the platform HPC list. This cannot be undone; if
+    the job is still running, `stop` it first.
 
     \b
     Example:
@@ -1783,7 +1784,9 @@ def shell_hpc(
     Needs a terminal: this attaches your stdin to a remote PTY. Leave with
     `exit`, or press Ctrl+] to drop the session without ending the shell.
 
-    Defaults to the `launcher`, which is where `srun` runs and therefore the only pod that sees your job's processes. `slurmctld` is the scheduler itself; a shell there answers questions about the queue, not the workload.
+    Defaults to the `launcher`, which is where `srun` runs and therefore the
+    only pod that sees your job's processes. `slurmctld` is the scheduler
+    itself; a shell there answers questions about the queue, not the workload.
 
     \b
     Examples:

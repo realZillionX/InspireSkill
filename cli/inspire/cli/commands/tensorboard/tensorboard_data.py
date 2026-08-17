@@ -139,9 +139,12 @@ def tensorboard_tags(
 ) -> None:
     """List the runs and scalar tags a running TensorBoard can serve.
 
-    A board pointed straight at a directory of event files reports the single run `.`; one pointed at a parent directory reports a run per subdirectory. Both the run and the tag are what `inspire tensorboard scalars` selects on.
+    A board pointed straight at a directory of event files reports the single
+    run `.`; one pointed at a parent directory reports a run per subdirectory.
+    Both the run and the tag are what `inspire tensorboard scalars` selects on.
 
-    No tags on a running board means the summary path holds no scalar events — a wrong path and a run that has not logged yet look identical from here.
+    No tags on a running board means the summary path holds no scalar events —
+    a wrong path and a run that has not logged yet look identical from here.
     """
     name = reject_tensorboard_id(ctx, name)
     try:
@@ -228,9 +231,15 @@ def tensorboard_scalars(
 ) -> None:
     """Read scalar series from a running TensorBoard.
 
-    Each series is reported as first/last value against its step range, plus min and max over the whole run — enough to answer whether a loss is still falling, whether an eval metric has plateaued, or whether a run diverged. `--points N` adds the last N raw (step, value) pairs when the trend line is not enough.
+    Each series is reported as first/last value against its step range, plus
+    min and max over the whole run — enough to answer whether a loss is still
+    falling, whether an eval metric has plateaued, or whether a run diverged.
+    `--points N` adds the last N raw (step, value) pairs when the trend line is
+    not enough.
 
-    Points are ordered by step, not by the order the event files list them: a resumed run or a multi-worker writer interleaves them, and "the last point" is a question about steps.
+    Points are ordered by step, not by the order the event files list them: a
+    resumed run or a multi-worker writer interleaves them, and "the last point"
+    is a question about steps.
 
     \b
     Examples:

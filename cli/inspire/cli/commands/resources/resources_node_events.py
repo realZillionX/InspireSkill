@@ -93,7 +93,11 @@ def node_events(
 ) -> None:
     """Show platform events for one or more cluster nodes.
 
-    Read node names off the `Node` column of `inspire job instances`, `inspire hpc instances`, or `inspire notebook status`. Several nodes answer in one merged timeline with a `Node` column. A node the cluster does not know is not an error — it simply has no events, so check the spelling before reading silence as a healthy node.
+    Read node names off the `Node` column of `inspire job instances`, `inspire
+    hpc instances`, or `inspire notebook status`. Several nodes answer in one
+    merged timeline with a `Node` column. A node the cluster does not know is
+    not an error — it simply has no events, so check the spelling before
+    reading silence as a healthy node.
 
     \b
     Examples:

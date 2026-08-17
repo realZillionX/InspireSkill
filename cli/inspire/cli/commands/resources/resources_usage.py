@@ -388,13 +388,28 @@ def usage_resources(
 ) -> None:
     """Show who is currently holding a workspace's compute.
 
-    Every row is a live allocation, so this is the counterpart to `resources availability`: that command reports what is left, this one reports where the rest went. `Reclaimable` is how much of a holder's GPUs sit on tasks submitted at a preemptible priority — the part a higher-priority submission can take rather than wait for. The rest is held outright, and how busy it is does not change that, which is why utilisation is not a column here; `--json` still carries `gpu_usage_rate` for the separate argument that parked capacity should be released.
+    Every row is a live allocation, so this is the counterpart to `resources
+    availability`: that command reports what is left, this one reports where
+    the rest went. `Reclaimable` is how much of a holder's GPUs sit on tasks
+    submitted at a preemptible priority — the part a higher-priority submission
+    can take rather than wait for. The rest is held outright, and how busy it
+    is does not change that, which is why utilisation is not a column here;
+    `--json` still carries `gpu_usage_rate` for the separate argument that
+    parked capacity should be released.
 
-    `--group` narrows to one compute group, which is the unit a workload is submitted to and therefore the unit the wait-or-ask decision is made in: a workspace can look busy while the group you would submit to is not, and the other way round. The keyword is a substring, so `--group H200` covers every group carrying that hardware.
+    `--group` narrows to one compute group, which is the unit a workload is
+    submitted to and therefore the unit the wait-or-ask decision is made in: a
+    workspace can look busy while the group you would submit to is not, and the
+    other way round. The keyword is a substring, so `--group H200` covers every
+    group carrying that hardware.
 
-    `--mine` reads your own footprint directly and costs one request; the workspace-wide views sweep every running workload in the workspace.
+    `--mine` reads your own footprint directly and costs one request; the
+    workspace-wide views sweep every running workload in the workspace.
 
-    `--workspace` takes one name — `all` is refused. Quota, scheduling and the decision this command feeds (wait, ask, or submit somewhere else) are all per workspace, and the rollups are built per workspace too, so a fanout would rank workspace-and-user pairs while reading as a platform ranking.
+    `--workspace` takes one name — `all` is refused. Quota, scheduling and the
+    decision this command feeds (wait, ask, or submit somewhere else) are all
+    per workspace, and the rollups are built per workspace too, so a fanout
+    would rank workspace-and-user pairs while reading as a platform ranking.
 
     \b
     Examples:

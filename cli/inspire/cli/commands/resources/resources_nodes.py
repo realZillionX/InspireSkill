@@ -123,7 +123,9 @@ def list_nodes(
     This accounts for GPU fragmentation across nodes, so it is the right view
     when a workload needs whole nodes instead of scattered free GPUs.
 
-    `Node Spec` is the largest single node the group can schedule onto, which is the ceiling a `--quota gpu,cpu,mem` triple has to fit under. Groups with mixed hardware report every distinct shape under `--json`.
+    `Node Spec` is the largest single node the group can schedule onto, which
+    is the ceiling a `--quota gpu,cpu,mem` triple has to fit under. Groups with
+    mixed hardware report every distinct shape under `--json`.
 
     \b
     Examples:

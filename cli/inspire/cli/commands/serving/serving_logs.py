@@ -143,7 +143,11 @@ def logs_serving(
 ) -> None:
     """Read aggregated platform logs for an inference serving.
 
-    Logs are collected per replica pod and merged in timestamp order. Output shows a bounded latest snapshot under a total character budget; use ``--all`` only when the complete window is required. Replicas that were replaced by a scale or rollback keep their logs until the platform's log store ages them out.
+    Logs are collected per replica pod and merged in timestamp order. Output
+    shows a bounded latest snapshot under a total character budget; use
+    ``--all`` only when the complete window is required. Replicas that were
+    replaced by a scale or rollback keep their logs until the platform's log
+    store ages them out.
 
     \b
     Examples:

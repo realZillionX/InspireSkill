@@ -174,9 +174,14 @@ def policy_resources(
 ) -> None:
     """Show a workspace's idle-reclaim rules and runtime caps per workload.
 
-    `Reclaim` is whether the scheduler takes the workload back on its own, `Idle Rule` is the condition that triggers it, and `Time Limit` is the hard cap — a `max` duration for jobs, a `daily` wall-clock shutdown for notebooks. A dash means the workspace declares no policy for that workload, which is not the same as declaring no limits.
+    `Reclaim` is whether the scheduler takes the workload back on its own,
+    `Idle Rule` is the condition that triggers it, and `Time Limit` is the hard
+    cap — a `max` duration for jobs, a `daily` wall-clock shutdown for
+    notebooks. A dash means the workspace declares no policy for that workload,
+    which is not the same as declaring no limits.
 
-    Use `inspire <workload> quota` for the ceiling on how much you may take, and `inspire resources availability` for what is physically free.
+    Use `inspire <workload> quota` for the ceiling on how much you may take,
+    and `inspire resources availability` for what is physically free.
 
     \b
     Examples:

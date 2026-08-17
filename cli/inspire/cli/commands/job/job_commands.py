@@ -1500,7 +1500,8 @@ def stop(ctx: Context, job: str, workspace: Optional[str], pick: Optional[int]) 
 def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Optional[int]) -> None:
     """Permanently delete a training job entry from the platform.
 
-    The entry disappears from the platform distributed-training list. This cannot be undone; if the job is still running, `stop` it first.
+    The entry disappears from the platform distributed-training list. This
+    cannot be undone; if the job is still running, `stop` it first.
 
     \b
     Example:
@@ -1607,9 +1608,16 @@ def wait(
 ) -> None:
     """Wait for a job to complete.
 
-    Polls until the job reaches a terminal state and returns as soon as it does. Terminal means SUCCEEDED, FAILED, CANCELLED or STOPPED (``job_succeeded`` / ``job_failed`` / ``job_cancelled`` / ``job_stopped`` on the wire). Exits 0 only on SUCCEEDED.
+    Polls until the job reaches a terminal state and returns as soon as it
+    does. Terminal means SUCCEEDED, FAILED, CANCELLED or STOPPED
+    (``job_succeeded`` / ``job_failed`` / ``job_cancelled`` / ``job_stopped``
+    on the wire). Exits 0 only on SUCCEEDED.
 
-    Only wait on a job that can still move: PENDING, QUEUING or RUNNING. A job that is already terminal is never coming back -- ``job`` has no ``start``, so a stopped job is as final as a failed one, and the only way to a running job again is a new ``job create``. Read the state once with ``job status`` before waiting on it.
+    Only wait on a job that can still move: PENDING, QUEUING or RUNNING. A job
+    that is already terminal is never coming back -- ``job`` has no ``start``,
+    so a stopped job is as final as a failed one, and the only way to a running
+    job again is a new ``job create``. Read the state once with ``job status``
+    before waiting on it.
 
     \b
     Example:

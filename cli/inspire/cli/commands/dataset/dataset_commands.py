@@ -637,7 +637,10 @@ def dataset_applications_cmd(
     access is granted, and applying for it is a web-only flow — this command
     reads the outcome, it does not submit, approve, or withdraw anything.
 
-    States are `pending`, `approved`, `rejected`, and `withdrawn`. An approved application is the point at which `dataset validate <name>:<version>` is worth running again. Pass NAME, the dataset name, for the full record of every application on that one dataset.
+    States are `pending`, `approved`, `rejected`, and `withdrawn`. An approved
+    application is the point at which `dataset validate <name>:<version>` is
+    worth running again. Pass NAME, the dataset name, for the full record of
+    every application on that one dataset.
     """
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)

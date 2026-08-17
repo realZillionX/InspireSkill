@@ -33,7 +33,13 @@ def image():
     operation, so use `inspire notebook save-image` for that, and
     `inspire notebook cancel-save-image` to abort a save still running.
 
-    Images live in a registry, not in a workspace, and several workspaces normally share one -- so `--workspace` here names which registry to read, and an image saved under one workspace is visible from every workspace on the same registry. What does not carry across is a registry boundary: 国产卡 workspaces read a different registry from the NVIDIA ones, and a name that exists in one may not exist in the other. `image list` is the ground truth for which workspace names reach which catalog.
+    Images live in a registry, not in a workspace, and several workspaces
+    normally share one -- so `--workspace` here names which registry to read,
+    and an image saved under one workspace is visible from every workspace on
+    the same registry. What does not carry across is a registry boundary: 国产卡
+    workspaces read a different registry from the NVIDIA ones, and a name that
+    exists in one may not exist in the other. `image list` is the ground truth
+    for which workspace names reach which catalog.
 
     \b
     Examples:
