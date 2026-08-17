@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v7.1.1
 
 ### 新增
 
@@ -24,6 +24,10 @@
 
   **`CreateCopy` 不是服务端复制，是一张要审批的申请。** 控制台里它叫「新建数据传输」，表单只有 `source_path` / `target_path` / `overwrite`，提交按钮写的是「提交审批」，和旁边的 `audit` 服务是一条链。`ListFileCopyTasks` 是用户级的（不认 workspace / filter），本账号 0 条。
 
+- 记录训练任务「预检」的实测结论，并说明为什么不接（只有文档，没有行为变更）。`ListPreCheckItems` / `GetPreCheckResult` 不是「提交前校验规格」那种东西，而是**每个训练任务创建时可选开启的节点健康检查**——创建面收 `enable_troubleshoot` 加一份 `pre_check_items`，没开的任务读结果直接答 `train job does not enable troubleshoot precheck`。而 `train_enable_troubleshoot` 在全部 10 个可见 Workspace 都是 `False`：平台侧没放开，接出来是一个谁也用不了、我也验不了的开关。
+
+  顺带记下同族另外三个能力位和它们各自在哪些 Workspace 开着，其中 `train_enable_specified_nodes` 是真正的节点绑定，**和我们已有的 `--exclude-node` 不是一回事**。要接这一族里的任何一个，先读这四个位。
+
 - `inspire ray shell`：进 Ray 实例的交互式 shell，默认进 **head**——驱动在那儿，`ray status` 和集群自己的日志也在那儿；要看某个 worker group 的进程用 `--instance <Role-Rank>`。走 `/api/v2/ray_job/instances/exec`。
 
 - `inspire hpc shell`：进 HPC 实例的交互式 shell，和 `job shell` 同一套（`exit` 退出、`Ctrl+]` 断开）。**默认进 `launcher`**——`srun` 在那儿跑，也只有那个 Pod 看得见你的进程；`slurmctld` 是调度器本身，`--instance slurmctld` 才去。走 `/api/v2/hpc_jobs/instances/exec`，同样是网关 REST 形状的那一半。
@@ -42,15 +46,19 @@
 
 - `project detail` 增加点券花在哪儿：`Spent` 拆成 `on training` / `on inference` / `on storage` / `on private workspace`（`project.GetProjectBudgetUsageOverview`）。此前只有总额和余额，中间那笔差额去了哪没人答得上。逐项目实测它的 `remain` 与 `GetProjectDetail` 的 `remain_budget` 一致，所以这是同一个数的展开，不是第二个说法；这一次请求失败不影响详情本身照常打印。
 
+### 破坏性变更
+
+- **`project list --json` 的 `remaining_budget` 键消失**，拆成 `my_remaining_budget` 和 `project_remaining_budget`。原因是那个键报的是**当前账号**的额度而不是项目的，而键名和列名都没说：实测同一个项目里项目还剩 233,107 而本账号只有 337——差 690 倍，按前者做决定会直接撞上「预算不足」。表里对应 `My Budget`（决定你的任务能不能起的那个数）和 `Project Budget`（全体成员共用的池子），平台不给成员额度时两列相同。读这个键的脚本必须改：**它不是被重命名成某一个新键，而是被拆成语义不同的两个**，照旧取「余额」会静默拿到另一个数。
+
+- **`inspire cache refresh` 不再接受裸形式**：不带 `--resource` / `--workspace` / `--name` 会直接报错并给出收窄的写法，此前这样敲会刷全部。刷一遍全部是几百个请求，读的还是几乎不动的目录，而正常情况下这条命令根本不需要跑——Workload 名字后台一直在补，其余的解析一次就自己缓存了。真正要跑的场合只有一种：你知道缓存底下的东西变了（管理员改过计算组规格、镜像在网页上被删了）。先 `cache status` 看哪个 Scope 真的不对，再只刷那一块。把裸形式写进脚本或定时任务的要改成点名刷。
+
 ### 变更
 
 - `resources usage` 的表里用 `Reclaimable` 换掉 `GPU Busy`。利用率回答不了这条命令要回答的问题——卡在谁手里跟它忙不忙没关系，持有者就是持有者；能被拿走的只有低优卡。新列是这个人持有的 GPU 里有多少落在以可抢占优先级提交的任务上，`--by task` 另给一列 `Prio` 显示提交原值。判据跟着 Workspace 的优先级合同走：公平调度空间小于 `4`，其余空间 `≤3`（后者拿平台按计算组给的口径逐组核对过，4 个组全中）。读不到合同时是 `-` 不是 `0`——「没有可抢的」和「不知道能不能抢」导向相反的决定。`--json` 里 `gpu_usage_rate` 照旧给，新增 `low_priority_gpus` 和 `priority`。
 
   数据一直在 `ListTaskDimension` 的行里（`priority` 字段），我们从来没读过。**它和 `resources availability` 的 `Reclaimable` 不保证对得上**：那一列是平台自己按计算组算的，非公平空间里两边逐组精确一致，公平调度空间里对不上，而且差额在两次调用之间自己会变（实测同一个组 100 → 72）。所以这一列只说「按提交时的优先级，这些卡属于哪一档」，不声称复现平台那个总数。
 
-- `project list` 的 `remaining_budget` 是**当前账号**的额度，不是项目的，而列名没说。实测同一个项目里项目还剩 233,107 而本账号只有 337——差 690 倍，按前者做决定会直接撞上「预算不足」。现在分成两列：`My Budget` / `my_remaining_budget` 是决定你的任务能不能起的那个数，`Project Budget` / `project_remaining_budget` 是全体成员共用的池子。平台不给成员额度时两列相同。**`--json` 的 `remaining_budget` 键随之消失**，脚本按新键名取。
-
-- **`inspire cache refresh` 不再有裸形式**：不带 `--resource` / `--workspace` / `--name` 会直接报错并给出收窄的写法。刷一遍全部是几百个请求，读的还是几乎不动的目录，而正常情况下这条命令根本不需要跑——Workload 名字后台一直在补，其余的解析一次就自己缓存了。真正要跑的场合只有一种：你知道缓存底下的东西变了（管理员改过计算组规格、镜像在网页上被删了）。先 `cache status` 看哪个 Scope 真的不对，再只刷那一块。
+  **`Prio` 和 `job status` 里那个优先级不是同一把刻度，别互相印证。** 维度行给的是**提交值**（`--priority` 的 1–10 档，实测线上取到 1 / 3 / 4 / 6 / 8 / 10），`Reclaimable` 和 `Prio` 用的都是它；`train.GetJob` 回的是平台**存储值**（本账号四个任务实测提交 10 全部存成 35，配 `priority_level: HIGH`）。两者之间没有验证过的换算——四个数据点只覆盖一档，所以 CLI 不做反查，`job status` 原样回显存储值并同时给出 `priority_level`，那一列才是可解读的部分。
 
 - 后台补 Workload 名字改成增量：只读列表最新的那一头（平台按创建时间倒序返回，`job` / `hpc` / `tensorboard` 已逐一实测），读到一页全是已知的就停，而且**只合并、不对账**。此前每 5 分钟把 10 个 Workspace 里全部 1458 个历史任务重新拉一遍，只为了缓存名字——一趟 6.3 MB，折合每小时 76 MB。现在这一趟 86 个请求 / 35.8 s / 8 MB → **70 个请求 / 5.3 s / 2.1 MB**。
 
