@@ -235,9 +235,14 @@ def get_resource_metrics_by_time(
       silently empties out;
     * ``disk_io_read`` / ``disk_io_write`` return a group with **zero**
       samples where this Action returns ten to thirteen;
-    * ``network_tcp_ip_io_read`` / ``network_tcp_ip_io_write`` fail outright
-      with ``InternalError: 指标查询暂不可用``, one metric type per request
-      being enough to trigger it.
+    * ``network_tcp_ip_io_read`` / ``network_tcp_ip_io_write`` never come back
+      at all. Asked for on their own they fail the whole request with
+      ``InternalError: 指标查询暂不可用``; packed in with metrics that do
+      return data the request succeeds and they are simply absent from it,
+      which is the worse of the two.
+
+    Note that the failure follows the metric, never the count: six non-network
+    types in one request are fine, one network type alone is not.
 
     Four of the eight metric types the UI offers are therefore wrong or
     missing, and the two that fail do so as an exception rather than as empty
