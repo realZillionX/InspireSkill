@@ -28,6 +28,8 @@
 
 ### 修复
 
+- **Session 过期时 `scan_v2_surface.py` 会把 Keycloak 登录页当成控制台扫，然后报 `0 routes / 0 actions`。** 过期不表现为失败而表现为**跳转**：网关 302 到 SSO，requests 默认跟过去，登录页 200 回来、自带一个 `<script src>`，于是扫描器照常沿着它「递归」了一层就结束。印出来的那行和真实结果同一个形状，只是数字是零——而这份清单唯一的用途就是判断某个 Action 存不存在，零就是「控制台什么都不调」。本次排查 batch API 时第一次跑就撞上了它，`WebSession.load(allow_expired=True)` 本来就会把过期 cookie 原样交出来，所以这是常见路径不是边角情况。三道闸：根请求改 `allow_redirects=False`，302/401/403 直接判定未认证——这正是 `browser-api.md` §2 要求每个外部探针都关掉重定向的同一条理由；按文档给的补救办法用 `get_web_session(force_refresh=True)` 重建 Session 重试一次；chunk 响应的 `content-type` 不是 javascript 就不写缓存，否则一张登录页会以 `.js` 的名字进磁盘缓存、毒化之后每一次从缓存跑的扫描。最后补一条下限检查：抽到 0 个 Action 时以 2 退出并明说「本次运行不构成不存在的证据」，而不是印一份读起来像结论的空报告。
+
 - **`inspire update --check` 恰好在有新版本可升的时候报「检查失败」。** 实测本机 v7.1.0 对着刚发布的 v7.1.1：版本缓存正确写下了 `latest: 7.1.1`，而命令印的是 `✗ InspireSkill check failed.` 并以 1 退出——也就是这条命令唯一有意义的那个结果被它自己当成了故障。根因是检查路径把 `latest` 喂给了 `_audit_update_state`，而那个审计里的版本比较是**升级完之后**的验收器（「装完了，可执行文件真的变成新版本了吗」），于是「你还在旧版本上」这个正确答案被判成审计不通过。现在检查路径不传 `expected_version`，审计只保留它真正该管的那部分：可执行文件在不在 PATH 上、版本读不读得出来、全局 uv tool 有没有被钉在本地源、检测到的 harness 里有没有 `SKILL.md`。
 
   连带影响是每日那个 launchd agent（跑的正是 `update --check --silent`）一直在静默地以 1 退出——`launchctl list` 里那一列就是 `1`。`--check` 此前没有任何测试覆盖（现有的 8 处调用一律传 `check_only=False`），这个 bug 因此活了下来；现在三种情形各有一条测试：有新版本、已是最新、装坏了。
