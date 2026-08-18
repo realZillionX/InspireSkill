@@ -23,6 +23,10 @@ def test_build_exec_command_hides_done_marker_from_terminal_echo() -> None:
     assert "__INSPIRE_DONE_abc__" not in encoded
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="runs a real bash; on Windows `bash` is the WSL launcher",
+)
 def test_build_exec_command_reports_exit_even_when_user_command_exits_shell() -> None:
     command = jt.build_jupyter_exec_command("exit 7", marker="__INSPIRE_DONE_exit__")
     encoded = command[len("echo '") : -len("' | base64 -d | bash\r")]

@@ -9,6 +9,8 @@ the name-only contract.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 # Captured on the first autouse setup, before that fixture replaces it.
@@ -218,3 +220,20 @@ def _short_circuit_platform_resolvers(monkeypatch):  # noqa: ANN001
             continue
         if hasattr(mod, attr):
             monkeypatch.setattr(mod, attr, _passthrough)
+
+
+def set_fake_home(monkeypatch, home) -> None:  # noqa: ANN001
+    """Point ``Path.home()`` and ``~`` expansion at *home* on every platform.
+
+    Setting ``HOME`` alone is a POSIX-only idiom: ``ntpath.expanduser`` consults
+    ``USERPROFILE`` first and never looks at ``HOME``, so on Windows a test that
+    sets only ``HOME`` silently reads and writes the real ``~/.inspire`` of
+    whoever is running pytest — the exact hazard ``conftest``'s other fixtures
+    exist to prevent.
+    """
+    home = str(home)
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.setenv("USERPROFILE", home)
+    drive, tail = os.path.splitdrive(home)
+    monkeypatch.setenv("HOMEDRIVE", drive)
+    monkeypatch.setenv("HOMEPATH", tail or home)

@@ -82,7 +82,9 @@ def _display_path(path: Path) -> str:
     user pastes into an issue.
     """
     try:
-        return f"~/{path.relative_to(Path.home())}"
+        # as_posix so the whole string reads as one path: a `~/` prefix spliced
+        # onto Windows' backslashes gives `~/.claude\skills\inspire`.
+        return f"~/{path.relative_to(Path.home()).as_posix()}"
     except ValueError:
         return str(path)
 

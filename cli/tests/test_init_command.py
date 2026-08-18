@@ -8,6 +8,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+
+from conftest import set_fake_home
 from click.testing import CliRunner
 
 from inspire.cli.context import EXIT_GENERAL_ERROR, EXIT_SUCCESS
@@ -30,8 +32,8 @@ def test_init_template_project_succeeds_with_active_account(
     fake_home = tmp_path / "home"
     account_dir = fake_home / ".inspire" / "accounts" / "alice"
     account_dir.mkdir(parents=True)
-    (account_dir / "config.toml").write_text("")
-    (fake_home / ".inspire" / "current").write_text("alice\n")
+    (account_dir / "config.toml").write_text("", encoding="utf-8")
+    (fake_home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: fake_home)
 
     account_config_path = tmp_path / "accounts" / "alice" / "config.toml"
@@ -124,7 +126,7 @@ def test_init_bootstraps_first_account_before_discover(
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
     monkeypatch.chdir(repo_dir)
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_fake_home(monkeypatch, tmp_path)
 
     calls: dict[str, object] = {}
     monkeypatch.setattr(init_cmd_module, "normalize_environment", lambda **kwargs: None)
@@ -164,7 +166,7 @@ def test_init_bootstrap_reprompts_empty_account_alias(
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
     monkeypatch.chdir(repo_dir)
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_fake_home(monkeypatch, tmp_path)
 
     calls: dict[str, object] = {}
     monkeypatch.setattr(init_cmd_module, "normalize_environment", lambda **kwargs: None)

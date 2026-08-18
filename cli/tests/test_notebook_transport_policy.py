@@ -235,7 +235,7 @@ def test_notebook_scp_rejects_restricted_notebook_with_cp_hint(monkeypatch, tmp_
     from inspire.cli.commands.notebook import remote_scp as scp_module
 
     local_file = tmp_path / "config.yaml"
-    local_file.write_text("x")
+    local_file.write_text("x", encoding="utf-8")
     monkeypatch.setattr(
         scp_module,
         "preflight_notebook_transport_policy",

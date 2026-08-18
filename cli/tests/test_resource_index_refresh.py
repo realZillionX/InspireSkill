@@ -7,6 +7,8 @@ import time
 from importlib import import_module
 
 import pytest
+
+from conftest import set_fake_home
 from click.testing import CliRunner
 
 from inspire.accounts import create_account, set_current_account
@@ -922,7 +924,7 @@ def test_cache_status_and_clear_never_expose_workspace_handle(
 ) -> None:
     from inspire.cli.main import main
 
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_fake_home(monkeypatch, tmp_path)
     create_account("alpha", "[inspire]\n")
     set_current_account("alpha")
     WebSession(
@@ -1087,7 +1089,7 @@ def test_cache_status_says_so_when_nothing_at_all_is_cached(tmp_path, monkeypatc
     """The whole-cache view of nothing is a sentence, not a column of zeroes."""
     from inspire.cli.main import main
 
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_fake_home(monkeypatch, tmp_path)
     create_account("alpha", "[inspire]\n")
     set_current_account("alpha")
     WebSession(
@@ -1113,7 +1115,7 @@ def test_cache_clear_takes_one_kind_at_a_time(tmp_path, monkeypatch) -> None:
     from inspire.cli.commands.notebook import gpu_model as gpu_model_module
     from inspire.cli.main import main
 
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_fake_home(monkeypatch, tmp_path)
     create_account("alpha", "[inspire]\n")
     set_current_account("alpha")
     WebSession(
@@ -1356,7 +1358,7 @@ def test_periodic_refresh_is_throttled_and_quiet(
     monkeypatch,
     active_account_session_storage,  # noqa: ANN001, ARG001
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_fake_home(monkeypatch, tmp_path)
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     create_account("alpha", "[inspire]\n")
     set_current_account("alpha")

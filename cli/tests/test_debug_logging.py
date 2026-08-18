@@ -36,7 +36,7 @@ def test_configure_debug_logging_creates_report_and_prunes(monkeypatch, tmp_path
     log_dir.mkdir(parents=True, exist_ok=True)
     for idx in range(6):
         old_file = log_dir / f"inspire-debug-20250101-00000{idx}-1.log"
-        old_file.write_text("old")
+        old_file.write_text("old", encoding="utf-8")
 
     report_path = configure_debug_logging(argv=["inspire", "--debug"], keep_logs=3)
     assert report_path is not None

@@ -275,11 +275,13 @@ class TestTunnelConfigPersistence:
 
         (tmp_path / "accounts" / "alice").mkdir(parents=True)
         (tmp_path / "accounts" / "alice" / "bridges.json").write_text(
-            '{"default": "a", "bridges": [{"name": "a", "proxy_url": "https://a.example.com"}]}'
+            '{"default": "a", "bridges": [{"name": "a", "proxy_url": "https://a.example.com"}]}',
+            encoding="utf-8",
         )
         (tmp_path / "accounts" / "bob").mkdir(parents=True)
         (tmp_path / "accounts" / "bob" / "bridges.json").write_text(
-            '{"default": "b", "bridges": [{"name": "b", "proxy_url": "https://b.example.com"}]}'
+            '{"default": "b", "bridges": [{"name": "b", "proxy_url": "https://b.example.com"}]}',
+            encoding="utf-8",
         )
 
         loaded = load_tunnel_config(tmp_path, account="alice")
@@ -296,7 +298,8 @@ class TestTunnelConfigPersistence:
 
         (tmp_path / "accounts" / "bob").mkdir(parents=True)
         (tmp_path / "accounts" / "bob" / "bridges.json").write_text(
-            '{"default": "b", "bridges": [{"name": "b", "proxy_url": "https://b.example.com"}]}'
+            '{"default": "b", "bridges": [{"name": "b", "proxy_url": "https://b.example.com"}]}',
+            encoding="utf-8",
         )
 
         loaded = load_tunnel_config(tmp_path)
@@ -311,7 +314,8 @@ class TestTunnelConfigPersistence:
         monkeypatch.setattr(accounts_mod, "current_account", lambda: None)
 
         (tmp_path / "bridges.json").write_text(
-            '{"default": "u", "bridges": [{"name": "u", "proxy_url": "https://u.example.com"}]}'
+            '{"default": "u", "bridges": [{"name": "u", "proxy_url": "https://u.example.com"}]}',
+            encoding="utf-8",
         )
 
         loaded = load_tunnel_config(tmp_path)

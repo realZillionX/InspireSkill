@@ -69,17 +69,17 @@ class TestCreateListCurrent:
     def test_create_overwrite(self, home: Path) -> None:
         storage.create_account("alice", "x = 1\n")
         storage.create_account("alice", "y = 2\n", overwrite=True)
-        assert storage.account_config_path("alice").read_text() == "y = 2\n"
+        assert storage.account_config_path("alice").read_text(encoding="utf-8") == "y = 2\n"
 
     def test_create_overwrite_replaces_all_account_local_state(self, home: Path) -> None:
         storage.create_account("alice", "x = 1\n")
         account_dir = storage.account_dir("alice")
         for name in ("web_session.json", "bridges.json", "rtunnel-proxy-state.json"):
-            (account_dir / name).write_text("state\n")
+            (account_dir / name).write_text("state\n", encoding="utf-8")
 
         storage.create_account("alice", "y = 2\n", overwrite=True)
 
-        assert storage.account_config_path("alice").read_text() == "y = 2\n"
+        assert storage.account_config_path("alice").read_text(encoding="utf-8") == "y = 2\n"
         for name in ("web_session.json", "bridges.json", "rtunnel-proxy-state.json"):
             assert not (account_dir / name).exists()
 
@@ -117,7 +117,7 @@ class TestCreateListCurrent:
     def test_list_ignores_files_and_dirs_without_config(self, home: Path) -> None:
         accounts = home / ".inspire" / "accounts"
         accounts.mkdir(parents=True)
-        (accounts / "stray.txt").write_text("junk")
+        (accounts / "stray.txt").write_text("junk", encoding="utf-8")
         (accounts / "no-config-here").mkdir()
         storage.create_account("alice", "x = 1\n")
         assert storage.list_accounts() == ["alice"]
@@ -129,8 +129,8 @@ class TestRenameStorage:
     ) -> None:
         storage.create_account("old", "x = 1\n")
         account_dir = storage.account_dir("old")
-        (account_dir / "web_session.json").write_text('{"account": "old"}\n')
-        (account_dir / "bridges.json").write_text('{"bridges": []}\n')
+        (account_dir / "web_session.json").write_text('{"account": "old"}\n', encoding="utf-8")
+        (account_dir / "bridges.json").write_text('{"bridges": []}\n', encoding="utf-8")
         storage.set_current_account("old")
 
         storage.rename_account("old", "new")
@@ -139,9 +139,9 @@ class TestRenameStorage:
         assert storage.current_account() == "new"
         assert not (home / ".inspire" / "accounts" / "old").exists()
         new_dir = home / ".inspire" / "accounts" / "new"
-        assert (new_dir / "config.toml").read_text() == "x = 1\n"
-        assert (new_dir / "web_session.json").read_text() == '{"account": "old"}\n'
-        assert (new_dir / "bridges.json").read_text() == '{"bridges": []}\n'
+        assert (new_dir / "config.toml").read_text(encoding="utf-8") == "x = 1\n"
+        assert (new_dir / "web_session.json").read_text(encoding="utf-8") == '{"account": "old"}\n'
+        assert (new_dir / "bridges.json").read_text(encoding="utf-8") == '{"bridges": []}\n'
 
     def test_rename_inactive_account_keeps_current(self, home: Path) -> None:
         storage.create_account("alice", "x = 1\n")
@@ -233,12 +233,12 @@ class TestAccountAddCommand:
         assert "Proxy URL" in result.output
         assert "Account added: alice (active)" in result.output
 
-        config = (home / ".inspire" / "accounts" / "alice" / "config.toml").read_text()
+        config = (home / ".inspire" / "accounts" / "alice" / "config.toml").read_text(encoding="utf-8")
         assert 'username = "alice"' in config
         assert 'password = "s3cr3t"' in config
         assert 'base_url = "https://qz.sii.edu.cn"' in config
         assert "proxy" not in config
-        assert (home / ".inspire" / "current").read_text().strip() == "alice"
+        assert (home / ".inspire" / "current").read_text(encoding="utf-8").strip() == "alice"
 
     def test_interactive_collects_custom_values(
         self, home: Path, runner: CliRunner
@@ -251,7 +251,7 @@ class TestAccountAddCommand:
         )
         result = _add(runner, "alice", input_=inputs)
         assert result.exit_code == 0, result.output
-        config = storage.account_config_path("alice").read_text()
+        config = storage.account_config_path("alice").read_text(encoding="utf-8")
         assert 'username = "user-xyz"' in config
         assert 'base_url = "https://staging.x"' in config
         assert 'playwright = "http://127.0.0.1:7897"' in config
@@ -264,7 +264,7 @@ class TestAccountAddCommand:
         result = _add(runner, "alice", input_=inputs)
         assert result.exit_code == 0, result.output
         assert "do not match" in result.output.lower() or "try again" in result.output.lower()
-        config = storage.account_config_path("alice").read_text()
+        config = storage.account_config_path("alice").read_text(encoding="utf-8")
         assert 'password = "again"' in config
 
     def test_switches_active_when_user_confirms(
@@ -313,7 +313,7 @@ class TestAccountAddCommand:
             "--use",
         )
         assert result.exit_code == 0, result.output
-        config = storage.account_config_path("alice").read_text()
+        config = storage.account_config_path("alice").read_text(encoding="utf-8")
         assert 'username = "user-xyz"' in config
         assert 'playwright = "http://127.0.0.1:7897"' in config
         assert storage.current_account() == "alice"
@@ -366,7 +366,7 @@ class TestAccountAddCommand:
             'p"w\\x',
         )
         assert result.exit_code == 0, result.output
-        config = storage.account_config_path("alice").read_text()
+        config = storage.account_config_path("alice").read_text(encoding="utf-8")
         # Round-trip through tomllib to confirm the escaped write parses back.
         try:
             import tomllib  # type: ignore[unresolved-import]
@@ -485,15 +485,15 @@ class TestAccountUseCommand:
         alice_dir = storage.account_dir("alice")
         bob_dir = storage.account_dir("bob")
         for name in ("web_session.json", "bridges.json", "rtunnel-proxy-state.json"):
-            (alice_dir / name).write_text(f"alice:{name}\n")
-            (bob_dir / name).write_text(f"bob:{name}\n")
+            (alice_dir / name).write_text(f"alice:{name}\n", encoding="utf-8")
+            (bob_dir / name).write_text(f"bob:{name}\n", encoding="utf-8")
 
         result = runner.invoke(account, ["use", "bob"])
 
         assert result.exit_code == 0, result.output
         for name in ("web_session.json", "bridges.json", "rtunnel-proxy-state.json"):
-            assert (alice_dir / name).read_text() == f"alice:{name}\n"
-            assert (bob_dir / name).read_text() == f"bob:{name}\n"
+            assert (alice_dir / name).read_text(encoding="utf-8") == f"alice:{name}\n"
+            assert (bob_dir / name).read_text(encoding="utf-8") == f"bob:{name}\n"
 
     def test_rtunnel_state_cache_lives_under_active_account(
         self, home: Path
@@ -529,8 +529,8 @@ class TestAccountUseCommand:
         bob_state = storage.account_dir("bob") / "rtunnel-proxy-state.json"
         assert alice_state.exists()
         assert bob_state.exists()
-        assert "alice.example" in alice_state.read_text()
-        assert "bob.example" in bob_state.read_text()
+        assert "alice.example" in alice_state.read_text(encoding="utf-8")
+        assert "bob.example" in bob_state.read_text(encoding="utf-8")
 
     def test_rtunnel_state_falls_back_for_non_account_login_name(
         self, home: Path
@@ -562,7 +562,7 @@ class TestAccountRenameCommand:
         assert result.output == "Account renamed: new (active)\n"
         assert storage.current_account() == "new"
         assert storage.list_accounts() == ["new"]
-        assert 'username = "platform-user"' in storage.account_config_path("new").read_text()
+        assert 'username = "platform-user"' in storage.account_config_path("new").read_text(encoding="utf-8")
 
     def test_rename_inactive_account(self, home: Path, runner: CliRunner) -> None:
         storage.create_account("alice", "x = 1\n")
