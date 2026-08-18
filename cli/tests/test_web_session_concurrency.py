@@ -211,6 +211,59 @@ def test_concurrent_failed_refresh_submits_credentials_only_once(
     assert (account_path / "web_session.json").exists()
 
 
+def _login_directly(home: str, barrier: Barrier, submissions: Counter) -> None:
+    """The `inspire init` shape: `login_with_playwright()` with no refresh lock."""
+    os.environ["HOME"] = home
+
+    def reject(*_args, **_kwargs) -> WebSession:  # noqa: ANN002, ANN003
+        with submissions.get_lock():
+            submissions.value += 1
+        time.sleep(0.2)
+        raise web_session_module.AuthenticationError("CAS rejected the login")
+
+    web_session_auth._submit_credentials = reject
+
+    barrier.wait()
+    try:
+        web_session_auth.login_with_playwright(
+            "user",
+            "wrong-secret",
+            base_url="https://qz.sii.edu.cn",
+            account="default",
+        )
+    except web_session_module.AuthenticationError:
+        return
+    raise AssertionError("a refused login must not return a session")
+
+
+def test_concurrent_direct_logins_submit_credentials_only_once(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """`init` calls the submission point directly, outside the refresh lock.
+
+    The account-level refresh lock covers every path that goes through
+    `get_web_session()`, which is almost all of them — but `inspire init` calls
+    `login_with_playwright()` itself, so the guard has to serialize on its own
+    marker rather than borrow someone else's lock.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".inspire" / "accounts" / "default").mkdir(parents=True)
+    context = worker_context()
+    barrier = context.Barrier(WORKER_COUNT)
+    submissions = context.Value("i", 0)
+
+    exit_codes = run_workers(
+        context,
+        _login_directly,
+        count=WORKER_COUNT,
+        args_for=lambda _index: (str(tmp_path), barrier, submissions),
+    )
+
+    assert exit_codes == [0] * WORKER_COUNT
+    assert submissions.value == 1
+
+
 def test_stale_session_save_does_not_replace_refreshed_cache(
     monkeypatch,
     tmp_path: Path,

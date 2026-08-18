@@ -325,6 +325,49 @@ def test_extract_cas_rsa_key_from_login_js() -> None:
     assert ws_auth._extract_cas_rsa_key(text) == (CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
 
 
+# Reduced from pages captured off the live CAS on 2026-08-18. The whole point
+# is the `style="display: none"`: every login tab is served hidden and the live
+# one is chosen in JavaScript, so "is this container visible" is a question the
+# served HTML cannot answer -- and answering it wrongly threw the platform's
+# reason away.
+_LIVE_CAS_TAB = (
+    '<div class="content-box content-box-template-right" style="display: none">'
+    '<section><form id="fm1"><div class="form-error">{slot}'
+    '<span class="form-tab-nav" id="swiSpan1" name="swiSpan_fm1"></span>'
+    "</div></form></section></div>"
+)
+_LIVE_CAS_CLEAN = _LIVE_CAS_TAB.format(slot="")
+_LIVE_CAS_REJECTED = _LIVE_CAS_TAB.format(
+    slot='<span id="msg1" name="error_fm1" class="form-tab-nav">账号或密码错误。</span>'
+)
+
+
+def test_extract_login_failure_hint_reads_the_error_slot_of_a_hidden_tab() -> None:
+    """The reason the user never saw why a login failed."""
+    assert ws_auth._extract_login_failure_hint(_LIVE_CAS_REJECTED) == "账号或密码错误。"
+
+
+def test_extract_login_failure_hint_stays_empty_on_a_page_nobody_failed_on() -> None:
+    """The slot is absent until CAS fills it, so the tab markup is not a hint."""
+    assert ws_auth._extract_login_failure_hint(_LIVE_CAS_CLEAN) == ""
+
+
+def test_extract_login_failure_hint_prefers_the_password_form_slot() -> None:
+    """`error_fm2` belongs to the SMS tab; a password login is not about that."""
+    html = (
+        '<div class="form-error">'
+        '<span name="error_fm2">短信验证码已失效。</span>'
+        '<span name="error_fm1">账号或密码错误。</span>'
+        "</div>"
+    )
+    assert ws_auth._extract_login_failure_hint(html) == "账号或密码错误。"
+
+
+def test_extract_login_failure_hint_joins_the_lines_cas_breaks() -> None:
+    html = '<span name="error_fm1">必须录入用户名。<br/>必须录入密码。</span>'
+    assert ws_auth._extract_login_failure_hint(html) == "必须录入用户名。 必须录入密码。"
+
+
 def test_extract_login_failure_hint_ignores_benign_login_page_copy() -> None:
     html = """
     <html><body>
@@ -514,6 +557,161 @@ def test_explicit_cas_failure_is_not_hidden_by_playwright_fallback(
         )
 
 
+class _FakePlaywrightLogin:
+    """The browser path with no browser: a page that never authenticates.
+
+    *form_found* is the only knob that matters. With it, the password was typed
+    and submitted before the wait timed out; without it, the form was never
+    there and nothing left the machine — and those two have to end differently.
+    """
+
+    def __init__(self, *, form_found: bool, page_html: str = "") -> None:
+        self.form_found = form_found
+        self.page_html = page_html
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        outer = self
+
+        class Locator:
+            def __init__(self) -> None:
+                self.first = self
+
+            def fill(self, _value: str) -> None:
+                pass
+
+            def press(self, _key: str, timeout: int) -> None:
+                pass
+
+            def evaluate(self, _script: str) -> None:
+                pass
+
+        class Page:
+            url = "https://cas.sii.edu.cn/login"
+
+            def goto(self, *_args, **_kwargs) -> None:
+                pass
+
+            def wait_for_timeout(self, _timeout: int) -> None:
+                pass
+
+            def wait_for_selector(self, *_args, **_kwargs) -> None:
+                if not outer.form_found:
+                    raise RuntimeError("no login form on this page")
+
+            def locator(self, _selector: str) -> Locator:
+                return Locator()
+
+            def get_by_text(self, *_args, **_kwargs) -> Locator:
+                raise RuntimeError("no account-login tab either")
+
+            def content(self) -> str:
+                return outer.page_html
+
+            def close(self) -> None:
+                pass
+
+        class Context:
+            request = object()
+
+            def new_page(self) -> Page:
+                return Page()
+
+        class Browser:
+            def new_context(self, **_kwargs) -> Context:
+                return Context()
+
+        class Chromium:
+            def launch(self, **_kwargs) -> Browser:
+                return Browser()
+
+        class PlaywrightContext:
+            def __enter__(self):  # noqa: ANN204
+                return type("Playwright", (), {"chromium": Chromium()})()
+
+            def __exit__(self, *_args) -> None:
+                pass
+
+        monkeypatch.setattr(
+            ws_auth,
+            "_login_with_cas_requests",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("use browser")),
+        )
+        # A clock that jumps a thousand seconds per read, so `deadline =
+        # time.time() + 30` is already in the past by the next read. Counting
+        # reads instead would depend on how many the guard makes on the way in.
+        reads = {"n": 0}
+
+        def _clock() -> float:
+            reads["n"] += 1
+            return reads["n"] * 1000.0
+
+        monkeypatch.setattr(ws_auth.time, "time", _clock)
+        monkeypatch.setattr(
+            ws_auth, "resolve_playwright_proxy_config", lambda **_kwargs: ({}, "none")
+        )
+        monkeypatch.setattr(
+            ws_auth,
+            "describe_effective_proxy_config",
+            lambda **_kwargs: {"playwright": {"route": "direct"}},
+        )
+        monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: PlaywrightContext())
+
+
+def test_playwright_failure_after_submission_is_an_authentication_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The browser is the last transport, so its failures must still be typed.
+
+    Nothing falls back after it, but the circuit still has to open: the next
+    process to reach an expired session would otherwise submit the same
+    rejected password again.
+    """
+    from inspire.platform.web.session import login_guard
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
+    _FakePlaywrightLogin(
+        form_found=True,
+        page_html='<div class="form-error">账号已被锁定</div>',
+    ).install(monkeypatch)
+
+    with pytest.raises(ws.AuthenticationError, match="账号已被锁定") as excinfo:
+        ws_auth.login_with_playwright(
+            "alice",
+            "password",
+            base_url="https://qz.sii.edu.cn",
+            account="alice",
+        )
+
+    assert "The password reached CAS" in str(excinfo.value)
+    assert login_guard.block_file("alice").exists()
+
+
+def test_playwright_failure_before_submission_is_not_an_authentication_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No form, no submission — so no rejected credential to remember."""
+    from inspire.platform.web.session import login_guard
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
+    _FakePlaywrightLogin(form_found=False).install(monkeypatch)
+
+    with pytest.raises(ValueError) as excinfo:
+        ws_auth.login_with_playwright(
+            "alice",
+            "password",
+            base_url="https://qz.sii.edu.cn",
+            account="alice",
+        )
+
+    assert not isinstance(excinfo.value, ws.AuthenticationError)
+    assert "The password reached CAS" not in str(excinfo.value)
+    assert not login_guard.block_file("alice").exists()
+
+
 def test_cas_server_failure_after_submission_does_not_submit_again_in_a_browser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -572,6 +770,166 @@ def test_cas_server_failure_after_submission_does_not_submit_again_in_a_browser(
         ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
 
     assert http.submissions == 1
+
+
+def test_a_login_page_asking_for_a_verification_code_submits_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CAS wants a human. Submitting the password anyway just loses an attempt.
+
+    Measured against the live platform: after repeated failed logins from one
+    machine, CAS adds `authcode` to the password form and answers every
+    submission with "account or password is wrong" — so the CLI reported a
+    credential problem for an account whose credentials were fine, and each
+    retry spent a real login attempt on a form it could not complete.
+    """
+    login_html = f"""
+    <form id="fm1" action="/cas/login">
+      <input name="username" value="">
+      <input name="password" value="">
+      <input name="execution" value="exec-1">
+      <input id="authcode" name="authcode" value="" placeholder="验证码 Verification Code">
+      <img src="/cas/captcha.jpg" onclick="refreshCaptcha(this);">
+    </form>
+    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
+    """
+
+    class Response:
+        status_code = 200
+        text = login_html
+        url = "https://cas.sii.edu.cn/cas/login"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class HTTP(requests.Session):
+        def __init__(self) -> None:
+            super().__init__()
+            self.posts = 0
+
+        def get(self, url, **_kwargs):  # noqa: ANN001
+            return Response()
+
+        def post(self, url, **_kwargs):  # noqa: ANN001
+            self.posts += 1
+            raise AssertionError("nothing may be submitted to a form asking for a code")
+
+    http = HTTP()
+    monkeypatch.setattr(requests, "Session", lambda: http)
+    monkeypatch.setattr(
+        ws_proxy,
+        "resolve_requests_proxy_config",
+        lambda account=None: ({}, "none"),
+    )
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright",
+        lambda: pytest.fail("the browser cannot answer a verification code either"),
+    )
+
+    with pytest.raises(ValueError, match="verification code") as excinfo:
+        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
+
+    assert not isinstance(excinfo.value, ws.AuthenticationError)
+    assert "No credentials were submitted" in str(excinfo.value)
+    assert http.posts == 0
+
+
+def test_the_dead_template_captcha_is_not_read_as_a_prompt() -> None:
+    """The template ships a captcha image at another university's host.
+
+    It is on every login page there has ever been, so treating "mentions a
+    captcha" as the signal would refuse every login forever. Same-origin is
+    what tells the live endpoint from the fossil.
+    """
+    url = "https://cas.sii.edu.cn/cas/login"
+    fossil = '<img src="https://mapp.suda.edu.cn/cas/captcha.jpg">'
+    assert ws_auth._references_live_captcha_image(fossil, url) is False
+    assert ws_auth._references_live_captcha_image('<img src="/cas/captcha.jpg">', url) is True
+
+    # And the field alone is not enough either.
+    field_only = (
+        '<form id="fm1"><input name="username"><input name="password">'
+        f"<input name=\"authcode\"></form>{fossil}"
+    )
+    assert ws_auth._asks_for_verification_code(field_only, url) is False
+
+
+def test_a_verification_code_prompt_does_not_open_the_login_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No submission, no recorded failure — the next real attempt is not blocked."""
+    from inspire.platform.web.session import login_guard
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
+
+    with pytest.raises(ValueError):
+        with login_guard.guarded_credential_submission("alice", "secret", account="alice"):
+            raise ws_auth._CasVerificationRequired("code required")
+
+    assert not login_guard.block_file("alice").exists()
+
+
+def test_a_code_field_that_appears_only_in_the_answer_is_still_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CAS can add the field in response to the submission it just refused.
+
+    That is the same rejection wearing a different cause, and "check that the
+    password is correct" sends the user off to change something that was never
+    wrong -- observed against the live platform.
+    """
+    plain_form = f"""
+    <form id="fm1" action="/cas/login">
+      <input name="username" value=""><input name="password" value="">
+      <input name="execution" value="exec-1">
+    </form>
+    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
+    """
+    form_with_code = plain_form.replace(
+        '<input name="execution" value="exec-1">',
+        '<input name="execution" value="exec-1"><input name="authcode" value="">'
+        '<img src="/cas/captcha.jpg">',
+    )
+
+    class Response:
+        def __init__(self, status_code: int, text: str) -> None:
+            self.status_code = status_code
+            self.text = text
+            self.url = "https://cas.sii.edu.cn/cas/login"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {}
+
+    class HTTP(requests.Session):
+        def get(self, url, **_kwargs):  # noqa: ANN001
+            return Response(200, plain_form)
+
+        def post(self, url, **_kwargs):  # noqa: ANN001
+            # The submission is answered with a page that now wants a code.
+            if "GetUserDetail" in url:
+                return Response(401, form_with_code)
+            return Response(200, form_with_code)
+
+    monkeypatch.setattr(requests, "Session", lambda: HTTP())
+    monkeypatch.setattr(
+        ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none")
+    )
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright",
+        lambda: pytest.fail("the browser cannot answer a verification code either"),
+    )
+
+    with pytest.raises(ws.AuthenticationError) as excinfo:
+        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
+
+    message = str(excinfo.value)
+    assert "asking for a verification code" in message
+    assert "Check that the password is correct" not in message
 
 
 def test_a_lost_response_after_submission_is_an_authentication_failure(
@@ -1335,6 +1693,90 @@ def test_a_session_another_caller_already_rebuilt_is_not_rebuilt_again(
 
     assert ws.request_json(session, "GET", "https://example.test") == {"ok": True}
     assert http.calls == 2
+
+
+def test_a_login_nothing_can_use_is_not_repeated_for_every_call(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The last hole the per-call budget leaves open.
+
+    The budget bounds rebuilds inside one `request_json`, and the credential
+    guard bounds *failed* logins. Neither covers a login that keeps succeeding
+    and keeps minting a session the platform refuses: every call in a fan-out
+    gets a fresh budget and the guard sees nothing wrong. Measured at 5 logins
+    for 5 calls before this.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    session = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "stale"}]},
+        cookies={"session": "stale"},
+        created_at=1.0,
+    )
+    logins = {"count": 0}
+
+    def fake_login(**_kwargs) -> WebSession:  # noqa: ANN003
+        logins["count"] += 1
+        return WebSession(
+            storage_state={"cookies": [{"name": "session", "value": "fresh"}]},
+            cookies={"session": "fresh"},
+            created_at=1.0 + logins["count"],
+        )
+
+    monkeypatch.setattr(
+        ws, "pooled_requests_session", lambda *_args: DummyHTTP(DummyResponse(401))
+    )
+    monkeypatch.setattr(ws, "_get_web_session", fake_login)
+    monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
+    monkeypatch.setattr(
+        ws, "_get_browser_client", lambda _session: pytest.fail("no browser expected")
+    )
+    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+
+    for _ in range(5):
+        with pytest.raises(ws.SessionExpiredError):
+            ws.request_json(session, "GET", "https://example.test")
+
+    assert logins["count"] == 1
+
+
+def test_a_rebuilt_session_that_works_does_not_block_a_later_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The refusal is about an *unusable* login, not about having logged in."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    session = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "stale"}]},
+        cookies={"session": "stale"},
+        created_at=1.0,
+    )
+    logins = {"count": 0}
+    answers: list[DummyResponse] = [DummyResponse(401), DummyResponse(200, payload={"ok": True})]
+
+    class _Sequenced:
+        def get(self, url, headers=None, timeout=None, allow_redirects=True):  # noqa: ANN001
+            return answers.pop(0) if answers else DummyResponse(200, payload={"ok": True})
+
+    def fake_login(**_kwargs) -> WebSession:  # noqa: ANN003
+        logins["count"] += 1
+        return WebSession(
+            storage_state={"cookies": [{"name": "session", "value": "fresh"}]},
+            cookies={"session": "fresh"},
+            created_at=1.0 + logins["count"],
+        )
+
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda *_args: _Sequenced())
+    monkeypatch.setattr(ws, "_get_web_session", fake_login)
+    monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
+    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+
+    assert ws.request_json(session, "GET", "https://example.test") == {"ok": True}
+
+    # A later expiry on a session that has been answering is a real expiry.
+    answers.extend([DummyResponse(401), DummyResponse(200, payload={"ok": True})])
+    assert ws.request_json(session, "GET", "https://example.test") == {"ok": True}
+    assert logins["count"] == 2
 
 
 def test_browser_request_context_posts_json_bytes():

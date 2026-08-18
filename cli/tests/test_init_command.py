@@ -487,6 +487,53 @@ def test_discover_runtime_retries_configured_login_after_browser_repair(
     ]
 
 
+def test_discover_shows_why_it_is_asking_again_after_a_rejected_login(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The prompt is the fix path; it should not look like a random re-ask.
+
+    `init` is *the* command for repairing a broken login, so the prompt has to
+    stay -- a different password is submitted straight away. What must not
+    happen is asking again with no explanation and then refusing the identical
+    answer from the credential guard.
+    """
+    from inspire.platform.web.session import AuthenticationError
+
+    cfg = type(
+        "Cfg",
+        (),
+        {"username": "platform-user", "password": "secret", "base_url": "https://qz.sii.edu.cn"},
+    )()
+    submitted: list[tuple[str, str]] = []
+
+    class FakeWebSessionModule:
+        @staticmethod
+        def get_web_session(**_kwargs):  # noqa: ANN001, ANN205
+            raise AuthenticationError("Platform reported: 账号或密码错误")
+
+        @staticmethod
+        def login_with_playwright(username, password, **_kwargs):  # noqa: ANN001, ANN205
+            submitted.append((username, password))
+            raise SystemExit(0)
+
+    monkeypatch.setattr(discover_module, "_ensure_playwright_browser", lambda **_kwargs: None)
+    monkeypatch.setattr(discover_module.click, "prompt", lambda *_a, **_k: "corrected-secret")
+
+    with pytest.raises(SystemExit):
+        discover_module._resolve_discover_runtime(
+            config=cfg,
+            web_session_module=FakeWebSessionModule,
+            default_workspace_id="__default__",
+            cli_username=None,
+            cli_base_url=None,
+        )
+
+    assert "账号或密码错误" in capsys.readouterr().err
+    # The prompted password is a different one, so it is allowed through.
+    assert submitted == [("corrected-secret", "corrected-secret")]
+
+
 def test_persist_prompted_credentials_updates_auth_username() -> None:
     global_data = {
         "auth": {"username": "仝", "password": "old-secret"},

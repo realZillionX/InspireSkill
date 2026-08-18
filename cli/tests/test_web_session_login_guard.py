@@ -100,6 +100,68 @@ def test_cooldown_grows_with_consecutive_rejections() -> None:
         _attempt(now=at + schedule[-1])
 
 
+def test_a_rejected_password_does_not_come_back_on_a_timer() -> None:
+    """The two kinds of login failure need opposite handling.
+
+    A rate limit or a verification-code prompt clears on its own, so waiting
+    and retrying is right. A password the platform has named as wrong only
+    gets worse by being sent again -- CAS lengthens a lockout by failure count
+    -- so the schedule that resumes after half an hour is the wrong schedule
+    for it. The competing qzcli client locked a real account learning this.
+    """
+    with pytest.raises(AuthenticationError):
+        with login_guard.guarded_credential_submission(
+            "alice", "secret", account="alice", now=100.0
+        ):
+            raise AuthenticationError("Platform reported: 账号或密码错误。")
+
+    # Well past every step of the transient schedule.
+    still_held = 100.0 + login_guard.COOLDOWN_SCHEDULE_SECONDS[-1] + 1
+    with pytest.raises(AuthenticationError, match="will not resume on a timer"):
+        _attempt(now=still_held)
+
+    # But corrected credentials are still accepted at once.
+    reached_cas = False
+    with login_guard.guarded_credential_submission(
+        "alice", "corrected", account="alice", now=101.0
+    ):
+        reached_cas = True
+    assert reached_cas is True
+
+
+def test_a_transient_refusal_still_uses_the_short_schedule() -> None:
+    """Being told to prove the machine is not being told the password is wrong."""
+    with pytest.raises(AuthenticationError):
+        with login_guard.guarded_credential_submission(
+            "alice", "secret", account="alice", now=100.0
+        ):
+            raise AuthenticationError(
+                "The page CAS answered with is asking for a verification code."
+            )
+
+    with pytest.raises(AuthenticationError, match="Automatic login is paused"):
+        _attempt(now=100.0 + login_guard.COOLDOWN_SCHEDULE_SECONDS[0] - 1)
+    # Recovers on its own, which is the whole difference.
+    with pytest.raises(AuthenticationError, match="CAS rejected"):
+        _attempt(now=100.0 + login_guard.COOLDOWN_SCHEDULE_SECONDS[0])
+
+
+def test_the_classifier_separates_the_two_kinds() -> None:
+    for named in (
+        "Platform reported: 账号或密码错误。",
+        "用户名或密码错误：您的账号被锁定，请联系管理员。",
+        "The account is locked.",
+    ):
+        assert login_guard.is_credential_rejection(named), named
+    for transient in (
+        "The page CAS answered with is asking for a verification code",
+        "Platform reported: 验证码信息无效",
+        "Login did not complete.",
+        "",
+    ):
+        assert not login_guard.is_credential_rejection(transient), transient
+
+
 def test_a_failure_nobody_followed_up_on_stops_escalating() -> None:
     with pytest.raises(AuthenticationError, match="CAS rejected"):
         _attempt(now=100.0)

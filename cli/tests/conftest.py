@@ -62,8 +62,13 @@ def _isolate_web_session_runtime(monkeypatch):  # noqa: ANN001
     from inspire.platform.web.session.browser_client import _close_browser_client
 
     monkeypatch.setattr(web_session_module, "_BROWSER_API_FORCE_BROWSER", False)
+    # Process-global like the transport flag, and for the same reason: it
+    # remembers a session generation nothing could use, so a test that leaves
+    # one set makes the next test's legitimate rebuild look futile.
+    monkeypatch.setattr(web_session_module, "_unproven_rebuild", None)
     yield
     web_session_module._BROWSER_API_FORCE_BROWSER = False
+    web_session_module._unproven_rebuild = None
     _close_browser_client()
 
 
