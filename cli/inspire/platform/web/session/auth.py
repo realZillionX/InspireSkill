@@ -15,6 +15,7 @@ from urllib.parse import urljoin
 from inspire.config import DEFAULT_BASE_URL, Config
 
 from .envelope import _v2_result
+from .login_guard import guarded_credential_submission
 from .models import AuthenticationError, DEFAULT_WORKSPACE_ID, WebSession
 from .browser_launch import (
     chromium_launch_kwargs,
@@ -38,7 +39,32 @@ _CAS_RSA_KEY_RE = re.compile(
 
 
 class _CasLoginFailure(AuthenticationError):
-    """An explicit CAS authentication failure that should not trigger a fallback."""
+    """A CAS rejection on the requests path, after the password was submitted."""
+
+
+class _CasVerificationRequired(ValueError):
+    """CAS is asking for a verification code, which no automated login can answer.
+
+    Deliberately *not* an :class:`AuthenticationError`: nothing was submitted,
+    so there is no rejected credential to remember. What it does have to stop
+    is the browser fallback, which would fill the same form, leave the same
+    field empty, and spend a real login attempt losing the same way.
+    """
+
+
+# Names CAS uses for the field it adds when it wants a human. It appears in the
+# password form after repeated failed logins from one machine and disappears
+# again on its own, which is exactly when an unattended CLI is most likely to
+# be retrying — and every one of those retries is a credential submission that
+# cannot succeed.
+_VERIFICATION_FIELD_NAMES = frozenset({"authcode", "captcha", "smscode", "vercode", "verifycode"})
+
+
+def _required_verification_field(fields: dict[str, str]) -> str | None:
+    for name in fields:
+        if name.strip().lower() in _VERIFICATION_FIELD_NAMES:
+            return name
+    return None
 
 
 def _load_runtime_config(account: Optional[str] = None) -> Config:
@@ -310,6 +336,7 @@ def _login_not_complete_message(
     page_hint: str | None = None,
     proxy_source: str | None = None,
     base_proxy_route: str | None = None,
+    submitted: bool = True,
 ) -> str:
     lines = ["Login did not complete."]
     if page_hint:
@@ -328,10 +355,12 @@ def _login_not_complete_message(
         "Run `inspire account check --details` to confirm the active account, base URL, and "
         "proxy settings. Re-run with `inspire --debug init` if you need a debug report."
     )
-    lines.append(
-        "Automatic authentication stopped after this credential submission to protect the "
-        "account from CAS lockout; do not retry repeatedly."
-    )
+    if submitted:
+        lines.append(
+            "The password reached CAS on this attempt, so nothing will submit it again on "
+            "its own — repeating a rejected login is what locks the account out. Correct "
+            "the credentials and retry once."
+        )
     if proxy_source and "system_env" in proxy_source:
         lines.append(
             "Shell HTTP_PROXY/HTTPS_PROXY/ALL_PROXY is configured for this login (including "
@@ -603,6 +632,17 @@ def _login_with_cas_requests(
         login_resp.raise_for_status()
 
     action, fields = _extract_login_form(login_resp.text, login_resp.url)
+    verification_field = _required_verification_field(fields)
+    if verification_field:
+        raise _CasVerificationRequired(
+            "The platform's login page is asking for a verification code "
+            f"(field `{verification_field}`), which no automated login can answer.\n"
+            "CAS adds that field after repeated failed logins from one machine and "
+            "removes it again on its own, so the account and the password are usually "
+            "fine — the machine is what is being asked to prove itself.\n"
+            f"Sign in once at {base_url.rstrip('/')}/login in a browser, then re-run. "
+            "No credentials were submitted on this attempt."
+        )
     exponent_hex, modulus_hex = _resolve_cas_rsa_key(http, login_resp.text, login_resp.url)
     fields["username"] = username
     fields["password"] = _cas_page_encrypt_password(password, exponent_hex, modulus_hex)
@@ -610,6 +650,11 @@ def _login_with_cas_requests(
     fields.setdefault("_eventId", "submit")
     fields.setdefault("loginType", "1")
 
+    # Everything above this line can still fall back to the browser: the
+    # password has not left the process yet. Everything below it cannot,
+    # whatever the failure looks like — a 5xx, a dropped connection, a response
+    # that never arrives. CAS may well have counted the submission, and the
+    # browser path would answer by making a second one.
     try:
         auth_resp = http.post(
             action,
@@ -619,19 +664,16 @@ def _login_with_cas_requests(
             allow_redirects=True,
         )
     except Exception as exc:
-        # The server may have received the credentials even when the response
-        # was lost.  Falling back to Playwright here would submit them again.
-        raise _CasLoginFailure(
-            _login_not_complete_message(proxy_source=proxy_source)
-        ) from exc
+        raise _CasLoginFailure(_login_not_complete_message(proxy_source=proxy_source)) from exc
     if auth_resp.status_code >= 400:
-        error = _login_not_complete_message(
-            status=auth_resp.status_code,
-            current_url=str(getattr(auth_resp, "url", "") or ""),
-            page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
-            proxy_source=proxy_source,
+        raise _CasLoginFailure(
+            _login_not_complete_message(
+                status=auth_resp.status_code,
+                current_url=str(getattr(auth_resp, "url", "") or ""),
+                page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
+                proxy_source=proxy_source,
+            )
         )
-        raise _CasLoginFailure(error)
 
     api_headers = {"Accept": "application/json", "Referer": f"{base_url.rstrip('/')}/login"}
     user_detail: dict | None = None
@@ -646,18 +688,18 @@ def _login_with_cas_requests(
         raise _CasLoginFailure(
             _login_not_complete_message(
                 current_url=str(getattr(auth_resp, "url", "") or ""),
-                page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
                 proxy_source=proxy_source,
             )
         ) from exc
     if user_detail_resp.status_code != 200:
-        error = _login_not_complete_message(
-            status=user_detail_resp.status_code,
-            current_url=str(getattr(auth_resp, "url", "") or ""),
-            page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
-            proxy_source=proxy_source,
+        raise _CasLoginFailure(
+            _login_not_complete_message(
+                status=user_detail_resp.status_code,
+                current_url=str(getattr(auth_resp, "url", "") or ""),
+                page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
+                proxy_source=proxy_source,
+            )
         )
-        raise _CasLoginFailure(error)
     try:
         detail = _v2_result(user_detail_resp.json())
     except Exception:
@@ -708,18 +750,25 @@ def _login_with_cas_requests(
         all_workspace_fair_scheduling=all_workspace_fair_scheduling or None,
         created_at=time.time(),
     )
+    _persist(session, account=account)
+    return session
+
+
+def _persist(session: WebSession, *, account: Optional[str]) -> None:
+    """Cache an authenticated session, keeping it usable if the write fails.
+
+    A cache that cannot be written is a local problem. Turning it into a failed
+    login would throw away credentials the platform just accepted and send the
+    caller back to the login flow for them again.
+    """
     try:
         session.save(account=account)
-    except Exception as exc:
-        # Authentication already happened.  A local cache write failure must
-        # not turn into a second credential submission through Playwright.
-        raise _CasLoginFailure(
-            _login_not_complete_message(
-                current_url=str(getattr(auth_resp, "url", "") or ""),
-                proxy_source=proxy_source,
-            )
-        ) from exc
-    return session
+    except Exception:
+        logger.warning(
+            "Logged in, but the session cache could not be written; "
+            "this session is in-memory only.",
+            exc_info=True,
+        )
 
 
 def get_credentials(account: Optional[str] = None) -> tuple[str, str]:
@@ -748,6 +797,11 @@ def login_with_playwright(
     """Login to Inspire web UI using Playwright and capture session storage state.
 
     The login flow: qz/login -> CAS (Keycloak broker) -> Keycloak -> qz.
+
+    This is the only function in the CLI that submits credentials, which is why
+    the cross-process guard sits here rather than at the callers: a wrapper that
+    bounds its own retries still adds one submission to whatever the wrapper
+    below it already spent. See :mod:`.login_guard`.
     """
     from inspire.platform.web.browser_api.core import _in_asyncio_loop, _run_in_thread
 
@@ -761,6 +815,25 @@ def login_with_playwright(
             account=account,
         )
 
+    with guarded_credential_submission(username, password, account=account):
+        return _submit_credentials(
+            username,
+            password,
+            base_url=base_url,
+            headless=headless,
+            account=account,
+        )
+
+
+def _submit_credentials(
+    username: str,
+    password: str,
+    *,
+    base_url: str,
+    headless: bool,
+    account: Optional[str],
+) -> WebSession:
+    """Authenticate once: CAS over requests, and only then a real browser."""
     from playwright.sync_api import sync_playwright
 
     try:
@@ -770,7 +843,13 @@ def login_with_playwright(
             base_url=base_url,
             account=account,
         )
-    except _CasLoginFailure:
+    except AuthenticationError:
+        # The password was submitted. Retrying it in a browser is a second
+        # submission, not a fallback.
+        raise
+    except _CasVerificationRequired:
+        # Nothing was submitted, and nothing this side can do would change the
+        # answer. The browser would only spend an attempt finding that out.
         raise
     except Exception:
         logger.debug("CAS requests login failed; falling back to Playwright.", exc_info=True)
@@ -866,27 +945,26 @@ def login_with_playwright(
                 pass
             pass_locator = _fill_login_form()
 
-        credentials_may_have_been_submitted = pass_locator is not None
+        credentials_submitted = pass_locator is not None
         if pass_locator:
             _submit_login_form(pass_locator)
 
-        def _playwright_authentication_error(
-            *,
-            status: int | None = None,
-        ) -> AuthenticationError:
+        def _login_failure_message(status: int | None = None) -> str:
             try:
                 current_url = page.url
             except Exception:
                 current_url = ""
-            return AuthenticationError(
-                _login_not_complete_message(
-                    status=status,
-                    current_url=current_url,
-                    page_hint=_extract_page_login_failure_hint(page),
-                    proxy_source=playwright_proxy_source,
-                    base_proxy_route=playwright_proxy_route,
-                )
+            return _login_not_complete_message(
+                status=status,
+                current_url=current_url,
+                page_hint=_extract_page_login_failure_hint(page),
+                proxy_source=playwright_proxy_source,
+                base_proxy_route=playwright_proxy_route,
+                submitted=credentials_submitted,
             )
+
+        def _authentication_error(status: int | None = None) -> AuthenticationError:
+            return AuthenticationError(_login_failure_message(status))
 
         def _wait_for_api_auth() -> None:
             deadline = time.time() + 30
@@ -909,18 +987,20 @@ def login_with_playwright(
                 except Exception:
                     pass
                 page.wait_for_timeout(500)
-            error = _playwright_authentication_error(status=last_status)
-            if credentials_may_have_been_submitted:
-                raise error
-            raise ValueError(str(error))
+            if credentials_submitted:
+                raise _authentication_error(last_status)
+            # The form was never found, so nothing was submitted; this is a
+            # page problem, and the caller may still try another way in.
+            raise ValueError(_login_failure_message(last_status))
 
         try:
             _wait_for_api_auth()
         except AuthenticationError:
             raise
         except Exception as exc:
-            if credentials_may_have_been_submitted:
-                raise _playwright_authentication_error() from exc
+            if credentials_submitted:
+                # Auth state is unknown and the credentials are already gone.
+                raise _authentication_error() from exc
             raise
         # Once authenticated cookies are available, stop the page quickly and
         # use request APIs for discovery.  Some minimal GPU notebook images can
@@ -981,34 +1061,32 @@ def login_with_playwright(
 
         workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
 
-        try:
-            # Capture storage state (cookies + localStorage)
-            storage_state = context.storage_state()
+        # Capture storage state (cookies + localStorage)
+        storage_state = context.storage_state()
 
-            # Keep a simple cookie name->value mapping for websocket clients.
-            cookies = context.cookies()
-            cookie_dict = {c["name"]: c["value"] for c in cookies}
+        # Keep a simple cookie name->value mapping for websocket clients.
+        cookies = context.cookies()
+        cookie_dict = {c["name"]: c["value"] for c in cookies}
 
-            browser.close()
+        browser.close()
 
-            session = WebSession(
-                storage_state=cast(dict[str, Any], storage_state),
-                cookies=cookie_dict,
-                workspace_id=workspace_id,
-                login_username=username,
-                base_url=base_url,
-                user_detail=user_detail,
-                all_workspace_ids=all_workspace_ids or None,
-                all_workspace_names=all_workspace_names or None,
-                all_workspace_fair_scheduling=all_workspace_fair_scheduling or None,
-                account=account,
-                created_at=time.time(),
-            )
-            session.save(account=account)
-        except Exception as exc:
-            if credentials_may_have_been_submitted:
-                raise _playwright_authentication_error() from exc
-            raise
+        session = WebSession(
+            storage_state=cast(dict[str, Any], storage_state),
+            cookies=cookie_dict,
+            workspace_id=workspace_id,
+            login_username=username,
+            base_url=base_url,
+            user_detail=user_detail,
+            all_workspace_ids=all_workspace_ids or None,
+            all_workspace_names=all_workspace_names or None,
+            all_workspace_fair_scheduling=all_workspace_fair_scheduling or None,
+            account=account,
+            created_at=time.time(),
+        )
+        # Past this point the platform has already accepted the password, so a
+        # failure here is not an authentication failure and must not be
+        # recorded as one — logging in again would succeed.
+        _persist(session, account=account)
 
         return session
 

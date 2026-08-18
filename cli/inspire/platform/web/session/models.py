@@ -26,7 +26,17 @@ class SessionExpiredError(Exception):
 
 
 class AuthenticationError(ValueError):
-    """A credential-bearing login attempt failed and must not be retried blindly."""
+    """A login attempt that reached CAS with credentials and did not authenticate.
+
+    The distinction this carries is not "the login failed" but "the password
+    was put on the wire". CAS locks an account after a handful of rejected
+    submissions, so nothing above this may answer one by trying another
+    transport, another wrapper, or the same credentials again.
+
+    It subclasses ``ValueError`` because that is what this layer has always
+    raised for a failed login, so every existing ``except ValueError`` boundary
+    keeps reporting it the way it always did.
+    """
 
 
 # Statuses that say the platform did not answer, not that the answer is no.

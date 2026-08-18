@@ -47,9 +47,7 @@ class _HTTP:
         self.calls += 1
         return self._responses[min(self.calls - 1, len(self._responses) - 1)]
 
-    def get(  # noqa: ANN001, ANN201
-        self, url, headers=None, timeout=None, allow_redirects=True
-    ):
+    def get(self, url, headers=None, timeout=None, allow_redirects=True):  # noqa: ANN001, ANN201
         assert allow_redirects is False
         return self._next()
 
@@ -270,25 +268,54 @@ def test_availability_refuses_to_report_a_rate_limited_group(monkeypatch) -> Non
 def test_availability_does_not_start_a_second_authentication_refresh(
     monkeypatch,  # noqa: ANN001
 ) -> None:
+    """The wrapper's own retry was a second login stacked on request_json's."""
     monkeypatch.setattr(
         availability_api,
         "_list_live_compute_groups",
-        lambda **_kwargs: (_ for _ in ()).throw(SessionExpiredError("refresh exhausted")),
+        lambda **_kwargs: (_ for _ in ()).throw(SessionExpiredError("rebuild exhausted")),
     )
     monkeypatch.setattr(
         availability_api,
         "get_web_session",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("availability must not start another authentication refresh")
+        lambda *_args, **_kwargs: pytest.fail(
+            "availability must not start another authentication refresh"
         ),
     )
 
     class _Session:
         all_workspace_names = {"workspace-one": "Training"}
 
-    with pytest.raises(SessionExpiredError, match="refresh exhausted"):
+    with pytest.raises(SessionExpiredError, match="rebuild exhausted"):
         availability_api.get_accurate_resource_availability(
             workspace_id="workspace-one",
+            session=_Session(),  # type: ignore[arg-type]
+        )
+
+
+def test_full_free_node_counts_does_not_start_a_second_authentication_refresh(
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    monkeypatch.setattr(
+        availability_api,
+        "list_node_dimension",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            SessionExpiredError("rebuild exhausted")
+        ),
+    )
+    monkeypatch.setattr(
+        availability_api,
+        "get_web_session",
+        lambda *_args, **_kwargs: pytest.fail(
+            "node counts must not start another authentication refresh"
+        ),
+    )
+
+    class _Session:
+        workspace_id = "workspace-one"
+
+    with pytest.raises(SessionExpiredError, match="rebuild exhausted"):
+        availability_api.get_full_free_node_counts(
+            ["group-one"],
             session=_Session(),  # type: ignore[arg-type]
         )
 

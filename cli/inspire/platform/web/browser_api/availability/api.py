@@ -818,8 +818,9 @@ def get_accurate_resource_availability(
         return results
 
     except SessionExpiredError:
-        # request_json() owns the single authentication refresh. Retrying here
-        # would create a second CAS login after that boundary is exhausted.
+        # request_json() owns the one authentication boundary and has already
+        # spent it. Restarting the whole fan-out here only adds a second login
+        # to a session the platform has now refused twice.
         raise
 
 
@@ -898,7 +899,7 @@ def get_full_free_node_counts(
             )
 
     except SessionExpiredError:
-        # request_json() already refreshed once; never start another login.
+        # Already refreshed once inside request_json(); never start another.
         raise
 
     results.sort(key=lambda r: r.full_free_nodes, reverse=True)

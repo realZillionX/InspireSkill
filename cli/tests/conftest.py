@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import pytest
 
+# Captured on the first autouse setup, before that fixture replaces it.
+_REAL_SESSION_ACCOUNT_RESOLVER = None
+
 
 @pytest.fixture(autouse=True)
 def _disable_update_check(monkeypatch):  # noqa: ANN001
@@ -62,6 +65,53 @@ def _isolate_web_session_runtime(monkeypatch):  # noqa: ANN001
     yield
     web_session_module._BROWSER_API_FORCE_BROWSER = False
     _close_browser_client()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_web_session_storage(monkeypatch):  # noqa: ANN001
+    """Give session storage no account to resolve unless a test names one.
+
+    Everything the session layer writes — the cached session and the marker
+    recording credentials CAS rejected — lands in the *active* account's
+    directory. Left alone that is the real `~/.inspire/accounts/<current>/` of
+    whoever runs pytest: a test that simulates a failed login would pause the
+    developer's own next login for a minute, from a password that was never
+    real. With no active account the resolver returns `None` and the whole
+    layer becomes a no-op, which is what the tests that do not care about
+    persistence want anyway.
+
+    Tests that do care pass an explicit account and isolate `Path.home`
+    themselves; the explicit name goes straight through this. Tests of the
+    active-account resolution itself ask for `active_account_session_storage`.
+    """
+    global _REAL_SESSION_ACCOUNT_RESOLVER
+
+    from inspire.platform.web.session import models as session_models
+
+    if _REAL_SESSION_ACCOUNT_RESOLVER is None:
+        _REAL_SESSION_ACCOUNT_RESOLVER = session_models._resolve_account_for_storage
+
+    def _explicit_only(explicit):  # noqa: ANN001, ANN202
+        return (explicit or "").strip() or None
+
+    monkeypatch.setattr(session_models, "_resolve_account_for_storage", _explicit_only)
+
+
+@pytest.fixture
+def active_account_session_storage(monkeypatch):  # noqa: ANN001
+    """Undo `_isolate_web_session_storage` for tests of the resolution itself.
+
+    Only safe once the test has redirected `Path.home` or `$HOME`, which every
+    caller of this does before asking for it.
+    """
+    from inspire.platform.web.session import models as session_models
+
+    assert _REAL_SESSION_ACCOUNT_RESOLVER is not None
+    monkeypatch.setattr(
+        session_models,
+        "_resolve_account_for_storage",
+        _REAL_SESSION_ACCOUNT_RESOLVER,
+    )
 
 
 @pytest.fixture(autouse=True)

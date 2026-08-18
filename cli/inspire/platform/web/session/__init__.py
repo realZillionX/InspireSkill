@@ -36,12 +36,7 @@ from inspire.platform.web.session.browser_launch import (
     playwright_install_hint,
 )
 from inspire.platform.web.session.proxy import get_playwright_proxy
-from inspire.platform.web.session.refresh_lock import (
-    clear_session_auth_failure,
-    exclusive_session_refresh,
-    raise_if_session_auth_blocked,
-    record_session_auth_failure,
-)
+from inspire.platform.web.session.refresh_lock import exclusive_session_refresh
 from inspire.platform.web.session.requests import (
     build_requests_session,
     close_pooled_requests_session,
@@ -105,63 +100,62 @@ def _refresh_session_in_place(current: "WebSession", refreshed: "WebSession") ->
     current.created_at = refreshed.created_at
 
 
-def _load_or_login_web_session(
+class _AuthRefreshBudget:
+    """One session rebuild per :func:`request_json` call, retries included.
+
+    ``with_transient_retry`` runs the call again after a 429, and a rebuild is
+    the one thing that must not be repeated per attempt: it is where a login
+    happens. Threading the allowance through the retries — rather than
+    resetting it on each one — is what keeps a rate-limited fan-out from
+    turning into three logins.
+    """
+
+    __slots__ = ("_remaining",)
+
+    def __init__(self, remaining: int) -> None:
+        self._remaining = remaining
+
+    def consume(self) -> bool:
+        if self._remaining <= 0:
+            return False
+        self._remaining -= 1
+        return True
+
+
+def _refresh_expired_session(
+    session: "WebSession",
     *,
-    force_refresh: bool,
-    require_workspace: bool,
-    account: str | None,
+    observed_created_at: float,
 ) -> "WebSession":
-    """Load or authenticate while enforcing the failed-login circuit."""
-    cached = WebSession.load(allow_expired=True, account=account)
-    raise_if_session_auth_blocked(account)
-    try:
-        session = _get_web_session(
-            force_refresh=force_refresh,
-            require_workspace=require_workspace,
-            account=account,
-        )
-    except AuthenticationError:
-        record_session_auth_failure(
-            account,
-            session_created_at=cached.created_at if cached is not None else None,
-        )
-        raise
-    clear_session_auth_failure(account)
-    return session
+    """Return a session newer than the one whose cookies were just refused.
 
-
-def _refresh_expired_session(session: "WebSession") -> "WebSession":
+    *observed_created_at* is the generation the caller actually sent. Comparing
+    against that, rather than against ``session.created_at`` as it reads now,
+    is what stops a second login when someone else refreshed the shared session
+    object mid-flight: the caller's 401 belongs to a generation that has
+    already been replaced, and the replacement was never tried.
+    """
     account = session.account
-    if not account:
-        return get_web_session(force_refresh=True, account=account)
+    if session.created_at > observed_created_at:
+        return session
     with exclusive_session_refresh(account):
-        raise_if_session_auth_blocked(account)
+        if session.created_at > observed_created_at:
+            return session
         cached = WebSession.load(allow_expired=True, account=account)
         if (
             cached is not None
             and bool(cached.storage_state.get("cookies"))
-            and cached.created_at > session.created_at
+            and cached.created_at > observed_created_at
         ):
-            clear_session_auth_failure(account)
             return cached
-        try:
-            # Keep the rejected Session on disk until its replacement is
-            # safely persisted.  It identifies the generation whose failed
-            # refresh opened the cross-process circuit breaker.
-            return _load_or_login_web_session(
-                force_refresh=True,
-                require_workspace=False,
-                account=account,
-            )
-        except AuthenticationError:
-            record_session_auth_failure(
-                account,
-                session_created_at=session.created_at,
-            )
-            raise
+        # The rejected session stays on disk until its replacement is written:
+        # it is the generation marker every other waiter compares against, and
+        # deleting it up front means a failed login leaves nothing behind to
+        # tell them the attempt already happened.
+        return _get_web_session(force_refresh=True, account=account)
 
 
-def _retry_after_session_expiry(
+def _rebuild_session_and_repeat(
     session: "WebSession",
     method: str,
     url: str,
@@ -169,16 +163,19 @@ def _retry_after_session_expiry(
     headers: Optional[dict[str, str]],
     body: Optional[dict],
     timeout: int,
-    retry_count: int,
+    budget: "_AuthRefreshBudget",
+    observed_created_at: float,
 ) -> dict:
-    """Refresh once after an explicit auth response, never after it fails."""
+    """The single authentication boundary every browser API call passes."""
     global _BROWSER_API_FORCE_BROWSER
 
     _close_browser_client()
-    if retry_count >= 1:
-        raise SessionExpiredError("Session expired after one authentication refresh")
-    logger.debug("Web session expired; refreshing cached session once.")
-    new_session = _refresh_expired_session(session)
+    if not budget.consume():
+        raise SessionExpiredError(
+            "Session expired again after a single authentication refresh"
+        )
+    logger.debug("Web session expired; rebuilding it once for this call.")
+    new_session = _refresh_expired_session(session, observed_created_at=observed_created_at)
     _refresh_session_in_place(session, new_session)
     _BROWSER_API_FORCE_BROWSER = False
     return _request_json_once(
@@ -188,7 +185,7 @@ def _retry_after_session_expiry(
         headers=headers,
         body=body,
         timeout=timeout,
-        _retry_count=retry_count + 1,
+        _budget=budget,
     )
 
 
@@ -210,6 +207,7 @@ def request_json(
     means; what does reach them is either data or a
     :class:`TransientAPIError` saying the platform never answered.
     """
+    budget = _AuthRefreshBudget(0 if _retry_count else 1)
     return with_transient_retry(
         lambda: _request_json_once(
             session,
@@ -218,7 +216,7 @@ def request_json(
             headers=headers,
             body=body,
             timeout=timeout,
-            _retry_count=_retry_count,
+            _budget=budget,
         )
     )
 
@@ -231,9 +229,15 @@ def _request_json_once(
     headers: Optional[dict[str, str]] = None,
     body: Optional[dict] = None,
     timeout: int = 30,
-    _retry_count: int = 0,
+    _budget: Optional["_AuthRefreshBudget"] = None,
 ) -> dict:
     global _BROWSER_API_FORCE_BROWSER
+
+    budget = _AuthRefreshBudget(1) if _budget is None else _budget
+    # Read before the request goes out: it names the session generation whose
+    # cookies this call is about to send, and another thread may replace it in
+    # place while the request is in flight.
+    observed_created_at = session.created_at
 
     if not _BROWSER_API_FORCE_BROWSER:
         # Pooled, not per-request: this is the path every browser API call
@@ -243,6 +247,9 @@ def _request_json_once(
         try:
             method_upper = method.upper()
             req_headers = headers or {}
+            # Redirects are never followed. An unauthenticated call is answered
+            # with a 302 towards CAS, and following it turns that signal into an
+            # HTML login page — a 200 the caller cannot tell from data.
             if method_upper == "GET":
                 resp = http.get(
                     url,
@@ -284,19 +291,20 @@ def _request_json_once(
             try:
                 return resp.json()
             except ValueError:
-                # With redirects disabled, a 200 non-JSON response is not an
-                # authentication signal.  Let the alternate transport verify
-                # it without submitting credentials.
+                # With redirects disabled this is no longer how an expiry
+                # arrives, so it is not treated as one. Let the other transport
+                # say what it is; that costs no credentials either way.
                 _BROWSER_API_FORCE_BROWSER = True
         except SessionExpiredError:
-            return _retry_after_session_expiry(
+            return _rebuild_session_and_repeat(
                 session,
                 method,
                 url,
                 headers=headers,
                 body=body,
                 timeout=timeout,
-                retry_count=_retry_count,
+                budget=budget,
+                observed_created_at=observed_created_at,
             )
         except requests_lib.exceptions.RequestException:
             _BROWSER_API_FORCE_BROWSER = True
@@ -329,14 +337,15 @@ def _request_json_once(
             timeout=timeout,
         )
     except SessionExpiredError:
-        return _retry_after_session_expiry(
+        return _rebuild_session_and_repeat(
             session,
             method,
             url,
             headers=headers,
             body=body,
             timeout=timeout,
-            retry_count=_retry_count,
+            budget=budget,
+            observed_created_at=observed_created_at,
         )
     except Exception as exc:
         if is_playwright_browser_runtime_error(exc):
@@ -368,8 +377,11 @@ def get_web_session(
     require_workspace: bool = False,
     account: Optional[str] = None,
 ) -> WebSession:
+    # The lock covers *force_refresh* too. That is the call that logs in, so
+    # skipping it was letting every concurrent process past the one gate meant
+    # to make them share a single refresh.
     with exclusive_session_refresh(account):
-        return _load_or_login_web_session(
+        return _get_web_session(
             force_refresh=force_refresh,
             require_workspace=require_workspace,
             account=account,

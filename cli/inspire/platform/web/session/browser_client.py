@@ -51,6 +51,8 @@ class _BrowserRequestClient:
         method_upper = method.upper()
         timeout_ms = timeout * 1000
 
+        # Same redirect discipline as the requests transport: a 302 towards CAS
+        # is the expiry signal, and following it hides that behind a login page.
         if method_upper == "GET":
             resp = self._context.request.get(
                 url,

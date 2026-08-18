@@ -4,10 +4,16 @@ Backs the web UI "资源视图" tab. Each service owns its own metrics Action, s
 the route is chosen from `task_type`. Used by the notebook / job / HPC /
 serving / Ray pages.
 
-The UI fans out one request per metric_type (confirmed empirically 2026-04:
-sending a list of 5 metric types in one call only returns results for the
-first). This wrapper loops per-metric and aggregates so callers get a single
-flat list of :class:`MetricGroup`.
+The UI fans out one request per metric_type, because the `GetTaskMetric` it
+calls answers for the first entry of `metric_types` and drops the rest
+(confirmed empirically 2026-04). This wrapper does not: `GetTaskMetricBatch`
+honours the whole list, so the eight types the UI offers cost two requests
+here rather than eight. That Action was in `/discovery` the whole time — the
+2026-04 note ruled out multi-metric requests by testing the singular Action
+alone, which is the same "only tested the same-named Action" mistake the
+Browser API reference warns about.
+
+Callers still get a single flat list of :class:`MetricGroup`.
 
 Rate metrics (``*_usage_rate``) are 0-1 ratios; I/O metrics are bytes/second.
 """
@@ -142,25 +148,57 @@ def _metrics_referer(task_type: str, task_id: str) -> str:
     return ref_map.get(task_type, f"{base}/jobs/interactiveModeling")
 
 
-def _request_one_metric(
+#: `GetTaskMetricBatch` answers `InternalError: 指标查询暂不可用` to any request
+#: carrying more than five metric types. Reproduced 3/3 rounds on 2026-08-18,
+#: each round preceded by a singular `GetTaskMetric` call that succeeded — so it
+#: is the request shape, not a flapping backend. The platform spends an
+#: `InternalError` rather than `InvalidParameter` on it and documents nothing,
+#: which is why this is a ceiling to stay under rather than a bug to report.
+_MAX_METRIC_TYPES_PER_REQUEST = 5
+
+
+def _metric_groups_from(payload: Any) -> list[dict]:
+    """Read the group list out of either spelling of the platform's key."""
+    # The platform emits the misspelled `seris`; accept the corrected spelling
+    # too so the wrapper follows either response shape.
+    raw = payload.get("time_seris_metric_groups")
+    if raw is None:
+        raw = payload.get("time_series_metric_groups")
+    return [g for g in raw if isinstance(g, dict)] if isinstance(raw, list) else []
+
+
+def _request_metric_batch(
     session: WebSession,
     *,
-    task_id: str,
+    task_ids: list[str],
     task_type: str,
-    logic_compute_group_id: str,
-    metric_type: str,
+    metric_types: list[str],
     start_timestamp: int,
     end_timestamp: int,
     interval_second: int,
     timeout: int,
-) -> list[MetricGroup]:
+) -> dict[str, list[MetricGroup]]:
+    """One `GetTaskMetricBatch` call: many tasks x up to five metric types.
+
+    Unlike the singular `GetTaskMetric` this Action really does honour every
+    entry of ``metric_types`` (the singular silently answers for the first one
+    only), and it takes the task list flat instead of inside a ``filter``. It
+    also declares no ``logic_compute_group_id``: the caller's compute group is
+    not part of the request.
+
+    Returns groups keyed by task id. A task the platform answered nothing for
+    is absent from the mapping — which is not the same as a task whose groups
+    came back empty, and callers depending on that distinction must not
+    conflate them.
+    """
+    route = _METRIC_ROUTE_BY_TASK_TYPE.get(task_type)
+    if route is None:
+        raise ValueError(f"unknown task type {task_type!r}")
+
     body = {
-        "filter": {
-            "logic_compute_group_id": logic_compute_group_id,
-            "task_id": task_id,
-            "task_type": task_type,
-        },
-        "metric_types": [metric_type],
+        "task_type": task_type,
+        "task_ids": list(task_ids),
+        "metric_types": list(metric_types),
         "time_range": {
             "start_timestamp": int(start_timestamp),
             "end_timestamp": int(end_timestamp),
@@ -168,32 +206,32 @@ def _request_one_metric(
         },
     }
 
-    route = _METRIC_ROUTE_BY_TASK_TYPE.get(task_type)
-    if route is None:
-        raise ValueError(f"metric '{metric_type}' failed: unknown task type {task_type!r}")
-
+    label = ", ".join(metric_types)
     data = _request_json(
         session,
         "POST",
-        f"/api/v2/{route}?Action=GetTaskMetric",
-        referer=_metrics_referer(task_type, task_id),
+        f"/api/v2/{route}?Action=GetTaskMetricBatch",
+        referer=_metrics_referer(task_type, task_ids[0]),
         body=body,
         timeout=timeout,
     )
-
     try:
         payload = _v2_result(data)
     except ValueError as exc:
-        raise ValueError(f"metric '{metric_type}' failed: {exc}") from exc
+        raise ValueError(f"metrics '{label}' failed: {exc}") from exc
 
-    # The platform currently emits the misspelled key; accept the corrected
-    # spelling as well so the wrapper follows either response shape.
-    raw_groups = payload.get("time_seris_metric_groups")
-    if raw_groups is None:
-        raw_groups = payload.get("time_series_metric_groups")
-    if not isinstance(raw_groups, list):
-        return []
-    return [MetricGroup.from_api(g) for g in raw_groups if isinstance(g, dict)]
+    raw_tasks = payload.get("task_metrics")
+    if not isinstance(raw_tasks, list):
+        return {}
+
+    out: dict[str, list[MetricGroup]] = {}
+    for entry in raw_tasks:
+        if not isinstance(entry, dict):
+            continue
+        key = str(entry.get("task_id") or "")
+        groups = [MetricGroup.from_api(g) for g in _metric_groups_from(entry)]
+        out.setdefault(key, []).extend(groups)
+    return out
 
 
 def get_resource_metrics_by_time(
@@ -210,16 +248,22 @@ def get_resource_metrics_by_time(
 ) -> list[MetricGroup]:
     """Query cluster-metric time series for a single task.
 
-    Backing Action: ``GetTaskMetric`` on the service that owns the workload.
+    Backing Action: ``GetTaskMetricBatch`` on the service that owns the
+    workload. ``metric_types`` goes out in chunks of
+    :data:`_MAX_METRIC_TYPES_PER_REQUEST`, so the eight types the UI offers
+    cost two requests rather than the eight the singular ``GetTaskMetric``
+    needed — it answers for the first metric of a list and drops the rest, so
+    fanning out per metric was the only way to use it.
 
-    The ``metric_types`` iterable is fanned out into one request per entry
-    (a single multi-metric request silently returns data only for the first
-    metric, confirmed by probe on 2026-04). Results are concatenated; if one
-    metric errors the whole call raises ``ValueError``.
+    Results are concatenated in the caller's ``metric_types`` order; if one
+    chunk errors the whole call raises ``ValueError``.
+
+    ``logic_compute_group_id`` is accepted for call compatibility and is not
+    sent: this Action does not take one.
 
     ``task_type`` must be one of :data:`TASK_TYPE_BY_RESOURCE` values:
     ``interactive_modeling`` / ``distributed_training`` / ``hpc_job`` /
-    ``inference_serving``.
+    ``inference_serving`` / ``ray_job``.
     """
     if session is None:
         session = get_web_session()
@@ -242,18 +286,18 @@ def get_resource_metrics_by_time(
         )
 
     all_groups: list[MetricGroup] = []
-    for metric in metrics:
-        all_groups.extend(
-            _request_one_metric(
-                session,
-                task_id=task_id,
-                task_type=task_type,
-                logic_compute_group_id=logic_compute_group_id,
-                metric_type=metric,
-                start_timestamp=start_timestamp,
-                end_timestamp=end_timestamp,
-                interval_second=interval_second,
-                timeout=timeout,
-            )
+    for start in range(0, len(metrics), _MAX_METRIC_TYPES_PER_REQUEST):
+        chunk = metrics[start : start + _MAX_METRIC_TYPES_PER_REQUEST]
+        by_task = _request_metric_batch(
+            session,
+            task_ids=[task_id],
+            task_type=task_type,
+            metric_types=chunk,
+            start_timestamp=start_timestamp,
+            end_timestamp=end_timestamp,
+            interval_second=interval_second,
+            timeout=timeout,
         )
+        # One task went out, so anything keyed to another id is not ours.
+        all_groups.extend(by_task.get(task_id, []))
     return all_groups

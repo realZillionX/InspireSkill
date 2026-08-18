@@ -15,7 +15,6 @@ from inspire.cli.utils.id_resolver import is_full_uuid, is_partial_id
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config
 from inspire.config.toml import _project_config_write_path
-from inspire.platform.web.session import AuthenticationError
 from inspire.platform.web.session.browser_launch import is_playwright_browser_runtime_error
 from .toml_helpers import _toml_dumps
 
@@ -462,10 +461,6 @@ def _resolve_discover_runtime(
     else:
         try:
             session = web_session_module.get_web_session(require_workspace=True)
-        except AuthenticationError:
-            # A credential-bearing attempt already happened. Prompting and
-            # calling login_with_playwright here would submit it a second time.
-            raise
         except (ValueError, RuntimeError) as exc:
             _ensure_playwright_browser(non_interactive=non_interactive)
             if is_playwright_browser_runtime_error(exc):
