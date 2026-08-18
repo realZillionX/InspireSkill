@@ -67,6 +67,20 @@ def _required_verification_field(fields: dict[str, str]) -> str | None:
     return None
 
 
+def _asks_for_verification_code(html: str, page_url: str) -> bool:
+    """Whether the page CAS answered with now wants a code in the password form.
+
+    Only the password form counts. The page always carries a code-login and a
+    QR-login form beside it, so scanning the whole document would report a
+    verification prompt on every login page there has ever been.
+    """
+    try:
+        _, fields = _extract_login_form(html, page_url)
+    except Exception:
+        return False
+    return _required_verification_field(fields) is not None
+
+
 def _load_runtime_config(account: Optional[str] = None) -> Config:
     account_name = str(account or "").strip()
     if account_name:
@@ -337,9 +351,12 @@ def _login_not_complete_message(
     proxy_source: str | None = None,
     base_proxy_route: str | None = None,
     submitted: bool = True,
+    asking_for_code: bool = False,
 ) -> str:
     lines = ["Login did not complete."]
-    if page_hint:
+    if asking_for_code and not page_hint:
+        pass
+    elif page_hint:
         lines.append(f"Platform reported: {page_hint}")
     else:
         lines.extend(
@@ -355,6 +372,12 @@ def _login_not_complete_message(
         "Run `inspire account check --details` to confirm the active account, base URL, and "
         "proxy settings. Re-run with `inspire --debug init` if you need a debug report."
     )
+    if asking_for_code:
+        lines.append(
+            "The page CAS answered with is asking for a verification code, so this "
+            "rejection is about the machine proving itself, not about the account. "
+            "Sign in once in a browser, or wait — CAS drops that field again on its own."
+        )
     if submitted:
         lines.append(
             "The password reached CAS on this attempt, so nothing will submit it again on "
@@ -698,6 +721,14 @@ def _login_with_cas_requests(
                 current_url=str(getattr(auth_resp, "url", "") or ""),
                 page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
                 proxy_source=proxy_source,
+                # CAS can add the field *in response to* this submission, which
+                # is the same rejection wearing a different cause: the account
+                # is fine and the password is fine, and "check your password"
+                # sends the user off to change something that was never wrong.
+                asking_for_code=_asks_for_verification_code(
+                    getattr(auth_resp, "text", "") or "",
+                    str(getattr(auth_resp, "url", "") or ""),
+                ),
             )
         )
     try:

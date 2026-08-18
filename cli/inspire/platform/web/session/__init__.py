@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -122,6 +123,39 @@ class _AuthRefreshBudget:
         return True
 
 
+# The generation a rebuild produced that no call has answered with yet.
+#
+# The per-call budget bounds rebuilds inside one `request_json`, and a *failed*
+# login is bounded by the credential guard. Neither covers the case where the
+# login keeps succeeding and the session it mints keeps being refused: the
+# budget is fresh for the next call, the guard sees nothing wrong, and a
+# workspace-wide fan-out is dozens of calls. Measured at 5 logins for 5 calls.
+_unproven_rebuild: float | None = None
+_unproven_rebuild_lock = threading.Lock()
+
+
+def _note_rebuilt_generation(created_at: float) -> None:
+    global _unproven_rebuild
+
+    with _unproven_rebuild_lock:
+        _unproven_rebuild = created_at
+
+
+def _note_generation_answered(created_at: float) -> None:
+    """A call came back with data, so this generation is usable after all."""
+    global _unproven_rebuild
+
+    with _unproven_rebuild_lock:
+        if _unproven_rebuild is not None and created_at >= _unproven_rebuild:
+            _unproven_rebuild = None
+
+
+def _would_replace_an_unusable_login(observed_created_at: float) -> bool:
+    with _unproven_rebuild_lock:
+        unproven = _unproven_rebuild
+    return unproven is not None and observed_created_at >= unproven
+
+
 def _refresh_expired_session(
     session: "WebSession",
     *,
@@ -170,6 +204,11 @@ def _rebuild_session_and_repeat(
     global _BROWSER_API_FORCE_BROWSER
 
     _close_browser_client()
+    if _would_replace_an_unusable_login(observed_created_at):
+        raise SessionExpiredError(
+            "The session the last rebuild produced was refused as well. Not logging "
+            "in again to replace a login nothing has been able to use."
+        )
     if not budget.consume():
         raise SessionExpiredError(
             "Session expired again after a single authentication refresh"
@@ -177,6 +216,7 @@ def _rebuild_session_and_repeat(
     logger.debug("Web session expired; rebuilding it once for this call.")
     new_session = _refresh_expired_session(session, observed_created_at=observed_created_at)
     _refresh_session_in_place(session, new_session)
+    _note_rebuilt_generation(session.created_at)
     _BROWSER_API_FORCE_BROWSER = False
     return _request_json_once(
         session,
@@ -289,12 +329,15 @@ def _request_json_once(
                     )
                 raise ValueError(message)
             try:
-                return resp.json()
+                payload = resp.json()
             except ValueError:
                 # With redirects disabled this is no longer how an expiry
                 # arrives, so it is not treated as one. Let the other transport
                 # say what it is; that costs no credentials either way.
                 _BROWSER_API_FORCE_BROWSER = True
+            else:
+                _note_generation_answered(session.created_at)
+                return payload
         except SessionExpiredError:
             return _rebuild_session_and_repeat(
                 session,
@@ -327,15 +370,18 @@ def _request_json_once(
 
     try:
         if _in_asyncio_loop():
-            return _run_in_thread(_browser_request_in_thread)
-        client = _get_browser_client(session)
-        return client.request_json(
-            method,
-            url,
-            headers=headers,
-            body=body,
-            timeout=timeout,
-        )
+            payload = _run_in_thread(_browser_request_in_thread)
+        else:
+            client = _get_browser_client(session)
+            payload = client.request_json(
+                method,
+                url,
+                headers=headers,
+                body=body,
+                timeout=timeout,
+            )
+        _note_generation_answered(session.created_at)
+        return payload
     except SessionExpiredError:
         return _rebuild_session_and_repeat(
             session,

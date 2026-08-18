@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from inspire.accounts.cache_lock import exclusive_cache_lock
+
 from .models import AuthenticationError, WebSession, get_session_cache_file
 
 logger = logging.getLogger(__name__)
@@ -249,6 +251,28 @@ def guarded_credential_submission(
     raises one, and clears the record when the body returns.
     """
     path = block_file(account)
+    if path is None:
+        # No account resolved, so there is nowhere to record a failure and
+        # nothing for another process to read. Nothing to serialize on either.
+        yield
+        return
+    # Held for the whole login, not just the check: `inspire init` calls
+    # `login_with_playwright()` directly, outside the refresh lock, so without
+    # this two concurrent runs both read "no failure recorded" and both submit.
+    # A separate lock file from the session cache and the refresh lock, so it
+    # can never nest with either.
+    with exclusive_cache_lock(path):
+        yield from _guarded(username, password, path, account=account, now=now)
+
+
+def _guarded(
+    username: str,
+    password: str,
+    path: Path,
+    *,
+    account: Optional[str],
+    now: Optional[float],
+) -> Iterator[None]:
     fingerprint = credential_fingerprint(username, password)
     current = time.time() if now is None else float(now)
 

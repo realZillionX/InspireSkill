@@ -807,6 +807,66 @@ def test_a_verification_code_prompt_does_not_open_the_login_circuit(
     assert not login_guard.block_file("alice").exists()
 
 
+def test_a_code_field_that_appears_only_in_the_answer_is_still_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CAS can add the field in response to the submission it just refused.
+
+    That is the same rejection wearing a different cause, and "check that the
+    password is correct" sends the user off to change something that was never
+    wrong -- observed against the live platform.
+    """
+    plain_form = f"""
+    <form id="fm1" action="/cas/login">
+      <input name="username" value=""><input name="password" value="">
+      <input name="execution" value="exec-1">
+    </form>
+    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
+    """
+    form_with_code = plain_form.replace(
+        '<input name="execution" value="exec-1">',
+        '<input name="execution" value="exec-1"><input name="authcode" value="">',
+    )
+
+    class Response:
+        def __init__(self, status_code: int, text: str) -> None:
+            self.status_code = status_code
+            self.text = text
+            self.url = "https://cas.sii.edu.cn/cas/login"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {}
+
+    class HTTP(requests.Session):
+        def get(self, url, **_kwargs):  # noqa: ANN001
+            return Response(200, plain_form)
+
+        def post(self, url, **_kwargs):  # noqa: ANN001
+            # The submission is answered with a page that now wants a code.
+            if "GetUserDetail" in url:
+                return Response(401, form_with_code)
+            return Response(200, form_with_code)
+
+    monkeypatch.setattr(requests, "Session", lambda: HTTP())
+    monkeypatch.setattr(
+        ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none")
+    )
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright",
+        lambda: pytest.fail("the browser cannot answer a verification code either"),
+    )
+
+    with pytest.raises(ws.AuthenticationError) as excinfo:
+        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
+
+    message = str(excinfo.value)
+    assert "asking for a verification code" in message
+    assert "Check that the password is correct" not in message
+
+
 def test_a_lost_response_after_submission_is_an_authentication_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1568,6 +1628,90 @@ def test_a_session_another_caller_already_rebuilt_is_not_rebuilt_again(
 
     assert ws.request_json(session, "GET", "https://example.test") == {"ok": True}
     assert http.calls == 2
+
+
+def test_a_login_nothing_can_use_is_not_repeated_for_every_call(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The last hole the per-call budget leaves open.
+
+    The budget bounds rebuilds inside one `request_json`, and the credential
+    guard bounds *failed* logins. Neither covers a login that keeps succeeding
+    and keeps minting a session the platform refuses: every call in a fan-out
+    gets a fresh budget and the guard sees nothing wrong. Measured at 5 logins
+    for 5 calls before this.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    session = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "stale"}]},
+        cookies={"session": "stale"},
+        created_at=1.0,
+    )
+    logins = {"count": 0}
+
+    def fake_login(**_kwargs) -> WebSession:  # noqa: ANN003
+        logins["count"] += 1
+        return WebSession(
+            storage_state={"cookies": [{"name": "session", "value": "fresh"}]},
+            cookies={"session": "fresh"},
+            created_at=1.0 + logins["count"],
+        )
+
+    monkeypatch.setattr(
+        ws, "pooled_requests_session", lambda *_args: DummyHTTP(DummyResponse(401))
+    )
+    monkeypatch.setattr(ws, "_get_web_session", fake_login)
+    monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
+    monkeypatch.setattr(
+        ws, "_get_browser_client", lambda _session: pytest.fail("no browser expected")
+    )
+    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+
+    for _ in range(5):
+        with pytest.raises(ws.SessionExpiredError):
+            ws.request_json(session, "GET", "https://example.test")
+
+    assert logins["count"] == 1
+
+
+def test_a_rebuilt_session_that_works_does_not_block_a_later_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The refusal is about an *unusable* login, not about having logged in."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    session = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "stale"}]},
+        cookies={"session": "stale"},
+        created_at=1.0,
+    )
+    logins = {"count": 0}
+    answers: list[DummyResponse] = [DummyResponse(401), DummyResponse(200, payload={"ok": True})]
+
+    class _Sequenced:
+        def get(self, url, headers=None, timeout=None, allow_redirects=True):  # noqa: ANN001
+            return answers.pop(0) if answers else DummyResponse(200, payload={"ok": True})
+
+    def fake_login(**_kwargs) -> WebSession:  # noqa: ANN003
+        logins["count"] += 1
+        return WebSession(
+            storage_state={"cookies": [{"name": "session", "value": "fresh"}]},
+            cookies={"session": "fresh"},
+            created_at=1.0 + logins["count"],
+        )
+
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda *_args: _Sequenced())
+    monkeypatch.setattr(ws, "_get_web_session", fake_login)
+    monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
+    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+
+    assert ws.request_json(session, "GET", "https://example.test") == {"ok": True}
+
+    # A later expiry on a session that has been answering is a real expiry.
+    answers.extend([DummyResponse(401), DummyResponse(200, payload={"ok": True})])
+    assert ws.request_json(session, "GET", "https://example.test") == {"ok": True}
+    assert logins["count"] == 2
 
 
 def test_browser_request_context_posts_json_bytes():
