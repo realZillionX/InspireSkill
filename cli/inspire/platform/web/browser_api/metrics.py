@@ -227,9 +227,16 @@ def get_resource_metrics_by_time(
     ``group_name`` so the per-pod split is gone. Its response is shaped
     differently too -- ``task_metrics[].time_series_metric_groups`` rather than
     the top-level ``time_seris_metric_groups`` read here -- which is how it can
-    look empty rather than broken to a reader expecting this shape. The web
-    console never calls it. Four of eight metrics silently reading as zero is
-    not worth three quarters fewer requests.
+    look empty rather than broken to a reader expecting this shape.
+
+    **The four types that do answer are not the same numbers.** Over a fixed
+    past window each endpoint is deterministic -- two calls agree byte for
+    byte -- and they still disagree with each other, because the batch Action
+    aggregates half the samples: the common denominator of everything this
+    path returns is consistently twice the batch one (``200 × gpu_count``
+    against ``100 × gpu_count``, on all four jobs). Long-run means stay close;
+    individual points reach 0.206 against 0.5. So a chart drawn from the batch
+    Action is not the chart the console shows. The console never calls it.
 
     ``task_type`` must be one of :data:`TASK_TYPE_BY_RESOURCE` values:
     ``interactive_modeling`` / ``distributed_training`` / ``hpc_job`` /

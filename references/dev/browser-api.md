@@ -772,11 +772,23 @@ POST /api/v2/{notebook|train|hpc|ray|inference_serving}?Action=GetTaskMetric
 
 | metric | 单数版 | Batch |
 | --- | --- | --- |
-| `gpu_usage_rate` / `gpu_memory_usage_rate` / `cpu_usage_rate` / `memory_usage_rate` | 61 点 | 61 点，但 `group_name` 缺失 |
+| `gpu_usage_rate` / `gpu_memory_usage_rate` / `cpu_usage_rate` / `memory_usage_rate` | 61 点 | 61 点，但 `group_name` 缺失，**且数值不同（见下）** |
 | `disk_io_read` / `disk_io_write` | 61 点 | **0 个样本**（4/4 复现） |
 | `network_tcp_ip_io_read` / `network_tcp_ip_io_write` | 61 点 | **`InternalError`** |
 
-8 个指标坏 4 个；`group_name` 全缺意味着多 Pod 任务的逐 Pod 拆分丢失。控制台自己在全部 bundle 里**一次都没有调用**这个 Action。省四分之三的请求换一块会静悄悄读成 0 的面板，不划算。
+8 个指标坏 4 个；`group_name` 全缺意味着多 Pod 任务的逐 Pod 拆分丢失。
+
+**剩下那 4 个也不是同一份数**。取一个已经结束的固定窗口（排除「现在还在变」），两个端点**各自都是确定的**——各查两次结果逐字节相同——但互相对不上：
+
+| timestamp | 单数版 | Batch |
+| --- | --- | --- |
+| 1787049449 | 0.20625 | 0.5 |
+| 1787049509 | 0.69625 | 0.785 |
+| 1787049569 | 0.7575 | 0.505 |
+
+差在聚合样本数上：把每个端点全部返回值的公分母算出来，**单数版恒为 Batch 的 2 倍**——4 卡任务 800 : 400，8 卡任务 1600 : 800，即 `200×卡数` 对 `100×卡数`（4 个运行中任务全部符合）。同一个信号，Batch 只聚合了一半的样本。长期均值大致对得上（0.536 vs 0.528、0.965 vs 0.967），但**任意单点可以差到 0.206 vs 0.5**。
+
+所以这不是「批量版少了个字段」，是**另一套聚合**：即便只取那 4 个能跑的指标，Batch 画出来的曲线也不是控制台上那一条。控制台自己在全部 bundle 里**一次都没有调用**这个 Action。省四分之三的请求换一块既会静悄悄读成 0、数值又对不上控制台的面板，不划算。
 
 ### 8.15 批量读 — `ListJobs` / `ListJobEvents` 的复数形态
 

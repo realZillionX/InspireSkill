@@ -14,7 +14,9 @@
 
 ### 变更
 
-- **`GetTaskMetricBatch` 复查过了，结论是继续不用它，指标维持逐个扇出。** 运维给的批量清单里包含这个 Action，但它答的不是同一份数据：在 `train` 路由上拿 4 个运行中的任务、同一时间窗逐指标对照，`disk_io_read` / `disk_io_write` **返回 0 个样本而单数版同窗口有 61 个点**（4/4 复现），两个 `network_tcp_ip_io_*` 直接 `InternalError`，并且所有 group **一律没有 `group_name`**，多 Pod 任务的逐 Pod 拆分就此丢失。8 个指标坏 4 个。它的响应形状也不一样——`task_metrics[].time_series_metric_groups`，而不是单数版顶层的 `time_seris_metric_groups`——这正是它容易被读成「空」而不是「坏」的原因，上一轮调研就是在这里读错了键。控制台自己从不调用这个 Action。顺带复核了单数版 `GetTaskMetric` 一次只认第一个 `metric_types` 的老结论：传 2 / 4 / 8 个类型各试一次，返回的始终只有第一个，扇出确实省不掉。结论写进了 `get_resource_metrics_by_time` 的 docstring。
+- **`GetTaskMetricBatch` 复查过了，结论是继续不用它，指标维持逐个扇出。** 运维给的批量清单里包含这个 Action，但它答的不是同一份数据：在 `train` 路由上拿 4 个运行中的任务、同一时间窗逐指标对照，`disk_io_read` / `disk_io_write` **返回 0 个样本而单数版同窗口有 61 个点**（4/4 复现），两个 `network_tcp_ip_io_*` 直接 `InternalError`，并且所有 group **一律没有 `group_name`**，多 Pod 任务的逐 Pod 拆分就此丢失。8 个指标坏 4 个。
+
+  **剩下那 4 个也不是同一份数**——这点上一轮没查，因为只比了样本数没有逐点比数值。取一个已经结束的固定窗口，两个端点各自都是确定的（各查两次逐字节相同），但互相对不上：同一时间戳单数版 `0.20625`、Batch `0.5`。差在聚合样本数上，把全部返回值的公分母算出来，**单数版恒为 Batch 的 2 倍**（4 卡 800:400、8 卡 1600:800，即 `200×卡数` 对 `100×卡数`，4 个任务全部符合）。长期均值大致对得上，单点能差到三倍。所以它不是「批量版少了个字段」而是**另一套聚合**：即便只取那 4 个能跑的指标，画出来的曲线也不是控制台上那一条。它的响应形状也不一样——`task_metrics[].time_series_metric_groups`，而不是单数版顶层的 `time_seris_metric_groups`——这正是它容易被读成「空」而不是「坏」的原因，上一轮调研就是在这里读错了键。控制台自己从不调用这个 Action。顺带复核了单数版 `GetTaskMetric` 一次只认第一个 `metric_types` 的老结论：传 2 / 4 / 8 个类型各试一次，返回的始终只有第一个，扇出确实省不掉。结论写进了 `get_resource_metrics_by_time` 的 docstring。
 
 - **`/api/v1` 从这个客户端里彻底消失了。** 最后三处——登录握手的 `user/detail`、登录时发现 Workspace 的 `user/routes/default`、Notebook 的 `notebook/lab/{id}`——留着的理由此前写的是「Session 自举时还没有 Session 可供 v2 用」和「反向代理不是 Action 能表达的东西」。三条实测全部不成立：
 
