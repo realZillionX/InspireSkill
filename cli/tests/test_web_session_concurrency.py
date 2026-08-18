@@ -34,7 +34,10 @@ class _StubResponse:
 
 
 class _StubHTTP:
-    def get(self, url: str, headers=None, timeout=None) -> _StubResponse:  # noqa: ANN001
+    def get(  # noqa: ANN001
+        self, url: str, headers=None, timeout=None, allow_redirects=True
+    ) -> _StubResponse:
+        assert allow_redirects is False
         _http_calls.append(url)
         return _StubResponse()
 
@@ -72,7 +75,7 @@ def _refresh_expired_session(
     web_session_module._BROWSER_API_FORCE_BROWSER = True
     web_session_module._get_browser_client = _SessionBrowserClient
     web_session_module._close_browser_client = lambda: None
-    web_session_module.get_web_session = fake_get_web_session
+    web_session_module._get_web_session = fake_get_web_session
     web_session_module.pooled_requests_session = lambda _session, _url: _StubHTTP()
 
     barrier.wait()
@@ -117,6 +120,95 @@ def test_concurrent_expired_session_requests_share_one_refresh(
     # Then: one process logs in and the waiters reuse its refreshed session.
     assert exit_codes == [0] * WORKER_COUNT
     assert login_count.value == 1
+
+
+def _reject_expired_session_refresh(
+    home: str,
+    barrier: Barrier,
+    submissions: Counter,
+) -> None:
+    """One CLI process meeting an expired session whose re-login is refused."""
+    os.environ["HOME"] = home
+    session = WebSession.load(allow_expired=True, account="default")
+    assert session is not None
+
+    def reject(*_args, **_kwargs) -> WebSession:  # noqa: ANN002, ANN003
+        with submissions.get_lock():
+            submissions.value += 1
+        # A rejected CAS login is not fast. Hold the window open so a waiter
+        # that is not guarded would get past the lock and submit its own.
+        time.sleep(0.2)
+        raise web_session_module.AuthenticationError("CAS rejected the login")
+
+    # Patched below the guard, not around it: the point of the test is that the
+    # guard is what stops the other seven, not the caller.
+    web_session_auth._submit_credentials = reject
+    web_session_module._BROWSER_API_FORCE_BROWSER = True
+    web_session_module._get_browser_client = _SessionBrowserClient
+    web_session_module._close_browser_client = lambda: None
+    web_session_module.pooled_requests_session = lambda _session, _url: _StubHTTP()
+
+    barrier.wait()
+    try:
+        web_session_module.request_json(
+            session,
+            "GET",
+            "https://example.test/api/v2/user?Action=GetUserDetail",
+        )
+    except web_session_module.AuthenticationError:
+        return
+    raise AssertionError("a refused login must stop the request")
+
+
+def test_concurrent_failed_refresh_submits_credentials_only_once(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    """Eight processes, one expired session, one wrong password.
+
+    This is the shape that reaches a CAS lockout: the account-level lock only
+    ever de-duplicated *successful* refreshes, so the seven waiters behind a
+    failed one each went on to submit the same credentials in turn.
+    """
+    # Given: the account whose session expired, and credentials CAS will refuse.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    account_path = tmp_path / ".inspire" / "accounts" / "default"
+    account_path.mkdir(parents=True)
+    (account_path / "config.toml").write_text(
+        "[auth]\nusername = 'user'\npassword = 'wrong-secret'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".inspire" / "current").write_text("default\n", encoding="utf-8")
+    WebSession(
+        storage_state={
+            "cookies": [{"name": "session", "value": "expired"}],
+            "origins": [],
+        },
+        cookies={"session": "expired"},
+        account="default",
+        created_at=1.0,
+    ).save(account="default")
+    context = worker_context()
+    barrier = context.Barrier(WORKER_COUNT)
+    submissions = context.Value("i", 0)
+
+    # When: every process discovers the expiry at the same moment.
+    exit_codes = run_workers(
+        context,
+        _reject_expired_session_refresh,
+        count=WORKER_COUNT,
+        args_for=lambda _index: (str(tmp_path), barrier, submissions),
+    )
+
+    # Then: the password reached CAS once, and the other seven never left the
+    # machine.
+    assert exit_codes == [0] * WORKER_COUNT
+    assert submissions.value == 1
+    assert (account_path / "web_session.login-block.json").exists()
+    # The rejected session stays: it is the generation marker the marker itself
+    # refers to, and clearing it up front left a failed login with nothing on
+    # disk to tell the next process the attempt had already happened.
+    assert (account_path / "web_session.json").exists()
 
 
 def test_stale_session_save_does_not_replace_refreshed_cache(

@@ -36,7 +36,6 @@ def serving() -> None:
     when you need to pick a model and version, then `serving create --dry-run`
     to verify the deployment plan.
 
-    \b
     `metrics` covers GPU / CPU / memory utilization; `api-metrics` covers
     request traffic (QPS, success rate, latency, tokens).
 

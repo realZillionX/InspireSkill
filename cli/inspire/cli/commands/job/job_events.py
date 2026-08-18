@@ -182,10 +182,9 @@ def events(
 ) -> None:
     """Show events for a training job.
 
-    \b
     Controller events and every instance's pod events are merged into one
-    timeline: the controller says why the job was not created, the pods say
-    why they were not scheduled or started, and they are disjoint sets. Use
+    timeline: the controller says why the job was not created, the pods say why
+    they were not scheduled or started, and they are disjoint sets. Use
     ``--instance`` to narrow to one instance, or ``--workload-level`` to keep
     only the controller's half.
 

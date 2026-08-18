@@ -249,7 +249,6 @@ def init(
     active account config. When `--scope project` is selected, it also writes
     this repository's context and path-alias overrides to the repo config.
 
-    \b
     Prompted passwords are stored in global config for the selected account.
 
     Template/smart modes avoid writing secrets.

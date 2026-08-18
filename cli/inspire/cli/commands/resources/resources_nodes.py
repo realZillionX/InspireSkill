@@ -123,7 +123,6 @@ def list_nodes(
     This accounts for GPU fragmentation across nodes, so it is the right view
     when a workload needs whole nodes instead of scattered free GPUs.
 
-    \b
     `Node Spec` is the largest single node the group can schedule onto, which
     is the ceiling a `--quota gpu,cpu,mem` triple has to fit under. Groups with
     mixed hardware report every distinct shape under `--json`.
@@ -131,7 +130,7 @@ def list_nodes(
     \b
     Examples:
         inspire resources nodes --workspace 分布式训练空间
-        inspire resources nodes --workspace all --group H200
+        inspire resources nodes --workspace 分布式训练空间 --group H200
         inspire resources nodes --workspace 分布式训练空间 --min-nodes 2
     """
     try:

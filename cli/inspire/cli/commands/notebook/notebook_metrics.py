@@ -9,6 +9,7 @@ compute-group handle, and exists only on the notebook route.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable, Optional, cast
 
 import click
@@ -241,7 +242,9 @@ notebook_metrics.params.append(
         ),
     )
 )
-notebook_metrics.help = (notebook_metrics.help or "").rstrip() + (
+# The shared factory docstring is indented for its nesting level; dedent it
+# before appending, or Click's cleandoc keeps that indent on every shared line.
+notebook_metrics.help = inspect.cleandoc(notebook_metrics.help or "") + (
     "\n\nPass --now for an instantaneous snapshot of the notebook's current "
     "CPU / memory / GPU / GPU-memory usage. Rates are shown as percentages; a "
     "notebook that is not RUNNING reports zero for every resource."

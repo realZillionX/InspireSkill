@@ -1230,12 +1230,11 @@ def scale_serving(
 ) -> None:
     """Change how many replicas an inference serving runs.
 
-    \b
     Scaling reuses the deployment's existing image, command, port and resource
     spec — only the replica count moves. Each replica costs the serving's full
-    quota, so check `inspire resources quota --workspace <workspace>` before
-    scaling up. Watch the result with
-    `inspire serving instances <name> --workspace <workspace>`.
+    quota, so check `inspire serving quota --workspace <workspace>` before
+    scaling up. Watch the result with `inspire serving instances <name>
+    --workspace <workspace>`.
     """
     name = reject_id_at_boundary(
         ctx,
@@ -1309,7 +1308,6 @@ def versions_serving(
 ) -> None:
     """List a serving's deployment history.
 
-    \b
     Each row is one configuration the deployment has run under. The version
     number is what `inspire serving rollback --version` takes.
     """
@@ -1398,7 +1396,6 @@ def scale_history_serving(
 ) -> None:
     """List when a serving's replica count changed, and to what.
 
-    \b
     This is the first thing to check when request latency or throughput moved
     without a redeploy: a replica count that dropped, or an autoscale that
     never landed, shows up here and nowhere in `versions`. Pair it with
@@ -1510,7 +1507,6 @@ def rollback_serving(
 ) -> None:
     """Redeploy an inference serving under an earlier version's configuration.
 
-    \b
     Pick the target with `inspire serving versions <name> --workspace
     <workspace>`. The running replicas are replaced, so in-flight requests are
     interrupted the same way a restart interrupts them.
@@ -1706,7 +1702,6 @@ def events_serving(
 ) -> None:
     """Show lifecycle and scheduling events for an inference serving.
 
-    \b
     Deployment events (`CreatingRevision` / `GroupsProgressing` / `Pending`)
     and every replica's pod events (`Scheduled` / `Pulled` / `Started`) are
     disjoint sets, and the default merges both into one timeline with an
@@ -2096,8 +2091,26 @@ def configs_serving(
     metavar="NAME",
     help="Serving condition profile providing workspace/project/group/quota/image.",
 )
-@click.option("--replicas", type=click.IntRange(1), default=1, show_default=True)
-@click.option("--nodes-per-replica", type=click.IntRange(1), default=1, show_default=True)
+@click.option(
+    "--replicas",
+    type=click.IntRange(1),
+    default=1,
+    show_default=True,
+    help=(
+        "How many replicas to serve behind the endpoint. Each one costs the full "
+        "--quota, and the count can be changed later with 'inspire serving scale'."
+    ),
+)
+@click.option(
+    "--nodes-per-replica",
+    type=click.IntRange(1),
+    default=1,
+    show_default=True,
+    help=(
+        "Nodes a single replica spans, for a model too large for one node. "
+        "'inspire model deploy-config <model>' reports the floor for this and --quota."
+    ),
+)
 @click.option(
     "--shm-size",
     type=click.IntRange(1),
@@ -2163,8 +2176,8 @@ def create_serving(
 
     \b
     Examples:
-        inspire serving create --name qwen-demo --model qwen-demo --workspace 分布式训练空间 \
-          --project <project> --group H200-2号机房 --quota 1,18,200 \
+        inspire serving create --name qwen-demo --model qwen-demo --workspace 分布式训练空间 \\
+          --project <project> --group H200-2号机房 --quota 1,18,200 \\
           --image <image> --command "python serve.py" --port 8000 --dry-run
         inspire serving metrics qwen-demo --workspace 分布式训练空间 --window 30m
     """
@@ -2459,7 +2472,6 @@ def shell_serving(
     Needs a terminal: this attaches your stdin to a remote PTY. Leave with
     `exit`, or press Ctrl+] to drop the session without ending the shell.
 
-    \b
     Every replica runs the same image and command, so the first running one is
     as good as any unless a specific replica is the one misbehaving; name it
     with `--instance`.

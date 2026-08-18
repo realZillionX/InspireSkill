@@ -786,12 +786,10 @@ def _confirm_ray_left_stopped(
 def start_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
     """Restart a stopped Ray (弹性计算) job.
 
-    \b
     The platform keeps the head and worker-group spec on the record, so a job
     stopped with `inspire ray stop` comes back with the same cluster shape and
     driver command; nothing has to be re-specified.
 
-    \b
     Only a stopped job can be started; the command reports what the job's
     status actually became rather than what the platform answered. Follow the
     startup with `inspire ray events <name> --workspace <workspace>`.
@@ -856,7 +854,6 @@ def start_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> N
 def stop_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
     """Stop a running Ray (弹性计算) job.
 
-    \b
     The record survives; `inspire ray start <name>` brings the same cluster
     back. Use `inspire ray delete` to remove the record entirely.
     """
@@ -1627,13 +1624,12 @@ def events_ray(
 ) -> None:
     """Show events for a Ray (弹性计算) job.
 
-    \b
-    Critical for diagnosing stuck PENDING jobs — the `FailedScheduling`
-    events spell out exactly why the scheduler can't place a pod
-    (insufficient CPU / GPU, node affinity mismatch, taint, etc.). Cluster
-    events and every pod's events arrive in one timeline with an `Instance`
-    column; `--instance` narrows to one role and `--workload-level` keeps only
-    the controller's half.
+    Critical for diagnosing stuck PENDING jobs — the `FailedScheduling` events
+    spell out exactly why the scheduler can't place a pod (insufficient CPU /
+    GPU, node affinity mismatch, taint, etc.). Cluster events and every pod's
+    events arrive in one timeline with an `Instance` column; `--instance`
+    narrows to one role and `--workload-level` keeps only the controller's
+    half.
 
     \b
     Examples:
@@ -1741,10 +1737,9 @@ def instances_ray(
 ) -> None:
     """List pod-level instances (head + workers) for a Ray job.
 
-    \b
-    NAME is resolved within the explicit workspace and current live user.
-    Shows each pod's status; check `inspire ray events <name> --workspace <workspace>`
-    for scheduler reasons when pods remain pending.
+    NAME is resolved within the explicit workspace and current live user. Shows
+    each pod's status; check `inspire ray events <name> --workspace
+    <workspace>` for scheduler reasons when pods remain pending.
     """
     try:
         output_limit = resolve_collection_limit(limit=limit, show_all=show_all)
@@ -1826,9 +1821,8 @@ def instances_ray(
 def delete_ray(ctx: Context, name: str, workspace: str, yes: bool, pick: Optional[int]) -> None:
     """Permanently delete a Ray (弹性计算) job record.
 
-    \b
-    The entry disappears from the platform Ray list. This cannot be undone; if the
-    job is still running, `stop` it first so the scheduler releases
+    The entry disappears from the platform Ray list. This cannot be undone; if
+    the job is still running, `stop` it first so the scheduler releases
     reserved capacity cleanly.
     """
     name = _reject_ray_name_at_boundary(ctx, name)
@@ -1906,7 +1900,6 @@ def shell_ray(
     Needs a terminal: this attaches your stdin to a remote PTY. Leave with
     `exit`, or press Ctrl+] to drop the session without ending the shell.
 
-    \b
     Defaults to the head, which runs the driver and is where `ray status` and
     the cluster's own logs live. Pick a worker by its Role / Rank when the
     question is about one group's processes rather than the cluster's.

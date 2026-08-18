@@ -205,7 +205,6 @@ def events(
 ) -> None:
     """Show platform events for an HPC job.
 
-    \b
     Controller events and every instance's pod events are merged into one
     timeline, so a job that never started explains itself in one call. Use
     ``--instance`` to narrow to a single role, or ``--workload-level`` to keep

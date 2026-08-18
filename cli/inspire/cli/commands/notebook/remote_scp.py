@@ -108,7 +108,7 @@ def bridge_scp(
     """Transfer files to/from an SSH-capable notebook via SSH/SCP.
 
     Requires `inspire notebook connection refresh <notebook> --workspace <workspace>`
-    first. NOTEBOOK is the notebook name. This command is SSH/SCP-only, so it
+    first. NAME is the notebook name. This command is SSH/SCP-only, so it
     is unavailable on H100/H200 notebooks. For those, keep the same
     /inspire/... shared path and run the transfer against an SSH-capable
     notebook instead.

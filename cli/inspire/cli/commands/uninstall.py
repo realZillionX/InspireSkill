@@ -300,7 +300,6 @@ def uninstall(
 ) -> None:
     """Remove InspireSkill from this machine.
 
-    \b
     Removes the agent skills, the update-check agent, and the CLI package.
     Account config is kept unless --purge is passed; the shared Playwright
     browser cache is kept unless --purge-runtime is passed. A repository's own

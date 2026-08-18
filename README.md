@@ -56,7 +56,7 @@ InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命�
 | Agent 文档系统 | 无统一 Skill 文档 | `qzcli-mcp` 的薄 Skill，主要说明工具调用顺序 | `SKILL.md` 是平台操作模型入口，按场景路由到完整 `references/` |
 | Harness 落位 | 无 | MCP 可接入 MCP-Capable Harness，但需要用户自己注册 | 安装器自动写入 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Desktop 的约定目录 |
 | Notebook 连接 | 依赖用户预配本地组件或容器公网 | Jupyter Terminal API Exec | SSH / Shell / Exec / SCP / OpenSSH Config / Proxy URL / Connection Cache / 跨账号重建 |
-| Workload 覆盖 | 少量训练 / HPC 能力 | 资源、GPU Job、HPC Submit、Logs、Dashboard、Jupyter Exec | Notebook / GPU Job / CPU HPC / Ray / Serving / Model / Image / Resources 全覆盖 |
+| Workload 覆盖 | 少量训练 / HPC 能力 | 资源、GPU Job、HPC Submit、Logs、Dashboard、Jupyter Exec | Notebook / GPU Job / CPU HPC / Ray / Serving / TensorBoard / Model / Image / Dataset / Project / Resources 全覆盖 |
 | 观测闭环 | 有限 | Job Logs、Watch、Usage / Dashboard | Events / Logs / Metrics / Instances / Lifecycle / Status 分层诊断 |
 | 资源与路径语义 | 主要是配置和命令参数 | 资源缓存、Workspace / Compute Group / Spec 解析 | Workload Profile 管调度条件，Path Alias 管远端路径，具体启智项目的 `INSPIRE.md` 管持久资产合同 |
 | 多账号与项目层 | `[accounts."<user>"]` 合并层 | 以单套 `~/.qzcli/` 配置为中心 | 一账号一目录，账号级默认值和仓库级项目覆盖分层 |
@@ -148,7 +148,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 <details>
 <summary><b>📝 Notebook 统一入口</b> —— 交互工作台、连接、文件流转、把跑通的环境固化成镜像</summary>
 
-全链路命令化：`create / list / status / start / stop / ssh / connection / ssh-config / exec / shell / scp / install-deps / proxy-url / path / metrics / events / lifecycle / save-image / cancel-save-image`。容器里部署好的服务用 `proxy-url --port` 拿到外部地址直接请求。
+全链路命令化：`create / batch / list / status / start / stop / delete / ssh / ssh-config / ssh-proxy / connection / exec / shell / scp / install-deps / proxy-url / path / quota / profile / metrics / events / lifecycle / save-image / cancel-save-image`。容器里部署好的服务用 `proxy-url --port` 拿到外部地址直接请求；`ssh-proxy` 是给 OpenSSH `ProxyCommand` 用的裸流转发，`ssh-config` 生成的配置里就指向它。
 
 把跑通的环境固化成镜像是 Notebook 自己的生命周期事件：`save-image` 会先报平台估算的快照体积（`--dry-run` 只估不存），保存期间该 Notebook 不可操作，中途要拿回来用 `cancel-save-image`——已经打出「等待推送」之后取消仍然生效。默认是在起点镜像上再堆一层，反复迭代的环境层数会一路累积，`--flatten` 把结果压成单层：实测**压平反而更小**（8 层 331.78 MB → 1 层 286.90 MB），多出来的时间落在镜像构建上而不落在 Notebook 上，两种保存都在同一时刻把容器还给你。
 
@@ -161,14 +161,14 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 平台官方把 `job` 这一路叫“分布式训练” / Distributed Training；提交 Job 时只要求 GPU 计算资源和启动命令，不强制程序必须是训练。`inspire job` 可用于一张卡、多卡、单节点、多节点等后台 GPU 任务：分布式训练 / 批量推理 / 并发 Worker Pool 都走这里（`hpc` 对应 CPU Slurm）。
 
-提交统一使用 `job create`，可用 `--enable-notification` 开启当前用户绑定飞书账号的状态通知；需要跟日志时用 `job logs <name> --workspace <workspace> --follow`，健康度用 `job metrics <name> --workspace <workspace>` 看 GPU、显存、CPU、内存、I/O 和多 Pod 负载是否同步。
+`inspire job create / batch / list / status / command / wait / stop / delete / events / instances / shell / logs / metrics / quota / profile`。提交统一使用 `job create`（一次提交多个用 `job batch`），可用 `--enable-notification` 开启当前用户绑定飞书账号的状态通知；脚本里等任务跑完用 `job wait`，忘了提交时写的启动命令用 `job command` 原样读回；需要跟日志时用 `job logs <name> --workspace <workspace> --follow`，健康度用 `job metrics <name> --workspace <workspace>` 看 GPU、显存、CPU、内存、I/O 和多 Pod 负载是否同步。
 
 </details>
 
 <details>
 <summary><b>🚀 HPC 任务分派</b> —— 只写 Slurm 正文，两层规格由 CLI 在提交前挡下</summary>
 
-`inspire hpc create -c <slurm-body>` 只写 Slurm 正文 + 显式 `srun`，平台自动补 `#SBATCH` 头。两层独立：节点资源用 `--quota gpu,cpu,mem`（CLI 自动解析到平台 Quota Row），Slurm 调度用 `--number-of-tasks / --cpus-per-task / --memory-per-cpu`。
+`inspire hpc create / batch / list / status / stop / delete / events / instances / shell / logs / metrics / quota / profile`。`hpc create -c <slurm-body>` 只写 Slurm 正文 + 显式 `srun`，平台自动补 `#SBATCH` 头。两层独立：节点资源用 `--quota gpu,cpu,mem`（CLI 自动解析到平台 Quota Row），Slurm 调度用 `--number-of-tasks / --cpus-per-task / --memory-per-cpu`。
 
 两层之间平台和网页端都不校验，规格不匹配时要么 `FAILED` 且日志和事件里都没有原因，要么一直 `RUNNING` 却什么都没跑，所以 `hpc create` 在提交前自己挡下这些组合。`hpc status` 的 `Steps` 是判断「程序到底跑没跑」的字段——正文忘了 `srun` 的任务照样报成功，但 `Steps` 是 `0/0`。
 
@@ -177,7 +177,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 <details>
 <summary><b>🧬 弹性计算（Ray）</b> —— Head 加可伸缩 Worker Group，以及弹性到底动没动过</summary>
 
-`inspire ray create / list / status / start / stop / delete / events / instances / shell / logs / metrics / scaling`：一个 Head 加多个可伸缩 Worker Group。停掉的 Job 保留完整集群规格，`ray start` 原样拉回来，不需要重新指定；平台在这里会「受理但不执行」，所以命令以状态真的离开 `STOPPED` 为准，没动就报失败。
+`inspire ray create / batch / list / status / start / stop / delete / events / instances / shell / logs / metrics / scaling / quota / profile`：一个 Head 加多个可伸缩 Worker Group。停掉的 Job 保留完整集群规格，`ray start` 原样拉回来，不需要重新指定；平台在这里会「受理但不执行」，所以命令以状态真的离开 `STOPPED` 为准，没动就报失败。
 
 弹性是 Ray 存在的理由，而「`min` / `max` 到底动没动过」要用 `ray scaling` 才看得到：它按时间列出每个 Worker Group 的每一次副本数变更，空的历史说明这个弹性区间从来没被用到。
 
@@ -186,7 +186,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 <details>
 <summary><b>🛰 模型部署（Serving）</b> —— 部署、伸缩、回滚，以及只有请求侧才看得见的那一半</summary>
 
-`inspire serving create / list / status / start / stop / scale / scale-history / versions / rollback / configs / events / instances / shell / logs / metrics / api-metrics`：覆盖模型部署服务的创建、列表、状态、启停、副本伸缩与伸缩历史、部署历史与回滚、可用配置、事件、实例、日志和指标；创建前用 `serving quota --workspace <workspace>` 选 Quota，用 `model deploy-config` 确认规格下限。
+`inspire serving create / batch / list / status / start / stop / delete / scale / scale-history / versions / rollback / configs / events / instances / shell / logs / metrics / api-metrics / quota / profile`：覆盖模型部署服务的创建、列表、状态、启停与删除、副本伸缩与伸缩历史、部署历史与回滚、可用配置、事件、实例、日志和指标；创建前用 `serving quota --workspace <workspace>` 选 Quota，用 `model deploy-config` 确认规格下限。
 
 `metrics` 看资源占用，`api-metrics` 看请求量、成功率和延迟——只有后者能把「没人调用」和「一直调用一直失败」分开。没重新部署过而延迟变了，先看 `scale-history`：掉下去的副本数、没落地的自动伸缩只出现在这里，`versions` 里一个字都没有。
 
@@ -261,6 +261,15 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 </details>
 
 <details>
+<summary><b>🗂️ 项目（Project）</b> —— 归属、负责人、预算与平台优先级</summary>
+
+`inspire project list / detail / owners`：项目是**全局对象，不按 Workspace 划分**，所以这一组都不接 `--workspace`。`list` 给出可见候选和显示预算，`detail <名字>` 看单个项目的预算 / 点券 / 平台优先级字段，`owners` 给出「负责人」下拉框的内容——需要权限时知道该找谁。
+
+判断本仓库归属哪个 Project 只能由用户指认，不从列表猜；确认后写进 `./.inspire/` 与 `INSPIRE.md`，见 [`references/project-context.md`](references/project-context.md)。日常算力决策先看 `<workload> quota` 和实时余量，项目预算通常不是第一约束。
+
+</details>
+
+<details>
 <summary><b>👤 权限</b> —— 提交前先确认自己有没有这个动作的权限</summary>
 
 `inspire account permissions --workspace <workspace>`：看清当前账号在某 Workspace 下实际授予的权限码（`job.trainingJob.create` 等），提交前先确认自己有没有这个动作的权限。
@@ -270,7 +279,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 <details>
 <summary><b>🗝 多账号（一账号一目录）</b> —— 切账号 = 改一个文件</summary>
 
-`inspire account add / list / use / rename / current / remove`：每个账号的 `config.toml`、SSH Tunnel Bridges 和登录缓存都在独立目录 `~/.inspire/accounts/<name>/`，活动账号由 `~/.inspire/current` 一行决定。
+`inspire account add / list / use / rename / current / remove / check / context / permissions`：每个账号的 `config.toml`、SSH Tunnel Bridges 和登录缓存都在独立目录 `~/.inspire/accounts/<name>/`，活动账号由 `~/.inspire/current` 一行决定。`account check` 一次核对配置、登录和项目上下文，`account context` 列出当前账号能用的全部资源名。
 
 不再有 `[accounts."<user>"]` 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。Notebook 连接类命令的 `--account <name>` 使用本地 Account Alias，不是平台登录用户名；`all` 是跨账号扫描 Selector。
 

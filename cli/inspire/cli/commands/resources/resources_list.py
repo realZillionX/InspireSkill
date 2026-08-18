@@ -319,13 +319,14 @@ def availability_resources(
 ) -> None:
     """List compute-group availability.
 
-    Requires --workspace <name|all> and shows real-time GPU usage.
+    Requires one --workspace <name> and shows real-time GPU usage. Availability
+    is defined per workspace, so `all` is rejected here.
     Use --include-cpu to include CPU-only compute groups and CPU/memory totals.
 
     \b
     Examples:
         inspire resources availability --workspace 分布式训练空间
-        inspire resources availability --workspace all --include-cpu
+        inspire resources availability --workspace CPU资源空间 --include-cpu
         inspire resources availability --workspace 分布式训练空间 --group H200
     """
     try:

@@ -1197,6 +1197,7 @@ def create_hpc(
 ) -> None:
     """Create a CPU Slurm / HPC batch job.
 
+    \b
     Two independent layers:
       * Node-level: --quota gpu,cpu,mem chooses the resources available per
         node; --instance-count chooses how many nodes.
@@ -1216,12 +1217,12 @@ def create_hpc(
 
     \b
     Examples:
-        inspire hpc create -n preprocess --workspace CPU资源空间 --project <project> \
-          --group HPC-可上网区资源-2 -q 0,20,256 --image <image> \
+        inspire hpc create -n preprocess --workspace CPU资源空间 --project <project> \\
+          --group HPC-可上网区资源-2 -q 0,20,256 --image <image> \\
           -c 'srun bash -lc "python preprocess.py"'
         inspire hpc create -n probe --profile cpu-hpc -c 'srun hostname' --dry-run
-        inspire hpc create -n index --profile cpu-hpc --dataset pixabay-81k:v0 \
-          --max-time 4 --keep-after-finish 0.5 \
+        inspire hpc create -n index --profile cpu-hpc --dataset pixabay-81k:v0 \\
+          --max-time 4 --keep-after-finish 0.5 \\
           -c 'srun bash -lc "python index.py /inspire/dataset/pixabay-81k/v0"'
     """
     dataset_mounts = parse_dataset_specs_or_usage_error(datasets)
@@ -1687,9 +1688,8 @@ def stop_hpc(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> No
 def delete_hpc(ctx: Context, name: str, workspace: str, yes: bool, pick: Optional[int]) -> None:
     """Permanently delete an HPC job entry (pass the job name).
 
-    \b
-    The entry disappears from the platform HPC list. This cannot be
-    undone; if the job is still running, `stop` it first.
+    The entry disappears from the platform HPC list. This cannot be undone; if
+    the job is still running, `stop` it first.
 
     \b
     Example:
@@ -1784,7 +1784,6 @@ def shell_hpc(
     Needs a terminal: this attaches your stdin to a remote PTY. Leave with
     `exit`, or press Ctrl+] to drop the session without ending the shell.
 
-    \b
     Defaults to the `launcher`, which is where `srun` runs and therefore the
     only pod that sees your job's processes. `slurmctld` is the scheduler
     itself; a shell there answers questions about the queue, not the workload.

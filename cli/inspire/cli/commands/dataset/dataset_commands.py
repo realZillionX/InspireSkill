@@ -637,7 +637,6 @@ def dataset_applications_cmd(
     access is granted, and applying for it is a web-only flow — this command
     reads the outcome, it does not submit, approve, or withdraw anything.
 
-    \b
     States are `pending`, `approved`, `rejected`, and `withdrawn`. An approved
     application is the point at which `dataset validate <name>:<version>` is
     worth running again. Pass NAME, the dataset name, for the full record of

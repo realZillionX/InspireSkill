@@ -1,6 +1,6 @@
 """`inspire resources policy` — what the workspace does to work left running.
 
-`resources quota` answers "am I allowed to take this capacity"; this answers
+`<workload> quota` answers "am I allowed to take this capacity"; this answers
 "how long do I get to keep it". Every workspace declares, per workload, an idle
 reclaim rule and a runtime cap, and until now nothing in the CLI surfaced them:
 a notebook reclaimed overnight, a training job killed at the ten-day mark and a
@@ -174,22 +174,20 @@ def policy_resources(
 ) -> None:
     """Show a workspace's idle-reclaim rules and runtime caps per workload.
 
-    \b
     `Reclaim` is whether the scheduler takes the workload back on its own,
     `Idle Rule` is the condition that triggers it, and `Time Limit` is the hard
     cap — a `max` duration for jobs, a `daily` wall-clock shutdown for
     notebooks. A dash means the workspace declares no policy for that workload,
     which is not the same as declaring no limits.
 
-    \b
-    Use `inspire resources quota` for the ceiling on how much you may take, and
-    `inspire resources availability` for what is physically free.
+    Use `inspire <workload> quota` for the ceiling on how much you may take,
+    and `inspire resources availability` for what is physically free.
 
     \b
     Examples:
         inspire resources policy --workspace 分布式训练空间
         inspire resources policy --workspace CPU资源空间 --workload notebook
-        inspire --json resources policy --workspace all --all
+        inspire --json resources policy --workspace 分布式训练空间 --all
     """
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)

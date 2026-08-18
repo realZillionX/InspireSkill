@@ -123,7 +123,7 @@ def main(
     \b
     Normal workflow:
         1. `inspire account context` lists usable resource names.
-        2. `inspire <kind> quota --workspace <name|all>` lists valid quotas.
+        2. `inspire <kind> quota --workspace <name>` lists valid quotas.
         3. `inspire <kind> create ...` creates a workload.
         4. `status`, `events`, `logs`, and `metrics` inspect it.
 
@@ -133,8 +133,8 @@ def main(
 
     \b
     Examples:
-        inspire job create --name "pr-123" --workspace 分布式训练空间 \
-          --project <project> --group H200-2号机房 --quota "4,80,800" \
+        inspire job create --name "pr-123" --workspace 分布式训练空间 \\
+          --project <project> --group H200-2号机房 --quota "4,80,800" \\
           --command "bash train.sh"
         inspire job status pr-123 --workspace 分布式训练空间
         inspire notebook list --workspace 分布式训练空间

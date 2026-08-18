@@ -21,6 +21,7 @@ from inspire.platform.web.session.auth import (
     login_with_playwright as _login_with_playwright,
 )
 from inspire.platform.web.session.models import (
+    AuthenticationError,
     DEFAULT_WORKSPACE_ID,
     SESSION_TTL,
     TRANSIENT_HTTP_STATUSES,
@@ -47,6 +48,7 @@ from inspire.platform.web.session.retry import (
 )
 
 __all__ = [
+    "AuthenticationError",
     "DEFAULT_WORKSPACE_ID",
     "SESSION_TTL",
     "TRANSIENT_HTTP_STATUSES",
@@ -98,20 +100,93 @@ def _refresh_session_in_place(current: "WebSession", refreshed: "WebSession") ->
     current.created_at = refreshed.created_at
 
 
-def _refresh_expired_session(session: "WebSession") -> "WebSession":
+class _AuthRefreshBudget:
+    """One session rebuild per :func:`request_json` call, retries included.
+
+    ``with_transient_retry`` runs the call again after a 429, and a rebuild is
+    the one thing that must not be repeated per attempt: it is where a login
+    happens. Threading the allowance through the retries — rather than
+    resetting it on each one — is what keeps a rate-limited fan-out from
+    turning into three logins.
+    """
+
+    __slots__ = ("_remaining",)
+
+    def __init__(self, remaining: int) -> None:
+        self._remaining = remaining
+
+    def consume(self) -> bool:
+        if self._remaining <= 0:
+            return False
+        self._remaining -= 1
+        return True
+
+
+def _refresh_expired_session(
+    session: "WebSession",
+    *,
+    observed_created_at: float,
+) -> "WebSession":
+    """Return a session newer than the one whose cookies were just refused.
+
+    *observed_created_at* is the generation the caller actually sent. Comparing
+    against that, rather than against ``session.created_at`` as it reads now,
+    is what stops a second login when someone else refreshed the shared session
+    object mid-flight: the caller's 401 belongs to a generation that has
+    already been replaced, and the replacement was never tried.
+    """
     account = session.account
-    if not account:
-        return get_web_session(force_refresh=True, account=account)
+    if session.created_at > observed_created_at:
+        return session
     with exclusive_session_refresh(account):
+        if session.created_at > observed_created_at:
+            return session
         cached = WebSession.load(allow_expired=True, account=account)
         if (
             cached is not None
             and bool(cached.storage_state.get("cookies"))
-            and cached.created_at > session.created_at
+            and cached.created_at > observed_created_at
         ):
             return cached
-        clear_session_cache(account=account)
-        return get_web_session(force_refresh=True, account=account)
+        # The rejected session stays on disk until its replacement is written:
+        # it is the generation marker every other waiter compares against, and
+        # deleting it up front means a failed login leaves nothing behind to
+        # tell them the attempt already happened.
+        return _get_web_session(force_refresh=True, account=account)
+
+
+def _rebuild_session_and_repeat(
+    session: "WebSession",
+    method: str,
+    url: str,
+    *,
+    headers: Optional[dict[str, str]],
+    body: Optional[dict],
+    timeout: int,
+    budget: "_AuthRefreshBudget",
+    observed_created_at: float,
+) -> dict:
+    """The single authentication boundary every browser API call passes."""
+    global _BROWSER_API_FORCE_BROWSER
+
+    _close_browser_client()
+    if not budget.consume():
+        raise SessionExpiredError(
+            "Session expired again after a single authentication refresh"
+        )
+    logger.debug("Web session expired; rebuilding it once for this call.")
+    new_session = _refresh_expired_session(session, observed_created_at=observed_created_at)
+    _refresh_session_in_place(session, new_session)
+    _BROWSER_API_FORCE_BROWSER = False
+    return _request_json_once(
+        session,
+        method,
+        url,
+        headers=headers,
+        body=body,
+        timeout=timeout,
+        _budget=budget,
+    )
 
 
 def request_json(
@@ -132,6 +207,7 @@ def request_json(
     means; what does reach them is either data or a
     :class:`TransientAPIError` saying the platform never answered.
     """
+    budget = _AuthRefreshBudget(0 if _retry_count else 1)
     return with_transient_retry(
         lambda: _request_json_once(
             session,
@@ -140,7 +216,7 @@ def request_json(
             headers=headers,
             body=body,
             timeout=timeout,
-            _retry_count=_retry_count,
+            _budget=budget,
         )
     )
 
@@ -153,9 +229,15 @@ def _request_json_once(
     headers: Optional[dict[str, str]] = None,
     body: Optional[dict] = None,
     timeout: int = 30,
-    _retry_count: int = 0,
+    _budget: Optional["_AuthRefreshBudget"] = None,
 ) -> dict:
     global _BROWSER_API_FORCE_BROWSER
+
+    budget = _AuthRefreshBudget(1) if _budget is None else _budget
+    # Read before the request goes out: it names the session generation whose
+    # cookies this call is about to send, and another thread may replace it in
+    # place while the request is in flight.
+    observed_created_at = session.created_at
 
     if not _BROWSER_API_FORCE_BROWSER:
         # Pooled, not per-request: this is the path every browser API call
@@ -165,18 +247,37 @@ def _request_json_once(
         try:
             method_upper = method.upper()
             req_headers = headers or {}
+            # Redirects are never followed. An unauthenticated call is answered
+            # with a 302 towards CAS, and following it turns that signal into an
+            # HTML login page — a 200 the caller cannot tell from data.
             if method_upper == "GET":
-                resp = http.get(url, headers=req_headers, timeout=timeout)
+                resp = http.get(
+                    url,
+                    headers=req_headers,
+                    timeout=timeout,
+                    allow_redirects=False,
+                )
             elif method_upper == "POST":
                 req_headers = dict(req_headers)
                 req_headers["Content-Type"] = "application/json"
-                resp = http.post(url, headers=req_headers, json=body or {}, timeout=timeout)
+                resp = http.post(
+                    url,
+                    headers=req_headers,
+                    json=body or {},
+                    timeout=timeout,
+                    allow_redirects=False,
+                )
             elif method_upper == "DELETE":
-                resp = http.delete(url, headers=req_headers, timeout=timeout)
+                resp = http.delete(
+                    url,
+                    headers=req_headers,
+                    timeout=timeout,
+                    allow_redirects=False,
+                )
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
-            if resp.status_code == 401:
+            if resp.status_code == 401 or 300 <= resp.status_code < 400:
                 raise SessionExpiredError("Session expired or invalid")
             if resp.status_code >= 400:
                 message = f"API returned {resp.status_code}: {resp.text}"
@@ -189,9 +290,23 @@ def _request_json_once(
                 raise ValueError(message)
             try:
                 return resp.json()
-            except ValueError as e:
-                raise SessionExpiredError("Session expired or invalid (non-JSON response)") from e
-        except (SessionExpiredError, requests_lib.exceptions.RequestException):
+            except ValueError:
+                # With redirects disabled this is no longer how an expiry
+                # arrives, so it is not treated as one. Let the other transport
+                # say what it is; that costs no credentials either way.
+                _BROWSER_API_FORCE_BROWSER = True
+        except SessionExpiredError:
+            return _rebuild_session_and_repeat(
+                session,
+                method,
+                url,
+                headers=headers,
+                body=body,
+                timeout=timeout,
+                budget=budget,
+                observed_created_at=observed_created_at,
+            )
+        except requests_lib.exceptions.RequestException:
             _BROWSER_API_FORCE_BROWSER = True
 
     from inspire.platform.web.browser_api.core import _in_asyncio_loop, _run_in_thread
@@ -222,23 +337,16 @@ def _request_json_once(
             timeout=timeout,
         )
     except SessionExpiredError:
-        _close_browser_client()
-        # Auto-retry once with fresh session
-        if _retry_count < 1:
-            logger.debug("Web session expired; refreshing cached session.")
-            new_session = _refresh_expired_session(session)
-            _refresh_session_in_place(session, new_session)
-            _BROWSER_API_FORCE_BROWSER = False
-            return _request_json_once(
-                session,
-                method,
-                url,
-                headers=headers,
-                body=body,
-                timeout=timeout,
-                _retry_count=_retry_count + 1,
-            )
-        raise
+        return _rebuild_session_and_repeat(
+            session,
+            method,
+            url,
+            headers=headers,
+            body=body,
+            timeout=timeout,
+            budget=budget,
+            observed_created_at=observed_created_at,
+        )
     except Exception as exc:
         if is_playwright_browser_runtime_error(exc):
             _close_browser_client()
@@ -269,14 +377,12 @@ def get_web_session(
     require_workspace: bool = False,
     account: Optional[str] = None,
 ) -> WebSession:
-    if force_refresh:
-        return _get_web_session(
-            force_refresh=True,
-            require_workspace=require_workspace,
-            account=account,
-        )
+    # The lock covers *force_refresh* too. That is the call that logs in, so
+    # skipping it was letting every concurrent process past the one gate meant
+    # to make them share a single refresh.
     with exclusive_session_refresh(account):
         return _get_web_session(
+            force_refresh=force_refresh,
             require_workspace=require_workspace,
             account=account,
         )

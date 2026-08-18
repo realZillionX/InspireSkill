@@ -4,7 +4,11 @@
 
 ### 变更
 
-- **`/api/v1` 从这个客户端里彻底消失了。** 最后三处——登录握手的 `user/detail`、登录时发现 Workspace 的 `user/routes/default`、Notebook 的 `notebook/lab/{id}`——留着的理由此前写的是「Session 自举时还没有 Session 可供 v2 用」和「反向代理不是 Action 能表达的东西」。三条实测全部不成立：
+- **`<workload> metrics` 从 8 次请求变成 2 次。** 之前按 metric 类型逐个扇出，理由写在 `metrics.py` 开头：「实测一次发 5 个 metric 类型只回第一个」。那句话是对的，但它测的是单数的 `GetTaskMetric`——而 `/discovery` 里一直躺着一个 `GetTaskMetricBatch`（train / hpc / ray / notebook / inference-serving / cluster 六处同名），**它认整个列表**。这正是 Browser API 参考里点名的固定错误模式：只测同名 Action 就下结论，然后把结论写进注释，扇出循环因此活了四个月。
+
+  Batch 版和单数版**不是同一个请求形状**：`task_ids` 是平铺的数组而不是 `filter.task_id`，响应多包一层 `task_metrics[]`，而且**不接 `logic_compute_group_id`**——那个参数在它的声明里根本不存在。`get_resource_metrics_by_time()` 的签名没动（仍然收 `logic_compute_group_id`，只是不再发出去），所以调用方一行不用改。
+
+  **每次最多 5 个 metric 类型**：第 6 个开始平台答 `InternalError: 指标查询暂不可用`，连跑 3 轮 3/3 复现，每轮之前先用单数版确认后端是活的，所以是请求形状不是后端抖动。平台给的是 `InternalError` 而不是 `InvalidParameter`，也没有任何文档，因此按「天花板」处理：包装层按 5 切块，8 个指标 = 2 次请求，而不是赌它哪天会放宽。 最后三处——登录握手的 `user/detail`、登录时发现 Workspace 的 `user/routes/default`、Notebook 的 `notebook/lab/{id}`——留着的理由此前写的是「Session 自举时还没有 Session 可供 v2 用」和「反向代理不是 Action 能表达的东西」。三条实测全部不成立：
 
   - `user.GetUserDetail` 空 body 就答，`data` 与 `Result` **逐字段相同**（8 个键，0 差异）。未登录时两边同样是 401，所以登录轮询那段判据一个字都不用改。
   - `user.GetRoutes` 的 `WorkspaceId` **收字面量 `"default"`**，答的是完整 `userWorkspaceList`，与传一个真实 Workspace id 的响应 5794 字节 **0 差异**。「v2 要一个真实 `WorkspaceId`，登录时拿不到」是我们自己写进 Reference 的错误结论——而登录时恰恰没有真实 id，于是这条推断把自己锁死了整整一个迁移周期。空串或缺键才报 `WorkspaceId is required`。
@@ -13,6 +17,10 @@
   **验收是真的跑了一次登录**：备份 Session 缓存，`force_refresh` 走 requests/CAS 与 Playwright 两条路径各一次，10 个 Workspace、名字、`is_fair_workspace`、`user_detail` 与迁移前完全一致；Notebook lab 的解析拿一台运行中的 CPU Notebook 对 v1/v2 各跑一遍，落点相同。
 
   连带清理：`_v2_result()` 移进 session 层（登录也要用它，而 session 不能反向 import `browser_api`）；`INSPIRE_BROWSER_API_PREFIX` / `api.browser_api_prefix` **配置项删除**——它最后只对 Notebook lab 一处生效，设成别的值只会把那一处弄坏，旧 `config.toml` 里残留这个键会被静默忽略；六处 docstring 还报着 `POST /api/v1/model/list` 这类早已不存在的地址，连同 `browser-api.md` 的「仍在使用的 v1 端点」整节一起重写。边界测试也换了两条更强的不变量：**全树零 `/api/v1` 字面量**（不再是白名单），以及 `/api/v2` 字面量只许出现在 `browser_api/`（例外两条：`job_shell.py` 的四条实例 PTY、`session/auth.py` 的登录自举）。
+
+- **`--help` 里有四条跑不通的示例。** `resources availability` 的正文写着「Requires `--workspace <name|all>`」、示例直接给了 `--workspace all --include-cpu`，而运行时答 `--workspace requires one workspace name for this command.`；`resources nodes` 和 `resources policy` 各有一条同样的 `--workspace all` 示例；`project list` 的示例带 `--workspace all`，而这条命令**根本没有 `--workspace`**（项目是全局对象）。`SKILL.md` 写的是「命令语法和参数始终回到 CLI Help」，所以 Help 里一条抄下来就报错的示例比文档过期更糟。同批修掉两处指向不存在的 `inspire resources quota` 的引用（真实命令是 `<workload> quota`）。
+
+- **README 的命令枚举补齐到真实命令面。** 用 Click 的命令树逐组对过，11 个枚举了子命令的组现在**逐字匹配**：Notebook 补 `delete` / `ssh-proxy`（给 OpenSSH `ProxyCommand` 用的裸流转发，`ssh-config` 生成的配置就指向它）/ `batch` / `profile` / `quota`，Serving 补 `delete`，Job 与 HPC 从「只提 create」改成完整命令面并点出 `job wait` / `job command`，Ray 与 Account 补齐 `batch` / `profile` / `quota` / `check` / `context`。新增 `inspire project` 一节——它是**全局对象、不按 Workspace 划分**，此前在 README 和 `SKILL.md` 的索引里都完全没有出现。
 
 - **Browser API 文档合并成一份。** `browser-api.md` / `browser-api-actions.md` / `data-plaza-api.md` 三份 977 行合成一份 962 行，其中 589 行是表格——协议、探针方法、13 条路由 114 个 Action 的逐条参数与响应、创建面字段合同、非 Action 的那半边网关、数据广场，全在同一页里按章节走。数据广场此前单开一份，理由是「不是启智的一部分」；但它由同一层 Web Session 驱动、`dataset.ValidateDataset` 又要靠它的 code 才挂得上，分开看反而要在两份文档之间来回跳。
 
@@ -23,6 +31,24 @@
 - **升级提醒改成对所有人都印**，不再需要 `INSPIRE_SHOW_UPDATE_NOTICE=1` 才开（这个环境变量随之删除）。它自 v6.3.0 起是 opt-in 且默认关着，理由是「别让升级元数据污染命令输出」——但代价是**没有任何人被告知过有新版本**，包括维护者自己。真正要守的那条不变量由另外两道闸守着，两道都还在：提醒只走 stderr（stdout 永远只有命令本身被要求的东西），并且 `--json` 下完全不印，所以「输出是单一 JSON 文档」这条合同没动。要整条关掉仍然是 `INSPIRE_SKIP_UPDATE_CHECK=1`。
 
 ### 修复
+
+- **一次 Session 过期能被放大成多次 CAS 凭据提交，足以把账号送进锁定。** 这个客户端会自己登录：Session 在命令中途失效，某一层悄悄重新认证。问题不是它会登录，而是**没有任何一层知道别人已经登过了**——每一层只限制自己的重试次数，于是限制叠在别人已经花掉的预算上。数出来的放大路径有五条：
+
+  - **跨进程只对「成功」去重。** Account 级文件锁的复用条件是「磁盘上有更新的 Session」，而那只有登录成功才写得出来。第一个进程登录失败之后，后面 7 个等待者依次拿到锁、依次提交同一份密码。新增的 8 进程测试把这条钉死了：去掉闸门 **8 次提交**，装上闸门 **1 次**。
+  - **提交之后还会换条路再提交一次。** requests/CAS 路径把密码 POST 出去之后，遇到 5xx、连接断开、响应丢失、甚至本地缓存写失败，都会落回 Playwright 重走一遍登录——而服务端很可能已经收下了那次提交。
+  - **上层 Wrapper 各包一层认证重试。** 资源可用性查询和节点计数在 `request_json()` 已经重建过一次 Session 之后，又 `clear_session_cache()` 从头再来一遍；`with_transient_retry` 则在每个 429 重试上把认证预算**重置**，一次被限流的扇出最多能买到三次登录。
+  - **同进程内共享 Session 对象时会重复登录。** `_refresh_expired_session()` 拿「此刻的 `session.created_at`」当作失败的那一代，而另一个线程刚刚把刷新结果原地写了回去——于是**没人试过的新 Session** 被判成刚失败的那个，再登一次。
+  - **401 先走一趟浏览器。** 同一份已经被拒的 Cookie 再送进 Playwright 问一遍，纯属延迟；而 `allow_redirects=True` 会把「网关 302 到 Keycloak」这个认证信号跟成一张 HTML 登录页，和数据无法区分——和上一条 `scan_v2_surface.py` 踩的是同一个坑，只是发生在客户端自己的传输层里。
+
+  现在提交凭据只有一个入口。`login_with_playwright()` 是全 CLI 唯一把密码放上网线的地方，闸门就设在那里（`session/login_guard.py`），而不是设在调用方——调用方永远不知道别人花了多少。一次提交被拒之后，**同一份凭据**在本地被拒绝再次提交：按 Account 存一个不含明文、不含平台响应的标记，前台命令、后台刷新和其它进程读的是同一个事实。冷却按**连续**失败次数升级 60s → 5min → 15min → 30min（封顶），一小时无人再试则清零。解除条件是三者之一：冷却到期、有更新的 Session 落盘、或者**凭据变了**——指纹用 PBKDF2 派生，用户改完密码立刻能登，重新输入同一个错密码则照旧拦下。登录成功清标记、不计次（成功的提交不触发锁定，没有理由限流）。
+
+  同批把叠加的那几层拆掉：`request_json()` 全程禁止重定向，401/3xx 直接进入**唯一**的重建边界，该边界的预算**跨 429 重试共享**；重建改成按调用实际发出去的那一代比较，别人刚换好的 Session 不再被当成失败品；资源可用性与节点计数的第二层重试删除。反过来也补了一处：登录成功但本地缓存写不进去时，Session 照常返回并只记一条 warning——把它当成登录失败，等于把平台刚认过的凭据丢掉再登一次。
+
+  **验收在真实平台上跑过，也真的撞上了它要防的东西。** 用一个不存在的用户名做闸门验收：第 1 次 2.16s 打到 CAS，随后 10 次串行 + 8 个并发进程共 18 次全部在本地 0.17s 返回，标记里的 `failures` 始终是 1；等到冷却结束再试，第 2 次才放出去，冷却随即升到 5 分钟；改一个字符的密码则立刻放行。而这几次失败登录之后，**CAS 开始对这台机器强制 `authcode` 验证码**，这台机器上原本有效的 Session 一并失效，正确密码也登不进去了——旧代码那种「一次过期换来 8 次提交」不是理论风险，几次就够触发平台侧的防护。真实账号那一侧的登录边界同样是实测的：`--debug` 日志里一次过期只有一行 `rebuilding it once` 和一行 `CAS requests login`，没有 Playwright 的第二次提交。
+
+  连带修掉一个测试隐患：会话缓存和这个新标记都写在**当前 Account** 目录下，而测试套件跑在开发者自己的 `~/.inspire/` 上——模拟一次失败登录就会给开发者自己的账号写一个熔断标记，用的还是一个根本不存在的密码。现在 `conftest.py` 让会话存储在测试里解析不到 Account（要持久化的测试自己传 Account 名并隔离 `Path.home`），验证这条解析逻辑本身的 5 个测试改用 `active_account_session_storage` 显式退出。
+
+- **Session 过期时 `scan_v2_surface.py` 会把 Keycloak 登录页当成控制台扫，然后报 `0 routes / 0 actions`。** 过期不表现为失败而表现为**跳转**：网关 302 到 SSO，requests 默认跟过去，登录页 200 回来、自带一个 `<script src>`，于是扫描器照常沿着它「递归」了一层就结束。印出来的那行和真实结果同一个形状，只是数字是零——而这份清单唯一的用途就是判断某个 Action 存不存在，零就是「控制台什么都不调」。本次排查 batch API 时第一次跑就撞上了它，`WebSession.load(allow_expired=True)` 本来就会把过期 cookie 原样交出来，所以这是常见路径不是边角情况。三道闸：根请求改 `allow_redirects=False`，302/401/403 直接判定未认证——这正是 `browser-api.md` §2 要求每个外部探针都关掉重定向的同一条理由；按文档给的补救办法用 `get_web_session(force_refresh=True)` 重建 Session 重试一次；chunk 响应的 `content-type` 不是 javascript 就不写缓存，否则一张登录页会以 `.js` 的名字进磁盘缓存、毒化之后每一次从缓存跑的扫描。最后补一条下限检查：抽到 0 个 Action 时以 2 退出并明说「本次运行不构成不存在的证据」，而不是印一份读起来像结论的空报告。
 
 - **Windows 成为一等公民，不再要求 WSL。** 此前 `import inspire.cli.main` 在 Windows 上直接 `ModuleNotFoundError: fcntl` —— 断点在 `accounts/cache_lock.py`，而它在第一条子命令的 import 链上，所以不是「某个命令不能用」，是 `inspire --version` 都起不来。五处模块级 POSIX 导入（`fcntl` / `pty` / `termios` / `tty`）按平台分叉，文件锁在 Windows 上用 `msvcrt.locking` 实现。CI 增加 `windows-latest`。
 
@@ -45,6 +71,28 @@
   连带影响是每日那个 launchd agent（跑的正是 `update --check --silent`）一直在静默地以 1 退出——`launchctl list` 里那一列就是 `1`。`--check` 此前没有任何测试覆盖（现有的 8 处调用一律传 `check_only=False`），这个 bug 因此活了下来；现在三种情形各有一条测试：有新版本、已是最新、装坏了。
 
 - **PyPI 响应被截断会让整个检查带着 traceback 崩掉**，而不是回落到 GitHub 上的 `pyproject.toml`。`http.client.IncompleteRead` 是 `HTTPException` 而**不是** `OSError`，所以它穿过了 `fetch_latest_version_info` 那个 `except (URLError, TimeoutError, OSError, JSONDecodeError)`。本机 `~/Library/Logs/inspire-skill-update-check.log` 里就留着这么一次崩溃。两个分支的 except 都补上 `http.client.HTTPException`，回落链因此真的能用——模块开头承诺的「失败时完全无副作用」现在对前台的 `update --check` 也成立，此前只有后台那条路径靠外层的兜底 `except Exception` 撑着。
+
+- **13 条多行示例在 `--help` 里被压成了一整行。** 根因是 docstring 里的续行写成了单个 `\`——在非 raw 字符串里那是 **Python 的续行符**，两行在 Click 拿到之前就已经被拼掉，只留下续行处那串缩进空格。渲染出来是 `--workspace 分布式训练空间           --project <project>`，一行拖到两百多字符。涉及 `inspire`(根)、`job create`、`notebook create`、`hpc create`、`serving create`。写法本来就有正确的样板：`ray create` 用的是 `\\`，这批照它改。
+
+  **`account add` 是另一个原因，症状相同**：它的 `\\` 一直是对的，但两条示例之间空了一行——而 Click 的 `\b` 只保护**紧跟其后的那一个段落**，空行之后就是新段落，于是第二条被照常重排。删掉那个空行即可。
+
+  同一类还有 **`hpc create` 的「两层」要点列表整个缺 `\b`**，四行带缩进的 `*` 列表被 Click 重排成一段连续文本（`Two independent layers:   * Node-level: ... per     node; ...`），是这次可读性最差的一处。
+
+- **`notebook metrics` 的正文整体多缩进 8 格。** 它的 help 是拼出来的：`metrics_shared.py` 里工厂函数的 docstring（嵌在函数里，缩进 8 格）后面直接追加一段 0 缩进的 `--now` 说明。`inspect.cleandoc` 脱的是**各行的公共缩进**，被这段 0 缩进的尾巴一压就成了 0，共享那四行于是原样带着 8 格印出来。改成先 `cleandoc` 再拼。同一份 docstring 在 `job` / `hpc` / `ray` / `serving` 上一直是正常的——只有 notebook 这条走了拼接。
+
+- **`serving create` 的 `--replicas` 和 `--nodes-per-replica` 没有 help**，`--help` 里这两行只有一个 `[default: 1; x>=1]`。补的说明按 `browser-api.md` 已经记下的语义写：`node_num_per_replica` 是「每副本几个节点」的规格，`GetRecommendedConfig` 的四个 `min_*` 正是它和 `--quota` 的下限——也就是 `inspire model deploy-config` 印的那张表。
+
+- **三处 docstring 讲的是一个用法行里不存在的参数名。** `notebook exec` / `notebook scp` / `notebook install-deps` 正文都写 `NOTEBOOK is the notebook name`，而 Click 印出来的用法行是 `NAME`。仓库里其余同类命令（`save-image`、`cancel-save-image`）写的就是 `NAME is the notebook name`，按这个改齐。
+
+- **58 段正文卡在 `\b` 里，`--help` 因此不随终端宽度走。** `\b` 是 Click 的「这段别重排」标记，本来只该给换行有意义的内容用；包住散文的副作用是**把段落钉死在作者当初折的那个宽度上**——120 列的终端上留一半空白，70 列的终端上由终端自己在边缘断行，而且**续行会掉到第 0 列**，丢掉 Click 那两格缩进。去掉 `\b` 之后 Click 归一化空白、按当前终端宽度重排，70 / 100 / 120 列下都排得整齐、缩进保持。
+
+  **`\b` 该留的地方一处没动**：示例块、`*` 要点列表、`Required fields after expansion:` 这类字段表共 **82 处**全部保留——它们的换行是内容本身（列表一项一行、示例里的 `\` 是 shell 续行符），本来就不该被重排。判据先用的是「首行不以 `:` 结尾」，漏掉了 `model status` / `project list` / `ray scaling` 三段——那三处的冒号只是句中标点，后面直接接散文，改按「段内有没有缩进行或列表项」重新判。
+
+  **docstring 源码仍按仓库惯例折在约 79 列**（中位 71 / 90 分位 79，`ruff line-length = 100`）。中途一版把每段合并成源码里一整行，最长 551 列、34 行越过 100——那是拿 Markdown 的写法套 Python，已回退：`cli/inspire/cli` 里超 100 列的行数与改动前同为 94。这一层怎么折对输出**没有任何影响**，因为非 `\b` 段落的空白 Click 一律归一化。
+
+  **验收是逐字比对**：182 条命令的 help 正文与 921 条 help 字符串各自把空白全部归一化后前后对比，**0 处字词变化**；源码回折那一步再单独比一次渲染结果，**0 字节差异**。示例仍是 284 条全部解析通过。2783 tests / ruff / mypy 全过。
+
+  **验收是全量渲染前后逐字对比**：182 条命令的 `--help` 各渲染一遍，前后只有上述 10 处 hunk 变化，没有一处旁落。另有两项自动核查这次**没有再查出问题**，结论记在这里免得重跑：help 文本里的 284 条 `inspire ...` 示例拿 Click 命令树逐条解析（未知子命令、未知选项、位置参数个数）全部通过；help 里写着 `default: N` 的选项对着真实 `default` 逐个比对，差异全部是 `--limit` 这类「Click 侧 `None`、取值在下游兜底 20/100」的有意设计，以及 `job wait --timeout` 的 `14400` 秒即正文说的 4 小时。
 
 ## v7.1.1
 

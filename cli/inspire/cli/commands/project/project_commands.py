@@ -257,10 +257,9 @@ def list_projects_cmd(
 ) -> None:
     """List every project visible to this account.
 
-    \b
     Projects are not scoped to a workspace, so this takes no `--workspace`:
-    `ListProjects` answers the same set with or without a workspace filter,
-    and one unfiltered call replaces a fanout over every visible workspace.
+    `ListProjects` answers the same set with or without a workspace filter, and
+    one unfiltered call replaces a fanout over every visible workspace.
 
     \b
     Examples:

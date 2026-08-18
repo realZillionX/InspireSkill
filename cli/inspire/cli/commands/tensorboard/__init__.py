@@ -26,13 +26,11 @@ from .tensorboard_data import tensorboard_scalars, tensorboard_tags
 def tensorboard() -> None:
     """Create, run and read TensorBoards.
 
-    \b
     A board is a fixed 1 CPU / 2 GiB workload that serves the event files under
     one shared-disk directory, so there is no quota to choose and no image to
     pick — only a compute group that advertises the tensorboard job type. It
     stops itself after `--auto-stop-hours` (platform maximum 72).
 
-    \b
     `tags` and `scalars` read the running board directly: an Agent gets the
     training curves as numbers instead of a web address it cannot open.
 
