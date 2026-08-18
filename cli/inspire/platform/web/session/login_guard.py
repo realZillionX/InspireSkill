@@ -56,6 +56,41 @@ COOLDOWN_SCHEDULE_SECONDS = (60.0, 300.0, 900.0, 1800.0)
 # attempt at half an hour.
 FAILURE_MEMORY_SECONDS = 3600.0
 
+# When the platform says the credentials themselves are the problem, waiting
+# does not help and retrying is the thing that hurts: CAS lengthens a lockout
+# by failure count, so a timer that resumes is a timer that digs deeper. This
+# is long enough that an unattended loop stops being an attacker while still
+# recovering on its own if an administrator unlocks the account without the
+# password changing. Correcting the credentials lifts it immediately.
+CREDENTIAL_FAILURE_HOLD_SECONDS = 6 * 3600.0
+
+# What "the credentials themselves" sounds like from this CAS. Observed here:
+# an empty submission answers `必须录入用户名。`, a rejected one answers
+# `账号或密码错误。`. The competing qzcli client locked a real account in
+# 2026-08 by treating a rejected password as retryable and settled on the same
+# discrimination; these markers are the intersection of its list and what this
+# platform has actually been seen to say.
+_CREDENTIAL_REJECTION_MARKERS = (
+    "锁定",
+    "密码错误",
+    "用户名或密码",
+    "账号不存在",
+    "account is locked",
+    "account has been locked",
+)
+
+
+def is_credential_rejection(message: str) -> bool:
+    """Whether the platform named the credentials, rather than the moment.
+
+    The distinction is worth drawing because the two need opposite handling: a
+    rate limit or a verification-code prompt clears on its own and a later
+    attempt is fine, while a rejected password only gets worse by being sent
+    again.
+    """
+    text = str(message or "")
+    return any(marker in text for marker in _CREDENTIAL_REJECTION_MARKERS)
+
 _BLOCK_FILE_NAME = "web_session.login-block.json"
 
 # The fingerprint answers one question — "are these the credentials that just
@@ -76,6 +111,7 @@ class _LoginBlock:
     failures: int
     fingerprint: str
     session_created_at: float
+    credential_rejection: bool = False
 
 
 def cooldown_for(failures: int) -> float:
@@ -149,6 +185,7 @@ def _load(path: Path | None) -> _LoginBlock | None:
     failures = _finite(payload.get("failures"))
     fingerprint = payload.get("credential_fingerprint")
     session_created_at = _finite(payload.get("session_created_at")) or 0.0
+    credential_rejection = payload.get("credential_rejection") is True
     if failed_at is None or blocked_until is None or failures is None:
         _remove(path)
         return None
@@ -161,6 +198,7 @@ def _load(path: Path | None) -> _LoginBlock | None:
         failures=max(1, int(failures)),
         fingerprint=fingerprint,
         session_created_at=session_created_at,
+        credential_rejection=credential_rejection,
     )
 
 
@@ -173,6 +211,7 @@ def _store(path: Path | None, block: _LoginBlock) -> None:
         "failures": block.failures,
         "credential_fingerprint": block.fingerprint,
         "session_created_at": block.session_created_at,
+        "credential_rejection": block.credential_rejection,
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,31 +247,48 @@ def _forget(
     if block.fingerprint != fingerprint:
         # Different credentials. Whatever CAS rejected, it was not these.
         return True
-    if now < block.failed_at or now - block.failed_at >= FAILURE_MEMORY_SECONDS:
-        # Either the clock moved backwards far enough that the recorded
-        # deadline cannot be reasoned about, or nothing has retried for long
-        # enough that this no longer describes a run of failures.
+    if now < block.failed_at:
+        # The clock moved backwards far enough that the recorded deadline can
+        # no longer be reasoned about.
         return True
     cached = WebSession.load(allow_expired=True, account=account)
     if cached is not None and cached.created_at > block.session_created_at:
         # Some process authenticated and persisted a session after this failure
-        # was recorded, then died before clearing it. The session wins.
+        # was recorded, then died before clearing it. The session wins. Checked
+        # before the deadline below, because a live session is most worth
+        # honouring exactly while the block would otherwise still be refusing.
         return True
-    return False
+    if now < block.blocked_until:
+        # Still refusing, so whatever else is true the record is not stale.
+        # A credential rejection holds for far longer than the failure memory
+        # window, and must not be forgotten out from under itself.
+        return False
+    return now - block.failed_at >= FAILURE_MEMORY_SECONDS
 
 
 def _blocked_message(block: _LoginBlock, *, now: float) -> str:
     remaining = max(1, math.ceil(block.blocked_until - now))
     attempts = "attempt" if block.failures == 1 else "consecutive attempts"
+    if block.credential_rejection:
+        opening = (
+            "Automatic login is stopped: the platform said the credentials themselves "
+            f"are the problem, {block.failures} {attempts} ago.\n"
+            "Waiting does not fix that and retrying makes it worse — CAS lengthens a "
+            "lockout by failure count — so this will not resume on a timer."
+        )
+    else:
+        opening = (
+            "Automatic login is paused: the platform rejected these exact credentials "
+            f"{block.failures} {attempts} ago and no new credentials have been sent since.\n"
+            "Repeating the same submission is what locks an account out of CAS, so this "
+            f"attempt was stopped locally without contacting the platform. Wait {remaining}s, "
+            "or fix the account's login name and password first."
+        )
     return (
-        "Automatic login is paused: the platform rejected these exact credentials "
-        f"{block.failures} {attempts} ago and no new credentials have been sent since.\n"
-        "Repeating the same submission is what locks an account out of CAS, so this "
-        f"attempt was stopped locally without contacting the platform. Wait {remaining}s, "
-        "or fix the account's login name and password first — corrected credentials are "
-        "accepted immediately.\n"
-        "Run `inspire account check --details` to see which account and base URL are active, "
-        "and `inspire account set --password` (or `inspire init`) to update them."
+        f"{opening}\n"
+        "Corrected credentials are accepted immediately: run `inspire account check "
+        "--details` to see which account and base URL are active, and `inspire account "
+        "set --password` (or `inspire init`) to update them."
     )
 
 
@@ -287,20 +343,23 @@ def _guarded(
 
     try:
         yield
-    except AuthenticationError:
+    except AuthenticationError as error:
         # A rejected login can take most of a minute to come back. The cooldown
         # is measured from when CAS answered, not from when we started asking.
         failed_at = current if now is not None else time.time()
         failures = 1 if block is None else block.failures + 1
+        rejection = is_credential_rejection(str(error))
+        hold = CREDENTIAL_FAILURE_HOLD_SECONDS if rejection else cooldown_for(failures)
         cached = WebSession.load(allow_expired=True, account=account)
         _store(
             path,
             _LoginBlock(
                 failed_at=failed_at,
-                blocked_until=failed_at + cooldown_for(failures),
+                blocked_until=failed_at + hold,
                 failures=failures,
                 fingerprint=fingerprint,
                 session_created_at=cached.created_at if cached is not None else 0.0,
+                credential_rejection=rejection,
             ),
         )
         raise
@@ -310,10 +369,12 @@ def _guarded(
 
 __all__ = [
     "COOLDOWN_SCHEDULE_SECONDS",
+    "CREDENTIAL_FAILURE_HOLD_SECONDS",
     "FAILURE_MEMORY_SECONDS",
     "block_file",
     "clear_login_block",
     "cooldown_for",
     "credential_fingerprint",
     "guarded_credential_submission",
+    "is_credential_rejection",
 ]

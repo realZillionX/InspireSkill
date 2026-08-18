@@ -325,6 +325,49 @@ def test_extract_cas_rsa_key_from_login_js() -> None:
     assert ws_auth._extract_cas_rsa_key(text) == (CAS_RSA_EXPONENT, CAS_RSA_MODULUS)
 
 
+# Reduced from pages captured off the live CAS on 2026-08-18. The whole point
+# is the `style="display: none"`: every login tab is served hidden and the live
+# one is chosen in JavaScript, so "is this container visible" is a question the
+# served HTML cannot answer -- and answering it wrongly threw the platform's
+# reason away.
+_LIVE_CAS_TAB = (
+    '<div class="content-box content-box-template-right" style="display: none">'
+    '<section><form id="fm1"><div class="form-error">{slot}'
+    '<span class="form-tab-nav" id="swiSpan1" name="swiSpan_fm1"></span>'
+    "</div></form></section></div>"
+)
+_LIVE_CAS_CLEAN = _LIVE_CAS_TAB.format(slot="")
+_LIVE_CAS_REJECTED = _LIVE_CAS_TAB.format(
+    slot='<span id="msg1" name="error_fm1" class="form-tab-nav">账号或密码错误。</span>'
+)
+
+
+def test_extract_login_failure_hint_reads_the_error_slot_of_a_hidden_tab() -> None:
+    """The reason the user never saw why a login failed."""
+    assert ws_auth._extract_login_failure_hint(_LIVE_CAS_REJECTED) == "账号或密码错误。"
+
+
+def test_extract_login_failure_hint_stays_empty_on_a_page_nobody_failed_on() -> None:
+    """The slot is absent until CAS fills it, so the tab markup is not a hint."""
+    assert ws_auth._extract_login_failure_hint(_LIVE_CAS_CLEAN) == ""
+
+
+def test_extract_login_failure_hint_prefers_the_password_form_slot() -> None:
+    """`error_fm2` belongs to the SMS tab; a password login is not about that."""
+    html = (
+        '<div class="form-error">'
+        '<span name="error_fm2">短信验证码已失效。</span>'
+        '<span name="error_fm1">账号或密码错误。</span>'
+        "</div>"
+    )
+    assert ws_auth._extract_login_failure_hint(html) == "账号或密码错误。"
+
+
+def test_extract_login_failure_hint_joins_the_lines_cas_breaks() -> None:
+    html = '<span name="error_fm1">必须录入用户名。<br/>必须录入密码。</span>'
+    assert ws_auth._extract_login_failure_hint(html) == "必须录入用户名。 必须录入密码。"
+
+
 def test_extract_login_failure_hint_ignores_benign_login_page_copy() -> None:
     html = """
     <html><body>
@@ -746,6 +789,7 @@ def test_a_login_page_asking_for_a_verification_code_submits_nothing(
       <input name="password" value="">
       <input name="execution" value="exec-1">
       <input id="authcode" name="authcode" value="" placeholder="验证码 Verification Code">
+      <img src="/cas/captcha.jpg" onclick="refreshCaptcha(this);">
     </form>
     <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
     """
@@ -790,6 +834,26 @@ def test_a_login_page_asking_for_a_verification_code_submits_nothing(
     assert http.posts == 0
 
 
+def test_the_dead_template_captcha_is_not_read_as_a_prompt() -> None:
+    """The template ships a captcha image at another university's host.
+
+    It is on every login page there has ever been, so treating "mentions a
+    captcha" as the signal would refuse every login forever. Same-origin is
+    what tells the live endpoint from the fossil.
+    """
+    url = "https://cas.sii.edu.cn/cas/login"
+    fossil = '<img src="https://mapp.suda.edu.cn/cas/captcha.jpg">'
+    assert ws_auth._references_live_captcha_image(fossil, url) is False
+    assert ws_auth._references_live_captcha_image('<img src="/cas/captcha.jpg">', url) is True
+
+    # And the field alone is not enough either.
+    field_only = (
+        '<form id="fm1"><input name="username"><input name="password">'
+        f"<input name=\"authcode\"></form>{fossil}"
+    )
+    assert ws_auth._asks_for_verification_code(field_only, url) is False
+
+
 def test_a_verification_code_prompt_does_not_open_the_login_circuit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -825,7 +889,8 @@ def test_a_code_field_that_appears_only_in_the_answer_is_still_named(
     """
     form_with_code = plain_form.replace(
         '<input name="execution" value="exec-1">',
-        '<input name="execution" value="exec-1"><input name="authcode" value="">',
+        '<input name="execution" value="exec-1"><input name="authcode" value="">'
+        '<img src="/cas/captcha.jpg">',
     )
 
     class Response:

@@ -67,18 +67,41 @@ def _required_verification_field(fields: dict[str, str]) -> str | None:
     return None
 
 
-def _asks_for_verification_code(html: str, page_url: str) -> bool:
-    """Whether the page CAS answered with now wants a code in the password form.
+def _references_live_captcha_image(html: str, page_url: str) -> bool:
+    """Whether the page points at a captcha image this CAS actually serves.
 
-    Only the password form counts. The page always carries a code-login and a
-    QR-login form beside it, so scanning the whole document would report a
-    verification prompt on every login page there has ever been.
+    The template ships a dead one — an ``<img>`` at another university's host,
+    left over and never cleaned up — so "mentions a captcha" is true of every
+    login page ever served. Same-origin is what separates the live endpoint
+    from the fossil.
+    """
+    from urllib.parse import urljoin, urlsplit
+
+    host = urlsplit(page_url).netloc
+    for match in re.finditer(r'src\s*=\s*["\']([^"\']*captcha[^"\']*)["\']', html, re.I):
+        candidate = urljoin(page_url, match.group(1))
+        if not host or urlsplit(candidate).netloc == host:
+            return True
+    return False
+
+
+def _asks_for_verification_code(html: str, page_url: str) -> bool:
+    """Whether CAS is asking this machine for a code, on two agreeing signals.
+
+    Getting this wrong in the false-positive direction means refusing to log in
+    at all, which is far worse than spending one submission finding out, so it
+    takes both: the field inside the *password* form (the page always carries a
+    code-login and a QR-login form beside it), and a captcha image this host
+    actually serves. Measured on the live platform — a clean page has neither,
+    a gated one has both.
     """
     try:
         _, fields = _extract_login_form(html, page_url)
     except Exception:
         return False
-    return _required_verification_field(fields) is not None
+    if _required_verification_field(fields) is None:
+        return False
+    return _references_live_captcha_image(html, page_url)
 
 
 def _load_runtime_config(account: Optional[str] = None) -> Config:
@@ -320,10 +343,82 @@ class _CasLoginErrorParser(HTMLParser):
             self._finish_container()
 
 
+class _CasErrorSlotParser(HTMLParser):
+    """Read the per-form error slot CAS fills in when a login is refused.
+
+    The visible-container rule below cannot see this one. CAS serves all three
+    login tabs with ``style="display: none"`` and picks the live one in
+    JavaScript, so every ``form-error`` on the page looks hidden in the HTML we
+    receive — and dropping it is how the platform's actual reason ("account or
+    password is wrong", "the account is locked") never reached the user, who
+    got generic advice to check a password that was fine.
+
+    The slot is a better anchor than visibility in every way: it is per form
+    (``error_fm1`` is the password form, ``error_fm2`` the SMS tab), it is
+    absent from a page nobody has failed on, and it does not depend on anything
+    a script does later.
+    """
+
+    _BREAK_TAGS = frozenset({"br", "div", "li", "p"})
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.slots: dict[str, list[str]] = {}
+        self._depth = 0
+        self._slot = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        name = str(dict(attrs).get("name") or "")
+        if self._slot:
+            self._depth += 1
+            if tag.lower() in self._BREAK_TAGS:
+                self.slots[self._slot].append(" ")
+        elif name.startswith("error_fm"):
+            self._slot = name
+            self._depth = 0
+            self.slots.setdefault(name, [])
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._slot and tag.lower() in self._BREAK_TAGS:
+            self.slots[self._slot].append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._slot:
+            return
+        if self._depth == 0:
+            self._slot = ""
+        else:
+            self._depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._slot:
+            self.slots[self._slot].append(data)
+
+
+def _extract_form_error_slot(html: str) -> str:
+    """The password form's error text, or any other tab's if only that is set."""
+    parser = _CasErrorSlotParser()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        pass
+    ordered = sorted(parser.slots, key=lambda name: (name != "error_fm1", name))
+    for name in ordered:
+        message = " ".join("".join(parser.slots[name]).split())
+        if message:
+            return message
+    return ""
+
+
 def _extract_login_failure_hint(html: str, *, limit: int = 180) -> str:
-    """Return text from the first non-empty visible CAS login error container."""
+    """Return what the platform said about this login, as precisely as possible."""
     if not html or limit <= 0:
         return ""
+
+    slot = _extract_form_error_slot(html)
+    if slot:
+        return slot[:limit]
 
     parser = _CasLoginErrorParser()
     try:
