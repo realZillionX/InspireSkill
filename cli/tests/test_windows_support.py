@@ -14,6 +14,7 @@ Python, so the reasoning lives next to the assertion:
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import PureWindowsPath
 
 import pytest
@@ -28,6 +29,7 @@ from inspire.cli.commands.notebook.ssh_config_cmd import (
 )
 from inspire.cli.commands.uninstall import _playwright_cache_dir
 from inspire.cli.console_bootstrap import configure_console_encoding
+from inspire.cli.utils.detached import detached_creationflags
 
 
 @pytest.fixture
@@ -178,3 +180,20 @@ def test_console_encoding_survives_a_stream_that_cannot_be_retuned(
 
     # Neither should take down the command that was about to print something.
     configure_console_encoding((Detached(), Plain()))
+
+
+# Faking sys.platform is not enough here: the constants themselves only exist in
+# the Windows stdlib, so each half runs where its assertion means something.
+@pytest.mark.skipif(sys.platform != "win32", reason="the flags only exist on Windows")
+def test_background_spawns_are_detached_from_the_console_on_windows() -> None:
+    # start_new_session is accepted and ignored on Windows, which leaves the
+    # child sharing the parent's console — and therefore its Ctrl-C. Both
+    # background spawns (update check, resource-index refresh) need the flags.
+    expected = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
+
+    assert detached_creationflags() == expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Popen rejects non-zero flags on POSIX")
+def test_background_spawns_pass_no_creationflags_off_windows() -> None:
+    assert detached_creationflags() == 0

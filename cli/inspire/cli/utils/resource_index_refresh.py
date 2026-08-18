@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
 from inspire.accounts import account_dir, current_account
+from inspire.cli.utils.detached import detached_creationflags
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.resource_index import (
     DEFAULT_TTL_SECONDS,
@@ -1330,6 +1331,7 @@ def maybe_spawn_periodic_refresh(
             env=env,
             start_new_session=True,
             close_fds=True,
+            creationflags=detached_creationflags(),
         )
         child_pid = getattr(process, "pid", None)
         if isinstance(child_pid, int) and child_pid > 0:
