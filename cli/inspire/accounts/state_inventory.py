@@ -42,6 +42,7 @@ _ACCOUNT_FILES = frozenset(
     {
         "config.toml",
         "web_session.json",
+        "web_session.login-block.json",  # credentials CAS just rejected
         "resource-index.sqlite3",
         "resource-index-refresh.stamp",
         "notebook-ide-url.json",

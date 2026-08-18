@@ -51,8 +51,15 @@ class _BrowserRequestClient:
         method_upper = method.upper()
         timeout_ms = timeout * 1000
 
+        # Same redirect discipline as the requests transport: a 302 towards CAS
+        # is the expiry signal, and following it hides that behind a login page.
         if method_upper == "GET":
-            resp = self._context.request.get(url, headers=req_headers, timeout=timeout_ms)
+            resp = self._context.request.get(
+                url,
+                headers=req_headers,
+                timeout=timeout_ms,
+                max_redirects=0,
+            )
         elif method_upper == "POST":
             post_headers = dict(req_headers)
             if not any(key.lower() == "content-type" for key in post_headers):
@@ -62,13 +69,19 @@ class _BrowserRequestClient:
                 headers=post_headers,
                 data=json.dumps(body or {}),
                 timeout=timeout_ms,
+                max_redirects=0,
             )
         elif method_upper == "DELETE":
-            resp = self._context.request.delete(url, headers=req_headers, timeout=timeout_ms)
+            resp = self._context.request.delete(
+                url,
+                headers=req_headers,
+                timeout=timeout_ms,
+                max_redirects=0,
+            )
         else:
             raise ValueError(f"Unsupported HTTP method: {method}")
 
-        if resp.status == 401:
+        if resp.status == 401 or 300 <= resp.status < 400:
             raise SessionExpiredError("Session expired or invalid")
         if resp.status >= 400:
             try:

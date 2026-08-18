@@ -918,6 +918,7 @@ def test_compute_group_failure_preserves_last_successful_rows(
 def test_cache_status_and_clear_never_expose_workspace_handle(
     tmp_path,
     monkeypatch,
+    active_account_session_storage,  # noqa: ANN001, ARG001
 ) -> None:
     from inspire.cli.main import main
 
@@ -1350,7 +1351,11 @@ def test_quiet_refresh_preserves_failure_exit_code(tmp_path, monkeypatch) -> Non
     assert result.output == ""
 
 
-def test_periodic_refresh_is_throttled_and_quiet(tmp_path, monkeypatch) -> None:
+def test_periodic_refresh_is_throttled_and_quiet(
+    tmp_path,
+    monkeypatch,
+    active_account_session_storage,  # noqa: ANN001, ARG001
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     create_account("alpha", "[inspire]\n")
