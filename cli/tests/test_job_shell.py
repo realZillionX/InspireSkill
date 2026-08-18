@@ -816,3 +816,136 @@ def test_remote_shell_refuses_a_workload_it_has_no_measured_route_for(monkeypatc
 
     with pytest.raises(job_shell.JobShellError, match="notebook"):
         job_shell.build_remote_cmd_ws_url("x", "y", workload="notebook")
+
+
+class _FakeShellWebSocket:
+    """A websocket whose frames the shell loop can read, plus a real fileno.
+
+    ``run_remote_shell`` selects on this object, so it has to be genuinely
+    selectable — a socketpair provides that while the frame queue drives the
+    loop.
+    """
+
+    def __init__(self, frames: list[tuple[int, bytes]]) -> None:
+        import socket as socket_module
+
+        self._frames = list(frames)
+        self._reader, self._writer = socket_module.socketpair()
+        self.sent: list[str] = []
+        self.pongs: list[bytes] = []
+        self._writer.sendall(b"\0" * len(self._frames))
+
+    def fileno(self) -> int:
+        return self._reader.fileno()
+
+    def __enter__(self) -> "_FakeShellWebSocket":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self._reader.close()
+        self._writer.close()
+
+    def send_text(self, text: str) -> None:
+        self.sent.append(text)
+
+    def recv_frame(self) -> tuple[int, bytes]:
+        if not self._frames:
+            raise EOFError
+        self._reader.recv(1)
+        return self._frames.pop(0)
+
+    def _send_frame(self, opcode: int, payload: bytes) -> None:
+        self.pongs.append(payload)
+
+
+def _run_shell(monkeypatch, frames, keystrokes: bytes = b"") -> tuple[int, _FakeShellWebSocket]:  # noqa: ANN001
+    import io
+    import os as os_module
+
+    from inspire.cli.utils import interactive_console
+
+    ws = _FakeShellWebSocket(frames)
+    monkeypatch.setattr(job_shell, "_get_base_url", lambda: "https://qz.sii.edu.cn")
+
+    read_fd, write_fd = os_module.pipe()
+    os_module.write(write_fd, keystrokes)
+    os_module.close(write_fd)
+    stdin = os_module.fdopen(read_fd, "rb", buffering=0)
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+
+    # The loop selects on stdin too; a pipe is selectable and never a tty, so
+    # raw mode stays out of the way.
+    assert interactive_console is not None
+    code = job_shell.run_remote_shell(
+        job_id="job-abc",
+        instance_name="worker-0",
+        session=_FakeSession(),
+        stdin=stdin,
+        stdout=stdout,
+        websocket_cls=lambda *args, **kwargs: ws,
+    )
+    stdout.flush()
+    return code, ws
+
+
+def test_run_remote_shell_passes_remote_output_through_verbatim(monkeypatch) -> None:  # noqa: ANN001
+    payload = "总用量 4\r\n$ ".encode()
+    captured: list[bytes] = []
+    monkeypatch.setattr(
+        job_shell, "write_stream_output", lambda stream, data: captured.append(data)
+    )
+
+    code, _ws = _run_shell(monkeypatch, [(0x1, payload), (0x8, b"")])
+
+    assert code == 0
+    assert b"".join(captured) == payload
+
+
+def test_run_remote_shell_forwards_keystrokes_and_bootstraps_the_size(monkeypatch) -> None:  # noqa: ANN001
+    # A close frame ends the loop before stdin is looked at, so the remote has
+    # to say something first for the keystrokes to get their turn.
+    code, ws = _run_shell(monkeypatch, [(0x1, b"prompt$ "), (0x8, b"")], keystrokes=b"ls -l\r")
+
+    assert code == 0
+    assert ws.sent[0] == job_shell.SHELL_BOOTSTRAP
+    assert ws.sent[1].startswith("stty columns ")
+    assert "ls -l\r" in ws.sent
+
+
+def test_run_remote_shell_answers_pings_without_printing_them(monkeypatch) -> None:  # noqa: ANN001
+    captured: list[bytes] = []
+    monkeypatch.setattr(
+        job_shell, "write_stream_output", lambda stream, data: captured.append(data)
+    )
+
+    code, ws = _run_shell(monkeypatch, [(0x9, b"ping-payload"), (0x8, b"")])
+
+    assert code == 0
+    assert ws.pongs == [b"ping-payload"]
+    assert captured == []
+
+
+def test_run_remote_shell_stops_on_the_shell_exit_marker(monkeypatch) -> None:  # noqa: ANN001
+    captured: list[bytes] = []
+    monkeypatch.setattr(
+        job_shell, "write_stream_output", lambda stream, data: captured.append(data)
+    )
+    marker_frame = ("bye\r\n" + job_shell.SHELL_EXIT_MARKER).encode()
+
+    code, _ws = _run_shell(monkeypatch, [(0x1, marker_frame), (0x1, b"never read")])
+
+    assert code == 0
+    # The marker is the shell announcing its own exit; it never reaches the user.
+    assert b"".join(captured) == b"bye\r\n"
+
+
+def test_run_remote_shell_exits_on_the_ctrl_bracket_escape(monkeypatch) -> None:  # noqa: ANN001
+    code, ws = _run_shell(
+        monkeypatch,
+        [(0x1, b"prompt$ ")],
+        keystrokes=b"partial" + job_shell.CTRL_RIGHT_BRACKET,
+    )
+
+    assert code == 0
+    # The escape is local: the chunk carrying it is not forwarded to the remote.
+    assert not any("partial" in text for text in ws.sent)
