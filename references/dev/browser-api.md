@@ -793,7 +793,7 @@ POST /api/v2/{train|hpc}?Action=ListJobEvents
 
 | 项 | 事实 | 读错的后果 |
 | --- | --- | --- |
-| `ListJobs` 的记录 | 与 `GetJob` **逐字段完全相同**（running/stopped/failed 三态各比一次） | 这是 `GetJob` 扇出的批量形态，不必再补一次详情请求 |
+| `ListJobs` 的记录 | 与 `GetJob` **逐字段完全相同**——在 `train` 上比过，running/stopped/failed 三态各一次，无独有字段、无值差异。**`hpc` 未实测**：当时账号在所有 Workspace 里都没有 HPC 任务，只验到两条路由的校验语句逐字一致（必填 `workspace_id`、上限 20、未知 id 静默丢弃）。记录等价性是推断，第一次拿到真实 HPC 任务时补验 | 这是 `GetJob` 扇出的批量形态，不必再补一次详情请求 |
 | 上限 20 | `job_ids count exceeds limit 20` / `object_ids count exceeds limit 20`，**按列表长度计数**，20 个不重复 + 1 个重复 = 21 也被拒 | 先去重再分片；分片后去重仍然会撞上限 |
 | `object_type: "instance"` **不受这个上限** | 500 个实测通过 | `list_job_instance_events` 按 200 分片是对的，不要跟着改成 20 |
 | `ListJobs` 找不到 id | **静默丢弃**，`total` 只反映命中数 | 缺失只能由调用方拿请求 diff 出来；短列表不等于「就这些」 |
