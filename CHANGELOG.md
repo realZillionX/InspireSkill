@@ -4,11 +4,7 @@
 
 ### 变更
 
-- **`<workload> metrics` 从 8 次请求变成 2 次。** 之前按 metric 类型逐个扇出，理由写在 `metrics.py` 开头：「实测一次发 5 个 metric 类型只回第一个」。那句话是对的，但它测的是单数的 `GetTaskMetric`——而 `/discovery` 里一直躺着一个 `GetTaskMetricBatch`（train / hpc / ray / notebook / inference-serving / cluster 六处同名），**它认整个列表**。这正是 Browser API 参考里点名的固定错误模式：只测同名 Action 就下结论，然后把结论写进注释，扇出循环因此活了四个月。
-
-  Batch 版和单数版**不是同一个请求形状**：`task_ids` 是平铺的数组而不是 `filter.task_id`，响应多包一层 `task_metrics[]`，而且**不接 `logic_compute_group_id`**——那个参数在它的声明里根本不存在。`get_resource_metrics_by_time()` 的签名没动（仍然收 `logic_compute_group_id`，只是不再发出去），所以调用方一行不用改。
-
-  **每次最多 5 个 metric 类型**：第 6 个开始平台答 `InternalError: 指标查询暂不可用`，连跑 3 轮 3/3 复现，每轮之前先用单数版确认后端是活的，所以是请求形状不是后端抖动。平台给的是 `InternalError` 而不是 `InvalidParameter`，也没有任何文档，因此按「天花板」处理：包装层按 5 切块，8 个指标 = 2 次请求，而不是赌它哪天会放宽。 最后三处——登录握手的 `user/detail`、登录时发现 Workspace 的 `user/routes/default`、Notebook 的 `notebook/lab/{id}`——留着的理由此前写的是「Session 自举时还没有 Session 可供 v2 用」和「反向代理不是 Action 能表达的东西」。三条实测全部不成立：
+- **`/api/v1` 从这个客户端里彻底消失了。** 最后三处——登录握手的 `user/detail`、登录时发现 Workspace 的 `user/routes/default`、Notebook 的 `notebook/lab/{id}`——留着的理由此前写的是「Session 自举时还没有 Session 可供 v2 用」和「反向代理不是 Action 能表达的东西」。三条实测全部不成立：
 
   - `user.GetUserDetail` 空 body 就答，`data` 与 `Result` **逐字段相同**（8 个键，0 差异）。未登录时两边同样是 401，所以登录轮询那段判据一个字都不用改。
   - `user.GetRoutes` 的 `WorkspaceId` **收字面量 `"default"`**，答的是完整 `userWorkspaceList`，与传一个真实 Workspace id 的响应 5794 字节 **0 差异**。「v2 要一个真实 `WorkspaceId`，登录时拿不到」是我们自己写进 Reference 的错误结论——而登录时恰恰没有真实 id，于是这条推断把自己锁死了整整一个迁移周期。空串或缺键才报 `WorkspaceId is required`。
@@ -71,8 +67,6 @@
   这条修复由 [#73](https://github.com/realZillionX/InspireSkill/pull/73) 提出（@expectqwq），闸门位置、冷却档位和解除条件在合并时做了调整，并补上了它没覆盖的两条放大路径。
 
   连带修掉一个测试隐患：会话缓存和这个新标记都写在**当前 Account** 目录下，而测试套件跑在开发者自己的 `~/.inspire/` 上——模拟一次失败登录就会给开发者自己的账号写一个熔断标记，用的还是一个根本不存在的密码。现在 `conftest.py` 让会话存储在测试里解析不到 Account（要持久化的测试自己传 Account 名并隔离 `Path.home`），验证这条解析逻辑本身的 5 个测试改用 `active_account_session_storage` 显式退出。
-
-- **Session 过期时 `scan_v2_surface.py` 会把 Keycloak 登录页当成控制台扫，然后报 `0 routes / 0 actions`。** 过期不表现为失败而表现为**跳转**：网关 302 到 SSO，requests 默认跟过去，登录页 200 回来、自带一个 `<script src>`，于是扫描器照常沿着它「递归」了一层就结束。印出来的那行和真实结果同一个形状，只是数字是零——而这份清单唯一的用途就是判断某个 Action 存不存在，零就是「控制台什么都不调」。本次排查 batch API 时第一次跑就撞上了它，`WebSession.load(allow_expired=True)` 本来就会把过期 cookie 原样交出来，所以这是常见路径不是边角情况。三道闸：根请求改 `allow_redirects=False`，302/401/403 直接判定未认证——这正是 `browser-api.md` §2 要求每个外部探针都关掉重定向的同一条理由；按文档给的补救办法用 `get_web_session(force_refresh=True)` 重建 Session 重试一次；chunk 响应的 `content-type` 不是 javascript 就不写缓存，否则一张登录页会以 `.js` 的名字进磁盘缓存、毒化之后每一次从缓存跑的扫描。最后补一条下限检查：抽到 0 个 Action 时以 2 退出并明说「本次运行不构成不存在的证据」，而不是印一份读起来像结论的空报告。
 
 - **Windows 成为一等公民，不再要求 WSL。** 此前 `import inspire.cli.main` 在 Windows 上直接 `ModuleNotFoundError: fcntl` —— 断点在 `accounts/cache_lock.py`，而它在第一条子命令的 import 链上，所以不是「某个命令不能用」，是 `inspire --version` 都起不来。五处模块级 POSIX 导入（`fcntl` / `pty` / `termios` / `tty`）按平台分叉，文件锁在 Windows 上用 `msvcrt.locking` 实现。CI 增加 `windows-latest`。
 

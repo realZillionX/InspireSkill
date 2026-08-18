@@ -3,12 +3,10 @@
 The endpoint has no public contract; these tests pin the wire-format we
 reverse-engineered from the 资源视图 tab in the web UI:
 
-- request body shape with flat ``task_type`` / ``task_ids`` / ``metric_types``
-  / ``time_range`` keys, and no ``logic_compute_group_id``
-- chunking at five metric types per request, because a sixth makes
-  ``GetTaskMetricBatch`` answer ``InternalError``
-- the ``task_metrics`` envelope, and that groups belonging to another task id
-  are not attributed to ours
+- request body shape with ``filter`` / ``metric_types`` / ``time_range`` keys
+- fan-out of multi-metric requests (one POST per metric, because the platform
+  silently returns only the first metric's data when multiple are packed in
+  a single body)
 - tolerance of the upstream response-key typo ``time_seris_metric_groups``
 - raise on ``code != 0`` and on unknown metric / task_type enums
 """
@@ -57,40 +55,20 @@ def _install_fake_request(
     monkeypatch.setattr(metrics_module, "_request_json", _fake)
 
 
-def _group(metric_type: str, samples: list[tuple[int, float]]) -> dict:
-    return {
-        "group_name": "pod-xyz",
-        "metric_type": metric_type,
-        "resource_name": "GPU",
-        "time_series": [{"timestamp": str(ts), "data": value} for ts, value in samples],
-    }
-
-
-def _success_response(
-    metric_type: str,
-    *,
-    samples: list[tuple[int, float]],
-    task_id: str = "nb-abc",
-) -> dict:
-    return _batch_response({task_id: [(metric_type, samples)]})
-
-
-def _batch_response(
-    by_task: dict[str, list[tuple[str, list[tuple[int, float]]]]],
-    *,
-    key: str = "time_seris_metric_groups",
-) -> dict:
-    """A `GetTaskMetricBatch` envelope: groups nested per task under a list."""
+def _success_response(metric_type: str, *, samples: list[tuple[int, float]]) -> dict:
     return {
         "code": 0,
         "message": "success",
         "data": {
-            "task_metrics": [
+            "time_seris_metric_groups": [
                 {
-                    "task_id": task_id,
-                    key: [_group(metric, samples) for metric, samples in entries],
+                    "group_name": "pod-xyz",
+                    "metric_type": metric_type,
+                    "resource_name": "GPU",
+                    "time_series": [
+                        {"timestamp": str(ts), "data": value} for ts, value in samples
+                    ],
                 }
-                for task_id, entries in by_task.items()
             ]
         },
     }
@@ -101,21 +79,15 @@ def _batch_response(
 # ---------------------------------------------------------------------------
 
 
-def test_get_resource_metrics_packs_metrics_into_one_request(
+def test_get_resource_metrics_fans_out_one_request_per_metric(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict] = []
     _install_fake_request(
         monkeypatch,
         responses=[
-            _batch_response(
-                {
-                    "nb-abc": [
-                        ("gpu_usage_rate", [(100, 0.25), (160, 0.75)]),
-                        ("cpu_usage_rate", [(100, 0.05)]),
-                    ]
-                }
-            )
+            _success_response("gpu_usage_rate", samples=[(100, 0.25), (160, 0.75)]),
+            _success_response("cpu_usage_rate", samples=[(100, 0.05)]),
         ],
         calls=calls,
     )
@@ -132,19 +104,24 @@ def test_get_resource_metrics_packs_metrics_into_one_request(
         session=session,
     )
 
-    # Both metrics ride one request; the singular Action needed one apiece.
-    assert len(calls) == 1
+    # Two calls, one per metric. A single multi-metric POST is broken
+    # upstream and would silently drop data.
+    assert len(calls) == 2
+    assert [c["body"]["metric_types"] for c in calls] == [
+        ["gpu_usage_rate"],
+        ["cpu_usage_rate"],
+    ]
+
     first = calls[0]
     assert first["method"] == "POST"
     # v2 has no cluster-wide metric endpoint; the route comes from task_type.
-    assert first["url"].endswith("/api/v2/notebook?Action=GetTaskMetricBatch")
+    assert first["url"].endswith("/api/v2/notebook?Action=GetTaskMetric")
     assert first["referer"].endswith("/jobs/interactiveModelDetail/nb-abc")
-    assert first["body"]["task_type"] == "interactive_modeling"
-    assert first["body"]["task_ids"] == ["nb-abc"]
-    assert first["body"]["metric_types"] == ["gpu_usage_rate", "cpu_usage_rate"]
-    # This Action takes no compute group; sending one is a `unknown field` risk.
-    assert "logic_compute_group_id" not in first["body"]
-    assert "filter" not in first["body"]
+    assert first["body"]["filter"] == {
+        "logic_compute_group_id": "lcg-test",
+        "task_id": "nb-abc",
+        "task_type": "interactive_modeling",
+    }
     assert first["body"]["time_range"] == {
         "start_timestamp": 100,
         "end_timestamp": 200,
@@ -160,71 +137,6 @@ def test_get_resource_metrics_packs_metrics_into_one_request(
     ]
 
 
-def test_get_resource_metrics_chunks_above_five_metrics(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A sixth metric type makes the platform answer InternalError."""
-    calls: list[dict] = []
-    _install_fake_request(
-        monkeypatch,
-        responses=[
-            _batch_response({"nb-abc": [(m, [(100, 0.5)]) for m in METRIC_TYPES[:5]]}),
-            _batch_response({"nb-abc": [(m, [(100, 0.5)]) for m in METRIC_TYPES[5:]]}),
-        ],
-        calls=calls,
-    )
-
-    groups = get_resource_metrics_by_time(
-        task_id="nb-abc",
-        task_type="interactive_modeling",
-        logic_compute_group_id="lcg-test",
-        metric_types=list(METRIC_TYPES),
-        start_timestamp=0,
-        end_timestamp=100,
-        interval_second=60,
-        session=_FakeSession(),
-    )
-
-    # Eight metrics, two requests -- never one request carrying six.
-    assert len(calls) == 2
-    assert [len(c["body"]["metric_types"]) for c in calls] == [5, 3]
-    assert calls[0]["body"]["metric_types"] == list(METRIC_TYPES[:5])
-    assert calls[1]["body"]["metric_types"] == list(METRIC_TYPES[5:])
-    assert [g.metric_type for g in groups] == list(METRIC_TYPES)
-
-
-def test_get_resource_metrics_ignores_other_tasks_groups(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A batch answer is keyed by task; another task's series is not ours."""
-    calls: list[dict] = []
-    _install_fake_request(
-        monkeypatch,
-        responses=[
-            _batch_response(
-                {
-                    "nb-abc": [("gpu_usage_rate", [(100, 0.25)])],
-                    "nb-other": [("gpu_usage_rate", [(100, 0.99)])],
-                }
-            )
-        ],
-        calls=calls,
-    )
-
-    groups = get_resource_metrics_by_time(
-        task_id="nb-abc",
-        task_type="interactive_modeling",
-        logic_compute_group_id="lcg-test",
-        metric_types=["gpu_usage_rate"],
-        start_timestamp=0,
-        end_timestamp=100,
-        interval_second=60,
-        session=_FakeSession(),
-    )
-    assert len(groups) == 1
-    assert groups[0].samples == [MetricSample(timestamp=100, value=0.25)]
-
-
 def test_get_resource_metrics_accepts_fixed_spelling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -233,10 +145,20 @@ def test_get_resource_metrics_accepts_fixed_spelling(
     _install_fake_request(
         monkeypatch,
         responses=[
-            _batch_response(
-                {"nb-abc": [("gpu_usage_rate", [(100, 0.5)])]},
-                key="time_series_metric_groups",
-            )
+            {
+                "code": 0,
+                "message": "success",
+                "data": {
+                    "time_series_metric_groups": [
+                        {
+                            "group_name": "pod-xyz",
+                            "metric_type": "gpu_usage_rate",
+                            "resource_name": "GPU",
+                            "time_series": [{"timestamp": "100", "data": 0.5}],
+                        }
+                    ]
+                },
+            }
         ],
         calls=calls,
     )

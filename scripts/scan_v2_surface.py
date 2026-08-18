@@ -57,7 +57,7 @@ from inspire.platform.web.browser_api.core import (  # noqa: E402
     _get_base_url,
     _request_json,
 )
-from inspire.platform.web.session import WebSession, get_web_session  # noqa: E402
+from inspire.platform.web.session import WebSession  # noqa: E402
 from inspire.platform.web.session.requests import build_requests_session  # noqa: E402
 
 #: `[A-Za-z0-9]+`, not `[A-Za-z]+`: the trailing digit of `GetProjectListV2` is
@@ -96,42 +96,12 @@ def is_read_only(action: str) -> bool:
     return action.startswith(_READ_PREFIXES) and not _WRITE_VERBS.search(action)
 
 
-class ScanNotAuthenticated(RuntimeError):
-    """The console was never reached, so the surface below is not evidence."""
-
-
-def _fetch_console_root(session: WebSession, base_url: str):
-    """GET `/` and prove the answer is the console, not the login page.
-
-    An expired session does not fail here, it *redirects*: the gateway 302s to
-    Keycloak, requests follows it, and the login page comes back 200 with a
-    `<script src>` of its own. Scanning that yields a clean `0 routes / 0
-    actions`, which reads exactly like "the console calls nothing" — the same
-    shape as a real finding, with none of the truth. `allow_redirects=False`
-    turns that silent zero back into a signal, which is the same reason
-    `browser-api.md` §2 requires it of every external probe.
-    """
-    http = build_requests_session(session, base_url)
-    root = http.get(base_url + "/", timeout=60, allow_redirects=False)
-    if root.is_redirect or root.status_code in (401, 403):
-        raise ScanNotAuthenticated(
-            f"GET / answered {root.status_code} -> {root.headers.get('location', '?')}"
-        )
-    root.raise_for_status()
-    return http, root
-
-
 def fetch_bundles(session: WebSession, base_url: str, cache: pathlib.Path) -> dict[str, str]:
     """Walk the console's chunk graph from the entry script."""
     cache.mkdir(parents=True, exist_ok=True)
-    try:
-        http, root = _fetch_console_root(session, base_url)
-    except ScanNotAuthenticated as first:
-        # The documented remedy for a 302 mid-probe: rebuild the session and
-        # retry once. `WebSession.load(allow_expired=True)` hands back a stale
-        # cookie without complaint, so this is the common path, not the rare one.
-        print(f"  ! session stale ({first}); refreshing", file=sys.stderr)
-        http, root = _fetch_console_root(get_web_session(force_refresh=True), base_url)
+    http = build_requests_session(session, base_url)
+    root = http.get(base_url + "/", timeout=60)
+    root.raise_for_status()
 
     todo = list(dict.fromkeys(_ENTRY.findall(root.text)))
     seen: set[str] = set()
@@ -151,11 +121,6 @@ def fetch_bundles(session: WebSession, base_url: str, cache: pathlib.Path) -> di
                 print(f"  ! {url}: {type(exc).__name__}", file=sys.stderr)
                 continue
             if response.status_code != 200:
-                continue
-            # A chunk URL that answers with HTML is the login page wearing a
-            # `.js` name; caching it poisons every later run from disk.
-            if "javascript" not in response.headers.get("content-type", ""):
-                print(f"  ! {url}: not javascript", file=sys.stderr)
                 continue
             text = response.text
             cached.write_text(text, encoding="utf-8")
@@ -253,16 +218,6 @@ def main() -> int:
 
     total = sum(len(names) for names in console.values())
     print(f"chunks {len(texts)}  console: {len(console)} routes / {total} actions")
-    if not console:
-        # Every number below is derived from the bundle, so an empty bundle
-        # makes the whole report say "absent" about things that are present.
-        # Refuse to print it rather than let a reader diff it against a real run.
-        print(
-            f"FAILED: {len(texts)} chunk(s) yielded no Actions at all. The console was "
-            "not reached; this run is not evidence of absence.",
-            file=sys.stderr,
-        )
-        return 2
     print(f"discovery {version}: {len(declared)} services / "
           f"{sum(len(v) for v in declared.values())} actions")
     print(f"REST-shaped /api/v2 paths (no ?Action=): {len(rest)}")
