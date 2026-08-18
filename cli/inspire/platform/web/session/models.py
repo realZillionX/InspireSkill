@@ -25,6 +25,10 @@ class SessionExpiredError(Exception):
     """Raised when the web session has expired (401 from server)."""
 
 
+class AuthenticationError(ValueError):
+    """A credential-bearing login attempt failed and must not be retried blindly."""
+
+
 # Statuses that say the platform did not answer, not that the answer is no.
 # 429 is the one seen in the wild: the browser APIs answer one
 # ``(workspace, compute group)`` per request, so any workspace-wide fan-out

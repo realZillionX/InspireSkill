@@ -22,7 +22,6 @@ from inspire.platform.web.session import (
     SessionExpiredError,
     TransientAPIError,
     WebSession,
-    clear_session_cache,
     get_web_session,
 )
 
@@ -700,7 +699,6 @@ def get_accurate_resource_availability(
     session: Optional[WebSession] = None,
     *,
     include_cpu: bool = False,
-    _retry: bool = True,
 ) -> list[GPUAvailability]:
     """Get accurate compute-group availability, optionally including CPU-only groups."""
     if session is None:
@@ -820,28 +818,20 @@ def get_accurate_resource_availability(
         return results
 
     except SessionExpiredError:
-        if _retry:
-            clear_session_cache()
-            return get_accurate_resource_availability(
-                workspace_id=workspace_id,
-                session=None,
-                include_cpu=include_cpu,
-                _retry=False,
-            )
+        # request_json() owns the single authentication refresh. Retrying here
+        # would create a second CAS login after that boundary is exhausted.
         raise
 
 
 def get_accurate_gpu_availability(
     workspace_id: Optional[str] = None,
     session: Optional[WebSession] = None,
-    _retry: bool = True,
 ) -> list[GPUAvailability]:
     """Get accurate GPU availability for all compute groups."""
     results = get_accurate_resource_availability(
         workspace_id=workspace_id,
         session=session,
         include_cpu=False,
-        _retry=_retry,
     )
     return [row for row in results if row.resource_kind == "gpu"]
 
@@ -852,7 +842,6 @@ def get_full_free_node_counts(
     gpu_per_node: int = 8,
     workspace_id_by_group: Optional[dict[str, str]] = None,
     session: Optional[WebSession] = None,
-    _retry: bool = True,
 ) -> list[FullFreeNodeCount]:
     """Get per-group counts of fully-free nodes.
 
@@ -909,15 +898,7 @@ def get_full_free_node_counts(
             )
 
     except SessionExpiredError:
-        if _retry:
-            clear_session_cache()
-            return get_full_free_node_counts(
-                group_ids,
-                gpu_per_node=gpu_per_node,
-                workspace_id_by_group=workspace_id_by_group,
-                session=None,
-                _retry=False,
-            )
+        # request_json() already refreshed once; never start another login.
         raise
 
     results.sort(key=lambda r: r.full_free_nodes, reverse=True)

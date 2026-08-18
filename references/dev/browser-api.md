@@ -96,7 +96,9 @@ Referer: {base_url}/{对应控制台页面}
 
 | 场景 | 做法 |
 | --- | --- |
-| CLI 内部 | 已兜住：`_request_json_once()` 收到 401 自动重建 Session 并重试一次 |
+| CLI 内部 | `_request_json_once()` 禁止重定向；收到 401/3xx 直接重建 Session 并重试一次，不先拿失效 Cookie 走 Playwright。上层 Wrapper 不得再包认证重试 |
+| 登录未完成 | 凭据一旦提交，requests 路径不再回落 Playwright。按 Account Alias 打开一分钟本地熔断；期间所有进程不访问 CAS。修改账号 `config.toml`、成功写入更新 Session 或到期会解除 |
+| 并发刷新 | Account 级文件锁同时去重成功与失败：成功的等待者复用更新 Session；失败的等待者命中熔断，不再逐个提交同一凭据 |
 | 外部探针脚本 | 必须自己重试：401 / 302 时用 `get_web_session(force_refresh=True)` 重建再试 |
 | 直接读 `web_session.json` 拿 cookie | **错的**：绕过续期路径，拿到的往往已过期，表现为整批调用统一 401，很容易误判成「网关不接受我们的 cookie」 |
 | 探针的重定向 | 必须 `allow_redirects=False`。认证失败时网关 302 到 Keycloak；跟随重定向会把这个信号变成一张 HTML 登录页，和「路由不存在」无法区分 |

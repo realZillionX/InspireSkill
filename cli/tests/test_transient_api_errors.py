@@ -15,7 +15,7 @@ from inspire.cli.utils.id_resolver import is_stale_handle_error
 from inspire.platform.web import session as ws
 from inspire.platform.web.browser_api import core as browser_core
 from inspire.platform.web.browser_api.availability import api as availability_api
-from inspire.platform.web.session import TransientAPIError, WebSession
+from inspire.platform.web.session import SessionExpiredError, TransientAPIError, WebSession
 from inspire.platform.web.session.models import is_transient_api_error
 from inspire.platform.web.session.retry import (
     MAX_ATTEMPTS,
@@ -47,10 +47,16 @@ class _HTTP:
         self.calls += 1
         return self._responses[min(self.calls - 1, len(self._responses) - 1)]
 
-    def get(self, url, headers=None, timeout=None):  # noqa: ANN001, ANN201
+    def get(  # noqa: ANN001, ANN201
+        self, url, headers=None, timeout=None, allow_redirects=True
+    ):
+        assert allow_redirects is False
         return self._next()
 
-    def post(self, url, headers=None, json=None, timeout=None):  # noqa: ANN001, ANN201
+    def post(  # noqa: ANN001, ANN201
+        self, url, headers=None, json=None, timeout=None, allow_redirects=True
+    ):
+        assert allow_redirects is False
         return self._next()
 
     def close(self) -> None:
@@ -255,6 +261,32 @@ def test_availability_refuses_to_report_a_rate_limited_group(monkeypatch) -> Non
         workspace_id = "workspace-one"
 
     with pytest.raises(TransientAPIError):
+        availability_api.get_accurate_resource_availability(
+            workspace_id="workspace-one",
+            session=_Session(),  # type: ignore[arg-type]
+        )
+
+
+def test_availability_does_not_start_a_second_authentication_refresh(
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    monkeypatch.setattr(
+        availability_api,
+        "_list_live_compute_groups",
+        lambda **_kwargs: (_ for _ in ()).throw(SessionExpiredError("refresh exhausted")),
+    )
+    monkeypatch.setattr(
+        availability_api,
+        "get_web_session",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("availability must not start another authentication refresh")
+        ),
+    )
+
+    class _Session:
+        all_workspace_names = {"workspace-one": "Training"}
+
+    with pytest.raises(SessionExpiredError, match="refresh exhausted"):
         availability_api.get_accurate_resource_availability(
             workspace_id="workspace-one",
             session=_Session(),  # type: ignore[arg-type]

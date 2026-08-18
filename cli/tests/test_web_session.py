@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -9,6 +10,7 @@ import requests
 from inspire.platform.web import session as ws
 from inspire.platform.web.session import auth as ws_auth
 from inspire.platform.web.session import browser_launch
+from inspire.platform.web.session import refresh_lock as ws_refresh_lock
 from inspire.platform.web.session.browser_launch import (
     CHROMIUM_CHANNEL_ENV,
     CHROMIUM_CONTAINER_ARGS,
@@ -46,15 +48,20 @@ class DummyHTTP:
         self.response = response
         self.calls = []
 
-    def get(self, url, headers=None, timeout=None):  # noqa: ANN001
+    def get(self, url, headers=None, timeout=None, allow_redirects=True):  # noqa: ANN001
+        assert allow_redirects is False
         self.calls.append(("GET", url, headers, timeout))
         return self.response
 
-    def post(self, url, headers=None, json=None, timeout=None):  # noqa: ANN001
+    def post(  # noqa: ANN001
+        self, url, headers=None, json=None, timeout=None, allow_redirects=True
+    ):
+        assert allow_redirects is False
         self.calls.append(("POST", url, headers, json, timeout))
         return self.response
 
-    def delete(self, url, headers=None, timeout=None):  # noqa: ANN001
+    def delete(self, url, headers=None, timeout=None, allow_redirects=True):  # noqa: ANN001
+        assert allow_redirects is False
         self.calls.append(("DELETE", url, headers, timeout))
         return self.response
 
@@ -85,15 +92,20 @@ class DummyRequestContext:
     def __init__(self) -> None:
         self.calls = []
 
-    def get(self, url, headers=None, timeout=None):  # noqa: ANN001
+    def get(self, url, headers=None, timeout=None, max_redirects=None):  # noqa: ANN001
+        assert max_redirects == 0
         self.calls.append(("GET", url, headers, None, timeout))
         return DummyAPIResponse(200, {"ok": True})
 
-    def post(self, url, headers=None, data=None, timeout=None):  # noqa: ANN001
+    def post(  # noqa: ANN001
+        self, url, headers=None, data=None, timeout=None, max_redirects=None
+    ):
+        assert max_redirects == 0
         self.calls.append(("POST", url, headers, data, timeout))
         return DummyAPIResponse(200, {"ok": True})
 
-    def delete(self, url, headers=None, timeout=None):  # noqa: ANN001
+    def delete(self, url, headers=None, timeout=None, max_redirects=None):  # noqa: ANN001
+        assert max_redirects == 0
         self.calls.append(("DELETE", url, headers, None, timeout))
         return DummyAPIResponse(200, {"ok": True})
 
@@ -504,6 +516,152 @@ def test_explicit_cas_failure_is_not_hidden_by_playwright_fallback(
         )
 
 
+def test_playwright_failure_after_submission_is_an_authentication_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ws_auth,
+        "_login_with_cas_requests",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("use browser")),
+    )
+    monkeypatch.setattr(ws_auth.time, "time", iter([0.0, 31.0]).__next__)
+    monkeypatch.setattr(ws_auth, "resolve_playwright_proxy_config", lambda **_kwargs: ({}, "none"))
+    monkeypatch.setattr(
+        ws_auth,
+        "describe_effective_proxy_config",
+        lambda **_kwargs: {"playwright": {"route": "direct"}},
+    )
+
+    class Locator:
+        first = None
+
+        def __init__(self) -> None:
+            self.first = self
+
+        def fill(self, _value: str) -> None:
+            pass
+
+        def press(self, _key: str, timeout: int) -> None:
+            pass
+
+    class Page:
+        url = "https://cas.sii.edu.cn/login"
+
+        def goto(self, *_args, **_kwargs) -> None:
+            pass
+
+        def wait_for_timeout(self, _timeout: int) -> None:
+            pass
+
+        def wait_for_selector(self, *_args, **_kwargs) -> None:
+            pass
+
+        def locator(self, _selector: str) -> Locator:
+            return Locator()
+
+        def content(self) -> str:
+            return '<div class="form-error">账号已被锁定</div>'
+
+    class Context:
+        request = object()
+
+        def new_page(self) -> Page:
+            return Page()
+
+    class Browser:
+        def new_context(self, **_kwargs) -> Context:
+            return Context()
+
+    class Chromium:
+        def launch(self, **_kwargs) -> Browser:
+            return Browser()
+
+    class Playwright:
+        chromium = Chromium()
+
+    class PlaywrightContext:
+        def __enter__(self) -> Playwright:
+            return Playwright()
+
+        def __exit__(self, *_args) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright",
+        lambda: PlaywrightContext(),
+    )
+
+    with pytest.raises(ws.AuthenticationError, match="账号已被锁定"):
+        ws_auth.login_with_playwright(
+            "user",
+            "password",
+            base_url="https://qz.sii.edu.cn",
+        )
+
+
+def test_cas_server_failure_after_submission_does_not_submit_again_in_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    login_html = f"""
+    <form action="/cas/login">
+      <input name="username" value="">
+      <input name="password" value="">
+      <input name="execution" value="exec-1">
+    </form>
+    <script>
+      RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");
+    </script>
+    """
+
+    class Response:
+        def __init__(self, status_code: int, text: str, url: str) -> None:
+            self.status_code = status_code
+            self.text = text
+            self.url = url
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise requests.HTTPError(str(self.status_code))
+
+    class HTTP(requests.Session):
+        def __init__(self) -> None:
+            super().__init__()
+            self.submissions = 0
+
+        def get(self, url, **_kwargs):  # noqa: ANN001
+            return Response(200, login_html, "https://cas.sii.edu.cn/cas/login")
+
+        def post(self, url, **_kwargs):  # noqa: ANN001
+            self.submissions += 1
+            return Response(503, "temporarily unavailable", url)
+
+    http = HTTP()
+    browser_fallbacks = 0
+
+    def fail_if_browser_fallback():  # noqa: ANN202
+        nonlocal browser_fallbacks
+        browser_fallbacks += 1
+        raise AssertionError("credentials must not be submitted again through Playwright")
+
+    monkeypatch.setattr(requests, "Session", lambda: http)
+    monkeypatch.setattr(
+        ws_proxy,
+        "resolve_requests_proxy_config",
+        lambda account=None: ({}, "none"),
+    )
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", fail_if_browser_fallback)
+
+    with pytest.raises(ws.AuthenticationError, match="Automatic authentication stopped"):
+        ws_auth.login_with_playwright(
+            "user",
+            "password",
+            base_url="https://qz.sii.edu.cn",
+        )
+
+    assert http.submissions == 1
+    assert browser_fallbacks == 0
+
+
 def test_describe_proxy_config_redacts_credentials() -> None:
     assert ws_auth._describe_proxy_config(
         {
@@ -773,27 +931,55 @@ def test_pooled_requests_session_never_answers_with_stale_cookies() -> None:
         ws_requests_module.close_pooled_requests_session()
 
 
-def test_request_json_falls_back_to_browser_client(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("status_code", [401, 302])
+def test_request_json_auth_response_refreshes_without_browser(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
     session = WebSession(
-        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
-        cookies={"session": "abc"},
+        storage_state={"cookies": [{"name": "session", "value": "expired"}]},
+        cookies={"session": "expired"},
         workspace_id="ws-test",
-        created_at=0,
+        created_at=1,
+    )
+    refreshed = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "fresh"}]},
+        cookies={"session": "fresh"},
+        workspace_id="ws-test",
+        created_at=2,
     )
 
-    http = DummyHTTP(DummyResponse(401))
-    browser = DummyBrowserClient({"ok": True})
+    expired_http = DummyHTTP(DummyResponse(status_code))
+    fresh_http = DummyHTTP(DummyResponse(200, payload={"ok": True}))
+    refresh_calls = 0
 
-    monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
-    monkeypatch.setattr(ws, "_get_browser_client", lambda _session: browser)
+    def fake_pool(current: WebSession, _url: str) -> DummyHTTP:
+        return fresh_http if current.cookies == {"session": "fresh"} else expired_http
+
+    def fake_refresh(**_kwargs) -> WebSession:  # noqa: ANN003
+        nonlocal refresh_calls
+        refresh_calls += 1
+        return refreshed
+
+    monkeypatch.setattr(ws, "pooled_requests_session", fake_pool)
+    monkeypatch.setattr(
+        ws,
+        "_get_browser_client",
+        lambda _session: (_ for _ in ()).throw(
+            AssertionError("an authentication response must not be retried in a browser")
+        ),
+    )
+    monkeypatch.setattr(ws, "_get_web_session", fake_refresh)
+    monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
 
     result = ws.request_json(session, "GET", "https://example.test")
 
     assert result == {"ok": True}
-    assert ws._BROWSER_API_FORCE_BROWSER is True
-    assert http.calls
-    assert browser.calls
+    assert refresh_calls == 1
+    assert len(expired_http.calls) == 1
+    assert len(fresh_http.calls) == 1
+    assert ws._BROWSER_API_FORCE_BROWSER is False
 
 
 def test_request_json_non_json_triggers_fallback(monkeypatch: pytest.MonkeyPatch):
@@ -831,7 +1017,10 @@ def test_request_json_transport_error_triggers_fallback(monkeypatch: pytest.Monk
         def __init__(self) -> None:
             self.calls = []
 
-        def get(self, url, headers=None, timeout=None):  # noqa: ANN001
+        def get(  # noqa: ANN001
+            self, url, headers=None, timeout=None, allow_redirects=True
+        ):
+            assert allow_redirects is False
             self.calls.append(("GET", url, headers, timeout))
             raise requests.exceptions.SSLError("ssl eof")
 
@@ -924,7 +1113,7 @@ def test_browser_client_reset_on_expired(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: ExpiringBrowserClient())
     monkeypatch.setattr(ws, "_close_browser_client", fake_close)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", True)
-    monkeypatch.setattr(ws, "get_web_session", fake_get_web_session)
+    monkeypatch.setattr(ws, "_get_web_session", fake_get_web_session)
 
     with pytest.raises(ws.SessionExpiredError):
         ws.request_json(session, "GET", "https://example.test")
@@ -956,8 +1145,12 @@ def test_request_json_reauth_is_silent(
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: ExpiringBrowserClient())
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", True)
-    monkeypatch.setattr(ws, "clear_session_cache", lambda **_kwargs: None)
-    monkeypatch.setattr(ws, "get_web_session", lambda **_kwargs: refreshed)
+    monkeypatch.setattr(ws, "_get_web_session", lambda **_kwargs: refreshed)
+    monkeypatch.setattr(
+        ws,
+        "pooled_requests_session",
+        lambda _session, _url: DummyHTTP(DummyResponse(401)),
+    )
 
     with pytest.raises(ws.SessionExpiredError):
         ws.request_json(session, "GET", "https://example.test")
@@ -998,8 +1191,7 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
     monkeypatch.setattr(ws, "_get_browser_client", lambda _session: expiring)
     monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
     monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
-    monkeypatch.setattr(ws, "clear_session_cache", lambda **_kwargs: None)
-    monkeypatch.setattr(ws, "get_web_session", fake_get_web_session)
+    monkeypatch.setattr(ws, "_get_web_session", fake_get_web_session)
     monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", True)
 
     result = ws.request_json(session, "GET", "https://example.test")
@@ -1017,6 +1209,66 @@ def test_request_json_reauth_refreshes_session_in_place(monkeypatch: pytest.Monk
     assert second_result == {"ok": True}
     assert refresh_calls["count"] == 1
     assert len(http.calls) == 2
+
+
+def test_failed_login_opens_local_circuit_until_account_config_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    account_dir = tmp_path / ".inspire" / "accounts" / "alice"
+    account_dir.mkdir(parents=True)
+    config_file = account_dir / "config.toml"
+    config_file.write_text("[auth]\nusername = 'alice'\n", encoding="utf-8")
+    stale = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "expired"}]},
+        account="alice",
+        created_at=1.0,
+    )
+    stale.save(account="alice")
+    attempts = 0
+
+    def reject_login(**_kwargs) -> WebSession:  # noqa: ANN003
+        nonlocal attempts
+        attempts += 1
+        raise ws.AuthenticationError("login rejected")
+
+    monkeypatch.setattr(ws, "_get_web_session", reject_login)
+
+    with pytest.raises(ws.AuthenticationError, match="login rejected"):
+        ws.get_web_session(force_refresh=True, account="alice")
+    with pytest.raises(ws.AuthenticationError, match="No new credentials were sent"):
+        ws.get_web_session(force_refresh=True, account="alice")
+    assert attempts == 1
+
+    refreshed = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "fresh"}]},
+        account="alice",
+        created_at=2.0,
+    )
+    config_mtime = time.time() + 1
+    os.utime(config_file, (config_mtime, config_mtime))
+    monkeypatch.setattr(ws, "_get_web_session", lambda **_kwargs: refreshed)
+
+    assert ws.get_web_session(force_refresh=True, account="alice") is refreshed
+
+
+def test_failed_login_circuit_expires_after_one_minute(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    ws_refresh_lock.record_session_auth_failure(
+        "alice",
+        session_created_at=None,
+        now=100.0,
+    )
+
+    with pytest.raises(ws.AuthenticationError, match="about 1 seconds"):
+        ws_refresh_lock.raise_if_session_auth_blocked("alice", now=159.0)
+
+    ws_refresh_lock.raise_if_session_auth_blocked("alice", now=160.0)
 
 
 def test_browser_request_context_posts_json_bytes():

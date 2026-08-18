@@ -15,7 +15,7 @@ from urllib.parse import urljoin
 from inspire.config import DEFAULT_BASE_URL, Config
 
 from .envelope import _v2_result
-from .models import DEFAULT_WORKSPACE_ID, WebSession
+from .models import AuthenticationError, DEFAULT_WORKSPACE_ID, WebSession
 from .browser_launch import (
     chromium_launch_kwargs,
     is_playwright_browser_runtime_error,
@@ -37,7 +37,7 @@ _CAS_RSA_KEY_RE = re.compile(
 )
 
 
-class _CasLoginFailure(ValueError):
+class _CasLoginFailure(AuthenticationError):
     """An explicit CAS authentication failure that should not trigger a fallback."""
 
 
@@ -328,6 +328,10 @@ def _login_not_complete_message(
         "Run `inspire account check --details` to confirm the active account, base URL, and "
         "proxy settings. Re-run with `inspire --debug init` if you need a debug report."
     )
+    lines.append(
+        "Automatic authentication stopped after this credential submission to protect the "
+        "account from CAS lockout; do not retry repeatedly."
+    )
     if proxy_source and "system_env" in proxy_source:
         lines.append(
             "Shell HTTP_PROXY/HTTPS_PROXY/ALL_PROXY is configured for this login (including "
@@ -606,13 +610,20 @@ def _login_with_cas_requests(
     fields.setdefault("_eventId", "submit")
     fields.setdefault("loginType", "1")
 
-    auth_resp = http.post(
-        action,
-        data=fields,
-        headers={"Referer": login_resp.url},
-        timeout=30,
-        allow_redirects=True,
-    )
+    try:
+        auth_resp = http.post(
+            action,
+            data=fields,
+            headers={"Referer": login_resp.url},
+            timeout=30,
+            allow_redirects=True,
+        )
+    except Exception as exc:
+        # The server may have received the credentials even when the response
+        # was lost.  Falling back to Playwright here would submit them again.
+        raise _CasLoginFailure(
+            _login_not_complete_message(proxy_source=proxy_source)
+        ) from exc
     if auth_resp.status_code >= 400:
         error = _login_not_complete_message(
             status=auth_resp.status_code,
@@ -620,18 +631,25 @@ def _login_with_cas_requests(
             page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
             proxy_source=proxy_source,
         )
-        if auth_resp.status_code < 500:
-            raise _CasLoginFailure(error)
-        raise ValueError(error)
+        raise _CasLoginFailure(error)
 
     api_headers = {"Accept": "application/json", "Referer": f"{base_url.rstrip('/')}/login"}
     user_detail: dict | None = None
-    user_detail_resp = http.post(
-        f"{base_url.rstrip('/')}{USER_DETAIL_PATH}",
-        headers=api_headers,
-        json={},
-        timeout=15,
-    )
+    try:
+        user_detail_resp = http.post(
+            f"{base_url.rstrip('/')}{USER_DETAIL_PATH}",
+            headers=api_headers,
+            json={},
+            timeout=15,
+        )
+    except Exception as exc:
+        raise _CasLoginFailure(
+            _login_not_complete_message(
+                current_url=str(getattr(auth_resp, "url", "") or ""),
+                page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
+                proxy_source=proxy_source,
+            )
+        ) from exc
     if user_detail_resp.status_code != 200:
         error = _login_not_complete_message(
             status=user_detail_resp.status_code,
@@ -639,9 +657,7 @@ def _login_with_cas_requests(
             page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
             proxy_source=proxy_source,
         )
-        if 400 <= user_detail_resp.status_code < 500:
-            raise _CasLoginFailure(error)
-        raise ValueError(error)
+        raise _CasLoginFailure(error)
     try:
         detail = _v2_result(user_detail_resp.json())
     except Exception:
@@ -692,7 +708,17 @@ def _login_with_cas_requests(
         all_workspace_fair_scheduling=all_workspace_fair_scheduling or None,
         created_at=time.time(),
     )
-    session.save(account=account)
+    try:
+        session.save(account=account)
+    except Exception as exc:
+        # Authentication already happened.  A local cache write failure must
+        # not turn into a second credential submission through Playwright.
+        raise _CasLoginFailure(
+            _login_not_complete_message(
+                current_url=str(getattr(auth_resp, "url", "") or ""),
+                proxy_source=proxy_source,
+            )
+        ) from exc
     return session
 
 
@@ -840,8 +866,27 @@ def login_with_playwright(
                 pass
             pass_locator = _fill_login_form()
 
+        credentials_may_have_been_submitted = pass_locator is not None
         if pass_locator:
             _submit_login_form(pass_locator)
+
+        def _playwright_authentication_error(
+            *,
+            status: int | None = None,
+        ) -> AuthenticationError:
+            try:
+                current_url = page.url
+            except Exception:
+                current_url = ""
+            return AuthenticationError(
+                _login_not_complete_message(
+                    status=status,
+                    current_url=current_url,
+                    page_hint=_extract_page_login_failure_hint(page),
+                    proxy_source=playwright_proxy_source,
+                    base_proxy_route=playwright_proxy_route,
+                )
+            )
 
         def _wait_for_api_auth() -> None:
             deadline = time.time() + 30
@@ -864,24 +909,19 @@ def login_with_playwright(
                 except Exception:
                     pass
                 page.wait_for_timeout(500)
-            page_hint = ""
-            current_url = ""
-            try:
-                current_url = page.url
-            except Exception:
-                current_url = ""
-            page_hint = _extract_page_login_failure_hint(page)
-            raise ValueError(
-                _login_not_complete_message(
-                    status=last_status,
-                    current_url=current_url,
-                    page_hint=page_hint,
-                    proxy_source=playwright_proxy_source,
-                    base_proxy_route=playwright_proxy_route,
-                )
-            )
+            error = _playwright_authentication_error(status=last_status)
+            if credentials_may_have_been_submitted:
+                raise error
+            raise ValueError(str(error))
 
-        _wait_for_api_auth()
+        try:
+            _wait_for_api_auth()
+        except AuthenticationError:
+            raise
+        except Exception as exc:
+            if credentials_may_have_been_submitted:
+                raise _playwright_authentication_error() from exc
+            raise
         # Once authenticated cookies are available, stop the page quickly and
         # use request APIs for discovery.  Some minimal GPU notebook images can
         # start Chromium but crash while rendering the full Qizhi SPA because
@@ -941,29 +981,34 @@ def login_with_playwright(
 
         workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
 
-        # Capture storage state (cookies + localStorage)
-        storage_state = context.storage_state()
+        try:
+            # Capture storage state (cookies + localStorage)
+            storage_state = context.storage_state()
 
-        # Keep a simple cookie name->value mapping for websocket clients.
-        cookies = context.cookies()
-        cookie_dict = {c["name"]: c["value"] for c in cookies}
+            # Keep a simple cookie name->value mapping for websocket clients.
+            cookies = context.cookies()
+            cookie_dict = {c["name"]: c["value"] for c in cookies}
 
-        browser.close()
+            browser.close()
 
-        session = WebSession(
-            storage_state=cast(dict[str, Any], storage_state),
-            cookies=cookie_dict,
-            workspace_id=workspace_id,
-            login_username=username,
-            base_url=base_url,
-            user_detail=user_detail,
-            all_workspace_ids=all_workspace_ids or None,
-            all_workspace_names=all_workspace_names or None,
-            all_workspace_fair_scheduling=all_workspace_fair_scheduling or None,
-            account=account,
-            created_at=time.time(),
-        )
-        session.save(account=account)
+            session = WebSession(
+                storage_state=cast(dict[str, Any], storage_state),
+                cookies=cookie_dict,
+                workspace_id=workspace_id,
+                login_username=username,
+                base_url=base_url,
+                user_detail=user_detail,
+                all_workspace_ids=all_workspace_ids or None,
+                all_workspace_names=all_workspace_names or None,
+                all_workspace_fair_scheduling=all_workspace_fair_scheduling or None,
+                account=account,
+                created_at=time.time(),
+            )
+            session.save(account=account)
+        except Exception as exc:
+            if credentials_may_have_been_submitted:
+                raise _playwright_authentication_error() from exc
+            raise
 
         return session
 

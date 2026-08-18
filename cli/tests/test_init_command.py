@@ -481,6 +481,51 @@ def test_discover_runtime_retries_configured_login_after_browser_repair(
     ]
 
 
+def test_discover_runtime_does_not_resubmit_after_authentication_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from inspire.platform.web.session import AuthenticationError
+
+    cfg = type(
+        "Cfg",
+        (),
+        {
+            "username": "platform-user",
+            "password": "secret",
+            "base_url": "https://qz.sii.edu.cn",
+        },
+    )()
+    calls = {"session": 0, "login": 0}
+
+    class FakeWebSessionModule:
+        @staticmethod
+        def get_web_session(**_kwargs):  # noqa: ANN001
+            calls["session"] += 1
+            raise AuthenticationError("CAS rejected the login")
+
+        @staticmethod
+        def login_with_playwright(*_args, **_kwargs):  # noqa: ANN001
+            calls["login"] += 1
+            raise AssertionError("authentication failure must not trigger a second login")
+
+    monkeypatch.setattr(
+        discover_module.click,
+        "prompt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected prompt")),
+    )
+
+    with pytest.raises(AuthenticationError, match="CAS rejected"):
+        discover_module._resolve_discover_runtime(
+            config=cfg,
+            web_session_module=FakeWebSessionModule,
+            default_workspace_id="__default__",
+            cli_username=None,
+            cli_base_url=None,
+        )
+
+    assert calls == {"session": 1, "login": 0}
+
+
 def test_persist_prompted_credentials_updates_auth_username() -> None:
     global_data = {
         "auth": {"username": "仝", "password": "old-secret"},

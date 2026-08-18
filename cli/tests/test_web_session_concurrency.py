@@ -34,7 +34,10 @@ class _StubResponse:
 
 
 class _StubHTTP:
-    def get(self, url: str, headers=None, timeout=None) -> _StubResponse:  # noqa: ANN001
+    def get(  # noqa: ANN001
+        self, url: str, headers=None, timeout=None, allow_redirects=True
+    ) -> _StubResponse:
+        assert allow_redirects is False
         _http_calls.append(url)
         return _StubResponse()
 
@@ -72,7 +75,7 @@ def _refresh_expired_session(
     web_session_module._BROWSER_API_FORCE_BROWSER = True
     web_session_module._get_browser_client = _SessionBrowserClient
     web_session_module._close_browser_client = lambda: None
-    web_session_module.get_web_session = fake_get_web_session
+    web_session_module._get_web_session = fake_get_web_session
     web_session_module.pooled_requests_session = lambda _session, _url: _StubHTTP()
 
     barrier.wait()
@@ -115,6 +118,71 @@ def test_concurrent_expired_session_requests_share_one_refresh(
     )
 
     # Then: one process logs in and the waiters reuse its refreshed session.
+    assert exit_codes == [0] * WORKER_COUNT
+    assert login_count.value == 1
+
+
+def _reject_expired_session_refresh(
+    home: str,
+    barrier: Barrier,
+    login_count: Counter,
+) -> None:
+    os.environ["HOME"] = home
+    session = WebSession.load(allow_expired=True, account="default")
+    assert session is not None
+
+    def reject_login(**_kwargs) -> WebSession:  # noqa: ANN003
+        with login_count.get_lock():
+            login_count.value += 1
+        time.sleep(0.2)
+        raise web_session_module.AuthenticationError("CAS rejected the login")
+
+    web_session_module._BROWSER_API_FORCE_BROWSER = True
+    web_session_module._get_browser_client = _SessionBrowserClient
+    web_session_module._close_browser_client = lambda: None
+    web_session_module._get_web_session = reject_login
+
+    barrier.wait()
+    try:
+        web_session_module.request_json(
+            session,
+            "GET",
+            "https://example.test/api/v2/user?Action=GetUserDetail",
+        )
+    except web_session_module.AuthenticationError:
+        return
+    raise AssertionError("failed authentication should stop the request")
+
+
+def test_concurrent_failed_refresh_submits_credentials_only_once(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # noqa: ANN001
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    account_path = tmp_path / ".inspire" / "accounts" / "default"
+    account_path.mkdir(parents=True)
+    (account_path / "config.toml").write_text("[auth]\nusername = 'user'\n", encoding="utf-8")
+    stale = WebSession(
+        storage_state={
+            "cookies": [{"name": "session", "value": "expired"}],
+            "origins": [],
+        },
+        cookies={"session": "expired"},
+        account="default",
+        created_at=1.0,
+    )
+    stale.save(account="default")
+    context = worker_context()
+    barrier = context.Barrier(WORKER_COUNT)
+    login_count = context.Value("i", 0)
+
+    exit_codes = run_workers(
+        context,
+        _reject_expired_session_refresh,
+        count=WORKER_COUNT,
+        args_for=lambda _index: (str(tmp_path), barrier, login_count),
+    )
+
     assert exit_codes == [0] * WORKER_COUNT
     assert login_count.value == 1
 
