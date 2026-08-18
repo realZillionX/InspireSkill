@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from inspire.cli.utils.interactive_console import (
+    ResizePoller,
     ShellStreams,
     raw_terminal,
     watch_terminal_resize,
@@ -152,28 +153,25 @@ def test_resize_watch_fires_on_posix_signal() -> None:
     assert fired == [1]
 
 
-def test_resize_watch_polls_the_size_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("sys.platform", "win32")
-    sizes = iter([os.terminal_size((80, 24)), os.terminal_size((100, 30))])
+def test_resize_poller_fires_once_per_size_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Stands in for SIGWINCH on Windows. The platform split is at import time,
+    # so the poller is tested directly rather than through the context manager.
     current = os.terminal_size((80, 24))
-
-    def fake_size(fallback: Any = None) -> os.terminal_size:
-        del fallback
-        return current
-
-    monkeypatch.setattr("shutil.get_terminal_size", fake_size)
-    next(sizes)
+    monkeypatch.setattr("shutil.get_terminal_size", lambda fallback=None: current)
 
     fired: list[int] = []
-    with watch_terminal_resize(lambda: fired.append(1)) as poll:
-        poll()
-        assert fired == []
-        current = next(sizes)
-        poll()
-        assert fired == [1]
-        # A steady size does not re-announce.
-        poll()
-        assert fired == [1]
+    poll = ResizePoller(lambda: fired.append(1))
+
+    poll()
+    assert fired == []
+
+    current = os.terminal_size((100, 30))
+    poll()
+    assert fired == [1]
+
+    # A steady size does not re-announce.
+    poll()
+    assert fired == [1]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX select/SIGWINCH only")

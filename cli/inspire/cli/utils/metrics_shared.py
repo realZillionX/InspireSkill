@@ -396,7 +396,10 @@ def _open_file(path: Path) -> None:
         elif sys.platform.startswith("linux"):
             subprocess.Popen(["xdg-open", str(path)])  # noqa: S603,S607
         elif sys.platform == "win32":  # pragma: no cover
-            os.startfile(str(path))  # type: ignore[attr-defined]
+            # getattr, not a `type: ignore`: os.startfile is Windows-only, so a
+            # direct call fails type checking on POSIX and the ignore that
+            # silences that becomes an unused-ignore error on Windows.
+            getattr(os, "startfile")(str(path))
     except Exception:  # pragma: no cover
         pass
 

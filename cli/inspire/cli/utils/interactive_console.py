@@ -43,99 +43,121 @@ if sys.platform != "win32":
     import tty
 
 
-@contextmanager
-def raw_terminal(stream: Any) -> Iterator[None]:
-    """Put the terminal in raw mode for the block, then restore it.
+class ResizePoller:
+    """Fire a callback when the terminal size changes since the last check.
 
-    A no-op when *stream* is not a terminal, so piped and captured runs behave
-    the same as they did before.
+    Stands in for SIGWINCH where there is none. Lives outside the platform split
+    so the comparison itself is testable on any host — the part that is actually
+    Windows-specific is only that something has to call it.
     """
-    if not bool(getattr(stream, "isatty", lambda: False)()):
-        yield
-        return
 
-    if sys.platform == "win32":
-        with _raw_windows_console():
+    def __init__(self, on_resize: Callable[[], None]) -> None:
+        self._on_resize = on_resize
+        self._last = shutil.get_terminal_size(fallback=(80, 24))
+
+    def __call__(self) -> None:
+        current = shutil.get_terminal_size(fallback=(80, 24))
+        if current != self._last:
+            self._last = current
+            self._on_resize()
+
+
+if sys.platform == "win32":
+
+    @contextmanager
+    def raw_terminal(stream: Any) -> Iterator[None]:
+        """Put the console in raw mode for the block, then restore it."""
+        if not bool(getattr(stream, "isatty", lambda: False)()):
             yield
-        return
+            return
 
-    descriptor = stream.fileno()
-    saved = termios.tcgetattr(descriptor)
-    tty.setraw(descriptor)
-    try:
-        yield
-    finally:
-        termios.tcsetattr(descriptor, termios.TCSADRAIN, saved)
+        import ctypes
 
+        # Reached through getattr because `ctypes.windll` exists only on
+        # Windows: a direct reference is an attribute error to a type checker
+        # running on POSIX, and a `type: ignore` for it is an unused-ignore
+        # error on Windows. There is no spelling that satisfies both.
+        kernel32 = getattr(ctypes, "windll").kernel32
+        stdin_handle = kernel32.GetStdHandle(_STD_INPUT_HANDLE)
+        stdout_handle = kernel32.GetStdHandle(_STD_OUTPUT_HANDLE)
 
-@contextmanager
-def _raw_windows_console() -> Iterator[None]:
-    import ctypes
+        saved_input = ctypes.c_uint32()
+        saved_output = ctypes.c_uint32()
+        have_input = bool(kernel32.GetConsoleMode(stdin_handle, ctypes.byref(saved_input)))
+        have_output = bool(kernel32.GetConsoleMode(stdout_handle, ctypes.byref(saved_output)))
+        if not have_input:
+            # isatty() said terminal but the console API disagrees — a ConPTY
+            # wrapper, or a handle this process may not touch. Leave it alone
+            # rather than fail the shell over it.
+            yield
+            return
 
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-    stdin_handle = kernel32.GetStdHandle(_STD_INPUT_HANDLE)
-    stdout_handle = kernel32.GetStdHandle(_STD_OUTPUT_HANDLE)
-
-    saved_input = ctypes.c_uint32()
-    saved_output = ctypes.c_uint32()
-    have_input = bool(kernel32.GetConsoleMode(stdin_handle, ctypes.byref(saved_input)))
-    have_output = bool(kernel32.GetConsoleMode(stdout_handle, ctypes.byref(saved_output)))
-    if not have_input:
-        # Not a real console (a ConPTY-less redirect, or a handle we cannot
-        # touch). Leave it alone rather than fail the shell.
-        yield
-        return
-
-    # Clearing PROCESSED_INPUT is what makes Ctrl-C arrive as a 0x03 byte
-    # instead of a signal, matching tty.setraw: the remote shell handles it.
-    raw_input_mode = saved_input.value & ~(
-        _ENABLE_PROCESSED_INPUT | _ENABLE_LINE_INPUT | _ENABLE_ECHO_INPUT
-    )
-    raw_input_mode |= _ENABLE_VIRTUAL_TERMINAL_INPUT
-    kernel32.SetConsoleMode(stdin_handle, raw_input_mode)
-    if have_output:
-        kernel32.SetConsoleMode(
-            stdout_handle, saved_output.value | _ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        # Clearing PROCESSED_INPUT is what makes Ctrl-C arrive as a 0x03 byte
+        # instead of a signal, matching tty.setraw: the remote shell handles it.
+        raw_input_mode = saved_input.value & ~(
+            _ENABLE_PROCESSED_INPUT | _ENABLE_LINE_INPUT | _ENABLE_ECHO_INPUT
         )
-    try:
-        yield
-    finally:
-        kernel32.SetConsoleMode(stdin_handle, saved_input.value)
+        raw_input_mode |= _ENABLE_VIRTUAL_TERMINAL_INPUT
+        kernel32.SetConsoleMode(stdin_handle, raw_input_mode)
         if have_output:
-            kernel32.SetConsoleMode(stdout_handle, saved_output.value)
+            kernel32.SetConsoleMode(
+                stdout_handle, saved_output.value | _ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            )
+        try:
+            yield
+        finally:
+            kernel32.SetConsoleMode(stdin_handle, saved_input.value)
+            if have_output:
+                kernel32.SetConsoleMode(stdout_handle, saved_output.value)
 
+    @contextmanager
+    def watch_terminal_resize(on_resize: Callable[[], None]) -> Iterator[Callable[[], None]]:
+        """Yield a poll callback that fires *on_resize* when the size changes.
 
-@contextmanager
-def watch_terminal_resize(on_resize: Callable[[], None]) -> Iterator[Callable[[], None]]:
-    """Install a resize notifier, yielding a poll callback for the event loop.
+        Windows has no SIGWINCH, so the shells call this once per event-loop
+        tick and it compares the size against the last one it saw.
+        """
+        yield ResizePoller(on_resize)
 
-    POSIX gets ``SIGWINCH`` and the yielded callback does nothing. Windows has no
-    such signal, so the callback compares the current size against the last one
-    and fires *on_resize* when it changed; the shells call it once per tick.
-    """
-    if sys.platform == "win32":
-        last_size = shutil.get_terminal_size(fallback=(80, 24))
+else:
 
-        def poll() -> None:
-            nonlocal last_size
-            current = shutil.get_terminal_size(fallback=(80, 24))
-            if current != last_size:
-                last_size = current
-                on_resize()
+    @contextmanager
+    def raw_terminal(stream: Any) -> Iterator[None]:
+        """Put the terminal in raw mode for the block, then restore it.
 
-        yield poll
-        return
+        A no-op when *stream* is not a terminal, so piped and captured runs
+        behave the same as they always did.
+        """
+        if not bool(getattr(stream, "isatty", lambda: False)()):
+            yield
+            return
 
-    def handler(signum: int, frame: Any) -> None:
-        del signum, frame
-        on_resize()
+        descriptor = stream.fileno()
+        saved = termios.tcgetattr(descriptor)
+        tty.setraw(descriptor)
+        try:
+            yield
+        finally:
+            termios.tcsetattr(descriptor, termios.TCSADRAIN, saved)
 
-    previous = signal.getsignal(signal.SIGWINCH)
-    signal.signal(signal.SIGWINCH, handler)
-    try:
-        yield lambda: None
-    finally:
-        signal.signal(signal.SIGWINCH, previous)
+    @contextmanager
+    def watch_terminal_resize(on_resize: Callable[[], None]) -> Iterator[Callable[[], None]]:
+        """Install a SIGWINCH handler, yielding a poll callback that does nothing.
+
+        The callback exists so the shells can call it unconditionally; here the
+        signal already does the work.
+        """
+
+        def handler(signum: int, frame: Any) -> None:
+            del signum, frame
+            on_resize()
+
+        previous = signal.getsignal(signal.SIGWINCH)
+        signal.signal(signal.SIGWINCH, handler)
+        try:
+            yield lambda: None
+        finally:
+            signal.signal(signal.SIGWINCH, previous)
 
 
 class ShellStreams:
@@ -197,6 +219,7 @@ class ShellStreams:
 
 
 __all__ = [
+    "ResizePoller",
     "ShellStreams",
     "raw_terminal",
     "watch_terminal_resize",
