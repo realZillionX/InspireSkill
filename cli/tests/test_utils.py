@@ -1,5 +1,6 @@
 """Tests for utility modules: config, tunnel."""
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -339,6 +340,11 @@ class TestProxyCommand:
         assert "wss://proxy.example.com/tunnel" in cmd
         assert str(rtunnel_bin) in cmd or "rtunnel" in cmd
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pins the POSIX ProxyCommand shape; the Windows contract is in "
+        "test_windows_support.py",
+    )
     def test_get_proxy_command_with_quiet(self, tmp_path: Path) -> None:
         """Test building proxy command with quiet flag."""
         bridge = BridgeProfile(
@@ -352,6 +358,11 @@ class TestProxyCommand:
         # Should include stderr redirect
         assert "2>/dev/null" in cmd
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pins the POSIX ProxyCommand shape; the Windows contract is in "
+        "test_windows_support.py",
+    )
     def test_get_proxy_command_injects_rtunnel_proxy_override(
         self,
         tmp_path: Path,
@@ -370,6 +381,11 @@ class TestProxyCommand:
         assert "HTTPS_PROXY=http://127.0.0.1:7897" in cmd
         assert "wss://proxy.example.com/tunnel" in cmd
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pins the POSIX ProxyCommand shape; the Windows contract is in "
+        "test_windows_support.py",
+    )
     def test_get_proxy_command_uses_rtunnel_proxy_from_toml(
         self,
         tmp_path: Path,
@@ -397,6 +413,11 @@ class TestProxyCommand:
         assert "HTTP_PROXY=http://127.0.0.1:7897" in cmd
         assert "HTTPS_PROXY=http://127.0.0.1:7897" in cmd
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pins the POSIX ProxyCommand shape; the Windows contract is in "
+        "test_windows_support.py",
+    )
     def test_get_proxy_command_reuses_qizhi_mixed_proxy(
         self,
         tmp_path: Path,
@@ -432,6 +453,11 @@ class TestProxyCommand:
 
         assert "HTTP_PROXY=http://127.0.0.1:7897" in cmd
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pins the POSIX ProxyCommand shape; the Windows contract is in "
+        "test_windows_support.py",
+    )
     def test_exec_rtunnel_proxy_quiet_redirects_stderr_during_exec(
         self,
         monkeypatch: pytest.MonkeyPatch,

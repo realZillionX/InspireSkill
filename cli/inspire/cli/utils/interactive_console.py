@@ -194,7 +194,12 @@ class ShellStreams:
                 if not chunk:
                     break
                 self._queue.put(chunk)
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError):
+            # OSError/ValueError: the pipe was closed underneath us.
+            # AttributeError: stdin is not a readable stream at all — a
+            # redirected or replaced handle. Either way it is end of input, and
+            # this runs on a daemon thread where an escaping exception would
+            # only print a traceback nobody can act on.
             pass
         finally:
             self._queue.put(b"")

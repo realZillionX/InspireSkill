@@ -95,6 +95,7 @@ def test_windows_ssh_env_carries_the_proxy_override(
     assert env["LC_ALL"] == "C"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX puts it in the ProxyCommand")
 def test_posix_ssh_env_leaves_the_proxy_to_the_proxy_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -103,7 +104,9 @@ def test_posix_ssh_env_leaves_the_proxy_to_the_proxy_command(
         lambda: "http://proxy.invalid:8080",
     )
 
-    assert "HTTPS_PROXY" not in build_ssh_process_env()
+    # Compared against the override rather than asserted absent: a developer
+    # machine may legitimately have HTTPS_PROXY set already.
+    assert build_ssh_process_env().get("HTTPS_PROXY") != "http://proxy.invalid:8080"
 
 
 def test_ssh_config_proxy_command_uses_windows_quoting(as_windows: None) -> None:
@@ -152,21 +155,30 @@ def test_playwright_cache_lives_under_local_app_data(
     assert "AppData" in str(cache_dir)
 
 
-def test_console_encoding_is_retuned_only_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
-    class Stream:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, str]] = []
+class _RecordingStream:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
 
-        def reconfigure(self, **kwargs: str) -> None:
-            self.calls.append(kwargs)
+    def reconfigure(self, **kwargs: str) -> None:
+        self.calls.append(kwargs)
 
-    stream = Stream()
-    configure_console_encoding((stream,))
-    assert stream.calls == []
 
+def test_console_encoding_forces_utf8_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.platform", "win32")
+    stream = _RecordingStream()
+
     configure_console_encoding((stream,))
+
     assert stream.calls == [{"encoding": "utf-8", "errors": "replace"}]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the no-op branch is the POSIX one")
+def test_console_encoding_leaves_posix_streams_alone() -> None:
+    stream = _RecordingStream()
+
+    configure_console_encoding((stream,))
+
+    assert stream.calls == []
 
 
 def test_console_encoding_survives_a_stream_that_cannot_be_retuned(
@@ -219,7 +231,9 @@ def test_liveness_probe_never_reaches_os_kill_on_windows(
 
     monkeypatch.setattr(os, "kill", explode)
 
-    # The ctypes path is unavailable off Windows, so this only has to prove the
-    # POSIX branch was not taken.
-    with pytest.raises(AttributeError):
+    try:
         process_is_alive(os.getpid())
+    except AttributeError:
+        # Off Windows the ctypes path is unavailable, which is itself proof the
+        # POSIX branch was not taken.
+        pass
