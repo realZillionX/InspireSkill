@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import logging
-import os
-import select
-import sys
-import threading
-import queue
 import shlex
 import subprocess
 import time
 from typing import Callable, Optional
+
+from inspire.process_io import iter_process_lines
 
 from .config import load_tunnel_config
 from .models import (
@@ -21,7 +18,7 @@ from .models import (
     TunnelNotAvailableError,
 )
 from .rtunnel import _ensure_rtunnel_binary
-from .ssh import _get_proxy_command
+from .ssh import _get_proxy_command, build_ssh_process_env
 
 logger = logging.getLogger(__name__)
 
@@ -29,17 +26,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Core helpers
 # ---------------------------------------------------------------------------
-
-
-def _build_ssh_process_env() -> dict[str, str]:
-    """Build environment for SSH subprocesses with a universally available locale.
-
-    This prevents remote login shells from inheriting unsupported locale values
-    (for example ``en_US.UTF-8``) via SSH env forwarding.
-    """
-    env = os.environ.copy()
-    env.update({"LC_ALL": "C", "LANG": "C"})
-    return env
 
 
 def _resolve_bridge_and_proxy(
@@ -92,7 +78,7 @@ def _build_ssh_base_args(
         "-o",
         "StrictHostKeyChecking=no",
         "-o",
-        "UserKnownHostsFile=NUL" if sys.platform == "win32" else "UserKnownHostsFile=/dev/null",
+        "UserKnownHostsFile=/dev/null",
         "-o",
         f"ProxyCommand={proxy_cmd}",
         "-o",
@@ -154,7 +140,7 @@ def run_ssh_command(
         errors="replace",
         timeout=timeout,
         check=check,
-        env=_build_ssh_process_env(),
+        env=build_ssh_process_env(),
     )
     logger.debug(
         "run_ssh_command completed bridge=%s returncode=%s",
@@ -246,7 +232,7 @@ def run_ssh_command_streaming(
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=_build_ssh_process_env(),
+        env=build_ssh_process_env(),
     )
     stdout = process.stdout
     if stdout is None:
@@ -261,22 +247,8 @@ def run_ssh_command_streaming(
 
     start_time = time.time()
 
-    reader_queue: queue.Queue[str | None] | None = None
-    reader_thread: threading.Thread | None = None
-    if sys.platform == "win32":
-        # select() only accepts sockets on Windows; pipes used by Popen must be
-        # drained from a reader thread instead.
-        reader_queue = queue.Queue()
-        def _drain_stdout() -> None:
-            for line in iter(stdout.readline, ""):
-                reader_queue.put(line)
-            reader_queue.put(None)
-
-        reader_thread = threading.Thread(target=_drain_stdout, daemon=True)
-        reader_thread.start()
-
     try:
-        while True:
+        for line in iter_process_lines(process, stdout):
             # Check timeout
             if timeout is not None:
                 elapsed = time.time() - start_time
@@ -291,30 +263,11 @@ def run_ssh_command_streaming(
                     process.wait()
                     raise subprocess.TimeoutExpired(ssh_cmd, timeout)
 
-            # Read from a single path (readline only) so lines cannot be emitted twice.
-            if sys.platform == "win32":
-                try:
-                    line = reader_queue.get(timeout=1.0) if reader_queue is not None else None
-                except queue.Empty:
-                    continue
-                if line is None:
-                    break
-            elif process.poll() is not None:
-                line = stdout.readline()
-            else:
-                ready, _, _ = select.select([stdout], [], [], 1.0)
-                if not ready:
-                    continue
-                line = stdout.readline()
-
-            if line:
+            if line is not None:
                 logger.debug("run_ssh_command_streaming line=%s", line.rstrip("\n"))
                 output_callback(line)
-                continue
 
-            if process.poll() is not None:
-                break
-
+        process.wait()
         logger.debug(
             "run_ssh_command_streaming completed bridge=%s returncode=%s",
             bridge.name,
@@ -331,12 +284,10 @@ def run_ssh_command_streaming(
         if process.poll() is None:
             process.terminate()
             process.wait()
-        if reader_thread is not None:
-            reader_thread.join(timeout=1.0)
 
 
 __all__ = [
-    "_build_ssh_process_env",
+    "build_ssh_process_env",
     "_build_ssh_base_args",
     "_build_stdin_script",
     "_wrap_remote_command",

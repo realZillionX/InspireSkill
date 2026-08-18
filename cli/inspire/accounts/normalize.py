@@ -136,6 +136,8 @@ def _install_playwright_chromium(
                 timeout=timeout_s,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             return True
         except subprocess.CalledProcessError as err:

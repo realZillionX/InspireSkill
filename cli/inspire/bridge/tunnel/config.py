@@ -47,9 +47,12 @@ def _read_json_into_config(path: Path, config: TunnelConfig) -> Optional[str]:
     name (or None). Existing bridges win on name collision (first loader to
     register a name keeps it)."""
     try:
-        with open(path) as f:
+        # Bridge profiles carry workspace names, which are routinely Chinese. The
+        # file is written as UTF-8, so it has to be read back as UTF-8 rather
+        # than through whatever the platform's locale happens to be.
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
 
     for bridge_data in data.get("bridges", []):

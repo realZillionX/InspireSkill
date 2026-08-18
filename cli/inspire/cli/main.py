@@ -53,6 +53,7 @@ from inspire.cli.utils.output_guard import (
     set_parser_redactions,
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.console_bootstrap import configure_console_encoding
 from inspire.cli.env_bootstrap import bootstrap_env_file
 
 
@@ -251,6 +252,7 @@ main.add_command(post_update)
 
 def cli() -> None:
     """Entry point for the CLI."""
+    configure_console_encoding()
     try:
         main()
     except Exception as e:  # pragma: no cover - top-level safety net

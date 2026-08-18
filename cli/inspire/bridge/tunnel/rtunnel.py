@@ -52,6 +52,8 @@ def _is_rtunnel_binary_usable(path: Path) -> bool:
             [str(path), "--help"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
         )

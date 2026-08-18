@@ -579,11 +579,12 @@ def _follow_logs_via_ssh(
     bridge_name: Optional[str] = None,
     status_hint: str = "inspire job status <job-name> --workspace <workspace>",
 ) -> Optional[str]:
-    import select
     import subprocess
     import time
 
     from inspire.bridge.tunnel import get_ssh_command_args
+    from inspire.bridge.tunnel.ssh import build_ssh_process_env
+    from inspire.process_io import iter_process_lines
 
     api_logger = logging.getLogger("inspire.inspire_api_control")
     original_level = api_logger.level
@@ -657,7 +658,10 @@ def _follow_logs_via_ssh(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=1,
-            universal_newlines=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=build_ssh_process_env(),
         )
         stdout = process.stdout
         if stdout is None:
@@ -665,20 +669,9 @@ def _follow_logs_via_ssh(
 
         last_status_check = time.time()
 
-        while True:
-            if process.poll() is not None:
-                for line in stdout:
-                    emit_follow_line(line)
-                break
-
-            ready, _, _ = select.select([stdout], [], [], 1.0)
-
-            if ready:
-                line = stdout.readline()
-                if line:
-                    emit_follow_line(line)
-                elif process.poll() is not None:
-                    break
+        for line in iter_process_lines(process, stdout):
+            if line is not None:
+                emit_follow_line(line)
 
             current_time = time.time()
             if current_time - last_status_check >= status_check_interval:

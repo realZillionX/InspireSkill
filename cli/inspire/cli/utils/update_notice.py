@@ -229,6 +229,23 @@ def maybe_spawn_check() -> None:
             env=env,
             start_new_session=True,
             close_fds=True,
+            creationflags=_detach_creationflags(),
         )
     except Exception:
         pass
+
+
+def _detach_creationflags() -> int:
+    """Return the Popen flags that keep the check invisible, 0 off Windows.
+
+    ``start_new_session`` is POSIX-only and silently ignored on Windows, so
+    without this every ``inspire`` invocation pops a console window for the child
+    interpreter and hands it the parent's Ctrl-C. Popen rejects a non-zero value
+    on POSIX, which is why this returns 0 there.
+    """
+    if sys.platform != "win32":
+        return 0
+    # Guarded lookups: these constants only exist in the Windows stdlib.
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) | int(
+        getattr(subprocess, "DETACHED_PROCESS", 0)
+    )

@@ -335,7 +335,13 @@ def test_playwright_install_non_interactive_is_silent_and_captured(
     assert calls == [
         (
             [sys.executable, "-m", "playwright", "install", "chromium"],
-            {"check": False, "capture_output": True, "text": True},
+            {
+                "check": False,
+                "capture_output": True,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+            },
         )
     ]
 

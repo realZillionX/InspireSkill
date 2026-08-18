@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -46,6 +47,20 @@ def _resolve_inspire_executable() -> str:
     return str(Path(executable).expanduser().resolve())
 
 
+def _quote_proxy_command(parts: list[str]) -> str:
+    """Join ProxyCommand tokens for whichever parser will read them back.
+
+    POSIX ssh hands the line to ``/bin/sh``. Win32-OpenSSH hands it to
+    CreateProcessW with no shell in between, where POSIX single quotes are just
+    characters in a filename that does not exist — and ``shlex.quote`` adds them
+    to every token holding a non-ASCII character, which every Chinese workspace
+    name does. ``list2cmdline`` produces what that parser actually expects.
+    """
+    if sys.platform == "win32":
+        return subprocess.list2cmdline(parts)
+    return " ".join(shlex.quote(part) for part in parts)
+
+
 def _public_identity_file(identity_file: str | None) -> str | None:
     """Return the IdentityFile value, shortened to ``~/`` where possible.
 
@@ -64,6 +79,22 @@ def _public_identity_file(identity_file: str | None) -> str | None:
     except ValueError:
         return str(path)
     return f"~/{relative.as_posix()}"
+
+
+def _quote_ssh_config_value(value: str) -> str:
+    """Quote one OpenSSH config argument the way OpenSSH itself parses it.
+
+    ``readconf.c`` splits arguments with ``strdelim``, which knows ``"`` and
+    nothing else — a POSIX single quote is just a character in the filename. So
+    a path with a space has to arrive double-quoted, and everything else is left
+    bare. This matters most on Windows, where ``C:\\Users\\First Last\\...`` is
+    the common case rather than the exotic one.
+    """
+    if not value:
+        return '""'
+    if any(char.isspace() for char in value) or '"' in value:
+        return '"' + value.replace('"', '\\"') + '"'
+    return value
 
 
 def _load_cached_target(
@@ -126,7 +157,7 @@ def _format_ssh_config(
     if pick is not None:
         proxy_parts.extend(["--pick", str(pick)])
     proxy_parts.extend(["--port", "%p"])
-    proxy_command = " ".join(shlex.quote(part) for part in proxy_parts)
+    proxy_command = _quote_proxy_command(proxy_parts)
 
     lines = [
         f"Host {host}",
@@ -138,7 +169,7 @@ def _format_ssh_config(
     ]
     identity_file = _public_identity_file(bridge.identity_file)
     if identity_file:
-        lines.insert(5, f"  IdentityFile {shlex.quote(identity_file)}")
+        lines.insert(5, f"  IdentityFile {_quote_ssh_config_value(identity_file)}")
     return "\n".join(lines) + "\n"
 
 

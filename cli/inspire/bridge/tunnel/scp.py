@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 import subprocess
-import sys
 from typing import Optional
 
 from .models import BridgeProfile
+from .ssh import build_ssh_process_env
 from .ssh_exec import _resolve_bridge_and_proxy
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ def _build_scp_base_args(
         "-o",
         "StrictHostKeyChecking=no",
         "-o",
-        "UserKnownHostsFile=NUL" if sys.platform == "win32" else "UserKnownHostsFile=/dev/null",
+        "UserKnownHostsFile=/dev/null",
         "-o",
         f"ProxyCommand={proxy_cmd}",
         "-o",
@@ -89,7 +89,10 @@ def run_scp_transfer(
         args,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
+        env=build_ssh_process_env(),
     )
     logger.debug(
         "run_scp_transfer completed bridge=%s returncode=%s stdout_chars=%s stderr_chars=%s",

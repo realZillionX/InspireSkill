@@ -197,7 +197,9 @@ def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert "Host inspire-demo" in result.output
     assert "HostName demo-box" in result.output
-    assert "IdentityFile '~/.ssh/id_ed25519'" in result.output
+    # Bare, not shell-quoted: OpenSSH's config parser only knows double quotes,
+    # so a POSIX-single-quoted path is read back as a filename containing quotes.
+    assert "IdentityFile ~/.ssh/id_ed25519" in result.output
     assert (
         "ProxyCommand /opt/tools/bin/inspire notebook ssh-proxy %h "
         "--workspace 'CPU资源空间' --port %p"

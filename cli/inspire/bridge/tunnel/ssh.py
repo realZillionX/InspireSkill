@@ -62,19 +62,18 @@ def _get_proxy_command(bridge: BridgeProfile, rtunnel_bin: Path, quiet: bool = F
         env_prefix = " ".join(f"{key}={shlex.quote(value)}" for key, value in env_values.items())
         return f"{env_prefix} {command}"
 
-    # ProxyCommand is executed by a shell on the client; quote the URL because it
-    # can contain characters like '?' (e.g. token query params) that some shells
-    # treat as glob patterns.
     if sys.platform == "win32":
-        # Windows OpenSSH invokes ProxyCommand through cmd.exe. Proxy settings
-        # are inherited from the SSH process, so POSIX VAR=value prefixes and
-        # `sh -c` cannot be used here.
-        def quote(value):
-            return '"' + str(value).replace('"', '\\"') + '"'
-        base_cmd = f"{quote(rtunnel_bin)} {quote(ws_url)} {quote('stdio://%h:%p')}"
-        if quiet:
-            return f"{base_cmd} 2>NUL"
-        return base_cmd
+        # Win32-OpenSSH does not run ProxyCommand through a shell at all: with
+        # FORK_NOT_SUPPORTED it hands the whole string to posix_spawnp, which
+        # reaches CreateProcessW with lpApplicationName=NULL. So no redirection,
+        # no `sh -c`, and no VAR=value prefix — anything shell-shaped would be
+        # passed to rtunnel as an extra argument and rejected. Quoting each token
+        # keeps a leading `"`, which is the branch of OpenSSH's
+        # build_commandline_string() that forwards the string unmodified.
+        # `quiet` has no effect here; rtunnel's stderr goes wherever ssh's does,
+        # and _proxy_env() reaches it through the environment ssh was spawned
+        # with (see build_ssh_process_env).
+        return " ".join(_windows_quote(part) for part in (rtunnel_bin, ws_url, "stdio://%h:%p"))
 
     base_cmd = f"{shlex.quote(str(rtunnel_bin))} {shlex.quote(ws_url)} {shlex.quote('stdio://%h:%p')}"
     base_cmd = _prepend_proxy_env(base_cmd)
@@ -83,6 +82,29 @@ def _get_proxy_command(bridge: BridgeProfile, rtunnel_bin: Path, quiet: bool = F
         cmd = f"{base_cmd} 2>/dev/null"
         return f"sh -c {shlex.quote(cmd)}"
     return base_cmd
+
+
+def _windows_quote(value: object) -> str:
+    """Quote one ProxyCommand token for CreateProcessW's command-line parser."""
+    return '"' + str(value).replace('"', '\\"') + '"'
+
+
+def build_ssh_process_env() -> dict[str, str]:
+    """Build the environment for a local ``ssh``/``scp`` call.
+
+    The locale is pinned so remote login shells do not inherit an unsupported
+    value (for example ``en_US.UTF-8``) through SSH env forwarding.
+
+    On POSIX the rtunnel proxy override rides along inside the ProxyCommand as a
+    ``VAR=value`` prefix. Windows has no shell there, so it has to arrive the
+    other way: ssh hands its own environment to the proxy process, so setting it
+    here is what reaches rtunnel.
+    """
+    env = os.environ.copy()
+    env.update({"LC_ALL": "C", "LANG": "C"})
+    if sys.platform == "win32":
+        env.update(_proxy_env())
+    return env
 
 
 def exec_rtunnel_proxy(
@@ -99,6 +121,10 @@ def exec_rtunnel_proxy(
     stream between OpenSSH and the remote notebook sshd. When *quiet* is true,
     rtunnel stderr is redirected to ``/dev/null`` immediately before exec so
     its client lifecycle logs do not appear in the user's SSH session.
+
+    Windows has no exec: the CRT spawns a child and terminates the caller, which
+    would hand OpenSSH a proxy pid that dies the moment the tunnel comes up.
+    There this stays alive as a thin parent and forwards rtunnel's exit code.
     """
     _ensure_rtunnel_binary(config)
     port = int(target_port or bridge.ssh_port)
@@ -109,6 +135,14 @@ def exec_rtunnel_proxy(
     ]
     env = os.environ.copy()
     env.update(_proxy_env())
+
+    if sys.platform == "win32":
+        completed = subprocess.run(
+            args,
+            env=env,
+            stderr=subprocess.DEVNULL if quiet else None,
+        )
+        raise SystemExit(completed.returncode)
 
     saved_stderr_fd: int | None = None
     if quiet:
@@ -169,7 +203,7 @@ def _test_ssh_connection(
                 "-o",
                 "StrictHostKeyChecking=no",
                 "-o",
-                "UserKnownHostsFile=NUL" if sys.platform == "win32" else "UserKnownHostsFile=/dev/null",
+                "UserKnownHostsFile=/dev/null",
                 "-o",
                 "BatchMode=yes",
                 "-o",
@@ -186,7 +220,10 @@ def _test_ssh_connection(
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout + 5,
+            env=build_ssh_process_env(),
         )
         return result.returncode == 0 and "ok" in result.stdout
     except (subprocess.TimeoutExpired, FileNotFoundError):

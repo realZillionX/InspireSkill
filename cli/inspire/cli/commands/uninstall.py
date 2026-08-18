@@ -108,6 +108,10 @@ def _playwright_cache_dir() -> Path | None:
         return Path(override).expanduser()
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Caches" / "ms-playwright"
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+        return base / "ms-playwright"
     return Path.home() / ".cache" / "ms-playwright"
 
 
@@ -215,6 +219,8 @@ def _unload_launch_agent() -> None:
             cmd,
             check=False,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -396,6 +402,8 @@ def uninstall(
             cmd,
             check=False,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
