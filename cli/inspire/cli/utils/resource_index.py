@@ -271,11 +271,15 @@ class ResourceIndex:
         the recovery path failed with a sharing violation instead.
         """
         connection = sqlite3.connect(self.path, timeout=5.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = NORMAL")
         try:
+            # Inside the try: `PRAGMA journal_mode` is the statement that first
+            # touches the file's pages, so it is exactly where a corrupt index
+            # raises — and leaving the connection open there is what made the
+            # discard-and-rebuild path fail on Windows.
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout = 5000")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = NORMAL")
             with connection:
                 yield connection
         finally:

@@ -87,8 +87,13 @@ jobs:
       - name: mypy
         run: uv run mypy
 
+      # Printed so a run that silently collects fewer tests than the Linux jobs
+      # is visible in the log rather than hidden behind a passing summary.
+      - name: Collected test count
+        run: uv run pytest --collect-only -q
+
       - name: Unit tests
-        run: uv run pytest -q
+        run: uv run pytest -q -ra
 
       # The CLI has to survive being redirected: a pipe drops Python off the
       # Windows console API and onto the ANSI code page, which is where every
