@@ -514,6 +514,161 @@ def test_explicit_cas_failure_is_not_hidden_by_playwright_fallback(
         )
 
 
+class _FakePlaywrightLogin:
+    """The browser path with no browser: a page that never authenticates.
+
+    *form_found* is the only knob that matters. With it, the password was typed
+    and submitted before the wait timed out; without it, the form was never
+    there and nothing left the machine — and those two have to end differently.
+    """
+
+    def __init__(self, *, form_found: bool, page_html: str = "") -> None:
+        self.form_found = form_found
+        self.page_html = page_html
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        outer = self
+
+        class Locator:
+            def __init__(self) -> None:
+                self.first = self
+
+            def fill(self, _value: str) -> None:
+                pass
+
+            def press(self, _key: str, timeout: int) -> None:
+                pass
+
+            def evaluate(self, _script: str) -> None:
+                pass
+
+        class Page:
+            url = "https://cas.sii.edu.cn/login"
+
+            def goto(self, *_args, **_kwargs) -> None:
+                pass
+
+            def wait_for_timeout(self, _timeout: int) -> None:
+                pass
+
+            def wait_for_selector(self, *_args, **_kwargs) -> None:
+                if not outer.form_found:
+                    raise RuntimeError("no login form on this page")
+
+            def locator(self, _selector: str) -> Locator:
+                return Locator()
+
+            def get_by_text(self, *_args, **_kwargs) -> Locator:
+                raise RuntimeError("no account-login tab either")
+
+            def content(self) -> str:
+                return outer.page_html
+
+            def close(self) -> None:
+                pass
+
+        class Context:
+            request = object()
+
+            def new_page(self) -> Page:
+                return Page()
+
+        class Browser:
+            def new_context(self, **_kwargs) -> Context:
+                return Context()
+
+        class Chromium:
+            def launch(self, **_kwargs) -> Browser:
+                return Browser()
+
+        class PlaywrightContext:
+            def __enter__(self):  # noqa: ANN204
+                return type("Playwright", (), {"chromium": Chromium()})()
+
+            def __exit__(self, *_args) -> None:
+                pass
+
+        monkeypatch.setattr(
+            ws_auth,
+            "_login_with_cas_requests",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("use browser")),
+        )
+        # A clock that jumps a thousand seconds per read, so `deadline =
+        # time.time() + 30` is already in the past by the next read. Counting
+        # reads instead would depend on how many the guard makes on the way in.
+        reads = {"n": 0}
+
+        def _clock() -> float:
+            reads["n"] += 1
+            return reads["n"] * 1000.0
+
+        monkeypatch.setattr(ws_auth.time, "time", _clock)
+        monkeypatch.setattr(
+            ws_auth, "resolve_playwright_proxy_config", lambda **_kwargs: ({}, "none")
+        )
+        monkeypatch.setattr(
+            ws_auth,
+            "describe_effective_proxy_config",
+            lambda **_kwargs: {"playwright": {"route": "direct"}},
+        )
+        monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: PlaywrightContext())
+
+
+def test_playwright_failure_after_submission_is_an_authentication_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The browser is the last transport, so its failures must still be typed.
+
+    Nothing falls back after it, but the circuit still has to open: the next
+    process to reach an expired session would otherwise submit the same
+    rejected password again.
+    """
+    from inspire.platform.web.session import login_guard
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
+    _FakePlaywrightLogin(
+        form_found=True,
+        page_html='<div class="form-error">账号已被锁定</div>',
+    ).install(monkeypatch)
+
+    with pytest.raises(ws.AuthenticationError, match="账号已被锁定") as excinfo:
+        ws_auth.login_with_playwright(
+            "alice",
+            "password",
+            base_url="https://qz.sii.edu.cn",
+            account="alice",
+        )
+
+    assert "The password reached CAS" in str(excinfo.value)
+    assert login_guard.block_file("alice").exists()
+
+
+def test_playwright_failure_before_submission_is_not_an_authentication_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No form, no submission — so no rejected credential to remember."""
+    from inspire.platform.web.session import login_guard
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
+    _FakePlaywrightLogin(form_found=False).install(monkeypatch)
+
+    with pytest.raises(ValueError) as excinfo:
+        ws_auth.login_with_playwright(
+            "alice",
+            "password",
+            base_url="https://qz.sii.edu.cn",
+            account="alice",
+        )
+
+    assert not isinstance(excinfo.value, ws.AuthenticationError)
+    assert "The password reached CAS" not in str(excinfo.value)
+    assert not login_guard.block_file("alice").exists()
+
+
 def test_cas_server_failure_after_submission_does_not_submit_again_in_a_browser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

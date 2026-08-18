@@ -52,6 +52,8 @@
 
   现在解析完登录表单就检查这个字段，**在提交之前**停下：既不提交，也不回落 Playwright（浏览器同样答不出验证码，只会再花掉一次尝试），并且**不打开熔断**——没提交过就没有「被拒绝的凭据」可记。报错直接说清楚平台在要验证码、这通常不是账号或密码的问题、去浏览器登一次即可解除，以及这次没有提交任何凭据。
 
+  这条修复由 [#73](https://github.com/realZillionX/InspireSkill/pull/73) 提出（@expectqwq），闸门位置、冷却档位和解除条件在合并时做了调整，并补上了它没覆盖的两条放大路径。
+
   连带修掉一个测试隐患：会话缓存和这个新标记都写在**当前 Account** 目录下，而测试套件跑在开发者自己的 `~/.inspire/` 上——模拟一次失败登录就会给开发者自己的账号写一个熔断标记，用的还是一个根本不存在的密码。现在 `conftest.py` 让会话存储在测试里解析不到 Account（要持久化的测试自己传 Account 名并隔离 `Path.home`），验证这条解析逻辑本身的 5 个测试改用 `active_account_session_storage` 显式退出。
 
 - **Session 过期时 `scan_v2_surface.py` 会把 Keycloak 登录页当成控制台扫，然后报 `0 routes / 0 actions`。** 过期不表现为失败而表现为**跳转**：网关 302 到 SSO，requests 默认跟过去，登录页 200 回来、自带一个 `<script src>`，于是扫描器照常沿着它「递归」了一层就结束。印出来的那行和真实结果同一个形状，只是数字是零——而这份清单唯一的用途就是判断某个 Action 存不存在，零就是「控制台什么都不调」。本次排查 batch API 时第一次跑就撞上了它，`WebSession.load(allow_expired=True)` 本来就会把过期 cookie 原样交出来，所以这是常见路径不是边角情况。三道闸：根请求改 `allow_redirects=False`，302/401/403 直接判定未认证——这正是 `browser-api.md` §2 要求每个外部探针都关掉重定向的同一条理由；按文档给的补救办法用 `get_web_session(force_refresh=True)` 重建 Session 重试一次；chunk 响应的 `content-type` 不是 javascript 就不写缓存，否则一张登录页会以 `.js` 的名字进磁盘缓存、毒化之后每一次从缓存跑的扫描。最后补一条下限检查：抽到 0 个 Action 时以 2 退出并明说「本次运行不构成不存在的证据」，而不是印一份读起来像结论的空报告。
