@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
 from inspire.accounts import account_dir, current_account
-from inspire.cli.utils.detached import detached_creationflags
+from inspire.cli.utils.detached import detached_creationflags, process_is_alive
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.resource_index import (
     DEFAULT_TTL_SECONDS,
@@ -1279,15 +1279,8 @@ def maybe_spawn_periodic_refresh(
                     except OSError:
                         stamp_age = 0.0
                 if pid and stamp_age < PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS:
-                    try:
-                        os.kill(pid, 0)
-                    except ProcessLookupError:
-                        pass
-                    except PermissionError:
-                        return False
-                    except OSError:
-                        return False
-                    else:
+                    # A live refresh child owns the stamp; leave it alone.
+                    if process_is_alive(pid):
                         return False
                 try:
                     if (
