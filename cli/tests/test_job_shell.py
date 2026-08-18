@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -888,6 +889,11 @@ def _run_shell(monkeypatch, frames, keystrokes: bytes = b"") -> tuple[int, _Fake
     return code, ws
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="drives the loop through the POSIX select path; the Windows reader thread's "
+    "delivery order is covered in test_interactive_console",
+)
 def test_run_remote_shell_passes_remote_output_through_verbatim(monkeypatch) -> None:  # noqa: ANN001
     payload = "总用量 4\r\n$ ".encode()
     captured: list[bytes] = []
@@ -901,6 +907,11 @@ def test_run_remote_shell_passes_remote_output_through_verbatim(monkeypatch) -> 
     assert b"".join(captured) == payload
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="drives the loop through the POSIX select path; the Windows reader thread's "
+    "delivery order is covered in test_interactive_console",
+)
 def test_run_remote_shell_forwards_keystrokes_and_bootstraps_the_size(monkeypatch) -> None:  # noqa: ANN001
     # A close frame ends the loop before stdin is looked at, so the remote has
     # to say something first for the keystrokes to get their turn.
@@ -912,6 +923,11 @@ def test_run_remote_shell_forwards_keystrokes_and_bootstraps_the_size(monkeypatc
     assert "ls -l\r" in ws.sent
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="drives the loop through the POSIX select path; the Windows reader thread's "
+    "delivery order is covered in test_interactive_console",
+)
 def test_run_remote_shell_answers_pings_without_printing_them(monkeypatch) -> None:  # noqa: ANN001
     captured: list[bytes] = []
     monkeypatch.setattr(
@@ -925,6 +941,11 @@ def test_run_remote_shell_answers_pings_without_printing_them(monkeypatch) -> No
     assert captured == []
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="drives the loop through the POSIX select path; the Windows reader thread's "
+    "delivery order is covered in test_interactive_console",
+)
 def test_run_remote_shell_stops_on_the_shell_exit_marker(monkeypatch) -> None:  # noqa: ANN001
     captured: list[bytes] = []
     monkeypatch.setattr(
@@ -939,6 +960,11 @@ def test_run_remote_shell_stops_on_the_shell_exit_marker(monkeypatch) -> None:  
     assert b"".join(captured) == b"bye\r\n"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="drives the loop through the POSIX select path; the Windows reader thread's "
+    "delivery order is covered in test_interactive_console",
+)
 def test_run_remote_shell_exits_on_the_ctrl_bracket_escape(monkeypatch) -> None:  # noqa: ANN001
     code, ws = _run_shell(
         monkeypatch,

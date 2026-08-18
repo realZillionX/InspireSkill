@@ -24,6 +24,22 @@
 
 ### 修复
 
+- **Windows 成为一等公民，不再要求 WSL。** 此前 `import inspire.cli.main` 在 Windows 上直接 `ModuleNotFoundError: fcntl` —— 断点在 `accounts/cache_lock.py`，而它在第一条子命令的 import 链上，所以不是「某个命令不能用」，是 `inspire --version` 都起不来。五处模块级 POSIX 导入（`fcntl` / `pty` / `termios` / `tty`）按平台分叉，文件锁在 Windows 上用 `msvcrt.locking` 实现。CI 增加 `windows-latest`。
+
+  **ProxyCommand 那条链上纠正了一个流传的判断**：Windows OpenSSH 并不通过 `cmd.exe` 跑 ProxyCommand。`FORK_NOT_SUPPORTED` 下它把整条命令串交给 `posix_spawnp`，最终落到 `CreateProcessW(lpApplicationName=NULL)`，中间没有任何 shell。所以那里的 `2>NUL` 不是重定向，而是 rtunnel 的第 4 个位置参数——rtunnel 收到就 `Error: invalid number of arguments` 退出。而 `_resolve_bridge_and_proxy` 的 `quiet` 默认是 `True`，`notebook ssh` / `exec` / `scp` 和 `is_tunnel_available` 全走它。现在 Windows 分支不含任何 shell 语法，逐 token 加双引号（首字符是 `"` 正是 OpenSSH `build_commandline_string()` 原样透传的分支），proxy override 改由 ssh 自己的环境传给 rtunnel。
+
+  **`UserKnownHostsFile` 保持 `/dev/null`**：Win32-OpenSSH 的 `fileio.c` 已经同时映射 `/dev/null` 和 `NUL`，换成 `NUL` 是没有差异的分叉。
+
+  **`ssh-config` 的引号在所有平台上都是错的。** ProxyCommand 和 `IdentityFile` 都用 `shlex.quote` 拼，而 OpenSSH 的 `strdelim` 只认双引号——POSIX 单引号会留在文件名里。这在 macOS/Linux 上同样坏，只是 ssh-agent 一直兜着所以没人发现；`shlex` 带 `re.ASCII`，中文 workspace 名必然被引号包住，Windows 上则连模块都找不到。ProxyCommand 在 Windows 上改用 `list2cmdline`，`IdentityFile` 改用 OpenSSH 自己的引号规则。
+
+  **交互式 shell 不是 fail-fast，是真的实现了**：`SetConsoleMode` 做 raw 模式（清掉 `PROCESSED_INPUT` 正是让 Ctrl-C 变成 `0x03` 字节而非信号，与 `tty.setraw` 语义一致），stdin 由读线程供给（`select` 在 Windows 上只收 socket），窗口大小改为轮询（没有 `SIGWINCH`）。`job shell` 和 Jupyter terminal 两份重复的循环收进一份实现，POSIX 分支保持原样。`run_remote_shell` 此前没有任何直接测试，这次补上。
+
+  **编码这条线**：`›` 这类字符不是靠换成 ASCII 解决的——仓库里 user-facing 的 `—` 有 89 处、`─` 27 处，还有大量中文，换字符只会让 mac/Linux 的输出一起退化。真正的成因是 Python 在 Windows 上一旦 stdout 被重定向就回落到 ANSI 代码页（中文 Windows 是 cp936），而 agent harness 调 CLI 全是管道。改为在 CLI 入口把 stdout/stderr 重设为 UTF-8。连带修掉：6 处 subprocess 的文本解码没指定编码（远端日志会乱码），bridge 连接缓存读取没指定编码（**这条与 Windows 无关，任何非 UTF-8 locale 都会因为中文 workspace 名而静默丢掉整份缓存**），`uninstall --purge-runtime` 在 Windows 上找错 Playwright 缓存目录，以及后台更新检查每次都闪一个控制台窗口。
+
+  `job logs --follow --transport ssh` 的 `select` on pipe 与 `ssh_exec` 的同款一起收进 `inspire.process_io`。`exec_rtunnel_proxy` 的 `os.execve` 在 Windows 上是 spawn + 父进程退出，会把 OpenSSH 记录的 proxy pid 打掉，改为留一个薄父进程转发退出码。
+
+  `scripts/install.ps1` 装的是 PyPI 上的包（`uv tool` / `pipx`），不是 editable checkout——`inspire update` 靠 `sys.prefix` 里有没有 `uv/tools` 或 `pipx/venvs` 判断能否自更新，editable 装法会静默让用户失去自更新能力；skill 文件交给 CLI 自己铺（新增内部命令 `_refresh-skills`），不在 PowerShell 里复制一份 harness 列表。
+
 - **`inspire update --check` 恰好在有新版本可升的时候报「检查失败」。** 实测本机 v7.1.0 对着刚发布的 v7.1.1：版本缓存正确写下了 `latest: 7.1.1`，而命令印的是 `✗ InspireSkill check failed.` 并以 1 退出——也就是这条命令唯一有意义的那个结果被它自己当成了故障。根因是检查路径把 `latest` 喂给了 `_audit_update_state`，而那个审计里的版本比较是**升级完之后**的验收器（「装完了，可执行文件真的变成新版本了吗」），于是「你还在旧版本上」这个正确答案被判成审计不通过。现在检查路径不传 `expected_version`，审计只保留它真正该管的那部分：可执行文件在不在 PATH 上、版本读不读得出来、全局 uv tool 有没有被钉在本地源、检测到的 harness 里有没有 `SKILL.md`。
 
   连带影响是每日那个 launchd agent（跑的正是 `update --check --silent`）一直在静默地以 1 退出——`launchctl list` 里那一列就是 `1`。`--check` 此前没有任何测试覆盖（现有的 8 处调用一律传 `check_only=False`），这个 bug 因此活了下来；现在三种情形各有一条测试：有新版本、已是最新、装坏了。

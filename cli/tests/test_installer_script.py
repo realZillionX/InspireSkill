@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 import subprocess
+
+import pytest
+
+SCRIPTS = Path(__file__).resolve().parents[1].parent / "scripts"
 
 
 def test_installer_uses_installed_inspire_for_browser_runtime_setup() -> None:
@@ -12,6 +17,7 @@ def test_installer_uses_installed_inspire_for_browser_runtime_setup() -> None:
     assert '"$INSPIRE_BIN" _ensure-playwright-runtime' in text
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="drives the bash installer end to end")
 def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> None:
     installer = Path(__file__).resolve().parents[1].parent / "scripts" / "install.sh"
     home = tmp_path / "home"
@@ -123,3 +129,42 @@ def test_installer_advertises_supported_harnesses() -> None:
     assert "qoder-work" in text
     assert "kimi-code" in text
     assert "kimi-desktop" in text
+
+
+def test_powershell_installer_uses_the_published_package_not_an_editable_checkout() -> None:
+    # `inspire update` decides whether it can upgrade itself by looking for
+    # `uv/tools` or `pipx/venvs` in sys.prefix. An editable install has neither,
+    # so `pip install -e` here would silently cost the user self-update.
+    text = (SCRIPTS / "install.ps1").read_text(encoding="utf-8")
+
+    assert "uv tool install --force --refresh" in text
+    assert "pipx install --force" in text
+    assert "pip install -e" not in text
+
+
+def test_powershell_installer_delegates_skill_layout_to_the_cli() -> None:
+    # The harness list and the codex agents/openai.yaml body live in update.py;
+    # a second copy in PowerShell would be a place for them to drift.
+    text = (SCRIPTS / "install.ps1").read_text(encoding="utf-8")
+
+    assert "_refresh-skills" in text
+    assert "_ensure-playwright-runtime" in text
+    assert "openai.yaml" not in text
+
+
+def test_powershell_installer_flags_are_separable() -> None:
+    # -SkipPlaywright must not also drop the skills, and vice versa, which is
+    # why each step has its own CLI hook rather than sharing `_post-update`.
+    text = (SCRIPTS / "install.ps1").read_text(encoding="utf-8")
+
+    assert "if (-not $SkipPlaywright) {" in text
+    assert "if (-not $SkipSkill) {" in text
+    assert "_post-update" not in text
+
+
+def test_powershell_installer_documents_the_openssh_prerequisite() -> None:
+    # Every SSH-backed command needs it and it is not installed by default on
+    # older Windows builds.
+    text = (SCRIPTS / "install.ps1").read_text(encoding="utf-8")
+
+    assert "OpenSSH.Client" in text

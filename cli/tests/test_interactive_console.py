@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
 import time
 from typing import Any
 
@@ -60,6 +61,7 @@ def _drain_until(streams: ShellStreams, predicate: Any, *, limit: float = 2.0) -
     raise AssertionError(f"condition never held; saw {seen!r}")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX select/SIGWINCH only")
 def test_posix_wait_reports_socket_and_keystrokes_from_one_select(socket_pair: Any) -> None:
     left, right = socket_pair
     read_fd, write_fd = os.pipe()
@@ -77,6 +79,7 @@ def test_posix_wait_reports_socket_and_keystrokes_from_one_select(socket_pair: A
         os.close(write_fd)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX select/SIGWINCH only")
 def test_posix_wait_skips_stdin_once_it_is_closed(socket_pair: Any) -> None:
     left, right = socket_pair
     right.sendall(b"x")
@@ -135,6 +138,7 @@ def test_raw_terminal_is_a_no_op_for_a_non_tty() -> None:
         pass
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX select/SIGWINCH only")
 def test_resize_watch_fires_on_posix_signal() -> None:
     import signal
 
@@ -172,6 +176,7 @@ def test_resize_watch_polls_the_size_on_windows(monkeypatch: pytest.MonkeyPatch)
         assert fired == [1]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX select/SIGWINCH only")
 def test_resize_watch_restores_the_previous_posix_handler() -> None:
     import signal
 

@@ -67,25 +67,11 @@ InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命�
 
 # 快速上手
 
-> 平台支持：macOS、Linux 与 Windows。Windows 原生使用系统 OpenSSH（Windows Optional Feature），不需要 WSL。SSH、SCP、Notebook 创建、任务提交和网页 API 操作均可用；`rsync` 仍是可选外部工具，建议用 `notebook scp` 完成文件传输。
+> 平台支持：macOS、Linux、Windows 都是一等公民，CI 覆盖 Linux 与 Windows。Windows 走系统自带的 OpenSSH，不需要 WSL；`rsync` 是可选外部工具，Windows 上用 `inspire notebook scp` 传文件。
 
 ## 安装
 
-### Windows PowerShell
-
-在本仓库根目录运行：
-
-    Set-ExecutionPolicy -Scope Process Bypass
-    .\scripts\install.ps1
-
-Requirements:
-
-- Python 3.10+ with `py.exe` or `python.exe` on `PATH`.
-- Windows OpenSSH Client (`ssh` and `scp`).
-- Git, when cloning this repository for installation.
-- Internet access for Python dependencies and the first Playwright Chromium download. Use `-SkipPlaywright` when browser login is not needed.
-
-The installer performs an editable install of the current fork and writes the Codex Skill.
+### macOS / Linux
 
 前置：`bash` / `curl` / `tar` / Python 3.10+ / 已装 `uv`（推荐）或 `pipx` 任一。
 
@@ -93,6 +79,27 @@ The installer performs an editable install of the current fork and writes the Co
 curl -LsSf https://astral.sh/uv/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scripts/install.sh | bash
 ```
+
+### Windows
+
+前置：Python 3.10+ / `uv`（推荐）或 `pipx` 任一 / OpenSSH 客户端。
+
+```powershell
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0
+```
+
+在仓库根目录运行安装脚本（`-SkipPlaywright` 可跳过 Chromium 下载，代价是浏览器登录不可用）：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\install.ps1
+```
+
+Windows 上有两处和 POSIX 不一样，都会咬人：
+
+- **`ssh-config` 别用 `>>` 追加。** Windows PowerShell 5.1 的 `>>` 写的是 UTF-16LE，OpenSSH 读不了。用 `inspire notebook ssh-config <notebook> | Out-File -Encoding utf8 -Append $env:USERPROFILE\.ssh\config`（PowerShell 7+ 默认已是 UTF-8，`>>` 可用）。
+- **确认用的是哪个 `ssh.exe`。** `Get-Command ssh -All`：系统自带的 `C:\Windows\System32\OpenSSH\ssh.exe` 和 Git for Windows 附带的那个对 ProxyCommand 的处理方式不同。两个都能用，但混用时报错信息会互相矛盾。
 
 安装、可选参数和安装后检查见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。
 
