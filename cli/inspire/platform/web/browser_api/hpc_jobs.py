@@ -6,6 +6,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from inspire.platform.web.browser_api.batch_query import (
+    fetch_events_by_ids,
+    fetch_jobs_by_ids,
+)
 from inspire.platform.web.browser_api.core import (
     _coerce_total,
     _get_base_url,
@@ -26,8 +30,10 @@ __all__ = [
     "delete_hpc_job",
     "get_hpc_job_detail",
     "list_hpc_instance_events",
+    "list_hpc_job_events_by_ids",
     "list_hpc_job_instances",
     "list_hpc_jobs",
+    "list_hpc_jobs_by_ids",
     "list_hpc_job_events",
     "list_hpc_job_logs",
     "stop_hpc_job",
@@ -212,6 +218,58 @@ def list_hpc_jobs(
 
     jobs = [HPCJobInfo.from_api_response(item) for item in jobs_data if isinstance(item, dict)]
     return jobs, total
+
+
+def list_hpc_jobs_by_ids(
+    job_ids: list[str],
+    *,
+    workspace_id: str,
+    session: Optional[WebSession] = None,
+) -> dict[str, dict[str, Any]]:
+    """Fetch full HPC job records for many ids at once.
+
+    Action: ``ListJobs`` with ``job_ids``; the batch form of
+    :func:`get_hpc_job_detail`. The `hpc` route validates `job_ids` with the
+    same rules as `train` -- workspace required, twenty per request -- so see
+    :mod:`inspire.platform.web.browser_api.batch_query` for the traps.
+    """
+    if session is None:
+        session = get_web_session()
+    return fetch_jobs_by_ids(
+        session,
+        route="hpc",
+        workspace_id=workspace_id,
+        job_ids=job_ids,
+        referer=f"{_get_base_url()}/jobs/highPerformanceComputing",
+    )
+
+
+def list_hpc_job_events_by_ids(
+    job_ids: list[str],
+    session: Optional[WebSession] = None,
+) -> tuple[dict[str, list[dict]], list[str]]:
+    """List platform events for many HPC jobs at once.
+
+    Action: ``ListJobEvents`` with ``filter.object_type="HPC_JOB"``. The batch
+    form of :func:`list_hpc_job_events`; returns
+    ``({job_id: events}, missing_ids)``.
+
+    ``hpc.ListJobEvents`` wants camelCase paging keys, unlike the `train`
+    route -- passing ``page_num`` here silently returns the first page for
+    every page asked for.
+    """
+    if session is None:
+        session = get_web_session()
+    return fetch_events_by_ids(
+        session,
+        route="hpc",
+        object_type="HPC_JOB",
+        object_ids=job_ids,
+        referer=f"{_get_base_url()}/jobs/highPerformanceComputing",
+        page_key="pageNum",
+        page_size_key="pageSize",
+        sorter=[{"field": "last_timestamp", "sort": "ascend"}],
+    )
 
 
 def list_hpc_job_events(

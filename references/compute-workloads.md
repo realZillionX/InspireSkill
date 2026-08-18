@@ -140,6 +140,10 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 卡住或失败先看 Events；已启动但健康度不明看 Metrics；程序行为看 Logs；产物完整性回到共享盘文件和 Fingerprint。上面五个都在回答「平台侧这个任务怎么样」，回答不了「模型训得怎么样」——那是 TensorBoard 那一条。
 
+**一批任务一起看**：`job status`、`hpc status`、`job events` 都可以直接跟多个名字，平台按每 20 个一次请求作答，比挨个问快得多——扫一批矩阵实验的状态时用这个，别写 shell 循环。多任务的 `job events` 合成一条按时间排好的时间线，多出一列 `Job` 指明每行来自哪个任务；它只给控制器级事件，因为 Pod 级事件要按任务各列一次实例清单，本来就省不掉，所以那是单任务查询（`--instance` 同理只对单个名字有意义）。一个答不上来的名字**不会中断整条命令**：能答的照常打印，答不了的以 `Unresolved:` 单独列出并说明原因（打错、已删、或一个名字对上了好几个任务），退出码同时告诉脚本这份答案是残缺的——所以批量结果**不能只看 stdout 有几行就当全**。
+
+指标没有批量口径：平台那个 `GetTaskMetricBatch` 实测 8 个指标里有 4 个要么静默返回 0 样本、要么直接报错，所以 `metrics` 仍是一次一个任务。
+
 **等待只对还会自己往前走的状态有意义。** `PENDING` / `QUEUING` / `RUNNING` 会动，终态不会：Job 和 HPC 没有 `start`，`job stop` 留下的 `job_stopped` 与 `SUCCEEDED` / `FAILED` / `CANCELLED` 一样是终点，要再跑只能重新 `create`；能从停止态拉回来的只有 Notebook、Ray 和 Serving，它们各有 `start`。所以开始等之前先 `status` 读一次当前状态，别对着一个已经停掉的任务等它变回运行中。`job wait` 和 `job logs --follow` 在任务进入终态时返回；`events --follow` 和 `job list --watch` 不会自己结束，任务结束了也不会，只能被中断——不要把这两条挂在后台终端上当「等任务跑完」用。
 
 节点归属分两层，两层都是 Live 事实，任务离开运行态就清空：`status` 给任务级的节点清单（`job` 的 `Nodes` / `Pinned Nodes` / `Excluded Nodes`、`hpc` 与 `serving` 的 `Nodes`、`notebook` 的 `Node` 带节点健康），`instances` 给 Pod 级的 `Node` 列。多节点任务定位掉队的那一个 Worker 用 `instances`，因为只有它把 rank 和节点对上；`ray` 的节点归属只有 `instances` 这一层，`ray status` 的 `head_node` / `worker_groups` 是规格不是落点。**空的节点清单读作「还没被调度」，不是「查不到」。**

@@ -1265,8 +1265,73 @@ def list_jobs(
         _handle_error(ctx, "Error", str(e), EXIT_GENERAL_ERROR)
 
 
+def _resolve_batch_job_ids(
+    names: tuple[str, ...],
+    *,
+    workspace: Optional[str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Map each name to its job id, collecting per-name failures.
+
+    One unresolvable name does not sink the rest: a batch query is asked about
+    several jobs and has an answer for each, so a name that cannot be resolved
+    is reported next to the ones that could rather than aborting the command.
+
+    Resolution is cache-first per name, which is what makes the batch fetch
+    worth doing -- a warm cache turns N names into zero list requests, leaving
+    only the `ceil(N / 20)` batched detail requests.
+    """
+    resolved: dict[str, str] = {}
+    failures: dict[str, str] = {}
+    for name in names:
+        try:
+            resolved[name] = _resolve_web_job_id(
+                job=name,
+                workspace=workspace,
+                all_workspaces=False,
+                max_pages=50,
+                workspace_must_be_single=True,
+            )
+        except WebJobResolutionError as exc:
+            failures[name] = str(exc)
+    return resolved, failures
+
+
+def _batch_job_status(
+    names: tuple[str, ...],
+    *,
+    workspace: Optional[str],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Fetch status for several named jobs through one batched read."""
+    session = get_web_session()
+    workspace_ids = _list_workspace_ids(session, workspace=workspace)
+    if len(workspace_ids) != 1:
+        raise ConfigError("--workspace must be a single workspace name for this command.")
+
+    resolved, failures = _resolve_batch_job_ids(names, workspace=workspace)
+    records = browser_api_module.list_jobs_by_ids(
+        list(resolved.values()),
+        workspace_id=workspace_ids[0],
+        session=session,
+    )
+
+    views: list[dict[str, Any]] = []
+    for name in names:
+        if name in failures:
+            continue
+        record = records.get(resolved[name])
+        if record is None:
+            # The id resolved (usually from cache) but the platform no longer
+            # lists it in this workspace. Deleted since, or the cache is
+            # pointing at another workspace's job -- either way it is not an
+            # empty status, it is an absent one.
+            failures[name] = _job_not_found_message(name)
+            continue
+        views.append(public_job_status(record, fallback_name=name))
+    return views, failures
+
+
 @click.command("status")
-@click.argument("job", metavar="NAME")
+@click.argument("jobs", metavar="NAME...", nargs=-1, required=True)
 @click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--pick",
@@ -1277,19 +1342,36 @@ def list_jobs(
 @pass_context
 def status(
     ctx: Context,
-    job: str,
+    jobs: tuple[str, ...],
     workspace: Optional[str],
     pick: Optional[int],
 ) -> None:
-    """Check the status of a training job.
+    """Check the status of one or more training jobs.
 
-    NAME is shown in `inspire job list`.
+    NAME is shown in `inspire job list`. Several names are answered with one
+    batched request per 20 jobs instead of one request each, and a name that
+    cannot be found is reported alongside the ones that could.
 
     \b
-    Example:
+    Examples:
         inspire job status my-training-run --workspace 分布式训练空间
+        inspire job status run-a run-b run-c --workspace 分布式训练空间
     """
-    job = _reject_web_job_name_at_boundary(ctx, job)
+    jobs = tuple(_reject_web_job_name_at_boundary(ctx, name) for name in jobs)
+    if pick is not None and len(jobs) > 1:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            "--pick disambiguates a single name; pass one NAME to use it.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+
+    if len(jobs) > 1:
+        _batch_status_output(ctx, jobs, workspace=workspace)
+        return
+
+    job = jobs[0]
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         try:
@@ -1331,6 +1413,59 @@ def status(
             )
         else:
             _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+
+
+def _batch_status_output(
+    ctx: Context,
+    jobs: tuple[str, ...],
+    *,
+    workspace: Optional[str],
+) -> None:
+    """Render `job status` for several names, then exit on any that failed."""
+    try:
+        try:
+            views, failures = _batch_job_status(jobs, workspace=workspace)
+        finally:
+            _close_web_client()
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        return
+    except WebJobValidationError as e:
+        _handle_error(ctx, "ValidationError", str(e), EXIT_VALIDATION_ERROR)
+        return
+    except (SessionExpiredError, ValueError) as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+        return
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+        return
+
+    if ctx.json_output:
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "items": views,
+                    # Not `not_found`: a name that matches four jobs failed to
+                    # resolve without being absent, and the two need different
+                    # answers from whoever reads this.
+                    "unresolved": [
+                        {"name": name, "reason": reason}
+                        for name, reason in failures.items()
+                    ],
+                }
+            )
+        )
+    else:
+        blocks = [format_job_status(view) for view in views]
+        if blocks:
+            click.echo("\n\n".join(blocks))
+        for name, reason in failures.items():
+            click.echo(f"Unresolved: {scrub_raw_ids(name)}: {scrub_raw_ids(reason)}")
+
+    # The rows that resolved are already on stdout; the exit code reports that
+    # the answer is partial, so a script cannot read a short list as complete.
+    if failures:
+        sys.exit(EXIT_JOB_NOT_FOUND)
 
 
 @click.command("instances")

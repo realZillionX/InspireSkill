@@ -2,7 +2,19 @@
 
 ## Unreleased
 
+### 新增
+
+- **`job status` / `hpc status` / `job events` 一次可以问多个任务了。** 平台在 v2 上给 `ListJobs` 加了 `job_ids`、给 `ListJobEvents` 加了 `filter.object_ids`，两条都实测过：`train.ListJobs` 按 `job_ids` 过滤出来的记录与 `train.GetJob` **逐字段完全相同**（running / stopped / failed 三态各比一次，无独有字段、无值差异），所以这是 `GetJob` 扇出的批量形态而不是它的摘要；`ListJobEvents` 严格可加（5 个任务批量 31 条 = 单查的 3+3+3+3+19），每行带 `object_id`，因此能原样拆回各自的任务。N 个名字现在是每 20 个一次请求，而不是每个一次。
+
+  **两条服务端限制写进了代码，因为两条都会静默地骗人**。其一，上限 20 **按列表长度计数而不是集合**——20 个不重复的 id 再加一个重复项就是 21 条，照样被拒，所以去重发生在分片之前而不是之后。其二，两个 Action 对「找不到的 id」的回答**正好相反**：`ListJobs` 静默丢弃（答案只是短了一截，只有拿请求去 diff 才看得出来是任务被删了还是自己没点名），而 `ListJobEvents` 让**整个请求**失败并报 `InvalidParameter: job <id> not found`——一个已被回收的任务足以把同批另外 19 个的事件全部带走。批量事件路径因此会剔掉报错点名的 id 重试，并把剔掉的显式报出来，而不是返回那个会被读成「这些任务没有事件」的空列表。
+
+  名字边界没有变：批量命令同样只收名字，内部解析成 id 再批量查。一个解析不出来的名字**不再终止整条命令**——能答的照常打印，答不了的以 `Unresolved: <名字>: <原因>` 单独列出（`--json` 下是 `unresolved` 数组，刻意不叫 `not_found`：一个匹配到四个任务的名字并不是「不存在」，两者需要不同的处置），退出码仍报告答案是残缺的。`--pick` 与 `--instance` 只对单个名字有意义，多名字时直接拒绝而不是猜。`hpc status` 的批量路径改为**列一次 Workspace 再本地匹配**，因为单名路径走的 `resolve_by_name` 在名字对不上时会直接结束进程——对一个名字是对的，对二十个不是。
+
+  多任务事件合并成一条时间线时新增 `Job` 列，因为跨任务的时间线不标出处就读不了——这与 `instance` 列存在的理由是同一条。
+
 ### 变更
+
+- **`GetTaskMetricBatch` 复查过了，结论是继续不用它，指标维持逐个扇出。** 运维给的批量清单里包含这个 Action，但它答的不是同一份数据：在 `train` 路由上拿 4 个运行中的任务、同一时间窗逐指标对照，`disk_io_read` / `disk_io_write` **返回 0 个样本而单数版同窗口有 61 个点**（4/4 复现），两个 `network_tcp_ip_io_*` 直接 `InternalError`，并且所有 group **一律没有 `group_name`**，多 Pod 任务的逐 Pod 拆分就此丢失。8 个指标坏 4 个。它的响应形状也不一样——`task_metrics[].time_series_metric_groups`，而不是单数版顶层的 `time_seris_metric_groups`——这正是它容易被读成「空」而不是「坏」的原因，上一轮调研就是在这里读错了键。控制台自己从不调用这个 Action。顺带复核了单数版 `GetTaskMetric` 一次只认第一个 `metric_types` 的老结论：传 2 / 4 / 8 个类型各试一次，返回的始终只有第一个，扇出确实省不掉。结论写进了 `get_resource_metrics_by_time` 的 docstring。
 
 - **`/api/v1` 从这个客户端里彻底消失了。** 最后三处——登录握手的 `user/detail`、登录时发现 Workspace 的 `user/routes/default`、Notebook 的 `notebook/lab/{id}`——留着的理由此前写的是「Session 自举时还没有 Session 可供 v2 用」和「反向代理不是 Action 能表达的东西」。三条实测全部不成立：
 

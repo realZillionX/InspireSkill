@@ -58,6 +58,18 @@ _WORKSPACE_FREE_PATHS = (
     ("project", "owners"),
 )
 
+# The reads whose backing Action accepts a list of ids (`ListJobs` takes
+# `job_ids`, `ListJobEvents` takes `filter.object_ids`, both capped at 20 per
+# request). They still take names, and still take one workspace; they just
+# answer about several workloads in one round trip.
+_BATCH_RESOURCE_PATHS = frozenset(
+    {
+        ("job", "status"),
+        ("job", "events"),
+        ("hpc", "status"),
+    }
+)
+
 _SINGLE_RESOURCE_PATHS = (
     ("job", "status"),
     ("job", "instances"),
@@ -160,7 +172,17 @@ def test_single_workload_commands_share_name_and_workspace_contract(
     pick = _option(command, "pick")
 
     assert arguments
-    assert arguments[0].metavar == "NAME"
+    # The batch-capable reads take several names through one platform request;
+    # everything else takes exactly one. Both still take *names* — the point of
+    # this contract — so the metavar is checked against the command's arity
+    # rather than loosened to "either".
+    if path in _BATCH_RESOURCE_PATHS:
+        assert arguments[0].metavar == "NAME..."
+        assert arguments[0].nargs == -1
+        assert arguments[0].required
+    else:
+        assert arguments[0].metavar == "NAME"
+        assert arguments[0].nargs == 1
     assert workspace.required
     assert workspace.help == "Workspace name."
     assert isinstance(pick.type, click.IntRange)

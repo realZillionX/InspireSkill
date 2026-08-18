@@ -214,8 +214,22 @@ def get_resource_metrics_by_time(
 
     The ``metric_types`` iterable is fanned out into one request per entry
     (a single multi-metric request silently returns data only for the first
-    metric, confirmed by probe on 2026-04). Results are concatenated; if one
-    metric errors the whole call raises ``ValueError``.
+    metric, confirmed by probe on 2026-04 and again on 2026-08-18 with two,
+    four and eight types). Results are concatenated; if one metric errors the
+    whole call raises ``ValueError``.
+
+    **The fan-out is not an oversight, and ``GetTaskMetricBatch`` does not fix
+    it.** That Action exists on every one of these routes and answers a
+    different, worse dataset: measured on `train` against four running jobs
+    over the same window, ``disk_io_read`` and ``disk_io_write`` return zero
+    samples where this path returns 61, both ``network_tcp_ip_io_*`` types
+    fail with ``InternalError``, and every group comes back without its
+    ``group_name`` so the per-pod split is gone. Its response is shaped
+    differently too -- ``task_metrics[].time_series_metric_groups`` rather than
+    the top-level ``time_seris_metric_groups`` read here -- which is how it can
+    look empty rather than broken to a reader expecting this shape. The web
+    console never calls it. Four of eight metrics silently reading as zero is
+    not worth three quarters fewer requests.
 
     ``task_type`` must be one of :data:`TASK_TYPE_BY_RESOURCE` values:
     ``interactive_modeling`` / ``distributed_training`` / ``hpc_job`` /
