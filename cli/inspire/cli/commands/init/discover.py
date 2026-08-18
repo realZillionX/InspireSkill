@@ -15,6 +15,7 @@ from inspire.cli.utils.id_resolver import is_full_uuid, is_partial_id
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config
 from inspire.config.toml import _project_config_write_path
+from inspire.platform.web.session import AuthenticationError
 from inspire.platform.web.session.browser_launch import is_playwright_browser_runtime_error
 from .toml_helpers import _toml_dumps
 
@@ -473,6 +474,13 @@ def _resolve_discover_runtime(
                     if is_playwright_browser_runtime_error(retry_exc):
                         raise
             if session is None:
+                if isinstance(exc, AuthenticationError):
+                    # The prompt below is the recovery path -- it asks for a
+                    # fresh password, and a different one is submitted straight
+                    # away. Re-entering the one the platform just rejected is
+                    # not, so say what happened instead of silently asking
+                    # again and refusing the identical answer.
+                    click.echo(click.style(str(exc), fg="yellow"), err=True)
                 username, password, base_url = _resolve_credentials_interactive(
                     config,
                     cli_username=cli_username,
