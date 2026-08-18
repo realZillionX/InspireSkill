@@ -4,11 +4,11 @@
 
 ### 变更
 
-- **`<workload> metrics` 从 8 次请求变成 2 次。** 之前按 metric 类型逐个扇出，理由写在 `metrics.py` 开头：「实测一次发 5 个 metric 类型只回第一个」。那句话是对的，但它测的是单数的 `GetTaskMetric`——而 `/discovery` 里一直躺着一个 `GetTaskMetricBatch`（train / hpc / ray / notebook / inference-serving / cluster 六处同名），**它认整个列表**。这正是 Browser API 参考里点名的固定错误模式：只测同名 Action 就下结论，然后把结论写进注释，扇出循环因此活了四个月。
+- **`<workload> metrics` 仍然按 metric 类型逐个扇出，`GetTaskMetricBatch` 不能用。** `/discovery` 里六个服务都声明了它，它也确实认整个 `metric_types` 列表——看上去正好能把 8 次请求压成 2 次。2026-08-18 拿三台运行中的 Notebook 与单数版逐指标对照，它答的**不是同一份数据**：每个 group 的 `group_name` 一律是 `None`（`metrics` 命令的 `Pods:` 和逐 Pod 末值会直接空掉）；`disk_io_read` / `disk_io_write` 回一个**零样本**的 group，而单数版同一时间窗有 10–13 个点；`network_tcp_ip_io_read` / `network_tcp_ip_io_write` 直接报 `InternalError: 指标查询暂不可用`，一次只发一个类型也照报。八个指标里四个错或缺，三台机器 3/3 复现。
 
-  Batch 版和单数版**不是同一个请求形状**：`task_ids` 是平铺的数组而不是 `filter.task_id`，响应多包一层 `task_metrics[]`，而且**不接 `logic_compute_group_id`**——那个参数在它的声明里根本不存在。`get_resource_metrics_by_time()` 的签名没动（仍然收 `logic_compute_group_id`，只是不再发出去），所以调用方一行不用改。
+  代价不对等：省下的是一条一次性命令四分之三的请求，换来的是一块**静悄悄读成 0** 的指标面板。所以扇出保留，`metrics.py` 里记下实测结论，并加一条测试钉住「不会有人再顺手把它改成 Batch 版」。中途一度以为限制是「每次最多 5 个 metric 类型」——那是探针把类型顺序当成了数量：前五个恰好避开了两个 network 指标，第六个才撞上。数量从来不是变量。
 
-  **每次最多 5 个 metric 类型**：第 6 个开始平台答 `InternalError: 指标查询暂不可用`，连跑 3 轮 3/3 复现，每轮之前先用单数版确认后端是活的，所以是请求形状不是后端抖动。平台给的是 `InternalError` 而不是 `InvalidParameter`，也没有任何文档，因此按「天花板」处理：包装层按 5 切块，8 个指标 = 2 次请求，而不是赌它哪天会放宽。 最后三处——登录握手的 `user/detail`、登录时发现 Workspace 的 `user/routes/default`、Notebook 的 `notebook/lab/{id}`——留着的理由此前写的是「Session 自举时还没有 Session 可供 v2 用」和「反向代理不是 Action 能表达的东西」。三条实测全部不成立：
+- **`/api/v1` 从这个客户端里彻底消失了。** 最后三处——登录握手的 `user/detail`、登录时发现 Workspace 的 `user/routes/default`、Notebook 的 `notebook/lab/{id}`——留着的理由此前写的是「Session 自举时还没有 Session 可供 v2 用」和「反向代理不是 Action 能表达的东西」。三条实测全部不成立：
 
   - `user.GetUserDetail` 空 body 就答，`data` 与 `Result` **逐字段相同**（8 个键，0 差异）。未登录时两边同样是 401，所以登录轮询那段判据一个字都不用改。
   - `user.GetRoutes` 的 `WorkspaceId` **收字面量 `"default"`**，答的是完整 `userWorkspaceList`，与传一个真实 Workspace id 的响应 5794 字节 **0 差异**。「v2 要一个真实 `WorkspaceId`，登录时拿不到」是我们自己写进 Reference 的错误结论——而登录时恰恰没有真实 id，于是这条推断把自己锁死了整整一个迁移周期。空串或缺键才报 `WorkspaceId is required`。
