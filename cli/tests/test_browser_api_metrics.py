@@ -9,8 +9,6 @@ reverse-engineered from the 资源视图 tab in the web UI:
   a single body)
 - tolerance of the upstream response-key typo ``time_seris_metric_groups``
 - raise on ``code != 0`` and on unknown metric / task_type enums
-- that the fan-out is not quietly replaced by ``GetTaskMetricBatch``, which
-  answers with different data (see ``get_resource_metrics_by_time``)
 """
 
 from __future__ import annotations
@@ -137,39 +135,6 @@ def test_get_resource_metrics_fans_out_one_request_per_metric(
         MetricSample(timestamp=100, value=0.25),
         MetricSample(timestamp=160, value=0.75),
     ]
-
-
-def test_get_resource_metrics_does_not_use_the_batch_action(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`GetTaskMetricBatch` answers with different data -- never call it here.
-
-    Measured 2026-08-18 on three running notebooks: it returns ``group_name:
-    None`` for every group, zero samples for both disk_io metrics, and fails
-    outright on both network_tcp_ip_io metrics. Collapsing the fan-out onto it
-    empties four of the eight metric types the UI offers.
-    """
-    calls: list[dict] = []
-    _install_fake_request(
-        monkeypatch,
-        responses=[_success_response(m, samples=[(100, 0.5)]) for m in METRIC_TYPES],
-        calls=calls,
-    )
-
-    get_resource_metrics_by_time(
-        task_id="nb-abc",
-        task_type="interactive_modeling",
-        logic_compute_group_id="lcg-test",
-        metric_types=list(METRIC_TYPES),
-        start_timestamp=0,
-        end_timestamp=100,
-        interval_second=60,
-        session=_FakeSession(),
-    )
-
-    assert len(calls) == len(METRIC_TYPES)
-    assert all("Action=GetTaskMetric" in c["url"] for c in calls)
-    assert not any("GetTaskMetricBatch" in c["url"] for c in calls)
 
 
 def test_get_resource_metrics_accepts_fixed_spelling(

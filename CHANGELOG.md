@@ -4,10 +4,6 @@
 
 ### 变更
 
-- **`<workload> metrics` 仍然按 metric 类型逐个扇出，`GetTaskMetricBatch` 不能用。** `/discovery` 里六个服务都声明了它，它也确实认整个 `metric_types` 列表——看上去正好能把 8 次请求压成 2 次。2026-08-18 拿三台运行中的 Notebook 与单数版逐指标对照，它答的**不是同一份数据**：每个 group 的 `group_name` 一律是 `None`（`metrics` 命令的 `Pods:` 和逐 Pod 末值会直接空掉）；`disk_io_read` / `disk_io_write` 回一个**零样本**的 group，而单数版同一时间窗有 10–13 个点；`network_tcp_ip_io_read` / `network_tcp_ip_io_write` 直接报 `InternalError: 指标查询暂不可用`，一次只发一个类型也照报。八个指标里四个错或缺，三台机器 3/3 复现。
-
-  代价不对等：省下的是一条一次性命令四分之三的请求，换来的是一块**静悄悄读成 0** 的指标面板。所以扇出保留，`metrics.py` 里记下实测结论，并加一条测试钉住「不会有人再顺手把它改成 Batch 版」。中途一度以为限制是「每次最多 5 个 metric 类型」——那是探针把类型顺序当成了数量：前五个恰好避开了两个 network 指标，第六个才撞上。数量从来不是变量。
-
 - **`/api/v1` 从这个客户端里彻底消失了。** 最后三处——登录握手的 `user/detail`、登录时发现 Workspace 的 `user/routes/default`、Notebook 的 `notebook/lab/{id}`——留着的理由此前写的是「Session 自举时还没有 Session 可供 v2 用」和「反向代理不是 Action 能表达的东西」。三条实测全部不成立：
 
   - `user.GetUserDetail` 空 body 就答，`data` 与 `Result` **逐字段相同**（8 个键，0 差异）。未登录时两边同样是 401，所以登录轮询那段判据一个字都不用改。
@@ -71,8 +67,6 @@
   这条修复由 [#73](https://github.com/realZillionX/InspireSkill/pull/73) 提出（@expectqwq），闸门位置、冷却档位和解除条件在合并时做了调整，并补上了它没覆盖的两条放大路径。
 
   连带修掉一个测试隐患：会话缓存和这个新标记都写在**当前 Account** 目录下，而测试套件跑在开发者自己的 `~/.inspire/` 上——模拟一次失败登录就会给开发者自己的账号写一个熔断标记，用的还是一个根本不存在的密码。现在 `conftest.py` 让会话存储在测试里解析不到 Account（要持久化的测试自己传 Account 名并隔离 `Path.home`），验证这条解析逻辑本身的 5 个测试改用 `active_account_session_storage` 显式退出。
-
-- **Session 过期时 `scan_v2_surface.py` 会把 Keycloak 登录页当成控制台扫，然后报 `0 routes / 0 actions`。** 过期不表现为失败而表现为**跳转**：网关 302 到 SSO，requests 默认跟过去，登录页 200 回来、自带一个 `<script src>`，于是扫描器照常沿着它「递归」了一层就结束。印出来的那行和真实结果同一个形状，只是数字是零——而这份清单唯一的用途就是判断某个 Action 存不存在，零就是「控制台什么都不调」。本次排查 batch API 时第一次跑就撞上了它，`WebSession.load(allow_expired=True)` 本来就会把过期 cookie 原样交出来，所以这是常见路径不是边角情况。三道闸：根请求改 `allow_redirects=False`，302/401/403 直接判定未认证——这正是 `browser-api.md` §2 要求每个外部探针都关掉重定向的同一条理由；按文档给的补救办法用 `get_web_session(force_refresh=True)` 重建 Session 重试一次；chunk 响应的 `content-type` 不是 javascript 就不写缓存，否则一张登录页会以 `.js` 的名字进磁盘缓存、毒化之后每一次从缓存跑的扫描。最后补一条下限检查：抽到 0 个 Action 时以 2 退出并明说「本次运行不构成不存在的证据」，而不是印一份读起来像结论的空报告。
 
 - **`inspire update --check` 恰好在有新版本可升的时候报「检查失败」。** 实测本机 v7.1.0 对着刚发布的 v7.1.1：版本缓存正确写下了 `latest: 7.1.1`，而命令印的是 `✗ InspireSkill check failed.` 并以 1 退出——也就是这条命令唯一有意义的那个结果被它自己当成了故障。根因是检查路径把 `latest` 喂给了 `_audit_update_state`，而那个审计里的版本比较是**升级完之后**的验收器（「装完了，可执行文件真的变成新版本了吗」），于是「你还在旧版本上」这个正确答案被判成审计不通过。现在检查路径不传 `expected_version`，审计只保留它真正该管的那部分：可执行文件在不在 PATH 上、版本读不读得出来、全局 uv tool 有没有被钉在本地源、检测到的 harness 里有没有 `SKILL.md`。
 

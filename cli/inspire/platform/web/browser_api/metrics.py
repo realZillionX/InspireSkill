@@ -9,9 +9,6 @@ sending a list of 5 metric types in one call only returns results for the
 first). This wrapper loops per-metric and aggregates so callers get a single
 flat list of :class:`MetricGroup`.
 
-`GetTaskMetricBatch` looks like it would collapse that fan-out and does not:
-see the note above :func:`get_resource_metrics_by_time`.
-
 Rate metrics (``*_usage_rate``) are 0-1 ratios; I/O metrics are bytes/second.
 """
 
@@ -223,31 +220,6 @@ def get_resource_metrics_by_time(
     ``task_type`` must be one of :data:`TASK_TYPE_BY_RESOURCE` values:
     ``interactive_modeling`` / ``distributed_training`` / ``hpc_job`` /
     ``inference_serving``.
-
-    **Do not "optimise" this into ``GetTaskMetricBatch``.** That Action is
-    real, is declared for all six metric services, and does honour a whole
-    ``metric_types`` list in one call — which makes it look like it collapses
-    this fan-out from eight requests to two. Measured against this Action on
-    three running notebooks on 2026-08-18, it does not answer the same thing:
-
-    * ``group_name`` comes back ``None`` on every group, so the per-pod
-      breakdown the callers render (``Pods:`` and the per-pod last value)
-      silently empties out;
-    * ``disk_io_read`` / ``disk_io_write`` return a group with **zero**
-      samples where this Action returns ten to thirteen;
-    * ``network_tcp_ip_io_read`` / ``network_tcp_ip_io_write`` never come back
-      at all. Asked for on their own they fail the whole request with
-      ``InternalError: 指标查询暂不可用``; packed in with metrics that do
-      return data the request succeeds and they are simply absent from it,
-      which is the worse of the two.
-
-    Note that the failure follows the metric, never the count: six non-network
-    types in one request are fine, one network type alone is not.
-
-    Four of the eight metric types the UI offers are therefore wrong or
-    missing, and the two that fail do so as an exception rather than as empty
-    data. The saving is three quarters of the requests on a command that runs
-    once; the cost is a metrics screen that quietly reads zero.
     """
     if session is None:
         session = get_web_session()
