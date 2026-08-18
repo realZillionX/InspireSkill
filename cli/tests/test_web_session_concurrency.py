@@ -205,6 +205,10 @@ def test_concurrent_failed_refresh_submits_credentials_only_once(
     assert exit_codes == [0] * WORKER_COUNT
     assert submissions.value == 1
     assert (account_path / "web_session.login-block.json").exists()
+    # The rejected session stays: it is the generation marker the marker itself
+    # refers to, and clearing it up front left a failed login with nothing on
+    # disk to tell the next process the attempt had already happened.
+    assert (account_path / "web_session.json").exists()
 
 
 def test_stale_session_save_does_not_replace_refreshed_cache(
