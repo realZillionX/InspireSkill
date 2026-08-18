@@ -574,6 +574,84 @@ def test_cas_server_failure_after_submission_does_not_submit_again_in_a_browser(
     assert http.submissions == 1
 
 
+def test_a_login_page_asking_for_a_verification_code_submits_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CAS wants a human. Submitting the password anyway just loses an attempt.
+
+    Measured against the live platform: after repeated failed logins from one
+    machine, CAS adds `authcode` to the password form and answers every
+    submission with "account or password is wrong" — so the CLI reported a
+    credential problem for an account whose credentials were fine, and each
+    retry spent a real login attempt on a form it could not complete.
+    """
+    login_html = f"""
+    <form id="fm1" action="/cas/login">
+      <input name="username" value="">
+      <input name="password" value="">
+      <input name="execution" value="exec-1">
+      <input id="authcode" name="authcode" value="" placeholder="验证码 Verification Code">
+    </form>
+    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
+    """
+
+    class Response:
+        status_code = 200
+        text = login_html
+        url = "https://cas.sii.edu.cn/cas/login"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class HTTP(requests.Session):
+        def __init__(self) -> None:
+            super().__init__()
+            self.posts = 0
+
+        def get(self, url, **_kwargs):  # noqa: ANN001
+            return Response()
+
+        def post(self, url, **_kwargs):  # noqa: ANN001
+            self.posts += 1
+            raise AssertionError("nothing may be submitted to a form asking for a code")
+
+    http = HTTP()
+    monkeypatch.setattr(requests, "Session", lambda: http)
+    monkeypatch.setattr(
+        ws_proxy,
+        "resolve_requests_proxy_config",
+        lambda account=None: ({}, "none"),
+    )
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright",
+        lambda: pytest.fail("the browser cannot answer a verification code either"),
+    )
+
+    with pytest.raises(ValueError, match="verification code") as excinfo:
+        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
+
+    assert not isinstance(excinfo.value, ws.AuthenticationError)
+    assert "No credentials were submitted" in str(excinfo.value)
+    assert http.posts == 0
+
+
+def test_a_verification_code_prompt_does_not_open_the_login_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No submission, no recorded failure — the next real attempt is not blocked."""
+    from inspire.platform.web.session import login_guard
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
+
+    with pytest.raises(ValueError):
+        with login_guard.guarded_credential_submission("alice", "secret", account="alice"):
+            raise ws_auth._CasVerificationRequired("code required")
+
+    assert not login_guard.block_file("alice").exists()
+
+
 def test_a_lost_response_after_submission_is_an_authentication_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -42,6 +42,31 @@ class _CasLoginFailure(AuthenticationError):
     """A CAS rejection on the requests path, after the password was submitted."""
 
 
+class _CasVerificationRequired(ValueError):
+    """CAS is asking for a verification code, which no automated login can answer.
+
+    Deliberately *not* an :class:`AuthenticationError`: nothing was submitted,
+    so there is no rejected credential to remember. What it does have to stop
+    is the browser fallback, which would fill the same form, leave the same
+    field empty, and spend a real login attempt losing the same way.
+    """
+
+
+# Names CAS uses for the field it adds when it wants a human. It appears in the
+# password form after repeated failed logins from one machine and disappears
+# again on its own, which is exactly when an unattended CLI is most likely to
+# be retrying — and every one of those retries is a credential submission that
+# cannot succeed.
+_VERIFICATION_FIELD_NAMES = frozenset({"authcode", "captcha", "smscode", "vercode", "verifycode"})
+
+
+def _required_verification_field(fields: dict[str, str]) -> str | None:
+    for name in fields:
+        if name.strip().lower() in _VERIFICATION_FIELD_NAMES:
+            return name
+    return None
+
+
 def _load_runtime_config(account: Optional[str] = None) -> Config:
     account_name = str(account or "").strip()
     if account_name:
@@ -607,6 +632,17 @@ def _login_with_cas_requests(
         login_resp.raise_for_status()
 
     action, fields = _extract_login_form(login_resp.text, login_resp.url)
+    verification_field = _required_verification_field(fields)
+    if verification_field:
+        raise _CasVerificationRequired(
+            "The platform's login page is asking for a verification code "
+            f"(field `{verification_field}`), which no automated login can answer.\n"
+            "CAS adds that field after repeated failed logins from one machine and "
+            "removes it again on its own, so the account and the password are usually "
+            "fine — the machine is what is being asked to prove itself.\n"
+            f"Sign in once at {base_url.rstrip('/')}/login in a browser, then re-run. "
+            "No credentials were submitted on this attempt."
+        )
     exponent_hex, modulus_hex = _resolve_cas_rsa_key(http, login_resp.text, login_resp.url)
     fields["username"] = username
     fields["password"] = _cas_page_encrypt_password(password, exponent_hex, modulus_hex)
@@ -810,6 +846,10 @@ def _submit_credentials(
     except AuthenticationError:
         # The password was submitted. Retrying it in a browser is a second
         # submission, not a fallback.
+        raise
+    except _CasVerificationRequired:
+        # Nothing was submitted, and nothing this side can do would change the
+        # answer. The browser would only spend an attempt finding that out.
         raise
     except Exception:
         logger.debug("CAS requests login failed; falling back to Playwright.", exc_info=True)
