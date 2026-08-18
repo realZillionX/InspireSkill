@@ -82,6 +82,15 @@
 
   `job logs --follow --transport ssh` 的 `select` on pipe 与 `ssh_exec` 的同款一起收进 `inspire.process_io`。`exec_rtunnel_proxy` 的 `os.execve` 在 Windows 上是 spawn + 父进程退出，会把 OpenSSH 记录的 proxy pid 打掉，改为留一个薄父进程转发退出码。
 
+  **windows-latest 头一次跑，挖出四个此前无人踩到的 Windows bug**，都不是这次改出来的：
+
+  - **`os.kill(pid, 0)` 在 Windows 上不是探活。** 那边没有 signal 0，而 `signal.CTRL_C_EVENT` 的值**就是 0**——于是这行代码走的是 GenerateConsoleCtrlEvent，把 Ctrl-C 发给目标进程所在的**整个控制台进程组**。`resource_index_refresh` 用它判断后台刷新子进程还在不在，等于每次跑 `inspire` 都随机给当前终端里的所有进程发一次 Ctrl-C。CI 里的表现是 pytest 自己被打断：0 个失败，却只跑了 2080/2854 条就停了，`-q` 下那行 `!!! KeyboardInterrupt !!!` 淹在 skip 列表后面。改用 OpenProcess + GetExitCodeProcess，只查不发信号。
+  - **后台子进程没脱离控制台。** `start_new_session=True` 在 Windows 上被静默忽略，于是更新检查和索引刷新这两个子进程都挂在用户当前终端上，既会闪窗口也共享 Ctrl-C。两处合用 `cli/utils/detached.py` 的 `creationflags`。
+  - **resource index 的 sqlite 连接从来没关过。** `with sqlite3.connect(...)` 只提交事务、不关连接。POSIX 上只是不整洁，Windows 上句柄没放意味着文件删不掉——「索引损坏就丢掉重建」这条恢复路径必然以 sharing violation 失败。
+  - **远端日志路径用 `os.path.join` 拼。** 在 Windows 上产出 `/train/user space\.inspire\xxx.log`，而这条路径会被塞进跑在 Linux 计算节点上的 shell 命令里。远端路径一律走 `join_remote_path`。
+
+  测试侧同样是第一次在 Windows 上跑：`monkeypatch.setenv("HOME", ...)` 是 POSIX 惯用法（`ntpath.expanduser` 只读 `USERPROFILE`），所以这些测试在 Windows 上一直读写**跑测试的人自己的** `~/.inspire`；114 处 `read_text`/`write_text` 没写 `encoding`，中文 workspace 名在 cp1252/cp936 下直接炸。产品代码一处都没漏，这次把测试补齐。
+
   `scripts/install.ps1` 装的是 PyPI 上的包（`uv tool` / `pipx`），不是 editable checkout——`inspire update` 靠 `sys.prefix` 里有没有 `uv/tools` 或 `pipx/venvs` 判断能否自更新，editable 装法会静默让用户失去自更新能力；skill 文件交给 CLI 自己铺（新增内部命令 `_refresh-skills`），不在 PowerShell 里复制一份 harness 列表。
 
 - **`inspire update --check` 恰好在有新版本可升的时候报「检查失败」。** 实测本机 v7.1.0 对着刚发布的 v7.1.1：版本缓存正确写下了 `latest: 7.1.1`，而命令印的是 `✗ InspireSkill check failed.` 并以 1 退出——也就是这条命令唯一有意义的那个结果被它自己当成了故障。根因是检查路径把 `latest` 喂给了 `_audit_update_state`，而那个审计里的版本比较是**升级完之后**的验收器（「装完了，可执行文件真的变成新版本了吗」），于是「你还在旧版本上」这个正确答案被判成审计不通过。现在检查路径不传 `expected_version`，审计只保留它真正该管的那部分：可执行文件在不在 PATH 上、版本读不读得出来、全局 uv tool 有没有被钉在本地源、检测到的 harness 里有没有 `SKILL.md`。

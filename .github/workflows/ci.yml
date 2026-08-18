@@ -90,7 +90,7 @@ jobs:
       # Printed so a run that silently collects fewer tests than the Linux jobs
       # is visible in the log rather than hidden behind a passing summary.
       - name: Collected test count
-        run: uv run pytest --collect-only -q
+        run: uv run pytest --collect-only -q | Select-Object -Last 2
 
       - name: Unit tests
         run: uv run pytest -q -ra
