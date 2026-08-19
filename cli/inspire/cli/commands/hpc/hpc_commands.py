@@ -1484,6 +1484,11 @@ def create_hpc(
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
+# Only exists so a platform that keeps answering rows without ever covering
+# its own `total` cannot spin the name-match forever.
+_MAX_NAME_MATCH_PAGES = 40
+
+
 def _match_hpc_names(
     session,  # noqa: ANN001
     *,
@@ -1508,15 +1513,34 @@ def _match_hpc_names(
     if workspace_id is None:
         raise ConfigError("--workspace is required.")
 
-    jobs, _ = browser_api_module.list_hpc_jobs(
-        workspace_id=workspace_id,
-        created_by=_current_user_id(session),
-        page_num=1,
-        page_size=limit,
-        session=session,
-    )
+    # Paged until `total` is covered, not one request at `limit`: the gateway
+    # clamps `page_size` above 5000 without saying so, and a listing cut off
+    # there reports every name beyond it as "no such job" — an answer, not an
+    # error, which is exactly the failure this command must not manufacture.
+    created_by = _current_user_id(session)
+    jobs: list = []
+    page_num = 1
+    while True:
+        rows, total = browser_api_module.list_hpc_jobs(
+            workspace_id=workspace_id,
+            created_by=created_by,
+            page_num=page_num,
+            page_size=limit,
+            session=session,
+        )
+        jobs.extend(rows)
+        if not rows or len(jobs) >= total or page_num >= _MAX_NAME_MATCH_PAGES:
+            break
+        page_num += 1
+
+    seen_ids: set[str] = set()
     by_name: dict[str, list[str]] = {}
     for job in jobs:
+        # A job that moved between pages while we listed would arrive twice,
+        # and twice under one name reads as an ambiguity that is not there.
+        if job.job_id in seen_ids:
+            continue
+        seen_ids.add(job.job_id)
         by_name.setdefault(job.name, []).append(job.job_id)
 
     resolved: dict[str, str] = {}

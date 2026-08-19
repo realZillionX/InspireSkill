@@ -146,6 +146,49 @@ def test_a_transient_refusal_still_uses_the_short_schedule() -> None:
         _attempt(now=100.0 + login_guard.COOLDOWN_SCHEDULE_SECONDS[0])
 
 
+def test_the_raisers_classification_outranks_the_words_it_quotes() -> None:
+    """A CAPTCHA-gated rejection quotes the platform's own "账号或密码错误".
+
+    The raiser knows the quote is about an empty code field, not about the
+    credentials, and says so on the error. Scanning the text instead would
+    find the quote and buy a fine password the six-hour credential hold.
+    """
+    gated = AuthenticationError(
+        "Login did not complete.\n"
+        "Platform reported: 账号或密码错误。\n"
+        "The page CAS answered with is asking for a verification code, so this "
+        "rejection is about the machine proving itself, not about the account."
+    )
+    gated.credential_rejection = False
+    with pytest.raises(AuthenticationError):
+        with login_guard.guarded_credential_submission(
+            "alice", "secret", account="alice", now=100.0
+        ):
+            raise gated
+
+    # The short schedule: still refused just inside the first cooldown step,
+    # recovered right at it -- not held for hours.
+    with pytest.raises(AuthenticationError, match="Automatic login is paused"):
+        _attempt(now=100.0 + login_guard.COOLDOWN_SCHEDULE_SECONDS[0] - 1)
+    with pytest.raises(AuthenticationError, match="CAS rejected"):
+        _attempt(now=100.0 + login_guard.COOLDOWN_SCHEDULE_SECONDS[0])
+
+
+def test_an_explicit_credential_classification_needs_no_keywords() -> None:
+    """The other direction: a raiser that knows the credentials were named."""
+    named = AuthenticationError("Login did not complete.")
+    named.credential_rejection = True
+    with pytest.raises(AuthenticationError):
+        with login_guard.guarded_credential_submission(
+            "alice", "secret", account="alice", now=100.0
+        ):
+            raise named
+
+    still_held = 100.0 + login_guard.COOLDOWN_SCHEDULE_SECONDS[-1] + 1
+    with pytest.raises(AuthenticationError, match="will not resume on a timer"):
+        _attempt(now=still_held)
+
+
 def test_the_classifier_separates_the_two_kinds() -> None:
     for named in (
         "Platform reported: 账号或密码错误。",

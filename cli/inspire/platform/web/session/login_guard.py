@@ -91,6 +91,21 @@ def is_credential_rejection(message: str) -> bool:
     text = str(message or "")
     return any(marker in text for marker in _CREDENTIAL_REJECTION_MARKERS)
 
+
+def _classify_rejection(error: BaseException) -> bool:
+    """The raiser's own classification when it has one, the keyword scan else.
+
+    The raiser can know things the message cannot carry: a CAPTCHA-gated
+    rejection *quotes* "账号或密码错误" while explaining that the machine is
+    what is being challenged, and scanning that text finds the quote. Reading
+    ``credential_rejection`` first is what keeps a machine gate on the short
+    schedule instead of the six-hour credential hold.
+    """
+    explicit = getattr(error, "credential_rejection", None)
+    if explicit is not None:
+        return bool(explicit)
+    return is_credential_rejection(str(error))
+
 _BLOCK_FILE_NAME = "web_session.login-block.json"
 
 # The fingerprint answers one question — "are these the credentials that just
@@ -348,7 +363,7 @@ def _guarded(
         # is measured from when CAS answered, not from when we started asking.
         failed_at = current if now is not None else time.time()
         failures = 1 if block is None else block.failures + 1
-        rejection = is_credential_rejection(str(error))
+        rejection = _classify_rejection(error)
         hold = CREDENTIAL_FAILURE_HOLD_SECONDS if rejection else cooldown_for(failures)
         cached = WebSession.load(allow_expired=True, account=account)
         _store(

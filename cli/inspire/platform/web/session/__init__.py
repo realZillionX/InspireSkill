@@ -237,7 +237,6 @@ def request_json(
     headers: Optional[dict[str, str]] = None,
     body: Optional[dict] = None,
     timeout: int = 30,
-    _retry_count: int = 0,
 ) -> dict:
     """Call one browser API endpoint, waiting out momentary refusals.
 
@@ -247,7 +246,7 @@ def request_json(
     means; what does reach them is either data or a
     :class:`TransientAPIError` saying the platform never answered.
     """
-    budget = _AuthRefreshBudget(0 if _retry_count else 1)
+    budget = _AuthRefreshBudget(1)
     return with_transient_retry(
         lambda: _request_json_once(
             session,
@@ -336,7 +335,13 @@ def _request_json_once(
                 # say what it is; that costs no credentials either way.
                 _BROWSER_API_FORCE_BROWSER = True
             else:
-                _note_generation_answered(session.created_at)
+                # The generation that answered is the one this call sent, read
+                # before the request went out. `session.created_at` as it reads
+                # *now* may already be a replacement another thread minted --
+                # crediting that one would clear the unproven marker for a
+                # login nothing has used, which re-arms exactly the repeated
+                # logins the marker exists to stop.
+                _note_generation_answered(observed_created_at)
                 return payload
         except SessionExpiredError:
             return _rebuild_session_and_repeat(
@@ -380,7 +385,7 @@ def _request_json_once(
                 body=body,
                 timeout=timeout,
             )
-        _note_generation_answered(session.created_at)
+        _note_generation_answered(observed_created_at)
         return payload
     except SessionExpiredError:
         return _rebuild_session_and_repeat(

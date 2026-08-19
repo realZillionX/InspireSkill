@@ -34,7 +34,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Optional
 
 from inspire.platform.web.browser_api.core import _request_json, _v2_result
-from inspire.platform.web.session import WebSession
+from inspire.platform.web.session import TransientAPIError, WebSession
 
 __all__ = [
     "BATCH_ID_LIMIT",
@@ -259,6 +259,11 @@ def fetch_events_by_ids(
                     sorter=sorter,
                     timeout=timeout,
                 )
+            except TransientAPIError:
+                # Subclasses ValueError, and a 5xx body can contain any text --
+                # "not found" included. A platform that did not answer has not
+                # said any job is missing.
+                raise
             except ValueError as exc:
                 message = str(exc)
                 if "not found" not in message.lower():
@@ -280,6 +285,8 @@ def fetch_events_by_ids(
                                 sorter=sorter,
                                 timeout=timeout,
                             )
+                        except TransientAPIError:
+                            raise
                         except ValueError as inner:
                             if "not found" not in str(inner).lower():
                                 raise

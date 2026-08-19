@@ -291,6 +291,36 @@ def test_non_missing_failures_propagate(monkeypatch: pytest.MonkeyPatch) -> None
         )
 
 
+def test_a_transient_failure_whose_text_says_not_found_still_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`TransientAPIError` subclasses `ValueError`, and a 5xx body can carry
+    any words -- "not found" included. A platform that did not answer has not
+    said any job is missing, so the not-found recovery must not eat it and
+    report the chunk as dead jobs."""
+    from inspire.platform.web.session import TransientAPIError
+
+    calls: list[dict] = []
+    _install(
+        monkeypatch,
+        lambda body: _error("InternalError", "backend shard not found"),
+        calls,
+    )
+
+    with pytest.raises(TransientAPIError):
+        fetch_events_by_ids(
+            _FakeSession(),
+            route="train",
+            object_type="job",
+            object_ids=["job-a", "job-b"],
+            referer="https://example/ref",
+        )
+
+    # And no per-id fallback fan-out either: the answer was "ask again later",
+    # not "one of these is dead".
+    assert len(calls) == 1
+
+
 def test_events_page_until_total_is_reached(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[dict] = []
     pages = {

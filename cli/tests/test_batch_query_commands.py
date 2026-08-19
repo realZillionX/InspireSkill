@@ -272,6 +272,56 @@ def test_hpc_batch_status_lists_the_workspace_once(
     assert batched == [["hpc-a", "hpc-b"]]
 
 
+def test_hpc_name_match_pages_until_the_listings_total_is_covered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gateway clamps `page_size` above 5000 without saying so.
+
+    A match cut off at one page answers every later name with "no such job" --
+    a wrong answer, not an error -- so the listing pages until its own `total`
+    is covered. A row that moved between pages while listing arrives twice and
+    must not read as two same-named jobs.
+    """
+
+    class _Job:
+        def __init__(self, name: str, job_id: str) -> None:
+            self.name = name
+            self.job_id = job_id
+            self.status = "RUNNING"
+            self.workspace_id = "ws-1"
+            self.created_at = "1"
+
+    pages = {
+        1: ([_Job("solver-a", "hpc-a"), _Job("solver-b", "hpc-b")], 3),
+        # `solver-b` shifted pages mid-listing and arrives a second time.
+        2: ([_Job("solver-b", "hpc-b"), _Job("solver-c", "hpc-c")], 3),
+    }
+
+    def _list_hpc_jobs(*, workspace_id, created_by, page_num, page_size, session):  # noqa: ANN001
+        return pages[page_num]
+
+    monkeypatch.setattr(hpc_commands, "select_workspace_id", lambda **kwargs: "ws-1")
+    monkeypatch.setattr(hpc_commands, "_current_user_id", lambda session: "user-1")
+    monkeypatch.setattr(
+        hpc_commands.browser_api_module, "list_hpc_jobs", _list_hpc_jobs
+    )
+
+    workspace_id, resolved, failures = hpc_commands._match_hpc_names(
+        _FakeSession(),
+        names=("solver-a", "solver-b", "solver-c"),
+        workspace="W",
+        limit=2,
+    )
+
+    assert workspace_id == "ws-1"
+    assert failures == {}
+    assert resolved == {
+        "solver-a": "hpc-a",
+        "solver-b": "hpc-b",
+        "solver-c": "hpc-c",
+    }
+
+
 def test_hpc_batch_status_reports_an_unknown_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
