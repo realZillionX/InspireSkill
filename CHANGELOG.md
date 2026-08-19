@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v7.1.2
 
 ### 新增
 
