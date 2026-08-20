@@ -4,7 +4,7 @@
 
 ## 1. 安装
 
-macOS、Linux、Windows 都是一等公民。Windows 见下面的 “1.1 Windows”，本节其余部分是 macOS / Linux。
+macOS、Linux、Windows 都是一等公民。本机是 Windows 时加载 [`windows-native.md`](windows-native.md)；本节其余部分是 macOS / Linux。
 
 前置只需要 `bash`、`curl`、`tar`、Python 3.10+，以及 `uv` 或 `pipx` 任一。没有 `uv` 时先装：
 
@@ -43,30 +43,6 @@ inspire update --check
 ```
 
 如果 `inspire: command not found`，开新终端或运行 `exec $SHELL`。如果 Playwright Chromium 缺失，直接重跑安装脚本或运行 `inspire update --cli-only`；安装 / 更新流程会修全局 CLI 的浏览器运行时。
-
-## 1.1 Windows
-
-前置：Python 3.10+、`uv`（推荐）或 `pipx`、OpenSSH 客户端。不需要 WSL。
-
-```powershell
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0
-Set-ExecutionPolicy -Scope Process Bypass
-.\scripts\install.ps1
-```
-
-`install.ps1` 和 `install.sh` 装的是同一个 PyPI 包，走 `uv tool` / `pipx`。参数 `-SkipPlaywright`（跳过 Chromium 下载，浏览器登录不可用）、`-SkipSkill`（只装 CLI）、`-Version <x.y.z>`（装指定版本）。harness 由 CLI 自动探测，没有 `--harness` 的对应参数。
-
-macOS 的每日 launchd 版本检查在 Windows 上没有对应物，不影响使用：CLI 每次运行时会在缓存过期后自己拉起一次后台检查。
-
-四件 Windows 特有的事：
-
-| 项 | 事实 | 读错的后果 |
-| --- | --- | --- |
-| `ssh.exe` 来源 | 系统自带的和 Git for Windows 附带的对 ProxyCommand 的处理不同：系统版不经过 shell，Git 版经过 `/bin/sh` | 两个混用时报错信息互相矛盾。用 `Get-Command ssh -All` 确认排在最前的是哪个 |
-| `ssh-config` 输出重定向 | Windows PowerShell 5.1 的 `>` / `>>` 写 UTF-16LE | OpenSSH 读不了这个 config。用 `\| Out-File -Encoding utf8 -Append`；PowerShell 7+ 默认 UTF-8，`>>` 可用 |
-| 私钥权限 | Windows OpenSSH 会拒绝 ACL 过宽的私钥 | 域账号或有继承 ACE 的 profile 下 `notebook ssh` 报 UNPROTECTED PRIVATE KEY FILE。用文件属性 → 安全，把 `%USERPROFILE%\.ssh` 收敛到只有本人 |
-| 文件传输 | `rsync` 不随 Windows 提供 | 用 `inspire notebook scp`。本地路径直接写盘符形式（`C:\...`）即可，Windows 版 scp 认盘符 |
 
 ## 2. 更新
 

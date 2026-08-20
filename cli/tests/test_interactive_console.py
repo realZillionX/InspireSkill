@@ -40,6 +40,13 @@ class FakeStdin:
         return False
 
 
+class FakeTty(FakeStdin):
+    """Same, but claiming to be a terminal — for the resize watcher's gate."""
+
+    def isatty(self) -> bool:
+        return True
+
+
 @pytest.fixture
 def socket_pair() -> Any:
     left, right = socket.socketpair()
@@ -144,7 +151,7 @@ def test_resize_watch_fires_on_posix_signal() -> None:
     import signal
 
     fired: list[int] = []
-    with watch_terminal_resize(lambda: fired.append(1)) as poll:
+    with watch_terminal_resize(FakeTty([]), lambda: fired.append(1)) as poll:
         # POSIX gets a real signal, so the polling hook has nothing to do.
         poll()
         assert fired == []
@@ -179,6 +186,40 @@ def test_resize_watch_restores_the_previous_posix_handler() -> None:
     import signal
 
     original = signal.getsignal(signal.SIGWINCH)
-    with watch_terminal_resize(lambda: None):
+    with watch_terminal_resize(FakeTty([]), lambda: None):
         assert signal.getsignal(signal.SIGWINCH) is not original
     assert signal.getsignal(signal.SIGWINCH) is original
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX select/SIGWINCH only")
+def test_resize_watch_leaves_signal_state_alone_for_a_non_tty() -> None:
+    import signal
+
+    # The pre-split implementation registered SIGWINCH inside `if raw_mode:`.
+    # Losing that gate broke library callers: signal.signal is main-thread-only,
+    # so a worker thread driving the shell with a piped stdin died on
+    # `ValueError: signal only works in main thread` before reading a byte.
+    original = signal.getsignal(signal.SIGWINCH)
+    with watch_terminal_resize(FakeStdin([]), lambda: None) as poll:
+        assert signal.getsignal(signal.SIGWINCH) is original
+        poll()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX select/SIGWINCH only")
+def test_resize_watch_works_from_a_worker_thread_when_stdin_is_piped() -> None:
+    import threading
+
+    failures: list[BaseException] = []
+
+    def drive() -> None:
+        try:
+            with watch_terminal_resize(FakeStdin([]), lambda: None) as poll:
+                poll()
+        except BaseException as exc:  # noqa: BLE001 — the failure IS the assertion
+            failures.append(exc)
+
+    worker = threading.Thread(target=drive)
+    worker.start()
+    worker.join(timeout=5)
+
+    assert failures == []

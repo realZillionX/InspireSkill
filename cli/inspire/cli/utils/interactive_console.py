@@ -62,12 +62,16 @@ class ResizePoller:
             self._on_resize()
 
 
+def _stream_is_a_terminal(stream: Any) -> bool:
+    return bool(getattr(stream, "isatty", lambda: False)())
+
+
 if sys.platform == "win32":
 
     @contextmanager
     def raw_terminal(stream: Any) -> Iterator[None]:
         """Put the console in raw mode for the block, then restore it."""
-        if not bool(getattr(stream, "isatty", lambda: False)()):
+        if not _stream_is_a_terminal(stream):
             yield
             return
 
@@ -111,12 +115,20 @@ if sys.platform == "win32":
                 kernel32.SetConsoleMode(stdout_handle, saved_output.value)
 
     @contextmanager
-    def watch_terminal_resize(on_resize: Callable[[], None]) -> Iterator[Callable[[], None]]:
+    def watch_terminal_resize(
+        stream: Any, on_resize: Callable[[], None]
+    ) -> Iterator[Callable[[], None]]:
         """Yield a poll callback that fires *on_resize* when the size changes.
 
         Windows has no SIGWINCH, so the shells call this once per event-loop
-        tick and it compares the size against the last one it saw.
+        tick and it compares the size against the last one it saw. When *stream*
+        is not a terminal there is no window whose size could change, so the
+        callback is a no-op — mirroring the POSIX side, where watching at all
+        would mean touching signal state.
         """
+        if not _stream_is_a_terminal(stream):
+            yield lambda: None
+            return
         yield ResizePoller(on_resize)
 
 else:
@@ -128,7 +140,7 @@ else:
         A no-op when *stream* is not a terminal, so piped and captured runs
         behave the same as they always did.
         """
-        if not bool(getattr(stream, "isatty", lambda: False)()):
+        if not _stream_is_a_terminal(stream):
             yield
             return
 
@@ -141,12 +153,24 @@ else:
             termios.tcsetattr(descriptor, termios.TCSADRAIN, saved)
 
     @contextmanager
-    def watch_terminal_resize(on_resize: Callable[[], None]) -> Iterator[Callable[[], None]]:
+    def watch_terminal_resize(
+        stream: Any, on_resize: Callable[[], None]
+    ) -> Iterator[Callable[[], None]]:
         """Install a SIGWINCH handler, yielding a poll callback that does nothing.
 
         The callback exists so the shells can call it unconditionally; here the
         signal already does the work.
+
+        The terminal gate is not an optimisation. ``signal.signal`` is legal
+        only on the main thread — a library caller driving this shell from a
+        worker thread with a piped stdin would otherwise die on ``ValueError:
+        signal only works in main thread`` before reading a byte. The pre-split
+        implementation had exactly this guard (SIGWINCH was registered inside
+        ``if raw_mode:``), and losing it in the refactor was a regression.
         """
+        if not _stream_is_a_terminal(stream):
+            yield lambda: None
+            return
 
         def handler(signum: int, frame: Any) -> None:
             del signum, frame

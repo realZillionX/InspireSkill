@@ -556,7 +556,7 @@ def run_remote_shell(
                 pass
 
         streams = ShellStreams(ws, stdin)
-        with raw_terminal(stdin), watch_terminal_resize(announce_resize) as poll_resize:
+        with raw_terminal(stdin), watch_terminal_resize(stdin, announce_resize) as poll_resize:
             stdin_open = True
             exit_watcher = ShellExitWatcher()
             while True:
