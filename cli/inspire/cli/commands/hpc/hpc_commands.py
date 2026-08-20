@@ -14,6 +14,7 @@ from inspire.cli.context import (
     EXIT_API_ERROR,
     EXIT_AUTH_ERROR,
     EXIT_CONFIG_ERROR,
+    EXIT_JOB_NOT_FOUND,
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
@@ -1483,8 +1484,152 @@ def create_hpc(
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
 
 
+# Only exists so a platform that keeps answering rows without ever covering
+# its own `total` cannot spin the name-match forever.
+_MAX_NAME_MATCH_PAGES = 40
+
+
+def _match_hpc_names(
+    session,  # noqa: ANN001
+    *,
+    names: tuple[str, ...],
+    workspace: str,
+    limit: int,
+) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Match several HPC names against one workspace listing.
+
+    Returns ``(workspace_id, {name: job_id}, {name: reason})``.
+
+    The single-name path resolves through ``resolve_by_name``, which ends the
+    process on a name it cannot place. That is the right answer for one name
+    and the wrong one for twenty, so the batch path lists the workspace once
+    and matches locally: every name gets an answer, and N names cost one list
+    request rather than N.
+    """
+    workspace_id = select_workspace_id(
+        explicit_workspace_name=workspace,
+        session=session,
+    )
+    if workspace_id is None:
+        raise ConfigError("--workspace is required.")
+
+    # Paged until `total` is covered, not one request at `limit`: the gateway
+    # clamps `page_size` above 5000 without saying so, and a listing cut off
+    # there reports every name beyond it as "no such job" — an answer, not an
+    # error, which is exactly the failure this command must not manufacture.
+    created_by = _current_user_id(session)
+    jobs: list = []
+    page_num = 1
+    while True:
+        rows, total = browser_api_module.list_hpc_jobs(
+            workspace_id=workspace_id,
+            created_by=created_by,
+            page_num=page_num,
+            page_size=limit,
+            session=session,
+        )
+        jobs.extend(rows)
+        if not rows or len(jobs) >= total or page_num >= _MAX_NAME_MATCH_PAGES:
+            break
+        page_num += 1
+
+    seen_ids: set[str] = set()
+    by_name: dict[str, list[str]] = {}
+    for job in jobs:
+        # A job that moved between pages while we listed would arrive twice,
+        # and twice under one name reads as an ambiguity that is not there.
+        if job.job_id in seen_ids:
+            continue
+        seen_ids.add(job.job_id)
+        by_name.setdefault(job.name, []).append(job.job_id)
+
+    resolved: dict[str, str] = {}
+    failures: dict[str, str] = {}
+    for name in names:
+        candidates = by_name.get(name) or []
+        if not candidates:
+            failures[name] = (
+                f"No HPC job matching {name!r} found. "
+                f"Try `inspire hpc list --workspace {workspace}`."
+            )
+        elif len(candidates) > 1:
+            # Never guess between same-named jobs; the single-name form takes
+            # --pick for exactly this case.
+            failures[name] = (
+                f"{len(candidates)} HPC jobs share name {name!r}; "
+                "query it on its own with --pick."
+            )
+        else:
+            resolved[name] = candidates[0]
+    return workspace_id, resolved, failures
+
+
+def _batch_hpc_status(
+    ctx: Context,
+    names: tuple[str, ...],
+    *,
+    workspace: str,
+) -> None:
+    """Render `hpc status` for several names through one batched read."""
+    try:
+        session = get_web_session()
+        workspace_id, resolved, failures = _match_hpc_names(
+            session,
+            names=names,
+            workspace=workspace,
+            limit=10000,
+        )
+        records = browser_api_module.list_hpc_jobs_by_ids(
+            list(resolved.values()),
+            workspace_id=workspace_id,
+            session=session,
+        )
+    except ConfigError as e:
+        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
+        return
+    except SessionExpiredError as e:
+        _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
+        return
+    except Exception as e:
+        _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
+        return
+
+    views: list[dict[str, Any]] = []
+    for name in names:
+        if name in failures:
+            continue
+        record = records.get(resolved[name])
+        if record is None:
+            failures[name] = f"HPC job {name!r} is no longer listed in this workspace."
+            continue
+        views.append(public_hpc_status(record, fallback_name=name))
+
+    if ctx.json_output:
+        click.echo(
+            json_formatter.format_json(
+                {
+                    "items": views,
+                    "unresolved": [
+                        {"name": name, "reason": reason}
+                        for name, reason in failures.items()
+                    ],
+                },
+                preserve_paths={"steps"},
+            )
+        )
+    else:
+        blocks = [format_hpc_status(view) for view in views]
+        if blocks:
+            click.echo("\n\n".join(blocks))
+        for name, reason in failures.items():
+            click.echo(f"Unresolved: {scrub_raw_ids(name)}: {scrub_raw_ids(reason)}")
+
+    if failures:
+        sys.exit(EXIT_JOB_NOT_FOUND)
+
+
 @click.command("status")
-@click.argument("name", metavar="NAME")
+@click.argument("names", metavar="NAME...", nargs=-1, required=True)
 @click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--pick",
@@ -1493,9 +1638,36 @@ def create_hpc(
     help=NAME_PICK_HELP,
 )
 @pass_context
-def status_hpc(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
-    """Show the compact public status view for an HPC job name."""
-    name = _reject_hpc_name_at_boundary(ctx, name)
+def status_hpc(
+    ctx: Context,
+    names: tuple[str, ...],
+    workspace: str,
+    pick: Optional[int],
+) -> None:
+    """Show the compact public status view for one or more HPC job names.
+
+    Several names are answered with one batched request per 20 jobs instead of
+    one request each.
+
+    \b
+    Examples:
+        inspire hpc status solver-a --workspace 高性能计算
+        inspire hpc status solver-a solver-b --workspace 高性能计算
+    """
+    names = tuple(_reject_hpc_name_at_boundary(ctx, value) for value in names)
+    if pick is not None and len(names) > 1:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            "--pick disambiguates a single name; pass one NAME to use it.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+    if len(names) > 1:
+        _batch_hpc_status(ctx, names, workspace=workspace)
+        return
+
+    name = names[0]
     try:
         config, _ = Config.from_files_and_env()
         session = get_web_session()

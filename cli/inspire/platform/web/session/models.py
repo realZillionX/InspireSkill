@@ -36,7 +36,18 @@ class AuthenticationError(ValueError):
     It subclasses ``ValueError`` because that is what this layer has always
     raised for a failed login, so every existing ``except ValueError`` boundary
     keeps reporting it the way it always did.
+
+    ``credential_rejection`` is the raiser's own classification of the failure,
+    for the cooldown that has to choose between "wait it out" and "never send
+    these again on a timer". It exists because the message text cannot carry
+    that distinction: a CAPTCHA-gated rejection quotes the platform's
+    "账号或密码错误" *and* explains that the machine is what is being
+    challenged, and a keyword scan over that text reads the quote, not the
+    explanation. ``None`` means the raiser does not know, and the reader may
+    fall back to scanning the platform's words.
     """
+
+    credential_rejection: Optional[bool] = None
 
 
 # Statuses that say the platform did not answer, not that the answer is no.

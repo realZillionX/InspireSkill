@@ -286,9 +286,9 @@ Referer：`/jobs/distributedTraining`，详情页 `/jobs/distributedTrainingDeta
 | --- | --- | --- | --- |
 | `CreateJobConsole` † | 见[创建面字段合同](#9-创建面的字段合同) | `{job_id, sub_code, sub_msg}` | `job create`、`job batch` |
 | `GetJob` | `{job_id}` | `name` / `status` / `command` / `framework_config[]` / `dataset_info[]` / `node_infos[]` / `specified_nodes[]` / `exclude_nodes[]` / `project_id` / `workspace_id` / `logic_compute_group_name` / `created_at` / `finished_at` | `job status` / `command` / `logs` / `metrics` / `wait` |
-| `ListJobs` | `{workspace_id, page_num, page_size, created_by, status?, keyword?}` | `{jobs[], total}`（`total` 是 int） | `job list`、Name Resolver、`cache refresh` |
+| `ListJobs` | `{workspace_id, page_num, page_size, created_by, status?, keyword?}`；或 `{workspace_id, job_ids[]}` 按 id 批量取，见 [8.15](#815-批量读--listjobs--listjobevents-的复数形态) | `{jobs[], total}`（`total` 是 int） | `job list`、`job status`、Name Resolver、`cache refresh` |
 | `ListJobInstances` | `{job_id, page_num, page_size}` | `{items[], total}` | `job instances` / `shell` / `logs` / `events` |
-| `ListJobEvents` | `{PageNumber\|page_num, page_size, filter:{object_type, object_ids[]}}` | `{events[], total}` | `job events` |
+| `ListJobEvents` | `{PageNumber\|page_num, page_size, filter:{object_type, object_ids[]}}`，`object_ids` 可多个，见 [8.15](#815-批量读--listjobs--listjobevents-的复数形态) | `{events[], total}` | `job events` |
 | `GetJobLog` | `{page_size, filter:{podNames[], start_timestamp_ms, end_timestamp_ms}}` | `{logs[], total}` | `job logs` |
 | `StopJob` | `{job_id}` | `{code, message}` | `job stop` |
 | `DeleteJob` | `{job_id}` | — | `job delete` |
@@ -346,8 +346,8 @@ Referer：`/jobs/highPerformanceComputing`，详情页 `/jobs/hpcDetail/{job_id}
 | --- | --- | --- | --- |
 | `CreateJobConsole` † | 见[创建面字段合同](#9-创建面的字段合同) | `{job_id, sub_code, sub_msg}` | `hpc create`、`hpc batch` |
 | `GetJob` | `{job_id}` | `{job_name, status, sbatch_script{}, slurm_cluster_spec{}, nodes[], steps, description, ttl_after_job_finish_seconds, dataset_info[], project_id, workspace_id, …}` | `hpc status`、`hpc metrics` |
-| `ListJobs` | `{workspace_id, page_num, page_size, created_by, status?}` | `{jobs[]\|items[], total}`（`total` 是**字符串**） | `hpc list`、Name Resolver |
-| `ListJobEvents` | `{pageNum: -1, pageSize: 200, filter:{object_ids:[job_id], object_type:"HPC_JOB"}, sorter:[{field:"last_timestamp", sort:"ascend"}]}` | `{events[]\|items[]\|list[]}` | `hpc events` |
+| `ListJobs` | `{workspace_id, page_num, page_size, created_by, status?}`；或 `{workspace_id, job_ids[]}` 按 id 批量取，见 [8.15](#815-批量读--listjobs--listjobevents-的复数形态) | `{jobs[]\|items[], total}`（`total` 是**字符串**） | `hpc list`、`hpc status`、Name Resolver |
+| `ListJobEvents` | `{pageNum: -1, pageSize: 200, filter:{object_ids:[job_id], object_type:"HPC_JOB"}, sorter:[{field:"last_timestamp", sort:"ascend"}]}`，`object_ids` 可多个，见 [8.15](#815-批量读--listjobs--listjobevents-的复数形态) | `{events[]\|items[]\|list[]}` | `hpc events` |
 | `ListJobInstances` | `{jobId, page_num, page_size}` | `{items[]\|list[], total}` | `hpc instances` |
 | `ListSlurmdPodEvent` | `{instance_id, page_size, PageNumber}` | `{events[], total}`（字符串） | `hpc events --instance` |
 | `GetJobLog` | `{page_size, filter:{podNames[], start_timestamp_ms, end_timestamp_ms}}` | `{logs[], total}`（**int**） | `hpc logs` |
@@ -761,6 +761,84 @@ POST /api/v2/{notebook|train|hpc|ray|inference_serving}?Action=GetTaskMetric
 | 不支持的 `task_type` | 会拿到一个 Prometheus 422（抱怨空 label name），Wrapper 在发出前就校验 |
 | 分组 | 多 pod 实例（分布式训练、多副本 serving）每个 pod 一个 group；单实例 Notebook 恰好一个 |
 | 没有对应物的那个 | `workspace.GetOverviewResourceMetricByTime` **不是**它的对应物：那是工作空间级总览，对普通成员 `AccessForbidden`。第 5 章的「用 `workspace.*` 不用 `cluster.*`」只适用于两边同名的那 8 个 Action |
+
+#### `GetTaskMetricBatch` 为什么不用（2026-08-18 实测）
+
+同样五个路由上都有一个 `GetTaskMetricBatch`，请求体是 `{task_ids, metric_types, time_range}`（不收 `filter` / `logic_compute_group_id`，传了报 proto unknown field）。它**答的不是同一份数据**，不能当作上面那条的批量形态。
+
+响应形状先不一样：`Result.task_metrics[] {task_id, time_series_metric_groups[]}`，多包一层且这里的键拼**对**了。按单数版的顶层 `time_seris_metric_groups` 去读会读出空，于是它看起来像「没数据」而不是「坏了」——这一点让它被误判过一次。
+
+`train` 路由、4 个运行中任务、同一时间窗逐指标对照：
+
+| metric | 单数版 | Batch |
+| --- | --- | --- |
+| `gpu_usage_rate` / `gpu_memory_usage_rate` / `cpu_usage_rate` / `memory_usage_rate` | 61 点 | 61 点，但 `group_name` 缺失，**且数值不同（见下）** |
+| `disk_io_read` / `disk_io_write` | 61 点 | **0 个样本**（4/4 复现） |
+| `network_tcp_ip_io_read` / `network_tcp_ip_io_write` | 61 点 | **`InternalError`** |
+
+8 个指标坏 4 个；`group_name` 全缺意味着多 Pod 任务的逐 Pod 拆分丢失。
+
+**剩下那 4 个也不是同一份数**。取一个已经结束的固定窗口（排除「现在还在变」），两个端点**各自都是确定的**——各查两次结果逐字节相同——但互相对不上：
+
+| timestamp | 单数版 | Batch |
+| --- | --- | --- |
+| 1787049449 | 0.20625 | 0.5 |
+| 1787049509 | 0.69625 | 0.785 |
+| 1787049569 | 0.7575 | 0.505 |
+
+差在聚合样本数上：把每个端点全部返回值的公分母算出来，**单数版恒为 Batch 的 2 倍**——4 卡任务 800 : 400，8 卡任务 1600 : 800，即 `200×卡数` 对 `100×卡数`（4 个运行中任务全部符合）。同一个信号，Batch 只聚合了一半的样本。长期均值大致对得上（0.536 vs 0.528、0.965 vs 0.967），但**任意单点可以差到 0.206 vs 0.5**。
+
+所以这不是「批量版少了个字段」，是**另一套聚合**：即便只取那 4 个能跑的指标，Batch 画出来的曲线也不是控制台上那一条。控制台自己在全部 bundle 里**一次都没有调用**这个 Action。省四分之三的请求换一块既会静悄悄读成 0、数值又对不上控制台的面板，不划算。
+
+### 8.15 批量读 — `ListJobs` / `ListJobEvents` 的复数形态
+
+`train` 与 `hpc` 各有两个 Action 接受 id 列表。两条都实测可用，但**限制与失败形态不对称**，照着一条的直觉写另一条会出事。
+
+```jsonc
+POST /api/v2/{train|hpc}?Action=ListJobs
+{"workspace_id": "ws-…", "job_ids": ["job-a", "job-b"]}      // ≤ 20
+
+POST /api/v2/{train|hpc}?Action=ListJobEvents
+{"page_num": 1, "page_size": 200,                             // hpc 要 pageNum/pageSize
+ "filter": {"object_type": "job", "object_ids": ["job-a"]}}   // hpc 是 "HPC_JOB"，≤ 20
+```
+
+| 项 | 事实 | 读错的后果 |
+| --- | --- | --- |
+| `ListJobs` 的记录 | 与 `GetJob` **逐字段完全相同**——在 `train` 上比过，running/stopped/failed 三态各一次，无独有字段、无值差异。**`hpc` 未实测**：当时账号在所有 Workspace 里都没有 HPC 任务，只验到两条路由的校验语句逐字一致（必填 `workspace_id`、上限 20、未知 id 静默丢弃）。记录等价性是推断，第一次拿到真实 HPC 任务时补验 | 这是 `GetJob` 扇出的批量形态，不必再补一次详情请求 |
+| 上限 20 | `job_ids count exceeds limit 20` / `object_ids count exceeds limit 20`，**按列表长度计数**，20 个不重复 + 1 个重复 = 21 也被拒 | 先去重再分片；分片后去重仍然会撞上限 |
+| `object_type: "instance"` **不受这个上限** | 500 个实测通过 | `list_job_instance_events` 按 200 分片是对的，不要跟着改成 20 |
+| `ListJobs` 找不到 id | **静默丢弃**，`total` 只反映命中数 | 缺失只能由调用方拿请求 diff 出来；短列表不等于「就这些」 |
+| `ListJobEvents` 找不到 id | **整个请求失败**：`InvalidParameter: job <id> not found`，train 与 hpc 都是 | 一个被 GC 的任务会带走同批另外 19 个的事件；必须剔掉报错点名的 id 重试 |
+| `workspace_id` | `job_ids` 存在时必填，否则 `workspace_id is required when job_ids is set` | **Workspace 传错会静默返回 0**，与「任务不存在」不可区分 |
+| `job_ids: []` | 掉回分页路径并报 `page or page_size too large` | 空列表必须短路，不能发出去 |
+| 返回顺序 | 不是入参顺序 | 按 id 建索引，不要跟请求 zip |
+| 事件可加性 | 严格可加（5 个任务批量 31 条 = 单查 3+3+3+3+19），每行带 `object_id` | 可以原样拆回各自任务 |
+| 事件分页 | `total` 准确（20 个任务 651 = 200+200+200+51） | — |
+
+### 8.16 `job.ListJobs` — 跨 workload 的批量状态（**未接入**）
+
+`/api/v2/job` 这个路由在 discovery 里没有，控制台的 `schedulingService` chunk 里有（`a.GET_JOBS`）。它一次可以问**多种 workload 类型**的状态：
+
+```jsonc
+POST /api/v2/job?Action=ListJobs
+{"filter": {"train_job_ids": [...], "notebook_job_ids": [...], "slurm_job_ids": [...]}}
+→ Result.jobs[] {task_id, task_name, task_type, <类型专属状态字段>, project, creator, worksapce_id}
+```
+
+| task_type | 入参键 | 状态字段 |
+| --- | --- | --- |
+| `distributed_training` | `train_job_ids` | `train_status` |
+| `interactive_modeling` | `notebook_job_ids` | `notebook_status` |
+| `hpc_job` | `slurm_job_ids` | `slurm_job_status` |
+| `ray_job` | `ray_job_ids` | `ray_job_status` |
+| `tensorboard` | `tensorboard_job_ids` | `tensorboard_status` |
+| `model_serving` / `inference_serving_customize` | `inference_serving_job_ids` | `model_serving_status` / `inference_serving_status` |
+| `sandbox` | `sandbox_ids` | `sandbox_status` |
+
+与 8.15 那两条相比：**不需要 `workspace_id`**、未知 id 静默丢弃且不报错、**未见 20 上限**（60 个不重复 id / 1000 条含重复均正常，服务端自行去重）。代价是记录很瘦——只有状态、项目、创建者，没有配额、节点、命令。响应里的 `worksapce_id` 是平台的拼写错误，要照抄。
+
+**目前没有接入**：CLI 的每条状态命令都是按 workload 分组的，瘦记录填不满 `job status` 的输出，而没有消费者的 Wrapper 就是死代码。要做「一条命令看完所有在跑的东西」时，从这里开始。
 
 ---
 

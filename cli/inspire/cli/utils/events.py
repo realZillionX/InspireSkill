@@ -169,13 +169,17 @@ def public_event(event: dict) -> dict[str, Any]:
     )
     projected = {
         "time": _fmt_timestamp(timestamp) if timestamp not in (None, "") else None,
-        # Who the row is about, when the row is about something narrower than
-        # the workload. `instance` is attached by the command layer for per-pod
-        # queries (the raw `object_id` is a handle and stays out of output);
-        # `node` comes from node events, where the platform names the node
-        # itself. Workload-level rows carry neither, so both keys are absent.
+        # Who the row is about, when that is not simply "the workload this
+        # command was pointed at". `instance` is attached by the command layer
+        # for per-pod queries (the raw `object_id` is a handle and stays out of
+        # output); `node` comes from node events, where the platform names the
+        # node itself; `job` is attached when one stream merges several jobs,
+        # which is the only case where the workload itself is ambiguous. A
+        # single-workload row carries none of them, so all three keys are
+        # absent.
         "node": event.get("node_name") or event.get("node"),
         "instance": event.get("instance"),
+        "job": event.get("job"),
         "type": event_type(event),
         "reason": event.get("reason"),
         "message": message,
@@ -193,8 +197,17 @@ def public_event(event: dict) -> dict[str, Any]:
 
 
 # The optional subject column: who a row is about, when that is narrower than
-# the workload. At most one of these is present in any single stream.
-_SUBJECT_COLUMNS = (("node", "Node", 24), ("instance", "Instance", 28))
+# the workload -- or, for `job`, when one stream carries several workloads. At
+# most one of these is present in any single stream.
+# The width is a cap the column shrinks below, so a generous `job` only costs
+# table width when the names really are long -- and job names here routinely
+# are. At 28 two runs of one experiment truncate to the same prefix, which
+# leaves the column carrying none of the information it exists to add.
+_SUBJECT_COLUMNS = (
+    ("node", "Node", 24),
+    ("instance", "Instance", 28),
+    ("job", "Job", 48),
+)
 
 # Kubernetes-shaped classification, which only the workload event streams
 # carry. Notebook lifecycle events are `{time, message}` and nothing else, so

@@ -9,6 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from inspire.platform.web.browser_api.batch_query import (
+    fetch_events_by_ids,
+    fetch_jobs_by_ids,
+)
 from inspire.platform.web.browser_api.core import (
     _coerce_total,
     _get_base_url,
@@ -28,9 +32,11 @@ __all__ = [
     "delete_job",
     "get_current_user",
     "get_job_detail_v2",
+    "list_job_events_by_ids",
     "list_job_instances",
     "list_job_events",
     "list_job_instance_events",
+    "list_jobs_by_ids",
     "list_train_job_logs",
     "list_jobs",
     "stop_training_job",
@@ -205,6 +211,55 @@ def list_jobs(
 
     jobs = [JobInfo.from_api_response(j) for j in jobs_data]
     return jobs, total
+
+
+def list_jobs_by_ids(
+    job_ids: list[str],
+    *,
+    workspace_id: str,
+    session: Optional[WebSession] = None,
+) -> dict[str, dict[str, Any]]:
+    """Fetch full training-job records for many ids at once.
+
+    Action: ``ListJobs`` with ``job_ids``, which answers the same record
+    ``GetJob`` does, so this is the batch form of
+    :func:`get_job_detail_v2` and not a summary of it. See
+    :mod:`inspire.platform.web.browser_api.batch_query` for the id cap and for
+    why an id missing from the result is not the same as an empty record.
+    """
+    if session is None:
+        session = get_web_session()
+    return fetch_jobs_by_ids(
+        session,
+        route="train",
+        workspace_id=workspace_id,
+        job_ids=job_ids,
+        referer=f"{_get_base_url()}/jobs/distributedTraining",
+    )
+
+
+def list_job_events_by_ids(
+    job_ids: list[str],
+    session: Optional[WebSession] = None,
+) -> tuple[dict[str, list[dict]], list[str]]:
+    """List job-level events for many training jobs at once.
+
+    Action: ``ListJobEvents`` with ``filter.object_type="job"``. The batch form
+    of :func:`list_job_events`; returns ``({job_id: events}, missing_ids)``.
+
+    Unlike the single-job wrapper this does not swallow failures into ``[]``.
+    A job the platform cannot find comes back in ``missing_ids`` so the caller
+    can say so, and everything else propagates.
+    """
+    if session is None:
+        session = get_web_session()
+    return fetch_events_by_ids(
+        session,
+        route="train",
+        object_type="job",
+        object_ids=job_ids,
+        referer=f"{_get_base_url()}/jobs/distributedTraining",
+    )
 
 
 def get_current_user(session: Optional[WebSession] = None) -> dict:

@@ -24,17 +24,21 @@ from inspire.cli.context import (
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, event_sort_key, run_events_command
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
+from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.jobs import (
     list_job_events,
     list_job_instance_events,
 )
+from inspire.platform.web.session import get_web_session
 from .job_commands import (
     WebJobResolutionError,
     _close_web_client,
+    _list_workspace_ids,
     _reject_job_instance_name,
     _reject_web_job_name_at_boundary,
+    _resolve_batch_job_ids,
     _run_readonly_web_job_operation,
 )
 from .job_instances import (
@@ -101,8 +105,63 @@ def _list_all_job_instances(job_id: str, *, session) -> list[dict]:  # noqa: ANN
         page_num += 1
 
 
+def _batch_workload_events(
+    names: tuple[str, ...],
+    *,
+    workspace: Optional[str],
+    report_unresolved: bool,
+) -> list[dict]:
+    """Controller events for several jobs, in one request per 20 jobs.
+
+    Multi-name queries are workload-level by construction: `object_type="job"`
+    is the half of the Action that batches, while per-pod events need an
+    instance listing per job and would cost one request each anyway. Every row
+    is labelled with the job name it came from, because a timeline merged
+    across jobs is unreadable without it.
+
+    A name that will not resolve, and a job the platform has since dropped,
+    are both reported on stderr and skipped rather than taking the other
+    nineteen jobs' events down with them. ``--follow`` re-runs this every few
+    seconds, so `report_unresolved` prints that list once rather than once per
+    poll.
+    """
+    session = get_web_session()
+    workspace_ids = _list_workspace_ids(session, workspace=workspace)
+    if len(workspace_ids) != 1:
+        raise ConfigError("--workspace must be a single workspace name for this command.")
+
+    resolved, failures = _resolve_batch_job_ids(names, workspace=workspace)
+    events_by_id, missing = browser_api_module.list_job_events_by_ids(
+        list(resolved.values()),
+        session=session,
+    )
+    gone = set(missing)
+    name_by_id = {job_id: name for name, job_id in resolved.items()}
+
+    rows: list[dict] = []
+    for name in names:
+        job_id = resolved.get(name)
+        if job_id is None:
+            continue
+        if job_id in gone:
+            failures[name] = f"job {name!r} is no longer known to the platform."
+            continue
+        for event in events_by_id.get(job_id) or []:
+            row = dict(event)
+            row["job"] = name_by_id.get(job_id, name)
+            rows.append(row)
+
+    if report_unresolved:
+        for name, reason in failures.items():
+            click.echo(
+                f"Unresolved: {scrub_raw_ids(name)}: {scrub_raw_ids(reason)}",
+                err=True,
+            )
+    return sorted(rows, key=event_sort_key)
+
+
 @click.command("events")
-@click.argument("job", metavar="NAME")
+@click.argument("jobs", metavar="NAME...", nargs=-1, required=True)
 @click.option("--workspace", required=True, metavar="NAME", help="Workspace name.")
 @click.option(
     "--pick",
@@ -169,7 +228,7 @@ def _list_all_job_instances(job_id: str, *, session) -> list[dict]:  # noqa: ANN
 @pass_context
 def events(
     ctx: Context,
-    job: str,
+    jobs: tuple[str, ...],
     workspace: Optional[str],
     pick: Optional[int],
     type_filter: Optional[str],
@@ -180,13 +239,18 @@ def events(
     follow: bool,
     interval: int,
 ) -> None:
-    """Show events for a training job.
+    """Show events for one or more training jobs.
 
-    Controller events and every instance's pod events are merged into one
-    timeline: the controller says why the job was not created, the pods say why
-    they were not scheduled or started, and they are disjoint sets. Use
-    ``--instance`` to narrow to one instance, or ``--workload-level`` to keep
-    only the controller's half.
+    For a single job, controller events and every instance's pod events are
+    merged into one timeline: the controller says why the job was not created,
+    the pods say why they were not scheduled or started, and they are disjoint
+    sets. Use ``--instance`` to narrow to one instance, or ``--workload-level``
+    to keep only the controller's half.
+
+    Several names are answered with one batched request per 20 jobs, and the
+    result is controller-level only -- per-pod events need an instance listing
+    per job, so they are a single-job query. Each row is labelled with the job
+    it came from.
 
     \b
     Examples:
@@ -197,8 +261,9 @@ def events(
       inspire job events train-a --workspace 分布式训练空间 --instance rank=0
       inspire job events train-a --workspace 分布式训练空间 --workload-level
       inspire job events train-a --workspace 分布式训练空间 --follow
+      inspire job events train-a train-b train-c --workspace 分布式训练空间
     """
-    job = _reject_web_job_name_at_boundary(ctx, job)
+    jobs = tuple(_reject_web_job_name_at_boundary(ctx, name) for name in jobs)
     if workload_level and instance_selectors:
         _handle_error(
             ctx,
@@ -209,11 +274,56 @@ def events(
         return
     for value in instance_selectors:
         _reject_job_instance_name(ctx, value)
+    if len(jobs) > 1 and instance_selectors:
+        _handle_error(
+            ctx,
+            "InvalidUsage",
+            "--instance selects pods within one job; pass a single NAME to use it.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+    if len(jobs) > 1 and pick is not None:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            "--pick disambiguates a single name; pass one NAME to use it.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
         return
+
+    if len(jobs) > 1:
+        reported = False
+
+        def _fetch_batch_events() -> list[dict]:
+            nonlocal reported
+            try:
+                rows = _batch_workload_events(
+                    jobs,
+                    workspace=workspace,
+                    report_unresolved=not reported,
+                )
+                reported = True
+                return rows
+            finally:
+                _close_web_client()
+
+        run_events_command(
+            ctx,
+            fetch=_fetch_batch_events,
+            type_filter=type_filter,
+            reason_filter=reason_filter,
+            tail=tail,
+            follow=follow,
+            interval=interval,
+        )
+        return
+
+    job = jobs[0]
 
     def _fetch_web_events() -> list[dict]:
         try:

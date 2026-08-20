@@ -208,6 +208,8 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 `job events` / `hpc events` / `notebook events` / `ray events` / `serving events` 拉平台 Events——不加参数就把控制器事件和每个 Pod 的事件合成一条时间线（`--instance` 收窄到某个实例，`--workload-level` 反过来只留控制器那一半），因为「这东西为什么没起来」的答案通常在 Pod 那一半。
 
+一批任务一起看时，`job status` / `hpc status` / `job events` 可以直接跟多个名字：平台每 20 个任务答一次，比一个个问快得多，事件会合成一条按时间排好、标着出处任务的时间线。名字答不上来的（打错、已删、或一个名字对上了好几个任务）**不会中断整条命令**——能答的照常打印，答不了的单独列在 `Unresolved:` 里，退出码同时告诉脚本这份答案是残缺的。
+
 `job logs` / `hpc logs` / `ray logs` / `serving logs` 读程序自己的输出，四条共用同一套预算和同一份 JSON schema；`job instances` / `hpc instances` / `ray instances` / `serving instances` 看 Live Pod / Component 清单和每个 Pod 落在哪个节点，`notebook lifecycle <name>` 看一个实例的多次启停记录。
 
 读完还要进去看的时候，`job shell` / `hpc shell` / `ray shell` / `serving shell` 把本地 stdin 接到实例里的远端 PTY（`exit` 退出、`Ctrl+]` 断开），默认进哪个实例按 Workload 定——HPC 进 `launcher`（`srun` 在那儿跑），Ray 进 head（驱动和 `ray status` 在那儿），Serving 进第一个运行中的副本，要点名用 `--instance`。

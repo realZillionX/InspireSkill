@@ -429,13 +429,12 @@ def _extract_login_failure_hint(html: str, *, limit: int = 180) -> str:
     return parser.messages[0][:limit] if parser.messages else ""
 
 
-def _extract_page_login_failure_hint(page: Any, *, limit: int = 180) -> str:
-    """Extract a structured login error from a Playwright page."""
+def _page_content(page: Any) -> str:
+    """The page's HTML, or ``""`` when the page is already closed."""
     try:
-        html = page.content()
+        return str(page.content() or "")
     except Exception:
         return ""
-    return _extract_login_failure_hint(html, limit=limit)
 
 
 def _login_not_complete_message(
@@ -751,6 +750,20 @@ def _login_with_cas_requests(
 
     action, fields = _extract_login_form(login_resp.text, login_resp.url)
     verification_field = _required_verification_field(fields)
+    if verification_field and not _references_live_captcha_image(login_resp.text, login_resp.url):
+        # Same two-signal rule as `_asks_for_verification_code`, for the same
+        # reason: refusing to log in at all is the expensive mistake, so a
+        # field with no live captcha image behind it (a dormant template
+        # leftover would look exactly like this) is submitted as the form
+        # carries it rather than declared a gate. A real gate that slips
+        # through here is still caught after the submission, where the page
+        # that answered is re-read.
+        logger.debug(
+            "Login form field %r looks like a verification field, but the page "
+            "serves no captcha image; proceeding.",
+            verification_field,
+        )
+        verification_field = None
     if verification_field:
         raise _CasVerificationRequired(
             "The platform's login page is asking for a verification code "
@@ -810,22 +823,30 @@ def _login_with_cas_requests(
             )
         ) from exc
     if user_detail_resp.status_code != 200:
-        raise _CasLoginFailure(
+        # CAS can add the field *in response to* this submission, which is the
+        # same rejection wearing a different cause: the account is fine and the
+        # password is fine, and "check your password" sends the user off to
+        # change something that was never wrong.
+        asking_for_code = _asks_for_verification_code(
+            getattr(auth_resp, "text", "") or "",
+            str(getattr(auth_resp, "url", "") or ""),
+        )
+        failure = _CasLoginFailure(
             _login_not_complete_message(
                 status=user_detail_resp.status_code,
                 current_url=str(getattr(auth_resp, "url", "") or ""),
                 page_hint=_extract_login_failure_hint(getattr(auth_resp, "text", "") or ""),
                 proxy_source=proxy_source,
-                # CAS can add the field *in response to* this submission, which
-                # is the same rejection wearing a different cause: the account
-                # is fine and the password is fine, and "check your password"
-                # sends the user off to change something that was never wrong.
-                asking_for_code=_asks_for_verification_code(
-                    getattr(auth_resp, "text", "") or "",
-                    str(getattr(auth_resp, "url", "") or ""),
-                ),
+                asking_for_code=asking_for_code,
             )
         )
+        if asking_for_code:
+            # The page quotes "账号或密码错误" even when the empty code field
+            # is what sank the submission, so the cooldown must not read that
+            # quote as "the credentials themselves are wrong" and hold them
+            # for hours: the gate clears on its own.
+            failure.credential_rejection = False
+        raise failure
     try:
         detail = _v2_result(user_detail_resp.json())
     except Exception:
@@ -1075,22 +1096,37 @@ def _submit_credentials(
         if pass_locator:
             _submit_login_form(pass_locator)
 
-        def _login_failure_message(status: int | None = None) -> str:
+        def _login_failure_parts(status: int | None = None) -> tuple[str, bool]:
             try:
                 current_url = page.url
             except Exception:
                 current_url = ""
-            return _login_not_complete_message(
+            html = _page_content(page)
+            # The browser sees the same post-submission page the requests path
+            # re-reads: CAS may have added the code field in response to this
+            # very submission, and that page quotes "账号或密码错误" for an
+            # account whose password is fine.
+            asking_for_code = bool(html) and _asks_for_verification_code(html, current_url)
+            message = _login_not_complete_message(
                 status=status,
                 current_url=current_url,
-                page_hint=_extract_page_login_failure_hint(page),
+                page_hint=_extract_login_failure_hint(html),
                 proxy_source=playwright_proxy_source,
                 base_proxy_route=playwright_proxy_route,
                 submitted=credentials_submitted,
+                asking_for_code=asking_for_code,
             )
+            return message, asking_for_code
+
+        def _login_failure_message(status: int | None = None) -> str:
+            return _login_failure_parts(status)[0]
 
         def _authentication_error(status: int | None = None) -> AuthenticationError:
-            return AuthenticationError(_login_failure_message(status))
+            message, asking_for_code = _login_failure_parts(status)
+            error = AuthenticationError(message)
+            if asking_for_code:
+                error.credential_rejection = False
+            return error
 
         def _wait_for_api_auth() -> None:
             deadline = time.time() + 30

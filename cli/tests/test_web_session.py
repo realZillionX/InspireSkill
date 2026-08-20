@@ -489,7 +489,7 @@ def test_extract_login_failure_hint_applies_length_limit() -> None:
     assert ws_auth._extract_login_failure_hint(html, limit=0) == ""
 
 
-def test_extract_page_login_failure_hint_uses_structured_html() -> None:
+def test_page_content_feeds_the_structured_hint_parser() -> None:
     class Page:
         def __init__(self) -> None:
             self.content_calls = 0
@@ -500,16 +500,17 @@ def test_extract_page_login_failure_hint_uses_structured_html() -> None:
 
     page = Page()
 
-    assert ws_auth._extract_page_login_failure_hint(page) == "账号或密码错误"
+    html = ws_auth._page_content(page)
+    assert ws_auth._extract_login_failure_hint(html) == "账号或密码错误"
     assert page.content_calls == 1
 
 
-def test_extract_page_login_failure_hint_tolerates_closed_page() -> None:
+def test_page_content_tolerates_closed_page() -> None:
     class ClosedPage:
         def content(self) -> str:
             raise RuntimeError("page closed")
 
-    assert ws_auth._extract_page_login_failure_hint(ClosedPage()) == ""
+    assert ws_auth._page_content(ClosedPage()) == ""
 
 
 def test_login_not_complete_message_prioritizes_platform_error() -> None:
@@ -854,6 +855,67 @@ def test_the_dead_template_captcha_is_not_read_as_a_prompt() -> None:
     assert ws_auth._asks_for_verification_code(field_only, url) is False
 
 
+def test_a_dormant_code_field_without_a_live_captcha_does_not_stop_the_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-submission gate follows the same two-signal rule.
+
+    Refusing to log in at all is the expensive mistake, so a code-looking
+    field with no captcha image behind it -- what a dormant template leftover
+    would look like -- is submitted as the form carries it. A real gate that
+    slips through is still caught after the submission.
+    """
+    login_html = f"""
+    <form id="fm1" action="/cas/login">
+      <input name="username" value="">
+      <input name="password" value="">
+      <input name="execution" value="exec-1">
+      <input id="authcode" name="authcode" value="">
+    </form>
+    <img src="https://mapp.suda.edu.cn/cas/captcha.jpg">
+    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
+    """
+
+    class Response:
+        def __init__(self, status_code: int, text: str, url: str) -> None:
+            self.status_code = status_code
+            self.text = text
+            self.url = url
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise requests.HTTPError(str(self.status_code))
+
+    class HTTP(requests.Session):
+        def __init__(self) -> None:
+            super().__init__()
+            self.submissions = 0
+
+        def get(self, url, **_kwargs):  # noqa: ANN001
+            return Response(200, login_html, "https://cas.sii.edu.cn/cas/login")
+
+        def post(self, url, **_kwargs):  # noqa: ANN001
+            self.submissions += 1
+            return Response(503, "temporarily unavailable", url)
+
+    http = HTTP()
+    monkeypatch.setattr(requests, "Session", lambda: http)
+    monkeypatch.setattr(
+        ws_proxy,
+        "resolve_requests_proxy_config",
+        lambda account=None: ({}, "none"),
+    )
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright",
+        lambda: pytest.fail("credentials must not be submitted again through Playwright"),
+    )
+
+    with pytest.raises(ws.AuthenticationError, match="The password reached CAS"):
+        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
+
+    assert http.submissions == 1
+
+
 def test_a_verification_code_prompt_does_not_open_the_login_circuit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -930,6 +992,74 @@ def test_a_code_field_that_appears_only_in_the_answer_is_still_named(
     message = str(excinfo.value)
     assert "asking for a verification code" in message
     assert "Check that the password is correct" not in message
+
+
+def test_a_gated_rejection_keeps_the_platforms_words_but_not_their_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gated page quotes "账号或密码错误" for a password that is fine.
+
+    The quote must reach the user -- it is the platform's actual answer -- but
+    the cooldown must read the raiser's classification, not the quote: this
+    clears on its own, and holding the credentials for six hours over it is
+    the misdiagnosis this whole path exists to avoid.
+    """
+    plain_form = f"""
+    <form id="fm1" action="/cas/login">
+      <input name="username" value=""><input name="password" value="">
+      <input name="execution" value="exec-1">
+    </form>
+    <script>RSAUtils.getKeyPair("{CAS_RSA_EXPONENT}", "", "{CAS_RSA_MODULUS}");</script>
+    """
+    gated_answer = (
+        plain_form.replace(
+            '<input name="execution" value="exec-1">',
+            '<input name="execution" value="exec-1"><input name="authcode" value="">'
+            '<img src="/cas/captcha.jpg">',
+        )
+        + '<div class="form-error"><span name="error_fm1">账号或密码错误。</span></div>'
+    )
+
+    class Response:
+        def __init__(self, status_code: int, text: str) -> None:
+            self.status_code = status_code
+            self.text = text
+            self.url = "https://cas.sii.edu.cn/cas/login"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {}
+
+    class HTTP(requests.Session):
+        def get(self, url, **_kwargs):  # noqa: ANN001
+            return Response(200, plain_form)
+
+        def post(self, url, **_kwargs):  # noqa: ANN001
+            if "GetUserDetail" in url:
+                return Response(401, gated_answer)
+            return Response(200, gated_answer)
+
+    monkeypatch.setattr(requests, "Session", lambda: HTTP())
+    monkeypatch.setattr(
+        ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none")
+    )
+    monkeypatch.setattr(
+        "playwright.sync_api.sync_playwright",
+        lambda: pytest.fail("the browser cannot answer a verification code either"),
+    )
+
+    with pytest.raises(ws.AuthenticationError) as excinfo:
+        ws_auth.login_with_playwright("user", "password", base_url="https://qz.sii.edu.cn")
+
+    from inspire.platform.web.session import login_guard
+
+    message = str(excinfo.value)
+    assert "账号或密码错误" in message
+    assert "asking for a verification code" in message
+    assert excinfo.value.credential_rejection is False
+    assert login_guard._classify_rejection(excinfo.value) is False
 
 
 def test_a_lost_response_after_submission_is_an_authentication_failure(
@@ -1738,6 +1868,56 @@ def test_a_login_nothing_can_use_is_not_repeated_for_every_call(
             ws.request_json(session, "GET", "https://example.test")
 
     assert logins["count"] == 1
+
+
+def test_a_stragglers_success_on_the_old_generation_does_not_vouch_for_the_new(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The generation that answered is the one the call actually sent.
+
+    A request sent with the old cookies can return 200 after another thread
+    has already minted an unproven replacement in place. Crediting
+    `session.created_at` as it reads on return credits that replacement --
+    clearing the marker for a login nothing has used, which re-arms exactly
+    the repeated logins the marker exists to stop.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    session = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "old"}]},
+        cookies={"session": "old"},
+        created_at=1.0,
+    )
+
+    class _RebuildLandsMidFlight:
+        def get(self, url, headers=None, timeout=None, allow_redirects=True):  # noqa: ANN001
+            if session.created_at == 1.0:
+                # Another caller's rebuild lands while this request is on the
+                # wire; the generation it minted has answered nothing yet.
+                session.storage_state = {"cookies": [{"name": "session", "value": "minted"}]}
+                session.cookies = {"session": "minted"}
+                session.created_at = 2.0
+                ws._note_rebuilt_generation(2.0)
+                return DummyResponse(200, payload={"ok": True})
+            return DummyResponse(401)
+
+    monkeypatch.setattr(ws, "pooled_requests_session", lambda *_args: _RebuildLandsMidFlight())
+    monkeypatch.setattr(ws, "_close_browser_client", lambda: None)
+    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
+    monkeypatch.setattr(
+        ws,
+        "_get_web_session",
+        lambda **_kwargs: pytest.fail(
+            "a login nothing has been able to use must not be replaced by another"
+        ),
+    )
+
+    # The straggler's answer belongs to generation 1.0 and must say so.
+    assert ws.request_json(session, "GET", "https://example.test") == {"ok": True}
+
+    # Generation 2.0 is refused by the platform: no further login, by design.
+    with pytest.raises(ws.SessionExpiredError, match="refused as well"):
+        ws.request_json(session, "GET", "https://example.test")
 
 
 def test_a_rebuilt_session_that_works_does_not_block_a_later_expiry(
