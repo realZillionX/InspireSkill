@@ -219,23 +219,44 @@ def hours_to_ms_string(hours: Optional[float]) -> Optional[str]:
     return str(int(hours * 3600 * 1000))
 
 
-def normalize_exclude_nodes(exclude_nodes: Iterable[str] | None) -> list[str]:
-    """Normalize the Web UI's exclude_nodes create option."""
+def _normalize_node_names(
+    values: Iterable[str] | None,
+    *,
+    field: str,
+) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
-    for raw_node in exclude_nodes or []:
+    for raw_node in values or []:
         node = str(raw_node).strip()
         if not node:
-            raise ValueError("exclude_nodes entries must be non-empty node names.")
+            raise ValueError(f"{field} entries must be non-empty node names.")
         if node not in seen:
             normalized.append(node)
             seen.add(node)
     return normalized
 
 
+def normalize_exclude_nodes(exclude_nodes: Iterable[str] | None) -> list[str]:
+    """Normalize the Web UI's ``exclude_nodes`` create option."""
+    return _normalize_node_names(exclude_nodes, field="exclude_nodes")
+
+
+def normalize_specified_nodes(specified_nodes: Iterable[str] | None) -> list[str]:
+    """Normalize the Web UI's ``specified_nodes`` create option."""
+    return _normalize_node_names(specified_nodes, field="specified_nodes")
+
+
 def training_plan_exclude_nodes(plan: JobSubmissionPlan) -> list[str]:
     """Return excluded node names from a training create plan."""
     nodes = plan.create_kwargs.get("exclude_nodes")
+    if isinstance(nodes, list):
+        return [str(node) for node in nodes]
+    return []
+
+
+def training_plan_specified_nodes(plan: JobSubmissionPlan) -> list[str]:
+    """Return pinned node names from a training create plan."""
+    nodes = plan.create_kwargs.get("specified_nodes")
     if isinstance(nodes, list):
         return [str(node) for node in nodes]
     return []
@@ -290,6 +311,7 @@ def build_training_job_plan(
     keep_after_failure_hours: Optional[float] = None,
     public_path_readonly: Optional[bool] = None,
     fault_tolerance_retry_interval_sec: Optional[int] = None,
+    specified_nodes: Iterable[str] | None = None,
     session: Any = None,
 ) -> JobSubmissionPlan:
     if not image:
@@ -340,8 +362,16 @@ def build_training_job_plan(
         framework_config["shm_gi"] = resolved_shm_size
 
     normalized_exclude_nodes = normalize_exclude_nodes(exclude_nodes)
+    normalized_specified_nodes = normalize_specified_nodes(specified_nodes)
+    overlap = sorted(set(normalized_exclude_nodes) & set(normalized_specified_nodes))
+    if overlap:
+        raise ValueError(
+            "The same node cannot be both specified and excluded: " + ", ".join(overlap)
+        )
     if normalized_exclude_nodes:
         create_kwargs["exclude_nodes"] = normalized_exclude_nodes
+    if normalized_specified_nodes:
+        create_kwargs["specified_nodes"] = normalized_specified_nodes
 
     if auto_fault_tolerance is True:
         if fault_tolerance_max_retry is not None and fault_tolerance_max_retry < 1:
@@ -422,6 +452,7 @@ def submit_training_job(
     keep_after_failure_hours: Optional[float] = None,
     public_path_readonly: Optional[bool] = None,
     fault_tolerance_retry_interval_sec: Optional[int] = None,
+    specified_nodes: Iterable[str] | None = None,
 ) -> JobSubmission:
     plan = build_training_job_plan(
         config=config,
@@ -440,6 +471,7 @@ def submit_training_job(
         fault_tolerance_max_retry=fault_tolerance_max_retry,
         enable_notification=enable_notification,
         exclude_nodes=exclude_nodes,
+        specified_nodes=specified_nodes,
         shm_size=shm_size,
         dataset_info=dataset_info,
         envs=envs,
@@ -448,6 +480,7 @@ def submit_training_job(
         keep_after_failure_hours=keep_after_failure_hours,
         public_path_readonly=public_path_readonly,
         fault_tolerance_retry_interval_sec=fault_tolerance_retry_interval_sec,
+        session=session,
     )
 
     data = browser_api_module.create_training_job(
@@ -475,10 +508,12 @@ __all__ = [
     "derive_remote_log_glob",
     "hours_to_ms_string",
     "normalize_exclude_nodes",
+    "normalize_specified_nodes",
     "parse_env_assignments",
     "sanitize_job_name_for_filename",
     "select_project_for_workspace",
     "submit_training_job",
     "training_plan_exclude_nodes",
+    "training_plan_specified_nodes",
     "wrap_in_bash",
 ]

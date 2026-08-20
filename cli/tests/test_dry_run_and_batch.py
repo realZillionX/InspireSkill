@@ -17,6 +17,7 @@ class DummyAPI:
     def __init__(self) -> None:
         self.training_calls: list[dict[str, Any]] = []
         self.hpc_calls: list[dict[str, Any]] = []
+        self.train_capability_calls: list[str] = []
 
     def create_training_job(
         self, *, payload: dict[str, Any], session: object | None = None
@@ -110,6 +111,19 @@ def _patch_submit_deps(
     api = DummyAPI()
     monkeypatch.setattr(browser_api_module, "create_training_job", api.create_training_job)
     monkeypatch.setattr(browser_api_module, "create_hpc_job", api.create_hpc_job)
+    def get_train_schedule_capabilities(
+        workspace_id: str,
+        session: object | None = None,
+    ) -> browser_api_module.TrainScheduleCapabilities:
+        del session
+        api.train_capability_calls.append(workspace_id)
+        return browser_api_module.TrainScheduleCapabilities(specified_nodes=True)
+
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_train_schedule_capabilities",
+        get_train_schedule_capabilities,
+    )
 
     project = browser_api_module.ProjectInfo(
         project_id="project-12345678-1234-1234-1234-123456789abc",
@@ -240,6 +254,12 @@ def test_job_create_dry_run_resolves_plan_without_create_api(
             "qb-prod-gpu1736",
             "--exclude-node",
             "qb-prod-gpu1737",
+            "--specified-node",
+            "qb-prod-gpu1701",
+            "--specified-node",
+            "qb-prod-gpu1701",
+            "--specified-node",
+            "qb-prod-gpu1702",
             "--dry-run",
         ],
     )
@@ -262,7 +282,49 @@ def test_job_create_dry_run_resolves_plan_without_create_api(
         "qb-prod-gpu1736",
         "qb-prod-gpu1737",
     ]
+    assert payload["data"]["specified_nodes"] == [
+        "qb-prod-gpu1701",
+        "qb-prod-gpu1702",
+    ]
     _assert_public_batch_output(payload["data"])
+    assert api.training_calls == []
+
+
+def test_job_create_rejects_a_node_that_is_both_specified_and_excluded(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "create",
+            "--name",
+            "contradictory-placement",
+            "--quota",
+            "1,20,200",
+            "--command",
+            "python train.py",
+            "--workspace",
+            "cpu",
+            "--project",
+            "Project One",
+            "--group",
+            "H200 Room",
+            "--image",
+            "registry.local/train:latest",
+            "--exclude-node",
+            "qb-prod-gpu1701",
+            "--specified-node",
+            "qb-prod-gpu1701",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "cannot be both specified and excluded" in result.output
     assert api.training_calls == []
 
 
@@ -420,6 +482,32 @@ def test_training_plan_exclude_nodes_reads_top_level_payload() -> None:
     )
 
     assert job_submit.training_plan_exclude_nodes(plan) == ["qb-prod-gpu1736"]
+
+
+def test_training_plan_specified_nodes_reads_top_level_payload() -> None:
+    plan = job_submit.JobSubmissionPlan(
+        create_kwargs={
+            "specified_nodes": ["qb-prod-gpu1701"],
+            "framework_config": [{"specified_nodes": ["nested-node"]}],
+        },
+        log_path=None,
+        wrapped_command="bash -c 'echo hi'",
+        max_time_ms=None,
+        project_name="Project One",
+        workspace_id="ws-77777777-7777-7777-7777-777777777777",
+        quota=ResolvedQuota(
+            quota_id="quota-12345678-1234-1234-1234-123456789abc",
+            logic_compute_group_id="lcg-12345678-1234-1234-1234-123456789abc",
+            compute_group_name="H200 Room",
+            gpu_count=1,
+            cpu_count=20,
+            memory_gib=200,
+            gpu_type="H200",
+            raw_price={},
+        ),
+    )
+
+    assert job_submit.training_plan_specified_nodes(plan) == ["qb-prod-gpu1701"]
 
 
 def test_hpc_dry_run_human_scrubs_raw_ids(
@@ -695,6 +783,7 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
                     "fault_tolerance_max_retry": 0,
                     "enable_notification": True,
                     "exclude_nodes": ["qb-prod-gpu17{seed}"],
+                    "specified_nodes": ["qb-prod-gpu18{seed}"],
                     "shm_size": 96,
                 },
                 "matrix": {"seed": [1, 2]},
@@ -725,12 +814,56 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert items[1]["command"] == "python train.py --seed 2"
     assert items[0]["exclude_nodes"] == ["qb-prod-gpu171"]
     assert items[1]["exclude_nodes"] == ["qb-prod-gpu172"]
+    assert items[0]["specified_nodes"] == ["qb-prod-gpu181"]
+    assert items[1]["specified_nodes"] == ["qb-prod-gpu182"]
+    assert api.train_capability_calls == [
+        "ws-77777777-7777-7777-7777-777777777777"
+    ]
     assert items[0]["shared_memory_gib"] == 96
     assert items[1]["shared_memory_gib"] == 96
     assert items[0]["priority"] == 7
     assert items[0]["notifications"] is True
     assert set(payload["data"]) == {"items"}
     _assert_public_batch_output(payload["data"])
+    assert api.training_calls == []
+
+
+def test_job_batch_rejects_specified_nodes_when_workspace_disables_them(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_train_schedule_capabilities",
+        lambda workspace_id, session=None: browser_api_module.TrainScheduleCapabilities(
+            specified_nodes=False
+        ),
+    )
+    batch_path = tmp_path / "disabled-specified-nodes.json"
+    batch_path.write_text(
+        json.dumps(
+            {
+                "defaults": {"type": "job", "profile": "h200"},
+                "jobs": [
+                    {
+                        "name": "pinned-job",
+                        "command": "python train.py",
+                        "specified_nodes": ["qb-prod-gpu181"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["job", "batch", str(batch_path), "--dry-run"],
+    )
+
+    assert result.exit_code != 0
+    assert "does not enable specified-node placement" in result.output
     assert api.training_calls == []
 
 

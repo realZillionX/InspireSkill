@@ -42,6 +42,7 @@ from inspire.cli.utils.quota_resolver import (
 from inspire.config import Config, ConfigError
 from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import select_workspace_id, workspace_label
+from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import DatasetMount
 from inspire.platform.web.session import get_web_session
 from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
@@ -70,6 +71,7 @@ def run_job_create(
     fault_tolerance_retry_interval: Optional[int] = None,
     enable_notification: Optional[bool] = None,
     exclude_nodes: tuple[str, ...] | None = None,
+    specified_nodes: tuple[str, ...] | None = None,
     shm_size: Optional[int] = None,
     dataset_mounts: Sequence[DatasetMount] = (),
     envs: Optional[list[dict[str, str]]] = None,
@@ -178,6 +180,22 @@ def run_job_create(
             )
             return
 
+        specified_nodes = tuple(job_submit.normalize_specified_nodes(specified_nodes))
+        if specified_nodes:
+            capabilities = browser_api_module.get_train_schedule_capabilities(
+                selected_workspace_id,
+                session=session,
+            )
+            if not capabilities.specified_nodes:
+                _handle_error(
+                    ctx,
+                    "ValidationError",
+                    f"Workspace {workspace!r} does not enable specified-node placement. "
+                    "Remove --specified-node or choose a workspace that enables it.",
+                    EXIT_VALIDATION_ERROR,
+                )
+                return
+
         try:
             resolved_quota = resolve_quota(
                 spec=quota_spec,
@@ -245,6 +263,7 @@ def run_job_create(
                 fault_tolerance_max_retry=fault_tolerance_max_retry,
                 enable_notification=enable_notification,
                 exclude_nodes=exclude_nodes,
+                specified_nodes=specified_nodes,
                 shm_size=shm_size,
                 dataset_info=dataset_info,
                 envs=envs,
@@ -260,6 +279,7 @@ def run_job_create(
             return
 
         plan_exclude_nodes = job_submit.training_plan_exclude_nodes(plan)
+        plan_specified_nodes = job_submit.training_plan_specified_nodes(plan)
 
         if dry_run:
             workspace_text = workspace_label(
@@ -305,6 +325,10 @@ def run_job_create(
                     dry_run_payload["exclude_nodes"] = [
                         scrub_raw_ids(node) for node in plan_exclude_nodes
                     ]
+                if plan_specified_nodes:
+                    dry_run_payload["specified_nodes"] = [
+                        scrub_raw_ids(node) for node in plan_specified_nodes
+                    ]
                 if dataset_mounts:
                     dry_run_payload["datasets"] = dataset_mount_views(dataset_mounts)
                 if envs:
@@ -343,6 +367,8 @@ def run_job_create(
                 click.echo(f"Shared memory: {plan.shm_size_gib} GiB")
             if plan_exclude_nodes:
                 click.echo(f"Exclude nodes: {scrub_raw_ids(', '.join(plan_exclude_nodes))}")
+            if plan_specified_nodes:
+                click.echo(f"Specified nodes: {scrub_raw_ids(', '.join(plan_specified_nodes))}")
             for line in describe_dataset_mounts(dataset_mounts):
                 click.echo(f"Dataset: {line}")
             if envs:
@@ -380,6 +406,7 @@ def run_job_create(
             fault_tolerance_max_retry=fault_tolerance_max_retry,
             enable_notification=enable_notification,
             exclude_nodes=exclude_nodes,
+            specified_nodes=specified_nodes,
             shm_size=shm_size,
             dataset_info=dataset_info,
             envs=envs,
@@ -591,6 +618,16 @@ def run_job_create(
     ),
 )
 @click.option(
+    "--specified-node",
+    "specified_nodes",
+    multiple=True,
+    metavar="NODE_NAME",
+    help=(
+        "Pin this job to a named node. Repeat for multiple nodes. The selected "
+        "workspace must enable specified-node placement."
+    ),
+)
+@click.option(
     "--shm-size",
     type=click.IntRange(min=1),
     default=None,
@@ -627,6 +664,7 @@ def create(
     project: Optional[str],
     nodes: Optional[int],
     exclude_nodes: tuple[str, ...],
+    specified_nodes: tuple[str, ...],
     shm_size: Optional[int],
     datasets: tuple[str, ...],
     env_values: tuple[str, ...],
@@ -689,6 +727,7 @@ def create(
         fault_tolerance_retry_interval=fault_tolerance_retry_interval,
         enable_notification=enable_notification,
         exclude_nodes=exclude_nodes,
+        specified_nodes=specified_nodes,
         shm_size=shm_size,
         dataset_mounts=dataset_mounts,
         envs=envs,

@@ -19,6 +19,48 @@ def test_job_api_validation_uses_visible_selection_terms() -> None:
     with pytest.raises(ValueError, match="Workspace selection is required\\."):
         jobs_module.list_jobs(created_by="current-user", session=_FakeSession())
 
+    with pytest.raises(ValueError, match="Workspace selection is required\\."):
+        jobs_module.get_train_schedule_capabilities("", session=_FakeSession())
+
+
+@pytest.mark.parametrize(
+    ("wire_value", "expected"),
+    ((True, True), (False, False), (1, True), ("true", True), (None, False)),
+)
+def test_get_train_schedule_capabilities_reads_specified_nodes_switch(
+    monkeypatch: pytest.MonkeyPatch,
+    wire_value: object,
+    expected: bool,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_request_json(session, method, path, *, referer, body=None, timeout=30):  # noqa: ANN001
+        captured.update(
+            {
+                "session": session,
+                "method": method,
+                "path": path,
+                "referer": referer,
+                "body": body,
+                "timeout": timeout,
+            }
+        )
+        return {"Result": {"train_enable_specified_nodes": wire_value}}
+
+    monkeypatch.setattr(jobs_module, "_get_base_url", lambda: "https://qz.example.test")
+    monkeypatch.setattr(jobs_module, "_request_json", fake_request_json)
+
+    capabilities = jobs_module.get_train_schedule_capabilities(
+        "ws-x",
+        session=_FakeSession(),
+    )
+
+    assert capabilities.specified_nodes is expected
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v2/train?Action=GetTrainScheduleConfig"
+    assert captured["body"] == {"workspace_id": "ws-x"}
+    assert "distributedTraining" in captured["referer"]
+
 
 def test_list_train_job_logs_uses_string_epoch_ms(monkeypatch) -> None:  # noqa: ANN001
     captured: dict[str, Any] = {}

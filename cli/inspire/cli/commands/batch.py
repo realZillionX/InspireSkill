@@ -97,6 +97,7 @@ _PUBLIC_FIELDS_BY_KIND = {
         ("fault_tolerance_max_retry", "fault_tolerance_max_retry"),
         ("fault_tolerance_retry_interval", "fault_tolerance_retry_interval_seconds"),
         ("exclude_nodes", "exclude_nodes"),
+        ("specified_nodes", "specified_nodes"),
         ("shm_size", "shared_memory_gib"),
         # Applied by `_prepare_training_item` and therefore part of the plan:
         # a dry run that hides them cannot be used to check a matrix.
@@ -556,6 +557,7 @@ def _prepare_training_item(
     *,
     config: Config,
     session: Any,
+    specified_nodes_capabilities: dict[str, bool] | None = None,
 ) -> job_submit.JobSubmissionPlan:
     quota_spec = parse_quota(_require_condition_str(item, "quota", kind="job"))
     workspace_id = select_workspace_id(
@@ -564,6 +566,23 @@ def _prepare_training_item(
     )
     if not workspace_id:
         raise ConfigError("Batch training item requires workspace resolution.")
+    specified_nodes = _optional_str_list(item, "specified_nodes")
+    if specified_nodes:
+        capabilities_by_workspace = (
+            specified_nodes_capabilities if specified_nodes_capabilities is not None else {}
+        )
+        if workspace_id not in capabilities_by_workspace:
+            capabilities_by_workspace[workspace_id] = (
+                browser_api_module.get_train_schedule_capabilities(
+                    workspace_id,
+                    session=session,
+                ).specified_nodes
+            )
+        if not capabilities_by_workspace[workspace_id]:
+            raise ConfigError(
+                f"Workspace {item.get('workspace')!r} does not enable specified-node "
+                "placement. Remove specified_nodes or choose a workspace that enables it."
+            )
     resolved_quota = resolve_quota(
         spec=quota_spec,
         workspace_id=workspace_id,
@@ -610,6 +629,7 @@ def _prepare_training_item(
             default=config.job_enable_notification,
         ),
         exclude_nodes=_optional_str_list(item, "exclude_nodes"),
+        specified_nodes=specified_nodes,
         shm_size=_optional_int(item, "shm_size", min_value=1),
         dataset_info=_resolved_dataset_info(
             _optional_dataset_mounts(item),
@@ -1275,7 +1295,7 @@ def job_batch(
         Optional fields use create-command defaults: priority, framework,
         nodes, max_time, auto_fault_tolerance, fault_tolerance_max_retry,
         fault_tolerance_retry_interval, enable_notification, exclude_nodes,
-        shm_size, dataset, env, description, keep_after_success,
+        specified_nodes, shm_size, dataset, env, description, keep_after_success,
         keep_after_failure, public_path_readonly
         `dataset` takes one "<name>:<version>" or a list of them; `env` takes
         either a "KEY=VALUE" list or a table.
@@ -1296,6 +1316,7 @@ def job_batch(
         items = _expanded_items(data, item_key="jobs")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
+        specified_nodes_capabilities: dict[str, bool] = {}
 
         outputs: list[dict[str, Any]] = []
         for item in items:
@@ -1311,7 +1332,12 @@ def job_batch(
                 local_profiles=local_profiles,
             )
             _validate_name_references(ctx, item)
-            plan = _prepare_training_item(item, config=config, session=session)
+            plan = _prepare_training_item(
+                item,
+                config=config,
+                session=session,
+                specified_nodes_capabilities=specified_nodes_capabilities,
+            )
             if dry_run:
                 outputs.append(
                     _public_batch_plan(
@@ -1336,6 +1362,7 @@ def job_batch(
                             "nodes": plan.create_kwargs.get("instance_count"),
                             "notifications": plan.create_kwargs.get("enable_notification"),
                             "exclude_nodes": job_submit.training_plan_exclude_nodes(plan),
+                            "specified_nodes": job_submit.training_plan_specified_nodes(plan),
                             "shared_memory_gib": plan.shm_size_gib,
                             **_plan_mount_and_env_views(item),
                         },

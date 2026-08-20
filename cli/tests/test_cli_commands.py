@@ -185,6 +185,13 @@ def patch_config_and_auth(
         lambda projects, requested=None, **_: (test_project, None),
     )
     monkeypatch.setattr(browser_api_module, "create_training_job", api.create_training_job)
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_train_schedule_capabilities",
+        lambda workspace_id, session=None: browser_api_module.TrainScheduleCapabilities(
+            specified_nodes=True
+        ),
+    )
     monkeypatch.setattr(browser_api_module, "get_job_detail_v2", api.get_job_detail_v2)
     monkeypatch.setattr(browser_api_module, "stop_training_job", api.stop_training_job)
     monkeypatch.setattr(
@@ -334,6 +341,10 @@ def test_job_create_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
             "qb-prod-gpu1736",
             "--exclude-node",
             "qb-prod-gpu1737",
+            "--specified-node",
+            "qb-prod-gpu1701",
+            "--specified-node",
+            "qb-prod-gpu1702",
         ],
     )
 
@@ -348,7 +359,12 @@ def test_job_create_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
         "qb-prod-gpu1736",
         "qb-prod-gpu1737",
     ]
+    assert create_payload["specified_nodes"] == [
+        "qb-prod-gpu1701",
+        "qb-prod-gpu1702",
+    ]
     assert "exclude_nodes" not in framework_config
+    assert "specified_nodes" not in framework_config
     # The backend CreateJob proto has no framework_config-level quota_id; the quota
     # is conveyed by the top-level logic_compute_group_id plus the nested
     # resource_spec_price (which carries its own quota_id).
@@ -358,6 +374,48 @@ def test_job_create_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     # No --max-time given: omit max_running_time_ms so the platform applies no
     # time cap (a giant sentinel would overflow the backend's INT column).
     assert "max_running_time_ms" not in create_payload
+
+
+def test_job_create_rejects_specified_nodes_when_workspace_disables_them(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = patch_config_and_auth(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_train_schedule_capabilities",
+        lambda workspace_id, session=None: browser_api_module.TrainScheduleCapabilities(
+            specified_nodes=False
+        ),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "job",
+            "create",
+            "--name",
+            "pinned-job",
+            "--quota",
+            "1,20,200",
+            "--command",
+            "echo hi",
+            "--workspace",
+            "cpu",
+            "--project",
+            "proj",
+            "--group",
+            "H200 TestRoom",
+            "--image",
+            "registry.local/train:latest",
+            "--specified-node",
+            "qb-prod-gpu1701",
+        ],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION_ERROR
+    assert "does not enable specified-node placement" in result.output
+    assert "create_training_job" not in api.calls
 
 
 def test_job_create_max_time_sets_running_time_ms(

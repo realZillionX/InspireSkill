@@ -161,7 +161,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 平台官方把 `job` 这一路叫“分布式训练” / Distributed Training；提交 Job 时只要求 GPU 计算资源和启动命令，不强制程序必须是训练。`inspire job` 可用于一张卡、多卡、单节点、多节点等后台 GPU 任务：分布式训练 / 批量推理 / 并发 Worker Pool 都走这里（`hpc` 对应 CPU Slurm）。
 
-`inspire job create / batch / list / status / command / wait / stop / delete / events / instances / shell / logs / metrics / quota / profile`。提交统一使用 `job create`（一次提交多个用 `job batch`），可用 `--enable-notification` 开启当前用户绑定飞书账号的状态通知；脚本里等任务跑完用 `job wait`，忘了提交时写的启动命令用 `job command` 原样读回；需要跟日志时用 `job logs <name> --workspace <workspace> --follow`，健康度用 `job metrics <name> --workspace <workspace>` 看 GPU、显存、CPU、内存、I/O 和多 Pod 负载是否同步。
+`inspire job create / batch / list / status / command / wait / stop / delete / events / instances / shell / logs / metrics / quota / profile`。提交统一使用 `job create`（一次提交多个用 `job batch`）；`--exclude-node` 排除坏节点，Workspace 开启指定节点能力时用可重复的 `--specified-node` 绑定节点，二者都会进入 dry-run。可用 `--enable-notification` 开启当前用户绑定飞书账号的状态通知；脚本里等任务跑完用 `job wait`，忘了提交时写的启动命令用 `job command` 原样读回；需要跟日志时用 `job logs <name> --workspace <workspace> --follow`，健康度用 `job metrics <name> --workspace <workspace>` 看 GPU、显存、CPU、内存、I/O 和多 Pod 负载是否同步。
 
 </details>
 
