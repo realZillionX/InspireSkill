@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
 from dataclasses import dataclass
@@ -14,7 +13,13 @@ from inspire.platform.web import session as web_session_module
 from inspire.platform.web.browser_api import ProjectInfo
 from inspire.cli.utils.id_resolver import _looks_like_platform_id
 from inspire.cli.utils.image_resolver import IMAGE_TYPE, resolve_image_url
-from inspire.config import Config, ConfigError, build_env_exports, default_remote_cwd
+from inspire.config import (
+    Config,
+    ConfigError,
+    build_env_exports,
+    default_remote_cwd,
+    join_remote_path,
+)
 from inspire.cli.utils.quota_resolver import ResolvedQuota, build_resource_spec_price
 
 
@@ -95,7 +100,7 @@ def derive_remote_log_glob(config: Config, *, name: str) -> str | None:
     if not remote_cwd:
         return None
     safe = sanitize_job_name_for_filename(name)
-    return os.path.join(remote_cwd, ".inspire", f"training_master_{safe}_*.log")
+    return join_remote_path(remote_cwd, ".inspire", f"training_master_{safe}_*.log")
 
 
 def build_remote_logged_command(
@@ -118,14 +123,15 @@ def build_remote_logged_command(
         remote_env.setdefault("PYTHONUNBUFFERED", "1")
         env_exports = build_env_exports(remote_env)
         safe = sanitize_job_name_for_filename(name)
-        log_dir = os.path.join(remote_cwd, ".inspire")
-        log_path = os.path.join(log_dir, f"training_master_{safe}_{_now_log_timestamp()}.log")
+        log_path = join_remote_path(
+            remote_cwd, ".inspire", f"training_master_{safe}_{_now_log_timestamp()}.log"
+        )
         quoted_log_path = shlex.quote(log_path)
         stdout_tee = f"tee -a {quoted_log_path}"
         stderr_tee = f"tee -a {quoted_log_path} >&2"
         script = (
             f"{env_exports}"
-            f"mkdir -p {shlex.quote(log_dir)} && "
+            f"mkdir -p {shlex.quote(log_path.rsplit('/', 1)[0])} && "
             f": > {quoted_log_path} && "
             f"cd {shlex.quote(remote_cwd)} && "
             f"{{ {command} 2> >({stderr_tee}); }} | {stdout_tee}"

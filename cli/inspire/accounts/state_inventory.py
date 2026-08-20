@@ -73,7 +73,9 @@ class OrphanEntry:
     @property
     def display(self) -> str:
         try:
-            return f"~/{self.path.relative_to(Path.home())}"
+            # as_posix so the whole string reads as one path: a `~/` prefix
+            # spliced onto Windows' backslashes gives `~/.inspire\accounts`.
+            return f"~/{self.path.relative_to(Path.home()).as_posix()}"
         except ValueError:
             return str(self.path)
 

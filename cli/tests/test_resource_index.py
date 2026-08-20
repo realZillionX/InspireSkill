@@ -6,6 +6,8 @@ import time
 
 import pytest
 
+from conftest import set_fake_home
+
 from inspire.accounts import create_account, set_current_account
 from inspire.cli.utils import resource_index as resource_index_module
 from inspire.cli.utils.resource_index import (
@@ -677,7 +679,7 @@ def test_account_indexes_are_isolated_and_private(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(
         resource_index_module, "resource_index_path", resource_index_path
     )
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_fake_home(monkeypatch, tmp_path)
     create_account("alpha", "[inspire]\n")
     create_account("beta", "[inspire]\n")
 

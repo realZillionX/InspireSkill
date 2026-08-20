@@ -20,6 +20,7 @@ from inspire.config.models import (
 from inspire.config.path_aliases import (  # noqa: F401
     PATH_ALIASES_SECTION,
     default_remote_cwd,
+    join_remote_path,
     delete_project_path_alias,
     load_project_path_aliases,
     resolve_remote_cwd,
@@ -59,6 +60,7 @@ __all__ = [
     "build_env_exports",
     "config_from_files_and_env",
     "default_remote_cwd",
+    "join_remote_path",
     "delete_project_path_alias",
     "get_config_paths",
     "get_option_by_toml",

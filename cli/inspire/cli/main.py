@@ -53,6 +53,7 @@ from inspire.cli.utils.output_guard import (
     set_parser_redactions,
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
+from inspire.cli.console_bootstrap import configure_console_encoding
 from inspire.cli.env_bootstrap import bootstrap_env_file
 
 
@@ -190,6 +191,19 @@ def ensure_playwright_runtime(silent: bool) -> None:
         raise SystemExit(1)
 
 
+@click.command("_refresh-skills", hidden=True)
+@click.option("--silent", is_flag=True, help="Suppress skill refresh output.")
+def refresh_skills(silent: bool) -> None:
+    """Internal installer hook for skill file refresh."""
+    # `_post-update` also refreshes skills, but bundled with a version audit and
+    # the browser runtime setup. An installer told to skip the browser still
+    # needs the skills, so the step has its own entry point.
+    from inspire.cli.commands.update import _refresh_skill_files
+
+    if not _refresh_skill_files(silent):
+        raise SystemExit(1)
+
+
 @click.command("_post-update", hidden=True)
 @click.option("--expected-version", required=True, help="Expected installed version.")
 @click.option("--cli-only", is_flag=True, help="Skip skill refresh.")
@@ -246,11 +260,13 @@ main.add_command(tensorboard)
 main.add_command(uninstall)
 main.add_command(update)
 main.add_command(ensure_playwright_runtime)
+main.add_command(refresh_skills)
 main.add_command(post_update)
 
 
 def cli() -> None:
     """Entry point for the CLI."""
+    configure_console_encoding()
     try:
         main()
     except Exception as e:  # pragma: no cover - top-level safety net

@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 
 import pytest
 
 from inspire.cli.utils import terminal_io
 from inspire.cli.utils.terminal_io import run_interactive_pty
+
+
+# run_interactive_pty forks a real PTY. Windows has none, so the function falls
+# back to a plain subprocess there and these tests have nothing to drive.
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY only")
 
 
 class _PipeInput:

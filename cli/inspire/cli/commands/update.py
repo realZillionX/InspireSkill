@@ -397,6 +397,8 @@ def _uv_tool_info() -> UvToolInfo | None:
             ["uv", "tool", "list", "--show-version-specifiers", "--show-paths"],
             check=False,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -413,6 +415,8 @@ def _pipx_tool_info() -> PipxToolInfo | None:
             ["pipx", "list", "--json"],
             check=False,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -489,6 +493,8 @@ def _run_upgrade_command(
         check=False,
         env=env,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -618,6 +624,8 @@ def _ensure_global_playwright_runtime(silent: bool) -> bool:
             check=False,
             env=env,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -661,6 +669,8 @@ def _run_post_update_command(
             check=False,
             env=env,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -1099,6 +1109,8 @@ def _read_inspire_version(executable: str | None = None) -> tuple[str | None, st
             check=False,
             env=env,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )

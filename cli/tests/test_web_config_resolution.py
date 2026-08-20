@@ -21,13 +21,14 @@ def test_notebook_cli_base_url_reads_account_toml(
     account_dir.mkdir(parents=True)
     (account_dir / "config.toml").write_text(
         '[auth]\nusername = "alice"\npassword = "pw"\n'
-        '[api]\nbase_url = "https://account.example"\n'
+        '[api]\nbase_url = "https://account.example"\n',
+        encoding="utf-8",
     )
-    (fake_home / ".inspire" / "current").write_text("alice\n")
+    (fake_home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
 
     project_dir = tmp_path / "repo" / ".inspire"
     project_dir.mkdir(parents=True)
-    (project_dir / "config.toml").write_text("")
+    (project_dir / "config.toml").write_text("", encoding="utf-8")
     monkeypatch.chdir(tmp_path / "repo")
     monkeypatch.delenv("INSPIRE_BASE_URL", raising=False)
 
@@ -40,8 +41,8 @@ def test_notebook_compute_group_fallback_uses_layered_config(
     fake_home = tmp_path / "home"
     account_dir = fake_home / ".inspire" / "accounts" / "alice"
     account_dir.mkdir(parents=True)
-    (account_dir / "config.toml").write_text("")
-    (fake_home / ".inspire" / "current").write_text("alice\n")
+    (account_dir / "config.toml").write_text("", encoding="utf-8")
+    (fake_home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: fake_home)
 
     project_dir = tmp_path / ".inspire" / "accounts" / "alice"
@@ -52,7 +53,8 @@ def test_notebook_compute_group_fallback_uses_layered_config(
 name = "H200 A"
 id = "lcg-test-1"
 gpu_type = "H200"
-"""
+""",
+        encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
 

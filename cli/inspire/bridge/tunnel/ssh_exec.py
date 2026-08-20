@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
-import os
-import select
 import shlex
 import subprocess
 import time
 from typing import Callable, Optional
+
+from inspire.process_io import iter_process_lines
 
 from .config import load_tunnel_config
 from .models import (
@@ -18,7 +18,7 @@ from .models import (
     TunnelNotAvailableError,
 )
 from .rtunnel import _ensure_rtunnel_binary
-from .ssh import _get_proxy_command
+from .ssh import _get_proxy_command, build_ssh_process_env
 
 logger = logging.getLogger(__name__)
 
@@ -26,17 +26,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Core helpers
 # ---------------------------------------------------------------------------
-
-
-def _build_ssh_process_env() -> dict[str, str]:
-    """Build environment for SSH subprocesses with a universally available locale.
-
-    This prevents remote login shells from inheriting unsupported locale values
-    (for example ``en_US.UTF-8``) via SSH env forwarding.
-    """
-    env = os.environ.copy()
-    env.update({"LC_ALL": "C", "LANG": "C"})
-    return env
 
 
 def _resolve_bridge_and_proxy(
@@ -151,7 +140,7 @@ def run_ssh_command(
         errors="replace",
         timeout=timeout,
         check=check,
-        env=_build_ssh_process_env(),
+        env=build_ssh_process_env(),
     )
     logger.debug(
         "run_ssh_command completed bridge=%s returncode=%s",
@@ -243,7 +232,7 @@ def run_ssh_command_streaming(
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=_build_ssh_process_env(),
+        env=build_ssh_process_env(),
     )
     stdout = process.stdout
     if stdout is None:
@@ -259,7 +248,7 @@ def run_ssh_command_streaming(
     start_time = time.time()
 
     try:
-        while True:
+        for line in iter_process_lines(process, stdout):
             # Check timeout
             if timeout is not None:
                 elapsed = time.time() - start_time
@@ -274,23 +263,11 @@ def run_ssh_command_streaming(
                     process.wait()
                     raise subprocess.TimeoutExpired(ssh_cmd, timeout)
 
-            # Read from a single path (readline only) so lines cannot be emitted twice.
-            if process.poll() is not None:
-                line = stdout.readline()
-            else:
-                ready, _, _ = select.select([stdout], [], [], 1.0)
-                if not ready:
-                    continue
-                line = stdout.readline()
-
-            if line:
+            if line is not None:
                 logger.debug("run_ssh_command_streaming line=%s", line.rstrip("\n"))
                 output_callback(line)
-                continue
 
-            if process.poll() is not None:
-                break
-
+        process.wait()
         logger.debug(
             "run_ssh_command_streaming completed bridge=%s returncode=%s",
             bridge.name,
@@ -310,7 +287,7 @@ def run_ssh_command_streaming(
 
 
 __all__ = [
-    "_build_ssh_process_env",
+    "build_ssh_process_env",
     "_build_ssh_base_args",
     "_build_stdin_script",
     "_wrap_remote_command",

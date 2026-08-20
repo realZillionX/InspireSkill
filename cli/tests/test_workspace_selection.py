@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import set_fake_home
+
 from inspire.accounts import create_account, set_current_account
 from inspire.cli.utils.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
 from inspire.config import Config, ConfigError
@@ -43,7 +45,7 @@ def test_explicit_workspace_name_uses_fresh_local_index(
     tmp_path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_fake_home(monkeypatch, tmp_path)
     create_account("alpha", "[inspire]\n")
     set_current_account("alpha")
     index = ResourceIndex.for_account()

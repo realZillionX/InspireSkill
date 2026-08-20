@@ -1,8 +1,8 @@
 """Helpers for tests that prove cross-process serialization.
 
-These tests need genuinely separate processes: the locks under test are
-``flock``-based, so threads inside one interpreter would not exercise them the
-way concurrent CLI invocations do.
+These tests need genuinely separate processes: the locks under test are OS file
+locks (``flock`` on POSIX, ``msvcrt.locking`` on Windows), so threads inside one
+interpreter would not exercise them the way concurrent CLI invocations do.
 
 They use the ``spawn`` start method deliberately. ``fork`` would let workers
 inherit the parent's monkeypatched state, but forking a pytest process that has
@@ -14,6 +14,7 @@ environment from the arguments it is passed.
 from __future__ import annotations
 
 import multiprocessing
+import os
 import time
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol
@@ -69,3 +70,19 @@ def run_workers(
                 worker.terminate()
                 worker.join()
     return [worker.exitcode for worker in workers]
+
+
+def adopt_home(home: str) -> None:
+    """Point this worker's ``~`` at *home*, on every platform.
+
+    Workers are spawned, not forked, so each one has to re-establish the fake
+    home for itself. ``HOME`` alone is not enough: ``ntpath.expanduser`` reads
+    ``USERPROFILE`` and never ``HOME``, so on Windows a worker that set only
+    ``HOME`` would quietly use the real user profile — and these tests write
+    session caches and credential-failure markers.
+    """
+    os.environ["HOME"] = home
+    os.environ["USERPROFILE"] = home
+    drive, tail = os.path.splitdrive(home)
+    os.environ["HOMEDRIVE"] = drive
+    os.environ["HOMEPATH"] = tail or home

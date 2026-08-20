@@ -203,7 +203,15 @@ def test_shell_check_uses_ssh_noninteractive_transport(monkeypatch) -> None:  # 
         stdout = "shell-check-ok\n"
         stderr = ""
 
-    def fake_run(args, *, text: bool, capture_output: bool, check: bool):  # noqa: ANN001
+    def fake_run(  # noqa: ANN001
+        args,
+        *,
+        text: bool,
+        capture_output: bool,
+        check: bool,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ):
         captured["args"] = args
         captured["text"] = text
         captured["capture_output"] = capture_output

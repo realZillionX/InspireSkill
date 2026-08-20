@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 import time
 from pathlib import Path
@@ -8,7 +7,13 @@ from pathlib import Path
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.session import WebSession
 from inspire.platform.web.session import auth as web_session_auth
-from multiprocess_workers import Barrier, Counter, run_workers, worker_context
+from multiprocess_workers import (
+    Barrier,
+    Counter,
+    adopt_home,
+    run_workers,
+    worker_context,
+)
 
 WORKER_COUNT = 8
 
@@ -50,7 +55,7 @@ def _refresh_expired_session(
     barrier: Barrier,
     login_count: Counter,
 ) -> None:
-    os.environ["HOME"] = home
+    adopt_home(home)
     session = WebSession.load(allow_expired=True, account="default")
     assert session is not None
 
@@ -128,7 +133,7 @@ def _reject_expired_session_refresh(
     submissions: Counter,
 ) -> None:
     """One CLI process meeting an expired session whose re-login is refused."""
-    os.environ["HOME"] = home
+    adopt_home(home)
     session = WebSession.load(allow_expired=True, account="default")
     assert session is not None
 
@@ -213,7 +218,7 @@ def test_concurrent_failed_refresh_submits_credentials_only_once(
 
 def _login_directly(home: str, barrier: Barrier, submissions: Counter) -> None:
     """The `inspire init` shape: `login_with_playwright()` with no refresh lock."""
-    os.environ["HOME"] = home
+    adopt_home(home)
 
     def reject(*_args, **_kwargs) -> WebSession:  # noqa: ANN002, ANN003
         with submissions.get_lock():
@@ -297,7 +302,7 @@ def _load_or_login_session(
     barrier: Barrier,
     login_count: Counter,
 ) -> None:
-    os.environ["HOME"] = home
+    adopt_home(home)
 
     def fake_login(
         username: str,

@@ -402,6 +402,8 @@ def bridge_ssh(
                 completed = subprocess.run(
                     ssh_args,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     capture_output=True,
                     check=False,
                 )

@@ -178,7 +178,7 @@ def test_upgrade_cli_retries_pypi_network_errors_with_mirrors(
 ) -> None:
     calls: list[tuple[list[str], str | None]] = []
 
-    def fake_run(cmd, check, env, text, stdout, stderr):
+    def fake_run(cmd, check, env, text, stdout, stderr, encoding=None, errors=None):
         calls.append((cmd, None if env is None else env.get("UV_DEFAULT_INDEX")))
         if len(calls) == 1:
             return subprocess.CompletedProcess(
@@ -212,7 +212,7 @@ def test_upgrade_cli_default_output_does_not_forward_installer_details(
 ) -> None:
     calls = 0
 
-    def fake_run(cmd, check, env, text, stdout, stderr):
+    def fake_run(cmd, check, env, text, stdout, stderr, encoding=None, errors=None):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -315,7 +315,7 @@ def test_upgrade_cli_pins_known_target_version_for_uv(
 ) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(cmd, check, env, text, stdout, stderr):
+    def fake_run(cmd, check, env, text, stdout, stderr, encoding=None, errors=None):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="installed\n", stderr="")
 
@@ -333,7 +333,7 @@ def test_upgrade_cli_does_not_retry_non_network_errors(
 ) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(cmd, check, env, text, stdout, stderr):
+    def fake_run(cmd, check, env, text, stdout, stderr, encoding=None, errors=None):
         calls.append(cmd)
         return subprocess.CompletedProcess(
             cmd,
@@ -354,7 +354,7 @@ def test_upgrade_cli_from_repo_venv_updates_global_uv_tool(
 ) -> None:
     calls: list[list[str]] = []
 
-    def fake_run(cmd, check, env, text, stdout, stderr):
+    def fake_run(cmd, check, env, text, stdout, stderr, encoding=None, errors=None):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="installed\n", stderr="")
 
@@ -434,7 +434,7 @@ def test_global_runtime_setup_uses_global_inspire_executable(
         ),
     )
 
-    def fake_run(cmd, check, env, text, stdout, stderr):
+    def fake_run(cmd, check, env, text, stdout, stderr, encoding=None, errors=None):
         calls.append((cmd, env.get("INSPIRE_SKIP_UPDATE_CHECK") if env else None))
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
@@ -943,7 +943,7 @@ def test_global_audit_prefers_uv_tool_executable_over_repo_venv_path(
     )
     monkeypatch.setattr(update_module.shutil, "which", lambda _name: "/repo/.venv/bin/inspire")
 
-    def fake_run(cmd, check, env, text, stdout, stderr):
+    def fake_run(cmd, check, env, text, stdout, stderr, encoding=None, errors=None):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="inspire, version 4.1.1\n", stderr="")
 

@@ -260,13 +260,30 @@ class ResourceIndex:
         path = resource_index_path(account)
         return cls(path) if path is not None else None
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextlib.contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a connection for one transaction, and always close it after.
+
+        ``with sqlite3.connect(...)`` commits or rolls back but leaves the
+        connection — and the file handle — open until the object is collected.
+        On POSIX that is only untidy. On Windows an open handle makes the file
+        undeletable, so a corrupt index could never be discarded and rebuilt:
+        the recovery path failed with a sharing violation instead.
+        """
         connection = sqlite3.connect(self.path, timeout=5.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = NORMAL")
-        return connection
+        try:
+            # Inside the try: `PRAGMA journal_mode` is the statement that first
+            # touches the file's pages, so it is exactly where a corrupt index
+            # raises — and leaving the connection open there is what made the
+            # discard-and-rebuild path fail on Windows.
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout = 5000")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = NORMAL")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:

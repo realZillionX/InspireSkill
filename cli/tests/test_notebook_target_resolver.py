@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import sys
+
 import pytest
 from click.testing import CliRunner
 
@@ -76,7 +78,7 @@ def test_resolver_finds_unique_cross_account_target(
     assert target is not None
     assert target.account == "alice"
     assert target.bridge.name == "dev-a"
-    cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text())
+    cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text(encoding="utf-8"))
     assert cache["targets"]["dev-a|workspace="]["account"] == "alice"
 
 
@@ -187,7 +189,7 @@ def test_resolver_pick_overrides_remembered_target_and_caches_selection(
     assert selected is not None
     assert selected.source == "pick"
     assert selected.account == "bob"
-    cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text())
+    cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text(encoding="utf-8"))
     assert cache["targets"]["dev-box|workspace="]["account"] == "bob"
 
 
@@ -235,7 +237,7 @@ def test_forget_notebook_targets_removes_matching_aliases(
     removed = target_resolver.forget_notebook_targets(notebook="dev-box")
 
     assert removed == ["dev-box|workspace=", "dev-box|workspace=CPU资源空间"]
-    cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text())
+    cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text(encoding="utf-8"))
     assert cache["targets"] == {}
 
 
@@ -266,7 +268,7 @@ def test_connection_target_forget_removes_remembered_targets(
 
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert "Removed remembered notebook target entries for dev-box: 1" in result.output
-    cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text())
+    cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text(encoding="utf-8"))
     assert cache["targets"] == {}
 
 
@@ -347,15 +349,17 @@ def test_ssh_config_proxy_command_pins_resolved_account(
         {"alice": _config("alice", _bridge("dev-box", workspace="CPU资源空间"))},
     )
 
-    monkeypatch.setattr(
-        ssh_config_module.shutil, "which", lambda name: "/opt/tools/bin/inspire"
-    )
+    inspire_path = str(tmp_path / "tools" / "bin" / "inspire")
+    monkeypatch.setattr(ssh_config_module.shutil, "which", lambda name: inspire_path)
     result = CliRunner().invoke(cli_main, ["notebook", "ssh-config", "dev-box"])
 
     assert result.exit_code == EXIT_SUCCESS, result.output
-    assert (
-        "ProxyCommand /opt/tools/bin/inspire notebook ssh-proxy %h --account alice"
-    ) in result.output
+    # The account has to survive into the ProxyCommand, otherwise reconnecting
+    # resolves against whichever account happens to be current at the time.
+    assert "notebook ssh-proxy %h --account alice" in result.output
+    if sys.platform != "win32":
+        # Exact quoting is platform-specific; see test_windows_support.py.
+        assert f"ProxyCommand {inspire_path} notebook ssh-proxy %h --account alice" in result.output
     assert "/Users/me" not in result.output
 
 

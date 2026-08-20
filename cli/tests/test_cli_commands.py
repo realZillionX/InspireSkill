@@ -1790,7 +1790,7 @@ def test_config_check_json_includes_base_url_resolution(
     project_config.write_text("""
 [api]
 base_url = "https://my-inspire.internal"
-""")
+""", encoding="utf-8")
     global_config = tmp_path / "global-config.toml"
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
@@ -1958,7 +1958,7 @@ def test_config_check_rejects_top_level_project_base_url_key(
     project_dir = tmp_path / ".inspire"
     project_dir.mkdir(parents=True, exist_ok=True)
     project_config = project_dir / "config.toml"
-    project_config.write_text('base_url = "https://wrong.example.com"\n')
+    project_config.write_text('base_url = "https://wrong.example.com"\n', encoding="utf-8")
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
         return config, {"base_url": config_module.SOURCE_PROJECT}
@@ -2034,8 +2034,8 @@ def test_init_json_global_contract_via_top_level_flag(
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     acct = fake_home / ".inspire" / "accounts" / "default"
     acct.mkdir(parents=True)
-    (acct / "config.toml").write_text("")
-    (fake_home / ".inspire" / "current").write_text("default\n")
+    (acct / "config.toml").write_text("", encoding="utf-8")
+    (fake_home / ".inspire" / "current").write_text("default\n", encoding="utf-8")
 
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()

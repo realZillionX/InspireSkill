@@ -135,6 +135,7 @@ def test_run_ssh_command_streaming_does_not_reemit_lines_after_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import inspire.bridge.tunnel.ssh_exec as ssh_exec_module
+    import inspire.process_io as process_io_module
 
     monkeypatch.setattr(ssh_exec_module, "_resolve_bridge_and_proxy", _stub_resolve)
 
@@ -194,7 +195,7 @@ def test_run_ssh_command_streaming_does_not_reemit_lines_after_exit(
         return ([], [], [])
 
     monkeypatch.setattr(ssh_exec_module.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(ssh_exec_module.select, "select", fake_select)
+    monkeypatch.setattr(process_io_module.select, "select", fake_select)
 
     emitted: list[str] = []
     exit_code = run_ssh_command_streaming("echo hello", output_callback=emitted.append)
@@ -273,6 +274,7 @@ def test_run_ssh_command_streaming_passes_remote_output_through(
 ) -> None:
     import click
     import inspire.bridge.tunnel.ssh_exec as ssh_exec_module
+    import inspire.process_io as process_io_module
 
     monkeypatch.setattr(ssh_exec_module, "_resolve_bridge_and_proxy", _stub_resolve)
 
@@ -313,7 +315,7 @@ def test_run_ssh_command_streaming_passes_remote_output_through(
         lambda *args, **kwargs: FakeProcess(),
     )
     monkeypatch.setattr(
-        ssh_exec_module.select,
+        process_io_module.select,
         "select",
         lambda read, write, error, timeout: (read, write, error),
     )

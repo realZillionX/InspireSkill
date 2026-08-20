@@ -3,15 +3,11 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
-import os
 import re
 import select
-import signal
 import shlex
 import sys
-import termios
 import time
-import tty
 import uuid
 from dataclasses import dataclass
 from typing import Iterator, Protocol, Optional
@@ -348,39 +344,35 @@ def _run_jupyter_terminal_shell(
         _stty_command,
     )
 
+    from inspire.cli.utils.interactive_console import (
+        ShellStreams,
+        raw_terminal,
+        watch_terminal_resize,
+    )
+
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     stdout_buffer = getattr(stdout, "buffer", stdout)
     headers = _jupyter_ws_headers(session, ws_url)
-    old_term = None
-    raw_mode = bool(getattr(stdin, "isatty", lambda: False)())
 
     with _WebSocketClient(ws_url, headers) as ws:
         _send_jupyter_stdin(ws, bootstrap)
         _send_jupyter_stdin(ws, _stty_command().replace("\n", "\r"))
 
-        def resize_handler(signum, frame):  # noqa: ANN001
-            del signum, frame
+        def announce_resize() -> None:
             try:
                 _send_jupyter_stdin(ws, _stty_command().replace("\n", "\r"))
             except Exception:
                 pass
 
-        previous_winch = None
-        if raw_mode:
-            old_term = termios.tcgetattr(stdin.fileno())
-            tty.setraw(stdin.fileno())
-            previous_winch = signal.getsignal(signal.SIGWINCH)
-            signal.signal(signal.SIGWINCH, resize_handler)
-        try:
+        streams = ShellStreams(ws, stdin)
+        with raw_terminal(stdin), watch_terminal_resize(stdin, announce_resize) as poll_resize:
             stdin_open = True
             exit_watcher = ShellExitWatcher()
             while True:
-                readers = [ws]
-                if stdin_open and not getattr(stdin, "closed", False):
-                    readers.append(stdin)
-                ready, _, _ = select.select(readers, [], [])
-                if ws in ready:
+                poll_resize()
+                socket_ready, keystrokes = streams.wait(stdin_open=stdin_open)
+                if socket_ready:
                     try:
                         opcode, payload = ws.recv_frame()
                     except EOFError:
@@ -409,19 +401,13 @@ def _run_jupyter_terminal_shell(
                             write_stream_output(stdout_buffer, visible)
                         if shell_exited:
                             return 0
-                if stdin in ready:
-                    data = os.read(stdin.fileno(), 4096)
-                    if not data:
+                if keystrokes is not None:
+                    if not keystrokes:
                         stdin_open = False
                         continue
-                    if CTRL_RIGHT_BRACKET in data:
+                    if CTRL_RIGHT_BRACKET in keystrokes:
                         return 0
-                    _send_jupyter_stdin(ws, data.decode("utf-8", errors="ignore"))
-        finally:
-            if raw_mode and old_term is not None:
-                termios.tcsetattr(stdin.fileno(), termios.TCSADRAIN, old_term)
-                if previous_winch is not None:
-                    signal.signal(signal.SIGWINCH, previous_winch)
+                    _send_jupyter_stdin(ws, keystrokes.decode("utf-8", errors="ignore"))
 
 
 def open_jupyter_terminal_shell(

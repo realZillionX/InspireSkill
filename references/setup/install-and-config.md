@@ -4,7 +4,7 @@
 
 ## 1. 安装
 
-macOS + Linux 是一等公民。Windows Agent 用 WSL2；Windows 原生命令行不支持。
+macOS、Linux、Windows 都是一等公民。本机是 Windows 时加载 [`windows-native.md`](windows-native.md)；本节其余部分是 macOS / Linux。
 
 前置只需要 `bash`、`curl`、`tar`、Python 3.10+，以及 `uv` 或 `pipx` 任一。没有 `uv` 时先装：
 

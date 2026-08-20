@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -127,6 +128,8 @@ class TunnelConfig:
 
     @property
     def rtunnel_bin(self) -> Path:
+        if sys.platform == "win32":
+            return Path.home() / ".inspire" / "bin" / "rtunnel.exe"
         return Path.home() / ".local" / "bin" / "rtunnel"
 
     def get_bridge(self, name: Optional[str] = None) -> Optional[BridgeProfile]:

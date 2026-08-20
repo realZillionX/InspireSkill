@@ -7,6 +7,7 @@ import subprocess
 from typing import Optional
 
 from .models import BridgeProfile
+from .ssh import build_ssh_process_env
 from .ssh_exec import _resolve_bridge_and_proxy
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,10 @@ def run_scp_transfer(
         args,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
+        env=build_ssh_process_env(),
     )
     logger.debug(
         "run_scp_transfer completed bridge=%s returncode=%s stdout_chars=%s stderr_chars=%s",

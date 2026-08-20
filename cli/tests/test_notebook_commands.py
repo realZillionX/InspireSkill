@@ -2567,13 +2567,19 @@ def test_notebook_path_commands_manage_project_path_alias(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    fake_home = tmp_path / "__home"
+    # The repo has to sit *under* the fake home: the project-config search walks
+    # up from the cwd and stops at home. With the fake home off to one side the
+    # walk runs past it to the filesystem root — which on Windows means straight
+    # through the real user profile, since tmp_path lives inside it.
+    fake_home = tmp_path
+    repo_dir = fake_home / "repo"
+    repo_dir.mkdir()
     account_dir = fake_home / ".inspire" / "accounts" / "alice"
     account_dir.mkdir(parents=True)
-    (account_dir / "config.toml").write_text("")
-    (fake_home / ".inspire" / "current").write_text("alice\n")
+    (account_dir / "config.toml").write_text("", encoding="utf-8")
+    (fake_home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: fake_home)
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(repo_dir)
 
     runner = CliRunner()
     set_result = runner.invoke(
@@ -2606,7 +2612,7 @@ def test_notebook_path_commands_manage_project_path_alias(
         "status": "saved",
     }
     assert "/inspire/" not in json_set_result.output
-    config_path = tmp_path / ".inspire" / "accounts" / "alice" / "config.toml"
+    config_path = repo_dir / ".inspire" / "accounts" / "alice" / "config.toml"
     assert config_path.exists()
     content = config_path.read_text(encoding="utf-8")
     assert "[path_aliases]" in content

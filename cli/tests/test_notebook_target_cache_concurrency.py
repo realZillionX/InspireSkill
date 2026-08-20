@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from inspire.bridge.tunnel import BridgeProfile
 from inspire.cli.commands.notebook.target_resolver import remember_notebook_target
-from multiprocess_workers import Barrier, run_workers, worker_context
+from multiprocess_workers import Barrier, adopt_home, run_workers, worker_context
 
 WORKER_COUNT = 16
 
 
 def _write_target(index: int, home: str, barrier: Barrier) -> None:
-    os.environ["HOME"] = home
+    adopt_home(home)
     bridge = BridgeProfile(
         name=f"bench-{index}",
         proxy_url=f"https://proxy.invalid/{index}",
@@ -45,7 +44,7 @@ def test_concurrent_target_cache_writes_preserve_every_entry(tmp_path: Path) -> 
     # Then: no writer crashes, and every independent entry remains cached.
     assert exit_codes == [0] * WORKER_COUNT
     cache_path = tmp_path / ".inspire" / "notebook-targets.json"
-    data = json.loads(cache_path.read_text())
+    data = json.loads(cache_path.read_text(encoding="utf-8"))
     assert set(data["targets"]) == {
         f"bench-{index}|workspace=CPU资源空间" for index in range(WORKER_COUNT)
     }

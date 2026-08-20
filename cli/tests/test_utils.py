@@ -1,5 +1,6 @@
 """Tests for utility modules: config, tunnel."""
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -275,11 +276,13 @@ class TestTunnelConfigPersistence:
 
         (tmp_path / "accounts" / "alice").mkdir(parents=True)
         (tmp_path / "accounts" / "alice" / "bridges.json").write_text(
-            '{"default": "a", "bridges": [{"name": "a", "proxy_url": "https://a.example.com"}]}'
+            '{"default": "a", "bridges": [{"name": "a", "proxy_url": "https://a.example.com"}]}',
+            encoding="utf-8",
         )
         (tmp_path / "accounts" / "bob").mkdir(parents=True)
         (tmp_path / "accounts" / "bob" / "bridges.json").write_text(
-            '{"default": "b", "bridges": [{"name": "b", "proxy_url": "https://b.example.com"}]}'
+            '{"default": "b", "bridges": [{"name": "b", "proxy_url": "https://b.example.com"}]}',
+            encoding="utf-8",
         )
 
         loaded = load_tunnel_config(tmp_path, account="alice")
@@ -296,7 +299,8 @@ class TestTunnelConfigPersistence:
 
         (tmp_path / "accounts" / "bob").mkdir(parents=True)
         (tmp_path / "accounts" / "bob" / "bridges.json").write_text(
-            '{"default": "b", "bridges": [{"name": "b", "proxy_url": "https://b.example.com"}]}'
+            '{"default": "b", "bridges": [{"name": "b", "proxy_url": "https://b.example.com"}]}',
+            encoding="utf-8",
         )
 
         loaded = load_tunnel_config(tmp_path)
@@ -311,7 +315,8 @@ class TestTunnelConfigPersistence:
         monkeypatch.setattr(accounts_mod, "current_account", lambda: None)
 
         (tmp_path / "bridges.json").write_text(
-            '{"default": "u", "bridges": [{"name": "u", "proxy_url": "https://u.example.com"}]}'
+            '{"default": "u", "bridges": [{"name": "u", "proxy_url": "https://u.example.com"}]}',
+            encoding="utf-8",
         )
 
         loaded = load_tunnel_config(tmp_path)
@@ -335,6 +340,11 @@ class TestProxyCommand:
         assert "wss://proxy.example.com/tunnel" in cmd
         assert str(rtunnel_bin) in cmd or "rtunnel" in cmd
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pins the POSIX ProxyCommand shape; the Windows contract is in "
+        "test_windows_support.py",
+    )
     def test_get_proxy_command_with_quiet(self, tmp_path: Path) -> None:
         """Test building proxy command with quiet flag."""
         bridge = BridgeProfile(
@@ -348,6 +358,11 @@ class TestProxyCommand:
         # Should include stderr redirect
         assert "2>/dev/null" in cmd
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pins the POSIX ProxyCommand shape; the Windows contract is in "
+        "test_windows_support.py",
+    )
     def test_get_proxy_command_injects_rtunnel_proxy_override(
         self,
         tmp_path: Path,
@@ -366,6 +381,11 @@ class TestProxyCommand:
         assert "HTTPS_PROXY=http://127.0.0.1:7897" in cmd
         assert "wss://proxy.example.com/tunnel" in cmd
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pins the POSIX ProxyCommand shape; the Windows contract is in "
+        "test_windows_support.py",
+    )
     def test_get_proxy_command_uses_rtunnel_proxy_from_toml(
         self,
         tmp_path: Path,
@@ -393,6 +413,11 @@ class TestProxyCommand:
         assert "HTTP_PROXY=http://127.0.0.1:7897" in cmd
         assert "HTTPS_PROXY=http://127.0.0.1:7897" in cmd
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pins the POSIX ProxyCommand shape; the Windows contract is in "
+        "test_windows_support.py",
+    )
     def test_get_proxy_command_reuses_qizhi_mixed_proxy(
         self,
         tmp_path: Path,
@@ -428,6 +453,11 @@ class TestProxyCommand:
 
         assert "HTTP_PROXY=http://127.0.0.1:7897" in cmd
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="pins the POSIX ProxyCommand shape; the Windows contract is in "
+        "test_windows_support.py",
+    )
     def test_exec_rtunnel_proxy_quiet_redirects_stderr_during_exec(
         self,
         monkeypatch: pytest.MonkeyPatch,

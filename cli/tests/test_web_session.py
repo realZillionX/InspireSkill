@@ -1328,7 +1328,7 @@ def test_playwright_install_args_include_deps_for_root_linux_apt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(browser_launch.sys, "platform", "linux")
-    monkeypatch.setattr(browser_launch.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(browser_launch.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(
         browser_launch.shutil,
         "which",
@@ -1346,7 +1346,7 @@ def test_playwright_install_args_skip_deps_when_not_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(browser_launch.sys, "platform", "linux")
-    monkeypatch.setattr(browser_launch.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(browser_launch.os, "geteuid", lambda: 1000, raising=False)
     monkeypatch.setattr(
         browser_launch.shutil,
         "which",
@@ -2145,9 +2145,10 @@ def test_get_credentials_reads_account_toml(tmp_path: Path, monkeypatch: pytest.
     account_dir = fake_home / ".inspire" / "accounts" / "alice"
     account_dir.mkdir(parents=True)
     (account_dir / "config.toml").write_text(
-        '[auth]\nusername = "account-user"\npassword = "account-pass"\n'
+        '[auth]\nusername = "account-user"\npassword = "account-pass"\n',
+        encoding="utf-8",
     )
-    (fake_home / ".inspire" / "current").write_text("alice\n")
+    (fake_home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("INSPIRE_USERNAME", raising=False)
@@ -2410,11 +2411,11 @@ def test_clear_session_cache_removes_only_active_account_cache(
     fake_home.mkdir()
     accounts_root = fake_home / ".inspire" / "accounts"
     (accounts_root / "alice").mkdir(parents=True)
-    (accounts_root / "alice" / "web_session.json").write_text("{}")
+    (accounts_root / "alice" / "web_session.json").write_text("{}", encoding="utf-8")
     (accounts_root / "bob").mkdir()
-    (accounts_root / "bob" / "web_session.json").write_text("{}")
-    (accounts_root / "bob" / "config.toml").write_text("")  # unrelated file kept
-    (fake_home / ".inspire" / "current").write_text("alice\n")
+    (accounts_root / "bob" / "web_session.json").write_text("{}", encoding="utf-8")
+    (accounts_root / "bob" / "config.toml").write_text("", encoding="utf-8")  # unrelated file kept
+    (fake_home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
 
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     ws.clear_session_cache()
@@ -2431,10 +2432,10 @@ def test_clear_all_session_caches_removes_every_account_cache(
     fake_home.mkdir()
     accounts_root = fake_home / ".inspire" / "accounts"
     (accounts_root / "alice").mkdir(parents=True)
-    (accounts_root / "alice" / "web_session.json").write_text("{}")
+    (accounts_root / "alice" / "web_session.json").write_text("{}", encoding="utf-8")
     (accounts_root / "bob").mkdir()
-    (accounts_root / "bob" / "web_session.json").write_text("{}")
-    (accounts_root / "bob" / "config.toml").write_text("")  # unrelated file kept
+    (accounts_root / "bob" / "web_session.json").write_text("{}", encoding="utf-8")
+    (accounts_root / "bob" / "config.toml").write_text("", encoding="utf-8")  # unrelated file kept
 
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     ws.clear_all_session_caches()
@@ -2508,7 +2509,7 @@ def test_save_prefers_bound_account_over_current_account(
         fake_home / ".inspire" / "accounts" / "alpha" / "web_session.json"
     )
     beta_cache = fake_home / ".inspire" / "accounts" / "beta" / "web_session.json"
-    assert json.loads(alpha_cache.read_text())["account"] == "alpha"
+    assert json.loads(alpha_cache.read_text(encoding="utf-8"))["account"] == "alpha"
     assert not beta_cache.exists()
 
 
@@ -2540,7 +2541,7 @@ def test_loaded_session_stays_bound_after_current_account_switch(
         login_username="before",
         account="alpha",
     )
-    alpha_cache.write_text(json.dumps(original.to_dict()))
+    alpha_cache.write_text(json.dumps(original.to_dict()), encoding="utf-8")
 
     loaded = WebSession.load()
     assert loaded is not None
@@ -2551,7 +2552,7 @@ def test_loaded_session_stays_bound_after_current_account_switch(
     loaded.save()
 
     beta_cache = fake_home / ".inspire" / "accounts" / "beta" / "web_session.json"
-    assert json.loads(alpha_cache.read_text())["login_username"] == "after"
+    assert json.loads(alpha_cache.read_text(encoding="utf-8"))["login_username"] == "after"
     assert not beta_cache.exists()
 
 
@@ -2575,7 +2576,7 @@ def test_save_explicit_account_overrides_bound_and_current_accounts(
 
     accounts_root = fake_home / ".inspire" / "accounts"
     gamma_cache = accounts_root / "gamma" / "web_session.json"
-    assert json.loads(gamma_cache.read_text())["account"] == "gamma"
+    assert json.loads(gamma_cache.read_text(encoding="utf-8"))["account"] == "gamma"
     assert session.account == "gamma"
     assert not (accounts_root / "alpha" / "web_session.json").exists()
     assert not (accounts_root / "beta" / "web_session.json").exists()

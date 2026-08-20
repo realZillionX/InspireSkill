@@ -27,6 +27,7 @@ from typing import Any
 import click
 
 from inspire import __version__
+from inspire.cli.utils.detached import detached_creationflags
 
 REPO_SLUG = "realZillionX/InspireSkill"
 PACKAGE_NAME = "inspire-skill"
@@ -229,6 +230,7 @@ def maybe_spawn_check() -> None:
             env=env,
             start_new_session=True,
             close_fds=True,
+            creationflags=detached_creationflags(),
         )
     except Exception:
         pass

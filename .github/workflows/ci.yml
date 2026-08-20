@@ -53,3 +53,68 @@ jobs:
 
       - name: Build package
         run: uv build
+
+  # Windows is a supported platform, not a best-effort one: the POSIX-only
+  # imports, the console encoding and the ProxyCommand quoting all fail here
+  # first, and none of them are visible from a Linux runner.
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: cli
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: cli/uv.lock
+
+      - name: Install dependencies
+        run: uv sync --dev --locked
+
+      - name: mypy
+        run: uv run mypy
+
+      # Printed so a run that silently collects fewer tests than the Linux jobs
+      # is visible in the log rather than hidden behind a passing summary.
+      - name: Collected test count
+        run: uv run pytest --collect-only -q | Select-Object -Last 2
+
+      - name: Unit tests
+        run: uv run pytest -q -ra
+
+      # The CLI has to survive being redirected: a pipe drops Python off the
+      # Windows console API and onto the ANSI code page, which is where every
+      # non-ASCII character in the output used to raise UnicodeEncodeError.
+      - name: CLI starts and its output survives a pipe
+        env:
+          INSPIRE_SKIP_UPDATE_CHECK: "1"
+        run: |
+          uv run inspire --version
+          uv run inspire --help > help.txt
+          uv run inspire notebook --help > notebook-help.txt
+
+      - name: PowerShell installer parses
+        shell: pwsh
+        working-directory: .
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/install.ps1), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) {
+            $errors | ForEach-Object { Write-Host $_.Message }
+            exit 1
+          }
+          Write-Host 'install.ps1 parses clean'

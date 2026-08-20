@@ -10,6 +10,7 @@ import importlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -272,6 +273,10 @@ def test_cli_and_installer_agree_on_the_constants_they_both_encode() -> None:
         assert harness in text, harness
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="runs a real bash; on Windows `bash` is the WSL launcher",
+)
 def test_installer_uninstall_clears_a_finished_install(tmp_path: Path) -> None:
     home = tmp_path / "home"
     bin_dir = tmp_path / "bin"
@@ -323,6 +328,10 @@ def test_installer_uninstall_clears_a_finished_install(tmp_path: Path) -> None:
     assert uninstalled.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="runs a real bash; on Windows `bash` is the WSL launcher",
+)
 def test_installer_uninstall_purge_tiers(tmp_path: Path) -> None:
     home = tmp_path / "home"
     bin_dir = tmp_path / "bin"
@@ -354,6 +363,10 @@ def test_installer_uninstall_purge_tiers(tmp_path: Path) -> None:
     assert not browsers.exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="runs a real bash; on Windows `bash` is the WSL launcher",
+)
 def test_installer_uninstall_without_a_terminal_requires_yes(tmp_path: Path) -> None:
     """`curl | bash` leaves stdin pointing at the script, not at the user."""
     home = tmp_path / "home"

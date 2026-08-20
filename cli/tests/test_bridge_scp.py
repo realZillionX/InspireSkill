@@ -79,7 +79,7 @@ def test_build_scp_base_args_no_user_host() -> None:
 
 def test_bridge_scp_upload_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     local_file = tmp_path / "test.txt"
-    local_file.write_text("hello")
+    local_file.write_text("hello", encoding="utf-8")
 
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(BridgeProfile(name="default", proxy_url="https://proxy.example.com"))
@@ -108,7 +108,7 @@ def test_bridge_scp_forwards_workspace_account_and_pick(
     tmp_path: Path,
 ) -> None:
     local_file = tmp_path / "test.txt"
-    local_file.write_text("hello")
+    local_file.write_text("hello", encoding="utf-8")
     tunnel_config = TunnelConfig(account="alice")
     bridge = BridgeProfile(
         name="gpu-box",
@@ -180,7 +180,7 @@ def test_bridge_scp_reads_active_account_notebook_cache(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     local_file = tmp_path / "test.txt"
-    local_file.write_text("hello")
+    local_file.write_text("hello", encoding="utf-8")
 
     config = Config(username="alice", password="")
     tunnel_config = TunnelConfig(account="default")
@@ -216,7 +216,7 @@ def test_bridge_scp_warns_when_remote_path_is_relative(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     local_file = tmp_path / "test.txt"
-    local_file.write_text("hello")
+    local_file.write_text("hello", encoding="utf-8")
 
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(BridgeProfile(name="default", proxy_url="https://proxy.example.com"))
@@ -248,7 +248,7 @@ def test_bridge_scp_resolves_remote_path_alias(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     local_file = tmp_path / "test.txt"
-    local_file.write_text("hello")
+    local_file.write_text("hello", encoding="utf-8")
 
     config = Config(username="", password="", path_aliases={"me": "/inspire/ssd/project/p1/alice/"})
     tunnel_config = TunnelConfig()
@@ -410,7 +410,7 @@ def test_bridge_scp_auto_recursive_for_directory(
 
 def test_bridge_scp_tunnel_not_available(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     local_file = tmp_path / "test.txt"
-    local_file.write_text("hello")
+    local_file.write_text("hello", encoding="utf-8")
 
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(BridgeProfile(name="default", proxy_url="https://proxy.example.com"))
@@ -435,7 +435,7 @@ def test_bridge_scp_local_path_not_found(tmp_path: Path) -> None:
 
 def test_bridge_scp_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     local_file = tmp_path / "test.txt"
-    local_file.write_text("hello")
+    local_file.write_text("hello", encoding="utf-8")
 
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(BridgeProfile(name="default", proxy_url="https://proxy.example.com"))
@@ -460,7 +460,7 @@ def test_bridge_scp_json_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
 
 def test_bridge_scp_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     local_file = tmp_path / "test.txt"
-    local_file.write_text("hello")
+    local_file.write_text("hello", encoding="utf-8")
 
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(BridgeProfile(name="default", proxy_url="https://proxy.example.com"))
@@ -484,7 +484,7 @@ def test_bridge_scp_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
 
 def test_bridge_scp_scp_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     local_file = tmp_path / "test.txt"
-    local_file.write_text("hello")
+    local_file.write_text("hello", encoding="utf-8")
 
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(BridgeProfile(name="default", proxy_url="https://proxy.example.com"))
@@ -508,7 +508,7 @@ def test_bridge_scp_scp_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
 
 def test_bridge_scp_bridge_option(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     local_file = tmp_path / "test.txt"
-    local_file.write_text("hello")
+    local_file.write_text("hello", encoding="utf-8")
 
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(BridgeProfile(name="gpu-main", proxy_url="https://proxy.example.com"))
@@ -540,7 +540,7 @@ def test_bridge_scp_missing_bridge_reports_bridge_not_found(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     local_file = tmp_path / "test.txt"
-    local_file.write_text("hello")
+    local_file.write_text("hello", encoding="utf-8")
 
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(BridgeProfile(name="gpu-main", proxy_url="https://proxy.example.com"))

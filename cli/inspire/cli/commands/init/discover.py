@@ -175,6 +175,8 @@ def _ensure_playwright_browser(*, non_interactive: bool = False) -> None:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0:
         click.echo(
@@ -283,6 +285,8 @@ def _ensure_ssh_key(*, non_interactive: bool = False) -> None:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode == 0:
         click.echo("SSH key generated.")

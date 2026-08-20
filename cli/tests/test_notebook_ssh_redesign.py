@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -169,8 +170,13 @@ def test_notebook_ssh_help_describes_direct_name_command() -> None:
     assert "Commands:" not in result.output
 
 
-def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setattr(Path, "home", lambda: Path("/home/me"))
+def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    # Paths come from tmp_path rather than a hard-coded "/home/me": on Windows a
+    # POSIX-looking absolute path resolves onto the current drive, which is not
+    # under the fake home and so never shortens to `~/`.
+    fake_home = tmp_path / "home"
+    (fake_home / ".ssh").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(
         BridgeProfile(
@@ -178,17 +184,15 @@ def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  
             proxy_url="https://proxy.invalid/proxy/31337/",
             notebook_name="demo-box",
             workspace_name="CPU资源空间",
-            identity_file="/home/me/.ssh/id_ed25519",
+            identity_file=str(fake_home / ".ssh" / "id_ed25519"),
         )
     )
 
     monkeypatch.setattr(ssh_config_module, "load_tunnel_config", lambda: tunnel_config)
-    # OpenSSH runs ProxyCommand under /bin/sh, whose PATH is not the
-    # interactive shell's, so the generated line has to name inspire by
-    # absolute path.
-    monkeypatch.setattr(
-        ssh_config_module.shutil, "which", lambda name: "/opt/tools/bin/inspire"
-    )
+    # OpenSSH's ProxyCommand does not inherit the interactive shell's PATH, so
+    # the generated line has to name inspire by absolute path.
+    inspire_path = str(tmp_path / "tools" / "bin" / "inspire")
+    monkeypatch.setattr(ssh_config_module.shutil, "which", lambda name: inspire_path)
     result = CliRunner().invoke(
         cli_main,
         ["notebook", "ssh-config", "demo-box", "--host", "inspire-demo"],
@@ -197,13 +201,21 @@ def test_ssh_config_uses_cached_bridge_and_proxy_command(monkeypatch) -> None:  
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert "Host inspire-demo" in result.output
     assert "HostName demo-box" in result.output
-    assert "IdentityFile '~/.ssh/id_ed25519'" in result.output
-    assert (
-        "ProxyCommand /opt/tools/bin/inspire notebook ssh-proxy %h "
-        "--workspace 'CPU资源空间' --port %p"
-    ) in result.output
-    assert "/home/me" not in result.output
-    assert "/Users/me" not in result.output
+    # Bare, not shell-quoted: OpenSSH's config parser only knows double quotes,
+    # so a POSIX-single-quoted path is read back as a filename containing quotes.
+    assert "IdentityFile ~/.ssh/id_ed25519" in result.output
+    assert "ProxyCommand" in result.output
+    assert "notebook ssh-proxy %h" in result.output
+    assert "--port %p" in result.output
+    assert "CPU资源空间" in result.output
+    if sys.platform != "win32":
+        # The exact quoting is platform-specific by design; the Windows shape is
+        # pinned in test_windows_support.py.
+        assert (
+            f"ProxyCommand {inspire_path} notebook ssh-proxy %h "
+            "--workspace 'CPU资源空间' --port %p"
+        ) in result.output
+    assert str(fake_home) not in result.output
     assert "proxy.invalid" not in result.output
     assert result.stderr == ""
 

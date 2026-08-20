@@ -82,6 +82,21 @@ def _join_remote_path(base: str, suffix: str) -> str:
     return f"{base}/{suffix}"
 
 
+def join_remote_path(base: str, *parts: str) -> str:
+    """Join segments of a path on the *remote* filesystem.
+
+    Always ``/``, never the local separator. Remote paths land inside shell
+    commands that run on a Linux compute node, so building them with
+    ``os.path.join`` produces ``C:\\...``-style separators the moment the CLI
+    runs on Windows — a path the remote node cannot resolve and will not
+    complain about in any way that points back here.
+    """
+    joined = str(base or "")
+    for part in parts:
+        joined = _join_remote_path(joined, part)
+    return joined
+
+
 def resolve_remote_path_alias(
     value: str,
     aliases: dict[str, str] | None,

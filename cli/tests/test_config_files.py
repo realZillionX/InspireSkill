@@ -146,7 +146,7 @@ username = "tomluser"
 base_url = "https://custom.example.com"
 """
         config_file = tmp_path / "config.toml"
-        config_file.write_text(toml_content)
+        config_file.write_text(toml_content, encoding="utf-8")
 
         data = Config._load_toml(config_file)
         assert data["auth"]["username"] == "tomluser"
@@ -246,7 +246,8 @@ class TestLayeredConfig:
         project_dir.mkdir()
         (project_dir / "config.toml").write_text(
             '[auth]\nusername = "projectuser"\n'
-            '[api]\nbase_url = "https://project.example.com"\n'
+            '[api]\nbase_url = "https://project.example.com"\n',
+            encoding="utf-8",
         )
         monkeypatch.chdir(tmp_path)
 
@@ -260,7 +261,8 @@ class TestLayeredConfig:
         project_dir = tmp_path / ".inspire"
         project_dir.mkdir()
         (project_dir / "config.toml").write_text(
-            "[path_aliases]\nme = \"/inspire/test\"\n"
+            "[path_aliases]\nme = \"/inspire/test\"\n",
+            encoding="utf-8",
         )
         monkeypatch.chdir(tmp_path)
 
@@ -278,7 +280,8 @@ class TestLayeredConfig:
             "[job]\n"
             "auto_fault_tolerance = true\n"
             "fault_tolerance_max_retry = 6\n"
-            "enable_notification = false\n"
+            "enable_notification = false\n",
+            encoding="utf-8",
         )
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("INSPIRE_JOB_ENABLE_NOTIFICATION", "true")
@@ -300,7 +303,8 @@ class TestLayeredConfig:
         (project_dir / "config.toml").write_text(
             "[path_aliases]\n"
             'me = "/inspire/ssd/project/topic/alice/"\n'
-            'qb-ilm2.public = "/inspire/qb-ilm2/project/topic/public/"\n'
+            'qb-ilm2.public = "/inspire/qb-ilm2/project/topic/public/"\n',
+            encoding="utf-8",
         )
         monkeypatch.chdir(tmp_path)
 
@@ -317,7 +321,8 @@ class TestLayeredConfig:
         project_dir = tmp_path / ".inspire"
         project_dir.mkdir()
         (project_dir / "config.toml").write_text(
-            '[notebook]\npost_start = "bash from-toml.sh"\n'
+            '[notebook]\npost_start = "bash from-toml.sh"\n',
+            encoding="utf-8",
         )
 
         monkeypatch.chdir(tmp_path)
@@ -339,7 +344,7 @@ class TestLayeredConfig:
         inspire_dir = tmp_path / ".inspire"
         inspire_dir.mkdir()
         config_file = inspire_dir / "config.toml"
-        config_file.write_text('[notebook]\npost_start = "bash setup.sh"\n')
+        config_file.write_text('[notebook]\npost_start = "bash setup.sh"\n', encoding="utf-8")
 
         # Work from a subdirectory: tmp/subdir/deep
         subdir = tmp_path / "subdir" / "deep"
@@ -379,14 +384,14 @@ class TestAccountConfigLayer:
     def _write_account_config(self, home: Path, name: str, body: str) -> Path:
         path = home / ".inspire" / "accounts" / name / "config.toml"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body)
-        (home / ".inspire" / "current").write_text(name + "\n")
+        path.write_text(body, encoding="utf-8")
+        (home / ".inspire" / "current").write_text(name + "\n", encoding="utf-8")
         return path
 
     def _write_project_account_config(self, root: Path, name: str, body: str) -> Path:
         path = root / ".inspire" / "accounts" / name / "config.toml"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body)
+        path.write_text(body, encoding="utf-8")
         return path
 
     def test_account_config_drives_identity_when_active(
@@ -715,12 +720,12 @@ class TestAccountConfigLayer:
             '[path_aliases]\nme = "/inspire/ssd/project/topic/bob/"\n',
         )
         shared_project = tmp_path / ".inspire" / "config.toml"
-        shared_project.write_text('[path_aliases]\nme = "/inspire/shared/"\n')
+        shared_project.write_text('[path_aliases]\nme = "/inspire/shared/"\n', encoding="utf-8")
 
-        (home / ".inspire" / "current").write_text("alice\n")
+        (home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
         alice_cfg, alice_sources = Config.from_files_and_env(require_credentials=False)
 
-        (home / ".inspire" / "current").write_text("bob\n")
+        (home / ".inspire" / "current").write_text("bob\n", encoding="utf-8")
         bob_cfg, bob_sources = Config.from_files_and_env(require_credentials=False)
 
         assert alice_cfg.path_aliases["me"] == "/inspire/ssd/project/topic/alice/"
@@ -748,7 +753,7 @@ class TestAccountConfigLayer:
             "bob",
             '[path_aliases]\nme = "/inspire/ssd/project/topic/bob/"\n',
         )
-        (home / ".inspire" / "current").write_text("alice\n")
+        (home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
 
         cfg, sources = Config.from_files_and_env(
             require_credentials=False,
@@ -761,7 +766,7 @@ class TestAccountConfigLayer:
         assert sources["username"] == SOURCE_ACCOUNT
         assert sources["base_url"] == SOURCE_ACCOUNT
         assert sources["path_aliases"] == SOURCE_PROJECT
-        assert (home / ".inspire" / "current").read_text() == "alice\n"
+        assert (home / ".inspire" / "current").read_text(encoding="utf-8") == "alice\n"
 
     def test_project_path_aliases_merge_over_account_defaults(
         self, home: Path, clean_env: None, tmp_path: Path
@@ -796,9 +801,10 @@ class TestAccountConfigLayer:
         account_config.parent.mkdir(parents=True)
         account_config.write_text(
             '[auth]\nusername = "alice"\npassword = "pw"\n'
-            '[api]\nbase_url = "https://alice.example.com"\n'
+            '[api]\nbase_url = "https://alice.example.com"\n',
+            encoding="utf-8",
         )
-        (fake_home / ".inspire" / "current").write_text("alice\n")
+        (fake_home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
         monkeypatch.chdir(repo)
 
         cfg, sources = Config.from_files_and_env(require_credentials=False)
@@ -863,7 +869,7 @@ class TestAccountConfigLayer:
         project_dir.mkdir()
         project_config = project_dir / "accounts" / "alice" / "config.toml"
         project_config.parent.mkdir(parents=True)
-        project_config.write_text('[notebook]\npost_start = "bash setup.sh"\n')
+        project_config.write_text('[notebook]\npost_start = "bash setup.sh"\n', encoding="utf-8")
 
         account_path, proj_path = Config.get_config_paths()
         assert account_path == home / ".inspire" / "accounts" / "alice" / "config.toml"
@@ -906,8 +912,8 @@ class TestInitCommand:
         monkeypatch.setattr(Path, "home", lambda: fake_home)
         account_dir = fake_home / ".inspire" / "accounts" / "default"
         account_dir.mkdir(parents=True)
-        (account_dir / "config.toml").write_text("")
-        (fake_home / ".inspire" / "current").write_text("default\n")
+        (account_dir / "config.toml").write_text("", encoding="utf-8")
+        (fake_home / ".inspire" / "current").write_text("default\n", encoding="utf-8")
         yield
 
     def test_init_creates_template_when_no_env_vars(
@@ -923,7 +929,7 @@ class TestInitCommand:
         assert result.output == "Configuration updated.\n"
         config_file = self._project_config_path(tmp_path)
         assert config_file.exists()
-        content = config_file.read_text()
+        content = config_file.read_text(encoding="utf-8")
         assert "[auth]" not in content
         assert "[api]" not in content
         assert "[context]" in content
@@ -939,7 +945,7 @@ class TestInitCommand:
         result = CliRunner().invoke(init, ["--template", "--scope", "global", "--force"])
 
         assert result.exit_code == 0, result.output
-        content = self._account_config_path().read_text()
+        content = self._account_config_path().read_text(encoding="utf-8")
         assert "[auth]" in content
         assert "[api]" in content
         assert "[tunnel]" in content
@@ -958,7 +964,7 @@ class TestInitCommand:
         result = CliRunner().invoke(init, ["--template", "--scope", "project", "--force"])
 
         assert result.exit_code == 0, result.output
-        content = self._project_config_path(tmp_path).read_text()
+        content = self._project_config_path(tmp_path).read_text(encoding="utf-8")
         assert "[auth]" not in content
         assert "[api]" not in content
         assert "[proxy]" not in content
@@ -998,7 +1004,7 @@ class TestInitCommand:
         assert result.output == "Configuration updated.\n"
         config_file = self._project_config_path(tmp_path)
         assert config_file.exists()
-        content = config_file.read_text()
+        content = config_file.read_text(encoding="utf-8")
         # Should have project placeholders, not actual env var values
         assert "[context]" in content
         assert "[path_aliases]" in content
@@ -1030,7 +1036,7 @@ class TestInitCommand:
         monkeypatch.chdir(tmp_path)
         config_file = self._project_config_path(tmp_path)
         config_file.parent.mkdir(parents=True)
-        config_file.write_text("[auth]\nusername = 'existing'")
+        config_file.write_text("[auth]\nusername = 'existing'", encoding="utf-8")
 
         runner = CliRunner()
         result = runner.invoke(
@@ -1056,7 +1062,7 @@ class TestInitCommand:
         # Create existing config
         config_file = self._project_config_path(tmp_path)
         config_file.parent.mkdir(parents=True)
-        config_file.write_text("[auth]\nusername = 'existing'")
+        config_file.write_text("[auth]\nusername = 'existing'", encoding="utf-8")
 
         runner = CliRunner()
         # Decline the overwrite prompt for an explicit project template.
@@ -1065,7 +1071,7 @@ class TestInitCommand:
         assert "already exists" in result.output
         assert "Configuration unchanged." in result.output
         # Original should be unchanged
-        assert "existing" in config_file.read_text()
+        assert "existing" in config_file.read_text(encoding="utf-8")
 
     def test_init_force_overwrites_existing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
@@ -1076,13 +1082,13 @@ class TestInitCommand:
         # Create existing config
         config_file = self._project_config_path(tmp_path)
         config_file.parent.mkdir(parents=True)
-        config_file.write_text("[auth]\nusername = 'existing'")
+        config_file.write_text("[auth]\nusername = 'existing'", encoding="utf-8")
 
         runner = CliRunner()
         result = runner.invoke(init, ["--template", "--scope", "project", "--force"])
 
         assert result.exit_code == 0
-        content = config_file.read_text()
+        content = config_file.read_text(encoding="utf-8")
         assert "existing" not in content
         assert "[context]" in content
         assert "[path_aliases]" in content
@@ -1108,7 +1114,7 @@ class TestInitCommand:
         # Project config should only carry the project-scope value.
         project_config = self._project_config_path(tmp_path)
         assert project_config.exists()
-        project_content = project_config.read_text()
+        project_content = project_config.read_text(encoding="utf-8")
         assert 'username = "testuser"' not in project_content
         assert 'post_start = "bash project-setup.sh"' in project_content
         Config.from_files_and_env(require_credentials=False)
@@ -1125,7 +1131,7 @@ class TestInitCommand:
         result = CliRunner().invoke(init, ["--no-discover", "--scope", "global", "--force"])
 
         assert result.exit_code == 0, result.output
-        account_content = self._account_config_path().read_text()
+        account_content = self._account_config_path().read_text(encoding="utf-8")
         assert 'username = "testuser"' in account_content
         assert "post_start" not in account_content
         Config.from_files_and_env(require_credentials=False)
@@ -1134,7 +1140,7 @@ class TestInitCommand:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        self._account_config_path().write_text('[auth]\nusername = "existing"\n')
+        self._account_config_path().write_text('[auth]\nusername = "existing"\n', encoding="utf-8")
         monkeypatch.setenv("INSPIRE_USERNAME", "testuser")
 
         result = CliRunner().invoke(init, ["--no-discover", "--scope", "project", "--force"])
@@ -1142,7 +1148,7 @@ class TestInitCommand:
         assert result.exit_code == 0, result.output
         assert result.output == "Configuration unchanged.\n"
         assert not self._project_config_path(tmp_path).exists()
-        assert 'username = "existing"' in self._account_config_path().read_text()
+        assert 'username = "existing"' in self._account_config_path().read_text(encoding="utf-8")
 
     def test_init_global_excludes_secrets(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
@@ -1156,7 +1162,7 @@ class TestInitCommand:
         result = runner.invoke(init, ["--no-discover", "--scope", "global", "--force"])
 
         assert result.exit_code == 0
-        content = self._account_config_path().read_text()
+        content = self._account_config_path().read_text(encoding="utf-8")
 
         # Username should be written
         assert 'username = "testuser"' in content
@@ -1181,7 +1187,7 @@ class TestInitCommand:
         # Project config should exist
         project_config = self._project_config_path(tmp_path)
         assert project_config.exists()
-        project_content = project_config.read_text()
+        project_content = project_config.read_text(encoding="utf-8")
         assert 'post_start = "bash project-setup.sh"' in project_content
 
         # Global config should NOT exist (no global-scope vars)
@@ -2062,7 +2068,8 @@ class TestPreferSource:
         project_dir = tmp_path / ".inspire"
         project_dir.mkdir()
         (project_dir / "config.toml").write_text(
-            '[notebook]\npost_start = "bash from-toml.sh"\n'
+            '[notebook]\npost_start = "bash from-toml.sh"\n',
+            encoding="utf-8",
         )
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("INSPIRE_NOTEBOOK_POST_START", "bash from-env.sh")
@@ -2081,7 +2088,8 @@ class TestPreferSource:
         project_dir.mkdir()
         (project_dir / "config.toml").write_text(
             '[cli]\nprefer_source = "env"\n'
-            '[notebook]\npost_start = "bash from-toml.sh"\n'
+            '[notebook]\npost_start = "bash from-toml.sh"\n',
+            encoding="utf-8",
         )
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("INSPIRE_NOTEBOOK_POST_START", "bash from-env.sh")
@@ -2099,7 +2107,8 @@ class TestPreferSource:
         project_dir.mkdir()
         (project_dir / "config.toml").write_text(
             '[cli]\nprefer_source = "toml"\n'
-            '[notebook]\npost_start = "bash from-toml.sh"\n'
+            '[notebook]\npost_start = "bash from-toml.sh"\n',
+            encoding="utf-8",
         )
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("INSPIRE_NOTEBOOK_POST_START", "bash from-env.sh")
@@ -2118,7 +2127,8 @@ class TestPreferSource:
         project_dir.mkdir()
         (project_dir / "config.toml").write_text(
             '[cli]\nprefer_source = "toml"\n'
-            '[notebook]\npost_start = "bash from-toml.sh"\n'
+            '[notebook]\npost_start = "bash from-toml.sh"\n',
+            encoding="utf-8",
         )
         monkeypatch.chdir(tmp_path)
         # Set env var for a field NOT in the project TOML
@@ -2139,9 +2149,10 @@ class TestPreferSource:
         account_config = home / ".inspire" / "accounts" / "alice" / "config.toml"
         account_config.parent.mkdir(parents=True)
         account_config.write_text(
-            '[api]\nbase_url = "https://account.example.com"\n'
+            '[api]\nbase_url = "https://account.example.com"\n',
+            encoding="utf-8",
         )
-        (home / ".inspire" / "current").write_text("alice\n")
+        (home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
 
         project_dir = tmp_path / ".inspire"
         project_dir.mkdir()
@@ -2150,7 +2161,8 @@ class TestPreferSource:
             """
 [cli]
 prefer_source = "toml"
-"""
+""",
+            encoding="utf-8",
         )
 
         monkeypatch.chdir(tmp_path)
@@ -2172,7 +2184,8 @@ prefer_source = "toml"
             """
 [cli]
 prefer_source = "invalid"
-"""
+""",
+            encoding="utf-8",
         )
         monkeypatch.chdir(tmp_path)
 
