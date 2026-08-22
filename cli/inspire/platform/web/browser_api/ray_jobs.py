@@ -242,16 +242,9 @@ def list_ray_jobs(
     if workspace_id is None:
         raise ValueError("Workspace selection is required.")
     if not user_ids:
-        current_user = _v2_result(
-            _request_json(
-                session,
-                "POST",
-                "/api/v2/user?Action=GetUserDetail",
-                referer=_ray_referer(),
-                body={},
-                timeout=30,
-            )
-        )
+        from inspire.platform.web.browser_api.jobs import get_current_user
+
+        current_user = get_current_user(session=session)
         current_user_id = str(
             current_user.get("id") or current_user.get("user_id") or ""
         ).strip()

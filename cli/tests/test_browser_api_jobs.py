@@ -10,6 +10,45 @@ from inspire.platform.web.browser_api import jobs as jobs_module
 class _FakeSession:
     workspace_id = "ws-default"
     storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
+    user_detail = None
+
+
+def test_current_user_reuses_identity_captured_during_login(monkeypatch) -> None:  # noqa: ANN001
+    class _Session(_FakeSession):
+        user_detail = {"id": "user-cached", "name": "Alice"}
+
+    monkeypatch.setattr(
+        jobs_module,
+        "_request_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a cached account identity must not reach the platform")
+        ),
+    )
+
+    assert jobs_module.get_current_user(session=_Session()) == {
+        "id": "user-cached",
+        "name": "Alice",
+    }
+
+
+def test_current_user_refresh_performs_live_health_check(monkeypatch) -> None:  # noqa: ANN001
+    class _Session(_FakeSession):
+        user_detail = {"id": "user-cached"}
+        account = "alpha"
+
+        def save(self, account=None):  # noqa: ANN001
+            self.saved_for = account
+
+    session = _Session()
+    monkeypatch.setattr(
+        jobs_module,
+        "_request_json",
+        lambda *_args, **_kwargs: {"Result": {"id": "user-live", "name": "Live"}},
+    )
+
+    assert jobs_module.get_current_user(session=session, refresh=True)["id"] == "user-live"
+    assert session.user_detail == {"id": "user-live", "name": "Live"}
+    assert session.saved_for == "alpha"
 
 
 def test_job_api_validation_uses_visible_selection_terms() -> None:
@@ -155,6 +194,25 @@ def test_list_jobs_passes_keyword(monkeypatch) -> None:  # noqa: ANN001
     assert captured["body"]["created_by"] == "user-x"
     assert captured["body"]["keyword"] == "qwen35"
     assert "distributedTraining" in captured["referer"]
+
+
+def test_list_jobs_clamps_the_action_specific_page_ceiling(monkeypatch) -> None:  # noqa: ANN001
+    captured: dict[str, Any] = {}
+
+    def fake_request_json(session, method, path, *, referer, body=None, timeout=30):  # noqa: ANN001
+        captured["body"] = body
+        return {"Result": {"jobs": [], "total": 0}}
+
+    monkeypatch.setattr(jobs_module, "_request_json", fake_request_json)
+
+    jobs_module.list_jobs(
+        workspace_id="ws-x",
+        created_by="user-x",
+        page_size=1000,
+        session=_FakeSession(),
+    )
+
+    assert captured["body"]["page_size"] == jobs_module.MAX_JOB_PAGE_SIZE == 999
 
 
 def test_get_job_detail_v2_uses_action_api(monkeypatch) -> None:  # noqa: ANN001

@@ -27,6 +27,7 @@ from inspire.platform.web.session import (
 )
 
 __all__ = [
+    "MAX_JOB_PAGE_SIZE",
     "JobInfo",
     "TrainScheduleCapabilities",
     "create_training_job",
@@ -43,6 +44,13 @@ __all__ = [
     "list_jobs",
     "stop_training_job",
 ]
+
+
+# `train.ListJobs` has an exclusive four-digit ceiling: live probes on the
+# shared lty account accept 999 rows and reject 1000 with
+# `InvalidParameter: page or page_size too large`. The transport-wide 5000 cap
+# is therefore not sufficient for this Action.
+MAX_JOB_PAGE_SIZE = 999
 
 
 @dataclass
@@ -232,7 +240,7 @@ def list_jobs(
     body: dict[str, Any] = {
         "workspace_id": workspace_id,
         "page_num": page_num,
-        "page_size": page_size,
+        "page_size": min(page_size, MAX_JOB_PAGE_SIZE),
         "created_by": created_by,
     }
 
@@ -311,12 +319,30 @@ def list_job_events_by_ids(
     )
 
 
-def get_current_user(session: Optional[WebSession] = None) -> dict:
-    """Get current user details."""
+def get_current_user(
+    session: Optional[WebSession] = None,
+    *,
+    refresh: bool = False,
+) -> dict:
+    """Get current user details, reusing the authenticated session identity.
+
+    The user behind one named account cannot change during a session, and the
+    login handshake already stores ``GetUserDetail`` in ``WebSession``.  Most
+    list endpoints need only that stable id for their owner filter, so making
+    another remote call before every list doubled their latency on slow
+    accounts.  ``refresh=True`` remains available to health checks that need
+    an authenticated round trip rather than an identity lookup.
+    """
     if session is None:
         session = get_web_session()
 
-    return _v2_result(
+    cached = getattr(session, "user_detail", None)
+    if not refresh and isinstance(cached, dict):
+        user_id = str(cached.get("id") or cached.get("user_id") or "").strip()
+        if user_id:
+            return dict(cached)
+
+    detail = _v2_result(
         _request_json(
             session,
             "POST",
@@ -326,6 +352,15 @@ def get_current_user(session: Optional[WebSession] = None) -> dict:
             timeout=30,
         )
     )
+    if isinstance(detail, dict) and detail:
+        session.user_detail = detail
+        try:
+            session.save(account=getattr(session, "account", None))
+        except Exception:
+            # Identity persistence is only an acceleration layer. The live
+            # answer remains valid even when the local cache cannot be written.
+            pass
+    return detail
 
 
 def list_job_instances(

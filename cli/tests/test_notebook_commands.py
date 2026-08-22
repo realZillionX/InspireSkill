@@ -104,7 +104,7 @@ from inspire.cli.commands.notebook import notebook_lookup as _NBL_MOD  # noqa: E
 _REAL_RESOLVE_NOTEBOOK_ID = _NBL_MOD._resolve_notebook_id
 
 
-def test_current_user_id_uses_live_user_detail(
+def test_current_user_id_uses_browser_api_identity_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeSession:
@@ -116,8 +116,8 @@ def test_current_user_id_uses_live_user_detail(
     calls: list[tuple[str, str]] = []
 
     def _fake_current_user(session=None):  # noqa: ANN001
-        calls.append(("GetUserDetail", ""))
-        return {"id": "live-user"}
+        calls.append(("get_current_user", ""))
+        return dict(session.user_detail)
 
     monkeypatch.setattr(
         _NBL_MOD.browser_api_module, "get_current_user", _fake_current_user
@@ -125,11 +125,11 @@ def test_current_user_id_uses_live_user_detail(
 
     session = _FakeSession()
     assert _NBL_MOD._try_get_current_user_ids(session, base_url="https://example.invalid") == [
-        "live-user"
+        "cached-user"
     ]
-    assert session.user_detail == {"id": "live-user"}
-    assert getattr(session, "saved", False) is True
-    assert calls == [("GetUserDetail", "")]
+    assert session.user_detail == {"id": "cached-user"}
+    assert getattr(session, "saved", False) is False
+    assert calls == [("get_current_user", "")]
 
 
 def test_current_user_id_failure_keeps_api_details_in_debug_log(
@@ -166,7 +166,7 @@ def test_current_user_id_failure_keeps_api_details_in_debug_log(
     assert "browser runtime missing" in caplog.text
 
 
-def test_current_user_detail_uses_live_user_detail(
+def test_current_user_detail_uses_browser_api_identity_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _FakeSession:
@@ -178,16 +178,16 @@ def test_current_user_detail_uses_live_user_detail(
     monkeypatch.setattr(
         _NBL_MOD.browser_api_module,
         "get_current_user",
-        lambda session=None: {"id": "live-user", "name": "Live"},
+        lambda session=None: dict(session.user_detail),
     )
 
     session = _FakeSession()
     assert _NBL_MOD._get_current_user_detail(
         session,
         base_url="https://example.invalid",
-    ) == {"id": "live-user", "name": "Live"}
-    assert session.user_detail == {"id": "live-user", "name": "Live"}
-    assert getattr(session, "saved", False) is True
+    ) == {"id": "cached-user"}
+    assert session.user_detail == {"id": "cached-user"}
+    assert getattr(session, "saved", False) is False
 
 
 @pytest.mark.parametrize(

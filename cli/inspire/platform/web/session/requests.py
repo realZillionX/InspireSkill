@@ -90,10 +90,9 @@ atexit.register(close_pooled_requests_session)
 def pooled_requests_session(session: WebSession, base_url: str) -> requests.Session:
     """Return the process-wide HTTP session, so connections survive the call.
 
-    A workspace-wide question costs one request per compute group, and a
-    background refresh costs a few hundred across every workspace. Building a
-    fresh :class:`requests.Session` per request throws the connection away each
-    time, so every one of them pays a new TCP connect and TLS handshake --
+    A workspace-wide question can cost one request per compute group. Building
+    a fresh :class:`requests.Session` per request throws the connection away
+    each time, so every one of them pays a new TCP connect and TLS handshake --
     measured at ~300 ms against ``qz.sii.edu.cn`` through the local SII proxy,
     against ~30 ms once the connection is reused.
 

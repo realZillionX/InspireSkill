@@ -21,6 +21,7 @@ from .availability import (
 )
 from .jobs import (
     JobInfo,
+    MAX_JOB_PAGE_SIZE,
     TrainScheduleCapabilities,
     create_training_job,
     delete_job,
@@ -220,6 +221,7 @@ from .schedule_config import (
 __all__ = [
     # Jobs / users
     "JobInfo",
+    "MAX_JOB_PAGE_SIZE",
     "TrainScheduleCapabilities",
     "create_training_job",
     "delete_job",

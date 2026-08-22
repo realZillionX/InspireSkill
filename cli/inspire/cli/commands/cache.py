@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 import time
 from typing import Sequence
@@ -119,14 +118,11 @@ def _reports_nothing(row: dict[str, object]) -> bool:
 def _touched_at(status: ScopeStatus) -> float:
     """When this scope last learned anything, complete scan or not.
 
-    Workload names are kept warm by an incremental background pass that reads
-    the newest end of each list and merges, so their scopes stay short of a
-    full scan by design. Reporting them off ``last_full_refresh_at`` alone
-    printed a scope refreshed a minute ago as ``never``.
+    A targeted name lookup is intentionally partial, while an explicit cache
+    refresh is complete. Both are useful observations, so status reports the
+    newer timestamp instead of calling a recently resolved scope ``never``.
     """
-    if status.last_full_refresh_at > 0:
-        return status.last_full_refresh_at
-    return status.last_refresh_at
+    return max(status.last_full_refresh_at, status.last_refresh_at)
 
 
 def _status_payload(
@@ -326,9 +322,6 @@ def cache() -> None:
     is_flag=True,
     help="Force a complete refresh even when cached scopes are still fresh.",
 )
-@click.option("--due", is_flag=True, hidden=True)
-@click.option("--quiet", is_flag=True, hidden=True)
-@click.option("--account", hidden=True, metavar="ACCOUNT")
 @pass_context
 def refresh_cache(
     ctx: Context,
@@ -336,16 +329,14 @@ def refresh_cache(
     workspaces: tuple[str, ...],
     name: str,
     full: bool,
-    due: bool,
-    quiet: bool,
-    account: str | None,
 ) -> None:
     """Refresh one named slice of the cache.
 
     Say what to refresh. Every kind in every workspace is a few hundred
     requests and reads catalogs that only move when an admin edits them, so
     there is no bare form of this command — and normally nothing to run at
-    all, because workload names are kept warm in the background.
+    all. Normal name resolution is read-through/write-through: a fresh hit is
+    local, while an expired entry or miss refreshes only the requested name.
 
     Reach for it when you know something changed under the cache: an admin
     edited a compute group's specs, or an image was deleted from the web UI.
@@ -356,12 +347,7 @@ def refresh_cache(
         inspire cache refresh --resource quota-job --workspace CPU资源空间 --full
         inspire cache refresh --resource image --name pytorch:2.1
     """
-    account = (
-        str(account or "").strip()
-        or os.environ.get("INSPIRE_RESOURCE_INDEX_REFRESH_ACCOUNT", "").strip()
-        or None
-    )
-    if not due and not (resources or workspaces or name):
+    if not (resources or workspaces or name):
         exit_with_error(
             ctx,
             "ValidationError",
@@ -400,9 +386,8 @@ def refresh_cache(
             list_command=f"inspire {selected[0]} list",
         )
 
-    index = _index_or_exit(ctx, account)
-    session = require_web_session(ctx, hint=WEB_AUTH_HINT, account=account)
-    force = bool(full or exact_name or resources or workspaces) and not due
+    index = _index_or_exit(ctx)
+    session = require_web_session(ctx, hint=WEB_AUTH_HINT)
     try:
         summary = refresh_resource_index(
             session=session,
@@ -410,12 +395,7 @@ def refresh_cache(
             resource_types=selected,
             workspace_names=validated_workspaces or None,
             exact_name=exact_name,
-            force=force,
-            # Only the background pass reads incrementally. Anyone who typed
-            # this command asked for a complete scan of what they named, which
-            # is also the only thing that can drop a workload the platform no
-            # longer lists.
-            incremental=due,
+            force=bool(full or exact_name or resources or workspaces),
         )
     except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
         _exit_cache_database_error(ctx)
@@ -427,11 +407,6 @@ def refresh_cache(
             str(exc),
             EXIT_VALIDATION_ERROR,
         )
-
-    if quiet:
-        if summary.error_count:
-            raise SystemExit(EXIT_API_ERROR)
-        return
 
     payload = _refresh_payload(summary.results)
     if ctx.json_output:

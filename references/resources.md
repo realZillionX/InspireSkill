@@ -56,13 +56,13 @@
 
 CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解析；普通 `list`、`status`、`events`、`metrics` 和 Availability 仍然查询 Live 平台，不能把缓存当作资源事实。怀疑缓存过期时用 `inspire cache status|refresh|clear` 管理；清空缓存不会删除任何平台资源。三条命令都支持 `--resource <kind>` 只针对一类，可重复，不带才是全部。kind 分四组：平台目录 `workspace` / `project` / `compute-group` / `image` / `model`，Workload `notebook` / `job` / `hpc` / `ray` / `serving`，Quota 目录 `quota-<workload>`，以及 Notebook 显卡型号那层 `notebook-gpu`。最后这个只能 `status` 和 `clear`，不能 `refresh`——它是用到才探一个组，没有可以整批拉的列表接口。
 
-缓存年龄按东西变多快分三档：Workload 名字 5 分钟，账号结构（`workspace` / `project` / `compute-group` / `model`）1 天，目录类（`image` 和 `quota-<workload>`）7 天。TTL 同时是「这份缓存还能不能读」和「后台多久去补一次」：过期只会让一次解析回落到 Live，那总是安全的；长档换来的风险在另一个方向——平台已经删掉的规格或镜像，可能还会被缓存报出来直到 Scope 过期。
+缓存年龄按东西变多快分三档：Workload 名字和账号结构（`workspace` / `project` / `compute-group` / `model`）1 天，目录类（`image` 和 `quota-<workload>`）7 天。Workload 的状态虽然变化快，但缓存里只保存稳定的「名字 → 句柄」映射；普通 `status` / `list` 仍然读 Live。创建和删除经过 CLI 时会立即写入或墓碑，缓存 miss、过期和 stale-handle 重试只针对当前名字回源。因此平台在网页上删除并用同名重建对象时，最坏是第一次操作命中旧句柄、多付一次 Live 重试，不会把旧状态当成当前事实。
 
-后台补 Workload 名字时只读列表最新的那一头（平台按创建时间倒序返回），读到一页全是已知的就停，而且只合并、不对账。所以后台绝不会删掉缓存里的行：平台那边消失的任务是靠 TTL 自己掉出去的——没人再刷新它的有效期，5 分钟后就查不到了；用 CLI 删的当场就打上墓碑。代价是「网页上删掉的任务名还能解析 5 分钟」，换来的是这一趟从 86 个请求 / 8 MB 降到 70 个 / 2.1 MB。
+**普通命令不会启动全账号后台刷新。** 缓存只由实际解析按需填充；没有消费者的 Scope 不产生网络流量。这样在多 Workspace 的慢账号上不会为未使用的 Image、Model 和 Workload 逐空间预热，也不会让缓存维护与前台争用同一账号的请求额度。
 
-**`inspire cache refresh` 必须说明刷什么**，不带 `--resource` / `--workspace` / `--name` 会直接报错。全量刷一遍是几百个请求，而且读的是几乎不动的目录；正常情况下你根本不需要跑它——Workload 名字后台一直在补，其余的解析一次就自己缓存了。真正要跑的场合只有一种：你知道缓存底下的东西变了，比如管理员刚改过计算组规格、或者刚在网页上删过镜像。这时候先 `inspire cache status` 看哪个 Scope 真的不对，再 `inspire cache refresh --resource <kind> --workspace <name> --full` 只刷那一块。手敲的这一次是完整对账，会把平台不再列出的行清掉。
+**`inspire cache refresh` 必须说明刷什么**，不带 `--resource` / `--workspace` / `--name` 会直接报错。全量刷一遍是几百个请求，而且读的是几乎不动的目录；正常情况下你根本不需要跑它。真正要跑的场合只有一种：你知道缓存底下的东西变了，比如管理员刚改过计算组规格、或者刚在网页上删过镜像。这时候先 `inspire cache status` 看哪个 Scope 真的不对，再 `inspire cache refresh --resource <kind> --workspace <name> --full` 只刷那一块。手敲的这一次是完整对账，会把平台不再列出的行清掉。
 
-`cache status` 里 Workload 那几行常态就是 `partial`：后台只读了最新的一头，没做完整扫描。这不是故障，`error` 才是。
+`cache status` 里的 `partial` 表示这个 Scope 只经过某个名字的定向解析、尚未做完整扫描。这不是故障，`error` 才是；需要完整对账时显式运行上述窄范围 `cache refresh`。
 
 `empty` 是另一个要看的信号：这个资源**刷新过、还在有效期内，却一个名字都拿不出来**。单个 Workspace 空是正常的（那个空间就是没有 Notebook），所以这个判定只按整个资源画——全局一条都没有，而刷新又声称跑过。配额目录出过一次这个状态，当时 `cache status` 把它印成 `ready`，于是「每个 `create` 都被拒」这件事在看板上完全看不出来。撞到 `empty` 先 `cache refresh --resource <kind> --full`，还空就是真出事了。
 

@@ -6,17 +6,11 @@ normal list/status commands continue to use live APIs as their source of truth.
 
 from __future__ import annotations
 
-import os
 import sqlite3
-import subprocess
-import sys
 import time
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
-from inspire.accounts import account_dir, current_account
-from inspire.cli.utils.detached import detached_creationflags, process_is_alive
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.resource_index import (
     DEFAULT_TTL_SECONDS,
@@ -52,24 +46,12 @@ WORKSPACE_RESOURCE_TYPES = tuple(
     if resource_type not in GLOBAL_RESOURCE_TYPES
 )
 
-# The scheduler must wake no slower than the shortest resource TTL, otherwise
-# workload mappings sit expired between refreshes. It is also the floor on how
-# often any account spawns a background refresh.
-PERIODIC_REFRESH_INTERVAL_SECONDS = min(DEFAULT_TTL_SECONDS.values())
-PERIODIC_REFRESH_STAMP = "resource-index-refresh.stamp"
-PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS = 30 * 60
-
 # A refresh reads whole scopes, not screens of them, so it pages at the bulk
 # size rather than the UI's. At 100 a workspace holding ~1400 of the user's
-# jobs cost 14 round trips every five minutes; the gateway caps `page_size` at
+# jobs costs 14 round trips; the gateway caps `page_size` at
 # `MAX_PAGE_SIZE` and clamps anything above it, so this only ever means fewer
 # requests for the same rows.
 REFRESH_PAGE_SIZE = 1000
-
-# The incremental pass wants the opposite of a bulk scan: a small first page,
-# so that "nothing new here" costs almost nothing. It normally reads exactly
-# one of these per workspace.
-INCREMENTAL_PAGE_SIZE = 100
 
 
 @dataclass(frozen=True)
@@ -489,21 +471,8 @@ def _read_pages(
     exact_name: str,
     *,
     page_size: int,
-    known: frozenset[str] | None,
 ) -> list[ResourceIdentity]:
-    """Page through one workload list, stopping as early as the mode allows.
-
-    ``known`` switches the stop rule. Without it this is a full scan: read
-    until the platform's ``total`` is accounted for, which is what lets the
-    caller reconcile the scope and tombstone whatever it did not see.
-
-    With it the read is incremental. These lists answer newest-first (verified
-    for ``job``, ``hpc`` and ``tensorboard``), so once a page holds nothing the
-    index is missing and the index already holds at least as many rows as the
-    platform reports, everything past it is rows we already have. A workspace
-    holding ~1400 jobs cost 6.3 MB every five minutes to re-read in full; the
-    incremental pass normally stops after one small page.
-    """
+    """Page through one complete workload list for an explicit refresh."""
     records: list[ResourceIdentity] = []
     seen: set[str] = set()
     fetched = 0
@@ -511,17 +480,12 @@ def _read_pages(
     while True:
         items, total = read_page(session, workspace_id, exact_name, page, page_size)
         fetched += len(items)
-        fresh_ids = False
         for record in items:
             resource_id = str(record.resource_id or "").strip()
             if resource_id and resource_id not in seen:
                 seen.add(resource_id)
                 records.append(record)
-            if known is not None and resource_id and resource_id not in known:
-                fresh_ids = True
         if not items or len(items) < page_size or fetched >= total:
-            break
-        if known is not None and not fresh_ids and len(known) >= total:
             break
         page += 1
     return records
@@ -537,55 +501,8 @@ def _workload_fetcher(resource_type: str) -> Fetcher:
             workspace_id,
             exact_name,
             page_size=REFRESH_PAGE_SIZE,
-            known=None,
         )
         return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
-
-    return _fetch
-
-
-def _incremental_workload_fetcher(
-    resource_type: str,
-    *,
-    index: ResourceIndex,
-    session: object,
-) -> Fetcher:
-    """Read only the head of one workload list, and never claim it is all of it.
-
-    ``complete=False`` is the whole point: the pass looked at the newest rows
-    and nothing else, so it merges and the refresh engine is never allowed to
-    tombstone from it. Rows the platform dropped still leave -- nothing
-    refreshes their ``expires_at``, so they fall out one TTL after the last
-    time they were seen -- and a delete through the CLI tombstones on the spot.
-    A complete scan is what `inspire cache refresh` is for.
-    """
-
-    def _fetch(session_arg: object, workspace_id: str, exact_name: str) -> FetchResult:
-        scope = _workspace_bound_scope(
-            session,
-            resource_type=resource_type,
-            workspace_id=workspace_id,
-        )
-        known: frozenset[str] | None = None
-        if scope is not None:
-            try:
-                known = frozenset(
-                    item.resource_id for item in index.list_identities(scope)
-                )
-            except (OSError, sqlite3.Error):
-                known = None
-        records = _read_pages(
-            WORKLOAD_PAGES[resource_type],
-            session_arg,
-            workspace_id,
-            exact_name,
-            page_size=INCREMENTAL_PAGE_SIZE,
-            known=known,
-        )
-        return FetchResult(
-            _filter_exact(_dedupe_records(records), exact_name),
-            complete=False,
-        )
 
     return _fetch
 
@@ -968,16 +885,9 @@ def refresh_resource_index(
     workspace_names: Sequence[str] | None = None,
     exact_name: str = "",
     force: bool = False,
-    incremental: bool = False,
     fetchers: Mapping[str, Fetcher] | None = None,
 ) -> RefreshSummary:
-    """Refresh selected resource scopes and return a name-only summary.
-
-    ``incremental`` is the background pass: workload lists are read from the
-    newest end only and merged, never reconciled. A complete scan — the one
-    that can tombstone a workload the platform no longer lists — is what a
-    hand-typed ``inspire cache refresh`` does.
-    """
+    """Completely refresh selected resource scopes and return a name-only summary."""
     selected_types = tuple(resource_types or RESOURCE_TYPES)
     unknown = sorted(set(selected_types) - set(RESOURCE_TYPES))
     if unknown:
@@ -990,15 +900,6 @@ def refresh_resource_index(
         # refresh that filled it, or a second run would reuse a catalog nobody
         # re-read.
         built: dict[str, Fetcher] = {**RESOURCE_FETCHERS, "image": _image_fetcher()}
-        if incremental:
-            built.update(
-                {
-                    resource_type: _incremental_workload_fetcher(
-                        resource_type, index=index, session=session
-                    )
-                    for resource_type in WORKLOAD_PAGES
-                }
-            )
         registry: Mapping[str, Fetcher] = built
     else:
         registry = fetchers
@@ -1227,132 +1128,13 @@ def refresh_resource_index(
     return RefreshSummary(results)
 
 
-def periodic_refresh_stamp_path(account: str | None = None) -> Path | None:
-    selected = str(account or "").strip() or current_account()
-    if not selected:
-        return None
-    return account_dir(selected) / PERIODIC_REFRESH_STAMP
-
-
-def maybe_spawn_periodic_refresh(
-    *,
-    interval_seconds: int = PERIODIC_REFRESH_INTERVAL_SECONDS,
-) -> bool:
-    """Spawn a quiet due-only refresh when a valid cached session is available."""
-    if os.environ.get("INSPIRE_RESOURCE_INDEX_REFRESH_CHILD") == "1":
-        return False
-    if os.environ.get("INSPIRE_DISABLE_RESOURCE_INDEX_REFRESH") == "1":
-        return False
-    if "PYTEST_CURRENT_TEST" in os.environ:
-        return False
-
-    account = current_account()
-    stamp = periodic_refresh_stamp_path(account)
-    if not account or stamp is None:
-        return False
-
-    from inspire.platform.web.session.models import WebSession
-
-    if WebSession.load(account=account) is None:
-        return False
-
-    now = time.time()
-    try:
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        for _ in range(2):
-            try:
-                fd = os.open(
-                    stamp,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                    0o600,
-                )
-            except FileExistsError:
-                try:
-                    stamp.chmod(0o600)
-                    contents = stamp.read_text(encoding="ascii").strip()
-                    pid = int(contents)
-                    stamp_age = max(0.0, now - stamp.stat().st_mtime)
-                except (OSError, ValueError):
-                    pid = 0
-                    try:
-                        stamp_age = max(0.0, now - stamp.stat().st_mtime)
-                    except OSError:
-                        stamp_age = 0.0
-                if pid and stamp_age < PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS:
-                    # A live refresh child owns the stamp; leave it alone.
-                    if process_is_alive(pid):
-                        return False
-                try:
-                    if (
-                        stamp_age < PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS
-                        and stamp_age < max(30, interval_seconds)
-                    ):
-                        return False
-                    stamp.unlink()
-                except FileNotFoundError:
-                    continue
-                except OSError:
-                    return False
-                continue
-            else:
-                with os.fdopen(fd, "w", encoding="ascii") as handle:
-                    handle.write(str(os.getpid()))
-                break
-        else:
-            return False
-    except OSError:
-        return False
-
-    env = os.environ.copy()
-    env["INSPIRE_RESOURCE_INDEX_REFRESH_CHILD"] = "1"
-    env["INSPIRE_SKIP_UPDATE_CHECK"] = "1"
-    env["INSPIRE_RESOURCE_INDEX_REFRESH_ACCOUNT"] = account
-    try:
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "inspire.cli.main",
-                "cache",
-                "refresh",
-                "--due",
-                "--quiet",
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=env,
-            start_new_session=True,
-            close_fds=True,
-            creationflags=detached_creationflags(),
-        )
-        child_pid = getattr(process, "pid", None)
-        if isinstance(child_pid, int) and child_pid > 0:
-            try:
-                stamp.write_text(str(child_pid), encoding="ascii")
-                stamp.chmod(0o600)
-            except OSError:
-                pass
-    except OSError:
-        try:
-            stamp.unlink()
-        except OSError:
-            pass
-        return False
-    return True
-
-
 __all__ = [
     "GLOBAL_RESOURCE_TYPES",
-    "PERIODIC_REFRESH_INTERVAL_SECONDS",
-    "PERIODIC_REFRESH_STAMP_MAX_AGE_SECONDS",
     "RESOURCE_FETCHERS",
     "RESOURCE_TYPES",
     "WORKSPACE_RESOURCE_TYPES",
     "FetchResult",
     "RefreshResult",
     "RefreshSummary",
-    "maybe_spawn_periodic_refresh",
-    "periodic_refresh_stamp_path",
     "refresh_resource_index",
 ]

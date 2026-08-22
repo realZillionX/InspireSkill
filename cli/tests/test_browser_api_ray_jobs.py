@@ -36,6 +36,7 @@ from inspire.platform.web.browser_api.ray_jobs import (
 class _FakeSession:
     def __init__(self, workspace_id: str | None = "ws-default") -> None:
         self.workspace_id = workspace_id
+        self.user_detail = {"id": "user-current"}
 
 
 def _install_fake_request(

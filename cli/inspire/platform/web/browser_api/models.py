@@ -136,16 +136,10 @@ def _merge_filter(
 
 
 def _current_user_id(session: WebSession, workspace_id: str) -> str:
-    payload = _v2_result(
-        _request_json(
-            session,
-            "POST",
-            "/api/v2/user?Action=GetUserDetail",
-            referer=_referer(workspace_id),
-            body={},
-            timeout=30,
-        )
-    )
+    del workspace_id
+    from inspire.platform.web.browser_api.jobs import get_current_user
+
+    payload = get_current_user(session=session)
     user_id = str(payload.get("id") or payload.get("user_id") or "").strip()
     if not user_id:
         raise ValueError("Current user could not be resolved for model listing.")

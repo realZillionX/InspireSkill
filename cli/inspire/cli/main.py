@@ -167,20 +167,6 @@ def main(
         except Exception:
             pass
 
-    if not (
-        len(sys.argv) > 1
-        and sys.argv[1] in {"account", "cache", "update", "uninstall"}
-    ):
-        try:
-            from inspire.cli.utils.resource_index_refresh import (
-                maybe_spawn_periodic_refresh,
-            )
-
-            maybe_spawn_periodic_refresh()
-        except Exception:
-            pass
-
-
 @click.command("_ensure-playwright-runtime", hidden=True)
 @click.option("--silent", is_flag=True, help="Suppress runtime setup output.")
 def ensure_playwright_runtime(silent: bool) -> None:

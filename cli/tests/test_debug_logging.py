@@ -245,7 +245,7 @@ def test_debug_does_not_expand_account_check_output(
     monkeypatch.setattr(
         check_module.browser_api_module,
         "get_current_user",
-        lambda session=None: {"name": "alice"},
+        lambda session=None, **_kwargs: {"name": "alice"},
     )
 
     runner = CliRunner()

@@ -1837,7 +1837,7 @@ class TestAccountCheckProxyDiagnostics:
         monkeypatch.setattr(
             check_module.browser_api_module,
             "get_current_user",
-            lambda session=None: {"name": "test-account"},
+            lambda session=None, **_kwargs: {"name": "test-account"},
         )
         monkeypatch.chdir(tmp_path)
 
@@ -1993,7 +1993,7 @@ class TestAccountCheckProxyDiagnostics:
         self._clear_shell_proxies(monkeypatch)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:18443")
 
-        def _expired(session=None):  # noqa: ANN001, ANN202
+        def _expired(session=None, **_kwargs):  # noqa: ANN001, ANN202
             raise SessionExpiredError("session expired")
 
         monkeypatch.setattr(check_module.browser_api_module, "get_current_user", _expired)

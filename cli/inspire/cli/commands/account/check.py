@@ -264,7 +264,9 @@ def check(ctx: Context, details: bool) -> None:
 
         try:
             session = get_web_session()
-            browser_api_module.get_current_user(session=session)
+            # A health check must prove the session against the platform; the
+            # cached identity used by normal owner-filtered lists is not enough.
+            browser_api_module.get_current_user(session=session, refresh=True)
         except (SessionExpiredError, ValueError) as e:
             auth_ok = False
             auth_error = str(e)

@@ -229,7 +229,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 机器本身发生了什么是另一层：`resources node-events <节点名>` 是平台上唯一按节点而不是按工作负载组织的事件源，内核 OOM kill、Cordon / Uncordon、重启、`NodeNotSchedulable` 都在这里，「同一台机器上反复失败」此前在 CLI 里无处可查。
 
-余量和规格始终读 Live 数据；`inspire cache status / refresh / clear` 管的是本地加速缓存——Name 解析索引、Quota 目录和 Notebook 显卡型号，三条命令都支持 `--resource <kind>` 分类操作。正常情况下 `refresh` 根本不需要跑（Workload 名字后台一直在补，其余的解析一次就自己缓存了），所以它**不接受裸形式**，必须用 `--resource` / `--workspace` / `--name` 说明刷哪一块；`cache status` 里 Workload 那几行常态是 `partial`（后台只读最新的一头），要看的信号是 `empty`——刷过、还在有效期内、却一个名字都拿不出来。
+余量和规格始终读 Live 数据；`inspire cache status / refresh / clear` 管的是本地加速缓存——Name 解析索引、Quota 目录和 Notebook 显卡型号，三条命令都支持 `--resource <kind>` 分类操作。缓存按需读穿、写穿：命中直接在本地解析，miss 或过期才针对当前名字回源，创建/删除后立即更新；普通命令不会在后台扫描所有 Workspace。正常情况下 `refresh` 根本不需要跑，所以它**不接受裸形式**，必须用 `--resource` / `--workspace` / `--name` 说明刷哪一块；`empty` 表示刷过、还在有效期内、却一个名字都拿不出来。
 
 </details>
 

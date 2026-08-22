@@ -44,9 +44,9 @@ logger = logging.getLogger(__name__)
 
 
 # How long the same credentials stay refused, by consecutive failure count.
-# The first entry only has to outlive one fan-out — a foreground command, the
-# background refresher and whatever else woke up on the same expiry. The later
-# ones exist because a repeat failure means the credentials themselves are
+# The first entry only has to outlive one foreground fan-out and any concurrent
+# commands that woke up on the same expiry. The later ones exist because a
+# repeat failure means the credentials themselves are
 # wrong, and that is the case where retrying on a timer is what reaches the
 # lockout threshold.
 COOLDOWN_SCHEDULE_SECONDS = (60.0, 300.0, 900.0, 1800.0)

@@ -29,8 +29,11 @@ RESOURCE_INDEX_FILENAME = "resource-index.sqlite3"
 
 # Three tiers, paced by how fast each kind actually moves.
 #
-# Workloads come and go under the user's own hand, minute to minute, and they
-# are what a name is usually resolved against — 5 minutes.
+# Workload *status* moves minute to minute, but the cached value here is only a
+# name-to-handle identity. Normal list/status output remains live, writes update
+# the index immediately, misses go live, and a stale hit gets one invalidation
+# plus live retry. A day therefore avoids repeated name scans without making a
+# mutable platform fact look current.
 #
 # Account structure changes when a person is added to a workspace or project,
 # or when an admin edits a compute group: rare, but the user is present for it
@@ -48,20 +51,18 @@ RESOURCE_INDEX_FILENAME = "resource-index.sqlite3"
 # still be quoted from cache until the scope expires. `cache refresh
 # --resource <kind> [--workspace <name>] --full` forces the issue.
 #
-# The shortest value here also paces the background refresh, so lowering it
-# costs a background process per account that often.
 DEFAULT_TTL_SECONDS: dict[str, int] = {
     "workspace": 24 * 60 * 60,
     "project": 24 * 60 * 60,
     "compute-group": 24 * 60 * 60,
     "model": 24 * 60 * 60,
     "image": 7 * 24 * 60 * 60,
-    "job": 5 * 60,
-    "hpc": 5 * 60,
-    "ray": 5 * 60,
-    "serving": 5 * 60,
-    "notebook": 5 * 60,
-    "tensorboard": 5 * 60,
+    "job": 24 * 60 * 60,
+    "hpc": 24 * 60 * 60,
+    "ray": 24 * 60 * 60,
+    "serving": 24 * 60 * 60,
+    "notebook": 24 * 60 * 60,
+    "tensorboard": 24 * 60 * 60,
 }
 
 # One resource type per workload: a compute group exposes a different quota
@@ -1234,8 +1235,8 @@ class ResourceIndex:
         back incomplete, leaves ``last_full_refresh_at`` where it was, so by
         that question the scope stays due forever and is re-attempted on every
         wake-up -- ``model`` answered ``InvalidParameter`` for every workspace
-        and was retried every five minutes for days, and a rate-limited quota
-        fan-out re-ran its whole fan-out just as fast. Readers must keep going
+        and was retried on every refresh attempt for days, and a rate-limited
+        quota fan-out re-ran its whole fan-out just as fast. Readers must keep going
         live in both cases, which is why this cannot be folded into
         ``scope_due``: this one only paces the refresh engine.
         """

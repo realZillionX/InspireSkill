@@ -83,6 +83,7 @@ Referer: {base_url}/{对应控制台页面}
 | 重试 | 最多 3 次，优先采纳 `Retry-After`（上限 8 秒），否则指数退避加抖动；耗尽后原样抛出 |
 | 限流吸收位置 | **必须留在传输层**。Workspace 级问题都是「每个计算组一次请求」的扇出，正是限流器会反应的形状；Wrapper 不要各自重试 |
 | `page_size` 上限 | 超过 5000 由 `_clamped_page_size()` 无条件截断。网关**逐 service 执行**这条（`hpc` 强制，`ray` 给 10000 也照收），不能靠某个 service 没报错推断没有上限。`-1` 是「取全部」，原样放过 |
+| `train.ListJobs` 的更低上限 | 这是 Action 级例外：`page_size=999` 实测返回 999 行，`1000` 直接答 `InvalidParameter: page or page_size too large`。`jobs.list_jobs` 先按 999 截断，缓存完整刷新也复用这条 Wrapper |
 | 请求体 | 不会被就地修改，截断走浅拷贝 |
 | 连接 | 复用连接池；Cookie / Header / 代理每次调用重设，刷新过 Session 后不会拿旧凭据作答 |
 
@@ -115,7 +116,7 @@ CAS 在连续若干次登录失败后会锁账号，也会对来源机器加验�
 | `AuthenticationError` | 「凭据已经出去了，且没通过」。凭据一旦 POST 出去，**任何**后续失败（4xx、5xx、连接断开、响应丢失）都是它 | 当成普通 `ValueError` 就会回落 Playwright，把一次提交变成两次 |
 | 回落边界 | requests/CAS 路径**只在提交之前**可以回落到 Playwright：取登录页、解析表单、拿 RSA 公钥失败都还没提交 | 把提交之后的失败也当作「换条路再试」，就是第二次提交 |
 | 验证码 | 表单里出现 `authcode` / `captcha` / `smscode` 时**提交之前**就停，不提交也不回落浏览器（浏览器同样答不出），且不打开熔断——没提交就没有被拒的凭据 | 留空照submit，拿回 `账号或密码错误。`，把「平台在要验证码」报成「你的密码不对」 |
-| 熔断标记 | `web_session.login-block.json`，按 Account 存，记 `failures` / `blocked_until` / 凭据指纹（PBKDF2，不含明文），不含平台响应 | 以为它只在本进程有效——它的意义正是让并发进程和后台刷新读到同一个事实 |
+| 熔断标记 | `web_session.login-block.json`，按 Account 存，记 `failures` / `blocked_until` / 凭据指纹（PBKDF2，不含明文），不含平台响应 | 以为它只在本进程有效——它的意义正是让并发进程读到同一个事实 |
 | 冷却档位 | 60s → 5min → 15min → 30min（封顶），按**连续**失败次数升级；1 小时没人再试就清零重来 | 以为等一分钟总能再试一次——连续失败会越等越久，这正是防锁的部分 |
 | 解除方式 | 冷却到期、**改凭据**（指纹变了立刻放行）、或有更新的 Session 落盘 | 以为只能干等；用户改完密码应当立刻能登 |
 | 登录成功 | 清掉标记，不计次 | 以为成功也受限——成功的提交不会触发 CAS 锁定，不该限流 |
@@ -579,6 +580,7 @@ Referer：`/jobs/distributedTraining`。
 | 项 | 事实 |
 | --- | --- |
 | `GetUserDetail` 只覆盖当前用户 | 传空体返回当前账号；传 `user_id` / `id` / `UserId` 一律 `InvalidParameter` |
+| 当前用户身份在登录时已经读过 | 登录握手把完整 `GetUserDetail` 存进账号隔离的 `WebSession`；所有只需要 owner id 的列表直接复用，缺失时才 Live 回源并写回。`account check` 是例外：它显式强制 Live，用这次往返证明 Session 仍能被平台接受。共享慢账号上这会从每条列表命令稳定省掉一个串行请求 |
 | `userWorkspaceList` 是 Workspace 枚举的唯一来源 | 每个条目 `path` 是 `ws-…` id，`name` 是显示名，`is_fair_workspace` 是优先级选择器的唯一数据源，缺了就没法判断该工作空间用哪套优先级 |
 | 登录自举就用这两个 | `GetRoutes` 的 `WorkspaceId` 传字面量 `"default"` 网关照收，答完整的 `userWorkspaceList`——与传真实 Workspace id 的响应逐字节相同（5794 字节 0 差异）。空串或省略才报 `WorkspaceId is required`。这正是登录握手时的处境：还一个 id 都不知道 |
 | 未封装 | `user.ListSSH`（账号级 SSH 公钥注册表，与 Notebook SSH 链路无关）、`user.GetMyPermissions`（见第 6 章）。`ListAPIKeys` 随 `user api-keys` 命令一起下线 |

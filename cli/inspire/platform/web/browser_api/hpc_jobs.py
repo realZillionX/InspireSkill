@@ -172,16 +172,9 @@ def list_hpc_jobs(
     if workspace_id is None:
         raise ValueError("Workspace selection is required.")
     if created_by is None:
-        current_user = _v2_result(
-            _request_json(
-                session,
-                "POST",
-                "/api/v2/user?Action=GetUserDetail",
-                referer=f"{_get_base_url()}/jobs/highPerformanceComputing",
-                body={},
-                timeout=30,
-            )
-        )
+        from inspire.platform.web.browser_api.jobs import get_current_user
+
+        current_user = get_current_user(session=session)
         created_by = str(current_user.get("id") or current_user.get("user_id") or "").strip()
         if not created_by:
             raise ValueError("Current user could not be resolved for HPC listing.")

@@ -44,7 +44,6 @@ def home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         "web_session.json.lock",
         "web_session.json.refresh.lock",
         "resource-index.sqlite3",
-        "resource-index-refresh.stamp",
         "notebook-ide-url.json",
         "bridges.json",
         "rtunnel-proxy-state.json",
@@ -74,6 +73,9 @@ def test_unknown_files_and_dirs_are_reported(home: Path) -> None:
     (home / "events").mkdir()
     (home / "events" / "a.events.json").write_text("", encoding="utf-8")
     (home / "accounts" / "primary" / "project_list.json").write_text("", encoding="utf-8")
+    (home / "accounts" / "primary" / "resource-index-refresh.stamp").write_text(
+        "", encoding="utf-8"
+    )
     (home / "accounts" / "primary" / "config.toml.bak-7897").write_text("", encoding="utf-8")
 
     found = {entry.path.name: entry.is_dir for entry in state_inventory.find_orphan_state()}
@@ -83,6 +85,7 @@ def test_unknown_files_and_dirs_are_reported(home: Path) -> None:
         ".environment-normalized-v3": False,
         "events": True,
         "project_list.json": False,
+        "resource-index-refresh.stamp": False,
         "config.toml.bak-7897": False,
     }
 

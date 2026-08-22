@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 性能
+
+- **名称缓存改为按需读穿 / 写穿，普通命令不再启动全账号后台扫描。** 共享账号 `lty` 可见 16 个 Workspace，旧刷新子进程实测运行超过 5 分钟仍未完成，并会为没有当前消费者的 Image、Model 和六类 Workload 逐空间请求，与前台争用同一账号的限流额度。现在 fresh hit 纯本地解析，miss / 过期只查当前名字，创建与删除立即写入或墓碑；Workload 名称映射 TTL 从 5 分钟延长到 1 天，`list` / `status` / Availability 等可变事实仍只读 Live。显式 `cache refresh` 保留，且始终做所选 Scope 的完整对账。
+
+  同批复用登录握手已经保存的 `GetUserDetail`：`job` / `hpc` / `ray` / `notebook` / `tensorboard` / `model` 的 owner filter 不再先串行查询一次当前用户；缺失时才 Live 回源并写回 Session。`account check` 显式强制 Live，仍然用真实往返证明 Session 可用。`lty` 上身份请求实测 `0.408 s`，缓存命中约 `7 µs`。
+
+  `train.ListJobs` 还有一个低于传输层通用上限的 Action 级限制：`page_size=999` 实测返回 999 行，`1000` 返回 `InvalidParameter: page or page_size too large`。Wrapper 现在按 999 截断；`lty` 的 `分布式训练空间` Job 缓存完整刷新实测 999 个名字、5.42 秒完成。
+
 ### 修复
 
 - **账号配置不再缓存项目和资源目录，隐式远端 cwd 不再注入 `cd`。** 旧版 `inspire init` 会把全部可见 Project、Compute Group、推导出的项目路径和未使用的 `docker_registry` 一起写进 `~/.inspire/accounts/<name>/config.toml`。一个账号跨多个 Project 使用时，账号级 `me` 会把 Notebook/Job 命令带进另一个 Fileset；Compute Group 快照还会在 Live API 失败时冒充资源事实。现在账号加载立即忽略这些旧字段，下一次 `inspire init` 会从磁盘删除 `[projects]`、`[project_catalog]`、`[[compute_groups]]`、账号级 `[path_aliases]` 和未使用的 `api.docker_registry`，其它未知字段保留；全局 init 不再枚举这些目录，项目路径只由 `inspire init --scope project` 写进仓库配置。Notebook exec/shell 省略 `--cwd` 时不生成 `cd`，Job 启动命令也不再由 CLI 添加 `cd`，两者均保留平台、容器或远端 Shell 的初始工作目录；显式 `--cwd` 仍会解析 Path Alias，Job 的共享文件日志目录与执行 cwd 解耦。
@@ -22,8 +30,7 @@
 
   **windows-latest 头一次跑，挖出四个此前无人踩到的 Windows bug**，都不是这次改出来的：
 
-  - **`os.kill(pid, 0)` 在 Windows 上不是探活。** 那边没有 signal 0，而 `signal.CTRL_C_EVENT` 的值**就是 0**——于是这行代码走的是 GenerateConsoleCtrlEvent，把 Ctrl-C 发给目标进程所在的**整个控制台进程组**。`resource_index_refresh` 用它判断后台刷新子进程还在不在，等于每次跑 `inspire` 都随机给当前终端里的所有进程发一次 Ctrl-C。CI 里的表现是 pytest 自己被打断：0 个失败，却只跑了 2080/2854 条就停了，`-q` 下那行 `!!! KeyboardInterrupt !!!` 淹在 skip 列表后面。改用 OpenProcess + GetExitCodeProcess，只查不发信号。
-  - **后台子进程没脱离控制台。** `start_new_session=True` 在 Windows 上被静默忽略，于是更新检查和索引刷新这两个子进程都挂在用户当前终端上，既会闪窗口也共享 Ctrl-C。两处合用 `cli/utils/detached.py` 的 `creationflags`。
+  - **后台更新检查没脱离控制台。** `start_new_session=True` 在 Windows 上被静默忽略，于是子进程挂在用户当前终端上，既会闪窗口也共享 Ctrl-C。现在用 `cli/utils/detached.py` 的 `creationflags` 真正脱离。
   - **resource index 的 sqlite 连接从来没关过。** `with sqlite3.connect(...)` 只提交事务、不关连接。POSIX 上只是不整洁，Windows 上句柄没放意味着文件删不掉——「索引损坏就丢掉重建」这条恢复路径必然以 sharing violation 失败。
   - **远端日志路径用 `os.path.join` 拼。** 在 Windows 上产出 `/train/user space\.inspire\xxx.log`，而这条路径会被塞进跑在 Linux 计算节点上的 shell 命令里。远端路径一律走 `join_remote_path`。
 
@@ -85,7 +92,7 @@
   - **同进程内共享 Session 对象时会重复登录。** `_refresh_expired_session()` 拿「此刻的 `session.created_at`」当作失败的那一代，而另一个线程刚刚把刷新结果原地写了回去——于是**没人试过的新 Session** 被判成刚失败的那个，再登一次。
   - **401 先走一趟浏览器。** 同一份已经被拒的 Cookie 再送进 Playwright 问一遍，纯属延迟；而 `allow_redirects=True` 会把「网关 302 到 Keycloak」这个认证信号跟成一张 HTML 登录页，和数据无法区分——和上一条 `scan_v2_surface.py` 踩的是同一个坑，只是发生在客户端自己的传输层里。
 
-  现在提交凭据只有一个入口。`login_with_playwright()` 是全 CLI 唯一把密码放上网线的地方，闸门就设在那里（`session/login_guard.py`），而不是设在调用方——调用方永远不知道别人花了多少。一次提交被拒之后，**同一份凭据**在本地被拒绝再次提交：按 Account 存一个不含明文、不含平台响应的标记，前台命令、后台刷新和其它进程读的是同一个事实。冷却按**连续**失败次数升级 60s → 5min → 15min → 30min（封顶），一小时无人再试则清零。解除条件是三者之一：冷却到期、有更新的 Session 落盘、或者**凭据变了**——指纹用 PBKDF2 派生，用户改完密码立刻能登，重新输入同一个错密码则照旧拦下。登录成功清标记、不计次（成功的提交不触发锁定，没有理由限流）。
+  现在提交凭据只有一个入口。`login_with_playwright()` 是全 CLI 唯一把密码放上网线的地方，闸门就设在那里（`session/login_guard.py`），而不是设在调用方——调用方永远不知道别人花了多少。一次提交被拒之后，**同一份凭据**在本地被拒绝再次提交：按 Account 存一个不含明文、不含平台响应的标记，前台命令和其它并发进程读的是同一个事实。冷却按**连续**失败次数升级 60s → 5min → 15min → 30min（封顶），一小时无人再试则清零。解除条件是三者之一：冷却到期、有更新的 Session 落盘、或者**凭据变了**——指纹用 PBKDF2 派生，用户改完密码立刻能登，重新输入同一个错密码则照旧拦下。登录成功清标记、不计次（成功的提交不触发锁定，没有理由限流）。
 
   同批把叠加的那几层拆掉：`request_json()` 全程禁止重定向，401/3xx 直接进入**唯一**的重建边界，该边界的预算**跨 429 重试共享**；重建改成按调用实际发出去的那一代比较，别人刚换好的 Session 不再被当成失败品；资源可用性与节点计数的第二层重试删除。反过来也补了一处：登录成功但本地缓存写不进去时，Session 照常返回并只记一条 warning——把它当成登录失败，等于把平台刚认过的凭据丢掉再登一次。
 

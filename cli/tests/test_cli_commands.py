@@ -1761,7 +1761,7 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     monkeypatch.setattr(
         config_check_module.browser_api_module,
         "get_current_user",
-        lambda session=None: (_ for _ in ()).throw(
+        lambda session=None, **_kwargs: (_ for _ in ()).throw(
             ValueError(
                 "request https://auth.internal/session failed at "
                 "/inspire/private/session.json login_name=alice"
@@ -1893,7 +1893,7 @@ base_url = "https://my-inspire.internal"
     monkeypatch.setattr(
         config_check_module.browser_api_module,
         "get_current_user",
-        lambda session=None: {"id": "user-test"},
+        lambda session=None, **_kwargs: {"id": "user-test"},
     )
 
     runner = CliRunner()
@@ -1955,7 +1955,7 @@ def test_config_check_accepts_local_json_alias(
     monkeypatch.setattr(
         config_check_module.browser_api_module,
         "get_current_user",
-        lambda session=None: {"id": "user-test"},
+        lambda session=None, **_kwargs: {"id": "user-test"},
     )
 
     runner = CliRunner()
@@ -2073,7 +2073,7 @@ def test_config_check_accepts_a_custom_base_url(
     monkeypatch.setattr(
         config_check_module.browser_api_module,
         "get_current_user",
-        lambda session=None: {"id": "user-test"},
+        lambda session=None, **_kwargs: {"id": "user-test"},
     )
 
     runner = CliRunner()

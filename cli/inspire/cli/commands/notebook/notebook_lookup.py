@@ -228,15 +228,15 @@ def _try_get_current_user_ids(
     Callers turn ``[]`` into "the account could not be identified", so a
     platform that is merely rate limiting raises instead: telling the user
     their session is broken would send them to re-login over a wait.
+
+    ``get_current_user`` reads the identity captured by the login handshake
+    first and persists its own live fallback.  Do not save the same session
+    again here: the old path added one remote call and one locked file rewrite
+    to every Notebook list, and repeated both for every workspace during a
+    cache scan.
     """
     try:
         data = browser_api_module.get_current_user(session=session)
-        if isinstance(data, dict):
-            session.user_detail = data
-            try:
-                session.save()
-            except Exception:
-                pass
         user_id = (data.get("id") or data.get("user_id")) if isinstance(data, dict) else None
         if user_id:
             return [str(user_id)]
@@ -256,14 +256,7 @@ def _get_current_user_detail(
     base_url: str,
 ) -> dict:
     data = browser_api_module.get_current_user(session=session)
-    if isinstance(data, dict) and data:
-        session.user_detail = data
-        try:
-            session.save()
-        except Exception:
-            pass
-        return data
-    return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _first_non_empty_str(data: dict, keys: tuple[str, ...]) -> str:

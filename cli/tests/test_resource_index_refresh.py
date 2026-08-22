@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import time
 from importlib import import_module
@@ -24,8 +23,6 @@ from inspire.cli.utils.resource_index_refresh import (
     FetchResult,
     RefreshResult,
     RefreshSummary,
-    maybe_spawn_periodic_refresh,
-    periodic_refresh_stamp_path,
     refresh_resource_index,
 )
 from inspire.platform.web.session.models import WebSession
@@ -273,93 +270,7 @@ def _job_pages(pages: list[list[tuple[str, str]]], total: int) -> tuple[list[int
     return read, _read_page
 
 
-def test_the_background_pass_stops_once_a_page_holds_nothing_new(
-    tmp_path, monkeypatch
-) -> None:
-    # 1400 of the user's jobs re-read in full every five minutes was 6.3 MB a
-    # cycle for names that had not moved. Newest-first lists let the pass stop
-    # at the first page it already knows.
-    from inspire.cli.utils import resource_index_refresh as refresh_module
-
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-    scope = _scope("job", "workspace-one")
-    index.reconcile(
-        scope,
-        [ResourceIdentity(resource_id="job-1", name="train-1")],
-    )
-    read, read_page = _job_pages([[("job-1", "train-1")], [("job-0", "train-0")]], 1)
-    monkeypatch.setitem(refresh_module.WORKLOAD_PAGES, "job", read_page)
-    monkeypatch.setattr(refresh_module, "INCREMENTAL_PAGE_SIZE", 1)
-
-    fetch = refresh_module._incremental_workload_fetcher(
-        "job", index=index, session=_Session()
-    )
-    result = fetch(_Session(), "workspace-one", "")
-
-    assert read == [1]
-    # Never complete: a head-only read must not be allowed to tombstone a tail
-    # it did not look at.
-    assert result.complete is False
-
-
-def test_the_background_pass_keeps_paging_while_the_index_is_behind(
-    tmp_path, monkeypatch
-) -> None:
-    from inspire.cli.utils import resource_index_refresh as refresh_module
-
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-    read, read_page = _job_pages(
-        [[("job-3", "train-3")], [("job-2", "train-2")], [("job-1", "train-1")]], 3
-    )
-    monkeypatch.setitem(refresh_module.WORKLOAD_PAGES, "job", read_page)
-    monkeypatch.setattr(refresh_module, "INCREMENTAL_PAGE_SIZE", 1)
-
-    fetch = refresh_module._incremental_workload_fetcher(
-        "job", index=index, session=_Session()
-    )
-    result = fetch(_Session(), "workspace-one", "")
-
-    assert read == [1, 2, 3]
-    assert sorted(record.resource_id for record in result.records) == [
-        "job-1",
-        "job-2",
-        "job-3",
-    ]
-
-
-def test_the_background_pass_never_tombstones_a_workload_it_did_not_look_at(
-    tmp_path, monkeypatch
-) -> None:
-    from inspire.cli.utils import resource_index_refresh as refresh_module
-
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-    scope = _scope("job", "workspace-one")
-    index.reconcile(
-        scope,
-        [
-            ResourceIdentity(resource_id="job-old", name="ancient"),
-            ResourceIdentity(resource_id="job-new", name="recent"),
-        ],
-    )
-    _read, read_page = _job_pages([[("job-new", "recent")]], 2)
-    monkeypatch.setitem(refresh_module.WORKLOAD_PAGES, "job", read_page)
-    monkeypatch.setitem(refresh_module.RESOURCE_FETCHERS, "workspace", _workspace_fetch)
-    monkeypatch.setattr(refresh_module, "INCREMENTAL_PAGE_SIZE", 100)
-
-    summary = refresh_resource_index(
-        session=_Session(),
-        index=index,
-        resource_types=("job",),
-        force=True,
-        incremental=True,
-    )
-
-    assert _outcome_count(summary, "partial") == 1
-    # `ancient` was never on the page that was read, and is still resolvable.
-    assert [item.resource_id for item in index.lookup(scope, "ancient")] == ["job-old"]
-
-
-def test_a_hand_typed_refresh_still_reconciles_the_whole_scope(
+def test_an_explicit_refresh_reconciles_the_whole_scope(
     tmp_path, monkeypatch
 ) -> None:
     from inspire.cli.utils import resource_index_refresh as refresh_module
@@ -382,7 +293,6 @@ def test_a_hand_typed_refresh_still_reconciles_the_whole_scope(
         index=index,
         resource_types=("job",),
         force=True,
-        incremental=False,
     )
 
     assert _outcome_count(summary, "refreshed") == 1
@@ -1327,80 +1237,6 @@ def test_cache_commands_normalize_database_errors(
     assert result.exit_code == EXIT_API_ERROR
     assert "CacheError" in result.output
     assert "database is locked" not in result.output
-
-
-def test_quiet_refresh_preserves_failure_exit_code(tmp_path, monkeypatch) -> None:
-    from inspire.cli.main import main
-
-    cache_commands = import_module("inspire.cli.commands.cache")
-    index = ResourceIndex(tmp_path / "index.sqlite3")
-    monkeypatch.setattr(cache_commands, "_index_or_exit", lambda *_args: index)
-    monkeypatch.setattr(cache_commands, "require_web_session", lambda *_args, **_kwargs: _Session())
-    monkeypatch.setattr(
-        cache_commands,
-        "refresh_resource_index",
-        lambda **_kwargs: RefreshSummary(
-            [RefreshResult("job", "Training Space", 0, "error", "API unavailable")]
-        ),
-    )
-
-    result = CliRunner().invoke(
-        main,
-        ["cache", "refresh", "--due", "--quiet"],
-    )
-
-    assert result.exit_code == EXIT_API_ERROR
-    assert result.output == ""
-
-
-def test_periodic_refresh_is_throttled_and_quiet(
-    tmp_path,
-    monkeypatch,
-    active_account_session_storage,  # noqa: ANN001, ARG001
-) -> None:
-    set_fake_home(monkeypatch, tmp_path)
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-    create_account("alpha", "[inspire]\n")
-    set_current_account("alpha")
-    WebSession(
-        storage_state={"cookies": [], "origins": []},
-        created_at=time.time(),
-        base_url="https://inspire.example",
-        login_username="alice",
-        user_detail={"id": "user-one"},
-        all_workspace_names={"workspace-one": "Training Space"},
-    ).save()
-
-    calls: list[dict[str, object]] = []
-
-    class _Process:
-        pass
-
-    def _popen(command, **kwargs):  # noqa: ANN001
-        calls.append({"command": command, **kwargs})
-        return _Process()
-
-    monkeypatch.setattr(
-        "inspire.cli.utils.resource_index_refresh.subprocess.Popen",
-        _popen,
-    )
-
-    assert maybe_spawn_periodic_refresh(interval_seconds=300) is True
-    assert maybe_spawn_periodic_refresh(interval_seconds=300) is False
-    assert calls[0]["command"][-4:] == [
-        "cache",
-        "refresh",
-        "--due",
-        "--quiet",
-    ]
-    assert calls[0]["env"]["INSPIRE_RESOURCE_INDEX_REFRESH_ACCOUNT"] == "alpha"
-    stamp = periodic_refresh_stamp_path()
-    assert stamp is not None
-    assert stamp.exists()
-
-    os.utime(stamp, (time.time() - 3600, time.time() - 3600))
-    assert maybe_spawn_periodic_refresh(interval_seconds=7200) is True
-    assert len(calls) == 2
 
 
 def test_project_refresh_is_global_not_per_workspace(tmp_path) -> None:
