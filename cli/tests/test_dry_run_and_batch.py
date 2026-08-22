@@ -1546,6 +1546,103 @@ def _patch_batch_dataset_resolution(monkeypatch: pytest.MonkeyPatch) -> list[Any
     return seen
 
 
+def test_job_batch_reuses_successful_dataset_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_submit_deps(monkeypatch, tmp_path)
+    seen = _patch_batch_dataset_resolution(monkeypatch)
+    batch_path = tmp_path / "dataset-reuse.json"
+    batch_path.write_text(
+        json.dumps(
+            {
+                "profiles": {
+                    "job": {
+                        "h200": {
+                            "quota": "1,20,200",
+                            "workspace": "cpu",
+                            "project": "Project One",
+                            "group": "H200 Room",
+                            "image": "registry.batch/train:latest",
+                        }
+                    }
+                },
+                "defaults": {
+                    "type": "job",
+                    "profile": "h200",
+                    "dataset": ["pixabay-81k:v0"],
+                },
+                "matrix": {"case": [1, 2, 3]},
+                "jobs": [
+                    {
+                        "name": "train-{case}",
+                        "command": "true",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "job", "batch", str(batch_path), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 1
+    assert [(mount.dataset, mount.version) for mount in seen[0][0]] == [
+        ("pixabay-81k", "v0")
+    ]
+
+
+def test_failed_dataset_validation_is_not_cached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_module = importlib.import_module("inspire.cli.commands.batch")
+    mount = batch_module.DatasetMount(dataset="pixabay-81k", version="v0")
+    cache = batch_module._BatchLiveCache()
+    calls = 0
+
+    def flaky_resolve(mounts, *, workspace_id, session=None):  # noqa: ANN001
+        nonlocal calls
+        del workspace_id, session
+        calls += 1
+        if calls == 1:
+            raise batch_module.DatasetSpecError("temporary rejection")
+        return [
+            {
+                "dataset_id": mounts[0].dataset,
+                "version_id": mounts[0].version,
+                "path": "store/pixabay-81k/v0",
+            }
+        ]
+
+    monkeypatch.setattr(batch_module, "resolve_dataset_info", flaky_resolve)
+
+    with pytest.raises(config_module.ConfigError, match="temporary rejection"):
+        batch_module._resolved_dataset_info(
+            [mount],
+            workspace_id="workspace-one",
+            session=object(),
+            live_cache=cache,
+        )
+
+    assert batch_module._resolved_dataset_info(
+        [mount],
+        workspace_id="workspace-one",
+        session=object(),
+        live_cache=cache,
+    ) == [
+        {
+            "dataset_id": "pixabay-81k",
+            "version_id": "v0",
+            "path": "store/pixabay-81k/v0",
+        }
+    ]
+    assert calls == 2
+
+
 def test_job_batch_entry_carries_datasets_env_and_reservations(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

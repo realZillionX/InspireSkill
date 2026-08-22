@@ -113,6 +113,9 @@ class _BatchLiveCache:
     notebook_images: dict[tuple[str, str], list[Any]] = dataclass_field(
         default_factory=dict
     )
+    dataset_info: dict[tuple[str, str, str], dict[str, str]] = dataclass_field(
+        default_factory=dict
+    )
 
 _PUBLIC_FIELDS_BY_KIND = {
     "job": (
@@ -390,6 +393,7 @@ def _resolved_dataset_info(
     *,
     workspace_id: str,
     session: Any,
+    live_cache: _BatchLiveCache | None = None,
 ) -> list[dict[str, str]] | None:
     """Resolve batch dataset mounts, reporting a rejection as a config error.
 
@@ -400,7 +404,44 @@ def _resolved_dataset_info(
     if not mounts:
         return None
     try:
-        return resolve_dataset_info(mounts, workspace_id=workspace_id, session=session)
+        if live_cache is None:
+            return resolve_dataset_info(
+                mounts,
+                workspace_id=workspace_id,
+                session=session,
+            )
+
+        missing = [
+            mount
+            for mount in mounts
+            if (workspace_id, mount.dataset, mount.version)
+            not in live_cache.dataset_info
+        ]
+        if missing:
+            resolved = resolve_dataset_info(
+                missing,
+                workspace_id=workspace_id,
+                session=session,
+            )
+            for item in resolved:
+                dataset = str(item.get("dataset_id") or "").strip()
+                version = str(item.get("version_id") or "").strip()
+                if dataset and version:
+                    live_cache.dataset_info[(workspace_id, dataset, version)] = dict(
+                        item
+                    )
+
+        ordered: list[dict[str, str]] = []
+        for mount in mounts:
+            key = (workspace_id, mount.dataset, mount.version)
+            cached_item = live_cache.dataset_info.get(key)
+            if cached_item is None:
+                raise DatasetSpecError(
+                    "The platform omitted a dataset it had just accepted: "
+                    f"{mount.dataset}:{mount.version}."
+                )
+            ordered.append(dict(cached_item))
+        return ordered
     except DatasetSpecError as exc:
         raise ConfigError(str(exc)) from exc
 
@@ -744,6 +785,7 @@ def _prepare_training_item(
             _optional_dataset_mounts(item),
             workspace_id=workspace_id,
             session=session,
+            live_cache=live_cache,
         ),
         envs=_optional_env_assignments(item) or None,
         description=_optional_str(item, "description"),
@@ -854,6 +896,7 @@ def _prepare_hpc_item(
             _optional_dataset_mounts(item),
             workspace_id=workspace_id,
             session=session,
+            live_cache=live_cache,
         ),
         description=_optional_str(item, "description"),
         keep_after_finish_hours=_optional_hours(item, "keep_after_finish"),
@@ -1038,6 +1081,7 @@ def _prepare_notebook_item(
         _optional_dataset_mounts(item),
         workspace_id=workspace_id,
         session=session,
+        live_cache=live_cache,
     )
     if dataset_info is not None:
         create_kwargs["dataset_info"] = dataset_info

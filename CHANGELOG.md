@@ -16,6 +16,8 @@
 
   HPC 更严重：每条原本读两次相同 Project 目录、再读一次 Image；3 条从 9 → 2 请求、17.05 秒 → 5.01 秒。CPU Notebook 的 3 条从 9 → 3 请求、10.30 秒 → 2.53 秒。Project 优先级、拥塞和 Quota 限制仍由本次命令刚取得的 Live 数据决定。
 
+  Job / HPC / Notebook Batch 对重复的官方数据集挂载也按 `(Workspace, dataset, version)` 复用本次命令内的成功校验；失败不缓存。`pixabay-81k:v0` 连续 3 次从 3 个 `ValidateDataset` / 0.521 秒降为 1 个 / 0.079 秒。
+
 ### 修复
 
 - **账号配置不再缓存项目和资源目录，隐式远端 cwd 不再注入 `cd`。** 旧版 `inspire init` 会把全部可见 Project、Compute Group、推导出的项目路径和未使用的 `docker_registry` 一起写进 `~/.inspire/accounts/<name>/config.toml`。一个账号跨多个 Project 使用时，账号级 `me` 会把 Notebook/Job 命令带进另一个 Fileset；Compute Group 快照还会在 Live API 失败时冒充资源事实。现在账号加载立即忽略这些旧字段，下一次 `inspire init` 会从磁盘删除 `[projects]`、`[project_catalog]`、`[[compute_groups]]`、账号级 `[path_aliases]` 和未使用的 `api.docker_registry`，其它未知字段保留；全局 init 不再枚举这些目录，项目路径只由 `inspire init --scope project` 写进仓库配置。Notebook exec/shell 省略 `--cwd` 时不生成 `cd`，Job 启动命令也不再由 CLI 添加 `cd`，两者均保留平台、容器或远端 Shell 的初始工作目录；显式 `--cwd` 仍会解析 Path Alias，Job 的共享文件日志目录与执行 cwd 解耦。
