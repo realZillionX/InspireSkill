@@ -74,7 +74,11 @@ def test_full_refresh_populates_scoped_name_map(tmp_path) -> None:
             )
         ]
         return FetchResult(
-            [record for record in records if not exact_name or record.name == exact_name]
+            [
+                record
+                for record in records
+                if not exact_name or record.name == exact_name
+            ]
         )
 
     summary = refresh_resource_index(
@@ -155,11 +159,8 @@ def test_exact_refresh_replaces_recreated_resource(tmp_path) -> None:
 
     assert summary.error_count == 0
     assert [
-        item.resource_id
-        for item in index.lookup(scope, "A", fresh_only=False, now=112)
-    ] == [
-        "notebook-new"
-    ]
+        item.resource_id for item in index.lookup(scope, "A", fresh_only=False, now=112)
+    ] == ["notebook-new"]
     old = index.lookup_id(scope, "notebook-old", include_tombstoned=True)
     assert old is not None
     assert old.tombstoned_at is not None
@@ -180,9 +181,7 @@ def test_refresh_does_not_overwrite_newer_write_through(tmp_path) -> None:
             [ResourceIdentity(resource_id="notebook-new", name="A")],
             now=111,
         )
-        return FetchResult(
-            [ResourceIdentity(resource_id="notebook-old", name="A")]
-        )
+        return FetchResult([ResourceIdentity(resource_id="notebook-old", name="A")])
 
     summary = refresh_resource_index(
         session=_Session(),
@@ -200,8 +199,7 @@ def test_refresh_does_not_overwrite_newer_write_through(tmp_path) -> None:
     assert _outcome_count(summary, "stale") == 1
     assert summary.error_count == 0
     assert [
-        item.resource_id
-        for item in index.lookup(scope, "A", fresh_only=False, now=112)
+        item.resource_id for item in index.lookup(scope, "A", fresh_only=False, now=112)
     ] == ["notebook-new"]
 
 
@@ -211,9 +209,7 @@ def test_refresh_does_not_repopulate_cache_after_clear(tmp_path) -> None:
 
     def _notebook_fetch(_session: object, _workspace: str, _name: str) -> FetchResult:
         index.clear()
-        return FetchResult(
-            [ResourceIdentity(resource_id="notebook-old", name="A")]
-        )
+        return FetchResult([ResourceIdentity(resource_id="notebook-old", name="A")])
 
     summary = refresh_resource_index(
         session=_Session(),
@@ -256,7 +252,9 @@ def test_failed_refresh_preserves_existing_rows(tmp_path) -> None:
     assert index.list_scope_status()[0].last_error == "temporary API failure"
 
 
-def _job_pages(pages: list[list[tuple[str, str]]], total: int) -> tuple[list[int], object]:
+def _job_pages(
+    pages: list[list[tuple[str, str]]], total: int
+) -> tuple[list[int], object]:
     """A paged `job` reader over canned pages, recording which pages were read."""
     read: list[int] = []
 
@@ -270,9 +268,114 @@ def _job_pages(pages: list[list[tuple[str, str]]], total: int) -> tuple[list[int
     return read, _read_page
 
 
-def test_an_explicit_refresh_reconciles_the_whole_scope(
-    tmp_path, monkeypatch
-) -> None:
+def test_page_reader_continues_when_an_action_clamps_the_requested_size() -> None:
+    from inspire.cli.utils.resource_index_refresh import _read_pages
+
+    calls: list[tuple[int, int]] = []
+
+    def _clamped_page(
+        _session: object,
+        _workspace: str,
+        _name: str,
+        page: int,
+        requested_size: int,
+    ) -> tuple[list[ResourceIdentity], int]:
+        calls.append((page, requested_size))
+        page_ids = range(999) if page == 1 else range(999, 1001) if page == 2 else []
+        return [
+            ResourceIdentity(resource_id=f"job-{item}", name=f"job-{item}")
+            for item in page_ids
+        ], 1001
+
+    records = _read_pages(
+        _clamped_page,
+        object(),
+        "workspace-one",
+        "",
+        page_size=1000,
+    )
+
+    assert len(records) == 1001
+    assert calls == [(1, 1000), (2, 1000)]
+
+
+def test_page_reader_does_not_treat_unnamed_rows_as_the_end() -> None:
+    from inspire.cli.utils.resource_index_refresh import _read_pages
+
+    calls: list[int] = []
+
+    def _page(
+        _session: object,
+        _workspace: str,
+        _name: str,
+        page: int,
+        _page_size: int,
+    ) -> tuple[list[ResourceIdentity], int]:
+        calls.append(page)
+        if page == 1:
+            return [ResourceIdentity(resource_id="unnamed", name="")], 2
+        return [ResourceIdentity(resource_id="named", name="visible")], 2
+
+    records = _read_pages(_page, object(), "workspace-one", "", page_size=1000)
+
+    assert [record.resource_id for record in records] == ["unnamed", "named"]
+    assert calls == [1, 2]
+
+
+def test_page_reader_rejects_an_unbounded_complete_catalog() -> None:
+    from inspire.cli.utils.resource_index_refresh import (
+        MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS,
+        _read_pages,
+    )
+
+    calls: list[int] = []
+
+    def _huge_page(
+        _session: object,
+        _workspace: str,
+        _name: str,
+        page: int,
+        _page_size: int,
+    ) -> tuple[list[ResourceIdentity], int]:
+        calls.append(page)
+        return [ResourceIdentity(resource_id="job-1", name="job-1")], (
+            MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS + 1
+        )
+
+    with pytest.raises(ValueError, match="Refresh one name with --name"):
+        _read_pages(_huge_page, object(), "workspace-one", "", page_size=1000)
+
+    assert calls == [1]
+
+
+def test_job_cache_refresh_uses_a_multi_page_safe_window(monkeypatch) -> None:
+    from inspire.cli.utils import resource_index_refresh as refresh_module
+
+    requested_sizes: list[int] = []
+
+    def _page(
+        _session: object,
+        _workspace: str,
+        _name: str,
+        _page: int,
+        page_size: int,
+    ) -> tuple[list[ResourceIdentity], int]:
+        requested_sizes.append(page_size)
+        return [ResourceIdentity(resource_id="job-1", name="job-1")], 1
+
+    monkeypatch.setitem(refresh_module.WORKLOAD_PAGES, "job", _page)
+
+    result = refresh_module.RESOURCE_FETCHERS["job"](
+        object(),
+        "workspace-one",
+        "",
+    )
+
+    assert len(result.records) == 1
+    assert requested_sizes == [refresh_module.JOB_REFRESH_PAGE_SIZE]
+
+
+def test_an_explicit_refresh_reconciles_the_whole_scope(tmp_path, monkeypatch) -> None:
     from inspire.cli.utils import resource_index_refresh as refresh_module
 
     index = ResourceIndex(tmp_path / "index.sqlite3")
@@ -300,7 +403,9 @@ def test_an_explicit_refresh_reconciles_the_whole_scope(
     assert [item.resource_id for item in index.lookup(scope, "running")] == ["job-live"]
 
 
-def test_cache_refresh_refuses_to_sweep_everything_by_default(tmp_path, monkeypatch) -> None:
+def test_cache_refresh_refuses_to_sweep_everything_by_default(
+    tmp_path, monkeypatch
+) -> None:
     from inspire.cli.main import main
 
     cache_commands = import_module("inspire.cli.commands.cache")
@@ -357,7 +462,9 @@ def test_image_catalog_is_read_once_per_registry_not_once_per_workspace(
     ]
 
 
-def test_a_registry_that_cannot_be_identified_is_still_read(tmp_path, monkeypatch) -> None:
+def test_a_registry_that_cannot_be_identified_is_still_read(
+    tmp_path, monkeypatch
+) -> None:
     # An empty probe means "I could not tell which registry this is", which is
     # never a reason to hand back some other workspace's catalog.
     from inspire.cli.utils import resource_index_refresh as refresh_module
@@ -366,7 +473,11 @@ def test_a_registry_that_cannot_be_identified_is_still_read(tmp_path, monkeypatc
 
     def _catalog(_session: object, workspace_id: str) -> list[ResourceIdentity]:
         catalog_reads.append(workspace_id)
-        return [ResourceIdentity(resource_id=f"img-{workspace_id}", name=f"{workspace_id}:v1")]
+        return [
+            ResourceIdentity(
+                resource_id=f"img-{workspace_id}", name=f"{workspace_id}:v1"
+            )
+        ]
 
     monkeypatch.setattr(
         "inspire.platform.web.browser_api.images.image_registry_id",
@@ -637,8 +748,7 @@ def test_incomplete_workspace_snapshot_never_tombstones_unseen_rows(tmp_path) ->
 
     assert summary.error_count == 0
     assert [
-        item.resource_id
-        for item in index.lookup(scope, "Two", fresh_only=False)
+        item.resource_id for item in index.lookup(scope, "Two", fresh_only=False)
     ] == ["workspace-two"]
 
 
@@ -772,6 +882,33 @@ def test_complete_workspace_refresh_prunes_removed_workspace_scopes(tmp_path) ->
     }
 
 
+def test_complete_child_refresh_also_prunes_removed_workspace_scopes(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    orphan_scope = _scope("notebook", "workspace-removed")
+    index.reconcile(
+        orphan_scope,
+        [ResourceIdentity(resource_id="notebook-old", name="old")],
+        now=100,
+    )
+
+    summary = refresh_resource_index(
+        session=_Session(),
+        index=index,
+        resource_types=("notebook",),
+        force=True,
+        fetchers={
+            "workspace": _workspace_fetch,
+            "notebook": lambda *_args: FetchResult([], complete=True),
+        },
+    )
+
+    assert summary.error_count == 0
+    assert index.lookup(orphan_scope, "old", fresh_only=False) == []
+    assert "workspace-removed" not in {
+        status.workspace_id for status in index.list_scope_status()
+    }
+
+
 def test_empty_workspace_snapshot_is_distinct_from_failure(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
     scope = _scope("workspace")
@@ -857,6 +994,16 @@ def test_cache_status_and_clear_never_expose_workspace_handle(
         ),
         [ResourceIdentity(resource_id="job-secret", name="train")],
     )
+    index.record_refresh_error(
+        ResourceScope(
+            base_url="https://inspire.example",
+            subject_id="previous-user",
+            resource_type="job",
+            workspace_id="workspace-secret",
+            owner_scope="self",
+        ),
+        "failure from a previous login identity",
+    )
 
     runner = CliRunner()
     status = runner.invoke(main, ["--json", "cache", "status"])
@@ -869,12 +1016,13 @@ def test_cache_status_and_clear_never_expose_workspace_handle(
     assert resource["cached_names"] == 1
     assert resource["state"] == "ready"
     assert resource["workspaces"] == 1
+    assert "previous login identity" not in status.output
     assert str(resource["updated"]).endswith("s ago")
     assert by_resource["notebook-gpu"]["state"] == "empty"
 
     cleared = runner.invoke(main, ["cache", "clear", "--yes"])
     assert cleared.exit_code == 0
-    assert cleared.output == "Cleared every local cache: 1 names, 0 GPU models.\n"
+    assert cleared.output == "Cleared every managed cache: 1 names, 0 GPU models.\n"
     assert index.list_scope_status() == []
 
 
@@ -995,7 +1143,9 @@ def test_cache_status_reports_one_kind_at_a_time(tmp_path, monkeypatch) -> None:
     ]
 
 
-def test_cache_status_says_so_when_nothing_at_all_is_cached(tmp_path, monkeypatch) -> None:
+def test_cache_status_says_so_when_nothing_at_all_is_cached(
+    tmp_path, monkeypatch
+) -> None:
     """The whole-cache view of nothing is a sentence, not a column of zeroes."""
     from inspire.cli.main import main
 
@@ -1148,7 +1298,9 @@ def test_cache_refresh_json_failure_is_compact(tmp_path, monkeypatch) -> None:
         ),
     )
 
-    result = CliRunner().invoke(main, ["--json", "cache", "refresh", "--resource", "job"])
+    result = CliRunner().invoke(
+        main, ["--json", "cache", "refresh", "--resource", "job"]
+    )
 
     assert result.exit_code == EXIT_API_ERROR
     assert json.loads(result.output) == {
@@ -1196,7 +1348,7 @@ def test_cache_clear_json_requires_explicit_confirmation(
     }
 
 
-def test_cache_refresh_workspace_metavar_accepts_name_or_all() -> None:
+def test_cache_refresh_help_uses_workspace_name_and_hides_redundant_full() -> None:
     from inspire.cli.main import main
 
     result = CliRunner().invoke(main, ["cache", "refresh", "--help"])
@@ -1205,6 +1357,38 @@ def test_cache_refresh_workspace_metavar_accepts_name_or_all() -> None:
     assert "--workspace NAME|all" in result.output
     assert "--workspace NAME " not in result.output
     assert "--workspace TEXT" not in result.output
+    assert "--full" not in result.output
+
+
+def test_cache_refresh_still_accepts_hidden_full_for_compatibility(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from inspire.cli.main import main
+
+    cache_commands = import_module("inspire.cli.commands.cache")
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(cache_commands, "_index_or_exit", lambda *_args: index)
+    monkeypatch.setattr(
+        cache_commands,
+        "require_web_session",
+        lambda *_args, **_kwargs: _Session(),
+    )
+
+    def _refresh(**kwargs: object) -> RefreshSummary:
+        observed.update(kwargs)
+        return RefreshSummary([])
+
+    monkeypatch.setattr(cache_commands, "refresh_resource_index", _refresh)
+
+    result = CliRunner().invoke(
+        main,
+        ["cache", "refresh", "--resource", "job", "--full"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert observed["force"] is True
 
 
 @pytest.mark.parametrize(
@@ -1472,7 +1656,9 @@ def test_one_rate_limited_group_never_tombstones_the_cached_catalog(
     assert _outcome_count(summary, "partial") == 1
     assert summary.error_count == 0
     scope = _scope("quota-notebook", "workspace-one")
-    assert [item.resource_id for item in index.lookup(scope, "8,160,1800")] == ["lcg-a:q-8"]
+    assert [item.resource_id for item in index.lookup(scope, "8,160,1800")] == [
+        "lcg-a:q-8"
+    ]
     # Not a full refresh, so a reader that demands one goes live instead of
     # trusting a catalog nobody fully read.
     assert index.scope_due(scope, interval_seconds=1, require_full=True) is False
@@ -1493,7 +1679,9 @@ def test_a_fully_rate_limited_refresh_never_becomes_an_empty_catalog(
 
     assert _outcome_count(summary, "partial") == 1
     scope = _scope("quota-notebook", "workspace-one")
-    assert [item.resource_id for item in index.lookup(scope, "8,160,1800")] == ["lcg-a:q-8"]
+    assert [item.resource_id for item in index.lookup(scope, "8,160,1800")] == [
+        "lcg-a:q-8"
+    ]
 
 
 def test_a_catalog_the_platform_emptied_is_still_reconciled(
@@ -1520,7 +1708,9 @@ def test_a_catalog_the_platform_emptied_is_still_reconciled(
     assert index.lookup(scope, "8,160,1800") == []
 
 
-def test_cache_status_reports_quota_like_any_other_resource(tmp_path, monkeypatch) -> None:
+def test_cache_status_reports_quota_like_any_other_resource(
+    tmp_path, monkeypatch
+) -> None:
     cache_commands = import_module("inspire.cli.commands.cache")
     index = ResourceIndex(tmp_path / "index.sqlite3")
     index.reconcile(

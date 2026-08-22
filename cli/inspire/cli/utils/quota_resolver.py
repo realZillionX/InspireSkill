@@ -500,7 +500,7 @@ def _load_price_rows(
                     "This is the platform failing to answer, not a workspace "
                     "without quotas -- retry, and if it persists refresh the "
                     "cached catalog with `inspire cache refresh --resource "
-                    "quota-<workload> --workspace <name> --full`."
+                    "quota-<workload> --workspace <name>`."
                 ) from exc
         else:
             # An empty *live* response can mean the cached group handle died.

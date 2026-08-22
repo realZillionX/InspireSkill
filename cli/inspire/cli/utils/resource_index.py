@@ -13,6 +13,7 @@ price object in ``payload``.
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import sqlite3
 import threading
@@ -23,9 +24,61 @@ from pathlib import Path
 from typing import Iterable, Iterator, Mapping, Sequence
 
 from inspire.accounts import account_dir, current_account
+from inspire.cli.formatters import json_formatter
 
 SCHEMA_VERSION = 4
 RESOURCE_INDEX_FILENAME = "resource-index.sqlite3"
+CACHE_ERROR_MAX_CHARS = 500
+
+
+def sanitize_cache_error(error: object) -> str:
+    """Return one bounded, credential-free diagnostic line for persistence.
+
+    Playwright exceptions include a multi-line request transcript with Cookie
+    headers. A cache only needs the failure class/reason; retaining transport
+    headers both leaks credentials and makes ``cache status`` unreadable.
+    """
+    sanitized = json_formatter.sanitize_text(
+        error,
+        redact_paths=True,
+        redact_urls=True,
+        redact_platform_paths=True,
+    )
+    first_line = next(
+        (line.strip() for line in sanitized.splitlines() if line.strip()),
+        "",
+    )
+    if len(first_line) <= CACHE_ERROR_MAX_CHARS:
+        return first_line
+    return first_line[: CACHE_ERROR_MAX_CHARS - 1].rstrip() + "…"
+
+
+def _lease_holder_is_alive(holder: str) -> bool:
+    """Whether a locally minted refresh-lease owner can still be running.
+
+    Unknown/legacy holder formats are kept until their TTL expires. Current
+    holders start with the owning PID, so an interrupted refresh can be
+    reclaimed immediately instead of blocking manual repair for two minutes.
+    """
+    pid_text, separator, _nonce = str(holder or "").partition(":")
+    if not separator:
+        return True
+    try:
+        pid = int(pid_text)
+    except ValueError:
+        return True
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        return exc.errno != errno.ESRCH
+    return True
+
 
 # Three tiers, paced by how fast each kind actually moves.
 #
@@ -48,8 +101,8 @@ RESOURCE_INDEX_FILENAME = "resource-index.sqlite3"
 # A TTL is read validity as well as refresh cadence: past it a lookup misses
 # and the command goes live, which is always safe. What the long tiers do
 # trade is the other direction — a spec or image the platform dropped can
-# still be quoted from cache until the scope expires. `cache refresh
-# --resource <kind> [--workspace <name>] --full` forces the issue.
+# still be quoted from cache until the scope expires. A targeted `cache
+# refresh --resource <kind> [--workspace <name>]` forces the issue.
 #
 DEFAULT_TTL_SECONDS: dict[str, int] = {
     "workspace": 24 * 60 * 60,
@@ -82,9 +135,7 @@ def quota_resource_type(workload: str) -> str:
     return f"quota-{str(workload or '').strip().lower()}"
 
 
-CASE_INSENSITIVE_RESOURCE_TYPES = frozenset(
-    {"workspace", "project", "compute-group"}
-)
+CASE_INSENSITIVE_RESOURCE_TYPES = frozenset({"workspace", "project", "compute-group"})
 
 # Resource kinds that are not scoped to a workspace. A project in particular
 # belongs to several workspaces at once (``ProjectInfo.workspace_ids``), so
@@ -187,7 +238,6 @@ class ScopeStatus:
     last_refresh_at: float
     last_full_refresh_at: float
     last_error: str
-
 
 
 def resource_index_path(account: str | None = None) -> Path | None:
@@ -389,7 +439,9 @@ class ResourceIndex:
                 )
             scope_columns = {
                 str(row["name"])
-                for row in connection.execute("PRAGMA table_info(resource_scope)").fetchall()
+                for row in connection.execute(
+                    "PRAGMA table_info(resource_scope)"
+                ).fetchall()
             }
             if "last_attempt_at" not in scope_columns:
                 connection.execute(
@@ -405,6 +457,20 @@ class ResourceIndex:
                     ADD COLUMN mutation_revision INTEGER NOT NULL DEFAULT 0
                     """
                 )
+            # Older builds persisted complete Playwright request transcripts
+            # in last_error, including Cookie headers. Clean them in place on
+            # every open so an upgraded CLI repairs existing account caches
+            # without requiring a destructive clear.
+            for row in connection.execute(
+                "SELECT rowid, last_error FROM resource_scope WHERE last_error != ''"
+            ).fetchall():
+                raw_error = str(row["last_error"] or "")
+                clean_error = sanitize_cache_error(raw_error)
+                if clean_error != raw_error:
+                    connection.execute(
+                        "UPDATE resource_scope SET last_error = ? WHERE rowid = ?",
+                        (clean_error, int(row["rowid"])),
+                    )
             # A resource kind this build no longer knows can never be refreshed,
             # never be named by `cache clear --resource`, and still shows up in
             # `cache status` — `ssh-key` outlived its commands that way. Drop the
@@ -539,8 +605,7 @@ class ResourceIndex:
         exact_name = str(name or "").strip()
         if not exact_name:
             return []
-        sql = (
-            """
+        sql = """
             SELECT resource_id, name, owner_id, status, created_at,
                    compute_group, payload, observed_at, expires_at,
                    tombstoned_at
@@ -548,7 +613,6 @@ class ResourceIndex:
             WHERE base_url = ? AND subject_id = ? AND resource_type = ?
               AND workspace_id = ? AND owner_scope = ?
             """
-        )
         params: list[object] = [*values]
         if case_sensitive:
             sql += " AND name = ?"
@@ -575,8 +639,7 @@ class ResourceIndex:
         handle = str(resource_id or "").strip()
         if not handle:
             return None
-        sql = (
-            """
+        sql = """
             SELECT resource_id, name, owner_id, status, created_at,
                    compute_group, payload, observed_at, expires_at,
                    tombstoned_at
@@ -585,7 +648,6 @@ class ResourceIndex:
               AND workspace_id = ? AND owner_scope = ?
               AND resource_id = ?
             """
-        )
         if not include_tombstoned:
             sql += " AND tombstoned_at IS NULL"
         with self._connect() as connection:
@@ -604,8 +666,7 @@ class ResourceIndex:
     ) -> list[ResourceIdentity]:
         """Return active identities in one scope without exposing them in CLI output."""
         timestamp = float(time.time() if now is None else now)
-        sql = (
-            """
+        sql = """
             SELECT resource_id, name, owner_id, status, created_at,
                    compute_group, payload, observed_at, expires_at,
                    tombstoned_at
@@ -614,7 +675,6 @@ class ResourceIndex:
               AND workspace_id = ? AND owner_scope = ?
               AND tombstoned_at IS NULL
             """
-        )
         params: list[object] = [*self._scope_values(scope)]
         if fresh_only:
             sql += " AND expires_at > ?"
@@ -717,19 +777,15 @@ class ResourceIndex:
         """Serialize a cache mutation and reject stale refresh snapshots."""
         connection.execute("BEGIN IMMEDIATE")
         current_generation = self._generation_from_connection(connection)
-        if (
-            expected_generation is not None
-            and current_generation != int(expected_generation)
+        if expected_generation is not None and current_generation != int(
+            expected_generation
         ):
             raise StaleResourceIndexRefresh(
                 f"cache was cleared during refresh (expected generation "
                 f"{expected_generation}, found {current_generation})"
             )
         current_revision = self._scope_revision_from_connection(connection, scope)
-        if (
-            expected_revision is not None
-            and current_revision != int(expected_revision)
-        ):
+        if expected_revision is not None and current_revision != int(expected_revision):
             raise StaleResourceIndexRefresh(
                 f"cache scope changed during refresh (expected revision "
                 f"{expected_revision}, found {current_revision})"
@@ -849,9 +905,7 @@ class ResourceIndex:
         scope = scope.validate()
         items = self._valid_records(records)
         observed_at = float(time.time() if now is None else now)
-        attempt_timestamp = float(
-            observed_at if attempted_at is None else attempted_at
-        )
+        attempt_timestamp = float(observed_at if attempted_at is None else attempted_at)
         ttl = (
             DEFAULT_TTL_SECONDS.get(scope.resource_type, 60)
             if ttl_seconds is None
@@ -913,9 +967,7 @@ class ResourceIndex:
             )
         ]
         observed_at = float(time.time() if now is None else now)
-        attempt_timestamp = float(
-            observed_at if attempted_at is None else attempted_at
-        )
+        attempt_timestamp = float(observed_at if attempted_at is None else attempted_at)
         ttl = (
             DEFAULT_TTL_SECONDS.get(scope.resource_type, 60)
             if ttl_seconds is None
@@ -945,7 +997,12 @@ class ResourceIndex:
                   AND workspace_id = ? AND owner_scope = ?
                   AND name = ? {name_match} AND tombstoned_at IS NULL
                 """
-            params: list[object] = [observed_at, observed_at, *self._scope_values(scope), exact_name]
+            params: list[object] = [
+                observed_at,
+                observed_at,
+                *self._scope_values(scope),
+                exact_name,
+            ]
             if ids:
                 sql += f" AND resource_id NOT IN ({','.join('?' for _ in ids)})"
                 params.extend(ids)
@@ -977,9 +1034,7 @@ class ResourceIndex:
         scope = scope.validate()
         items = self._valid_records(records)
         observed_at = float(time.time() if now is None else now)
-        attempt_timestamp = float(
-            observed_at if attempted_at is None else attempted_at
-        )
+        attempt_timestamp = float(observed_at if attempted_at is None else attempted_at)
         ttl = (
             DEFAULT_TTL_SECONDS.get(scope.resource_type, 60)
             if ttl_seconds is None
@@ -1093,7 +1148,7 @@ class ResourceIndex:
                 refreshed_at if full else 0,
                 scan_id,
                 1 if full else 0,
-                str(error or ""),
+                sanitize_cache_error(error),
             ),
         )
 
@@ -1129,7 +1184,11 @@ class ResourceIndex:
                             ELSE resource_scope.last_error
                         END
                     """,
-                    (*self._scope_values(scope), timestamp, str(error or "")),
+                    (
+                        *self._scope_values(scope),
+                        timestamp,
+                        sanitize_cache_error(error),
+                    ),
                 )
         except (OSError, sqlite3.Error):
             # Refresh diagnostics are best effort and must not replace a
@@ -1277,14 +1336,29 @@ class ResourceIndex:
             ).fetchone()
         if row is None:
             return True
-        last = float(row["last_full_refresh_at"] if require_full else row["last_refresh_at"])
+        last = float(
+            row["last_full_refresh_at"] if require_full else row["last_refresh_at"]
+        )
         return last <= 0 or timestamp - last >= max(0, int(interval_seconds))
 
-    def list_scope_status(self, *, now: float | None = None) -> list[ScopeStatus]:
+    def list_scope_status(
+        self,
+        *,
+        now: float | None = None,
+        base_url: str = "",
+        subject_id: str = "",
+    ) -> list[ScopeStatus]:
         timestamp = float(time.time() if now is None else now)
+        identity_values = (
+            str(base_url or "").strip().rstrip("/"),
+            str(subject_id or "").strip(),
+        )
+        identity_where = (
+            "WHERE s.base_url = ? AND s.subject_id = ?" if all(identity_values) else ""
+        )
         with self._connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT
                     s.resource_type,
                     s.workspace_id,
@@ -1306,12 +1380,13 @@ class ResourceIndex:
                  AND r.resource_type=s.resource_type
                  AND r.workspace_id=s.workspace_id
                  AND r.owner_scope=s.owner_scope
+                {identity_where}
                 GROUP BY
                     s.base_url, s.subject_id, s.resource_type,
                     s.workspace_id, s.owner_scope
                 ORDER BY s.resource_type, s.workspace_id, s.owner_scope
                 """,
-                (timestamp,),
+                (timestamp, *identity_values) if identity_where else (timestamp,),
             ).fetchall()
         return [
             ScopeStatus(
@@ -1456,6 +1531,17 @@ class ResourceIndex:
                     "DELETE FROM refresh_lease WHERE lease_key = ? AND expires_at <= ?",
                     (lease_key, timestamp),
                 )
+                existing = connection.execute(
+                    "SELECT holder FROM refresh_lease WHERE lease_key = ?",
+                    (lease_key,),
+                ).fetchone()
+                if existing is not None and not _lease_holder_is_alive(
+                    str(existing["holder"] or "")
+                ):
+                    connection.execute(
+                        "DELETE FROM refresh_lease WHERE lease_key = ? AND holder = ?",
+                        (lease_key, str(existing["holder"] or "")),
+                    )
                 try:
                     connection.execute(
                         """
@@ -1566,6 +1652,7 @@ class ResourceIndex:
 
 
 __all__ = [
+    "CACHE_ERROR_MAX_CHARS",
     "DEFAULT_TTL_SECONDS",
     "QUOTA_RESOURCE_TYPES",
     "QUOTA_WORKLOADS",
@@ -1577,6 +1664,7 @@ __all__ = [
     "ResourceScope",
     "ScopeStatus",
     "StaleResourceIndexRefresh",
+    "sanitize_cache_error",
     "quota_resource_type",
     "resource_index_path",
     "scope_for_session",

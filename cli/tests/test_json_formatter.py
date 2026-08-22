@@ -83,10 +83,7 @@ def test_sanitizer_removes_secrets_and_internal_transport_details() -> None:
 
 
 def test_sanitizer_preserves_explicit_remote_raw_content() -> None:
-    content = (
-        "https://alice:secret@example.test/run?token=keep "
-        "path=/home/user/out.log token=keep"
-    )
+    content = "https://alice:secret@example.test/run?token=keep path=/home/user/out.log token=keep"
 
     assert sanitize_json_data({"content": content, "output": content}) == {
         "content": content,
@@ -217,10 +214,7 @@ def test_error_json_removes_credentials_urls_and_absolute_paths() -> None:
         "error": {
             "type": "SSHExecutionError",
             "code": 1,
-            "message": (
-                "SSH failed: <redacted> "
-                "path=<redacted> password=<redacted>"
-            ),
+            "message": ("SSH failed: <redacted> path=<redacted> password=<redacted>"),
         },
     }
     for secret in ("user:pass", "access_token=abc", "/home/user/run.log", "hunter2"):
@@ -237,9 +231,38 @@ def test_error_text_redacts_platform_paths_urls_and_login_assignments() -> None:
     )
 
     assert rendered == (
-        "request <redacted> failed at <redacted> "
-        "login_name=<redacted> account_id=<redacted>"
+        "request <redacted> failed at <redacted> login_name=<redacted> account_id=<redacted>"
     )
+
+
+def test_error_text_redacts_http_auth_headers_and_session_cookie() -> None:
+    rendered = sanitize_text(
+        "Call log:\n"
+        "  - cookie: inspire-session=session-secret; other=also-secret\n"
+        "  - Authorization: Bearer bearer-secret\n"
+        "  - Set-Cookie: session=reply-secret\n"
+        "request headers Cookie: first=inline-one; second=inline-two\n"
+        "inspire-session=inline-secret",
+    )
+
+    assert rendered == (
+        "Call log:\n"
+        "  - cookie: <redacted>\n"
+        "  - Authorization: <redacted>\n"
+        "  - Set-Cookie: <redacted>\n"
+        "request headers Cookie: <redacted>\n"
+        "inspire-session=<redacted>"
+    )
+    for secret in (
+        "session-secret",
+        "also-secret",
+        "bearer-secret",
+        "reply-secret",
+        "inline-one",
+        "inline-two",
+        "inline-secret",
+    ):
+        assert secret not in rendered
 
 
 def test_final_output_guard_scrubs_text_and_bytes() -> None:

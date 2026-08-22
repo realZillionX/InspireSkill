@@ -62,13 +62,19 @@ CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解
 
 **普通命令不会启动全账号后台刷新。** 缓存只由实际解析按需填充；没有消费者的 Scope 不产生网络流量。这样在多 Workspace 的慢账号上不会为未使用的 Image、Model 和 Workload 逐空间预热，也不会让缓存维护与前台争用同一账号的请求额度。
 
-**`inspire cache refresh` 必须说明刷什么**，不带 `--resource` / `--workspace` / `--name` 会直接报错。全量刷一遍是几百个请求，而且读的是几乎不动的目录；正常情况下你根本不需要跑它。真正要跑的场合只有一种：你知道缓存底下的东西变了，比如管理员刚改过计算组规格、或者刚在网页上删过镜像。这时候先 `inspire cache status` 看哪个 Scope 真的不对，再 `inspire cache refresh --resource <kind> --workspace <name> --full` 只刷那一块。手敲的这一次是完整对账，会把平台不再列出的行清掉。
+**`inspire cache refresh` 必须说明刷什么**，不带 `--resource` / `--workspace` / `--name` 会直接报错。全量刷一遍是几百个请求，而且读的是几乎不动的目录；正常情况下你根本不需要跑它。真正要跑的场合只有一种：你知道缓存底下的东西变了，比如管理员刚改过计算组规格、或者刚在网页上删过镜像。这时候先 `inspire cache status` 看哪个 Scope 真的不对，再 `inspire cache refresh --resource <kind> --workspace <name>` 只刷那一块。每次显式 refresh 都是完整对账，会把平台不再列出的行清掉；旧版的冗余 `--full` 仍被静默接受，但不再出现在 Help。
+
+Workload 历史目录超过 5000 行时不会硬扫：刷新器读第一页确认 `total` 后停止，保留已有名称行并提示加 `--name`。共享账号的 Job 历史可能达到几十万条，把它完整搬进本机 SQLite 既慢也没有消费者；正常命令仍按当前名字读穿并写回，后续同名操作直接命中本地缓存。
 
 `cache status` 里的 `partial` 表示这个 Scope 只经过某个名字的定向解析、尚未做完整扫描。这不是故障，`error` 才是；需要完整对账时显式运行上述窄范围 `cache refresh`。
 
-`empty` 是另一个要看的信号：这个资源**刷新过、还在有效期内，却一个名字都拿不出来**。单个 Workspace 空是正常的（那个空间就是没有 Notebook），所以这个判定只按整个资源画——全局一条都没有，而刷新又声称跑过。配额目录出过一次这个状态，当时 `cache status` 把它印成 `ready`，于是「每个 `create` 都被拒」这件事在看板上完全看不出来。撞到 `empty` 先 `cache refresh --resource <kind> --full`，还空就是真出事了。
+`cache status` / `cache clear` 管的是资源名称索引、Quota 行和 Notebook GPU 探测结果；不碰登录 Session、IDE/连接目标、代理状态或更新检查状态。`status` 只汇总当前 Session 的身份分区，避免共用账号换过登录主体后把旧分区的数量和错误混进来；`clear` 仍清当前账号的全部分区。默认 `cache clear --yes` 所说的 “every managed cache” 仅指这些明确列在 `cache status` 里的缓存，不能拿它当登出或网络重置命令。
 
-空结果只在平台成功回答时才是事实。Quota 目录是「Workspace 里每个 Compute Group 一次请求」的扇出，任何一组没答上（限流、超时、5xx），这一轮就记成 incomplete：已读到的行照常缓存，读不到的那些保留上一轮的旧行，Scope 不算完整刷新。`cache refresh` 会在汇总里报 `N incomplete` 并列出原因，`cache status` 把原因留在该 Scope 的 `error` 上，下一次完整刷新才清掉。因此 `No quota rows found.` 和 `(workspace has no quotas)` 现在只可能来自平台真的返回空；上游没答复时命令直接报 API 错误。命中限流时先重试，持续不缓解再针对性 `inspire cache refresh --resource quota-<workload> --workspace <name> --full`。
+`empty` 是另一个要看的信号：这个资源**刷新过、还在有效期内，却一个名字都拿不出来**。单个 Workspace 空是正常的（那个空间就是没有 Notebook），所以这个判定只按整个资源画——全局一条都没有，而刷新又声称跑过。配额目录出过一次这个状态，当时 `cache status` 把它印成 `ready`，于是「每个 `create` 都被拒」这件事在看板上完全看不出来。撞到 `empty` 先 `cache refresh --resource <kind>`，还空就是真出事了。
+
+空结果只在平台成功回答时才是事实。Quota 目录是「Workspace 里每个 Compute Group 一次请求」的扇出，任何一组没答上（限流、超时、5xx），这一轮就记成 incomplete：已读到的行照常缓存，读不到的那些保留上一轮的旧行，Scope 不算完整刷新。`cache refresh` 会在汇总里报 `N incomplete` 并列出原因，`cache status` 把原因留在该 Scope 的 `error` 上，下一次完整刷新才清掉。因此 `No quota rows found.` 和 `(workspace has no quotas)` 现在只可能来自平台真的返回空；上游没答复时命令直接报 API 错误。命中限流时先重试，持续不缓解再针对性 `inspire cache refresh --resource quota-<workload> --workspace <name>`。
+
+刷新错误只保留一行、最多 500 个字符的诊断摘要；Cookie、Authorization、URL、账号路径和平台路径在写进 SQLite 前就会被抹掉。新版第一次打开旧索引时也会原地清理历史错误，不需要清空仍然有效的名称行。
 
 ## 4. Quota 语义
 

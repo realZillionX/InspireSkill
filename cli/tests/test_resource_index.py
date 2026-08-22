@@ -115,8 +115,7 @@ def test_replace_name_tombstones_deleted_and_recreated_identity(tmp_path) -> Non
     index.replace_name(scope, "A", [_record("notebook-new", "A")], now=200)
 
     assert [
-        item.resource_id
-        for item in index.lookup(scope, "A", fresh_only=False, now=200)
+        item.resource_id for item in index.lookup(scope, "A", fresh_only=False, now=200)
     ] == ["notebook-new"]
     old = index.lookup_id(scope, "notebook-old", include_tombstoned=True)
     assert old is not None
@@ -136,8 +135,7 @@ def test_replace_name_with_no_results_tombstones_only_that_name(tmp_path) -> Non
 
     assert index.lookup(scope, "A", fresh_only=False, now=200) == []
     assert [
-        item.resource_id
-        for item in index.lookup(scope, "B", fresh_only=False, now=200)
+        item.resource_id for item in index.lookup(scope, "B", fresh_only=False, now=200)
     ] == ["job-b"]
 
 
@@ -250,8 +248,7 @@ def test_partial_upsert_never_tombstones_unseen_rows(tmp_path) -> None:
     index.upsert(scope, [_record("job-a", "A", status="RUNNING")], now=200)
 
     assert [
-        item.resource_id
-        for item in index.lookup(scope, "B", fresh_only=False, now=200)
+        item.resource_id for item in index.lookup(scope, "B", fresh_only=False, now=200)
     ] == ["job-b"]
 
 
@@ -294,8 +291,7 @@ def test_old_full_refresh_cannot_resurrect_deleted_and_recreated_name(
         )
 
     assert [
-        item.resource_id
-        for item in index.lookup(scope, "A", fresh_only=False, now=112)
+        item.resource_id for item in index.lookup(scope, "A", fresh_only=False, now=112)
     ] == ["notebook-new"]
     old = index.lookup_id(scope, "notebook-old", include_tombstoned=True)
     assert old is not None
@@ -328,9 +324,66 @@ def test_refresh_error_preserves_last_successful_snapshot(tmp_path) -> None:
     assert metadata["last_attempt_at"] == 200
     assert metadata["refresh_complete"] == 1
     assert [
-        item.resource_id
-        for item in index.lookup(scope, "A", fresh_only=False, now=200)
+        item.resource_id for item in index.lookup(scope, "A", fresh_only=False, now=200)
     ] == ["job-a"]
+
+
+def test_refresh_error_is_redacted_bounded_and_single_line(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    secret = "session-secret-value"
+    index.record_refresh_error(
+        scope,
+        "APIRequestContext.post: failed at https://qz.sii.edu.cn/api/v2/train\n"
+        f"  - cookie: inspire-session={secret}\n"
+        "  - Authorization: Bearer auth-secret\n" + "x" * 1000,
+        now=200,
+    )
+
+    error = index.list_scope_status()[0].last_error
+    assert error == "APIRequestContext.post: failed at <redacted>"
+    assert "\n" not in error
+    assert secret not in error
+    assert "auth-secret" not in error
+    assert len(resource_index_module.sanitize_cache_error("x" * 1000)) == 500
+
+
+def test_opening_index_migrates_legacy_raw_refresh_errors(tmp_path) -> None:
+    path = tmp_path / "index.sqlite3"
+    index = ResourceIndex(path)
+    scope = _scope()
+    index.record_refresh_error(scope, "placeholder", now=200)
+    with index._connect() as connection:  # noqa: SLF001 - inject legacy state
+        connection.execute(
+            "UPDATE resource_scope SET last_error = ?",
+            (
+                "legacy failure\n"
+                "  - cookie: inspire-session=legacy-secret\n"
+                "  - Authorization: Bearer auth-secret",
+            ),
+        )
+
+    reopened = ResourceIndex(path)
+
+    assert reopened.list_scope_status()[0].last_error == "legacy failure"
+
+
+def test_scope_status_can_filter_the_current_session_identity(tmp_path) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    active = _scope(subject_id="user-active")
+    previous = _scope(subject_id="user-previous")
+    index.reconcile(active, [_record("job-active", "active")], now=100)
+    index.record_refresh_error(previous, "previous session failure", now=100)
+
+    statuses = index.list_scope_status(
+        base_url=active.base_url,
+        subject_id=active.subject_id,
+        now=101,
+    )
+
+    assert len(statuses) == 1
+    assert statuses[0].active_count == 1
+    assert statuses[0].last_error == ""
 
 
 def test_older_refresh_error_cannot_overwrite_newer_success(tmp_path) -> None:
@@ -350,7 +403,9 @@ def test_older_refresh_error_cannot_overwrite_newer_success(tmp_path) -> None:
     assert _scope_metadata(index, scope)["last_attempt_at"] == 200
 
 
-def test_write_through_preserves_full_refresh_error_until_full_success(tmp_path) -> None:
+def test_write_through_preserves_full_refresh_error_until_full_success(
+    tmp_path,
+) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
     scope = _scope()
     index.reconcile(scope, [_record("job-a", "A")], now=100)
@@ -456,8 +511,8 @@ def test_prune_orphan_workspace_scopes_removes_only_invisible_workspaces(
     orphan_scope = _scope(workspace_id="workspace-removed")
     index.reconcile(visible_scope, [_record("job-visible", "visible")], now=100)
     index.reconcile(orphan_scope, [_record("job-old", "old")], now=100)
-    generation, workspace_revision, child_revisions = (
-        index.snapshot_workspace_refresh(workspace_scope)
+    generation, workspace_revision, child_revisions = index.snapshot_workspace_refresh(
+        workspace_scope
     )
 
     assert (
@@ -473,9 +528,9 @@ def test_prune_orphan_workspace_scopes_removes_only_invisible_workspaces(
 
     assert index.lookup(visible_scope, "visible", fresh_only=False)
     assert index.lookup(orphan_scope, "old", fresh_only=False) == []
-    assert {
-        status.workspace_id for status in index.list_scope_status()
-    } == {"workspace-visible"}
+    assert {status.workspace_id for status in index.list_scope_status()} == {
+        "workspace-visible"
+    }
 
 
 def test_prune_orphan_workspace_scopes_preserves_concurrently_changed_scope(
@@ -485,8 +540,8 @@ def test_prune_orphan_workspace_scopes_preserves_concurrently_changed_scope(
     workspace_scope = _scope(resource_type="workspace", workspace_id="")
     orphan_scope = _scope(workspace_id="workspace-new")
     index.reconcile(orphan_scope, [_record("job-old", "old")], now=100)
-    generation, workspace_revision, child_revisions = (
-        index.snapshot_workspace_refresh(workspace_scope)
+    generation, workspace_revision, child_revisions = index.snapshot_workspace_refresh(
+        workspace_scope
     )
 
     index.upsert(orphan_scope, [_record("job-new", "new")], now=101)
@@ -511,8 +566,8 @@ def test_prune_orphan_workspace_scopes_rejects_pre_clear_snapshot(
     workspace_scope = _scope(resource_type="workspace", workspace_id="")
     orphan_scope = _scope(workspace_id="workspace-old")
     index.reconcile(orphan_scope, [_record("job-old", "old")], now=100)
-    generation, workspace_revision, child_revisions = (
-        index.snapshot_workspace_refresh(workspace_scope)
+    generation, workspace_revision, child_revisions = index.snapshot_workspace_refresh(
+        workspace_scope
     )
 
     index.clear()
@@ -540,6 +595,27 @@ def test_refresh_lease_is_single_flight_and_released(tmp_path) -> None:
 
     with index.refresh_lease(scope, holder="third", now=101) as third:
         assert third is True
+
+
+def test_refresh_lease_reclaims_a_dead_local_holder(tmp_path, monkeypatch) -> None:
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    scope = _scope()
+    with index._connect() as connection:  # noqa: SLF001 - inject crashed owner
+        connection.execute(
+            """
+            INSERT INTO refresh_lease(lease_key, holder, expires_at)
+            VALUES(?, '12345:crashed', 999)
+            """,
+            (scope.lease_key(),),
+        )
+    monkeypatch.setattr(
+        resource_index_module,
+        "_lease_holder_is_alive",
+        lambda holder: holder != "12345:crashed",
+    )
+
+    with index.refresh_lease(scope, holder="second", now=100) as acquired:
+        assert acquired is True
 
 
 def test_refresh_lease_database_errors_are_best_effort(tmp_path, monkeypatch) -> None:
@@ -650,7 +726,9 @@ def test_corrupt_database_is_discarded_and_rebuilt(tmp_path) -> None:
     ],
 )
 def test_non_corruption_database_errors_are_not_discarded(message: str) -> None:
-    assert ResourceIndex._is_corruption_error(sqlite3.OperationalError(message)) is False
+    assert (
+        ResourceIndex._is_corruption_error(sqlite3.OperationalError(message)) is False
+    )
 
 
 def test_scope_for_session_requires_stable_account_identity() -> None:
@@ -780,7 +858,11 @@ def test_compute_group_round_trips_through_lookup_paths(tmp_path) -> None:
     index.replace_name(
         scope,
         "gpu-box",
-        [ResourceIdentity(resource_id="notebook-one", name="gpu-box", compute_group="CPU资源-2")],
+        [
+            ResourceIdentity(
+                resource_id="notebook-one", name="gpu-box", compute_group="CPU资源-2"
+            )
+        ],
         now=102,
     )
     assert index.lookup(scope, "gpu-box", now=103)[0].compute_group == "CPU资源-2"
@@ -843,7 +925,6 @@ def test_index_without_compute_group_column_is_migrated_in_place(tmp_path) -> No
     assert index.lookup(scope, "gpu-box")[0].compute_group == (
         "开发区-H100-cuda12.8版本-119核"
     )
-
 
 
 def test_payload_round_trips_for_quota_style_rows(tmp_path) -> None:

@@ -29,6 +29,8 @@ from inspire.cli.utils.resource_index import (
     ResourceIndex,
     ResourceIndexDatabaseError,
     ScopeStatus,
+    sanitize_cache_error,
+    scope_for_session,
 )
 from inspire.cli.utils.resource_index_refresh import (
     RESOURCE_TYPES,
@@ -96,8 +98,20 @@ def _workspace_name_map() -> dict[str, str]:
     }
 
 
+def _active_cache_identity() -> tuple[str, str]:
+    session = WebSession.load(allow_expired=True)
+    scope = (
+        scope_for_session(session, resource_type="workspace")
+        if session is not None
+        else None
+    )
+    if scope is None:
+        return "", ""
+    return scope.base_url, scope.subject_id
+
+
 def _public_error(value: object) -> str:
-    return json_formatter.sanitize_text(value, redact_paths=True)
+    return sanitize_cache_error(value)
 
 
 def _reports_nothing(row: dict[str, object]) -> bool:
@@ -129,6 +143,8 @@ def _status_payload(
     index: ResourceIndex,
     *,
     resources: Sequence[str] = (),
+    base_url: str = "",
+    subject_id: str = "",
 ) -> dict[str, object]:
     selected = {str(resource or "").strip().lower() for resource in resources}
     selected.discard("")
@@ -137,7 +153,10 @@ def _status_payload(
     scopes: list[dict[str, object]] = []
     statuses = [
         status
-        for status in index.list_scope_status()
+        for status in index.list_scope_status(
+            base_url=base_url,
+            subject_id=subject_id,
+        )
         if not selected or status.resource_type in selected
     ]
     for status in statuses:
@@ -178,13 +197,10 @@ def _status_payload(
         refresh_times = [
             touched
             for status in statuses
-            if status.resource_type == resource
-            and (touched := _touched_at(status)) > 0
+            if status.resource_type == resource and (touched := _touched_at(status)) > 0
         ]
         item_counts = [
-            value
-            for row in rows
-            if isinstance((value := row.get("cached_names")), int)
+            value for row in rows if isinstance((value := row.get("cached_names")), int)
         ]
         cached_names = sum(item_counts)
         if state == "ready" and not cached_names:
@@ -269,7 +285,11 @@ def _refresh_payload(
     }
     failures = [
         {
-            **({"workspace": scrub_raw_ids(result.workspace_name)} if result.workspace_name else {}),
+            **(
+                {"workspace": scrub_raw_ids(result.workspace_name)}
+                if result.workspace_name
+                else {}
+            ),
             "resource": result.resource_type,
             "error": _public_error(result.error),
         }
@@ -283,7 +303,11 @@ def _refresh_payload(
     # is not the whole catalog either, and silence would read as "complete".
     incomplete = [
         {
-            **({"workspace": scrub_raw_ids(result.workspace_name)} if result.workspace_name else {}),
+            **(
+                {"workspace": scrub_raw_ids(result.workspace_name)}
+                if result.workspace_name
+                else {}
+            ),
             "resource": result.resource_type,
             "reason": _public_error(result.error),
         }
@@ -316,11 +340,13 @@ def cache() -> None:
     metavar="NAME|all",
     help="Refresh only this workspace name. Repeat or use 'all'.",
 )
-@click.option("--name", default="", metavar="NAME", help="Refresh one exact resource name.")
+@click.option(
+    "--name", default="", metavar="NAME", help="Refresh one exact resource name."
+)
 @click.option(
     "--full",
     is_flag=True,
-    help="Force a complete refresh even when cached scopes are still fresh.",
+    hidden=True,
 )
 @pass_context
 def refresh_cache(
@@ -344,9 +370,12 @@ def refresh_cache(
     \b
     Examples:
         inspire cache refresh --resource notebook --workspace 分布式训练空间
-        inspire cache refresh --resource quota-job --workspace CPU资源空间 --full
+        inspire cache refresh --resource quota-job --workspace CPU资源空间
         inspire cache refresh --resource image --name pytorch:2.1
     """
+    del (
+        full
+    )  # Accepted invisibly for compatibility; every explicit refresh is complete.
     if not (resources or workspaces or name):
         exit_with_error(
             ctx,
@@ -395,7 +424,7 @@ def refresh_cache(
             resource_types=selected,
             workspace_names=validated_workspaces or None,
             exact_name=exact_name,
-            force=bool(full or exact_name or resources or workspaces),
+            force=True,
         )
     except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
         _exit_cache_database_error(ctx)
@@ -467,7 +496,13 @@ def cache_status(ctx: Context, resources: tuple[str, ...]) -> None:
         inspire cache status --resource notebook-gpu --resource quota-notebook
     """
     try:
-        payload = _status_payload(_index_or_exit(ctx), resources=resources)
+        base_url, subject_id = _active_cache_identity()
+        payload = _status_payload(
+            _index_or_exit(ctx),
+            resources=resources,
+            base_url=base_url,
+            subject_id=subject_id,
+        )
     except (OSError, sqlite3.Error, ResourceIndexDatabaseError):
         _exit_cache_database_error(ctx)
         raise RuntimeError("unreachable")
@@ -476,7 +511,11 @@ def cache_status(ctx: Context, resources: tuple[str, ...]) -> None:
         return
 
     items = payload["items"]
-    rows = [row for row in items if isinstance(row, dict)] if isinstance(items, list) else []
+    rows = (
+        [row for row in items if isinstance(row, dict)]
+        if isinstance(items, list)
+        else []
+    )
     # A whole-cache view of nothing reads better as one sentence than as a
     # column of zeroes. A --resource view still gets its rows: "empty" is the
     # answer it asked for.
@@ -521,7 +560,7 @@ def cache_status(ctx: Context, resources: tuple[str, ...]) -> None:
 )
 @pass_context
 def clear_cache(ctx: Context, resources: tuple[str, ...], yes: bool) -> None:
-    """Clear local caches, all of them or one kind at a time.
+    """Clear managed name/GPU caches, all or one kind at a time.
 
     \b
     Examples:
@@ -530,7 +569,7 @@ def clear_cache(ctx: Context, resources: tuple[str, ...], yes: bool) -> None:
         inspire cache clear --resource notebook-gpu --resource quota-notebook --yes
     """
     selected = tuple(dict.fromkeys(resource.lower() for resource in resources))
-    scope_label = ", ".join(selected) if selected else "every local cache"
+    scope_label = ", ".join(selected) if selected else "every managed cache"
     require_confirmation(
         ctx,
         yes=yes,
@@ -539,9 +578,7 @@ def clear_cache(ctx: Context, resources: tuple[str, ...], yes: bool) -> None:
         hint="Pass --yes to confirm clearing the cache.",
     )
 
-    index_types = [
-        resource for resource in selected if resource != GPU_MODEL_RESOURCE
-    ]
+    index_types = [resource for resource in selected if resource != GPU_MODEL_RESOURCE]
     cleared: dict[str, int] = {}
     if index_types or not selected:
         try:

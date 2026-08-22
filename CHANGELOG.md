@@ -28,6 +28,12 @@
 
 ### 修复
 
+- **`inspire cache` 不再把请求凭据写进诊断缓存。** Playwright 的失败文本会附带完整请求调用记录，旧实现把它原样存进 `resource_scope.last_error`，`cache status` 的通用文本净化又没有覆盖 Cookie / Authorization Header，代理故障时因此可能把 Session Cookie 回显出来。现在错误在写入 SQLite 前就统一移除认证 Header、URL、本机和平台路径，只保留首个非空诊断行并限制为 500 字符；打开既有索引会原地迁移旧错误，保留可用名称行。输出层继续做同一套净化作为第二道边界。
+
+- **缓存维护命令与真实作用域一致，异常退出后也能立即恢复刷新。** 每次显式 `cache refresh` 本来就会强制完整对账，冗余的 `--full` 从 Help 和当前文档移除（旧脚本仍可静默传入）；`cache clear` 的默认提示改成 “every managed cache”，并明确它只清资源名称 / Quota 索引和 Notebook GPU 探测，不会伪装成已清理登录 Session、IDE/连接、代理或更新状态。刷新租约现在识别本机持有进程：代理或 CLI 崩溃留下的租约会在下一次尝试时立即回收，不再把显式修复挡成最多 120 秒的 `busy`；未知旧格式仍按 TTL 保守过期。任一维护刷新只要已取得完整 Live Workspace 目录，就会顺手清掉账号不再可见的孤儿 Scope；此前只有显式包含 `workspace` 类型才清理，已移除空间的旧错误会让 Notebook 等汇总永久停在 `partial` / `error`。`cache status` 还会按当前 Session 的平台地址和登录主体过滤：共用账号换过登录主体时，不能再消费的旧身份分区不再污染当前数量与健康状态；`cache clear` 仍按账号清掉全部分区。
+
+- **缓存完整刷新不再把服务端缩页误判成最后一页，也不会硬扫无限历史。** 刷新器请求 1000 行，但 `train.ListJobs` 的客户端会按已确认的网关上限静默夹到 999；旧终止条件看到 `999 < 1000` 就停，因此一个 Scope 即使 `total > 999` 也只缓存第一页。现在 Job / HPC / Ray / Serving / TensorBoard 和 Model 都按服务端 `total` 翻页，只有空页或已读满 total 才结束；无名 TensorBoard 行也会计入翻页进度，再在持久化前丢弃。Job 的多页窗口改用真机确认可用的 500 行；`lty` 的分布式训练空间报告约 47 万条共享 Job 历史，Workload Scope 超过 5000 行时现在会在第一页后拒绝无边界完整扫描、保留旧缓存并提示用 `--name`，不再假装前 999 行就是完整目录，也不会运行几十分钟。Ray / Serving 仅做静态路径与单元测试验证，不发起 Live 请求。
+
 - **账号配置不再缓存项目和资源目录，隐式远端 cwd 不再注入 `cd`。** 旧版 `inspire init` 会把全部可见 Project、Compute Group、推导出的项目路径和未使用的 `docker_registry` 一起写进 `~/.inspire/accounts/<name>/config.toml`。一个账号跨多个 Project 使用时，账号级 `me` 会把 Notebook/Job 命令带进另一个 Fileset；Compute Group 快照还会在 Live API 失败时冒充资源事实。现在账号加载立即忽略这些旧字段，下一次 `inspire init` 会从磁盘删除 `[projects]`、`[project_catalog]`、`[[compute_groups]]`、账号级 `[path_aliases]` 和未使用的 `api.docker_registry`，其它未知字段保留；全局 init 不再枚举这些目录，项目路径只由 `inspire init --scope project` 写进仓库配置。Notebook exec/shell 省略 `--cwd` 时不生成 `cd`，Job 启动命令也不再由 CLI 添加 `cd`，两者均保留平台、容器或远端 Shell 的初始工作目录；显式 `--cwd` 仍会解析 Path Alias，Job 的共享文件日志目录与执行 cwd 解耦。
 
 - **Windows 成为一等公民，不再要求 WSL。** 此前 `import inspire.cli.main` 在 Windows 上直接 `ModuleNotFoundError: fcntl` —— 断点在 `accounts/cache_lock.py`，而它在第一条子命令的 import 链上，所以不是「某个命令不能用」，是 `inspire --version` 都起不来。五处模块级 POSIX 导入（`fcntl` / `pty` / `termios` / `tty`）按平台分叉，文件锁在 Windows 上用 `msvcrt.locking` 实现。CI 增加 `windows-latest`。

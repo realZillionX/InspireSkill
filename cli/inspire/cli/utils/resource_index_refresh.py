@@ -48,10 +48,12 @@ WORKSPACE_RESOURCE_TYPES = tuple(
 
 # A refresh reads whole scopes, not screens of them, so it pages at the bulk
 # size rather than the UI's. At 100 a workspace holding ~1400 of the user's
-# jobs costs 14 round trips; the gateway caps `page_size` at
-# `MAX_PAGE_SIZE` and clamps anything above it, so this only ever means fewer
-# requests for the same rows.
+# jobs costs 14 round trips. Some Actions clamp this request below the value
+# sent, so completion is decided from the returned total rather than by
+# comparing a response page with this requested size.
 REFRESH_PAGE_SIZE = 1000
+JOB_REFRESH_PAGE_SIZE = 500
+MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS = 5000
 
 
 @dataclass(frozen=True)
@@ -301,7 +303,7 @@ def _model_fetch(session: object, workspace_id: str, exact_name: str) -> FetchRe
             )
             for item in items
         )
-        if not items or len(records) >= total or len(items) < REFRESH_PAGE_SIZE:
+        if not items or (total > 0 and len(records) >= total):
             break
         page += 1
     return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
@@ -376,9 +378,8 @@ def _tensorboard_page(
             created_at=item.created_at,
         )
         for item in items
-        # A board may be created without a name; it can never be addressed
-        # by one either, so caching it would only add a nameless row.
-        if item.name
+        # Nameless boards survive this page boundary so they still count
+        # toward pagination. `_dedupe_records` drops them before persistence.
     ], total
 
 
@@ -479,13 +480,18 @@ def _read_pages(
     page = 1
     while True:
         items, total = read_page(session, workspace_id, exact_name, page, page_size)
+        if not exact_name and total > MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS:
+            raise ValueError(
+                f"Catalog reports {total} rows; the complete cache refresh limit is "
+                f"{MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS}. Refresh one name with --name."
+            )
         fetched += len(items)
         for record in items:
             resource_id = str(record.resource_id or "").strip()
             if resource_id and resource_id not in seen:
                 seen.add(resource_id)
                 records.append(record)
-        if not items or len(items) < page_size or fetched >= total:
+        if not items or (total > 0 and fetched >= total):
             break
         page += 1
     return records
@@ -500,7 +506,11 @@ def _workload_fetcher(resource_type: str) -> Fetcher:
             session,
             workspace_id,
             exact_name,
-            page_size=REFRESH_PAGE_SIZE,
+            page_size=(
+                JOB_REFRESH_PAGE_SIZE
+                if resource_type == "job"
+                else REFRESH_PAGE_SIZE
+            ),
         )
         return FetchResult(_filter_exact(_dedupe_records(records), exact_name))
 
@@ -995,6 +1005,34 @@ def refresh_resource_index(
         if workspace_error
         else _select_workspace_ids(names_by_id, workspace_names)
     )
+
+    # A selected child-resource refresh already paid for a complete live
+    # workspace catalog. Use that authoritative snapshot to remove scopes for
+    # workspaces the account can no longer see, even when `workspace` itself
+    # was not one of the requested resource kinds. Previously those rows could
+    # leave `cache status` permanently partial/error until an unrelated full
+    # workspace refresh happened. The revision snapshot makes this best-effort
+    # cleanup lose safely to concurrent cache mutations.
+    if (
+        "workspace" not in selected_types
+        and not workspace_error
+        and workspace_fetched
+        and workspace_snapshot.complete
+        and not exact_name
+        and workspace_scope is not None
+        and workspace_generation is not None
+        and workspace_revision is not None
+    ):
+        try:
+            index.prune_orphan_workspace_scopes(
+                workspace_scope,
+                names_by_id,
+                expected_generation=workspace_generation,
+                expected_workspace_revision=workspace_revision,
+                expected_child_revisions=workspace_child_revisions,
+            )
+        except (StaleResourceIndexRefresh, OSError, sqlite3.Error):
+            pass
 
     results: list[RefreshResult] = []
     for resource_type in selected_types:

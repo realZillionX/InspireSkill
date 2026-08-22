@@ -64,14 +64,17 @@ _SENSITIVE_KEYS = {
     "access_token",
     "api_key",
     "api_token",
+    "authorization",
     "auth_token",
     "client_secret",
+    "cookie",
     "login_name",
     "login_username",
     "password",
     "passwd",
     "refresh_token",
     "secret",
+    "set_cookie",
     "token",
     "username",
 }
@@ -97,10 +100,14 @@ _URL_RE = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"(?i)\b("
     r"access[_-]?token|account[_-]?id|api[_-]?key|"
+    r"authorization|cookie|set[_-]?cookie|inspire[_-]?session|"
     r"login(?:[_-]?(?:id|name|username))?|password|passwd|"
     r"refresh[_-]?token|token|user[_-]?id|username"
     r")"
-    r"\s*[:=]\s*[^\s,;&]+"
+    r"(\s*[:=]\s*)[^\s,;&]+"
+)
+_SENSITIVE_HEADER_RE = re.compile(
+    r"(?im)(\b(?:set-cookie|cookie|authorization)\s*[:=]\s*).*$"
 )
 _ALL_UNIX_ABSOLUTE_PATH_RE = re.compile(
     r"(?<![\w:/])/"
@@ -219,7 +226,14 @@ def _sanitize_public_text(
         sanitized,
     )
     sanitized = _SENSITIVE_ASSIGNMENT_RE.sub(
-        lambda match: f"{match.group(1)}=<redacted>",
+        lambda match: f"{match.group(1)}{match.group(2)}<redacted>",
+        sanitized,
+    )
+    # Header values can contain several cookies separated by spaces or
+    # semicolons. Apply this after the scalar assignment scrubber so the whole
+    # remainder of the line is removed, including sibling cookie values.
+    sanitized = _SENSITIVE_HEADER_RE.sub(
+        lambda match: f"{match.group(1)}<redacted>",
         sanitized,
     )
     if not redact_paths:
