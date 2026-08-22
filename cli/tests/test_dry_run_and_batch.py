@@ -18,6 +18,10 @@ class DummyAPI:
         self.training_calls: list[dict[str, Any]] = []
         self.hpc_calls: list[dict[str, Any]] = []
         self.train_capability_calls: list[str] = []
+        self.project_list_calls = 0
+        self.scheduling_health_calls = 0
+        self.priority_menu_calls = 0
+        self.image_catalog_calls: list[str] = []
 
     def create_training_job(
         self, *, payload: dict[str, Any], session: object | None = None
@@ -130,15 +134,21 @@ def _patch_submit_deps(
         name="Project One",
         workspace_id="ws-77777777-7777-7777-7777-777777777777",
     )
-    monkeypatch.setattr(
-        browser_api_module,
-        "list_projects",
-        lambda workspace_id=None, session=None: [project],
-    )
+    def list_projects(workspace_id=None, session=None):  # noqa: ANN001
+        del workspace_id, session
+        api.project_list_calls += 1
+        return [project]
+
+    def check_scheduling_health(workspace_id=None, project_ids=None, session=None):  # noqa: ANN001
+        del workspace_id, project_ids, session
+        api.scheduling_health_calls += 1
+        return set()
+
+    monkeypatch.setattr(browser_api_module, "list_projects", list_projects)
     monkeypatch.setattr(
         browser_api_module,
         "check_scheduling_health",
-        lambda workspace_id=None, project_ids=None, session=None: {},
+        check_scheduling_health,
     )
     monkeypatch.setattr(
         browser_api_module,
@@ -159,6 +169,9 @@ def _patch_submit_deps(
     )
 
     def fake_resolve_quota(*, spec, workspace_id, session=None, **kwargs):  # noqa: ANN001
+        priority_loader = kwargs.get("priority_levels_loader")
+        if priority_loader is not None:
+            priority_loader()
         return ResolvedQuota(
             quota_id="quota-12345678-1234-1234-1234-123456789abc",
             logic_compute_group_id="lcg-12345678-1234-1234-1234-123456789abc",
@@ -178,10 +191,40 @@ def _patch_submit_deps(
     job_create_module = importlib.import_module("inspire.cli.commands.job.job_create")
     job_submit_module = importlib.import_module("inspire.cli.utils.job_submit")
     projects_module = importlib.import_module("inspire.platform.web.browser_api.projects")
+    images_module = importlib.import_module("inspire.platform.web.browser_api.images")
     quota_module = importlib.import_module("inspire.cli.utils.quota_resolver")
+
+    def load_priority_levels(**_kwargs):
+        api.priority_menu_calls += 1
+        return {}
+
+    def list_images_by_source(*, source, session=None, workspace_id=None):  # noqa: ANN001
+        del session, workspace_id
+        api.image_catalog_calls.append(source)
+        if source != "official":
+            return []
+        return [
+            browser_api_module.CustomImageInfo(
+                image_id="image-train",
+                url="registry.batch/train:latest",
+                name="train-image",
+                framework="pytorch",
+                version="v1",
+                source="SOURCE_OFFICIAL",
+                status="READY",
+                description="",
+                created_at="",
+            )
+        ]
 
     monkeypatch.setattr(batch_module, "get_web_session", lambda: FakeWebSession())
     monkeypatch.setattr(batch_module, "resolve_quota", fake_resolve_quota)
+    monkeypatch.setattr(
+        batch_module,
+        "load_quota_priority_levels",
+        load_priority_levels,
+    )
+    monkeypatch.setattr(images_module, "list_images_by_source", list_images_by_source)
     monkeypatch.setattr(hpc_module, "get_web_session", lambda: FakeWebSession())
     monkeypatch.setattr(projects_module, "list_projects", lambda **_kwargs: [project])
     monkeypatch.setattr(job_create_module, "get_web_session", lambda: FakeWebSession())
@@ -768,7 +811,7 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
                             "workspace": "cpu",
                             "project": "Project One",
                             "group": "H200 Room",
-                            "image": "registry.batch/train:latest",
+                            "image": "train-image:v1",
                         }
                     }
                 },
@@ -810,7 +853,7 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert items[0]["workspace"] == "cpu"
     assert items[0]["project"] == "Project One"
     assert items[0]["compute_group"] == "H200 Room"
-    assert items[0]["image"] == "registry.batch/train:latest"
+    assert items[0]["image"] == "train-image:v1"
     assert items[1]["command"] == "python train.py --seed 2"
     assert items[0]["exclude_nodes"] == ["qb-prod-gpu171"]
     assert items[1]["exclude_nodes"] == ["qb-prod-gpu172"]
@@ -819,6 +862,10 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert api.train_capability_calls == [
         "ws-77777777-7777-7777-7777-777777777777"
     ]
+    assert api.project_list_calls == 1
+    assert api.scheduling_health_calls == 1
+    assert api.priority_menu_calls == 1
+    assert api.image_catalog_calls == ["official"]
     assert items[0]["shared_memory_gib"] == 96
     assert items[1]["shared_memory_gib"] == 96
     assert items[0]["priority"] == 7

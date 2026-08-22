@@ -12,7 +12,11 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.browser_api import ProjectInfo
 from inspire.cli.utils.id_resolver import _looks_like_platform_id
-from inspire.cli.utils.image_resolver import IMAGE_TYPE, resolve_image_url
+from inspire.cli.utils.image_resolver import (
+    IMAGE_TYPE,
+    ImageCatalogCache,
+    resolve_image_url,
+)
 from inspire.config import (
     Config,
     ConfigError,
@@ -21,6 +25,9 @@ from inspire.config import (
     preferred_remote_path,
 )
 from inspire.cli.utils.quota_resolver import ResolvedQuota, build_resource_spec_price
+
+
+ProjectSelectionCache = dict[str, tuple[list[ProjectInfo], set[str]]]
 
 
 @dataclass(frozen=True)
@@ -145,6 +152,8 @@ def select_project_for_workspace(
     *,
     workspace_id: str,
     requested: str | None,
+    session: Any = None,
+    selection_cache: ProjectSelectionCache | None = None,
 ) -> tuple[ProjectInfo, str | None]:
     """Select a project for the given workspace, with quota-aware fallback."""
     requested_name = (requested or "").strip()
@@ -153,14 +162,29 @@ def select_project_for_workspace(
     if _looks_like_platform_id(requested_name):
         raise ConfigError("--project only accepts a project name.")
 
-    try:
-        session = web_session_module.get_web_session()
-    except ValueError as e:
-        raise ConfigError(str(e)) from e
+    if session is None:
+        try:
+            session = web_session_module.get_web_session()
+        except ValueError as e:
+            raise ConfigError(str(e)) from e
 
-    projects = browser_api_module.list_projects(workspace_id=workspace_id, session=session)
-    if not projects:
-        raise ConfigError("No projects available")
+    snapshot = selection_cache.get(workspace_id) if selection_cache is not None else None
+    if snapshot is None:
+        projects = browser_api_module.list_projects(
+            workspace_id=workspace_id,
+            session=session,
+        )
+        if not projects:
+            raise ConfigError("No projects available")
+        congested = browser_api_module.check_scheduling_health(
+            workspace_id=workspace_id,
+            project_ids={p.project_id for p in projects},
+            session=session,
+        )
+        if selection_cache is not None:
+            selection_cache[workspace_id] = (projects, congested)
+    else:
+        projects, congested = snapshot
 
     name_matches = [
         project for project in projects if project.name.casefold() == requested_name.casefold()
@@ -169,12 +193,6 @@ def select_project_for_workspace(
         raise ValueError(f"Project name '{requested_name}' not found")
     if len(name_matches) > 1:
         raise ValueError(f"Project name '{requested_name}' is ambiguous")
-
-    congested = browser_api_module.check_scheduling_health(
-        workspace_id=workspace_id,
-        project_ids={p.project_id for p in projects},
-        session=session,
-    )
 
     return browser_api_module.select_project(
         projects,
@@ -312,6 +330,7 @@ def build_training_job_plan(
     fault_tolerance_retry_interval_sec: Optional[int] = None,
     specified_nodes: Iterable[str] | None = None,
     session: Any = None,
+    image_catalog_cache: ImageCatalogCache | None = None,
 ) -> JobSubmissionPlan:
     if not image:
         raise ValueError("--image is required.")
@@ -332,7 +351,12 @@ def build_training_job_plan(
     # the name is rejected with 无法找到对应镜像.
     framework_config: dict[str, Any] = {
         "image_type": IMAGE_TYPE,
-        "image": resolve_image_url(image, session=session, workspace_id=workspace_id),
+        "image": resolve_image_url(
+            image,
+            session=session,
+            workspace_id=workspace_id,
+            catalog_cache=image_catalog_cache,
+        ),
         "instance_count": int(nodes),
         "resource_spec_price": resource_spec_price,
         "cpu": quota.cpu_count,

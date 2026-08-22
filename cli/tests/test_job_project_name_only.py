@@ -119,3 +119,44 @@ def test_job_project_selector_uses_live_name_from_alias(
 
     assert selected is expected
     assert message is None
+
+
+def test_job_project_selector_reuses_one_command_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = object()
+    expected = _project(PROJECT_ID, "Project One")
+    other = _project(OTHER_PROJECT_ID, "Other Project")
+    calls = {"projects": 0, "health": 0}
+
+    def _projects(**_kwargs):
+        calls["projects"] += 1
+        return [expected, other]
+
+    def _health(**_kwargs):
+        calls["health"] += 1
+        return set()
+
+    monkeypatch.setattr(job_submit.browser_api_module, "list_projects", _projects)
+    monkeypatch.setattr(job_submit.browser_api_module, "check_scheduling_health", _health)
+    cache: job_submit.ProjectSelectionCache = {}
+    config = Config(username="user", password="pass")
+
+    first, _ = job_submit.select_project_for_workspace(
+        config,
+        workspace_id=WORKSPACE_ID,
+        requested="Project One",
+        session=session,
+        selection_cache=cache,
+    )
+    second, _ = job_submit.select_project_for_workspace(
+        config,
+        workspace_id=WORKSPACE_ID,
+        requested="Other Project",
+        session=session,
+        selection_cache=cache,
+    )
+
+    assert first is expected
+    assert second is other
+    assert calls == {"projects": 1, "health": 1}

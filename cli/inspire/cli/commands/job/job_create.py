@@ -213,6 +213,7 @@ def run_job_create(
                 config,
                 workspace_id=selected_workspace_id,
                 requested=project,
+                session=session,
             )
         except ValueError as e:
             _handle_error(ctx, "ValidationError", str(e), EXIT_CONFIG_ERROR)

@@ -1,6 +1,7 @@
 """Tests for image management commands and API functions."""
 
 import json
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -890,6 +891,55 @@ def test_image_list_all_sources_partial_failure(
     assert "/Users/alice/private.log" not in result.output
     assert "img-secret-123" not in result.output
     assert "socket hang up" not in result.output
+
+
+def test_image_list_all_sources_fetches_concurrently_in_stable_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_config_and_session(monkeypatch, tmp_path)
+    barrier = threading.Barrier(4)
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def fake_list_by_source(source="official", session=None, workspace_id=None):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        barrier.wait(timeout=2)
+        with lock:
+            active -= 1
+        return [
+            browser_api_module.CustomImageInfo(
+                image_id=f"img-{source}",
+                url=f"registry/{source}",
+                name=source,
+                framework="",
+                version="v1",
+                source="SOURCE_OFFICIAL" if source == "official" else "SOURCE_PUBLIC",
+                status="READY",
+                description="",
+                created_at="",
+            )
+        ]
+
+    monkeypatch.setattr(browser_api_module, "list_images_by_source", fake_list_by_source)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "image", "list", *_WS, "--source", "all", "--all"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert max_active == 4
+    assert [item["name"] for item in _json_data(result.output)["items"]] == [
+        "official:v1",
+        "public:v1",
+        "project:v1",
+        "private:v1",
+    ]
 
 
 def test_image_list_all_sources_all_fail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -625,6 +625,7 @@ Referer：`/jobs/interactiveModeling`。
 | `add_method` | `0` = 本地推送（`docker push`，网关直接拒 `no image uploaded`），`2` = 注册已有镜像地址 | — |
 | 就绪状态有两套 | `image register` 产出的走 `READY`，`notebook save-image` 产出的走 `SUCCESS`。终态失败：`FAILED` / `FAILURE` / `ERROR` / `CANCELLED` / `TIMEOUT` / `ABORTED` / `INTERRUPTED` | 漏掉任何一个都会让轮询挂到超时而不是快速失败 |
 | 目录按 Registry 组织 | `registry_hint: {workspace_id}` 指的是一个 Registry，多个 Workspace 正常共用同一份目录 | 按 Workspace 各读一遍是重复下载；用行里的 `registry_id` 判组 |
+| 四种来源彼此独立 | official / public / project / private 各是一条完整 `ListImages`；`image list --source all` 同时读取，再按这个稳定顺序合并。单档失败只产生该档 warning | 串行读取会把四条目录延迟直接相加；并发不改变任何请求体或空结果语义 |
 
 「把 Notebook 存成镜像」不在这条路由，在 `notebook.SaveNotebookImage`；`image` 组只管已经存在的镜像。
 

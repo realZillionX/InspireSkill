@@ -38,6 +38,7 @@ from inspire.cli.utils.dataset_mounts import (
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
+from inspire.cli.utils.image_resolver import ImageCatalogCache
 from inspire.cli.utils.project_resolver import project_name_candidates
 from inspire.cli.utils.quota_resolver import (
     QuotaMatchError,
@@ -46,6 +47,7 @@ from inspire.cli.utils.quota_resolver import (
     SCHEDULE_TYPE_HPC,
     SCHEDULE_TYPE_TRAIN,
     build_resource_spec_price,
+    load_quota_priority_levels,
     parse_quota,
     resolve_quota,
 )
@@ -558,6 +560,12 @@ def _prepare_training_item(
     config: Config,
     session: Any,
     specified_nodes_capabilities: dict[str, bool] | None = None,
+    project_selection_cache: job_submit.ProjectSelectionCache | None = None,
+    priority_levels_cache: dict[
+        tuple[str, str], dict[str, tuple[str, ...]] | None
+    ]
+    | None = None,
+    image_catalog_cache: ImageCatalogCache | None = None,
 ) -> job_submit.JobSubmissionPlan:
     quota_spec = parse_quota(_require_condition_str(item, "quota", kind="job"))
     workspace_id = select_workspace_id(
@@ -583,17 +591,37 @@ def _prepare_training_item(
                 f"Workspace {item.get('workspace')!r} does not enable specified-node "
                 "placement. Remove specified_nodes or choose a workspace that enables it."
             )
+    priority_key = (workspace_id, "job")
+
+    def _priority_levels_loader() -> dict[str, tuple[str, ...]] | None:
+        if priority_levels_cache is None:
+            return load_quota_priority_levels(
+                workspace_id=workspace_id,
+                session=session,
+                workload="job",
+            )
+        if priority_key not in priority_levels_cache:
+            priority_levels_cache[priority_key] = load_quota_priority_levels(
+                workspace_id=workspace_id,
+                session=session,
+                workload="job",
+            )
+        return priority_levels_cache[priority_key]
+
     resolved_quota = resolve_quota(
         spec=quota_spec,
         workspace_id=workspace_id,
         session=session,
         schedule_config_type=SCHEDULE_TYPE_TRAIN,
         group_override=_require_condition_str(item, "group", kind="job"),
+        priority_levels_loader=_priority_levels_loader,
     )
     selected, _ = job_submit.select_project_for_workspace(
         config,
         workspace_id=workspace_id,
         requested=_require_condition_str(item, "project", kind="job"),
+        session=session,
+        selection_cache=project_selection_cache,
     )
     fault_retry = _optional_int(item, "fault_tolerance_max_retry", min_value=0)
     task_priority = resolve_workspace_task_priority(
@@ -645,6 +673,7 @@ def _prepare_training_item(
             item, "fault_tolerance_retry_interval", min_value=1
         ),
         session=session,
+        image_catalog_cache=image_catalog_cache,
     )
 
 
@@ -1317,6 +1346,11 @@ def job_batch(
         config, _ = Config.from_files_and_env()
         session = get_web_session()
         specified_nodes_capabilities: dict[str, bool] = {}
+        project_selection_cache: job_submit.ProjectSelectionCache = {}
+        priority_levels_cache: dict[
+            tuple[str, str], dict[str, tuple[str, ...]] | None
+        ] = {}
+        image_catalog_cache: ImageCatalogCache = {}
 
         outputs: list[dict[str, Any]] = []
         for item in items:
@@ -1337,6 +1371,9 @@ def job_batch(
                 config=config,
                 session=session,
                 specified_nodes_capabilities=specified_nodes_capabilities,
+                project_selection_cache=project_selection_cache,
+                priority_levels_cache=priority_levels_cache,
+                image_catalog_cache=image_catalog_cache,
             )
             if dry_run:
                 outputs.append(

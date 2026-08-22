@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 import click
@@ -103,26 +104,28 @@ def _resolve_image_name(
 
     def _lister():
         bucket = []
-        failed_sources: list[str] = []
-        for source in _ALL_SOURCE_KEYS:
-            try:
-                imgs = browser_api_module.list_images_by_source(
-                    source=source, session=session, workspace_id=workspace_id
-                )
-            except Exception:
-                failed_sources.append(source)
-                continue
-            for i in imgs:
-                full = f"{i.name}" if ":" in (i.name or "") else f"{i.name}:{i.version}" if i.version else i.name
-                if ":" not in name and full.split(":", 1)[0] == name:
-                    versions_for_bare_name.append(full)
-                bucket.append(
-                    {
-                        "name": full,
-                        "id": i.image_id,
-                        "status": i.status,
-                    }
-                )
+        images, failed_sources = _load_image_sources(
+            source_keys=_ALL_SOURCE_KEYS,
+            session=session,
+            workspace_id=workspace_id,
+        )
+        for image in images:
+            full = (
+                f"{image.name}"
+                if ":" in (image.name or "")
+                else f"{image.name}:{image.version}"
+                if image.version
+                else image.name
+            )
+            if ":" not in name and full.split(":", 1)[0] == name:
+                versions_for_bare_name.append(full)
+            bucket.append(
+                {
+                    "name": full,
+                    "id": image.image_id,
+                    "status": image.status,
+                }
+            )
         if failed_sources and not any(
             candidate["name"] == name for candidate in bucket
         ):
@@ -191,6 +194,41 @@ _VISIBILITY_BY_NAME = {
     "project": _VISIBILITY_PROJECT,
     "private": _VISIBILITY_PRIVATE,
 }
+
+
+def _load_image_sources(
+    *,
+    source_keys: tuple[str, ...],
+    session: Any,
+    workspace_id: str,
+) -> tuple[list[browser_api_module.CustomImageInfo], list[str]]:
+    """Read independent image catalogues concurrently in stable tab order.
+
+    Each source is one complete ``ListImages`` request. Starting the requests
+    together changes neither their wire contracts nor partial-failure
+    semantics; results and failures are still folded in the caller-visible
+    official/public/project/private order.
+    """
+    if not source_keys:
+        return [], []
+
+    def _fetch(source: str) -> list[browser_api_module.CustomImageInfo]:
+        return browser_api_module.list_images_by_source(
+            source=source,
+            session=session,
+            workspace_id=workspace_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=len(source_keys)) as executor:
+        futures = {source: executor.submit(_fetch, source) for source in source_keys}
+        images: list[browser_api_module.CustomImageInfo] = []
+        failed: list[str] = []
+        for source in source_keys:
+            try:
+                images.extend(futures[source].result())
+            except Exception:
+                failed.append(source)
+    return images, failed
 
 # `CreateImage.add_method`. 2 is the console's 本地推送: it reserves
 # ``<name>:<version>`` and answers with the address to docker-push to. 0 is
@@ -391,15 +429,15 @@ def list_images_cmd(
 
     try:
         if source == "all":
-            for src_key in _ALL_SOURCE_KEYS:
-                try:
-                    items = browser_api_module.list_images_by_source(
-                        source=src_key, session=session, workspace_id=workspace_id
-                    )
-                except Exception:
-                    warnings.append(f"{src_key} image catalog unavailable.")
-                    continue
-                images.extend(items)
+            images, failed_sources = _load_image_sources(
+                source_keys=_ALL_SOURCE_KEYS,
+                session=session,
+                workspace_id=workspace_id,
+            )
+            warnings.extend(
+                f"{source_key} image catalog unavailable."
+                for source_key in failed_sources
+            )
 
             images = _dedupe_images_by_id(images)
 

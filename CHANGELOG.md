@@ -10,6 +10,10 @@
 
   `train.ListJobs` 还有一个低于传输层通用上限的 Action 级限制：`page_size=999` 实测返回 999 行，`1000` 返回 `InvalidParameter: page or page_size too large`。Wrapper 现在按 999 截断；`lty` 的 `分布式训练空间` Job 缓存完整刷新实测 999 个名字、5.42 秒完成。
 
+- **镜像全目录并发读取，Job Batch 复用命令内 Live 快照。** `image list --source all` 的 official / public / project / private 是四个互不依赖的 `ListImages` 请求，现改为同时发出，再按原页签顺序合并，部分失败的 warning 语义不变；`lty` 实测 9.05 秒降到 5.49–6.81 秒，剩余时间由最慢的单个目录决定。
+
+  Job Batch 此前每个条目都重读同一 Workspace 的 Quota 优先级菜单、Project 目录、排队拥塞和镜像目录。现在只在本次 Batch 进程里复用第一条刚读到的 Live 快照，不跨命令持久化；3 条 dry-run 的真机请求数 15 → 5，11.32 秒 → 5.32 秒。
+
 ### 修复
 
 - **账号配置不再缓存项目和资源目录，隐式远端 cwd 不再注入 `cd`。** 旧版 `inspire init` 会把全部可见 Project、Compute Group、推导出的项目路径和未使用的 `docker_registry` 一起写进 `~/.inspire/accounts/<name>/config.toml`。一个账号跨多个 Project 使用时，账号级 `me` 会把 Notebook/Job 命令带进另一个 Fileset；Compute Group 快照还会在 Live API 失败时冒充资源事实。现在账号加载立即忽略这些旧字段，下一次 `inspire init` 会从磁盘删除 `[projects]`、`[project_catalog]`、`[[compute_groups]]`、账号级 `[path_aliases]` 和未使用的 `api.docker_registry`，其它未知字段保留；全局 init 不再枚举这些目录，项目路径只由 `inspire init --scope project` 写进仓库配置。Notebook exec/shell 省略 `--cwd` 时不生成 `cd`，Job 启动命令也不再由 CLI 添加 `cd`，两者均保留平台、容器或远端 Shell 的初始工作目录；显式 `--cwd` 仍会解析 Path Alias，Job 的共享文件日志目录与执行 cwd 解耦。

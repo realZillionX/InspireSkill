@@ -73,6 +73,20 @@ def test_unknown_display_name_is_a_config_error(catalogue) -> None:
         resolve_image_url("no-such-image:v9", session=object(), workspace_id="ws-test")
 
 
+def test_command_local_image_catalogue_is_reused(catalogue) -> None:
+    cache: image_resolver.ImageCatalogCache = {}
+
+    for _ in range(2):
+        assert resolve_image_url(
+            "ngc-pytorch:25.02-cuda12.8.0-py3",
+            session=object(),
+            workspace_id="ws-test",
+            catalog_cache=cache,
+        ).startswith("docker.example/")
+
+    assert catalogue == ["official"]
+
+
 def test_job_payload_sends_url_not_name(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         image_resolver,

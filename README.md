@@ -238,7 +238,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 `image list / detail / register / set-visibility / delete`，创建 Notebook、Job、HPC、Ray 或 Serving 时显式传 `--image`；`hpc create --image-type` 明确可见性。
 
-镜像存在 Registry 里而不是 Workspace 里，**多个 Workspace 正常共用同一份 Registry**——这一组都要 `--workspace`，因为那是平台唯一的指定 Registry 的方式，它是路标不是分区，所以 `notebook save-image --workspace X` 存出的镜像在同一个 Registry 上的每个 Workspace 里都看得到。真正会挡住人的是 Registry 边界，而这条线基本沿着卡的类型走：国产卡空间和 NVIDIA 空间读的是两份不相交的目录。一个 Registry 动辄几千个镜像，用 `image list --keyword` 按名字搜。
+镜像存在 Registry 里而不是 Workspace 里，**多个 Workspace 正常共用同一份 Registry**——这一组都要 `--workspace`，因为那是平台唯一的指定 Registry 的方式，它是路标不是分区，所以 `notebook save-image --workspace X` 存出的镜像在同一个 Registry 上的每个 Workspace 里都看得到。真正会挡住人的是 Registry 边界，而这条线基本沿着卡的类型走：国产卡空间和 NVIDIA 空间读的是两份不相交的目录。一个 Registry 动辄几千个镜像，用 `image list --keyword` 按名字搜；`--source all` 会并发读取四个可见性目录，再按固定页签顺序合并。
 
 把跑通的 Notebook 固化成镜像不在这一组——那是 Notebook 的生命周期事件，走 `notebook save-image`。可见性有 `private` / `project` / `public` 三档，**改成 public 是单向门**：之后既删不掉也改不回私有，只有平台管理员能清理。
 

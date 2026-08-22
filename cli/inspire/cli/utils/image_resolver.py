@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 _CATALOGUE_ORDER = ("official", "public", "private")
 
+# One command-local catalogue snapshot. The bool says the source request
+# failed, which must stay distinct from a successful empty catalogue.
+ImageCatalogCache = dict[tuple[str, str], tuple[list[Any], bool]]
+
 # Sent for every image; the platform ignores it as long as `image` is a URL.
 IMAGE_TYPE = "SOURCE_PRIVATE"
 
@@ -53,6 +57,7 @@ def resolve_image_url(
     session: Any,
     workspace_id: Optional[str] = None,
     debug: bool = False,
+    catalog_cache: ImageCatalogCache | None = None,
 ) -> str:
     """Return the registry URL for a visible image name.
 
@@ -74,13 +79,22 @@ def resolve_image_url(
 
     target = value.lower()
     for source in _CATALOGUE_ORDER:
-        try:
-            images = list_images_by_source(
-                source=source, session=session, workspace_id=workspace_id
-            )
-        except Exception:  # noqa: BLE001 - one catalogue failing is not fatal
-            if debug:
-                logger.debug("Image lookup via %s failed", source, exc_info=True)
+        cache_key = (str(workspace_id or ""), source)
+        if catalog_cache is not None and cache_key in catalog_cache:
+            images, failed = catalog_cache[cache_key]
+        else:
+            try:
+                images = list_images_by_source(
+                    source=source, session=session, workspace_id=workspace_id
+                )
+                failed = False
+            except Exception:  # noqa: BLE001 - one catalogue failing is not fatal
+                if debug:
+                    logger.debug("Image lookup via %s failed", source, exc_info=True)
+                images, failed = [], True
+            if catalog_cache is not None:
+                catalog_cache[cache_key] = (images, failed)
+        if failed:
             continue
         for image in images:
             if target in {label.lower() for label in _labels_for(image)}:
@@ -94,4 +108,4 @@ def resolve_image_url(
     )
 
 
-__all__ = ["IMAGE_TYPE", "resolve_image_url"]
+__all__ = ["IMAGE_TYPE", "ImageCatalogCache", "resolve_image_url"]
