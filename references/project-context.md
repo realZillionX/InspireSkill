@@ -39,7 +39,7 @@
 inspire init --scope project
 ```
 
-交互流程会选择 Project 和默认存储池；已从用户拿到答案时用 `--select-project <name>` 直接传入。写入内容是账号覆盖层的 Project Context 和发现到的 Path Alias。Path Alias 只在显式路径参数和 `--cwd` 中生效；省略 `--cwd` 时不注入 `cd`，保留远端运行时的初始目录。
+交互流程会选择 Project 和默认存储池；已从用户拿到答案时用 `--select-project <name>` 直接传入。写入内容是账号覆盖层的 Project Context 和发现到的 Path Alias。Path Alias 供显式路径参数和 `--cwd` 解析；配置 `me` 时，Job 还会用它定位共享日志，但不把它作为执行 cwd。省略 `--cwd` 时不注入 `cd`，保留远端运行时的初始目录。
 
 需要让 `inspire ...` 在本仓库稳定加载项目 `.env` 时，登记到仓库共享层：
 
@@ -62,7 +62,7 @@ inspire notebook path list
 
 ### 绑定失效
 
-`[context] project` 只在初始化时写一次，之后再不复查。平台上把这个 Project 删掉或改名之后，仓库就钉在一个解析不到任何东西的名字上，这里的每一条 `<workload> create` 都会栽在它上面——而账号级的 Project 缓存帮不上忙，它是写下这个 pin 的同一次初始化留下的，和 pin 一起错。
+`[context] project` 只在初始化时写一次，之后再不复查。平台上把这个 Project 删掉或改名之后，仓库就钉在一个解析不到任何东西的名字上，这里的每一条 `<workload> create` 都会栽在它上面。账号配置不再缓存 Project 目录，因此不能用本地旧数据判断这种失效；只有 Live 列表能确认当前平台事实。
 
 `inspire account check` 会实时列一次项目目录来判断这件事，失效时报 `Project context: STALE` 并以配置错误退出（**不是认证错误**：账号是好的，坏的是这个仓库的绑定）。列表调用本身失败时不作判断——网络问题不是失效的证据。
 

@@ -45,7 +45,7 @@ Path Alias 只保存在仓库级、账号隔离的 `[path_aliases]` 中。账号
 
 ## 5. Alias 语义
 
-默认 Alias 由 `inspire init` 写入账号配置；当前 Repo 需要覆盖时，由 `inspire init --scope project` 写入仓库级配置，日常增删改用 `inspire notebook path list/set/delete`。项目初始化问询和路径约定的持续维护见 [`project-context.md`](project-context.md)。
+默认 Alias 由 `inspire init --scope project` 写入当前仓库的账号隔离配置；普通 `inspire init` 不写入 Alias。日常增删改用 `inspire notebook path list/set/delete`。项目初始化问询和路径约定的持续维护见 [`project-context.md`](project-context.md)。
 
 | Alias | 指向 |
 | --- | --- |

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -18,9 +17,6 @@ from inspire.platform.web.session import (
     WebSession,
     get_web_session,
 )
-
-_log = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Models
