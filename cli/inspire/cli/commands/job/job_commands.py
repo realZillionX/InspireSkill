@@ -491,7 +491,7 @@ def _scan_web_jobs_round_robin(
             )
             return state, items, total
 
-        max_workers = min(len(active_states), 4)
+        max_workers = min(len(active_states), 8)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {executor.submit(fetch_page, state): state for state in active_states}
             for future in as_completed(future_map):
@@ -964,7 +964,7 @@ def _list_web_jobs(
             workspace=workspace,
         )
 
-        if name and (workspace or "").strip().lower() == "all":
+        if (workspace or "").strip().lower() == "all":
             for query_status in query_statuses:
                 status_rows, status_scanned = _scan_web_jobs_round_robin(
                     session=session,
@@ -981,6 +981,16 @@ def _list_web_jobs(
                 rows.extend(status_rows)
                 scanned.extend(status_scanned)
             rows = _dedupe_job_rows(rows)
+            workspace_rank = {
+                workspace_id: index
+                for index, workspace_id in enumerate(workspace_ids)
+            }
+            rows.sort(
+                key=lambda row: workspace_rank.get(
+                    str(row.get("workspace_id") or ""),
+                    len(workspace_rank),
+                )
+            )
             rows.sort(key=lambda x: x.get("created_at", ""), reverse=True)
             return _limit_job_rows_per_workspace(rows, limit), scanned
 

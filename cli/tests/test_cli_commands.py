@@ -1,5 +1,6 @@
 import json
 import shlex
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1306,6 +1307,10 @@ def test_job_list_limit_applies_across_requested_workspaces(
         storage_state = {"cookies": [{"name": "session", "value": "ok"}]}
 
     calls: list[dict[str, Any]] = []
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
 
     monkeypatch.setattr(job_commands_module, "get_web_session", lambda: FakeSession())
     monkeypatch.setattr(
@@ -1343,6 +1348,10 @@ def test_job_list_limit_applies_across_requested_workspaces(
         page_size=100,
         session=None,
     ):  # noqa: ARG001
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
         calls.append(
             {
                 "workspace_id": workspace_id,
@@ -1353,6 +1362,9 @@ def test_job_list_limit_applies_across_requested_workspaces(
                 "page_size": page_size,
             }
         )
+        barrier.wait(timeout=2)
+        with lock:
+            active -= 1
         return ([_job(f"{workspace_id}-job-{page_num}", workspace_id or "ws-main")], 2)
 
     monkeypatch.setattr(browser_api_module, "list_jobs", fake_list_jobs)
@@ -1369,9 +1381,10 @@ def test_job_list_limit_applies_across_requested_workspaces(
     assert payload["data"]["shown"] == 1
     assert payload["data"]["total"] == 4
     assert payload["data"]["truncated"] is True
-    assert [call["workspace_id"] for call in calls] == ["ws-main", "ws-train"]
+    assert sorted(call["workspace_id"] for call in calls) == ["ws-main", "ws-train"]
     assert all(call["page_num"] == 1 for call in calls)
     assert all(call["page_size"] == 1 for call in calls)
+    assert max_active == 2
 
 
 def test_job_list_active_queries_only_active_platform_statuses(

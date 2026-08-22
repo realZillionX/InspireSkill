@@ -312,6 +312,7 @@ Referer：`/jobs/distributedTraining`，详情页 `/jobs/distributedTrainingDeta
 | `DeleteJob` | 要求先停止，运行中答 `Conflict`。**找不到资源时答 `AccessForbidden`**，不是 `ResourceNotFound`（与 `hpc.DeleteJob` 相反） | 按 `ResourceNotFound` 判「已删除」会漏判 |
 | 规格来源 | `JobInfo` 从 `framework_config[0]` 读 `gpu_count` / `cpu` / `mem_gi` / `shm_gi` / `instance_count`；GPU 型号在 `instance_spec_price_info.gpu_info.gpu_type_display` | — |
 | 节点归属三个字段 | `node_infos[]` 是**实际落点**（`{node_name}`，被调度后才有值，停止即清空）；`specified_nodes[]` / `exclude_nodes[]` 是**创建时的请求侧**（裸字符串数组）。`node_count` 是请求的节点数，与 `framework_config[0].instance_count` 同值 | `node_count` **不是** `node_infos` 的长度，排队中的任务两者不等。多节点任务把 rank 和节点对上只能靠 `ListJobInstances` 行的 `node` |
+| 跨 Workspace 列表 | `ListJobs` 本身只收一个 `workspace_id`，所以 `job list --workspace all` 必须扇出；CLI 按页以最多 8 个 Workspace 并发 round-robin，逐 Workspace 保留 `total` / page 状态，再合并排序和应用全局输出 limit | 串行 16 个慢 Workspace 会直接相加；一次把所有页全并发又会冲击限流器，所以并发单位是“当前每个 Workspace 的下一页” |
 
 **TensorBoard 要点**
 

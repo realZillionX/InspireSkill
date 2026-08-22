@@ -58,7 +58,7 @@ from inspire.cli.utils.id_resolver import (
 )
 from inspire.cli.utils.project_resolver import (
     project_display_name,
-    resolve_project_id as resolve_project_id_by_name,
+    resolve_project as resolve_project_by_name,
 )
 from inspire.config.workspaces import (
     resolve_workspace_query_scope,
@@ -208,14 +208,14 @@ def _run_readonly_hpc_operation(
     )
 
 
-def _resolve_project_id(
+def _resolve_project_info(
     config: Config,
     requested: Optional[str],
     *,
     workspace_id: Optional[str] = None,
     session=None,
     ctx: Context | None = None,
-) -> str:
+) -> Any:
     """Resolve a visible project name against the current workspace."""
     if not requested:
         raise ConfigError("--project is required.")
@@ -234,7 +234,28 @@ def _resolve_project_id(
         workspace_id=workspace_id,
         session=session,
     )
-    return resolve_project_id_by_name(config, requested, projects)
+    return resolve_project_by_name(config, requested, projects)
+
+
+def _resolve_project_id(
+    config: Config,
+    requested: Optional[str],
+    *,
+    workspace_id: Optional[str] = None,
+    session=None,
+    ctx: Context | None = None,
+) -> str:
+    project = _resolve_project_info(
+        config,
+        requested,
+        workspace_id=workspace_id,
+        session=session,
+        ctx=ctx,
+    )
+    project_id = str(getattr(project, "project_id", "") or "").strip()
+    if not project_id:
+        raise ConfigError(f"Project {getattr(project, 'name', '')!r} has no platform record.")
+    return project_id
 
 
 def _project_label(config: Config, requested: Optional[str]) -> str:
@@ -1286,7 +1307,7 @@ def create_hpc(
         )
         if resolved_workspace_id is None:
             raise ConfigError(profile_required_message("hpc", "workspace"))
-        resolved_project_id = _resolve_project_id(
+        resolved_project = _resolve_project_info(
             config,
             project,
             workspace_id=resolved_workspace_id,
@@ -1297,8 +1318,9 @@ def create_hpc(
             priority,
             session=session,
             workspace_id=resolved_workspace_id,
-            project_id=resolved_project_id,
+            project_limit=resolved_project.priority_name,
         )
+        resolved_project_id = resolved_project.project_id
         final_image = image
         if _looks_like_full_slurm_script(entrypoint):
             _handle_error(

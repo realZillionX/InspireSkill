@@ -71,6 +71,7 @@ HPC 有两层资源模型，不能混：
 
 - 入口命令只写 Slurm 正文，程序必须显式 `srun` 启动。**没有 `srun` 的正文照样跑完并报 `SUCCEEDED`**——sbatch 会在第一个节点上执行它——只是不产生 Slurm step，多节点时其余节点全程空转。`hpc status` 的 `Steps` 是唯一能看出这件事的字段：`0/0` 表示没有 step，`1/1` 表示 step 跑完了。
 - Group 使用完整 Compute Group 名称；并非所有 CPU Compute Group 都支持 HPC。
+- Project 仍从当前 Workspace 的 Live 目录解析；同一条记录同时提供创建所需 ID 与优先级上限，不会为了两个字段重复列目录。
 - 镜像必须带可用 Slurm 运行环境；平台的镜像列表不按这一点过滤，选错了不会有任何提示。
 - `status=SUCCEEDED` 不等于业务产出完整；先看 `Steps`，再写 Fingerprint，从同项目 Notebook 回读产物。
 - 结束后有一段 `SUCCEEDED_RETAINING` / `FAILED_RETAINING` 保留态，此时 `hpc delete` 答「当前状态（运行中）无法删除」，`hpc stop` 也解除不了——等它自己转成终态（约一分钟）再删。
@@ -145,6 +146,8 @@ Job / HPC / Notebook Batch 对同一 Workspace 的 Quota 优先级菜单、Proje
 卡住或失败先看 Events；已启动但健康度不明看 Metrics；程序行为看 Logs；产物完整性回到共享盘文件和 Fingerprint。上面五个都在回答「平台侧这个任务怎么样」，回答不了「模型训得怎么样」——那是 TensorBoard 那一条。
 
 **一批任务一起看**：`job status`、`hpc status`、`job events` 都可以直接跟多个名字，平台按每 20 个一次请求作答，比挨个问快得多——扫一批矩阵实验的状态时用这个，别写 shell 循环。多任务的 `job events` 合成一条按时间排好的时间线，多出一列 `Job` 指明每行来自哪个任务；它只给控制器级事件，因为 Pod 级事件要按任务各列一次实例清单，本来就省不掉，所以那是单任务查询（`--instance` 同理只对单个名字有意义）。一个答不上来的名字**不会中断整条命令**：能答的照常打印，答不了的以 `Unresolved:` 单独列出并说明原因（打错、已删、或一个名字对上了好几个任务），退出码同时告诉脚本这份答案是残缺的——所以批量结果**不能只看 stdout 有几行就当全**。
+
+不知道 Job 在哪个 Workspace 时用 `job list --workspace all`；它按页对可见 Workspace 做 8 路有界 round-robin，而不是把每个空间串行相加。输出仍按全局 `--limit` 截断，`--all` 才完整翻页。
 
 指标没有批量口径：平台那个 `GetTaskMetricBatch` 实测 8 个指标里有 4 个要么静默返回 0 样本、要么直接报错，所以 `metrics` 仍是一次一个任务。
 

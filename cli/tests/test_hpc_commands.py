@@ -1201,6 +1201,32 @@ def test_hpc_create_dry_run_json_reports_the_priority_it_will_send(
     assert plan["memory_per_cpu"] == "4G"
 
 
+def test_hpc_create_reuses_project_row_for_priority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    patch_hpc_config_and_auth(monkeypatch, tmp_path)
+    from inspire.cli.commands.hpc import hpc_commands as hpc_mod
+
+    original = hpc_mod.browser_api_module.list_projects
+    calls = 0
+
+    def _projects(**kwargs):  # noqa: ANN003
+        nonlocal calls
+        calls += 1
+        return original(**kwargs)
+
+    monkeypatch.setattr(hpc_mod.browser_api_module, "list_projects", _projects)
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", *_hpc_create_argv("--dry-run")],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == 1
+
+
 def test_hpc_status_reports_the_step_counter(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -10,7 +10,7 @@
 
   `train.ListJobs` 还有一个低于传输层通用上限的 Action 级限制：`page_size=999` 实测返回 999 行，`1000` 返回 `InvalidParameter: page or page_size too large`。Wrapper 现在按 999 截断；`lty` 的 `分布式训练空间` Job 缓存完整刷新实测 999 个名字、5.42 秒完成。
 
-- **镜像全目录并发读取，Job / HPC / Notebook Batch 复用命令内 Live 快照。** `image list --source all` 的 official / public / project / private 是四个互不依赖的 `ListImages` 请求，现改为同时发出，再按原页签顺序合并，部分失败的 warning 语义不变；`lty` 实测 9.05 秒降到 5.49–6.81 秒，剩余时间由最慢的单个目录决定。
+- **镜像全目录并发读取，Job / HPC / Notebook Batch 复用命令内 Live 快照。** `image list --source all` 的 official / public / project / private 是四个互不依赖的 `ListImages` 请求，现改为同时发出，再按原页签顺序合并，部分失败的 warning 语义不变；网络恢复后 `lty` 同一批 5620 行实测 6.464 秒 → 5.289 秒，剩余时间由最慢的单个目录决定。
 
   Job Batch 此前每个条目都重读同一 Workspace 的 Quota 优先级菜单、Project 目录、排队拥塞和镜像目录。现在只在本次 Batch 进程里复用第一条刚读到的 Live 快照，不跨命令持久化；3 条 dry-run 的真机请求数 15 → 5，11.32 秒 → 5.32 秒。
 
@@ -21,6 +21,10 @@
 - **资源视图减少分页和重复 Live 读取。** `resources availability` 对 Compute Group 的 Resource + NodeDimension 改为 4 路有界并发，仍然逐组读取完整 Live 事实；`lty` 的分布式训练空间从 2.98 秒降到 1.21 秒。`resources nodes` 复用同一命令里 Availability 已经读到的 NodeDimension，不再为 13 个组重复拉一遍，51 → 39 请求、4.66 秒 → 1.66 秒。
 
   `workspace.List*Dimension` 的显式 `page_size=5000` 已在 1000+ 活任务上实测可用；`resources usage --by task` 默认页从 500 调到网关上限 5000，当前 3 页收敛为 1 页、9.54 秒 → 2.41 秒。失败与空结果的边界不变，所有这些视图仍只用 Live 数据。
+
+- **`job list --workspace all` 启用已有的 round-robin 扫描器。** 此前只有带 `--keyword` 时才 4 路并发；普通 all 把 `lty` 的 16 个 Workspace 串行相加，实测 41.13 秒。现在所有 all 查询都按页 8 路有界并发，第一页 16/16 Workspace 无失败，完整命令降到 11.01 秒；单 Workspace、全局输出 limit 和逐 Workspace total 语义不变。
+
+- **HPC Project 解析不再重复列目录。** `hpc create` 原先按名字列一次 Project 得到 ID，计算优先级时又按同一 Workspace 列一次以找 `priority_name`。现在同一份 Live `ProjectInfo` 同时提供两者，每次 create / dry-run 少一个完整 `ListProjects`；Batch 的命令级快照语义保持不变。
 
 ### 修复
 
