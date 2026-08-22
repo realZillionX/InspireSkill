@@ -28,6 +28,8 @@
 
 ### 修复
 
+- **CI 与发布工作流不再依赖已退役的 Node.js 20 Action 运行时。** GitHub Hosted Runner 已开始把旧 Action 强制转到 Node.js 24 并产生弃用警告；`checkout`、`setup-python`、`setup-uv` 以及发布产物上传/下载分别升级到当前 Node.js 24 主版本，工作流默认权限同时收敛为只读仓库内容，PyPI 发布 Job 只额外保留 OIDC 所需的 `id-token: write`。
+
 - **发版复审补齐 Windows、并发请求和缓存分页的三个边界。** 最新的刷新租约恢复逻辑一度重新用 `os.kill(pid, 0)` 探活；该调用在 Windows 上会发送控制台 Ctrl-C，现在统一走 Win32 只读进程查询，Windows CI 也直接锁住“不触达 `os.kill`”。POSIX 的终端尺寸监听除 TTY 外再检查主线程，库调用方即使从 Worker 线程传入 TTY 也不会触发 `signal.signal` 的主线程限制。资源、镜像和跨 Workspace Job 的并发读取不再共享同一个可变 `requests.Session`，改为每线程复用自己的连接池，保留 keep-alive 的同时隔离 Cookie / Header / Proxy 状态。
 
 - **缓存完整刷新对不可信 `total` 和未服务端过滤的 `--name` 也有硬上限。** 旧上限只在没有 `--name` 且平台正确报告 `total` 时生效；HPC / Ray 列表不支持服务端名字过滤，一次看似点名的刷新仍可能扫描全部历史，异常响应若持续回满页却把 `total` 报成 0 也能绕过限制。现在报告行数与实际累计行数分别受 5000 行上限约束，超限保留既有缓存并明确报错。
