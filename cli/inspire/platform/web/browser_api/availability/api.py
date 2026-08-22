@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from .models import (
@@ -308,7 +309,7 @@ def list_node_dimension(
     return nodes
 
 
-_DIMENSION_PAGE_SIZE = 500
+_DIMENSION_PAGE_SIZE = 5000
 _DIMENSION_PAGE_CAP = 40
 
 
@@ -715,11 +716,10 @@ def get_accurate_resource_availability(
             groups = _list_live_compute_groups(workspace_id=wid, session=session)
             workspace_name = workspace_names.get(wid, "")
 
-            for group in groups:
+            def _load_group(group: dict) -> tuple[dict, dict, dict[str, int], list[dict]] | None:
                 group_id = _group_id(group)
                 if not group_id:
-                    continue
-                group_name = _group_name(group)
+                    return None
 
                 try:
                     group_resource = _v2_result(
@@ -740,23 +740,39 @@ def get_accurate_resource_availability(
                     # fact. Availability is a live answer or it is an error.
                     raise
                 except ValueError:
-                    continue
+                    return None
 
                 try:
-                    node_summary = _compute_node_summary(
-                        list_node_dimension(group_id, workspace_id=wid, session=session)
+                    node_dimensions = list_node_dimension(
+                        group_id,
+                        workspace_id=wid,
+                        session=session,
                     )
+                    node_summary = _compute_node_summary(node_dimensions)
                 except (SessionExpiredError, TransientAPIError):
                     # Zeroed node counts read as "nothing free". Never say that
                     # because the platform was busy.
                     raise
                 except ValueError:
+                    node_dimensions = []
                     node_summary = {
                         "total_nodes": 0,
                         "ready_nodes": 0,
                         "free_nodes": 0,
                         "gpu_per_node": 0,
                     }
+                return group, group_resource, node_summary, node_dimensions
+
+            max_workers = min(4, len(groups)) or 1
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                loaded_groups = list(executor.map(_load_group, groups))
+
+            for loaded in loaded_groups:
+                if loaded is None:
+                    continue
+                group, group_resource, node_summary, node_dimensions = loaded
+                group_id = _group_id(group)
+                group_name = _group_name(group)
 
                 # Platform spelling: `logic_resouces`, not `logic_resources`.
                 resources = group_resource.get("logic_resouces", {})
@@ -812,6 +828,7 @@ def get_accurate_resource_availability(
                         memory_used_gib=memory_used_gib,
                         memory_available_gib=memory_available_gib,
                         resource_kind=resource_kind,
+                        node_dimensions=tuple(node_dimensions),
                     )
                 )
 
@@ -842,6 +859,7 @@ def get_full_free_node_counts(
     *,
     gpu_per_node: int = 8,
     workspace_id_by_group: Optional[dict[str, str]] = None,
+    node_dimensions_by_group: Optional[dict[str, list[dict]]] = None,
     session: Optional[WebSession] = None,
 ) -> list[FullFreeNodeCount]:
     """Get per-group counts of fully-free nodes.
@@ -854,6 +872,7 @@ def get_full_free_node_counts(
         session = get_web_session()
 
     by_group = dict(workspace_id_by_group or {})
+    prefetched_nodes = dict(node_dimensions_by_group or {})
     fallback_workspace = str(getattr(session, "workspace_id", "") or "").strip()
     results: list[FullFreeNodeCount] = []
 
@@ -863,9 +882,13 @@ def get_full_free_node_counts(
             if not workspace_id:
                 continue
 
-            nodes = list_node_dimension(
-                gid, workspace_id=workspace_id, session=session
-            )
+            nodes = prefetched_nodes.get(gid)
+            if nodes is None:
+                nodes = list_node_dimension(
+                    gid,
+                    workspace_id=workspace_id,
+                    session=session,
+                )
 
             total_nodes = len(nodes)
             ready_nodes = 0

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -166,3 +167,72 @@ def test_free_node_counts_skip_nodes_the_scheduler_cannot_place_on(monkeypatch) 
         session=object(),  # type: ignore[arg-type]
     )
     assert [(row.ready_nodes, row.full_free_nodes) for row in counts] == [(4, 1)]
+
+
+def test_free_node_counts_reuse_prefetched_dimensions(monkeypatch) -> None:
+    nodes = [_node("free"), _node("busy", task_list=[{"name": "task"}])]
+    monkeypatch.setattr(
+        api,
+        "list_node_dimension",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("prefetched node dimensions must avoid a second live read")
+        ),
+    )
+
+    counts = api.get_full_free_node_counts(
+        ["lcg-1"],
+        workspace_id_by_group={"lcg-1": "ws-1"},
+        node_dimensions_by_group={"lcg-1": nodes},
+        session=object(),  # type: ignore[arg-type]
+    )
+
+    assert [(row.total_nodes, row.full_free_nodes) for row in counts] == [(2, 1)]
+
+
+def test_availability_loads_compute_groups_with_bounded_concurrency(monkeypatch) -> None:
+    groups = [
+        {"logic_compute_group_id": f"lcg-{index}", "name": f"Group {index}"}
+        for index in range(4)
+    ]
+    barrier = threading.Barrier(4)
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    monkeypatch.setattr(api, "list_compute_groups", lambda **_kwargs: groups)
+    monkeypatch.setattr(
+        api,
+        "list_node_dimension",
+        lambda *_args, **_kwargs: [_node("free")],
+    )
+
+    def _request(_session, _method, path, *, referer, body, timeout):
+        nonlocal active, max_active
+        assert path.endswith("Action=GetLogicComputeGroupResource")
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        barrier.wait(timeout=2)
+        with lock:
+            active -= 1
+        return {
+            "Result": {
+                "logic_resouces": {"gpu_total": 8, "gpu_used": 0},
+                "gpu_type_stats": [
+                    {"gpu_info": {"gpu_type_display": "H200"}}
+                ],
+            }
+        }
+
+    monkeypatch.setattr(api, "_request_json", _request)
+
+    class _Session:
+        all_workspace_names = {"ws-1": "Workspace"}
+
+    rows = api.get_accurate_resource_availability(
+        workspace_id="ws-1",
+        session=_Session(),  # type: ignore[arg-type]
+    )
+
+    assert max_active == 4
+    assert [row.group_name for row in rows] == [f"Group {index}" for index in range(4)]

@@ -180,6 +180,10 @@ def list_nodes(
             group_ids,
             gpu_per_node=8,
             workspace_id_by_group=workspace_id_map,
+            node_dimensions_by_group={
+                item.group_id: list(item.node_dimensions)
+                for item in accurate_availability
+            },
             session=session,
         )
 

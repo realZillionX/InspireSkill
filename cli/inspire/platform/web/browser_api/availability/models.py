@@ -29,6 +29,9 @@ class GPUAvailability:
     memory_used_gib: float = 0.0
     memory_available_gib: float = 0.0
     resource_kind: str = "gpu"
+    # Internal reuse within one live resources command. Public projections
+    # never expose raw node rows or their platform handles.
+    node_dimensions: tuple[dict, ...] = ()
 
     @property
     def high_priority_available_gpus(self) -> int:

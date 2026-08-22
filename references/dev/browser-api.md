@@ -553,7 +553,7 @@ Referer：`/jobs/distributedTraining`。
 | 它覆盖的信号 | 内核 OOM kill、`TaskHung`、Cordon / Uncordon、`Rebooted`、`NodeNotSchedulable` | 平台上唯一按节点组织的事件源 |
 | `ListNodeDimension` 的两级 scoping | `filter` 里只放 `logic_compute_group_id` 返回 `AccessForbidden`，同时放 `workspace_id` 和 `logic_compute_group_id` 才通 | 最容易踩的一处 |
 | 维度族的 scoping | 只认嵌套 `filter.workspace_id`：顶层被拒为 `unknown field`，缺 workspace 则 `AccessForbidden`。`filter.logic_compute_group_id` 可选且真收窄；`filter.task_type` 被**静默忽略**，`task_name_keyword` / `gpu_type` 有效 | — |
-| 维度族的分页 | `page_size: -1` 和省略都只回 10 行（实测 `total=1289` 时仍只给 10），必须按 `total` 显式翻页。三种分页拼法都认，`total` 是 int | — |
+| 维度族的分页 | `page_size: -1` 和省略都只回 10 行（实测 `total=1289` 时仍只给 10），必须按 `total` 显式翻页。正整数 `5000` 实测可用，Wrapper 以此为默认页并继续按 `total` 翻页；三种分页拼法都认，`total` 是 int | — |
 | 维度族的排序 | `order_by` 元素是 `{field, sort}` 而不是 `{field, order}`，只有 `created_at` 被采纳且 `sort` 被忽略（恒升序），`{"field":"gpu"}` / `{"field":"cpu"}` 直接 `InternalError` | **排序只能在客户端做** |
 | 维度行的内容 | 只含存活工作负载（`RUNNING` 加短暂的 `COMMITTING`），覆盖所有用户与所有 Workload 类型。**`gpu.used` 是死字段（恒 0）**，但 `gpu.usage_rate` / `cpu.usage_rate` 是活的 0–1 比率 | TensorBoard 不在维度里（`train.GetLcgUsedComputeResourceJobs` 才有），不过它一张卡都不占 |
 | 两把优先级刻度 | `task_dimensions[].priority` 是**提交值**（`--priority` 的 1–10 档，线上取到 1/3/4/6/8/10），`resources usage` 的 `Reclaimable` 用它；`train.GetJob` 回的是平台**存储值**（提交 10 存成 35，配 `priority_level: HIGH`） | 两者之间**没有验证过的换算**，CLI 不做反查，`job status` 原样回显存储值并同时给出 `priority_level` |
@@ -565,6 +565,7 @@ Referer：`/jobs/distributedTraining`。
 | `ListLogicComputeGroups` 的两个坑 | 标识字段叫 `logic_compute_group_id` 而不是 `id`；`support_job_type_list` 是 **JSON 编码的字符串**，不是数组 | 用 `isinstance(x, list)` 判断会把每个组都读成「没声明」，按 Workload 过滤计算组看起来生效、实际一个都没滤掉。取值域：`interactive_modeling` / `hpc_job` / `ray_job` / `distributed_training` / `tensorboard` / `inference_serving_customize` / `inference_serving_exclusive` |
 | 配额字段的结构 | `{资源}_{high\|low}_{running\|total}` 加可选 `_used`：高优先级（保障）和低优先级（可回收）是**两套独立的上限**，一个运行中的任务只吃其中一套。`-1` 表示不限 | 混着读会两边都报错。`GetWorkspaceQuota` / `GetWorkspaceComputeResource` 要顶层 `workspace_id`，套 `filter` 反而被拒 |
 | 配额与容量是两个问题 | **配额用完了可以被拒，即使机器闲着；机器忙满了也可以被拒，即使配额还有** | 两者都要看 |
+| 资源视图的命令内复用 | Availability 对各 Compute Group 的 `GetLogicComputeGroupResource` + `ListNodeDimension` 以 4 路有界并发读取；Nodes 直接复用这批 NodeDimension 计算 8-GPU 整节点数，只额外请求 NodeSpecs。原始节点行只活在内部 `GPUAvailability.node_dimensions`，公共投影不暴露 | 不复用时 Nodes 会把每个组的 NodeDimension 完整读取两遍；持久缓存又会把实时余量冒充当前事实，所以复用范围只限本次命令 |
 | `ListProjectDimension` | 实测是空的：10 个可见 Workspace、逐计算组、逐项目 id 都返回成功信封配 `total: 0`，而同族兄弟在**同一个** `filter.workspace_id` 位置上答出真实数据 | 是权限地板，没有封装；按项目聚合改为在客户端折叠任务维度的行 |
 
 ---

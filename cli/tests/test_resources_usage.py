@@ -82,6 +82,7 @@ def test_task_dimension_scopes_workspace_inside_filter(
 
     assert seen[0]["filter"] == {"workspace_id": "ws-1"}
     assert "workspace_id" not in {key for key in seen[0] if key != "filter"}
+    assert seen[0]["page_size"] == api._DIMENSION_PAGE_SIZE == 5000
 
 
 def test_task_dimension_pages_against_total_not_page_size_minus_one(
@@ -106,10 +107,16 @@ def test_task_dimension_pages_against_total_not_page_size_minus_one(
 
     monkeypatch.setattr(api, "_request_json", _fake)
 
-    usages = api.list_task_usage("ws-1", session=object())  # type: ignore[arg-type]
+    rows = api._list_dimension_rows(
+        "ListTaskDimension",
+        "task_dimensions",
+        workspace_id="ws-1",
+        session=object(),  # type: ignore[arg-type]
+        page_size=500,
+    )
 
     assert pages == [1, 2, 3]
-    assert len(usages) == 1200
+    assert len(rows) == 1200
 
 
 def test_task_dimension_drops_rows_repeated_across_pages(
@@ -131,9 +138,15 @@ def test_task_dimension_drops_rows_repeated_across_pages(
 
     monkeypatch.setattr(api, "_request_json", _fake)
 
-    usages = api.list_task_usage("ws-1", session=object())  # type: ignore[arg-type]
+    rows = api._list_dimension_rows(
+        "ListTaskDimension",
+        "task_dimensions",
+        workspace_id="ws-1",
+        session=object(),  # type: ignore[arg-type]
+        page_size=500,
+    )
 
-    assert len(usages) == 501
+    assert len(rows) == 501
 
 
 def test_task_dimension_reads_string_total(monkeypatch: pytest.MonkeyPatch) -> None:
