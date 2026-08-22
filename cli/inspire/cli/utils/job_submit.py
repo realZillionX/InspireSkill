@@ -17,8 +17,8 @@ from inspire.config import (
     Config,
     ConfigError,
     build_env_exports,
-    default_remote_cwd,
     join_remote_path,
+    preferred_remote_path,
 )
 from inspire.cli.utils.quota_resolver import ResolvedQuota, build_resource_spec_price
 
@@ -90,17 +90,17 @@ def derive_remote_log_glob(config: Config, *, name: str) -> str | None:
     head -1`) to find the most recent run. Returns ``None`` when no default
     path alias is configured (no shared-FS log redirect).
 
-    Naming convention: ``<remote_cwd>/.inspire/training_master_<safe>_*.log``
+    Naming convention: ``<configured-path>/.inspire/training_master_<safe>_*.log``
     where ``<safe>`` is the sanitized job name and ``*`` is a UTC timestamp
     that ``submit_training_job`` writes per submission. Re-submitting the
     same NAME produces a new log file rather than clobbering the previous
     run's output.
     """
-    remote_cwd = default_remote_cwd(config.path_aliases)
-    if not remote_cwd:
+    remote_log_dir = preferred_remote_path(config.path_aliases)
+    if not remote_log_dir:
         return None
     safe = sanitize_job_name_for_filename(name)
-    return join_remote_path(remote_cwd, ".inspire", f"training_master_{safe}_*.log")
+    return join_remote_path(remote_log_dir, ".inspire", f"training_master_{safe}_*.log")
 
 
 def build_remote_logged_command(
@@ -117,14 +117,14 @@ def build_remote_logged_command(
     final_command = f"{env_exports}{command}" if env_exports else command
 
     log_path: str | None = None
-    remote_cwd = default_remote_cwd(config.path_aliases)
-    if remote_cwd:
+    remote_log_dir = preferred_remote_path(config.path_aliases)
+    if remote_log_dir:
         remote_env = dict(config.remote_env)
         remote_env.setdefault("PYTHONUNBUFFERED", "1")
         env_exports = build_env_exports(remote_env)
         safe = sanitize_job_name_for_filename(name)
         log_path = join_remote_path(
-            remote_cwd, ".inspire", f"training_master_{safe}_{_now_log_timestamp()}.log"
+            remote_log_dir, ".inspire", f"training_master_{safe}_{_now_log_timestamp()}.log"
         )
         quoted_log_path = shlex.quote(log_path)
         stdout_tee = f"tee -a {quoted_log_path}"
@@ -133,7 +133,6 @@ def build_remote_logged_command(
             f"{env_exports}"
             f"mkdir -p {shlex.quote(log_path.rsplit('/', 1)[0])} && "
             f": > {quoted_log_path} && "
-            f"cd {shlex.quote(remote_cwd)} && "
             f"{{ {command} 2> >({stderr_tee}); }} | {stdout_tee}"
         )
         final_command = f"bash -o pipefail -c {shlex.quote(script)}"

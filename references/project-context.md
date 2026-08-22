@@ -1,6 +1,6 @@
 # 项目上下文：初始化与持续维护
 
-把一个本地项目工作区接入启智（项目初始化），或项目事实变化需要更新项目信息时看本页。账号级安装、登录和全局发现见 [`setup/install-and-config.md`](setup/install-and-config.md)；路径作用域和存储池语义见 [`paths.md`](paths.md)。命令语法和参数以 CLI Help 为准。
+把一个本地项目工作区接入启智（项目初始化），或项目事实变化需要更新项目信息时看本页。账号级安装、登录和初始化见 [`setup/install-and-config.md`](setup/install-and-config.md)；路径作用域和存储池语义见 [`paths.md`](paths.md)。命令语法和参数以 CLI Help 为准。
 
 项目上下文有两个载体，缺一不可：
 
@@ -16,7 +16,7 @@
 1. 当前工作区对应一个明确的启智科研或工程项目，而不是 CLI、Skill、文档或其它通用工具源码仓库。
 2. `INSPIRE.md` 或 `./.inspire/` 项目配置缺失、过期，或用户明确要求把项目接入启智。
 
-账号级全局发现（`inspire init`）是前置条件，先按 [`setup/install-and-config.md`](setup/install-and-config.md) 完成。项目只做一次性临时操作时不初始化，也不创建空壳 `INSPIRE.md`。
+账号级初始化（`inspire init`）是前置条件，先按 [`setup/install-and-config.md`](setup/install-and-config.md) 完成。项目只做一次性临时操作时不初始化，也不创建空壳 `INSPIRE.md`。
 
 ## 2. 四项信息先问清
 
@@ -39,7 +39,7 @@
 inspire init --scope project
 ```
 
-交互流程会选择 Project 和默认存储池；已从用户拿到答案时用 `--select-project <name>` 直接传入。写入内容是账号覆盖层的 Project Context 和发现到的 Path Alias。不要维护单独的“远端工作目录”字段；远端目录一律用 Path Alias 表达（`me`、`me:<repo>`、`public` 等）。
+交互流程会选择 Project 和默认存储池；已从用户拿到答案时用 `--select-project <name>` 直接传入。写入内容是账号覆盖层的 Project Context 和发现到的 Path Alias。Path Alias 只在显式路径参数和 `--cwd` 中生效；省略 `--cwd` 时不注入 `cd`，保留远端运行时的初始目录。
 
 需要让 `inspire ...` 在本仓库稳定加载项目 `.env` 时，登记到仓库共享层：
 

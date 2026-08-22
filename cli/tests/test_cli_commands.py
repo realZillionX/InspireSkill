@@ -449,7 +449,8 @@ def test_build_remote_logged_command_tees_output_and_sets_pipefail(
     assert "export WANDB_MODE=offline && export PYTHONUNBUFFERED=1 && " in script
     assert "mkdir -p '/train/user space/.inspire' && " in script
     assert ": > '/train/user space/.inspire/training_master_train_a_20260508T010203Z.log'" in script
-    assert "cd '/train/user space' && " in script
+    assert "cd / && " not in script
+    assert "cd '/train/user space' && " not in script
     assert "{ bash -c 'python train.py' 2> >(" in script
     assert (
         "tee -a '/train/user space/.inspire/training_master_train_a_20260508T010203Z.log' >&2"
@@ -483,7 +484,7 @@ def test_build_remote_logged_command_preserves_user_pythonunbuffered() -> None:
     assert "export PYTHONUNBUFFERED=1 && " not in script
 
 
-def test_build_remote_logged_command_without_default_path_alias_keeps_existing_behavior() -> None:
+def test_build_remote_logged_command_without_path_alias_does_not_inject_cwd() -> None:
     from inspire.cli.utils import job_submit as job_submit_module
 
     config = config_module.Config(

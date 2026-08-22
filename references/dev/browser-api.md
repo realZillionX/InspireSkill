@@ -534,7 +534,7 @@ Referer：`/jobs/distributedTraining`。
 
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
-| `ListLogicComputeGroups` | `{page_size: -1, page_num: 1, filter:{workspace_id}}` | `{logic_compute_groups[], total}` | `resources availability`、`<workload> quota`、每个 create 的组解析、`init` |
+| `ListLogicComputeGroups` | `{page_size: -1, page_num: 1, filter:{workspace_id}}` | `{logic_compute_groups[], total}` | `resources availability`、`<workload> quota`、每个 create 的组解析 |
 | `ListNodeDimension` | `{filter:{workspace_id, logic_compute_group_id}, PageNumber, page_size}` | `{node_dimensions[], total}` | `resources availability`、`resources nodes` |
 | `ListTaskDimension` | `{filter:{workspace_id, logic_compute_group_id?}, PageNumber, page_size}` | `{task_dimensions[], total}` | `resources usage --by task\|project` |
 | `ListUserDimension` | `{filter:{workspace_id}, PageNumber, page_size}` | `{user_dimensions[], total}` | `resources usage --mine` |

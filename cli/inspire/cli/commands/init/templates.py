@@ -42,9 +42,9 @@ def _require_writable_global_path() -> Path:
 
 ACCOUNT_CONFIG_TEMPLATE = f"""# Inspire CLI Account Configuration
 # Account-level values are shared by every repository that uses this account.
-# `inspire init` discovery may also write account-level default path aliases
-# here. Repo-wide project settings live in ./.inspire/config.toml; account-
-# specific project overrides such as personal path aliases live in
+# Live project/resource catalogs are never copied here. Repo-wide project
+# settings live in ./.inspire/config.toml; account-specific project overrides
+# such as personal path aliases live in
 # ./.inspire/accounts/<account>/config.toml.
 #
 # Values here are overridden by environment variables.
@@ -90,8 +90,10 @@ PROJECT_CONFIG_TEMPLATE = """# Inspire CLI Project Configuration
 # project = "<project>"
 
 [path_aliases]
-# Remote path aliases for notebook exec/shell/scp. Plain `inspire init` writes
-# account-level defaults; `inspire init --scope project` writes repo overrides.
+# Remote path aliases for explicit notebook exec/shell/scp paths.
+# `inspire init --scope project` writes repo-scoped values here; omitting
+# --cwd preserves the remote runtime's initial directory and never selects
+# `me` implicitly.
 # <path-user> is the shared-storage personal directory segment reported by
 # the platform, which can differ from the login username.
 # me = "/inspire/ssd/project/<topic>/<path-user>/"

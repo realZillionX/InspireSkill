@@ -31,6 +31,9 @@ _CONTEXT_COLLECTION_KEYS = (
 
 def _collect_context(cfg: Config) -> dict[str, Any]:
     from inspire.accounts import current_account
+    from inspire.config.workspaces import workspace_name_map
+    from inspire.platform.web import browser_api as browser_api_module
+    from inspire.platform.web.session import get_web_session
 
     warnings: list[str] = []
     active_account = scrub_raw_ids(current_account() or "") or None
@@ -38,65 +41,95 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
     active_project_name = scrub_raw_ids(cfg.context_project or "") or None
     active_workspace_name = scrub_raw_ids(cfg.context_workspace or "") or None
 
-    # Projects: names only. Local paths are implementation details and are
-    # available through path-alias commands when explicitly requested.
-    project_names: set[str] = set()
-    for name in (cfg.projects or {}):
-        project_names.add(scrub_raw_ids(name))
-    for entry in (cfg.project_catalog or {}).values():
-        if not isinstance(entry, dict):
-            continue
-        catalog_name = entry.get("name")
-        if isinstance(catalog_name, str) and catalog_name.strip():
-            project_names.add(scrub_raw_ids(catalog_name))
-    projects_view = [{"name": name} for name in sorted(project_names)]
-
-    # Workspaces: live names from the web session when available.
+    # One live session feeds every catalog below. Account config deliberately
+    # carries no project or compute-group snapshot, so falling back to Config
+    # here would quietly reintroduce the stale-catalog bug that init removes.
+    session: Any | None = None
     ws_name_for_id: dict[str, str] = {}
     try:
-        from inspire.config.workspaces import workspace_name_map
-        from inspire.platform.web.session import get_web_session
-
-        ws_name_for_id = {
-            ws_id: scrub_raw_ids(name)
-            for ws_id, name in workspace_name_map(get_web_session()).items()
-        }
+        session = get_web_session()
+        for workspace_id, raw_name in workspace_name_map(session).items():
+            name = scrub_raw_ids(raw_name)
+            if name:
+                ws_name_for_id[workspace_id] = name
     except Exception:
-        ws_name_for_id = {}
         warnings.append(
             "Workspace names are unavailable. Run `inspire account check` and retry."
         )
     workspaces_view = sorted(set(ws_name_for_id.values()))
 
-    # Compute groups: name + workspace name only. GPU and platform metadata are
-    # intentionally omitted from this name-discovery command.
-    compute_groups_view: list[dict[str, Any]] = []
-    for group in cfg.compute_groups or []:
-        if not isinstance(group, dict):
-            continue
-        name = str(group.get("name") or "").strip()
-        if not name:
-            continue
-        group_entry: dict[str, Any] = {"name": scrub_raw_ids(name)}
-        workspace_ids = group.get("workspace_ids") or []
-        workspace_names = [
-            ws_name_for_id[ws_id]
-            for ws_id in workspace_ids
-            if ws_id in ws_name_for_id
-        ]
-        if workspace_names:
-            # compute_groups usually live in a single workspace; flatten to a
-            # scalar when that's true.
-            group_entry["workspace"] = (
-                workspace_names[0] if len(workspace_names) == 1 else workspace_names
+    # Projects are global objects that can span workspaces, so use the one-call
+    # live project listing instead of querying once per workspace.
+    projects_view: list[dict[str, str]] = []
+    if session is not None:
+        try:
+            project_names = {
+                scrub_raw_ids(str(getattr(project, "name", "") or "").strip())
+                for project in browser_api_module.list_all_projects(session=session)
+            }
+            projects_view = [
+                {"name": name}
+                for name in sorted(project_names)
+                if name
+            ]
+        except Exception:
+            warnings.append(
+                "Project names are unavailable. Run `inspire account check` and retry."
             )
-        compute_groups_view.append(group_entry)
-    compute_groups_view.sort(
-        key=lambda entry: (
-            str(entry.get("workspace") or ""),
-            str(entry["name"]),
+
+    # Compute groups are workspace-scoped. Preserve successful workspace rows
+    # when one workspace fails, but say that the aggregate is incomplete.
+    compute_groups_view: list[dict[str, Any]] = []
+    if session is not None:
+        group_workspaces: dict[str, set[str]] = {}
+        failed_workspace_count = 0
+        for workspace_id, workspace_name in sorted(
+            ws_name_for_id.items(),
+            key=lambda item: (item[1], item[0]),
+        ):
+            try:
+                groups = browser_api_module.list_compute_groups(
+                    workspace_id=workspace_id,
+                    session=session,
+                )
+            except Exception:
+                failed_workspace_count += 1
+                continue
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                raw_name = (
+                    group.get("name")
+                    or group.get("logic_compute_group_name")
+                    or group.get("compute_group_name")
+                    or ""
+                )
+                name = scrub_raw_ids(str(raw_name).strip())
+                if name:
+                    group_workspaces.setdefault(name, set()).add(workspace_name)
+
+        for name, workspace_names_set in group_workspaces.items():
+            workspace_names = sorted(workspace_names_set)
+            entry: dict[str, Any] = {"name": name}
+            if workspace_names:
+                entry["workspace"] = (
+                    workspace_names[0]
+                    if len(workspace_names) == 1
+                    else workspace_names
+                )
+            compute_groups_view.append(entry)
+        compute_groups_view.sort(
+            key=lambda entry: (
+                str(entry.get("workspace") or ""),
+                str(entry["name"]),
+            )
         )
-    )
+        if failed_workspace_count:
+            warnings.append(
+                "Compute group names are incomplete: "
+                f"{failed_workspace_count} workspace(s) could not be queried. "
+                "Run `inspire account check` and retry."
+            )
 
     data: dict[str, Any] = {
         "active": {
@@ -188,7 +221,7 @@ def _render_human(data: dict[str, Any]) -> None:
 @click.option("--all", "show_all", is_flag=True, help="Show every discovered name.")
 @pass_context
 def context(ctx: Context, limit: int | None, show_all: bool) -> None:
-    """List names available to the active account.
+    """List live names available to the active account.
 
     Pass the displayed names to ``--workspace``, ``--project``, and
     ``--group`` on other commands.

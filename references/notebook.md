@@ -55,6 +55,8 @@ Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的
 
 受限 Notebook 的 `exec` 每次使用独立临时 Jupyter Terminal，命令结束后立即回收，不共享 `cwd`、环境变量或 Shell 状态。
 
+`notebook exec` / `shell` 省略 `--cwd` 时不注入 `cd`，不读取 `me` 或账号配置中的项目路径，而是保留当前 Transport 给出的初始目录。受限 Notebook 的 JupyterTerminal 实测会保留平台设置的项目用户目录；SSH 登录 Shell 的初始目录由远端 SSH/镜像决定。需要固定目录时显式传 `--cwd me:<repo>`、其它 Path Alias 或绝对路径。
+
 交互会话用完敲 `exit` 正常退出（`job shell` 同理）。`Ctrl+]` 是强制断开的转义键，用于远端已经不响应、`exit` 也回不来的情况。
 
 ### 跨账号 Notebook 连接

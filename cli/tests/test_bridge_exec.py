@@ -62,7 +62,7 @@ def make_tunnel_config(name: str = "gpu-main") -> TunnelConfig:
     return tunnel_config
 
 
-def test_bridge_exec_without_default_path_alias_runs_in_remote_default_cwd(
+def test_bridge_exec_without_explicit_cwd_preserves_remote_initial_cwd(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
@@ -88,7 +88,6 @@ def test_bridge_exec_without_default_path_alias_runs_in_remote_default_cwd(
 
     assert result.exit_code == EXIT_SUCCESS
     assert captured["command"] == "hostname"
-    assert 'cd "' not in captured["command"]
 
 
 def test_bridge_exec_invalid_remote_env_human_returns_config_error(
@@ -430,8 +429,7 @@ def test_bridge_exec_supports_command_after_double_dash(
     result = runner.invoke(cli_main, ["notebook", "exec", "gpu-main", "--", "bash", "-s"])
 
     assert result.exit_code == EXIT_SUCCESS
-    assert 'cd "' in captured["command"]
-    assert "&& bash -s" in captured["command"]
+    assert captured["command"] == "bash -s"
 
 
 def test_bridge_exec_stdin_streaming_passes_stdin_mode_to_ssh(
@@ -462,7 +460,7 @@ def test_bridge_exec_stdin_streaming_passes_stdin_mode_to_ssh(
 
     assert result.exit_code == EXIT_SUCCESS
     assert captured["pass_stdin"] is True
-    assert "&& bash -s" in captured["command"]
+    assert captured["command"] == "bash -s"
 
 
 def test_bridge_exec_auto_stdin_streaming_passes_stdin_mode_to_ssh(
@@ -580,7 +578,7 @@ def test_bridge_exec_ssh_json_stdin_uses_buffered_with_pass_stdin(
 
     assert result.exit_code == EXIT_SUCCESS
     assert captured["pass_stdin"] is True
-    assert "&& bash -s" in captured["command"]
+    assert captured["command"] == "bash -s"
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert "method" not in payload["data"]

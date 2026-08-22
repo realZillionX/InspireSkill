@@ -35,7 +35,7 @@ Job 覆盖 GPU 多节点工作负载，包括分布式训练、批量推理和�
 
 Job 的关键边界：
 
-- 日志和工作目录依赖共享盘约定；训练 Repo 建议在 `me:<repo>`，启动命令里使用相对共享盘路径或让脚本自己切目录。
+- CLI 不再在 Job 启动命令前注入 `cd`：命令保留平台或镜像的初始工作目录，也不会隐式选择 `me`；依赖固定目录时让启动命令显式 `cd /inspire/...`。项目级 `me:<repo>` 仍可用于 Notebook 等带 `--cwd` 的命令和共享日志定位。
 - Shared Memory 是每个 Job Instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader Workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置。
 - 环境变量由平台注入，不必再拼进启动命令；值可能是凭据，CLI 输出只回显变量名。
 - 训练曲线走独立的 `inspire tensorboard` 命令组，不是 Job 的附属字段，见本文第 9 节。

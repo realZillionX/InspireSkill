@@ -119,6 +119,16 @@ def test_init_defaults_to_discover_mode_with_active_account(
     assert calls["kwargs"]["non_interactive"] is True
 
 
+def test_init_rejects_select_project_outside_project_scope() -> None:
+    result = CliRunner().invoke(
+        cli_main,
+        ["init", "--select-project", "Project One", "--force"],
+    )
+
+    assert result.exit_code == EXIT_GENERAL_ERROR
+    assert "--select-project is only supported" in result.output
+
+
 def test_init_bootstraps_first_account_before_discover(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -573,140 +583,6 @@ def test_looks_like_project_handle_uses_platform_handle_shape(
     expected: bool,
 ) -> None:
     assert discover_module._looks_like_project_handle(value) is expected
-
-
-def test_merge_compute_groups_strips_ids_and_persists_workspace_names() -> None:
-    merged = discover_module._merge_compute_groups(
-        [
-            {
-                "id": "lcg-old-123",
-                "name": "H100开发区",
-                "gpu_type": "H100",
-                "workspace_ids": ["ws-old-123"],
-            }
-        ],
-        [
-            {
-                "name": "H100开发区",
-                "gpu_type": "H100",
-                "workspace_names": ["训练空间"],
-            },
-            {
-                "name": "CPU资源-2",
-                "gpu_type": "CPU",
-                "workspace_names": ["CPU空间"],
-            },
-        ],
-        workspace_names_by_id={"ws-old-123": "训练空间"},
-    )
-
-    assert merged == [
-        {
-            "name": "CPU资源-2",
-            "gpu_type": "CPU",
-            "workspace_names": ["CPU空间"],
-        },
-        {
-            "name": "H100开发区",
-            "gpu_type": "H100",
-            "workspace_names": ["训练空间"],
-        },
-    ]
-    serialized = json.dumps(merged, ensure_ascii=False)
-    assert "lcg-old-123" not in serialized
-    assert "ws-old-123" not in serialized
-    assert '"id"' not in serialized
-    assert "workspace_ids" not in serialized
-
-
-def test_persist_compute_groups_refreshes_successful_workspaces_and_preserves_failed() -> None:
-    global_data = {
-        "compute_groups": [
-            {
-                "name": "已删除资源组",
-                "gpu_type": "H100",
-                "workspace_names": ["训练空间"],
-            },
-            {
-                "name": "暂时不可查询资源组",
-                "gpu_type": "H200",
-                "workspace_names": ["容灾空间"],
-            },
-        ]
-    }
-
-    discover_module._persist_compute_groups(
-        global_data=global_data,
-        compute_groups=[
-            {
-                "name": "新资源组",
-                "gpu_type": "H100",
-                "workspace_names": ["训练空间"],
-            }
-        ],
-        failed_workspace_names={"容灾空间"},
-    )
-
-    assert global_data["compute_groups"] == [
-        {
-            "name": "新资源组",
-            "gpu_type": "H100",
-            "workspace_names": ["训练空间"],
-        },
-        {
-            "name": "暂时不可查询资源组",
-            "gpu_type": "H200",
-            "workspace_names": ["容灾空间"],
-        },
-    ]
-    serialized = json.dumps(global_data, ensure_ascii=False)
-    assert "已删除资源组" not in serialized
-
-
-def test_discover_compute_groups_returns_name_only_records() -> None:
-    class _BrowserAPI:
-        @staticmethod
-        def list_compute_groups(*, workspace_id, session):  # noqa: ANN001
-            return [
-                {
-                    "logic_compute_group_id": "lcg-secret-123",
-                    "name": "H100开发区",
-                    "location": "A区",
-                    "payload": {"trace": "secret"},
-                }
-            ]
-
-        @staticmethod
-        def get_accurate_gpu_availability(*, workspace_id, session):  # noqa: ANN001
-            return [
-                SimpleNamespace(
-                    group_id="lcg-secret-123",
-                    gpu_type="H100",
-                )
-            ]
-
-    session = SimpleNamespace(
-        all_workspace_names={"ws-secret-123": "训练空间"},
-    )
-
-    groups = discover_module._discover_compute_groups(
-        browser_api_module=_BrowserAPI,
-        session=session,
-        workspace_id="ws-secret-123",
-    )
-
-    assert groups == [
-        {
-            "name": "H100开发区",
-            "gpu_type": "H100",
-            "location": "A区",
-            "workspace_names": ["训练空间"],
-        }
-    ]
-    serialized = json.dumps(groups, ensure_ascii=False)
-    assert "lcg-secret-123" not in serialized
-    assert "ws-secret-123" not in serialized
-    assert "payload" not in serialized
 
 
 def test_init_json_report_only_emits_result_and_changed_configs(

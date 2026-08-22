@@ -303,7 +303,7 @@ def _training_plan(monkeypatch: pytest.MonkeyPatch, **extra: Any) -> dict[str, A
     return plan.create_kwargs
 
 
-def test_job_create_payload_unchanged_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_job_create_payload_does_not_inject_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _training_plan(monkeypatch) == {
         "name": "demo",
         "command": "bash -c 'python train.py'",

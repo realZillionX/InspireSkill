@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from inspire.config import Config
 from inspire.platform.web.browser_api.core import (
     _get_base_url,
     _request_json,
@@ -310,19 +309,13 @@ def list_notebook_compute_groups(
 ) -> list[dict]:
     """List compute groups available for notebook creation.
 
-    Use the workspace-wide ``logic_compute_groups/list`` endpoint as the
-    source of truth, with an InspireSkill-config-based fallback for offline
-    or misconfigured environments.
-
-    A failure the platform will recover from is raised rather than answered
-    with the config list: everything downstream fans out one request per
-    compute group, so a short list quietly becomes a short quota catalog. The
-    same goes for a failure with no fallback to offer — an empty list here
-    reads as "this workspace has no compute groups", and that has to be
-    something the platform actually said. Callers building authoritative
-    state pass ``allow_config_fallback=False`` so config.toml can never stand
-    in for the platform.
+    The workspace-wide ``logic_compute_groups/list`` endpoint is the only
+    source of truth. ``allow_config_fallback`` is retained for call-site
+    compatibility but ignored: old account catalogs were stale snapshots and
+    could silently turn a transient API failure into a false empty/CPU-only
+    quota view.
     """
+    del allow_config_fallback
     session, workspace_id = _get_session_and_workspace_id(
         workspace_id=workspace_id, session=session
     )
@@ -338,25 +331,8 @@ def list_notebook_compute_groups(
             return data
     except TransientAPIError:
         raise
-    except Exception as exc:  # noqa: BLE001 — fallback path must remain available
+    except Exception as exc:  # noqa: BLE001 — preserve the platform error for callers
         api_error = exc
-
-    fallback = (
-        _config_compute_groups_fallback(workspace_id=workspace_id)
-        if allow_config_fallback
-        else []
-    )
-    if fallback:
-        reason = f"API error: {api_error!r}" if api_error else "API returned empty list"
-        _log.warning(
-            "list_notebook_compute_groups: %s for workspace %s — "
-            "falling back to %d compute_groups defined in config.toml. "
-            "The returned list may be stale; prefer a live refresh when available.",
-            reason,
-            workspace_id,
-            len(fallback),
-        )
-        return fallback
 
     if api_error is not None:
         raise api_error
@@ -430,43 +406,6 @@ def list_notebooks(
     except (KeyError, TypeError, ValueError):
         total = None
     return items, total
-
-
-def _config_compute_groups_fallback(workspace_id: str | None = None) -> list[dict]:
-    """Build synthetic compute group list from InspireSkill config."""
-    try:
-        cfg, _ = Config.from_files_and_env(require_credentials=False)
-    except Exception:
-        return []
-
-    groups = cfg.compute_groups
-    result = []
-    for g in groups:
-        group_ws_ids = g.get("workspace_ids") or []
-        if workspace_id and group_ws_ids and workspace_id not in group_ws_ids:
-            continue
-        gpu_type = g.get("gpu_type", "")
-        is_real_gpu = gpu_type and gpu_type.upper() != "CPU"
-        result.append(
-            {
-                "logic_compute_group_id": g.get("id", ""),
-                "name": g.get("name", ""),
-                "gpu_type_stats": (
-                    [
-                        {
-                            "gpu_info": {
-                                "gpu_type": gpu_type,
-                                "gpu_type_display": gpu_type,
-                                "brand_name": gpu_type,
-                            },
-                        }
-                    ]
-                    if is_real_gpu
-                    else []
-                ),
-            }
-        )
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1205,5 +1144,4 @@ __all__ = [
     "start_notebook",
     "stop_notebook",
     "wait_for_notebook_running",
-    "_config_compute_groups_fallback",
 ]

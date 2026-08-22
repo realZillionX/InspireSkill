@@ -58,7 +58,7 @@ Workspace 判断：
 
 | 用户问题或判断点 | 先加载 |
 | --- | --- |
-| 安装、更新、卸载、账号、多账号切换、全局发现 | [`references/setup/install-and-config.md`](references/setup/install-and-config.md) |
+| 安装、更新、卸载、账号、多账号切换、账号初始化 | [`references/setup/install-and-config.md`](references/setup/install-and-config.md) |
 | 本机是 Windows（PowerShell、`install.ps1`、系统 OpenSSH、私钥 ACL） | [`references/setup/windows-native.md`](references/setup/windows-native.md) |
 | 本机 Clash Verge 的 `*.sii.edu.cn`、`SII Proxy` / `DIRECT` 分流 | [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md) |
 | 项目初始化、`INSPIRE.md`、Project / Workspace / Paths / Image 问询、项目信息持续维护 | [`references/project-context.md`](references/project-context.md) |

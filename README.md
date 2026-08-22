@@ -135,7 +135,7 @@ inspire init --scope project
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
-`inspire init` 默认做账号级全局发现，写入平台 Catalog 和默认 Path Alias；`--scope project` 用于当前仓库的 Project Context 和 Path Alias 覆盖。
+`inspire init` 校验账号并清理旧版写入的派生 Catalog/Path Alias，只保留真正的账号级设置；`--scope project` 才为当前仓库写入 Project Context 和 Path Alias。Notebook 远端命令省略 `--cwd` 时不注入 `cd`，保留平台、容器或远端 Shell 给出的初始目录。
 
 安装、更新和多账号操作见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)；项目初始化问询（Project / Workspace / Paths / Image）和 `INSPIRE.md` 维护见 [`references/project-context.md`](references/project-context.md)；Clash Verge 的 SII Proxy / DIRECT 分流模板见 [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)。
 
@@ -351,7 +351,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 # 文档索引
 
 - [`SKILL.md`](SKILL.md)：日常使用入口，包含平台不变量、项目上下文约定、最短执行闭环和按需加载索引。
-- [`references/setup/install-and-config.md`](references/setup/install-and-config.md)：安装、更新、账号配置、全局发现和多账号操作。
+- [`references/setup/install-and-config.md`](references/setup/install-and-config.md)：安装、更新、账号配置、账号初始化和多账号操作。
 - [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)：Clash Verge 的 SII Proxy / DIRECT 分流模板和验证步骤。
 - [`references/project-context.md`](references/project-context.md)：项目初始化问询（Project / Workspace / Paths / Image）、`INSPIRE.md` 资产合同和项目信息持续维护。
 - [`references/resources.md`](references/resources.md)：Workspace、Compute Group、规格三元组、实时资源和 Workload Profile 边界。

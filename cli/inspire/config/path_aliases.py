@@ -138,13 +138,25 @@ def resolve_remote_path_alias(
     return text, False
 
 
-def default_remote_cwd(aliases: dict[str, str] | None) -> str | None:
-    """Return the default remote working directory from path aliases."""
+def preferred_remote_path(aliases: dict[str, str] | None) -> str | None:
+    """Return the preferred configured path for persistent remote artifacts.
+
+    Path aliases remain useful when a caller explicitly names one and for
+    optional shared-file logs. They no longer decide the implicit working
+    directory: one account can access many projects, so treating one cached
+    ``me`` path as a process-wide cwd sends commands into the wrong fileset.
+    """
     alias_map = aliases or {}
     for alias in _PREFERRED_REMOTE_CWD_ALIASES:
         value = str(alias_map.get(alias) or "").strip()
         if value:
             return value
+    return None
+
+
+def default_remote_cwd(aliases: dict[str, str] | None) -> str | None:
+    """Return no implicit cwd so the remote runtime keeps its natural one."""
+    del aliases
     return None
 
 
@@ -256,6 +268,7 @@ __all__ = [
     "load_project_path_alias_data",
     "load_project_path_aliases",
     "normalize_path_alias_map",
+    "preferred_remote_path",
     "project_path_alias_config_path",
     "resolve_remote_cwd",
     "resolve_remote_path_alias",

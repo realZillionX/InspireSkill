@@ -4,6 +4,8 @@
 
 ### 修复
 
+- **账号配置不再缓存项目和资源目录，隐式远端 cwd 不再注入 `cd`。** 旧版 `inspire init` 会把全部可见 Project、Compute Group、推导出的项目路径和未使用的 `docker_registry` 一起写进 `~/.inspire/accounts/<name>/config.toml`。一个账号跨多个 Project 使用时，账号级 `me` 会把 Notebook/Job 命令带进另一个 Fileset；Compute Group 快照还会在 Live API 失败时冒充资源事实。现在账号加载立即忽略这些旧字段，下一次 `inspire init` 会从磁盘删除 `[projects]`、`[project_catalog]`、`[[compute_groups]]`、账号级 `[path_aliases]` 和未使用的 `api.docker_registry`，其它未知字段保留；全局 init 不再枚举这些目录，项目路径只由 `inspire init --scope project` 写进仓库配置。Notebook exec/shell 省略 `--cwd` 时不生成 `cd`，Job 启动命令也不再由 CLI 添加 `cd`，两者均保留平台、容器或远端 Shell 的初始工作目录；显式 `--cwd` 仍会解析 Path Alias，Job 的共享文件日志目录与执行 cwd 解耦。
+
 - **Windows 成为一等公民，不再要求 WSL。** 此前 `import inspire.cli.main` 在 Windows 上直接 `ModuleNotFoundError: fcntl` —— 断点在 `accounts/cache_lock.py`，而它在第一条子命令的 import 链上，所以不是「某个命令不能用」，是 `inspire --version` 都起不来。五处模块级 POSIX 导入（`fcntl` / `pty` / `termios` / `tty`）按平台分叉，文件锁在 Windows 上用 `msvcrt.locking` 实现。CI 增加 `windows-latest`。
 
   **ProxyCommand 那条链上纠正了一个流传的判断**：Windows OpenSSH 并不通过 `cmd.exe` 跑 ProxyCommand。`FORK_NOT_SUPPORTED` 下它把整条命令串交给 `posix_spawnp`，最终落到 `CreateProcessW(lpApplicationName=NULL)`，中间没有任何 shell。所以那里的 `2>NUL` 不是重定向，而是 rtunnel 的第 4 个位置参数——rtunnel 收到就 `Error: invalid number of arguments` 退出。而 `_resolve_bridge_and_proxy` 的 `quiet` 默认是 `True`，`notebook ssh` / `exec` / `scp` 和 `is_tunnel_available` 全走它。现在 Windows 分支不含任何 shell 语法，逐 token 加双引号（首字符是 `"` 正是 OpenSSH `build_commandline_string()` 原样透传的分支），proxy override 改由 ssh 自己的环境传给 rtunnel。

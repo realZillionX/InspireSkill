@@ -2835,7 +2835,7 @@ def test_notebook_shell_cwd_uses_path_alias(
     )
 
 
-def test_notebook_shell_without_default_path_alias_uses_login_home(
+def test_notebook_shell_without_explicit_cwd_preserves_remote_initial_cwd(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = config_module.Config(username="", password="")

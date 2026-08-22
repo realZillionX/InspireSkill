@@ -92,30 +92,6 @@ def _parse_alias_map(raw_value: Any) -> dict[str, str]:
     return result
 
 
-def _normalize_project_catalog(raw_value: Any) -> dict[str, dict[str, Any]]:
-    if not isinstance(raw_value, dict):
-        return {}
-
-    normalized: dict[str, dict[str, Any]] = {}
-    for raw_alias, raw_entry in raw_value.items():
-        alias = str(raw_alias).strip()
-        if not alias or not isinstance(raw_entry, dict):
-            continue
-
-        entry: dict[str, Any] = {}
-        # ``name``, ``path`` and ``path_user`` are the metadata consumed by
-        # name-only commands and remote path helpers.
-        for key in ("name", "path", "path_user"):
-            value = raw_entry.get(key)
-            if isinstance(value, str):
-                value = value.strip()
-            if not value:
-                continue
-            entry[key] = value
-        normalized[alias] = entry
-    return normalized
-
-
 def _coerce_project_default(field_name: str, raw_value: Any) -> Any:
     if field_name == "shm_size":
         return int(raw_value)
@@ -135,6 +111,5 @@ __all__ = [
     "_coerce_project_default",
     "_default_config_values",
     "_initialize_sources",
-    "_normalize_project_catalog",
     "_parse_alias_map",
 ]

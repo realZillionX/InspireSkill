@@ -341,6 +341,15 @@ def test_remote_cwd_resolves_path_alias() -> None:
     assert cwd == "/inspire/ssd/project/topic/alice/repo"
 
 
+def test_remote_cwd_is_none_even_when_me_alias_exists() -> None:
+    cwd = resolve_remote_cwd(
+        cwd=None,
+        aliases={"me": "/inspire/ssd/project/topic/alice/"},
+    )
+
+    assert cwd is None
+
+
 def test_remote_cwd_rejects_unknown_relative_alias() -> None:
     with pytest.raises(ConfigError, match="Unknown path alias"):
         resolve_remote_cwd(
