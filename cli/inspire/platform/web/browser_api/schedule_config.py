@@ -13,7 +13,8 @@ scheduling-config record per workspace plus two standalone ones:
 * ``hpc.GetHpcScheduleConfig`` and ``inference_serving.GetServingScheduleConfig``
   are separate records (neither carries the shared record's ``config_id``).
 
-The three sibling Actions are therefore deliberately not wrapped:
+The scheduling-policy reader therefore does not duplicate the three sibling
+Actions as policy sources:
 
 * ``notebook.GetNotebookScheduleConfig`` and ``ray.GetRayJobScheduleConfig``
   are strict projections of the shared record. Measured across all ten visible

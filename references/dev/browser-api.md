@@ -257,7 +257,7 @@ CAS 在连续若干次登录失败后会锁账号，也会对来源机器加验�
 
 | 路由 | 域 | Action 数 | 主要 CLI 命令组 |
 | --- | --- | --- | --- |
-| [`train`](#81-train--分布式训练与-tensorboard) | GPU 训练任务、TensorBoard | 15 | `job`、`tensorboard` |
+| [`train`](#81-train--分布式训练与-tensorboard) | GPU 训练任务、TensorBoard | 16 | `job`、`tensorboard` |
 | [`hpc`](#82-hpc--cpu-slurm-批处理) | CPU Slurm 批处理 | 11 | `hpc` |
 | [`ray`](#83-ray--弹性计算) | 弹性计算 | 12 | `ray` |
 | [`notebook`](#84-notebook--交互式建模) | 交互式建模 | 18 | `notebook`、`image` |
@@ -285,6 +285,7 @@ Referer：`/jobs/distributedTraining`，详情页 `/jobs/distributedTrainingDeta
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
 | `CreateJobConsole` † | 见[创建面字段合同](#9-创建面的字段合同) | `{job_id, sub_code, sub_msg}` | `job create`、`job batch` |
+| `GetTrainScheduleConfig` | `{workspace_id}` | `train_enable_specified_nodes` | `job create --specified-node`、Job Batch 的 `specified_nodes` |
 | `GetJob` | `{job_id}` | `name` / `status` / `command` / `framework_config[]` / `dataset_info[]` / `node_infos[]` / `specified_nodes[]` / `exclude_nodes[]` / `project_id` / `workspace_id` / `logic_compute_group_name` / `created_at` / `finished_at` | `job status` / `command` / `logs` / `metrics` / `wait` |
 | `ListJobs` | `{workspace_id, page_num, page_size, created_by, status?, keyword?}`；或 `{workspace_id, job_ids[]}` 按 id 批量取，见 [8.15](#815-批量读--listjobs--listjobevents-的复数形态) | `{jobs[], total}`（`total` 是 int） | `job list`、`job status`、Name Resolver、`cache refresh` |
 | `ListJobInstances` | `{job_id, page_num, page_size}` | `{items[], total}` | `job instances` / `shell` / `logs` / `events` |
