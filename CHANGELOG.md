@@ -10,9 +10,11 @@
 
   `train.ListJobs` 还有一个低于传输层通用上限的 Action 级限制：`page_size=999` 实测返回 999 行，`1000` 返回 `InvalidParameter: page or page_size too large`。Wrapper 现在按 999 截断；`lty` 的 `分布式训练空间` Job 缓存完整刷新实测 999 个名字、5.42 秒完成。
 
-- **镜像全目录并发读取，Job Batch 复用命令内 Live 快照。** `image list --source all` 的 official / public / project / private 是四个互不依赖的 `ListImages` 请求，现改为同时发出，再按原页签顺序合并，部分失败的 warning 语义不变；`lty` 实测 9.05 秒降到 5.49–6.81 秒，剩余时间由最慢的单个目录决定。
+- **镜像全目录并发读取，Job / HPC / Notebook Batch 复用命令内 Live 快照。** `image list --source all` 的 official / public / project / private 是四个互不依赖的 `ListImages` 请求，现改为同时发出，再按原页签顺序合并，部分失败的 warning 语义不变；`lty` 实测 9.05 秒降到 5.49–6.81 秒，剩余时间由最慢的单个目录决定。
 
   Job Batch 此前每个条目都重读同一 Workspace 的 Quota 优先级菜单、Project 目录、排队拥塞和镜像目录。现在只在本次 Batch 进程里复用第一条刚读到的 Live 快照，不跨命令持久化；3 条 dry-run 的真机请求数 15 → 5，11.32 秒 → 5.32 秒。
+
+  HPC 更严重：每条原本读两次相同 Project 目录、再读一次 Image；3 条从 9 → 2 请求、17.05 秒 → 5.01 秒。CPU Notebook 的 3 条从 9 → 3 请求、10.30 秒 → 2.53 秒。Project 优先级、拥塞和 Quota 限制仍由本次命令刚取得的 Live 数据决定。
 
 ### 修复
 

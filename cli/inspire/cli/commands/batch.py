@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +39,11 @@ from inspire.cli.utils.dataset_mounts import (
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
-from inspire.cli.utils.image_resolver import ImageCatalogCache
-from inspire.cli.utils.project_resolver import project_name_candidates
+from inspire.cli.utils.image_resolver import (
+    ImageCatalogCache,
+    resolve_image_url,
+)
+from inspire.cli.utils.project_resolver import project_name_candidates, resolve_project
 from inspire.cli.utils.quota_resolver import (
     QuotaMatchError,
     QuotaParseError,
@@ -86,6 +90,29 @@ _REFERENCE_FIELDS = {
         "inspire model list --workspace <workspace-name> --project <project-name>",
     ),
 }
+
+
+@dataclass
+class _BatchLiveCache:
+    """Live catalogues reused only while one Batch command is expanding.
+
+    These snapshots deliberately never leave the process. They collapse
+    identical requests across matrix rows without turning mutable scheduling
+    facts into persistent configuration or cross-command cache entries.
+    """
+
+    job_project_selections: job_submit.ProjectSelectionCache = dataclass_field(
+        default_factory=dict
+    )
+    priority_levels: dict[
+        tuple[str, str], dict[str, tuple[str, ...]] | None
+    ] = dataclass_field(default_factory=dict)
+    image_url_catalogues: ImageCatalogCache = dataclass_field(default_factory=dict)
+    projects: dict[str, list[Any]] = dataclass_field(default_factory=dict)
+    project_health: dict[str, set[str]] = dataclass_field(default_factory=dict)
+    notebook_images: dict[tuple[str, str], list[Any]] = dataclass_field(
+        default_factory=dict
+    )
 
 _PUBLIC_FIELDS_BY_KIND = {
     "job": (
@@ -554,18 +581,79 @@ def _optional_max_time_hours(item: dict[str, Any]) -> float | None:
     return _require_max_time_hours(item)
 
 
+def _batch_priority_levels(
+    *,
+    workspace_id: str,
+    workload: str,
+    session: Any,
+    live_cache: _BatchLiveCache | None,
+) -> dict[str, tuple[str, ...]] | None:
+    if live_cache is None:
+        return load_quota_priority_levels(
+            workspace_id=workspace_id,
+            session=session,
+            workload=workload,
+        )
+    key = (workspace_id, workload)
+    if key not in live_cache.priority_levels:
+        live_cache.priority_levels[key] = load_quota_priority_levels(
+            workspace_id=workspace_id,
+            session=session,
+            workload=workload,
+        )
+    return live_cache.priority_levels[key]
+
+
+def _batch_projects(
+    *,
+    workspace_id: str,
+    session: Any,
+    live_cache: _BatchLiveCache | None,
+) -> list[Any]:
+    if live_cache is None:
+        return browser_api_module.list_projects(
+            workspace_id=workspace_id,
+            session=session,
+        )
+    if workspace_id not in live_cache.projects:
+        live_cache.projects[workspace_id] = browser_api_module.list_projects(
+            workspace_id=workspace_id,
+            session=session,
+        )
+    return live_cache.projects[workspace_id]
+
+
+def _batch_project_health(
+    *,
+    workspace_id: str,
+    projects: list[Any],
+    session: Any,
+    live_cache: _BatchLiveCache | None,
+) -> set[str]:
+    if live_cache is None:
+        return browser_api_module.check_scheduling_health(
+            workspace_id=workspace_id,
+            project_ids={project.project_id for project in projects},
+            session=session,
+        )
+    if workspace_id not in live_cache.project_health:
+        live_cache.project_health[workspace_id] = (
+            browser_api_module.check_scheduling_health(
+                workspace_id=workspace_id,
+                project_ids={project.project_id for project in projects},
+                session=session,
+            )
+        )
+    return live_cache.project_health[workspace_id]
+
+
 def _prepare_training_item(
     item: dict[str, Any],
     *,
     config: Config,
     session: Any,
     specified_nodes_capabilities: dict[str, bool] | None = None,
-    project_selection_cache: job_submit.ProjectSelectionCache | None = None,
-    priority_levels_cache: dict[
-        tuple[str, str], dict[str, tuple[str, ...]] | None
-    ]
-    | None = None,
-    image_catalog_cache: ImageCatalogCache | None = None,
+    live_cache: _BatchLiveCache | None = None,
 ) -> job_submit.JobSubmissionPlan:
     quota_spec = parse_quota(_require_condition_str(item, "quota", kind="job"))
     workspace_id = select_workspace_id(
@@ -591,22 +679,13 @@ def _prepare_training_item(
                 f"Workspace {item.get('workspace')!r} does not enable specified-node "
                 "placement. Remove specified_nodes or choose a workspace that enables it."
             )
-    priority_key = (workspace_id, "job")
-
     def _priority_levels_loader() -> dict[str, tuple[str, ...]] | None:
-        if priority_levels_cache is None:
-            return load_quota_priority_levels(
-                workspace_id=workspace_id,
-                session=session,
-                workload="job",
-            )
-        if priority_key not in priority_levels_cache:
-            priority_levels_cache[priority_key] = load_quota_priority_levels(
-                workspace_id=workspace_id,
-                session=session,
-                workload="job",
-            )
-        return priority_levels_cache[priority_key]
+        return _batch_priority_levels(
+            workspace_id=workspace_id,
+            workload="job",
+            session=session,
+            live_cache=live_cache,
+        )
 
     resolved_quota = resolve_quota(
         spec=quota_spec,
@@ -621,7 +700,9 @@ def _prepare_training_item(
         workspace_id=workspace_id,
         requested=_require_condition_str(item, "project", kind="job"),
         session=session,
-        selection_cache=project_selection_cache,
+        selection_cache=(
+            live_cache.job_project_selections if live_cache is not None else None
+        ),
     )
     fault_retry = _optional_int(item, "fault_tolerance_max_retry", min_value=0)
     task_priority = resolve_workspace_task_priority(
@@ -673,7 +754,9 @@ def _prepare_training_item(
             item, "fault_tolerance_retry_interval", min_value=1
         ),
         session=session,
-        image_catalog_cache=image_catalog_cache,
+        image_catalog_cache=(
+            live_cache.image_url_catalogues if live_cache is not None else None
+        ),
     )
 
 
@@ -682,11 +765,11 @@ def _prepare_hpc_item(
     *,
     config: Config,
     session: Any,
+    live_cache: _BatchLiveCache | None = None,
 ) -> dict[str, Any]:
     from inspire.cli.commands.hpc.hpc_commands import (
         SlurmLayoutError,
         _looks_like_full_slurm_script,
-        _resolve_project_id,
         build_hpc_create_payload,
         resolve_slurm_layout,
     )
@@ -724,18 +807,32 @@ def _prepare_hpc_item(
         )
     except SlurmLayoutError as e:
         raise ConfigError(str(e)) from e
-    project_id = _resolve_project_id(
+    selected_project = resolve_project(
         config,
         _require_condition_str(item, "project", kind="hpc"),
-        workspace_id=workspace_id,
+        _batch_projects(
+            workspace_id=workspace_id,
+            session=session,
+            live_cache=live_cache,
+        ),
+    )
+    project_id = str(selected_project.project_id or "").strip()
+    if not project_id:
+        raise ConfigError(f"Project {selected_project.name!r} has no platform record.")
+    image = resolve_image_url(
+        _require_condition_str(item, "image", kind="hpc"),
         session=session,
+        workspace_id=workspace_id,
+        catalog_cache=(
+            live_cache.image_url_catalogues if live_cache is not None else None
+        ),
     )
     return build_hpc_create_payload(
         name=_require_str(item, "name"),
         logic_compute_group_id=resolved_quota.logic_compute_group_id,
         project_id=project_id,
         workspace_id=workspace_id,
-        image=_require_condition_str(item, "image", kind="hpc"),
+        image=image,
         image_type=_optional_str(item, "image_type") or "SOURCE_PRIVATE",
         entrypoint=entrypoint,
         quota_id=resolved_quota.quota_id,
@@ -744,7 +841,7 @@ def _prepare_hpc_item(
             _optional_int(item, "priority", min_value=1),
             session=session,
             workspace_id=workspace_id,
-            project_id=project_id,
+            project_limit=selected_project.priority_name,
         ),
         number_of_tasks=layout.number_of_tasks,
         cpus_per_task=layout.cpus_per_task,
@@ -778,21 +875,25 @@ def _select_notebook_project(
     requested: str,
     session: Any,
     needs_gpu_quota: bool,
+    live_cache: _BatchLiveCache | None = None,
 ):
-    projects = browser_api_module.list_projects(workspace_id=workspace_id, session=session)
+    projects = _batch_projects(
+        workspace_id=workspace_id,
+        session=session,
+        live_cache=live_cache,
+    )
     if not projects:
         raise ConfigError("No projects available in this workspace.")
 
     congested = None
     if needs_gpu_quota:
-        congested = (
-            browser_api_module.check_scheduling_health(
-                workspace_id=workspace_id,
-                project_ids={p.project_id for p in projects},
-                session=session,
-            )
-            or None
+        congested = _batch_project_health(
+            workspace_id=workspace_id,
+            projects=projects,
+            session=session,
+            live_cache=live_cache,
         )
+        congested = congested or None
 
     try:
         selected, _ = browser_api_module.select_project(
@@ -807,19 +908,41 @@ def _select_notebook_project(
     return selected
 
 
-def _select_notebook_image(*, workspace_id: str, requested: str, session: Any):
+def _select_notebook_image(
+    *,
+    workspace_id: str,
+    requested: str,
+    session: Any,
+    live_cache: _BatchLiveCache | None = None,
+):
     from inspire.cli.commands.notebook.notebook_create_flow import _find_image_match
 
-    images = browser_api_module.list_images(workspace_id=workspace_id, session=session)
+    def _images(source: str | None = None) -> list[Any]:
+        key = (workspace_id, str(source or "official"))
+        if live_cache is not None and key in live_cache.notebook_images:
+            return live_cache.notebook_images[key]
+        loaded = (
+            browser_api_module.list_images(
+                workspace_id=workspace_id,
+                session=session,
+            )
+            if source is None
+            else browser_api_module.list_images(
+                workspace_id=workspace_id,
+                source=source,
+                session=session,
+            )
+        )
+        if live_cache is not None:
+            live_cache.notebook_images[key] = loaded
+        return loaded
+
+    images = _images()
     selected = _find_image_match(images, requested)
     if not selected:
         for source in ("SOURCE_PUBLIC", "SOURCE_PRIVATE"):
             try:
-                extra_images = browser_api_module.list_images(
-                    workspace_id=workspace_id,
-                    source=source,
-                    session=session,
-                )
+                extra_images = _images(source)
             except TransientAPIError:
                 # "not found" below would be a verdict on a catalog that was
                 # never listed. Say the platform did not answer instead.
@@ -840,6 +963,7 @@ def _prepare_notebook_item(
     *,
     config: Config,
     session: Any,
+    live_cache: _BatchLiveCache | None = None,
 ) -> dict[str, Any]:
     from inspire.cli.commands.notebook.notebook_create_flow import (
         _split_auto_stop_after,
@@ -861,6 +985,12 @@ def _prepare_notebook_item(
         session=session,
         schedule_config_type=SCHEDULE_TYPE_DSW,
         group_override=_require_condition_str(item, "group", kind="notebook"),
+        priority_levels_loader=lambda: _batch_priority_levels(
+            workspace_id=workspace_id,
+            workload="notebook",
+            session=session,
+            live_cache=live_cache,
+        ),
     )
     selected_project = _select_notebook_project(
         config=config,
@@ -868,11 +998,13 @@ def _prepare_notebook_item(
         requested=_require_condition_str(item, "project", kind="notebook"),
         session=session,
         needs_gpu_quota=resolved_quota.gpu_count > 0,
+        live_cache=live_cache,
     )
     selected_image = _select_notebook_image(
         workspace_id=workspace_id,
         requested=_require_condition_str(item, "image", kind="notebook"),
         session=session,
+        live_cache=live_cache,
     )
     shm_size = _optional_int(item, "shm_size", min_value=1) or 32
     task_priority = resolve_workspace_task_priority(
@@ -1345,12 +1477,8 @@ def job_batch(
         items = _expanded_items(data, item_key="jobs")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
+        live_cache = _BatchLiveCache()
         specified_nodes_capabilities: dict[str, bool] = {}
-        project_selection_cache: job_submit.ProjectSelectionCache = {}
-        priority_levels_cache: dict[
-            tuple[str, str], dict[str, tuple[str, ...]] | None
-        ] = {}
-        image_catalog_cache: ImageCatalogCache = {}
 
         outputs: list[dict[str, Any]] = []
         for item in items:
@@ -1371,9 +1499,7 @@ def job_batch(
                 config=config,
                 session=session,
                 specified_nodes_capabilities=specified_nodes_capabilities,
-                project_selection_cache=project_selection_cache,
-                priority_levels_cache=priority_levels_cache,
-                image_catalog_cache=image_catalog_cache,
+                live_cache=live_cache,
             )
             if dry_run:
                 outputs.append(
@@ -1486,6 +1612,7 @@ def hpc_batch(
         items = _expanded_items(data, item_key="jobs")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
+        live_cache = _BatchLiveCache()
 
         outputs: list[dict[str, Any]] = []
         for item in items:
@@ -1497,7 +1624,12 @@ def hpc_batch(
                 local_profiles=local_profiles,
             )
             _validate_name_references(ctx, item)
-            create_kwargs = _prepare_hpc_item(item, config=config, session=session)
+            create_kwargs = _prepare_hpc_item(
+                item,
+                config=config,
+                session=session,
+                live_cache=live_cache,
+            )
             if dry_run:
                 outputs.append(
                     _public_batch_plan(
@@ -1594,6 +1726,7 @@ def notebook_batch(
         items = _expanded_items(data, item_key="notebooks")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
+        live_cache = _BatchLiveCache()
 
         outputs: list[dict[str, Any]] = []
         for item in items:
@@ -1609,7 +1742,12 @@ def notebook_batch(
                 local_profiles=local_profiles,
             )
             _validate_name_references(ctx, item)
-            plan = _prepare_notebook_item(item, config=config, session=session)
+            plan = _prepare_notebook_item(
+                item,
+                config=config,
+                session=session,
+                live_cache=live_cache,
+            )
             if dry_run:
                 outputs.append(
                     _public_batch_plan(

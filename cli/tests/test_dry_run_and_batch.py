@@ -22,6 +22,7 @@ class DummyAPI:
         self.scheduling_health_calls = 0
         self.priority_menu_calls = 0
         self.image_catalog_calls: list[str] = []
+        self.notebook_image_calls: list[str] = []
 
     def create_training_job(
         self, *, payload: dict[str, Any], session: object | None = None
@@ -162,11 +163,12 @@ def _patch_submit_deps(
         framework="pytorch",
         version="latest",
     )
-    monkeypatch.setattr(
-        browser_api_module,
-        "list_images",
-        lambda workspace_id=None, source=None, session=None: [image],
-    )
+    def list_images(workspace_id=None, source=None, session=None):  # noqa: ANN001
+        del workspace_id, session
+        api.notebook_image_calls.append(str(source or "official"))
+        return [image]
+
+    monkeypatch.setattr(browser_api_module, "list_images", list_images)
 
     def fake_resolve_quota(*, spec, workspace_id, session=None, **kwargs):  # noqa: ANN001
         priority_loader = kwargs.get("priority_levels_loader")
@@ -1332,7 +1334,7 @@ def test_notebook_batch_matrix_dry_run_expands_json_without_submit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_submit_deps(monkeypatch, tmp_path)
+    api = _patch_submit_deps(monkeypatch, tmp_path)
     batch_path = tmp_path / "notebooks.json"
     batch_path.write_text(
         json.dumps(
@@ -1378,7 +1380,60 @@ def test_notebook_batch_matrix_dry_run_expands_json_without_submit(
     assert items[0]["compute_group"] == "H200 Room"
     assert items[0]["image"] == "registry.batch/notebook:latest"
     assert items[0]["shared_memory_gib"] == 32
+    assert api.project_list_calls == 1
+    assert api.priority_menu_calls == 1
+    assert api.notebook_image_calls == ["official"]
     _assert_public_batch_output(payload["data"])
+
+
+def test_hpc_batch_reuses_live_project_and_image_catalogs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    api = _patch_submit_deps(monkeypatch, tmp_path)
+    batch_path = tmp_path / "hpc-reuse.json"
+    batch_path.write_text(
+        json.dumps(
+            {
+                "profiles": {
+                    "hpc": {
+                        "cpu": {
+                            "quota": "0,4,32",
+                            "workspace": "cpu",
+                            "project": "Project One",
+                            "group": "H200 Room",
+                            "image": "train-image:v1",
+                        }
+                    }
+                },
+                "defaults": {
+                    "type": "hpc",
+                    "profile": "cpu",
+                    "priority": 7,
+                    "instance_count": 1,
+                    "number_of_tasks": 1,
+                },
+                "matrix": {"case": [1, 2]},
+                "jobs": [
+                    {
+                        "name": "hpc-{case}",
+                        "entrypoint": "srun true",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "hpc", "batch", str(batch_path), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert api.project_list_calls == 1
+    assert api.image_catalog_calls == ["official"]
+    assert api.hpc_calls == []
 
 
 def test_batch_requires_training_fields_after_expansion(
