@@ -43,7 +43,7 @@ Job 的关键边界：
 - 状态变化通知（`--enable-notification`，收件人固定为当前用户绑定的飞书账号）和自动容错默认关闭，除非明确启用。
 - 需要项目级持久默认值时写 `[job]` 配置段；提交前用 `job create --dry-run` 检查 Shared Memory、通知和容错的最终生效值。
 - 多节点训练要关注每个 Pod 的 GPU、显存、CPU 和网络曲线是否同步；某个 Worker 长期低负载通常比日志更早暴露问题。
-- 排除坏节点是“不要调度到这些 Ready 节点”，不是固定节点；候选节点来自所选 Compute Group。
+- 节点放置有两个相反的选项：`--exclude-node <名字>` 排除坏节点；`--specified-node <名字>` 把任务绑定到指定节点。两者都可重复，节点名来自所选 Compute Group，同一个节点不能同时指定和排除。指定节点前 CLI 会读取 Workspace 的 `train_enable_specified_nodes` 能力位；未开启时在本地报错，不发送创建请求。两组最终值都由 `job create --dry-run` 回显。
 - Workspace 会按空闲规则回收运行中的任务，判据是 GPU 利用率：`分布式训练空间` 对 Job 声明的是「GPU 低于 40% 持续 3 小时」。长时间不吃卡的阶段（大规模数据预处理、CPU 侧评测、等待外部服务）留在 GPU Job 里会被无声收走，提交前用 `inspire resources policy --workspace <名字>` 读当前规则。
 
 优先级合同——公平调度 Workspace 只接受 `1=LOW`（可抢占）或 `4=HIGH`（默认，稳定档），其他 Workspace 是 `1–10`（默认 10），项目策略还可能再压低一档——见 [`resources.md`](resources.md)。任务需要稳定训练但 Status 显示 LOW 时，先 stop，再按当前 Workspace 和项目策略重提。

@@ -28,10 +28,12 @@ from inspire.platform.web.session import (
 
 __all__ = [
     "JobInfo",
+    "TrainScheduleCapabilities",
     "create_training_job",
     "delete_job",
     "get_current_user",
     "get_job_detail_v2",
+    "get_train_schedule_capabilities",
     "list_job_events_by_ids",
     "list_job_instances",
     "list_job_events",
@@ -93,6 +95,53 @@ class JobInfo:
             priority=data.get("priority", 0),
             workspace_id=data.get("workspace_id", ""),
         )
+
+
+@dataclass(frozen=True)
+class TrainScheduleCapabilities:
+    """Workspace switches controlling optional distributed-training features."""
+
+    specified_nodes: bool = False
+
+
+def _bool_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def get_train_schedule_capabilities(
+    workspace_id: str,
+    *,
+    session: Optional[WebSession] = None,
+) -> TrainScheduleCapabilities:
+    """Read the feature switches for distributed training in one workspace.
+
+    ``specified_nodes`` is accepted by the train create schema, but the console
+    only exposes node pinning when ``train_enable_specified_nodes`` is enabled
+    for the selected workspace.  Treat an absent switch as disabled rather than
+    guessing from another workspace.
+    """
+    workspace_id = str(workspace_id or "").strip()
+    if not workspace_id:
+        raise ValueError("Workspace selection is required.")
+    if session is None:
+        session = get_web_session()
+
+    data = _request_json(
+        session,
+        "POST",
+        "/api/v2/train?Action=GetTrainScheduleConfig",
+        referer=f"{_get_base_url()}/jobs/distributedTraining",
+        body={"workspace_id": workspace_id},
+        timeout=20,
+    )
+    payload = _v2_result(data)
+    return TrainScheduleCapabilities(
+        specified_nodes=_bool_flag(payload.get("train_enable_specified_nodes")),
+    )
 
 
 def create_training_job(

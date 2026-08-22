@@ -21,10 +21,12 @@ from .availability import (
 )
 from .jobs import (
     JobInfo,
+    TrainScheduleCapabilities,
     create_training_job,
     delete_job,
     get_current_user,
     get_job_detail_v2,
+    get_train_schedule_capabilities,
     list_job_events,
     list_job_events_by_ids,
     list_job_instances,
@@ -218,10 +220,12 @@ from .schedule_config import (
 __all__ = [
     # Jobs / users
     "JobInfo",
+    "TrainScheduleCapabilities",
     "create_training_job",
     "delete_job",
     "get_current_user",
     "get_job_detail_v2",
+    "get_train_schedule_capabilities",
     "list_job_events",
     "list_job_events_by_ids",
     "list_job_instances",

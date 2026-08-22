@@ -257,7 +257,7 @@ CAS 在连续若干次登录失败后会锁账号，也会对来源机器加验�
 
 | 路由 | 域 | Action 数 | 主要 CLI 命令组 |
 | --- | --- | --- | --- |
-| [`train`](#81-train--分布式训练与-tensorboard) | GPU 训练任务、TensorBoard | 15 | `job`、`tensorboard` |
+| [`train`](#81-train--分布式训练与-tensorboard) | GPU 训练任务、TensorBoard | 16 | `job`、`tensorboard` |
 | [`hpc`](#82-hpc--cpu-slurm-批处理) | CPU Slurm 批处理 | 11 | `hpc` |
 | [`ray`](#83-ray--弹性计算) | 弹性计算 | 12 | `ray` |
 | [`notebook`](#84-notebook--交互式建模) | 交互式建模 | 18 | `notebook`、`image` |
@@ -285,6 +285,7 @@ Referer：`/jobs/distributedTraining`，详情页 `/jobs/distributedTrainingDeta
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
 | `CreateJobConsole` † | 见[创建面字段合同](#9-创建面的字段合同) | `{job_id, sub_code, sub_msg}` | `job create`、`job batch` |
+| `GetTrainScheduleConfig` | `{workspace_id}` | `train_enable_specified_nodes` | `job create --specified-node`、Job Batch 的 `specified_nodes` |
 | `GetJob` | `{job_id}` | `name` / `status` / `command` / `framework_config[]` / `dataset_info[]` / `node_infos[]` / `specified_nodes[]` / `exclude_nodes[]` / `project_id` / `workspace_id` / `logic_compute_group_name` / `created_at` / `finished_at` | `job status` / `command` / `logs` / `metrics` / `wait` |
 | `ListJobs` | `{workspace_id, page_num, page_size, created_by, status?, keyword?}`；或 `{workspace_id, job_ids[]}` 按 id 批量取，见 [8.15](#815-批量读--listjobs--listjobevents-的复数形态) | `{jobs[], total}`（`total` 是 int） | `job list`、`job status`、Name Resolver、`cache refresh` |
 | `ListJobInstances` | `{job_id, page_num, page_size}` | `{items[], total}` | `job instances` / `shell` / `logs` / `events` |
@@ -334,7 +335,7 @@ Referer：`/jobs/distributedTraining`，详情页 `/jobs/distributedTrainingDeta
 | `ListTensorboardUsers` | `{workspace_id}` → 整个 Workspace 建过 board 的 158 个人，答的是控制台「创建人」下拉框，对只看自己资源的 CLI 没有消费者 |
 | `ListPreCheckItems` / `GetPreCheckResult` | 不是「提交前校验规格」，是**每个训练任务创建时可选开启**的节点健康检查（创建面收 `enable_troubleshoot` 加 `pre_check_items`；没开的任务答 `train job does not enable troubleshoot precheck`）。而 `train_enable_troubleshoot` 在全部 10 个可见 Workspace 都是 `False`，接出来是一个谁也用不了、也验不了的开关 |
 
-`notebook.GetScheduleConfig` 里还有三个同族能力位，接任何一个之前先读它们：`train_enable_slow_detect`（`分布式训练空间` / `CI-情境智能` 开）、`train_enable_specified_nodes`（两个 `CI-情境智能*` 开，是真正的节点绑定，与 `--exclude-node` 不是一回事）、`train_enable_vccl`（`分布式训练空间` 开）。
+`notebook.GetScheduleConfig` 里还有三个同族能力位：`train_enable_slow_detect`（`分布式训练空间` / `CI-情境智能` 开）、`train_enable_specified_nodes`（两个 `CI-情境智能*` 开，是真正的节点绑定，与 `--exclude-node` 不是一回事）、`train_enable_vccl`（`分布式训练空间` 开）。节点绑定已经接入 `job create --specified-node` 和 Job Batch 的 `specified_nodes`；创建前用 `train.GetTrainScheduleConfig` 读取同名能力位，关闭时不发创建请求。其余能力接入前仍要同时核对开关和控制台是否真正渲染控件。
 
 ---
 
@@ -862,7 +863,7 @@ POST /api/v2/job?Action=ListJobs
 | Action | 必填 | 可选 |
 | --- | --- | --- |
 | `notebook.CreateNotebook` | `workspace_id`、`name`、`project_id`、`project_name`、`auto_stop`、`allow_ssh`、`mirror_id`、`mirror_url`、`logic_compute_group_id`、`quota_id`、`cpu_count`、`gpu_count`、`memory_size`、`shared_memory_size` | `resource_spec_price`（GPU Notebook 必需）、`task_priority`、`node_id`、`dataset_info[]`、`enable_notification`、`stop_hour` + `stop_minute`、`is_publicpath_readonly`、`is_projectuserspath_readonly` |
-| `train.CreateJobConsole` | `name`、`command`、`framework`、`project_id`、`workspace_id`、`logic_compute_group_id`、`task_priority`、`enable_notification`、`framework_config:[{image_type, image, instance_count, resource_spec_price, cpu, gpu_count, mem_gi, shm_gi?}]` | `max_running_time_ms`、`exclude_nodes[]`、`auto_fault_tolerance` + `fault_tolerance_max_retry` + `fault_tolerance_retry_interval_sec`、`dataset_info[]`、`envs[]`、`description`、`reserve_on_success_ms`、`reserve_on_fail_ms`、`is_publicpath_readonly` |
+| `train.CreateJobConsole` | `name`、`command`、`framework`、`project_id`、`workspace_id`、`logic_compute_group_id`、`task_priority`、`enable_notification`、`framework_config:[{image_type, image, instance_count, resource_spec_price, cpu, gpu_count, mem_gi, shm_gi?}]` | `max_running_time_ms`、`exclude_nodes[]`、`specified_nodes[]`、`auto_fault_tolerance` + `fault_tolerance_max_retry` + `fault_tolerance_retry_interval_sec`、`dataset_info[]`、`envs[]`、`description`、`reserve_on_success_ms`、`reserve_on_fail_ms`、`is_publicpath_readonly` |
 | `hpc.CreateJobConsole` | `job_name`、`logic_compute_group_id`、`project_id`、`workspace_id`、`enable_notification`、`priority`、`sbatch_script:{number_of_tasks, cpus_per_task, memory_per_cpu, enable_hyper_threading, entrypoint}`、`slurm_cluster_spec:{predef_quota_id, cpu, mem_gi, image, image_type, instance_count, spec_price}` | `dataset_info[]`、`description`、`ttl_after_job_finish_seconds`、`is_publicpath_readonly`，以及 `sbatch_script` 里的运行时长四件套 |
 | `ray.CreateJob` | `name`、`description`、`workspace_id`、`project_id`、`entrypoint`、`task_priority`、`head_node:{mirror_id, image_type, logic_compute_group_id, quota_id, shm_gi?}`、`worker_groups:[{group_name, mirror_id, image_type, logic_compute_group_id, min_replicas, max_replicas, quota_id, shm_gi?}]` | `is_publicpath_readonly` |
 | `inference_serving.CreateServingConsole` | `workspace_id`、`project_id`、`inference_serving_type`、`name`、`logic_compute_group_id`、`model_id`、`model_version`、`mirror_id`、`command`、`port`、`description`、`replicas`、`node_num_per_replica`、`task_priority`、`resource_spec_price` | `custom_domain`、`shm_gi`、`model_source`、`is_publicpath_readonly`、`enable_auto_scaling`。**`queue_id` / `dataset_info` / `envs` / `scale_status` 被拒且没有对应物** |
@@ -881,6 +882,7 @@ POST /api/v2/job?Action=ListJobs
 | `mount_path` / `mounts` 是死字段 | 接受、存储、不生效。元素是 `{real_path, mount_path, volume}`，没有 `read_only`。受控验证里三种 `volume` 写法全部被接受并原样存进 `start_config.mount_path`，但实例起来后 `/mnt/` 是空的，`find / -name 'probe-*'` 零命中。控制台侧也对得上：notebook / train 表单没有任何自定义挂载入口 | **结论不是「契约未知」，是「这个字段当前没有消费者」** |
 | `hpc` 的 `working_dir` 同类 | `CreateJobConsole` 接受它，但 `GetJob` 读回是 `None`——平台连存都没存。对照组是同一次请求里的 `dataset_info` / `description` / `ttl_after_job_finish_seconds`，三个都完整 round-trip | **写进去读不回来，就不要接** |
 | `train_enable_*` 是 Workspace 能力开关 | 不是可传的参数。`GetTrainScheduleConfig` 返回 `train_enable_pre_check` / `_troubleshoot` / `_specified_nodes` / `_slow_detect` / `_vccl`，控制台据此决定渲染哪些控件。`enable_slow_detect` / `enable_vccl` 虽被 `CreateJobConsole` 接受，但表单里没有对应控件 | **判断某个字段该不该接时，先看这组开关，再看控制台是否真的渲染了控件，两者缺一不可** |
+| `specified_nodes` | discovery 的 `train.CreateJob` 创建 Schema 明确声明 `string[]`，`GetJob` 原样回显；`train_enable_specified_nodes` 决定 Workspace 是否开放。CLI 顶层发送，不塞进 `framework_config`，与 `exclude_nodes` 重名时本地拒绝 | 把它当成 `--nodes` 会混淆“要几个节点”和“必须落在哪些节点”；能力位关闭时发送没有可靠语义 |
 | `notebook` 的第二个 `flatten` | `flatten_mode`（`FLATTEN_OFF` / `FLATTEN_ON` / `FLATTEN_AUTO`，控制台标签「停机自动保存时压平镜像」）在合同里——三个取值逐个探过都过了 proto 解析——但**控制台里这组单选带 `disabled`**，平台侧没放开 | 和 `train_enable_troubleshoot` 同类，刻意不接。它管的是「停机自动保存」这条独立链路，**不是 `notebook save-image --flatten`** |
 | `resource_spec_price` 的形状 | 嵌套 proto 风格对象 `{cpu_type, cpu_count, gpu_type, gpu_count, memory_size_gib, logic_compute_group_id, quota_id}`；CPU 档位省略 `gpu_type`。由 `quota_id` 那一行的原始 price 对象构造，来源是 [8.11](#811-resource-price--配额目录-) | — |
 | 镜像一律发注册表 URL 或 `mirror_id` | 不发可见名，否则 `无法找到对应镜像`。`image_type` 取 `SOURCE_PUBLIC` / `SOURCE_PRIVATE` / `SOURCE_OFFICIAL` | — |

@@ -161,7 +161,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 平台官方把 `job` 这一路叫“分布式训练” / Distributed Training；提交 Job 时只要求 GPU 计算资源和启动命令，不强制程序必须是训练。`inspire job` 可用于一张卡、多卡、单节点、多节点等后台 GPU 任务：分布式训练 / 批量推理 / 并发 Worker Pool 都走这里（`hpc` 对应 CPU Slurm）。
 
-`inspire job create / batch / list / status / command / wait / stop / delete / events / instances / shell / logs / metrics / quota / profile`。提交统一使用 `job create`（一次提交多个用 `job batch`），可用 `--enable-notification` 开启当前用户绑定飞书账号的状态通知；脚本里等任务跑完用 `job wait`，忘了提交时写的启动命令用 `job command` 原样读回；需要跟日志时用 `job logs <name> --workspace <workspace> --follow`，健康度用 `job metrics <name> --workspace <workspace>` 看 GPU、显存、CPU、内存、I/O 和多 Pod 负载是否同步。
+`inspire job create / batch / list / status / command / wait / stop / delete / events / instances / shell / logs / metrics / quota / profile`。提交统一使用 `job create`（一次提交多个用 `job batch`）；`--exclude-node` 排除坏节点，Workspace 开启指定节点能力时用可重复的 `--specified-node` 绑定节点，二者都会进入 dry-run。可用 `--enable-notification` 开启当前用户绑定飞书账号的状态通知；脚本里等任务跑完用 `job wait`，忘了提交时写的启动命令用 `job command` 原样读回；需要跟日志时用 `job logs <name> --workspace <workspace> --follow`，健康度用 `job metrics <name> --workspace <workspace>` 看 GPU、显存、CPU、内存、I/O 和多 Pod 负载是否同步。
 
 </details>
 
@@ -363,7 +363,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 - [`references/workflows.md`](references/workflows.md)：CPU 准备、数据处理、分布式训练三阶段项目流程。
 - [`references/image.md`](references/image.md)：镜像职责、保存 / 注册边界、可见性和清理原则。
 - [`references/model.md`](references/model.md)：Model Registry 与 Serving 的职责边界、注册限制和版本判断。
-- [`references/dev/browser-api.md`](references/dev/browser-api.md)：CLI 维护参考，唯一一份接口文档——请求契约与信封、认证与 Session、分页与 scoping、探针方法、13 条路由 114 个 Action 的逐条参数与响应表、创建面字段合同、数据广场（`aip.sii.edu.cn`）与变更验收。
+- [`references/dev/browser-api.md`](references/dev/browser-api.md)：CLI 维护参考，唯一一份接口文档——请求契约与信封、认证与 Session、分页与 scoping、探针方法、13 条路由 115 个 Action 的逐条参数与响应表、创建面字段合同、数据广场（`aip.sii.edu.cn`）与变更验收。
 - [`CONTRIBUTING.md`](CONTRIBUTING.md)：开发、测试和贡献约定。
 - [`cli/`](cli/)：CLI 源码；入口 `cli/inspire/cli/main.py`。
 - [`scripts/install.sh`](scripts/install.sh)：Curl Pipe Bash 安装器。

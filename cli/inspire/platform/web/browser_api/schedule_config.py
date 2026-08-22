@@ -13,7 +13,8 @@ scheduling-config record per workspace plus two standalone ones:
 * ``hpc.GetHpcScheduleConfig`` and ``inference_serving.GetServingScheduleConfig``
   are separate records (neither carries the shared record's ``config_id``).
 
-The three sibling Actions are therefore deliberately not wrapped:
+The scheduling-policy reader therefore does not duplicate the three sibling
+Actions as policy sources:
 
 * ``notebook.GetNotebookScheduleConfig`` and ``ray.GetRayJobScheduleConfig``
   are strict projections of the shared record. Measured across all ten visible
@@ -23,7 +24,9 @@ The three sibling Actions are therefore deliberately not wrapped:
   Its only exclusives are the console form's fault-tolerance defaults, which
   say nothing about what ``inspire job create`` will do because the CLI takes
   its own defaults from ``[job]`` config, and the ``train_enable_*`` workspace
-  capability switches, which are platform-side behaviour with no user control.
+  capability switches. The scheduling-policy reader still does not duplicate
+  this endpoint; the job submit path wraps it narrowly to gate optional node
+  pinning before creation.
 * ``workspace.GetScheduleConfig`` answers ``AccessForbidden: You are not the
   admin of the <workspace_id> workspace`` to an ordinary member. That is a
   permission boundary and not a scoping mistake: it was retried with top-level

@@ -79,4 +79,4 @@ Workspace 判断：
 
 | 需要什么 | 加载 |
 | --- | --- |
-| 请求契约、响应信封、认证与 Session、分页、Workspace scoping、错误码、探针方法、变更验收；13 条路由 114 个 Action 的请求体 / 响应 / 参数语义 / CLI 映射 / 限制；创建面字段合同；数据广场（`aip.sii.edu.cn`）的握手、信封与目录端点 | [`references/dev/browser-api.md`](references/dev/browser-api.md) |
+| 请求契约、响应信封、认证与 Session、分页、Workspace scoping、错误码、探针方法、变更验收；13 条路由 115 个 Action 的请求体 / 响应 / 参数语义 / CLI 映射 / 限制；创建面字段合同；数据广场（`aip.sii.edu.cn`）的握手、信封与目录端点 | [`references/dev/browser-api.md`](references/dev/browser-api.md) |
