@@ -236,3 +236,53 @@ def test_availability_loads_compute_groups_with_bounded_concurrency(monkeypatch)
 
     assert max_active == 4
     assert [row.group_name for row in rows] == [f"Group {index}" for index in range(4)]
+
+
+def test_zero_guarantee_gpu_group_is_not_hidden_as_cpu(monkeypatch) -> None:
+    monkeypatch.setattr(
+        api,
+        "list_compute_groups",
+        lambda **_kwargs: [
+            {"logic_compute_group_id": "lcg-gpu", "name": "Fair H200"}
+        ],
+    )
+    monkeypatch.setattr(
+        api,
+        "list_node_dimension",
+        lambda *_args, **_kwargs: [_node("gpu-node", gpu_total=8)],
+    )
+    monkeypatch.setattr(
+        api,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "Result": {
+                "logic_resouces": {
+                    "gpu_total": 0,
+                    "gpu_used": 7,
+                    "gpu_low_priority_used": 2,
+                },
+                "gpu_type_stats": [
+                    {
+                        "gpu_info": {
+                            "gpu_type": "NVIDIA_H200_SXM_141G",
+                            "gpu_type_display": "NVIDIA H200 (141GB)",
+                        }
+                    }
+                ],
+            }
+        },
+    )
+
+    class _Session:
+        all_workspace_names = {"ws-1": "Workspace"}
+
+    rows = api.get_accurate_resource_availability(
+        workspace_id="ws-1",
+        session=_Session(),  # type: ignore[arg-type]
+    )
+
+    assert len(rows) == 1
+    assert rows[0].resource_kind == "gpu"
+    assert rows[0].gpu_type == "NVIDIA H200 (141GB)"
+    assert rows[0].available_gpus == -7
+    assert rows[0].gpu_per_node == 8

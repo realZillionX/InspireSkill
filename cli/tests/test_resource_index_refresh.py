@@ -348,6 +348,72 @@ def test_page_reader_rejects_an_unbounded_complete_catalog() -> None:
     assert calls == [1]
 
 
+def test_page_reader_bounds_an_unfiltered_name_lookup() -> None:
+    from inspire.cli.utils.resource_index_refresh import (
+        MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS,
+        _read_pages,
+    )
+
+    calls: list[int] = []
+
+    def _unfiltered_page(
+        _session: object,
+        _workspace: str,
+        _name: str,
+        page: int,
+        _page_size: int,
+    ) -> tuple[list[ResourceIdentity], int]:
+        calls.append(page)
+        return [ResourceIdentity(resource_id="hpc-1", name="target")], (
+            MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS + 1
+        )
+
+    with pytest.raises(ValueError, match="name-targeted query is still too large"):
+        _read_pages(
+            _unfiltered_page,
+            object(),
+            "workspace-one",
+            "target",
+            page_size=1000,
+        )
+
+    assert calls == [1]
+
+
+def test_page_reader_bounds_full_pages_when_total_is_unusable() -> None:
+    from inspire.cli.utils.resource_index_refresh import (
+        MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS,
+        _read_pages,
+    )
+
+    calls: list[int] = []
+
+    def _lying_page(
+        _session: object,
+        _workspace: str,
+        _name: str,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[ResourceIdentity], int]:
+        calls.append(page)
+        start = (page - 1) * page_size
+        return [
+            ResourceIdentity(resource_id=f"job-{index}", name=f"job-{index}")
+            for index in range(start, start + page_size)
+        ], 0
+
+    with pytest.raises(ValueError, match="without a usable total"):
+        _read_pages(
+            _lying_page,
+            object(),
+            "workspace-one",
+            "",
+            page_size=1000,
+        )
+
+    assert calls == list(range(1, MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS // 1000 + 2))
+
+
 def test_job_cache_refresh_uses_a_multi_page_safe_window(monkeypatch) -> None:
     from inspire.cli.utils import resource_index_refresh as refresh_module
 

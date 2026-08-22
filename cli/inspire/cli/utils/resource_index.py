@@ -13,7 +13,6 @@ price object in ``payload``.
 from __future__ import annotations
 
 import contextlib
-import errno
 import os
 import sqlite3
 import threading
@@ -25,6 +24,7 @@ from typing import Iterable, Iterator, Mapping, Sequence
 
 from inspire.accounts import account_dir, current_account
 from inspire.cli.formatters import json_formatter
+from inspire.cli.utils.detached import process_is_alive
 
 SCHEMA_VERSION = 4
 RESOURCE_INDEX_FILENAME = "resource-index.sqlite3"
@@ -69,15 +69,7 @@ def _lease_holder_is_alive(holder: str) -> bool:
         return True
     if pid <= 0:
         return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError as exc:
-        return exc.errno != errno.ESRCH
-    return True
+    return process_is_alive(pid)
 
 
 # Three tiers, paced by how fast each kind actually moves.

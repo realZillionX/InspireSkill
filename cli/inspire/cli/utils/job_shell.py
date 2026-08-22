@@ -374,7 +374,10 @@ class _WebSocketClient:
             raise JobShellError(f"Remote shell websocket handshake failed: {status_line}")
         accept = self._header_value(response, "Sec-WebSocket-Accept")
         expected = base64.b64encode(
-            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+            hashlib.sha1(
+                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode(),
+                usedforsecurity=False,
+            ).digest()
         ).decode("ascii")
         if accept and accept != expected:
             sock.close()

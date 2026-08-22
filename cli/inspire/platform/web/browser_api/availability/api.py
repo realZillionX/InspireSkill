@@ -778,9 +778,15 @@ def get_accurate_resource_availability(
                 resources = group_resource.get("logic_resouces", {})
                 gpu_stats = group_resource.get("gpu_type_stats", [{}])
 
-                gpu_type = ""
-                if gpu_stats:
-                    gpu_type = gpu_stats[0].get("gpu_info", {}).get("gpu_type_display", "Unknown")
+                gpu_info: dict = {}
+                if isinstance(gpu_stats, list) and gpu_stats:
+                    first_gpu_stat = gpu_stats[0]
+                    if isinstance(first_gpu_stat, dict):
+                        raw_gpu_info = first_gpu_stat.get("gpu_info")
+                        if isinstance(raw_gpu_info, dict):
+                            gpu_info = raw_gpu_info
+                gpu_type = str(gpu_info.get("gpu_type_display") or "").strip()
+                gpu_type_code = str(gpu_info.get("gpu_type") or "").strip().upper()
 
                 gpu_total = int(resources.get("gpu_total", 0) or 0)
                 gpu_used = int(resources.get("gpu_used", 0) or 0)
@@ -795,7 +801,24 @@ def get_accurate_resource_availability(
                 memory_used_gib = float(resources.get("memory_gi_used", 0) or 0)
                 memory_available_gib = memory_total_gib - memory_used_gib
 
-                resource_kind = "gpu" if gpu_total > 0 else "cpu"
+                # `gpu_total` is the workspace's guaranteed amount, not a
+                # hardware classifier. Fair-scheduling groups can publish a
+                # zero guarantee while live node dimensions and usage show
+                # real GPUs; classifying on total alone hid those groups from
+                # the default GPU view. A negative available value is still a
+                # useful fact here: it says usage is beyond the guarantee.
+                has_gpu_type = bool(
+                    gpu_type_code
+                    and gpu_type_code not in {"CPU", "GPU_TYPE_UNSPECIFIED", "UNSPECIFIED"}
+                )
+                has_gpu_signal = (
+                    gpu_total > 0
+                    or gpu_used > 0
+                    or gpu_low_priority > 0
+                    or node_summary["gpu_per_node"] > 0
+                    or has_gpu_type
+                )
+                resource_kind = "gpu" if has_gpu_signal else "cpu"
                 if resource_kind == "cpu" and not include_cpu:
                     continue
                 if resource_kind == "cpu":

@@ -1406,6 +1406,38 @@ def test_pooled_requests_session_keeps_one_connection_pool() -> None:
         ws_requests_module.close_pooled_requests_session()
 
 
+def test_pooled_requests_sessions_are_isolated_between_threads() -> None:
+    session = WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "abc"}]},
+        cookies={"session": "abc"},
+        workspace_id="ws-test",
+        created_at=0,
+    )
+    main_http = ws_requests_module.pooled_requests_session(
+        session, "https://qz.sii.edu.cn"
+    )
+    worker: dict[str, object] = {}
+
+    def load_twice() -> None:
+        first = ws_requests_module.pooled_requests_session(
+            session, "https://qz.sii.edu.cn"
+        )
+        second = ws_requests_module.pooled_requests_session(
+            session, "https://qz.sii.edu.cn"
+        )
+        worker["first"] = first
+        worker["same"] = first is second
+
+    thread = threading.Thread(target=load_twice)
+    thread.start()
+    thread.join(timeout=5)
+    try:
+        assert worker["same"] is True
+        assert worker["first"] is not main_http
+    finally:
+        ws_requests_module.close_pooled_requests_session()
+
+
 def test_pooled_requests_session_never_answers_with_stale_cookies() -> None:
     # Only the pool is shared. A refreshed session's cookies must replace the
     # previous ones outright, not merge with them.

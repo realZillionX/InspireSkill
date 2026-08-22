@@ -168,7 +168,10 @@ else:
         implementation had exactly this guard (SIGWINCH was registered inside
         ``if raw_mode:``), and losing it in the refactor was a regression.
         """
-        if not _stream_is_a_terminal(stream):
+        if (
+            not _stream_is_a_terminal(stream)
+            or threading.current_thread() is not threading.main_thread()
+        ):
             yield lambda: None
             return
 

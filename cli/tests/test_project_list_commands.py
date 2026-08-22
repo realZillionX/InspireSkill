@@ -184,7 +184,8 @@ def test_project_commands_reject_a_workspace_option() -> None:
 
     passed = CliRunner().invoke(cli_main, ["project", "list", "--workspace", "any"])
     assert passed.exit_code != 0
-    assert "No such option: --workspace" in passed.output
+    assert "No such option" in passed.output
+    assert "--workspace" in passed.output
 
 
 def test_project_detail_json_is_name_only_and_compact(monkeypatch):

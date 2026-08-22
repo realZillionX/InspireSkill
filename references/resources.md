@@ -38,7 +38,7 @@
 
 `<workload> quota` 回答「有哪些合法的 `gpu,cpu,mem` 档位」，`resources availability` 回答「这些档位现在还有没有空」。**Workspace 的配额天花板不是一个需要规划的约束**：实测 10 个可见 Workspace，GPU 上限要么是 `unlimited`，要么是整个集群容量的两倍（分布式训练空间 10000/20000 对 5589 张卡），要么是 0（那是「这个空间根本没有你的份」，不是配给）；CPU 和内存则处处 `unlimited`。所以先耗尽的永远是硬件，`QUOTA_PENDING` 不会因为这个天花板发生，CLI 也不提供读它的命令。用户级和项目级配额另有一套，需要 Workspace 管理员权限，普通成员读不到。
 
-`Available` 是平台上当前未被占用的 GPU，`Low Pri` 是低优任务占用、可被高优任务抢占的 GPU，`High Pri` 是 `Available + Low Pri`。判断高优任务时不要只看 `Available`，但 `High Pri` 也只是可抢占容量上限；提交后仍以 Events 为准。
+`Available` 是 Compute Group 分给当前 Workspace 的保障额度余量（`gpu_total - gpu_used`），不是整组物理节点上的空卡数；公平调度允许超出保障额度运行低优任务，所以它可以为负。`Low Pri` 是低优任务占用、可被高优任务抢占的 GPU，`High Pri` 是 `Available + Low Pri`，同样可能在已超保障时为负。判断高优任务时不要只看 `Available`；要判断物理整节点是否空闲看 `resources nodes`，提交后仍以 Events 为准。GPU 组也不能靠 `gpu_total > 0` 识别：保障为 0 的组仍可能有 GPU 节点和正在运行的 GPU 任务，CLI 综合 Live 使用量、型号和 NodeDimension 分类。
 
 `resources policy` 回答另一个方向的问题：拿到手的资源能留多久。每个 Workspace 按 Workload 声明空闲回收规则和运行时长上限，这条命令逐行给出 `Reclaim`（调度器会不会自己收走）、`Idle Rule`（触发条件）和 `Time Limit`（硬上限——Job 是 `max` 运行时长，Notebook 是 `daily` 关机点）。**触发条件是 GPU 利用率，不是有没有人连着**：实测 `分布式训练空间` 对 Job 声明「GPU 低于 40% 持续 3 小时」，对 Notebook 声明「GPU 低于 15% 持续 3 小时，或运行超过 18 小时」，Serving 的规则还按 GPU 档位分条给。所以长时间不吃卡的阶段留在 GPU Workload 里会被无声收走，而这不是故障。`-` 表示这个 Workspace 对该 Workload **没有声明策略**，不等于没有限制，两者结论相反。留任务过夜、跑长训练或让 Serving 常驻之前先读这张表。
 
@@ -64,7 +64,7 @@ CLI 为每个账号维护一份本地缓存，只用于加速名称和 Quota 解
 
 **`inspire cache refresh` 必须说明刷什么**，不带 `--resource` / `--workspace` / `--name` 会直接报错。全量刷一遍是几百个请求，而且读的是几乎不动的目录；正常情况下你根本不需要跑它。真正要跑的场合只有一种：你知道缓存底下的东西变了，比如管理员刚改过计算组规格、或者刚在网页上删过镜像。这时候先 `inspire cache status` 看哪个 Scope 真的不对，再 `inspire cache refresh --resource <kind> --workspace <name>` 只刷那一块。每次显式 refresh 都是完整对账，会把平台不再列出的行清掉；旧版的冗余 `--full` 仍被静默接受，但不再出现在 Help。
 
-Workload 历史目录超过 5000 行时不会硬扫：刷新器读第一页确认 `total` 后停止，保留已有名称行并提示加 `--name`。共享账号的 Job 历史可能达到几十万条，把它完整搬进本机 SQLite 既慢也没有消费者；正常命令仍按当前名字读穿并写回，后续同名操作直接命中本地缓存。
+Workload 历史目录超过 5000 行时不会硬扫：刷新器按平台报告的 `total` 和实际累计行数分别设限，超限时保留已有名称行。Job / Serving / TensorBoard 的列表支持服务端名字过滤，`--name` 可以把读取收窄；HPC / Ray 不支持，点名刷新仍可能面对整份历史并被上限挡下。共享账号的 Job 历史可能达到几十万条，把它完整搬进本机 SQLite 既慢也没有消费者；正常命令仍按当前名字读穿并写回，后续同名操作直接命中本地缓存。
 
 `cache status` 里的 `partial` 表示这个 Scope 只经过某个名字的定向解析、尚未做完整扫描。这不是故障，`error` 才是；需要完整对账时显式运行上述窄范围 `cache refresh`。
 

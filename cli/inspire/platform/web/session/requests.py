@@ -68,18 +68,17 @@ def build_requests_session(session: WebSession, base_url: str) -> requests.Sessi
 
 
 _pooled_lock = threading.Lock()
-_pooled: requests.Session | None = None
+_pooled_by_thread: dict[int, requests.Session] = {}
 
 
 def close_pooled_requests_session() -> None:
-    """Drop the shared connection pool, closing whatever it still holds."""
-    global _pooled
-
+    """Drop every thread-local connection pool and close its session."""
     with _pooled_lock:
-        stale, _pooled = _pooled, None
-    if stale is not None:
+        stale = list(_pooled_by_thread.values())
+        _pooled_by_thread.clear()
+    for http in stale:
         try:
-            stale.close()
+            http.close()
         except Exception:  # pragma: no cover - closing must never raise
             pass
 
@@ -88,7 +87,7 @@ atexit.register(close_pooled_requests_session)
 
 
 def pooled_requests_session(session: WebSession, base_url: str) -> requests.Session:
-    """Return the process-wide HTTP session, so connections survive the call.
+    """Return this thread's HTTP session, so connections survive the call.
 
     A workspace-wide question can cost one request per compute group. Building
     a fresh :class:`requests.Session` per request throws the connection away
@@ -96,22 +95,26 @@ def pooled_requests_session(session: WebSession, base_url: str) -> requests.Sess
     measured at ~300 ms against ``qz.sii.edu.cn`` through the local SII proxy,
     against ~30 ms once the connection is reused.
 
-    Only the connection pool is shared. Cookies, headers, and proxy settings
-    are reapplied per call exactly as :func:`build_requests_session` does, so a
-    refreshed session never answers with a previous one's credentials.
+    Requests sessions mutate cookies, headers, and proxy state while preparing
+    a request and are not safe to share across the parallel workspace/catalog
+    readers. Each thread therefore owns its session while still reusing its
+    own urllib3 connections across pages and sibling requests. Cookies,
+    headers, and proxy settings are reapplied per call exactly as
+    :func:`build_requests_session` does, so a refreshed session never answers
+    with a previous one's credentials.
 
     Callers that close what they are handed must keep using
     :func:`build_requests_session`; closing this one empties the pool for
     everybody.
     """
-    global _pooled
-
     storage_cookies = session.storage_state.get("cookies") if session.storage_state else None
     if not storage_cookies:
         raise ValueError("Session expired or invalid (missing storage state)")
 
+    thread_id = threading.get_ident()
     with _pooled_lock:
-        http = _pooled
+        http = _pooled_by_thread.get(thread_id)
         if http is None:
-            http = _pooled = requests.Session()
+            http = requests.Session()
+            _pooled_by_thread[thread_id] = http
         return _configure(http, session, base_url)

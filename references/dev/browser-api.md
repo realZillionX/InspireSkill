@@ -563,6 +563,7 @@ Referer：`/jobs/distributedTraining`。
 | `node_specs` 是规格目录不是节点清单 | 一个 292 节点的组只发布 17 种形状，行是「形状 × 作业类型」的笛卡尔积，还会因 GiB 小数差异重复（68 行原始数据只有 6 种真实形状） | **任何按行数当节点数的读法都是错的**。`gpu_type` 恒空、`gpu_memory_size` 恒 0（真值在 `gpu_info` 里），discovery 声明的 `node_count` 线上不存在 |
 | `Get*NodeSpecs` 的 scoping 在顶层 | 套 `filter` 是 `unknown field`；只给组不给 workspace 是 `AccessForbidden` | 与维度族相反 |
 | 平台拼错的键 | 组资源汇总是 **`logic_resouces`**（少一个 `r`），`GetLogicComputeGroupResource` 与 `GetWorkspaceComputeResource` 同病。GPU 型号在 `gpu_type_stats[0].gpu_info.gpu_type_display` | — |
+| `logic_resouces.gpu_total` 不是硬件分类 | 它是当前 Workspace 在该组的 GPU 保障额度；公平调度可以出现 `gpu_total=0`、`gpu_used=7`，同时 `gpu_type_stats` 报 H200、NodeDimension 有 2 台 8 卡节点。`gpu_total - gpu_used` 因而可以为负 | 不能靠 `gpu_total > 0` 识别 GPU 组，否则零保障组会被当成 CPU 并从默认 Availability 消失。Wrapper 综合 Live 使用量、`gpu_type_stats` 和 NodeDimension 分类；负余量原样保留，表示已超保障额度 |
 | `ListLogicComputeGroups` 的两个坑 | 标识字段叫 `logic_compute_group_id` 而不是 `id`；`support_job_type_list` 是 **JSON 编码的字符串**，不是数组 | 用 `isinstance(x, list)` 判断会把每个组都读成「没声明」，按 Workload 过滤计算组看起来生效、实际一个都没滤掉。取值域：`interactive_modeling` / `hpc_job` / `ray_job` / `distributed_training` / `tensorboard` / `inference_serving_customize` / `inference_serving_exclusive` |
 | 配额字段的结构 | `{资源}_{high\|low}_{running\|total}` 加可选 `_used`：高优先级（保障）和低优先级（可回收）是**两套独立的上限**，一个运行中的任务只吃其中一套。`-1` 表示不限 | 混着读会两边都报错。`GetWorkspaceQuota` / `GetWorkspaceComputeResource` 要顶层 `workspace_id`，套 `filter` 反而被拒 |
 | 配额与容量是两个问题 | **配额用完了可以被拒，即使机器闲着；机器忙满了也可以被拒，即使配额还有** | 两者都要看 |

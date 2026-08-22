@@ -13,6 +13,7 @@ Python, so the reasoning lives next to the assertion:
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import PureWindowsPath
@@ -29,7 +30,7 @@ from inspire.cli.commands.notebook.ssh_config_cmd import (
 )
 from inspire.cli.commands.uninstall import _playwright_cache_dir
 from inspire.cli.console_bootstrap import configure_console_encoding
-from inspire.cli.utils.detached import detached_creationflags
+from inspire.cli.utils.detached import detached_creationflags, process_is_alive
 
 
 @pytest.fixture
@@ -209,3 +210,33 @@ def test_background_spawns_are_detached_from_the_console_on_windows() -> None:
 @pytest.mark.skipif(sys.platform == "win32", reason="Popen rejects non-zero flags on POSIX")
 def test_background_spawns_pass_no_creationflags_off_windows() -> None:
     assert detached_creationflags() == 0
+
+
+def test_liveness_probe_reports_this_process_and_not_a_dead_one() -> None:
+    assert process_is_alive(os.getpid()) is True
+    assert process_is_alive(0) is False
+    # High enough to be unallocated on both platforms; the important contract
+    # is that the probe returns without sending a signal.
+    assert process_is_alive(2**31 - 1) is False
+
+
+def test_liveness_probe_never_reaches_os_kill_on_windows(
+    as_windows: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On Windows signal.CTRL_C_EVENT is numeric zero, so this POSIX-looking
+    # call interrupts the target's whole console process group.
+    def explode(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("os.kill must not be used to probe liveness on Windows")
+
+    monkeypatch.setattr(os, "kill", explode)
+
+    # ctypes.windll is unavailable on a POSIX test host. Reaching that lookup
+    # proves the Windows branch was selected without touching os.kill; the real
+    # Windows CI job exercises the call successfully.
+    import ctypes
+
+    if hasattr(ctypes, "windll"):
+        assert process_is_alive(os.getpid()) is True
+    else:
+        with pytest.raises(AttributeError):
+            process_is_alive(os.getpid())

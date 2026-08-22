@@ -28,6 +28,16 @@
 
 ### 修复
 
+- **发版复审补齐 Windows、并发请求和缓存分页的三个边界。** 最新的刷新租约恢复逻辑一度重新用 `os.kill(pid, 0)` 探活；该调用在 Windows 上会发送控制台 Ctrl-C，现在统一走 Win32 只读进程查询，Windows CI 也直接锁住“不触达 `os.kill`”。POSIX 的终端尺寸监听除 TTY 外再检查主线程，库调用方即使从 Worker 线程传入 TTY 也不会触发 `signal.signal` 的主线程限制。资源、镜像和跨 Workspace Job 的并发读取不再共享同一个可变 `requests.Session`，改为每线程复用自己的连接池，保留 keep-alive 的同时隔离 Cookie / Header / Proxy 状态。
+
+- **缓存完整刷新对不可信 `total` 和未服务端过滤的 `--name` 也有硬上限。** 旧上限只在没有 `--name` 且平台正确报告 `total` 时生效；HPC / Ray 列表不支持服务端名字过滤，一次看似点名的刷新仍可能扫描全部历史，异常响应若持续回满页却把 `total` 报成 0 也能绕过限制。现在报告行数与实际累计行数分别受 5000 行上限约束，超限保留既有缓存并明确报错。
+
+- **零保障额度的 GPU 计算组不再从资源视图消失。** `GetLogicComputeGroupResource.logic_resouces.gpu_total` 描述 Workspace 的保障额度，不是硬件类型；公平调度下可以出现 `gpu_total=0`、同时节点目录明确有 GPU 且 `gpu_used>0` 的组。旧代码只按 `gpu_total > 0` 分类，会把这类组当 CPU 并在默认 `resources availability` 中过滤。现在综合 Live 使用量、GPU 型号和 NodeDimension 判断类型；余量为负仍原样保留，明确表达当前使用已经超过保障额度。
+
+- **发布依赖不再解析到已有安全修复的旧版本。** 发版审计命中的 Click、idna、Pillow、urllib3 漏洞均已有上游修复，依赖下限相应提升到 `click>=8.3.3`、`idna>=3.15`、`pillow>=12.3.0`、`urllib3>=2.7.0` 并刷新锁文件；新安装与工具升级不会继续保留受影响的传递依赖。
+
+- **Skill 更新在 Python 3.10 上也不再回退到无校验解包。** 旧逻辑只在新 Python 上使用 `tarfile` 的安全过滤器，3.10 会对 GitHub codeload 归档直接 `extractall`。现在写盘前先验证完整成员集，只接受同一顶层目录内的普通文件和目录，拒绝绝对路径、`..` 穿越、Windows 反斜杠路径、链接和设备文件，再逐文件复制；恶意成员不会留下已经解出一半的 Skill。
+
 - **`inspire cache` 不再把请求凭据写进诊断缓存。** Playwright 的失败文本会附带完整请求调用记录，旧实现把它原样存进 `resource_scope.last_error`，`cache status` 的通用文本净化又没有覆盖 Cookie / Authorization Header，代理故障时因此可能把 Session Cookie 回显出来。现在错误在写入 SQLite 前就统一移除认证 Header、URL、本机和平台路径，只保留首个非空诊断行并限制为 500 字符；打开既有索引会原地迁移旧错误，保留可用名称行。输出层继续做同一套净化作为第二道边界。
 
 - **缓存维护命令与真实作用域一致，异常退出后也能立即恢复刷新。** 每次显式 `cache refresh` 本来就会强制完整对账，冗余的 `--full` 从 Help 和当前文档移除（旧脚本仍可静默传入）；`cache clear` 的默认提示改成 “every managed cache”，并明确它只清资源名称 / Quota 索引和 Notebook GPU 探测，不会伪装成已清理登录 Session、IDE/连接、代理或更新状态。刷新租约现在识别本机持有进程：代理或 CLI 崩溃留下的租约会在下一次尝试时立即回收，不再把显式修复挡成最多 120 秒的 `busy`；未知旧格式仍按 TTL 保守过期。任一维护刷新只要已取得完整 Live Workspace 目录，就会顺手清掉账号不再可见的孤儿 Scope；此前只有显式包含 `workspace` 类型才清理，已移除空间的旧错误会让 Notebook 等汇总永久停在 `partial` / `error`。`cache status` 还会按当前 Session 的平台地址和登录主体过滤：共用账号换过登录主体时，不能再消费的旧身份分区不再污染当前数量与健康状态；`cache clear` 仍按账号清掉全部分区。

@@ -27,9 +27,12 @@ classifiers = [
 ]
 dependencies = [
     "requests>=2.28.0",
-    "click>=8.0.0",
+    "urllib3>=2.7.0",
+    "idna>=3.15",
+    "click>=8.3.3",
     "playwright>=1.57.0",
     "matplotlib>=3.8.0",
+    "pillow>=12.3.0",
     "tomli>=1.2.0; python_version < '3.11'",
 ]
 

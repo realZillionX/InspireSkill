@@ -40,7 +40,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import click
 
@@ -697,34 +697,63 @@ def _download_tarball(timeout: int = 30) -> bytes | None:
 def _extract_assets(tarball: bytes, dest: Path) -> Path | None:
     """Extract the tarball into `dest` and return the top-level extracted dir.
 
-    Defensive about two things:
-    - **Top-level dir detection**: GitHub codeload tarballs always wrap
-      content under a single ``<repo>-<ref>/`` directory, but we don't
-      trust that ``members[0]`` is that directory entry — different tar
-      tools order entries differently. Find the unique top segment by
-      scanning all members.
-    - **Path traversal**: pin ``filter='data'`` on Python 3.12+ where
-      that's a documented safe default. Older Pythons silently use the
-      Python 3.10 fallback (``extractall`` without a filter
-      kwarg), which is what we used before — codeload is GitHub-trusted
-      so this is low-risk, but the explicit filter is strictly safer.
+    GitHub codeload tarballs wrap content under one ``<repo>-<ref>/``
+    directory, but neither member ordering nor archive paths are trusted.
+    Validate the complete member set before writing anything, then copy only
+    regular files and directories. This keeps Python 3.10 as safe as newer
+    ``tarfile`` releases without an unsafe ``extractall`` fallback.
     """
     try:
         with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tf:
             members = tf.getmembers()
             if not members:
                 return None
-            top_segments = {m.name.split("/", 1)[0] for m in members if m.name}
+
+            dest.mkdir(parents=True, exist_ok=True)
+            root = dest.resolve()
+            validated: list[tuple[tarfile.TarInfo, Path]] = []
+            top_segments: set[str] = set()
+            for member in members:
+                name = str(member.name or "")
+                # Backslashes are separators on Windows even though tar names
+                # are POSIX. Rejecting them keeps one validation rule on every
+                # supported host. Links and special files are unnecessary for
+                # SKILL.md/references and can redirect writes after validation.
+                if not name or "\\" in name or "\0" in name:
+                    return None
+                archive_path = PurePosixPath(name)
+                parts = archive_path.parts
+                if (
+                    archive_path.is_absolute()
+                    or not parts
+                    or ".." in parts
+                    or any(":" in part for part in parts)
+                ):
+                    return None
+                if not (member.isdir() or member.isfile()):
+                    return None
+                target = dest.joinpath(*parts)
+                try:
+                    target.resolve().relative_to(root)
+                except ValueError:
+                    return None
+                top_segments.add(parts[0])
+                validated.append((member, target))
+
             if len(top_segments) != 1:
                 logger.debug("Skill tarball has unexpected top-level entries: %s", top_segments)
                 return None
             top = top_segments.pop()
-            try:
-                tf.extractall(dest, filter="data")
-            except TypeError:
-                # Python < 3.11.4 (no `filter=` kwarg). codeload is GitHub
-                # which we trust, so the fallback extract is acceptable.
-                tf.extractall(dest)
+            for member, target in validated:
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                source = tf.extractfile(member)
+                if source is None:
+                    return None
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
             extracted = dest / top
             return extracted if extracted.is_dir() else None
     except (tarfile.TarError, OSError) as e:

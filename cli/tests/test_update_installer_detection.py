@@ -8,10 +8,12 @@ virtual environments and system Python.
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import os
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -572,6 +574,78 @@ def test_download_tarball_uses_only_timeout(
     assert update_module._download_tarball(timeout=7) == b"tarball"
     assert len(calls) == 1
     assert calls[0][1] == 7
+
+
+def _skill_tarball(entries: dict[str, bytes]) -> bytes:
+    payload = io.BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:gz") as archive:
+        for name, content in entries.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+    return payload.getvalue()
+
+
+def test_extract_assets_copies_only_the_single_wrapped_tree(tmp_path: Path) -> None:
+    destination = tmp_path / "extract"
+    extracted = update_module._extract_assets(
+        _skill_tarball(
+            {
+                "InspireSkill-main/SKILL.md": b"skill\n",
+                "InspireSkill-main/references/setup.md": b"reference\n",
+            }
+        ),
+        destination,
+    )
+
+    assert extracted == destination / "InspireSkill-main"
+    assert (extracted / "SKILL.md").read_bytes() == b"skill\n"
+    assert (extracted / "references" / "setup.md").read_bytes() == b"reference\n"
+
+
+@pytest.mark.parametrize(
+    "malicious_name",
+    [
+        "InspireSkill-main/../../escaped.txt",
+        "InspireSkill-main\\..\\escaped.txt",
+        "InspireSkill-main/SKILL.md:alternate-stream",
+        "/InspireSkill-main/escaped.txt",
+    ],
+)
+def test_extract_assets_rejects_unsafe_paths_before_writing(
+    tmp_path: Path,
+    malicious_name: str,
+) -> None:
+    destination = tmp_path / "extract"
+    extracted = update_module._extract_assets(
+        _skill_tarball(
+            {
+                "InspireSkill-main/SKILL.md": b"must not be partially written\n",
+                malicious_name: b"escaped\n",
+            }
+        ),
+        destination,
+    )
+
+    assert extracted is None
+    assert not (destination / "InspireSkill-main" / "SKILL.md").exists()
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_extract_assets_rejects_links_before_writing(tmp_path: Path) -> None:
+    payload = io.BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:gz") as archive:
+        skill = tarfile.TarInfo("InspireSkill-main/SKILL.md")
+        skill.size = 6
+        archive.addfile(skill, io.BytesIO(b"skill\n"))
+        link = tarfile.TarInfo("InspireSkill-main/references")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../../outside"
+        archive.addfile(link)
+
+    destination = tmp_path / "extract"
+    assert update_module._extract_assets(payload.getvalue(), destination) is None
+    assert not (destination / "InspireSkill-main" / "SKILL.md").exists()
 
 
 def _stub_successful_update(monkeypatch: pytest.MonkeyPatch) -> None:

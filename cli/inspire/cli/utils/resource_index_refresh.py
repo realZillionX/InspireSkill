@@ -473,19 +473,35 @@ def _read_pages(
     *,
     page_size: int,
 ) -> list[ResourceIdentity]:
-    """Page through one complete workload list for an explicit refresh."""
+    """Page through one complete workload list for an explicit refresh.
+
+    The reported total is the first guard, but not the only one: a malformed
+    or changing response can report zero/unknown while continuing to return
+    full pages. The observed-row guard keeps that path bounded as well.
+    """
     records: list[ResourceIdentity] = []
     seen: set[str] = set()
     fetched = 0
     page = 1
     while True:
         items, total = read_page(session, workspace_id, exact_name, page, page_size)
-        if not exact_name and total > MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS:
+        if total > MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS:
+            hint = (
+                "Refresh one name with --name."
+                if not exact_name
+                else "The name-targeted query is still too large to refresh safely."
+            )
             raise ValueError(
                 f"Catalog reports {total} rows; the complete cache refresh limit is "
-                f"{MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS}. Refresh one name with --name."
+                f"{MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS}. {hint}"
             )
         fetched += len(items)
+        if fetched > MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS:
+            raise ValueError(
+                "Catalog returned more than the complete cache refresh limit of "
+                f"{MAX_COMPLETE_WORKLOAD_REFRESH_ITEMS} rows without a usable total. "
+                "The refresh was stopped before replacing the existing cache."
+            )
         for record in items:
             resource_id = str(record.resource_id or "").strip()
             if resource_id and resource_id not in seen:

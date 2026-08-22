@@ -223,3 +223,26 @@ def test_resize_watch_works_from_a_worker_thread_when_stdin_is_piped() -> None:
     worker.join(timeout=5)
 
     assert failures == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX select/SIGWINCH only")
+def test_resize_watch_leaves_signal_state_alone_for_a_worker_thread_tty() -> None:
+    import signal
+    import threading
+
+    original = signal.getsignal(signal.SIGWINCH)
+    failures: list[BaseException] = []
+
+    def drive() -> None:
+        try:
+            with watch_terminal_resize(FakeTty([]), lambda: None) as poll:
+                poll()
+        except BaseException as exc:  # noqa: BLE001 — the failure IS the assertion
+            failures.append(exc)
+
+    worker = threading.Thread(target=drive)
+    worker.start()
+    worker.join(timeout=5)
+
+    assert failures == []
+    assert signal.getsignal(signal.SIGWINCH) is original
