@@ -173,9 +173,8 @@ def _find_stale_context_project(cfg: Config, session: WebSession) -> str | None:
     A repository pins `[context] project` once and then never revisits it, so a
     project that gets deleted or renamed on the platform leaves the repo bound
     to a name that resolves to nothing — and every `<workload> create` here
-    fails on it. The account-level catalog is no help: it is a cache written by
-    the same `inspire init` run that wrote the pin, so it agrees with the pin
-    and stays wrong. Only a live listing can tell.
+    fails on it. Only a live listing can tell; account configuration no longer
+    stores a project catalog.
 
     Returns None when there is no pin, when the pin is fine, or when the
     listing itself failed — a network problem is not evidence of staleness.

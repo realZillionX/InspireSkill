@@ -11,7 +11,7 @@ Path Alias 是远端路径 Alias，不是 Workload Profile。它只回答“文�
 | Workload Profile | `workspace`、`project`、`group`、`quota`、`image` | 远端目录 |
 | Path Alias | 共享盘上的目录 | `workspace`、`project`、`group`、`quota`、`image` |
 
-账号级 `[path_aliases]` 提供默认远端路径；仓库级、账号隔离的 `[path_aliases]` 可以覆盖当前 Repo 的同名 Alias。不要维护单独的“远端工作目录”字段。
+Path Alias 只保存在仓库级、账号隔离的 `[path_aliases]` 中。账号配置不保存项目路径，因为一个账号可以访问多个互相隔离的 Project Fileset。省略 `--cwd` 时 CLI 不注入 `cd`，保留远端运行时的初始目录；只有显式传 `--cwd <alias>` 时才解析 Alias。
 
 ## 2. 路径作用域
 
@@ -45,7 +45,7 @@ Path Alias 是远端路径 Alias，不是 Workload Profile。它只回答“文�
 
 ## 5. Alias 语义
 
-默认 Alias 由 `inspire init` 写入账号配置；当前 Repo 需要覆盖时，由 `inspire init --scope project` 写入仓库级配置，日常增删改用 `inspire notebook path list/set/delete`。项目初始化问询和路径约定的持续维护见 [`project-context.md`](project-context.md)。
+默认 Alias 由 `inspire init --scope project` 写入当前仓库的账号隔离配置；普通 `inspire init` 不写入 Alias。日常增删改用 `inspire notebook path list/set/delete`。项目初始化问询和路径约定的持续维护见 [`project-context.md`](project-context.md)。
 
 | Alias | 指向 |
 | --- | --- |

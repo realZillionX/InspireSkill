@@ -391,7 +391,7 @@ def test_unlistable_compute_groups_fail_the_catalog(monkeypatch) -> None:  # noq
 
 
 def test_catalog_never_stands_in_config_groups_for_the_platform(monkeypatch) -> None:  # noqa: ANN001
-    """config.toml is a display fallback, never the source of cached fact."""
+    """config.toml must never stand in for the live platform group list."""
     seen: dict[str, object] = {}
 
     def _list_groups(**kwargs):  # noqa: ANN202

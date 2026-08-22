@@ -208,7 +208,7 @@ def _bootstrap_first_account_if_needed(
     metavar="NAME",
     help=(
         "Pick a project explicitly by name (skips the interactive "
-        "prompt and the platform-heuristic guess). Used by discovery."
+        "prompt and the platform-heuristic guess). Only valid with --scope project."
     ),
 )
 @click.option(
@@ -232,12 +232,13 @@ def init(
     """Initialize Inspire CLI configuration.
 
     Plain `inspire init` defaults to global scope: it logs in or uses the
-    active account, discovers visible workspaces / projects / compute groups,
-    then writes account-level catalogs and remote path aliases to
-    ~/.inspire/accounts/<account>/config.toml.
+    active account, validates the session, and rewrites
+    ~/.inspire/accounts/<account>/config.toml with account settings only.
+    Obsolete project catalogs, compute groups, path aliases and the unused
+    Docker registry field from older versions are removed.
 
-    `--scope project` also discovers platform catalogs, then writes this
-    repository's project context and path-alias overrides to
+    `--scope project` discovers the selected project, then writes this
+    repository's project context and path aliases to
     ./.inspire/accounts/<account>/config.toml.
     `--env-file` records repo-wide dotenv loading in ./.inspire/config.toml.
 
@@ -245,9 +246,8 @@ def init(
     environment-variable detection / smart init into one config file instead
     of running discovery.
 
-    Discovery writes account-scoped catalogs and default path aliases to the
-    active account config. When `--scope project` is selected, it also writes
-    this repository's context and path-alias overrides to the repo config.
+    Project and resource catalogs stay live and are not copied into account
+    configuration.
 
     Prompted passwords are stored in global config for the selected account.
 
@@ -257,7 +257,7 @@ def init(
     detected (or with --template), init creates a template config with
     placeholder values.
 
-    Discovery creates path aliases such as `me`, `public`, `global-me`,
+    Project discovery creates path aliases such as `me`, `public`, `global-me`,
     `ssd.me`, `hdd.me`, and `qb-ilm2.me`; the top-level `me` points at the
     selected path tier, with `ssd` suggested for the path hot tier.
 
@@ -296,6 +296,10 @@ def init(
     try:
         if env_file and not project_flag:
             raise ValueError("--env-file is only supported with `inspire init --scope project`.")
+        if select_project_name and not project_flag:
+            raise ValueError(
+                "--select-project is only supported with `inspire init --scope project`."
+            )
 
         if run_discovery:
             _bootstrap_first_account_if_needed(

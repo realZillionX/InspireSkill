@@ -115,7 +115,7 @@ def _load_tunnel_config_for_account(account: str | None):
 @click.option(
     "--cwd",
     default=None,
-    help="Remote working directory or path alias (default: 'me' alias, else $HOME)",
+    help="Remote working directory or path alias (default: do not inject cd)",
 )
 @click.option(
     "--check",

@@ -534,7 +534,7 @@ def try_exec_via_jupyter_terminal(
 @click.option(
     "--cwd",
     default=None,
-    help="Remote working directory or path alias (default: 'me' alias, else $HOME)",
+    help="Remote working directory or path alias (default: do not inject cd)",
 )
 @click.option(
     "stdin_mode",
@@ -562,7 +562,8 @@ def exec_command(
     use one quoted command string when cwd, environment variables, or shell
     state must stay together.
 
-    COMMAND is the shell command to run remotely (in --cwd, the `me` path alias, or $HOME).
+    COMMAND runs in --cwd when provided; otherwise the CLI preserves the
+    remote runtime's initial working directory.
     Command output (stdout/stderr) is automatically displayed after completion.
 
     An SSH-capable notebook needs its connection cached first — run `inspire

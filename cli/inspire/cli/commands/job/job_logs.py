@@ -1386,10 +1386,10 @@ def logs(
             _handle_error(
                 ctx,
                 "ConfigError",
-                "Cannot derive remote log path: no default path alias is configured.",
+                "Cannot derive remote log path: no project path alias is configured.",
                 EXIT_CONFIG_ERROR,
                 hint=(
-                    "Run `inspire init` to populate the `me` path alias, "
+                    "Run `inspire init --scope project` to populate the `me` path alias, "
                     "or pass --remote-log-path explicitly."
                 ),
             )

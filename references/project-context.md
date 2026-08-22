@@ -1,6 +1,6 @@
 # 项目上下文：初始化与持续维护
 
-把一个本地项目工作区接入启智（项目初始化），或项目事实变化需要更新项目信息时看本页。账号级安装、登录和全局发现见 [`setup/install-and-config.md`](setup/install-and-config.md)；路径作用域和存储池语义见 [`paths.md`](paths.md)。命令语法和参数以 CLI Help 为准。
+把一个本地项目工作区接入启智（项目初始化），或项目事实变化需要更新项目信息时看本页。账号级安装、登录和初始化见 [`setup/install-and-config.md`](setup/install-and-config.md)；路径作用域和存储池语义见 [`paths.md`](paths.md)。命令语法和参数以 CLI Help 为准。
 
 项目上下文有两个载体，缺一不可：
 
@@ -16,7 +16,7 @@
 1. 当前工作区对应一个明确的启智科研或工程项目，而不是 CLI、Skill、文档或其它通用工具源码仓库。
 2. `INSPIRE.md` 或 `./.inspire/` 项目配置缺失、过期，或用户明确要求把项目接入启智。
 
-账号级全局发现（`inspire init`）是前置条件，先按 [`setup/install-and-config.md`](setup/install-and-config.md) 完成。项目只做一次性临时操作时不初始化，也不创建空壳 `INSPIRE.md`。
+账号级初始化（`inspire init`）是前置条件，先按 [`setup/install-and-config.md`](setup/install-and-config.md) 完成。项目只做一次性临时操作时不初始化，也不创建空壳 `INSPIRE.md`。
 
 ## 2. 四项信息先问清
 
@@ -39,7 +39,7 @@
 inspire init --scope project
 ```
 
-交互流程会选择 Project 和默认存储池；已从用户拿到答案时用 `--select-project <name>` 直接传入。写入内容是账号覆盖层的 Project Context 和发现到的 Path Alias。不要维护单独的“远端工作目录”字段；远端目录一律用 Path Alias 表达（`me`、`me:<repo>`、`public` 等）。
+交互流程会选择 Project 和默认存储池；已从用户拿到答案时用 `--select-project <name>` 直接传入。写入内容是账号覆盖层的 Project Context 和发现到的 Path Alias。Path Alias 供显式路径参数和 `--cwd` 解析；配置 `me` 时，Job 还会用它定位共享日志，但不把它作为执行 cwd。省略 `--cwd` 时不注入 `cd`，保留远端运行时的初始目录。
 
 需要让 `inspire ...` 在本仓库稳定加载项目 `.env` 时，登记到仓库共享层：
 
@@ -62,7 +62,7 @@ inspire notebook path list
 
 ### 绑定失效
 
-`[context] project` 只在初始化时写一次，之后再不复查。平台上把这个 Project 删掉或改名之后，仓库就钉在一个解析不到任何东西的名字上，这里的每一条 `<workload> create` 都会栽在它上面——而账号级的 Project 缓存帮不上忙，它是写下这个 pin 的同一次初始化留下的，和 pin 一起错。
+`[context] project` 只在初始化时写一次，之后再不复查。平台上把这个 Project 删掉或改名之后，仓库就钉在一个解析不到任何东西的名字上，这里的每一条 `<workload> create` 都会栽在它上面。账号配置不再缓存 Project 目录，因此不能用本地旧数据判断这种失效；只有 Live 列表能确认当前平台事实。
 
 `inspire account check` 会实时列一次项目目录来判断这件事，失效时报 `Project context: STALE` 并以配置错误退出（**不是认证错误**：账号是好的，坏的是这个仓库的绑定）。列表调用本身失败时不作判断——网络问题不是失效的证据。
 

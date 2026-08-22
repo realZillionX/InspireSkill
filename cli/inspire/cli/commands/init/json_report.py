@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import click
@@ -9,20 +10,28 @@ import click
 from inspire.cli.formatters import json_formatter
 
 
-def snapshot_paths(global_path: Path, project_path: Path) -> dict[str, dict[str, int | bool]]:
-    """Capture path existence and mtime before init mutates config files."""
-    snapshot: dict[str, dict[str, int | bool]] = {}
+def _content_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def snapshot_paths(
+    global_path: Path,
+    project_path: Path,
+) -> dict[str, dict[str, int | bool | str]]:
+    """Capture path existence and content before init mutates config files."""
+    snapshot: dict[str, dict[str, int | bool | str]] = {}
     for path in (global_path, project_path):
         exists = path.exists()
         snapshot[str(path)] = {
             "exists": exists,
             "mtime_ns": path.stat().st_mtime_ns if exists else 0,
+            "digest": _content_digest(path) if exists else "",
         }
     return snapshot
 
 
 def _path_was_written(
-    before: dict[str, dict[str, int | bool]],
+    before: dict[str, dict[str, int | bool | str]],
     after_path: Path,
 ) -> bool:
     """Return whether init created or changed a target config path."""
@@ -33,14 +42,19 @@ def _path_was_written(
     now_exists = after_path.exists()
     if not now_exists:
         return False
+    if not prev_exists:
+        return True
+    prev_digest = str(prev.get("digest") or "")
+    if prev_digest:
+        return _content_digest(after_path) != prev_digest
     now_mtime_ns = after_path.stat().st_mtime_ns
-    return (not prev_exists) or (now_mtime_ns > prev_mtime_ns)
+    return now_mtime_ns > prev_mtime_ns
 
 
 def emit_init_result(
     *,
     target_paths: list[Path],
-    before: dict[str, dict[str, int | bool]],
+    before: dict[str, dict[str, int | bool | str]],
     warnings: list[str],
     effective_json: bool,
 ) -> None:

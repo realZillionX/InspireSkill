@@ -53,11 +53,11 @@ class Config:
     job_fault_tolerance_max_retry: int = 10
     job_enable_notification: bool = False
 
-    # Project alias map for name resolution (alias -> project name).
+    # Repo-scoped project alias map for name resolution (alias -> project name).
     projects: dict[str, str] = field(default_factory=dict)
 
-    # Discovered per-account project metadata keyed by alias. Values contain
-    # the visible name and optional remote path metadata.
+    # Legacy compatibility field. Account config no longer populates a cached
+    # project catalog; project selection and path discovery use live data.
     project_catalog: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Notebook settings
     notebook_post_start: Optional[str] = None
@@ -72,7 +72,8 @@ class Config:
     # User-defined project selection order (list of project names or aliases)
     project_order: list[str] = field(default_factory=list)
 
-    # Compute groups (loaded from config.toml [[compute_groups]] sections)
+    # Legacy repo-config/display field. Scheduling never falls back to this;
+    # compute groups and quota catalogs come from the live platform API.
     compute_groups: list[dict] = field(default_factory=list)
 
     # Remote environment variables (injected into notebook commands and jobs)

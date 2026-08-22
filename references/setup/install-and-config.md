@@ -1,6 +1,6 @@
 # 安装与配置
 
-安装、更新、账号配置、全局发现和多账号操作看这一份。本机需要通过 Clash Verge 为 `*.sii.edu.cn` 分流时，加载 [`sii-proxy.md`](sii-proxy.md)；项目工作区的接入和 `INSPIRE.md` 维护见 [`../project-context.md`](../project-context.md)。平台任务运行看 Notebook、Compute Workloads、Resources 等业务 Reference；命令表面以 CLI Help 为准。
+安装、更新、账号配置、账号初始化和多账号操作看这一份。本机需要通过 Clash Verge 为 `*.sii.edu.cn` 分流时，加载 [`sii-proxy.md`](sii-proxy.md)；项目工作区的接入和 `INSPIRE.md` 维护见 [`../project-context.md`](../project-context.md)。平台任务运行看 Notebook、Compute Workloads、Resources 等业务 Reference；命令表面以 CLI Help 为准。
 
 ## 1. 安装
 
@@ -113,16 +113,18 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
 
 需要稳定代理时写入账号配置；临时诊断可按上面的方式显式清除 Shell 代理变量。
 
-## 5. 全局发现
+## 5. 账号初始化
 
-账号配置完成后，先做一次全局发现，把可见 Project、平台目录和默认远端 Path Alias 写入账号配置，并确认能读到实时资源：
+账号配置完成后运行一次初始化，校验现有 Session，并把账号配置规范化为认证、API、代理等真正的账号级设置：
 
 ```bash
 inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
-全局发现是账号级动作，和具体仓库无关。把某个项目工作区接入启智（`inspire init --scope project`、问清 Project / Workspace / Paths / Image、创建和维护 `INSPIRE.md`）是另一件事，见 [`../project-context.md`](../project-context.md)。
+`inspire init` 不把 Project、Compute Group、平台目录或 Path Alias 复制到账号配置；这些目录以 Live 查询为准。旧版留下的 `[projects]`、`[project_catalog]`、`[[compute_groups]]`、账号级 `[path_aliases]` 和未使用的 API 字段会在重写时删除。
+
+账号初始化和具体仓库无关。把某个项目工作区接入启智（`inspire init --scope project`、问清 Project / Workspace / Paths / Image、创建和维护 `INSPIRE.md`）是另一件事，见 [`../project-context.md`](../project-context.md)。
 
 ## 6. 多账号
 

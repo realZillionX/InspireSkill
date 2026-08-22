@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -49,25 +50,6 @@ def _patch_large_context(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = Config(username="login-user", password="secret")
     cfg.context_project = "Project 00"
     cfg.context_workspace = "Workspace 00"
-    cfg.projects = {
-        f"Project {index:02d}": f"Project {index:02d}"
-        for index in range(25)
-    }
-    cfg.project_catalog = {
-        f"Project {index:02d}": {
-            "name": f"Project {index:02d}",
-            "path": f"/internal/project/{index}",
-        }
-        for index in range(25)
-    }
-    cfg.compute_groups = [
-        {
-            "name": f"Group {index:02d}",
-            "gpu_type": f"GPU-{index}",
-            "workspace_ids": [f"internal-workspace-{index}"],
-        }
-        for index in range(25)
-    ]
 
     monkeypatch.setattr(
         context_module.Config,
@@ -75,14 +57,36 @@ def _patch_large_context(monkeypatch: pytest.MonkeyPatch) -> None:
         classmethod(lambda cls, **_: (cfg, {})),
     )
     monkeypatch.setattr("inspire.accounts.current_account", lambda: "primary")
+    workspace_names = {
+        f"internal-workspace-{index}": f"Workspace {index:02d}"
+        for index in range(25)
+    }
+    session = object()
     monkeypatch.setattr(
         "inspire.config.workspaces.workspace_name_map",
-        lambda _session: {
-            f"internal-workspace-{index}": f"Workspace {index:02d}"
-            for index in range(25)
-        },
+        lambda received: workspace_names if received is session else {},
     )
-    monkeypatch.setattr("inspire.platform.web.session.get_web_session", object)
+    monkeypatch.setattr(
+        "inspire.platform.web.session.get_web_session",
+        lambda: session,
+    )
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.list_all_projects",
+        lambda *, session: [
+            SimpleNamespace(name=f"Project {index:02d}")
+            for index in range(25)
+        ],
+    )
+
+    def _list_compute_groups(*, workspace_id: str, session: object) -> list[dict[str, str]]:
+        assert session is not None
+        index = int(workspace_id.rsplit("-", 1)[-1])
+        return [{"name": f"Group {index:02d}", "gpu_type": f"GPU-{index}"}]
+
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.list_compute_groups",
+        _list_compute_groups,
+    )
 
 
 def test_account_context_default_json_is_bounded_and_name_only(
@@ -195,3 +199,96 @@ def test_account_context_reports_actionable_workspace_discovery_failure(
             "Workspace names are unavailable. Run `inspire account check` and retry."
         ],
     }
+
+
+def test_account_context_uses_live_catalogs_and_ignores_stale_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = Config(username="login-user", password="secret")
+    cfg.projects = {"Stale Project": "Stale Project"}
+    cfg.project_catalog = {"stale": {"name": "Stale Catalog Project"}}
+    cfg.compute_groups = [{"name": "Stale Group"}]
+    session = object()
+
+    monkeypatch.setattr("inspire.accounts.current_account", lambda: "primary")
+    monkeypatch.setattr(
+        "inspire.platform.web.session.get_web_session",
+        lambda: session,
+    )
+    monkeypatch.setattr(
+        "inspire.config.workspaces.workspace_name_map",
+        lambda received: {"ws-a": "Workspace A", "ws-b": "Workspace B"}
+        if received is session
+        else {},
+    )
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.list_all_projects",
+        lambda *, session: [SimpleNamespace(name="Live Project")],
+    )
+
+    def _groups(*, workspace_id: str, session: object) -> list[dict[str, str]]:
+        return [
+            {"name": "Shared Group"},
+            {"name": f"Only {workspace_id}"},
+        ]
+
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.list_compute_groups",
+        _groups,
+    )
+
+    data = context_module._collect_context(cfg)
+
+    assert data["projects"] == [{"name": "Live Project"}]
+    assert {entry["name"] for entry in data["compute_groups"]} == {
+        "Only ws-a",
+        "Only ws-b",
+        "Shared Group",
+    }
+    shared = next(
+        entry for entry in data["compute_groups"] if entry["name"] == "Shared Group"
+    )
+    assert shared["workspace"] == ["Workspace A", "Workspace B"]
+    assert "Stale" not in json.dumps(data)
+
+
+def test_account_context_keeps_partial_live_compute_groups_with_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = Config(username="login-user", password="secret")
+    session = object()
+
+    monkeypatch.setattr("inspire.accounts.current_account", lambda: "primary")
+    monkeypatch.setattr(
+        "inspire.platform.web.session.get_web_session",
+        lambda: session,
+    )
+    monkeypatch.setattr(
+        "inspire.config.workspaces.workspace_name_map",
+        lambda _session: {"ws-ok": "Workspace OK", "ws-fail": "Workspace Fail"},
+    )
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.list_all_projects",
+        lambda *, session: [],
+    )
+
+    def _groups(*, workspace_id: str, session: object) -> list[dict[str, str]]:
+        if workspace_id == "ws-fail":
+            raise RuntimeError("private platform detail")
+        return [{"name": "Live Group"}]
+
+    monkeypatch.setattr(
+        "inspire.platform.web.browser_api.list_compute_groups",
+        _groups,
+    )
+
+    data = context_module._collect_context(cfg)
+
+    assert data["compute_groups"] == [
+        {"name": "Live Group", "workspace": "Workspace OK"}
+    ]
+    assert data["warnings"] == [
+        "Compute group names are incomplete: 1 workspace(s) could not be queried. "
+        "Run `inspire account check` and retry."
+    ]
+    assert "private platform detail" not in json.dumps(data)

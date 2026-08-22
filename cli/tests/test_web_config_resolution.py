@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from inspire.cli.utils.notebook_cli import get_base_url
-from inspire.platform.web.browser_api.notebooks import _config_compute_groups_fallback
+from inspire.platform.web.browser_api.notebooks import list_notebook_compute_groups
 
 
 def test_notebook_cli_base_url_reads_account_toml(
@@ -35,7 +35,7 @@ def test_notebook_cli_base_url_reads_account_toml(
     assert get_base_url() == "https://account.example"
 
 
-def test_notebook_compute_group_fallback_uses_layered_config(
+def test_notebook_compute_groups_ignore_legacy_config_catalog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_home = tmp_path / "home"
@@ -45,9 +45,7 @@ def test_notebook_compute_group_fallback_uses_layered_config(
     (fake_home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: fake_home)
 
-    project_dir = tmp_path / ".inspire" / "accounts" / "alice"
-    project_dir.mkdir(parents=True)
-    (project_dir / "config.toml").write_text(
+    (account_dir / "config.toml").write_text(
         """
 [[compute_groups]]
 name = "H200 A"
@@ -56,10 +54,13 @@ gpu_type = "H200"
 """,
         encoding="utf-8",
     )
-    monkeypatch.chdir(tmp_path)
+    from inspire.platform.web.browser_api.availability import api as availability_api
 
-    groups = _config_compute_groups_fallback()
+    monkeypatch.setattr(availability_api, "list_compute_groups", lambda **_: [])
 
-    assert len(groups) == 1
-    assert groups[0]["logic_compute_group_id"] == "lcg-test-1"
-    assert groups[0]["name"] == "H200 A"
+    groups = list_notebook_compute_groups(
+        workspace_id="workspace-test",
+        session=object(),  # type: ignore[arg-type]
+    )
+
+    assert groups == []

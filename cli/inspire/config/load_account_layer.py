@@ -4,8 +4,9 @@ Identity and account-wide settings live at::
 
     ~/.inspire/accounts/<current>/config.toml
 
-Sections: ``[auth]``, ``[api]``, ``[proxy]``, ``[ssh]``, ``[projects]``,
-``[defaults]``, ``[[compute_groups]]``, ``[remote_env]``, ``[path_aliases]``.
+Sections: ``[auth]``, ``[api]``, ``[proxy]``, ``[tunnel]``, ``[defaults]``
+and ``[remote_env]``. Project names, compute groups and paths are live or
+repository-scoped state and are deliberately ignored here.
 
 One account = one file. Without an active account
 (``~/.inspire/current`` absent or pointing at a missing directory),
@@ -22,14 +23,12 @@ from typing import Any
 from inspire.config.models import SOURCE_ACCOUNT, ConfigError
 from inspire.config.toml import _flatten_toml, _load_toml, _toml_key_to_field
 
-from .load_common import _apply_defaults_overrides, _normalize_project_catalog, _parse_alias_map
-from .path_aliases import normalize_path_alias_map
+from .load_common import _apply_defaults_overrides
 
 # Keys whose *value* must differ per repository — a single account is used
 # across many repos, each with its own Inspire project and workload profiles.
 # Putting these at account level silently shadows the correct project-level
-# value, so we reject them outright. Remote path aliases are allowed as account
-# defaults and are overridden by project config when present.
+# value, so we reject them outright.
 ACCOUNT_LAYER_DISALLOWED_KEYS = frozenset(
     {
         "profiles",
@@ -80,17 +79,25 @@ def _apply_account_layer(
     # project config or come from env vars.
     _reject_per_repo_keys(raw, account_path)
 
-    compute_groups = raw.pop("compute_groups", [])
+    # Older discovery releases wrote live/project-derived catalogs into every
+    # account config. Ignore them immediately, even before the next ``init``
+    # rewrite physically removes them from disk.
+    for legacy_key in (
+        "compute_groups",
+        "path_aliases",
+        "project_catalog",
+        "projects",
+        "paths",
+    ):
+        raw.pop(legacy_key, None)
+
     remote_env = {str(k): str(v) for k, v in raw.pop("remote_env", {}).items()}
-    path_aliases = normalize_path_alias_map(raw.pop("path_aliases", {}))
-    project_catalog = _normalize_project_catalog(raw.pop("project_catalog", {}))
 
     defaults: dict[str, Any] = {}
     raw_defaults = raw.pop("defaults", {})
     if isinstance(raw_defaults, dict):
         defaults = raw_defaults
 
-    projects = _parse_alias_map(raw.pop("projects", {}))
     flat = _flatten_toml(raw)
     for toml_key, value in flat.items():
         field_name = _toml_key_to_field(toml_key)
@@ -98,21 +105,9 @@ def _apply_account_layer(
             config_dict[field_name] = value
             sources[field_name] = SOURCE_ACCOUNT
 
-    if compute_groups:
-        config_dict["compute_groups"] = compute_groups
-        sources["compute_groups"] = SOURCE_ACCOUNT
     if remote_env:
         config_dict["remote_env"] = remote_env
         sources["remote_env"] = SOURCE_ACCOUNT
-    if path_aliases:
-        config_dict["path_aliases"] = path_aliases
-        sources["path_aliases"] = SOURCE_ACCOUNT
-    if projects:
-        config_dict["projects"] = projects
-        sources["projects"] = SOURCE_ACCOUNT
-    if project_catalog:
-        config_dict["project_catalog"] = project_catalog
-        sources["project_catalog"] = SOURCE_ACCOUNT
 
     _apply_defaults_overrides(
         defaults=defaults,
@@ -139,8 +134,7 @@ def _reject_per_repo_keys(raw: dict[str, Any], account_path: Path) -> None:
         "from inside the repo), not at the account level — a single account usually has "
         "many repos with different Inspire projects / workload profiles, "
         "and placing per-repo values here silently shadows "
-        "the correct ones. Remote path aliases may live here as account defaults "
-        "and be overridden by a repo config."
+        "the correct ones. Remote path aliases belong in the repo config."
     )
 
 

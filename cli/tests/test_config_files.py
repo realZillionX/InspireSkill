@@ -412,7 +412,7 @@ class TestAccountConfigLayer:
         assert sources["username"] == SOURCE_ACCOUNT
         assert sources["base_url"] == SOURCE_ACCOUNT
 
-    def test_account_project_catalog_preserves_path_user(
+    def test_account_project_catalog_is_ignored_as_legacy_derived_state(
         self, home: Path, clean_env: None
     ) -> None:
         self._write_account_config(
@@ -426,10 +426,10 @@ class TestAccountConfigLayer:
 
         cfg, sources = Config.from_files_and_env(require_credentials=False)
 
-        assert cfg.project_catalog["CI-情境智能"]["path_user"] == "tongjingqi-CZXS25110029"
-        assert sources["project_catalog"] == SOURCE_ACCOUNT
+        assert cfg.project_catalog == {}
+        assert sources["project_catalog"] == SOURCE_DEFAULT
 
-    def test_account_path_aliases_load_as_defaults(
+    def test_account_path_aliases_are_ignored_as_project_specific_state(
         self, home: Path, clean_env: None
     ) -> None:
         self._write_account_config(
@@ -442,9 +442,8 @@ class TestAccountConfigLayer:
 
         cfg, sources = Config.from_files_and_env(require_credentials=False)
 
-        assert cfg.path_aliases["me"] == "/inspire/ssd/project/topic/alice/"
-        assert cfg.path_aliases["public"] == "/inspire/ssd/project/topic/public/"
-        assert sources["path_aliases"] == SOURCE_ACCOUNT
+        assert cfg.path_aliases == {}
+        assert sources["path_aliases"] == SOURCE_DEFAULT
 
     def test_project_context_is_loaded_for_display(
         self, home: Path, clean_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -478,6 +477,10 @@ class TestAccountConfigLayer:
         monkeypatch.setattr(
             "inspire.platform.web.session.get_web_session",
             object,
+        )
+        monkeypatch.setattr(
+            "inspire.platform.web.browser_api.list_all_projects",
+            lambda **_kwargs: [],
         )
         result = CliRunner().invoke(cli_main, ["account", "context"])
         assert result.exit_code == 0
@@ -768,7 +771,7 @@ class TestAccountConfigLayer:
         assert sources["path_aliases"] == SOURCE_PROJECT
         assert (home / ".inspire" / "current").read_text(encoding="utf-8") == "alice\n"
 
-    def test_project_path_aliases_merge_over_account_defaults(
+    def test_project_path_aliases_do_not_merge_account_legacy_values(
         self, home: Path, clean_env: None, tmp_path: Path
     ) -> None:
         self._write_account_config(
@@ -787,7 +790,7 @@ class TestAccountConfigLayer:
         cfg, sources = Config.from_files_and_env(require_credentials=False)
 
         assert cfg.path_aliases["me"] == "/inspire/qb-ilm2/project/topic/project/"
-        assert cfg.path_aliases["public"] == "/inspire/ssd/project/topic/public/"
+        assert "public" not in cfg.path_aliases
         assert sources["path_aliases"] == SOURCE_PROJECT
 
     def test_project_config_search_does_not_treat_home_account_as_project(
@@ -1286,33 +1289,44 @@ class TestInitCommand:
         )
         assert aliases["global-me"] == "/inspire/ssd/global_user/tongjingqi-CZXS25110029/"
 
-    def test_project_catalog_discards_platform_id_key(self) -> None:
-        from inspire.cli.commands.init.discover import _resolve_project_catalog_aliases
-        from inspire.platform.web.browser_api.projects import ProjectInfo
+    def test_account_config_sanitizer_drops_every_derived_catalog(self) -> None:
+        from inspire.cli.commands.init.discover import _sanitize_account_config
 
-        project = ProjectInfo(
-            project_id="project-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            name="Project One",
-            workspace_id="ws-11111111-1111-1111-1111-111111111111",
+        cleaned = _sanitize_account_config(
+            {
+                "auth": {"username": "alice", "password": "pw", "unused": "x"},
+                "api": {
+                    "base_url": "https://qz.sii.edu.cn",
+                    "docker_registry": "registry.invalid",
+                    "future_transport": "v3",
+                },
+                "proxy": {"requests_http": "http://proxy", "unknown": "x"},
+                "tunnel": {"retries": 5, "retry_pause": 1.5},
+                "defaults": {"shm_size": 64, "project_order": ["Project"]},
+                "remote_env": {"WANDB_MODE": "offline"},
+                "projects": {"Project": "Project"},
+                "project_catalog": {"Project": {"path": "topic"}},
+                "compute_groups": [{"name": "H200"}],
+                "path_aliases": {"me": "/wrong/project"},
+                "paths": {"remote": "/wrong/project"},
+                "future_account_section": {"enabled": True},
+                "future_scalar": "preserve-me",
+            }
         )
-        global_data: dict[str, object] = {
-            "projects": {"production": "Project One"},
-            "project_catalog": {
-                project.project_id: {
-                    "name": "Project One",
-                    "path": "topic",
-                }
+
+        assert cleaned == {
+            "auth": {"username": "alice", "password": "pw", "unused": "x"},
+            "api": {
+                "base_url": "https://qz.sii.edu.cn",
+                "future_transport": "v3",
             },
+            "proxy": {"requests_http": "http://proxy", "unknown": "x"},
+            "tunnel": {"retries": 5, "retry_pause": 1.5},
+            "defaults": {"shm_size": 64, "project_order": ["Project"]},
+            "remote_env": {"WANDB_MODE": "offline"},
+            "future_account_section": {"enabled": True},
+            "future_scalar": "preserve-me",
         }
-
-        project_alias_by_platform_id, project_catalog = _resolve_project_catalog_aliases(
-            global_data=global_data,
-            projects=[project],
-        )
-
-        assert project_alias_by_platform_id == {project.project_id: "production"}
-        assert project_catalog == {}
-        assert global_data["project_catalog"] == {}
 
     def test_project_catalog_never_falls_back_to_platform_id_key(self) -> None:
         from inspire.cli.commands.init.discover import _populate_project_catalog
@@ -1535,8 +1549,10 @@ class TestInitCommand:
         account_config = self._account_config_path()
         assert account_config.exists()
         account_content = account_config.read_text(encoding="utf-8")
-        assert "[projects]" in account_content
-        assert "[project_catalog" in account_content
+        assert "[projects]" not in account_content
+        assert "[project_catalog" not in account_content
+        assert "[[compute_groups]]" not in account_content
+        assert "[path_aliases]" not in account_content
         assert not self._project_config_path(tmp_path).exists()
 
     def test_discover_replaces_template_username_with_session_login(
@@ -1559,10 +1575,11 @@ class TestInitCommand:
         assert 'base_url = "https://qz.sii.edu.cn"' in account_content
         assert "your_username" not in account_content
 
-    def test_global_scope_discover_writes_account_path_aliases(
+    def test_global_scope_discover_removes_legacy_account_path_aliases(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
     ) -> None:
         from inspire.platform.web.browser_api.files import FileDirectoryInfo
+        import inspire.platform.web.browser_api as browser_api_module
 
         self._setup_discover_mocks(
             monkeypatch,
@@ -1582,21 +1599,40 @@ class TestInitCommand:
         monkeypatch.setenv("INSPIRE_USERNAME", "cached-user")
         monkeypatch.setenv("INSPIRE_BASE_URL", "https://example.invalid")
 
+        def _unexpected_catalog_call(**_kwargs: object) -> object:
+            raise AssertionError("global init must not enumerate live catalogs")
+
+        monkeypatch.setattr(browser_api_module, "list_projects", _unexpected_catalog_call)
+        monkeypatch.setattr(browser_api_module, "list_compute_groups", _unexpected_catalog_call)
+        monkeypatch.setattr(
+            browser_api_module,
+            "list_project_file_directories",
+            _unexpected_catalog_call,
+        )
+        self._account_config_path().write_text(
+            '[auth]\nusername = "cached-user"\n'
+            '[api]\nbase_url = "https://example.invalid"\n'
+            'docker_registry = "registry.invalid"\n'
+            'future_transport = "v3"\n'
+            '[path_aliases]\nme = "/inspire/ssd/project/wrong/user/"\n'
+            '[projects]\nWrong = "Wrong"\n'
+            '[[compute_groups]]\nname = "stale"\n'
+            '[future_account_section]\nenabled = true\n',
+            encoding="utf-8",
+        )
+
         result = CliRunner().invoke(init, ["--force"])
 
         assert result.exit_code == 0, result.output
         assert not self._project_config_path(tmp_path).exists()
         account_content = self._account_config_path().read_text(encoding="utf-8")
-        assert "[path_aliases]" in account_content
-        assert (
-            'me = "/inspire/ssd/project/exploration-topic/tongjingqi-CZXS25110029/"'
-            in account_content
-        )
-        assert 'public = "/inspire/ssd/project/exploration-topic/public/"' in account_content
-        assert (
-            'global-me = "/inspire/ssd/global_user/tongjingqi-CZXS25110029/"'
-            in account_content
-        )
+        assert "[path_aliases]" not in account_content
+        assert "[projects]" not in account_content
+        assert "[[compute_groups]]" not in account_content
+        assert "docker_registry" not in account_content
+        assert 'future_transport = "v3"' in account_content
+        assert "[future_account_section]" in account_content
+        assert "enabled = true" in account_content
 
     def test_project_scope_discover_writes_project_context(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
@@ -1610,8 +1646,8 @@ class TestInitCommand:
 
         assert result.exit_code == 0, result.output
         account_content = self._account_config_path().read_text(encoding="utf-8")
-        assert "[projects]" in account_content
-        assert "[project_catalog" in account_content
+        assert "[projects]" not in account_content
+        assert "[project_catalog" not in account_content
 
         project_config = self._project_config_path(tmp_path)
         assert project_config.exists()
@@ -1648,7 +1684,7 @@ class TestInitCommand:
 
         assert result.exit_code == 0, result.output
         account_content = self._account_config_path().read_text(encoding="utf-8")
-        assert "[path_aliases]" in account_content
+        assert "[path_aliases]" not in account_content
         project_content = self._project_config_path(tmp_path).read_text(encoding="utf-8")
         assert "[context]" in project_content
         assert "[path_aliases]" in project_content

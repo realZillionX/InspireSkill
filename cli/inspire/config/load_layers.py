@@ -137,7 +137,7 @@ def _apply_one_project_file(
         )
         sources["profiles"] = SOURCE_PROJECT
 
-    # Merge project alias maps on top of account-level ones (project wins).
+    # Merge aliases from the repo's shared and account-specific project files.
     if project_aliases:
         merged_projects = dict(config_dict.get("projects", {}))
         merged_projects.update(project_aliases)
