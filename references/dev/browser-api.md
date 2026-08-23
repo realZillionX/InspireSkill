@@ -4,7 +4,7 @@
 >
 > **覆盖两个平台**：启智控制台 `qz.sii.edu.cn` 的接口面（第 1–10 章）和数据广场 `aip.sii.edu.cn`（第 11 章）。两者不同 host、不同 API 风格、不同 Session，只共用同一套 CAS SSO，但都由 CLI 的同一层 Web Session 驱动，所以记在一起。
 >
-> **平台只有 `/api/v2` 一个接口面**：v1 随平台弃用已完全迁移完毕，边界测试把「全树零 `/api/v1` 字面量」钉成不变量，本页其余部分不再提它。
+> **平台只有 `/api/v2` 一个接口面**：v1 随平台弃用已完全迁移完毕，本页其余部分不再提它。
 
 ## 1. 事实源与不变量
 
@@ -21,7 +21,7 @@ Browser API 是启智控制台自己用的接口面：同一台 `qz.sii.edu.cn`�
 
 | 不变量 | 由谁保证 |
 | --- | --- |
-| 平台路径只在 `browser_api/` 内构造 | `test_browser_api_boundary.py`；`_ALLOWED` 两条例外（`job_shell.py` 的实例 PTY、`session/auth.py` 的登录自举），按 AST 判定，注释与 docstring 不算 |
+| 平台 JSON 请求只在 `browser_api/` 内构造 | `job_shell.py` 的实例 PTY 是 WebSocket；`session/auth.py` 的登录自举发生在 Wrapper 可用之前，两者不属于 JSON Action 请求 |
 | 响应解包只有一个入口 | `session/envelope.py` 的 `_v2_result()`，`browser_api/core.py` 再导出 |
 | 本页只收有当前消费者、且可复现的事实 | 未闭合的调查与迁移过程记录不进入 |
 
@@ -920,7 +920,7 @@ POST /api/v2/job?Action=ListJobs
 
 ### 实例 PTY
 
-四条共用控制台里同一个 URL 构造器，参数走 query string，进容器执行 `command -v bash >/dev/null 2>&1 && exec bash || exec sh`，改窗口大小发 `stty columns N rows M`。构造在 [`job_shell.py`](../../cli/inspire/cli/utils/job_shell.py)，是边界测试 `_ALLOWED` 的一条。
+四条共用控制台里同一个 URL 构造器，参数走 query string，进容器执行 `command -v bash >/dev/null 2>&1 && exec bash || exec sh`，改窗口大小发 `stty columns N rows M`。构造在 [`job_shell.py`](../../cli/inspire/cli/utils/job_shell.py)，不属于 JSON Action Wrapper。
 
 | Workload | 路由 | 句柄参数 | 实例参数 |
 | --- | --- | --- | --- |
