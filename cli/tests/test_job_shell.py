@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from click.testing import CliRunner
 
+from inspire.cli.commands.hpc import hpc_commands
 from inspire.cli.commands.job import job_commands
 from inspire.cli.main import main as cli_main
 from inspire.cli.utils import job_shell
@@ -221,6 +222,63 @@ def test_job_shell_command_prompts_for_multiple_instances(monkeypatch) -> None: 
     assert result.exit_code == 0, result.output
     assert captured["instance_name"] == "worker-1"
     assert "Select instance" in result.output
+
+
+def test_hpc_shell_command_passes_live_session_to_instance_fetch(monkeypatch) -> None:  # noqa: ANN001
+    captured = {}
+    session = _FakeSession()
+
+    monkeypatch.setattr(hpc_commands, "get_web_session", lambda: session)
+    monkeypatch.setattr(
+        hpc_commands,
+        "_resolve_hpc_name_in_workspace",
+        lambda *args, **kwargs: "hpc-abc",
+    )
+
+    def fake_fetch(job_id, *, limit, session, show_all):  # noqa: ANN001
+        captured["fetch"] = {
+            "job_id": job_id,
+            "limit": limit,
+            "session": session,
+            "show_all": show_all,
+        }
+        return (
+            [
+                {
+                    "name": "project/hpc-abc-cluster-launcher-0",
+                    "status": "Running",
+                    "component": "launcher",
+                }
+            ],
+            1,
+        )
+
+    monkeypatch.setattr(hpc_commands, "_fetch_hpc_instances", fake_fetch)
+    monkeypatch.setattr(
+        hpc_commands,
+        "open_job_shell",
+        lambda **kwargs: captured.update({"shell": kwargs}) or 0,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["hpc", "shell", "prep-a", "--workspace", "CPU资源空间"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["fetch"] == {
+        "job_id": "hpc-abc",
+        "limit": 200,
+        "session": session,
+        "show_all": True,
+    }
+    assert captured["shell"] == {
+        "job_id": "hpc-abc",
+        "instance_name": "project/hpc-abc-cluster-launcher-0",
+        "session": session,
+        "workload": "hpc",
+    }
+    assert "Opening shell: prep-a / launcher" in result.output
 
 
 def test_job_shell_command_rejects_multiple_selectors() -> None:
