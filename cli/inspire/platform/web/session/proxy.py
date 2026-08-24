@@ -241,6 +241,24 @@ def get_rtunnel_proxy_override(account: str | None = None) -> str | None:
     return proxy
 
 
+def get_websocket_proxy(
+    target_url: str,
+    account: str | None = None,
+) -> str | None:
+    """Return the proxy for one WebSocket target.
+
+    System ``HTTP(S)_PROXY`` values inherit Requests' standard ``NO_PROXY``
+    semantics.  The native WebSocket client cannot delegate that decision to
+    Requests, so it has to apply the same bypass before opening its socket.
+    Explicit Inspire and account-TOML proxy settings remain forced overrides,
+    matching the HTTP client.
+    """
+    proxy, source = resolve_rtunnel_proxy_config(account)
+    if proxy and source == "requests:system_env" and _no_proxy_match(target_url) == "matched":
+        return None
+    return proxy
+
+
 def describe_effective_proxy_config(
     account: str | None = None,
     *,

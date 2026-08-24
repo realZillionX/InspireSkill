@@ -79,8 +79,9 @@ def require_notebook_gpu_model(
         EXIT_GENERAL_ERROR,
         hint=(
             "The GPU model decides SSH vs JupyterTerminal, and it is read over that "
-            "terminal. Retry in a moment; if it persists, restart the notebook with "
-            f"`inspire notebook stop {name}` then `inspire notebook start {name}`."
+            "terminal. Retry with `inspire --debug notebook exec ...` to record whether "
+            "access URL, REST, proxy, or WebSocket setup failed. If the web terminal works, "
+            "check HTTP(S)_PROXY and NO_PROXY before restarting the notebook."
         ),
     )
     raise RuntimeError("unreachable")

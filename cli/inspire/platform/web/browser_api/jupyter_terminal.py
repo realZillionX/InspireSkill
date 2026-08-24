@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import logging
 import re
 import select
 import shlex
@@ -31,6 +32,8 @@ _EXIT_CODE_RE = re.compile(r"^\d+\s")
 # The PTY drops input that arrives faster than it drains, so feed it in chunks.
 _STDIN_CHUNK = 2048
 _STDIN_CHUNK_DELAY_S = 0.05
+
+logger = logging.getLogger(__name__)
 
 
 class _TextWebSocket(Protocol):
@@ -184,6 +187,7 @@ def _jupyter_terminal(
     """
     lab_url = _notebook_jupyter_url(session, notebook_id)
     if not lab_url:
+        logger.debug("JupyterTerminal access URL is empty")
         yield None
         return
 
@@ -191,17 +195,22 @@ def _jupyter_terminal(
     term_name = ""
     base = rtunnel_module._jupyter_server_base(lab_url)
     try:
-        http.get(lab_url, timeout=(5, timeout_s), allow_redirects=True)
+        entrance = http.get(lab_url, timeout=(5, timeout_s), allow_redirects=True)
+        logger.debug("JupyterTerminal entrance GET status=%s", entrance.status_code)
         xsrf = str(http.cookies.get("_xsrf") or "")
+        logger.debug("JupyterTerminal XSRF cookie present=%s", bool(xsrf))
         headers = {"X-XSRFToken": xsrf} if xsrf else {}
         response = http.post(f"{base}api/terminals", headers=headers, timeout=(5, timeout_s))
+        logger.debug("JupyterTerminal create POST status=%s", response.status_code)
         if response.status_code not in (200, 201):
             yield None
             return
         term_name = str(response.json().get("name") or "")
         if not term_name:
+            logger.debug("JupyterTerminal create response omitted the terminal name")
             yield None
             return
+        logger.debug("JupyterTerminal created; opening WebSocket")
         yield _JupyterTerminal(
             lab_url=lab_url,
             name=term_name,
@@ -291,8 +300,16 @@ def _capture_terminal_output(
                     if done_at >= 0 and _EXIT_CODE_RE.match(output[done_at + len(done_prefix) :]):
                         break
     except Exception:
+        logger.debug("JupyterTerminal WebSocket failed", exc_info=True)
         return None
-    return parse_jupyter_exec_output(output, marker=marker)
+    result = parse_jupyter_exec_output(output, marker=marker)
+    if not result.completed:
+        logger.debug(
+            "JupyterTerminal command ended without a completion marker; sent=%s output_chars=%s",
+            sent,
+            len(output),
+        )
+    return result
 
 
 def _jupyter_ws_headers(session: WebSession, ws_url: str) -> dict[str, str]:

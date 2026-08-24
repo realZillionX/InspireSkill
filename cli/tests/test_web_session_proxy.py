@@ -7,6 +7,7 @@ from inspire.platform.web.session.proxy import (
     describe_effective_proxy_config,
     get_playwright_proxy,
     get_rtunnel_proxy_override,
+    get_websocket_proxy,
     redact_proxy_url,
     resolve_requests_proxy_config,
 )
@@ -174,6 +175,27 @@ def test_get_rtunnel_proxy_override_uses_toml(monkeypatch: pytest.MonkeyPatch) -
     )
 
     assert get_rtunnel_proxy_override() == "http://127.0.0.1:7897"
+
+
+def test_websocket_system_proxy_honors_no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("NO_PROXY", ".sii.edu.cn")
+
+    assert get_websocket_proxy("wss://qz.sii.edu.cn/jupyter/notebook/terminal") is None
+    assert (
+        get_websocket_proxy("wss://outside.example/jupyter/notebook/terminal")
+        == "http://127.0.0.1:7897"
+    )
+
+
+def test_websocket_explicit_proxy_ignores_no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INSPIRE_RTUNNEL_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.setenv("NO_PROXY", ".sii.edu.cn")
+
+    assert (
+        get_websocket_proxy("wss://qz.sii.edu.cn/jupyter/notebook/terminal")
+        == "http://127.0.0.1:7897"
+    )
 
 
 def test_describe_effective_proxy_config_reports_shell_env(

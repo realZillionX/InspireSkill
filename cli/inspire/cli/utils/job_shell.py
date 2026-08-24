@@ -25,7 +25,7 @@ from inspire.cli.utils.interactive_console import (
 from inspire.cli.utils.terminal_io import write_stream_output
 from inspire.platform.web.browser_api.core import _get_base_url
 from inspire.platform.web.session import WebSession, get_web_session
-from inspire.platform.web.session.proxy import get_rtunnel_proxy_override
+from inspire.platform.web.session.proxy import get_websocket_proxy
 
 RUNNING_INSTANCE_STATUS = "instance_running"
 CTRL_RIGHT_BRACKET = b"\x1d"
@@ -387,14 +387,14 @@ class _WebSocketClient:
         self.sock = sock
 
     def _create_socket(self, scheme: str, host: str, port: int) -> socket.socket:
-        proxy_url = self._proxy_url(scheme)
+        proxy_url = self._proxy_url(self.url)
         if not proxy_url:
             return socket.create_connection((host, port), timeout=self.timeout)
 
         proxy = urlsplit(proxy_url)
         if proxy.scheme not in {"http", "https"}:
             raise JobShellError(
-                "Job shell websocket proxy only supports HTTP(S) proxies. "
+                "WebSocket proxy only supports HTTP(S) proxies. "
                 f"Configured proxy scheme: {proxy.scheme or 'unknown'}"
             )
         proxy_host = proxy.hostname
@@ -425,9 +425,8 @@ class _WebSocketClient:
         return sock
 
     @staticmethod
-    def _proxy_url(scheme: str) -> str:
-        del scheme
-        return str(get_rtunnel_proxy_override() or "").strip()
+    def _proxy_url(target_url: str) -> str:
+        return str(get_websocket_proxy(target_url) or "").strip()
 
     @staticmethod
     def _read_http_response(sock: socket.socket | ssl.SSLSocket) -> tuple[str, bytes]:

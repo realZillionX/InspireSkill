@@ -272,6 +272,32 @@ def test_capture_reports_unfinished_when_the_marker_never_arrives(monkeypatch) -
     assert result.returncode == jt.MISSING_MARKER_RETURN_CODE
 
 
+def test_capture_logs_websocket_failure(monkeypatch, caplog) -> None:  # noqa: ANN001
+    import inspire.cli.utils.job_shell as job_shell
+
+    class _BrokenWebSocket:
+        def __enter__(self):
+            raise ConnectionRefusedError("proxy refused connection")
+
+        def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+            return False
+
+    monkeypatch.setattr(job_shell, "_WebSocketClient", lambda *_a, **_k: _BrokenWebSocket())
+
+    with caplog.at_level("DEBUG", logger=jt.__name__):
+        result = jt._capture_terminal_output(
+            ws_url="wss://nb.example.com/terminals/websocket/1",
+            session=SimpleNamespace(storage_state={"cookies": []}, cookies={}),
+            stdin_data="echo hi\r",
+            timeout_ms=5000,
+            marker="__INSPIRE_DONE_abc__",
+        )
+
+    assert result is None
+    assert "JupyterTerminal WebSocket failed" in caplog.text
+    assert "ConnectionRefusedError" in caplog.text
+
+
 def test_command_capture_runs_without_playwright(monkeypatch) -> None:  # noqa: ANN001
     """The whole point: `notebook exec` no longer starts a browser."""
     monkeypatch.setitem(sys.modules, "playwright", None)
