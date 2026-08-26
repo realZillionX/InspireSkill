@@ -1,5 +1,21 @@
 # Changelog
 
+## v7.1.4
+
+### 修复
+
+- **受限 Notebook 的 JupyterTerminal 预检会用 Live 列表修正过期的名称缓存。** 同名 Notebook 被删除后重建时，旧句柄可能只表现为空 access URL 或通用 WebSocket 失败；现在 GPU 探针不通或即将使用 H100/H200 JupyterTerminal 时，CLI 会在发送用户命令前重新解析当前实例并更新缓存。`--ignore-target-cache` 也会从首次 Transport 预检起跳过 Remembered Target 和名称缓存。持续失败时，根级 `--debug` 会区分 access URL、Jupyter GET、XSRF、Terminal POST、代理、WebSocket 和 completion marker，不再把手动刷新缓存当作恢复步骤。
+
+- **JupyterTerminal WebSocket 对系统 `HTTP(S)_PROXY` 遵循 `NO_PROXY`。** 原生 WebSocket 客户端现在对系统环境代理应用与 Requests 相同的绕过判断，平台域命中 `NO_PROXY` 时直接连接；显式 Inspire 代理和账号 TOML 代理仍按强制覆盖处理。终端创建与命令捕获同时补充分阶段 debug 日志，未收到 completion marker 时会给出可执行的诊断提示。
+
+- **`hpc shell` 恢复实例查询与交互连接。** 只读 HPC 操作包装器会把当前 Live Session 传给回调；实例列表不再因旧的一参数回调签名直接失败，默认 launcher 与显式 `--instance` 选择重新可用。
+
+### 维护
+
+- 删除只锁定旧实现细节、已经失去有效消费者的回归文件；Browser API 参考改为描述当前请求边界，不再把已删除的测试文件写成合同来源。
+
+- 发布说明和资源参考收敛为可复用的长期事实，移除账号特定的验证背景并统一中文排版；CLI 行为与公开命令合同不变。
+
 ## v7.1.3
 
 ### 性能
@@ -27,8 +43,6 @@
 - **HPC Project 解析不再重复列目录。** `hpc create` 原先按名字列一次 Project 得到 ID，计算优先级时又按同一 Workspace 列一次以找 `priority_name`。现在同一份 Live `ProjectInfo` 同时提供两者，每次 create / dry-run 少一个完整 `ListProjects`；Batch 的命令级快照语义保持不变。
 
 ### 修复
-
-- **Notebook JupyterTerminal 不再把旧实例缓存的偶然失效当作用户应手动处理的恢复步骤。** 名称缓存里若仍是删除前的 Notebook 句柄，`GetNotebookAccessUrl`、Terminal REST 或 WebSocket 可能只表现成统一的“无响应”；此前 Issue #76 里一次 `--ignore-target-cache` 后恢复被误读成修复，但该选项实际只影响 GPU 预检之后的 SSH Connection 选择，根本没有进入 JupyterTransport 的名称解析。现在 GPU 探针不通或即将使用 H100/H200 JupyterTerminal 时，Transport 预检会用 Live Notebook 列表对账并自动替换旧句柄，且只在发送用户命令之前的只读阶段恢复；`--ignore-target-cache` 也真正从首次预检起强制 Live。持续失败的错误明确说明无需手动刷新缓存，并指向根级 `--debug` 中的 access URL、Jupyter GET、XSRF、Terminal POST、代理、WebSocket 与 completion-marker 分阶段诊断。
 
 - **CI 与发布工作流不再依赖已退役的 Node.js 20 Action 运行时。** GitHub Hosted Runner 已开始把旧 Action 强制转到 Node.js 24 并产生弃用警告；`checkout`、`setup-python`、`setup-uv` 以及发布产物上传/下载分别升级到当前 Node.js 24 主版本，工作流默认权限同时收敛为只读仓库内容，PyPI 发布 Job 只额外保留 OIDC 所需的 `id-token: write`。
 
