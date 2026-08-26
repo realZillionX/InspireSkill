@@ -84,7 +84,7 @@
 
   名字边界没有变：批量命令同样只收名字，内部解析成 id 再批量查。一个解析不出来的名字**不再终止整条命令**——能答的照常打印，答不了的以 `Unresolved: <名字>: <原因>` 单独列出（`--json` 下是 `unresolved` 数组，刻意不叫 `not_found`：一个匹配到四个任务的名字并不是「不存在」，两者需要不同的处置），退出码仍报告答案是残缺的。`--pick` 与 `--instance` 只对单个名字有意义，多名字时直接拒绝而不是猜。`hpc status` 的批量路径改为**列一次 Workspace 再本地匹配**，因为单名路径走的 `resolve_by_name` 在名字对不上时会直接结束进程——对一个名字是对的，对二十个不是。
 
-  复审又堵上两个口子。其一，事件路径的「not found 剔除重试」写的是 `except ValueError`，而 `TransientAPIError` 恰好是 `ValueError` 的子类——一次 5xx 的响应体里但凡带上 "not found" 三个词，限流就会被翻译成「这批任务都不存在了」；现在瞬态错误在嗅探之前显式放行，平台没回答就是没回答。其二，hpc 的本地名字匹配原来一次 `page_size=10000` 列完就算，而网关对超过 5000 的 page_size 是**静默截断**（这条就记在本文档里），列表被截掉的那部分名字全都会被答成「没有这个任务」——一个错答案而不是一个报错；现在按返回的 `total` 翻页直到列完，翻页间移动的行按 job_id 去重，不会读成两个同名任务。
+  复审又堵上两个口子。其一，事件路径的「not found 剔除重试」写的是 `except ValueError`，而 `TransientAPIError` 恰好是 `ValueError` 的子类——一次 5xx 的响应体里但凡带上 `not found` 三个词，限流就会被翻译成「这批任务都不存在了」；现在瞬态错误在嗅探之前显式放行，平台没回答就是没回答。其二，hpc 的本地名字匹配原来一次 `page_size=10000` 列完就算，而网关对超过 5000 的 page_size 是**静默截断**（这条就记在本文档里），列表被截掉的那部分名字全都会被答成「没有这个任务」——一个错答案而不是一个报错；现在按返回的 `total` 翻页直到列完，翻页间移动的行按 job_id 去重，不会读成两个同名任务。
 
   多任务事件合并成一条时间线时新增 `Job` 列，因为跨任务的时间线不标出处就读不了——这与 `instance` 列存在的理由是同一条。
 
@@ -92,7 +92,7 @@
 
 - **`GetTaskMetricBatch` 复查过了，结论是继续不用它，指标维持逐个扇出。** 运维给的批量清单里包含这个 Action，但它答的不是同一份数据：在 `train` 路由上拿 4 个运行中的任务、同一时间窗逐指标对照，`disk_io_read` / `disk_io_write` **返回 0 个样本而单数版同窗口有 61 个点**（4/4 复现），两个 `network_tcp_ip_io_*` 直接 `InternalError`，并且所有 group **一律没有 `group_name`**，多 Pod 任务的逐 Pod 拆分就此丢失。8 个指标坏 4 个。
 
-  **剩下那 4 个也不是同一份数**——这点上一轮没查，因为只比了样本数没有逐点比数值。取一个已经结束的固定窗口，两个端点各自都是确定的（各查两次逐字节相同），但互相对不上：同一时间戳单数版 `0.20625`、Batch `0.5`。差在聚合样本数上，把全部返回值的公分母算出来，**单数版恒为 Batch 的 2 倍**（4 卡 800:400、8 卡 1600:800，即 `200×卡数` 对 `100×卡数`，4 个任务全部符合）。长期均值大致对得上，单点能差到三倍。所以它不是「批量版少了个字段」而是**另一套聚合**：即便只取那 4 个能跑的指标，画出来的曲线也不是控制台上那一条。它的响应形状也不一样——`task_metrics[].time_series_metric_groups`，而不是单数版顶层的 `time_seris_metric_groups`——这正是它容易被读成「空」而不是「坏」的原因，上一轮调研就是在这里读错了键。控制台自己从不调用这个 Action。顺带复核了单数版 `GetTaskMetric` 一次只认第一个 `metric_types` 的老结论：传 2 / 4 / 8 个类型各试一次，返回的始终只有第一个，扇出确实省不掉。结论写进了 `get_resource_metrics_by_time` 的 docstring。
+  **剩下那 4 个也不是同一份数**——这点上一轮没查，因为只比了样本数没有逐点比数值。取一个已经结束的固定窗口，两个端点各自都是确定的（各查两次逐字节相同），但互相对不上：同一时间戳单数版 `0.20625`、Batch `0.5`。差在聚合样本数上，把全部返回值的公分母算出来，**单数版恒为 Batch 的 2 倍**（4 卡 800∶400、8 卡 1600∶800，即 `200×卡数` 对 `100×卡数`，4 个任务全部符合）。长期均值大致对得上，单点能差到三倍。所以它不是「批量版少了个字段」而是**另一套聚合**：即便只取那 4 个能跑的指标，画出来的曲线也不是控制台上那一条。它的响应形状也不一样——`task_metrics[].time_series_metric_groups`，而不是单数版顶层的 `time_seris_metric_groups`——这正是它容易被读成「空」而不是「坏」的原因，上一轮调研就是在这里读错了键。控制台自己从不调用这个 Action。顺带复核了单数版 `GetTaskMetric` 一次只认第一个 `metric_types` 的老结论：传 2 / 4 / 8 个类型各试一次，返回的始终只有第一个，扇出确实省不掉。结论写进了 `get_resource_metrics_by_time` 的 docstring。
 
 - **`/api/v1` 从这个客户端里彻底消失了。** 最后三处——登录握手的 `user/detail`、登录时发现 Workspace 的 `user/routes/default`、Notebook 的 `notebook/lab/{id}`——留着的理由此前写的是「Session 自举时还没有 Session 可供 v2 用」和「反向代理不是 Action 能表达的东西」。三条实测全部不成立：
 
@@ -170,7 +170,7 @@
 
 - **PyPI 响应被截断会让整个检查带着 traceback 崩掉**，而不是回落到 GitHub 上的 `pyproject.toml`。`http.client.IncompleteRead` 是 `HTTPException` 而**不是** `OSError`，所以它穿过了 `fetch_latest_version_info` 那个 `except (URLError, TimeoutError, OSError, JSONDecodeError)`。本机 `~/Library/Logs/inspire-skill-update-check.log` 里就留着这么一次崩溃。两个分支的 except 都补上 `http.client.HTTPException`，回落链因此真的能用——模块开头承诺的「失败时完全无副作用」现在对前台的 `update --check` 也成立，此前只有后台那条路径靠外层的兜底 `except Exception` 撑着。
 
-- **13 条多行示例在 `--help` 里被压成了一整行。** 根因是 docstring 里的续行写成了单个 `\`——在非 raw 字符串里那是 **Python 的续行符**，两行在 Click 拿到之前就已经被拼掉，只留下续行处那串缩进空格。渲染出来是 `--workspace 分布式训练空间           --project <project>`，一行拖到两百多字符。涉及 `inspire`(根)、`job create`、`notebook create`、`hpc create`、`serving create`。写法本来就有正确的样板：`ray create` 用的是 `\\`，这批照它改。
+- **13 条多行示例在 `--help` 里被压成了一整行。** 根因是 docstring 里的续行写成了单个 `\`——在非 raw 字符串里那是 **Python 的续行符**，两行在 Click 拿到之前就已经被拼掉，只留下续行处那串缩进空格。渲染出来是 `--workspace 分布式训练空间           --project <project>`，一行拖到两百多字符。涉及 `inspire`（根）、`job create`、`notebook create`、`hpc create`、`serving create`。写法本来就有正确的样板：`ray create` 用的是 `\\`，这批照它改。
 
   **`account add` 是另一个原因，症状相同**：它的 `\\` 一直是对的，但两条示例之间空了一行——而 Click 的 `\b` 只保护**紧跟其后的那一个段落**，空行之后就是新段落，于是第二条被照常重排。删掉那个空行即可。
 
@@ -202,7 +202,7 @@
 
   **压平反而更小**（-13.5%），因为被后面层覆盖或删掉的内容不再随镜像走。而多出来的 22 秒（33.4 s → 55.5 s）落在镜像的 `CREATING` 上，**不落在 Notebook 上**——两次都在 t≈33 秒把容器还回来，所以这个开关不会让 Notebook 多停一秒，命令的提示也照这个说。压平出来的镜像另建了一台 Notebook 确认能起，验完连镜像带 Notebook 都已删除。
 
-  同一个 Action 上还查到 `accessible`(int32) 和 `support_brand_list` 也在合同里。`accessible` 只有两档（个人可见 / 公开可见），顶不掉 CLI 三档可见性存完再调 `image.UpdateImage` 那一步，因此没有顺手换过去。
+  同一个 Action 上还查到 `accessible`（int32）和 `support_brand_list` 也在合同里。`accessible` 只有两档（个人可见 / 公开可见），顶不掉 CLI 三档可见性存完再调 `image.UpdateImage` 那一步，因此没有顺手换过去。
 
   另有一个同名易混的 `flatten_mode`（`FLATTEN_OFF` / `FLATTEN_ON` / `FLATTEN_AUTO`）在 `CreateNotebook` 的合同里，管的是「停机自动保存时压平」这条独立链路。**控制台里那组单选是 `disabled` 的**，平台侧没放开，所以刻意不接，只把结论记进 Action 表。
 
@@ -553,7 +553,7 @@
 
 ### 维护
 
-- **`inspire resources usage` 不接受 `--workspace all`**，传了直接报 `--workspace requires one workspace name for this command.`。跨 Workspace 聚合会把同一用户拆成多条「(空间, 人)」记录，而不是给出全局用户排名；全局输出上限还会偏向最先枚举的空间。因此命令只接受一个 Workspace，保证排序和截断语义与展示范围一致。
+- **`inspire resources usage` 不接受 `--workspace all`**，传了直接报 `--workspace requires one workspace name for this command.`。跨 Workspace 聚合会把同一用户拆成多条「（空间，人）」记录，而不是给出全局用户排名；全局输出上限还会偏向最先枚举的空间。因此命令只接受一个 Workspace，保证排序和截断语义与展示范围一致。
 
   没有改成真正的跨空间聚合，是因为聚合完也没有对应的决定：配额和调度都按 Workspace 走，这个命令服务的三个动作（等、去找人要、换个地方提交）也都是。跨 Workspace 找地方本来就是 `resources availability` 和 `resources nodes` 的活，它们逐空间一行、拼接是诚实的。
 
