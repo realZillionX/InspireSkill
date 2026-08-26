@@ -17,6 +17,7 @@ from inspire.cli.context import (
     EXIT_CONFIG_ERROR,
     EXIT_SUCCESS,
     EXIT_TIMEOUT,
+    EXIT_VALIDATION_ERROR,
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
@@ -584,7 +585,8 @@ def exec_command(
     An SSH-capable notebook needs its connection cached first — run `inspire
     notebook connection refresh <name> --workspace <workspace>` once after
     creating it. Restricted H100/H200 notebooks need no setup: they run through
-    JupyterTerminal.
+    JupyterTerminal, where exec rejects --stdin and local piped/file input.
+    Stage input under /inspire/... and read it from the remote command instead.
 
     \b
     Examples:
@@ -640,6 +642,20 @@ def exec_command(
     )
 
     if policy.exec_transport == "jupyter":
+        if stdin_mode or _should_auto_passthrough_stdin():
+            sys.exit(
+                _emit_error(
+                    ctx,
+                    "UnsupportedStdinTransport",
+                    "JupyterTerminal exec does not support stdin.",
+                    EXIT_VALIDATION_ERROR,
+                    hint=(
+                        "Restricted H100/H200 notebooks reject --stdin and local piped/file "
+                        "input. Put the input on /inspire/... and read it from the remote "
+                        "command, or use notebook shell for an interactive TTY session."
+                    ),
+                )
+            )
         sys.exit(
             try_exec_via_jupyter_terminal(
                 ctx,

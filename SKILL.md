@@ -22,6 +22,8 @@ description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire C
 
 Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和资源可用性的事实源；本地缓存只是加速层，可用 `inspire cache status|refresh|clear` 管理，三条命令都接受 `--resource <kind>` 只针对一类，不能当作资源事实；`refresh` 不接受裸形式，必须用 `--resource` / `--workspace` / `--name` 说明刷哪一块，而且正常情况下不需要跑它。CLI 对 Agent 的稳定资源身份只有 Name 和 Alias；同名对象用 Workspace、可读候选和 `--pick` 消歧。
 
+受限 H100/H200 Notebook 的 JupyterTerminal `exec` 不支持 stdin。Agent 不得对它使用 `--stdin` / `--bash-stdin`，也不得从本地用管道或 `< file` 向 `inspire notebook exec` 喂输入；尚未确认 Transport 时同样不要先试。CLI 会在 Transport 预检后、发送用户命令前拒绝这些组合。需要脚本或输入文件时，先把它放到 `/inspire/...`，再让远端命令按路径读取；需要人工交互时使用带 TTY 的 `inspire notebook shell`，不要把 `shell` 当作脚本输入通道。SSH Notebook 的 `exec --stdin` 不受此限制。
+
 发现类列表和 Batch 结果默认最多展示 20 项，用命令自身的 `--limit/-n` 收窄或 `--all` 显式展开；Job 日志默认有行数和字符预算，截断时会给出已展示数量和继续获取完整结果的选项。需要结构化输出时使用根级 `inspire --json ...`，输出始终是单一 JSON 文档。
 
 Workspace 判断：

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### 修复
+
+- **受限 Notebook 的 JupyterTerminal `exec` 明确拒绝 stdin。** 该 Transport 的内部控制脚本与用户命令共用 stdin，读取输入会吞掉完成标记并最终超时；现在显式 `--stdin` / `--bash-stdin` 和本地管道、文件重定向会在发送用户命令前返回校验错误。普通 JupyterTerminal `exec`、交互式 `notebook shell` 和 SSH Notebook 的 stdin 行为不变；Agent 指引同步要求经 `/inspire/...` 传递脚本或数据。
+
 ## v7.1.4
 
 ### 修复
