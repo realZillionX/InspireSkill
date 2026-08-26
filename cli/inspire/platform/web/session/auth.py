@@ -704,6 +704,205 @@ def _cookie_to_storage_entry(cookie: Cookie) -> dict[str, Any]:
     }
 
 
+def _has_sso_renewal_state(session: WebSession) -> bool:
+    """Whether *session* carries cookies that can renew Qizhi without a password.
+
+    The short-lived ``inspire-session`` cookie is the thing the API has just
+    refused.  CAS and Keycloak cookies live on their own hosts and commonly
+    outlive it; following the normal login redirect with those cookies can
+    mint a new Qizhi session without submitting credentials at all.
+    """
+    cookies = session.storage_state.get("cookies") if session.storage_state else None
+    for cookie in cookies or []:
+        name = str(cookie.get("name") or "").upper()
+        domain = str(cookie.get("domain") or "").lstrip(".").casefold()
+        if name in {"CASTGC", "KEYCLOAK_IDENTITY", "KEYCLOAK_SESSION"}:
+            return True
+        if domain.startswith("cas.") or "keycloak" in domain:
+            return True
+    return False
+
+
+def _seed_requests_cookies(http: Any, session: WebSession) -> None:
+    """Copy Playwright storage cookies into a Requests cookie jar."""
+    cookies = session.storage_state.get("cookies") if session.storage_state else None
+    for cookie in cookies or []:
+        name = str(cookie.get("name") or "")
+        value = str(cookie.get("value") or "")
+        if not name:
+            continue
+        kwargs: dict[str, Any] = {
+            "path": str(cookie.get("path") or "/"),
+            "secure": bool(cookie.get("secure", False)),
+        }
+        domain = str(cookie.get("domain") or "").strip()
+        if domain:
+            kwargs["domain"] = domain
+        expires = cookie.get("expires")
+        if isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires > 0:
+            kwargs["expires"] = int(expires)
+        http.cookies.set(name, value, **kwargs)
+
+
+def renew_web_session_without_credentials(session: WebSession) -> WebSession | None:
+    """Try to renew a refused Qizhi session through existing SSO cookies.
+
+    ``None`` has one narrow meaning: the cached CAS/Keycloak login is also
+    gone, so the caller may enter the existing single credential-submission
+    path.  Transport failures and unexpected platform replies propagate; they
+    are not evidence that submitting a password would help.
+    """
+    if not _has_sso_renewal_state(session):
+        return None
+
+    import requests
+    import urllib3
+
+    from .proxy import resolve_requests_proxy_config
+
+    account = session.account
+    config = _load_runtime_config(account)
+    base_url = str(session.base_url or config.base_url or DEFAULT_BASE_URL).rstrip("/")
+    username = str(session.login_username or config.username or "").strip()
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    proxies, proxy_source = resolve_requests_proxy_config(account=account)
+    logger.debug(
+        "SSO session renewal using proxy_source=%s proxies=%s",
+        proxy_source,
+        _describe_proxy_config(proxies),
+    )
+    http = requests.Session()
+    if proxy_source == "system_env":
+        http.trust_env = True
+    else:
+        http.trust_env = False
+        http.proxies.update(proxies)
+    http.verify = False
+    http.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) InspireSkill",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+    )
+    _seed_requests_cookies(http, session)
+
+    try:
+        login_resp = http.get(f"{base_url}/login", timeout=30, allow_redirects=True)
+        login_resp.raise_for_status()
+        cas_login_url = _decode_keycloak_login_url(login_resp.text, login_resp.url)
+        if cas_login_url:
+            login_resp = http.get(cas_login_url, timeout=30, allow_redirects=True)
+            login_resp.raise_for_status()
+
+        # Reaching the password form is the decisive "SSO is gone" answer.
+        # Parsing it is safe; filling or submitting it is deliberately left to
+        # the guarded credential path below the caller.
+        try:
+            _extract_login_form(login_resp.text, login_resp.url)
+        except ValueError:
+            pass
+        else:
+            logger.debug("Cached SSO state reached the CAS password form.")
+            return None
+
+        api_headers = {"Accept": "application/json", "Referer": f"{base_url}/login"}
+        user_detail_resp = http.post(
+            f"{base_url}{USER_DETAIL_PATH}",
+            headers=api_headers,
+            json={},
+            timeout=15,
+            allow_redirects=False,
+        )
+        if user_detail_resp.status_code == 401 or 300 <= user_detail_resp.status_code < 400:
+            logger.debug("Cached SSO state is no longer authenticated.")
+            return None
+        if user_detail_resp.status_code >= 400:
+            raise ValueError(
+                "SSO session renewal failed before any credentials were submitted: "
+                f"API returned {user_detail_resp.status_code}."
+            )
+        try:
+            detail = _v2_result(user_detail_resp.json())
+        except Exception as exc:
+            raise ValueError(
+                "SSO session renewal returned an invalid user response before any "
+                "credentials were submitted."
+            ) from exc
+        if not isinstance(detail, dict) or not detail:
+            raise ValueError(
+                "SSO session renewal returned no user identity before any credentials "
+                "were submitted."
+            )
+        previous_detail = session.user_detail if isinstance(session.user_detail, dict) else {}
+        previous_user_id = str(
+            previous_detail.get("id") or previous_detail.get("user_id") or ""
+        ).strip()
+        renewed_user_id = str(detail.get("id") or detail.get("user_id") or "").strip()
+        if previous_user_id and renewed_user_id != previous_user_id:
+            raise ValueError(
+                "SSO session renewal resolved a different platform user; no credentials "
+                "were submitted and the cached account session was not replaced."
+            )
+
+        all_workspace_ids: list[str] = []
+        all_workspace_names: dict[str, str] = {}
+        all_workspace_fair_scheduling: dict[str, bool] = {}
+        try:
+            routes_resp = http.post(
+                f"{base_url}{USER_ROUTES_PATH}",
+                headers=api_headers,
+                json=BOOTSTRAP_ROUTES_BODY,
+                timeout=15,
+            )
+            if routes_resp.status_code == 200:
+                route_ids, route_names, route_fair_scheduling = _workspace_routes_from_payload(
+                    routes_resp.json()
+                )
+                _merge_workspace_routes(
+                    all_workspace_ids,
+                    all_workspace_names,
+                    all_workspace_fair_scheduling,
+                    route_ids,
+                    route_names,
+                    route_fair_scheduling,
+                )
+        except Exception:
+            pass
+
+        storage_state = {
+            "cookies": [_cookie_to_storage_entry(cookie) for cookie in http.cookies],
+            "origins": [],
+        }
+        cookie_dict = {cookie.name: cookie.value for cookie in http.cookies}
+        renewed = WebSession(
+            storage_state=storage_state,
+            cookies=cookie_dict,
+            workspace_id=(
+                all_workspace_ids[0]
+                if all_workspace_ids
+                else session.workspace_id or DEFAULT_WORKSPACE_ID
+            ),
+            login_username=username or session.login_username,
+            base_url=base_url,
+            user_detail=detail,
+            all_workspace_ids=all_workspace_ids or session.all_workspace_ids,
+            all_workspace_names=all_workspace_names or session.all_workspace_names,
+            all_workspace_fair_scheduling=(
+                all_workspace_fair_scheduling or session.all_workspace_fair_scheduling
+            ),
+            account=account,
+            created_at=time.time(),
+        )
+        _persist(renewed, account=account)
+        return renewed
+    finally:
+        try:
+            http.close()
+        except Exception:
+            pass
+
+
 def _login_with_cas_requests(
     username: str,
     password: str,
