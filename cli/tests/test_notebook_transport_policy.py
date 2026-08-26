@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import pytest
 from click.testing import CliRunner
 
+from inspire.cli.commands.notebook import remote_exec as remote_exec_module
 from inspire.cli.commands.notebook import transport as transport_module
+from inspire.cli.context import EXIT_TIMEOUT
 from inspire.cli.main import main as cli_main
 
 
@@ -94,6 +96,7 @@ def test_preflight_blocks_ssh_when_the_machine_reports_h200(monkeypatch) -> None
             "session": session,
         }
     ]
+    assert [call["require_live"] for call in _resolved] == [False, True]
 
 
 def test_preflight_allows_ssh_when_the_machine_has_no_gpu(monkeypatch) -> None:  # noqa: ANN001
@@ -176,6 +179,97 @@ def test_preflight_stops_when_a_running_notebook_stays_silent(monkeypatch, capsy
     assert exc.value.code != 0
     errors = capsys.readouterr().err
     assert "JupyterTerminal did not respond" in errors
+    assert "already re-resolved this notebook name from the live platform" in errors
+    assert "manually refreshing caches should not be necessary" in errors
+
+
+def test_preflight_replaces_stale_cached_notebook_before_jupyter(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    session = SimpleNamespace(account="primary")
+    resolved: list[bool] = []
+    probes: list[str] = []
+
+    monkeypatch.setattr(transport_module, "require_web_session", lambda *_a, **_k: session)
+    monkeypatch.setattr(transport_module, "get_base_url", lambda **_k: "https://example.test")
+
+    def fake_resolve(*_args, **kwargs):  # noqa: ANN202
+        require_live = bool(kwargs["require_live"])
+        resolved.append(require_live)
+        if require_live:
+            return "nb-current", "ws-123", "训练区-H100"
+        return "nb-obsolete", "ws-123", "训练区-H100"
+
+    def fake_probe(**kwargs):  # noqa: ANN202
+        notebook_id = str(kwargs["notebook_id"])
+        probes.append(notebook_id)
+        return "H100" if notebook_id == "nb-current" else None
+
+    monkeypatch.setattr(transport_module, "_resolve_notebook_target", fake_resolve)
+    monkeypatch.setattr(transport_module, "notebook_gpu_model", fake_probe)
+
+    policy = transport_module.preflight_notebook_transport_policy(
+        SimpleNamespace(json_output=False),
+        notebook="gpu-box",
+        workspace=None,
+    )
+
+    assert policy.notebook_id == "nb-current"
+    assert policy.exec_transport == "jupyter"
+    assert resolved == [False, True]
+    assert probes == ["nb-obsolete", "nb-current"]
+
+
+def test_preflight_ignore_target_cache_starts_with_live_notebook_identity(
+    monkeypatch,
+) -> None:  # noqa: ANN001
+    session = SimpleNamespace(account="primary")
+    resolved, _probes, _details = _patch_preflight(
+        monkeypatch,
+        gpu_model="H100",
+        session=session,
+    )
+
+    policy = transport_module.preflight_notebook_transport_policy(
+        SimpleNamespace(json_output=False),
+        notebook="gpu-box",
+        workspace=None,
+        ignore_target_cache=True,
+    )
+
+    assert policy.notebook_id == "nb-123"
+    assert [call["require_live"] for call in resolved] == [True]
+
+
+def test_jupyter_exec_missing_completion_marker_has_actionable_hint(
+    monkeypatch,
+    capsys,
+) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        remote_exec_module.browser_api_module,
+        "run_command_capture_in_notebook",
+        lambda **_kwargs: SimpleNamespace(
+            returncode=124,
+            output="",
+            completed=False,
+        ),
+    )
+
+    code = remote_exec_module.try_exec_via_jupyter_terminal(
+        SimpleNamespace(json_output=False),
+        notebook_id="nb-current",
+        command="hostname",
+        session=SimpleNamespace(),
+        remote_cwd=None,
+        env_exports="",
+        timeout_s=30,
+    )
+
+    assert code == EXIT_TIMEOUT
+    errors = capsys.readouterr().err
+    assert "did not establish or complete the remote command" in errors
+    assert "inspire --debug notebook exec" in errors
+    assert "manual cache refresh should not be needed" in errors
 
 
 def test_policy_blocks_ssh_for_restricted_gpu() -> None:

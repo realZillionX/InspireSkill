@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from inspire.cli.context import EXIT_GENERAL_ERROR, Context
 from inspire.cli.utils.errors import emit_error, exit_with_error
@@ -28,9 +28,10 @@ NotebookExecTransport = Literal["ssh", "jupyter"]
 SSH_RESTRICTED_GPU_MODELS: tuple[str, ...] = ("H100", "H200")
 
 _RUNNING_NOTEBOOK_STATUS = "RUNNING"
+_UNPROBED_GPU_MODEL = object()
 
 
-def gpu_model_supports_ssh(gpu_model: str) -> bool:
+def gpu_model_supports_ssh(gpu_model: str | None) -> bool:
     """Whether a machine reporting this GPU model can be reached over SSH/rtunnel."""
     upper = str(gpu_model or "").upper()
     return not any(model in upper for model in SSH_RESTRICTED_GPU_MODELS)
@@ -43,6 +44,7 @@ def require_notebook_gpu_model(
     notebook_id: str,
     compute_group: str,
     session: WebSession | None,
+    probed_gpu_model: str | None | object = _UNPROBED_GPU_MODEL,
 ) -> str:
     """Read the machine's GPU model, or exit explaining why it stayed silent.
 
@@ -51,10 +53,14 @@ def require_notebook_gpu_model(
     guess a transport for it, say what is actually wrong -- almost always a
     notebook that is not running -- and stop.
     """
-    gpu_model = notebook_gpu_model(
-        notebook_id=notebook_id,
-        compute_group=compute_group,
-        session=session,
+    gpu_model = (
+        notebook_gpu_model(
+            notebook_id=notebook_id,
+            compute_group=compute_group,
+            session=session,
+        )
+        if probed_gpu_model is _UNPROBED_GPU_MODEL
+        else cast(str | None, probed_gpu_model)
     )
     if gpu_model is not None:
         return gpu_model
@@ -78,10 +84,12 @@ def require_notebook_gpu_model(
         f"Cannot reach notebook {name}: its JupyterTerminal did not respond.",
         EXIT_GENERAL_ERROR,
         hint=(
-            "The GPU model decides SSH vs JupyterTerminal, and it is read over that "
-            "terminal. Retry with `inspire --debug notebook exec ...` to record whether "
-            "access URL, REST, proxy, or WebSocket setup failed. If the web terminal works, "
-            "check HTTP(S)_PROXY and NO_PROXY before restarting the notebook."
+            "The CLI already re-resolved this notebook name from the live platform before "
+            "reporting the failure; manually refreshing caches should not be necessary. "
+            "Retry the same operation with root `--debug` (for example, "
+            "`inspire --debug notebook exec ...`) to distinguish access URL, Jupyter GET, "
+            "XSRF, Terminal POST, proxy, WebSocket, and completion-marker failures. If the "
+            "web terminal works, check HTTP(S)_PROXY and NO_PROXY before restarting the notebook."
         ),
     )
     raise RuntimeError("unreachable")
@@ -152,6 +160,7 @@ def preflight_notebook_transport_policy(
     workspace: str | None,
     account: str | None = None,
     pick: int | None = None,
+    ignore_target_cache: bool = False,
 ) -> NotebookTransportPolicy:
     from inspire.config.workspaces import resolve_workspace_query_scope
 
@@ -167,15 +176,22 @@ def preflight_notebook_transport_policy(
         )
     else:
         workspace_ids = None
-    notebook_id, _workspace_id, compute_group = _resolve_notebook_target(
-        ctx,
-        session=session,
-        base_url=get_base_url(account=account),
-        identifier=notebook,
-        json_output=ctx.json_output,
-        workspace_ids=workspace_ids,
-        pick=pick,
-    )
+    base_url = get_base_url(account=account)
+
+    def _resolve(*, require_live: bool) -> tuple[str, str | None, str]:
+        return _resolve_notebook_target(
+            ctx,
+            session=session,
+            base_url=base_url,
+            identifier=notebook,
+            json_output=ctx.json_output,
+            workspace_ids=workspace_ids,
+            pick=pick,
+            require_live=require_live,
+        )
+
+    resolved_live = bool(ignore_target_cache)
+    notebook_id, _workspace_id, compute_group = _resolve(require_live=resolved_live)
     if not compute_group:
         # The group is the probe's cache key, and name resolution normally hands
         # it back for free from the identity cache or the list response it
@@ -186,6 +202,35 @@ def preflight_notebook_transport_policy(
             session=session,
         )
         compute_group = _notebook_compute_group(detail)
+    gpu_model = notebook_gpu_model(
+        notebook_id=notebook_id,
+        compute_group=compute_group,
+        session=session,
+    )
+
+    # A stale name -> handle mapping is harmless for most reads because their
+    # operation wrapper retries explicit ResourceNotFound responses. Terminal
+    # setup is different: an obsolete handle can collapse into an empty access
+    # URL or a generic WebSocket failure. Before choosing or using the Jupyter
+    # transport, make the live Notebook list authoritative and replace the
+    # cached identity. This is a read-only point, so retrying cannot duplicate a
+    # user's remote command.
+    if not resolved_live and (gpu_model is None or not gpu_model_supports_ssh(gpu_model)):
+        cached_notebook_id = notebook_id
+        cached_compute_group = compute_group
+        notebook_id, _workspace_id, compute_group = _resolve(require_live=True)
+        resolved_live = True
+        if (notebook_id, compute_group) != (cached_notebook_id, cached_compute_group):
+            logger.debug(
+                "Notebook transport target changed during live cache validation; "
+                "using the current platform instance"
+            )
+            gpu_model = notebook_gpu_model(
+                notebook_id=notebook_id,
+                compute_group=compute_group,
+                session=session,
+            )
+
     return NotebookTransportPolicy(
         notebook=notebook,
         notebook_id=notebook_id,
@@ -195,6 +240,7 @@ def preflight_notebook_transport_policy(
             notebook_id=notebook_id,
             compute_group=compute_group,
             session=session,
+            probed_gpu_model=gpu_model,
         ),
         session=session,
     )

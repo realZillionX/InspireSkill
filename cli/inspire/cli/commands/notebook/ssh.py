@@ -42,7 +42,7 @@ from .transport import emit_ssh_policy_error, preflight_notebook_transport_polic
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
-    help="Ignore the remembered notebook target and resolve candidates again.",
+    help="Ignore remembered connections and resolve the current notebook instance live.",
 )
 @click.option("--wait/--no-wait", default=True, help="Wait for notebook to reach RUNNING status")
 @click.option(
@@ -117,6 +117,7 @@ def notebook_ssh(
             workspace=workspace,
             account=account,
             pick=pick,
+            ignore_target_cache=ignore_target_cache,
         )
         if not policy.allow_ssh:
             raise SystemExit(emit_ssh_policy_error(ctx, policy))

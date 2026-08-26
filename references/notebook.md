@@ -40,6 +40,8 @@ Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的
 
 机器答不上来（Notebook 未启动、Jupyter 起不来）时命令直接报错退出，不猜 Transport：`ssh` / `exec` / `shell` / `scp` 本来就都要求 Notebook 处于 `RUNNING`。未启动时提示先 `inspire notebook start <name> --workspace <workspace>`。
 
+受限 Notebook 在选定或使用 JupyterTerminal 前，会把名称缓存中的 Notebook 句柄与 Live 列表对账；同名实例被删除后重建、旧句柄仍留在本地时，CLI 自动替换为当前实例，不要求用户先跑 `cache refresh`。`--ignore-target-cache` 会从一开始跳过 Remembered Connection Target 和 Notebook 名称缓存，直接用 Live 身份完成 Transport 预检；它是显式诊断开关，不是日常恢复步骤。JupyterTerminal 仍失败时，用根级 `--debug` 重跑同一条命令，诊断会区分 access URL、Jupyter GET、XSRF、Terminal POST、代理、WebSocket 和 completion marker；网页 Terminal 正常时优先检查 `HTTP(S)_PROXY` / `NO_PROXY`，不要把手动刷新缓存后的偶然恢复当成根因。
+
 | 入口 | 心智模型 | 受限 Notebook 行为 |
 | --- | --- | --- |
 | `exec` | 一次性独立命令 | 自动走 JupyterTerminal |
@@ -63,7 +65,7 @@ Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的
 
 Notebook 连接类命令包括 `ssh`、`exec`、`shell`、`scp`、`ssh-config` 和 `ssh-proxy`。它们的 `--account <name>` 参数使用本地 Account Alias，也就是 `~/.inspire/accounts/<name>/` 的目录名，不是平台登录 Username。`all` 是跨账号扫描 Selector。
 
-不传 `--account` 时，CLI 会先查 Remembered Target Cache；如果没有可用记录，再扫描所有账号下已有的 Cached Connection。唯一匹配会自动使用；多匹配时会列出候选，交互环境会 Prompt 选择并把选择写入 Target Cache。需要忽略 Remembered Target 时传 `--ignore-target-cache`。
+不传 `--account` 时，CLI 会先查 Remembered Target Cache；如果没有可用记录，再扫描所有账号下已有的 Cached Connection。唯一匹配会自动使用；多匹配时会列出候选，交互环境会 Prompt 选择并把选择写入 Target Cache。需要同时忽略 Remembered Target 并让 Transport 预检从 Live Notebook 身份开始时传 `--ignore-target-cache`。
 
 已缓存的 Notebook Connection 不要求当前 Active Account 是 Notebook 所属账号。连接不可用时，CLI 会用目标 Account Alias 对应的 Web Session 和账号配置重建；用户不需要先 `inspire account use <name>`。受限 Notebook 不建立 SSH Connection，命令执行走 JupyterTerminal。
 

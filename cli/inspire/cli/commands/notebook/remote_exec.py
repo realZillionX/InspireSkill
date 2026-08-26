@@ -463,6 +463,21 @@ def try_exec_via_jupyter_terminal(
         session=session,
         timeout=timeout_s,
     )
+    if not result.completed:
+        if result.output and not ctx.json_output:
+            click.echo(scrub_raw_ids(result.output), nl=False)
+        return _emit_error(
+            ctx,
+            "JupyterTerminalUnreachable",
+            "JupyterTerminal did not establish or complete the remote command.",
+            EXIT_TIMEOUT,
+            hint=(
+                "The notebook target was checked against the live platform before execution. "
+                "Retry the same command with `inspire --debug notebook exec ...`; diagnostics "
+                "separate access URL, Jupyter GET, XSRF, Terminal POST, proxy, WebSocket, and "
+                "completion-marker failures. A manual cache refresh should not be needed."
+            ),
+        )
     if ctx.json_output:
         if result.returncode == 0:
             emit_output_success(
@@ -521,7 +536,7 @@ def try_exec_via_jupyter_terminal(
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
-    help="Ignore the remembered notebook target and resolve candidates again.",
+    help="Ignore remembered connections and resolve the current notebook instance live.",
 )
 @click.option(
     "timeout",
@@ -621,6 +636,7 @@ def exec_command(
         workspace=workspace,
         account=account,
         pick=pick,
+        ignore_target_cache=ignore_target_cache,
     )
 
     if policy.exec_transport == "jupyter":

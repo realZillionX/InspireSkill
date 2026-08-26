@@ -28,6 +28,8 @@
 
 ### 修复
 
+- **Notebook JupyterTerminal 不再把旧实例缓存的偶然失效当作用户应手动处理的恢复步骤。** 名称缓存里若仍是删除前的 Notebook 句柄，`GetNotebookAccessUrl`、Terminal REST 或 WebSocket 可能只表现成统一的“无响应”；此前 Issue #76 里一次 `--ignore-target-cache` 后恢复被误读成修复，但该选项实际只影响 GPU 预检之后的 SSH Connection 选择，根本没有进入 JupyterTransport 的名称解析。现在 GPU 探针不通或即将使用 H100/H200 JupyterTerminal 时，Transport 预检会用 Live Notebook 列表对账并自动替换旧句柄，且只在发送用户命令之前的只读阶段恢复；`--ignore-target-cache` 也真正从首次预检起强制 Live。持续失败的错误明确说明无需手动刷新缓存，并指向根级 `--debug` 中的 access URL、Jupyter GET、XSRF、Terminal POST、代理、WebSocket 与 completion-marker 分阶段诊断。
+
 - **CI 与发布工作流不再依赖已退役的 Node.js 20 Action 运行时。** GitHub Hosted Runner 已开始把旧 Action 强制转到 Node.js 24 并产生弃用警告；`checkout`、`setup-python`、`setup-uv` 以及发布产物上传/下载分别升级到当前 Node.js 24 主版本，工作流默认权限同时收敛为只读仓库内容，PyPI 发布 Job 只额外保留 OIDC 所需的 `id-token: write`。
 
 - **补齐 Windows、并发请求和缓存分页的三个边界。** 刷新租约恢复逻辑不再用会在 Windows 上发送控制台 Ctrl-C 的 `os.kill(pid, 0)` 探活，统一走 Win32 只读进程查询，Windows CI 也锁住“不触达 `os.kill`”。POSIX 的终端尺寸监听除 TTY 外再检查主线程，库调用方即使从 Worker 线程传入 TTY 也不会触发 `signal.signal` 的主线程限制。资源、镜像和跨 Workspace Job 的并发读取不再共享同一个可变 `requests.Session`，改为每线程复用自己的连接池，保留 keep-alive 的同时隔离 Cookie / Header / Proxy 状态。

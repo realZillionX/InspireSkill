@@ -192,7 +192,7 @@ def _format_ssh_config(
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
-    help="Ignore the remembered notebook target and resolve candidates again.",
+    help="Ignore remembered connections and resolve the current notebook instance live.",
 )
 @click.option("--host", "host_alias", required=False, help="OpenSSH Host alias to emit.")
 @click.option(
@@ -263,6 +263,7 @@ def ssh_config_cmd(
             workspace=workspace,
             account=account,
             pick=pick,
+            ignore_target_cache=ignore_target_cache,
         )
         if not policy.allow_ssh:
             raise SystemExit(emit_ssh_policy_error(ctx, policy))

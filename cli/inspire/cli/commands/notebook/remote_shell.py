@@ -110,7 +110,7 @@ def _load_tunnel_config_for_account(account: str | None):
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
-    help="Ignore the remembered notebook target and resolve candidates again.",
+    help="Ignore remembered connections and resolve the current notebook instance live.",
 )
 @click.option(
     "--cwd",
@@ -171,6 +171,7 @@ def bridge_ssh(
         workspace=workspace,
         account=account,
         pick=pick,
+        ignore_target_cache=ignore_target_cache,
     )
     if policy.exec_transport == "jupyter":
         if check:
@@ -194,9 +195,21 @@ def bridge_ssh(
             _handle_error(
                 ctx,
                 "ShellCheckFailed",
-                f"JupyterTerminal shell check failed with exit code {result.returncode}",
+                (
+                    "JupyterTerminal did not establish or complete the shell check."
+                    if not result.completed
+                    else f"JupyterTerminal shell check failed with exit code {result.returncode}"
+                ),
                 EXIT_GENERAL_ERROR,
-                hint=result.output.strip() or None,
+                hint=(
+                    result.output.strip()
+                    or (
+                        "The notebook target was checked against the live platform. Retry with "
+                        "`inspire --debug notebook shell ... --check` to distinguish access URL, "
+                        "Jupyter REST, proxy, WebSocket, and completion-marker failures; a manual "
+                        "cache refresh should not be needed."
+                    )
+                ),
             )
         code = browser_api_module.open_jupyter_terminal_shell(
             notebook_id=policy.notebook_id,

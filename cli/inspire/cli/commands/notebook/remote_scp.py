@@ -86,7 +86,7 @@ def _warn_if_remote_path_is_relative(remote_path: str, *, download: bool) -> Non
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
-    help="Ignore the remembered notebook target and resolve candidates again.",
+    help="Ignore remembered connections and resolve the current notebook instance live.",
 )
 @click.option("--download", "-d", is_flag=True, help="Download from remote (default is upload)")
 @click.option("--recursive", "-r", is_flag=True, help="Copy directories recursively")
@@ -157,6 +157,7 @@ def bridge_scp(
         workspace=workspace,
         account=account,
         pick=pick,
+        ignore_target_cache=ignore_target_cache,
     )
     if not policy.allow_ssh:
         _handle_error(

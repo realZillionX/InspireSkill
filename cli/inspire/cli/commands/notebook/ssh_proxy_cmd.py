@@ -86,7 +86,7 @@ def _load_proxy_target(
 @click.option(
     "--ignore-target-cache",
     is_flag=True,
-    help="Ignore the remembered notebook target and resolve candidates again.",
+    help="Ignore remembered connections and resolve the current notebook instance live.",
 )
 @click.option(
     "--port",
@@ -214,6 +214,7 @@ def ssh_proxy_cmd(
                     workspace=bootstrap_workspace,
                     account=bootstrap_account,
                     pick=pick,
+                    ignore_target_cache=ignore_target_cache,
                 )
                 if not policy.allow_ssh:
                     raise SystemExit(emit_ssh_policy_error(ctx, policy))
