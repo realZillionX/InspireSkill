@@ -4,13 +4,13 @@
 
 ### 性能
 
-- **名称缓存改为按需读穿 / 写穿，普通命令不再启动全账号后台扫描。** 共享账号 `lty` 可见 16 个 Workspace，旧刷新子进程实测运行超过 5 分钟仍未完成，并会为没有当前消费者的 Image、Model 和六类 Workload 逐空间请求，与前台争用同一账号的限流额度。现在 fresh hit 纯本地解析，miss / 过期只查当前名字，创建与删除立即写入或墓碑；Workload 名称映射 TTL 从 5 分钟延长到 1 天，`list` / `status` / Availability 等可变事实仍只读 Live。显式 `cache refresh` 保留，且始终做所选 Scope 的完整对账。
+- **名称缓存改为按需读穿 / 写穿，普通命令不再启动全账号后台扫描。** 旧刷新子进程会为没有当前消费者的 Image、Model 和六类 Workload 逐 Workspace 请求，耗时随可见空间和历史目录规模放大，并与前台争用同一账号的限流额度。现在 fresh hit 纯本地解析，miss / 过期只查当前名字，创建与删除立即写入或墓碑；Workload 名称映射 TTL 从 5 分钟延长到 1 天，`list` / `status` / Availability 等可变事实仍只读 Live。显式 `cache refresh` 保留，且始终做所选 Scope 的完整对账。
 
-  同批复用登录握手已经保存的 `GetUserDetail`：`job` / `hpc` / `ray` / `notebook` / `tensorboard` / `model` 的 owner filter 不再先串行查询一次当前用户；缺失时才 Live 回源并写回 Session。`account check` 显式强制 Live，仍然用真实往返证明 Session 可用。`lty` 上身份请求实测 `0.408 s`，缓存命中约 `7 µs`。
+  同批复用登录握手已经保存的 `GetUserDetail`：`job` / `hpc` / `ray` / `notebook` / `tensorboard` / `model` 的 owner filter 不再先串行查询一次当前用户；缺失时才 Live 回源并写回 Session。`account check` 显式强制 Live，仍然用真实往返证明 Session 可用。
 
-  `train.ListJobs` 还有一个低于传输层通用上限的 Action 级限制：`page_size=999` 实测返回 999 行，`1000` 返回 `InvalidParameter: page or page_size too large`。Wrapper 现在按 999 截断；`lty` 的 `分布式训练空间` Job 缓存完整刷新实测 999 个名字、5.42 秒完成。
+  `train.ListJobs` 还有一个低于传输层通用上限的 Action 级限制：`page_size=999` 返回 999 行，`1000` 返回 `InvalidParameter: page or page_size too large`。Wrapper 现在按 999 截断。
 
-- **镜像全目录并发读取，Job / HPC / Notebook Batch 复用命令内 Live 快照。** `image list --source all` 的 official / public / project / private 是四个互不依赖的 `ListImages` 请求，现改为同时发出，再按原页签顺序合并，部分失败的 warning 语义不变；网络恢复后 `lty` 同一批 5620 行实测 6.464 秒 → 5.289 秒，剩余时间由最慢的单个目录决定。
+- **镜像全目录并发读取，Job / HPC / Notebook Batch 复用命令内 Live 快照。** `image list --source all` 的 official / public / project / private 是四个互不依赖的 `ListImages` 请求，现改为同时发出，再按原页签顺序合并，部分失败的 warning 语义不变；总耗时由最慢的单个目录决定。
 
   Job Batch 此前每个条目都重读同一 Workspace 的 Quota 优先级菜单、Project 目录、排队拥塞和镜像目录。现在只在本次 Batch 进程里复用第一条刚读到的 Live 快照，不跨命令持久化；3 条 dry-run 的真机请求数 15 → 5，11.32 秒 → 5.32 秒。
 
@@ -18,11 +18,11 @@
 
   Job / HPC / Notebook Batch 对重复的官方数据集挂载也按 `(Workspace, dataset, version)` 复用本次命令内的成功校验；失败不缓存。`pixabay-81k:v0` 连续 3 次从 3 个 `ValidateDataset` / 0.521 秒降为 1 个 / 0.079 秒。
 
-- **资源视图减少分页和重复 Live 读取。** `resources availability` 对 Compute Group 的 Resource + NodeDimension 改为 4 路有界并发，仍然逐组读取完整 Live 事实；`lty` 的分布式训练空间从 2.98 秒降到 1.21 秒。`resources nodes` 复用同一命令里 Availability 已经读到的 NodeDimension，不再为 13 个组重复拉一遍，51 → 39 请求、4.66 秒 → 1.66 秒。
+- **资源视图减少分页和重复 Live 读取。** `resources availability` 对 Compute Group 的 Resource + NodeDimension 改为 4 路有界并发，仍然逐组读取完整 Live 事实。`resources nodes` 复用同一命令里 Availability 已经读到的 NodeDimension，不再为每个组重复拉取。
 
-  `workspace.List*Dimension` 的显式 `page_size=5000` 已在 1000+ 活任务上实测可用；`resources usage --by task` 默认页从 500 调到网关上限 5000，当前 3 页收敛为 1 页、9.54 秒 → 2.41 秒。失败与空结果的边界不变，所有这些视图仍只用 Live 数据。
+  `workspace.List*Dimension` 支持显式 `page_size=5000`；`resources usage --by task` 默认页从 500 调到网关上限 5000。失败与空结果的边界不变，所有这些视图仍只用 Live 数据。
 
-- **`job list --workspace all` 启用已有的 round-robin 扫描器。** 此前只有带 `--keyword` 时才 4 路并发；普通 all 把 `lty` 的 16 个 Workspace 串行相加，实测 41.13 秒。现在所有 all 查询都按页 8 路有界并发，第一页 16/16 Workspace 无失败，完整命令降到 11.01 秒；单 Workspace、全局输出 limit 和逐 Workspace total 语义不变。
+- **`job list --workspace all` 启用已有的 round-robin 扫描器。** 此前只有带 `--keyword` 时才 4 路并发，普通 all 会串行扫描所有 Workspace。现在所有 all 查询都按页 8 路有界并发；单 Workspace、全局输出 limit 和逐 Workspace total 语义不变。
 
 - **HPC Project 解析不再重复列目录。** `hpc create` 原先按名字列一次 Project 得到 ID，计算优先级时又按同一 Workspace 列一次以找 `priority_name`。现在同一份 Live `ProjectInfo` 同时提供两者，每次 create / dry-run 少一个完整 `ListProjects`；Batch 的命令级快照语义保持不变。
 
@@ -30,7 +30,7 @@
 
 - **CI 与发布工作流不再依赖已退役的 Node.js 20 Action 运行时。** GitHub Hosted Runner 已开始把旧 Action 强制转到 Node.js 24 并产生弃用警告；`checkout`、`setup-python`、`setup-uv` 以及发布产物上传/下载分别升级到当前 Node.js 24 主版本，工作流默认权限同时收敛为只读仓库内容，PyPI 发布 Job 只额外保留 OIDC 所需的 `id-token: write`。
 
-- **发版复审补齐 Windows、并发请求和缓存分页的三个边界。** 最新的刷新租约恢复逻辑一度重新用 `os.kill(pid, 0)` 探活；该调用在 Windows 上会发送控制台 Ctrl-C，现在统一走 Win32 只读进程查询，Windows CI 也直接锁住“不触达 `os.kill`”。POSIX 的终端尺寸监听除 TTY 外再检查主线程，库调用方即使从 Worker 线程传入 TTY 也不会触发 `signal.signal` 的主线程限制。资源、镜像和跨 Workspace Job 的并发读取不再共享同一个可变 `requests.Session`，改为每线程复用自己的连接池，保留 keep-alive 的同时隔离 Cookie / Header / Proxy 状态。
+- **补齐 Windows、并发请求和缓存分页的三个边界。** 刷新租约恢复逻辑不再用会在 Windows 上发送控制台 Ctrl-C 的 `os.kill(pid, 0)` 探活，统一走 Win32 只读进程查询，Windows CI 也锁住“不触达 `os.kill`”。POSIX 的终端尺寸监听除 TTY 外再检查主线程，库调用方即使从 Worker 线程传入 TTY 也不会触发 `signal.signal` 的主线程限制。资源、镜像和跨 Workspace Job 的并发读取不再共享同一个可变 `requests.Session`，改为每线程复用自己的连接池，保留 keep-alive 的同时隔离 Cookie / Header / Proxy 状态。
 
 - **缓存完整刷新对不可信 `total` 和未服务端过滤的 `--name` 也有硬上限。** 旧上限只在没有 `--name` 且平台正确报告 `total` 时生效；HPC / Ray 列表不支持服务端名字过滤，一次看似点名的刷新仍可能扫描全部历史，异常响应若持续回满页却把 `total` 报成 0 也能绕过限制。现在报告行数与实际累计行数分别受 5000 行上限约束，超限保留既有缓存并明确报错。
 
@@ -42,35 +42,35 @@
 
 - **`inspire cache` 不再把请求凭据写进诊断缓存。** Playwright 的失败文本会附带完整请求调用记录，旧实现把它原样存进 `resource_scope.last_error`，`cache status` 的通用文本净化又没有覆盖 Cookie / Authorization Header，代理故障时因此可能把 Session Cookie 回显出来。现在错误在写入 SQLite 前就统一移除认证 Header、URL、本机和平台路径，只保留首个非空诊断行并限制为 500 字符；打开既有索引会原地迁移旧错误，保留可用名称行。输出层继续做同一套净化作为第二道边界。
 
-- **缓存维护命令与真实作用域一致，异常退出后也能立即恢复刷新。** 每次显式 `cache refresh` 本来就会强制完整对账，冗余的 `--full` 从 Help 和当前文档移除（旧脚本仍可静默传入）；`cache clear` 的默认提示改成 “every managed cache”，并明确它只清资源名称 / Quota 索引和 Notebook GPU 探测，不会伪装成已清理登录 Session、IDE/连接、代理或更新状态。刷新租约现在识别本机持有进程：代理或 CLI 崩溃留下的租约会在下一次尝试时立即回收，不再把显式修复挡成最多 120 秒的 `busy`；未知旧格式仍按 TTL 保守过期。任一维护刷新只要已取得完整 Live Workspace 目录，就会顺手清掉账号不再可见的孤儿 Scope；此前只有显式包含 `workspace` 类型才清理，已移除空间的旧错误会让 Notebook 等汇总永久停在 `partial` / `error`。`cache status` 还会按当前 Session 的平台地址和登录主体过滤：共用账号换过登录主体时，不能再消费的旧身份分区不再污染当前数量与健康状态；`cache clear` 仍按账号清掉全部分区。
+- **缓存维护命令与真实作用域一致，异常退出后也能立即恢复刷新。** 每次显式 `cache refresh` 本来就会强制完整对账，冗余的 `--full` 从 Help 和当前文档移除（旧脚本仍可静默传入）；`cache clear` 的默认提示改成 “every managed cache”，并明确它只清资源名称 / Quota 索引和 Notebook GPU 探测，不会伪装成已清理登录 Session、IDE/连接、代理或更新状态。刷新租约现在识别本机持有进程：代理或 CLI 崩溃留下的租约会在下一次尝试时立即回收，不再把显式修复挡成最多 120 秒的 `busy`；未知旧格式仍按 TTL 保守过期。任一维护刷新只要已取得完整 Live Workspace 目录，就会顺手清掉账号不再可见的孤儿 Scope；此前只有显式包含 `workspace` 类型才清理，已移除空间的旧错误会让 Notebook 等汇总永久停在 `partial` / `error`。`cache status` 还会按当前 Session 的平台地址和登录主体过滤：同一本地账号配置切换登录主体后，不能再消费的旧身份分区不再污染当前数量与健康状态；`cache clear` 仍按账号清掉全部分区。
 
-- **缓存完整刷新不再把服务端缩页误判成最后一页，也不会硬扫无限历史。** 刷新器请求 1000 行，但 `train.ListJobs` 的客户端会按已确认的网关上限静默夹到 999；旧终止条件看到 `999 < 1000` 就停，因此一个 Scope 即使 `total > 999` 也只缓存第一页。现在 Job / HPC / Ray / Serving / TensorBoard 和 Model 都按服务端 `total` 翻页，只有空页或已读满 total 才结束；无名 TensorBoard 行也会计入翻页进度，再在持久化前丢弃。Job 的多页窗口改用真机确认可用的 500 行；`lty` 的分布式训练空间报告约 47 万条共享 Job 历史，Workload Scope 超过 5000 行时现在会在第一页后拒绝无边界完整扫描、保留旧缓存并提示用 `--name`，不再假装前 999 行就是完整目录，也不会运行几十分钟。Ray / Serving 仅做静态路径与单元测试验证，不发起 Live 请求。
+- **缓存完整刷新不再把服务端缩页误判成最后一页，也不会硬扫无限历史。** 刷新器请求 1000 行，但 `train.ListJobs` 的客户端会按网关上限静默夹到 999；旧终止条件看到 `999 < 1000` 就停，因此一个 Scope 即使 `total > 999` 也只缓存第一页。现在 Job / HPC / Ray / Serving / TensorBoard 和 Model 都按服务端 `total` 翻页，只有空页或已读满 total 才结束；无名 TensorBoard 行也会计入翻页进度，再在持久化前丢弃。Job 的多页窗口改用 500 行；Workload Scope 超过 5000 行时会在第一页后拒绝无边界完整扫描、保留旧缓存并提示用 `--name`，不再把截断结果当作完整目录。Ray / Serving 仅做静态路径与单元测试验证，不发起 Live 请求。
 
 - **账号配置不再缓存项目和资源目录，隐式远端 cwd 不再注入 `cd`。** 旧版 `inspire init` 会把全部可见 Project、Compute Group、推导出的项目路径和未使用的 `docker_registry` 一起写进 `~/.inspire/accounts/<name>/config.toml`。一个账号跨多个 Project 使用时，账号级 `me` 会把 Notebook/Job 命令带进另一个 Fileset；Compute Group 快照还会在 Live API 失败时冒充资源事实。现在账号加载立即忽略这些旧字段，下一次 `inspire init` 会从磁盘删除 `[projects]`、`[project_catalog]`、`[[compute_groups]]`、账号级 `[path_aliases]` 和未使用的 `api.docker_registry`，其它未知字段保留；全局 init 不再枚举这些目录，项目路径只由 `inspire init --scope project` 写进仓库配置。Notebook exec/shell 省略 `--cwd` 时不生成 `cd`，Job 启动命令也不再由 CLI 添加 `cd`，两者均保留平台、容器或远端 Shell 的初始工作目录；显式 `--cwd` 仍会解析 Path Alias，Job 的共享文件日志目录与执行 cwd 解耦。
 
 - **Windows 成为一等公民，不再要求 WSL。** 此前 `import inspire.cli.main` 在 Windows 上直接 `ModuleNotFoundError: fcntl` —— 断点在 `accounts/cache_lock.py`，而它在第一条子命令的 import 链上，所以不是「某个命令不能用」，是 `inspire --version` 都起不来。五处模块级 POSIX 导入（`fcntl` / `pty` / `termios` / `tty`）按平台分叉，文件锁在 Windows 上用 `msvcrt.locking` 实现。CI 增加 `windows-latest`。
 
-  **ProxyCommand 那条链上纠正了一个流传的判断**：Windows OpenSSH 并不通过 `cmd.exe` 跑 ProxyCommand。`FORK_NOT_SUPPORTED` 下它把整条命令串交给 `posix_spawnp`，最终落到 `CreateProcessW(lpApplicationName=NULL)`，中间没有任何 shell。所以那里的 `2>NUL` 不是重定向，而是 rtunnel 的第 4 个位置参数——rtunnel 收到就 `Error: invalid number of arguments` 退出。而 `_resolve_bridge_and_proxy` 的 `quiet` 默认是 `True`，`notebook ssh` / `exec` / `scp` 和 `is_tunnel_available` 全走它。现在 Windows 分支不含任何 shell 语法，逐 token 加双引号（首字符是 `"` 正是 OpenSSH `build_commandline_string()` 原样透传的分支），proxy override 改由 ssh 自己的环境传给 rtunnel。
+  **ProxyCommand 适配 Windows OpenSSH 的实际执行模型**：Windows OpenSSH 并不通过 `cmd.exe` 跑 ProxyCommand。`FORK_NOT_SUPPORTED` 下它把整条命令串交给 `posix_spawnp`，最终落到 `CreateProcessW(lpApplicationName=NULL)`，中间没有任何 shell。所以那里的 `2>NUL` 不是重定向，而是 rtunnel 的第 4 个位置参数——rtunnel 收到就 `Error: invalid number of arguments` 退出。而 `_resolve_bridge_and_proxy` 的 `quiet` 默认是 `True`，`notebook ssh` / `exec` / `scp` 和 `is_tunnel_available` 全走它。现在 Windows 分支不含任何 shell 语法，逐 token 加双引号（首字符是 `"` 正是 OpenSSH `build_commandline_string()` 原样透传的分支），proxy override 改由 ssh 自己的环境传给 rtunnel。
 
   **`UserKnownHostsFile` 保持 `/dev/null`**：Win32-OpenSSH 的 `fileio.c` 已经同时映射 `/dev/null` 和 `NUL`，换成 `NUL` 是没有差异的分叉。
 
-  **`ssh-config` 的引号在所有平台上都是错的。** ProxyCommand 和 `IdentityFile` 都用 `shlex.quote` 拼，而 OpenSSH 的 `strdelim` 只认双引号——POSIX 单引号会留在文件名里。这在 macOS/Linux 上同样坏，只是 ssh-agent 一直兜着所以没人发现；`shlex` 带 `re.ASCII`，中文 workspace 名必然被引号包住，Windows 上则连模块都找不到。ProxyCommand 在 Windows 上改用 `list2cmdline`，`IdentityFile` 改用 OpenSSH 自己的引号规则。
+  **`ssh-config` 的引号在所有平台上统一修正。** ProxyCommand 和 `IdentityFile` 都用 `shlex.quote` 拼，而 OpenSSH 的 `strdelim` 只认双引号——POSIX 单引号会留在文件名里；macOS/Linux 上可能被 ssh-agent 掩盖，Windows 上则会直接失败。ProxyCommand 在 Windows 上改用 `list2cmdline`，`IdentityFile` 改用 OpenSSH 自己的引号规则。
 
-  **交互式 shell 不是 fail-fast，是真的实现了**：`SetConsoleMode` 做 raw 模式（清掉 `PROCESSED_INPUT` 正是让 Ctrl-C 变成 `0x03` 字节而非信号，与 `tty.setraw` 语义一致），stdin 由读线程供给（`select` 在 Windows 上只收 socket），窗口大小改为轮询（没有 `SIGWINCH`）。`job shell` 和 Jupyter terminal 两份重复的循环收进一份实现，POSIX 分支保持原样。`run_remote_shell` 此前没有任何直接测试，这次补上。
+  **交互式 shell 在 Windows 上完整实现**：`SetConsoleMode` 做 raw 模式（清掉 `PROCESSED_INPUT` 正是让 Ctrl-C 变成 `0x03` 字节而非信号，与 `tty.setraw` 语义一致），stdin 由读线程供给（`select` 在 Windows 上只收 socket），窗口大小改为轮询（没有 `SIGWINCH`）。`job shell` 和 Jupyter terminal 两份重复的循环收进一份实现，POSIX 分支保持原样，并补上 `run_remote_shell` 的直接测试。
 
-  **编码这条线**：`›` 这类字符不是靠换成 ASCII 解决的——仓库里 user-facing 的 `—` 有 89 处、`─` 27 处，还有大量中文，换字符只会让 mac/Linux 的输出一起退化。真正的成因是 Python 在 Windows 上一旦 stdout 被重定向就回落到 ANSI 代码页（中文 Windows 是 cp936），而 agent harness 调 CLI 全是管道。改为在 CLI 入口把 stdout/stderr 重设为 UTF-8。连带修掉：6 处 subprocess 的文本解码没指定编码（远端日志会乱码），bridge 连接缓存读取没指定编码（**这条与 Windows 无关，任何非 UTF-8 locale 都会因为中文 workspace 名而静默丢掉整份缓存**），`uninstall --purge-runtime` 在 Windows 上找错 Playwright 缓存目录，以及后台更新检查每次都闪一个控制台窗口。
+  **CLI 编码统一为 UTF-8**：Python 在 Windows 上一旦 stdout 被重定向就会回落到 ANSI 代码页，而 Agent harness 调 CLI 使用管道。现在 CLI 入口会把 stdout/stderr 重设为 UTF-8；subprocess 文本、bridge 连接缓存和相关文件读写也显式使用 UTF-8。连带修复 `uninstall --purge-runtime` 在 Windows 上定位错 Playwright 缓存目录，以及后台更新检查闪控制台窗口的问题。
 
   `job logs --follow --transport ssh` 的 `select` on pipe 与 `ssh_exec` 的同款一起收进 `inspire.process_io`。`exec_rtunnel_proxy` 的 `os.execve` 在 Windows 上是 spawn + 父进程退出，会把 OpenSSH 记录的 proxy pid 打掉，改为留一个薄父进程转发退出码。
 
-  **windows-latest 头一次跑，挖出四个此前无人踩到的 Windows bug**，都不是这次改出来的：
+  **Windows CI 覆盖补齐三处平台差异**：
 
   - **后台更新检查没脱离控制台。** `start_new_session=True` 在 Windows 上被静默忽略，于是子进程挂在用户当前终端上，既会闪窗口也共享 Ctrl-C。现在用 `cli/utils/detached.py` 的 `creationflags` 真正脱离。
   - **resource index 的 sqlite 连接从来没关过。** `with sqlite3.connect(...)` 只提交事务、不关连接。POSIX 上只是不整洁，Windows 上句柄没放意味着文件删不掉——「索引损坏就丢掉重建」这条恢复路径必然以 sharing violation 失败。
   - **远端日志路径用 `os.path.join` 拼。** 在 Windows 上产出 `/train/user space\.inspire\xxx.log`，而这条路径会被塞进跑在 Linux 计算节点上的 shell 命令里。远端路径一律走 `join_remote_path`。
 
-  测试侧同样是第一次在 Windows 上跑：`monkeypatch.setenv("HOME", ...)` 是 POSIX 惯用法（`ntpath.expanduser` 只读 `USERPROFILE`），所以这些测试在 Windows 上一直读写**跑测试的人自己的** `~/.inspire`；114 处 `read_text`/`write_text` 没写 `encoding`，中文 workspace 名在 cp1252/cp936 下直接炸。产品代码一处都没漏，这次把测试补齐。
+  测试侧改为同时隔离 `HOME` 与 `USERPROFILE`，避免 Windows 上的 `ntpath.expanduser` 绕过临时目录；测试文件读写也显式使用 UTF-8，覆盖中文 Workspace 名。
 
-  **真机复审（@expectqwq，Windows 11 / PowerShell 5.1 / cp936）确认全链路可用**：系统 OpenSSH 下 ProxyCommand、真实 ssh/exec/scp roundtrip、cp936 重定向、installer 检测、后台进程零残留全部通过，全量 2831 passed。复审同时抓出两条合并前修掉的问题：`watch_terminal_resize` 在重构时丢了旧实现的 TTY gate——`signal.signal` 只能在主线程调，库调用方在 worker 线程里带管道 stdin 驱动交互 shell 会直接 `ValueError`，现在非 TTY 恒不碰 signal 状态（Windows 侧同样不再空转轮询）；Windows 安装说明从 `install-and-config.md` 拆到 `references/setup/windows-native.md` 并在 `SKILL.md` 单独路由，Linux Agent 的安装/账号任务不再多读约 1.8KB 的 Windows 专属内容。
+  **Windows 11 / PowerShell 5.1 / cp936 实机验证通过**：系统 OpenSSH 下 ProxyCommand、ssh/exec/scp roundtrip、cp936 重定向、installer 检测和后台进程清理均可用。`watch_terminal_resize` 只在 TTY 主线程修改 signal 状态，避免 Worker 线程触发 `ValueError`；Windows 安装说明拆到 `references/setup/windows-native.md` 并在 `SKILL.md` 单独路由。
 
   `scripts/install.ps1` 装的是 PyPI 上的包（`uv tool` / `pipx`），不是 editable checkout——`inspire update` 靠 `sys.prefix` 里有没有 `uv/tools` 或 `pipx/venvs` 判断能否自更新，editable 装法会静默让用户失去自更新能力；skill 文件交给 CLI 自己铺（新增内部命令 `_refresh-skills`），不在 PowerShell 里复制一份 harness 列表。
 
@@ -162,7 +162,7 @@
 
   这条修复由 [#73](https://github.com/realZillionX/InspireSkill/pull/73) 提出（@expectqwq），闸门位置、冷却档位和解除条件在合并时做了调整，并补上了它没覆盖的两条放大路径。
 
-  连带修掉一个测试隐患：会话缓存和这个新标记都写在**当前 Account** 目录下，而测试套件跑在开发者自己的 `~/.inspire/` 上——模拟一次失败登录就会给开发者自己的账号写一个熔断标记，用的还是一个根本不存在的密码。现在 `conftest.py` 让会话存储在测试里解析不到 Account（要持久化的测试自己传 Account 名并隔离 `Path.home`），验证这条解析逻辑本身的 5 个测试改用 `active_account_session_storage` 显式退出。
+  连带修掉一个测试隐患：会话缓存和这个新标记都写在当前 Account 目录下，而测试套件此前没有隔离真实用户配置目录，模拟失败登录可能写入非测试状态。现在 `conftest.py` 让会话存储在测试里解析不到 Account（要持久化的测试自己传 Account 名并隔离 `Path.home`），验证这条解析逻辑本身的 5 个测试改用 `active_account_session_storage` 显式退出。
 
 - **`inspire update --check` 恰好在有新版本可升的时候报「检查失败」。** 实测本机 v7.1.0 对着刚发布的 v7.1.1：版本缓存正确写下了 `latest: 7.1.1`，而命令印的是 `✗ InspireSkill check failed.` 并以 1 退出——也就是这条命令唯一有意义的那个结果被它自己当成了故障。根因是检查路径把 `latest` 喂给了 `_audit_update_state`，而那个审计里的版本比较是**升级完之后**的验收器（「装完了，可执行文件真的变成新版本了吗」），于是「你还在旧版本上」这个正确答案被判成审计不通过。现在检查路径不传 `expected_version`，审计只保留它真正该管的那部分：可执行文件在不在 PATH 上、版本读不读得出来、全局 uv tool 有没有被钉在本地源、检测到的 harness 里有没有 `SKILL.md`。
 
@@ -212,7 +212,7 @@
 
 - 记录两条 `file` 服务的实测结论（只有文档，没有行为变更）：
 
-  **`GetSftpgoConnectionInfo` 是一条不需要计算资源的共享盘读写通道。** `{storage_name}`（池名转小写）换回一台 WebDAV 服务器，根下就是容器里那套 `/inspire/<池>/…` 全命名空间。写侧在自己的个人目录下做过完整往返：`PUT` 201 → `GET` 200（内容逐字节一致）→ `DELETE` 204 → `GET` 404，探针文件已清除。目前 CLI 的文件流转只有 `notebook scp`，要一台运行中的 Notebook 加容器内 sshd 加 rtunnel，这条路把三样都省掉。**响应里的 `auth` 是明文凭据**，须与 Notebook Proxy 的 token 同等对待——不进日志、不进报错、不进 `--json`、不进文档。尚未封装。
+  **`GetSftpgoConnectionInfo` 是一条不需要计算资源的共享盘读写通道。** `{storage_name}`（池名转小写）换回一台 WebDAV 服务器，根下就是容器里那套 `/inspire/<池>/…` 全命名空间。受控路径上的 `PUT` → `GET` → `DELETE` 往返已验证，探针文件已清除。目前 CLI 的文件流转只有 `notebook scp`，要一台运行中的 Notebook 加容器内 sshd 加 rtunnel，这条路把三样都省掉。**响应里的 `auth` 是明文凭据**，须与 Notebook Proxy 的 token 同等对待——不进日志、不进报错、不进 `--json`、不进文档。尚未封装。
 
   **`CreateCopy` 不是服务端复制，是一张要审批的申请。** 控制台里它叫「新建数据传输」，表单只有 `source_path` / `target_path` / `overwrite`，提交按钮写的是「提交审批」，和旁边的 `audit` 服务是一条链。`ListFileCopyTasks` 是用户级的（不认 workspace / filter），本账号 0 条。
 
@@ -278,7 +278,7 @@
 
   `inspire image --help` 此前写着「An image saved by `notebook save-image --workspace X` is only visible under `--workspace X`」，这是错的：同一个 Registry 上的任何一个 Workspace 都看得到它。真正会挡住人的是 Registry 边界，而这条线基本沿着卡的类型走——国产卡空间和 NVIDIA 空间读的是两份不相交的目录。
 
-- 测试不再读运行 pytest 那台机器上真实的 `~/.inspire/` 名称索引。任何一次名称解析都会为当前账号打开索引，没有重定向时那就是开发者自己的库：`test_workload_quota_and_resources` 明明把平台打了桩，却会拿到开发者自己的计算组，同一个测试通不通取决于他最近跑没跑过 CLI——TTL 拉长之后这件事立刻暴露出来。conftest 里加一条 autouse 重定向，和已有的几条「别碰真实 home」同一个理由。
+- 测试不再读取真实用户配置目录下的 `~/.inspire/` 名称索引。名称解析测试现在由 conftest 的 autouse fixture 统一重定向到临时目录，结果不再受本机缓存内容和 TTL 影响。
 
 - 每次 HTTP 请求不再新建一个 `requests.Session`，连接因此能复用。此前 `_request_json_once` 每次调用都 `build_requests_session(...)`，用完 `finally: http.close()`，于是每一个请求都要重新建 TCP 连接、重新握手 TLS——走本地 SII 代理连 `qz.sii.edu.cn` 实测每请求约 300 ms，复用连接后约 30 ms。平常一条命令察觉不到，但 Name 缓存把很多操作变成了扇出（Quota 目录每个计算组一次、镜像每个 Workspace 三次、后台刷新一轮几百次），这一项就变成了主要开销。同一份完整的后台刷新，实测网络时间 201.5 s → 97.2 s、整体 202.8 s → 120.4 s；扣掉本来就是传输量瓶颈的镜像，单请求 397 ms → 91 ms。共享的只有连接池，Cookie / Header / 代理设置每次调用照旧重设，所以刷新过 Session 之后不会拿旧凭据作答；需要自己 `close()` 的调用方继续用 `build_requests_session`。
 
@@ -535,7 +535,7 @@
 
 - `<workload> quota` 不再列出并不受理该 Workload 的计算组。每个组自己声明 `support_job_type_list`，`CPU资源空间` 四个组里只有两个收 `ray_job`，但 `ray quota` 把四个都列了出来，照着选到最后是创建时报「已选择的计算类型组不支持此类型任务」——一条要走到提交才暴露的死路。过滤同时作用于 `quota` 展示、创建时的 `--quota` 解析和配额目录缓存，三条路径用同一个判定。踩到的坑是这个字段是 **JSON 编码的字符串**而不是数组，按数组判断会让过滤看起来生效、实际一条都没滤掉。无法解析该字段时保留该组：读不出来是我们的无知，不是平台的拒绝，而藏掉一个可用的组是更糟的失败——它读起来像「这个空间跑不了这个」，没有任何错误信息会来纠正。
 
-- 平台限流不再被当成「这个 Workspace 没有 Quota」。Quota 目录是每个 Compute Group 一次请求的扇出，`get_resource_prices()` 却把任何失败都 `return []`，于是一次 429 和「这个组确实没有规格」返回同一个值。刷新引擎照单全收：`FetchResult(complete=True)` → `index.reconcile()` → 把上一轮读到的行全部 tombstone，再把空目录标成完整且 fresh。之后 `job quota` / `notebook quota` 报 `No quota rows found.`，`job create` 报 `--quota 1,10,100 matches no quota row`、`Available: (workspace has no quotas)`——同一时刻 Web UI 能在那个组建出 1 卡 Notebook，`resources availability` 也显示还有几十张卡空着。缓存过 TTL 才会自己好，`cache clear` 之后紧接着的另一个进程还可能再踩一次，只有强制完整刷新并真的缓存到行才稳定恢复。（[#68](https://github.com/realZillionX/InspireSkill/issues/68)）
+- 平台限流不再被当成「这个 Workspace 没有 Quota」。Quota 目录是每个 Compute Group 一次请求的扇出，`get_resource_prices()` 却把任何失败都 `return []`，于是一次 429 和「这个组确实没有规格」返回同一个值。刷新引擎照单全收：`FetchResult(complete=True)` → `index.reconcile()` → 把上一轮读到的行全部 tombstone，再把空目录标成完整且 fresh。之后 `job quota` / `notebook quota` 报 `No quota rows found.`，`job create` 报 `--quota 1,10,100 matches no quota row`、`Available: (workspace has no quotas)`，即使其它 Live 视图仍能确认该组有可用规格。缓存过 TTL 才会自己好，`cache clear` 之后紧接着的另一个进程还可能再踩一次，只有强制完整刷新并真的缓存到行才稳定恢复。（[#68](https://github.com/realZillionX/InspireSkill/issues/68)）
 
   修在语义上：`get_resource_prices()` 和 `list_notebook_compute_groups()` 不再吞掉请求失败，空列表从此只可能是平台成功回答的空。`fetch_quota_catalog()` 改为返回 `QuotaCatalog(records, complete, error)`——扇出会分片失败，一个组读不到就把这一轮记成 incomplete：读到的行照常写入，读不到的保留旧行，Scope 不算完整刷新，所以要求完整刷新的读者会回到 Live 查询。只有完整的目录才允许 `reconcile()` 去 tombstone。列不出 Compute Group 是另一回事——那时根本没有目录，直接抛错。构建缓存事实时不再接受 `config.toml` 的 Compute Group 兜底：那是给离线显示用的，写进权威缓存会把陈旧的组 ID 变成事实。
 
@@ -553,7 +553,7 @@
 
 ### 维护
 
-- **`inspire resources usage` 不接受 `--workspace all`**，传了直接报 `--workspace requires one workspace name for this command.`。开发中做过这个扇出，量完发现它答不出看起来在答的问题：聚合是在逐 Workspace 的循环里做的，同一个人在每个空间各占一行，所以 `--by user` 给的是「(空间, 人) 组合」的排名而不是人的排名——实测一个人在四个空间分别持有 2122 / 1176 / 888 / 560 卡，排行榜上就是四个不同的条目。截断更糟：总排序被跳过，默认 20 行只会来自最先枚举到的那个空间，而提示照样写 `Showing 20 of 857`。
+- **`inspire resources usage` 不接受 `--workspace all`**，传了直接报 `--workspace requires one workspace name for this command.`。跨 Workspace 聚合会把同一用户拆成多条「(空间, 人)」记录，而不是给出全局用户排名；全局输出上限还会偏向最先枚举的空间。因此命令只接受一个 Workspace，保证排序和截断语义与展示范围一致。
 
   没有改成真正的跨空间聚合，是因为聚合完也没有对应的决定：配额和调度都按 Workspace 走，这个命令服务的三个动作（等、去找人要、换个地方提交）也都是。跨 Workspace 找地方本来就是 `resources availability` 和 `resources nodes` 的活，它们逐空间一行、拼接是诚实的。
 

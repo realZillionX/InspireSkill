@@ -46,10 +46,9 @@ __all__ = [
 ]
 
 
-# `train.ListJobs` has an exclusive four-digit ceiling: live probes on the
-# shared lty account accept 999 rows and reject 1000 with
-# `InvalidParameter: page or page_size too large`. The transport-wide 5000 cap
-# is therefore not sufficient for this Action.
+# `train.ListJobs` has an Action-specific ceiling: it accepts 999 rows and
+# rejects 1000 with `InvalidParameter: page or page_size too large`. The
+# transport-wide 5000 cap is therefore not sufficient for this Action.
 MAX_JOB_PAGE_SIZE = 999
 
 

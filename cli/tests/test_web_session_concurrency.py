@@ -290,7 +290,7 @@ def test_stale_session_save_does_not_replace_refreshed_cache(
     # When: an older in-flight request attempts to save its session afterward.
     stale.save(account="default")
 
-    # Then: the refreshed credentials remain in the shared account cache.
+    # Then: the refreshed credentials remain in the process-wide account cache.
     cached = WebSession.load(allow_expired=True, account="default")
     assert cached is not None
     assert cached.created_at == 2.0
