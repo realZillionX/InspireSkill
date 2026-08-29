@@ -263,7 +263,6 @@ def test_auto_stop_after_splits_into_hours_and_minutes(
 
 
 class _FakeJobConfig:
-    path_aliases: dict[str, str] = {}
     remote_env: dict[str, str] = {}
     shm_size = None
     job_auto_fault_tolerance = False
@@ -497,7 +496,6 @@ def _patch_create_runtime(
         password="pass",
         base_url="https://example.invalid",
     )
-    config.projects = {}
     monkeypatch.setattr(
         config_module.Config,
         "from_files_and_env",

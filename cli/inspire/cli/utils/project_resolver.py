@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
-from typing import Any, TypeVar
+from collections.abc import Callable, Iterable
+from typing import TypeVar
 
 from inspire.cli.utils.id_resolver import looks_like_platform_id
 from inspire.config import Config, ConfigError
@@ -11,36 +11,15 @@ from inspire.config import Config, ConfigError
 T = TypeVar("T")
 
 
-def _casefold_lookup(mapping: Mapping[str, Any], value: str) -> tuple[str, Any] | None:
-    needle = str(value or "").strip().casefold()
-    if not needle:
-        return None
-    for key, item in mapping.items():
-        if str(key or "").strip().casefold() == needle:
-            return str(key), item
-    return None
-
-
 def project_name_candidates(config: Config, requested: str) -> tuple[str, ...]:
-    """Return the live project name represented by a name or configured alias."""
+    """Validate and return one explicit live project name."""
+    del config
     raw = str(requested or "").strip()
     if not raw:
         raise ConfigError("--project is required.")
     if looks_like_platform_id(raw):
         raise ConfigError("--project takes a project name.")
 
-    configured = _casefold_lookup(config.projects or {}, raw)
-    if configured is not None:
-        alias, configured_name = configured
-        configured_name = str(configured_name or "").strip()
-        if not configured_name:
-            raise ConfigError(f"Configured project alias {alias!r} has no project name.")
-        if looks_like_platform_id(configured_name):
-            raise ConfigError(
-                f"Configured project alias {alias!r} must map to a project name; "
-                "run `inspire init` to refresh it."
-            )
-        return (configured_name,)
     return (raw,)
 
 

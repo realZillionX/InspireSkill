@@ -73,6 +73,27 @@ def _assert_public_batch_output(value: Any) -> None:
             _assert_public_batch_output(child)
 
 
+_JOB_CONDITION_ARGS = [
+    "--workspace",
+    "cpu",
+    "--project",
+    "Project One",
+    "--group",
+    "H200 Room",
+    "--quota",
+    "1,20,200",
+    "--image",
+    "registry.local/train:latest",
+]
+_JOB_CONDITIONS = {
+    "workspace": "cpu",
+    "project": "Project One",
+    "group": "H200 Room",
+    "quota": "1,20,200",
+    "image": "registry.local/train:latest",
+}
+
+
 def _patch_submit_deps(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -84,22 +105,9 @@ def _patch_submit_deps(
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "remote")},
     )
     config.shm_size = shm_size
     config.job_enable_notification = enable_notification
-    config.projects = {"proj": "Project One"}
-    config.profiles = {
-        "job": {
-            "h200": {
-                "workspace": "cpu",
-                "project": "Project One",
-                "group": "H200 Room",
-                "quota": "1,20,200",
-                "image": "registry.local/train:latest",
-            }
-        }
-    }
 
     def fake_from_files_and_env(
         cls,
@@ -247,7 +255,6 @@ def _write_job_batch(path: Path, *, count: int) -> None:
             {
                 "defaults": {
                     "type": "job",
-                    "profile": "h200",
                     "priority": 7,
                     "framework": "pytorch",
                     "nodes": 1,
@@ -255,6 +262,7 @@ def _write_job_batch(path: Path, *, count: int) -> None:
                 "matrix": {"case": list(range(count))},
                 "jobs": [
                     {
+                        **_JOB_CONDITIONS,
                         "name": "train-{case}",
                         "command": "python train.py --case {case}",
                     }
@@ -452,8 +460,7 @@ def test_job_create_notification_precedence_controls_top_level_payload(
         "create",
         "--name",
         "notify-job",
-        "--profile",
-        "h200",
+        *_JOB_CONDITION_ARGS,
         "--command",
         "python train.py",
     ]
@@ -486,8 +493,7 @@ def test_job_create_notification_reaches_live_create_payload(
             "create",
             "--name",
             "notify-job",
-            "--profile",
-            "h200",
+            *_JOB_CONDITION_ARGS,
             "--command",
             "python train.py",
         ],
@@ -509,7 +515,6 @@ def test_training_plan_exclude_nodes_reads_top_level_payload() -> None:
             "exclude_nodes": ["qb-prod-gpu1736"],
             "framework_config": [{"exclude_nodes": ["nested-node"]}],
         },
-        log_path=None,
         wrapped_command="bash -c 'echo hi'",
         max_time_ms=None,
         project_name="Project One",
@@ -535,7 +540,6 @@ def test_training_plan_specified_nodes_reads_top_level_payload() -> None:
             "specified_nodes": ["qb-prod-gpu1701"],
             "framework_config": [{"specified_nodes": ["nested-node"]}],
         },
-        log_path=None,
         wrapped_command="bash -c 'echo hi'",
         max_time_ms=None,
         project_name="Project One",
@@ -577,7 +581,7 @@ def test_hpc_dry_run_human_scrubs_raw_ids(
             "--workspace",
             "cpu",
             "--project",
-            "proj",
+            "Project One",
             "--image",
             "registry.local/hpc:latest",
             "--dry-run",
@@ -590,37 +594,6 @@ def test_hpc_dry_run_human_scrubs_raw_ids(
     assert "lcg-12345678-1234-1234-1234-123456789abc" not in result.output
     assert "<redacted>" in result.output
     assert api.hpc_calls == []
-
-
-def test_job_create_profile_fills_condition_fields(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    api = _patch_submit_deps(monkeypatch, tmp_path)
-
-    result = CliRunner().invoke(
-        cli_main,
-        [
-            "--json",
-            "job",
-            "create",
-            "--name",
-            "profile-job",
-            "--profile",
-            "h200",
-            "--command",
-            "python train.py",
-            "--dry-run",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["data"]["name"] == "profile-job"
-    assert payload["data"]["image"] == "registry.local/train:latest"
-    assert payload["data"]["project"] == "Project One"
-    _assert_public_batch_output(payload["data"])
-    assert api.training_calls == []
 
 
 def test_job_create_shm_size_overrides_config_default(
@@ -637,8 +610,7 @@ def test_job_create_shm_size_overrides_config_default(
             "create",
             "--name",
             "shm-job",
-            "--profile",
-            "h200",
+            *_JOB_CONDITION_ARGS,
             "--command",
             "python train.py",
             "--shm-size",
@@ -667,8 +639,7 @@ def test_job_create_uses_config_shm_size_when_flag_absent(
             "create",
             "--name",
             "config-shm-job",
-            "--profile",
-            "h200",
+            *_JOB_CONDITION_ARGS,
             "--command",
             "python train.py",
             "--dry-run",
@@ -694,8 +665,7 @@ def test_job_create_human_dry_run_shows_resolved_shm_size(
             "create",
             "--name",
             "human-shm-job",
-            "--profile",
-            "h200",
+            *_JOB_CONDITION_ARGS,
             "--command",
             "python train.py",
             "--dry-run",
@@ -721,8 +691,7 @@ def test_job_create_rejects_shm_size_above_quota_memory(
             "create",
             "--name",
             "oversized-shm-job",
-            "--profile",
-            "h200",
+            *_JOB_CONDITION_ARGS,
             "--command",
             "python train.py",
             "--shm-size",
@@ -753,8 +722,7 @@ def test_job_create_rejects_config_shm_size_above_quota_memory(
             "create",
             "--name",
             "oversized-config-shm-job",
-            "--profile",
-            "h200",
+            *_JOB_CONDITION_ARGS,
             "--command",
             "python train.py",
             "--dry-run",
@@ -769,34 +737,6 @@ def test_job_create_rejects_config_shm_size_above_quota_memory(
     assert api.training_calls == []
 
 
-def test_job_create_rejects_profile_with_explicit_condition_field(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    api = _patch_submit_deps(monkeypatch, tmp_path)
-
-    result = CliRunner().invoke(
-        cli_main,
-        [
-            "job",
-            "create",
-            "--name",
-            "profile-job",
-            "--profile",
-            "h200",
-            "--workspace",
-            "cpu",
-            "--command",
-            "python train.py",
-            "--dry-run",
-        ],
-    )
-
-    assert result.exit_code != 0
-    assert "--profile cannot be combined with scheduling fields: --workspace" in result.output
-    assert api.training_calls == []
-
-
 def test_batch_matrix_dry_run_expands_json_without_submit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -806,20 +746,8 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     batch_path.write_text(
         json.dumps(
             {
-                "profiles": {
-                    "job": {
-                        "h200": {
-                            "quota": "1,20,200",
-                            "workspace": "cpu",
-                            "project": "Project One",
-                            "group": "H200 Room",
-                            "image": "train-image:v1",
-                        }
-                    }
-                },
                 "defaults": {
                     "type": "job",
-                    "profile": "h200",
                     "priority": 7,
                     "framework": "pytorch",
                     "nodes": 1,
@@ -834,6 +762,7 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
                 "matrix": {"seed": [1, 2]},
                 "jobs": [
                     {
+                        **_JOB_CONDITIONS,
                         "name": "train-s{seed}",
                         "command": "python train.py --seed {seed}",
                     }
@@ -855,7 +784,7 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert items[0]["workspace"] == "cpu"
     assert items[0]["project"] == "Project One"
     assert items[0]["compute_group"] == "H200 Room"
-    assert items[0]["image"] == "train-image:v1"
+    assert items[0]["image"] == "registry.local/train:latest"
     assert items[1]["command"] == "python train.py --seed 2"
     assert items[0]["exclude_nodes"] == ["qb-prod-gpu171"]
     assert items[1]["exclude_nodes"] == ["qb-prod-gpu172"]
@@ -867,7 +796,7 @@ def test_batch_matrix_dry_run_expands_json_without_submit(
     assert api.project_list_calls == 1
     assert api.scheduling_health_calls == 1
     assert api.priority_menu_calls == 1
-    assert api.image_catalog_calls == ["official"]
+    assert api.image_catalog_calls == []
     assert items[0]["shared_memory_gib"] == 96
     assert items[1]["shared_memory_gib"] == 96
     assert items[0]["priority"] == 7
@@ -893,9 +822,10 @@ def test_job_batch_rejects_specified_nodes_when_workspace_disables_them(
     batch_path.write_text(
         json.dumps(
             {
-                "defaults": {"type": "job", "profile": "h200"},
+                "defaults": {"type": "job"},
                 "jobs": [
                     {
+                        **_JOB_CONDITIONS,
                         "name": "pinned-job",
                         "command": "python train.py",
                         "specified_nodes": ["qb-prod-gpu181"],
@@ -1015,27 +945,16 @@ def test_batch_notification_item_overrides_config_default(
     batch_path.write_text(
         json.dumps(
             {
-                "profiles": {
-                    "job": {
-                        "h200": {
-                            "quota": "1,20,200",
-                            "workspace": "cpu",
-                            "project": "Project One",
-                            "group": "H200 Room",
-                            "image": "registry.batch/train:latest",
-                        }
-                    }
-                },
                 "defaults": {
                     "type": "job",
-                    "profile": "h200",
                     "priority": 7,
                     "framework": "pytorch",
                     "nodes": 1,
                 },
                 "jobs": [
-                    {"name": "inherits", "command": "python train.py"},
+                    {**_JOB_CONDITIONS, "name": "inherits", "command": "python train.py"},
                     {
+                        **_JOB_CONDITIONS,
                         "name": "disabled",
                         "command": "python train.py",
                         "enable_notification": False,
@@ -1070,24 +989,12 @@ def test_batch_rejects_shm_size_above_quota_memory(
     batch_path.write_text(
         json.dumps(
             {
-                "profiles": {
-                    "job": {
-                        "h200": {
-                            "quota": "1,20,200",
-                            "workspace": "cpu",
-                            "project": "Project One",
-                            "group": "H200 Room",
-                            "image": "registry.batch/train:latest",
-                        }
-                    }
-                },
                 "defaults": {
                     "type": "job",
-                    "profile": "h200",
                     "shm_size": 256,
                 },
                 "jobs": [
-                    {"name": "train", "command": "python train.py"},
+                    {**_JOB_CONDITIONS, "name": "train", "command": "python train.py"},
                 ],
             }
         ),
@@ -1136,21 +1043,11 @@ def test_batch_rejects_platform_ids_in_name_fields(
     batch_path.write_text(
         json.dumps(
             {
-                "profiles": {
-                    "job": {
-                        "bad": {
-                            "quota": "1,20,200",
-                            "workspace": "cpu",
-                            "project": raw_project_id,
-                            "group": "H200 Room",
-                            "image": "registry.batch/train:latest",
-                        }
-                    }
-                },
                 "jobs": [
                     {
+                        **_JOB_CONDITIONS,
                         "type": "job",
-                        "profile": "bad",
+                        "project": raw_project_id,
                         "name": "train",
                         "command": "python train.py",
                     }
@@ -1179,16 +1076,8 @@ def test_batch_matrix_submit_calls_create_for_each_item(
     batch_path = tmp_path / "batch.toml"
     batch_path.write_text(
         """
-[profiles.job.h200]
-quota = "1,20,200"
-workspace = "cpu"
-project = "Project One"
-group = "H200 Room"
-image = "registry.batch/train:latest"
-
 [defaults]
 type = "job"
-profile = "h200"
 priority = 7
 framework = "pytorch"
 nodes = 1
@@ -1203,6 +1092,11 @@ lr = ["1e-4", "2e-4"]
 [[jobs]]
 name = "train-{lr}"
 command = "python train.py --lr {lr}"
+quota = "1,20,200"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/train:latest"
 """.strip(),
         encoding="utf-8",
     )
@@ -1238,19 +1132,8 @@ def test_batch_does_not_fall_back_to_config_job_defaults(
     batch_path.write_text(
         json.dumps(
             {
-                "profiles": {
-                    "job": {
-                        "h200": {
-                            "quota": "1,20,200",
-                            "workspace": "cpu",
-                            "project": "Project One",
-                            "group": "H200 Room",
-                        }
-                    }
-                },
                 "defaults": {
                     "type": "job",
-                    "profile": "h200",
                     "priority": 7,
                     "framework": "pytorch",
                     "nodes": 1,
@@ -1259,7 +1142,12 @@ def test_batch_does_not_fall_back_to_config_job_defaults(
                     "fault_tolerance_max_retry": 0,
                 },
                 "jobs": [
-                    {"name": "train", "command": "python train.py"},
+                    {
+                        **_JOB_CONDITIONS,
+                        "name": "train",
+                        "command": "python train.py",
+                        "image": None,
+                    },
                 ],
             }
         ),
@@ -1273,7 +1161,7 @@ def test_batch_does_not_fall_back_to_config_job_defaults(
     assert api.training_calls == []
 
 
-def test_batch_rejects_profile_merged_with_condition_override(
+def test_batch_rejects_removed_profiles(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1293,25 +1181,7 @@ def test_batch_rejects_profile_merged_with_condition_override(
                         }
                     }
                 },
-                "defaults": {
-                    "type": "job",
-                    "profile": "h200",
-                    "priority": 6,
-                    "framework": "pytorch",
-                    "nodes": 1,
-                    "max_time": 24,
-                    "auto_fault_tolerance": False,
-                    "fault_tolerance_max_retry": 0,
-                },
-                "jobs": [
-                    {"name": "train-default", "command": "python train.py"},
-                    {
-                        "name": "train-override",
-                        "command": "python train.py",
-                        "image": "registry.batch/override:latest",
-                        "priority": 8,
-                    },
-                ],
+                "jobs": [{**_JOB_CONDITIONS, "name": "train", "command": "true"}],
             }
         ),
         encoding="utf-8",
@@ -1325,9 +1195,35 @@ def test_batch_rejects_profile_merged_with_condition_override(
     assert result.exit_code != 0
     payload = json.loads(result.output)
     assert payload["success"] is False
-    assert "--profile cannot be combined with scheduling fields: --image" in payload["error"][
-        "message"
-    ]
+    assert "Batch profiles were removed" in payload["error"]["message"]
+
+
+def test_batch_rejects_removed_item_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_submit_deps(monkeypatch, tmp_path)
+    batch_path = tmp_path / "batch.json"
+    batch_path.write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        **_JOB_CONDITIONS,
+                        "profile": "old",
+                        "name": "train",
+                        "command": "true",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli_main, ["job", "batch", str(batch_path), "--dry-run"])
+
+    assert result.exit_code != 0
+    assert "Batch item profiles were removed" in result.output
 
 
 def test_notebook_batch_matrix_dry_run_expands_json_without_submit(
@@ -1339,27 +1235,22 @@ def test_notebook_batch_matrix_dry_run_expands_json_without_submit(
     batch_path.write_text(
         json.dumps(
             {
-                "profiles": {
-                    "notebook": {
-                        "cpu": {
-                            "quota": "0,4,32",
-                            "workspace": "cpu",
-                            "project": "proj",
-                            "group": "H200 Room",
-                            "image": "registry.batch/notebook:latest",
-                        }
-                    }
-                },
                 "defaults": {
                     "type": "notebook",
-                    "profile": "cpu",
                     "priority": 5,
                     "shm_size": 32,
                     "auto_stop": False,
                 },
                 "matrix": {"seed": [1, 2]},
                 "notebooks": [
-                    {"name": "nb-s{seed}"},
+                    {
+                        "name": "nb-s{seed}",
+                        "quota": "0,4,32",
+                        "workspace": "cpu",
+                        "project": "Project One",
+                        "group": "H200 Room",
+                        "image": "registry.batch/notebook:latest",
+                    },
                 ],
             }
         ),
@@ -1395,20 +1286,8 @@ def test_hpc_batch_reuses_live_project_and_image_catalogs(
     batch_path.write_text(
         json.dumps(
             {
-                "profiles": {
-                    "hpc": {
-                        "cpu": {
-                            "quota": "0,4,32",
-                            "workspace": "cpu",
-                            "project": "Project One",
-                            "group": "H200 Room",
-                            "image": "train-image:v1",
-                        }
-                    }
-                },
                 "defaults": {
                     "type": "hpc",
-                    "profile": "cpu",
                     "priority": 7,
                     "instance_count": 1,
                     "number_of_tasks": 1,
@@ -1418,6 +1297,11 @@ def test_hpc_batch_reuses_live_project_and_image_catalogs(
                     {
                         "name": "hpc-{case}",
                         "entrypoint": "srun true",
+                        "quota": "0,4,32",
+                        "workspace": "cpu",
+                        "project": "Project One",
+                        "group": "H200 Room",
+                        "image": "train-image:v1",
                     }
                 ],
             }
@@ -1445,20 +1329,8 @@ def test_batch_requires_training_fields_after_expansion(
     batch_path.write_text(
         json.dumps(
             {
-                "profiles": {
-                    "job": {
-                        "h200": {
-                            "quota": "1,20,200",
-                            "workspace": "cpu",
-                            "project": "Project One",
-                            "group": "H200 Room",
-                            "image": "registry.batch/train:latest",
-                        }
-                    }
-                },
                 "defaults": {
                     "type": "job",
-                    "profile": "h200",
                     "priority": 7,
                     "framework": "pytorch",
                     "nodes": 1,
@@ -1468,7 +1340,7 @@ def test_batch_requires_training_fields_after_expansion(
                 },
                 "matrix": {"cmd": [""]},
                 "jobs": [
-                    {"name": "train", "command": "{cmd}"},
+                    {**_JOB_CONDITIONS, "name": "train", "command": "{cmd}"},
                 ],
             }
         ),
@@ -1491,19 +1363,8 @@ def test_batch_hpc_requires_fields_after_expansion(
     batch_path.write_text(
         json.dumps(
             {
-                "profiles": {
-                    "hpc": {
-                        "cpu": {
-                            "quota": "0,32,256",
-                            "workspace": "cpu",
-                            "project": "proj",
-                            "group": "H200 Room",
-                        }
-                    }
-                },
                 "defaults": {
                     "type": "hpc",
-                    "profile": "cpu",
                     "image_type": "SOURCE_PRIVATE",
                     "priority": 7,
                     "instance_count": 1,
@@ -1512,7 +1373,14 @@ def test_batch_hpc_requires_fields_after_expansion(
                     "enable_hyper_threading": False,
                 },
                 "jobs": [
-                    {"name": "hpc", "entrypoint": "srun python train.py"},
+                    {
+                        "name": "hpc",
+                        "entrypoint": "srun python train.py",
+                        "quota": "0,32,256",
+                        "workspace": "cpu",
+                        "project": "Project One",
+                        "group": "H200 Room",
+                    },
                 ],
             }
         ),
@@ -1556,25 +1424,14 @@ def test_job_batch_reuses_successful_dataset_validation(
     batch_path.write_text(
         json.dumps(
             {
-                "profiles": {
-                    "job": {
-                        "h200": {
-                            "quota": "1,20,200",
-                            "workspace": "cpu",
-                            "project": "Project One",
-                            "group": "H200 Room",
-                            "image": "registry.batch/train:latest",
-                        }
-                    }
-                },
                 "defaults": {
                     "type": "job",
-                    "profile": "h200",
                     "dataset": ["pixabay-81k:v0"],
                 },
                 "matrix": {"case": [1, 2, 3]},
                 "jobs": [
                     {
+                        **_JOB_CONDITIONS,
                         "name": "train-{case}",
                         "command": "true",
                     }
@@ -1652,21 +1509,18 @@ def test_job_batch_entry_carries_datasets_env_and_reservations(
     batch_path = tmp_path / "batch.toml"
     batch_path.write_text(
         """
-[profiles.job.h200]
-quota = "1,20,200"
-workspace = "cpu"
-project = "Project One"
-group = "H200 Room"
-image = "registry.batch/train:latest"
-
 [defaults]
 type = "job"
-profile = "h200"
 nodes = 1
 
 [[jobs]]
 name = "train"
 command = "python train.py"
+quota = "1,20,200"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/train:latest"
 dataset = ["pixabay-81k:v0", "videoufo:v1"]
 env = { HF_HOME = "/tmp/hf", RANK = 0 }
 description = "batch smoke"
@@ -1739,20 +1593,17 @@ def test_hpc_batch_entry_carries_dataset_and_retention(
     batch_path = tmp_path / "batch.toml"
     batch_path.write_text(
         """
-[profiles.hpc.cpu]
+[defaults]
+type = "hpc"
+
+[[jobs]]
+name = "prep"
+entrypoint = "srun python prep.py"
 quota = "0,20,100"
 workspace = "cpu"
 project = "Project One"
 group = "H200 Room"
 image = "registry.batch/hpc:latest"
-
-[defaults]
-type = "hpc"
-profile = "cpu"
-
-[[jobs]]
-name = "prep"
-entrypoint = "srun python prep.py"
 dataset = "pixabay-81k:v0"
 description = "hpc smoke"
 keep_after_finish = 0.5
@@ -1786,21 +1637,18 @@ def test_batch_rejects_a_malformed_dataset_spec_before_submitting(
     batch_path = tmp_path / "batch.toml"
     batch_path.write_text(
         """
-[profiles.job.h200]
-quota = "1,20,200"
-workspace = "cpu"
-project = "Project One"
-group = "H200 Room"
-image = "registry.batch/train:latest"
-
 [defaults]
 type = "job"
-profile = "h200"
 nodes = 1
 
 [[jobs]]
 name = "train"
 command = "python train.py"
+quota = "1,20,200"
+workspace = "cpu"
+project = "Project One"
+group = "H200 Room"
+image = "registry.batch/train:latest"
 dataset = "pixabay-81k"
 """.strip(),
         encoding="utf-8",
@@ -1848,20 +1696,17 @@ def test_ray_batch_entry_carries_the_readonly_guard(
     batch_path = tmp_path / "batch.toml"
     batch_path.write_text(
         """
-[profiles.ray.cpu]
+[defaults]
+type = "ray"
+
+[[jobs]]
+name = "pipeline"
+command = "python driver.py"
 quota = "0,20,80"
 workspace = "cpu"
 project = "Project One"
 group = "H200 Room"
 image = "registry.batch/notebook:latest"
-
-[defaults]
-type = "ray"
-profile = "cpu"
-
-[[jobs]]
-name = "pipeline"
-command = "python driver.py"
 public_path_readonly = true
 workers = ["name=w;image=registry.batch/notebook:latest;group=H200 Room;quota=0,20,80;min=1;max=2"]
 """.strip(),
@@ -1908,20 +1753,17 @@ def test_ray_batch_entry_without_the_guard_omits_it(
     batch_path = tmp_path / "batch.toml"
     batch_path.write_text(
         """
-[profiles.ray.cpu]
+[defaults]
+type = "ray"
+
+[[jobs]]
+name = "pipeline"
+command = "python driver.py"
 quota = "0,20,80"
 workspace = "cpu"
 project = "Project One"
 group = "H200 Room"
 image = "registry.batch/notebook:latest"
-
-[defaults]
-type = "ray"
-profile = "cpu"
-
-[[jobs]]
-name = "pipeline"
-command = "python driver.py"
 workers = ["name=w;image=registry.batch/notebook:latest;group=H200 Room;quota=0,20,80;min=1;max=2"]
 """.strip(),
         encoding="utf-8",

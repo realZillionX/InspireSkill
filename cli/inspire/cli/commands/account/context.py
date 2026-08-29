@@ -38,9 +38,6 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
     warnings: list[str] = []
     active_account = scrub_raw_ids(current_account() or "") or None
 
-    active_project_name = scrub_raw_ids(cfg.context_project or "") or None
-    active_workspace_name = scrub_raw_ids(cfg.context_workspace or "") or None
-
     # One live session feeds every catalog below. Account config deliberately
     # carries no project or compute-group snapshot, so falling back to Config
     # here would quietly reintroduce the stale-catalog bug that init removes.
@@ -134,8 +131,6 @@ def _collect_context(cfg: Config) -> dict[str, Any]:
     data: dict[str, Any] = {
         "active": {
             "account": active_account,
-            "project": active_project_name,
-            "workspace": active_workspace_name,
         },
         "projects": projects_view,
         "workspaces": workspaces_view,
@@ -170,10 +165,7 @@ def _bound_context(data: dict[str, Any], limit: int | None) -> dict[str, Any]:
 def _render_human(data: dict[str, Any]) -> None:
     active = data["active"]
     click.echo(
-        "active "
-        f"account={active['account'] or '-'} "
-        f"project={active['project'] or '-'} "
-        f"workspace={active['workspace'] or '-'}"
+        "active " f"account={active['account'] or '-'}"
     )
 
     projects: list[dict[str, str]] = data["projects"]

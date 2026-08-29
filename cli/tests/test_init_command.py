@@ -21,7 +21,7 @@ from inspire.cli.main import main as cli_main
 from inspire.config import Config
 
 
-def test_init_template_project_succeeds_with_active_account(
+def test_init_template_writes_account_only(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -44,14 +44,12 @@ def test_init_template_project_succeeds_with_active_account(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["init", "--template", "--scope", "project", "--force"])
+    result = runner.invoke(cli_main, ["init", "--template", "--force"])
 
-    project_config = repo_dir / ".inspire" / "accounts" / "alice" / "config.toml"
     assert result.exit_code == EXIT_SUCCESS
-    assert project_config.exists()
-    content = project_config.read_text(encoding="utf-8")
-    assert "Inspire CLI Project Configuration" in content
-    assert "[auth]" not in content
+    assert account_config_path.exists()
+    assert "Inspire CLI Account Configuration" in account_config_path.read_text(encoding="utf-8")
+    assert not (repo_dir / ".inspire").exists()
 
 
 def test_init_fails_fast_when_no_active_account(
@@ -69,7 +67,7 @@ def test_init_fails_fast_when_no_active_account(
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["init", "--template", "--scope", "project", "--force"])
+    result = runner.invoke(cli_main, ["init", "--template", "--force"])
 
     assert result.exit_code == EXIT_GENERAL_ERROR
     assert "No active account configured. Run `inspire account add` first." in result.output
@@ -95,7 +93,7 @@ def test_init_defaults_to_discover_mode_with_active_account(
     monkeypatch.setattr(
         init_cmd_module,
         "snapshot_paths",
-        lambda global_path, project_path: {"global": global_path, "project": project_path},
+        lambda account_path: {"account": account_path},
     )
     monkeypatch.setattr(init_cmd_module, "current_account", lambda: "alice")
     monkeypatch.setattr(init_cmd_module, "list_accounts", lambda: ["alice"])
@@ -115,18 +113,17 @@ def test_init_defaults_to_discover_mode_with_active_account(
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert calls["func"] is init_cmd_module._init_discover_mode
     assert calls["force"] is True
-    assert calls["kwargs"]["scope"] == "global"
     assert calls["kwargs"]["non_interactive"] is True
 
 
-def test_init_rejects_select_project_outside_project_scope() -> None:
+def test_init_rejects_removed_select_project() -> None:
     result = CliRunner().invoke(
         cli_main,
         ["init", "--select-project", "Project One", "--force"],
     )
 
-    assert result.exit_code == EXIT_GENERAL_ERROR
-    assert "--select-project is only supported" in result.output
+    assert result.exit_code == 2
+    assert "No such option '--select-project'" in result.output
 
 
 def test_init_bootstraps_first_account_before_discover(
@@ -160,7 +157,6 @@ def test_init_bootstraps_first_account_before_discover(
     assert result.exit_code == EXIT_SUCCESS, result.output
     assert "Active account: zillionx" in result.output
     assert calls["func"] is init_cmd_module._init_discover_mode
-    assert calls["kwargs"]["scope"] == "global"
     assert (tmp_path / ".inspire" / "current").read_text(encoding="utf-8") == "zillionx\n"
     account_config = (
         tmp_path / ".inspire" / "accounts" / "zillionx" / "config.toml"
@@ -478,7 +474,7 @@ def test_discover_runtime_retries_configured_login_after_browser_repair(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected prompt")),
     )
 
-    resolved_session, prompted_credentials, account_key, workspace_id = (
+    resolved_session, prompted_credentials, account_key = (
         discover_module._resolve_discover_runtime(
             config=cfg,
             web_session_module=FakeWebSessionModule,
@@ -491,7 +487,6 @@ def test_discover_runtime_retries_configured_login_after_browser_repair(
     assert resolved_session is session
     assert prompted_credentials is None
     assert account_key == "253108120116"
-    assert workspace_id == "ws-real"
     assert repaired == [True]
     assert calls == [
         {"require_workspace": True},
@@ -547,13 +542,13 @@ def test_discover_shows_why_it_is_asking_again_after_a_rejected_login(
 
 
 def test_persist_prompted_credentials_updates_auth_username() -> None:
-    global_data = {
+    account_data = {
         "auth": {"username": "仝", "password": "old-secret"},
         "api": {"base_url": "https://qz.sii.edu.cn"},
     }
 
     discover_module._persist_prompted_credentials(
-        global_data=global_data,
+        account_data=account_data,
         prompted_credentials=(
             "253108120116",
             "new-secret",
@@ -561,28 +556,9 @@ def test_persist_prompted_credentials_updates_auth_username() -> None:
         ),
     )
 
-    assert global_data["auth"]["username"] == "253108120116"
-    assert global_data["auth"]["password"] == "new-secret"
-    assert global_data["api"]["base_url"] == "https://qz.sii.edu.cn"
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        ("project-alpha-2026", False),
-        ("workspace-research-2026", False),
-        ("lcg-training-room-2026", False),
-        ("project-a1b2c3d4", True),
-        ("proj-deadbeef", True),
-        ("workspace-a1b2c3d4", True),
-        ("550e8400-e29b-41d4-a716-446655440000", True),
-    ],
-)
-def test_looks_like_project_handle_uses_platform_handle_shape(
-    value: str,
-    expected: bool,
-) -> None:
-    assert discover_module._looks_like_project_handle(value) is expected
+    assert account_data["auth"]["username"] == "253108120116"
+    assert account_data["auth"]["password"] == "new-secret"
+    assert account_data["api"]["base_url"] == "https://qz.sii.edu.cn"
 
 
 def test_init_json_report_only_emits_result_and_changed_configs(

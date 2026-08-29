@@ -70,13 +70,6 @@ from .datasets import (
     container_mount_path,
     validate_dataset_mounts,
 )
-from .files import (
-    FileDirectoryInfo,
-    SystemStorageInfo,
-    list_file_directories,
-    list_project_file_directories,
-    list_system_storage_types,
-)
 from .hpc_jobs import (
     HPC_LOG_MAX_WINDOW_MS,
     HPCJobInfo,
@@ -255,12 +248,6 @@ __all__ = [
     "DatasetValidation",
     "container_mount_path",
     "validate_dataset_mounts",
-    # Files
-    "FileDirectoryInfo",
-    "SystemStorageInfo",
-    "list_file_directories",
-    "list_project_file_directories",
-    "list_system_storage_types",
     # HPC jobs
     "HPC_LOG_MAX_WINDOW_MS",
     "HPCJobInfo",

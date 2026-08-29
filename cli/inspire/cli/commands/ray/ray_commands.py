@@ -55,7 +55,6 @@ from inspire.cli.utils.task_priority import (
     task_priority_option,
 )
 from inspire.config import Config, ConfigError
-from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import (
     resolve_workspace_query_scope,
     select_workspace_id,
@@ -1039,27 +1038,30 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
 )
 @click.option(
     "--workspace",
+    required=True,
     metavar="NAME",
-    help="Workspace name. Required unless supplied by --profile.",
+    help="Workspace name.",
 )
 @click.option(
     "--project",
     "-p",
+    required=True,
     metavar="NAME",
-    help="Project name. Required unless supplied by --profile.",
+    help="Project name.",
 )
 @click.option(
     "--group",
+    required=True,
     default=None,
     metavar="NAME",
     help=(
-        "Full compute group name copied from the same quota row as --quota. "
-        "Required unless supplied by --profile."
+        "Full compute group name copied from the same quota row as --quota."
     ),
 )
 @click.option(
     "--quota",
     "-q",
+    required=True,
     default=None,
     metavar="SPEC",
     help=(
@@ -1070,16 +1072,10 @@ def _parse_worker_spec(raw: str) -> dict[str, Any]:
 @click.option(
     "--image",
     "-i",
+    required=True,
     default=None,
     metavar="NAME|URL",
-    help="Head node image name or Docker URL. Required unless supplied by --profile.",
-)
-@click.option(
-    "--profile",
-    "profile_name",
-    default=None,
-    metavar="NAME",
-    help="Ray condition profile for workspace/project/group/quota/image.",
+    help="Head node image name or Docker URL.",
 )
 @click.option("--description", default="", help="Free-form description")
 @task_priority_option()
@@ -1128,7 +1124,6 @@ def create_ray(
     description: str,
     project: Optional[str],
     workspace: Optional[str],
-    profile_name: Optional[str],
     priority: Optional[int],
     image: Optional[str],
     image_type: str,
@@ -1163,23 +1158,6 @@ def create_ray(
         config, _ = Config.from_files_and_env()
         session = get_web_session()
 
-        fields = apply_workload_profile(
-            profiles=getattr(config, "profiles", {}),
-            kind="ray",
-            profile_name=profile_name,
-            values={
-                "workspace": workspace,
-                "project": project,
-                "group": group,
-                "image": image,
-                "quota": quota,
-            },
-        )
-        workspace = fields["workspace"]
-        project = fields["project"]
-        group = fields["group"]
-        image = fields["image"]
-        quota = fields["quota"]
         body = _assemble_create_body(
             ctx,
             config=config,
@@ -1367,7 +1345,7 @@ def _assemble_create_body(
         ("project", project),
     ):
         if not value:
-            raise click.UsageError(profile_required_message("ray", field_name))
+            raise click.UsageError(f"--{field_name} is required.")
     image_value = cast(str, image)
     image_type_value = image_type.strip()
     if image_type_value not in IMAGE_TYPE_CHOICES:
@@ -1387,7 +1365,7 @@ def _assemble_create_body(
         session=session,
     )
     if resolved_workspace_id is None:
-        raise ConfigError(profile_required_message("ray", "workspace"))
+        raise ConfigError("--workspace is required.")
     resolved_project_id = _resolve_project_id(
         config,
         project,

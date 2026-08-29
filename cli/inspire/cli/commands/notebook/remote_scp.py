@@ -11,12 +11,10 @@ import click
 
 from inspire.cli.context import (
     Context,
-    EXIT_CONFIG_ERROR,
     EXIT_GENERAL_ERROR,
     EXIT_TIMEOUT,
     pass_context,
 )
-from inspire.config import Config, ConfigError, resolve_remote_path_alias
 from inspire.bridge.tunnel import (
     TunnelNotAvailableError,
     BridgeNotFoundError,
@@ -59,7 +57,7 @@ def _warn_if_remote_path_is_relative(remote_path: str, *, download: bool) -> Non
     click.echo(
         (
             f"Warning: remote {role} '{remote_path}' is relative on the notebook; "
-            "it does not use path aliases. Prefer an absolute path."
+            "prefer an absolute path."
         ),
         err=True,
     )
@@ -114,17 +112,14 @@ def bridge_scp(
     notebook instead.
     By default, uploads SOURCE (local) to DESTINATION (remote).
     Use --download to download SOURCE (remote) to DESTINATION (local).
-    Remote paths may be absolute paths, aliases, or alias:sub/path values
-    from [path_aliases]. Relative remote paths are allowed but trigger a
-    warning because their meaning depends on the remote shell.
+    Remote paths should be absolute. Relative remote paths are allowed but
+    trigger a warning because their meaning depends on the remote shell.
 
     \b
     Examples:
-        inspire notebook scp my-notebook ./model.py me:repo/model.py
-        inspire notebook scp my-notebook ./data/ me:repo/data/ -r
-        inspire notebook scp my-notebook -d me:repo/results.tar.gz ./results.tar.gz
-        inspire notebook scp my-notebook -d me:repo/checkpoints/ ./checkpoints/ -r
-        inspire notebook scp my-notebook ./bundle.tar me:
+        inspire notebook scp my-notebook ./model.py /inspire/ssd/project/topic/user/repo/model.py
+        inspire notebook scp my-notebook ./data/ /inspire/ssd/project/topic/user/repo/data/ -r
+        inspire notebook scp my-notebook -d /inspire/ssd/project/topic/user/results.tar.gz ./
         inspire notebook scp public-box ./dataset.tar /inspire/hdd/project/topic/user/dataset.tar
     """
     from inspire.cli.utils.id_resolver import reject_id_at_boundary
@@ -135,11 +130,6 @@ def bridge_scp(
         resource_type="notebook",
         list_command="inspire notebook list",
     )
-    try:
-        config, _ = Config.from_files_and_env(require_credentials=False)
-    except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-
     # Validate local path exists for uploads
     if not download:
         local = Path(source)
@@ -221,24 +211,14 @@ def bridge_scp(
     else:
         local_path, remote_path = source, destination
 
-    try:
-        remote_path, used_alias = resolve_remote_path_alias(
-            remote_path,
-            config.path_aliases,
-            require_absolute_or_alias=False,
-        )
-    except ConfigError as e:
-        _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-
     _warn_if_remote_path_is_relative(remote_path, download=download)
 
     direction = "download" if download else "upload"
 
     logger.debug(
-        "Notebook SCP transfer started direction=%s recursive=%s alias_resolved=%s",
+        "Notebook SCP transfer started direction=%s recursive=%s",
         direction,
         recursive,
-        used_alias,
     )
 
     try:

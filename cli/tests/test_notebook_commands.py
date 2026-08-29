@@ -80,7 +80,6 @@ def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> co
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
     )
     if include_compute_groups:
         test_group_id = "lcg-test000-0000-0000-0000-000000000000"
@@ -1353,7 +1352,6 @@ def test_notebook_start_accepts_name(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
     )
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
@@ -1452,7 +1450,6 @@ def test_notebook_start_wait_prints_progress(
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
     )
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
@@ -1550,7 +1547,6 @@ def test_notebook_start_name_conflict_prompts_selection(
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
     )
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
@@ -1657,7 +1653,6 @@ def test_notebook_start_warns_when_no_wait_conflicts_with_configured_post_start(
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
         notebook_post_start="echo from config",
     )
 
@@ -2563,108 +2558,10 @@ def test_notebook_connection_workspace_rejects_id_shaped_values(
     assert "ws-123456" not in result.output
 
 
-def test_notebook_path_commands_manage_project_path_alias(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    # The repo has to sit *under* the fake home: the project-config search walks
-    # up from the cwd and stops at home. With the fake home off to one side the
-    # walk runs past it to the filesystem root — which on Windows means straight
-    # through the real user profile, since tmp_path lives inside it.
-    fake_home = tmp_path
-    repo_dir = fake_home / "repo"
-    repo_dir.mkdir()
-    account_dir = fake_home / ".inspire" / "accounts" / "alice"
-    account_dir.mkdir(parents=True)
-    (account_dir / "config.toml").write_text("", encoding="utf-8")
-    (fake_home / ".inspire" / "current").write_text("alice\n", encoding="utf-8")
-    monkeypatch.setattr(Path, "home", lambda: fake_home)
-    monkeypatch.chdir(repo_dir)
-
-    runner = CliRunner()
-    set_result = runner.invoke(
-        cli_main,
-        [
-            "notebook",
-            "path",
-            "set",
-            "me",
-            "/inspire/ssd/project/topic/alice/",
-        ],
-    )
-
-    assert set_result.exit_code == EXIT_SUCCESS
-    assert set_result.output == "OK Path alias saved: me\n"
-    json_set_result = runner.invoke(
-        cli_main,
-        [
-            "--json",
-            "notebook",
-            "path",
-            "set",
-            "me",
-            "/inspire/ssd/project/topic/alice/",
-        ],
-    )
-    assert json_set_result.exit_code == EXIT_SUCCESS
-    assert json.loads(json_set_result.output)["data"] == {
-        "name": "me",
-        "status": "saved",
-    }
-    assert "/inspire/" not in json_set_result.output
-    config_path = repo_dir / ".inspire" / "accounts" / "alice" / "config.toml"
-    assert config_path.exists()
-    content = config_path.read_text(encoding="utf-8")
-    assert "[path_aliases]" in content
-    assert 'me = "/inspire/ssd/project/topic/alice/"' in content
-
-    list_result = runner.invoke(cli_main, ["notebook", "path", "list"])
-    assert list_result.exit_code == EXIT_SUCCESS
-    assert "Project path aliases" not in list_result.output
-    assert "me" in list_result.output
-    assert "/inspire/" not in list_result.output
-
-    json_list_result = runner.invoke(cli_main, ["--json", "notebook", "path", "list"])
-    assert json_list_result.exit_code == EXIT_SUCCESS
-    assert json.loads(json_list_result.output)["data"] == {"items": [{"name": "me"}]}
-    assert "/inspire/" not in json_list_result.output
-
-    show_result = runner.invoke(cli_main, ["notebook", "path", "show", "me"])
-    assert show_result.exit_code == EXIT_SUCCESS
-    assert "Path alias: me" in show_result.output
-    assert "/inspire/ssd/project/topic/alice/" in show_result.output
-
-    json_show_result = runner.invoke(
-        cli_main,
-        ["--json", "notebook", "path", "show", "me"],
-    )
-    assert json_show_result.exit_code == EXIT_SUCCESS
-    assert json.loads(json_show_result.output)["data"] == {
-        "name": "me",
-        "path": "/inspire/ssd/project/topic/alice/",
-    }
-
-    delete_result = runner.invoke(cli_main, ["notebook", "path", "delete", "me", "--yes"])
-    assert delete_result.exit_code == EXIT_SUCCESS
-    assert delete_result.output == "OK Path alias deleted: me\n"
-    assert "[path_aliases]" not in config_path.read_text(encoding="utf-8")
-
-
-def test_notebook_help_exposes_path_group() -> None:
-    runner = CliRunner()
-
-    notebook_help = runner.invoke(cli_main, ["notebook", "--help"])
-    assert notebook_help.exit_code == EXIT_SUCCESS
-    assert "path" in notebook_help.output
-
-    path_help = runner.invoke(cli_main, ["notebook", "path", "--help"])
-    assert path_help.exit_code == EXIT_SUCCESS
-    assert "Manage project-level remote path aliases." in path_help.output
-    assert "not bound to any one notebook instance" in path_help.output
-
-    show_help = runner.invoke(cli_main, ["notebook", "path", "show", "--help"])
-    assert show_help.exit_code == EXIT_SUCCESS
-    assert "Reveal the remote path stored for one alias." in show_help.output
+def test_notebook_help_has_no_path_alias_group() -> None:
+    result = CliRunner().invoke(cli_main, ["notebook", "--help"])
+    assert result.exit_code == EXIT_SUCCESS
+    assert "  path " not in result.output
 
 
 def test_notebook_workspace_metavars_are_name_oriented() -> None:
@@ -2706,14 +2603,13 @@ def test_notebook_live_name_commands_share_pick_interface(command: str) -> None:
     )
 
 
-def test_notebook_exec_cwd_uses_path_alias(
+def test_notebook_exec_cwd_uses_absolute_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     config = config_module.Config(
         username="",
         password="",
-        path_aliases={"me": "/inspire/ssd/project/topic/alice/"},
     )
     tunnel_config = tunnel_module.TunnelConfig()
     tunnel_config.add_bridge(
@@ -2743,7 +2639,14 @@ def test_notebook_exec_cwd_uses_path_alias(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["notebook", "exec", "gpu-main", "--cwd", "me:repo", "pwd"],
+        [
+            "notebook",
+            "exec",
+            "gpu-main",
+            "--cwd",
+            "/inspire/ssd/project/topic/alice/repo",
+            "pwd",
+        ],
     )
 
     assert result.exit_code == EXIT_SUCCESS
@@ -2789,14 +2692,13 @@ def test_notebook_exec_verifies_target_cache_before_use(
     assert captured["verify_target_cache"] is True
 
 
-def test_notebook_shell_cwd_uses_path_alias(
+def test_notebook_shell_cwd_uses_absolute_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     config = config_module.Config(
         username="",
         password="",
-        path_aliases={"me": "/inspire/ssd/project/topic/alice/"},
     )
     tunnel_config = tunnel_module.TunnelConfig()
     tunnel_config.add_bridge(
@@ -2826,7 +2728,16 @@ def test_notebook_shell_cwd_uses_path_alias(
     monkeypatch.setattr(remote_shell_module, "run_interactive_pty", lambda args: 0)
 
     runner = CliRunner()
-    result = runner.invoke(cli_main, ["notebook", "shell", "gpu-main", "--cwd", "me:repo"])
+    result = runner.invoke(
+        cli_main,
+        [
+            "notebook",
+            "shell",
+            "gpu-main",
+            "--cwd",
+            "/inspire/ssd/project/topic/alice/repo",
+        ],
+    )
 
     assert result.exit_code == EXIT_SUCCESS
     assert captured["bridge_name"] == "gpu-main"

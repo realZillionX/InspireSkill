@@ -21,7 +21,7 @@
 
 | 准备结果 | 去向 |
 | --- | --- |
-| 代码 checkout、数据集、权重、Checkpoint、预处理产物 | 共享盘 Path Alias，例如 `me` / `public` |
+| 代码 checkout、数据集、权重、Checkpoint、预处理产物 | 共享盘 `/inspire/...` 绝对路径 |
 | Python / System 依赖、Slurm / Ray Runtime、服务启动环境 | Notebook 验证后 `notebook save-image` 成项目镜像 |
 | 一次性调试脚本或小工具 | 项目个人路径或全局个人路径，视是否跨项目复用 |
 
@@ -108,4 +108,4 @@ Apt 不要机械粘贴源行。先确认镜像 codename，再把 `/etc/apt/sourc
 
 依赖安装跑通后，保存为镜像。`notebook save-image` 会触发一段中等时长的镜像保存过程；保存过程中不可操作该 Notebook；保存完毕后 Notebook 不会自动停止。
 
-后续 Notebook / Job / HPC / Ray / Serving 应复用已验证镜像。只有数据、权重和产物继续走共享盘路径。项目基底镜像建立或更换后，按 [`project-context.md`](project-context.md) 回填 `INSPIRE.md` 资产身份。
+后续 Notebook / Job / HPC / Ray / Serving 应复用已验证镜像。只有数据、权重和产物继续走共享盘路径。项目基底镜像建立或更换后，按 [`assets.md`](assets.md) 回填 `INSPIRE.md` 资产身份及适用 Project / Workspace。

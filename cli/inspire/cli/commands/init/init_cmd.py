@@ -1,4 +1,4 @@
-"""Implementation for the `inspire init` command."""
+"""Implementation for the account-only ``inspire init`` command."""
 
 from __future__ import annotations
 
@@ -6,12 +6,6 @@ from pathlib import Path
 
 import click
 
-from inspire.cli.context import (
-    Context,
-    EXIT_GENERAL_ERROR,
-    pass_context,
-)
-from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.accounts import (
     AccountError,
     create_account,
@@ -22,12 +16,10 @@ from inspire.accounts import (
     set_current_account,
     validate_name,
 )
-from inspire.cli.commands.account.add import (
-    _render_config as _render_account_config,
-)
-from inspire.cli.env_bootstrap import write_shared_project_env_file
+from inspire.cli.commands.account.add import _render_config as _render_account_config
+from inspire.cli.context import Context, EXIT_GENERAL_ERROR, pass_context
+from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.config import DEFAULT_BASE_URL, Config
-from inspire.config.toml import _project_config_write_path
 
 from .discover import _init_discover_mode
 from .env_detect import _detect_env_vars
@@ -45,23 +37,10 @@ def _stdin_is_interactive() -> bool:
 
 
 def _require_active_account_config_path() -> Path:
-    """Return the active account config path, or fail fast with a direct error."""
-    global_path = Config.writable_config_path()
-    if global_path is None:
+    path = Config.writable_config_path()
+    if path is None:
         raise ValueError(_NO_ACTIVE_ACCOUNT_MESSAGE)
-    return global_path
-
-
-def _get_config_paths() -> tuple[Path, Path]:
-    """Writable paths for ``inspire init``.
-
-    The first element always lands under the active account's directory
-    (``~/.inspire/accounts/<name>/config.toml``), so ``init`` fails fast
-    when no account is active instead of crashing later on a ``None`` path.
-    """
-    global_path = _require_active_account_config_path()
-    project_path = _project_config_write_path()
-    return global_path, project_path
+    return path
 
 
 def _bootstrap_first_account_if_needed(
@@ -71,13 +50,7 @@ def _bootstrap_first_account_if_needed(
     cli_username: str | None,
     cli_base_url: str | None,
 ) -> bool:
-    """Create the first account inline for interactive ``inspire init``.
-
-    ``inspire init`` is now the first-run path, so making users detour into
-    ``inspire account add`` is unnecessary when no account exists yet. If an
-    account directory already exists but none is active, we keep the explicit
-    error boundary so we don't guess which account to use.
-    """
+    """Create the first account inline for an interactive first run."""
     if current_account():
         return False
     if list_accounts():
@@ -108,15 +81,15 @@ def _bootstrap_first_account_if_needed(
             continue
         break
 
-    if cli_username is None:
-        username = click.prompt(
+    username = (
+        click.prompt(
             "Platform login name (not display name)",
             default=account_name,
             show_default=True,
         )
-    else:
-        username = cli_username
-    username = username.strip()
+        if cli_username is None
+        else cli_username
+    ).strip()
     if not username:
         raise ValueError("Username cannot be empty.")
 
@@ -125,21 +98,12 @@ def _bootstrap_first_account_if_needed(
         hide_input=True,
         confirmation_prompt="Confirm password",
     )
-
-    if cli_base_url is None:
-        base_url = click.prompt(
-            "Inspire base URL",
-            default=DEFAULT_BASE_URL,
-            show_default=True,
-        )
-    else:
-        base_url = cli_base_url
-
-    proxy = click.prompt(
-        "Proxy URL (leave empty for none)",
-        default="",
-        show_default=False,
+    base_url = (
+        click.prompt("Inspire base URL", default=DEFAULT_BASE_URL, show_default=True)
+        if cli_base_url is None
+        else cli_base_url
     )
+    proxy = click.prompt("Proxy URL (leave empty for none)", default="", show_default=False)
 
     content = _render_account_config(
         username=username,
@@ -148,159 +112,77 @@ def _bootstrap_first_account_if_needed(
         proxy=(proxy or "").strip(),
     )
     try:
-        target = create_account(account_name, content)
+        create_account(account_name, content)
         set_current_account(account_name)
     except AccountError as err:
         raise ValueError(str(err)) from err
 
-    del target
     click.echo(f"Active account: {account_name}")
     normalize_environment(interactive=True, auto_install_playwright=True)
     return True
 
 
 @click.command()
-@click.option(
-    "--scope",
-    type=click.Choice(["project", "global"], case_sensitive=False),
-    default="global",
-    show_default=True,
-    help="Select the discovery/config target scope.",
-)
-@click.option(
-    "--force",
-    "-f",
-    is_flag=True,
-    help="Overwrite existing files without prompting",
-)
+@click.option("--force", "-f", is_flag=True, help="Overwrite existing config without prompting")
 @click.option(
     "--template",
     "-t",
     "template_flag",
     is_flag=True,
-    help="Create template with placeholders (skip env var detection)",
+    help="Create an account template with placeholders (skip discovery)",
 )
 @click.option(
     "--no-discover",
     is_flag=True,
-    help="Skip platform discovery and only write template/smart config.",
+    help="Skip platform discovery and initialize from environment variables.",
 )
 @click.option(
     "--username",
     "-u",
     default=None,
     metavar="LOGIN",
-    help=(
-        "Platform login name, such as phone number, student number, or email "
-        "(not the display name). Used by discovery."
-    ),
+    help="Platform login name used during first-account discovery.",
 )
 @click.option(
     "--base-url",
     default=None,
     metavar="URL",
-    help="Platform base URL (prompted if not configured). Used by discovery.",
-)
-@click.option(
-    "--select-project",
-    "select_project_name",
-    default=None,
-    metavar="NAME",
-    help=(
-        "Pick a project explicitly by name (skips the interactive "
-        "prompt and the platform-heuristic guess). Only valid with --scope project."
-    ),
-)
-@click.option(
-    "--env-file",
-    default=None,
-    metavar="PATH",
-    help="Register a repo-wide dotenv file in shared project config (project scope only).",
+    help="Platform base URL used during first-account discovery.",
 )
 @pass_context
 def init(
     ctx: Context,
-    scope: str,
     force: bool,
     template_flag: bool,
     no_discover: bool,
     username: str | None,
     base_url: str | None,
-    select_project_name: str | None,
-    env_file: str | None,
 ) -> None:
-    """Initialize Inspire CLI configuration.
+    """Validate and normalize the active account configuration.
 
-    Plain `inspire init` defaults to global scope: it logs in or uses the
-    active account, validates the session, and rewrites
-    ~/.inspire/accounts/<account>/config.toml with account settings only.
-    Obsolete project catalogs, compute groups, path aliases and the unused
-    Docker registry field from older versions are removed.
-
-    `--scope project` discovers the selected project, then writes this
-    repository's project context and path aliases to
-    ./.inspire/accounts/<account>/config.toml.
-    `--env-file` records repo-wide dotenv loading in ./.inspire/config.toml.
-
-    `--template` writes a placeholder config. `--no-discover` forces
-    environment-variable detection / smart init into one config file instead
-    of running discovery.
-
-    Project and resource catalogs stay live and are not copied into account
-    configuration.
-
-    Prompted passwords are stored in global config for the selected account.
-
-    Template/smart modes avoid writing secrets.
-
-    Without discovery (`--no-discover`), if no environment variables are
-    detected (or with --template), init creates a template config with
-    placeholder values.
-
-    Project discovery creates path aliases such as `me`, `public`, `global-me`,
-    `ssd.me`, `hdd.me`, and `qb-ilm2.me`; the top-level `me` points at the
-    selected path tier, with `ssd` suggested for the path hot tier.
+    The command writes only ``~/.inspire/accounts/<account>/config.toml``.
+    Project, workspace, group, quota, image and remote paths remain explicit
+    command inputs or live platform data; no repository-local config is read
+    or created.
 
     \b
     Examples:
       inspire init
       inspire init --force
-      inspire init --scope project
-      inspire init --template --scope project
-      inspire init --no-discover --scope project
-      inspire init --no-discover --scope global
-      inspire init --scope project --env-file .env
+      inspire init --template --force
+      inspire init --no-discover --force
     """
     effective_json = ctx.json_output
     non_interactive = effective_json or not _stdin_is_interactive()
     warnings: list[str] = []
-
-    scope_value = scope.lower()
-    global_flag = scope_value == "global"
-    project_flag = scope_value == "project"
     run_discovery = not template_flag and not no_discover
 
-    def _warn(msg: str) -> None:
-        warnings.append(msg)
+    def _warn(message: str) -> None:
+        warnings.append(message)
         if not effective_json:
-            click.echo(click.style(f"Warning: {msg}", fg="yellow"))
-
-    def _register_env_file() -> Path | None:
-        if not env_file:
-            return None
-        path = write_shared_project_env_file(env_file)
-        if not effective_json:
-            click.echo(click.style("Registered project env file.", fg="green"))
-        return path
+            click.echo(click.style(f"Warning: {message}", fg="yellow"))
 
     try:
-        if env_file and not project_flag:
-            raise ValueError("--env-file is only supported with `inspire init --scope project`.")
-        if select_project_name and not project_flag:
-            raise ValueError(
-                "--select-project is only supported with `inspire init --scope project`."
-            )
-
         if run_discovery:
             _bootstrap_first_account_if_needed(
                 effective_json=effective_json,
@@ -309,140 +191,47 @@ def init(
                 cli_base_url=base_url,
             )
 
-        global_path, project_path = _get_config_paths()
-        before = snapshot_paths(global_path, project_path)
-        discover_target_paths = [global_path, project_path] if project_flag else [global_path]
+        account_path = _require_active_account_config_path()
+        before = snapshot_paths(account_path)
 
-        if not run_discovery and (username or base_url or select_project_name):
-            _warn(
-                "--username, --base-url, and --select-project are only effective with "
-                "discovery and were ignored."
+        if not run_discovery and (username or base_url):
+            _warn("--username and --base-url only apply to discovery and were ignored.")
+
+        if non_interactive and account_path.exists() and not force:
+            raise ValueError(
+                "Non-interactive init requires --force when account config already exists."
             )
 
         if run_discovery:
-            if non_interactive and not force and any(
-                path.exists() for path in discover_target_paths
-            ):
-                raise ValueError(
-                    "Non-interactive discover updates require --force when config files "
-                    "already exist."
-                )
-
             run_init_action(
                 _init_discover_mode,
                 effective_json,
                 force,
-                scope=scope_value,
                 cli_username=username,
                 cli_base_url=base_url,
-                cli_select_project=select_project_name,
                 non_interactive=non_interactive,
             )
-            env_file_config_path = _register_env_file()
-            if env_file_config_path is not None and env_file_config_path not in discover_target_paths:
-                discover_target_paths.append(env_file_config_path)
+        elif template_flag:
+            run_init_action(_init_template_mode, effective_json, force)
+        else:
+            detected = _detect_env_vars()
+            if detected:
+                run_init_action(_init_smart_mode, effective_json, detected, force)
+            else:
+                run_init_action(_init_template_mode, effective_json, force)
 
-            emit_init_result(
-                target_paths=discover_target_paths,
-                before=before,
-                warnings=warnings,
-                effective_json=effective_json,
-            )
-            return
-
-        if template_flag:
-            if non_interactive:
-                target_path = global_path if global_flag else project_path
-                if target_path.exists() and not force:
-                    raise ValueError(
-                        "Non-interactive init requires --force to overwrite configuration."
-                    )
-            run_init_action(
-                _init_template_mode,
-                effective_json,
-                global_flag,
-                project_flag,
-                force,
-            )
-            env_file_config_path = _register_env_file()
-            target_paths = [global_path] if global_flag else [project_path]
-            if env_file_config_path is not None and env_file_config_path not in target_paths:
-                target_paths.append(env_file_config_path)
-            emit_init_result(
-                target_paths=target_paths,
-                before=before,
-                warnings=warnings,
-                effective_json=effective_json,
-            )
-            return
-
-        detected = _detect_env_vars()
-
-        if detected:
-            if non_interactive and not force:
-                if global_flag and global_path.exists():
-                    raise ValueError(
-                        "Non-interactive init requires --force to overwrite configuration."
-                    )
-                if project_flag and project_path.exists():
-                    raise ValueError(
-                        "Non-interactive init requires --force to overwrite configuration."
-                    )
-            run_init_action(
-                _init_smart_mode,
-                effective_json,
-                detected,
-                global_flag,
-                project_flag,
-                force,
-            )
-            target_paths = []
-            if global_flag:
-                has_global = any(opt.scope == "global" for opt, _ in detected)
-                target_paths = [global_path] if has_global else []
-            elif project_flag:
-                has_project = any(opt.scope == "project" for opt, _ in detected)
-                target_paths = [project_path] if has_project else []
-            env_file_config_path = _register_env_file()
-            if env_file_config_path is not None and env_file_config_path not in target_paths:
-                target_paths.append(env_file_config_path)
-            emit_init_result(
-                target_paths=target_paths,
-                before=before,
-                warnings=warnings,
-                effective_json=effective_json,
-            )
-            return
-
-        if non_interactive:
-            target_path = global_path if global_flag else project_path
-            if target_path.exists() and not force:
-                raise ValueError(
-                    "Non-interactive init requires --force to overwrite configuration."
-                )
-        run_init_action(
-            _init_template_mode,
-            effective_json,
-            global_flag,
-            project_flag,
-            force,
-        )
-        env_file_config_path = _register_env_file()
-        target_paths = [global_path] if global_flag else [project_path]
-        if env_file_config_path is not None and env_file_config_path not in target_paths:
-            target_paths.append(env_file_config_path)
         emit_init_result(
-            target_paths=target_paths,
+            target_paths=[account_path],
             before=before,
             warnings=warnings,
             effective_json=effective_json,
         )
-    except ValueError as e:
-        _handle_error(ctx, "ValidationError", str(e), EXIT_GENERAL_ERROR)
+    except ValueError as err:
+        _handle_error(ctx, "ValidationError", str(err), EXIT_GENERAL_ERROR)
     except SystemExit:
         raise
-    except Exception as e:
-        _handle_error(ctx, "Error", str(e), EXIT_GENERAL_ERROR)
+    except Exception as err:
+        _handle_error(ctx, "Error", str(err), EXIT_GENERAL_ERROR)
 
 
 __all__ = ["init"]

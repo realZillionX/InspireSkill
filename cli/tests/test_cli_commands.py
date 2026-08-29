@@ -1,5 +1,4 @@
 import json
-import shlex
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,7 +39,6 @@ def make_test_config(tmp_path: Path, include_compute_groups: bool = False) -> co
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
     )
     # Add test compute groups if requested
     if include_compute_groups:
@@ -91,7 +89,6 @@ def patch_config_and_auth(
         include_compute_groups: If True, include test compute groups in config
     """
     config = make_test_config(tmp_path, include_compute_groups=include_compute_groups)
-    Path(config.path_aliases["me"]).mkdir(parents=True, exist_ok=True)
 
     def fake_from_files_and_env(cls, require_credentials: bool = True) -> tuple:  # type: ignore[override]
         return config, {}
@@ -482,84 +479,55 @@ def test_wrap_in_bash():
     assert wrap_in_bash("  bash -c 'foo'  ") == "  bash -c 'foo'  "
 
 
-def test_build_remote_logged_command_tees_output_and_sets_pipefail(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_build_remote_command_exports_account_environment() -> None:
     from inspire.cli.utils import job_submit as job_submit_module
 
-    monkeypatch.setattr(job_submit_module, "_now_log_timestamp", lambda: "20260508T010203Z")
     config = config_module.Config(
         username="user",
         password="pass",
-        path_aliases={"me": "/train/user space"},
         remote_env={"WANDB_MODE": "offline"},
     )
 
-    command, log_path = job_submit_module.build_remote_logged_command(
+    command = job_submit_module.build_remote_command(
         config,
         command="bash -c 'python train.py'",
-        name="train/a",
     )
 
-    assert log_path == "/train/user space/.inspire/training_master_train_a_20260508T010203Z.log"
-    outer = shlex.split(command)
-    assert outer[:4] == ["bash", "-o", "pipefail", "-c"]
-    script = outer[4]
-    assert "export WANDB_MODE=offline && export PYTHONUNBUFFERED=1 && " in script
-    assert "mkdir -p '/train/user space/.inspire' && " in script
-    assert ": > '/train/user space/.inspire/training_master_train_a_20260508T010203Z.log'" in script
-    assert "cd / && " not in script
-    assert "cd '/train/user space' && " not in script
-    assert "{ bash -c 'python train.py' 2> >(" in script
-    assert (
-        "tee -a '/train/user space/.inspire/training_master_train_a_20260508T010203Z.log' >&2"
-        in script
-    )
-    assert (
-        "| tee -a '/train/user space/.inspire/training_master_train_a_20260508T010203Z.log'"
-        in script
-    )
-    assert '> "${log_path}" 2>&1' not in command
+    assert command == "export WANDB_MODE=offline && bash -c 'python train.py'"
 
 
-def test_build_remote_logged_command_preserves_user_pythonunbuffered() -> None:
+def test_build_remote_command_preserves_user_pythonunbuffered() -> None:
     from inspire.cli.utils import job_submit as job_submit_module
 
     config = config_module.Config(
         username="user",
         password="pass",
-        path_aliases={"me": "/train/user"},
         remote_env={"PYTHONUNBUFFERED": "0"},
     )
 
-    command, _ = job_submit_module.build_remote_logged_command(
+    command = job_submit_module.build_remote_command(
         config,
         command="bash -c 'python train.py'",
-        name="train",
     )
 
-    script = shlex.split(command)[4]
-    assert "export PYTHONUNBUFFERED=0 && " in script
-    assert "export PYTHONUNBUFFERED=1 && " not in script
+    assert "export PYTHONUNBUFFERED=0 && " in command
+    assert "export PYTHONUNBUFFERED=1 && " not in command
 
 
-def test_build_remote_logged_command_without_path_alias_does_not_inject_cwd() -> None:
+def test_build_remote_command_without_environment_is_unchanged() -> None:
     from inspire.cli.utils import job_submit as job_submit_module
 
     config = config_module.Config(
         username="user",
         password="pass",
-        remote_env={"FOO": "bar"},
     )
 
-    command, log_path = job_submit_module.build_remote_logged_command(
+    command = job_submit_module.build_remote_command(
         config,
         command="bash -c 'python train.py'",
-        name="train",
     )
 
-    assert command == "export FOO=bar && bash -c 'python train.py'"
-    assert log_path is None
+    assert command == "bash -c 'python train.py'"
 
 
 def test_job_status_human_output_is_compact_and_name_only(
@@ -1805,7 +1773,7 @@ def test_config_check_auth_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert detailed.exit_code == EXIT_AUTH_ERROR
     assert "Effective runtime proxy" in detailed.output
     assert "source=system_env" in detailed.output
-    assert "Config files:" in detailed.output
+    assert "Config file:" in detailed.output
     for secret in (
         "my-inspire.internal",
         "proxy.internal",
@@ -1853,31 +1821,19 @@ def test_config_check_json_includes_base_url_resolution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_test_config(tmp_path)
-    config.prefer_source = "toml"
     config.base_url = "https://my-inspire.internal"
-
-    project_dir = tmp_path / ".inspire"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    project_config = project_dir / "config.toml"
-    project_config.write_text("""
-[api]
-base_url = "https://my-inspire.internal"
-""", encoding="utf-8")
-    global_config = tmp_path / "global-config.toml"
+    account_config = tmp_path / "account-config.toml"
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
-        return config, {"base_url": config_module.SOURCE_PROJECT}
-
-    def fake_get_config_paths(cls):  # type: ignore[override]
-        return global_config, project_config
+        return config, {"base_url": config_module.SOURCE_ACCOUNT}
 
     monkeypatch.setattr(
         config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
     )
-    monkeypatch.setattr(
-        config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
-    )
     from inspire.cli.commands.account import check as config_check_module
+    from inspire.config import load_account_layer
+
+    monkeypatch.setattr(load_account_layer, "_resolve_account_config_path", lambda: account_config)
 
     effective_proxy = {
         "target": "my-inspire.internal",
@@ -1916,14 +1872,11 @@ base_url = "https://my-inspire.internal"
     payload = json.loads(result.output)
     resolution = payload["data"]["base_url_resolution"]
     assert resolution["configured"] is True
-    assert resolution["source"] == config_module.SOURCE_PROJECT
-    assert resolution["prefer_source"] == "toml"
+    assert resolution["source"] == config_module.SOURCE_ACCOUNT
     assert resolution["env_present"] is True
-    assert resolution["project_config_present"] is True
     assert resolution["account_config_present"] is True
     assert "value" not in resolution
-    assert str(project_config) not in result.output
-    assert str(global_config) not in result.output
+    assert str(account_config) not in result.output
     assert "my-inspire.internal" not in result.output
     assert payload["data"]["effective_proxy"] == {
         "requests": {
@@ -1952,14 +1905,8 @@ def test_config_check_accepts_local_json_alias(
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
         return config, {"base_url": config_module.SOURCE_ENV}
 
-    def fake_get_config_paths(cls):  # type: ignore[override]
-        return None, None
-
     monkeypatch.setattr(
         config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
-    )
-    monkeypatch.setattr(
-        config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
     from inspire.cli.commands.account import check as config_check_module
 
@@ -1993,14 +1940,8 @@ def test_config_check_rejects_placeholder_base_url(
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
         return config, {"base_url": config_module.SOURCE_DEFAULT}
 
-    def fake_get_config_paths(cls):  # type: ignore[override]
-        return None, None
-
     monkeypatch.setattr(
         config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
-    )
-    monkeypatch.setattr(
-        config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
     from inspire.cli.commands.account import check as config_check_module
 
@@ -2021,47 +1962,6 @@ def test_config_check_rejects_placeholder_base_url(
     assert "INSPIRE_BASE_URL" in payload["error"]["message"]
 
 
-def test_config_check_rejects_top_level_project_base_url_key(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    config = make_test_config(tmp_path)
-    config.base_url = "https://my-inspire.internal"
-
-    project_dir = tmp_path / ".inspire"
-    project_dir.mkdir(parents=True, exist_ok=True)
-    project_config = project_dir / "config.toml"
-    project_config.write_text('base_url = "https://wrong.example.com"\n', encoding="utf-8")
-
-    def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
-        return config, {"base_url": config_module.SOURCE_PROJECT}
-
-    def fake_get_config_paths(cls):  # type: ignore[override]
-        return None, project_config
-
-    monkeypatch.setattr(
-        config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
-    )
-    monkeypatch.setattr(
-        config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
-    )
-    from inspire.cli.commands.account import check as config_check_module
-
-    monkeypatch.setattr(
-        config_check_module,
-        "get_web_session",
-        lambda: pytest.fail("should not auth"),
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["--json", "account", "check"])
-
-    assert result.exit_code == EXIT_CONFIG_ERROR
-    payload = json.loads(result.output)
-    assert payload["success"] is False
-    assert "top-level `base_url`" in payload["error"]["message"]
-    assert "[api]" in payload["error"]["message"]
-
-
 def test_config_check_accepts_a_custom_base_url(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2071,14 +1971,8 @@ def test_config_check_accepts_a_custom_base_url(
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]
         return config, {"base_url": config_module.SOURCE_ENV}
 
-    def fake_get_config_paths(cls):  # type: ignore[override]
-        return None, None
-
     monkeypatch.setattr(
         config_module.Config, "from_files_and_env", classmethod(fake_from_files_and_env)
-    )
-    monkeypatch.setattr(
-        config_module.Config, "get_config_paths", classmethod(fake_get_config_paths)
     )
     from inspire.cli.commands.account import check as config_check_module
 
@@ -2114,7 +2008,7 @@ def test_init_json_global_contract_via_top_level_flag(
 
     result = runner.invoke(
         cli_main,
-        ["--json", "init", "--template", "--scope", "project", "--force"],
+        ["--json", "init", "--template", "--force"],
     )
 
     assert result.exit_code == EXIT_SUCCESS
@@ -2134,7 +2028,6 @@ def test_notebook_list_all_workspaces_combines_results(
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
     )
 
     def fake_from_files_and_env(cls, require_credentials: bool = True):  # type: ignore[override]

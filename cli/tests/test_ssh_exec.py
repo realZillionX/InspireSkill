@@ -12,7 +12,7 @@ import pytest
 from inspire.bridge.tunnel.models import BridgeProfile, TunnelConfig
 from inspire.bridge.tunnel.ssh_exec import run_ssh_command, run_ssh_command_streaming
 from inspire.config import ConfigError
-from inspire.config.path_aliases import resolve_remote_cwd, resolve_remote_path_alias
+from inspire.cli.utils.remote_paths import explicit_remote_cwd
 
 
 def _stub_resolve(*args: Any, **kwargs: Any) -> tuple[TunnelConfig, BridgeProfile, str]:
@@ -332,37 +332,16 @@ def test_run_ssh_command_streaming_passes_remote_output_through(
     assert "".join(emitted) == "ok job-1234abcd\ndone\n"
 
 
-def test_remote_cwd_resolves_path_alias() -> None:
-    cwd = resolve_remote_cwd(
-        cwd="me:repo",
-        aliases={"me": "/inspire/ssd/project/topic/alice/"},
+def test_remote_cwd_accepts_absolute_path() -> None:
+    assert explicit_remote_cwd("/inspire/ssd/project/topic/alice/repo") == (
+        "/inspire/ssd/project/topic/alice/repo"
     )
 
-    assert cwd == "/inspire/ssd/project/topic/alice/repo"
+
+def test_remote_cwd_is_none_when_omitted() -> None:
+    assert explicit_remote_cwd(None) is None
 
 
-def test_remote_cwd_is_none_even_when_me_alias_exists() -> None:
-    cwd = resolve_remote_cwd(
-        cwd=None,
-        aliases={"me": "/inspire/ssd/project/topic/alice/"},
-    )
-
-    assert cwd is None
-
-
-def test_remote_cwd_rejects_unknown_relative_alias() -> None:
-    with pytest.raises(ConfigError, match="Unknown path alias"):
-        resolve_remote_cwd(
-            cwd="missing:repo",
-            aliases={"me": "/inspire/ssd/project/topic/alice/"},
-        )
-
-
-def test_remote_path_resolves_alias_prefix_for_scp() -> None:
-    path, used_alias = resolve_remote_path_alias(
-        "qb-ilm2.me/checkpoints",
-        {"qb-ilm2.me": "/inspire/qb-ilm2/project/topic/alice/"},
-    )
-
-    assert used_alias is True
-    assert path == "/inspire/qb-ilm2/project/topic/alice/checkpoints"
+def test_remote_cwd_rejects_relative_path() -> None:
+    with pytest.raises(ConfigError, match="absolute remote path"):
+        explicit_remote_cwd("repo")

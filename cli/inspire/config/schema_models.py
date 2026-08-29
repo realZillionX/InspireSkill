@@ -21,8 +21,8 @@ class ConfigOption:
         field_name: Config dataclass field name (e.g., "username")
         secret: If True, never write the value into a generated config file
         parser: Optional function to parse string value to correct type
-        scope: Configuration scope - "global" for account-wide settings,
-               "project" for per-codebase settings
+        scope: Kept as ``global`` for compatibility with the init generator;
+               repository-local settings no longer exist.
     """
 
     env_var: str
@@ -30,7 +30,7 @@ class ConfigOption:
     field_name: str
     secret: bool = False
     parser: Callable[[str], Any] | None = None
-    scope: str = "project"
+    scope: str = "global"
 
 
 def _parse_int(value: str) -> int:

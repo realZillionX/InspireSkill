@@ -71,7 +71,6 @@ def _patch_config_and_session(
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
     )
 
     def fake_from_files_and_env(cls, require_credentials: bool = True) -> tuple:

@@ -54,7 +54,6 @@ def make_sync_config(tmp_path: Path) -> Config:
     return Config(
         username="",
         password="",
-        path_aliases={"me": str(tmp_path)},
     )
 
 
@@ -73,7 +72,6 @@ def test_bridge_exec_without_explicit_cwd_preserves_remote_initial_cwd(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
-    config.path_aliases = {}
     captured: Dict[str, Any] = {}
 
     monkeypatch.setattr(
@@ -152,7 +150,6 @@ def test_bridge_ssh_invalid_remote_env_human_returns_config_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
-    config.path_aliases = {"me": str(tmp_path / "project")}
     config.remote_env = {"NOT-VALID": "value"}
 
     monkeypatch.setattr(
@@ -178,7 +175,6 @@ def test_bridge_ssh_invalid_remote_env_json_returns_config_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
-    config.path_aliases = {"me": str(tmp_path / "project")}
     config.remote_env = {"NOT-VALID": "value"}
 
     monkeypatch.setattr(
@@ -1521,7 +1517,6 @@ def test_bridge_exec_json_errors_after_reconnect_exhausted(
 
 def test_bridge_ssh_uses_requested_bridge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     config = make_sync_config(tmp_path)
-    config.path_aliases = {"me": str(tmp_path / "project")}
     captured: Dict[str, Any] = {}
 
     monkeypatch.setattr(
@@ -1564,7 +1559,6 @@ def test_bridge_ssh_rebuilds_notebook_tunnel_before_connect(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
-    config.path_aliases = {"me": str(tmp_path / "project")}
     config.tunnel_retries = 2
     config.tunnel_retry_pause = 0.0
     calls: Dict[str, Any] = {"availability": 0, "rebuild": 0, "ssh": 0}
@@ -1627,7 +1621,6 @@ def test_bridge_ssh_fails_fast_when_notebook_is_stopped(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
-    config.path_aliases = {"me": str(tmp_path / "project")}
     config.tunnel_retries = 3
     config.tunnel_retry_pause = 0.0
     calls: Dict[str, int] = {"rebuild": 0}
@@ -1675,7 +1668,6 @@ def test_bridge_ssh_fails_fast_when_notebook_is_pending(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
-    config.path_aliases = {"me": str(tmp_path / "project")}
     config.tunnel_retries = 3
     config.tunnel_retry_pause = 0.0
     calls: Dict[str, int] = {"rebuild": 0}
@@ -1723,7 +1715,6 @@ def test_bridge_ssh_reconnects_after_disconnect(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
-    config.path_aliases = {"me": str(tmp_path / "project")}
     config.tunnel_retries = 2
     config.tunnel_retry_pause = 0.0
     calls: Dict[str, Any] = {"rebuild": 0}
@@ -1770,7 +1761,6 @@ def test_bridge_ssh_unavailable_non_notebook_bridge_errors(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
-    config.path_aliases = {"me": str(tmp_path / "project")}
 
     monkeypatch.setattr(
         Config,
@@ -1800,7 +1790,6 @@ def test_bridge_ssh_missing_bridge_reports_bridge_not_found(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = make_sync_config(tmp_path)
-    config.path_aliases = {"me": str(tmp_path / "project")}
 
     monkeypatch.setattr(
         Config,

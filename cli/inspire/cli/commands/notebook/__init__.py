@@ -20,7 +20,6 @@ import click
 
 from inspire.cli.commands.batch import notebook_batch
 from inspire.cli.commands.workload_quota import make_quota_command
-from inspire.cli.commands.workload_profile import make_profile_command
 
 from .notebook_commands import (
     create_notebook_cmd,
@@ -31,7 +30,6 @@ from .notebook_commands import (
     stop_notebook_cmd,
 )
 from .connection import notebook_connection
-from .path_aliases import path_aliases_cmd
 from .ssh import notebook_ssh
 from .ssh_config_cmd import ssh_config_cmd
 from .ssh_proxy_cmd import ssh_proxy_cmd
@@ -69,8 +67,8 @@ def notebook():
         inspire notebook ssh prep-box --workspace CPU资源空间
         inspire notebook ssh prep-box -- hostname
         inspire notebook ssh-config prep-box >> ~/.ssh/config
-        inspire notebook exec prep-box --cwd me:repo "git pull && pip install -r requirements.txt"
-        inspire notebook scp prep-box ./config.yaml me:repo/config.yaml
+        inspire notebook exec prep-box --cwd /inspire/ssd/project/topic/user/repo "git pull && pip install -r requirements.txt"
+        inspire notebook scp prep-box ./config.yaml /inspire/ssd/project/topic/user/repo/config.yaml
         inspire notebook metrics <notebook> --workspace CPU资源空间 --window 30m
         inspire notebook save-image prep-box --workspace CPU资源空间 -n my-img --dry-run
         inspire notebook save-image prep-box --workspace CPU资源空间 -n my-img
@@ -85,7 +83,6 @@ notebook.add_command(notebook_status)           # status
 notebook.add_command(notebook_proxy_url)        # proxy-url (container HTTP service URL)
 notebook.add_command(create_notebook_cmd)       # create
 notebook.add_command(make_quota_command("notebook"))  # quota
-notebook.add_command(make_profile_command("notebook"))  # profile
 notebook.add_command(notebook_batch)            # batch
 notebook.add_command(stop_notebook_cmd)         # stop
 notebook.add_command(start_notebook_cmd)        # start
@@ -99,7 +96,6 @@ notebook.add_command(ssh_proxy_cmd)             # ssh-proxy
 notebook.add_command(notebook_events)           # events (K8s scheduling / pod lifecycle)
 notebook.add_command(notebook_lifecycle)        # lifecycle (run-cycle timeline; /run_index/list)
 notebook.add_command(notebook_metrics)          # metrics (资源视图 time-series, no SSH needed)
-notebook.add_command(path_aliases_cmd)          # path (project remote path aliases)
 
 # Remote operations on a cached notebook connection.
 notebook.add_command(_remote_exec,  name="exec")

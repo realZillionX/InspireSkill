@@ -1388,7 +1388,6 @@ def _patch_serving_create_deps(
     from inspire.cli.utils import quota_resolver as quota_resolver_module
 
     config = config_module.Config(username="user", password="pass")
-    config.profiles = {}
     monkeypatch.setattr(
         config_module.Config,
         "from_files_and_env",

@@ -28,6 +28,7 @@ from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
 from inspire.cli.utils.output import emit_success as emit_output_success
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.remote_paths import explicit_remote_cwd
 from inspire.cli.utils.terminal_io import run_interactive_pty
 from inspire.cli.utils.tunnel_reconnect import (
     load_ssh_public_key_material,
@@ -35,7 +36,7 @@ from inspire.cli.utils.tunnel_reconnect import (
     retry_pause_seconds,
     should_attempt_ssh_reconnect,
 )
-from inspire.config import Config, ConfigError, build_env_exports, resolve_remote_cwd
+from inspire.config import Config, ConfigError, build_env_exports
 from inspire.platform.web import browser_api as browser_api_module
 
 from .target_resolver import (
@@ -49,8 +50,8 @@ logger = logging.getLogger(__name__)
 _RUNNING_NOTEBOOK_STATUS = "RUNNING"
 
 
-def _resolve_shell_remote_cwd(*, cwd: Optional[str], config: Config) -> Optional[str]:
-    return resolve_remote_cwd(cwd=cwd, aliases=config.path_aliases)
+def _resolve_shell_remote_cwd(*, cwd: Optional[str]) -> Optional[str]:
+    return explicit_remote_cwd(cwd)
 
 
 def _build_remote_shell_command(*, remote_cwd: Optional[str], env_exports: str) -> Optional[str]:
@@ -115,7 +116,7 @@ def _load_tunnel_config_for_account(account: str | None):
 @click.option(
     "--cwd",
     default=None,
-    help="Remote working directory or path alias (default: do not inject cd)",
+    help="Absolute remote working directory (default: do not inject cd)",
 )
 @click.option(
     "--check",
@@ -144,7 +145,7 @@ def bridge_ssh(
     Example:
         inspire notebook connection refresh my-notebook --workspace <workspace>
         inspire notebook shell my-notebook
-        inspire notebook shell my-notebook --cwd me
+        inspire notebook shell my-notebook --cwd /inspire/ssd/project/topic/user
     """
     from inspire.cli.utils.id_resolver import reject_id_at_boundary
 
@@ -156,7 +157,7 @@ def bridge_ssh(
     )
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        remote_cwd = _resolve_shell_remote_cwd(cwd=cwd, config=config)
+        remote_cwd = _resolve_shell_remote_cwd(cwd=cwd)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
 

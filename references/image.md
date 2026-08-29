@@ -4,7 +4,7 @@
 
 ## 1. 镜像的职责
 
-镜像保存“已经装好的运行环境”，用于 Notebook、Job、HPC、Ray 和 Serving 之间复用。数据集、权重、Checkpoint 和批量产物不进镜像，应放共享盘路径并用 Path Alias 管理。
+镜像保存“已经装好的运行环境”，用于 Notebook、Job、HPC、Ray 和 Serving 之间复用。数据集、权重、Checkpoint 和批量产物不进镜像，应放在明确的共享盘绝对路径。
 
 镜像存在 Registry 里，不是存在 Workspace 里，**多个 Workspace 正常共用同一份 Registry**。`image list` / `detail` / `register` / `set-visibility` / `delete` 都要 `--workspace`，因为平台只认 `registry_hint: {workspace_id}` 这一种指定 Registry 的方式——它是一个指向 Registry 的路标，不是分区。所以 `notebook save-image --workspace X` 存出的镜像，在**同一个 Registry 上的每一个 Workspace** 里都看得到，不必回到 X。
 
@@ -41,7 +41,7 @@
 
 **改成 public 是单向操作。** 平台不再把创建者当成公开镜像的属主：既不能改回 private，也不能删除，只有平台管理员能清理。所以确认要长期共享、名字也定下来了再放开；试验性镜像留在 private 或 project。
 
-保存出的镜像成为项目基底或被后续 Workload 长期复用时，把名称、用途和覆盖的依赖回填到 `INSPIRE.md`（见 [`project-context.md`](project-context.md)）。
+保存出的镜像成为项目基底或被后续 Workload 长期复用时，把名称、适用 Project / Workspace、用途和覆盖的依赖回填到 `INSPIRE.md`（见 [`assets.md`](assets.md)）。
 
 ## 4. Register 边界
 

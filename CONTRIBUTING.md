@@ -58,11 +58,11 @@ Browser API 文档只收录已经闭合的合同。请求体、响应形状、Re
 
 ## 配置和默认值
 
-不要把调度条件做成隐式默认值。`workspace`、`project`、`group`、`quota` 和 `image` 是创建 workload 的调度条件，只能来自显式参数、workload profile 或 batch 条目里的 `profile`。Profile 是调度条件组 alias，不是路径 alias。
+不要把调度条件做成隐式默认值。`workspace`、`project`、`group`、`quota` 和 `image` 是创建 workload 的调度条件，只能来自本次命令或本条 Batch item 的显式字段。
 
-Path alias 只表示远端路径。`me`、`public`、`global-me` 和存储池前缀 alias 用于 `--cwd`、`scp`、日志路径和共享盘约定，不能替代 `workspace`、`project`、`group`、`quota` 或 `image`。
+远端路径用 `/inspire/...` 绝对路径。需要缩写时交给本地 shell 环境变量；CLI 不保存 Path Alias。
 
-账号、代理和本地环境通过账号配置呈现，不通过一次性环境变量前缀污染 live 命令示例。需要临时远端目录时用命令参数，例如 `--cwd /tmp`；需要持久语义时用 `inspire init`、`.inspire/config.toml` 和 `[path_aliases]`。
+账号、代理和本地环境通过账号配置呈现，不通过一次性环境变量前缀污染 live 命令示例。需要远端目录时用显式命令参数，例如 `--cwd /tmp`。CLI 不读写仓库级 `./.inspire/`。
 
 ## 平台工作流
 

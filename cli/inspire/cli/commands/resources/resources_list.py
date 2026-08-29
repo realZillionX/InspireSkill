@@ -292,7 +292,7 @@ def run_resources_list(
     help=(
         "Filter by compute group name keyword/substring; full name is not "
         "required. Use this to find the exact compute group name required by "
-        "workload create/profile --group."
+        "workload create --group."
     ),
 )
 @click.option(

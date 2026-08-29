@@ -21,7 +21,7 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
-from inspire.config import Config, ConfigError, build_env_exports, resolve_remote_cwd
+from inspire.config import Config, ConfigError, build_env_exports
 from inspire.bridge.tunnel import (
     BridgeProfile,
     TunnelConfig,
@@ -36,6 +36,7 @@ from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
 from inspire.cli.utils.output import emit_success as emit_output_success
 from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.cli.utils.remote_paths import explicit_remote_cwd
 from inspire.cli.utils.tunnel_reconnect import (
     NotebookBridgeReconnectState,
     NotebookBridgeReconnectStatus,
@@ -65,8 +66,8 @@ def _build_remote_command(*, command: str, remote_cwd: Optional[str], env_export
     return f'{env_exports}cd "{remote_cwd}" && {command}'
 
 
-def _resolve_exec_remote_cwd(*, cwd: Optional[str], config: Config) -> Optional[str]:
-    return resolve_remote_cwd(cwd=cwd, aliases=config.path_aliases)
+def _resolve_exec_remote_cwd(*, cwd: Optional[str]) -> Optional[str]:
+    return explicit_remote_cwd(cwd)
 
 
 def _normalize_exec_command(command_parts: tuple[str, ...]) -> str:
@@ -550,7 +551,7 @@ def try_exec_via_jupyter_terminal(
 @click.option(
     "--cwd",
     default=None,
-    help="Remote working directory or path alias (default: do not inject cd)",
+    help="Absolute remote working directory (default: do not inject cd)",
 )
 @click.option(
     "stdin_mode",
@@ -591,9 +592,9 @@ def exec_command(
     \b
     Examples:
         inspire notebook connection refresh my-notebook --workspace <workspace>
-        inspire notebook exec my-notebook --cwd me:repo "uv venv .venv"
-        inspire notebook exec my-notebook --cwd me "pwd"
-        inspire notebook exec my-notebook --cwd me:repo "pip install torch" --timeout 600
+        inspire notebook exec my-notebook --cwd /inspire/ssd/project/topic/user/repo "uv venv .venv"
+        inspire notebook exec my-notebook --cwd /inspire/ssd/project/topic/user "pwd"
+        inspire notebook exec my-notebook --cwd /inspire/ssd/project/topic/user/repo "pip install torch" --timeout 600
         inspire notebook exec my-notebook --stdin -- bash -s < scripts/setup.sh
         inspire notebook exec my-notebook "hostname"
     """
@@ -609,7 +610,7 @@ def exec_command(
 
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
-        remote_cwd = _resolve_exec_remote_cwd(cwd=cwd, config=config)
+        remote_cwd = _resolve_exec_remote_cwd(cwd=cwd)
     except ConfigError as e:
         _emit_error(
             ctx,

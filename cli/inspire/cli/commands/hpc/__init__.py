@@ -6,7 +6,6 @@ import click
 
 from inspire.cli.commands.batch import hpc_batch
 from inspire.cli.commands.workload_quota import make_quota_command
-from inspire.cli.commands.workload_profile import make_profile_command
 
 from .hpc_commands import (
     shell_hpc,
@@ -45,7 +44,6 @@ def hpc() -> None:
 hpc.add_command(list_hpc)
 hpc.add_command(create_hpc)
 hpc.add_command(make_quota_command("hpc"))
-hpc.add_command(make_profile_command("hpc"))
 hpc.add_command(hpc_batch)
 hpc.add_command(status_hpc)
 hpc.add_command(instances_hpc)

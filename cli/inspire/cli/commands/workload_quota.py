@@ -234,7 +234,7 @@ def make_quota_command(workload: str) -> click.Command:
         help=(
             "Filter by compute group name keyword/substring; full name is not "
             "required. Use this to find the exact compute group name required by "
-            "create/profile --group."
+            "create --group."
         ),
     )
     @click.option(

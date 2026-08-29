@@ -6,7 +6,6 @@ import click
 
 from inspire.cli.commands.batch import job_batch
 from inspire.cli.commands.workload_quota import make_quota_command
-from inspire.cli.commands.workload_profile import make_profile_command
 
 from .job_commands import (
     delete,
@@ -46,7 +45,6 @@ def job() -> None:
 
 job.add_command(create)
 job.add_command(make_quota_command("job"))
-job.add_command(make_profile_command("job"))
 job.add_command(job_batch)
 job.add_command(status)
 job.add_command(logs)

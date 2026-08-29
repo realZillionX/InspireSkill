@@ -6,10 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-# Config file paths
+# Account config file name
 CONFIG_FILENAME = "config.toml"
-PROJECT_CONFIG_DIR = ".inspire"  # ./.inspire/accounts/<account>/config.toml
-PROJECT_ACCOUNT_CONFIG_DIR = "accounts"
 
 # The only Inspire deployment anyone points this CLI at. `base_url` stays
 # configurable for staging hosts, but the default has to be a host that
@@ -26,7 +24,6 @@ class ConfigError(Exception):
 # Source tracking for config values
 SOURCE_DEFAULT = "default"
 SOURCE_ACCOUNT = "account"
-SOURCE_PROJECT = "project"
 SOURCE_ENV = "env"
 SOURCE_ENV_FILE = "env-file"
 
@@ -53,12 +50,6 @@ class Config:
     job_fault_tolerance_max_retry: int = 10
     job_enable_notification: bool = False
 
-    # Repo-scoped project alias map for name resolution (alias -> project name).
-    projects: dict[str, str] = field(default_factory=dict)
-
-    # Legacy compatibility field. Account config no longer populates a cached
-    # project catalog; project selection and path discovery use live data.
-    project_catalog: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Notebook settings
     notebook_post_start: Optional[str] = None
 
@@ -72,38 +63,15 @@ class Config:
     # User-defined project selection order (list of project names or aliases)
     project_order: list[str] = field(default_factory=list)
 
-    # Legacy repo-config/display field. Scheduling never falls back to this;
-    # compute groups and quota catalogs come from the live platform API.
-    compute_groups: list[dict] = field(default_factory=list)
-
     # Remote environment variables (injected into notebook commands and jobs)
     remote_env: dict[str, str] = field(default_factory=dict)
-
-    # Project-scoped remote path aliases used by notebook exec/shell/scp.
-    path_aliases: dict[str, str] = field(default_factory=dict)
-
-    # Project-scoped workload condition profiles. These are command aliases
-    # for workspace/project/group/image/quota, not defaults.
-    profiles: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
-
-    # Display-only project context from project config. These names are shown
-    # by `inspire account context`; create commands still require explicit
-    # arguments or workload profiles.
-    context_project: Optional[str] = None
-    context_workspace: Optional[str] = None
-
-    # Source precedence: "env" (default) = env vars win, "toml" = project TOML wins
-    prefer_source: str = "env"
 
     @classmethod
     def writable_config_path(cls) -> Optional[Path]:
         """Return the active account's ``config.toml`` path, or ``None``.
 
-        ``None`` signals "no global-scope write target" — the caller
-        (typically ``inspire init --scope global`` or discover writes) should
-        error out at that point with a clear "run 'inspire account add'
-        first" message. Project-scope writes don't consult this and are
-        unaffected.
+        ``None`` signals that no active account exists. Callers should fail
+        with a clear ``inspire account add`` / ``account use`` hint.
         """
         from inspire.accounts import account_config_path, current_account
 
@@ -111,12 +79,6 @@ class Config:
         if not name:
             return None
         return account_config_path(name)
-
-    @classmethod
-    def _find_project_config(cls) -> Path | None:
-        from inspire.config.toml import _find_project_config
-
-        return _find_project_config()
 
     @staticmethod
     def _load_toml(path: Path) -> dict[str, Any]:
@@ -143,9 +105,3 @@ class Config:
         from inspire.config.load import config_from_files_and_env
 
         return config_from_files_and_env(require_credentials=require_credentials, account=account)
-
-    @classmethod
-    def get_config_paths(cls, account: str | None = None) -> tuple[Path | None, Path | None]:
-        from inspire.config.load import get_config_paths
-
-        return get_config_paths(account=account)

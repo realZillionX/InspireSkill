@@ -1,10 +1,10 @@
 # 项目工作流
 
-一个项目跨越 CPU 准备、数据处理、GPU 训练、部署或交付时看本页。这里给阶段化决策和验收点，不维护命令模板；具体命令表面回到 CLI Help，单领域边界分别看 Project Context、Resources、Internal Sources、Paths、Dataset、Notebook、Image、Compute Workloads 和 Model References。
+一个项目跨越 CPU 准备、数据处理、GPU 训练、部署或交付时看本页。这里给阶段化决策和验收点，不维护命令模板；具体命令表面回到 CLI Help，单领域边界分别看 Assets、Resources、Internal Sources、Paths、Dataset、Notebook、Image、Compute Workloads 和 Model References。
 
 ## 1. 总体框架
 
-项目上下文是所有阶段的前置：进入项目工作区先按 [`project-context.md`](project-context.md) 核对 `INSPIRE.md` 和项目初始化状态，问清 Project / Workspace / Paths / Image 再动手。之后把项目推进拆成三段：
+每个阶段都根据当前任务和 Live 事实重新确认 Project / Workspace / Paths / Image，不从仓库绑定或 Profile 继承。如果存在 `INSPIRE.md`，只读取与当前 Project 相关的稳定资产条目（见 [`assets.md`](assets.md)）。之后把项目推进拆成三段：
 
 | 阶段 | 目标 | 典型平台位置 | 验收 |
 | --- | --- | --- | --- |
@@ -27,7 +27,7 @@
 - 关键 Python / System 依赖能在目标镜像里导入或执行。
 - 数据和权重路径在目标项目共享盘下可读。
 - 后续 Workload 要复用的镜像状态为 `READY`。
-- Path 约定、基底镜像身份和相关 Workload Profile 名称已按 [`project-context.md`](project-context.md) 写入 `INSPIRE.md`。
+- 需要长期复用的绝对路径、适用 Project / Workspace 和基底镜像身份已按 [`assets.md`](assets.md) 写入 `INSPIRE.md`。
 
 ## 3. 阶段 B：CPU 处理
 

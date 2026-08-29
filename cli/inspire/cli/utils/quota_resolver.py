@@ -11,7 +11,7 @@ When multiple compute groups in the same workspace expose the same
 triple (e.g. an H100 group and an H200 group both offering
 ``(1, 20, 200)``), scheduling callers must pass the exact compute group
 name via ``--group`` to disambiguate. Query commands may offer keyword
-filters upstream, but this resolver is used by create/profile paths.
+filters upstream, but this resolver is used by create paths.
 """
 
 from __future__ import annotations
@@ -626,7 +626,7 @@ def resolve_quota(
             hint = ", ".join(available) if available else "(none)"
             raise QuotaMatchError(
                 f"No compute group name exactly matches --group {group_override!r}. "
-                "Create/profile --group requires the full compute group name. "
+                "Create --group requires the full compute group name. "
                 "Use a quota query --group <keyword> only to find the exact name. "
                 f"Available: {hint}"
             )

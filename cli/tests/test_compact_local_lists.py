@@ -5,9 +5,7 @@ import json
 from click.testing import CliRunner
 
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
-from inspire.cli.commands import workload_profile
 from inspire.cli.commands.notebook import connection as connection_module
-from inspire.cli.commands.notebook import path_aliases as path_aliases_module
 from inspire.cli.commands.serving import serving_commands as serving_module
 from inspire.cli.main import main as cli_main
 from inspire.config import Config
@@ -18,63 +16,6 @@ def _assert_default_page(data: dict, key: str) -> None:
     assert data["shown"] == 20
     assert data["total"] == 25
     assert data["truncated"] is True
-
-
-def test_profile_list_defaults_to_twenty(monkeypatch) -> None:  # noqa: ANN001
-    profiles = {
-        f"profile-{index:02d}": {
-            "workspace": "GPU Workspace",
-            "project": "Research",
-            "group": "H200 Group",
-            "quota": "1,20,200",
-            "image": "train:v1",
-        }
-        for index in range(25)
-    }
-    config = Config(username="", password="", profiles={"job": profiles})
-    monkeypatch.setattr(
-        workload_profile.Config,
-        "from_files_and_env",
-        classmethod(lambda cls, **_kwargs: (config, {})),
-    )
-
-    result = CliRunner().invoke(cli_main, ["--json", "job", "profile", "list"])
-
-    assert result.exit_code == 0, result.output
-    _assert_default_page(json.loads(result.output)["data"], "items")
-
-
-def test_path_alias_list_supports_explicit_all(monkeypatch) -> None:  # noqa: ANN001
-    aliases = {
-        f"alias-{index:02d}": f"/inspire/ssd/project/demo/{index:02d}/"
-        for index in range(25)
-    }
-    monkeypatch.setattr(
-        path_aliases_module,
-        "load_project_path_aliases",
-        lambda: (None, aliases),
-    )
-
-    default_result = CliRunner().invoke(
-        cli_main,
-        ["--json", "notebook", "path", "list"],
-    )
-    all_result = CliRunner().invoke(
-        cli_main,
-        ["--json", "notebook", "path", "list", "--all"],
-    )
-
-    assert default_result.exit_code == 0, default_result.output
-    default_data = json.loads(default_result.output)["data"]
-    _assert_default_page(default_data, "items")
-    assert all(set(item) == {"name"} for item in default_data["items"])
-    assert "/inspire/" not in default_result.output
-    assert all_result.exit_code == 0, all_result.output
-    all_data = json.loads(all_result.output)["data"]
-    assert len(all_data["items"]) == 25
-    assert all(set(item) == {"name"} for item in all_data["items"])
-    assert "/inspire/" not in all_result.output
-    assert "truncated" not in all_data
 
 
 def test_connection_list_verifies_only_visible_page(monkeypatch) -> None:  # noqa: ANN001

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 变更
+
+- **删除仓库级 `./.inspire/` 及其三类隐式状态。** `inspire init` 现在只校验和规范化 `~/.inspire/accounts/<account>/config.toml`，不再接受 `--scope project`、`--select-project` 或持久化 dotenv。Project Context、Path Alias 和 Workload Profile 的读写层、命令组和创建参数全部删除；Notebook `--cwd` 只接受绝对远端路径，SCP 不再展开 Alias，Job 不再为共享盘日志暗中包装启动命令。`workspace`、`project`、`group`、`quota` 和 `image` 在每次 create 和每个 Batch item 上明确给出。原仓库级 `job.*` / `notebook.post_start` 设置收敛为账号 TOML 或环境变量。
+
+- **`inspire update` 会发现并清理用户主目录下退役的仓库级 `.inspire/`。** 扫描不跟随符号链接，跳过 VCS、依赖库、缓存和操作系统目录，且永远保留账号级 `~/.inspire/`。和已有旧状态清扫一样，普通模式先列清单再确认，`--yes` 直接删，JSON 和后台检查只报告。
+
 ### 修复
 
 - **受限 Notebook 的 JupyterTerminal `exec` 明确关闭本地 stdin。** 该 Transport 的内部控制脚本由 stdin 送入 Shell；用户命令继承同一输入时，`cat` / `bash -s` 之类的读取者会吞掉完成标记并最终超时。现在用户命令的默认 stdin 隔离为 `/dev/null`，远端管道和显式远端文件重定向仍可覆盖；显式 `--stdin` / `--bash-stdin` 和本地管道、文件重定向则会在发送用户命令前返回校验错误。交互式 `notebook shell` 和 SSH Notebook 的 stdin 行为不变；Agent 指引同步要求经 `/inspire/...` 传递脚本或数据。
@@ -427,7 +433,7 @@
 
   清单模块是在升级装完之后才 import 的，所以读到的是**新版本**的声明而不是当前进程这一版的——正好是想要的那份，它才知道新版停用了什么。代价是把一个本进程没有依赖过的模块加载进来，因此扫描的任何失败都被吞掉：清扫是顺带的家务，绝不能把一次已经成功的升级变成 traceback，下次 `update` 会重试。另外这个能力从本版起才有，而驱动升级的是**升级前**那个版本，所以装上本版的那一次升级本身不会清扫，之后每次都会。
 
-- **`inspire account check` 会发现本仓库钉住了一个平台上已经不存在的 Project。** 仓库的 `[context] project` 只在 `inspire init` 时写一次，之后再不复查；平台上把这个 Project 删掉或改名之后，仓库就钉在一个解析不到任何东西的名字上，这里的每一条 `<workload> create` 都会栽在它上面。账号级的 `project_catalog` 帮不上忙——它是写下这个 pin 的同一次 `inspire init` 留下的缓存，和 pin 口径一致地一起错，只有实时列一次才看得出来。判定为失效时报 `Project context: STALE` 并退 `EXIT_CONFIG_ERROR`（不是认证错误：账号是好的，是这个仓库的绑定坏了）。提示同时给出两种修法：重新绑定用 `inspire init --scope project`，而本来就不该有绑定的仓库应该把 `./.inspire/` 删掉——[`project-context.md`](references/project-context.md) 早就写明 CLI、Skill、文档这类通用工具源码仓库不做项目初始化，这类仓库要的是解绑而不是改绑。列表调用本身失败时不作判断——网络问题不是失效的证据。
+- **`inspire account check` 会发现本仓库钉住了一个平台上已经不存在的 Project。** 仓库的 `[context] project` 只在 `inspire init` 时写一次，之后再不复查；平台上把这个 Project 删掉或改名之后，仓库就钉在一个解析不到任何东西的名字上，这里的每一条 `<workload> create` 都会栽在它上面。账号级的 `project_catalog` 帮不上忙——它是写下这个 pin 的同一次 `inspire init` 留下的缓存，和 pin 口径一致地一起错，只有实时列一次才看得出来。判定为失效时报 `Project context: STALE` 并退 `EXIT_CONFIG_ERROR`（不是认证错误：账号是好的，是这个仓库的绑定坏了）。提示同时给出两种修法：重新绑定用 `inspire init --scope project`，而本来就不该有绑定的仓库应该把 `./.inspire/` 删掉。这是已退役的历史行为；当前版本已无仓库绑定层。
 
 - **删除 `inspire config` 整个命令组，其中管账号的部分并入 `inspire account`。** `config check` → `account check`，`config context` → `account context`；`config show` **没有替代命令**，理由见下一条。归属本来就错了：schema 里 15 个 option 有 10 个是账号作用域（Authentication / API / Proxy / Tunnel），它们全部由 `account add` 写入 `~/.inspire/accounts/<name>/config.toml`。`config context` 更直接：它列出的 project 和 compute group 就是 `inspire init` 的发现结果写进账号配置的那份缓存，只有 workspace 名单是实时查的。
 

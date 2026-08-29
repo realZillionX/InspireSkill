@@ -116,28 +116,31 @@ def _with_workspace_display_name(item: dict, workspace_name: str) -> dict:
 )
 @click.option(
     "--workspace",
+    required=True,
     metavar="NAME",
-    help="Workspace name. Required unless supplied by --profile.",
+    help="Workspace name.",
 )
 @click.option(
     "--project",
     "-p",
+    required=True,
     metavar="NAME",
-    help="Project name. Required unless supplied by --profile.",
+    help="Project name.",
 )
 @click.option(
     "--group",
     "group",
+    required=True,
     metavar="NAME",
     help=(
         "Full compute group name copied from the same quota row as --quota. "
-        "Required unless supplied by --profile. "
         "Partial matches are not accepted."
     ),
 )
 @click.option(
     "--quota",
     "-q",
+    required=True,
     default=None,
     metavar="SPEC",
     help=(
@@ -145,22 +148,15 @@ def _with_workspace_display_name(item: dict, workspace_name: str) -> dict:
         "Example: '1,20,200' for 1 GPU + 20 CPU + 200 GiB. "
         "Use '0,4,32' for CPU-only. "
         "The triple must match a quota row in the workspace (see 'inspire notebook quota'); "
-        "pass --group <full compute group name> to disambiguate. "
-        "Required unless supplied by --profile."
+        "pass --group <full compute group name> to disambiguate."
     ),
 )
 @click.option(
     "--image",
     "-i",
+    required=True,
     metavar="NAME|URL",
-    help="Image name or URL. Required unless supplied by --profile.",
-)
-@click.option(
-    "--profile",
-    "profile_name",
-    default=None,
-    metavar="NAME",
-    help="Notebook condition profile providing workspace/project/group/quota/image.",
+    help="Image name or URL.",
 )
 @click.option(
     "--shm-size",
@@ -266,7 +262,6 @@ def create_notebook_cmd(
     priority: Optional[int],
     group: Optional[str],
     node: Optional[str],
-    profile_name: Optional[str],
 ) -> None:
     """Create a new interactive notebook instance.
 
@@ -310,7 +305,6 @@ def create_notebook_cmd(
         project_explicit=project_explicit,
         group=group,
         node=node,
-        profile_name=profile_name,
         dataset_mounts=dataset_mounts,
         enable_notification=enable_notification,
         auto_stop_after=auto_stop_after,

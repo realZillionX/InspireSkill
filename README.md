@@ -21,7 +21,7 @@
 InspireSkill 将算力平台的一切入口交给 AI Agent。当 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Desktop 识别到本项目所提供的 `SKILL.md`，它会：
 
 - 直接调用 `inspire` 命令查实时资源、开 Notebook、提 HPC 任务、拉日志
-- 全程只用 Name：参数、帮助、错误、人类输出和 JSON 输出都使用 Name、Account Alias、Path Alias 和可读状态，不需要 Agent 记忆或搬运平台内部 ID
+- 全程只用 Name：参数、帮助、错误、人类输出和 JSON 输出都使用资源 Name、Account Alias 和可读状态，不需要 Agent 记忆或搬运平台内部 ID
 - 提供可选的 Clash Verge Mixed Port 分流模板，让公网与启智内网共存一套本地代理配置，取代多人共用断连的 aTrust；CLI 本身不绑定固定端口，任何能同时覆盖公网与 `*.sii.edu.cn` 的代理方案都行
 - 把平台网页上的常用操作都变成可复现、可串联、可自动化的命令链
 - 从 `SKILL.md` 按需加载对应使用手册，理解调度语义、资源申请原则和验收点，不需要用户在对话里反复向 Agent 解释平台语义
@@ -48,7 +48,7 @@ InspireSkill 将算力平台的一切入口交给 AI Agent。当 Claude Code / C
 
 启智社区还有两条独立维护的 CLI：[EmbodiedForge/Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) 和 [tianyilt/qzcli_tool](https://github.com/tianyilt/qzcli_tool)。它们都解决了部分网页操作自动化问题，尤其 qzcli_tool 已经覆盖资源查询、GPU Job 提交、HPC Submit、Logs、Dashboard 和 Jupyter Exec，也提供 `qzcli-mcp` 给 MCP-Capable Harness 使用。
 
-InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命令，而是把启智平台整理成一套 Agent 能长期使用的操作模型。安装、命令面、`SKILL.md`、`references/`、具体启智项目的 `INSPIRE.md` 资产合同、Path Alias、Workload Profile、观测和清理闭环都在同一套设计里。
+InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命令，而是把启智平台整理成一套 Agent 能长期使用的操作模型。安装、命令面、`SKILL.md`、`references/`、可选的 `INSPIRE.md` 资产合同、观测和清理闭环都在同一套设计里；调度条件和远端路径每次显式传入，不在仓库中维护隐式状态。
 
 | 维度 | [Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) | [qzcli_tool](https://github.com/tianyilt/qzcli_tool) | InspireSkill |
 | --- | --- | --- | --- |
@@ -58,8 +58,8 @@ InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命�
 | Notebook 连接 | 依赖用户预配本地组件或容器公网 | Jupyter Terminal API Exec | SSH / Shell / Exec / SCP / OpenSSH Config / Proxy URL / Connection Cache / 跨账号重建 |
 | Workload 覆盖 | 少量训练 / HPC 能力 | 资源、GPU Job、HPC Submit、Logs、Dashboard、Jupyter Exec | Notebook / GPU Job / CPU HPC / Ray / Serving / TensorBoard / Model / Image / Dataset / Project / Resources 全覆盖 |
 | 观测闭环 | 有限 | Job Logs、Watch、Usage / Dashboard | Events / Logs / Metrics / Instances / Lifecycle / Status 分层诊断 |
-| 资源与路径语义 | 主要是配置和命令参数 | 资源缓存、Workspace / Compute Group / Spec 解析 | Workload Profile 管调度条件，Path Alias 管远端路径，具体启智项目的 `INSPIRE.md` 管持久资产合同 |
-| 多账号与项目层 | `[accounts."<user>"]` 合并层 | 以单套 `~/.qzcli/` 配置为中心 | 一账号一目录，账号级默认值和仓库级项目覆盖分层 |
+| 资源与路径语义 | 主要是配置和命令参数 | 资源缓存、Workspace / Compute Group / Spec 解析 | 调度条件按 Live 目录每次显式传入，远端文件用绝对路径，`INSPIRE.md` 只记持久资产合同 |
+| 多账号与项目层 | `[accounts."<user>"]` 合并层 | 以单套 `~/.qzcli/` 配置为中心 | 一账号一目录；没有仓库级配置或 Project 绑定 |
 
 一句话：这两条 CLI 各做了一段路；InspireSkill 把整个平台的操作面、文档面和观测面端到端铺平，让 Agent 不只是“能调用命令”，而是能理解应该怎么用启智平台。
 
@@ -122,7 +122,7 @@ inspire uninstall --purge        # 连 ~/.inspire 的账号配置一起删
 inspire uninstall --purge-runtime # 连共享的 Playwright 浏览器缓存一起删
 ```
 
-执行前会打印完整清单并要求确认。账号配置和浏览器缓存默认保留：前者重装后还能直接用，后者是本机所有 Playwright 工具共用的；仓库自己的 `INSPIRE.md` 和 `./.inspire/` 任何一档都不碰。CLI 已经跑不起来时，用安装脚本的 `--uninstall` 兜底，分层与参数见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。
+执行前会打印完整清单并要求确认。账号配置和浏览器缓存默认保留；用户维护的 `INSPIRE.md` 不属于卸载目标。旧版留下的仓库级 `./.inspire/` 由 `inspire update` 的旧状态清扫处理。CLI 已经跑不起来时，用安装脚本的 `--uninstall` 兜底。
 
 ## 完整初始化（安装后必跑）
 
@@ -130,14 +130,12 @@ inspire uninstall --purge-runtime # 连共享的 Playwright 浏览器缓存一�
 inspire account add <name>
 inspire account check
 inspire init
-cd /path/to/your-repo
-inspire init --scope project
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
-`inspire init` 校验账号并清理旧版写入的派生 Catalog/Path Alias，只保留真正的账号级设置；`--scope project` 才为当前仓库写入 Project Context 和 Path Alias。Notebook 远端命令省略 `--cwd` 时不注入 `cd`，保留平台、容器或远端 Shell 给出的初始目录。
+`inspire init` 只校验并规范化当前账号；不读写仓库级配置。Project、Workspace、Group、Quota、Image 和远端路径在每次命令中显式给出。Notebook 远端命令省略 `--cwd` 时不注入 `cd`。
 
-安装、更新和多账号操作见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)；项目初始化问询（Project / Workspace / Paths / Image）和 `INSPIRE.md` 维护见 [`references/project-context.md`](references/project-context.md)；Clash Verge 的 SII Proxy / DIRECT 分流模板见 [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)。
+安装、更新和多账号操作见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)；`INSPIRE.md` 持久资产合同见 [`references/assets.md`](references/assets.md)；Clash Verge 的 SII Proxy / DIRECT 分流模板见 [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)。
 
 ---
 
@@ -267,7 +265,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 `inspire project list / detail / owners`：项目是**全局对象，不按 Workspace 划分**，所以这一组都不接 `--workspace`。`list` 给出可见候选和显示预算，`detail <名字>` 看单个项目的预算 / 点券 / 平台优先级字段，`owners` 给出「负责人」下拉框的内容——需要权限时知道该找谁。
 
-判断本仓库归属哪个 Project 只能由用户指认，不从列表猜；确认后写进 `./.inspire/` 与 `INSPIRE.md`，见 [`references/project-context.md`](references/project-context.md)。日常算力决策先看 `<workload> quota` 和实时余量，项目预算通常不是第一约束。
+仓库不绑定 Project。每次操作根据当前任务显式传入 Project；如果有跨会话复用的稳定资产，在 `INSPIRE.md` 的每个条目上单独标明所属 Project / Workspace，见 [`references/assets.md`](references/assets.md)。
 
 </details>
 
@@ -281,7 +279,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 <details>
 <summary><b>🗝 多账号（一账号一目录）</b> —— 切账号 = 改一个文件</summary>
 
-`inspire account add / list / use / rename / current / remove / check / context / permissions`：每个账号的 `config.toml`、SSH Tunnel Bridges 和登录缓存都在独立目录 `~/.inspire/accounts/<name>/`，活动账号由 `~/.inspire/current` 一行决定。`account check` 一次核对配置、登录和项目上下文，`account context` 列出当前账号能用的全部资源名。
+`inspire account add / list / use / rename / current / remove / check / context / permissions`：每个账号的 `config.toml`、SSH Tunnel Bridges 和登录缓存都在独立目录 `~/.inspire/accounts/<name>/`，活动账号由 `~/.inspire/current` 一行决定。`account check` 核对账号配置和登录，`account context` 列出当前账号能用的全部资源名。
 
 不再有 `[accounts."<user>"]` 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。Notebook 连接类命令的 `--account <name>` 使用本地 Account Alias，不是平台登录用户名；`all` 是跨账号扫描 Selector。
 
@@ -310,9 +308,9 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 # 通用 Skill 与项目资产合同
 
-`SKILL.md` 装完是一份通用 Playbook。日常 Workspace 基本就是 `CPU资源空间` 和 `分布式训练空间`；资源条件不要写成隐式默认值，把 `workspace`、`project`、`group`、`quota` 和 `image` 组合成 Workload Profile，并在 `inspire notebook/job/hpc/... create --profile <name>` 或 Batch 文件里显式使用。
+`SKILL.md` 装完是一份通用 Playbook。日常 Workspace 基本就是 `CPU资源空间` 和 `分布式训练空间`；`workspace`、`project`、`group`、`quota` 和 `image` 每次创建都显式传入，Batch 中每个展开条目也同样显式提供。
 
-`INSPIRE.md` 不是所有仓库必备的文件。只有某个具体科研或工程项目在启智上维护稳定拓扑、Canonical Remote Paths、永久基础设施或 Image / Model / Dataset / Checkpoint 等持久资产时，才在该项目工作区根维护 `INSPIRE.md`。CLI、Skill、文档和其它通用工具源码仓库不应为了“使用了启智”而创建它；初始化问询、字段与生命周期边界见 [`references/project-context.md`](references/project-context.md)。
+`INSPIRE.md` 不是所有仓库必备的文件。只有仓库在启智上维护需要跨 Agent / 会话复用的稳定路径、永久基础设施或 Image / Model / Dataset / Checkpoint 等持久资产时才创建；每项资产可分别属于不同 Project / Workspace。边界见 [`references/assets.md`](references/assets.md)。
 
 需要定制 Harness 级入口时，直接编辑 `~/.claude/skills/inspire/SKILL.md` 和同目录 `references/`（Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Desktop 同理）。`inspire update` 默认会覆盖 `SKILL.md` 和 `references/`；维护本地改动后用 `inspire update --cli-only` 只升级 CLI 与运行时。
 
@@ -350,12 +348,12 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 # 文档索引
 
-- [`SKILL.md`](SKILL.md)：日常使用入口，包含平台不变量、项目上下文约定、最短执行闭环和按需加载索引。
+- [`SKILL.md`](SKILL.md)：日常使用入口，包含平台不变量、资产合同边界、最短执行闭环和按需加载索引。
 - [`references/setup/install-and-config.md`](references/setup/install-and-config.md)：安装、更新、账号配置、账号初始化和多账号操作。
 - [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)：Clash Verge 的 SII Proxy / DIRECT 分流模板和验证步骤。
-- [`references/project-context.md`](references/project-context.md)：项目初始化问询（Project / Workspace / Paths / Image）、`INSPIRE.md` 资产合同和项目信息持续维护。
-- [`references/resources.md`](references/resources.md)：Workspace、Compute Group、规格三元组、实时资源和 Workload Profile 边界。
-- [`references/paths.md`](references/paths.md)：共享盘作用域、存储池、挂载隔离、Path Alias 和远端路径边界。
+- [`references/assets.md`](references/assets.md)：`INSPIRE.md` 持久资产合同和生命周期。
+- [`references/resources.md`](references/resources.md)：Workspace、Compute Group、规格三元组和实时资源。
+- [`references/paths.md`](references/paths.md)：共享盘作用域、存储池、挂载隔离和远端绝对路径。
 - [`references/dataset.md`](references/dataset.md)：数据广场检索、官方数据集的版本与访问权限、`--dataset` 只读挂载语义。
 - [`references/internal-sources.md`](references/internal-sources.md)：联网准备动线、SII 内部源入口和镜像固化策略。
 - [`references/notebook.md`](references/notebook.md)：Notebook 作为交互工作台、连接方式、文件流转、Proxy 和观察边界。

@@ -1,4 +1,4 @@
-"""What this version of the CLI keeps under ``~/.inspire``, and what it doesn't.
+"""What this version of the CLI keeps, and what older releases left behind.
 
 Every release that drops a state file leaves the old one on disk forever: the
 code that read it is gone, so nothing ever deletes it. This module is the
@@ -13,6 +13,7 @@ creates it, rather than silent accumulation.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,6 +61,28 @@ _USER_OUTPUT_DIRS = frozenset({"metrics"})
 # Not ours and not the user's data. Deleting them accomplishes nothing because
 # the OS recreates them, so they are neither owned nor swept.
 _IGNORED_NAMES = frozenset({".DS_Store", ".localized", "Thumbs.db"})
+
+# Repository-local ``.inspire`` was retired completely. Scan ordinary source
+# locations under the user's home while avoiding dependency stores, VCS
+# internals and OS-owned trees that can contain millions of unrelated files.
+_REPOSITORY_SCAN_PRUNE_NAMES = frozenset(
+    {
+        ".cache",
+        ".cargo",
+        ".git",
+        ".hg",
+        ".local",
+        ".rustup",
+        ".svn",
+        ".Trash",
+        ".venv",
+        "AppData",
+        "Library",
+        "node_modules",
+        "__pycache__",
+        "venv",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -111,16 +134,43 @@ def _scan(directory: Path, owned_files: frozenset[str], owned_dirs: frozenset[st
     return orphans
 
 
+def _find_retired_repository_state() -> list[OrphanEntry]:
+    """Find repo-local ``.inspire`` directories without following symlinks."""
+    user_home = Path.home()
+    global_state = inspire_home()
+    found: list[OrphanEntry] = []
+
+    def _ignore_walk_error(_error: OSError) -> None:
+        return
+
+    for root, dir_names, _file_names in os.walk(
+        user_home,
+        topdown=True,
+        onerror=_ignore_walk_error,
+        followlinks=False,
+    ):
+        root_path = Path(root)
+        retained: list[str] = []
+        for name in sorted(dir_names):
+            candidate = root_path / name
+            if name == ".inspire":
+                if candidate != global_state and not candidate.is_symlink():
+                    found.append(OrphanEntry(path=candidate, is_dir=True))
+                continue
+            if name in _REPOSITORY_SCAN_PRUNE_NAMES or candidate.is_symlink():
+                continue
+            retained.append(name)
+        dir_names[:] = retained
+    return found
+
+
 def find_orphan_state() -> list[OrphanEntry]:
-    """Every path under ~/.inspire that this version neither reads nor writes.
+    """Return obsolete account state and retired repo-local ``.inspire`` dirs.
 
     Contents of user-output directories are never reported: those are answers
     someone asked for, not version-bound state.
     """
     home = inspire_home()
-    if not home.is_dir():
-        return []
-
     orphans = _scan(home, _HOME_FILES, _HOME_DIRS | _USER_OUTPUT_DIRS)
 
     accounts = accounts_dir()
@@ -131,6 +181,7 @@ def find_orphan_state() -> list[OrphanEntry]:
             elif account.name not in _IGNORED_NAMES:
                 orphans.append(OrphanEntry(path=account, is_dir=False))
 
+    orphans.extend(_find_retired_repository_state())
     return orphans
 
 

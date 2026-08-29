@@ -51,7 +51,6 @@ from inspire.cli.utils.task_priority import (
     task_priority_option,
 )
 from inspire.config import Config, ConfigError
-from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import (
     resolve_workspace_operation_scope,
     resolve_workspace_query_scope,
@@ -2055,41 +2054,38 @@ def configs_serving(
 )
 @click.option(
     "--workspace",
+    required=True,
     metavar="NAME",
-    help="Workspace name. Required unless supplied by --profile.",
+    help="Workspace name.",
 )
 @click.option(
     "--project",
     "-p",
+    required=True,
     metavar="NAME",
-    help="Project name. Required unless supplied by --profile.",
+    help="Project name.",
 )
 @click.option(
     "--group",
+    required=True,
     metavar="NAME",
     help=(
-        "Full compute group name copied from the same quota row as --quota. "
-        "Required unless supplied by --profile."
+        "Full compute group name copied from the same quota row as --quota."
     ),
 )
 @click.option(
     "--quota",
     "-q",
+    required=True,
     metavar="SPEC",
-    help="Serving resource as gpu,cpu,mem. Required unless supplied by --profile.",
+    help="Serving resource as gpu,cpu,mem.",
 )
 @click.option(
     "--image",
     "-i",
+    required=True,
     metavar="NAME|URL",
-    help="Visible image name or name:tag. Required unless supplied by --profile.",
-)
-@click.option(
-    "--profile",
-    "profile_name",
-    default=None,
-    metavar="NAME",
-    help="Serving condition profile providing workspace/project/group/quota/image.",
+    help="Visible image name or name:tag.",
 )
 @click.option(
     "--replicas",
@@ -2154,7 +2150,6 @@ def create_serving(
     group: Optional[str],
     quota: Optional[str],
     image: Optional[str],
-    profile_name: Optional[str],
     command: str,
     port: int,
     replicas: int,
@@ -2194,23 +2189,6 @@ def create_serving(
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
 
-        fields = apply_workload_profile(
-            profiles=getattr(config, "profiles", {}),
-            kind="serving",
-            profile_name=profile_name,
-            values={
-                "workspace": workspace,
-                "project": project,
-                "group": group,
-                "image": image,
-                "quota": quota,
-            },
-        )
-        workspace = cast(Optional[str], fields["workspace"])
-        project = cast(Optional[str], fields["project"])
-        group = cast(Optional[str], fields["group"])
-        image = cast(Optional[str], fields["image"])
-        quota = cast(Optional[str], fields["quota"])
         for field_name, value in (
             ("workspace", workspace),
             ("project", project),
@@ -2219,7 +2197,7 @@ def create_serving(
             ("image", image),
         ):
             if not value:
-                raise ConfigError(profile_required_message("serving", field_name))
+                raise ConfigError(f"--{field_name} is required.")
         workspace = cast(str, workspace)
         project = cast(str, project)
         group = cast(str, group)
@@ -2231,7 +2209,7 @@ def create_serving(
             session=session,
         )
         if not workspace_id:
-            raise ConfigError(profile_required_message("serving", "workspace"))
+            raise ConfigError("--workspace is required.")
         project_id = _resolve_project_id(
             ctx=ctx,
             workspace_id=workspace_id,
@@ -2240,7 +2218,7 @@ def create_serving(
             requested=project,
         )
         if not project_id:
-            raise ConfigError(profile_required_message("serving", "project"))
+            raise ConfigError("--project is required.")
         user = browser_api_module.get_current_user(session=session)
         current_user_id = str(user.get("id") or user.get("user_id") or "").strip()
         if not current_user_id:

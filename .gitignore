@@ -23,7 +23,6 @@ cli/build/
 # Local agent caches / logs that might accidentally land here
 AGENTS.md
 CLAUDE.md
-.inspire/
 .cache/
 *.log
 

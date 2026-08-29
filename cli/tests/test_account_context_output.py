@@ -28,7 +28,7 @@ def test_account_context_renders_compact_name_lines(capsys):
     )
 
     output = capsys.readouterr().out
-    assert "active account=default project=- workspace=-" in output
+    assert "active account=default" in output
     assert "project 专项项目-2" in output
     assert "workspace CI-情境智能" in output
     assert "workspace CPU资源空间" in output
@@ -187,11 +187,7 @@ def test_account_context_reports_actionable_workspace_discovery_failure(
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["data"] == {
-        "active": {
-            "account": "primary",
-            "project": None,
-            "workspace": None,
-        },
+            "active": {"account": "primary"},
         "projects": [],
         "workspaces": [],
         "compute_groups": [],
@@ -205,7 +201,6 @@ def test_account_context_uses_live_catalogs_and_ignores_stale_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = Config(username="login-user", password="secret")
-    cfg.projects = {"Stale Project": "Stale Project"}
     cfg.project_catalog = {"stale": {"name": "Stale Catalog Project"}}
     cfg.compute_groups = [{"name": "Stale Group"}]
     session = object()

@@ -240,26 +240,20 @@ def test_bridge_scp_warns_when_remote_path_is_relative(
     )
 
     assert result.exit_code == EXIT_SUCCESS
-    assert "does not use path aliases" in result.output
+    assert "prefer an absolute path" in result.output
     assert "Warning: remote destination 'artifacts/test.txt'" in result.output
 
 
-def test_bridge_scp_resolves_remote_path_alias(
+def test_bridge_scp_preserves_absolute_remote_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     local_file = tmp_path / "test.txt"
     local_file.write_text("hello", encoding="utf-8")
 
-    config = Config(username="", password="", path_aliases={"me": "/inspire/ssd/project/p1/alice/"})
     tunnel_config = TunnelConfig()
     tunnel_config.add_bridge(BridgeProfile(name="default", proxy_url="https://proxy.example.com"))
     captured: Dict[str, Any] = {}
 
-    monkeypatch.setattr(
-        Config,
-        "from_files_and_env",
-        classmethod(lambda cls, require_credentials=True: (config, {})),
-    )
     monkeypatch.setattr(scp_cmd_module, "load_tunnel_config", lambda: tunnel_config)
     monkeypatch.setattr(scp_cmd_module, "is_tunnel_available", lambda **kw: True)
 
@@ -275,11 +269,17 @@ def test_bridge_scp_resolves_remote_path_alias(
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["notebook", "scp", "default", str(local_file), "me:artifacts/test.txt"],
+        [
+            "notebook",
+            "scp",
+            "default",
+            str(local_file),
+            "/inspire/ssd/project/p1/alice/artifacts/test.txt",
+        ],
     )
 
     assert result.exit_code == EXIT_SUCCESS
-    assert "does not use path aliases" not in result.output
+    assert "relative" not in result.output
     assert captured["remote_path"] == "/inspire/ssd/project/p1/alice/artifacts/test.txt"
 
 
@@ -308,7 +308,7 @@ def test_bridge_scp_warns_when_remote_source_is_relative_on_download(
     )
 
     assert result.exit_code == EXIT_SUCCESS
-    assert "does not use path aliases" in result.output
+    assert "prefer an absolute path" in result.output
     assert "Warning: remote source 'artifacts/test.txt'" in result.output
 
 

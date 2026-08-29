@@ -12,7 +12,6 @@ import click
 
 from inspire.cli.commands.batch import ray_batch
 from inspire.cli.commands.workload_quota import make_quota_command
-from inspire.cli.commands.workload_profile import make_profile_command
 
 from .ray_commands import (
     shell_ray,
@@ -60,7 +59,6 @@ ray.add_command(stop_ray)
 ray.add_command(delete_ray)
 ray.add_command(create_ray)
 ray.add_command(make_quota_command("ray"))
-ray.add_command(make_profile_command("ray"))
 ray.add_command(ray_batch)
 ray.add_command(events_ray)
 ray.add_command(instances_ray)

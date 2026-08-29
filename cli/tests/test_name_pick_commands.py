@@ -162,11 +162,6 @@ def test_job_platform_logs_forwards_pick_to_retryable_resolution(
 ) -> None:
     seen: list[tuple[int | None, bool]] = []
     monkeypatch.setattr(
-        job_logs.Config,
-        "from_files_and_env",
-        lambda **_kwargs: (object(), {}),
-    )
-    monkeypatch.setattr(
         job_logs,
         "_run_readonly_web_job_operation",
         lambda **kwargs: (
@@ -212,11 +207,6 @@ def test_job_ssh_logs_forwards_pick_to_selected_resolution_path(
 ) -> None:
     direct: list[tuple[int | None, bool]] = []
     retryable: list[tuple[int | None, bool]] = []
-    monkeypatch.setattr(
-        job_logs.Config,
-        "from_files_and_env",
-        lambda **_kwargs: (object(), {}),
-    )
     monkeypatch.setattr(
         job_logs,
         "_resolve_web_job_id",

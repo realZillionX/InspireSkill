@@ -23,7 +23,7 @@ Notebook 是交互工作台，不只是“开一个终端”。
 1. 用真实 Workspace 选择角色：CPU 准备盒走 `CPU资源空间`，GPU Probe 走 `分布式训练空间`。
 2. 用 Quota Live 查询选择合法 `gpu,cpu,mem` 三元组。
 3. 确认 Project 是目标项目名，Image 已 `READY`。
-4. 需要复用同一调度条件时写 Workload Profile；远端目录仍用 Path Alias。
+4. 每次创建都从当前 Live Quota Row 显式传入 Workspace / Project / Group / Quota / Image。
 5. 需要数据广场的官方数据集时用 `--dataset <数据集名>:<版本名>`，先按 [`dataset.md`](dataset.md) 确认版本和访问权限。
 
 共享盘默认可写。需要防止误写项目公共目录或项目成员目录时，创建时用只读挂载开关把它们降级为 `ro`；项目成员目录那一档还要求当前账号是项目 Maintainer，否则平台直接拒绝创建。两者默认都不开启，行为与不传时一致。
@@ -59,7 +59,7 @@ Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的
 
 JupyterTerminal `exec` 的内部控制脚本由 stdin 送入远端 Shell，因此用户命令的默认 stdin 被隔离为 `/dev/null`，避免 `cat` / `bash -s` 一类读取者吞掉控制脚本的完成标记。它无法承载本地用户输入：显式 `--stdin` / `--bash-stdin`，以及本地 `producer | inspire notebook exec ...`、`inspire notebook exec ... < local-file` 都会在发送用户命令前失败。远端命令自身在引号内使用管道或显式读取远端文件会覆盖 `/dev/null`，例如 `inspire notebook exec <name> "python task.py < /inspire/.../input.jsonl"`。需要传入本地脚本或数据时，先经支持 SSH 的 Notebook 放到 `/inspire/...`，再按远端路径执行或读取；需要人工交互时使用带 TTY 的 `notebook shell`，不要向 `shell` 管道脚本。支持 SSH 的 Notebook 仍可使用 `exec --stdin`。
 
-`notebook exec` / `shell` 省略 `--cwd` 时不注入 `cd`，不读取 `me` 或账号配置中的项目路径，而是保留当前 Transport 给出的初始目录。受限 Notebook 的 JupyterTerminal 使用平台设置的项目用户目录；SSH 登录 Shell 的初始目录由远端 SSH/镜像决定。需要固定目录时显式传 `--cwd me:<repo>`、其它 Path Alias 或绝对路径。
+`notebook exec` / `shell` 省略 `--cwd` 时不注入 `cd`，而是保留当前 Transport 给出的初始目录。受限 Notebook 的 JupyterTerminal 使用平台设置的项目用户目录；SSH 登录 Shell 的初始目录由远端 SSH/镜像决定。需要固定目录时显式传入 `/inspire/...` 绝对路径，需要缩写时由本地 shell 环境变量展开。
 
 交互会话用完敲 `exit` 正常退出（`job shell` 同理）。`Ctrl+]` 是强制断开的转义键，用于远端已经不响应、`exit` 也回不来的情况。
 

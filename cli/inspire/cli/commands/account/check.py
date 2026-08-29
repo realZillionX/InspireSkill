@@ -25,7 +25,7 @@ from inspire.config import (
     SOURCE_DEFAULT,
 )
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import SessionExpiredError, WebSession, get_web_session
+from inspire.platform.web.session import SessionExpiredError, get_web_session
 from inspire.platform.web.session.proxy import describe_effective_proxy_config
 
 from .proxy_output import (
@@ -55,12 +55,6 @@ _HOST_VALIDATION_FIELDS = (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _describe_precedence(prefer_source: str) -> str:
-    if prefer_source == "toml":
-        return "project TOML wins on conflict"
-    return "env vars win on conflict (default)"
 
 
 def _extract_hostname(value: str | None) -> str | None:
@@ -148,70 +142,17 @@ def _validate_required_credentials(cfg: Config) -> None:
         )
 
 
-def _validate_project_base_url_shape(project_path: Path | None) -> None:
-    if not project_path or not project_path.exists():
-        return
-
-    try:
-        project_raw = Config._load_toml(project_path)
-    except Exception as e:
-        raise ConfigError(f"Failed to read project config at {project_path}: {e}") from e
-
-    if "base_url" in project_raw:
-        raise ConfigError(
-            f"Invalid project config at {project_path}.\n"
-            "Found top-level `base_url`; this key must be under [api].\n"
-            "Use:\n"
-            "  [api]\n"
-            "  base_url = 'https://your-inspire-host'"
-        )
-
-
-def _find_stale_context_project(cfg: Config, session: WebSession) -> str | None:
-    """Return the pinned project name when the platform no longer has it.
-
-    A repository pins `[context] project` once and then never revisits it, so a
-    project that gets deleted or renamed on the platform leaves the repo bound
-    to a name that resolves to nothing — and every `<workload> create` here
-    fails on it. Only a live listing can tell; account configuration no longer
-    stores a project catalog.
-
-    Returns None when there is no pin, when the pin is fine, or when the
-    listing itself failed — a network problem is not evidence of staleness.
-    """
-    pinned = str(getattr(cfg, "context_project", "") or "").strip()
-    if not pinned:
-        return None
-
-    try:
-        projects = browser_api_module.list_all_projects(session=session)
-    except Exception:
-        return None
-
-    live_names = {
-        str(getattr(project, "name", "") or "").strip().casefold()
-        for project in projects
-    }
-    if not live_names or pinned.casefold() in live_names:
-        return None
-    return pinned
-
-
 def _build_base_url_resolution(
     cfg: Config,
     sources: dict[str, str],
     account_path: Path | None,
-    project_path: Path | None,
 ) -> dict[str, object]:
     env_base_url = os.environ.get("INSPIRE_BASE_URL")
     return {
         "configured": bool(str(cfg.base_url or "").strip()),
         "source": sources.get("base_url", SOURCE_DEFAULT),
-        "prefer_source": getattr(cfg, "prefer_source", "env"),
-        "precedence": _describe_precedence(getattr(cfg, "prefer_source", "env")),
         "env_present": bool(env_base_url),
         "account_config_present": bool(account_path),
-        "project_config_present": bool(project_path),
     }
 
 
@@ -249,8 +190,9 @@ def check(ctx: Context, details: bool) -> None:
             require_credentials=False,
         )
         active_account = scrub_raw_ids(current_account() or "") or None
-        account_path, project_path = Config.get_config_paths()
-        _validate_project_base_url_shape(project_path)
+        from inspire.config.load_account_layer import _resolve_account_config_path
+
+        account_path = _resolve_account_config_path()
 
         placeholder_issues = _find_placeholder_host_issues(cfg, sources)
         if placeholder_issues:
@@ -260,8 +202,6 @@ def check(ctx: Context, details: bool) -> None:
 
         auth_ok = True
         auth_error = None
-        stale_project = None
-
         try:
             session = get_web_session()
             # A health check must prove the session against the platform; the
@@ -270,8 +210,6 @@ def check(ctx: Context, details: bool) -> None:
         except (SessionExpiredError, ValueError) as e:
             auth_ok = False
             auth_error = str(e)
-        else:
-            stale_project = _find_stale_context_project(cfg, session)
 
         # A failed check has to say why without a second run: the reason the
         # login did not go through and the route the request actually took are
@@ -286,7 +224,7 @@ def check(ctx: Context, details: bool) -> None:
             else None
         )
 
-        base_url_resolution = _build_base_url_resolution(cfg, sources, account_path, project_path)
+        base_url_resolution = _build_base_url_resolution(cfg, sources, account_path)
         default_base_url_hint = None
         if base_url_resolution["source"] == SOURCE_DEFAULT:
             default_base_url_hint = (
@@ -299,8 +237,6 @@ def check(ctx: Context, details: bool) -> None:
             "configured": True,
             "authenticated": auth_ok,
         }
-        if stale_project:
-            result["stale_context_project"] = scrub_raw_ids(stale_project)
         if verbose:
             result["effective_proxy"] = effective_proxy
             if auth_error:
@@ -316,7 +252,7 @@ def check(ctx: Context, details: bool) -> None:
                 result["note"] = default_base_url_hint
 
         if effective_json:
-            click.echo(json_formatter.format_json(result, success=auth_ok and not stale_project))
+            click.echo(json_formatter.format_json(result, success=auth_ok))
         else:
             click.echo(f"Account: {active_account or '-'}")
             click.echo(human_formatter.format_success("Configuration: OK"))
@@ -324,33 +260,13 @@ def check(ctx: Context, details: bool) -> None:
                 click.echo(human_formatter.format_success("Authentication: OK"))
             else:
                 click.echo(human_formatter.format_error("Authentication: FAILED"))
-            if stale_project:
-                click.echo(
-                    human_formatter.format_error(
-                        f"Project context: STALE (this repository is pinned to "
-                        f"{scrub_raw_ids(stale_project)}, which the platform no "
-                        f"longer has)"
-                    )
-                )
-                # Two different repairs, and the wrong one is easy to reach for:
-                # a repo that never should have been pinned — a CLI, a skill, a
-                # docs tree — wants the binding gone, not pointed somewhere else.
-                click.echo(
-                    "Re-pin with `inspire init --scope project`, or delete "
-                    "./.inspire/ if this repository does not run workloads on "
-                    "the platform."
-                )
-
             if show_details:
                 click.echo(
                     "Source: "
-                    f"{base_url_resolution['source']} "
-                    f"({base_url_resolution['precedence']})"
+                    f"{base_url_resolution['source']} (environment overrides account TOML)"
                 )
                 click.echo(
-                    "Config files: "
-                    f"account={'yes' if account_path else 'no'} "
-                    f"project={'yes' if project_path else 'no'}"
+                    "Config file: " f"account={'yes' if account_path else 'no'}"
                 )
                 if default_base_url_hint:
                     click.echo(click.style(f"Note: {default_base_url_hint}", fg="yellow"))
@@ -370,11 +286,6 @@ def check(ctx: Context, details: bool) -> None:
 
         if not auth_ok:
             sys.exit(EXIT_AUTH_ERROR)
-        if stale_project:
-            # Not an auth problem: the account works, this repository's pin does
-            # not. Every `<workload> create` here would fail on it.
-            sys.exit(EXIT_CONFIG_ERROR)
-
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
     except Exception as e:

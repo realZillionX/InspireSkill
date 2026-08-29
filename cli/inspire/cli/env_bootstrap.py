@@ -1,9 +1,4 @@
-"""Early dotenv loading for the CLI entrypoint.
-
-This is intentionally an entrypoint bootstrap, not part of the core config
-loader: the goal is to make the whole process see project-declared variables,
-including lower-level helpers that read ``os.environ`` directly.
-"""
+"""Early loading for an explicitly supplied dotenv file."""
 
 from __future__ import annotations
 
@@ -11,15 +6,7 @@ import ast
 import os
 import re
 from pathlib import Path
-from typing import Any
-
 import click
-
-from inspire.config.toml import (
-    _find_project_configs,
-    _load_toml,
-    _project_config_write_path,
-)
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LOADED_ENV_FILE_KEYS: set[str] = set()
@@ -43,41 +30,6 @@ def is_env_file_key(key: str) -> bool:
 
 def loaded_env_file_path() -> Path | None:
     return _LOADED_ENV_FILE_PATH
-
-
-def _project_root_for_config_path(path: Path) -> Path:
-    parts = path.parts
-    if len(parts) >= 4 and parts[-4:-1] == (".inspire", "accounts", parts[-2]):
-        return path.parents[3]
-    return path.parent.parent
-
-
-def _read_cli_env_file_value(config_path: Path) -> str | None:
-    try:
-        raw = _load_toml(config_path)
-    except FileNotFoundError:
-        return None
-    cli_section = raw.get("cli")
-    if not isinstance(cli_section, dict):
-        return None
-    value = str(cli_section.get("env_file") or "").strip()
-    return value or None
-
-
-def _configured_env_file() -> tuple[Path, Path] | None:
-    shared_path, account_path = _find_project_configs()
-    selected: tuple[Path, Path] | None = None
-    for config_path in (shared_path, account_path):
-        if config_path is None:
-            continue
-        value = _read_cli_env_file_value(config_path)
-        if not value:
-            continue
-        env_path = Path(value).expanduser()
-        if not env_path.is_absolute():
-            env_path = _project_root_for_config_path(config_path) / env_path
-        selected = (env_path, config_path)
-    return selected
 
 
 def _strip_inline_comment(text: str) -> str:
@@ -162,59 +114,26 @@ def _apply_env_values(path: Path, values: dict[str, str]) -> None:
 def bootstrap_env_file(
     *,
     env_file: Path | None,
-    disabled: bool,
+    disabled: bool = False,
 ) -> Path | None:
-    """Load an explicit or project-configured dotenv file into ``os.environ``."""
+    """Load an explicitly selected dotenv file into ``os.environ``."""
     reset_loaded_env_file_state()
     if disabled and env_file is not None:
         raise click.ClickException("--env-file cannot be combined with --no-env-file")
     if disabled:
         return None
-
-    selected_path: Path | None = None
-    source_config: Path | None = None
-    if env_file is not None:
-        selected_path = env_file.expanduser()
-        if not selected_path.is_absolute():
-            selected_path = Path.cwd() / selected_path
-    else:
-        configured = _configured_env_file()
-        if configured is not None:
-            selected_path, source_config = configured
-
-    if selected_path is None:
+    if env_file is None:
         return None
 
+    selected_path = env_file.expanduser()
+    if not selected_path.is_absolute():
+        selected_path = Path.cwd() / selected_path
     selected_path = selected_path.resolve()
     if not selected_path.exists():
-        suffix = f" (declared in {source_config})" if source_config else ""
-        raise click.ClickException(f"Env file not found: {selected_path}{suffix}")
+        raise click.ClickException(f"Env file not found: {selected_path}")
     values = _parse_env_file(selected_path)
     _apply_env_values(selected_path, values)
     return selected_path
-
-
-def write_shared_project_env_file(env_file: str) -> Path:
-    """Persist ``[cli].env_file`` to the repo-wide project config."""
-    value = str(env_file or "").strip()
-    if not value:
-        raise click.ClickException("env_file cannot be empty")
-    if "\x00" in value:
-        raise click.ClickException("env_file cannot contain NUL bytes")
-
-    config_path = _project_config_write_path(shared=True)
-    data: dict[str, Any] = _load_toml(config_path) if config_path.exists() else {}
-    cli_section = data.get("cli")
-    if not isinstance(cli_section, dict):
-        cli_section = {}
-        data["cli"] = cli_section
-    cli_section["env_file"] = value
-
-    from inspire.cli.commands.init.toml_helpers import _toml_dumps
-
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(_toml_dumps(data), encoding="utf-8")
-    return config_path
 
 
 __all__ = [
@@ -222,5 +141,4 @@ __all__ = [
     "is_env_file_key",
     "loaded_env_file_path",
     "reset_loaded_env_file_state",
-    "write_shared_project_env_file",
 ]

@@ -46,7 +46,6 @@ from inspire.cli.utils.task_priority import (
     task_priority_option,
 )
 from inspire.config import Config, ConfigError
-from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.cli.utils.id_resolver import (
     NAME_PICK_HELP,
     forget_resource_identity,
@@ -1049,28 +1048,31 @@ def list_hpc(
 )
 @click.option(
     "--workspace",
+    required=True,
     metavar="NAME",
-    help="Workspace name. Required unless supplied by --profile.",
+    help="Workspace name.",
 )
 @click.option(
     "--project",
     "-p",
+    required=True,
     metavar="NAME",
-    help="Project name. Required unless supplied by --profile.",
+    help="Project name.",
 )
 @click.option(
     "--group",
     "compute_group",
+    required=True,
     metavar="NAME",
     help=(
         "Full compute group name copied from the same quota row as --quota. "
-        "Required unless supplied by --profile "
         "(e.g. 'HPC-可上网区资源-2'; see 'inspire account context')."
     ),
 )
 @click.option(
     "--quota",
     "-q",
+    required=True,
     metavar="SPEC",
     help=(
         "Node resource as 'gpu,cpu,mem' (mem in GiB). The triple chooses "
@@ -1083,15 +1085,9 @@ def list_hpc(
 @click.option(
     "--image",
     "-i",
+    required=True,
     metavar="NAME|URL",
-    help="Docker image URL or visible image name. Required unless supplied by --profile.",
-)
-@click.option(
-    "--profile",
-    "profile_name",
-    default=None,
-    metavar="NAME",
-    help="HPC condition profile providing workspace/project/group/quota/image.",
+    help="Docker image URL or visible image name.",
 )
 @click.option(
     "--image-type",
@@ -1200,7 +1196,6 @@ def create_hpc(
     quota: Optional[str],
     project: Optional[str],
     workspace: Optional[str],
-    profile_name: Optional[str],
     image: Optional[str],
     image_type: str,
     instance_count: int,
@@ -1242,8 +1237,9 @@ def create_hpc(
         inspire hpc create -n preprocess --workspace CPU资源空间 --project <project> \\
           --group HPC-可上网区资源-2 -q 0,20,256 --image <image> \\
           -c 'srun bash -lc "python preprocess.py"'
-        inspire hpc create -n probe --profile cpu-hpc -c 'srun hostname' --dry-run
-        inspire hpc create -n index --profile cpu-hpc --dataset pixabay-81k:v0 \\
+        inspire hpc create -n index --workspace CPU资源空间 --project <project> \\
+          --group HPC-可上网区资源-2 -q 0,20,256 --image <image> \\
+          --dataset pixabay-81k:v0 \\
           --max-time 4 --keep-after-finish 0.5 \\
           -c 'srun bash -lc "python index.py /inspire/dataset/pixabay-81k/v0"'
     """
@@ -1260,24 +1256,6 @@ def create_hpc(
 
         config, _ = Config.from_files_and_env()
 
-        fields = apply_workload_profile(
-            profiles=getattr(config, "profiles", {}),
-            kind="hpc",
-            profile_name=profile_name,
-            values={
-                "workspace": workspace,
-                "project": project,
-                "group": compute_group,
-                "image": image,
-                "quota": quota,
-            },
-        )
-        workspace = cast(Optional[str], fields["workspace"])
-        project = cast(Optional[str], fields["project"])
-        compute_group = cast(Optional[str], fields["group"])
-        image = cast(Optional[str], fields["image"])
-        quota = cast(Optional[str], fields["quota"])
-
         for field_name, value in (
             ("workspace", workspace),
             ("project", project),
@@ -1289,7 +1267,7 @@ def create_hpc(
                 _handle_error(
                     ctx,
                     "ValidationError",
-                    profile_required_message("hpc", field_name),
+                    f"--{field_name} is required.",
                     EXIT_CONFIG_ERROR,
                 )
                 return
@@ -1306,7 +1284,7 @@ def create_hpc(
             session=session,
         )
         if resolved_workspace_id is None:
-            raise ConfigError(profile_required_message("hpc", "workspace"))
+            raise ConfigError("--workspace is required.")
         resolved_project = _resolve_project_info(
             config,
             project,

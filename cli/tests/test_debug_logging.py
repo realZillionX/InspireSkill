@@ -235,11 +235,6 @@ def test_debug_does_not_expand_account_check_output(
         "from_files_and_env",
         classmethod(lambda cls, **_kwargs: (cfg, {"base_url": SOURCE_ENV})),
     )
-    monkeypatch.setattr(
-        Config,
-        "get_config_paths",
-        classmethod(lambda cls: (tmp_path / "global.toml", tmp_path / "project.toml")),
-    )
     monkeypatch.setattr("inspire.accounts.current_account", lambda: "test-account")
     monkeypatch.setattr(check_module, "get_web_session", lambda: object())
     monkeypatch.setattr(

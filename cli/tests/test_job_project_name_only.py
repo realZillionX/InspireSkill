@@ -87,17 +87,13 @@ def test_job_project_selector_rejects_project_id_before_session_lookup(
         )
 
 
-def test_job_project_selector_uses_live_name_from_alias(
+def test_job_project_selector_uses_explicit_live_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = object()
     expected = _project(PROJECT_ID, "Project One")
     other = _project(OTHER_PROJECT_ID, "Other Project")
-    config = Config(
-        username="user",
-        password="pass",
-        projects={"Project One": "Project One"},
-    )
+    config = Config(username="user", password="pass")
 
     monkeypatch.setattr(job_submit.web_session_module, "get_web_session", lambda: session)
     monkeypatch.setattr(

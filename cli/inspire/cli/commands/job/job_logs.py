@@ -35,9 +35,8 @@ from inspire.cli.context import (
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
-from inspire.cli.utils.job_submit import derive_remote_log_glob
 from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.config import Config, ConfigError
+from inspire.config import ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, WebSession, get_web_session
 
@@ -793,8 +792,6 @@ def _run_job_logs_single_job(
     bridge_name: Optional[str] = None,
 ) -> None:
     try:
-        config, _ = Config.from_files_and_env(require_credentials=False)
-
         effective_bridge_name, tunnel_config, bridge_configured = _resolve_tunnel_preflight_target(
             bridge_name
         )
@@ -967,7 +964,6 @@ def _run_job_logs_web_single_job(
         return
 
     try:
-        config, _ = Config.from_files_and_env(require_credentials=False)
         fetch_size = max(web_page_size, tail or 0, head or 0)
 
         def _load_logs(job_id: str, session: WebSession):
@@ -1148,8 +1144,7 @@ def _run_job_logs_web_single_job(
     default=None,
     metavar="PATH",
     help=(
-        "Explicit remote log file path. Overrides the default project log path. "
-        "Useful for jobs created outside the CLI where the path was set by the platform."
+        "Explicit remote log file path. Required with --source ssh."
     ),
 )
 @click.option(
@@ -1168,7 +1163,7 @@ def _run_job_logs_web_single_job(
     show_default=True,
     help=(
         "Log source. Use platform for aggregated platform logs or ssh for "
-        "CLI-managed remote log files."
+        "an explicitly named remote log file."
     ),
 )
 @click.option(
@@ -1219,8 +1214,8 @@ def logs(
 
     Platform logs are the default. One-shot output shows a bounded latest
     snapshot and applies a total character budget. Use ``--all`` only when the
-    complete log is required. Use ``--source ssh`` for the CLI-managed remote
-    log file through a cached notebook bridge.
+    complete log is required. ``--source ssh`` requires ``--remote-log-path``
+    and reads that explicit file through a cached notebook bridge.
 
     \b
     Examples:
@@ -1229,7 +1224,8 @@ def logs(
         inspire job logs my-training-run --workspace 分布式训练空间 --window 30m
         inspire job logs my-training-run --workspace 分布式训练空间 --follow
         inspire job logs my-training-run --workspace 分布式训练空间 --all
-        inspire job logs my-training-run --workspace 分布式训练空间 --source ssh --notebook my-cpu-box
+        inspire job logs my-training-run --workspace 分布式训练空间 --source ssh \
+          --notebook my-cpu-box --remote-log-path /inspire/ssd/project/topic/user/run.log
     """
     job = _reject_web_job_name_at_boundary(ctx, job)
     if tail is not None and head is not None:
@@ -1326,8 +1322,16 @@ def logs(
         )
         return
 
+    if not remote_log_path or not remote_log_path.strip():
+        _handle_error(
+            ctx,
+            "InvalidUsage",
+            "--source ssh requires --remote-log-path with an explicit remote file.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+
     try:
-        config, _ = Config.from_files_and_env(require_credentials=False)
         if follow:
             try:
                 job_id = _run_readonly_web_job_operation(
@@ -1369,53 +1373,7 @@ def logs(
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
         return
 
-    resolved_log_path: str
-    if remote_log_path:
-        resolved_log_path = remote_log_path.strip()
-        if not resolved_log_path:
-            _handle_error(
-                ctx,
-                "InvalidUsage",
-                "--remote-log-path cannot be empty",
-                EXIT_GENERAL_ERROR,
-            )
-            return
-    else:
-        glob_pattern = derive_remote_log_glob(config, name=job)
-        if not glob_pattern:
-            _handle_error(
-                ctx,
-                "ConfigError",
-                "Cannot derive remote log path: no project path alias is configured.",
-                EXIT_CONFIG_ERROR,
-                hint=(
-                    "Run `inspire init --scope project` to populate the `me` path alias, "
-                    "or pass --remote-log-path explicitly."
-                ),
-            )
-            return
-        resolved_candidate = _resolve_latest_log_via_ssh(glob_pattern, bridge_name=bridge)
-        if resolved_candidate:
-            resolved_log_path = resolved_candidate
-        else:
-            if follow:
-                # `_follow_logs_via_ssh` polls for the file's existence with
-                # its own wait loop — pass the glob pattern through so it
-                # can poll-resolve on each iteration.
-                resolved_log_path = glob_pattern
-            else:
-                _handle_error(
-                    ctx,
-                    "LogNotFound",
-                    "No job log was found on the shared filesystem.",
-                    EXIT_LOG_NOT_FOUND,
-                    hint=(
-                        "The job may not have started writing yet. Pass --follow "
-                        "to wait, or pass --remote-log-path if the job uses a "
-                        "non-default path (e.g. created outside the CLI)."
-                    ),
-                )
-                return
+    resolved_log_path = remote_log_path.strip()
 
     if not job_id:
         _handle_error(ctx, "JobNotFound", f"Job not found: {job}", EXIT_JOB_NOT_FOUND)

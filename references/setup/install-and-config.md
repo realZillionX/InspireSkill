@@ -1,6 +1,6 @@
 # 安装与配置
 
-安装、更新、账号配置、账号初始化和多账号操作看这一份。本机需要通过 Clash Verge 为 `*.sii.edu.cn` 分流时，加载 [`sii-proxy.md`](sii-proxy.md)；项目工作区的接入和 `INSPIRE.md` 维护见 [`../project-context.md`](../project-context.md)。平台任务运行看 Notebook、Compute Workloads、Resources 等业务 Reference；命令表面以 CLI Help 为准。
+安装、更新、账号配置、账号初始化和多账号操作看这一份。本机需要通过 Clash Verge 为 `*.sii.edu.cn` 分流时，加载 [`sii-proxy.md`](sii-proxy.md)；持久资产合同见 [`../assets.md`](../assets.md)。平台任务运行看 Notebook、Compute Workloads、Resources 等业务 Reference；命令表面以 CLI Help 为准。
 
 ## 1. 安装
 
@@ -55,7 +55,7 @@ inspire update --skill-only
 
 `inspire update` 会自动识别 `uv tool` / `pipx` 安装来源，升级 CLI 包，刷新 harness skill，并逐步打印进度、刷新到的 harness 列表和新旧版本之间的更新摘要（取自 GitHub Releases，回退到 `main` 的 `CHANGELOG.md`）。`--cli-only` 只升 CLI 包与运行时；`--skill-only` 只刷 `SKILL.md` 和 `references/`。
 
-它同时会扫掉旧版本在 `~/.inspire` 下留着、而当前版本已经不再读的状态文件——停用某个文件的那个版本没法在退场时删掉它，因为知道它存在的代码正是被删掉的那部分，所以这件事只能在版本切换时做。发现内容先按清单打印再问，`--yes` 跳过询问，`--json` 和后台每日检查都只报告不删除。已经是最新版时 `inspire update` 照样扫一遍，所以它也是随时手动跑这件事的入口。`~/.inspire/metrics/` 里的图是明确要过的产物，任何一档都不碰。
+它同时会扫掉旧版本留下、而当前版本已经不再读的本地状态，包括 `~/.inspire` 下的废弃文件和用户主目录里退役的仓库级 `./.inspire/` 目录。发现内容先按清单打印再问，`--yes` 跳过询问，`--json` 和后台每日检查都只报告不删除。已经是最新版时 `inspire update` 照样扫一遍。`~/.inspire/metrics/` 里的图是明确要过的产物，任何一档都不碰。
 
 ## 3. 卸载
 
@@ -71,7 +71,7 @@ inspire uninstall --purge-runtime
 
 - `~/.inspire` 存的是平台凭据，以及 Name 解析索引、Notebook 连接和显卡型号这些本地加速缓存，重装后还能直接用，所以默认保留，`--purge` 才删。
 - Playwright 浏览器缓存装在共享位置，本机其它 Playwright 用户也在读，所以默认保留，`--purge-runtime` 才删，且不被 `--purge` 蕴含。
-- 仓库自己的 `INSPIRE.md` 和 `./.inspire/` 是项目资产，任何一档都不碰。
+- `INSPIRE.md` 是用户文档，卸载不碰；退役的仓库级 `./.inspire/` 由 `inspire update` 的旧状态清扫处理。
 
 有文件删不掉时会中止并保留 CLI 包，这样清掉阻碍后还能再跑一次 `inspire uninstall`。CLI 已经跑不起来时用安装脚本兜底，参数与上面同名：
 
@@ -122,9 +122,9 @@ inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
-`inspire init` 不把 Project、Compute Group、平台目录或 Path Alias 复制到账号配置；这些目录以 Live 查询为准。旧版留下的 `[projects]`、`[project_catalog]`、`[[compute_groups]]`、账号级 `[path_aliases]` 和未使用的 API 字段会在重写时删除。
+`inspire init` 不把 Project、Compute Group、平台目录或路径复制到本地配置；这些以 Live 查询和每次命令的显式参数为准。旧版留下的 `[context]`、`[profiles]`、`[projects]`、`[project_catalog]`、`[[compute_groups]]`、`[path_aliases]` 和未使用的 API 字段会在重写时删除。
 
-账号初始化和具体仓库无关。把某个项目工作区接入启智（`inspire init --scope project`、问清 Project / Workspace / Paths / Image、创建和维护 `INSPIRE.md`）是另一件事，见 [`../project-context.md`](../project-context.md)。
+账号初始化和当前仓库无关；CLI 不提供仓库初始化或 Project 绑定。
 
 ## 6. 多账号
 

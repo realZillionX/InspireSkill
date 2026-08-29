@@ -52,7 +52,6 @@ from inspire.cli.utils.quota_resolver import (
 from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import TaskPriorityError, resolve_task_priority
 from inspire.config import Config, ConfigError
-from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import select_workspace_id
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import DatasetMount, NotebookFailedError
@@ -669,11 +668,11 @@ def _resolve_create_inputs(
     shm_size: int | None,
 ) -> tuple[str, str | None, str | None, int]:
     if not quota:
-        raise ValueError(profile_required_message("notebook", "quota"))
+        raise ValueError("--quota is required.")
     if not project:
-        raise ValueError(profile_required_message("notebook", "project"))
+        raise ValueError("--project is required.")
     if not image:
-        raise ValueError(profile_required_message("notebook", "image"))
+        raise ValueError("--image is required.")
     if shm_size is None:
         shm_size = config.shm_size if config.shm_size is not None else 32
     if shm_size < 1:
@@ -845,7 +844,6 @@ def run_notebook_create(
     project_explicit: bool = False,
     group: Optional[str] = None,
     node: Optional[str] = None,
-    profile_name: str | None = None,
     dataset_mounts: Sequence[DatasetMount] = (),
     enable_notification: Optional[bool] = None,
     auto_stop_after: Optional[int] = None,
@@ -860,24 +858,6 @@ def run_notebook_create(
         hint=WEB_AUTH_HINT,
     )
     config = load_config(ctx)
-
-    fields = apply_workload_profile(
-        profiles=getattr(config, "profiles", {}),
-        kind="notebook",
-        profile_name=profile_name,
-        values={
-            "workspace": workspace,
-            "project": project,
-            "group": group,
-            "image": image,
-            "quota": quota,
-        },
-    )
-    workspace = fields["workspace"]
-    project = fields["project"]
-    group = fields["group"]
-    image = fields["image"]
-    quota = fields["quota"]
 
     try:
         post_start_spec = resolve_notebook_post_start_spec(
@@ -905,7 +885,7 @@ def run_notebook_create(
         _handle_error(
             ctx,
             "ValidationError",
-            profile_required_message("notebook", "group"),
+            "--group is required.",
             EXIT_CONFIG_ERROR,
         )
         return
@@ -913,7 +893,7 @@ def run_notebook_create(
         _handle_error(
             ctx,
             "ValidationError",
-            profile_required_message("notebook", "workspace"),
+            "--workspace is required.",
             EXIT_CONFIG_ERROR,
         )
         return

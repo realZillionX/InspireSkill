@@ -90,6 +90,32 @@ def test_unknown_files_and_dirs_are_reported(home: Path) -> None:
     }
 
 
+def test_retired_repository_inspire_directory_is_reported_and_removed(
+    home: Path,
+) -> None:
+    repo_state = home.parent / "DiVR" / ".inspire"
+    account_override = repo_state / "accounts" / "alice" / "config.toml"
+    account_override.parent.mkdir(parents=True)
+    account_override.write_text(
+        '[context]\nproject = "Old"\n[path_aliases]\nme = "/inspire/old"\n',
+        encoding="utf-8",
+    )
+
+    found = state_inventory.find_orphan_state()
+
+    assert [(entry.display, entry.is_dir) for entry in found] == [
+        ("~/DiVR/.inspire", True)
+    ]
+    result = update_module._sweep_orphan_state(
+        silent=False,
+        assume_yes=True,
+        json_output=False,
+    )
+    assert result == {"found": ["~/DiVR/.inspire/"], "removed": 1}
+    assert not repo_state.exists()
+    assert home.exists()
+
+
 def test_sweep_keeps_everything_without_consent(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

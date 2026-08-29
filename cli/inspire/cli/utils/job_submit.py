@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import re
-import shlex
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 from inspire.platform.web import browser_api as browser_api_module
@@ -21,8 +18,6 @@ from inspire.config import (
     Config,
     ConfigError,
     build_env_exports,
-    join_remote_path,
-    preferred_remote_path,
 )
 from inspire.cli.utils.quota_resolver import ResolvedQuota, build_resource_spec_price
 
@@ -35,7 +30,6 @@ class JobSubmission:
     job_id: Optional[str]
     data: dict
     result: Any
-    log_path: Optional[str]
     wrapped_command: str
     max_time_ms: Optional[str]
 
@@ -45,7 +39,6 @@ class JobSubmissionPlan:
     """Fully resolved local submission plan, before the create API call."""
 
     create_kwargs: dict[str, Any]
-    log_path: Optional[str]
     wrapped_command: str
     max_time_ms: Optional[str]
     project_name: Optional[str]
@@ -65,86 +58,10 @@ def wrap_in_bash(command: str) -> str:
     return f"bash -c '{escaped}'"
 
 
-_NAME_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]")
-
-
-def sanitize_job_name_for_filename(name: str) -> str:
-    """Project a job name onto a filesystem-safe filename fragment.
-
-    Job names are tame in practice (alnum + ``-`` / ``_``), but a stray
-    slash or shell metacharacter would break the `command > path` redirect
-    or the corresponding `inspire job logs` lookup. Replace anything
-    outside ``A-Za-z0-9._-`` with ``_``.
-    """
-    return _NAME_FILENAME_RE.sub("_", (name or "").strip()) or "job"
-
-
-def _now_log_timestamp() -> str:
-    """ISO-ish timestamp suffix used in deterministic log filenames.
-
-    UTC + ``%Y%m%dT%H%M%SZ`` so the suffix is filesystem-safe and sortable
-    by ``ls -1t`` (which sorts on mtime, but the lexicographic order of
-    these timestamps matches mtime ordering too — useful for tools that
-    fall back to lexicographic sorting).
-    """
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def derive_remote_log_glob(config: Config, *, name: str) -> str | None:
-    """Glob pattern matching every log file written by jobs with this NAME.
-
-    ``inspire job logs <name>`` resolves it via SSH (`ls -1t <pattern> |
-    head -1`) to find the most recent run. Returns ``None`` when no default
-    path alias is configured (no shared-FS log redirect).
-
-    Naming convention: ``<configured-path>/.inspire/training_master_<safe>_*.log``
-    where ``<safe>`` is the sanitized job name and ``*`` is a UTC timestamp
-    that ``submit_training_job`` writes per submission. Re-submitting the
-    same NAME produces a new log file rather than clobbering the previous
-    run's output.
-    """
-    remote_log_dir = preferred_remote_path(config.path_aliases)
-    if not remote_log_dir:
-        return None
-    safe = sanitize_job_name_for_filename(name)
-    return join_remote_path(remote_log_dir, ".inspire", f"training_master_{safe}_*.log")
-
-
-def build_remote_logged_command(
-    config: Config, *, command: str, name: str
-) -> tuple[str, str | None]:
-    """Build the remote command (with optional logging) and return (final_command, log_path).
-
-    The concrete log path uses a per-submission UTC timestamp so two jobs
-    with the same name (e.g. delete-and-recreate iteration) write to
-    distinct files. ``derive_remote_log_glob`` recovers the matching
-    pattern at lookup time.
-    """
+def build_remote_command(config: Config, *, command: str) -> str:
+    """Prefix the explicit job command with configured account environment exports."""
     env_exports = build_env_exports(config.remote_env)
-    final_command = f"{env_exports}{command}" if env_exports else command
-
-    log_path: str | None = None
-    remote_log_dir = preferred_remote_path(config.path_aliases)
-    if remote_log_dir:
-        remote_env = dict(config.remote_env)
-        remote_env.setdefault("PYTHONUNBUFFERED", "1")
-        env_exports = build_env_exports(remote_env)
-        safe = sanitize_job_name_for_filename(name)
-        log_path = join_remote_path(
-            remote_log_dir, ".inspire", f"training_master_{safe}_{_now_log_timestamp()}.log"
-        )
-        quoted_log_path = shlex.quote(log_path)
-        stdout_tee = f"tee -a {quoted_log_path}"
-        stderr_tee = f"tee -a {quoted_log_path} >&2"
-        script = (
-            f"{env_exports}"
-            f"mkdir -p {shlex.quote(log_path.rsplit('/', 1)[0])} && "
-            f": > {quoted_log_path} && "
-            f"{{ {command} 2> >({stderr_tee}); }} | {stdout_tee}"
-        )
-        final_command = f"bash -o pipefail -c {shlex.quote(script)}"
-
-    return final_command, log_path
+    return f"{env_exports}{command}" if env_exports else command
 
 
 def select_project_for_workspace(
@@ -340,9 +257,7 @@ def build_training_job_plan(
         raise ValueError("--nodes must be >= 1.")
 
     wrapped_command = wrap_in_bash(command)
-    final_command, log_path = build_remote_logged_command(
-        config, command=wrapped_command, name=name
-    )
+    final_command = build_remote_command(config, command=wrapped_command)
 
     max_time_ms = hours_to_ms_string(max_time_hours)
 
@@ -438,7 +353,6 @@ def build_training_job_plan(
 
     return JobSubmissionPlan(
         create_kwargs=create_kwargs,
-        log_path=log_path,
         wrapped_command=wrapped_command,
         max_time_ms=max_time_ms,
         project_name=project_name,
@@ -517,7 +431,6 @@ def submit_training_job(
         job_id=job_id,
         data=data,
         result=result,
-        log_path=plan.log_path,
         wrapped_command=plan.wrapped_command,
         max_time_ms=plan.max_time_ms,
     )
@@ -527,13 +440,11 @@ __all__ = [
     "JobSubmission",
     "JobSubmissionPlan",
     "build_training_job_plan",
-    "build_remote_logged_command",
-    "derive_remote_log_glob",
+    "build_remote_command",
     "hours_to_ms_string",
     "normalize_exclude_nodes",
     "normalize_specified_nodes",
     "parse_env_assignments",
-    "sanitize_job_name_for_filename",
     "select_project_for_workspace",
     "submit_training_job",
     "training_plan_exclude_nodes",

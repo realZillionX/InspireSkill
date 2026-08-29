@@ -15,7 +15,6 @@ class _FakeSession:
 
 def _patch_web_resolution(monkeypatch) -> _FakeSession:  # noqa: ANN001
     session = _FakeSession()
-    monkeypatch.setattr(job_logs.Config, "from_files_and_env", lambda **kwargs: (object(), []))
     monkeypatch.setattr(job_logs, "get_web_session", lambda: session)
     monkeypatch.setattr(job_logs, "_resolve_web_job_id", lambda **kwargs: "job-abc")
     monkeypatch.setattr(job_logs, "_close_web_client", lambda: None)
@@ -249,11 +248,6 @@ def test_web_follow_stops_once_the_job_is_terminal(monkeypatch) -> None:  # noqa
 
 
 def test_web_follow_json_is_rejected_before_web_calls(monkeypatch) -> None:  # noqa: ANN001
-    def fail_config(**kwargs):  # noqa: ANN001
-        raise AssertionError("json follow validation should run before web setup")
-
-    monkeypatch.setattr(job_logs.Config, "from_files_and_env", fail_config)
-
     result = CliRunner().invoke(
         cli_main,
         [
@@ -274,14 +268,6 @@ def test_web_follow_json_is_rejected_before_web_calls(monkeypatch) -> None:  # n
 
 
 def test_job_logs_rejects_instance_handle_before_web_calls(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setattr(
-        job_logs.Config,
-        "from_files_and_env",
-        lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("instance validation should run before web setup")
-        ),
-    )
-
     result = CliRunner().invoke(
         cli_main,
         [

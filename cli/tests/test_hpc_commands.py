@@ -45,7 +45,6 @@ def patch_hpc_config_and_auth(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         password="pass",
         base_url="https://example.invalid",
     )
-    config.projects = {"alias-project": "Project"}
     config.compute_groups = [{"id": "lcg-123", "name": "CG-123"}]
 
     def fake_from_files_and_env(
@@ -175,7 +174,7 @@ def test_hpc_create_json_uses_alias_resolution(
             "--quota",
             "0,32,256",
             "--project",
-            "alias-project",
+            "Project",
             "--workspace",
             "cpu-room",
             "--image",
@@ -236,7 +235,7 @@ def test_hpc_create_slurm_knobs_default_from_quota(
             "--workspace",
             "cpu-room",
             "--project",
-            "alias-project",
+            "Project",
             "--image",
             "registry.local/hpc:latest",
         ],
@@ -284,7 +283,7 @@ def test_hpc_create_human_output_is_compact(
             "--workspace",
             "cpu-room",
             "--project",
-            "alias-project",
+            "Project",
             "--image",
             "registry.local/hpc:latest",
         ],
@@ -340,7 +339,7 @@ def test_hpc_create_rejects_full_slurm_script(
             "--workspace",
             "cpu-room",
             "--project",
-            "alias-project",
+            "Project",
             "--image",
             "registry.local/hpc:latest",
         ],
@@ -1105,7 +1104,7 @@ def _hpc_create_argv(*extra: str) -> list[str]:
         "--workspace",
         "cpu-room",
         "--project",
-        "alias-project",
+        "Project",
         "--image",
         "registry.local/hpc:latest",
         *extra,

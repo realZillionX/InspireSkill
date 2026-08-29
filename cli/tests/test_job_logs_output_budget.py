@@ -19,7 +19,6 @@ class _FakeSession:
 
 def _patch_platform_resolution(monkeypatch: pytest.MonkeyPatch) -> _FakeSession:
     session = _FakeSession()
-    monkeypatch.setattr(job_logs.Config, "from_files_and_env", lambda **kwargs: (object(), []))
     monkeypatch.setattr(job_logs, "get_web_session", lambda: session)
     monkeypatch.setattr(job_logs, "_resolve_web_job_id", lambda **kwargs: "job-internal")
     monkeypatch.setattr(job_logs, "_close_web_client", lambda: None)
@@ -42,7 +41,6 @@ def _patch_ssh(
     stdout: str,
 ) -> list[str]:
     commands: list[str] = []
-    monkeypatch.setattr(job_logs.Config, "from_files_and_env", lambda **kwargs: (object(), []))
     monkeypatch.setattr(job_logs, "_resolve_web_job_id", lambda **kwargs: "job-internal")
     monkeypatch.setattr(
         job_logs,
@@ -230,15 +228,7 @@ def test_ssh_read_failure_hides_path_and_engineering_stderr(
     assert detail in caplog.text
 
 
-def test_ssh_missing_derived_log_does_not_print_glob(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    secret_glob = "/inspire/internal/project/private/training_master_train-a_*.log"
-    monkeypatch.setattr(job_logs.Config, "from_files_and_env", lambda **_kwargs: (object(), []))
-    monkeypatch.setattr(job_logs, "_resolve_web_job_id", lambda **_kwargs: "job-internal")
-    monkeypatch.setattr(job_logs, "derive_remote_log_glob", lambda *_args, **_kwargs: secret_glob)
-    monkeypatch.setattr(job_logs, "_resolve_latest_log_via_ssh", lambda *_args, **_kwargs: None)
-
+def test_ssh_requires_explicit_remote_log_path() -> None:
     result = CliRunner().invoke(
         cli_main,
         [
@@ -253,9 +243,7 @@ def test_ssh_missing_derived_log_does_not_print_glob(
     )
 
     assert result.exit_code != 0
-    assert "No job log was found on the shared filesystem" in result.output
-    assert secret_glob not in result.output
-    assert "/inspire/internal" not in result.output
+    assert "--source ssh requires --remote-log-path" in result.output
 
 
 def test_ssh_all_uses_cat_and_bypasses_budgets(

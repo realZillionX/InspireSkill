@@ -12,7 +12,6 @@ from inspire.config import (
     Config,
     ConfigOption,
 )
-from inspire.config.toml import _project_config_write_path
 
 from .env_detect import _generate_toml_content
 
@@ -41,11 +40,8 @@ def _require_writable_global_path() -> Path:
 
 
 ACCOUNT_CONFIG_TEMPLATE = f"""# Inspire CLI Account Configuration
-# Account-level values are shared by every repository that uses this account.
-# Live project/resource catalogs are never copied here. Repo-wide project
-# settings live in ./.inspire/config.toml; account-specific project overrides
-# such as personal path aliases live in
-# ./.inspire/accounts/<account>/config.toml.
+# Account-level values are independent of the current repository.
+# Live project/resource catalogs are never copied here.
 #
 # Values here are overridden by environment variables.
 # Sensitive values (passwords, tokens) should use env vars.
@@ -69,59 +65,17 @@ base_url = "{DEFAULT_BASE_URL}"
 retries = 3
 retry_pause = 2.0
 
-[remote_env]
-# Environment variables exported before notebook commands and jobs run for every repo.
-# Tip: use "$VARNAME" or "${{VARNAME}}" to pull from your *local* env at runtime.
-# WANDB_API_KEY = "$WANDB_API_KEY"
-# HF_TOKEN = "$HF_TOKEN"
-"""
-
-
-PROJECT_CONFIG_TEMPLATE = """# Inspire CLI Project Configuration
-# Project-level values live in this repository for the active account override.
-# Repo-wide project settings, such as [cli].env_file, live in
-# ./.inspire/config.toml.
-# Account identity, API, and proxy settings belong in
-# ~/.inspire/accounts/<account>/config.toml.
-#
-# Values here are overridden by environment variables.
-
-[context]
-# project = "<project>"
-
-[path_aliases]
-# Remote path aliases for explicit notebook exec/shell/scp paths.
-# `inspire init --scope project` writes repo-scoped values here; omitting
-# --cwd preserves the remote runtime's initial directory and never selects
-# `me` implicitly.
-# <path-user> is the shared-storage personal directory segment reported by
-# the platform, which can differ from the login username.
-# me = "/inspire/ssd/project/<topic>/<path-user>/"
-# public = "/inspire/ssd/project/<topic>/public/"
-# global-me = "/inspire/ssd/global_user/<path-user>/"
-# hdd.me = "/inspire/hdd/project/<topic>/<path-user>/"
-# ssd.public = "/inspire/ssd/project/<topic>/public/"
-# qb-ilm2.me = "/inspire/qb-ilm2/project/<topic>/<path-user>/"
-
 [job]
-# shm_size = 32  # Default shared memory (GiB) for notebooks; jobs use it when set
+# shm_size = 32
 # auto_fault_tolerance = false
 # fault_tolerance_max_retry = 10
-# enable_notification = false  # Feishu status updates to the current user's bound account
+# enable_notification = false
 
 [notebook]
-# post_start = "bash /workspace/setup.sh"  # none | shell command
-
-[profiles.notebook.example]
-# Workload condition profile used only when passed as --profile example.
-# workspace = "分布式训练空间"
-# project = "<project>"
-# group = "H200-2号机房"
-# quota = "1,20,200"
-# image = "<image>"
+# post_start = "bash /workspace/setup.sh"
 
 [remote_env]
-# Environment variables exported before notebook commands and jobs run in this repo.
+# Environment variables exported before notebook commands and jobs run.
 # Tip: use "$VARNAME" or "${{VARNAME}}" to pull from your *local* env at runtime.
 # WANDB_API_KEY = "$WANDB_API_KEY"
 # HF_TOKEN = "$HF_TOKEN"
@@ -129,31 +83,18 @@ PROJECT_CONFIG_TEMPLATE = """# Inspire CLI Project Configuration
 
 
 def _init_template_mode(
-    global_flag: bool,
-    project_flag: bool,
     force: bool,
 ) -> None:
-    """Initialize config using template with placeholders (template mode)."""
-    global_path = _require_writable_global_path()
-    if global_flag:
-        config_path = global_path
-        is_global = True
-        label = "Account configuration"
-    elif project_flag:
-        config_path = _project_config_write_path()
-        is_global = False
-        label = "Project configuration"
-    else:  # Internal callers must use the same explicit scope contract as Click.
-        raise ValueError("Init requires either global or project scope.")
+    """Initialize the active account config with placeholders."""
+    config_path = _require_writable_global_path()
 
     if config_path.exists() and not force:
-        message = f"{label} already exists."
+        message = "Account configuration already exists."
         click.echo(click.style(message, fg="yellow"))
         if not click.confirm("\nOverwrite existing config?"):
             return
 
-    template = ACCOUNT_CONFIG_TEMPLATE if is_global else PROJECT_CONFIG_TEMPLATE
-    _atomic_write_text(config_path, template)
+    _atomic_write_text(config_path, ACCOUNT_CONFIG_TEMPLATE)
 
 
 def _write_single_file(
@@ -169,35 +110,34 @@ def _write_single_file(
             return
 
     toml_content = _generate_toml_content(detected)
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+        import tomli as tomllib
 
-    _atomic_write_text(output_path, toml_content)
+    generated = tomllib.loads(toml_content)
+    existing = Config._load_toml(output_path) if output_path.exists() else {}
+    from .discover import _sanitize_account_config
+    from .toml_helpers import _toml_dumps
+
+    merged = _sanitize_account_config(existing)
+    for section, value in generated.items():
+        if isinstance(value, dict) and isinstance(merged.get(section), dict):
+            merged[section].update(value)
+        else:
+            merged[section] = value
+    _atomic_write_text(output_path, _toml_dumps(merged))
 
 def _init_smart_mode(
     detected: list[tuple[ConfigOption, str]],
-    global_flag: bool,
-    project_flag: bool,
     force: bool,
 ) -> None:
-    """Initialize config using detected env vars (smart mode)."""
-    if global_flag:
-        global_opts = [(opt, val) for opt, val in detected if opt.scope == "global"]
-        if not global_opts:
-            return
-        _write_single_file(
-            global_opts,
-            _require_writable_global_path(),
-            force,
-            "account",
-        )
-    elif project_flag:
-        project_opts = [(opt, val) for opt, val in detected if opt.scope == "project"]
-        if not project_opts:
-            return
-        _write_single_file(
-            project_opts,
-            _project_config_write_path(),
-            force,
-            "project",
-        )
-    else:
-        raise ValueError("Init requires either global or project scope.")
+    """Initialize the active account config using detected env vars."""
+    if not detected:
+        return
+    _write_single_file(
+        detected,
+        _require_writable_global_path(),
+        force,
+        "account",
+    )

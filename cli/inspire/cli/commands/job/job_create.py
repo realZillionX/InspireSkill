@@ -40,7 +40,6 @@ from inspire.cli.utils.quota_resolver import (
     resolve_quota,
 )
 from inspire.config import Config, ConfigError
-from inspire.config.workload_profiles import apply_workload_profile, profile_required_message
 from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import DatasetMount
@@ -64,7 +63,6 @@ def run_job_create(
     project: str | None,
     nodes: int | None,
     group: str | None,
-    profile_name: str | None = None,
     dry_run: bool = False,
     auto_fault_tolerance: Optional[bool] = None,
     fault_tolerance_max_retry: Optional[int] = None,
@@ -84,24 +82,6 @@ def run_job_create(
     try:
         config, _ = Config.from_files_and_env()
 
-        fields = apply_workload_profile(
-            profiles=getattr(config, "profiles", {}),
-            kind="job",
-            profile_name=profile_name,
-            values={
-                "workspace": workspace,
-                "project": project,
-                "group": group,
-                "image": image,
-                "quota": quota,
-            },
-        )
-        workspace = fields["workspace"]
-        project = fields["project"]
-        group = fields["group"]
-        image = fields["image"]
-        quota = fields["quota"]
-
         if auto_fault_tolerance is None:
             auto_fault_tolerance = config.job_auto_fault_tolerance
         if fault_tolerance_max_retry is None:
@@ -113,7 +93,7 @@ def run_job_create(
             _handle_error(
                 ctx,
                 "ValidationError",
-                profile_required_message("job", "group"),
+                "--group is required.",
                 EXIT_CONFIG_ERROR,
             )
             return
@@ -121,7 +101,7 @@ def run_job_create(
             _handle_error(
                 ctx,
                 "ValidationError",
-                profile_required_message("job", "image"),
+                "--image is required.",
                 EXIT_CONFIG_ERROR,
             )
             return
@@ -129,7 +109,7 @@ def run_job_create(
             _handle_error(
                 ctx,
                 "ValidationError",
-                profile_required_message("job", "project"),
+                "--project is required.",
                 EXIT_CONFIG_ERROR,
             )
             return
@@ -137,7 +117,7 @@ def run_job_create(
             _handle_error(
                 ctx,
                 "ValidationError",
-                profile_required_message("job", "workspace"),
+                "--workspace is required.",
                 EXIT_CONFIG_ERROR,
             )
             return
@@ -145,7 +125,7 @@ def run_job_create(
             _handle_error(
                 ctx,
                 "ValidationError",
-                profile_required_message("job", "quota"),
+                "--quota is required.",
                 EXIT_CONFIG_ERROR,
             )
             return
@@ -175,7 +155,7 @@ def run_job_create(
             _handle_error(
                 ctx,
                 "ConfigError",
-                f"{profile_required_message('job', 'workspace')} {workspace_required_hint(config)}.",
+                f"--workspace is required; {workspace_required_hint(config)}.",
                 EXIT_CONFIG_ERROR,
             )
             return
@@ -455,27 +435,30 @@ def run_job_create(
 @click.option("--command", "-c", required=True, help="Start command")
 @click.option(
     "--workspace",
+    required=True,
     metavar="NAME",
-    help="Workspace name. Required unless supplied by --profile.",
+    help="Workspace name.",
 )
 @click.option(
     "--project",
     "-p",
+    required=True,
     metavar="NAME",
-    help="Project name. Required unless supplied by --profile.",
+    help="Project name.",
 )
 @click.option(
     "--group",
+    required=True,
     metavar="NAME",
     help=(
         "Full compute group name copied from the same quota row as --quota. "
-        "Required unless supplied by --profile. "
         "Partial matches are not accepted."
     ),
 )
 @click.option(
     "--quota",
     "-q",
+    required=True,
     metavar="SPEC",
     help=(
         "Resource quota as 'gpu,cpu,mem' (mem in GiB). "
@@ -487,15 +470,9 @@ def run_job_create(
 @click.option(
     "--image",
     "-i",
+    required=True,
     metavar="NAME|URL",
-    help="Docker image URL or visible image name. Required unless supplied by --profile.",
-)
-@click.option(
-    "--profile",
-    "profile_name",
-    default=None,
-    metavar="NAME",
-    help="Job condition profile providing workspace/project/group/quota/image.",
+    help="Docker image URL or visible image name.",
 )
 @click.option(
     "--framework",
@@ -659,7 +636,6 @@ def create(
     enable_notification: Optional[bool],
     max_time: Optional[float],
     workspace: Optional[str],
-    profile_name: Optional[str],
     group: Optional[str],
     image: Optional[str],
     project: Optional[str],
@@ -679,9 +655,8 @@ def create(
 
     Use this for fixed-size GPU work: single-node training, multi-node
     distributed training, batch inference, or a fixed GPU worker pool.
-    If the ``me`` path alias is configured, stdout/stderr are captured under
-    ``me/.inspire`` so ``inspire job logs`` can read them later through a
-    notebook connection with access to the same shared storage.
+    Program output is available through the platform log API. For a custom
+    shared-file log, redirect the command to an explicit ``/inspire/...`` path.
 
     \b
     Examples:
@@ -721,7 +696,6 @@ def create(
         project=project,
         nodes=nodes,
         group=group,
-        profile_name=profile_name,
         dry_run=dry_run,
         auto_fault_tolerance=auto_fault_tolerance,
         fault_tolerance_max_retry=fault_tolerance_max_retry,

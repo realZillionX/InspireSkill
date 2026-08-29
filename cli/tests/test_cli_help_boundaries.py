@@ -58,12 +58,12 @@ def test_all_public_help_is_name_only() -> None:
             assert term not in output, f"{' '.join(path) or '<root>'}: {term}"
 
 
-def test_job_logs_help_positions_web_as_fallback() -> None:
+def test_job_logs_help_positions_platform_as_default() -> None:
     result = CliRunner().invoke(cli_main, ["job", "logs", "--help"])
     output = _one_line(result.output)
 
     assert result.exit_code == 0
-    assert "CLI-managed remote log file" in output
+    assert "explicitly named remote log file" in output
     assert "cached notebook bridge" in output
     assert "Platform logs are the default" in output
 
@@ -196,18 +196,13 @@ def test_query_group_help_says_keyword_substring() -> None:
         assert "full name is not required" in output
 
 
-def test_create_and_profile_group_help_requires_full_name() -> None:
+def test_create_help_requires_full_group_name() -> None:
     for args in (
         ["notebook", "create", "--help"],
         ["job", "create", "--help"],
         ["hpc", "create", "--help"],
         ["ray", "create", "--help"],
         ["serving", "create", "--help"],
-        ["notebook", "profile", "set", "--help"],
-        ["job", "profile", "set", "--help"],
-        ["hpc", "profile", "set", "--help"],
-        ["ray", "profile", "set", "--help"],
-        ["serving", "profile", "set", "--help"],
     ):
         result = CliRunner().invoke(cli_main, args)
         output = _one_line(result.output)
@@ -271,18 +266,14 @@ def test_notebook_create_help_explains_auto_stop_boundary() -> None:
     assert "workspace lifetime caps" in output
 
 
-def test_init_help_exposes_scope_and_discovery_controls() -> None:
+def test_init_help_is_account_only() -> None:
     result = CliRunner().invoke(cli_main, ["init", "--help"])
     output = _one_line(result.output)
 
     assert result.exit_code == 0
-    assert "Plain `inspire init` defaults to global scope" in output
-    assert "Obsolete project catalogs, compute groups, path aliases" in output
-    assert "writes this repository's project context and path aliases" in output
-    assert "Project and resource catalogs stay live" in output
-    assert "top-level `me` points at the selected path tier" in output
-    assert "`ssd` suggested for the path hot tier" in output
-    assert "--scope [project|global]" in result.output
+    assert "writes only ``~/.inspire/accounts/<account>/config.toml``" in output
+    assert "no repository-local config is read or created" in output
+    assert "--scope" not in result.output
     assert "--no-discover" in result.output
 
 
@@ -445,7 +436,7 @@ def test_job_batch_help_keeps_scope_small() -> None:
     assert result.exit_code == 0
     assert "Submit a JSON/TOML matrix through `job create`" in result.output
     assert "top-level `jobs` is required" in output
-    assert 'condition fields may come from `profile = "<name>"`' in output
+    assert "scheduling conditions explicitly" in output
     assert "Required fields after expansion:" in result.output
     assert "Optional fields use create-command defaults" in result.output
 
@@ -476,7 +467,7 @@ def test_notebook_batch_help_keeps_scope_small() -> None:
     assert result.exit_code == 0
     assert "Create notebook instances from a JSON/TOML matrix" in result.output
     assert "Top-level `notebooks` is required" in result.output
-    assert 'condition fields may come from `profile = "<name>"`' in output
+    assert "scheduling conditions listed below" in output
 
 
 def test_ray_and_serving_batch_help_keeps_scope_small() -> None:
@@ -486,10 +477,10 @@ def test_ray_and_serving_batch_help_keeps_scope_small() -> None:
 
     assert ray_result.exit_code == 0
     assert "Create Ray jobs from a JSON/TOML matrix" in ray_result.output
-    assert "Worker objects may also set" in ray_result.output
+    assert "Head and worker scheduling conditions" in ray_result.output
     assert serving_result.exit_code == 0
     assert "Create inference servings from a JSON/TOML matrix" in serving_result.output
-    assert "Condition fields may" in serving_output
+    assert "including every scheduling condition" in serving_output
 
 
 def test_events_help_uses_live_tail_options() -> None:
@@ -675,16 +666,10 @@ def test_destructive_commands_share_yes_help() -> None:
         ["notebook", "connection", "forget"],
         ["notebook", "connection", "prune"],
         ["notebook", "connection", "target", "forget"],
-        ["notebook", "path", "delete"],
-        ["notebook", "profile", "delete"],
         ["job", "delete"],
-        ["job", "profile", "delete"],
         ["hpc", "delete"],
-        ["hpc", "profile", "delete"],
         ["ray", "delete"],
-        ["ray", "profile", "delete"],
         ["serving", "delete"],
-        ["serving", "profile", "delete"],
         ["image", "delete"],
         ["tensorboard", "delete"],
     ):
@@ -707,7 +692,6 @@ def test_destructive_commands_share_yes_help() -> None:
                 "--group NAME",
                 "--quota SPEC",
                 "--image NAME|URL",
-                "--profile NAME",
             ),
         ),
         (
@@ -719,7 +703,6 @@ def test_destructive_commands_share_yes_help() -> None:
                 "--group NAME",
                 "--quota SPEC",
                 "--image NAME|URL",
-                "--profile NAME",
             ),
         ),
         (
@@ -731,7 +714,6 @@ def test_destructive_commands_share_yes_help() -> None:
                 "--group NAME",
                 "--quota SPEC",
                 "--image NAME|URL",
-                "--profile NAME",
             ),
         ),
         (
@@ -743,7 +725,6 @@ def test_destructive_commands_share_yes_help() -> None:
                 "--group NAME",
                 "--quota SPEC",
                 "--image NAME|URL",
-                "--profile NAME",
                 "--worker SPEC",
             ),
         ),
@@ -757,7 +738,6 @@ def test_destructive_commands_share_yes_help() -> None:
                 "--group NAME",
                 "--quota SPEC",
                 "--image NAME|URL",
-                "--profile NAME",
             ),
         ),
     ),
@@ -786,7 +766,6 @@ def test_workload_create_help_uses_name_and_spec_metavars(
                 "--group",
                 "--quota",
                 "--image",
-                "--profile",
                 "--shm-size",
             ),
         ),
@@ -800,7 +779,6 @@ def test_workload_create_help_uses_name_and_spec_metavars(
                 "--group",
                 "--quota",
                 "--image",
-                "--profile",
                 "--framework",
             ),
         ),
@@ -814,7 +792,6 @@ def test_workload_create_help_uses_name_and_spec_metavars(
                 "--group",
                 "--quota",
                 "--image",
-                "--profile",
                 "--image-type",
             ),
         ),
@@ -828,7 +805,6 @@ def test_workload_create_help_uses_name_and_spec_metavars(
                 "--group",
                 "--quota",
                 "--image",
-                "--profile",
                 "--description",
             ),
         ),
@@ -845,7 +821,6 @@ def test_workload_create_help_uses_name_and_spec_metavars(
                 "--group",
                 "--quota",
                 "--image",
-                "--profile",
                 "--replicas",
             ),
         ),

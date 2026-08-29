@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from inspire.config.models import SOURCE_ENV, SOURCE_ENV_FILE, SOURCE_PROJECT, ConfigError
+from inspire.config.models import SOURCE_ENV, SOURCE_ENV_FILE, ConfigError
 from inspire.config.schema import CONFIG_OPTIONS
 
 def _env_source_for(key: str) -> str:
@@ -21,7 +21,6 @@ def _apply_env_layer(
     *,
     config_dict: dict[str, Any],
     sources: dict[str, str],
-    prefer_source: str,
 ) -> str | None:
     env_password = os.getenv("INSPIRE_PASSWORD")
 
@@ -46,9 +45,6 @@ def _apply_env_layer(
             new_value = parsed_value
         else:
             new_value = value
-
-        if prefer_source == "toml" and sources.get(field_name) == SOURCE_PROJECT:
-            continue
 
         config_dict[field_name] = new_value
         sources[field_name] = _env_source_for(source_key)

@@ -128,8 +128,6 @@ def _configure_create_happy_path(
         project_order=None,
         notebook_post_start=post_start_value,
         shm_size=32,
-        projects={},
-        profiles={},
     )
 
     selected_project = SimpleNamespace(
@@ -779,7 +777,7 @@ def test_unknown_project_name_is_reported_without_a_traceback(
     line; this path printed a full Python traceback above it.
     """
     ctx = Context()
-    config = SimpleNamespace(project_order=None, projects={}, profiles={})
+    config = SimpleNamespace(project_order=None)
     known = SimpleNamespace(project_id="project-1111", name="Project One", priority_name=None)
 
     with pytest.raises(SystemExit) as exit_info:

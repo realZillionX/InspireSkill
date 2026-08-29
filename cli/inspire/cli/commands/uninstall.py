@@ -14,8 +14,9 @@ Design notes:
   Playwright browser cache sits in a *shared* location that any other Playwright
   user on this machine reads, so it takes ``--purge-runtime`` and is never
   implied by ``--purge``.
-- A repository's own ``INSPIRE.md`` and ``./.inspire/`` are project assets, not
-  install output. Nothing here touches them at any tier.
+- ``INSPIRE.md`` is user documentation and is never uninstall output. Retired
+  repository-local ``./.inspire/`` directories are handled by ``inspire update``
+  stale-state sweeping rather than uninstall's installation inventory.
 - The package comes off last, and only if every file removal succeeded — a
   half-cleaned machine should still have the command that finishes the job.
 - ``scripts/install.sh --uninstall`` covers the same ground for a machine whose
@@ -304,8 +305,8 @@ def uninstall(
 
     Removes the agent skills, the update-check agent, and the CLI package.
     Account config is kept unless --purge is passed; the shared Playwright
-    browser cache is kept unless --purge-runtime is passed. A repository's own
-    INSPIRE.md and .inspire/ are project assets and are never touched.
+    browser cache is kept unless --purge-runtime is passed. User-authored
+    INSPIRE.md files are never touched.
 
     \b
     Examples:

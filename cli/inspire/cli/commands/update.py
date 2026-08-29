@@ -1413,8 +1413,8 @@ def update(
     """Check for and install newer InspireSkill versions.
 
     Also sweeps local state that older versions wrote and no current code path
-    reads. The sweep runs on every upgrade, including one that finds nothing
-    new to install, so it doubles as the way to run it on demand.
+    reads, including retired repository-local ``.inspire`` directories. The
+    sweep runs even when no newer package is available.
     """
     if cli_only and skill_only:
         raise click.UsageError("--cli-only and --skill-only are mutually exclusive.")

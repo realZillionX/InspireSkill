@@ -41,7 +41,6 @@ def _patch_config_and_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
     )
 
     def fake_from_files_and_env(cls, require_credentials: bool = True) -> tuple:
@@ -326,8 +325,6 @@ def test_run_notebook_create_does_not_submit_a_taken_name(
             project_order=None,
             notebook_post_start=None,
             shm_size=32,
-            projects={},
-            profiles={},
         ),
     )
     monkeypatch.setattr(

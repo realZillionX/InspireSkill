@@ -1,8 +1,7 @@
 """Configuration schema for Inspire CLI.
 
-Maps every settable key across its three spellings — environment variable,
-TOML key, and ``Config`` field — so the loader and ``inspire init`` agree on
-what exists. Defaults live in ``load_common._default_config_values()``.
+Maps every account setting across its environment variable, TOML key and
+``Config`` field so the loader and ``inspire init`` agree on what exists.
 
 The option list is split across smaller per-area modules for readability.
 """
@@ -18,7 +17,7 @@ from inspire.config.schema_models import (  # noqa: F401
 )
 from inspire.config.options.api import API_OPTIONS, AUTH_OPTIONS, PROXY_OPTIONS
 from inspire.config.options.infra import TUNNEL_OPTIONS
-from inspire.config.options.project import (
+from inspire.config.options.workload import (
     JOB_OPTIONS,
     NOTEBOOK_OPTIONS,
 )

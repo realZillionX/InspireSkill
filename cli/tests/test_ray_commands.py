@@ -17,6 +17,20 @@ class _FakeSession:
     all_workspace_ids = ["ws-ray"]
 
 
+_RAY_CONDITION_ARGS = [
+    "--workspace",
+    "Ray资源空间",
+    "--project",
+    "Project",
+    "--group",
+    "CPU Group",
+    "--quota",
+    "0,4,16",
+    "--image",
+    "ray-image",
+]
+
+
 def _patch_ray_create_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, Any]:
@@ -198,6 +212,7 @@ def test_ray_create_json_uses_stable_public_contract(
             "ray-demo",
             "--command",
             "python driver.py",
+            *_RAY_CONDITION_ARGS,
         ],
     )
 
@@ -231,6 +246,7 @@ def test_ray_create_human_output_is_compact(
             "ray-demo",
             "--command",
             "python driver.py",
+            *_RAY_CONDITION_ARGS,
         ],
     )
 

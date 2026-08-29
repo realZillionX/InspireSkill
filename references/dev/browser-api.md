@@ -268,7 +268,7 @@ CAS 会在连续登录失败后锁账号，也可能对来源机器增加验证�
 | [`image`](#89-image--镜像) | 镜像 | 5 | `image` |
 | [`model-hub`](#810-model-hub--模型仓库) | 模型仓库 | 14 | `model`、`serving create` |
 | [`resource-price`](#811-resource-price--配额目录-) ‡ | 按计算组解析好的配额目录 | 1 | `<workload> quota`、每个 `create` |
-| [`file`](#812-file--文件页-) ‡ | 存储池与目录发现 | 2 | `init --scope project` |
+| [`file`](#812-file--文件页-) ‡ | 存储池与目录发现 | 2 | 当前 CLI 无消费者 |
 | [`dataset`](#813-dataset--官方数据集挂载-) ‡ | 官方数据集挂载 | 1 | `dataset validate`、`--dataset` |
 
 | 状态 | 清单 |
@@ -687,7 +687,7 @@ Referer：`/jobs/files?spaceId={workspace_id}`（`GetSftpgoConnectionInfo` 在�
 
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
-| `GetSystemStorageTypeList` | `{filter:{workspace_id}}` | `{system_storages[{name, cluster_id}]}` | `init --scope project` 的存储池发现 |
+| `GetSystemStorageTypeList` | `{filter:{workspace_id}}` | `{system_storages[{name, cluster_id}]}` | 当前 CLI 无消费者 |
 | `GetDirList` | `{filter:{workspace_id, system_storage_type, name, cluster_id?}}` | `{files[{directory}]}` | 同上，逐存储池列项目目录 |
 | `GetSftpgoConnectionInfo` † | `{storage_name}`（小写池名，可选 `usage`） | `{address, webdav_port, auth}` ⚠️ **`auth` 是明文凭据** | — |
 | `ListFileCopyTasks` † | `{page, page_size}` | `{items, total}` | — |

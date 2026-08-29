@@ -108,7 +108,7 @@ class _NameOnlyGroup(click.Group):
 @click.option(
     "--no-env-file",
     is_flag=True,
-    help="Do not load the project-declared dotenv file.",
+    help="Do not load a dotenv file.",
 )
 @pass_context
 def main(

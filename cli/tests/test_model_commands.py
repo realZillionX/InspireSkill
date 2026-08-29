@@ -56,16 +56,11 @@ def _assert_compact_public_payload(value: Any) -> None:
 def _patch_runtime(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    *,
-    projects: dict[str, str] | None = None,
-    project_catalog: dict[str, dict[str, Any]] | None = None,
 ) -> config_module.Config:
     config = config_module.Config(
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        projects=projects or {},
-        project_catalog=project_catalog or {},
     )
     monkeypatch.setattr(
         config_module.Config,
@@ -731,16 +726,11 @@ def test_model_versions_retries_stale_cached_handle_by_name(
     assert invalidated == ["model-old"]
 
 
-def test_model_register_resolves_alias_to_current_live_project_id(
+def test_model_register_resolves_explicit_live_project_name(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    _patch_runtime(
-        monkeypatch,
-        tmp_path,
-        projects={"production": "模型项目"},
-        project_catalog={"production": {"name": "模型项目"}},
-    )
+    _patch_runtime(monkeypatch, tmp_path)
     monkeypatch.setattr(
         browser_api_module,
         "list_projects",
@@ -773,7 +763,7 @@ def test_model_register_resolves_alias_to_current_live_project_id(
         "--workspace",
         "训练空间",
         "--project",
-        "production",
+        "模型项目",
     ]
     result = CliRunner().invoke(
         cli_main,
@@ -787,7 +777,7 @@ def test_model_register_resolves_alias_to_current_live_project_id(
     assert payload == {
         "name": "qwen-demo",
         "status": "registered",
-        "project": "production",
+        "project": "模型项目",
         "workspace": "训练空间",
     }
     _assert_compact_public_payload(payload)
@@ -797,25 +787,6 @@ def test_model_register_resolves_alias_to_current_live_project_id(
     human_result = CliRunner().invoke(cli_main, register_args)
     assert human_result.exit_code == 0, human_result.output
     assert human_result.output == "OK Model registered: qwen-demo\n"
-
-
-def test_project_alias_with_platform_id_value_is_rejected(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = config_module.Config(
-        username="user",
-        password="pass",
-        projects={"production": _WORKSPACE_ID.replace("ws-", "project-")},
-    )
-    monkeypatch.setattr(browser_api_module, "list_projects", lambda **_kwargs: [])
-
-    with pytest.raises(config_module.ConfigError, match="must map to a project name"):
-        model_commands_module._resolve_project_id(
-            config,
-            "production",
-            workspace_id=_WORKSPACE_ID,
-            session=_Session(),
-        )
 
 
 # ---------------------------------------------------------------------------

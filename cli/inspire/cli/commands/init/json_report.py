@@ -14,13 +14,10 @@ def _content_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def snapshot_paths(
-    global_path: Path,
-    project_path: Path,
-) -> dict[str, dict[str, int | bool | str]]:
+def snapshot_paths(*paths: Path) -> dict[str, dict[str, int | bool | str]]:
     """Capture path existence and content before init mutates config files."""
     snapshot: dict[str, dict[str, int | bool | str]] = {}
-    for path in (global_path, project_path):
+    for path in paths:
         exists = path.exists()
         snapshot[str(path)] = {
             "exists": exists,

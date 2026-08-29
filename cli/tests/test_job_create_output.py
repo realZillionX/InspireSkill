@@ -66,7 +66,6 @@ def _patch_job_create_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         "build_training_job_plan",
         lambda **kwargs: job_submit.JobSubmissionPlan(
             create_kwargs={},
-            log_path=None,
             wrapped_command="python train.py",
             max_time_ms=None,
             project_name="Project",
@@ -87,7 +86,6 @@ def _patch_job_create_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
                 "request": {"trace_id": "trace-internal"},
             },
             result={"code": 0, "data": {"debug": "backend-debug"}},
-            log_path=None,
             wrapped_command="python train.py",
             max_time_ms=None,
         ),

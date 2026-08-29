@@ -1,6 +1,6 @@
 # 资源与调度条件
 
-选择 Workspace、Project、Compute Group、`--quota`、镜像和 Workload Profile 时先看本页。共享盘、存储池和 Path Alias 看 [`paths.md`](paths.md)；联网准备和内部源看 [`internal-sources.md`](internal-sources.md)。具体命令表面始终回到 CLI Help。
+选择 Workspace、Project、Compute Group、`--quota` 和镜像时先看本页。共享盘、存储池和绝对路径看 [`paths.md`](paths.md)；联网准备和内部源看 [`internal-sources.md`](internal-sources.md)。具体命令表面始终回到 CLI Help。
 
 ## 1. 三类名字
 
@@ -9,10 +9,10 @@
 | 类型 | 决定什么 | 典型字段 |
 | --- | --- | --- |
 | 调度条件 | 任务在哪跑、用多少资源、基于哪个镜像 | `workspace`、`project`、`group`、`quota`、`image` |
-| 远端路径 | 代码、数据、权重、Checkpoint 和产物放在哪 | `me`、`public`、`ssd.me`、`qb-ilm2.public` |
+| 远端路径 | 代码、数据、权重、Checkpoint 和产物放在哪 | `/inspire/<tier>/project/...` 绝对路径 |
 | 对象名字 | 观察、连接或清理哪个平台对象 | Notebook / Job / HPC / Ray / Serving 的名称 |
 
-调度条件没有隐式默认值。创建 Workload 时显式传入，或用 Workload Profile 保存这五类条件。Path Alias 只表示远端路径，不能替代 Workspace、Project、Group、Quota 或 Image。
+调度条件没有隐式默认值。创建 Workload 时每次显式传入这五项；CLI 不保存仓库绑定或 Workload Profile。
 
 ## 2. Workspace 判断
 
@@ -23,7 +23,7 @@
 | `CPU资源空间` | CPU Notebook、联网准备、依赖安装、CPU HPC、CPU Ray |
 | `分布式训练空间` | GPU Notebook、GPU Job、多节点训练、Serving、GPU 指标观察 |
 
-其余 Workspace（项目专属空间、国产卡分区等）都必须由用户亲自指认后才能使用；已指认的专属 Workspace 及其职责记录在项目上下文（见 [`project-context.md`](project-context.md)），不要因为列表里可见就自行启用。
+其余 Workspace（项目专属空间、国产卡分区等）都必须由用户亲自指认后才能使用；不要因为列表里可见就自行启用。
 
 ## 3. Resource Truth
 
@@ -134,26 +134,11 @@ Workload 历史目录超过 5000 行时不会硬扫：刷新器按平台报告�
 
 `project detail` 再给花在哪儿：`Spent` 拆成 `on training` / `on inference` / `on storage` / `on private workspace`；`Remaining budget` 是同一项目余额的详情投影，不是第二套额度。成员逐人的额度表要 Maintainer 权限，普通成员读到空记录，CLI 不接。
 
-具体可用 GPU 型号、机房和 `gpu,cpu,mem` 三元组仍以当前 Workload 的 Live Quota Row 为准；创建 Workload 或写 Profile 时从同一行复制完整 `group` 和 `quota`。提交后再从 Status / Events 核实平台解析出的优先级、排队和抢占结果。
+具体可用 GPU 型号、机房和 `gpu,cpu,mem` 三元组仍以当前 Workload 的 Live Quota Row 为准；创建 Workload 时从同一行复制完整 `group` 和 `quota`。提交后再从 Status / Events 核实平台解析出的优先级、排队和抢占结果。
 
 申请资源前按真实任务需求和实时空余选择规格。不要因为猜测主动降档；只有调度语义、空余量或项目策略明确不足时再缩小规模。
 
-## 5. Workload Profile
-
-Profile 是调度条件组 Alias，只保存 `workspace`、`project`、`group`、`quota` 和 `image`。它不是 Path Alias，也不是远端工作目录。
-
-适合写 Profile 的场景：
-
-- 同一个项目反复创建同规格 GPU Probe、训练 Job 或 Serving。
-- 同一批 Batch 条目共用调度条件，只变名称、命令或输入输出路径。
-
-不适合写 Profile 的场景：
-
-- 只想给远端目录起名字。用 Path Alias。
-- 资源只用一次，且当前任务还在探索。
-- 想省略 Workspace。没有默认 Workspace；Profile 也必须明确 Workspace。
-
-## 6. 调度与资源观察
+## 5. 调度与资源观察
 
 创建前看 Quota 和 Availability；提交后先看 Events，再看 Logs / Metrics / Instances。`status=RUNNING` 只说明平台对象在运行，不说明业务健康；`status=SUCCEEDED` 也不说明产物完整。
 

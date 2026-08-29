@@ -61,13 +61,6 @@ from inspire.cli.utils.task_priority import (
     resolve_workspace_task_priority,
 )
 from inspire.config import Config, ConfigError
-from inspire.config.workload_profiles import (
-    PROFILE_FIELDS,
-    apply_workload_profile,
-    merge_workload_profiles,
-    normalize_workload_profiles,
-    profile_required_message,
-)
 from inspire.config.workspaces import select_workspace_id, workspace_label
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NotebookFailedError
@@ -90,6 +83,7 @@ _REFERENCE_FIELDS = {
         "inspire model list --workspace <workspace-name> --project <project-name>",
     ),
 }
+_CONDITION_FIELDS = frozenset({"workspace", "project", "group", "quota", "image"})
 
 
 @dataclass
@@ -452,45 +446,31 @@ def _optional_int(item: dict[str, Any], key: str, *, min_value: int | None = Non
     return _require_int(item, key, min_value=min_value)
 
 
-def _batch_profiles(data: dict[str, Any]) -> dict[str, dict[str, dict[str, str]]]:
-    return normalize_workload_profiles(data.get("profiles", {}))
-
-
 def _ensure_no_condition_defaults(defaults: dict[str, Any], *, item_key: str) -> None:
-    condition_fields = set(PROFILE_FIELDS)
-    disallowed = condition_fields | {"compute_group"}
+    disallowed = _CONDITION_FIELDS | {"compute_group"}
     bad = sorted(key for key in defaults if key in disallowed)
     if bad:
         joined = ", ".join(bad)
         raise ConfigError(
             f"Batch defaults cannot set workload condition fields: {joined}. "
-            f"Move them into a profile and set profile = \"<name>\" for {item_key} items."
+            f"Set them explicitly on every {item_key} item."
         )
 
 
-def _apply_item_profile(
-    *,
-    config: Config,
-    kind: str,
-    item: dict[str, Any],
-    local_profiles: dict[str, dict[str, dict[str, str]]],
-) -> dict[str, Any]:
-    profile_name = _optional_str(item, "profile")
-    profiles = merge_workload_profiles(getattr(config, "profiles", {}), local_profiles)
-    fields = apply_workload_profile(
-        profiles=profiles,
-        kind=kind,
-        profile_name=profile_name,
-        values={field: item.get(field) for field in PROFILE_FIELDS},
-    )
-    merged = dict(item)
-    for field, value in fields.items():
-        if value is not None:
-            merged[field] = value
-    return merged
+def _reject_batch_profiles(data: dict[str, Any]) -> None:
+    if "profiles" in data:
+        raise ConfigError(
+            "Batch profiles were removed. Put workspace, project, group, quota and image "
+            "directly on every expanded item."
+        )
 
 
 def _validate_name_references(ctx: Context, item: dict[str, Any]) -> None:
+    if "profile" in item:
+        raise ConfigError(
+            "Batch item profiles were removed. Set workspace, project, group, quota and "
+            "image explicitly on this item."
+        )
     for field, (resource_type, list_command) in _REFERENCE_FIELDS.items():
         value = item.get(field)
         if isinstance(value, str) and value.strip():
@@ -570,7 +550,9 @@ def _submitted_batch_item(name: str) -> dict[str, str]:
 def _require_condition_str(item: dict[str, Any], key: str, *, kind: str) -> str:
     value = item.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise ConfigError(profile_required_message(kind, key, batch=True))
+        raise ConfigError(
+            f"Batch {kind} item is missing required condition field: {key}."
+        )
     return value
 
 
@@ -1185,8 +1167,6 @@ def _ray_worker_specs(
     item: dict[str, Any],
     *,
     ctx: Context,
-    config: Config,
-    local_profiles: dict[str, dict[str, dict[str, str]]],
 ) -> tuple[str, ...]:
     specs: list[str] = []
     for raw in _require_list(item, "workers"):
@@ -1198,19 +1178,18 @@ def _ray_worker_specs(
             continue
         if not isinstance(raw, dict):
             raise ConfigError("Batch item field workers must contain strings or objects.")
-        worker = _apply_item_profile(
-            config=config,
-            kind="ray",
-            item=dict(raw),
-            local_profiles=local_profiles,
-        )
+        worker = dict(raw)
+        if "profile" in worker:
+            raise ConfigError(
+                "Ray worker profiles were removed; set image, group and quota explicitly."
+            )
         _validate_name_references(ctx, worker)
         missing = {"name", "min", "max"} - set(worker.keys())
         if missing:
             raise ConfigError(f"Ray worker spec is missing keys: {sorted(missing)}.")
         for field in ("image", "group", "quota"):
             _require_condition_str(worker, field, kind="ray")
-        skip = {"profile", "workspace", "project"}
+        skip = {"workspace", "project"}
         parts = [
             f"{key}={worker[key]}"
             for key in sorted(worker.keys())
@@ -1226,7 +1205,6 @@ def _prepare_ray_item(
     ctx: Context,
     config: Config,
     session: Any,
-    local_profiles: dict[str, dict[str, dict[str, str]]],
 ):
     from inspire.cli.commands.ray.ray_commands import _assemble_create_body
 
@@ -1261,8 +1239,6 @@ def _prepare_ray_item(
         workers=_ray_worker_specs(
             item,
             ctx=ctx,
-            config=config,
-            local_profiles=local_profiles,
         ),
     )
 
@@ -1490,9 +1466,8 @@ def job_batch(
     """Submit a JSON/TOML matrix through `job create`.
 
     The config format is command-local: top-level `jobs` is required, while
-    optional `defaults`, `profiles`, and `matrix` reduce repetition. Every
-    expanded item must include all required `job create` fields; condition
-    fields may come from `profile = "<name>"`.
+    optional `defaults` and `matrix` reduce repetition. Every expanded item
+    must include its scheduling conditions explicitly.
 
     \b
     Required fields after expansion:
@@ -1517,7 +1492,7 @@ def job_batch(
     )
     try:
         data = _load_config(config_path)
-        local_profiles = _batch_profiles(data)
+        _reject_batch_profiles(data)
         items = _expanded_items(data, item_key="jobs")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
@@ -1530,12 +1505,6 @@ def job_batch(
                 item,
                 allowed={"job", "training"},
                 command_name="job",
-            )
-            item = _apply_item_profile(
-                config=config,
-                kind="job",
-                item=item,
-                local_profiles=local_profiles,
             )
             _validate_name_references(ctx, item)
             plan = _prepare_training_item(
@@ -1627,9 +1596,8 @@ def hpc_batch(
 ) -> None:
     """Submit a JSON/TOML matrix through `hpc create`.
 
-    Top-level `jobs` is required. Optional `defaults`, `profiles`, and
-    `matrix` reduce repetition. Condition fields may come from
-    `profile = "<name>"`.
+    Top-level `jobs` is required. Optional `defaults` and `matrix` reduce
+    repetition; scheduling conditions remain explicit per item.
 
     \b
     Required fields after expansion:
@@ -1652,7 +1620,7 @@ def hpc_batch(
     )
     try:
         data = _load_config(config_path)
-        local_profiles = _batch_profiles(data)
+        _reject_batch_profiles(data)
         items = _expanded_items(data, item_key="jobs")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
@@ -1661,12 +1629,6 @@ def hpc_batch(
         outputs: list[dict[str, Any]] = []
         for item in items:
             _validate_kind_if_present(item, allowed={"hpc"}, command_name="hpc")
-            item = _apply_item_profile(
-                config=config,
-                kind="hpc",
-                item=item,
-                local_profiles=local_profiles,
-            )
             _validate_name_references(ctx, item)
             create_kwargs = _prepare_hpc_item(
                 item,
@@ -1738,9 +1700,9 @@ def notebook_batch(
 ) -> None:
     """Create notebook instances from a JSON/TOML matrix.
 
-    Top-level `notebooks` is required. Optional `defaults`, `profiles`, and `matrix`
-    reduce repetition. Every expanded item must include the notebook create
-    fields listed below; condition fields may come from `profile = "<name>"`.
+    Top-level `notebooks` is required. Optional `defaults` and `matrix` reduce
+    repetition. Every expanded item must include the notebook create fields
+    and scheduling conditions listed below.
     `wait`, `post_start`, and
     `post_start_script` are optional execution controls.
 
@@ -1766,7 +1728,7 @@ def notebook_batch(
     )
     try:
         data = _load_config(config_path)
-        local_profiles = _batch_profiles(data)
+        _reject_batch_profiles(data)
         items = _expanded_items(data, item_key="notebooks")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
@@ -1778,12 +1740,6 @@ def notebook_batch(
                 item,
                 allowed={"notebook", "dsw"},
                 command_name="notebook",
-            )
-            item = _apply_item_profile(
-                config=config,
-                kind="notebook",
-                item=item,
-                local_profiles=local_profiles,
             )
             _validate_name_references(ctx, item)
             plan = _prepare_notebook_item(
@@ -1858,9 +1814,8 @@ def ray_batch(
     """Create Ray jobs from a JSON/TOML matrix.
 
     Top-level `jobs` is required. Each expanded item must describe the Ray
-    create request with visible names. `profile = "<name>"` can fill
-    workspace/project/image/group/quota. Worker objects may also set
-    `profile = "<name>"` to fill image/group/quota.
+    create request with visible names. Head and worker scheduling conditions
+    must be explicit on every item.
 
     \b
     Required fields after expansion:
@@ -1882,7 +1837,7 @@ def ray_batch(
     )
     try:
         data = _load_config(config_path)
-        local_profiles = _batch_profiles(data)
+        _reject_batch_profiles(data)
         items = _expanded_items(data, item_key="jobs")
         config, _ = Config.from_files_and_env()
         session = get_web_session()
@@ -1890,19 +1845,12 @@ def ray_batch(
         outputs: list[dict[str, Any]] = []
         for item in items:
             _validate_kind_if_present(item, allowed={"ray"}, command_name="ray")
-            item = _apply_item_profile(
-                config=config,
-                kind="ray",
-                item=item,
-                local_profiles=local_profiles,
-            )
             _validate_name_references(ctx, item)
             body = _prepare_ray_item(
                 item,
                 ctx=ctx,
                 config=config,
                 session=session,
-                local_profiles=local_profiles,
             )
             if dry_run:
                 outputs.append(
@@ -1963,8 +1911,8 @@ def serving_batch(
     """Create inference servings from a JSON/TOML matrix.
 
     Top-level `servings` is required. Each expanded item must include the
-    serving create fields as visible names or values. Condition fields may
-    come from `profile = "<name>"`.
+    serving create fields as visible names or values, including every
+    scheduling condition.
 
     \b
     Required fields after expansion:
@@ -1986,7 +1934,7 @@ def serving_batch(
     )
     try:
         data = _load_config(config_path)
-        local_profiles = _batch_profiles(data)
+        _reject_batch_profiles(data)
         items = _expanded_items(data, item_key="servings")
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
@@ -1997,12 +1945,6 @@ def serving_batch(
                 item,
                 allowed={"serving", "inference", "inference-serving"},
                 command_name="serving",
-            )
-            item = _apply_item_profile(
-                config=config,
-                kind="serving",
-                item=item,
-                local_profiles=local_profiles,
             )
             _validate_name_references(ctx, item)
             payload = _prepare_serving_item(item, ctx=ctx, config=config, session=session)

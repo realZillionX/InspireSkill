@@ -158,7 +158,6 @@ def _make_config(tmp_path: Path) -> config_module.Config:
         username="user",
         password="pass",
         base_url="https://example.invalid",
-        path_aliases={"me": str(tmp_path / "logs")},
     )
 
 
