@@ -647,7 +647,7 @@ def exec_command(
                 _emit_error(
                     ctx,
                     "UnsupportedStdinTransport",
-                    "JupyterTerminal exec does not support stdin.",
+                    "JupyterTerminal exec does not support local stdin passthrough.",
                     EXIT_VALIDATION_ERROR,
                     hint=(
                         "Restricted H100/H200 notebooks reject --stdin and local piped/file "

@@ -57,7 +57,7 @@ Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的
 
 受限 Notebook 的 `exec` 每次使用独立临时 Jupyter Terminal，命令结束后立即回收，不共享 `cwd`、环境变量或 Shell 状态。
 
-JupyterTerminal `exec` 的内部控制脚本占用 stdin，无法可靠承载用户输入，因此 CLI 对受限 Notebook 明确禁用 stdin：显式 `--stdin` / `--bash-stdin`，以及本地 `producer | inspire notebook exec ...`、`inspire notebook exec ... < local-file` 都会在发送用户命令前失败。远端命令自身在引号内使用管道或读取远端文件不受影响，例如 `inspire notebook exec <name> "python task.py < /inspire/.../input.jsonl"`。需要传入本地脚本或数据时，先经支持 SSH 的 Notebook 放到 `/inspire/...`，再按远端路径执行或读取；需要人工交互时使用带 TTY 的 `notebook shell`，不要向 `shell` 管道脚本。支持 SSH 的 Notebook 仍可使用 `exec --stdin`。
+JupyterTerminal `exec` 的内部控制脚本由 stdin 送入远端 Shell，因此用户命令的默认 stdin 被隔离为 `/dev/null`，避免 `cat` / `bash -s` 一类读取者吞掉控制脚本的完成标记。它无法承载本地用户输入：显式 `--stdin` / `--bash-stdin`，以及本地 `producer | inspire notebook exec ...`、`inspire notebook exec ... < local-file` 都会在发送用户命令前失败。远端命令自身在引号内使用管道或显式读取远端文件会覆盖 `/dev/null`，例如 `inspire notebook exec <name> "python task.py < /inspire/.../input.jsonl"`。需要传入本地脚本或数据时，先经支持 SSH 的 Notebook 放到 `/inspire/...`，再按远端路径执行或读取；需要人工交互时使用带 TTY 的 `notebook shell`，不要向 `shell` 管道脚本。支持 SSH 的 Notebook 仍可使用 `exec --stdin`。
 
 `notebook exec` / `shell` 省略 `--cwd` 时不注入 `cd`，不读取 `me` 或账号配置中的项目路径，而是保留当前 Transport 给出的初始目录。受限 Notebook 的 JupyterTerminal 实测会保留平台设置的项目用户目录；SSH 登录 Shell 的初始目录由远端 SSH/镜像决定。需要固定目录时显式传 `--cwd me:<repo>`、其它 Path Alias 或绝对路径。
 

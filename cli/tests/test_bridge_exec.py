@@ -326,7 +326,7 @@ def test_exec_rejects_explicit_stdin_for_jupyter_transport(monkeypatch, tmp_path
     )
 
     assert result.exit_code == EXIT_VALIDATION_ERROR
-    assert "JupyterTerminal exec does not support stdin" in result.output
+    assert "JupyterTerminal exec does not support local stdin passthrough" in result.output
     assert execution_called is False
 
 

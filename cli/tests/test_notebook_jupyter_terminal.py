@@ -19,6 +19,7 @@ def test_build_exec_command_hides_done_marker_from_terminal_echo() -> None:
     encoded = command[len("echo '") : -len("' | base64 -d | bash\r")]
     decoded = base64.b64decode(encoded).decode()
     assert "echo hi" in decoded
+    assert ") </dev/null" in decoded
     assert "__INSPIRE_DONE_abc__" in decoded
     assert "__INSPIRE_DONE_abc__" not in encoded
 
@@ -41,6 +42,32 @@ def test_build_exec_command_reports_exit_even_when_user_command_exits_shell() ->
 
     assert result.returncode == 7
     assert "__INSPIRE_DONE_exit__:exit:7" in result.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="runs a real bash; on Windows `bash` is the WSL launcher",
+)
+def test_build_exec_command_keeps_control_tail_out_of_user_stdin() -> None:
+    """An stdin reader must not consume the wrapper's completion marker."""
+    command = jt.build_jupyter_exec_command("cat", marker="__INSPIRE_DONE_stdin__")
+    encoded = command[len("echo '") : -len("' | base64 -d | bash\r")]
+    decoded = base64.b64decode(encoded).decode()
+
+    # Feeding the script on bash's stdin mirrors `base64 -d | bash`. Without
+    # the /dev/null boundary, `cat` prints the remaining control script and the
+    # parent never executes the marker line.
+    result = subprocess.run(  # noqa: S603
+        ["bash"],
+        input=decoded,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=2,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "\n__INSPIRE_DONE_stdin__:exit:0\n"
 
 
 def test_parse_command_output_extracts_returncode_and_removes_marker() -> None:
