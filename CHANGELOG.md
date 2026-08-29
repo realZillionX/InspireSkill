@@ -1,16 +1,26 @@
 # Changelog
 
-## Unreleased
+## v7.1.5
 
-### 变更
+### 破坏性变更
 
-- **删除仓库级 `./.inspire/` 及其三类隐式状态。** `inspire init` 现在只校验和规范化 `~/.inspire/accounts/<account>/config.toml`，不再接受 `--scope project`、`--select-project` 或持久化 dotenv。Project Context、Path Alias 和 Workload Profile 的读写层、命令组和创建参数全部删除；Notebook `--cwd` 只接受绝对远端路径，SCP 不再展开 Alias，Job 不再为共享盘日志暗中包装启动命令。`workspace`、`project`、`group`、`quota` 和 `image` 在每次 create 和每个 Batch item 上明确给出。原仓库级 `job.*` / `notebook.post_start` 设置收敛为账号 TOML 或环境变量。
+- **删除仓库级 `./.inspire/` 及其三类隐式状态。** `inspire init` 现在只校验和规范化 `~/.inspire/accounts/<account>/config.toml`，不再接受 `--scope project`、`--select-project` 或持久化 dotenv。Project Context、Path Alias 和 Workload Profile 的读写层、命令组与 `--profile` 全部删除；`workspace`、`project`、`group`、`quota` 和 `image` 必须在每次 `create` 和每个展开后的 Batch item 上显式给出，Batch 里的顶层 `profiles` 或 item `profile` 现在会直接报错。原仓库级 `job.*` / `notebook.post_start` 行为设置收敛到账号 TOML 或同名环境变量，调度条件不提供默认值。
 
-- **`inspire update` 会发现并清理用户主目录下退役的仓库级 `.inspire/`。** 扫描不跟随符号链接，跳过 VCS、依赖库、缓存和操作系统目录，且永远保留账号级 `~/.inspire/`。和已有旧状态清扫一样，普通模式先列清单再确认，`--yes` 直接删，JSON 和后台检查只报告。
+- **远端路径全部回到显式绝对路径。** Notebook `exec` / `shell --cwd` 只接受绝对远端路径（如 `/inspire/...` 或 `/tmp`），SCP 不再展开 Alias；需要缩写时由本地 shell 环境变量展开。Job 不再为共享盘日志暗中包装启动命令，默认读平台日志；`job logs --source ssh` 改为必须显式传 `--remote-log-path`。`INSPIRE.md` 仍可作为人类可读的可选持久资产合同，每项资产自带 Project / Workspace 适用范围，CLI 不解析它。
+
+### 迁移
+
+- **`inspire update` 会发现并清理用户主目录下退役的仓库级 `.inspire/`。** 扫描不跟随符号链接，跳过 VCS、依赖库、缓存和操作系统目录，且永远保留账号级 `~/.inspire/`。普通模式先列清单再确认，`--yes` 直接删，JSON 和后台检查只报告。账号配置中历史遗留的 `[context]`、`[profiles]`、`[projects]`、`[project_catalog]`、`[[compute_groups]]`、`[path_aliases]` 加载时立即忽略，下次 `inspire init` 重写时从磁盘删除。
 
 ### 修复
 
+- **过期 Qizhi Session 先用已有 CAS / Keycloak SSO Cookie 无密码续签，不再一上来重提凭据。** 平台请求收到 401 / 3xx 后，续签仅播种未过期的已知 SSO 认证 Cookie，明确不复用刚被拒绝的 `inspire-session`；成功换取新 Session 前必须拿到稳定用户 ID，并与缓存身份一致，然后才落盘并重试原请求。只有认证响应或重新到达密码表单才允许回落既有凭据登录；用户不一致、无稳定身份、无新平台 Cookie 或非预期响应都原样报错，不会被翻译成“再试一次密码”。无密码续签不受凭据失败熔断阻挡，但每次原请求仍只有一次认证重建预算。
+
 - **受限 Notebook 的 JupyterTerminal `exec` 明确关闭本地 stdin。** 该 Transport 的内部控制脚本由 stdin 送入 Shell；用户命令继承同一输入时，`cat` / `bash -s` 之类的读取者会吞掉完成标记并最终超时。现在用户命令的默认 stdin 隔离为 `/dev/null`，远端管道和显式远端文件重定向仍可覆盖；显式 `--stdin` / `--bash-stdin` 和本地管道、文件重定向则会在发送用户命令前返回校验错误。交互式 `notebook shell` 和 SSH Notebook 的 stdin 行为不变；Agent 指引同步要求经 `/inspire/...` 传递脚本或数据。
+
+### 维护
+
+- **通用 Skill 和 References 收敛为账号中立、可长期复用的当前合同。** 删除账号特定的即时数量、价格、临时验证过程与无消费者的文件目录 Wrapper；`references/assets.md` 取代仓库绑定文档，明确 `INSPIRE.md` 是可选、可覆盖多个 Project 的人类资产合同。CLI Help、开发者参考和测试同步删除已退役的 Profile / Alias / Project Context 口径。
 
 ## v7.1.4
 

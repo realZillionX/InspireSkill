@@ -35,13 +35,13 @@ Job 覆盖 GPU 多节点工作负载，包括分布式训练、批量推理和�
 
 Job 的关键边界：
 
-- CLI 不再在 Job 启动命令前注入 `cd`：命令保留平台或镜像的初始工作目录，也不会隐式选择 `me`；依赖固定目录时让启动命令显式 `cd /inspire/...`。项目级 `me:<repo>` 仍可用于 Notebook 等带 `--cwd` 的命令和共享日志定位。
+- CLI 不在 Job 启动命令前注入 `cd`：命令保留平台或镜像的初始工作目录。依赖固定目录时，让启动命令显式 `cd /inspire/...`。Notebook `exec` / `shell --cwd` 同样只接受绝对远端路径，需要缩写时由本地 shell 环境变量展开。
 - Shared Memory 是每个 Job Instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader Workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置。
 - 环境变量由平台注入，不必再拼进启动命令；值可能是凭据，CLI 输出只回显变量名。
 - 训练曲线走独立的 `inspire tensorboard` 命令组，不是 Job 的附属字段，见本文第 9 节。
 - 任务结束后容器默认立即释放。需要事后进容器看现场时，在创建时设置成功 / 失败保留时长，任务会停在保留态等待，过期自动释放；这是排查失败训练最省事的路径，比重跑一次便宜。
 - 状态变化通知（`--enable-notification`，收件人固定为当前用户绑定的飞书账号）和自动容错默认关闭，除非明确启用。
-- 需要项目级持久默认值时写 `[job]` 配置段；提交前用 `job create --dry-run` 检查 Shared Memory、通知和容错的最终生效值。
+- Shared Memory、通知和容错这类账号行为默认值可写在当前账号配置的 `[job]` 段，或用同名环境变量临时覆盖；调度条件仍每次显式传入。提交前用 `job create --dry-run` 检查最终生效值。
 - 多节点训练要关注每个 Pod 的 GPU、显存、CPU 和网络曲线是否同步；某个 Worker 长期低负载通常比日志更早暴露问题。
 - 节点放置有两个相反的选项：`--exclude-node <名字>` 排除坏节点；`--specified-node <名字>` 把任务绑定到指定节点。两者都可重复，节点名来自所选 Compute Group，同一个节点不能同时指定和排除。指定节点前 CLI 会读取 Workspace 的 `train_enable_specified_nodes` 能力位；未开启时在本地报错，不发送创建请求。两组最终值都由 `job create --dry-run` 回显。
 - Workspace 会按 GPU 利用率与时间规则回收运行中的任务，具体阈值和时限由目标 Workspace Live 策略决定。长时间不吃卡的阶段（大规模数据预处理、CPU 侧评测、等待外部服务）留在 GPU Job 里可能被自动回收，提交前用 `inspire resources policy --workspace <名字>` 读当前规则。
@@ -121,7 +121,7 @@ LLM 专属部署、Serverless LLM 和模型广场一键部署有不同平台类�
 
 ## 7. 矩阵提交（Batch）
 
-同一组调度条件要提交一批只差名称、命令或输入输出路径的 Workload 时，用 `<workload> batch <文件>` 而不是循环调 `create`。五类都有：`job` / `hpc` / `notebook` / `ray` / `serving`。文件是 JSON 或 TOML，顶层是该 Workload 的条目列表，可选的 `defaults`、`profiles` 和 `matrix` 用来消重复；展开后的每一条必须自带 `create` 的全部必填字段，调度条件可以由条目里的 `profile = "<名字>"` 提供。
+要提交一批只差名称、命令或输入输出路径的 Workload 时，用 `<workload> batch <文件>` 而不是循环调 `create`。五类都有：`job` / `hpc` / `notebook` / `ray` / `serving`。文件是 JSON 或 TOML，顶层是该 Workload 的条目列表，可选的 `defaults` 和 `matrix` 只用于复用非调度字段和展开变体。展开后的每一条都必须显式带齐 `workspace`、`project`、`group`、`quota`、`image` 以及其它 `create` 必填字段；顶层或 item 里出现 `profiles` / `profile` 会直接报错。
 
 **Batch 条目的字段与 `create` 严格对齐**，不是它的弱化版：数据集挂载、环境变量、描述、成功 / 失败保留时长、容错重试间隔、运行时长上限、状态通知和只读挂载都能写进条目。`dataset` 收一条 `"<名字>:<版本>"` 或一个列表，`env` 除了 `KEY=VALUE` 列表还接受表——TOML 和 JSON 表达映射比拼接字符串自然。`ray` 和 `serving` 的条目不收数据集（平台拒绝该字段）。
 

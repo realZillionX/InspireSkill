@@ -83,7 +83,7 @@ Notebook 连接类命令包括 `ssh`、`exec`、`shell`、`scp`、`ssh-config` �
 
 源码同步优先走 Git：本地 push，远端 pull。`notebook scp` 适合少量非 Git 文件、产物下载和临时配置，不适合作为源码同步主路径。
 
-多仓库项目把 Repo 并列放在 `me:<repo>` 这类路径约定下；项目公共数据、权重和 Checkpoint 放 `public` 或指定存储池 Alias。
+多仓库项目把 Repo 并列放在明确的 `/inspire/<tier>/project/<topic>/<path-user>/...` 绝对路径下；项目公共数据、权重和 Checkpoint 放在同一 Project 的 `public` 目录。需要缩写时由本地 shell 环境变量展开，CLI 不保存路径 Alias。
 
 跨 Workspace 时先确认共享盘作用域：同项目路径通常可见，不同项目路径通常因 Fileset 隔离不可见。
 
