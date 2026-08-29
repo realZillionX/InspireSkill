@@ -713,21 +713,71 @@ def test_playwright_failure_before_submission_is_not_an_authentication_error(
     assert not login_guard.block_file("alice").exists()
 
 
-def test_expired_qizhi_session_renews_through_sso_without_credentials(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """The long-lived CAS state should renew Qizhi before a password is sent."""
-    account_dir = tmp_path / ".inspire" / "accounts" / "alice"
-    account_dir.mkdir(parents=True)
-    (account_dir / "config.toml").write_text(
-        "[auth]\nusername = 'alice'\npassword = 'secret'\n"
-        "[api]\nbase_url = 'https://qz.sii.edu.cn'\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+class _RenewalResponse:
+    def __init__(
+        self,
+        payload: dict | Exception | None = None,
+        *,
+        status_code: int = 200,
+        text: str = "",
+        url: str = "https://qz.sii.edu.cn/login",
+    ) -> None:
+        self.status_code = status_code
+        self.text = text
+        self.url = url
+        self._payload = payload if payload is not None else {}
 
-    expired = WebSession(
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(str(self.status_code))
+
+    def json(self) -> dict:
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
+class _RenewalHTTP(requests.Session):
+    def __init__(
+        self,
+        user_response: _RenewalResponse,
+        *,
+        issue_platform_cookie: bool = True,
+    ) -> None:
+        super().__init__()
+        self.user_response = user_response
+        self.issue_platform_cookie = issue_platform_cookie
+        self.posts: list[str] = []
+        self.seeded_cookie_names: set[str] = set()
+
+    def get(self, url, **_kwargs):  # noqa: ANN001
+        self.seeded_cookie_names = {cookie.name for cookie in self.cookies}
+        if self.issue_platform_cookie:
+            self.cookies.set(
+                "inspire-session",
+                "fresh",
+                domain="qz.sii.edu.cn",
+                path="/",
+            )
+        return _RenewalResponse()
+
+    def post(self, url, **kwargs):  # noqa: ANN001
+        self.posts.append(url)
+        assert "password" not in kwargs.get("json", {})
+        assert kwargs["allow_redirects"] is False
+        if url.endswith("Action=GetUserDetail"):
+            return self.user_response
+        return _RenewalResponse({"Result": {"routes": []}})
+
+
+def _expired_session_for_renewal(*, user_id: str | None = "user-one") -> WebSession:
+    origins = [
+        {
+            "origin": "https://qz.sii.edu.cn",
+            "localStorage": [{"name": "ui", "value": "preserve-me"}],
+        }
+    ]
+    return WebSession(
         storage_state={
             "cookies": [
                 {
@@ -746,55 +796,26 @@ def test_expired_qizhi_session_renews_through_sso_without_credentials(
                     "secure": True,
                 },
             ],
-            "origins": [],
+            "origins": origins,
         },
         workspace_id="ws-old",
-        user_detail={"id": "user-one"},
+        user_detail={"id": user_id} if user_id else None,
         login_username="alice",
         base_url="https://qz.sii.edu.cn",
         account="alice",
         created_at=1.0,
     )
 
-    class Response:
-        def __init__(self, payload: dict | None = None) -> None:
-            self.status_code = 200
-            self.text = ""
-            self.url = "https://qz.sii.edu.cn/login"
-            self._payload = payload or {}
 
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return self._payload
-
-    class HTTP(requests.Session):
-        def __init__(self) -> None:
-            super().__init__()
-            self.posts: list[str] = []
-
-        def get(self, url, **_kwargs):  # noqa: ANN001
-            assert self.cookies.get("CASTGC", domain="cas.sii.edu.cn", path="/cas") == (
-                "still-authenticated"
-            )
-            self.cookies.set(
-                "inspire-session",
-                "fresh",
-                domain="qz.sii.edu.cn",
-                path="/",
-            )
-            return Response()
-
-        def post(self, url, **kwargs):  # noqa: ANN001
-            self.posts.append(url)
-            assert "password" not in kwargs.get("json", {})
-            if url.endswith("Action=GetUserDetail"):
-                assert kwargs["allow_redirects"] is False
-                return Response({"Result": {"id": "user-one"}})
-            return Response({"Result": {"routes": []}})
-
-    http = HTTP()
+def test_expired_qizhi_session_renews_through_sso_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The long-lived CAS state should renew Qizhi before a password is sent."""
+    (tmp_path / ".inspire" / "accounts" / "alice").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    expired = _expired_session_for_renewal()
+    http = _RenewalHTTP(_RenewalResponse({"Result": {"id": "user-one"}}))
     monkeypatch.setattr(requests, "Session", lambda: http)
     monkeypatch.setattr(
         ws_proxy,
@@ -807,10 +828,101 @@ def test_expired_qizhi_session_renews_through_sso_without_credentials(
     assert renewed is not None
     assert renewed.created_at > expired.created_at
     assert renewed.cookies["inspire-session"] == "fresh"
+    assert renewed.storage_state["origins"] == expired.storage_state["origins"]
+    assert "inspire-session" not in http.seeded_cookie_names
+    assert "CASTGC" in http.seeded_cookie_names
     assert http.posts == [
         "https://qz.sii.edu.cn/api/v2/user?Action=GetUserDetail",
         "https://qz.sii.edu.cn/api/v2/user?Action=GetRoutes",
     ]
+
+
+@pytest.mark.parametrize(
+    ("cookie", "expected"),
+    [
+        ({"name": "CASTGC", "value": "ok", "expires": -1}, True),
+        ({"name": "KEYCLOAK_SESSION_LEGACY", "value": "ok", "expires": 101}, True),
+        ({"name": "CASTGC", "value": "expired", "expires": 100}, False),
+        ({"name": "CASTGC", "value": "", "expires": -1}, False),
+        ({"name": "other", "value": "cookie", "domain": "cas.sii.edu.cn"}, False),
+    ],
+)
+def test_sso_renewal_state_requires_a_live_known_auth_cookie(
+    cookie: dict,
+    expected: bool,
+) -> None:
+    session = WebSession(
+        storage_state={"cookies": [cookie]},
+        created_at=1.0,
+    )
+
+    assert ws_auth._has_sso_renewal_state(session, now=100) is expected
+
+
+def test_sso_renewal_requires_the_cached_user_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        requests,
+        "Session",
+        lambda: pytest.fail("identity-less cached SSO must not be used"),
+    )
+
+    assert (
+        ws_auth.renew_web_session_without_credentials(_expired_session_for_renewal(user_id=None))
+        is None
+    )
+
+
+def test_sso_renewal_rejects_a_different_platform_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http = _RenewalHTTP(_RenewalResponse({"Result": {"id": "user-two"}}))
+    monkeypatch.setattr(requests, "Session", lambda: http)
+    monkeypatch.setattr(
+        ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none")
+    )
+
+    with pytest.raises(ValueError, match="different platform user"):
+        ws_auth.renew_web_session_without_credentials(_expired_session_for_renewal())
+
+
+@pytest.mark.parametrize("status_code", [302, 401])
+def test_sso_renewal_falls_back_only_after_an_authentication_response(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    http = _RenewalHTTP(_RenewalResponse(status_code=status_code))
+    monkeypatch.setattr(requests, "Session", lambda: http)
+    monkeypatch.setattr(
+        ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none")
+    )
+
+    assert ws_auth.renew_web_session_without_credentials(_expired_session_for_renewal()) is None
+
+
+@pytest.mark.parametrize(
+    ("user_response", "issue_platform_cookie", "message"),
+    [
+        (_RenewalResponse(ValueError("not json")), True, "invalid user response"),
+        (_RenewalResponse({"Result": {"name": "no stable id"}}), True, "stable user identity"),
+        (_RenewalResponse({"Result": {"id": "user-one"}}), False, "session cookie"),
+    ],
+)
+def test_sso_renewal_propagates_unexpected_responses_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    user_response: _RenewalResponse,
+    issue_platform_cookie: bool,
+    message: str,
+) -> None:
+    http = _RenewalHTTP(user_response, issue_platform_cookie=issue_platform_cookie)
+    monkeypatch.setattr(requests, "Session", lambda: http)
+    monkeypatch.setattr(
+        ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none")
+    )
+
+    with pytest.raises(ValueError, match=message):
+        ws_auth.renew_web_session_without_credentials(_expired_session_for_renewal())
 
 
 def test_session_refresh_uses_sso_renewal_before_credential_login(

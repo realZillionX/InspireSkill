@@ -704,7 +704,20 @@ def _cookie_to_storage_entry(cookie: Cookie) -> dict[str, Any]:
     }
 
 
-def _has_sso_renewal_state(session: WebSession) -> bool:
+_SSO_RENEWAL_COOKIE_NAMES = frozenset(
+    {
+        "AUTH_SESSION_ID",
+        "AUTH_SESSION_ID_LEGACY",
+        "CASTGC",
+        "KEYCLOAK_IDENTITY",
+        "KEYCLOAK_IDENTITY_LEGACY",
+        "KEYCLOAK_SESSION",
+        "KEYCLOAK_SESSION_LEGACY",
+    }
+)
+
+
+def _has_sso_renewal_state(session: WebSession, *, now: float | None = None) -> bool:
     """Whether *session* carries cookies that can renew Qizhi without a password.
 
     The short-lived ``inspire-session`` cookie is the thing the API has just
@@ -712,24 +725,36 @@ def _has_sso_renewal_state(session: WebSession) -> bool:
     outlive it; following the normal login redirect with those cookies can
     mint a new Qizhi session without submitting credentials at all.
     """
+    current_time = time.time() if now is None else now
     cookies = session.storage_state.get("cookies") if session.storage_state else None
     for cookie in cookies or []:
+        if not isinstance(cookie, dict):
+            continue
         name = str(cookie.get("name") or "").upper()
-        domain = str(cookie.get("domain") or "").lstrip(".").casefold()
-        if name in {"CASTGC", "KEYCLOAK_IDENTITY", "KEYCLOAK_SESSION"}:
-            return True
-        if domain.startswith("cas.") or "keycloak" in domain:
-            return True
+        value = str(cookie.get("value") or "")
+        if name not in _SSO_RENEWAL_COOKIE_NAMES or not value:
+            continue
+        expires = cookie.get("expires")
+        if (
+            isinstance(expires, (int, float))
+            and not isinstance(expires, bool)
+            and expires > 0
+            and expires <= current_time
+        ):
+            continue
+        return True
     return False
 
 
-def _seed_requests_cookies(http: Any, session: WebSession) -> None:
-    """Copy Playwright storage cookies into a Requests cookie jar."""
+def _seed_sso_renewal_cookies(http: Any, session: WebSession) -> None:
+    """Copy cached cookies except the platform cookie that was just refused."""
     cookies = session.storage_state.get("cookies") if session.storage_state else None
     for cookie in cookies or []:
+        if not isinstance(cookie, dict):
+            continue
         name = str(cookie.get("name") or "")
         value = str(cookie.get("value") or "")
-        if not name:
+        if not name or name.casefold() == "inspire-session":
             continue
         kwargs: dict[str, Any] = {
             "path": str(cookie.get("path") or "/"),
@@ -747,12 +772,22 @@ def _seed_requests_cookies(http: Any, session: WebSession) -> None:
 def renew_web_session_without_credentials(session: WebSession) -> WebSession | None:
     """Try to renew a refused Qizhi session through existing SSO cookies.
 
-    ``None`` has one narrow meaning: the cached CAS/Keycloak login is also
-    gone, so the caller may enter the existing single credential-submission
-    path.  Transport failures and unexpected platform replies propagate; they
-    are not evidence that submitting a password would help.
+    ``None`` means there is no safely reusable SSO state: the auth cookies are
+    absent/expired, the cached user cannot be identified, or the SSO redirect
+    reaches a password form. The caller may then enter the existing single
+    credential-submission path. Transport failures and unexpected platform
+    replies propagate; they are not evidence that submitting a password would
+    help.
     """
     if not _has_sso_renewal_state(session):
+        return None
+
+    previous_detail = session.user_detail if isinstance(session.user_detail, dict) else {}
+    previous_user_id = str(
+        previous_detail.get("id") or previous_detail.get("user_id") or ""
+    ).strip()
+    if not previous_user_id:
+        logger.debug("Cached SSO state has no platform user identity to verify.")
         return None
 
     import requests
@@ -761,9 +796,8 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
     from .proxy import resolve_requests_proxy_config
 
     account = session.account
-    config = _load_runtime_config(account)
-    base_url = str(session.base_url or config.base_url or DEFAULT_BASE_URL).rstrip("/")
-    username = str(session.login_username or config.username or "").strip()
+    base_url = str(session.base_url or DEFAULT_BASE_URL).rstrip("/")
+    username = str(session.login_username or "").strip()
 
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     proxies, proxy_source = resolve_requests_proxy_config(account=account)
@@ -785,7 +819,7 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
     )
-    _seed_requests_cookies(http, session)
+    _seed_sso_renewal_cookies(http, session)
 
     try:
         login_resp = http.get(f"{base_url}/login", timeout=30, allow_redirects=True)
@@ -834,12 +868,13 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
                 "SSO session renewal returned no user identity before any credentials "
                 "were submitted."
             )
-        previous_detail = session.user_detail if isinstance(session.user_detail, dict) else {}
-        previous_user_id = str(
-            previous_detail.get("id") or previous_detail.get("user_id") or ""
-        ).strip()
         renewed_user_id = str(detail.get("id") or detail.get("user_id") or "").strip()
-        if previous_user_id and renewed_user_id != previous_user_id:
+        if not renewed_user_id:
+            raise ValueError(
+                "SSO session renewal returned no stable user identity before any "
+                "credentials were submitted."
+            )
+        if renewed_user_id != previous_user_id:
             raise ValueError(
                 "SSO session renewal resolved a different platform user; no credentials "
                 "were submitted and the cached account session was not replaced."
@@ -854,10 +889,11 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
                 headers=api_headers,
                 json=BOOTSTRAP_ROUTES_BODY,
                 timeout=15,
+                allow_redirects=False,
             )
             if routes_resp.status_code == 200:
-                route_ids, route_names, route_fair_scheduling = _workspace_routes_from_payload(
-                    routes_resp.json()
+                route_ids, route_names, route_fair_scheduling = (
+                    _workspace_routes_from_payload(routes_resp.json())
                 )
                 _merge_workspace_routes(
                     all_workspace_ids,
@@ -870,11 +906,18 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
         except Exception:
             pass
 
-        storage_state = {
-            "cookies": [_cookie_to_storage_entry(cookie) for cookie in http.cookies],
-            "origins": [],
-        }
+        storage_cookies = [_cookie_to_storage_entry(cookie) for cookie in http.cookies]
         cookie_dict = {cookie.name: cookie.value for cookie in http.cookies}
+        if not cookie_dict.get("inspire-session"):
+            raise ValueError(
+                "SSO session renewal returned no platform session cookie before any "
+                "credentials were submitted."
+            )
+        previous_origins = session.storage_state.get("origins") if session.storage_state else None
+        storage_state = {
+            "cookies": storage_cookies,
+            "origins": list(previous_origins) if isinstance(previous_origins, list) else [],
+        }
         renewed = WebSession(
             storage_state=storage_state,
             cookies=cookie_dict,
@@ -1406,8 +1449,8 @@ def _submit_credentials(
                 timeout=15000,
             )
             if routes_resp.status == 200:
-                route_ids, route_names, route_fair_scheduling = (
-                    _workspace_routes_from_payload(routes_resp.json())
+                route_ids, route_names, route_fair_scheduling = _workspace_routes_from_payload(
+                    routes_resp.json()
                 )
                 _merge_workspace_routes(
                     all_workspace_ids,
