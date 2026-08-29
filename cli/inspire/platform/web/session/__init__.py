@@ -20,6 +20,7 @@ from inspire.platform.web.session.auth import (
     get_credentials as _get_credentials,
     get_web_session as _get_web_session,
     login_with_playwright as _login_with_playwright,
+    renew_web_session_without_credentials as _renew_web_session_without_credentials,
 )
 from inspire.platform.web.session.models import (
     AuthenticationError,
@@ -186,6 +187,10 @@ def _refresh_expired_session(
         # it is the generation marker every other waiter compares against, and
         # deleting it up front means a failed login leaves nothing behind to
         # tell them the attempt already happened.
+        renewed = _renew_web_session_without_credentials(session)
+        if renewed is not None:
+            logger.debug("Web session renewed through cached SSO state without credentials.")
+            return renewed
         return _get_web_session(force_refresh=True, account=account)
 
 
