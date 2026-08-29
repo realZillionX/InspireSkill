@@ -8,7 +8,7 @@
 
 镜像存在 Registry 里，不是存在 Workspace 里，**多个 Workspace 正常共用同一份 Registry**。`image list` / `detail` / `register` / `set-visibility` / `delete` 都要 `--workspace`，因为平台只认 `registry_hint: {workspace_id}` 这一种指定 Registry 的方式——它是一个指向 Registry 的路标，不是分区。所以 `notebook save-image --workspace X` 存出的镜像，在**同一个 Registry 上的每一个 Workspace** 里都看得到，不必回到 X。
 
-真正会挡住你的是 Registry 边界，而 Registry 边界基本沿着卡的类型走。实测本账号 10 个 Workspace 只有两份目录：`CI-PPU` / `CI-情境智能-国产卡-ssd3` / `昇腾卡公共空间` 用 `sjHarbor`（7 官方 + 288 公开 + 0 个人），其余 7 个用 `qbHarbor`（17 + 5355 + 67），两份的 `image_id` 集合交集为空。跨过这条线，同名镜像可能根本不存在。哪个 Workspace 名字通到哪份目录，以 `image list` 的实际结果为准。
+真正会挡住你的是 Registry 边界。不同硬件域或专属空间可能指向互不相交的镜像目录，跨过边界后同名镜像也不保证存在；哪个 Workspace 能看到哪份目录，始终以该 Workspace 的 Live `image list` 结果为准，不把某个账号当时可见的 Workspace、Registry 名称或目录数量写成通用映射。
 
 一个稳定镜像至少满足：
 

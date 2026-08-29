@@ -30,7 +30,7 @@ Notebook 是交互工作台，不只是“开一个终端”。
 
 **名字在一个 Workspace 里必须唯一，这条得自己守。** 平台不校验重名——同一个名字连建两个都会成功——而 CLI 全程按名字寻址，重名之后每一条 `notebook <动词> <名字>` 都变成歧义、必须 `--pick` 才能落到具体那一个。`notebook create` 因此在提交前先查一遍同 Workspace 的现有名字（大小写不敏感，忽略尾部空格）并挡下重名；探测失败时让路、不拦创建。
 
-`--auto-stop` 只表达空闲自动停止请求，不覆盖平台管理员设置的自动回收规则或 Workspace 生命周期上限——那些规则用 `inspire resources policy --workspace <名字>` 读，`分布式训练空间` 对 Notebook 声明的是「GPU 低于 15% 持续 3 小时，或运行超过 18 小时」，所以夜里挂着但不吃卡的 Notebook 第二天不在了是规则生效，不是故障。定时停止是另一回事：它是平台侧的运行时长计时器，到点停机，与空闲无关。长时间训练、批量推理或守护任务应改用 Job、Ray 或 Serving 这类匹配的 Workload。需要在 Notebook 中验证长任务入口时，只跑短 Probe，并把正式命令迁移到后台 Workload。
+`--auto-stop` 只表达空闲自动停止请求，不覆盖平台管理员设置的自动回收规则或 Workspace 生命周期上限——这些阈值和时限用 `inspire resources policy --workspace <名字>` 读当前 Live 值。定时停止是另一回事：它是平台侧的运行时长计时器，到点停机，与空闲无关。长时间训练、批量推理或守护任务应改用 Job、Ray 或 Serving 这类匹配的 Workload。需要在 Notebook 中验证长任务入口时，只跑短 Probe，并把正式命令迁移到后台 Workload。
 
 手动 Pin 节点只用于排查坏节点、复现实验或平台同学明确指定节点；传入所选 Compute Group 中显示的节点名。实际落在哪个节点由 `notebook status` 的 `Node` 给出，后面跟着该节点的健康状态，被 Cordon 或处于维护窗口时一并标出——正在跑不代表下次重启还能落回来。停止的 Notebook 不占节点，这一行随之消失。
 
@@ -59,7 +59,7 @@ Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的
 
 JupyterTerminal `exec` 的内部控制脚本由 stdin 送入远端 Shell，因此用户命令的默认 stdin 被隔离为 `/dev/null`，避免 `cat` / `bash -s` 一类读取者吞掉控制脚本的完成标记。它无法承载本地用户输入：显式 `--stdin` / `--bash-stdin`，以及本地 `producer | inspire notebook exec ...`、`inspire notebook exec ... < local-file` 都会在发送用户命令前失败。远端命令自身在引号内使用管道或显式读取远端文件会覆盖 `/dev/null`，例如 `inspire notebook exec <name> "python task.py < /inspire/.../input.jsonl"`。需要传入本地脚本或数据时，先经支持 SSH 的 Notebook 放到 `/inspire/...`，再按远端路径执行或读取；需要人工交互时使用带 TTY 的 `notebook shell`，不要向 `shell` 管道脚本。支持 SSH 的 Notebook 仍可使用 `exec --stdin`。
 
-`notebook exec` / `shell` 省略 `--cwd` 时不注入 `cd`，不读取 `me` 或账号配置中的项目路径，而是保留当前 Transport 给出的初始目录。受限 Notebook 的 JupyterTerminal 实测会保留平台设置的项目用户目录；SSH 登录 Shell 的初始目录由远端 SSH/镜像决定。需要固定目录时显式传 `--cwd me:<repo>`、其它 Path Alias 或绝对路径。
+`notebook exec` / `shell` 省略 `--cwd` 时不注入 `cd`，不读取 `me` 或账号配置中的项目路径，而是保留当前 Transport 给出的初始目录。受限 Notebook 的 JupyterTerminal 使用平台设置的项目用户目录；SSH 登录 Shell 的初始目录由远端 SSH/镜像决定。需要固定目录时显式传 `--cwd me:<repo>`、其它 Path Alias 或绝对路径。
 
 交互会话用完敲 `exit` 正常退出（`job shell` 同理）。`Ctrl+]` 是强制断开的转义键，用于远端已经不响应、`exit` 也回不来的情况。
 
@@ -134,9 +134,9 @@ inspire notebook proxy-url <name> --workspace <workspace> --port 7860
 
 验证通过后保存项目镜像。保存是 **Notebook 的生命周期事件**：`notebook save-image <notebook-name>` 就地提交当前容器，过程中该 Notebook 进入 COMMITTING、不可操作；保存完成后 Notebook 不会自动停止，仍可继续连接和使用，镜像只是这次事件的产物。因此这条命令按 Notebook 名寻址，`--workspace` 指的是 **Notebook 所在的空间**，不是镜像的归属。
 
-保存前平台会给出快照体积估算并先打印出来，用它判断这次会占用多久；`--dry-run` 只看估算、不真的保存。这个估算是容器可写层的**未压缩**增量，比最终落进镜像的层大得多——实测 523 MB 的估算对应压缩后 169 MB 的一层，别拿它当镜像体积读。Notebook 未运行时命令直接拒绝，不会产生半成品。
+保存前平台会给出快照体积估算并先打印出来，用它判断这次可能占用多久；`--dry-run` 只看估算、不真的保存。这个估算是容器可写层的**未压缩**增量，不是最终镜像体积，两者不能直接换算。Notebook 未运行时命令直接拒绝，不会产生半成品。
 
-**每次保存都在起点镜像上再堆一层**，所以「保存镜像 → 用它起新 Notebook → 再保存」这种反复迭代的环境，层数会一路累积。`--flatten` 把结果压成单层：实测同一台 Notebook 连存两次，分层保存是基底那 7 层逐个原样保留再加 1 层、共 331.79 MB，压平保存是 1 层、286.90 MB——**压平反而更小**，因为被后面层覆盖或删掉的内容不再被驮着走。代价落在镜像身上而不是 Notebook 身上：两次都在 t≈33 秒把容器还回来，压平那次只是镜像自己多花约 22 秒才构建完。因此固化项目基底镜像、或迭代了很多轮之后收一版时用 `--flatten`，日常快照保持默认的分层保存即可。
+**每次默认保存都在起点镜像上追加一个增量层**，所以「保存镜像 → 用它起新 Notebook → 再保存」这种反复迭代的环境会持续累积层数。`--flatten` 把结果合并成单层，并清除被后续层覆盖或删除的旧内容；它通常需要更多镜像构建时间，但不会延长 Notebook 的 COMMITTING 占用阶段。固化项目基底镜像、或多轮迭代后收敛环境时用 `--flatten`，日常快照保持默认的分层保存即可；最终体积和耗时以本次镜像内容为准。
 
 保存跑到一半要拿回 Notebook 时用 `notebook cancel-save-image <notebook-name>`：即使平台已经报告提交完成，取消仍然生效，Notebook 回到保存前的状态。但半成品镜像会以 `FAILED` 留在镜像目录里，需要按 [`image.md`](image.md) 单独删除。
 

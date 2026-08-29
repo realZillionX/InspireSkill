@@ -36,19 +36,19 @@
 
 `resources availability`、`resources nodes` 和各 Workload 的 `quota` 是资源事实入口；具体参数和输出以 CLI Help 为准。
 
-`<workload> quota` 回答「有哪些合法的 `gpu,cpu,mem` 档位」，`resources availability` 回答「这些档位现在还有没有空」。**Workspace 的配额天花板不是一个需要规划的约束**：实测 10 个可见 Workspace，GPU 上限要么是 `unlimited`，要么是整个集群容量的两倍（分布式训练空间 10000/20000 对 5589 张卡），要么是 0（那是「这个空间根本没有你的份」，不是配给）；CPU 和内存则处处 `unlimited`。所以先耗尽的永远是硬件，`QUOTA_PENDING` 不会因为这个天花板发生，CLI 也不提供读它的命令。用户级和项目级配额另有一套，需要 Workspace 管理员权限，普通成员读不到。
+`<workload> quota` 回答「有哪些合法的 `gpu,cpu,mem` 档位」，`resources availability` 回答「这些档位现在还有没有空」。CLI 不展示 Workspace 级配额天花板，因为创建决策落在具体 Compute Group 的 Live Quota Row 与实时容量上；用户级和项目级上限属于另一套管理员视图。创建被拒时以 Events 和平台错误区分硬件不足、调度策略、项目预算与权限，不能用某个账号曾看到的集群总量或上限推断。
 
 `Available` 是 Compute Group 分给当前 Workspace 的保障额度余量（`gpu_total - gpu_used`），不是整组物理节点上的空卡数；公平调度允许超出保障额度运行低优任务，所以它可以为负。`Low Pri` 是低优任务占用、可被高优任务抢占的 GPU，`High Pri` 是 `Available + Low Pri`，同样可能在已超保障时为负。判断高优任务时不要只看 `Available`；要判断物理整节点是否空闲看 `resources nodes`，提交后仍以 Events 为准。GPU 组也不能靠 `gpu_total > 0` 识别：保障为 0 的组仍可能有 GPU 节点和正在运行的 GPU 任务，CLI 综合 Live 使用量、型号和 NodeDimension 分类。
 
-`resources policy` 回答另一个方向的问题：拿到手的资源能留多久。每个 Workspace 按 Workload 声明空闲回收规则和运行时长上限，这条命令逐行给出 `Reclaim`（调度器会不会自己收走）、`Idle Rule`（触发条件）和 `Time Limit`（硬上限——Job 是 `max` 运行时长，Notebook 是 `daily` 关机点）。**触发条件是 GPU 利用率，不是有没有人连着**：实测 `分布式训练空间` 对 Job 声明「GPU 低于 40% 持续 3 小时」，对 Notebook 声明「GPU 低于 15% 持续 3 小时，或运行超过 18 小时」，Serving 的规则还按 GPU 档位分条给。所以长时间不吃卡的阶段留在 GPU Workload 里会被无声收走，而这不是故障。`-` 表示这个 Workspace 对该 Workload **没有声明策略**，不等于没有限制，两者结论相反。留任务过夜、跑长训练或让 Serving 常驻之前先读这张表。
+`resources policy` 回答另一个方向的问题：拿到手的资源能留多久。每个 Workspace 按 Workload 声明空闲回收规则和运行时长上限，这条命令逐行给出 `Reclaim`（调度器会不会自己收走）、`Idle Rule`（触发条件）和 `Time Limit`（硬上限——Job 是 `max` 运行时长，Notebook 是 `daily` 关机点）。触发条件按平台返回的 GPU 利用率与时间规则判断，不按有没有人连着判断；Serving 还可能按 GPU 档位分条。`-` 表示这个 Workspace 对该 Workload **没有声明策略**，不等于没有限制。留任务过夜、跑长训练或让 Serving 常驻之前读取当前 Workspace 的 Live 策略。
 
 余量不够时用 `resources usage` 看余量去了哪儿：它按用户、项目或任务列出存活工作负载持有的算力，其中 `Reclaimable` 是这些卡里有多少落在**以可抢占优先级提交**的任务上——那部分高优任务可以直接拿走，剩下的只能等或者去谈。`--by task` 的 `Prio` 列给每个任务提交时的优先级原值。`--mine` 只看自己的占用，是一次预聚合请求，比扫全 Workspace 便宜。
 
 这三张资源视图始终读 Live，但会在一次命令内部避免重复：Availability 对多个 Compute Group 有界并发；Nodes 复用 Availability 已读到的 NodeDimension，再额外读取规格；Usage 的维度列表显式使用网关允许的 5000 行页，超过时才继续翻页。命令结束后这些实时行不会进入持久缓存。
 
-低优判据跟着 Workspace 的优先级合同走：公平调度空间里小于 `4` 算低优，其余空间 `≤3` 算低优（后者拿平台按计算组给的口径逐组核对过，4 个组全中）。**读不到合同时这一列是 `-` 而不是 `0`**——「没有可抢的」和「不知道能不能抢」会导向相反的决定。
+低优判据跟着 Workspace 的优先级合同走：公平调度空间里小于 `4` 算低优，其余空间 `≤3` 算低优。**读不到合同时这一列是 `-` 而不是 `0`**——「没有可抢的」和「不知道能不能抢」会导向相反的决定。
 
-**它和 `resources availability` 的 `Reclaimable` 不保证对得上。** 那一列是平台自己按计算组算的，是「到底能抢多少」的权威；这一列是把持有量按每个任务当初提交的优先级归到人头上。非公平空间里两边逐组精确一致，公平调度空间里对不上，而且差额在两次调用之间还会自己变（实测同一个组 100 → 72）。要判断能抢多少看 `availability`，要判断该找谁谈看这里。
+**它和 `resources availability` 的 `Reclaimable` 不保证对得上。** 那一列是平台按计算组实时计算的，是「到底能抢多少」的权威；这一列是客户端把持有量按每个任务提交时的优先级归到人头上。两次查询的时间点和公平调度口径都可能造成差异。要判断能抢多少看 `availability`，要判断该找谁谈看这里。
 
 利用率不再进表：卡在谁手里跟它忙不忙没关系，忙不忙只是「该不该请人释放」这个另一个问题的论据。`--json` 里 `gpu_usage_rate` 照旧给。
 
@@ -70,7 +70,7 @@ Workload 历史目录超过 5000 行时不会硬扫：刷新器按平台报告�
 
 `cache status` / `cache clear` 管的是资源名称索引、Quota 行和 Notebook GPU 探测结果；不碰登录 Session、IDE/连接目标、代理状态或更新检查状态。`status` 只汇总当前 Session 的身份分区，避免同一本地账号配置切换登录主体后把旧分区的数量和错误混进来；`clear` 仍清当前账号的全部分区。默认 `cache clear --yes` 所说的 “every managed cache” 仅指这些明确列在 `cache status` 里的缓存，不能拿它当登出或网络重置命令。
 
-`empty` 是另一个要看的信号：这个资源**刷新过、还在有效期内，却一个名字都拿不出来**。单个 Workspace 空是正常的（那个空间就是没有 Notebook），所以这个判定只按整个资源画——全局一条都没有，而刷新又声称跑过。配额目录出过一次这个状态，当时 `cache status` 把它印成 `ready`，于是「每个 `create` 都被拒」这件事在看板上完全看不出来。撞到 `empty` 先 `cache refresh --resource <kind>`，还空就是真出事了。
+`empty` 是另一个要看的信号：这个资源**刷新过、还在有效期内，却一个名字都拿不出来**。单个 Workspace 空是正常的（那个空间就是没有 Notebook），所以这个判定只按整个资源汇总——全局一条都没有，而刷新又声称跑过。撞到 `empty` 先 `cache refresh --resource <kind>`；完整刷新仍为空时，再把它当作当前平台事实或账号可见性问题处理。
 
 空结果只在平台成功回答时才是事实。Quota 目录是「Workspace 里每个 Compute Group 一次请求」的扇出，任何一组没答上（限流、超时、5xx），这一轮就记成 incomplete：已读到的行照常缓存，读不到的那些保留上一轮的旧行，Scope 不算完整刷新。`cache refresh` 会在汇总里报 `N incomplete` 并列出原因，`cache status` 把原因留在该 Scope 的 `error` 上，下一次完整刷新才清掉。因此 `No quota rows found.` 和 `(workspace has no quotas)` 现在只可能来自平台真的返回空；上游没答复时命令直接报 API 错误。命中限流时先重试，持续不缓解再针对性 `inspire cache refresh --resource quota-<workload> --workspace <name>`。
 
@@ -90,7 +90,7 @@ Workload 历史目录超过 5000 行时不会硬扫：刷新器按平台报告�
 
 | Workspace | 可选值 | 默认 |
 | --- | --- | --- |
-| 公平调度（`分布式训练空间` 是） | `1=LOW` 或 `4=HIGH`，中间值平台不认 | `4` |
+| 公平调度 Workspace | `1=LOW` 或 `4=HIGH`，中间值平台不认 | `4` |
 | 其他 | `1–10` | `10` |
 
 低优先级任务可以被更高优先级抢占，这是它换来「有空就能起」的代价；公平调度 Workspace 里 `4=HIGH` 就是稳定档。Project 策略还可能把最终优先级再压低一档，所以提交后要从 Status / Events 核实平台真正解析出的值，不要以传入值为准。
@@ -111,26 +111,19 @@ Workload 历史目录超过 5000 行时不会硬扫：刷新器按平台报告�
 
 限制按每个 Workload 实例或节点选择的 Quota 判断，不按任务聚合后的 GPU 总数判断。比如每节点 4 GPU、`--nodes 2` 仍是两个碎卡实例，不会因为总计 8 GPU 变成整节点请求；`--nodes` 只放大实例数，不改变单行 Quota 的调度语义。
 
-实测这层限制目前只出现在 `分布式训练空间`，形状是「碎卡只给低优，整节点才给高优」，并且开发区和训练区两片计算组的规则不同：
-
-| Compute Group | `1` / `2` / `4` 卡行 | `8` 卡整节点行 |
-| --- | --- | --- |
-| `开发区-*` | `any` | `any` |
-| `训练区-*` | `low` | `any` |
-
-也就是说：要一个不会被抢占的小规格 GPU 任务，就去开发区；在训练区想拿高优先级，只能整节点起。Notebook、Job 和 Serving 在这个 Workspace 里读到的是同一份限制。这是当前实测结果而不是平台承诺，创建前仍以 `<workload> quota` 的 `Priority` 列为准。
+限制可能随 Workspace、Compute Group、Workload 与单实例规格变化；碎卡和整节点行也不保证使用相同策略。不要从 Group 名称或 GPU 数量猜，创建前始终以目标 Workload 的 Live `<workload> quota` `Priority` 列为准。
 
 ### Quota 行的点券成本
 
 `<workload> quota` 的 `Points/h` 列是该行**每实例每小时**消耗的点券，`--json` 里是 `points_per_hour`。按实例计费，所以 `--nodes 2` 跑 8 点券的行是每小时 16 点券。
 
-**只有 GPU 计费**：所有 CPU-only 行都是 `0`，同一份数据预处理放进 `CPU资源空间` 就不花点券。GPU 按卡型定价，实测 H100 / H200 是 1 点券/卡/小时，4090 是 0.33——差三倍，能跑在 4090 上的活没必要占 H200。
+平台当前返回的 CPU-only 行价格为 `0`；GPU 行按卡型和规格给出 Live 价格。不要把某次查询的单价写进脚本或文档，提交前从目标 Workspace / Compute Group 的 Quota 行读取并按实例数计算。
 
 `null`（表里显示 `-`）是「平台没有给这一行定价」，不是免费；两者不能当作同一件事。
 
 ### 点券余额有两个，别混
 
-`project list` 给两列，它们是不同的量，而且经常差几个数量级——实测同一个项目里项目余额 233,107、当前账号的额度只有 337：
+`project list` 给两列，它们是不同的量，成员额度可能远小于项目总余额：
 
 | 列 | `--json` 键 | 含义 |
 | --- | --- | --- |
@@ -139,7 +132,7 @@ Workload 历史目录超过 5000 行时不会硬扫：刷新器按平台报告�
 
 平台不给成员额度时两列相同，此时 `My Budget` 是拿项目余额顶上的，不代表平台真的按人分了额度。
 
-`project detail` 再给花在哪儿：`Spent` 拆成 `on training` / `on inference` / `on storage` / `on private workspace`。逐项目实测它的 `Remaining budget` 与拆分口径一致，所以这是同一个数的展开，不是第二个说法。成员逐人的额度表要 Maintainer 权限，普通成员读到空记录，CLI 不接。
+`project detail` 再给花在哪儿：`Spent` 拆成 `on training` / `on inference` / `on storage` / `on private workspace`；`Remaining budget` 是同一项目余额的详情投影，不是第二套额度。成员逐人的额度表要 Maintainer 权限，普通成员读到空记录，CLI 不接。
 
 具体可用 GPU 型号、机房和 `gpu,cpu,mem` 三元组仍以当前 Workload 的 Live Quota Row 为准；创建 Workload 或写 Profile 时从同一行复制完整 `group` 和 `quota`。提交后再从 Status / Events 核实平台解析出的优先级、排队和抢占结果。
 

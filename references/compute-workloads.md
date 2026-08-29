@@ -44,7 +44,7 @@ Job 的关键边界：
 - 需要项目级持久默认值时写 `[job]` 配置段；提交前用 `job create --dry-run` 检查 Shared Memory、通知和容错的最终生效值。
 - 多节点训练要关注每个 Pod 的 GPU、显存、CPU 和网络曲线是否同步；某个 Worker 长期低负载通常比日志更早暴露问题。
 - 节点放置有两个相反的选项：`--exclude-node <名字>` 排除坏节点；`--specified-node <名字>` 把任务绑定到指定节点。两者都可重复，节点名来自所选 Compute Group，同一个节点不能同时指定和排除。指定节点前 CLI 会读取 Workspace 的 `train_enable_specified_nodes` 能力位；未开启时在本地报错，不发送创建请求。两组最终值都由 `job create --dry-run` 回显。
-- Workspace 会按空闲规则回收运行中的任务，判据是 GPU 利用率：`分布式训练空间` 对 Job 声明的是「GPU 低于 40% 持续 3 小时」。长时间不吃卡的阶段（大规模数据预处理、CPU 侧评测、等待外部服务）留在 GPU Job 里会被无声收走，提交前用 `inspire resources policy --workspace <名字>` 读当前规则。
+- Workspace 会按 GPU 利用率与时间规则回收运行中的任务，具体阈值和时限由目标 Workspace Live 策略决定。长时间不吃卡的阶段（大规模数据预处理、CPU 侧评测、等待外部服务）留在 GPU Job 里可能被自动回收，提交前用 `inspire resources policy --workspace <名字>` 读当前规则。
 
 优先级合同——公平调度 Workspace 只接受 `1=LOW`（可抢占）或 `4=HIGH`（默认，稳定档），其他 Workspace 是 `1–10`（默认 10），项目策略还可能再压低一档——见 [`resources.md`](resources.md)。任务需要稳定训练但 Status 显示 LOW 时，先 stop，再按当前 Workspace 和项目策略重提。
 
@@ -63,9 +63,9 @@ HPC 有两层资源模型，不能混：
 
 内存只按每 CPU 给（`--memory-per-cpu`，Slurm `--mem-per-cpu`）。网页端另有「每节点使用内存」输入框，**它是坏的**：平台收下并在详情页显示这个值，但生成脚本时只写 `--mem-per-cpu`，于是那一行是空的，任务必然失败。不要在网页端用它，CLI 也不提供对应选项。
 
-**容器里量到的资源不是你的配额，程序不能照着它自动调档。** 一个 `0,4,16` 的 slurmd 容器里 `nproc` 报 **64**、`free -m` 报 **~503 GiB**——那是宿主机的数字。真实约束是 Pod 的 cgroup：`cpu.max` = `400000 100000`（4 核，硬限流），`memory.max` = 16 GiB。任何按 `nproc` / `free` / `multiprocessing.cpu_count()` / OpenBLAS 与 PyTorch 默认线程数自动调档的程序，都会按 64 核和 503 GiB 去开工作进程，然后在 4 核上被限流、被内存墙撞死。**并发度和缓冲区一律显式取自 `SLURM_CPUS_PER_TASK` 和 `--quota` 的内存数**，别让库自己猜。
+**容器里量到的宿主机资源不是任务配额，程序不能照着 `nproc` / `free` 自动调档。** 真实约束在 Pod cgroup 的 `cpu.max` 与 `memory.max`，而部分工具和库仍可能看到宿主机总量并据此放大进程数或缓冲区。**并发度和缓冲区显式取自 `SLURM_CPUS_PER_TASK` 和 `--quota` 的内存数**，不要让 `multiprocessing.cpu_count()`、OpenBLAS 或 PyTorch 默认值替你猜。
 
-**内存墙是节点规格，不是你申请的量，而且要留出运行时自身的占用。** cgroup 的 `memory.max` 恒等于 `--quota` 的内存，**不随 `--memory-per-cpu` 变**——实测只申请 12 GiB（`AllocMem=12288`）的任务照样提交了 15 GiB 而没有任何拦截，也就是说 Slurm 这一层的内存只进记账、不设运行时上限。真正会杀你的是那 16 GiB：单进程提交到 15900 MiB、16100 MiB 都正常，**顶到 16384 MiB 直接被 OOM 杀掉，日志里连一行错都没有**（进程被 SIGKILL，什么都来不及打）。所以按 `--quota` 的内存规划，并给解释器、shell 和 slurmd 自身留出几百 MiB；峰值贴着整数顶格的程序，失败形态就是「莫名其妙没输出」。
+**内存墙是节点规格，不是 `--memory-per-cpu` 的记账量，而且要留出运行时自身的占用。** cgroup 的 `memory.max` 等于 `--quota` 的节点内存，不随 `--memory-per-cpu` 变化；Slurm 这一层的内存字段只进记账，不设置容器运行时上限。进程贴到 cgroup 上限时会被 OOM 直接 SIGKILL，日志可能一行都来不及写。所以按 `--quota` 规划峰值，并给解释器、shell 和 slurmd 自身留出余量。
 
 关键约束：
 
@@ -149,7 +149,7 @@ Job / HPC / Notebook Batch 对同一 Workspace 的 Quota 优先级菜单、Proje
 
 不知道 Job 在哪个 Workspace 时用 `job list --workspace all`；它按页对可见 Workspace 做 8 路有界 round-robin，而不是把每个空间串行相加。输出仍按全局 `--limit` 截断，`--all` 才完整翻页。
 
-指标没有批量口径：平台那个 `GetTaskMetricBatch` 实测 8 个指标里有 4 个要么静默返回 0 样本、要么直接报错，所以 `metrics` 仍是一次一个任务。
+指标没有等价批量口径：平台的 `GetTaskMetricBatch` 会丢失多 Pod 分组，部分 I/O 指标返回空或报错，其余聚合值也与控制台使用的单任务端点不一致，所以 `metrics` 仍是一次一个任务。
 
 **等待只对还会自己往前走的状态有意义。** `PENDING` / `QUEUING` / `RUNNING` 会动，终态不会：Job 和 HPC 没有 `start`，`job stop` 留下的 `job_stopped` 与 `SUCCEEDED` / `FAILED` / `CANCELLED` 一样是终点，要再跑只能重新 `create`；能从停止态拉回来的只有 Notebook、Ray 和 Serving，它们各有 `start`。所以开始等之前先 `status` 读一次当前状态，别对着一个已经停掉的任务等它变回运行中。`job wait` 和 `job logs --follow` 在任务进入终态时返回；`events --follow` 和 `job list --watch` 不会自己结束，任务结束了也不会，只能被中断——不要把这两条挂在后台终端上当「等任务跑完」用。
 

@@ -26,10 +26,10 @@
 
 | 字段 | 含义 | 影响 |
 | --- | --- | --- |
-| Access | 当前账号是否有权挂载 | 无权限时创建会被拒为 `无访问权限`，约五分之一的数据集属于这种；申请进度用 `dataset applications` 看 |
+| Access | 当前账号是否有权挂载 | 无权限时创建会被拒为 `无访问权限`；申请进度用 `dataset applications` 看 |
 | State | 数据集状态 | `active` 可用；`processing` / `wanted` / `error` 都不可挂载 |
 | Grade | 数据分级 `S2` / `S3` / `S4` | 决定合规要求，不影响命令 |
-| Tags | 领域标签 | 52 个固定标签，分属文本、图像、音频、视频、多模态五种模态；全量用 `dataset tags` 列 |
+| Tags | 领域标签 | 分属文本、图像、音频、视频、多模态五种模态；当前全量用 `dataset tags` 列 |
 
 版本另有自己的状态，`downloading` 和 `pending_upload` 表示数据还没落盘。数据集 `active` 不代表每个版本都可用。
 

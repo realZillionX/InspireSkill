@@ -100,7 +100,7 @@
 
 ### 新增
 
-- **`job status` / `hpc status` / `job events` 一次可以问多个任务了。** 平台在 v2 上给 `ListJobs` 加了 `job_ids`、给 `ListJobEvents` 加了 `filter.object_ids`，两条都实测过：`train.ListJobs` 按 `job_ids` 过滤出来的记录与 `train.GetJob` **逐字段完全相同**（running / stopped / failed 三态各比一次，无独有字段、无值差异），所以这是 `GetJob` 扇出的批量形态而不是它的摘要；`ListJobEvents` 严格可加（5 个任务批量 31 条 = 单查的 3+3+3+3+19），每行带 `object_id`，因此能原样拆回各自的任务。N 个名字现在是每 20 个一次请求，而不是每个一次。
+- **`job status` / `hpc status` / `job events` 一次可以问多个任务了。** `ListJobs` 使用 `job_ids`，`ListJobEvents` 使用 `filter.object_ids`；平台按每 20 个任务一批返回，事件行带 `object_id`，客户端可按任务拆回并合成带来源的时间线。
 
   **两条服务端限制写进了代码，因为两条都会静默地骗人**。其一，上限 20 **按列表长度计数而不是集合**——20 个不重复的 id 再加一个重复项就是 21 条，照样被拒，所以去重发生在分片之前而不是之后。其二，两个 Action 对「找不到的 id」的回答**正好相反**：`ListJobs` 静默丢弃（答案只是短了一截，只有拿请求去 diff 才看得出来是任务被删了还是自己没点名），而 `ListJobEvents` 让**整个请求**失败并报 `InvalidParameter: job <id> not found`——一个已被回收的任务足以把同批另外 19 个的事件全部带走。批量事件路径因此会剔掉报错点名的 id 重试，并把剔掉的显式报出来，而不是返回那个会被读成「这些任务没有事件」的空列表。
 
@@ -114,7 +114,7 @@
 
 - **`GetTaskMetricBatch` 复查过了，结论是继续不用它，指标维持逐个扇出。** 运维给的批量清单里包含这个 Action，但它答的不是同一份数据：在 `train` 路由上拿 4 个运行中的任务、同一时间窗逐指标对照，`disk_io_read` / `disk_io_write` **返回 0 个样本而单数版同窗口有 61 个点**（4/4 复现），两个 `network_tcp_ip_io_*` 直接 `InternalError`，并且所有 group **一律没有 `group_name`**，多 Pod 任务的逐 Pod 拆分就此丢失。8 个指标坏 4 个。
 
-  **剩下那 4 个也不是同一份数**——这点上一轮没查，因为只比了样本数没有逐点比数值。取一个已经结束的固定窗口，两个端点各自都是确定的（各查两次逐字节相同），但互相对不上：同一时间戳单数版 `0.20625`、Batch `0.5`。差在聚合样本数上，把全部返回值的公分母算出来，**单数版恒为 Batch 的 2 倍**（4 卡 800∶400、8 卡 1600∶800，即 `200×卡数` 对 `100×卡数`，4 个任务全部符合）。长期均值大致对得上，单点能差到三倍。所以它不是「批量版少了个字段」而是**另一套聚合**：即便只取那 4 个能跑的指标，画出来的曲线也不是控制台上那一条。它的响应形状也不一样——`task_metrics[].time_series_metric_groups`，而不是单数版顶层的 `time_seris_metric_groups`——这正是它容易被读成「空」而不是「坏」的原因，上一轮调研就是在这里读错了键。控制台自己从不调用这个 Action。顺带复核了单数版 `GetTaskMetric` 一次只认第一个 `metric_types` 的老结论：传 2 / 4 / 8 个类型各试一次，返回的始终只有第一个，扇出确实省不掉。结论写进了 `get_resource_metrics_by_time` 的 docstring。
+  `GetTaskMetricBatch` 不是单任务指标的等价批量面：响应多包一层，缺少多 Pod 分组，部分 I/O 指标空或报错，其余聚合值也与控制台曲线不同。单数版一次只返回第一个 `metric_types`，所以 CLI 继续按指标扇出。
 
 - **`/api/v1` 从这个客户端里彻底消失了。** 最后三处——登录握手的 `user/detail`、登录时发现 Workspace 的 `user/routes/default`、Notebook 的 `notebook/lab/{id}`——留着的理由此前写的是「Session 自举时还没有 Session 可供 v2 用」和「反向代理不是 Action 能表达的东西」。三条实测全部不成立：
 
@@ -122,7 +122,7 @@
   - `user.GetRoutes` 的 `WorkspaceId` **收字面量 `"default"`**，答的是完整 `userWorkspaceList`，与传一个真实 Workspace id 的响应 5794 字节 **0 差异**。「v2 要一个真实 `WorkspaceId`，登录时拿不到」是我们自己写进 Reference 的错误结论——而登录时恰恰没有真实 id，于是这条推断把自己锁死了整整一个迁移周期。空串或缺键才报 `WorkspaceId is required`。
   - `/api/v2/notebook/lab/{id}` 与 v1 同样 `301` 到同一个带 token 的网关地址，跟过去是同一份 8007 字节的 JupyterLab；**控制台自己的 iframe 指的就是这条**。顺带钉死一件事：`/proxy/{port}/` 挂在平台域上时两种前缀都答 `404 page not found`，只有带 token 的网关地址真的会连容器端口。
 
-  **验收是真的跑了一次登录**：备份 Session 缓存，`force_refresh` 走 requests/CAS 与 Playwright 两条路径各一次，10 个 Workspace、名字、`is_fair_workspace`、`user_detail` 与迁移前完全一致；Notebook lab 的解析拿一台运行中的 CPU Notebook 对 v1/v2 各跑一遍，落点相同。
+  登录验收覆盖 requests/CAS 与 Playwright 两条路径，并核对 Workspace 名称、公平调度标记、用户身份和 Notebook Lab 解析保持一致；发布说明不记录验收账号的资源数量或对象清单。
 
   连带清理：`_v2_result()` 移进 session 层（登录也要用它，而 session 不能反向 import `browser_api`）；`INSPIRE_BROWSER_API_PREFIX` / `api.browser_api_prefix` **配置项删除**——它最后只对 Notebook lab 一处生效，设成别的值只会把那一处弄坏，旧 `config.toml` 里残留这个键会被静默忽略；六处 docstring 还报着 `POST /api/v1/model/list` 这类早已不存在的地址，连同 `browser-api.md` 的「仍在使用的 v1 端点」整节一起重写。边界测试也换了两条更强的不变量：**全树零 `/api/v1` 字面量**（不再是白名单），以及 `/api/v2` 字面量只许出现在 `browser_api/`（例外两条：`job_shell.py` 的四条实例 PTY、`session/auth.py` 的登录自举）。
 
@@ -154,7 +154,7 @@
 
   **验收在真实平台上跑过，也真的撞上了它要防的东西。** 用一个不存在的用户名做闸门验收：第 1 次 2.16s 打到 CAS，随后 10 次串行 + 8 个并发进程共 18 次全部在本地 0.17s 返回，标记里的 `failures` 始终是 1；等到冷却结束再试，第 2 次才放出去，冷却随即升到 5 分钟；改一个字符的密码则立刻放行。
 
-  **写操作验收**（CPU资源空间 / 前沿课题探索 / CPU资源-2 / `0,1,4`，0 点券，用完即删）：把缓存 Session 的 Cookie 就地作废制造真实过期，再跑 `notebook create`——建成功了，`--debug` 日志里**一次重建、一次凭据提交**，没有 Playwright 的第二次提交。加压的那一轮更能说明问题：同一份失效 Session 上**同时**起 6 个进程（1 个写 + 5 个读），6 个全都识别出过期，**只有 1 个提交了凭据**，另外 5 个复用它刷出来的 Session。收尾 stop + delete，工作区回到原来的 4 台。
+  写操作验收通过人为失效缓存 Session 后创建最小临时 Notebook，并以并发读写进程确认跨进程刷新锁只允许一次凭据提交；临时资源在验收后清理。
 
 - **登录失败时平台给的原话，一直被 InspireSkill 自己丢掉了。** 参考竞品 [qzcli_tool](https://github.com/tianyilt/qzcli_tool) 的登录处理时挖出来的，它 v0.4.4 修过同一类问题的另一半。CAS 把失败原因写进 `<div class="form-error">`，而 `_extract_login_failure_hint()` 只认**可见**容器——抓真实页面看，三个登录 tab 面板在服务端**全是** `style="display: none"`，由 JS 在运行时决定显示哪个，于是「这个容器可见吗」是收到的 HTML 根本回答不了的问题，答错的代价就是平台原话全丢，用户只剩一句「检查密码是否正确」。今天误判成密码问题，根因就是这个。
 
@@ -170,7 +170,7 @@
 
   复审发现这条规则只装在了提交后的文案判断上，**提交前的硬停止反而只查字段一个信号**——后果最重的位置（拒绝登录、也不回落浏览器）用的是最弱的判据，方向恰好装反。现在提交前同样要求两个信号：字段孤立出现而页面不引用同源验证码图（一个休眠的模板残留正是这个形状）就照常提交，表单里带什么就交什么；真被挡的页面两个信号齐备照旧停下，即便漏判，提交后的那道检测也会接住并如实说明。真实平台复跑过一次登录：干净页不误报，正常放行。
 
-- **登录页要验证码时，CLI 报的是「密码可能不对」，而且会照样把密码提交上去。** 上一条的验收撞出来的：连续几次失败登录之后，**CAS 会给这台机器的密码表单加一个 `authcode` 字段**（页面同时出现 `/cas/captcha.jpg`），requests 路径照旧把这个字段留空提交，CAS 回一张 `账号或密码错误。` 的登录页——于是**密码完全正确的账号被告知密码可能不对**，而每一次「再试试」都是一次注定失败的凭据提交，正好把账号推向真正的锁定。过一段时间这个字段会自己消失，登录恢复正常，实测前后两次抓的表单字段就差这一个。
+- **登录页要求验证码时不再把它误报成密码错误并继续提交。** CLI 在提交前检查验证码字段与同源图片；CAS 若在提交后才增加验证码，失败页也会再次解析并明确说明需要人工验证，避免自动重试推动账号锁定。
 
   现在解析完登录表单就检查这个字段，**在提交之前**停下：既不提交，也不回落 Playwright（浏览器同样答不出验证码，只会再花掉一次尝试），并且**不打开熔断**——没提交过就没有「被拒绝的凭据」可记。报错直接说清楚平台在要验证码、这通常不是账号或密码的问题、去浏览器登一次即可解除，以及这次没有提交任何凭据。
 
@@ -180,13 +180,13 @@
 
     复审在「清掉」这半边找到同一类代际混淆的镜像：成功回执记的是**回执那一刻**的 `session.created_at`，而共享 Session 对象可能在请求飞行途中被别的线程就地换代——一个用旧 Cookie 发出去、成功回来的迟到调用，会把别人刚铸出来、谁都没用过的新代际错误地记成「已验证」，于是下一个 401 又买到一次登录，保护每次都被重新解除。失败那半边修过的教训（比较调用实际发出去的那一代）现在对成功回执同样成立：记 `observed_created_at`，不记此刻。连带删掉 `request_json` 的 `_retry_count` 参数——生产代码里没有任何调用方传它，唯一作用是把预算归零，属于上一版重试结构的残留。
   - **`init` 直接调 `login_with_playwright()`，绕过那把账号级刷新锁。** 熔断标记的读-判-写因此不是原子的，两个并发的 `inspire init` 会同时读到「没有失败记录」然后各提交一次。现在闸门在自己的标记上加独立文件锁（和 Session 缓存锁、刷新锁三个不同的文件，不可能互相嵌套），8 进程直接调的测试：拆掉锁 8 次提交，装上 1 次。
-  - **验证码字段可能是提交之后才出现的。** 提交前的检测挡不住这一种，而 CAS 回的还是「账号或密码错误」——正是我实测撞上的那个形状。现在失败时再解析一次响应页的密码表单，字段在就直说是机器在被要求证明自己，并且不再印「检查密码是否正确」那句误导。复审补齐了它的另一半：这道提交后检测原来只在 requests 路径上有，**Playwright 路径失败时同一张被挡页面仍被报成「检查密码」**——现在浏览器路径读的是同一份页面 HTML，同样给出验证码说明、同样标注为临时失败。
+  - **验证码字段可能在提交后才出现。** requests 与 Playwright 两条路径现在共用失败页解析，统一给出人工验证说明，并将其与凭据拒绝区分。
 
   这条修复由 [#73](https://github.com/realZillionX/InspireSkill/pull/73) 提出（@expectqwq），闸门位置、冷却档位和解除条件在合并时做了调整，并补上了它没覆盖的两条放大路径。
 
   连带修掉一个测试隐患：会话缓存和这个新标记都写在当前 Account 目录下，而测试套件此前没有隔离真实用户配置目录，模拟失败登录可能写入非测试状态。现在 `conftest.py` 让会话存储在测试里解析不到 Account（要持久化的测试自己传 Account 名并隔离 `Path.home`），验证这条解析逻辑本身的 5 个测试改用 `active_account_session_storage` 显式退出。
 
-- **`inspire update --check` 恰好在有新版本可升的时候报「检查失败」。** 实测本机 v7.1.0 对着刚发布的 v7.1.1：版本缓存正确写下了 `latest: 7.1.1`，而命令印的是 `✗ InspireSkill check failed.` 并以 1 退出——也就是这条命令唯一有意义的那个结果被它自己当成了故障。根因是检查路径把 `latest` 喂给了 `_audit_update_state`，而那个审计里的版本比较是**升级完之后**的验收器（「装完了，可执行文件真的变成新版本了吗」），于是「你还在旧版本上」这个正确答案被判成审计不通过。现在检查路径不传 `expected_version`，审计只保留它真正该管的那部分：可执行文件在不在 PATH 上、版本读不读得出来、全局 uv tool 有没有被钉在本地源、检测到的 harness 里有没有 `SKILL.md`。
+- **`inspire update --check` 在有新版本时不再误报检查失败。** 检查路径不再把可升级状态交给安装后版本审计，只验证可执行文件、版本读取、安装源和 Harness Skill 完整性。
 
   连带影响是每日那个 launchd agent（跑的正是 `update --check --silent`）一直在静默地以 1 退出——`launchctl list` 里那一列就是 `1`。`--check` 此前没有任何测试覆盖（现有的 8 处调用一律传 `check_only=False`），这个 bug 因此活了下来；现在三种情形各有一条测试：有新版本、已是最新、装坏了。
 
@@ -220,7 +220,7 @@
 
 - `inspire notebook save-image --flatten`：把保存出来的镜像压成单层，而不是在起点镜像上再堆一层（[#71](https://github.com/realZillionX/InspireSkill/issues/71)）。默认仍是分层保存。
 
-  **先验了它是不是真生效**，因为 discovery 声明过、网关收下了，都不等于平台照做——这仓库已经记过两个「接受、不生效」的死字段。拿一台新建的 CPU Notebook 连存两次，再从 `docker-qb.sii.edu.cn` 那台 Harbor 把两份 manifest 读回来比对：分层保存是基底那 7 层逐个 digest 原样保留再追加一层、共 8 层 331.78 MB；压平保存是 **1 层 286.90 MB**。
+  `flatten` 的生效性通过镜像 manifest 往返验证：默认保存保留基底层并追加增量层，压平保存合并为单层；最终体积和耗时随镜像内容变化，不写成固定样本。
 
   **压平反而更小**（-13.5%），因为被后面层覆盖或删掉的内容不再随镜像走。而多出来的 22 秒（33.4 s → 55.5 s）落在镜像的 `CREATING` 上，**不落在 Notebook 上**——两次都在 t≈33 秒把容器还回来，所以这个开关不会让 Notebook 多停一秒，命令的提示也照这个说。压平出来的镜像另建了一台 Notebook 确认能起，验完连镜像带 Notebook 都已删除。
 
@@ -232,37 +232,37 @@
 
   **Serving 连句柄参数都不叫 `job_id`，叫 `inference_serving_id`。** 这是拿 `job_id` 打了两次被拒才发现的——错的键不给报错，只把握手拒成一个光秃秃的 `HTTP/1.1 200 OK`。`_PTY_ROUTES` 因此把句柄键也参数化了。
 
-- 记录两条 `file` 服务的实测结论（只有文档，没有行为变更）：
+- 文档补充 `file` 服务的两个长期边界：
 
-  **`GetSftpgoConnectionInfo` 是一条不需要计算资源的共享盘读写通道。** `{storage_name}`（池名转小写）换回一台 WebDAV 服务器，根下就是容器里那套 `/inspire/<池>/…` 全命名空间。受控路径上的 `PUT` → `GET` → `DELETE` 往返已验证，探针文件已清除。目前 CLI 的文件流转只有 `notebook scp`，要一台运行中的 Notebook 加容器内 sshd 加 rtunnel，这条路把三样都省掉。**响应里的 `auth` 是明文凭据**，须与 Notebook Proxy 的 token 同等对待——不进日志、不进报错、不进 `--json`、不进文档。尚未封装。
+  **`GetSftpgoConnectionInfo` 是无需计算资源的 WebDAV 共享盘通道，但响应含可直接使用的明文凭据。** CLI 刻意不封装该端点，现有文件流转继续走 `notebook scp`；凭据不得进入日志、错误、JSON 或文档。
 
-  **`CreateCopy` 不是服务端复制，是一张要审批的申请。** 控制台里它叫「新建数据传输」，表单只有 `source_path` / `target_path` / `overwrite`，提交按钮写的是「提交审批」，和旁边的 `audit` 服务是一条链。`ListFileCopyTasks` 是用户级的（不认 workspace / filter），本账号 0 条。
+  **`CreateCopy` 不是服务端复制，是一张要审批的申请。** 控制台里它叫「新建数据传输」，表单只有 `source_path` / `target_path` / `overwrite`，提交按钮写的是「提交审批」，和旁边的 `audit` 服务是一条链。`ListFileCopyTasks` 是只服务于该审批流程的用户级列表，CLI 不接。
 
-- 记录训练任务「预检」的实测结论，并说明为什么不接（只有文档，没有行为变更）。`ListPreCheckItems` / `GetPreCheckResult` 不是「提交前校验规格」那种东西，而是**每个训练任务创建时可选开启的节点健康检查**——创建面收 `enable_troubleshoot` 加一份 `pre_check_items`，没开的任务读结果直接答 `train job does not enable troubleshoot precheck`。而 `train_enable_troubleshoot` 在全部 10 个可见 Workspace 都是 `False`：平台侧没放开，接出来是一个谁也用不了、我也验不了的开关。
+- 说明训练任务「预检」为什么不接（只有文档，没有行为变更）。`ListPreCheckItems` / `GetPreCheckResult` 不是提交前规格校验，而是由 Workspace 能力位控制、每个训练任务创建时可选开启的节点健康检查；CLI 只在能力位和控制台都提供稳定入口时接入。
 
-  顺带记下同族另外三个能力位和它们各自在哪些 Workspace 开着，其中 `train_enable_specified_nodes` 是真正的节点绑定，**和我们已有的 `--exclude-node` 不是一回事**。要接这一族里的任何一个，先读这四个位。
+  同族另外三个能力位中，`train_enable_specified_nodes` 是真正的节点绑定，**和已有的 `--exclude-node` 不是一回事**。能力是否开启始终读目标 Workspace 的 Live 配置。
 
 - `inspire ray shell`：进 Ray 实例的交互式 shell，默认进 **head**——驱动在那儿，`ray status` 和集群自己的日志也在那儿；要看某个 worker group 的进程用 `--instance <Role-Rank>`。走 `/api/v2/ray_job/instances/exec`。
 
 - `inspire hpc shell`：进 HPC 实例的交互式 shell，和 `job shell` 同一套（`exit` 退出、`Ctrl+]` 断开）。**默认进 `launcher`**——`srun` 在那儿跑，也只有那个 Pod 看得见你的进程；`slurmctld` 是调度器本身，`--instance slurmctld` 才去。走 `/api/v2/hpc_jobs/instances/exec`，同样是网关 REST 形状的那一半。
 
-  **参数名不能照搬 train 那条**：`hpc` 和 `ray` 都只认 `instance_id`，用错的两种失败都不给报错——`hpc` 收到 `instance_name` 会照常 upgrade 然后一个字节都不回（实测 `instance_id` 回 53 字节，这边回 0），`ray` 则直接把握手拒成一个光秃秃的 `HTTP/1.1 200 OK`。`serving` 平台侧也有实例 PTY，没验证过，`build_remote_cmd_ws_url` 对它直接抛错而不是猜一个参数名。
+  **参数名不能照搬 train**：HPC / Ray 的实例参数是 `instance_id`，错误键可能表现为已升级但无数据，或握手返回 200 而非 101；路由构造器按 Workload 显式映射，不按类比猜。
 
-- `<workload> quota` 增加 `Points/h` 列（`--json` 里是 `points_per_hour`）：该 Quota 行每实例每小时消耗多少点券。数据本来就在配额目录的响应里，只是一直被丢掉。**只有 GPU 计费**——所有 CPU-only 行都是 0，同一份预处理放进 `CPU资源空间` 就不花点券；GPU 按卡型定价，实测 H100 / H200 是 1 点券/卡/小时而 4090 是 0.33，差三倍。按实例计费，`--nodes 2` 跑 8 点券的行是每小时 16。`null` 是「平台没给这行定价」，和 `0`（免费）是两件事。
+- `<workload> quota` 增加 `Points/h`（JSON 为 `points_per_hour`），表示该 Quota 行每实例每小时的 Live 点券成本。CPU-only 行与 GPU 单价都以平台当前响应为准；`null` 表示未定价，不等于 `0` 免费。多节点成本按实例数相乘。
 
-- `scripts/scan_v2_surface.py` 补上 `/api/v2` 的第二种形状。`?Action=` 之外还有一片 **REST 风格**的路径（当前 12 条），只认 Action 的清单会把它们报成不存在——`job shell` 走 v1 的那条 `/api/v2/train_job/remote_cmd` 就在里面，而我们的边界测试里写着「v2 没有任何 Action 暴露 shell」，这句话对 Action 成立、对 `/api/v2` 不成立。同批还有 HPC / Ray / Serving 三条实例 PTY（我们完全没有对应命令）、文件页的目录操作、日志下载。**这几条都还没验证**：网关在路由之前先鉴权，普通 GET、带 Referer 的 GET、真实 WebSocket 握手三种打法对 v1（确知可用）和一条随手编的路径回的都是同一个 401，要确认只能拿一个自己的运行中任务去握手。已把结论和未验证状态写进 `browser-api.md` 与边界测试的白名单理由。
+- `scripts/scan_v2_surface.py` 补上 `/api/v2` 的 REST 路径扫描；实例 PTY、Notebook Lab、文件与日志下载不使用 `?Action=`，只扫描 Action 会漏掉它们。REST 路径需按自身鉴权与握手合同验证。
 
-- `scripts/scan_v2_surface.py`：把控制台前端产物里写死的 `/api/v2/{route}?Action=` 全抓出来，和 `GET /discovery` 对账，`--probe` 再按 `browser-api.md` §7 的判据逐个探活。这是这次唯一抓出我们自己错误结论的东西——配额目录被判成「v2 无对应物」正是因为只查了 discovery，而 `resource-price` 整条路由不在里面。当前 25 条路由 / 187 个 Action，discovery 是 11 / 175。只探 `Get` / `List` / `Search` 开头且不含写动词的 Action，空请求体在校验阶段就被拒，建不出任何东西。
+- `scripts/scan_v2_surface.py` 会递归抓取当前控制台产物中的 `/api/v2/{route}?Action=` 与 REST 路径，再和 Live `/discovery` 对账；`--probe` 只对只读候选使用空请求体，产物与 discovery 的数量不写成固定合同。
 
-- `resources usage --group <关键词>`：把「谁占着」收窄到计算组，也就是任务真正提交进去的那个单位。整个 Workspace 看着满、你要投的那个组未必满，反过来也一样，所以这个判断本来就该在组这一层做。关键词是子串（`--group H200` 覆盖所有带这个硬件的组），输出顶部列出实际匹配到哪几个，`--json` 里是 `compute_groups`。底层的 `ListTaskDimension` 一直收 `logic_compute_group_id`，只是没有命令用；平台确实认这个过滤（实测 1125 → 183 行）。`--mine` 读的是按项目预聚合的记录，里面没有计算组，两者互斥。
+- `resources usage --group <关键词>` 把「谁占着」收窄到任务真正提交的 Compute Group；关键词是子串，输出和 JSON 都列出实际匹配的组。底层使用 `ListTaskDimension.logic_compute_group_id` 的服务端过滤；`--mine` 读的是不含计算组的项目预聚合记录，两者互斥。
 
-  同族的 `job.GetLcgUsedComputeResourceJobs` 看着更像是为这件事准备的，实测不值得接：对同一个组两边逐条吻合（同样 183 个任务 id、同样 1400 张卡），而任务维度还额外带着用户、项目和 GPU 利用率——那个 Action 没有。它唯一多出来的行是 TensorBoard，而 TensorBoard 一张卡都不占。
+  `job.GetLcgUsedComputeResourceJobs` 没有接入：任务维度已经提供同一组的任务、用户、项目和 GPU 利用率；前者唯一额外出现的 TensorBoard 不占 GPU，没有独立消费者。
 
-- `project detail` 增加点券花在哪儿：`Spent` 拆成 `on training` / `on inference` / `on storage` / `on private workspace`（`project.GetProjectBudgetUsageOverview`）。此前只有总额和余额，中间那笔差额去了哪没人答得上。逐项目实测它的 `remain` 与 `GetProjectDetail` 的 `remain_budget` 一致，所以这是同一个数的展开，不是第二个说法；这一次请求失败不影响详情本身照常打印。
+- `project detail` 增加点券用途拆分：`Spent` 分为 training / inference / storage / private workspace；`remain` 与 `GetProjectDetail.remain_budget` 是同一余额的详情投影。用途请求失败不影响基础详情输出。
 
 ### 破坏性变更
 
-- **`project list --json` 的 `remaining_budget` 键消失**，拆成 `my_remaining_budget` 和 `project_remaining_budget`。原因是那个键报的是**当前账号**的额度而不是项目的，而键名和列名都没说：实测同一个项目里项目还剩 233,107 而本账号只有 337——差 690 倍，按前者做决定会直接撞上「预算不足」。表里对应 `My Budget`（决定你的任务能不能起的那个数）和 `Project Budget`（全体成员共用的池子），平台不给成员额度时两列相同。读这个键的脚本必须改：**它不是被重命名成某一个新键，而是被拆成语义不同的两个**，照旧取「余额」会静默拿到另一个数。
+- **`project list --json` 的 `remaining_budget` 键消失**，拆成 `my_remaining_budget` 和 `project_remaining_budget`。前者是当前成员额度，后者是项目共享余额，两者可能相差很大；平台不给成员额度时两列相同。旧键不是简单改名，而是拆成了语义不同的两个值。
 
 - **`inspire cache refresh` 不再接受裸形式**：不带 `--resource` / `--workspace` / `--name` 会直接报错并给出收窄的写法，此前这样敲会刷全部。刷一遍全部是几百个请求，读的还是几乎不动的目录，而正常情况下这条命令根本不需要跑——Workload 名字后台一直在补，其余的解析一次就自己缓存了。真正要跑的场合只有一种：你知道缓存底下的东西变了（管理员改过计算组规格、镜像在网页上被删了）。先 `cache status` 看哪个 Scope 真的不对，再只刷那一块。把裸形式写进脚本或定时任务的要改成点名刷。
 
@@ -270,11 +270,11 @@
 
 - `resources usage` 的表里用 `Reclaimable` 换掉 `GPU Busy`。利用率回答不了这条命令要回答的问题——卡在谁手里跟它忙不忙没关系，持有者就是持有者；能被拿走的只有低优卡。新列是这个人持有的 GPU 里有多少落在以可抢占优先级提交的任务上，`--by task` 另给一列 `Prio` 显示提交原值。判据跟着 Workspace 的优先级合同走：公平调度空间小于 `4`，其余空间 `≤3`（后者拿平台按计算组给的口径逐组核对过，4 个组全中）。读不到合同时是 `-` 不是 `0`——「没有可抢的」和「不知道能不能抢」导向相反的决定。`--json` 里 `gpu_usage_rate` 照旧给，新增 `low_priority_gpus` 和 `priority`。
 
-  数据一直在 `ListTaskDimension` 的行里（`priority` 字段），我们从来没读过。**它和 `resources availability` 的 `Reclaimable` 不保证对得上**：那一列是平台自己按计算组算的，非公平空间里两边逐组精确一致，公平调度空间里对不上，而且差额在两次调用之间自己会变（实测同一个组 100 → 72）。所以这一列只说「按提交时的优先级，这些卡属于哪一档」，不声称复现平台那个总数。
+  `resources usage` 的 `Reclaimable` 是按任务提交优先级归类，`resources availability` 则是平台按计算组实时计算；时间点与公平调度口径都可能造成差异，所以前者不声称复现后者总数。
 
-  **`Prio` 和 `job status` 里那个优先级不是同一把刻度，别互相印证。** 维度行给的是**提交值**（`--priority` 的 1–10 档，实测线上取到 1 / 3 / 4 / 6 / 8 / 10），`Reclaimable` 和 `Prio` 用的都是它；`train.GetJob` 回的是平台**存储值**（本账号四个任务实测提交 10 全部存成 35，配 `priority_level: HIGH`）。两者之间没有验证过的换算——四个数据点只覆盖一档，所以 CLI 不做反查，`job status` 原样回显存储值并同时给出 `priority_level`，那一列才是可解读的部分。
+  **`Prio` 和 `job status` 里的优先级不是同一刻度。** 维度行给提交值，`Reclaimable` 和 `Prio` 使用它；`train.GetJob` 回平台内部存储值并另带 `priority_level`。两者没有公共换算合同，CLI 不做反查。
 
-- 后台补 Workload 名字改成增量：只读列表最新的那一头（平台按创建时间倒序返回，`job` / `hpc` / `tensorboard` 已逐一实测），读到一页全是已知的就停，而且**只合并、不对账**。此前每 5 分钟把 10 个 Workspace 里全部 1458 个历史任务重新拉一遍，只为了缓存名字——一趟 6.3 MB，折合每小时 76 MB。现在这一趟 86 个请求 / 35.8 s / 8 MB → **70 个请求 / 5.3 s / 2.1 MB**。
+- 后台补 Workload 名字改成增量：只读按创建时间倒序列表的最新部分，读到一页全是已知项就停，而且**只合并、不对账**。不再为了缓存名字周期性重拉每个 Workspace 的完整历史目录。
 
   后台因此永远不会删掉缓存里的行。平台那边消失的任务靠 TTL 自己掉出去——没人再刷新它的 `expires_at`，5 分钟后就查不到了；用 CLI 删的当场打墓碑。代价是「网页上删掉的任务名还能解析 5 分钟」，而完整对账（能立刻清掉平台不再列出的行）改成只有手敲 `cache refresh` 时才做。冷缓存不受影响：`known` 为空时增量那一趟本来就会一直翻到 `total`，第一次仍然是完整的。
 
@@ -286,35 +286,34 @@
 
 - `serving create` 回显的镜像引用把 tag 拼了两遍：`sandbox-base:ubuntu24.04-py3.12-1.0.0:ubuntu24.04-py3.12-1.0.0`。`ImageInfo.name` 对平台发布的镜像本来就带着 tag，代码又接了一次 `version`。创建本身没坏（请求体走的是 `mirror_id`），坏的是 `--dry-run` 和 `--json` 报出一个解析不到任何东西的引用——而那正是有人会抄进脚本的那个字符串。
 
-- `cache refresh --resource model` 把 9 个 Workspace 上挂了两天的陈年错误清掉了（底层那个 `page_size=-1` 的 bug 早已修好，只是每个 Workspace 要各自刷一次才清）。没有代码变更。
 
 - `cache status` 不再把「刷新过、在有效期内、却一个名字都拿不出来」印成 `ready`。这正是配额目录出事时的状态——每个 `create` 都被拒，而看板显示的是最健康的那一档，故障因此完全看不出来。现在这种资源报 `empty`。判定只按整个资源画，不按单个 Scope：一个 Workspace 里没有 Notebook 是正常的，按 Scope 判会对几乎每个账号误报。
 
 - `job shell` 从 `/api/v1/train_job/remote_cmd` 迁到 `/api/v2/train_job/remote_cmd`，这是最后一处非自举的 v1 依赖，边界测试的白名单因此只剩 `session/auth.py` 一条。此前留着的理由写的是「v2 没有任何 Action 暴露 shell」——对 Action 成立，对 `/api/v2` 不成立：PTY 走的是网关 REST 形状的那一半，不带 `?Action=`，所以按 Action 名做的清单一直把它报成不存在。用一个 1 卡低优的一次性任务实测：v1 与 v2 各握一次手、各发一条 `echo`，**两边逐字节相同**（各 45 字节），验完即删。等价所以不留回落。
 
-- **`<workload> quota` 和每一个 `create` 会因为一份空缓存全线报「没有配额」。** 实测 `job quota` 在全部三个工作空间返回 `No quota rows found.`，而平台侧行都在——也就是说 CLI 建不出任何 Workload。根因在 `CachedPricesLoader`：Scope 只要标着「已完整刷新」，读到的记录哪怕一条没有也照样当答案，于是每个计算组都权威地回空。真实触发是 Scope 键变过之后遗留的 150 条记录读不到，而 Scope 仍标着完整。
+- **`<workload> quota` 和每一个 `create` 不再把空缓存当成「没有配额」。** Scope 标成完整但实际没有任何行时，读取侧改为 miss 并回落 Live；单个 Compute Group 的权威空结果仍保留，因为它表示该组不支持对应 Workload。
 
   整份目录一行都没有不是工作空间的回答，是缓存出了事故，现在读作未命中并回落 Live。**单个计算组的空依旧权威**——那是「这个组不跑这类 Workload」的正常事实。代价是真的一行配额都没有的工作空间每次要按组回源，这一侧值得错：多几个请求，换的是不会有一个建不了东西的 CLI。已用真实缓存复现：同一个坏状态下未修复版报空、修复版正常。
 
-- 镜像目录按 Registry 读一次，不再按 Workspace 各读一遍。`registry_hint: {workspace_id}` 指的是一个 Registry，不是一份按 Workspace 切分的目录，多个 Workspace 正常共用同一个：实测本账号 10 个 Workspace 只有两份目录，7 个用 `qbHarbor`、3 个国产卡空间用 `sjHarbor`，组内 `image_id` 集合逐字节相同。此前后台每轮把那份约 5400 个镜像的目录重复下载 7 遍——一轮完整刷新 51 MB 里的 42 MB、120 s 里的 68 s 都是它。现在先用一行探针（`page_size: 1`，读响应里的 `registry_id`，约 80 ms）问出每个 Workspace 属于哪个 Registry，同一个 Registry 只读一次：`image` 一轮 30 个请求 / 42.0 MB / 82.9 s → 16 个请求 / 6.2 MB / 11.8 s。探针答不出来的 Workspace（Registry 里一个公开镜像都没有）照旧单独读，绝不会被当成和别人同一份。
+- 镜像目录按 Registry 读一次，不再按 Workspace 重复读取。`registry_hint: {workspace_id}` 是 Registry 路标；CLI 先用最小探针读取 `registry_id`，相同 Registry 只拉一次完整目录，无法识别的 Workspace 保持独立读取。
 
-  `inspire image --help` 此前写着「An image saved by `notebook save-image --workspace X` is only visible under `--workspace X`」，这是错的：同一个 Registry 上的任何一个 Workspace 都看得到它。真正会挡住人的是 Registry 边界，而这条线基本沿着卡的类型走——国产卡空间和 NVIDIA 空间读的是两份不相交的目录。
+  `inspire image --help` 同步修正：镜像对同一 Registry 上的 Workspace 可见，真正的边界是 Registry；目标 Workspace 到 Registry 的映射始终从 Live 目录解析，不按硬件或专属空间名称写死。
 
 - 测试不再读取真实用户配置目录下的 `~/.inspire/` 名称索引。名称解析测试现在由 conftest 的 autouse fixture 统一重定向到临时目录，结果不再受本机缓存内容和 TTL 影响。
 
-- 每次 HTTP 请求不再新建一个 `requests.Session`，连接因此能复用。此前 `_request_json_once` 每次调用都 `build_requests_session(...)`，用完 `finally: http.close()`，于是每一个请求都要重新建 TCP 连接、重新握手 TLS——走本地 SII 代理连 `qz.sii.edu.cn` 实测每请求约 300 ms，复用连接后约 30 ms。平常一条命令察觉不到，但 Name 缓存把很多操作变成了扇出（Quota 目录每个计算组一次、镜像每个 Workspace 三次、后台刷新一轮几百次），这一项就变成了主要开销。同一份完整的后台刷新，实测网络时间 201.5 s → 97.2 s、整体 202.8 s → 120.4 s；扣掉本来就是传输量瓶颈的镜像，单请求 397 ms → 91 ms。共享的只有连接池，Cookie / Header / 代理设置每次调用照旧重设，所以刷新过 Session 之后不会拿旧凭据作答；需要自己 `close()` 的调用方继续用 `build_requests_session`。
+- 每次 HTTP 请求不再新建 `requests.Session`，改为线程内复用连接池，避免反复建立 TCP/TLS。Cookie、Header 和代理设置仍按请求重设，刷新 Session 后不会复用旧凭据；需要独立生命周期的调用方继续使用 `build_requests_session`。
 
-- `cache refresh` 的 `model` 刷新一直在失败，而且每 5 分钟重试一次。它是唯一给 `ListModels` 传 `page_size=-1` 的调用点，而这个 Action 不像 `ListImages` / `ListLogicComputeGroups` 那样接受「-1 表示全要」，回的是 `InvalidParameter: page or page_size invalid`。失败不推进 `last_full_refresh_at`，于是这个 Scope 在「够不够新」这个问题下永远是 due，后台每次醒来都对 10 个 Workspace 各试一次——本机这个账号已经这样白跑了两天多。现在按 `total` 翻页，`list_models()` 的默认值也从注定失败的 `-1` 改成 100。
+- `cache refresh` 的 `model` 刷新不再给 `ListModels` 发送必然失败的 `page_size=-1`；该 Action 按 `total` 翻页，`list_models()` 默认使用正整数页大小。
 
 - 刷新引擎给每个 Scope 加了尝试节流：一个 Scope 两次**尝试**之间至少隔它自己的 TTL，无论上一次是成功、报错还是只读到一半。此前只看「读到的数据够不够新」，而报错和 incomplete 都不推进 `last_full_refresh_at`，所以坏掉的 `model` 每 5 分钟重试、被限流的 Quota 扇出也每 5 分钟重跑整个扇出——恰恰在平台正在推回来的时候跑得最勤。读侧不受影响：`scope_due()` 的语义没动，缓存不新鲜时该走 Live 还是走 Live。`cache refresh --full` 仍然能立刻强制。
 
-- 后台刷新按批量翻页，不再按界面翻页。五个 Workload 的 fetcher 都写死 `page_size = 100`，一个存了约 1400 个任务的 Workspace 因此每 5 分钟要 14 个来回；网关的上限是 `MAX_PAGE_SIZE` 且会自动收敛，所以调到 1000 只会更少请求、不会更少行。实测 `job` 一轮 24 → 11 个请求。
+- 后台刷新按批量页大小与平台 `total` 翻页，不再照界面的小页扫描历史目录；客户端页大小仍受各 Action 上限约束。
 
 - 打开索引时删掉全局资源类型上残留的按 Workspace 分区行。`project` 在 v7.0.0 前按 Workspace 存，之后 `scope_workspace_id()` 会把它的 Workspace 抹平，于是老库里那些带 Workspace 的 `project` 行既刷不到也查不到，只会让 `cache status` 多报几个 Workspace。和已有的「删掉本版本不认识的资源类型」同一处、同一个理由。
 
-- 配额目录从 `/api/v1/resource_prices/logic_compute_groups/` 迁到 v2 的 `resource-price?Action=GetLogicComputeGroupResourceSpecPrices`。这是挡在每一个 `create` 前面的那个请求——把 `-q 1,20,200` 翻成平台要的 `quota_id`，也是 `<workload> quota` 的数据源，此前是仅存的几处 v1 依赖里唯一一处在关键路径上的。此前判定「v2 没有对应物」是照 `/discovery` 下的结论，而 `resource-price` 整条路由根本不在 discovery 里——正是我们自己文档里写着的那个错误模式。两侧请求体相同、响应键相同：10 个 Workspace × 全部计算组 × 5 种 `schedule_config_type` 共 225 组比对，225/225 行集一致，字段集无差异。随之删掉最后一个 v1 转发助手。
+- 配额目录从 v1 迁到 `resource-price?Action=GetLogicComputeGroupResourceSpecPrices`。请求体与响应投影保持一致；CLI 删除最后一个 v1 转发助手，并继续用该 Action 解析每个 Compute Group 的 Live Quota 行。
 
-- `resources nodes` 的整节点空闲数不再把调度不上去的节点算进去。`resources availability` 的 `Free Nodes` 一直在排除 `cordon_type` / `is_maint` / `resource_pool=fault`，而同一份 `ListNodeDimension` 数据在 `get_full_free_node_counts` 里只判了 `status=READY` 且无任务——同一个「整节点空闲」在两处有两个定义，而 `resources nodes` 恰恰是提交多节点任务前用来看放不放得下的那个视图。实测这三个字段在现网真的会被置上（`CPU资源空间/HPC-可上网区资源-2` 436 个节点里 101 个带 cordon），只是目前被 cordon 的节点同时也不是 `READY`，所以暂时没有暴露成错数；判据现在收敛到一个 `_node_is_schedulable_and_idle`，两处共用。
+- `resources nodes` 与 `resources availability` 共用同一套可调度且空闲判据：`status=READY`、无任务、无 cordon、非维护、非故障池。两处不再对同一节点给出不同结论。
 
 ## v7.1.0
 
@@ -322,7 +321,7 @@
 
 - `inspire dataset list|show|validate`：数据广场（`aip.sii.edu.cn`）的目录、版本和挂载前校验。这是一个和启智并列的独立平台，只共用同一套 CAS SSO，控制台侧边栏的「数据集」就是外链过去的——启智那侧根本没有检索接口，只有一个把某个版本挂进容器的 `dataset.ValidateDataset`。CLI 用现有 Session 里的 CASTGC 走一次 CAS 握手换 `datasets-session`，纯 HTTP，不起浏览器。
 
-  **数据集用名字寻址，不用数字 ID。** 数据广场内部的 `datasetId` / `versionId` 拿去挂载会被拒为「数据集不存在」；认的是 `pixabay-81k` 和 `v0` 这样的 code。`list` 因此把名字当第一列，数字主键只留在 resolver 里；`show` 的每个版本行直接给出可粘贴的 `--dataset` 值和容器内路径。列表还给出 Access 一列：全平台 531 个数据集里有 106 个当前账号无权挂载，不先看这一列就会在创建时才撞上「无访问权限」，而申请权限只有网页端有入口。版本号不保证是 `vN`，`v1-br`、`2026-07-30`、`v3again` 都真实存在，不要按序号猜。
+  **数据集用名字寻址，不用数字 ID。** 数据广场内部 `datasetId` / `versionId` 只活在 resolver；挂载使用数据集 code 与版本 code。列表的 Access 列来自当前账号 Live 权限，权限申请仍只在网页端完成；版本名不保证是 `vN`，必须从目录读取。
 
 - `notebook create`、`job create`、`hpc create` 支持 `--dataset <数据集名>:<版本名>`，可重复。挂载点固定为 `/inspire/dataset/<数据集名>/<版本名>`，只读，不占项目共享盘配额，也不归 Path Alias 管。创建前平台会逐条校验并解析真实存储路径，任何一条不通就整体失败，不会先建出一个缺数据的 Workload。`ray` 和 `serving` 没有这个选项：平台直接拒绝该字段，网页端对应表单也没有这一项。
 
@@ -344,13 +343,13 @@
 
   **真正的收获是 `tags` 和 `scalars`。** board 的 `url` 不是内部路径，而是一个真的能打的 TensorBoard 应用，同一个 Session cookie 直接认，于是 `data/runs` 和 `data/plugin/scalars/*` 都能读成 JSON。Agent 因此可以自己建一个 board 指向训练目录，然后把 loss 曲线、eval 指标当数字读回来——首尾值、step 区间、最小最大值，`--points N` 再要最后 N 个点——不需要浏览器，也不需要有人替它去看一眼图。点按 step 排序而不是按 event 文件顺序，因为续训和多 worker 写出来的序列在文件里是交错的。
 
-  规格由平台固定成 1 CPU / 2 GiB，所以没有 quota 也没有镜像要选；唯一的放置输入是计算组，而且必须声明 `tensorboard`——`分布式训练空间` 里有几个训练组没有声明，CLI 在发请求前就挡下来。自动停机上限 72 小时。`create` 另外挡住两件平台会照单全收、但收完这个 board 就废了的事：不给名字（建出来的行 Name-only 的 CLI 再也指不到）和不给 summary 路径（建出来什么都读不到）。
+  TensorBoard 规格由平台固定，因此没有 Quota 或镜像选项；计算组必须在 Live `support_job_type_list` 中声明 `tensorboard`。自动停机上限来自平台合同。`create` 还拒绝缺名字或 summary 路径，避免创建 Name-only CLI 无法寻址或没有数据源的对象。
 
 - `inspire dataset tags`：列出 `dataset list --tag` 接受的全部 52 个标签及其所属模态。标签名是固定的中文词（`视频生成`、`具身智能`……），猜不出来，此前唯一的发现路径是故意填错一个再去看报错里的候选。
 
 - `inspire hpc logs`、`inspire serving logs`、`inspire ray logs`：补齐「每种 Workload 都能读到程序输出」这条线上最后三个缺口——此前只有 `job logs`，HPC、Serving 和 Ray 的容器输出在 CLI 里根本看不到。三条命令与 `job logs` 共用同一套记录与字符预算（默认 100 条 / 16,000 字符）和同一份 `--json` schema，实例筛选一律用 `instances` 已经在打印的角色/序号而不是被 `scrub_raw_ids` 洗过的 pod 名。平台侧有三个坑：日志端点的实例名要带命名空间（HPC 裸名报「expect 1, but got 0」，Ray 干脆静默回空）；`page_size=N` 保留的是**最旧**的 N 条，所以「最后 N 条」必须先取满窗口再在客户端截尾；时间窗超一个月平台答 `InternalError`，而这个码在瞬时错误名单里，不在客户端 clamp 就会先白烧三次退避重试再抛出一条看着像平台故障的错。
 
-- `inspire resources usage --workspace <名字> [--by user|project|task] [--mine]`：共享集群上「卡被谁占着」此前从 CLI 完全看不出来——`resources availability` 只回答「还剩多少」。现在按用户、项目或任务报出存活工作负载持有的 GPU / CPU / 内存，以及其中有多少真的在忙（`gpu.used` 是死字段恒 0，`usage_rate` 才是活的）。平台的 `ListProjectDimension` 在 10 个可见工作空间上全部返回空，是权限地板而不是 scoping 写错，所以按项目聚合改在客户端折叠任务维度的行；`--mine` 走 `ListUserDimension`，它只答调用者自己的行。
+- `inspire resources usage --workspace <名字> [--by user|project|task] [--mine]`：按用户、项目或任务报告存活工作负载持有的 GPU / CPU / 内存。`gpu.used` 不可用，利用率读 `usage_rate`；`ListProjectDimension` 对普通成员不是权威来源，因此项目聚合由客户端折叠任务维度，`--mine` 使用 `ListUserDimension`。
 
 - `inspire resources policy --workspace <名字>`：报出每类 Workload 的空闲回收规则与运行时长上限。第二天回来发现 Notebook 没了、任务在某个时刻被杀，此前只能猜；这些都是平台明确声明过的配置，只是从来没接进 CLI。AND/OR 条件按原样呈现而不是拍平，Serving 的规则按 GPU 档位逐条给。平台在部分工作空间对 HPC 返回字面量 `null`，渲染成「未声明」而不是「无限制」——那两者是相反的结论。
 
@@ -370,7 +369,7 @@
 
 - `inspire dataset applications`：只读查看数据集权限申请与待我审批的条目，状态显示为可读词。提交与审批仍然只在网页端——那两个动作会以你的名义触达真人审批者，CLI 不接。
 
-- `<workload> quota` 新增 `Priority` 列，`job` / `notebook` / `serving` 的 `create` 在提交前拒绝该档位不接受的优先级。平台在工作空间的调度记录里逐档声明 `allowed_priority_levels`——训练区的 1/2/4 卡是 `["low"]`，8 卡满节点不限——此前 CLI 把这四档平等地列出来，用户按 `--priority 4` 提交要等平台拒绝才知道，而拒绝理由看不出与优先级有关。这条知识以前是一段按组名里有没有「训练区」三个字来推断的硬编码提示，现在改成读平台，那段提示已删除。
+- `<workload> quota` 新增 `Priority`，`job` / `notebook` / `serving create` 在提交前拒绝 Quota 行不接受的优先级。限制直接读取平台的 `allowed_priority_levels`，不再根据 Compute Group 名称或 GPU 数量硬编码。
 
   三种状态严格区分：`any`（平台声明不限）、`low`（只能低优先级）、`unknown`（菜单没读到）。**读不到不等于不限**，所以 `unknown` 既不显示成 `any`，也不阻断创建——一次平台抖动不该让一个可用的配额看起来不可用。
 
@@ -390,13 +389,13 @@
 
   这条推翻了仓库里一条记错的事实：`ray.ListJobEvents` 的 `filter` **是有效的**，此前记的「没有 `object_type`，传了返回 `参数错误`」在真实任务上不成立（拿不存在的任务去探，平台先答 `ResourceNotFound`，看不到字段层的真相）。为定论专门建了一个最小 CPU Ray 集群（1 CPU / 4 GiB，head + 1 worker），量完即 `stop` + `delete`。顺带发现事件时间戳只到秒，同一容器的 `Pulled` / `Created` / `Started` 常常同秒、而平台的同秒次序还随 filter 变，所以排序加了 `id` 作 tiebreaker——否则「倒着取一屏再翻回来」会把因果顺序翻反。
 
-- `inspire resources node-events <节点名>...`：**唯一按节点而不是按工作负载组织的事件源**。工作负载的 Events 只说平台对这个任务做了什么，说不了机器本身发生了什么——内核 OOM kill（`kernel-monitor` 上报的 `TaskHung`、`Memory cgroup out of memory`）、Cordon / Uncordon、`Rebooted`、`InvalidDiskCapacity`、`NodeNotSchedulable`。「同一台机器上反复失败」此前在 CLI 里没有任何可查的东西，实测一台 4090 上有 149 条、一台 HPC 计算节点上有 88 条 Warning。
+- `inspire resources node-events <节点名>...` 增加唯一按节点组织的事件源，覆盖内核 OOM、Cordon / Uncordon、重启和不可调度等信号；输出不记录某台机器当时的事件数量。
 
-  `cluster.*` 这条路由对普通成员基本全是 `AccessForbidden`，**这个 Action 是例外**，本账号读得通。契约有三处得记住：`filter.node_names` 事实上必填（不给 filter 答 `total: 0`，读起来像「集群很安静」而不是「你什么都没问」）；行里的类型字段叫 `event_type` 而不是别处的 `type`，共享渲染与 `--type` 过滤都在一个地方吸收这个差异；平台声明的 `start_last_timestamp` / `end_last_timestamp` 时间窗答 `InternalError`，所以时间收窄留在客户端。节点名不认识时回空列表而不是报错，因此帮助里明说「查不到不等于机器没问题，先核对拼写」。
+  `cluster.ListNodeEvents` 是普通成员可读的节点事件例外。`filter.node_names` 实质必填；行类型键是 `event_type`；平台时间窗字段不可靠，因此时间过滤留在客户端。未知节点返回空列表，所以空结果前仍要核对名称。
 
 ### 破坏性变更
 
-- **`inspire project` 整组不再接受 `--workspace`。** 项目根本不按 Workspace 划分：`ListProjects` 不带 `workspace_id` 就是全局目录，`GetProjectDetail` 只认项目自己的 id，那个 `--workspace` 是个过滤器却被写成了 `required=True`。实测这个账号全局 4 个项目，扇出 10 个 Workspace 拿回来的还是同样 4 个——扇出唯一多产出的是一列 `Workspace`，而它是靠「逐空间查一遍看谁答得出来」反推的（全局调用里 `space_list` 是空的），10 个请求换一列截断到看不清的文字。现在 `project list` 一次调用给出全部项目，`Workspace` 列随扇出一起删除；`project detail <名字>` 直接寻址，名称候选也从全局目录取——按 Workspace 收窄只会把一个在别处可见的项目报成「找不到」。
+- **`inspire project` 整组不再接受 `--workspace`。** Project 是全局对象：`ListProjects` 可不带 Workspace，`GetProjectDetail` 只认项目本身。列表和详情现在从全局目录一次解析，不再跨 Workspace 扇出反推可见性。
 
 - **`--workspace all` 收敛到「按名字找东西」这一类。** 还接受扇出的只剩 `<workload> list`（`job` / `notebook` / `hpc` / `ray` / `serving` / `model`）和 `account permissions`——不知道东西在哪个 Workspace 时，本来就没法先给出空间名。`resources availability` / `resources nodes`、`<workload> quota`、`serving configs` 一律改为要一个 Workspace 名字（本轮新增的 `resources policy` / `resources usage` 从一开始就按这条规则发布）：档位目录、计算组余量、回收策略、部署配置面和当前占用都是按 Workspace 定义的事实，扇出不会多回答一个问题，只会把逐空间的行拼起来再按输出预算截断，把「前 N 名」悄悄变成「最先枚举到的那个空间的前 N 名」。随之删掉的还有只为扇出存在的 `Workspace` 列与 `show_workspace` 分支，以及 `get_accurate_resource_availability` 的 `all_workspaces` 参数和它的多空间目标解析。
 
@@ -422,7 +421,7 @@
 
 ### 变更
 
-- **`inspire update` 会扫掉旧版本留下、当前版本已经不读的本地状态。** 停用某个状态文件的那个版本没法在退场时删掉它——知道它存在的代码正是被删掉的那部分——于是这些文件会永远留在 `~/.inspire` 下。本机实测积了五处：`jobs.json.legacy`、`.environment-normalized-v3`、`events/`（34 个文件、956K）、`accounts/<n>/project_list.json`、`accounts/<n>/config.toml.bak-7897`，当前代码里没有一行读它们。
+- **`inspire update` 会清理旧版本留下且当前版本不再读取的本地状态。** 清单只含明确废弃且无消费者的 legacy 标记、事件缓存、旧项目列表与安装备份，不触碰账号凭据或当前项目资产。
 
   新增的 `inspire/accounts/state_inventory.py` 是当前版本拥有哪些路径的唯一声明，`update` 拿它和磁盘对账。写了新状态文件却忘了在这里登记，它就会被报成孤儿并提议删除——吵闹但可恢复，好过无声累积。删除前必然先打印清单：交互模式下询问，`--yes` 跳过询问，`--json` 和后台每日检查只报告不删除（前者没有可回答的人，后者没有人）。已经是最新版时 `update` 照样扫，所以它也是随时手动跑这件事的入口。`metrics/` 里的图是用户明确要过的产物，不参与清扫。
 
@@ -474,7 +473,7 @@
 
 - **镜像的 Visibility 一栏读的是 `source`，不是 `visibility`。** 这两个字段都在每条镜像记录里，含义完全不同：`source` 是镜像被构建进哪个 registry 命名空间，`visibility` 才是谁能看见它、才是 `set-visibility` 写的那个字段、也才是 `--source public` / `--source private` 实际筛选的依据。从 Notebook 存出来的个人镜像一律是 `SOURCE_PUBLIC` + `VISIBILITY_PRIVATE`，于是 `image list --source private`（网页端「个人可见镜像」）把整张表的 Visibility 全标成 `public`——正好和事实相反。`image list`、`image detail` 和 `notebook save-image` 的回读现在都取 `visibility`；官方镜像自己没有这个字段，仍按 `source` 认。
 
-- **`image list --source` 少了一整类：网页镜像选择器有四个页签，CLI 只有三个。** 「项目可见镜像」（`VISIBILITY_PROJECT`）在 CLI 里既列不出来也设不了，`--source all` 也扫不到——`CPU资源空间` 里有 2 个这样的镜像，此前按名字根本解析不到。`--source` 增加 `project`，`image set-visibility` 和 `notebook save-image --visibility` 同步增加 `project` 一档。
+- **`image list --source` 补上项目可见目录。** `--source`、`image set-visibility` 和 `notebook save-image --visibility` 增加 `project`，`--source all` 现在覆盖网页选择器的四个可见性页签。
 
 - **在 `job shell` / 受限 Notebook 的 `notebook shell` 里敲 `exit`，远端 shell 结束了，本地进程永远不退。** 网关不会因为远端 shell 死掉就关连接——实测敲完 `exit` 之后 40 秒内既没有 close frame 也没有 EOF，一个字节都不再来，于是客户端一直阻塞在 `select` 上。唯一能脱身的是 `Ctrl+]`，而它在任何一处 help 里都没写过。
 
@@ -484,7 +483,7 @@
 
 - **`job logs` 会打乱同一毫秒内的输出。** 平台的 `time` 是纳秒精度，`timestamp_ms` 是四舍五入到毫秒的；排序用的是后者，于是一次 `nvidia-smi --format=csv` 的表头和数据行并列成同一个键，日志存储怎么给就怎么印——实测数据行印在了表头前面，`ls` 的三行也被打散。现在按 `time` 的亚毫秒部分排序。
 
-- **`job quota` / `notebook quota` 把 Compute Group 一列截断到 28 列，而 `--group` 恰恰只认逐字相同的全名。** `分布式训练空间` 里 `开发区-H100-cuda12.8版本-119核` 和 `...-183核` 只差后缀，两条的 quota 三元组还不一样（`1,10,200` 对 `1,20,200`），在表里全都显示成 `开发区-H100-cuda12.8版本-...`，等于这张表印出来的值没一个能直接拿去用。该列改为按内容自适应宽度。
+- **Quota 表不再截断 Compute Group 名称。** 该名称是 `--group` 的精确输入，表格改为按内容自适应宽度，避免仅后缀不同的组显示成同一文本。
 
 - **`notebook create` 传了一个不存在的 `--project` 会打出完整 Python traceback。** `job create` 和 `hpc create` 早就是一行报错，只有 notebook 这条路径让 `ConfigError` 一路冒到顶层，43 行里 42 行是栈。
 
@@ -504,10 +503,10 @@
 
 - `notebook exec` / `notebook shell` 的 help 补上 SSH 型 Notebook 首次要跑一次 `connection refresh`：受限 H100/H200 走 JupyterTerminal 不需要任何准备，同一条命令在两类机器上的前置条件不同，此前只有 `scp` 的 help 写了这件事。
 
-- **`hpc create` 会提交一份 Slurm 规格，平台收下、返回 job id，然后什么都不跑。** 节点级（`slurm_cluster_spec`：买几个什么样的节点）和 Slurm 级（`sbatch_script`：程序怎么用这些节点）在平台上互不校验，**控制台也不校验**——它的「最大值」提示来自项目的单任务配额而不是所选规格，而且那几个输入框排在「选择规格」之前，结构上就没法比。受控验证（`CPU资源空间` / `HPC-可上网区资源-2` / `0,4,16`，12 个任务）测出三种形态：
+- **`hpc create` 现在交叉校验 Slurm 请求与节点规格。** `slurm_cluster_spec` 决定申请的节点，`sbatch_script` 描述程序如何使用节点；平台和控制台都不替客户端验证两者是否相容。
 
-  - `--cpus-per-task` 超过一个节点的核数（一个任务跨不了节点），或者单节点上所有任务的内存超过节点内存 → 任务跑约两分钟后 `FAILED`，**`hpc logs` 是空的、`hpc events` 只有正常的 Pod 生命周期，没有任何一处带上 sbatch 的拒绝原因**。
-  - 任务总数乘每任务 CPU 超过买下的节点总核数 → sbatch 反而**收下**，step 永远排在队里，平台一路报 `RUNNING`，直到 Workspace 自己的运行时长上限（该空间是 10 天）把它停掉。这就是「假装成功但一条命令都没执行」。
+  - `--cpus-per-task` 超过单节点核数，或单节点任务内存总量超过节点规格，会在提交后失败，且日志与事件可能没有 sbatch 拒绝原因。
+  - 任务总 CPU 需求超过全部节点容量时，sbatch 可能仍收下，step 长期排队而平台对象保持 `RUNNING`，直到目标 Workspace 的 Live 运行时限触发。
 
   现在这三条在提交前就被拒绝，报出算式和该改哪个参数。**默认值也一起改了**：`--cpus-per-task` / `--memory-per-cpu` 不给时按「一个节点上落几个任务」推导，此前是「一个任务独占整个节点」——于是只调 `--number-of-tasks` 而不动其它参数，必然造出上面第二种永久排队的任务。单任务单节点的默认值与此前逐字节一致。`hpc batch` 走同一个 resolver。
 
@@ -531,13 +530,13 @@
 
 - **`job events` / `hpc events` 的实例级事件此前混成一条没有署名的时间线。** 行里唯一指明来源的字段是 `object_id`——平台句柄，按设计不进输出——而公共投影把它丢掉了，于是范围一开到 `--all-instances`，拿到的是一堆看不出归属的 `FailedScheduling`，「哪个 Worker 没排上」恰恰在最需要它的场合答不出来。现在按实例查询时输出多一列 `Instance`（`--json` 里是 `instance` 字段），标识一律取各自 `instances` 已经在打印的那一个：`hpc` 是角色 / 序号（`slurmd`、`launcher`），`job` 是 Rank（`rank=0`）——训练 Pod 叫 `job-<uuid>-worker-0-0`，洗过之后是 `<redacted>-worker-0-0`，那正是 `job instances` 当初丢掉名字改用 Rank 的原因，事件不该再把它捡回来。实例表里认不出的 Pod 宁可不标，也不回退到句柄。工作负载级事件不带这一列，输出与此前逐字节一致。
 
-- **配额目录此前会丢掉大半计算组，原因是缓存主键漏了组。** 平台把同一档规格在多个组之间**复用同一个 `quota_id`**（分布式训练空间实测：9 个组、11 个不同的 `quota_id`，其中 7 个被 4–7 个组共用），而本地资源索引的主键里没有 `owner_id`，缓存行又是按裸 `quota_id` 存的。于是每个组写入时都覆盖掉前一个组的同名行，只剩最后一个写入者：索引里恰好 11 条 = 11 个不同的 `quota_id`，一条不多一条不少。
+- **配额目录缓存主键补上 Compute Group。** 同一个 `quota_id` 可以被多个 Group 复用；索引现在用包含 `owner_id` 的作用域保存，避免后写入的 Group 覆盖前者。
 
-  后果是实打实的：`训练区-H200-1号机房` 有 1368 张 H200，v1 也一直正常返回它的四档规格，但 CLI 既列不出也建不了——`--group` 指名道姓同样报「matches no quota row」。修法是让缓存键以计算组打头（真正的 `quota_id` 一直存在行的 payload 里，创建时回显的是那个，不受影响）。修复后索引从 11 条 / 3 组变成 32 条 / 8 组，与平台逐组返回的结果完全一致（第 9 个组 `gpu_total` 真的是 0）。
+  修复后缓存键以 Compute Group 为作用域；原始 `quota_id` 仍保留在行 payload 中用于创建。索引行集现在与平台逐组返回一致，包括保障额度为 0 但仍有可用规格的 Group。
 
 - `--quota` 匹配不到时，如果同时给了 `--group`，错误不再说「这个 workspace 没有配额」。行集那时已经被 `--group` 收窄过了，那句话把责任推给了错误的作用域；现在按实际作用域说话，并列出该组真实有的档位。
 
-- **私有镜像此前在整个 CLI 里都够不着。** 镜像是按 Workspace 的 registry 存的（每个 `ListImages` / `CreateImage` 都带 `registry_hint`），但读取一侧从来没有把 Workspace 当参数——它从当前 session 上取。这个账号的 session 默认空间恰好是一个空 registry，而 67 个自定义镜像都在另一个空间，于是 `image list` 报「没有镜像」，`job create --image <自己存的镜像>` 报「不在任何目录里」，**「把环境存成镜像再拿去跑任务」这条主动线是断的**。
+- **私有镜像读取补上 Workspace / Registry 作用域。** `ListImages` / `CreateImage` 都使用 `registry_hint`；读取侧现在显式传目标 Workspace，不再从 Session 默认空间隐式选择 Registry，保存镜像再复用的主动线恢复。
 
   修法是把 registry 所在的 Workspace 一路显式传下去：`list_images_by_source` 新增 `workspace_id` 参数，`image list/detail/register/set-visibility/delete` 新增**必填** `--workspace`（语义统一为「镜像 registry 所在的工作空间」），`resolve_image_url`（train / HPC 创建）、serving 与 ray 的镜像解析、以及 `notebook save-image` 存完之后回查镜像，全部改成传入各自已经解析好的目标 Workspace。CLI 层的解析函数把这个参数设成必填而不是留默认值——静默默认正是这个 bug 的成因。有一条测试扫描全仓，任何漏传的调用点都会失败。
 
@@ -579,19 +578,19 @@
 
   没有改成真正的跨空间聚合，是因为聚合完也没有对应的决定：配额和调度都按 Workspace 走，这个命令服务的三个动作（等、去找人要、换个地方提交）也都是。跨 Workspace 找地方本来就是 `resources availability` 和 `resources nodes` 的活，它们逐空间一行、拼接是诚实的。
 
-- **CLI 不提供读 Workspace 配额天花板的命令，这是量过之后的结论。** 10 个可见 Workspace 逐个实测：GPU 上限要么是 `unlimited`（4 个），要么是整个集群容量的两倍（`分布式训练空间` 10000/20000 对 5589 张卡、`CI-情境智能` 4236/8472 对 1536、`可上网GPU资源` 2894/5788 对 1438），要么是 0（`CI-PPU`、`专属资源开发空间`——那是「这个空间根本没有你的份」，不是配给）；CPU 和内存则处处 `unlimited`。也就是说这条命令唯一有意义的那一列「配额余量」永远要么是 `-`，要么是一个比整个集群还大的数，**先耗尽的永远是硬件**——`QUOTA_PENDING` 不会因为这个天花板发生。Workspace 级汇总也答不出提交决定：任务是提交到某个计算组的，`resources availability` 给的按组余量严格更可用。结论写进 [`resources.md`](references/resources.md)；`workspace.GetWorkspaceQuota` 与 `GetWorkspaceComputeResource` 两个 Action 因此没有 CLI 消费者，对应的 `WorkspaceQuotaUsage` / `get_workspace_quota_usage` / `UNLIMITED_QUOTA` 一并从 `browser_api.workspaces` 删除。
+- **CLI 不提供 Workspace 配额天花板命令。** 创建决策需要具体 Compute Group 的 Live Quota Row 和实时容量；Workspace 汇总不能回答目标组是否能提交，用户级与项目级限制又属于管理员视图。相关无消费者的汇总模型和 Wrapper 已删除。
 
-- 手册补上「资源能留多久」和「谁能起高优」这两条一直只在 CLI help 里的规则。`inspire resources policy` 此前只有命令自己的 help 提过，手册里从头到尾没有出场，于是空闲回收在文档里只是「回收策略」这四个字；现在 [`resources.md`](references/resources.md) 说明它逐行给出的 `Reclaim` / `Idle Rule` / `Time Limit` 各是什么，并点明触发条件是 GPU 利用率而不是有没有人连着（`分布式训练空间` 实测：Job「GPU 低于 40% 持续 3 小时」，Notebook「GPU 低于 15% 持续 3 小时，或运行超过 18 小时」），`-` 是「没声明策略」而不是「没有限制」。[`notebook.md`](references/notebook.md) 的 `--auto-stop` 段和 [`compute-workloads.md`](references/compute-workloads.md) 的 Job 边界各自指过去——夜里挂着不吃卡的 Notebook 第二天不在了，是规则生效不是故障。
+- 手册补上 `resources policy`：`Reclaim` / `Idle Rule` / `Time Limit` 解释平台当前返回的回收与运行时限；触发值必须从目标 Workspace Live 读取，`-` 表示未声明策略而不是没有限制。
 
-  优先级那一半的问题是位置错了：`1=LOW` / `4=HIGH` 的公平调度合同只写在 `compute-workloads.md` 的 GPU Job 一节，而 `SKILL.md` 把「优先级」路由到 `resources.md`，于是那边只能读到一句没有前提的「公平调度 Workspace 里就是 `--priority 1`」。合同移到 `resources.md`，Job 一节留一行摘要并指过去。同时把 `分布式训练空间` 的实际形状写成表：开发区四档全部不限，训练区 1 / 2 / 4 卡只调度低优先级、只有 8 卡整节点才不受限——要一个不会被抢占的小规格任务就去开发区，在训练区想拿高优先级只能整节点起。`--priority` 的 help 也补上一句指向 `<workload> quota` 的 `Priority` 列，此前它只讲两套合同和项目封顶，逐行限制要等到创建预检才知道。
+  优先级合同集中到 `resources.md`，Job 文档只保留摘要；逐 Quota 行限制统一以 `<workload> quota` 的 `Priority` 列为准，不再记录某个 Workspace 当时的 Group / GPU 映射。
 
-- Browser API 文档重写。`references/dev/browser-api-v1.md` 和 `browser-api-v2.md` 被删除，替换为三份可独立阅读的参考：[`browser-api.md`](references/dev/browser-api.md)（请求契约、响应信封、认证与 Session、分页、Workspace scoping、错误码、探针方法、仍在用的 v1 端点、回落纪律、输出边界、变更验收）、[`browser-api-actions.md`](references/dev/browser-api-actions.md)（12 条路由 93 个 Action 的请求体、响应键、参数语义、CLI 映射与限制，加上五个创建 Action 的字段合同）、[`data-plaza-api.md`](references/dev/data-plaza-api.md)（数据广场是另一个平台，独立成篇）。
+- Browser API 文档重写并合并为当前维护参考：请求契约、响应信封、认证、分页、scoping、Action 表、创建合同、数据广场与验收规则集中在 `references/dev/browser-api.md`；不再用固定 Action 数量描述接口面。
 
   旧的两份是按迁移顺序累积的工程日志：v1 那份的「当前公开命令映射」有十行只写着「全部已迁 v2」，v2 那份把契约、踩坑记录和迁移复盘混在同一节里，而两份都必须对照才能读懂任何一条。新文档按「维护者要查什么」组织，不再记录迁移过程；已废弃的 v1 域一并移除，只保留四处仍有消费者的 v1 端点及其保留理由。
 
   随后接入这一批 Action 时，实测又推翻了文档里三处说法：**字段存在性探针会被资源 id 静默废掉**——网关的鉴权中间件在严格 proto 解析之前先读一遍资源键，读不到对象就直接返回，于是 body 里的未知字段根本没被解析，探针给出的「这个字段在合同里」是假的（`ray.GetJobLog` 上四路对照可复现，它让 `ray_job_id` 看起来在合同里，其实不在）；**网关对字段名的大小写和下划线不敏感**，`ImageId` / `image_id` / `Image_Id` 落到同一个字段，所以旧文档那套「同一个标识符三种拼法」的陷阱只剩 `image.UpdateImage` 要裸 `id` 这一处真的存在；**discovery 的响应声明只有最外层的列表键和 total 不可信**，元素内部的属性名是准的。另外把 `workspace.GetScheduleConfig` 归入管理员专用（它与各 Workload 路由下的同名 Action 只是重名），并补上 12 个新接入 Action 的请求体、响应键与限制，Action 总数 93 → 105。
 
-  重写时对着 `browser_api/` 逐个 Wrapper 和一份现取的 `/discovery`（`Version = e1daec0f`，11 个 Service / 175 个 Action）核了一遍，修正了三处旧文档的错误：登录握手仍在用 `/api/v1/user/detail` 和 `/api/v1/user/routes/default`（v2 的 `GetRoutes` 要一个真实 `WorkspaceId`，登录时还没有），此前被漏记成「账号与用户全部已迁 v2」；`workspace.GetWorkspaceQuota` 与 `GetWorkspaceComputeResource` 现在在 discovery 里，此前记的是「两者都不在」；discovery 声明的**响应**结构与线上不符（声明 `Items` / `TotalCount`，实际是 `jobs` / `list` / `logic_compute_groups` 加小写 `total`），此前只说了参数不可信。另外如实标出 15 个有 Wrapper 和测试、但当前没有任何 CLI 命令调用的 Action。
+  文档改为对照当前 `browser_api/` 和 Live `/discovery`，记录字段解析、响应键与权限边界，不保留某次 discovery 版本、Service / Action 数量或无消费者 Wrapper 清单的快照统计。
 
 ## v7.0.2
 
@@ -651,7 +650,7 @@
 
 - 恢复 `inspire update` 面向用户的输出：逐步打印进度（检查更新 / 升级 CLI / 刷新 Skill / 校验安装 / 准备浏览器运行时）、列出刷新到的 harness，并打印新旧版本之间的更新摘要（取自 GitHub Releases，回退到 `main` 的 `CHANGELOG.md`）。v6.3.0 把这些一并降级成了 `--debug` 日志，只剩一行 `InspireSkill updated to vX`。诊断细节仍然只进 `--debug`：harness 只报名称不报本地路径，摘要过滤掉安装 / 构建类条目、URL 和绝对路径。`--json` 输出相应新增 `skills` 与 `release_notes` 字段。摘要条目会先合并硬换行的续行，不再从行尾截断成半句话。
 
-- Browser API 按域从 `/api/v1` 迁到 `/api/v2`：notebook、ray、train、hpc、inference_serving、model-hub、project、user、image、file，以及计算组、节点维度、组资源统计和五个 Workload 的 metrics。公开 CLI 合同不变——命令名、参数、Name-only 语义、human 与 JSON 输出都保持原样，写操作全部经过受控验证（在 `CPU资源空间` 起最小规格临时资源跑完整生命周期，train 的删除因为 CPU 组不支持该任务类型，在 `分布式训练空间` 用 1 卡 H100 验证后随即释放；镜像与模型注册各跑了一遍建→读→改→删；「存镜像」用最小 CPU 配额加最小官方镜像起了一个临时 Notebook，真提交出一个 196 MB 的镜像，全部痕迹随即清除）。两代接口的契约差异记在 `references/dev/browser-api.md`。
+- Browser API 按域从 v1 迁到 v2，公开 CLI 合同保持不变。写操作通过最小临时资源的完整生命周期验证，资源与中间镜像在验收后清理；参考只保留可复现的请求合同和行为结论。
 
   第二轮迁移推翻了第一轮的一个前提：**平台的 `/discovery` 清单是不完整的，不能用来否定一个端点有没有对应物。** 第一轮把 `/user/permissions`、`/user/routes`、`/project/list`、`/project/{id}`、`/project/owners`、`/file/*`、`/model_plaza/*`、`/image/create`、`/image/update`、`/model/create` 共 10 个家族判成「没有对应 Action」并保留 v1，依据都是「discovery 里查不到」。逐个实测下来它们全部有可用 Action，只是没被声明——`file` 和 `model_plaza` 连整个路由都不在清单里。判断一个 Action 是否存在只能靠空 body 探针（`InvalidAction` 才是不存在），路由是否存在只能靠 `404` 与 `InvalidAction` 的区别。
 
@@ -659,7 +658,7 @@
 
   - `/notebook/lab*` 与 Notebook Proxy——反向代理，要转发任意 HTTP 流量，整套 Notebook SSH 也架在它上面。v2 的 Action 模型装不下。
   - `/train_job/remote_cmd`——双向 PTY 流，同理。23 个候选名 × 5 条路由全部 `InvalidAction`。
-  - `/resource_prices/logic_compute_groups/`——**不是没有对应物，是换过去更贵**。它一次答完「这个组能选哪些规格」；v2 的 `workspace.GetScheduleConfig` 只给静态菜单，还要按组补 `GetLogicComputeGroupNodeSpecs`（规格得装得进组内机器）和 `GetLogicComputeGroupResource`（组得真有可分配容量）才能筛出同样结果——实测 9 个组从 9 次请求变 19 次，且等于在客户端维护一份平台调度端筛选逻辑的副本。完整规则与逐组验证记在 `references/dev/browser-api.md` 第 8 节。
+  - `/resource_prices/logic_compute_groups/` 当时保留的原因不是无对应物，而是 v2 需要组合调度菜单、节点规格与实时容量才能得到等价筛选；当前实现已改用 `resource-price` 的按组解析结果，避免在客户端复制调度筛选逻辑。
 
   平台用户中心的 SSH 公钥接口 `/ssh/*` 不在此列：它随 `inspire user ssh-keys` 一起下线后已无任何消费者，文档里那几行「留在 v1」是残留，一并删除。
 
@@ -667,7 +666,7 @@
 
 - `inspire notebook exec` 和 `inspire notebook shell` 走 Jupyter Terminal 时不再启动无头浏览器。那个浏览器只做三件事：取 lab URL、取 `_xsrf`、建/删 terminal。现在分别由 `notebook.GetNotebookAccessUrl`、一次普通 GET（`_xsrf` 本来就是个 cookie）和 `POST`/`DELETE api/terminals` 完成。交互式 shell 的会话本就跑在 Python WebSocket 上；`exec` 的抓取循环从页内 JavaScript 移植到 Python，协议未变（等 prompt、分块喂 stdin、见到 `<marker>:exit:<code>` 收工）。受控验证在 RUNNING 的 CPU Notebook 上完成，全程用 import hook 封死 `playwright` 包，退出码与多行输出都正确。
 
-  顺带说明一个容易误判的事实：`exec` 在该容器上端到端约 31 秒，其中 **27 秒是容器里内层 `bash` 在 source rc 文件**（`build_jupyter_exec_command` 的执行方式一直如此），与传输方式无关，老的浏览器路径同样要付这笔钱。
+  JupyterTerminal `exec` 的主要延迟来自远端 Shell 初始化而非传输方式；发布说明不固化某个镜像或容器的单次耗时。
 
 - Notebook 网关 URL 的解析不再默认起一个无头 Chromium：先问平台的 `notebook.GetNotebookAccessUrl`，拿不到才回落浏览器抓取。两者归一化后的结果**逐字节相同**，耗时 **0.57 秒对 6.4–36 秒**。收口在 `resolve_notebook_vscode_ide_url`，所以 `notebook proxy-url` 和 rtunnel 的 SSH 候选路径同时受益。`--refresh` 也走 API——它的语义是「别信缓存」而不是「一定要抓」；STOPPED 的 Notebook 上 API 返回空串，照旧回落浏览器。
 

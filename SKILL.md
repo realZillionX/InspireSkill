@@ -22,6 +22,8 @@ description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire C
 
 Live 查询是账号、Workspace、Project、Compute Group、Quota、Image 和资源可用性的事实源；本地缓存只是加速层，可用 `inspire cache status|refresh|clear` 管理，三条命令都接受 `--resource <kind>` 只针对一类，不能当作资源事实；`refresh` 不接受裸形式，必须用 `--resource` / `--workspace` / `--name` 说明刷哪一块，而且正常情况下不需要跑它。CLI 对 Agent 的稳定资源身份只有 Name 和 Alias；同名对象用 Workspace、可读候选和 `--pick` 消歧。
 
+通用文档只记录平台合同、当前 CLI 行为和长期有效的判断规则。某个账号可见的专属 Workspace / Registry 名称、当次目录数量、即时配额与价格、资源 ID、临时探针结果和待补验结论都不进入通用文档；这些事实随账号和时间变化，使用时从 Live 命令读取。受控验证只保留能够复现且直接约束实现的结论，不保留实验现场或过程统计。
+
 受限 H100/H200 Notebook 的 JupyterTerminal `exec` 不支持本地 stdin，远端命令的默认 stdin 是 `/dev/null`。Agent 不得对它使用 `--stdin` / `--bash-stdin`，也不得从本地用管道或 `< file` 向 `inspire notebook exec` 喂输入；尚未确认 Transport 时同样不要先试。CLI 会在 Transport 预检后、发送用户命令前拒绝这些组合。需要脚本或输入文件时，先把它放到 `/inspire/...`，再让远端命令用显式重定向或路径读取；需要人工交互时使用带 TTY 的 `inspire notebook shell`，不要把 `shell` 当作脚本输入通道。SSH Notebook 的 `exec --stdin` 不受此限制。
 
 发现类列表和 Batch 结果默认最多展示 20 项，用命令自身的 `--limit/-n` 收窄或 `--all` 显式展开；Job 日志默认有行数和字符预算，截断时会给出已展示数量和继续获取完整结果的选项。需要结构化输出时使用根级 `inspire --json ...`，输出始终是单一 JSON 文档。
@@ -81,4 +83,4 @@ Workspace 判断：
 
 | 需要什么 | 加载 |
 | --- | --- |
-| 请求契约、响应信封、认证与 Session、分页、Workspace scoping、错误码、探针方法、变更验收；13 条路由 115 个 Action 的请求体 / 响应 / 参数语义 / CLI 映射 / 限制；创建面字段合同；数据广场（`aip.sii.edu.cn`）的握手、信封与目录端点 | [`references/dev/browser-api.md`](references/dev/browser-api.md) |
+| 请求契约、响应信封、认证与 Session、分页、Workspace scoping、错误码、探针方法、变更验收；当前 CLI 使用的 Action 请求体 / 响应 / 参数语义 / CLI 映射 / 限制；创建面字段合同；数据广场（`aip.sii.edu.cn`）的握手、信封与目录端点 | [`references/dev/browser-api.md`](references/dev/browser-api.md) |

@@ -150,7 +150,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 全链路命令化：`create / batch / list / status / start / stop / delete / ssh / ssh-config / ssh-proxy / connection / exec / shell / scp / install-deps / proxy-url / path / quota / profile / metrics / events / lifecycle / save-image / cancel-save-image`。容器里部署好的服务用 `proxy-url --port` 拿到外部地址直接请求；`ssh-proxy` 是给 OpenSSH `ProxyCommand` 用的裸流转发，`ssh-config` 生成的配置里就指向它。
 
-把跑通的环境固化成镜像是 Notebook 自己的生命周期事件：`save-image` 会先报平台估算的快照体积（`--dry-run` 只估不存），保存期间该 Notebook 不可操作，中途要拿回来用 `cancel-save-image`——已经打出「等待推送」之后取消仍然生效。默认是在起点镜像上再堆一层，反复迭代的环境层数会一路累积，`--flatten` 把结果压成单层：实测**压平反而更小**（8 层 331.78 MB → 1 层 286.90 MB），多出来的时间落在镜像构建上而不落在 Notebook 上，两种保存都在同一时刻把容器还给你。
+把跑通的环境固化成镜像是 Notebook 自己的生命周期事件：`save-image` 会先报平台估算的快照体积（`--dry-run` 只估不存），保存期间该 Notebook 不可操作，中途要拿回来用 `cancel-save-image`——已经打出「等待推送」之后取消仍然生效。默认是在起点镜像上追加增量层，反复迭代会持续累积层数；`--flatten` 把结果合并成单层，适合固化基底或在多轮迭代后收敛镜像。估算值、最终体积和构建耗时随基底与改动内容变化，以本次命令和镜像状态为准。
 
 显卡不是 `H100` / `H200` 的 Notebook 可使用 OpenSSH / SCP / SSH Config；`H100` / `H200` 受限 Notebook 使用 JupyterTerminal 执行命令，文件流转以 `/inspire/...` 共享路径为边界，并通过支持 SSH 的 Notebook 使用 `notebook scp` 或外部 `rsync` 完成本地上传/下载。连接类命令会跨账号解析本地已缓存的 Notebook Connection，不要求先切 Active Account。
 
@@ -223,7 +223,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 `resources availability --workspace <name> --include-cpu` / `resources nodes --workspace <name>` / `resources usage --workspace <name>` / `resources policy --workspace <name>` / `<workload> quota --workspace <name>`：定位一个 Workspace 里哪个计算组有空，支持透支式申请。`<workload> quota` 回答「有哪些合法档位」，`availability` 回答「这些档位现在还有没有空」，`usage` 回答「余量去哪了、其中哪些能抢回来」——它的 `Reclaimable` 列是持有者手里有多少卡落在以可抢占优先级提交的任务上，`--group <关键词>` 把这个判断收窄到任务真正提交进去的那个计算组，`policy` 回答「拿到手能留多久——空闲多久被回收、有没有运行时长上限」。
 
-`<workload> quota` 的 `Priority` 列还给出这一行接受哪些任务优先级：`分布式训练空间` 的训练区碎卡档只调度低优先级（可被抢占），整节点档才不受限，创建时 CLI 按这一列先做预检，不用等平台拒绝；`Points/h` 列给出这一行每实例每小时烧多少点券——只有 GPU 计费，CPU-only 的行一律是 `0`，而 GPU 按卡型定价（实测 H100 / H200 是 1 点券/卡/小时，4090 是 0.33）。
+`<workload> quota` 的 `Priority` 列给出每一行接受的任务优先级，创建时 CLI 会据此预检，不用等平台拒绝；`Points/h` 列给出该行每实例每小时的 Live 点券成本。优先级限制和价格会随 Workspace、Compute Group、硬件与平台策略变化，不在文档里固化某个目录当时的数值。
 
 这些命令一律一次只看一个 Workspace——档位、余量、回收策略和占用都是按 Workspace 定义的事实，跨空间扫一遍答不出任何一个可执行的决定；还接受 `--workspace all` 的只剩「按名字找东西」那一类（`<workload> list` / `account permissions`），因为不知道东西在哪个空间时本来就给不出空间名。
 
@@ -238,7 +238,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 `image list / detail / register / set-visibility / delete`，创建 Notebook、Job、HPC、Ray 或 Serving 时显式传 `--image`；`hpc create --image-type` 明确可见性。
 
-镜像存在 Registry 里而不是 Workspace 里，**多个 Workspace 正常共用同一份 Registry**——这一组都要 `--workspace`，因为那是平台唯一的指定 Registry 的方式，它是路标不是分区，所以 `notebook save-image --workspace X` 存出的镜像在同一个 Registry 上的每个 Workspace 里都看得到。真正会挡住人的是 Registry 边界，而这条线基本沿着卡的类型走：国产卡空间和 NVIDIA 空间读的是两份不相交的目录。一个 Registry 动辄几千个镜像，用 `image list --keyword` 按名字搜；`--source all` 会并发读取四个可见性目录，再按固定页签顺序合并。
+镜像存在 Registry 里而不是 Workspace 里，**多个 Workspace 正常共用同一份 Registry**——这一组都要 `--workspace`，因为那是平台唯一的指定 Registry 的方式，它是路标不是分区，所以 `notebook save-image --workspace X` 存出的镜像在同一个 Registry 上的每个 Workspace 里都看得到。不同硬件域或专属空间也可能指向互不相交的 Registry；用目标 Workspace 的 Live `image list --keyword` 搜索，不维护静态映射。`--source all` 会并发读取四个可见性目录，再按固定页签顺序合并。
 
 把跑通的 Notebook 固化成镜像不在这一组——那是 Notebook 的生命周期事件，走 `notebook save-image`。可见性有 `private` / `project` / `public` 三档，**改成 public 是单向门**：之后既删不掉也改不回私有，只有平台管理员能清理。
 
@@ -258,7 +258,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 `inspire dataset list / show / tags / validate / applications`：数据广场是和启智并列的独立平台，只共用同一套 SSO，启智那侧没有检索接口。CLI 用现有登录态走一次 CAS 握手，直接检索目录、读版本、看当前账号有没有挂载权限。
 
-确认后在 `notebook / job / hpc create` 上用 `--dataset <数据集名>:<版本名>` 只读挂载到 `/inspire/dataset/<数据集名>/<版本名>`，创建前平台逐条校验，不会先建出一个缺数据的 Workload。数据集用名字寻址，数据广场内部的数字 ID 拿去挂载会被拒。`--tag` 认的是固定中文词，全量用 `dataset tags` 列（52 个，分属五种模态），猜不出来；没有挂载权限时申请仍然只在网页端，但 `dataset applications` 能读到申请走到哪一步。
+确认后在 `notebook / job / hpc create` 上用 `--dataset <数据集名>:<版本名>` 只读挂载到 `/inspire/dataset/<数据集名>/<版本名>`，创建前平台逐条校验，不会先建出一个缺数据的 Workload。数据集用名字寻址，数据广场内部的数字 ID 拿去挂载会被拒。`--tag` 认的是目录当前返回的中文标签，全量用 `dataset tags` 列，猜不出来；没有挂载权限时申请仍然只在网页端，但 `dataset applications` 能读到申请走到哪一步。
 
 </details>
 
@@ -363,7 +363,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 - [`references/workflows.md`](references/workflows.md)：CPU 准备、数据处理、分布式训练三阶段项目流程。
 - [`references/image.md`](references/image.md)：镜像职责、保存 / 注册边界、可见性和清理原则。
 - [`references/model.md`](references/model.md)：Model Registry 与 Serving 的职责边界、注册限制和版本判断。
-- [`references/dev/browser-api.md`](references/dev/browser-api.md)：CLI 维护参考，唯一一份接口文档——请求契约与信封、认证与 Session、分页与 scoping、探针方法、13 条路由 115 个 Action 的逐条参数与响应表、创建面字段合同、数据广场（`aip.sii.edu.cn`）与变更验收。
+- [`references/dev/browser-api.md`](references/dev/browser-api.md)：CLI 维护参考，唯一一份接口文档——请求契约与信封、认证与 Session、分页与 scoping、当前 CLI 使用的 Action 参数与响应表、创建面字段合同、数据广场（`aip.sii.edu.cn`）与变更验收。
 - [`CONTRIBUTING.md`](CONTRIBUTING.md)：开发、测试和贡献约定。
 - [`cli/`](cli/)：CLI 源码；入口 `cli/inspire/cli/main.py`。
 - [`scripts/install.sh`](scripts/install.sh)：Curl Pipe Bash 安装器。
