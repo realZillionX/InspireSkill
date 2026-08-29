@@ -58,7 +58,13 @@ def build_jupyter_exec_command(command: str, *, marker: str) -> str:
             "set +e",
             "(",
             command,
-            ")",
+            # The outer bash reads this control script from stdin. A user
+            # command that inherits the same fd (for example `cat` or
+            # `bash -s`) can otherwise consume the status/marker tail before
+            # the outer shell parses it. Give the command a closed default
+            # stdin; an explicit remote pipe or `< /inspire/...` redirection
+            # inside `command` still overrides this subshell redirection.
+            ") </dev/null",
             "__inspire_status=$?",
             f"printf '\\n%s:exit:%s\\n' {shlex.quote(marker)} \"$__inspire_status\"",
             "exit \"$__inspire_status\"",

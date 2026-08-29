@@ -11,7 +11,14 @@ from click.testing import CliRunner
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
 from inspire.cli.commands.notebook.transport import NotebookTransportPolicy
 from inspire.cli.main import main as cli_main
-from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, EXIT_SUCCESS, EXIT_TIMEOUT
+from inspire.cli.context import (
+    Context,
+    EXIT_CONFIG_ERROR,
+    EXIT_GENERAL_ERROR,
+    EXIT_SUCCESS,
+    EXIT_TIMEOUT,
+    EXIT_VALIDATION_ERROR,
+)
 from inspire.cli.logging_setup import clear_debug_logging
 from inspire.config import Config
 
@@ -280,6 +287,82 @@ def test_exec_uses_jupyter_when_policy_blocks_ssh(monkeypatch, tmp_path) -> None
     assert result.exit_code == 0
     assert "ok" in result.output
     assert capture_kwargs["session"] is target_session
+
+
+def test_exec_rejects_explicit_stdin_for_jupyter_transport(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    config = make_sync_config(tmp_path)
+    execution_called = False
+
+    monkeypatch.setattr(
+        Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=True: (config, {})),
+    )
+    monkeypatch.setattr(
+        exec_cmd_module,
+        "preflight_notebook_transport_policy",
+        lambda *_a, **_k: NotebookTransportPolicy(
+            notebook="gpu-box",
+            notebook_id="nb-123",
+            gpu_model="H200",
+        ),
+    )
+
+    def fake_capture(**_kwargs):  # noqa: ANN202
+        nonlocal execution_called
+        execution_called = True
+        raise AssertionError("Jupyter command must not be sent")
+
+    monkeypatch.setattr(
+        exec_cmd_module.browser_api_module,
+        "run_command_capture_in_notebook",
+        fake_capture,
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["notebook", "exec", "gpu-box", "--stdin", "--", "bash", "-s"],
+        input="echo unsafe\n",
+    )
+
+    assert result.exit_code == EXIT_VALIDATION_ERROR
+    assert "JupyterTerminal exec does not support local stdin passthrough" in result.output
+    assert execution_called is False
+
+
+def test_exec_rejects_auto_detected_stdin_for_jupyter_transport(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    config = make_sync_config(tmp_path)
+
+    monkeypatch.setattr(
+        Config,
+        "from_files_and_env",
+        classmethod(lambda cls, require_credentials=True: (config, {})),
+    )
+    monkeypatch.setattr(
+        exec_cmd_module,
+        "preflight_notebook_transport_policy",
+        lambda *_a, **_k: NotebookTransportPolicy(
+            notebook="gpu-box",
+            notebook_id="nb-123",
+            gpu_model="H200",
+        ),
+    )
+    monkeypatch.setattr(exec_cmd_module, "_should_auto_passthrough_stdin", lambda: True)
+    monkeypatch.setattr(
+        exec_cmd_module.browser_api_module,
+        "run_command_capture_in_notebook",
+        lambda **_k: pytest.fail("Jupyter command must not be sent"),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "notebook", "exec", "gpu-box", "cat"],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION_ERROR
+    payload = json.loads(result.output)
+    assert payload["error"]["type"] == "UnsupportedStdinTransport"
+    assert payload["error"]["code"] == EXIT_VALIDATION_ERROR
 
 
 def test_exec_json_reports_jupyter_transport(monkeypatch, tmp_path) -> None:  # noqa: ANN001

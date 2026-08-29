@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### 修复
+
+- **受限 Notebook 的 JupyterTerminal `exec` 明确关闭本地 stdin。** 该 Transport 的内部控制脚本由 stdin 送入 Shell；用户命令继承同一输入时，`cat` / `bash -s` 之类的读取者会吞掉完成标记并最终超时。现在用户命令的默认 stdin 隔离为 `/dev/null`，远端管道和显式远端文件重定向仍可覆盖；显式 `--stdin` / `--bash-stdin` 和本地管道、文件重定向则会在发送用户命令前返回校验错误。交互式 `notebook shell` 和 SSH Notebook 的 stdin 行为不变；Agent 指引同步要求经 `/inspire/...` 传递脚本或数据。
+
 ## v7.1.4
 
 ### 修复
