@@ -123,6 +123,15 @@ def test_resources_nodes_help_prefers_min_nodes_wording() -> None:
     assert "not scattered GPUs" in result.output
 
 
+def test_resources_group_help_separates_workspace_and_node_event_scope() -> None:
+    result = CliRunner().invoke(cli_main, ["resources", "--help"])
+    output = _one_line(result.output)
+
+    assert result.exit_code == 0, result.output
+    assert "Node events are cluster facts" in output
+    assert "therefore take no workspace option" in output
+
+
 def test_query_commands_require_explicit_workspace() -> None:
     cases = (
         ["job", "list"],

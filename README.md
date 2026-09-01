@@ -225,7 +225,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 这些命令一律一次只看一个 Workspace——档位、余量、回收策略和占用都是按 Workspace 定义的事实，跨空间扫一遍答不出任何一个可执行的决定；还接受 `--workspace all` 的只剩「按名字找东西」那一类（`<workload> list` / `account permissions`），因为不知道东西在哪个空间时本来就给不出空间名。
 
-机器本身发生了什么是另一层：`resources node-events <节点名>` 是平台上唯一按节点而不是按工作负载组织的事件源，内核 OOM kill、Cordon / Uncordon、重启、`NodeNotSchedulable` 都在这里，「同一台机器上反复失败」此前在 CLI 里无处可查。
+机器本身发生了什么是另一层：`resources node-events <节点名>` 是平台上唯一按节点而不是按工作负载组织的事件源，内核 OOM kill、Cordon / Uncordon、重启、`NodeNotSchedulable` 都在这里；命令倒序读取最新 1000 行再恢复时间顺序，不会因为分页预算只看到旧事件。「同一台机器上反复失败」此前在 CLI 里无处可查。
 
 余量和规格始终读 Live 数据；`inspire cache status / refresh / clear` 管的是本地加速缓存——Name 解析索引、Quota 目录和 Notebook 显卡型号，三条命令都支持 `--resource <kind>` 分类操作。缓存按需读穿、写穿：命中直接在本地解析，miss 或过期才针对当前名字回源，创建/删除后立即更新；普通命令不会在后台扫描所有 Workspace。正常情况下 `refresh` 根本不需要跑，所以它**不接受裸形式**，必须用 `--resource` / `--workspace` / `--name` 说明刷哪一块；`empty` 表示刷过、还在有效期内、却一个名字都拿不出来。
 

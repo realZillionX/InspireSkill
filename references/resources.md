@@ -42,7 +42,7 @@
 
 `resources policy` 回答另一个方向的问题：拿到手的资源能留多久。每个 Workspace 按 Workload 声明空闲回收规则和运行时长上限，这条命令逐行给出 `Reclaim`（调度器会不会自己收走）、`Idle Rule`（触发条件）和 `Time Limit`（硬上限——Job 是 `max` 运行时长，Notebook 是 `daily` 关机点）。触发条件按平台返回的 GPU 利用率与时间规则判断，不按有没有人连着判断；Serving 还可能按 GPU 档位分条。`-` 表示这个 Workspace 对该 Workload **没有声明策略**，不等于没有限制。留任务过夜、跑长训练或让 Serving 常驻之前读取当前 Workspace 的 Live 策略。
 
-余量不够时用 `resources usage` 看余量去了哪儿：它按用户、项目或任务列出存活工作负载持有的算力，其中 `Reclaimable` 是这些卡里有多少落在**以可抢占优先级提交**的任务上——那部分高优任务可以直接拿走，剩下的只能等或者去谈。`--by task` 的 `Prio` 列给每个任务提交时的优先级原值。`--mine` 只看自己的占用，是一次预聚合请求，比扫全 Workspace 便宜。
+余量不够时用 `resources usage` 看余量去了哪儿：它按用户、项目或任务列出存活工作负载持有的算力，其中 `Reclaimable` 是这些卡里有多少落在**以可抢占优先级提交**的任务上——那部分高优任务可以直接拿走，剩下的只能等或者去谈。`--by task` 的 `Prio` 列给每个任务提交时的优先级原值。`--mine` 会把当前登录用户 id 传给 UserDimension，只读自己的预聚合项目行；该接口不带用户过滤时返回 Workspace 全员，不能直接叫“我的占用”。
 
 这三张资源视图始终读 Live，但会在一次命令内部避免重复：Availability 对多个 Compute Group 有界并发；Nodes 复用 Availability 已读到的 NodeDimension，再读取一次 TaskDimension 取得任务提交优先级，并额外读取规格；Usage 的维度列表显式使用网关允许的 5000 行页，超过时才继续翻页。命令结束后这些实时行不会进入持久缓存。
 
@@ -153,4 +153,4 @@ Workload 历史目录超过 5000 行时不会硬扫：刷新器按平台报告�
 | 同一台机器上反复失败 | `resources node-events <节点名>` 看这台机器自己的事实 |
 | 任务或 Notebook 无故消失、被停 | 先看 Events 有没有抢占记录，再用 `resources policy` 对空闲回收规则和运行时长上限 |
 
-工作负载的 Events 只说平台对**这个任务**做了什么，说不了机器本身发生了什么。`resources node-events <节点名>` 是唯一按节点组织的事件源：内核 OOM kill、`TaskHung`、Cordon / Uncordon、重启、`NodeNotSchedulable`。节点名从 `<workload> instances` 的 `Node` 列或 `<workload> status` 拿；可以一次给多个节点，输出多一列 `Node`。`--from` 按上报组件收窄（`kubelet` / `kernel-monitor` / `node-controller`）。**查不到事件不等于机器没问题**，先核对节点名拼写。
+工作负载的 Events 只说平台对**这个任务**做了什么，说不了机器本身发生了什么。`resources node-events <节点名>` 是唯一按节点组织的事件源：内核 OOM kill、`TaskHung`、Cordon / Uncordon、重启、`NodeNotSchedulable`。节点名从 `<workload> instances` 的 `Node` 列或 `<workload> status` 拿；可以一次给多个节点，输出多一列 `Node`。命令读取最新 1000 行，`--from` 由平台先按上报组件收窄（`kubelet` / `kernel-monitor` / `node-controller`），`--type` / `--reason` 再在这批最近事件里过滤。**查不到事件不等于机器没问题**，先核对节点名拼写。

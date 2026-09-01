@@ -45,7 +45,11 @@ from inspire.platform.web.browser_api.schedule_config import (
     format_duration,
     get_workspace_schedule_policy,
 )
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import (
+    AuthenticationError,
+    SessionExpiredError,
+    get_web_session,
+)
 
 # The platform applies the serving reclaim rule to custom deployments only;
 # the console says so next to the switch.
@@ -124,8 +128,7 @@ def _format_rows(rows: list[dict[str, Any]]) -> str:
         column_width(header, [row[index] for row in table_rows], max_width=44)
         for index, header in enumerate(headers)
     ]
-    rendered = render_table(headers, table_rows, widths, line_char="─")
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(render_table(headers, table_rows, widths, line_char="─"))
 
 
 def _notes(rows: list[dict[str, Any]]) -> list[str]:
@@ -180,8 +183,9 @@ def policy_resources(
     notebooks. A dash means the workspace declares no policy for that workload,
     which is not the same as declaring no limits.
 
-    Use `inspire <workload> quota` for the ceiling on how much you may take,
-    and `inspire resources availability` for what is physically free.
+    Use `inspire <workload> quota` for legal resource shapes, `inspire
+    resources availability` for guarantee-level capacity, and `inspire
+    resources nodes` for physical whole-node availability.
 
     \b
     Examples:
@@ -229,7 +233,7 @@ def policy_resources(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except SessionExpiredError as e:
+    except (AuthenticationError, SessionExpiredError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)

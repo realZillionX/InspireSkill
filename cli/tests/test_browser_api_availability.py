@@ -134,6 +134,33 @@ def test_list_compute_groups_rejects_nonzero_api_code(monkeypatch) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: api.list_compute_groups(workspace_id="ws-1", session=object()),
+        lambda: api.list_node_dimension(
+            "lcg-1", workspace_id="ws-1", session=object()
+        ),
+        lambda: api._list_dimension_rows(
+            "ListTaskDimension",
+            "task_dimensions",
+            workspace_id="ws-1",
+            session=object(),
+        ),
+        lambda: api.list_node_events(["node-1"], session=object()),
+        lambda: api.list_node_specs("ws-1", session=object()),
+    ],
+)
+def test_resource_list_wrappers_reject_missing_contract_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    call,
+) -> None:
+    monkeypatch.setattr(api, "_request_json", lambda *_args, **_kwargs: {"Result": {}})
+
+    with pytest.raises(ValueError, match="response omitted"):
+        call()
+
+
 def _node(name: str, **overrides: object) -> dict:
     row = {
         "node_name": name,
@@ -187,6 +214,129 @@ def test_free_node_counts_reuse_prefetched_dimensions(monkeypatch) -> None:
     )
 
     assert [(row.total_nodes, row.full_free_nodes) for row in counts] == [(2, 1)]
+
+
+def test_node_dimension_keeps_paging_when_server_returns_short_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pages: list[int] = []
+
+    def _fake(_session, _method, _path, *, referer, body, timeout):
+        page = int(body["PageNumber"])
+        pages.append(page)
+        rows = [_node(f"node-{page}-{index}") for index in range(2 if page == 1 else 1)]
+        return {"Result": {"node_dimensions": rows, "total": 3}}
+
+    monkeypatch.setattr(api, "_request_json", _fake)
+
+    rows = api.list_node_dimension(
+        "lcg-1",
+        workspace_id="ws-1",
+        page_size=500,
+        session=object(),  # type: ignore[arg-type]
+    )
+
+    assert pages == [1, 2]
+    assert len(rows) == 3
+
+
+def test_node_dimension_deduplicates_rows_across_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake(_session, _method, _path, *, referer, body, timeout):
+        page = int(body["PageNumber"])
+        rows = (
+            [_node("node-1"), _node("node-2")]
+            if page == 1
+            else [_node("node-2"), _node("node-3")]
+        )
+        return {"Result": {"node_dimensions": rows, "total": 4}}
+
+    monkeypatch.setattr(api, "_request_json", _fake)
+
+    rows = api.list_node_dimension(
+        "lcg-1",
+        workspace_id="ws-1",
+        page_size=2,
+        session=object(),  # type: ignore[arg-type]
+    )
+
+    assert [row["node_name"] for row in rows] == ["node-1", "node-2", "node-3"]
+
+
+def test_node_dimension_refuses_to_return_a_safety_cap_partial_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(api, "_NODE_DIMENSION_PAGE_CAP", 1)
+    monkeypatch.setattr(
+        api,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "Result": {
+                "node_dimensions": [_node("node-1")],
+                "total": 2,
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="safe pagination limit"):
+        api.list_node_dimension(
+            "lcg-1",
+            workspace_id="ws-1",
+            page_size=1,
+            session=object(),  # type: ignore[arg-type]
+        )
+
+
+def test_node_summary_counts_over_guarantee_nodes_and_uses_max_gpu_shape() -> None:
+    rows = [
+        _node("partial", gpu={"total": 2, "used": 0}),
+        _node("over-guarantee", gpu={"total": 0, "used": 8}),
+        _node("physical-shape", gpu={"total": 8, "used": 16}),
+    ]
+
+    summary = api._compute_node_summary(rows)
+
+    assert summary["total_nodes"] == 3
+    assert summary["ready_nodes"] == 3
+    assert summary["gpu_per_node"] == 8
+
+
+@pytest.mark.parametrize("failure_source", ["resource", "nodes"])
+def test_availability_propagates_business_errors_instead_of_dropping_a_group(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_source: str,
+) -> None:
+    monkeypatch.setattr(
+        api,
+        "_list_live_compute_groups",
+        lambda **_kwargs: [{"logic_compute_group_id": "lcg-1", "name": "H200"}],
+    )
+
+    def _request(*_args, **_kwargs):
+        if failure_source == "resource":
+            raise ValueError("permission denied")
+        return {"Result": {"logic_resouces": {"gpu_total": 8}}}
+
+    monkeypatch.setattr(api, "_request_json", _request)
+    monkeypatch.setattr(
+        api,
+        "list_node_dimension",
+        lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(ValueError("permission denied"))
+            if failure_source == "nodes"
+            else [_node("free")]
+        ),
+    )
+
+    class _Session:
+        all_workspace_names = {"ws-1": "Workspace"}
+
+    with pytest.raises(ValueError, match="permission denied"):
+        api.get_accurate_resource_availability(
+            workspace_id="ws-1",
+            session=_Session(),  # type: ignore[arg-type]
+        )
 
 
 def test_free_node_counts_parse_live_task_containers_and_reclaim_low_only_nodes(

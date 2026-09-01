@@ -42,18 +42,27 @@ def _node_event(
     }
 
 
-def _patch_command(monkeypatch: pytest.MonkeyPatch, events: list[dict]) -> list[list[str]]:
-    asked: list[list[str]] = []
+def _patch_command(monkeypatch: pytest.MonkeyPatch, events: list[dict]) -> list[dict]:
+    asked: list[dict] = []
     monkeypatch.setattr(
         node_events_mod.Config,
         "from_files_and_env",
         lambda **_kwargs: (object(), {}),
     )
     monkeypatch.setattr(node_events_mod, "get_web_session", lambda: object())
+    def _list_node_events(names, **kwargs):  # noqa: ANN001
+        asked.append({"names": list(names), **kwargs})
+        component = kwargs.get("from_component")
+        return [
+            event
+            for event in events
+            if not component or event.get("from") == component
+        ]
+
     monkeypatch.setattr(
         node_events_mod.browser_api_module,
         "list_node_events",
-        lambda names, **_kwargs: asked.append(list(names)) or list(events),
+        _list_node_events,
     )
     return asked
 
@@ -160,7 +169,7 @@ def test_the_type_filter_reads_the_node_spelling(
 def test_the_from_filter_narrows_to_one_reporting_component(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _patch_command(
+    asked = _patch_command(
         monkeypatch,
         [
             _node_event("gpu040", "TaskHung", "1", source="kernel-monitor"),
@@ -176,6 +185,20 @@ def test_the_from_filter_narrows_to_one_reporting_component(
     assert result.exit_code == 0, result.output
     items = json.loads(result.output)["data"]["items"]
     assert [item["reason"] for item in items] == ["TaskHung"]
+    assert asked[0]["from_component"] == "kernel-monitor"
+    assert asked[0]["sort_ascending"] is False
+
+
+def test_command_scans_the_newest_node_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked = _patch_command(monkeypatch, [])
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["resources", "node-events", "gpu040"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert asked[0]["sort_ascending"] is False
 
 
 def test_a_node_name_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -184,3 +207,56 @@ def test_a_node_name_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
     result = CliRunner().invoke(cli_main, ["resources", "node-events"])
 
     assert result.exit_code != 0
+
+
+def test_json_follow_is_rejected_before_session_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        node_events_mod,
+        "get_web_session",
+        lambda: pytest.fail("local option conflict must not authenticate"),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "resources", "node-events", "gpu040", "--follow"],
+    )
+
+    assert result.exit_code != 0
+    assert "--json --follow is not supported" in result.output
+
+
+def test_node_event_wrapper_can_filter_at_source_and_page_a_server_short_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bodies: list[dict] = []
+
+    def _fake(_session, _method, _path, *, referer, body, timeout):
+        bodies.append(body)
+        page = body["PageNumber"]
+        rows = [
+            _node_event("n1", f"event-{page}-{index}", str(10 - page * 2 - index))
+            for index in range(2 if page == 1 else 1)
+        ]
+        return {"Result": {"events": rows, "total": 3}}
+
+    monkeypatch.setattr(availability_api, "_request_json", _fake)
+
+    events = availability_api.list_node_events(
+        ["n1"],
+        page_size=200,
+        sort_ascending=False,
+        from_component="kernel-monitor",
+        session=object(),  # type: ignore[arg-type]
+    )
+
+    assert len(events) == 3
+    assert [body["PageNumber"] for body in bodies] == [1, 2]
+    assert bodies[0]["filter"] == {
+        "node_names": ["n1"],
+        "from": "kernel-monitor",
+    }
+    assert bodies[0]["sorter"] == [
+        {"field": "last_timestamp", "sort": "descend"}
+    ]

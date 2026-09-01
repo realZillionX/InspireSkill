@@ -28,7 +28,11 @@ from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import (
+    AuthenticationError,
+    SessionExpiredError,
+    get_web_session,
+)
 
 _REDACTED_ID_RE = re.compile(
     r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)"
@@ -37,13 +41,10 @@ _REDACTED_ID_RE = re.compile(
 
 def _resolve_workspace_scope(
     *,
-    config: Optional[Config],
     session,
     workspace: Optional[str],
 ) -> tuple[str, dict[str, str]]:
     workspace_names = dict(session.all_workspace_names or {})
-    if config is None:
-        raise ConfigError("Workspace selection requires a loaded config.")
     workspace_id = resolve_workspace_operation_scope(
         workspace=workspace,
         session=session,
@@ -51,11 +52,36 @@ def _resolve_workspace_scope(
     return workspace_id, workspace_names
 
 
+def _ordered_availability(availability: list) -> list:  # noqa: ANN401
+    """Return the same decision order for Human and JSON output.
+
+    GPU and CPU rows render as separate table sections.  Sorting only inside
+    the Human formatter made JSON use platform enumeration order and, more
+    importantly, applied the default output limit before ranking capacity.
+    """
+    gpu_rows = [a for a in availability if getattr(a, "resource_kind", "gpu") == "gpu"]
+    cpu_rows = [a for a in availability if getattr(a, "resource_kind", "gpu") == "cpu"]
+    gpu_rows.sort(
+        # Workload defaults are high priority, so rank by the capacity they can
+        # actually obtain after preemption; use the guarantee balance only as
+        # the tiebreaker.
+        key=lambda item: (item.high_priority_available_gpus, item.available_gpus),
+        reverse=True,
+    )
+    cpu_rows.sort(key=lambda item: item.cpu_available, reverse=True)
+    return [*gpu_rows, *cpu_rows]
+
+
 def _format_metric(value: float | int) -> str:
     numeric = float(value)
     if abs(numeric - round(numeric)) < 1e-6:
         return str(int(round(numeric)))
     return f"{numeric:.1f}"
+
+
+def _public_metric(value: float | int) -> float:
+    """Remove binary floating-point noise without hiding useful precision."""
+    return round(float(value), 4)
 
 
 def _display_name(value: object, *, fallback: str = "-") -> str:
@@ -75,12 +101,14 @@ def _public_availability_row(availability) -> dict[str, object]:  # noqa: ANN001
     if row["kind"] == "cpu":
         row.update(
             {
-                "cpu_total": availability.cpu_total,
-                "cpu_used": availability.cpu_used,
-                "cpu_available": availability.cpu_available,
-                "memory_total_gib": availability.memory_total_gib,
-                "memory_used_gib": availability.memory_used_gib,
-                "memory_available_gib": availability.memory_available_gib,
+                "cpu_total": _public_metric(availability.cpu_total),
+                "cpu_used": _public_metric(availability.cpu_used),
+                "cpu_available": _public_metric(availability.cpu_available),
+                "memory_total_gib": _public_metric(availability.memory_total_gib),
+                "memory_used_gib": _public_metric(availability.memory_used_gib),
+                "memory_available_gib": _public_metric(
+                    availability.memory_available_gib
+                ),
             }
         )
         return row
@@ -119,11 +147,7 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
                 row.total_gpus,
                 row.free_nodes,
             )
-            for row in sorted(
-                gpu_rows,
-                key=lambda x: (x.available_gpus, x.high_priority_available_gpus),
-                reverse=True,
-            )
+            for row in gpu_rows
         ]
         sections.append(
             "\n".join(
@@ -156,7 +180,7 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
                 f"{_format_metric(row.memory_used_gib)} GiB",
                 f"{_format_metric(row.memory_total_gib)} GiB",
             )
-            for row in sorted(cpu_rows, key=lambda item: item.cpu_available, reverse=True)
+            for row in cpu_rows
         ]
         sections.append(
             "\n".join(
@@ -191,17 +215,10 @@ def _list_accurate_resources(
 ) -> None:
     """List accurate compute-group availability using browser API."""
     try:
-        config = None
-        try:
-            config, _ = Config.from_files_and_env(
-                require_credentials=False
-            )
-        except Exception:
-            config = None
+        Config.from_files_and_env(require_credentials=False)
 
         session = get_web_session()
         workspace_id, workspace_names = _resolve_workspace_scope(
-            config=config,
             session=session,
             workspace=workspace,
         )
@@ -217,6 +234,7 @@ def _list_accurate_resources(
             availability = [
                 a for a in availability if group_filter in str(a.group_name or "").lower()
             ]
+        availability = _ordered_availability(availability)
         page = bound_collection(availability, limit=limit)
         availability = page.items
         for entry in availability:
@@ -248,7 +266,7 @@ def _list_accurate_resources(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except (SessionExpiredError, ValueError) as e:
+    except (AuthenticationError, SessionExpiredError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
@@ -319,8 +337,11 @@ def availability_resources(
 ) -> None:
     """List compute-group availability.
 
-    Requires one --workspace <name> and shows real-time GPU usage. Availability
-    is defined per workspace, so `all` is rejected here.
+    Requires one --workspace <name> and shows real-time GPU usage. `Available`
+    is the workspace's guarantee balance and can be negative when usage is
+    over guarantee; `High Pri` adds GPUs held by preemptible tasks and can
+    still be negative. `Free Nodes` is the physical idle-node signal.
+    Availability is defined per workspace, so `all` is rejected here.
     Use --include-cpu to include CPU-only compute groups and CPU/memory totals.
 
     \b

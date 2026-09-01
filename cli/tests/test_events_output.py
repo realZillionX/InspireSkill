@@ -266,6 +266,18 @@ def test_follow_event_deduplication_window_is_bounded() -> None:
     assert len(seen) == 2
 
 
+def test_follow_deduplication_keeps_identical_events_from_different_nodes() -> None:
+    seen = _RecentEventKeys()
+    shared = {
+        "reason": "NodeNotSchedulable",
+        "message": "node unavailable",
+        "last_timestamp": "1",
+    }
+
+    assert seen.remember({**shared, "node_name": "node-a"}) is True
+    assert seen.remember({**shared, "node_name": "node-b"}) is True
+
+
 def test_notebook_events_fetch_runs_through_stale_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

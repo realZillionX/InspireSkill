@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -119,6 +120,60 @@ def test_task_dimension_pages_against_total_not_page_size_minus_one(
     assert len(rows) == 1200
 
 
+def test_task_dimension_keeps_paging_when_server_returns_short_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pages: list[int] = []
+
+    def _fake(_session, _method, _path, *, referer, body, timeout):
+        page = int(body["PageNumber"])
+        pages.append(page)
+        start = (page - 1) * 2
+        rows = [
+            {"id": f"job-{index}", "gpu": {"total": 1}}
+            for index in range(start, min(start + 2, 4))
+        ]
+        return {"Result": {"task_dimensions": rows, "total": 4}}
+
+    monkeypatch.setattr(api, "_request_json", _fake)
+
+    rows = api._list_dimension_rows(
+        "ListTaskDimension",
+        "task_dimensions",
+        workspace_id="ws-1",
+        session=object(),  # type: ignore[arg-type]
+        page_size=500,
+    )
+
+    assert pages == [1, 2]
+    assert len(rows) == 4
+
+
+def test_task_dimension_refuses_to_return_a_safety_cap_partial_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(api, "_DIMENSION_PAGE_CAP", 1)
+    monkeypatch.setattr(
+        api,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "Result": {
+                "task_dimensions": [{"id": "job-1"}],
+                "total": 2,
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="safe pagination limit"):
+        api._list_dimension_rows(
+            "ListTaskDimension",
+            "task_dimensions",
+            workspace_id="ws-1",
+            session=object(),  # type: ignore[arg-type]
+            page_size=1,
+        )
+
+
 def test_task_dimension_drops_rows_repeated_across_pages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -228,10 +283,11 @@ def test_task_dimension_never_folds_a_transient_failure_into_no_usage(
 def test_member_usage_reads_the_per_kind_node_counts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        api,
-        "_request_json",
-        lambda *_a, **_k: {
+    bodies: list[dict] = []
+
+    def _request(*_args, **kwargs):
+        bodies.append(kwargs["body"])
+        return {
             "ResponseMetadata": {},
             "Result": {
                 "user_dimensions": [
@@ -248,10 +304,12 @@ def test_member_usage_reads_the_per_kind_node_counts(
                 ],
                 "total": 1,
             },
-        },
-    )
+        }
 
-    usage = api.list_member_usage("ws-1", session=object())[0]  # type: ignore[arg-type]
+    monkeypatch.setattr(api, "_request_json", _request)
+
+    session = SimpleNamespace(user_detail={"id": "user-1"})
+    usage = api.list_member_usage("ws-1", session=session)[0]  # type: ignore[arg-type]
 
     assert usage == MemberUsage(
         user_name="Ada",
@@ -263,6 +321,26 @@ def test_member_usage_reads_the_per_kind_node_counts(
         cpu_nodes=4,
         hpc_nodes=1,
     )
+    assert bodies == [
+        {
+            "filter": {"workspace_id": "ws-1", "user_id": "user-1"},
+            "PageNumber": 1,
+            "page_size": api._DIMENSION_PAGE_SIZE,
+        }
+    ]
+
+
+def test_member_usage_refuses_to_call_an_unfiltered_workspace_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from inspire.platform.web.browser_api import jobs
+
+    monkeypatch.setattr(jobs, "get_current_user", lambda _session: {})
+    with pytest.raises(ValueError, match="Could not resolve the current user"):
+        api.list_member_usage(
+            "ws-1",
+            session=SimpleNamespace(user_detail={}),  # type: ignore[arg-type]
+        )
 
 
 # --- command ---------------------------------------------------------------

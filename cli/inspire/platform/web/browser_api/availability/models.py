@@ -96,9 +96,8 @@ class TaskUsage:
 class MemberUsage:
     """The caller's own footprint in one project of a workspace.
 
-    ``workspace.ListUserDimension`` reports **only the caller**: asking for
-    another member's ``user_id`` answers an empty list rather than a denial,
-    so this can never grow into a per-member view of the workspace.
+    ``workspace.ListUserDimension`` is workspace-wide unless filtered; the
+    wrapper supplies the authenticated user's id before producing these rows.
     """
 
     user_name: str

@@ -596,6 +596,138 @@ def test_resources_availability_human_hides_raw_group_ids(
     _assert_compact_public_payload(row)
 
 
+def test_resources_availability_sorts_before_limit_in_human_and_json(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from inspire.cli.commands.resources import resources_list as list_module
+    from inspire.platform.web.browser_api.availability.models import GPUAvailability
+
+    _patch_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(list_module, "get_web_session", lambda: _Session())
+    monkeypatch.setattr(
+        list_module.browser_api_module,
+        "get_accurate_resource_availability",
+        lambda **_: [
+            GPUAvailability(
+                group_id="lcg-low",
+                group_name="Low",
+                gpu_type="H200",
+                total_gpus=8,
+                used_gpus=0,
+                available_gpus=8,
+                low_priority_gpus=0,
+            ),
+            GPUAvailability(
+                group_id="lcg-high",
+                group_name="High",
+                gpu_type="H200",
+                total_gpus=8,
+                used_gpus=8,
+                available_gpus=0,
+                low_priority_gpus=16,
+            ),
+        ],
+    )
+
+    human = CliRunner().invoke(
+        cli_main,
+        ["resources", "availability", "--workspace", "分布式训练空间", "-n", "1"],
+    )
+    structured = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "resources",
+            "availability",
+            "--workspace",
+            "分布式训练空间",
+            "-n",
+            "1",
+        ],
+    )
+
+    assert human.exit_code == 0, human.output
+    assert "High" in human.output
+    assert "Low" not in human.output
+    assert structured.exit_code == 0, structured.output
+    items = _json_data(structured.output)["items"]
+    assert [row["compute_group"] for row in items] == ["High"]
+
+
+def test_resources_availability_json_removes_float_noise() -> None:
+    from inspire.cli.commands.resources import resources_list as list_module
+    from inspire.platform.web.browser_api.availability.models import GPUAvailability
+
+    row = list_module._public_availability_row(
+        GPUAvailability(
+            group_id="lcg-cpu",
+            group_name="CPU",
+            gpu_type="",
+            total_gpus=0,
+            used_gpus=0,
+            available_gpus=0,
+            low_priority_gpus=0,
+            cpu_total=1.0,
+            cpu_used=0.7,
+            cpu_available=0.1 + 0.2,
+            memory_total_gib=1.0,
+            memory_used_gib=0.7,
+            memory_available_gib=0.1 + 0.2,
+            resource_kind="cpu",
+        )
+    )
+
+    assert row["cpu_available"] == 0.3
+    assert row["memory_available_gib"] == 0.3
+
+
+def test_resources_availability_reports_business_value_errors_as_api_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from inspire.cli.commands.resources import resources_list as list_module
+
+    _patch_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(list_module, "get_web_session", lambda: _Session())
+    monkeypatch.setattr(
+        list_module.browser_api_module,
+        "get_accurate_resource_availability",
+        lambda **_: (_ for _ in ()).throw(ValueError("permission denied")),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "resources", "availability", "--workspace", "分布式训练空间"],
+    )
+
+    assert result.exit_code != 0
+    assert json.loads(result.output)["error"]["type"] == "APIError"
+
+
+def test_resources_availability_keeps_login_failures_as_authentication_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from inspire.cli.commands.resources import resources_list as list_module
+    from inspire.platform.web.session import AuthenticationError
+
+    _patch_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        list_module,
+        "get_web_session",
+        lambda: (_ for _ in ()).throw(AuthenticationError("login rejected")),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "resources", "availability", "--workspace", "分布式训练空间"],
+    )
+
+    assert result.exit_code != 0
+    assert json.loads(result.output)["error"]["type"] == "AuthenticationError"
+
+
 def test_availability_uses_workspace_actions_for_groups_and_nodes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

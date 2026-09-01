@@ -30,7 +30,11 @@ from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NodeSpec
 from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import (
+    AuthenticationError,
+    SessionExpiredError,
+    get_web_session,
+)
 from inspire.task_priority import is_preemptible_task_priority
 
 _REDACTED_ID_RE = re.compile(
@@ -45,12 +49,9 @@ def _display_name(value: object, *, fallback: str = "-") -> str:
 
 def _resolve_workspace_scope(
     *,
-    config: Optional[Config],
     session,
     workspace: Optional[str],
 ) -> str:
-    if config is None:
-        raise ConfigError("Workspace selection requires a loaded config.")
     return resolve_workspace_operation_scope(workspace=workspace, session=session)
 
 
@@ -156,16 +157,9 @@ def list_nodes(
                 resource_type="compute group",
                 list_command=f"inspire resources nodes --workspace {workspace}",
             )
-        config = None
-        try:
-            config, _ = Config.from_files_and_env(
-                require_credentials=False
-            )
-        except Exception:
-            config = None
+        Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
         workspace_id = _resolve_workspace_scope(
-            config=config,
             session=session,
             workspace=workspace,
         )
@@ -308,7 +302,7 @@ def list_nodes(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except (SessionExpiredError, ValueError) as e:
+    except (AuthenticationError, SessionExpiredError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)

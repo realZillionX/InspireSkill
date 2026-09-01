@@ -472,6 +472,8 @@ def test_policy_table_names_the_rule_and_the_cap(monkeypatch: pytest.MonkeyPatch
     assert "gpu < 15% for 3h OR runtime > 18h" in result.output
     assert "max 10d" in result.output
     assert "gpu < 20% for 5h (8-16 GPU)" in result.output
+    assert result.output.startswith("─")
+    assert result.output.splitlines()[2].startswith("─")
 
 
 def test_an_undeclared_policy_reads_as_unknown_not_as_unlimited(

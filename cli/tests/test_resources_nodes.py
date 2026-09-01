@@ -232,6 +232,30 @@ def test_resources_nodes_rejects_group_id_input(
     assert raw_group_id not in result.output
 
 
+def test_resources_nodes_reports_business_value_errors_as_api_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_config(monkeypatch, tmp_path)
+
+    from inspire.cli.commands.resources import resources_nodes as nodes_module
+
+    monkeypatch.setattr(nodes_module, "get_web_session", lambda: _Session())
+    monkeypatch.setattr(
+        nodes_module.browser_api_module,
+        "get_accurate_resource_availability",
+        lambda **_: (_ for _ in ()).throw(ValueError("permission denied")),
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "resources", "nodes", "--workspace", "Default WS"],
+    )
+
+    assert result.exit_code != 0
+    assert json.loads(result.output)["error"]["type"] == "APIError"
+
+
 def test_resources_nodes_defaults_to_twenty_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

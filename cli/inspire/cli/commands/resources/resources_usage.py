@@ -15,11 +15,11 @@ question this data can answer, so the flag that implies it is gone.
 
 The rollups are computed here rather than requested from the platform on
 purpose. `workspace.ListProjectDimension` answers an empty list to ordinary
-members in every reachable workspace, and `workspace.ListUserDimension` returns
-only the caller's own rows — asking for another member's id answers empty
-rather than denying — so the task dimension is the only workspace-wide source.
-`--mine` still reads the user dimension, because the caller's own footprint is
-one pre-aggregated request there instead of a full sweep of the workspace.
+members in every reachable workspace. `workspace.ListUserDimension` is a
+workspace-wide per-user view unless given `filter.user_id`, so `--mine` sends
+the authenticated user's id and gets that caller's pre-aggregated project rows
+in one request. The task dimension remains the workspace-wide source used by
+the other modes.
 
 `--group` narrows to the unit a workload is actually submitted to, by passing
 `logic_compute_group_id` to the same Action. `job.GetLcgUsedComputeResourceJobs`
@@ -62,7 +62,11 @@ from inspire.config.workspaces import (
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import MemberUsage, TaskUsage
 from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import (
+    AuthenticationError,
+    SessionExpiredError,
+    get_web_session,
+)
 from inspire.task_priority import is_preemptible_task_priority
 
 _REDACTED_ID_RE = re.compile(r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)")
@@ -516,7 +520,7 @@ def usage_resources(
 
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
-    except SessionExpiredError as e:
+    except (AuthenticationError, SessionExpiredError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
     except Exception as e:
         _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)

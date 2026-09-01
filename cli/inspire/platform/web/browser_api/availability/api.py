@@ -21,7 +21,6 @@ from inspire.platform.web.browser_api.core import (
 )
 from inspire.platform.web.session import (
     SessionExpiredError,
-    TransientAPIError,
     WebSession,
     get_web_session,
 )
@@ -60,7 +59,9 @@ def list_compute_groups(
         )
     )
     groups = payload.get("logic_compute_groups")
-    return groups if isinstance(groups, list) else []
+    if not isinstance(groups, list):
+        raise ValueError("ListLogicComputeGroups response omitted logic_compute_groups.")
+    return groups
 
 
 # Workload -> the `notebook.GetScheduleConfig` key carrying its spec menu.
@@ -173,6 +174,7 @@ def list_node_events(
     page_size: int = 200,
     max_pages: int | None = None,
     sort_ascending: bool = True,
+    from_component: str | None = None,
     session: Optional[WebSession] = None,
 ) -> list[dict]:
     """List Kubernetes events belonging to nodes themselves.
@@ -210,6 +212,10 @@ def list_node_events(
         session = get_web_session()
 
     sort = "ascend" if sort_ascending else "descend"
+    filters: dict[str, object] = {"node_names": clean_names}
+    component = str(from_component or "").strip()
+    if component:
+        filters["from"] = component
     events: list[dict] = []
     page = 1
     while max_pages is None or page <= max_pages:
@@ -222,7 +228,7 @@ def list_node_events(
                 body={
                     "PageNumber": page,
                     "page_size": page_size,
-                    "filter": {"node_names": clean_names},
+                    "filter": dict(filters),
                     "sorter": [{"field": "last_timestamp", "sort": sort}],
                 },
                 timeout=30,
@@ -230,17 +236,13 @@ def list_node_events(
         )
         page_events = payload.get("events")
         if not isinstance(page_events, list):
-            page_events = payload.get("items")
-        if not isinstance(page_events, list):
-            page_events = []
+            raise ValueError("ListNodeEvents response omitted events.")
         events.extend(item for item in page_events if isinstance(item, dict))
 
         total = _coerce_total(payload.get("total"), -1)
-        if (
-            not page_events
-            or len(page_events) < page_size
-            or (total >= 0 and len(events) >= total)
-        ):
+        if not page_events or (total >= 0 and len(events) >= total):
+            break
+        if total < 0 and len(page_events) < page_size:
             break
         page += 1
     return events
@@ -272,6 +274,7 @@ def list_node_dimension(
         raise ValueError("Workspace selection is required.")
 
     nodes: list[dict] = []
+    seen: set[str] = set()
     page = 1
     while True:
         payload = _v2_result(
@@ -292,25 +295,42 @@ def list_node_dimension(
             )
         )
         rows = payload.get("node_dimensions")
-        if not isinstance(rows, list) or not rows:
+        if not isinstance(rows, list):
+            raise ValueError("ListNodeDimension response omitted node_dimensions.")
+        if not rows:
             break
-        nodes.extend(row for row in rows if isinstance(row, dict))
+        before_count = len(nodes)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = str(row.get("id") or row.get("name") or row.get("node_name") or "")
+            if key:
+                if key in seen:
+                    continue
+                seen.add(key)
+            nodes.append(row)
 
         try:
             total = int(str(payload.get("total")))
         except (TypeError, ValueError):
             break
-        if len(nodes) >= total or len(rows) < page_size:
+        if len(nodes) >= total:
+            break
+        if len(nodes) == before_count:
             break
         page += 1
-        if page > 100:  # safety cap
-            break
+        if page > _NODE_DIMENSION_PAGE_CAP:
+            raise ValueError(
+                "Node dimension exceeded the safe pagination limit before "
+                "the platform-reported total was read."
+            )
 
     return nodes
 
 
 _DIMENSION_PAGE_SIZE = 5000
 _DIMENSION_PAGE_CAP = 40
+_NODE_DIMENSION_PAGE_CAP = 100
 
 
 def _list_dimension_rows(
@@ -320,6 +340,7 @@ def _list_dimension_rows(
     workspace_id: str,
     session: WebSession,
     logic_compute_group_id: Optional[str] = None,
+    user_id: Optional[str] = None,
     page_size: int = _DIMENSION_PAGE_SIZE,
 ) -> list[dict]:
     """Page one ``workspace.List*Dimension`` Action to completion.
@@ -337,6 +358,8 @@ def _list_dimension_rows(
     filters: dict[str, object] = {"workspace_id": workspace_id}
     if logic_compute_group_id:
         filters["logic_compute_group_id"] = logic_compute_group_id
+    if user_id:
+        filters["user_id"] = user_id
 
     rows: list[dict] = []
     seen: set[str] = set()
@@ -357,8 +380,11 @@ def _list_dimension_rows(
             )
         )
         batch = payload.get(list_key)
-        if not isinstance(batch, list) or not batch:
+        if not isinstance(batch, list):
+            raise ValueError(f"{action} response omitted {list_key}.")
+        if not batch:
             break
+        before_count = len(rows)
         for row in batch:
             if not isinstance(row, dict):
                 continue
@@ -372,11 +398,16 @@ def _list_dimension_rows(
             rows.append(row)
 
         total = _coerce_total(payload.get("total"), len(rows))
-        if len(rows) >= total or len(batch) < page_size:
+        if len(rows) >= total:
+            break
+        if len(rows) == before_count:
             break
         page += 1
         if page > _DIMENSION_PAGE_CAP:
-            break
+            raise ValueError(
+                f"{action} exceeded the safe pagination limit before the "
+                "platform-reported total was read."
+            )
 
     return rows
 
@@ -482,25 +513,34 @@ def list_member_usage(
 ) -> list[MemberUsage]:
     """List the caller's own footprint in a workspace, split by project.
 
-    Action: ``workspace.ListUserDimension``. Despite the name it is **not** a
-    per-member view of the workspace: the platform answers with the caller's
-    rows only, and passing another member's ``user_id`` returns an empty list
-    instead of a denial. Use :func:`list_task_usage` for everyone's usage.
+    Action: ``workspace.ListUserDimension``. An unfiltered request is a
+    workspace-wide per-user view, so this wrapper must pass the authenticated
+    user's id inside ``filter``. Without it, `resources usage --mine` labels
+    every member's rows as the caller's own footprint.
 
-    It is worth keeping anyway because it is one pre-aggregated request, where
-    the same answer from the task dimension costs a full paged sweep of every
-    workload in the workspace.
+    The filtered result remains useful because it is one pre-aggregated
+    request, where the same answer from the task dimension costs a full paged
+    sweep of every workload in the workspace.
     """
     if session is None:
         session = get_web_session()
     if not workspace_id:
         raise ValueError("Workspace selection is required.")
 
+    # Local import avoids a browser_api package initialization cycle.
+    from inspire.platform.web.browser_api.jobs import get_current_user
+
+    current_user = get_current_user(session)
+    user_id = str(current_user.get("id") or current_user.get("user_id") or "").strip()
+    if not user_id:
+        raise ValueError("Could not resolve the current user for resource usage.")
+
     rows = _list_dimension_rows(
         "ListUserDimension",
         "user_dimensions",
         workspace_id=workspace_id,
         session=session,
+        user_id=user_id,
     )
 
     return [
@@ -565,7 +605,7 @@ def list_node_specs(
     )
     rows = payload.get("node_specs")
     if not isinstance(rows, list):
-        return []
+        raise ValueError(f"{action} response omitted node_specs.")
 
     folded: dict[tuple, set[str]] = {}
     for row in rows:
@@ -730,12 +770,19 @@ def _compute_node_summary(nodes: list[dict]) -> dict[str, int]:
     gpu_per_node = 0
 
     for node in nodes:
-        gpu_count = _node_gpu_total(node)
-        if gpu_count <= 0:
+        # A fair-scheduling node can report a zero guarantee (`total=0`) while
+        # a low-priority task is using all eight physical GPUs.  `used` is then
+        # the only positive GPU signal, so taking only `total` drops a real node
+        # from Total/Ready and makes availability disagree with `resources nodes`.
+        gpu_total = _node_gpu_total(node)
+        gpu_used = _node_gpu_used(node)
+        if max(gpu_total, gpu_used) <= 0:
             continue
         total_nodes += 1
-        if gpu_per_node == 0:
-            gpu_per_node = gpu_count
+        # `used` may itself exceed physical capacity under logical overcommit
+        # (16 has been observed on an 8-GPU H100 node), so it is only a node-
+        # presence signal and must never define the per-node hardware shape.
+        gpu_per_node = max(gpu_per_node, gpu_total)
 
         if str(node.get("status") or "").upper() == "READY":
             ready_nodes += 1
@@ -772,51 +819,32 @@ def get_accurate_resource_availability(
             groups = _list_live_compute_groups(workspace_id=wid, session=session)
             workspace_name = workspace_names.get(wid, "")
 
-            def _load_group(group: dict) -> tuple[dict, dict, dict[str, int], list[dict]] | None:
+            def _load_group(group: dict) -> tuple[dict, dict, dict[str, int], list[dict]]:
                 group_id = _group_id(group)
                 if not group_id:
-                    return None
+                    raise ValueError("Compute-group response omitted logic_compute_group_id.")
+                if not _group_name(group):
+                    raise ValueError("Compute-group response omitted its visible name.")
 
-                try:
-                    group_resource = _v2_result(
-                        _request_json(
-                            session,
-                            "POST",
-                            "/api/v2/workspace?Action=GetLogicComputeGroupResource",
-                            referer=f"{_get_base_url()}/jobs/distributedTraining",
-                            body={
-                                "workspace_id": wid,
-                                "logic_compute_group_id": group_id,
-                            },
-                            timeout=30,
-                        )
+                group_resource = _v2_result(
+                    _request_json(
+                        session,
+                        "POST",
+                        "/api/v2/workspace?Action=GetLogicComputeGroupResource",
+                        referer=f"{_get_base_url()}/jobs/distributedTraining",
+                        body={
+                            "workspace_id": wid,
+                            "logic_compute_group_id": group_id,
+                        },
+                        timeout=30,
                     )
-                except (SessionExpiredError, TransientAPIError):
-                    # Dropping the group here would under-report capacity as
-                    # fact. Availability is a live answer or it is an error.
-                    raise
-                except ValueError:
-                    return None
-
-                try:
-                    node_dimensions = list_node_dimension(
-                        group_id,
-                        workspace_id=wid,
-                        session=session,
-                    )
-                    node_summary = _compute_node_summary(node_dimensions)
-                except (SessionExpiredError, TransientAPIError):
-                    # Zeroed node counts read as "nothing free". Never say that
-                    # because the platform was busy.
-                    raise
-                except ValueError:
-                    node_dimensions = []
-                    node_summary = {
-                        "total_nodes": 0,
-                        "ready_nodes": 0,
-                        "free_nodes": 0,
-                        "gpu_per_node": 0,
-                    }
+                )
+                node_dimensions = list_node_dimension(
+                    group_id,
+                    workspace_id=wid,
+                    session=session,
+                )
+                node_summary = _compute_node_summary(node_dimensions)
                 return group, group_resource, node_summary, node_dimensions
 
             max_workers = min(4, len(groups)) or 1
@@ -824,8 +852,6 @@ def get_accurate_resource_availability(
                 loaded_groups = list(executor.map(_load_group, groups))
 
             for loaded in loaded_groups:
-                if loaded is None:
-                    continue
                 group, group_resource, node_summary, node_dimensions = loaded
                 group_id = _group_id(group)
                 group_name = _group_name(group)

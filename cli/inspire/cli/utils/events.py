@@ -326,9 +326,11 @@ def _event_key(event: dict) -> tuple[str, ...]:
         for key in (
             "object_id",
             "object_type",
+            "node_name",
             "reason",
             "message",
             "from",
+            "event_type",
             "first_timestamp",
             "last_timestamp",
             "count",

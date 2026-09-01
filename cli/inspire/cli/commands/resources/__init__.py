@@ -15,7 +15,7 @@ from .resources_usage import usage_resources
 def resources() -> None:
     """Inspect live compute availability, placement and scheduling policy.
 
-    Use `resources availability` for current free / used capacity,
+    Use `resources availability` for guarantee-level free / used capacity,
     `resources nodes` before multi-node GPU jobs that need whole 8-GPU nodes,
     `resources policy` for how long the workspace lets a workload keep what it
     took before reclaiming, `resources usage` for who is holding what is
@@ -24,9 +24,10 @@ def resources() -> None:
     under each workload group: `notebook quota`, `job quota`, `hpc quota`,
     `ray quota`, and `serving quota`.
 
-    Every command here reads a fact that the platform declares per workspace,
-    so each takes one workspace name. Comparing two workspaces means running it
-    twice.
+    Availability, nodes, policy and usage read facts declared per workspace,
+    so each takes one workspace name and comparing two means running it twice.
+    Node events are cluster facts keyed directly by one or more node names and
+    therefore take no workspace option.
 
     \b
     Examples:

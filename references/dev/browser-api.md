@@ -532,7 +532,7 @@ Referer：`/jobs/distributedTraining`。
 | `ListLogicComputeGroups` | `{page_size: -1, page_num: 1, filter:{workspace_id}}` | `{logic_compute_groups[], total}` | `resources availability`、`<workload> quota`、每个 create 的组解析 |
 | `ListNodeDimension` | `{filter:{workspace_id, logic_compute_group_id}, PageNumber, page_size}` | `{node_dimensions[], total}` | `resources availability`、`resources nodes` |
 | `ListTaskDimension` | `{filter:{workspace_id, logic_compute_group_id?}, PageNumber, page_size}` | `{task_dimensions[], total}` | `resources usage --by task\|project`、`resources nodes` 的低优任务归类 |
-| `ListUserDimension` | `{filter:{workspace_id}, PageNumber, page_size}` | `{user_dimensions[], total}` | `resources usage --mine` |
+| `ListUserDimension` | `{filter:{workspace_id, user_id?}, PageNumber, page_size}` | `{user_dimensions[], total}` | `resources usage --mine`（显式传当前用户） |
 | `GetLogicComputeGroupNodeSpecs` | `{workspace_id, logic_compute_group_id}` | `{node_specs[]}` | `resources nodes` |
 | `GetWorkspaceNodeSpecs` | `{workspace_id}` | `{node_specs[]}` | `resources nodes` |
 | `GetLogicComputeGroupResource` | `{workspace_id, logic_compute_group_id}` | `{logic_resouces{}, gpu_type_stats[], runtime_attributes[]}` | `resources availability` |
@@ -542,15 +542,15 @@ Referer：`/jobs/distributedTraining`。
 
 | 项 | 事实 | 后果 |
 | --- | --- | --- |
-| `ListNodeEvents` 的 filter | `filter.node_names` 事实上必填：不给 filter 答 `{events: [], total: 0}`；节点名不认识同样是空列表而不是报错。`filter.from` 按上报组件收窄有效；`event_type` / `type` / `keyword` 全是 `unknown field`；discovery 声明的 `start_last_timestamp` / `end_last_timestamp` 答 `InternalError` | 空列表与「这个集群很安静」不可区分。行的类型字段叫 **`event_type`**，也**没有 `count`**；时间窗只能在客户端做。一次可给多个节点，行里带 `node_name` 自己署名 |
+| `ListNodeEvents` 的 filter | `filter.node_names` 事实上必填：不给 filter 答 `{events: [], total: 0}`；节点名不认识同样是空列表而不是报错。`filter.from` 按上报组件收窄有效；`event_type` / `type` / `keyword` 全是 `unknown field`；discovery 声明的 `start_last_timestamp` / `end_last_timestamp` 答 `InternalError` | 空列表与「这个集群很安静」不可区分。行的类型字段叫 **`event_type`**，也**没有 `count`**；一次可给多个节点，行里带 `node_name` 自己署名。命令倒序读取最新 1000 行再恢复时间正序，避免固定页预算截掉最近事件；`--from` 服务端过滤，`--type` / `--reason` 在这 1000 行内过滤 |
 | 它覆盖的信号 | 内核 OOM kill、`TaskHung`、Cordon / Uncordon、`Rebooted`、`NodeNotSchedulable` | 平台上唯一按节点组织的事件源 |
 | `ListNodeDimension` 的两级 scoping | `filter` 里只放 `logic_compute_group_id` 返回 `AccessForbidden`，同时放 `workspace_id` 和 `logic_compute_group_id` 才通 | 最容易踩的一处 |
-| 维度族的 scoping | 只认嵌套 `filter.workspace_id`：顶层被拒为 `unknown field`，缺 workspace 则 `AccessForbidden`。`filter.logic_compute_group_id` 可选且真收窄；`filter.task_type` 被**静默忽略**，`task_name_keyword` / `gpu_type` 有效 | — |
-| 维度族的分页 | `page_size: -1` 和省略都只回 10 行，即使 `total` 更大，必须按 `total` 显式翻页。正整数 `5000` 可用，Wrapper 以此为默认页并继续按 `total` 翻页；三种分页拼法都认，`total` 是 int | — |
+| 维度族的 scoping | 只认嵌套 `filter.workspace_id`：顶层被拒为 `unknown field`，缺 workspace 则 `AccessForbidden`。`filter.logic_compute_group_id` 可选且真收窄；`ListUserDimension.filter.user_id` 是单个字符串，省略会返回 Workspace 全员而不是当前用户。`filter.task_type` 被**静默忽略**，`task_name_keyword` / `gpu_type` 有效 | `resources usage --mine` 必须先解析当前用户 id 再发送；不带会把别人的占用冒充成“我的” |
+| 维度族的分页 | `page_size: -1` 和省略都只回 10 行，即使 `total` 更大，必须按 `total` 显式翻页。正整数 `5000` 可用，Wrapper 以此为默认页并继续按 `total` 翻页；服务端短页不代表结束，节点和任务行跨页按 id 去重。超过安全页数而仍未读满 `total` 时抛错，不返回静默截断的资源事实；三种分页拼法都认，`total` 是 int | — |
 | 维度族的排序 | `order_by` 元素是 `{field, sort}` 而不是 `{field, order}`，只有 `created_at` 被采纳且 `sort` 被忽略（恒升序），`{"field":"gpu"}` / `{"field":"cpu"}` 直接 `InternalError` | **排序只能在客户端做** |
 | 维度行的内容 | 只含存活工作负载（`RUNNING` 加短暂的 `COMMITTING`），覆盖所有用户与所有 Workload 类型。**`gpu.used` 是死字段（恒 0）**，但 `gpu.usage_rate` / `cpu.usage_rate` 是活的 0–1 比率 | TensorBoard 不在维度里（`train.GetLcgUsedComputeResourceJobs` 才有），不过它一张卡都不占 |
 | 两把优先级刻度 | `task_dimensions[].priority` 是**提交值**，`resources usage` 的 `Reclaimable` 用它；`train.GetJob` 回的是平台内部**存储值**并另带 `priority_level` | 两者不是同一刻度，也没有公共换算合同；CLI 不做反查，`job status` 原样回显存储值并同时给出 `priority_level` |
-| 节点行的 GPU 数 | 嵌在 `gpu{total, used, available}` 里，不是扁平 `gpu_count`；公平调度透支时单节点的 `used` 也可能大于 `total`，`available` 因而可为负 | 只读扁平键会让每个节点看起来都是零卡；把 `available` 当物理空卡又会让节点表出现负数。`resources nodes` 的 `Idle GPUs` 只按完全空闲整节点乘 8 |
+| 节点行的 GPU 数 | 嵌在 `gpu{total, used, available}` 里，不是扁平 `gpu_count`；公平调度透支时单节点的 `used` 也可能大于 `total`，甚至在 8 卡物理节点上报 16，`available` 因而可为负 | `max(total, used)>0` 可以补回零保障但正在使用的 GPU 节点，却不能拿 `used` 推物理规格；单机卡数只取 `total` / NodeSpecs。把 `available` 当物理空卡又会让节点表出现负数，`resources nodes` 的 `Idle GPUs` 只按完全空闲整节点乘 8 |
 | 任务关联容器 | Live `tasks_associated` 是 `{count, tasks:[{id, name, task_type, …}]}`，不是裸列表；兼容数据也可能在 `task_list` 给裸列表 | 直接判断字典真假会让 `{count:0, tasks:[]}` 永远算“有任务”，把真空闲节点全部隐藏 |
 | 「完全空闲」的判据 | `status=READY` + 任务关联 `count=0` + `gpu.used=0` + 无 `cordon_type` + 非 `is_maint` + `resource_pool != fault`，六项同时成立 | 少判一项就会把调度不上去或分配信息尚未收敛的节点算成空闲 |
 | 清退后的整节点 | NodeDimension 不带优先级；用 `tasks_associated.tasks[].id` 关联同 Workspace 的 `task_dimensions[].id`，只有节点上每个已声明任务都可见且提交优先级为低，才计入 `High Pri` | 混合高低优、缺 id、提交优先级为 0（未知）或两次 Live 快照间发生变化时都保守地不计入 |

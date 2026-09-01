@@ -28,14 +28,18 @@ from inspire.cli.utils.events import (
 )
 from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.platform.web.session import (
+    AuthenticationError,
+    SessionExpiredError,
+    get_web_session,
+)
 
 _NODE_EVENT_PAGE_SIZE = 200
-_NODE_EVENT_MAX_PAGES = 5
+_NODE_EVENT_MAX_PAGES = 5  # newest 1,000 rows; see command help
 
 
 @click.command("node-events")
-@click.argument("nodes", metavar="NODE", nargs=-1, required=True)
+@click.argument("nodes", metavar="NODE...", nargs=-1, required=True)
 @click.option(
     "--from",
     "from_filter",
@@ -97,7 +101,9 @@ def node_events(
     hpc instances`, or `inspire notebook status`. Several nodes answer in one
     merged timeline with a `Node` column. A node the cluster does not know is
     not an error — it simply has no events, so check the spelling before
-    reading silence as a healthy node.
+    reading silence as a healthy node. The command scans the newest 1,000
+    events; `--from` is applied by the platform before that window, while
+    `--type` and `--reason` filter the scanned rows locally.
 
     \b
     Examples:
@@ -107,13 +113,19 @@ def node_events(
       inspire resources node-events qb-prod-4090-gpu040 --from kernel-monitor
       inspire --json resources node-events qb-prod-4090-gpu040
     """
+    if follow and ctx.json_output:
+        raise click.UsageError(
+            "--json --follow is not supported for events. Drop --json to follow, "
+            "or drop --follow for a one-shot JSON fetch."
+        )
+
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)
         session = get_web_session()
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
         return
-    except SessionExpiredError as e:
+    except (AuthenticationError, SessionExpiredError) as e:
         _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
         return
 
@@ -125,22 +137,18 @@ def node_events(
                 list(nodes),
                 page_size=_NODE_EVENT_PAGE_SIZE,
                 max_pages=_NODE_EVENT_MAX_PAGES,
+                sort_ascending=False,
+                from_component=component or None,
                 session=session,
             )
-        except SessionExpiredError as e:
+        except (AuthenticationError, SessionExpiredError) as e:
             _handle_error(ctx, "AuthenticationError", str(e), EXIT_AUTH_ERROR)
             return []
         except Exception as e:  # noqa: BLE001
             _handle_error(ctx, "APIError", str(e), EXIT_API_ERROR)
             return []
-        if component:
-            events = [
-                event
-                for event in events
-                if component in str(event.get("from") or "").lower()
-            ]
-        # Several nodes are concatenated by the platform in filter order, so
-        # the chronology that makes `--tail` mean "most recent" is imposed here.
+        # The API is read newest-first so a bounded scan cannot discard the
+        # recent tail; renderers still need oldest-first chronology.
         return sorted(events, key=event_sort_key)
 
     run_events_command(
