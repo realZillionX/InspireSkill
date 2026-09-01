@@ -463,6 +463,8 @@ def run_job_create(
     help=(
         "Resource quota as 'gpu,cpu,mem' (mem in GiB). "
         "Example: '4,80,800' for 4 GPU + 80 CPU + 800 GiB. "
+        "When --nodes is greater than 1, select an 8-GPU quota: every node "
+        "must be a full 8-GPU node. "
         "The triple must match a quota row in the workspace (see 'inspire job quota'); "
         "pass --group <full compute group name> to disambiguate."
     ),
@@ -583,7 +585,11 @@ def run_job_create(
     type=click.IntRange(1),
     default=1,
     show_default=True,
-    help="Number of nodes for multi-node training.",
+    help=(
+        "Number of nodes. Values greater than 1 require a full 8-GPU quota "
+        "on every node, for nodes x 8 GPUs total. Multi-node layouts with "
+        "2, 4, or 6 GPUs per node are not supported."
+    ),
 )
 @click.option(
     "--exclude-node",
@@ -657,6 +663,11 @@ def create(
     distributed training, batch inference, or a fixed GPU worker pool.
     Program output is available through the platform log API. For a custom
     shared-file log, redirect the command to an explicit ``/inspire/...`` path.
+
+    Multi-node jobs only support full 8-GPU nodes. With ``--nodes N`` where
+    N is greater than 1, the selected quota must provide 8 GPUs per node and
+    the job uses N x 8 GPUs total. N x 2, N x 4, and N x 6 layouts are not
+    supported.
 
     \b
     Examples:

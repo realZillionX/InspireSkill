@@ -35,6 +35,7 @@ Job 覆盖 GPU 多节点工作负载，包括分布式训练、批量推理和�
 
 Job 的关键边界：
 
+- **多节点 Job 只能按 8 卡满节点提交。** `--nodes n`（`n > 1`）时，每个节点选择的 `--quota` 必须是 8 GPU 规格，任务总规模固定为 `n × 8` 卡；平台不支持每节点只用 2 / 4 / 6 卡的 `n × 2`、`n × 4`、`n × 6` 多节点 Job。单节点 Job 不受这条限制。
 - CLI 不在 Job 启动命令前注入 `cd`：命令保留平台或镜像的初始工作目录。依赖固定目录时，让启动命令显式 `cd /inspire/...`。Notebook `exec` / `shell --cwd` 同样只接受绝对远端路径，需要缩写时由本地 shell 环境变量展开。
 - Shared Memory 是每个 Job Instance 的 `/dev/shm` / IPC 资源，不等同于 `--quota gpu,cpu,mem` 里的 `mem`，但不能超过该 `mem`。PyTorch DataLoader Workers、多进程数据管线或大模型训练需要更大 `/dev/shm` 时，用 `--shm-size <GiB>` 显式设置。
 - 环境变量由平台注入，不必再拼进启动命令；值可能是凭据，CLI 输出只回显变量名。
@@ -48,7 +49,7 @@ Job 的关键边界：
 
 优先级合同——公平调度 Workspace 只接受 `1=LOW`（可抢占）或 `4=HIGH`（默认，稳定档），其他 Workspace 是 `1–10`（默认 10），项目策略还可能再压低一档——见 [`resources.md`](resources.md)。任务需要稳定训练但 Status 显示 LOW 时，先 stop，再按当前 Workspace 和项目策略重提。
 
-平台还会逐行限制 Quota 能用的优先级，`job quota` 的 `Priority` 列显示这条声明：`low` 的行只接受 `--priority 1`（可抢占），`any` 不受这层限制，`unknown` 表示这次没读到。`job create` 在发出创建请求前按这一列预检并说明改法，细节见 [`resources.md`](resources.md)。限制按每个 Job Instance 的 Quota 判断，不按 `quota.gpu × --nodes` 的总卡数判断；例如 2 个 4 GPU Instance 仍是两个碎卡实例。提交后用 Status / Events 核实解析后的优先级和调度结果。
+平台还会逐行限制 Quota 能用的优先级，`job quota` 的 `Priority` 列显示这条声明：`low` 的行只接受 `--priority 1`（可抢占），`any` 不受这层限制，`unknown` 表示这次没读到。`job create` 在发出创建请求前按这一列预检并说明改法，细节见 [`resources.md`](resources.md)。限制按每个 Job Instance 的 Quota 判断，不按 `quota.gpu × --nodes` 的任务总卡数判断；多节点 Job 的每个 Instance 固定使用一条 8 GPU 满节点 Quota，例如 `--nodes 2` 是两个 8 卡 Instance、总计 16 卡。提交后用 Status / Events 核实解析后的优先级和调度结果。
 
 ## 4. HPC
 

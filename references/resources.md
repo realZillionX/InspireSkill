@@ -31,7 +31,7 @@
 
 1. 先看账号当前可见的 Workspace、Project 和 Compute Group 名字。
 2. 按 Workload 类型查对应 Quota：CPU Notebook / HPC / CPU Ray 在 `CPU资源空间`，GPU Notebook / Job / Serving 在 `分布式训练空间`。
-3. 用实时 Availability 判断空余；多节点 GPU 任务再看整节点空闲。
+3. 用实时 Availability 判断空余；多节点 Job 只能按每节点 8 卡提交，再用 `resources nodes` 看 8 卡整节点空闲数。
 4. 创建命令里的 `--group` 使用完整 Compute Group 名称；查询命令里的 Group Filter 可以用关键词收窄候选。
 
 `resources availability`、`resources nodes` 和各 Workload 的 `quota` 是资源事实入口；具体参数和输出以 CLI Help 为准。
@@ -109,7 +109,7 @@ Workload 历史目录超过 5000 行时不会硬扫：刷新器按平台报告�
 
 `job` / `notebook` / `serving` 的 `create` 在发出创建请求前按这一列预检：所选行只接受低优先级而 `--priority` 更高时直接报错并说明改法；`unknown` 不阻断创建，因为一次读取失败不等于平台拒绝。
 
-限制按每个 Workload 实例或节点选择的 Quota 判断，不按任务聚合后的 GPU 总数判断。比如每节点 4 GPU、`--nodes 2` 仍是两个碎卡实例，不会因为总计 8 GPU 变成整节点请求；`--nodes` 只放大实例数，不改变单行 Quota 的调度语义。
+限制按每个 Workload 实例或节点选择的 Quota 判断，不按任务聚合后的 GPU 总数判断。对于 Job，`--nodes n`（`n > 1`）只接受每个节点 8 GPU 的满节点 Quota，因此总规模只能是 `n × 8`；不能用 2 / 4 / 6 GPU Quota 创建 `n × 2`、`n × 4`、`n × 6` 多节点任务。`--nodes` 只放大 8 卡 Instance 数，不会把碎卡规格合并成多节点请求。
 
 限制可能随 Workspace、Compute Group、Workload 与单实例规格变化；碎卡和整节点行也不保证使用相同策略。不要从 Group 名称或 GPU 数量猜，创建前始终以目标 Workload 的 Live `<workload> quota` `Priority` 列为准。
 

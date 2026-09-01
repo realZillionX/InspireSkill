@@ -68,6 +68,17 @@ def test_job_logs_help_positions_platform_as_default() -> None:
     assert "Platform logs are the default" in output
 
 
+def test_job_create_help_states_full_node_multi_node_constraint() -> None:
+    result = CliRunner().invoke(cli_main, ["job", "create", "--help"])
+    output = _one_line(result.output)
+
+    assert result.exit_code == 0
+    assert "Multi-node jobs only support full 8-GPU nodes." in output
+    assert "the job uses N x 8 GPUs total" in output
+    assert "N x 2, N x 4, and N x 6 layouts are not supported" in output
+    assert "Values greater than 1 require a full 8-GPU quota on every node" in output
+
+
 def test_instances_help_uses_required_workspace_and_limit() -> None:
     for group in ("job", "ray", "hpc"):
         result = CliRunner().invoke(cli_main, [group, "instances", "--help"])
