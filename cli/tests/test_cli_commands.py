@@ -1575,6 +1575,11 @@ def test_nodes_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             )
         ],
     )
+    monkeypatch.setattr(
+        browser_api_module,
+        "list_task_usage",
+        lambda _workspace_id, **_kwargs: [],
+    )
     # Also mock get_accurate_resource_availability which is called by the nodes command
     monkeypatch.setattr(
         browser_api_module,
@@ -1614,7 +1619,10 @@ def test_nodes_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
                 "total_nodes": 10,
                 "ready_nodes": 8,
                 "full_free_nodes": 3,
-                "full_free_gpus": 12,
+                "reclaimable_nodes": 0,
+                "high_priority_free_nodes": 3,
+                "full_free_gpus": 24,
+                "high_priority_free_gpus": 24,
                 "node_specs": [],
             }
         ]

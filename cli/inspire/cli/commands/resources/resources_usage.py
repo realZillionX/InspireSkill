@@ -63,6 +63,7 @@ from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import MemberUsage, TaskUsage
 from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.task_priority import is_preemptible_task_priority
 
 _REDACTED_ID_RE = re.compile(r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)")
 
@@ -86,31 +87,6 @@ def _fair_scheduling_or_unknown(session: Any, workspace_id: str) -> Optional[boo
         return is_fair_scheduling_workspace(session, workspace_id)
     except Exception:
         return None
-
-
-def _is_low_priority(priority: int, *, fair_scheduling: bool) -> bool:
-    """Whether a task was submitted at a priority a higher one can preempt.
-
-    Two contracts, matching `--priority`: a fair-scheduling workspace takes
-    1=LOW or 4=HIGH and collapses anything under 4 to LOW, everywhere else the
-    scale is 1..10 and the platform's own group-level low-priority figure was
-    reproduced exactly by ``<= 3`` across every group of a non-fair workspace.
-
-    ``0`` means the row carried no priority, which is not "low" — treating an
-    unanswered field as preemptible would invent capacity nobody can take.
-
-    This is the priority the task was **submitted** at, so it says what the
-    holder asked for, not what the scheduler currently treats it as. The
-    per-group authority on how much is actually preemptible stays
-    `resources availability`'s `Reclaimable`, which the platform computes
-    itself. The two agreed exactly across every group of a non-fair
-    workspace and did not in a fair-scheduling one, where the residual also
-    moved between calls, so this column attributes holdings by what was
-    asked for and does not claim to reproduce that total.
-    """
-    if priority <= 0:
-        return False
-    return priority < 4 if fair_scheduling else priority <= 3
 
 
 def _amount(value: float) -> str:
@@ -153,7 +129,7 @@ def _rollup(
             },
         )
         bucket["gpus"] += task.gpus
-        if fair_scheduling is not None and _is_low_priority(
+        if fair_scheduling is not None and is_preemptible_task_priority(
             task.priority, fair_scheduling=fair_scheduling
         ):
             bucket["low_priority_gpus"] += task.gpus

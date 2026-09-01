@@ -49,6 +49,12 @@ class FullFreeNodeCount:
     total_nodes: int
     ready_nodes: int
     full_free_nodes: int
+    reclaimable_nodes: int = 0
+
+    @property
+    def high_priority_free_nodes(self) -> int:
+        """Whole nodes usable after preempting exclusively low-priority occupants."""
+        return int(self.full_free_nodes) + int(self.reclaimable_nodes)
 
 
 @dataclass(frozen=True)

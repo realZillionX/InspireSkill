@@ -196,6 +196,11 @@ def _patch_nodes_command(
     monkeypatch.setattr(nodes_module, "get_web_session", lambda: _Session())
     monkeypatch.setattr(
         nodes_module.browser_api_module,
+        "list_task_usage",
+        lambda _workspace_id, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        nodes_module.browser_api_module,
         "get_accurate_resource_availability",
         lambda **_: [
             GPUAvailability(

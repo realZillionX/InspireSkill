@@ -649,22 +649,78 @@ def _node_gpu_total(node: dict) -> int:
         return 0
 
 
-def _node_is_schedulable_and_idle(node: dict) -> bool:
-    """Whether a node row can actually take a new whole-node workload.
+def _node_gpu_used(node: dict) -> int:
+    gpu = node.get("gpu")
+    if not isinstance(gpu, dict):
+        return 0
+    try:
+        return int(gpu.get("used") or 0)
+    except (TypeError, ValueError):
+        return 0
 
-    ``READY`` with no tasks is not enough: a cordoned, under-maintenance, or
-    faulted node keeps reporting idle cards it will never schedule onto, so
-    counting it inflates every "can I fit N whole nodes" answer.
+
+def _node_task_associations(node: dict) -> tuple[tuple[dict, ...], int]:
+    """Return visible task rows and the platform-declared association count.
+
+    Live ``tasks_associated`` is a container shaped like
+    ``{"count": N, "tasks": [...]}``, not the task list itself.  Treating the
+    container's keys as occupants makes even ``count=0`` truthy and therefore
+    hides every genuinely idle node.  Older fixtures and responses can still
+    carry a bare list under ``task_list``, so both shapes remain readable.
+
+    The declared count is kept separate from the visible rows: if the platform
+    says tasks exist but omits their identities, callers must classify the
+    node as busy with unknown priority rather than free or reclaimable.
+    """
+    entries: list[dict] = []
+    declared_count = 0
+    for key in ("task_list", "tasks_associated"):
+        raw = node.get(key)
+        if isinstance(raw, list):
+            visible = [item for item in raw if isinstance(item, dict)]
+            entries.extend(visible)
+            declared_count = max(declared_count, len(raw))
+            continue
+        if not isinstance(raw, dict):
+            continue
+        tasks = raw.get("tasks")
+        visible = (
+            [item for item in tasks if isinstance(item, dict)]
+            if isinstance(tasks, list)
+            else []
+        )
+        entries.extend(visible)
+        try:
+            count = int(raw.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        declared_count = max(declared_count, count, len(visible))
+    return tuple(entries), declared_count
+
+
+def _node_is_schedulable(node: dict) -> bool:
+    """Whether scheduler state permits placing a workload on this node.
+
+    ``READY`` alone is not enough: a cordoned, under-maintenance, or faulted
+    node keeps reporting idle cards it will never schedule onto.
     """
     if str(node.get("status") or "").upper() != "READY":
-        return False
-    if node.get("task_list") or node.get("tasks_associated"):
         return False
     if str(node.get("cordon_type") or "").strip():
         return False
     if bool(node.get("is_maint", False)):
         return False
     return str(node.get("resource_pool") or "").lower() != "fault"
+
+
+def _node_is_schedulable_and_idle(node: dict) -> bool:
+    """Whether a node can take work now and holds no allocation."""
+    _tasks, declared_count = _node_task_associations(node)
+    return (
+        _node_is_schedulable(node)
+        and declared_count == 0
+        and _node_gpu_used(node) == 0
+    )
 
 
 def _compute_node_summary(nodes: list[dict]) -> dict[str, int]:
@@ -883,19 +939,27 @@ def get_full_free_node_counts(
     gpu_per_node: int = 8,
     workspace_id_by_group: Optional[dict[str, str]] = None,
     node_dimensions_by_group: Optional[dict[str, list[dict]]] = None,
+    low_priority_task_ids: Optional[set[str]] = None,
     session: Optional[WebSession] = None,
 ) -> list[FullFreeNodeCount]:
-    """Get per-group counts of fully-free nodes.
+    """Get per-group whole-node capacity now and after low-priority preemption.
 
     Backed by ``workspace.ListNodeDimension``, which ordinary members can read
     — the admin-only node listings cannot, and reading one of those is how the
     free-node column silently read zero for them.
+
+    Node rows do not carry priority.  The caller may therefore pass task ids
+    classified from the same workspace's live ``ListTaskDimension`` response.
+    A busy node is reclaimable only when every declared occupant is visible,
+    has a stable task id, and belongs to that set.  Churn or missing priority is
+    deliberately conservative.
     """
     if session is None:
         session = get_web_session()
 
     by_group = dict(workspace_id_by_group or {})
     prefetched_nodes = dict(node_dimensions_by_group or {})
+    low_task_ids = set(low_priority_task_ids or set())
     fallback_workspace = str(getattr(session, "workspace_id", "") or "").strip()
     results: list[FullFreeNodeCount] = []
 
@@ -916,6 +980,7 @@ def get_full_free_node_counts(
             total_nodes = len(nodes)
             ready_nodes = 0
             full_free_nodes = 0
+            reclaimable_nodes = 0
             group_name = ""
 
             for node in nodes:
@@ -926,12 +991,22 @@ def get_full_free_node_counts(
                     continue
                 ready_nodes += 1
 
-                # A node counts as fully free only when every card is idle and
-                # the scheduler can still place work on it.
-                if _node_gpu_total(node) == gpu_per_node and _node_is_schedulable_and_idle(
-                    node
-                ):
+                if _node_gpu_total(node) != gpu_per_node or not _node_is_schedulable(node):
+                    continue
+
+                tasks, declared_count = _node_task_associations(node)
+                if declared_count == 0 and _node_gpu_used(node) == 0:
                     full_free_nodes += 1
+                    continue
+
+                task_ids = tuple(str(task.get("id") or "").strip() for task in tasks)
+                if (
+                    low_task_ids
+                    and declared_count == len(tasks)
+                    and task_ids
+                    and all(task_id and task_id in low_task_ids for task_id in task_ids)
+                ):
+                    reclaimable_nodes += 1
 
             results.append(
                 FullFreeNodeCount(
@@ -941,6 +1016,7 @@ def get_full_free_node_counts(
                     total_nodes=total_nodes,
                     ready_nodes=ready_nodes,
                     full_free_nodes=full_free_nodes,
+                    reclaimable_nodes=reclaimable_nodes,
                 )
             )
 
@@ -948,7 +1024,10 @@ def get_full_free_node_counts(
         # Already refreshed once inside request_json(); never start another.
         raise
 
-    results.sort(key=lambda r: r.full_free_nodes, reverse=True)
+    results.sort(
+        key=lambda r: (r.high_priority_free_nodes, r.full_free_nodes),
+        reverse=True,
+    )
     return results
 
 

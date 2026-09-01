@@ -26,6 +26,11 @@ _NODE_SPEC = NodeSpec(
 def _patch_node_specs(monkeypatch: pytest.MonkeyPatch, nodes_module) -> None:
     monkeypatch.setattr(
         nodes_module.browser_api_module,
+        "list_task_usage",
+        lambda _workspace_id, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        nodes_module.browser_api_module,
         "list_node_specs",
         lambda _workspace_id, **_kwargs: [_NODE_SPEC],
     )
@@ -96,7 +101,8 @@ def test_resources_nodes_filters_and_returns_compact_json(
                 gpu_per_node=gpu_per_node,
                 total_nodes=8,
                 ready_nodes=8,
-                full_free_nodes=6,
+                full_free_nodes=1,
+                reclaimable_nodes=1,
             ),
             FullFreeNodeCount(
                 group_id="cg-22222222-2222-2222-2222-222222222222",
@@ -128,6 +134,11 @@ def test_resources_nodes_filters_and_returns_compact_json(
     payload = json.loads(result.output)
     data = payload["data"]
     assert [row["compute_group"] for row in data["items"]] == ["H200-2号机房"]
+    assert data["items"][0]["full_free_nodes"] == 1
+    assert data["items"][0]["reclaimable_nodes"] == 1
+    assert data["items"][0]["high_priority_free_nodes"] == 2
+    assert data["items"][0]["full_free_gpus"] == 8
+    assert data["items"][0]["high_priority_free_gpus"] == 16
     assert data["items"][0]["workspace"] == "Default WS"
     assert "group" not in data["items"][0]
     assert set(data) == {"items"}
@@ -173,6 +184,7 @@ def test_resources_nodes_human_scrubs_raw_ids(
                 total_nodes=8,
                 ready_nodes=8,
                 full_free_nodes=6,
+                reclaimable_nodes=2,
             )
         ],
     )

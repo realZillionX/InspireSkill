@@ -29,7 +29,9 @@ from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NodeSpec
+from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
 from inspire.platform.web.session import SessionExpiredError, get_web_session
+from inspire.task_priority import is_preemptible_task_priority
 
 _REDACTED_ID_RE = re.compile(
     r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)"
@@ -60,7 +62,10 @@ def _public_group(row: dict) -> dict[str, object]:
         "total_nodes": row["total_nodes"],
         "ready_nodes": row["ready_nodes"],
         "full_free_nodes": row["full_free_nodes"],
+        "reclaimable_nodes": row["reclaimable_nodes"],
+        "high_priority_free_nodes": row["high_priority_free_nodes"],
         "full_free_gpus": row["full_free_gpus"],
+        "high_priority_free_gpus": row["high_priority_free_gpus"],
         "node_specs": row["node_specs"],
     }
 
@@ -97,8 +102,8 @@ def _public_spec(spec: NodeSpec) -> dict[str, object]:
     default=0,
     show_default=True,
     help=(
-        "Only show groups with at least N fully idle 8-GPU nodes. "
-        "Use before multi-node jobs that need whole nodes, not scattered GPUs."
+        "Only show groups with at least N whole 8-GPU nodes available to a "
+        "high-priority job after low-priority preemption."
     ),
 )
 @click.option(
@@ -118,10 +123,14 @@ def list_nodes(
     limit: int | None,
     show_all: bool,
 ) -> None:
-    """Show how many whole 8-GPU nodes are currently free per compute group.
+    """Show whole 8-GPU node capacity now and after low-priority preemption.
 
-    This accounts for GPU fragmentation across nodes, so it is the right view
-    when a workload needs whole nodes instead of scattered free GPUs.
+    `Free Now` counts schedulable nodes with no task or GPU allocation. `High
+    Pri` also counts nodes whose every occupant was submitted at a preemptible
+    priority. Unknown or mixed-priority occupants are never treated as free.
+    `Idle GPUs` is exactly `Free Now * 8`, so quota overcommit cannot make it
+    negative. Use `resources availability` for guarantee-level GPU capacity.
+    This view is for whole-node placement, not scattered GPUs.
 
     `Node Spec` is the largest single node the group can schedule onto, which
     is the ceiling a `--quota gpu,cpu,mem` triple has to fit under. Groups with
@@ -167,7 +176,6 @@ def list_nodes(
             session=session,
             include_cpu=False,
         )
-        accurate_map = {a.group_id: a.available_gpus for a in accurate_availability}
         name_map = {a.group_id: a.group_name for a in accurate_availability}
         workspace_map = {
             a.group_id: a.workspace_name or workspace_names.get(a.workspace_id, "")
@@ -176,6 +184,19 @@ def list_nodes(
 
         group_ids = [a.group_id for a in accurate_availability]
         workspace_id_map = {a.group_id: a.workspace_id for a in accurate_availability}
+        fair_scheduling = is_fair_scheduling_workspace(session, workspace_id)
+        low_priority_task_ids = {
+            task.task_id
+            for task in browser_api_module.list_task_usage(
+                workspace_id,
+                session=session,
+            )
+            if task.task_id
+            and is_preemptible_task_priority(
+                task.priority,
+                fair_scheduling=fair_scheduling,
+            )
+        }
         counts = browser_api_module.get_full_free_node_counts(
             group_ids,
             gpu_per_node=8,
@@ -184,6 +205,7 @@ def list_nodes(
                 item.group_id: list(item.node_dimensions)
                 for item in accurate_availability
             },
+            low_priority_task_ids=low_priority_task_ids,
             session=session,
         )
 
@@ -194,10 +216,8 @@ def list_nodes(
             name = c.group_name or name_map.get(c.group_id, "") or "Unknown"
             if group_lower and group_lower not in name.lower():
                 continue
-            if c.full_free_nodes < min_nodes:
+            if c.high_priority_free_nodes < min_nodes:
                 continue
-            # Use accurate available GPUs if available, otherwise fall back to computed
-            free_gpus = accurate_map.get(c.group_id, c.full_free_nodes * c.gpu_per_node)
             # Free-node counts say how much is idle but never what the idle
             # hardware is, so a `--quota gpu,cpu,mem` triple could not be
             # checked against the group it would be submitted to.
@@ -215,17 +235,23 @@ def list_nodes(
                     "total_nodes": c.total_nodes,
                     "ready_nodes": c.ready_nodes,
                     "full_free_nodes": c.full_free_nodes,
-                    "full_free_gpus": free_gpus,
+                    "reclaimable_nodes": c.reclaimable_nodes,
+                    "high_priority_free_nodes": c.high_priority_free_nodes,
+                    "full_free_gpus": c.full_free_nodes * c.gpu_per_node,
+                    "high_priority_free_gpus": (
+                        c.high_priority_free_nodes * c.gpu_per_node
+                    ),
                     "node_specs": [_public_spec(spec) for spec in specs],
                     "node_spec_label": specs[0].label if specs else "",
                 }
             )
 
-        # Sort by full_free_nodes descending
+        # Default job priority is high, so rank by the capacity that submission
+        # can actually obtain, then prefer capacity that needs no preemption.
         filtered.sort(
             key=lambda x: (
+                x["high_priority_free_nodes"],
                 x["full_free_nodes"],
-                x["full_free_gpus"],
                 x["ready_nodes"],
             ),
             reverse=True,
@@ -249,15 +275,24 @@ def list_nodes(
             click.echo("No compute groups match.")
             return
 
-        headers = ("Group", "Node Spec", "Full Free", "Ready", "Total", "Free GPUs")
-        widths = [25, 22, 10, 8, 8, 10]
-        aligns = ["left", "left", "right", "right", "right", "right"]
+        headers = (
+            "Group",
+            "Node Spec",
+            "Free Now",
+            "High Pri",
+            "Ready",
+            "Total",
+            "Idle GPUs",
+        )
+        widths = [25, 22, 9, 9, 7, 7, 9]
+        aligns = ["left", "left", "right", "right", "right", "right", "right"]
 
         table_rows: list[tuple[object, ...]] = [
             (
                 _display_name(row["group_name"]),
                 row["node_spec_label"] or "-",
                 row["full_free_nodes"],
+                row["high_priority_free_nodes"],
                 row["ready_nodes"],
                 row["total_nodes"],
                 row["full_free_gpus"],

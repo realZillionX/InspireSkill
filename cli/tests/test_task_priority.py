@@ -9,6 +9,7 @@ from inspire.platform.web.session.models import WebSession
 from inspire.task_priority import (
     TaskPriorityError,
     is_low_task_priority,
+    is_preemptible_task_priority,
     resolve_task_priority,
 )
 
@@ -93,6 +94,16 @@ def test_platform_values_below_high_are_low(priority: int) -> None:
 @pytest.mark.parametrize("priority", [4, 5, 10, None, "invalid"])
 def test_non_low_priorities_are_not_classified_as_low(priority: object) -> None:
     assert is_low_task_priority(priority) is False
+
+
+@pytest.mark.parametrize("fair_scheduling", [True, False])
+def test_only_known_submitted_low_priorities_are_preemptible(
+    fair_scheduling: bool,
+) -> None:
+    assert is_preemptible_task_priority(1, fair_scheduling=fair_scheduling) is True
+    assert is_preemptible_task_priority(3, fair_scheduling=fair_scheduling) is True
+    assert is_preemptible_task_priority(0, fair_scheduling=fair_scheduling) is False
+    assert is_preemptible_task_priority(4, fair_scheduling=fair_scheduling) is False
 
 
 @pytest.mark.parametrize("project_limit", ["", "invalid", True, 3.9])

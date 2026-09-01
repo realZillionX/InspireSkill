@@ -89,6 +89,24 @@ def is_low_task_priority(value: Any) -> bool:
     return 0 <= priority < FAIR_PRIORITY_HIGH
 
 
+def is_preemptible_task_priority(value: Any, *, fair_scheduling: bool) -> bool:
+    """Return whether a submitted task priority is safely reclaimable.
+
+    Task-dimension rows use ``0`` when the platform did not report a submitted
+    priority, so this predicate deliberately differs from
+    :func:`is_low_task_priority`, whose ``0`` handling is retained for legacy
+    quota records.  An unknown priority must never be advertised as capacity a
+    higher-priority workload can take.
+    """
+    try:
+        priority = int(value)
+    except (TypeError, ValueError):
+        return False
+    if priority <= 0:
+        return False
+    return priority < FAIR_PRIORITY_HIGH if fair_scheduling else priority <= 3
+
+
 __all__ = [
     "FAIR_PRIORITIES",
     "STANDARD_PRIORITY_MAX",
@@ -96,5 +114,6 @@ __all__ = [
     "TaskPriorityError",
     "default_task_priority",
     "is_low_task_priority",
+    "is_preemptible_task_priority",
     "resolve_task_priority",
 ]

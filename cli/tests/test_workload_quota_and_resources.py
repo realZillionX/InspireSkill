@@ -574,7 +574,7 @@ def test_resources_availability_human_hides_raw_group_ids(
     assert result.exit_code == 0, result.output
     assert "中文资源组" in result.output
     assert "Available" in result.output
-    assert "Reclaimable" in result.output
+    assert "High Pri" in result.output
     assert "Usage:" not in result.output
     assert "Legend:" not in result.output
     assert "lcg-secret-raw-id" not in result.output

@@ -189,6 +189,57 @@ def test_free_node_counts_reuse_prefetched_dimensions(monkeypatch) -> None:
     assert [(row.total_nodes, row.full_free_nodes) for row in counts] == [(2, 1)]
 
 
+def test_free_node_counts_parse_live_task_containers_and_reclaim_low_only_nodes(
+    monkeypatch,
+) -> None:
+    nodes = [
+        _node(
+            "free",
+            gpu={"total": 8, "used": 0},
+            tasks_associated={"count": 0, "tasks": []},
+        ),
+        _node(
+            "low-only",
+            gpu={"total": 8, "used": 8},
+            tasks_associated={"count": 1, "tasks": [{"id": "task-low"}]},
+        ),
+        _node(
+            "mixed",
+            gpu={"total": 8, "used": 8},
+            tasks_associated={
+                "count": 2,
+                "tasks": [{"id": "task-low"}, {"id": "task-high"}],
+            },
+        ),
+        _node(
+            "unknown",
+            gpu={"total": 8, "used": 8},
+            tasks_associated={"count": 1, "tasks": []},
+        ),
+        _node(
+            "allocation-lag",
+            gpu={"total": 8, "used": 8},
+            tasks_associated={"count": 0, "tasks": []},
+        ),
+    ]
+    monkeypatch.setattr(api, "list_node_dimension", lambda *_a, **_k: nodes)
+
+    summary = api._compute_node_summary(nodes)
+    assert summary["free_nodes"] == 1
+
+    counts = api.get_full_free_node_counts(
+        ["lcg-1"],
+        workspace_id_by_group={"lcg-1": "ws-1"},
+        low_priority_task_ids={"task-low"},
+        session=object(),  # type: ignore[arg-type]
+    )
+
+    assert len(counts) == 1
+    assert counts[0].full_free_nodes == 1
+    assert counts[0].reclaimable_nodes == 1
+    assert counts[0].high_priority_free_nodes == 2
+
+
 def test_availability_loads_compute_groups_with_bounded_concurrency(monkeypatch) -> None:
     groups = [
         {"logic_compute_group_id": f"lcg-{index}", "name": f"Group {index}"}

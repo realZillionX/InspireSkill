@@ -132,7 +132,7 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
                         "Compute Group",
                         "GPU",
                         "Available",
-                        "Reclaimable",
+                        "High Pri",
                         "Used",
                         "Total",
                         "Free Nodes",
