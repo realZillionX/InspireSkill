@@ -86,6 +86,31 @@ def test_task_dimension_scopes_workspace_inside_filter(
     assert seen[0]["page_size"] == api._DIMENSION_PAGE_SIZE == 5000
 
 
+def test_task_dimension_can_scope_user_and_project_inside_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[dict] = []
+
+    def _fake(_session, _method, _path, *, referer, body, timeout):
+        seen.append(body)
+        return {"Result": {"task_dimensions": [], "total": 0}}
+
+    monkeypatch.setattr(api, "_request_json", _fake)
+
+    api.list_task_usage(
+        "ws-1",
+        user_id="user-1",
+        project_id="project-1",
+        session=object(),  # type: ignore[arg-type]
+    )
+
+    assert seen[0]["filter"] == {
+        "workspace_id": "ws-1",
+        "user_id": "user-1",
+        "project_id": "project-1",
+    }
+
+
 def test_task_dimension_pages_against_total_not_page_size_minus_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -377,7 +402,15 @@ def test_usage_by_user_folds_shared_nodes_once(
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "resources", "usage", "--workspace", "Default WS"],
+        [
+            "--json",
+            "resources",
+            "usage",
+            "--workspace",
+            "Default WS",
+            "--by",
+            "user",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -419,12 +452,100 @@ def test_usage_by_user_weights_gpu_busy_by_cards_held(
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "resources", "usage", "--workspace", "Default WS"],
+        [
+            "--json",
+            "resources",
+            "usage",
+            "--workspace",
+            "Default WS",
+            "--by",
+            "user",
+        ],
     )
 
     assert result.exit_code == 0, result.output
     row = json.loads(result.output)["data"]["items"][0]
     assert row["gpu_usage_rate"] == 0.8
+
+
+def test_usage_defaults_to_project_user_attribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_command(
+        monkeypatch,
+        [
+            _task(name="vision-a", user="Ada", project="Vision", gpus=4, nodes=("n1",)),
+            _task(name="vision-b", user="Bo", project="Vision", gpus=8, nodes=("n2",)),
+            _task(name="speech-a", user="Ada", project="Speech", gpus=2, nodes=("n3",)),
+        ],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        ["--json", "resources", "usage", "--workspace", "Default WS"],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["by"] == "project-user"
+    rows = {(row["project"], row["user"]): row for row in data["items"]}
+    assert rows[("Vision", "Ada")]["gpus"] == 4
+    assert rows[("Vision", "Bo")]["gpus"] == 8
+    assert rows[("Speech", "Ada")]["gpus"] == 2
+
+
+def test_usage_project_filter_and_details_share_the_same_task_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_command(
+        monkeypatch,
+        [
+            _task(name="vision-a", user="Ada", project="Vision", gpus=4, nodes=("n1",)),
+            _task(name="speech-a", user="Ada", project="Speech", gpus=8, nodes=("n2",)),
+        ],
+    )
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "--json",
+            "resources",
+            "usage",
+            "--workspace",
+            "Default WS",
+            "--project",
+            "Vision",
+            "--details",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["by"] == "task"
+    assert data["filters"] == {"project": "Vision"}
+    assert [row["task"] for row in data["items"]] == ["vision-a"]
+
+
+def test_usage_rejects_ambiguous_details_and_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_command(monkeypatch, [])
+
+    result = CliRunner().invoke(
+        cli_main,
+        [
+            "resources",
+            "usage",
+            "--workspace",
+            "Default WS",
+            "--details",
+            "--by",
+            "user",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "either --details or --by" in result.output
 
 
 def test_usage_by_project_counts_distinct_users(

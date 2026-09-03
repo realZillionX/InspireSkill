@@ -1,7 +1,7 @@
 """`inspire resources usage` — who is holding the capacity right now.
 
-`resources availability` answers "how much is left" and `resources nodes`
-answers "how many whole nodes are idle". Neither answers "who took the rest",
+`resources availability` answers "how much is left", including whole-node
+capacity. It does not answer "who took the rest",
 which on a shared cluster is the question that decides whether to wait, ask, or
 submit somewhere else. This reads the live per-workload dimension and rolls it
 up by user, by project, or leaves it per task.
@@ -71,7 +71,7 @@ from inspire.task_priority import is_preemptible_task_priority
 
 _REDACTED_ID_RE = re.compile(r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)")
 
-_BY_CHOICES = ("user", "project", "task")
+_BY_CHOICES = ("project-user", "user", "project", "task")
 
 
 def _display_name(value: object, *, fallback: str = "-") -> str:
@@ -177,6 +177,87 @@ def _rollup(
     return rows
 
 
+def _project_user_rows(
+    tasks: list[TaskUsage],
+    *,
+    workspace: str,
+    fair_scheduling: Optional[bool],
+) -> list[dict[str, Any]]:
+    """Attribute every live allocation to one project and one user."""
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for task in tasks:
+        key = (task.project_name or "(unknown)", task.user_name or "(unknown)")
+        bucket = buckets.setdefault(
+            key,
+            {
+                "project": key[0],
+                "user": key[1],
+                "gpus": 0,
+                "low_priority_gpus": 0,
+                "cpus": 0.0,
+                "memory_gib": 0.0,
+                "nodes": set(),
+                "tasks": 0,
+                "_gpu_busy": 0.0,
+            },
+        )
+        bucket["gpus"] += task.gpus
+        if fair_scheduling is not None and is_preemptible_task_priority(
+            task.priority,
+            fair_scheduling=fair_scheduling,
+        ):
+            bucket["low_priority_gpus"] += task.gpus
+        bucket["cpus"] += task.cpus
+        bucket["memory_gib"] += task.memory_gib
+        bucket["nodes"].update(task.node_names)
+        bucket["tasks"] += 1
+        bucket["_gpu_busy"] += task.gpus * task.gpu_usage_rate
+
+    rows: list[dict[str, Any]] = []
+    for bucket in buckets.values():
+        gpus = bucket["gpus"]
+        rows.append(
+            {
+                "workspace": workspace,
+                "project": bucket["project"],
+                "user": bucket["user"],
+                "gpus": gpus,
+                "low_priority_gpus": (
+                    bucket["low_priority_gpus"] if fair_scheduling is not None else None
+                ),
+                "cpus": round(bucket["cpus"], 1),
+                "memory_gib": round(bucket["memory_gib"], 1),
+                "nodes": len(bucket["nodes"]),
+                "tasks": bucket["tasks"],
+                "gpu_usage_rate": round(bucket["_gpu_busy"] / gpus, 4) if gpus else None,
+            }
+        )
+    rows.sort(key=lambda row: (row["gpus"], row["nodes"], row["cpus"]), reverse=True)
+    return rows
+
+
+def _filter_tasks(
+    tasks: list[TaskUsage],
+    *,
+    project: Optional[str],
+    user: Optional[str],
+    task: Optional[str],
+) -> list[TaskUsage]:
+    """Apply visible-name filters before any aggregate is computed."""
+    needles = {
+        "project": (project or "").casefold(),
+        "user": (user or "").casefold(),
+        "task": (task or "").casefold(),
+    }
+    return [
+        item
+        for item in tasks
+        if (not needles["project"] or needles["project"] in item.project_name.casefold())
+        and (not needles["user"] or needles["user"] in item.user_name.casefold())
+        and (not needles["task"] or needles["task"] in item.name.casefold())
+    ]
+
+
 def _resolve_group_ids(
     *,
     session: Any,
@@ -279,6 +360,16 @@ def _render(
 
 
 _COLUMNS: dict[str, list[tuple[str, str, str]]] = {
+    "project-user": [
+        ("project", "Project", "left"),
+        ("user", "User", "left"),
+        ("gpus", "GPUs", "right"),
+        ("low_priority_gpus", "Reclaimable", "right"),
+        ("cpus", "CPUs", "right"),
+        ("memory_gib", "Mem GiB", "right"),
+        ("nodes", "Nodes", "right"),
+        ("tasks", "Tasks", "right"),
+    ],
     "user": [
         ("user", "User", "left"),
         ("gpus", "GPUs", "right"),
@@ -328,11 +419,29 @@ _COLUMNS: dict[str, list[tuple[str, str, str]]] = {
     "--by",
     "by",
     type=click.Choice(_BY_CHOICES, case_sensitive=False),
-    default=None,
-    help=(
-        "Roll live usage up by user or project, or list it per task "
-        "[default: user]."
-    ),
+    default="project-user",
+    show_default=True,
+    help="Choose a projection; the default attributes project quota to each user.",
+)
+@click.option(
+    "--project",
+    metavar="NAME",
+    help="Only include tasks whose project name contains this text.",
+)
+@click.option(
+    "--user",
+    metavar="NAME",
+    help="Only include tasks whose user name contains this text.",
+)
+@click.option(
+    "--task",
+    metavar="NAME",
+    help="Only include tasks whose task name contains this text.",
+)
+@click.option(
+    "--details",
+    is_flag=True,
+    help="Expand the filtered Project/User view to one row per live task.",
 )
 @click.option(
     "--group",
@@ -361,6 +470,10 @@ def usage_resources(
     ctx: Context,
     workspace: str,
     by: Optional[str],
+    project: Optional[str],
+    user: Optional[str],
+    task: Optional[str],
+    details: bool,
     group: Optional[str],
     mine: bool,
     limit: Optional[int],
@@ -383,8 +496,14 @@ def usage_resources(
     other way round. The keyword is a substring, so `--group H200` covers every
     group carrying that hardware.
 
-    `--mine` reads your own footprint directly and costs one request; the
-    workspace-wide views sweep every running workload in the workspace.
+    The default is a Project → User attribution table: it answers who is
+    consuming a project's quota. Use `--details` (or `--by task`) for the task
+    rows underneath it, and `--project`, `--user`, or `--task` to filter before
+    aggregation. `--by user` and `--by project` remain compact projections of
+    the same task source.
+
+    `--mine` is shorthand for the current user's pre-aggregated footprint; it
+    cannot be combined with task-level filters or `--details`.
 
     `--workspace` takes one name — `all` is refused. Quota, scheduling and the
     decision this command feeds (wait, ask, or submit somewhere else) are all
@@ -399,7 +518,16 @@ def usage_resources(
         inspire resources usage --workspace 分布式训练空间 --by task -n 5
         inspire resources usage --workspace CPU资源空间 --mine
     """
-    if mine and by:
+    by = (by or "project-user").lower()
+    if details and by not in {"project-user", "task"}:
+        _handle_error(
+            ctx,
+            "ValidationError",
+            "Use either --details or --by, not both.",
+            EXIT_VALIDATION_ERROR,
+        )
+        return
+    if mine and by != "project-user":
         _handle_error(
             ctx,
             "ValidationError",
@@ -408,18 +536,18 @@ def usage_resources(
         )
         return
 
-    if mine and group:
+    if mine and (group or user or task or details):
         _handle_error(
             ctx,
             "ValidationError",
-            "--mine reads a pre-aggregated per-project record that carries no "
-            "compute group, so it cannot be narrowed with --group. Use "
-            "--by task --group <name> and read your own rows.",
+            "--mine reads a pre-aggregated per-project record, so it cannot be "
+            "narrowed with --group, --user, --task, or --details. Use the "
+            "default Project/User view or --by task --group <name> instead.",
             EXIT_VALIDATION_ERROR,
         )
         return
 
-    mode = "mine" if mine else (by or "user").lower()
+    mode = "mine" if mine else ("task" if details else by)
 
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
@@ -459,7 +587,15 @@ def usage_resources(
         rows: list[dict[str, Any]]
         if mode == "mine":
             rows = _member_rows(
-                browser_api_module.list_member_usage(workspace_id, session=session),
+                [
+                    usage
+                    for usage in browser_api_module.list_member_usage(
+                        workspace_id,
+                        session=session,
+                    )
+                    if not project
+                    or project.casefold() in usage.project_name.casefold()
+                ],
                 workspace=label,
             )
         else:
@@ -475,14 +611,27 @@ def usage_resources(
                 ]
             else:
                 tasks = browser_api_module.list_task_usage(workspace_id, session=session)
+            tasks = _filter_tasks(
+                tasks,
+                project=project,
+                user=user,
+                task=task,
+            )
+            fair_scheduling = _fair_scheduling_or_unknown(session, workspace_id)
             rows = (
                 _task_rows(tasks, workspace=label)
                 if mode == "task"
+                else _project_user_rows(
+                    tasks,
+                    workspace=label,
+                    fair_scheduling=fair_scheduling,
+                )
+                if mode == "project-user"
                 else _rollup(
                     tasks,
                     by=mode,
                     workspace=label,
-                    fair_scheduling=_fair_scheduling_or_unknown(session, workspace_id),
+                    fair_scheduling=fair_scheduling,
                 )
             )
 
@@ -491,6 +640,17 @@ def usage_resources(
 
         if ctx.json_output:
             payload: dict[str, Any] = {"by": mode}
+            filters = {
+                key: value
+                for key, value in (
+                    ("project", project),
+                    ("user", user),
+                    ("task", task),
+                )
+                if value
+            }
+            if filters:
+                payload["filters"] = filters
             if matched_groups:
                 payload["compute_groups"] = [
                     _display_name(name) for _group_id, name in matched_groups

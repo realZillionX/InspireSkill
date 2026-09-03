@@ -549,6 +549,13 @@ def test_resources_availability_human_hides_raw_group_ids(
     from inspire.platform.web.browser_api.availability.models import GPUAvailability
 
     _patch_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        list_module.browser_api_module,
+        "get_resource_inventory",
+        lambda **kwargs: list_module.browser_api_module.get_accurate_resource_availability(
+            **kwargs
+        ),
+    )
     monkeypatch.setattr(list_module, "get_web_session", lambda: _Session())
     monkeypatch.setattr(
         list_module.browser_api_module,
@@ -596,6 +603,56 @@ def test_resources_availability_human_hides_raw_group_ids(
     _assert_compact_public_payload(row)
 
 
+def test_resources_availability_includes_whole_node_capacity_in_same_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from inspire.cli.commands.resources import resources_list as list_module
+    from inspire.platform.web.browser_api.availability.models import GPUAvailability
+
+    _patch_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(list_module, "get_web_session", lambda: _Session())
+    monkeypatch.setattr(
+        list_module.browser_api_module,
+        "get_resource_inventory",
+        lambda **_kwargs: [
+            GPUAvailability(
+                group_id="lcg-h200",
+                group_name="H200",
+                gpu_type="H200",
+                total_gpus=16,
+                used_gpus=16,
+                available_gpus=0,
+                low_priority_gpus=8,
+                total_nodes=2,
+                ready_nodes=2,
+                free_nodes=0,
+                gpu_per_node=8,
+                full_free_nodes=0,
+                reclaimable_nodes=1,
+            )
+        ],
+    )
+
+    human = CliRunner().invoke(
+        cli_main,
+        ["resources", "availability", "--workspace", "分布式训练空间"],
+    )
+    structured = CliRunner().invoke(
+        cli_main,
+        ["--json", "resources", "availability", "--workspace", "分布式训练空间"],
+    )
+
+    assert human.exit_code == 0, human.output
+    assert "Free Nodes" in human.output
+    assert "High Pri Nodes" in human.output
+    assert "Ready/Total" in human.output
+    assert structured.exit_code == 0, structured.output
+    row = _json_data(structured.output)["items"][0]
+    assert row["high_priority_free_nodes"] == 1
+    assert row["high_priority_free_gpus"] == 8
+
+
 def test_resources_availability_sorts_before_limit_in_human_and_json(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -604,6 +661,13 @@ def test_resources_availability_sorts_before_limit_in_human_and_json(
     from inspire.platform.web.browser_api.availability.models import GPUAvailability
 
     _patch_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        list_module.browser_api_module,
+        "get_resource_inventory",
+        lambda **kwargs: list_module.browser_api_module.get_accurate_resource_availability(
+            **kwargs
+        ),
+    )
     monkeypatch.setattr(list_module, "get_web_session", lambda: _Session())
     monkeypatch.setattr(
         list_module.browser_api_module,
@@ -689,6 +753,13 @@ def test_resources_availability_reports_business_value_errors_as_api_errors(
     from inspire.cli.commands.resources import resources_list as list_module
 
     _patch_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        list_module.browser_api_module,
+        "get_resource_inventory",
+        lambda **kwargs: list_module.browser_api_module.get_accurate_resource_availability(
+            **kwargs
+        ),
+    )
     monkeypatch.setattr(list_module, "get_web_session", lambda: _Session())
     monkeypatch.setattr(
         list_module.browser_api_module,
@@ -713,6 +784,13 @@ def test_resources_availability_keeps_login_failures_as_authentication_errors(
     from inspire.platform.web.session import AuthenticationError
 
     _patch_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        list_module.browser_api_module,
+        "get_resource_inventory",
+        lambda **kwargs: list_module.browser_api_module.get_accurate_resource_availability(
+            **kwargs
+        ),
+    )
     monkeypatch.setattr(
         list_module,
         "get_web_session",

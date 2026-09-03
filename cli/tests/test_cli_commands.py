@@ -228,6 +228,11 @@ def test_global_json_flag_with_resources_list(monkeypatch: pytest.MonkeyPatch, t
             )
         ],
     )
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_resource_inventory",
+        lambda **kwargs: browser_api_module.get_accurate_resource_availability(**kwargs),
+    )
     runner = CliRunner()
 
     result = runner.invoke(
@@ -250,6 +255,11 @@ def test_global_debug_flag_runs_subcommand(monkeypatch: pytest.MonkeyPatch, tmp_
         browser_api_module,
         "get_accurate_resource_availability",
         lambda **kwargs: [],  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_resource_inventory",
+        lambda **kwargs: browser_api_module.get_accurate_resource_availability(**kwargs),
     )
     runner = CliRunner()
 
@@ -1601,6 +1611,32 @@ def test_nodes_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "list_node_specs",
         lambda workspace_id, logic_compute_group_id=None, session=None, **_kwargs: [],  # noqa: ARG005
     )
+
+    def _inventory(**kwargs):  # noqa: ANN003
+        rows = browser_api_module.get_accurate_resource_availability(**kwargs)
+        counts = browser_api_module.get_full_free_node_counts(
+            [row.group_id for row in rows],
+            gpu_per_node=8,
+            session=kwargs.get("session"),
+        )
+        counts_by_group = {count.group_id: count for count in counts}
+        for row in rows:
+            count = counts_by_group[row.group_id]
+            row.gpu_per_node = count.gpu_per_node
+            row.total_nodes = count.total_nodes
+            row.ready_nodes = count.ready_nodes
+            row.full_free_nodes = count.full_free_nodes
+            row.reclaimable_nodes = count.reclaimable_nodes
+            row.node_specs = tuple(
+                browser_api_module.list_node_specs(
+                    row.workspace_id,
+                    logic_compute_group_id=row.group_id,
+                    session=kwargs.get("session"),
+                )
+            )
+        return rows
+
+    monkeypatch.setattr(browser_api_module, "get_resource_inventory", _inventory)
     runner = CliRunner()
 
     result = runner.invoke(
@@ -1679,6 +1715,11 @@ def test_resources_list_one_workspace_and_cpu_json(
         browser_api_module,
         "get_accurate_resource_availability",
         _fake_get_accurate_resource_availability,
+    )
+    monkeypatch.setattr(
+        browser_api_module,
+        "get_resource_inventory",
+        lambda **kwargs: browser_api_module.get_accurate_resource_availability(**kwargs),
     )
 
     runner = CliRunner()

@@ -184,8 +184,8 @@ def policy_resources(
     which is not the same as declaring no limits.
 
     Use `inspire <workload> quota` for legal resource shapes, `inspire
-    resources availability` for guarantee-level capacity, and `inspire
-    resources nodes` for physical whole-node availability.
+    resources availability` for guarantee-level and physical whole-node
+    capacity.
 
     \b
     Examples:

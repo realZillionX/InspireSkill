@@ -130,6 +130,7 @@ def test_resources_group_help_separates_workspace_and_node_event_scope() -> None
     assert result.exit_code == 0, result.output
     assert "Node events are cluster facts" in output
     assert "therefore take no workspace option" in output
+    assert "  nodes " not in result.output
 
 
 def test_query_commands_require_explicit_workspace() -> None:

@@ -125,6 +125,22 @@ def _public_availability_row(availability) -> dict[str, object]:  # noqa: ANN001
             "ready_nodes": availability.ready_nodes,
             "free_nodes": availability.free_nodes,
             "gpus_per_node": availability.gpu_per_node,
+            "full_free_nodes": availability.full_free_nodes,
+            "reclaimable_nodes": availability.reclaimable_nodes,
+            "high_priority_free_nodes": availability.high_priority_free_nodes,
+            "full_free_gpus": availability.full_free_gpus,
+            "high_priority_free_gpus": availability.high_priority_free_gpus,
+            "node_specs": [
+                {
+                    "node_type": spec.node_type,
+                    "gpu_type": spec.gpu_type,
+                    "gpu_count": spec.gpu_count,
+                    "cpu_count": spec.cpu_count,
+                    "memory_gib": spec.memory_gib,
+                    "job_types": list(spec.job_types),
+                }
+                for spec in availability.node_specs
+            ],
         }
     )
     return row
@@ -146,6 +162,8 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
                 row.used_gpus,
                 row.total_gpus,
                 row.free_nodes,
+                row.high_priority_free_nodes,
+                f"{row.ready_nodes}/{row.total_nodes}",
             )
             for row in gpu_rows
         ]
@@ -156,14 +174,26 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
                         "Compute Group",
                         "GPU",
                         "Available",
-                        "High Pri",
+                        "High Pri GPU",
                         "Used",
                         "Total",
                         "Free Nodes",
+                        "High Pri Nodes",
+                        "Ready/Total",
                     ),
                     gpu_table_rows,
-                    [25, 18, 10, 12, 8, 8, 10],
-                    aligns=["left", "left", "right", "right", "right", "right", "right"],
+                    [25, 18, 10, 12, 8, 8, 10, 14, 12],
+                    aligns=[
+                        "left",
+                        "left",
+                        "right",
+                        "right",
+                        "right",
+                        "right",
+                        "right",
+                        "right",
+                        "right",
+                    ],
                     line_char="─",
                 )
             )
@@ -223,7 +253,7 @@ def _list_accurate_resources(
             workspace=workspace,
         )
 
-        availability = browser_api_module.get_accurate_resource_availability(
+        availability = browser_api_module.get_resource_inventory(
             workspace_id=workspace_id,
             session=session,
             include_cpu=include_cpu,
@@ -339,8 +369,9 @@ def availability_resources(
 
     Requires one --workspace <name> and shows real-time GPU usage. `Available`
     is the workspace's guarantee balance and can be negative when usage is
-    over guarantee; `High Pri` adds GPUs held by preemptible tasks and can
-    still be negative. `Free Nodes` is the physical idle-node signal.
+    over guarantee; `High Pri GPU` adds GPUs held by preemptible tasks and can
+    still be negative. `Free Nodes` and `High Pri Nodes` are physical whole-
+    node signals.
     Availability is defined per workspace, so `all` is rejected here.
     Use --include-cpu to include CPU-only compute groups and CPU/memory totals.
 

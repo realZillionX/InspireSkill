@@ -240,6 +240,32 @@ def _patch_nodes_command(
     monkeypatch.setattr(
         nodes_module.browser_api_module, "list_node_specs", _list_node_specs
     )
+
+    def _inventory(**kwargs):  # noqa: ANN003
+        rows = nodes_module.browser_api_module.get_accurate_resource_availability(**kwargs)
+        counts = nodes_module.browser_api_module.get_full_free_node_counts(
+            [row.group_id for row in rows],
+            gpu_per_node=8,
+            session=kwargs.get("session"),
+        )
+        counts_by_group = {count.group_id: count for count in counts}
+        for row in rows:
+            count = counts_by_group[row.group_id]
+            row.gpu_per_node = count.gpu_per_node
+            row.total_nodes = count.total_nodes
+            row.ready_nodes = count.ready_nodes
+            row.full_free_nodes = count.full_free_nodes
+            row.reclaimable_nodes = count.reclaimable_nodes
+            row.node_specs = tuple(
+                _list_node_specs(
+                    row.workspace_id,
+                    logic_compute_group_id=row.group_id,
+                    session=kwargs.get("session"),
+                )
+            )
+        return rows
+
+    monkeypatch.setattr(nodes_module.browser_api_module, "get_resource_inventory", _inventory)
     return calls
 
 

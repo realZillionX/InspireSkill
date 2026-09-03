@@ -29,13 +29,11 @@ from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api import NodeSpec
-from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
 from inspire.platform.web.session import (
     AuthenticationError,
     SessionExpiredError,
     get_web_session,
 )
-from inspire.task_priority import is_preemptible_task_priority
 
 _REDACTED_ID_RE = re.compile(
     r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)"
@@ -82,7 +80,10 @@ def _public_spec(spec: NodeSpec) -> dict[str, object]:
     }
 
 
-@click.command("nodes")
+@click.command(
+    "nodes",
+    hidden=True,
+)
 @click.option(
     "--workspace",
     required=True,
@@ -124,7 +125,7 @@ def list_nodes(
     limit: int | None,
     show_all: bool,
 ) -> None:
-    """Show whole 8-GPU node capacity now and after low-priority preemption.
+    """Compatibility alias for the node columns in `resources availability`.
 
     `Free Now` counts schedulable nodes with no task or GPU allocation. `High
     Pri` also counts nodes whose every occupant was submitted at a preemptible
@@ -165,76 +166,40 @@ def list_nodes(
         )
         workspace_names = dict(session.all_workspace_names or {})
 
-        accurate_availability = browser_api_module.get_accurate_resource_availability(
+        inventory = browser_api_module.get_resource_inventory(
             workspace_id=workspace_id,
             session=session,
             include_cpu=False,
         )
-        name_map = {a.group_id: a.group_name for a in accurate_availability}
+        name_map = {a.group_id: a.group_name for a in inventory}
         workspace_map = {
             a.group_id: a.workspace_name or workspace_names.get(a.workspace_id, "")
-            for a in accurate_availability
+            for a in inventory
         }
-
-        group_ids = [a.group_id for a in accurate_availability]
-        workspace_id_map = {a.group_id: a.workspace_id for a in accurate_availability}
-        fair_scheduling = is_fair_scheduling_workspace(session, workspace_id)
-        low_priority_task_ids = {
-            task.task_id
-            for task in browser_api_module.list_task_usage(
-                workspace_id,
-                session=session,
-            )
-            if task.task_id
-            and is_preemptible_task_priority(
-                task.priority,
-                fair_scheduling=fair_scheduling,
-            )
-        }
-        counts = browser_api_module.get_full_free_node_counts(
-            group_ids,
-            gpu_per_node=8,
-            workspace_id_by_group=workspace_id_map,
-            node_dimensions_by_group={
-                item.group_id: list(item.node_dimensions)
-                for item in accurate_availability
-            },
-            low_priority_task_ids=low_priority_task_ids,
-            session=session,
-        )
 
         # Fill missing names and apply filter
         filtered: list[dict] = []
         group_lower = (group or "").lower()
-        for c in counts:
-            name = c.group_name or name_map.get(c.group_id, "") or "Unknown"
+        for resource in inventory:
+            name = resource.group_name or name_map.get(resource.group_id, "") or "Unknown"
             if group_lower and group_lower not in name.lower():
                 continue
-            if c.high_priority_free_nodes < min_nodes:
+            if resource.high_priority_free_nodes < min_nodes:
                 continue
-            # Free-node counts say how much is idle but never what the idle
-            # hardware is, so a `--quota gpu,cpu,mem` triple could not be
-            # checked against the group it would be submitted to.
-            specs = browser_api_module.list_node_specs(
-                workspace_id_map.get(c.group_id, ""),
-                logic_compute_group_id=c.group_id,
-                session=session,
-            )
+            specs = list(resource.node_specs)
             filtered.append(
                 {
-                    "group_id": c.group_id,
+                    "group_id": resource.group_id,
                     "group_name": name,
-                    "workspace_name": workspace_map.get(c.group_id, ""),
-                    "gpu_per_node": c.gpu_per_node,
-                    "total_nodes": c.total_nodes,
-                    "ready_nodes": c.ready_nodes,
-                    "full_free_nodes": c.full_free_nodes,
-                    "reclaimable_nodes": c.reclaimable_nodes,
-                    "high_priority_free_nodes": c.high_priority_free_nodes,
-                    "full_free_gpus": c.full_free_nodes * c.gpu_per_node,
-                    "high_priority_free_gpus": (
-                        c.high_priority_free_nodes * c.gpu_per_node
-                    ),
+                    "workspace_name": workspace_map.get(resource.group_id, ""),
+                    "gpu_per_node": resource.gpu_per_node,
+                    "total_nodes": resource.total_nodes,
+                    "ready_nodes": resource.ready_nodes,
+                    "full_free_nodes": resource.full_free_nodes,
+                    "reclaimable_nodes": resource.reclaimable_nodes,
+                    "high_priority_free_nodes": resource.high_priority_free_nodes,
+                    "full_free_gpus": resource.full_free_gpus,
+                    "high_priority_free_gpus": resource.high_priority_free_gpus,
                     "node_specs": [_public_spec(spec) for spec in specs],
                     "node_spec_label": specs[0].label if specs else "",
                 }

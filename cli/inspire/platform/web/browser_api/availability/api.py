@@ -24,6 +24,8 @@ from inspire.platform.web.session import (
     WebSession,
     get_web_session,
 )
+from inspire.platform.web.browser_api.workspaces import is_fair_scheduling_workspace
+from inspire.task_priority import is_preemptible_task_priority
 
 
 def list_compute_groups(
@@ -341,6 +343,7 @@ def _list_dimension_rows(
     session: WebSession,
     logic_compute_group_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     page_size: int = _DIMENSION_PAGE_SIZE,
 ) -> list[dict]:
     """Page one ``workspace.List*Dimension`` Action to completion.
@@ -360,6 +363,8 @@ def _list_dimension_rows(
         filters["logic_compute_group_id"] = logic_compute_group_id
     if user_id:
         filters["user_id"] = user_id
+    if project_id:
+        filters["project_id"] = project_id
 
     rows: list[dict] = []
     seen: set[str] = set()
@@ -453,10 +458,19 @@ def _named(row: dict, key: str, *name_keys: str) -> str:
     return ""
 
 
+def _nested_id(row: dict, key: str) -> str:
+    nested = row.get(key)
+    if not isinstance(nested, dict):
+        return ""
+    return str(nested.get("id") or nested.get(f"{key}_id") or "").strip()
+
+
 def list_task_usage(
     workspace_id: str,
     *,
     logic_compute_group_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     session: Optional[WebSession] = None,
 ) -> list[TaskUsage]:
     """List every live workload in a workspace with the capacity it holds.
@@ -480,6 +494,8 @@ def list_task_usage(
         workspace_id=workspace_id,
         session=session,
         logic_compute_group_id=logic_compute_group_id,
+        user_id=user_id,
+        project_id=project_id,
     )
 
     usages: list[TaskUsage] = []
@@ -492,6 +508,8 @@ def list_task_usage(
                 status=str(row.get("status") or ""),
                 user_name=_named(row, "user", "name", "name_en"),
                 project_name=_named(row, "project", "name", "project_name"),
+                user_id=_nested_id(row, "user"),
+                project_id=_nested_id(row, "project"),
                 gpus=int(_block_amount(row, "gpu")),
                 cpus=_block_amount(row, "cpu"),
                 memory_gib=_block_amount(row, "memory"),
@@ -1057,11 +1075,76 @@ def get_full_free_node_counts(
     return results
 
 
+def get_resource_inventory(
+    workspace_id: str,
+    *,
+    include_cpu: bool = False,
+    session: Optional[WebSession] = None,
+) -> list[GPUAvailability]:
+    """Return one live compute-group inventory with quota and node capacity.
+
+    Availability and whole-node capacity are two projections of the same
+    snapshot.  Keeping their enrichment here prevents the CLI commands from
+    issuing separate, slightly different reads and gives callers one row per
+    compute group.  ``available_gpus`` remains the workspace guarantee balance
+    (and may be negative); node fields are physical whole-node signals.
+    """
+    if session is None:
+        session = get_web_session()
+
+    rows = get_accurate_resource_availability(
+        workspace_id=workspace_id,
+        session=session,
+        include_cpu=include_cpu,
+    )
+    gpu_rows = [row for row in rows if row.resource_kind == "gpu"]
+    if not gpu_rows:
+        return rows
+
+    fair_scheduling = is_fair_scheduling_workspace(session, workspace_id)
+    low_priority_task_ids = {
+        task.task_id
+        for task in list_task_usage(workspace_id, session=session)
+        if task.task_id
+        and is_preemptible_task_priority(
+            task.priority,
+            fair_scheduling=fair_scheduling,
+        )
+    }
+    counts = get_full_free_node_counts(
+        [row.group_id for row in gpu_rows],
+        gpu_per_node=8,
+        workspace_id_by_group={row.group_id: row.workspace_id for row in gpu_rows},
+        node_dimensions_by_group={
+            row.group_id: list(row.node_dimensions) for row in gpu_rows
+        },
+        low_priority_task_ids=low_priority_task_ids,
+        session=session,
+    )
+    counts_by_group = {row.group_id: row for row in counts}
+
+    for row in gpu_rows:
+        count = counts_by_group.get(row.group_id)
+        if count is None:
+            continue
+        row.full_free_nodes = count.full_free_nodes
+        row.reclaimable_nodes = count.reclaimable_nodes
+        row.node_specs = tuple(
+            list_node_specs(
+                row.workspace_id,
+                logic_compute_group_id=row.group_id,
+                session=session,
+            )
+        )
+    return rows
+
+
 __all__ = [
     "QUOTA_PRIORITY_SPEC_FIELDS",
     "get_accurate_resource_availability",
     "get_accurate_gpu_availability",
     "get_full_free_node_counts",
+    "get_resource_inventory",
     "get_quota_priority_levels",
     "list_member_usage",
     "list_node_dimension",

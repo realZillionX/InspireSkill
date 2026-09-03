@@ -31,24 +31,24 @@
 
 1. 先看账号当前可见的 Workspace、Project 和 Compute Group 名字。
 2. 按 Workload 类型查对应 Quota：CPU Notebook / HPC / CPU Ray 在 `CPU资源空间`，GPU Notebook / Job / Serving 在 `分布式训练空间`。
-3. 用实时 Availability 判断保障额度余量；多节点 Job 只能按每节点 8 卡提交，再用 `resources nodes` 看当前完全空闲和清退低优任务后的 8 卡整节点数。
+3. 用 `resources availability` 同时看保障额度和 8 卡整节点容量；多节点 Job 只能按每节点 8 卡提交，`Free Nodes` 是当前完全空闲，`High Pri Nodes` 是清退纯低优占用后可用。
 4. 创建命令里的 `--group` 使用完整 Compute Group 名称；查询命令里的 Group Filter 可以用关键词收窄候选。
 
-`resources availability`、`resources nodes` 和各 Workload 的 `quota` 是资源事实入口；具体参数和输出以 CLI Help 为准。
+`resources availability` 和各 Workload 的 `quota` 是资源事实入口；具体参数和输出以 CLI Help 为准。
 
 `<workload> quota` 回答「有哪些合法的 `gpu,cpu,mem` 档位」，`resources availability` 回答「这些档位现在还有没有空」。CLI 不展示 Workspace 级配额天花板，因为创建决策落在具体 Compute Group 的 Live Quota Row 与实时容量上；用户级和项目级上限属于另一套管理员视图。创建被拒时以 Events 和平台错误区分硬件不足、调度策略、项目预算与权限，不能用某个账号曾看到的集群总量或上限推断。
 
-`Available` 是 Compute Group 分给当前 Workspace 的保障额度余量（`gpu_total - gpu_used`），不是整组物理节点上的空卡数；公平调度允许超出保障额度运行低优任务，所以它可以为负。`low_priority_gpus`（JSON）是低优任务占用、可被高优任务抢占的 GPU，Human 表里的 `High Pri` 是 `Available + low_priority_gpus`，同样可能在已超保障时为负。判断高优任务时不要只看 `Available`；要判断物理整节点看 `resources nodes`：`Free Now` 是当前完全空闲，`High Pri` 再加上所有占用都明确为低优的可抢占整节点，`Idle GPUs` 严格等于 `Free Now × 8`，不读取保障额度余量。提交后仍以 Events 为准。GPU 组也不能靠 `gpu_total > 0` 识别：保障为 0 的组仍可能有 GPU 节点和正在运行的 GPU 任务，CLI 综合 Live 使用量、型号和 NodeDimension 分类。
+`Available` 是 Compute Group 分给当前 Workspace 的保障额度余量（`gpu_total - gpu_used`），不是整组物理节点上的空卡数；公平调度允许超出保障额度运行低优任务，所以它可以为负。`low_priority_gpus`（JSON）是低优任务占用、可被高优任务抢占的 GPU，Human 表里的 `High Pri GPU` 是 `Available + low_priority_gpus`，同样可能在已超保障时为负。判断高优任务时不要只看 `Available`；要判断物理整节点直接看同一张 `resources availability` 表的 `Free Nodes` / `High Pri Nodes`：前者当前完全空闲，后者再加上所有占用都明确为低优的可抢占整节点。整节点的 `Idle GPUs` 严格等于当前完全空闲节点数 × 8，不读取保障额度余量。提交后仍以 Events 为准。GPU 组也不能靠 `gpu_total > 0` 识别：保障为 0 的组仍可能有 GPU 节点和正在运行的 GPU 任务，CLI 综合 Live 使用量、型号和 NodeDimension 分类。
 
 `resources policy` 回答另一个方向的问题：拿到手的资源能留多久。每个 Workspace 按 Workload 声明空闲回收规则和运行时长上限，这条命令逐行给出 `Reclaim`（调度器会不会自己收走）、`Idle Rule`（触发条件）和 `Time Limit`（硬上限——Job 是 `max` 运行时长，Notebook 是 `daily` 关机点）。触发条件按平台返回的 GPU 利用率与时间规则判断，不按有没有人连着判断；Serving 还可能按 GPU 档位分条。`-` 表示这个 Workspace 对该 Workload **没有声明策略**，不等于没有限制。留任务过夜、跑长训练或让 Serving 常驻之前读取当前 Workspace 的 Live 策略。
 
-余量不够时用 `resources usage` 看余量去了哪儿：它按用户、项目或任务列出存活工作负载持有的算力，其中 `Reclaimable` 是这些卡里有多少落在**以可抢占优先级提交**的任务上——那部分高优任务可以直接拿走，剩下的只能等或者去谈。`--by task` 的 `Prio` 列给每个任务提交时的优先级原值。`--mine` 会把当前登录用户 id 传给 UserDimension，只读自己的预聚合项目行；该接口不带用户过滤时返回 Workspace 全员，不能直接叫“我的占用”。
+余量不够时用 `resources usage` 看余量去了哪儿：它以 TaskDimension 为唯一事实源，默认按 `Project → User` 归因，其中 `Reclaimable` 是这些卡里有多少落在**以可抢占优先级提交**的任务上——那部分高优任务可以直接拿走，剩下的只能等或者去谈。`--details` 展开到任务，`--project` / `--user` / `--task` 在聚合前收窄，`--by user|project|task` 只是同一份任务数据的兼容投影。`--mine` 会把当前登录用户 id 传给 UserDimension，只读自己的预聚合项目行；该接口不带用户过滤时返回 Workspace 全员，不能直接叫“我的占用”。
 
-这三张资源视图始终读 Live，但会在一次命令内部避免重复：Availability 对多个 Compute Group 有界并发；Nodes 复用 Availability 已读到的 NodeDimension，再读取一次 TaskDimension 取得任务提交优先级，并额外读取规格；Usage 的维度列表显式使用网关允许的 5000 行页，超过时才继续翻页。命令结束后这些实时行不会进入持久缓存。
+这三张资源视图始终读 Live，但会在一次命令内部避免重复：Availability 对多个 Compute Group 有界并发，并在同一批 NodeDimension 上补齐整节点与低优归因；Usage 复用同一类 TaskDimension 任务行做 Project/User/Task 投影，维度列表显式使用网关允许的 5000 行页，超过时才继续翻页。命令结束后这些实时行不会进入持久缓存。
 
 低优判据跟着 Workspace 的优先级合同走：公平调度空间里小于 `4` 算低优，其余空间 `≤3` 算低优。**读不到合同时这一列是 `-` 而不是 `0`**——「没有可抢的」和「不知道能不能抢」会导向相反的决定。
 
-**`resources usage` 的 `Reclaimable` 和 `resources availability` 的 `low_priority_gpus` 不保证对得上。** 后者是平台按计算组实时计算的，是「到底能抢多少卡」的权威；前者是客户端把持有量按每个任务提交时的优先级归到人头上。两次查询的时间点和公平调度口径都可能造成差异。要判断能抢多少卡看 `availability` 的 `High Pri` 与 `Available`，要判断该找谁谈看 `usage`。整节点能否在清退后腾空则看 `nodes` 的 `High Pri`；混有高优任务、优先级缺失或两次 Live 快照之间发生变化的节点都会保守地不算可抢占。
+**`resources usage` 的 `Reclaimable` 和 `resources availability` 的 `low_priority_gpus` 不保证对得上。** 后者是平台按计算组实时计算的，是「到底能抢多少卡」的权威；前者是客户端把持有量按每个任务提交时的优先级归到 Project/User/Task。两次查询的时间点和公平调度口径都可能造成差异。要判断能抢多少卡看 `availability` 的 `High Pri GPU` 与 `Available`，要判断该找谁谈看 `usage`。整节点能否在清退后腾空也在同一张 `availability` 表的 `High Pri Nodes`；混有高优任务、优先级缺失或两次 Live 快照之间发生变化的节点都会保守地不算可抢占。
 
 利用率不再进表：卡在谁手里跟它忙不忙没关系，忙不忙只是「该不该请人释放」这个另一个问题的论据。`--json` 里 `gpu_usage_rate` 照旧给。
 

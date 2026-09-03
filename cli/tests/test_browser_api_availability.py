@@ -390,6 +390,87 @@ def test_free_node_counts_parse_live_task_containers_and_reclaim_low_only_nodes(
     assert counts[0].high_priority_free_nodes == 2
 
 
+def test_resource_inventory_enriches_quota_rows_with_node_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from inspire.platform.web.browser_api.availability.models import (
+        GPUAvailability,
+        NodeSpec,
+        TaskUsage,
+    )
+
+    nodes = [
+        _node(
+            "free",
+            tasks_associated={"count": 0, "tasks": []},
+            gpu={"total": 8, "used": 0},
+        ),
+        _node(
+            "low",
+            tasks_associated={"count": 1, "tasks": [{"id": "task-low"}]},
+            gpu={"total": 8, "used": 8},
+        ),
+    ]
+    row = GPUAvailability(
+        group_id="lcg-1",
+        group_name="H200",
+        gpu_type="H200",
+        total_gpus=16,
+        used_gpus=8,
+        available_gpus=8,
+        low_priority_gpus=8,
+        total_nodes=2,
+        ready_nodes=2,
+        gpu_per_node=8,
+        workspace_id="ws-1",
+        node_dimensions=tuple(nodes),
+    )
+    task = TaskUsage(
+        task_id="task-low",
+        name="low",
+        task_type="distributed_training",
+        status="RUNNING",
+        user_name="Ada",
+        project_name="Vision",
+        gpus=8,
+        cpus=160,
+        memory_gib=1600,
+        gpu_usage_rate=0,
+        cpu_usage_rate=0,
+        node_names=("low",),
+        created_at="",
+        running_time_ms=0,
+        priority=1,
+    )
+    monkeypatch.setattr(api, "get_accurate_resource_availability", lambda **_kwargs: [row])
+    monkeypatch.setattr(api, "is_fair_scheduling_workspace", lambda *_args: True)
+    monkeypatch.setattr(api, "list_task_usage", lambda *_args, **_kwargs: [task])
+    monkeypatch.setattr(
+        api,
+        "list_node_specs",
+        lambda *_args, **_kwargs: [
+            NodeSpec(
+                node_type="gpu",
+                gpu_type="H200",
+                gpu_count=8,
+                cpu_count=183,
+                memory_gib=1888,
+                job_types=("distributed_training",),
+            )
+        ],
+    )
+
+    inventory = api.get_resource_inventory("ws-1", session=object())  # type: ignore[arg-type]
+
+    assert inventory == [row]
+    assert row.full_free_nodes == 1
+    assert row.reclaimable_nodes == 1
+    assert row.high_priority_free_nodes == 2
+    assert row.full_free_gpus == 8
+    assert row.high_priority_free_gpus == 16
+    assert row.node_specs[0].gpu_count == 8
+
+
 def test_availability_loads_compute_groups_with_bounded_concurrency(monkeypatch) -> None:
     groups = [
         {"logic_compute_group_id": f"lcg-{index}", "name": f"Group {index}"}

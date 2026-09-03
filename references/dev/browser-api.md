@@ -530,11 +530,11 @@ Referer：`/jobs/distributedTraining`。
 | Action | 请求体 | 响应（`Result` 内） | CLI |
 | --- | --- | --- | --- |
 | `ListLogicComputeGroups` | `{page_size: -1, page_num: 1, filter:{workspace_id}}` | `{logic_compute_groups[], total}` | `resources availability`、`<workload> quota`、每个 create 的组解析 |
-| `ListNodeDimension` | `{filter:{workspace_id, logic_compute_group_id}, PageNumber, page_size}` | `{node_dimensions[], total}` | `resources availability`、`resources nodes` |
-| `ListTaskDimension` | `{filter:{workspace_id, logic_compute_group_id?}, PageNumber, page_size}` | `{task_dimensions[], total}` | `resources usage --by task\|project`、`resources nodes` 的低优任务归类 |
+| `ListNodeDimension` | `{filter:{workspace_id, logic_compute_group_id}, PageNumber, page_size}` | `{node_dimensions[], total}` | `resources availability`（整节点列） |
+| `ListTaskDimension` | `{filter:{workspace_id, logic_compute_group_id?, user_id?, project_id?}, PageNumber, page_size}` | `{task_dimensions[], total}` | `resources usage`（Project/User/Task 归因）、`resources availability` 的低优任务归类 |
 | `ListUserDimension` | `{filter:{workspace_id, user_id?}, PageNumber, page_size}` | `{user_dimensions[], total}` | `resources usage --mine`（显式传当前用户） |
-| `GetLogicComputeGroupNodeSpecs` | `{workspace_id, logic_compute_group_id}` | `{node_specs[]}` | `resources nodes` |
-| `GetWorkspaceNodeSpecs` | `{workspace_id}` | `{node_specs[]}` | `resources nodes` |
+| `GetLogicComputeGroupNodeSpecs` | `{workspace_id, logic_compute_group_id}` | `{node_specs[]}` | `resources availability`（整节点规格） |
+| `GetWorkspaceNodeSpecs` | `{workspace_id}` | `{node_specs[]}` | `resources availability`（整节点规格） |
 | `GetLogicComputeGroupResource` | `{workspace_id, logic_compute_group_id}` | `{logic_resouces{}, gpu_type_stats[], runtime_attributes[]}` | `resources availability` |
 | `GetWorkspaceQuota` | `{workspace_id}` | `{gpu_high_running, gpu_high_running_used, cpu_*, memory_*, is_fair_workspace, …}` | — |
 | `GetWorkspaceComputeResource` | `{workspace_id}` | `{logic_resouces{cpu_total, cpu_used, memory_gi_total, memory_gi_used, gpu_total, gpu_used, gpu_low_priority_used}}` | — |
@@ -550,7 +550,7 @@ Referer：`/jobs/distributedTraining`。
 | 维度族的排序 | `order_by` 元素是 `{field, sort}` 而不是 `{field, order}`，只有 `created_at` 被采纳且 `sort` 被忽略（恒升序），`{"field":"gpu"}` / `{"field":"cpu"}` 直接 `InternalError` | **排序只能在客户端做** |
 | 维度行的内容 | 只含存活工作负载（`RUNNING` 加短暂的 `COMMITTING`），覆盖所有用户与所有 Workload 类型。**`gpu.used` 是死字段（恒 0）**，但 `gpu.usage_rate` / `cpu.usage_rate` 是活的 0–1 比率 | TensorBoard 不在维度里（`train.GetLcgUsedComputeResourceJobs` 才有），不过它一张卡都不占 |
 | 两把优先级刻度 | `task_dimensions[].priority` 是**提交值**，`resources usage` 的 `Reclaimable` 用它；`train.GetJob` 回的是平台内部**存储值**并另带 `priority_level` | 两者不是同一刻度，也没有公共换算合同；CLI 不做反查，`job status` 原样回显存储值并同时给出 `priority_level` |
-| 节点行的 GPU 数 | 嵌在 `gpu{total, used, available}` 里，不是扁平 `gpu_count`；公平调度透支时单节点的 `used` 也可能大于 `total`，甚至在 8 卡物理节点上报 16，`available` 因而可为负 | `max(total, used)>0` 可以补回零保障但正在使用的 GPU 节点，却不能拿 `used` 推物理规格；单机卡数只取 `total` / NodeSpecs。把 `available` 当物理空卡又会让节点表出现负数，`resources nodes` 的 `Idle GPUs` 只按完全空闲整节点乘 8 |
+| 节点行的 GPU 数 | 嵌在 `gpu{total, used, available}` 里，不是扁平 `gpu_count`；公平调度透支时单节点的 `used` 也可能大于 `total`，甚至在 8 卡物理节点上报 16，`available` 因而可为负 | `max(total, used)>0` 可以补回零保障但正在使用的 GPU 节点，却不能拿 `used` 推物理规格；单机卡数只取 `total` / NodeSpecs。把 `available` 当物理空卡又会让节点表出现负数，`resources availability` 的整节点 `Idle GPUs` 只按完全空闲整节点乘 8 |
 | 任务关联容器 | Live `tasks_associated` 是 `{count, tasks:[{id, name, task_type, …}]}`，不是裸列表；兼容数据也可能在 `task_list` 给裸列表 | 直接判断字典真假会让 `{count:0, tasks:[]}` 永远算“有任务”，把真空闲节点全部隐藏 |
 | 「完全空闲」的判据 | `status=READY` + 任务关联 `count=0` + `gpu.used=0` + 无 `cordon_type` + 非 `is_maint` + `resource_pool != fault`，六项同时成立 | 少判一项就会把调度不上去或分配信息尚未收敛的节点算成空闲 |
 | 清退后的整节点 | NodeDimension 不带优先级；用 `tasks_associated.tasks[].id` 关联同 Workspace 的 `task_dimensions[].id`，只有节点上每个已声明任务都可见且提交优先级为低，才计入 `High Pri` | 混合高低优、缺 id、提交优先级为 0（未知）或两次 Live 快照间发生变化时都保守地不计入 |
@@ -561,7 +561,7 @@ Referer：`/jobs/distributedTraining`。
 | `ListLogicComputeGroups` 的两个坑 | 标识字段叫 `logic_compute_group_id` 而不是 `id`；`support_job_type_list` 是 **JSON 编码的字符串**，不是数组 | 用 `isinstance(x, list)` 判断会把每个组都读成「没声明」，按 Workload 过滤计算组看起来生效、实际一个都没滤掉。取值域：`interactive_modeling` / `hpc_job` / `ray_job` / `distributed_training` / `tensorboard` / `inference_serving_customize` / `inference_serving_exclusive` |
 | 配额字段的结构 | `{资源}_{high\|low}_{running\|total}` 加可选 `_used`：高优先级（保障）和低优先级（可回收）是**两套独立的上限**，一个运行中的任务只吃其中一套。`-1` 表示不限 | 混着读会两边都报错。`GetWorkspaceQuota` / `GetWorkspaceComputeResource` 要顶层 `workspace_id`，套 `filter` 反而被拒 |
 | 配额与容量是两个问题 | **配额用完了可以被拒，即使机器闲着；机器忙满了也可以被拒，即使配额还有** | 两者都要看 |
-| 资源视图的命令内复用 | Availability 对各 Compute Group 的 `GetLogicComputeGroupResource` + `ListNodeDimension` 以 4 路有界并发读取；Nodes 直接复用这批 NodeDimension，另读一次 Workspace TaskDimension 归类低优任务，再额外请求 NodeSpecs。原始节点行和任务 id 只活在内部，公共投影不暴露 | 不复用时 Nodes 会把每个组的 NodeDimension 完整读取两遍；持久缓存又会把实时余量冒充当前事实，所以复用范围只限本次命令 |
+| 资源视图的命令内复用 | Availability 对各 Compute Group 的 `GetLogicComputeGroupResource` + `ListNodeDimension` 以 4 路有界并发读取，并在同一条命令内读取 TaskDimension 归类低优任务、NodeSpecs 展开规格；Nodes 只是兼容别名，复用同一批 inventory。Usage 单独读取 TaskDimension 做 Project/User/Task 投影。原始节点行、任务行和句柄只活在内部，公共投影不暴露 | 不复用时会把同一批 NodeDimension 重复读取并产生不同时间点的答案；持久缓存又会把实时余量冒充当前事实，所以复用范围只限本次命令 |
 | `ListProjectDimension` | 普通成员作用域可能成功返回空，即使同一 Workspace 的任务维度有真实数据，因此不能作为项目用量的权威来源 | 没有封装；按项目聚合改为在客户端折叠任务维度的行 |
 
 ---

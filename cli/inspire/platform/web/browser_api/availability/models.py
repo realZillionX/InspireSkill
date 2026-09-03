@@ -32,11 +32,29 @@ class GPUAvailability:
     # Internal reuse within one live resources command. Public projections
     # never expose raw node rows or their platform handles.
     node_dimensions: tuple[dict, ...] = ()
+    full_free_nodes: int = 0
+    reclaimable_nodes: int = 0
+    node_specs: tuple[NodeSpec, ...] = ()
 
     @property
     def high_priority_available_gpus(self) -> int:
         """GPU capacity visible to high-priority jobs after low-priority preemption."""
         return int(self.available_gpus) + int(self.low_priority_gpus)
+
+    @property
+    def high_priority_free_nodes(self) -> int:
+        """Whole nodes usable after preempting exclusively low-priority occupants."""
+        return int(self.full_free_nodes) + int(self.reclaimable_nodes)
+
+    @property
+    def full_free_gpus(self) -> int:
+        """Physical GPUs on nodes that are idle now."""
+        return int(self.full_free_nodes) * int(self.gpu_per_node)
+
+    @property
+    def high_priority_free_gpus(self) -> int:
+        """Physical GPUs on nodes usable by a high-priority job."""
+        return int(self.high_priority_free_nodes) * int(self.gpu_per_node)
 
 
 @dataclass
@@ -90,6 +108,10 @@ class TaskUsage:
     created_at: str
     running_time_ms: int
     priority: int = 0  # 0 = the platform did not report one
+    # Internal identity fields used for server-side filters; public projections
+    # intentionally keep only names.
+    user_id: str = ""
+    project_id: str = ""
 
 
 @dataclass(frozen=True)

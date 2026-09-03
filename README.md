@@ -219,7 +219,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 <details>
 <summary><b>📊 资源情报</b> —— 哪个组有空、余量去哪了、能抢回来多少、拿到手能留多久</summary>
 
-`resources availability --workspace <name> --include-cpu` / `resources nodes --workspace <name>` / `resources usage --workspace <name>` / `resources policy --workspace <name>` / `<workload> quota --workspace <name>`：定位一个 Workspace 里哪个计算组有空，支持透支式申请。`<workload> quota` 回答「有哪些合法档位」，`availability` 回答「保障额度还剩多少，高优任务连可抢占卡一起能拿多少」；`nodes` 的 `Free Now` 给当前完全空闲的 8 卡整节点，`High Pri` 再加上只被低优任务占用、清退后可用的整节点，`Idle GPUs` 始终等于 `Free Now × 8`，不会混入可为负的保障额度余量。`usage` 回答「余量去哪了、其中哪些能抢回来」——它的 `Reclaimable` 列是持有者手里有多少卡落在以可抢占优先级提交的任务上，`--group <关键词>` 把这个判断收窄到任务真正提交进去的那个计算组；`policy` 回答「拿到手能留多久——空闲多久被回收、有没有运行时长上限」。
+`resources availability --workspace <name> --include-cpu` / `resources usage --workspace <name>` / `resources policy --workspace <name>` / `<workload> quota --workspace <name>`：定位一个 Workspace 里哪个计算组有空，支持透支式申请。`<workload> quota` 回答「有哪些合法档位」，`availability` 同时给出「保障额度还剩多少、高优任务连可抢占卡一起能拿多少」以及 `Free Nodes` / `High Pri Nodes` 的 8 卡整节点容量；`Free Nodes` 是当前完全空闲，`High Pri Nodes` 再加上只被低优任务占用、清退后可用的整节点。GPU 保障余额仍可能为负，但整节点容量与 `Idle GPUs` 不会混入该余额。`usage` 回答「项目配额被哪些 user/task 使用」——默认按 `Project → User` 归因，`--details` 展开任务，`--project` / `--user` / `--task` 负责收窄；`--group <关键词>` 把判断收窄到任务真正提交进去的计算组。`policy` 回答「拿到手能留多久——空闲多久被回收、有没有运行时长上限」。
 
 `<workload> quota` 的 `Priority` 列给出每一行接受的任务优先级，创建时 CLI 会据此预检，不用等平台拒绝；`Points/h` 列给出该行每实例每小时的 Live 点券成本。优先级限制和价格会随 Workspace、Compute Group、硬件与平台策略变化，不在文档里固化某个目录当时的数值。
 
