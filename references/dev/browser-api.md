@@ -561,7 +561,7 @@ Referer：`/jobs/distributedTraining`。
 | `ListLogicComputeGroups` 的两个坑 | 标识字段叫 `logic_compute_group_id` 而不是 `id`；`support_job_type_list` 是 **JSON 编码的字符串**，不是数组 | 用 `isinstance(x, list)` 判断会把每个组都读成「没声明」，按 Workload 过滤计算组看起来生效、实际一个都没滤掉。取值域：`interactive_modeling` / `hpc_job` / `ray_job` / `distributed_training` / `tensorboard` / `inference_serving_customize` / `inference_serving_exclusive` |
 | 配额字段的结构 | `{资源}_{high\|low}_{running\|total}` 加可选 `_used`：高优先级（保障）和低优先级（可回收）是**两套独立的上限**，一个运行中的任务只吃其中一套。`-1` 表示不限 | 混着读会两边都报错。`GetWorkspaceQuota` / `GetWorkspaceComputeResource` 要顶层 `workspace_id`，套 `filter` 反而被拒 |
 | 配额与容量是两个问题 | **配额用完了可以被拒，即使机器闲着；机器忙满了也可以被拒，即使配额还有** | 两者都要看 |
-| 资源视图的命令内复用 | Availability 对各 Compute Group 的 `GetLogicComputeGroupResource` + `ListNodeDimension` 以 4 路有界并发读取，并在同一条命令内读取 TaskDimension 归类低优任务、NodeSpecs 展开规格；Nodes 只是兼容别名，复用同一批 inventory。Usage 单独读取 TaskDimension 做 Project/User/Task 投影。原始节点行、任务行和句柄只活在内部，公共投影不暴露 | 不复用时会把同一批 NodeDimension 重复读取并产生不同时间点的答案；持久缓存又会把实时余量冒充当前事实，所以复用范围只限本次命令 |
+| 资源视图的命令内复用 | Availability 对各 Compute Group 的 `GetLogicComputeGroupResource` + `ListNodeDimension` 以 4 路有界并发读取，并在同一条命令内读取 TaskDimension 归类低优任务、NodeSpecs 展开规格，整节点列在 Availability 投影。Usage 单独读取 TaskDimension 做 Project/User/Task 投影。原始节点行、任务行和句柄只活在内部，公共投影不暴露 | 不复用时会把同一批 NodeDimension 重复读取并产生不同时间点的答案；持久缓存又会把实时余量冒充当前事实，所以复用范围只限本次命令 |
 | `ListProjectDimension` | 普通成员作用域可能成功返回空，即使同一 Workspace 的任务维度有真实数据，因此不能作为项目用量的权威来源 | 没有封装；按项目聚合改为在客户端折叠任务维度的行 |
 
 ---

@@ -529,9 +529,7 @@ def test_each_workload_quota_takes_one_workspace(workload: str) -> None:
     assert "--workspace TEXT" not in result.output
 
 
-@pytest.mark.parametrize(
-    "command", ("availability", "nodes", "policy", "usage")
-)
+@pytest.mark.parametrize("command", ("availability", "policy", "usage"))
 def test_resource_queries_take_one_workspace(command: str) -> None:
     """Resource facts are per workspace, so these never fan out."""
     result = CliRunner().invoke(cli_main, ["resources", command, "--help"])

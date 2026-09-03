@@ -111,18 +111,6 @@ def test_named_detail_commands_share_name_and_pick_interface(path: list[str]) ->
     assert "Pick the Nth candidate (1-indexed) when the name is ambiguous." in output
 
 
-def test_resources_nodes_help_prefers_min_nodes_wording() -> None:
-    result = CliRunner().invoke(cli_main, ["resources", "nodes", "--help"])
-    output = _one_line(result.output)
-
-    assert result.exit_code == 0
-    assert "whole 8-GPU nodes" in result.output
-    assert "compute group name keyword/substring" in output
-    assert "full name is not required" in output
-    assert "inspire resources nodes --workspace 分布式训练空间 --min-nodes 2" in result.output
-    assert "not scattered GPUs" in result.output
-
-
 def test_resources_group_help_separates_workspace_and_node_event_scope() -> None:
     result = CliRunner().invoke(cli_main, ["resources", "--help"])
     output = _one_line(result.output)
@@ -139,7 +127,6 @@ def test_query_commands_require_explicit_workspace() -> None:
         ["notebook", "status", "demo"],
         ["notebook", "list"],
         ["resources", "availability"],
-        ["resources", "nodes"],
         ["hpc", "list"],
         ["ray", "list"],
         ["model", "list"],
@@ -207,7 +194,6 @@ def test_query_group_help_says_keyword_substring() -> None:
     for args in (
         ["job", "quota", "--help"],
         ["resources", "availability", "--help"],
-        ["resources", "nodes", "--help"],
     ):
         result = CliRunner().invoke(cli_main, args)
         output = _one_line(result.output)

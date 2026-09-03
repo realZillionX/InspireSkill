@@ -6,7 +6,6 @@ import click
 
 from .resources_list import availability_resources
 from .resources_node_events import node_events
-from .resources_nodes import list_nodes
 from .resources_policy import policy_resources
 from .resources_usage import usage_resources
 
@@ -16,8 +15,8 @@ def resources() -> None:
     """Inspect live compute availability, placement and scheduling policy.
 
     Use `resources availability` for guarantee-level capacity and whole-node
-    placement,
-    `resources policy` for how long the workspace lets a workload keep what it
+    placement, `resources policy` for how long the workspace lets a workload
+    keep what it
     took before reclaiming, `resources usage` for who is holding what is
     already taken, and `resources node-events` for what a specific machine did
     to the workload that landed on it. Valid `--quota gpu,cpu,mem` triples live
@@ -42,7 +41,6 @@ def resources() -> None:
 
 
 resources.add_command(availability_resources)
-resources.add_command(list_nodes)
 resources.add_command(node_events)
 resources.add_command(policy_resources)
 resources.add_command(usage_resources)

@@ -122,10 +122,8 @@ def patch_config_and_auth(
         lambda: FakeWebSession(),
     )
     from inspire.cli.commands.resources import resources_list as resources_list_module
-    from inspire.cli.commands.resources import resources_nodes as resources_nodes_module
 
     monkeypatch.setattr(resources_list_module, "get_web_session", lambda: FakeWebSession())
-    monkeypatch.setattr(resources_nodes_module, "get_web_session", lambda: FakeWebSession())
 
     # Stub quota resolution so job-submit tests don't hit the real platform —
     # real resolution lives in test_quota_resolver.
@@ -1563,106 +1561,6 @@ def test_job_list_human_output_hides_raw_ids_and_name_search_ignores_job_id(
     assert id_query_result.exit_code == 0
     assert "No jobs found." in id_query_result.output
     assert TEST_JOB_ID not in id_query_result.output
-
-
-def test_nodes_list_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    # Include test compute groups in config
-    patch_config_and_auth(monkeypatch, tmp_path, include_compute_groups=True)
-    from inspire.platform.web import browser_api as browser_api_module
-
-    test_group_id = "lcg-test000-0000-0000-0000-000000000000"
-    monkeypatch.setattr(
-        browser_api_module,
-        "get_full_free_node_counts",
-        lambda group_ids, gpu_per_node=8, session=None, _retry=True, **_kwargs: [  # noqa: ARG005
-            browser_api_module.FullFreeNodeCount(
-                group_id=test_group_id,
-                group_name="H200 TestRoom",
-                gpu_per_node=gpu_per_node,
-                total_nodes=10,
-                ready_nodes=8,
-                full_free_nodes=3,
-            )
-        ],
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "list_task_usage",
-        lambda _workspace_id, **_kwargs: [],
-    )
-    # Also mock get_accurate_resource_availability which is called by the nodes command
-    monkeypatch.setattr(
-        browser_api_module,
-        "get_accurate_resource_availability",
-        lambda workspace_id=None, session=None, include_cpu=False, all_workspaces=False, _retry=True: [  # noqa: ARG005
-            browser_api_module.GPUAvailability(
-                group_id=test_group_id,
-                group_name="H200 TestRoom",
-                gpu_type="H200",
-                total_gpus=80,
-                used_gpus=68,
-                available_gpus=12,
-                low_priority_gpus=0,
-            )
-        ],
-    )
-    monkeypatch.setattr(
-        browser_api_module,
-        "list_node_specs",
-        lambda workspace_id, logic_compute_group_id=None, session=None, **_kwargs: [],  # noqa: ARG005
-    )
-
-    def _inventory(**kwargs):  # noqa: ANN003
-        rows = browser_api_module.get_accurate_resource_availability(**kwargs)
-        counts = browser_api_module.get_full_free_node_counts(
-            [row.group_id for row in rows],
-            gpu_per_node=8,
-            session=kwargs.get("session"),
-        )
-        counts_by_group = {count.group_id: count for count in counts}
-        for row in rows:
-            count = counts_by_group[row.group_id]
-            row.gpu_per_node = count.gpu_per_node
-            row.total_nodes = count.total_nodes
-            row.ready_nodes = count.ready_nodes
-            row.full_free_nodes = count.full_free_nodes
-            row.reclaimable_nodes = count.reclaimable_nodes
-            row.node_specs = tuple(
-                browser_api_module.list_node_specs(
-                    row.workspace_id,
-                    logic_compute_group_id=row.group_id,
-                    session=kwargs.get("session"),
-                )
-            )
-        return rows
-
-    monkeypatch.setattr(browser_api_module, "get_resource_inventory", _inventory)
-    runner = CliRunner()
-
-    result = runner.invoke(
-        cli_main,
-        ["--json", "resources", "nodes", "--workspace", "Test Workspace"],
-    )
-    assert result.exit_code == 0
-
-    data = json.loads(result.output)
-    assert data["data"] == {
-        "items": [
-            {
-                "compute_group": "H200 TestRoom",
-                "workspace": "",
-                "gpus_per_node": 8,
-                "total_nodes": 10,
-                "ready_nodes": 8,
-                "full_free_nodes": 3,
-                "reclaimable_nodes": 0,
-                "high_priority_free_nodes": 3,
-                "full_free_gpus": 24,
-                "high_priority_free_gpus": 24,
-                "node_specs": [],
-            }
-        ]
-    }
 
 
 def test_resources_list_one_workspace_and_cpu_json(

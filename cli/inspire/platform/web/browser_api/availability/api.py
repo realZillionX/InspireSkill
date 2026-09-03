@@ -791,7 +791,8 @@ def _compute_node_summary(nodes: list[dict]) -> dict[str, int]:
         # A fair-scheduling node can report a zero guarantee (`total=0`) while
         # a low-priority task is using all eight physical GPUs.  `used` is then
         # the only positive GPU signal, so taking only `total` drops a real node
-        # from Total/Ready and makes availability disagree with `resources nodes`.
+        # from Total/Ready and makes availability disagree with its own node
+        # capacity projection.
         gpu_total = _node_gpu_total(node)
         gpu_used = _node_gpu_used(node)
         if max(gpu_total, gpu_used) <= 0:

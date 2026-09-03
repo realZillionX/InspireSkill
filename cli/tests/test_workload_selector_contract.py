@@ -39,7 +39,6 @@ _COLLECTION_PATHS = (
 # so each takes exactly one name.
 _SINGLE_WORKSPACE_RESOURCE_PATHS = (
     ("resources", "availability"),
-    ("resources", "nodes"),
     ("resources", "policy"),
     ("resources", "usage"),
     ("serving", "configs"),
