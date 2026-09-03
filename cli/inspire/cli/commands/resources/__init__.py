@@ -34,7 +34,7 @@ def resources() -> None:
         inspire resources availability --workspace 分布式训练空间 --include-cpu
         inspire resources availability --workspace 分布式训练空间 --group H200
         inspire resources policy --workspace 分布式训练空间
-        inspire resources usage --workspace 分布式训练空间 --by user
+        inspire resources usage --workspace 分布式训练空间 --project <project>
         inspire resources node-events qb-prod-4090-gpu040 --type Warning
     """
     pass

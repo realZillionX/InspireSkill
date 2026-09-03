@@ -3,17 +3,17 @@
 `resources availability` answers "how much is left", including whole-node
 capacity. It does not answer "who took the rest",
 which on a shared cluster is the question that decides whether to wait, ask, or
-submit somewhere else. This reads the live per-workload dimension and rolls it
-up by user, by project, or leaves it per task.
+submit somewhere else. This reads the live per-workload dimension and attributes
+it to a project and user, or expands it to one row per task.
 
 It takes one workspace and refuses `all`. Quota and scheduling are per
-workspace, so every decision this feeds is too; and because the rollups below
+workspace, so every decision this feeds is too; and because the attribution below
 bucket per workspace, a fanout would emit one row per workspace-and-user pair
 while the shared Workspace column and truncation notice made it read as a
 platform-wide ranking. "Who holds the most across the cluster" is not a
 question this data can answer, so the flag that implies it is gone.
 
-The rollups are computed here rather than requested from the platform on
+The attribution is computed here rather than requested from the platform on
 purpose. `workspace.ListProjectDimension` answers an empty list to ordinary
 members in every reachable workspace. `workspace.ListUserDimension` is a
 workspace-wide per-user view unless given `filter.user_id`, so `--mine` sends
@@ -71,9 +71,6 @@ from inspire.task_priority import is_preemptible_task_priority
 
 _REDACTED_ID_RE = re.compile(r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)")
 
-_BY_CHOICES = ("project-user", "user", "project", "task")
-
-
 def _display_name(value: object, *, fallback: str = "-") -> str:
     text = _REDACTED_ID_RE.sub(" ", scrub_raw_ids(value))
     return " ".join(text.split()) or fallback
@@ -103,78 +100,6 @@ def _percent(value: Optional[float]) -> str:
     if value is None:
         return "-"
     return f"{value * 100:.0f}%"
-
-
-def _rollup(
-    tasks: list[TaskUsage],
-    *,
-    by: str,
-    workspace: str,
-    fair_scheduling: Optional[bool],
-) -> list[dict[str, Any]]:
-    """Fold live workloads into one row per user or per project."""
-    buckets: dict[str, dict[str, Any]] = {}
-    for task in tasks:
-        key = task.user_name if by == "user" else task.project_name
-        key = key or "(unknown)"
-        bucket = buckets.setdefault(
-            key,
-            {
-                "workspace": workspace,
-                by: key,
-                "gpus": 0,
-                "low_priority_gpus": 0,
-                "cpus": 0.0,
-                "memory_gib": 0.0,
-                "tasks": 0,
-                "_nodes": set(),
-                "_peers": set(),
-                "_gpu_busy": 0.0,
-            },
-        )
-        bucket["gpus"] += task.gpus
-        if fair_scheduling is not None and is_preemptible_task_priority(
-            task.priority, fair_scheduling=fair_scheduling
-        ):
-            bucket["low_priority_gpus"] += task.gpus
-        bucket["cpus"] += task.cpus
-        bucket["memory_gib"] += task.memory_gib
-        bucket["tasks"] += 1
-        # A node shared by several of a user's tasks must be counted once, or
-        # "nodes held" silently becomes "tasks running".
-        bucket["_nodes"].update(task.node_names)
-        peer = task.project_name if by == "user" else task.user_name
-        if peer:
-            bucket["_peers"].add(peer)
-        bucket["_gpu_busy"] += task.gpus * task.gpu_usage_rate
-
-    rows: list[dict[str, Any]] = []
-    for bucket in buckets.values():
-        gpus = bucket["gpus"]
-        row = {
-            "workspace": bucket["workspace"],
-            by: bucket[by],
-            "gpus": gpus,
-            # `None`, not 0: an unreadable contract is not "nothing is
-            # preemptible", and the two would drive opposite decisions.
-            "low_priority_gpus": (
-                bucket["low_priority_gpus"] if fair_scheduling is not None else None
-            ),
-            "cpus": round(bucket["cpus"], 1),
-            "memory_gib": round(bucket["memory_gib"], 1),
-            "nodes": len(bucket["_nodes"]),
-            "tasks": bucket["tasks"],
-            "projects" if by == "user" else "users": len(bucket["_peers"]),
-        }
-        if gpus > 0:
-            row["gpu_usage_rate"] = round(bucket["_gpu_busy"] / gpus, 4)
-        rows.append(row)
-
-    rows.sort(
-        key=lambda row: (row["gpus"], row["nodes"], row["cpus"]),
-        reverse=True,
-    )
-    return rows
 
 
 def _project_user_rows(
@@ -370,24 +295,6 @@ _COLUMNS: dict[str, list[tuple[str, str, str]]] = {
         ("nodes", "Nodes", "right"),
         ("tasks", "Tasks", "right"),
     ],
-    "user": [
-        ("user", "User", "left"),
-        ("gpus", "GPUs", "right"),
-        ("low_priority_gpus", "Reclaimable", "right"),
-        ("cpus", "CPUs", "right"),
-        ("memory_gib", "Mem GiB", "right"),
-        ("nodes", "Nodes", "right"),
-        ("tasks", "Tasks", "right"),
-    ],
-    "project": [
-        ("project", "Project", "left"),
-        ("gpus", "GPUs", "right"),
-        ("low_priority_gpus", "Reclaimable", "right"),
-        ("cpus", "CPUs", "right"),
-        ("memory_gib", "Mem GiB", "right"),
-        ("nodes", "Nodes", "right"),
-        ("users", "Users", "right"),
-    ],
     "task": [
         ("task", "Task", "left"),
         ("type", "Type", "left"),
@@ -414,14 +321,6 @@ _COLUMNS: dict[str, list[tuple[str, str, str]]] = {
     required=True,
     metavar="NAME",
     help="Workspace name.",
-)
-@click.option(
-    "--by",
-    "by",
-    type=click.Choice(_BY_CHOICES, case_sensitive=False),
-    default="project-user",
-    show_default=True,
-    help="Choose a projection; the default attributes project quota to each user.",
 )
 @click.option(
     "--project",
@@ -469,7 +368,6 @@ _COLUMNS: dict[str, list[tuple[str, str, str]]] = {
 def usage_resources(
     ctx: Context,
     workspace: str,
-    by: Optional[str],
     project: Optional[str],
     user: Optional[str],
     task: Optional[str],
@@ -497,10 +395,8 @@ def usage_resources(
     group carrying that hardware.
 
     The default is a Project → User attribution table: it answers who is
-    consuming a project's quota. Use `--details` (or `--by task`) for the task
-    rows underneath it, and `--project`, `--user`, or `--task` to filter before
-    aggregation. `--by user` and `--by project` remain compact projections of
-    the same task source.
+    consuming a project's quota. Use `--details` for the task rows underneath
+    it, and `--project`, `--user`, or `--task` to filter before aggregation.
 
     `--mine` is shorthand for the current user's pre-aggregated footprint; it
     cannot be combined with task-level filters or `--details`.
@@ -513,41 +409,22 @@ def usage_resources(
     \b
     Examples:
         inspire resources usage --workspace 分布式训练空间
-        inspire resources usage --workspace 分布式训练空间 --by project
         inspire resources usage --workspace 分布式训练空间 --group H200-1号机房
-        inspire resources usage --workspace 分布式训练空间 --by task -n 5
+        inspire resources usage --workspace 分布式训练空间 --details -n 5
         inspire resources usage --workspace CPU资源空间 --mine
     """
-    by = (by or "project-user").lower()
-    if details and by not in {"project-user", "task"}:
-        _handle_error(
-            ctx,
-            "ValidationError",
-            "Use either --details or --by, not both.",
-            EXIT_VALIDATION_ERROR,
-        )
-        return
-    if mine and by != "project-user":
-        _handle_error(
-            ctx,
-            "ValidationError",
-            "Use either --by or --mine, not both.",
-            EXIT_VALIDATION_ERROR,
-        )
-        return
-
     if mine and (group or user or task or details):
         _handle_error(
             ctx,
             "ValidationError",
             "--mine reads a pre-aggregated per-project record, so it cannot be "
             "narrowed with --group, --user, --task, or --details. Use the "
-            "default Project/User view or --by task --group <name> instead.",
+            "default Project/User view or --details --group <name> instead.",
             EXIT_VALIDATION_ERROR,
         )
         return
 
-    mode = "mine" if mine else ("task" if details else by)
+    mode = "mine" if mine else ("task" if details else "project-user")
 
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
@@ -618,28 +495,20 @@ def usage_resources(
                 task=task,
             )
             fair_scheduling = _fair_scheduling_or_unknown(session, workspace_id)
-            rows = (
-                _task_rows(tasks, workspace=label)
-                if mode == "task"
-                else _project_user_rows(
+            if mode == "task":
+                rows = _task_rows(tasks, workspace=label)
+            else:
+                rows = _project_user_rows(
                     tasks,
                     workspace=label,
                     fair_scheduling=fair_scheduling,
                 )
-                if mode == "project-user"
-                else _rollup(
-                    tasks,
-                    by=mode,
-                    workspace=label,
-                    fair_scheduling=fair_scheduling,
-                )
-            )
 
         page = bound_collection(rows, limit=effective_limit)
         public_rows = page.items
 
         if ctx.json_output:
-            payload: dict[str, Any] = {"by": mode}
+            payload: dict[str, Any] = {"scope": mode}
             filters = {
                 key: value
                 for key, value in (

@@ -42,13 +42,13 @@
 
 `resources policy` 回答另一个方向的问题：拿到手的资源能留多久。每个 Workspace 按 Workload 声明空闲回收规则和运行时长上限，这条命令逐行给出 `Reclaim`（调度器会不会自己收走）、`Idle Rule`（触发条件）和 `Time Limit`（硬上限——Job 是 `max` 运行时长，Notebook 是 `daily` 关机点）。触发条件按平台返回的 GPU 利用率与时间规则判断，不按有没有人连着判断；Serving 还可能按 GPU 档位分条。`-` 表示这个 Workspace 对该 Workload **没有声明策略**，不等于没有限制。留任务过夜、跑长训练或让 Serving 常驻之前读取当前 Workspace 的 Live 策略。
 
-余量不够时用 `resources usage` 看余量去了哪儿：它以 TaskDimension 为唯一事实源，默认按 `Project → User` 归因，其中 `Reclaimable` 是这些卡里有多少落在**以可抢占优先级提交**的任务上——那部分高优任务可以直接拿走，剩下的只能等或者去谈。`--details` 展开到任务，`--project` / `--user` / `--task` 在聚合前收窄，`--by user|project|task` 只是同一份任务数据的兼容投影。`--mine` 会把当前登录用户 id 传给 UserDimension，只读自己的预聚合项目行；该接口不带用户过滤时返回 Workspace 全员，不能直接叫“我的占用”。
+余量不够时用 `resources usage` 看余量去了哪儿：它以 TaskDimension 为唯一事实源，默认按 `Project → User` 归因，其中 `Reclaimable` 是这些卡里有多少落在**以可抢占优先级提交**的任务上——那部分高优任务可以直接拿走，剩下的只能等或者去谈。`--details` 展开到任务，`--project` / `--user` / `--task` 在聚合前收窄。`--mine` 会把当前登录用户 id 传给 UserDimension，只读自己的预聚合项目行；该接口不带用户过滤时返回 Workspace 全员，不能直接叫“我的占用”。
 
-这三张资源视图始终读 Live，但会在一次命令内部避免重复：Availability 对多个 Compute Group 有界并发，并在同一批 NodeDimension 上补齐整节点与低优归因；Usage 复用同一类 TaskDimension 任务行做 Project/User/Task 投影，维度列表显式使用网关允许的 5000 行页，超过时才继续翻页。命令结束后这些实时行不会进入持久缓存。
+这三张资源视图始终读 Live，但会在一次命令内部避免重复：Availability 对多个 Compute Group 有界并发，并在同一批 NodeDimension 上补齐整节点与低优归因；Usage 复用同一类 TaskDimension 任务行做 Project/User 归因，`--details` 展开任务，维度列表显式使用网关允许的 5000 行页，超过时才继续翻页。命令结束后这些实时行不会进入持久缓存。
 
 低优判据跟着 Workspace 的优先级合同走：公平调度空间里小于 `4` 算低优，其余空间 `≤3` 算低优。**读不到合同时这一列是 `-` 而不是 `0`**——「没有可抢的」和「不知道能不能抢」会导向相反的决定。
 
-**`resources usage` 的 `Reclaimable` 和 `resources availability` 的 `low_priority_gpus` 不保证对得上。** 后者是平台按计算组实时计算的，是「到底能抢多少卡」的权威；前者是客户端把持有量按每个任务提交时的优先级归到 Project/User/Task。两次查询的时间点和公平调度口径都可能造成差异。要判断能抢多少卡看 `availability` 的 `High Pri GPU` 与 `Available`，要判断该找谁谈看 `usage`。整节点能否在清退后腾空也在同一张 `availability` 表的 `High Pri Nodes`；混有高优任务、优先级缺失或两次 Live 快照之间发生变化的节点都会保守地不算可抢占。
+**`resources usage` 的 `Reclaimable` 和 `resources availability` 的 `low_priority_gpus` 不保证对得上。** 后者是平台按计算组实时计算的，是「到底能抢多少卡」的权威；前者是客户端把持有量按每个任务提交时的优先级归到 Project/User，`--details` 只改变展示粒度为任务。两次查询的时间点和公平调度口径都可能造成差异。要判断能抢多少卡看 `availability` 的 `High Pri GPU` 与 `Available`，要判断该找谁谈看 `usage`。整节点能否在清退后腾空也在同一张 `availability` 表的 `High Pri Nodes`；混有高优任务、优先级缺失或两次 Live 快照之间发生变化的节点都会保守地不算可抢占。
 
 利用率不再进表：卡在谁手里跟它忙不忙没关系，忙不忙只是「该不该请人释放」这个另一个问题的论据。`--json` 里 `gpu_usage_rate` 照旧给。
 

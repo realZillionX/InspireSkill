@@ -371,6 +371,20 @@ def test_member_usage_refuses_to_call_an_unfiltered_workspace_view(
 # --- command ---------------------------------------------------------------
 
 
+def test_usage_removes_legacy_by_option() -> None:
+    runner = CliRunner()
+    help_result = runner.invoke(cli_main, ["resources", "usage", "--help"])
+    assert help_result.exit_code == 0, help_result.output
+    assert "--by" not in help_result.output
+
+    result = runner.invoke(
+        cli_main,
+        ["resources", "usage", "--workspace", "Default WS", "--by", "user"],
+    )
+    assert result.exit_code != 0
+    assert "No such option '--by'" in result.output
+
+
 def _patch_command(monkeypatch: pytest.MonkeyPatch, tasks: list[TaskUsage]) -> None:
     from inspire.cli.commands.resources import resources_usage as usage_module
 
@@ -388,44 +402,7 @@ def _patch_command(monkeypatch: pytest.MonkeyPatch, tasks: list[TaskUsage]) -> N
     )
 
 
-def test_usage_by_user_folds_shared_nodes_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _patch_command(
-        monkeypatch,
-        [
-            _task(name="a", user="Ada", project="Vision", gpus=4, nodes=("n1",)),
-            _task(name="b", user="Ada", project="Speech", gpus=4, nodes=("n1", "n2")),
-            _task(name="c", user="Bo", project="Vision", gpus=8, nodes=("n3",)),
-        ],
-    )
-
-    result = CliRunner().invoke(
-        cli_main,
-        [
-            "--json",
-            "resources",
-            "usage",
-            "--workspace",
-            "Default WS",
-            "--by",
-            "user",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    data = json.loads(result.output)["data"]
-    assert data["by"] == "user"
-    rows = {row["user"]: row for row in data["items"]}
-    assert rows["Ada"]["gpus"] == 8
-    assert rows["Ada"]["tasks"] == 2
-    assert rows["Ada"]["projects"] == 2
-    # n1 carries two of Ada's tasks and must not be counted twice.
-    assert rows["Ada"]["nodes"] == 2
-    assert rows["Bo"]["nodes"] == 1
-
-
-def test_usage_by_user_weights_gpu_busy_by_cards_held(
+def test_usage_weights_gpu_busy_by_cards_held(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_command(
@@ -458,8 +435,6 @@ def test_usage_by_user_weights_gpu_busy_by_cards_held(
             "usage",
             "--workspace",
             "Default WS",
-            "--by",
-            "user",
         ],
     )
 
@@ -487,7 +462,7 @@ def test_usage_defaults_to_project_user_attribution(
 
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)["data"]
-    assert data["by"] == "project-user"
+    assert data["scope"] == "project-user"
     rows = {(row["project"], row["user"]): row for row in data["items"]}
     assert rows[("Vision", "Ada")]["gpus"] == 4
     assert rows[("Vision", "Bo")]["gpus"] == 8
@@ -521,57 +496,12 @@ def test_usage_project_filter_and_details_share_the_same_task_source(
 
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)["data"]
-    assert data["by"] == "task"
+    assert data["scope"] == "task"
     assert data["filters"] == {"project": "Vision"}
     assert [row["task"] for row in data["items"]] == ["vision-a"]
 
 
-def test_usage_rejects_ambiguous_details_and_projection(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _patch_command(monkeypatch, [])
-
-    result = CliRunner().invoke(
-        cli_main,
-        [
-            "resources",
-            "usage",
-            "--workspace",
-            "Default WS",
-            "--details",
-            "--by",
-            "user",
-        ],
-    )
-
-    assert result.exit_code != 0
-    assert "either --details or --by" in result.output
-
-
-def test_usage_by_project_counts_distinct_users(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _patch_command(
-        monkeypatch,
-        [
-            _task(name="a", user="Ada", project="Vision", gpus=4, nodes=("n1",)),
-            _task(name="b", user="Bo", project="Vision", gpus=4, nodes=("n2",)),
-        ],
-    )
-
-    result = CliRunner().invoke(
-        cli_main,
-        ["--json", "resources", "usage", "--workspace", "Default WS", "--by", "project"],
-    )
-
-    assert result.exit_code == 0, result.output
-    row = json.loads(result.output)["data"]["items"][0]
-    assert row["project"] == "Vision"
-    assert row["gpus"] == 8
-    assert row["users"] == 2
-
-
-def test_usage_by_task_sorts_by_capacity_held(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_usage_details_sorts_by_capacity_held(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_command(
         monkeypatch,
         [
@@ -582,7 +512,7 @@ def test_usage_by_task_sorts_by_capacity_held(monkeypatch: pytest.MonkeyPatch) -
 
     result = CliRunner().invoke(
         cli_main,
-        ["--json", "resources", "usage", "--workspace", "Default WS", "--by", "task"],
+        ["--json", "resources", "usage", "--workspace", "Default WS", "--details"],
     )
 
     assert result.exit_code == 0, result.output
@@ -590,7 +520,7 @@ def test_usage_by_task_sorts_by_capacity_held(monkeypatch: pytest.MonkeyPatch) -
     assert [row["task"] for row in items] == ["huge", "small"]
 
 
-@pytest.mark.parametrize("mode", ([], ["--by", "task"], ["--mine"]))
+@pytest.mark.parametrize("mode", ([], ["--details"], ["--mine"]))
 def test_usage_refuses_a_workspace_fanout(
     monkeypatch: pytest.MonkeyPatch, mode: list[str]
 ) -> None:
@@ -682,7 +612,7 @@ def test_usage_mine_uses_the_single_request_source(
 
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)["data"]
-    assert data["by"] == "mine"
+    assert data["scope"] == "mine"
     assert data["items"][0]["project"] == "Vision"
     assert data["items"][0]["gpu_nodes"] == 1
 
@@ -866,26 +796,6 @@ def test_usage_rejects_group_with_mine(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "--group" in result.output
 
 
-def test_usage_rejects_by_with_mine(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch_command(monkeypatch, [])
-
-    result = CliRunner().invoke(
-        cli_main,
-        [
-            "resources",
-            "usage",
-            "--workspace",
-            "Default WS",
-            "--by",
-            "task",
-            "--mine",
-        ],
-    )
-
-    assert result.exit_code != 0
-    assert "not both" in result.output
-
-
 def test_usage_keeps_platform_handles_out_of_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -905,7 +815,7 @@ def test_usage_keeps_platform_handles_out_of_output(
 
     result = CliRunner().invoke(
         cli_main,
-        ["resources", "usage", "--workspace", "Default WS", "--by", "task"],
+        ["resources", "usage", "--workspace", "Default WS", "--details"],
     )
 
     assert result.exit_code == 0, result.output

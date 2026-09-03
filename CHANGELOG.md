@@ -4,6 +4,8 @@
 
 ### 破坏性变更
 
+- **资源命令收敛为两个事实入口。** `resources nodes` 已删除，节点级空闲与清退后整节点容量统一从 `resources availability` 查看；`resources usage` 也删除旧的 `--by user|project|task` 投影，只保留默认的 Project → User 归因、`--details` 任务明细，以及 `--project` / `--user` / `--task` 过滤。旧参数不再兼容。
+
 - **删除仓库级 `./.inspire/` 及其三类隐式状态。** `inspire init` 现在只校验和规范化 `~/.inspire/accounts/<account>/config.toml`，不再接受 `--scope project`、`--select-project` 或持久化 dotenv。Project Context、Path Alias 和 Workload Profile 的读写层、命令组与 `--profile` 全部删除；`workspace`、`project`、`group`、`quota` 和 `image` 必须在每次 `create` 和每个展开后的 Batch item 上显式给出，Batch 里的顶层 `profiles` 或 item `profile` 现在会直接报错。原仓库级 `job.*` / `notebook.post_start` 行为设置收敛到账号 TOML 或同名环境变量，调度条件不提供默认值。
 
 - **远端路径全部回到显式绝对路径。** Notebook `exec` / `shell --cwd` 只接受绝对远端路径（如 `/inspire/...` 或 `/tmp`），SCP 不再展开 Alias；需要缩写时由本地 shell 环境变量展开。Job 不再为共享盘日志暗中包装启动命令，默认读平台日志；`job logs --source ssh` 改为必须显式传 `--remote-log-path`。`INSPIRE.md` 仍可作为人类可读的可选持久资产合同，每项资产自带 Project / Workspace 适用范围，CLI 不解析它。
@@ -58,7 +60,7 @@
 
 - **资源视图减少分页和重复 Live 读取。** `resources availability` 对 Compute Group 的 Resource + NodeDimension 改为 4 路有界并发，仍然逐组读取完整 Live 事实。`resources nodes` 复用同一命令里 Availability 已经读到的 NodeDimension，不再为每个组重复拉取。
 
-  `workspace.List*Dimension` 支持显式 `page_size=5000`；`resources usage --by task` 默认页从 500 调到网关上限 5000。失败与空结果的边界不变，所有这些视图仍只用 Live 数据。
+  `workspace.List*Dimension` 支持显式 `page_size=5000`；`resources usage --details` 默认页从 500 调到网关上限 5000。失败与空结果的边界不变，所有这些视图仍只用 Live 数据。
 
 - **`job list --workspace all` 启用已有的 round-robin 扫描器。** 此前只有带 `--keyword` 时才 4 路并发，普通 all 会串行扫描所有 Workspace。现在所有 all 查询都按页 8 路有界并发；单 Workspace、全局输出 limit 和逐 Workspace total 语义不变。
 
@@ -284,7 +286,7 @@
 
 ### 变更
 
-- `resources usage` 的表里用 `Reclaimable` 换掉 `GPU Busy`。利用率回答不了这条命令要回答的问题——卡在谁手里跟它忙不忙没关系，持有者就是持有者；能被拿走的只有低优卡。新列是这个人持有的 GPU 里有多少落在以可抢占优先级提交的任务上，`--by task` 另给一列 `Prio` 显示提交原值。判据跟着 Workspace 的优先级合同走：公平调度空间小于 `4`，其余空间 `≤3`（后者拿平台按计算组给的口径逐组核对过，4 个组全中）。读不到合同时是 `-` 不是 `0`——「没有可抢的」和「不知道能不能抢」导向相反的决定。`--json` 里 `gpu_usage_rate` 照旧给，新增 `low_priority_gpus` 和 `priority`。
+- `resources usage` 的表里用 `Reclaimable` 换掉 `GPU Busy`。利用率回答不了这条命令要回答的问题——卡在谁手里跟它忙不忙没关系，持有者就是持有者；能被拿走的只有低优卡。新列是这个人持有的 GPU 里有多少落在以可抢占优先级提交的任务上，任务明细模式另给一列 `Prio` 显示提交原值。判据跟着 Workspace 的优先级合同走：公平调度空间小于 `4`，其余空间 `≤3`（后者拿平台按计算组给的口径逐组核对过，4 个组全中）。读不到合同时是 `-` 不是 `0`——「没有可抢的」和「不知道能不能抢」导向相反的决定。`--json` 里 `gpu_usage_rate` 照旧给，新增 `low_priority_gpus` 和 `priority`。
 
   `resources usage` 的 `Reclaimable` 是按任务提交优先级归类，`resources availability` 则是平台按计算组实时计算；时间点与公平调度口径都可能造成差异，所以前者不声称复现后者总数。
 
@@ -365,7 +367,7 @@
 
 - `inspire hpc logs`、`inspire serving logs`、`inspire ray logs`：补齐「每种 Workload 都能读到程序输出」这条线上最后三个缺口——此前只有 `job logs`，HPC、Serving 和 Ray 的容器输出在 CLI 里根本看不到。三条命令与 `job logs` 共用同一套记录与字符预算（默认 100 条 / 16,000 字符）和同一份 `--json` schema，实例筛选一律用 `instances` 已经在打印的角色/序号而不是被 `scrub_raw_ids` 洗过的 pod 名。平台侧有三个坑：日志端点的实例名要带命名空间（HPC 裸名报「expect 1, but got 0」，Ray 干脆静默回空）；`page_size=N` 保留的是**最旧**的 N 条，所以「最后 N 条」必须先取满窗口再在客户端截尾；时间窗超一个月平台答 `InternalError`，而这个码在瞬时错误名单里，不在客户端 clamp 就会先白烧三次退避重试再抛出一条看着像平台故障的错。
 
-- `inspire resources usage --workspace <名字> [--by user|project|task] [--mine]`：按用户、项目或任务报告存活工作负载持有的 GPU / CPU / 内存。`gpu.used` 不可用，利用率读 `usage_rate`；`ListProjectDimension` 对普通成员不是权威来源，因此项目聚合由客户端折叠任务维度，`--mine` 使用 `ListUserDimension`。
+- `inspire resources usage --workspace <名字> [--details] [--mine]`：按项目→用户归因或按任务报告存活工作负载持有的 GPU / CPU / 内存。`gpu.used` 不可用，利用率读 `usage_rate`；`ListProjectDimension` 对普通成员不是权威来源，因此项目归因由客户端折叠任务维度，`--mine` 使用 `ListUserDimension`。
 
 - `inspire resources policy --workspace <名字>`：报出每类 Workload 的空闲回收规则与运行时长上限。第二天回来发现 Notebook 没了、任务在某个时刻被杀，此前只能猜；这些都是平台明确声明过的配置，只是从来没接进 CLI。AND/OR 条件按原样呈现而不是拍平，Serving 的规则按 GPU 档位逐条给。平台在部分工作空间对 HPC 返回字面量 `null`，渲染成「未声明」而不是「无限制」——那两者是相反的结论。
 
