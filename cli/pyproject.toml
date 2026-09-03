@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "inspire-skill"
-version = "7.1.5"
+version = "7.1.6"
 description = "CLI for the Inspire training platform: notebook lifecycle, distributed/HPC job submission, SSH tunneling, image and resource ops"
 readme = "README.md"
 requires-python = ">=3.10"
