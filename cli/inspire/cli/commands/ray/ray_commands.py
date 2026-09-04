@@ -234,7 +234,7 @@ def _format_ray_list_rows(rows: list[dict[str, str]]) -> str:
         for index, header in enumerate(headers)
     ]
     rendered = render_table(headers, table_rows, widths, line_char="─")
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(rendered)
 
 
 def _public_ray_instance_text(inst: dict[str, Any], *keys: str) -> str:
@@ -359,7 +359,7 @@ def _format_ray_instances(instances: list[dict[str, Any]]) -> str:
         table_rows,
         widths,
     )
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(rendered)
 
 
 class RayInstanceSelectionError(ValueError):

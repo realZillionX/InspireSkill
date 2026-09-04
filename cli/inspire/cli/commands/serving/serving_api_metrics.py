@@ -171,7 +171,7 @@ def _format_api_metrics(name: str, metrics: list[str], rows: list[dict[str, Any]
         line_char="─",
     )
     missing = [m for m in metrics if not any(row.get("metric") == m for row in rows)]
-    body = "\n".join([header, "", rendered[1], rendered[2], *rendered[3:-1]])
+    body = "\n".join([header, "", *rendered])
     if missing:
         body += f"\nNo data: {', '.join(missing)}"
     return body

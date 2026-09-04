@@ -192,7 +192,7 @@ def _print_notebook_list(
         widths,
         line_char="─",
     )
-    click.echo("\n".join([lines[1], lines[2], *lines[3:-1]]))
+    click.echo("\n".join(lines))
 
 
 __all__ = ["_print_notebook_detail", "_print_notebook_list"]

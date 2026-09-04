@@ -575,7 +575,7 @@ def _format_job_instances(instances: list[dict]) -> str:
         rows,
         widths,
     )
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(rendered)
 
 
 def _resolve_web_job_id(
@@ -935,7 +935,7 @@ def _format_job_list(rows: list[dict]) -> str:
         widths,
         line_char="─",
     )
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(rendered)
 
 
 def _list_web_jobs(

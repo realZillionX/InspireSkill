@@ -426,7 +426,7 @@ def _format_list_rows(rows: list[dict[str, str]], total: int) -> str:
         widths,
         line_char="─",
     )
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(rendered)
 
 
 def _public_serving_instance_text(
@@ -555,7 +555,7 @@ def _format_serving_instances(instances: list[dict[str, Any]]) -> str:
         table_rows,
         widths,
     )
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(rendered)
 
 
 def _public_serving_version(item: dict[str, Any]) -> dict[str, Any]:
@@ -623,7 +623,7 @@ def _format_serving_versions(versions: list[dict[str, Any]]) -> str:
         widths,
         line_char="─",
     )
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(rendered)
 
 
 def _scale_replica_count(item: dict[str, Any], *keys: str) -> int | None:
@@ -700,7 +700,7 @@ def _format_scale_history(entries: list[dict[str, Any]]) -> str:
         widths,
         line_char="─",
     )
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(rendered)
 
 
 def _config_label(item: dict[str, Any], index: int) -> str:

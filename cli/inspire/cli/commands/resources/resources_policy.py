@@ -128,7 +128,10 @@ def _format_rows(rows: list[dict[str, Any]]) -> str:
         column_width(header, [row[index] for row in table_rows], max_width=44)
         for index, header in enumerate(headers)
     ]
-    return "\n".join(render_table(headers, table_rows, widths, line_char="─"))
+    rendered = render_table(headers, table_rows, widths, line_char="─")
+    # Keep the policy view's established rule-first presentation while the
+    # table body and separator are now produced by Rich.
+    return "\n".join([rendered[1], *rendered])
 
 
 def _notes(rows: list[dict[str, Any]]) -> list[str]:

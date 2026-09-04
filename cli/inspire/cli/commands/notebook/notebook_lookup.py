@@ -14,6 +14,7 @@ from inspire.cli.context import (
     EXIT_CONFIG_ERROR,
     EXIT_VALIDATION_ERROR,
 )
+from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import (
     forget_resource_identity,
@@ -761,8 +762,32 @@ def _resolve_notebook_target(
         )
 
     click.echo(f"Multiple notebooks named '{scrub_raw_ids(identifier)}' found:")
-    for idx, (ws_id, item) in enumerate(matches, start=1):
-        click.echo(f"  [{idx}] {_label_for(item, ws_id)}")
+    table_rows = [
+        (
+            str(idx),
+            scrub_raw_ids(str(item.get("status") or "Unknown")),
+            scrub_raw_ids(_format_notebook_resource(item)),
+            scrub_raw_ids(str(item.get("created_at") or "-")),
+            scrub_raw_ids(_workspace_label(session, ws_id)),
+        )
+        for idx, (ws_id, item) in enumerate(matches, start=1)
+    ]
+    widths = [
+        column_width(header, [row[index] for row in table_rows], max_width=max_width)
+        for index, (header, max_width) in enumerate(
+            (("#", 4), ("Status", 12), ("Resource", 24), ("Created", 19), ("Workspace", 32))
+        )
+    ]
+    click.echo(
+        "\n".join(
+            render_table(
+                ("#", "Status", "Resource", "Created", "Workspace"),
+                table_rows,
+                widths,
+                aligns=("right", "left", "left", "left", "left"),
+            )
+        )
+    )
 
     choice = click.prompt(
         "Select notebook",

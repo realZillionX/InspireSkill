@@ -22,6 +22,7 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
+from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.collection_output import (
     bound_collection,
     resolve_collection_limit,
@@ -182,8 +183,7 @@ def lifecycle(
         )
         return
 
-    header = f"{'#':>3}  {'Start':<19}  {'End':<19}  {'Duration':<9}"
-    click.echo(header)
+    table_rows: list[tuple[str, str, str, str]] = []
     for r in page.items:
         idx = r.get("index", "?")
         # Platform may drift the field types; coerce to str defensively so
@@ -193,7 +193,23 @@ def lifecycle(
         start = _to_local(start_raw) or "-"
         end_display = _to_local(end_raw) or "ongoing"
         dur = _format_duration(start_raw, end_raw) if end_raw else "running"
-        click.echo(f"{str(idx):>3}  {start:<19}  {end_display:<19}  {dur:<9}")
+        table_rows.append((str(idx), start, end_display, dur))
+    widths = [
+        column_width(header, [row[index] for row in table_rows], max_width=max_width)
+        for index, (header, max_width) in enumerate(
+            (("#", 3), ("Start", 19), ("End", 19), ("Duration", 9))
+        )
+    ]
+    click.echo(
+        "\n".join(
+            render_table(
+                ("#", "Start", "End", "Duration"),
+                table_rows,
+                widths,
+                aligns=("right", "left", "left", "left"),
+            )
+        )
+    )
     notice = truncation_notice(page)
     if notice:
         click.echo(notice)

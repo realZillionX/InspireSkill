@@ -150,7 +150,7 @@ def _format_ray_scaling(events: list[dict[str, Any]]) -> str:
         rows,
         widths,
     )
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(rendered)
 
 
 @click.command("scaling")

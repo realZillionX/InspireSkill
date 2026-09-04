@@ -329,8 +329,24 @@ def tensorboard_scalars(
             f"\n{scrub_raw_ids(item['run'])} / {scrub_raw_ids(item['tag'])} "
             f"(last {min(points, item['count'])} of {item['count']})"
         )
-        for step, value in _tail(item["points"], points):
-            click.echo(f"  {int(step):>10}  {value:.6g}")
+        point_rows = [
+            (str(int(step)), f"{value:.6g}")
+            for step, value in _tail(item["points"], points)
+        ]
+        point_widths = [
+            column_width("Step", [row[0] for row in point_rows], max_width=10),
+            column_width("Value", [row[1] for row in point_rows], max_width=24),
+        ]
+        click.echo(
+            "\n".join(
+                render_table(
+                    ("Step", "Value"),
+                    point_rows,
+                    point_widths,
+                    aligns=("right", "right"),
+                )
+            )
+        )
 
 
 __all__ = ["tensorboard_scalars", "tensorboard_tags"]

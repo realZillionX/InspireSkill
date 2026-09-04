@@ -601,7 +601,7 @@ def _format_hpc_list_rows(rows: list[dict[str, str]]) -> str:
         column_width("Created", [row[-1] for row in table_rows], max_width=19)
     )
     rendered = render_table(headers, table_rows, widths, line_char="─")
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(rendered)
 
 
 def _public_hpc_instance_text(inst: dict[str, Any], *keys: str) -> str:
@@ -727,7 +727,7 @@ def _format_hpc_instances(instances: list[dict[str, Any]]) -> str:
         table_rows,
         widths,
     )
-    return "\n".join([rendered[1], rendered[2], *rendered[3:-1]])
+    return "\n".join(rendered)
 
 
 def _fetch_hpc_instances(

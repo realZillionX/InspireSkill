@@ -15,6 +15,7 @@ from inspire.cli.context import (
     pass_context,
 )
 from inspire.cli.formatters import json_formatter
+from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.collection_output import (
     bound_collection,
     resolve_collection_limit,
@@ -122,11 +123,33 @@ def permissions(
             )
             return
 
-        for permission in page.items:
-            if isinstance(permission, dict):
-                click.echo(f"{permission['workspace']}: {permission['permission']}")
-            else:
-                click.echo(permission)
+        fallback_workspace = scrub_raw_ids(
+            workspace_name_map(session).get(workspace_ids[0])
+            or "(workspace name unavailable)"
+        )
+        table_rows = [
+            (
+                scrub_raw_ids(
+                    f"{permission.get('workspace') or fallback_workspace}: "
+                    f"{permission.get('permission') or ''}"
+                )
+                if isinstance(permission, dict)
+                else scrub_raw_ids(f"{fallback_workspace}: {permission}"),
+            )
+            for permission in page.items
+        ]
+        widths = [
+            column_width("Permission", [row[0] for row in table_rows], max_width=112),
+        ]
+        click.echo(
+            "\n".join(
+                render_table(
+                    ("Permission",),
+                    table_rows,
+                    widths,
+                )
+            )
+        )
         notice = truncation_notice(page)
         if notice:
             click.echo(notice)
