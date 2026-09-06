@@ -16,6 +16,7 @@ import click
 import click.exceptions as click_exceptions
 
 from inspire import __version__
+from inspire.accounts import account_scope, current_account
 from inspire.cli.logging_setup import clear_debug_logging, configure_debug_logging
 from inspire.cli.context import (
     Context,
@@ -55,6 +56,7 @@ from inspire.cli.utils.output_guard import (
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.console_bootstrap import configure_console_encoding
 from inspire.cli.env_bootstrap import bootstrap_env_file
+from inspire.cli.utils.account_option import install_account_options
 
 
 _PARSER_GUARD_INSTALLED = False
@@ -80,10 +82,13 @@ class _NameOnlyGroup(click.Group):
         if cli_args is None:
             cli_args = sys.argv[1:]
         _install_pre_parse_output_guard(tuple(str(value) for value in cli_args))
-        try:
-            return super().main(*args, **kwargs)
-        finally:
-            clear_parser_redactions()
+        # Cover parsing failures too: Click does not close a context whose
+        # make_context() failed after an option callback selected an account.
+        with account_scope(current_account()):
+            try:
+                return super().main(*args, **kwargs)
+            finally:
+                clear_parser_redactions()
 
 
 @click.group(cls=_NameOnlyGroup)
@@ -92,6 +97,7 @@ class _NameOnlyGroup(click.Group):
     "--json",
     "json_output",
     is_flag=True,
+    is_eager=True,
     help="Output as JSON for scripts or structured automation.",
 )
 @click.option(
@@ -130,6 +136,7 @@ def main(
     \b
     Output:
         --json prints structured script output.
+        --account <name> uses one account for this command without changing the default.
 
     \b
     Examples:
@@ -248,6 +255,7 @@ main.add_command(update)
 main.add_command(ensure_playwright_runtime)
 main.add_command(refresh_skills)
 main.add_command(post_update)
+install_account_options(main)
 
 
 def cli() -> None:

@@ -11,7 +11,7 @@ from inspire.accounts import (
     AccountError,
     account_dir,
     create_account,
-    current_account,
+    default_account,
     ensure_inspire_home,
     set_current_account,
     validate_name,
@@ -161,7 +161,7 @@ def add(
     except AccountError as err:
         exit_with_error(ctx, "AccountError", str(err), EXIT_VALIDATION_ERROR)
 
-    existing_active = current_account()
+    existing_active = default_account()
     if make_active is None:
         if existing_active is None:
             make_active = True  # first account always activates
@@ -187,7 +187,7 @@ def add(
             auto_install_playwright=not non_interactive,
         )
 
-    is_active = current_account() == validated
+    is_active = default_account() == validated
     suffix = " (active)" if is_active else ""
     emit_success(
         ctx,

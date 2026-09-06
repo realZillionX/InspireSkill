@@ -9,6 +9,8 @@ description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire C
 
 ## 核心操作模型
 
+`inspire account use <name>` 设置持久默认账号；所有命令的 `--account <name>` 仅覆盖本次命令。账号使用本地 Alias。命令开始后固定账号，不受其他进程切换默认账号影响；不传参数只使用默认账号。切账号保留各账号的 Session、SSH Connection 和资源缓存，需要清理时使用相应的显式缓存管理命令。
+
 执行前先把任务拆成四个平面：
 
 | 平面 | 绑定内容 |
@@ -69,7 +71,7 @@ CLI 不读写仓库级 `./.inspire/`，不把仓库绑定到某个 Project，也
 | 共享盘、存储池、挂载隔离和绝对路径 | [`references/paths.md`](references/paths.md) |
 | 数据广场检索、官方数据集挂载、版本与访问权限 | [`references/dataset.md`](references/dataset.md) |
 | 联网准备、SII 内部源、依赖安装、镜像固化 | [`references/internal-sources.md`](references/internal-sources.md) |
-| Notebook 创建、连接、跨账号解析、`exec` / `shell` / `scp`、IDE URL、文件流转 | [`references/notebook.md`](references/notebook.md) |
+| Notebook 创建、按账号连接、`exec` / `shell` / `scp`、IDE URL、文件流转 | [`references/notebook.md`](references/notebook.md) |
 | GPU Job、CPU HPC、Ray、Serving、TensorBoard，及提交后的观察、优先级与异常 | [`references/compute-workloads.md`](references/compute-workloads.md) |
 | CPU 准备、数据处理、GPU 训练、部署或交付的阶段化计划 | [`references/workflows.md`](references/workflows.md) |
 | Image 选择、保存、注册、可见性和清理 | [`references/image.md`](references/image.md) |

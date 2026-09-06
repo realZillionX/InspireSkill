@@ -19,12 +19,28 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from .cache_lock import exclusive_cache_lock
 
 CONFIG_FILENAME = "config.toml"
 NOTEBOOK_TARGET_CACHE_FILENAME = "notebook-targets.json"
+_COMMAND_ACCOUNT: ContextVar[tuple[str | None] | None] = ContextVar(
+    "inspire_command_account", default=None,
+)
+
+
+@contextmanager
+def account_scope(account: str | None) -> Iterator[None]:
+    """Pin one command's identity without changing the saved default or caches."""
+    token = _COMMAND_ACCOUNT.set((account,))
+    try:
+        yield
+    finally:
+        _COMMAND_ACCOUNT.reset(token)
 
 
 def _atomic_write_text(target: Path, content: str) -> None:
@@ -53,10 +69,9 @@ class AccountError(Exception):
 def _clear_process_account_caches() -> None:
     """Best-effort reset for account-sensitive in-process caches.
 
-    Normal CLI invocations are one process per command, but tests, embedded
-    callers, and Click runners can switch accounts several times in one
-    process. Keep low-level account storage responsible for invalidating any
-    process-local state that would otherwise keep using the previous account.
+    Configuration replacement and account renaming can change values within
+    one account key. Changing only the saved default needs no invalidation:
+    each runtime cache already includes the effective account in its key.
     """
     try:
         from inspire.platform.web.browser_api.core import clear_browser_api_runtime_cache
@@ -120,7 +135,13 @@ def account_exists(name: str) -> bool:
 
 
 def current_account() -> str | None:
-    """Return the active account, or ``None`` if there is no usable one.
+    """Return the command's pinned account, or the saved default outside a command."""
+    selected = _COMMAND_ACCOUNT.get()
+    return selected[0] if selected is not None else default_account()
+
+
+def default_account() -> str | None:
+    """Read the saved default account, or ``None`` if there is no usable one.
 
     Sanitizes ``~/.inspire/current`` against three failure modes:
       * file missing or empty → no active account (return ``None``)
@@ -155,8 +176,8 @@ def set_current_account(name: str) -> None:
     if not account_exists(validated):
         raise AccountError(f"Account not found: {validated}")
     ensure_inspire_home()
-    _atomic_write_text(current_file(), validated + "\n")
-    _clear_process_account_caches()
+    with exclusive_cache_lock(current_file()):
+        _atomic_write_text(current_file(), validated + "\n")
 
 
 def clear_current_account() -> None:
@@ -187,7 +208,7 @@ def remove_account(name: str) -> None:
     target = accounts_dir() / validated
     if not target.exists():
         raise AccountError(f"Account not found: {validated}")
-    was_active = current_account() == validated
+    was_active = default_account() == validated
     shutil.rmtree(target)
     if was_active:
         clear_current_account()
@@ -208,7 +229,7 @@ def rename_account(old_name: str, new_name: str) -> None:
     if target.exists():
         raise AccountError(f"Account already exists: {new}")
 
-    was_active = current_account() == old
+    was_active = default_account() == old
     source.rename(target)
     _rewrite_notebook_target_cache_account(old, new)
     if was_active:
@@ -217,7 +238,7 @@ def rename_account(old_name: str, new_name: str) -> None:
 
 
 def _rewrite_notebook_target_cache_account(old: str, new: str) -> None:
-    """Rewrite remembered cross-account notebook target selections."""
+    """Preserve remembered Notebook targets when their account alias changes."""
     path = inspire_home() / NOTEBOOK_TARGET_CACHE_FILENAME
     with exclusive_cache_lock(path):
         try:
@@ -235,13 +256,15 @@ def _rewrite_notebook_target_cache_account(old: str, new: str) -> None:
 
         changed = False
         updated_at = int(time.time())
-        for entry in targets.values():
+        for key, entry in list(targets.items()):
             if not isinstance(entry, dict):
                 continue
             if entry.get("account") != old:
                 continue
             entry["account"] = new
             entry["updated_at"] = updated_at
+            if str(key).endswith(f"|account={old}"):
+                targets[f"{str(key).rsplit('|account=', 1)[0]}|account={new}"] = targets.pop(key)
             changed = True
         if not changed:
             return

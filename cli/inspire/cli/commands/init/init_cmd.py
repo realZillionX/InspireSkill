@@ -8,6 +8,7 @@ import click
 
 from inspire.accounts import (
     AccountError,
+    account_scope,
     create_account,
     current_account,
     ensure_inspire_home,
@@ -114,6 +115,7 @@ def _bootstrap_first_account_if_needed(
     try:
         create_account(account_name, content)
         set_current_account(account_name)
+        click.get_current_context().with_resource(account_scope(account_name))
     except AccountError as err:
         raise ValueError(str(err)) from err
 

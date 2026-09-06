@@ -168,21 +168,20 @@ def preflight_notebook_transport_policy(
     from inspire.config.workspaces import resolve_workspace_query_scope
 
     account = str(account or "").strip() or None
-    cached_target = None
-    if not account or account.lower() == "all":
-        cached_target = resolve_cached_notebook_target(
-            ctx,
-            notebook=notebook,
-            workspace=workspace,
-            account=account,
-            pick=pick,
-            ignore_target_cache=ignore_target_cache,
-            allow_prompt=not ctx.json_output,
-        )
-        account = cached_target.account if cached_target else None
+    cached_target = resolve_cached_notebook_target(
+        ctx,
+        notebook=notebook,
+        workspace=workspace,
+        account=account,
+        pick=pick,
+        ignore_target_cache=ignore_target_cache,
+        allow_prompt=not ctx.json_output,
+    )
+    if cached_target:
+        account = cached_target.account
     lookup_notebook = notebook
     if cached_target:
-        # Pick applies to the cross-account candidates once. The live lookup
+        # Pick applies to the cached candidates once. The live lookup
         # must inspect the selected notebook in that account and workspace.
         lookup_notebook = cached_target.bridge.notebook_name or notebook
         workspace = workspace or cached_target.bridge.workspace_name

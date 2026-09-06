@@ -11,6 +11,7 @@ from inspire.config import Config
 
 
 def test_shell_uses_jupyter_when_policy_blocks_ssh(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr("inspire.cli.utils.account_option.account_exists", lambda name: name == "alice")
     config = Config(username="", password="")
     policy_calls = {}
     shell_calls = {}

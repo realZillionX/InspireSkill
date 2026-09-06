@@ -128,15 +128,19 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 ## 6. 多账号
 
-多账号只用这些命令：
+默认账号与单次账号覆盖：
 
 ```bash
 inspire account add <name2>
 inspire account use <name>
 inspire account rename <old-name> <new-name>
 inspire account current
+inspire --account <name2> notebook list --workspace CPU资源空间
+inspire job list --workspace 分布式训练空间 --account <name2>
 ```
 
-这里的 `<name>` 是本地 Account Alias，也就是 `~/.inspire/accounts/<name>/` 的目录名；它不要求等于平台登录 username。`~/.inspire/current` 保存当前 Active Account Alias；`inspire account use` 只更新这个指针，`inspire account rename` 只改本地 Alias，都不会修改平台登录 username。
+这里的 `<name>` 是本地 Account Alias，也就是 `~/.inspire/accounts/<name>/` 的目录名；它不要求等于平台登录 username。`~/.inspire/current` 保存持久默认账号，`account current` 读取这个默认值。`inspire account use` 只更新默认值，`inspire account rename` 只改本地 Alias，都不会修改平台登录 username。
 
-账号目录、Web Session、Notebook SSH Connection Cache 和代理状态都在 `~/.inspire/accounts/<name>/` 下。Notebook 连接类命令的 `--account <name>` 同样使用本地 Account Alias；跨账号解析、Connection Cache 管理和受限 Notebook 文件流转统一见 [`../notebook.md`](../notebook.md)。
+所有命令都接受 `--account <name>`，可放在根命令、命令组或子命令后；离子命令最近的显式选择生效。它只覆盖本次命令，不写入默认值。不传参数时只使用默认账号。命令开始后固定有效账号，配置、认证、代理、资源索引和 Notebook 连接都跟随这个账号；其他进程切换默认账号不影响已经运行的命令。
+
+账号配置、Web Session、Notebook SSH Connection Cache、资源索引和代理状态按账号保存在 `~/.inspire/accounts/<name>/` 下。切换账号不删除这些缓存，也不停止 SSH 连接；切回后继续复用仍然有效的缓存，失效的 Session / 连接按正常流程刷新。只有显式执行缓存清理、连接遗忘或账号删除等操作才清理相应状态。Notebook Connection Cache 管理和受限 Notebook 文件流转见 [`../notebook.md`](../notebook.md)。

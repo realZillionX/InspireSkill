@@ -177,7 +177,7 @@ def bridge_scp(
     if target is None:
         explicit_account = (
             str(account or "").strip()
-            if str(account or "").strip() and str(account or "").strip().lower() != "all"
+            if str(account or "").strip()
             else None
         )
         tunnel_config = (

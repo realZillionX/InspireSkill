@@ -415,6 +415,7 @@ def test_exec_forwards_workspace_account_and_pick_to_target_resolution(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr("inspire.cli.utils.account_option.account_exists", lambda name: name == "alice")
     config = make_sync_config(tmp_path)
     policy_calls: dict[str, Any] = {}
     target_calls: dict[str, Any] = {}

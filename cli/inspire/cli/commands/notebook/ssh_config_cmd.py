@@ -121,7 +121,7 @@ def _load_cached_target(
 
     explicit_account = (
         str(account or "").strip()
-        if str(account or "").strip() and str(account or "").strip().lower() != "all"
+        if str(account or "").strip()
         else None
     )
     config = load_tunnel_config(account=explicit_account) if explicit_account else load_tunnel_config()

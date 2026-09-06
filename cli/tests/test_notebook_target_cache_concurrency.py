@@ -46,5 +46,5 @@ def test_concurrent_target_cache_writes_preserve_every_entry(tmp_path: Path) -> 
     cache_path = tmp_path / ".inspire" / "notebook-targets.json"
     data = json.loads(cache_path.read_text(encoding="utf-8"))
     assert set(data["targets"]) == {
-        f"bench-{index}|workspace=CPU资源空间" for index in range(WORKER_COUNT)
+        f"bench-{index}|workspace=CPU资源空间|account=default" for index in range(WORKER_COUNT)
     }

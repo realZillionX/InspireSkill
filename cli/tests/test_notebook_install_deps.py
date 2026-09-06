@@ -244,6 +244,7 @@ def test_install_deps_passes_timeout_to_ssh(monkeypatch: pytest.MonkeyPatch) -> 
 def test_install_deps_forwards_pick_to_live_preflight_and_cached_bridge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("inspire.cli.utils.account_option.account_exists", lambda name: name == "alice")
     policy_calls: list[dict] = []
     ssh_calls: list[dict] = []
     config = TunnelConfig(account="alice")

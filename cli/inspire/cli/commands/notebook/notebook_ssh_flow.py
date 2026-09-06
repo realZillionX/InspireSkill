@@ -644,7 +644,7 @@ def run_notebook_ssh(
     )
     explicit_tunnel_account = (
         str(account or "").strip()
-        if str(account or "").strip() and str(account or "").strip().lower() != "all"
+        if str(account or "").strip()
         else None
     )
 

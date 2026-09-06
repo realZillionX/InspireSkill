@@ -38,6 +38,7 @@ def _patch_preflight(
     status: str = "RUNNING",
 ) -> tuple[list[dict], list[dict], list[dict]]:
     """Stub name resolution, the GPU probe and detail; return their calls."""
+    monkeypatch.setattr(transport_module, "resolve_cached_notebook_target", lambda *_a, **_k: None)
     resolved: list[dict] = []
     probes: list[dict] = []
     details: list[dict] = []

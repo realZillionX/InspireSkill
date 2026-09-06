@@ -130,7 +130,7 @@ def notebook_connection() -> None:
 
 @notebook_connection.group("target")
 def connection_target() -> None:
-    """Inspect and reset remembered cross-account notebook targets."""
+    """Inspect and reset remembered notebook targets in the selected account."""
 
 
 @connection_target.command("list")

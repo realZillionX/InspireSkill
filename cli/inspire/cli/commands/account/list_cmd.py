@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from inspire.accounts import current_account, list_accounts
+from inspire.accounts import default_account, list_accounts
 from inspire.cli.context import Context, pass_context
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.collection_output import (
@@ -33,7 +33,7 @@ def list_cmd(ctx: Context, limit: int | None, show_all: bool) -> None:
         raise click.UsageError(str(exc)) from exc
 
     names = list_accounts()
-    active = current_account()
+    active = default_account()
     page = bound_collection(
         [{"name": name, "active": name == active} for name in names],
         limit=output_limit,

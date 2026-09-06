@@ -1,4 +1,4 @@
-"""Cross-account cached notebook SSH target resolution."""
+"""Cached Notebook SSH target resolution within one selected account."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any
 
 import click
 
-from inspire.accounts import account_exists, current_account, list_accounts
+from inspire.accounts import account_exists, current_account
 from inspire.accounts.cache_lock import exclusive_cache_lock
 from inspire.bridge import tunnel as tunnel_module
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
@@ -25,7 +25,7 @@ from inspire.config.workspaces import validate_workspace_operation_name
 
 from .public_output import sanitize_public_text
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 TARGET_CACHE_FILENAME = "notebook-targets.json"
 NOTEBOOK_TARGET_WORKSPACE_HELP = (
     "Workspace name used to disambiguate this notebook target."
@@ -65,13 +65,16 @@ def target_cache_path() -> Path:
     return Path.home() / ".inspire" / TARGET_CACHE_FILENAME
 
 
-def notebook_target_cache_key(notebook: str, workspace: str | None) -> str:
+def notebook_target_cache_key(
+    notebook: str, workspace: str | None, account: str | None = None,
+) -> str:
     identifier = str(notebook or "").strip()
     workspace_key = str(workspace or "").strip()
-    return f"{identifier}|workspace={workspace_key}"
+    return f"{identifier}|workspace={workspace_key}|account={_effective_account(account) or ''}"
 
 
 def _split_target_cache_key(key: str) -> tuple[str, str]:
+    key = key.rsplit("|account=", 1)[0]
     marker = "|workspace="
     if marker not in key:
         return key, ""
@@ -89,8 +92,16 @@ def _read_target_cache() -> dict[str, Any]:
     if not isinstance(data, dict):
         return {"version": CACHE_VERSION, "targets": {}}
     targets = data.get("targets")
-    if not isinstance(targets, dict):
-        data["targets"] = {}
+    normalized = {}
+    if isinstance(targets, dict):
+        for key, entry in targets.items():
+            if not isinstance(entry, dict):
+                continue
+            notebook, workspace = _split_target_cache_key(str(key))
+            # Keep existing selections while adding the account to their key.
+            account = str(entry.get("account") or "")
+            normalized[f"{notebook}|workspace={workspace}|account={account}"] = entry
+    data["targets"] = normalized
     data["version"] = CACHE_VERSION
     return data
 
@@ -112,7 +123,7 @@ def _write_target_cache(data: dict[str, Any]) -> None:
 
 def _effective_account(explicit: str | None) -> str | None:
     account = str(explicit or "").strip()
-    if account and account.lower() != "all":
+    if account:
         return account
     return current_account()
 
@@ -124,6 +135,7 @@ def remember_notebook_target(
     account: str | None,
     bridge: BridgeProfile,
 ) -> None:
+    account = _effective_account(account)
     identifier = str(notebook or "").strip()
     if not identifier:
         return
@@ -133,7 +145,7 @@ def remember_notebook_target(
         if not isinstance(targets, dict):
             targets = {}
             data["targets"] = targets
-        key = notebook_target_cache_key(identifier, workspace)
+        key = notebook_target_cache_key(identifier, workspace, account)
         targets[key] = {
             "account": account,
             "bridge_name": bridge.name,
@@ -175,8 +187,9 @@ def list_notebook_targets() -> list[dict[str, Any]]:
     if not isinstance(targets, dict):
         return []
     rows: list[dict[str, Any]] = []
+    account = current_account()
     for key, raw_entry in sorted(targets.items()):
-        if not isinstance(raw_entry, dict):
+        if not isinstance(raw_entry, dict) or raw_entry.get("account") != account:
             continue
         identifier, _workspace_key = _split_target_cache_key(str(key))
         name = sanitize_public_text(
@@ -230,10 +243,9 @@ def _target_entry_matches(
         if requested_workspace not in workspace_values:
             return False
 
-    requested_account = str(account or "").strip()
-    if requested_account and requested_account.lower() != "all":
-        if str(entry.get("account") or "").strip() != requested_account:
-            return False
+    requested_account = _effective_account(account)
+    if (str(entry.get("account") or "").strip() or None) != requested_account:
+        return False
 
     requested_bridge = str(bridge_name or "").strip()
     if requested_bridge and str(entry.get("bridge_name") or "").strip() != requested_bridge:
@@ -286,21 +298,12 @@ def forget_notebook_targets(
 
 
 def _account_scope(account: str | None) -> list[str]:
-    selector = str(account or "").strip()
-    if selector and selector.lower() != "all":
-        if not account_exists(selector):
-            raise ValueError(f"Account not found: {selector}")
-        return [selector]
-
-    accounts = list_accounts()
-    active = current_account()
-    ordered: list[str] = []
-    if active and active in accounts:
-        ordered.append(active)
-    for name in accounts:
-        if name not in ordered:
-            ordered.append(name)
-    return ordered
+    selector = _effective_account(account)
+    if not selector:
+        return []
+    if not account_exists(selector):
+        raise ValueError(f"Account not found: {selector}")
+    return [selector]
 
 
 def _matches_workspace(bridge: BridgeProfile, workspace: str | None) -> bool:
@@ -573,7 +576,7 @@ def resolve_cached_notebook_target(
     allow_prompt: bool = True,
     pick: int | None = None,
 ) -> NotebookConnectionTarget | None:
-    """Resolve a cached notebook bridge across configured accounts.
+    """Resolve a cached notebook bridge within the selected account.
 
     Returns ``None`` when no matching cached bridge exists. Ambiguous matches
     either prompt or exit with a candidate list.
@@ -599,8 +602,8 @@ def resolve_cached_notebook_target(
             candidates=[],
         )
 
-    selector = str(account or "").strip()
-    if selector and selector.lower() != "all":
+    selector = _effective_account(account)
+    if selector:
         try:
             _account_scope(selector)
         except ValueError as exc:
@@ -620,15 +623,15 @@ def resolve_cached_notebook_target(
     require_candidate_verification = False
     # An explicit pick is an instruction to select from the current candidate
     # set. Do not let a previously remembered target silently override it.
-    if pick is None and not selector and not ignore_target_cache:
+    if pick is None and not ignore_target_cache:
         data = _read_target_cache()
-        entry = (data.get("targets") or {}).get(notebook_target_cache_key(notebook, workspace))
+        entry = (data.get("targets") or {}).get(notebook_target_cache_key(notebook, workspace, selector))
         candidate = _candidate_from_cache_entry(
             entry=entry,
             notebook=notebook,
             workspace=workspace,
         )
-        if candidate is not None:
+        if candidate is not None and candidate.account == selector:
             if verify_target_cache and not _target_available(candidate):
                 if not ctx.json_output:
                     click.echo(
@@ -647,7 +650,7 @@ def resolve_cached_notebook_target(
     candidates = _find_candidates(
         notebook=notebook,
         workspace=workspace,
-        account=None if selector.lower() == "all" else selector or None,
+        account=selector,
     )
     if not candidates:
         return None

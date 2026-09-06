@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from typing import Any, Optional
 
 import click
@@ -220,7 +221,10 @@ def _load_image_sources(
         )
 
     with ThreadPoolExecutor(max_workers=len(source_keys)) as executor:
-        futures = {source: executor.submit(_fetch, source) for source in source_keys}
+        futures = {
+            source: executor.submit(copy_context().run, _fetch, source)
+            for source in source_keys
+        }
         images: list[browser_api_module.CustomImageInfo] = []
         failed: list[str] = []
         for source in source_keys:

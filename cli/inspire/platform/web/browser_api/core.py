@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+from contextvars import copy_context
 from typing import Any, Optional
 
 from inspire.platform.web.session import (
@@ -176,7 +177,7 @@ def _run_in_thread(func, *args, **kwargs):  # noqa: ANN001
         except BaseException as exc:  # pragma: no cover - re-raised in main thread
             error["exc"] = exc
 
-    thread = threading.Thread(target=runner, daemon=True)
+    thread = threading.Thread(target=copy_context().run, args=(runner,), daemon=True)
     thread.start()
     thread.join()
     if error:

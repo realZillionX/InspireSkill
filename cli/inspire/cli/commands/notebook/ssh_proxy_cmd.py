@@ -187,8 +187,6 @@ def ssh_proxy_cmd(
             sys.exit(EXIT_CONFIG_ERROR)
         requested_account = str(account or "").strip() or None
         bootstrap_account = target.account if target and target.account else requested_account
-        if bootstrap_account and bootstrap_account.lower() == "all":
-            bootstrap_account = None
         with serialize_notebook_bootstrap(
             account=bootstrap_account,
             notebook=notebook,

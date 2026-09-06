@@ -166,7 +166,7 @@ def bridge_ssh(
 
     try:
         config_account = policy.account or account
-        if config_account and config_account.lower() != "all":
+        if config_account:
             config, _ = Config.from_files_and_env(
                 require_credentials=False, account=config_account,
             )
@@ -240,7 +240,7 @@ def bridge_ssh(
     if target is None:
         explicit_account = (
             str(account or "").strip()
-            if str(account or "").strip() and str(account or "").strip().lower() != "all"
+            if str(account or "").strip()
             else None
         )
         tunnel_config = _load_tunnel_config_for_account(explicit_account)

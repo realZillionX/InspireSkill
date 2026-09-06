@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from inspire.accounts import AccountError, current_account, rename_account
+from inspire.accounts import AccountError, default_account, rename_account
 from inspire.cli.context import Context, EXIT_VALIDATION_ERROR, pass_context
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error
@@ -22,7 +22,7 @@ def rename(ctx: Context, old_name: str, new_name: str) -> None:
     except AccountError as err:
         exit_with_error(ctx, "AccountError", str(err), EXIT_VALIDATION_ERROR)
     new = new_name.strip()
-    active = current_account()
+    active = default_account()
     is_active = active == new
     suffix = " (active)" if is_active else ""
     emit_success(

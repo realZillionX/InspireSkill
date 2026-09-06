@@ -24,7 +24,7 @@ def two_accounts(monkeypatch, tmp_path):
         )
     current = tmp_path / ".inspire" / "current"
     current.write_text("alice\n")
-    for name in ("current_account", "list_accounts", "account_exists"):
+    for name in ("current_account", "account_exists"):
         monkeypatch.setattr(target_resolver, name, getattr(storage, name))
     return current
 
@@ -70,11 +70,14 @@ def stub_platform(monkeypatch, gpu_model):
     return session, lookups
 
 
-@pytest.mark.parametrize("selector", ["bob", None, "all"])
+@pytest.mark.parametrize("selector", ["root", "group", "leaf", "default"])
 @pytest.mark.parametrize("gpu_model", ["", "H200"])
 def test_exec_uses_one_account_for_preflight_environment_and_execution(
     monkeypatch, two_accounts, selector, gpu_model,
 ):
+    if selector == "default":
+        two_accounts.write_text("bob\n")
+    saved_default = two_accounts.read_text()
     cache_connection("bob")
     session, _ = stub_platform(monkeypatch, gpu_model)
     commands = []
@@ -94,21 +97,25 @@ def test_exec_uses_one_account_for_preflight_environment_and_execution(
     monkeypatch.setattr(remote_exec, "try_exec_via_jupyter_terminal", run_jupyter)
     monkeypatch.setattr(remote_exec, "_should_auto_passthrough_stdin", lambda: False)
     args = ["notebook", "exec", "dev-box"]
-    if selector:
-        args += ["--account", selector]
+    position = {"root": 0, "group": 1, "leaf": len(args), "default": None}[selector]
+    if position is not None:
+        args[position:position] = ["--account", "bob"]
     result = CliRunner().invoke(main, [*args, "hostname"])
 
     assert result.exit_code == 0, (result.output, result.exception)
     assert len(commands) == 1
     assert "bob" in commands[0]
     assert "alice" not in commands[0]
-    assert two_accounts.read_text() == "alice\n"
+    assert two_accounts.read_text() == saved_default
 
 
-@pytest.mark.parametrize("selector", ["bob", None, "all"])
+@pytest.mark.parametrize("selector", ["root", "group", "leaf", "default"])
 def test_jupyter_shell_loads_the_target_accounts_environment(
     monkeypatch, two_accounts, selector,
 ):
+    if selector == "default":
+        two_accounts.write_text("bob\n")
+    saved_default = two_accounts.read_text()
     cache_connection("bob")
     session, _ = stub_platform(monkeypatch, "H200")
     calls = []
@@ -120,24 +127,30 @@ def test_jupyter_shell_loads_the_target_accounts_environment(
 
     monkeypatch.setattr(remote_shell.browser_api_module, "open_jupyter_terminal_shell", run_shell)
     args = ["notebook", "shell", "dev-box"]
-    if selector:
-        args += ["--account", selector]
+    position = {"root": 0, "group": 1, "leaf": len(args), "default": None}[selector]
+    if position is not None:
+        args[position:position] = ["--account", "bob"]
     result = CliRunner().invoke(main, args)
 
     assert result.exit_code == 0, (result.output, result.exception)
     assert len(calls) == 1
     assert "bob" in calls[0]
     assert "alice" not in calls[0]
-    assert two_accounts.read_text() == "alice\n"
+    assert two_accounts.read_text() == saved_default
 
 
-def test_cross_account_pick_is_consumed_before_live_lookup(monkeypatch, two_accounts):
-    cache_connection("alice")
+def test_cached_pick_is_consumed_before_live_lookup(monkeypatch, two_accounts):
     cache_connection("bob")
+    config = tunnel.load_tunnel_config(account="bob")
+    config.add_bridge(tunnel.BridgeProfile(
+        name="another-box", notebook_name="dev-box", notebook_id="notebook-another",
+        workspace_name="CPU资源空间", proxy_url="https://example.test/proxy/31337/",
+    ))
+    tunnel.save_tunnel_config(config)
     _, lookups = stub_platform(monkeypatch, "")
 
     policy = transport.preflight_notebook_transport_policy(
-        Context(), notebook="dev-box", workspace=None, account="all", pick=2,
+        Context(), notebook="dev-box", workspace=None, account="bob", pick=2,
     )
 
     assert policy.account == "bob"

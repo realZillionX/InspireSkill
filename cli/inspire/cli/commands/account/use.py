@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from inspire.accounts import AccountError, current_account, set_current_account
+from inspire.accounts import AccountError, default_account, set_current_account
 from inspire.cli.context import Context, EXIT_VALIDATION_ERROR, pass_context
 from inspire.cli.formatters import json_formatter
 from inspire.cli.utils.errors import exit_with_error
@@ -20,7 +20,7 @@ def use(ctx: Context, name: str) -> None:
         set_current_account(name)
     except AccountError as err:
         exit_with_error(ctx, "AccountError", str(err), EXIT_VALIDATION_ERROR)
-    active = current_account() or name.strip()
+    active = default_account() or name.strip()
     emit_success(
         ctx,
         payload={"name": active, "status": "selected"},

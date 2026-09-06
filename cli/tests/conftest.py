@@ -129,7 +129,6 @@ def _isolate_notebook_target_resolver(monkeypatch):  # noqa: ANN001
     target_resolver = importlib.import_module("inspire.cli.commands.notebook.target_resolver")
 
     monkeypatch.setattr(target_resolver, "current_account", lambda: None)
-    monkeypatch.setattr(target_resolver, "list_accounts", lambda: [])
     monkeypatch.setattr(target_resolver, "account_exists", lambda _name: False)
 
 

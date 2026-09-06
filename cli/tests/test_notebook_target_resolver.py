@@ -25,11 +25,12 @@ def _bridge(
     *,
     workspace: str = "CPU资源空间",
     notebook_id: str | None = None,
+    notebook_name: str | None = None,
 ) -> BridgeProfile:
     return BridgeProfile(
         name=name,
         proxy_url=f"https://proxy.invalid/{name}/proxy/31337/",
-        notebook_name=name,
+        notebook_name=notebook_name or name,
         notebook_id=notebook_id or f"notebook-{name}",
         workspace_name=workspace,
     )
@@ -46,11 +47,11 @@ def _install_accounts(
     monkeypatch: pytest.MonkeyPatch,
     configs: dict[str, TunnelConfig],
     *,
-    current: str | None = "active",
+    current: str | None = "alice",
 ) -> None:
     monkeypatch.setattr(target_resolver, "current_account", lambda: current)
-    monkeypatch.setattr(target_resolver, "list_accounts", lambda: sorted(configs))
     monkeypatch.setattr(target_resolver, "account_exists", lambda name: name in configs)
+    monkeypatch.setattr("inspire.cli.utils.account_option.account_exists", lambda name: name in configs)
 
     def fake_load_tunnel_config(account: str | None = None) -> TunnelConfig:
         if account is None:
@@ -62,7 +63,7 @@ def _install_accounts(
     monkeypatch.setattr(ssh_tunnel_module, "load_tunnel_config", fake_load_tunnel_config)
 
 
-def test_resolver_finds_unique_cross_account_target(
+def test_resolver_finds_target_in_selected_account(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -79,7 +80,7 @@ def test_resolver_finds_unique_cross_account_target(
     assert target.account == "alice"
     assert target.bridge.name == "dev-a"
     cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text(encoding="utf-8"))
-    assert cache["targets"]["dev-a|workspace="]["account"] == "alice"
+    assert cache["targets"]["dev-a|workspace=|account=alice"]["account"] == "alice"
 
 
 def test_resolver_lists_candidates_when_noninteractive(
@@ -90,10 +91,11 @@ def test_resolver_lists_candidates_when_noninteractive(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     _install_accounts(
         monkeypatch,
-        {
-            "alice": _config("alice", _bridge("dev-box")),
-            "bob": _config("bob", _bridge("dev-box")),
-        },
+        {"alice": _config(
+            "alice",
+            _bridge("cpu-box", notebook_name="dev-box"),
+            _bridge("gpu-box", notebook_name="dev-box", workspace="分布式训练空间"),
+        )},
     )
 
     with pytest.raises(SystemExit) as exc:
@@ -108,7 +110,7 @@ def test_resolver_lists_candidates_when_noninteractive(
     err = capsys.readouterr().err
     assert "Multiple cached notebook connections match 'dev-box'" in err
     assert "account=alice" in err
-    assert "account=bob" in err
+    assert "分布式训练空间" in err
     assert "--workspace <name>" in err
     assert "--account <name>" in err
 
@@ -120,10 +122,11 @@ def test_resolver_prompt_choice_is_cached_and_can_be_ignored(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     _install_accounts(
         monkeypatch,
-        {
-            "alice": _config("alice", _bridge("dev-box")),
-            "bob": _config("bob", _bridge("dev-box")),
-        },
+        {"alice": _config(
+            "alice",
+            _bridge("cpu-box", notebook_name="dev-box"),
+            _bridge("gpu-box", notebook_name="dev-box", workspace="分布式训练空间"),
+        )},
     )
     monkeypatch.setattr(target_resolver, "_can_prompt", lambda ctx: True)
     choices = iter([2, 1])
@@ -136,7 +139,8 @@ def test_resolver_prompt_choice_is_cached_and_can_be_ignored(
         allow_prompt=True,
     )
     assert selected is not None
-    assert selected.account == "bob"
+    assert selected.account == "alice"
+    assert selected.bridge.name == "gpu-box"
 
     cached = target_resolver.resolve_cached_notebook_target(
         Context(),
@@ -147,7 +151,8 @@ def test_resolver_prompt_choice_is_cached_and_can_be_ignored(
     )
     assert cached is not None
     assert cached.source == "target_cache"
-    assert cached.account == "bob"
+    assert cached.account == "alice"
+    assert cached.bridge.name == "gpu-box"
 
     ignored = target_resolver.resolve_cached_notebook_target(
         Context(),
@@ -158,6 +163,7 @@ def test_resolver_prompt_choice_is_cached_and_can_be_ignored(
     )
     assert ignored is not None
     assert ignored.account == "alice"
+    assert ignored.bridge.name == "cpu-box"
 
 
 def test_resolver_pick_overrides_remembered_target_and_caches_selection(
@@ -165,10 +171,11 @@ def test_resolver_pick_overrides_remembered_target_and_caches_selection(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    configs = {
-        "alice": _config("alice", _bridge("dev-box", notebook_id="notebook-alice")),
-        "bob": _config("bob", _bridge("dev-box", notebook_id="notebook-bob")),
-    }
+    configs = {"alice": _config(
+        "alice",
+        _bridge("dev-box"),
+        _bridge("gpu-box", notebook_name="dev-box", workspace="分布式训练空间"),
+    )}
     _install_accounts(monkeypatch, configs)
     target_resolver.remember_notebook_target(
         notebook="dev-box",
@@ -188,9 +195,10 @@ def test_resolver_pick_overrides_remembered_target_and_caches_selection(
 
     assert selected is not None
     assert selected.source == "pick"
-    assert selected.account == "bob"
+    assert selected.account == "alice"
+    assert selected.bridge.name == "gpu-box"
     cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text(encoding="utf-8"))
-    assert cache["targets"]["dev-box|workspace="]["account"] == "bob"
+    assert cache["targets"]["dev-box|workspace=|account=alice"]["bridge_name"] == "gpu-box"
 
 
 def test_resolver_pick_out_of_range_is_noninteractive_error(
@@ -234,9 +242,9 @@ def test_forget_notebook_targets_removes_matching_aliases(
         bridge=bridge,
     )
 
-    removed = target_resolver.forget_notebook_targets(notebook="dev-box")
+    removed = target_resolver.forget_notebook_targets(notebook="dev-box", account="alice")
 
-    assert removed == ["dev-box|workspace=", "dev-box|workspace=CPU资源空间"]
+    assert removed == ["dev-box|workspace=|account=alice", "dev-box|workspace=CPU资源空间|account=alice"]
     cache = json.loads((tmp_path / ".inspire" / "notebook-targets.json").read_text(encoding="utf-8"))
     assert cache["targets"] == {}
 
@@ -246,6 +254,7 @@ def test_connection_target_forget_removes_remembered_targets(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(target_resolver, "current_account", lambda: "alice")
     bridge = _bridge("dev-box", workspace="CPU资源空间")
     target_resolver.remember_notebook_target(
         notebook="dev-box",
@@ -272,7 +281,7 @@ def test_connection_target_forget_removes_remembered_targets(
     assert cache["targets"] == {}
 
 
-def test_resolver_reselects_when_cached_target_is_unavailable(
+def test_resolver_does_not_switch_account_when_cached_target_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -305,8 +314,7 @@ def test_resolver_reselects_when_cached_target_is_unavailable(
         allow_prompt=True,
     )
 
-    assert selected is not None
-    assert selected.account == "bob"
+    assert selected is None
 
 
 def test_resolver_returns_none_when_rediscovered_target_is_still_unavailable(

@@ -107,6 +107,7 @@ def test_bridge_scp_forwards_workspace_account_and_pick(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr("inspire.cli.utils.account_option.account_exists", lambda name: name == "alice")
     local_file = tmp_path / "test.txt"
     local_file.write_text("hello", encoding="utf-8")
     tunnel_config = TunnelConfig(account="alice")

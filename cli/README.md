@@ -13,6 +13,12 @@ The public CLI resolves resources by name. Human-readable output and the root
 metadata rather than implementation metadata. Use `--limit/-n` or `--all`
 where offered, and consult the installed command help for the current syntax.
 
+`inspire account use <name>` sets the saved default account. Every command
+accepts `--account <name>` to override it for that invocation, including at the
+root, command-group, or subcommand position. Commands keep their selected
+account throughout execution. Switching the default preserves each account's
+sessions, SSH connections, and resource caches.
+
 Project documentation:
 
 - [Project overview](https://github.com/realZillionX/InspireSkill/blob/main/README.md)

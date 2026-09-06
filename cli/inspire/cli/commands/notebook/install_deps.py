@@ -410,8 +410,6 @@ def install_deps_cmd(
                 bridge = policy.cached_target.bridge
             else:
                 target_account = policy.account or account
-                if target_account and target_account.lower() == "all":
-                    target_account = None
                 tunnel_config = (
                     load_tunnel_config(account=target_account)
                     if target_account else load_tunnel_config()

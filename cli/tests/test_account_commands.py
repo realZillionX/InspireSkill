@@ -458,7 +458,7 @@ class TestAccountUseCommand:
         assert cfg.username == "bob"
         assert browser_core._get_base_url() == "https://bob.example"
 
-    def test_use_clears_browser_api_runtime_cache(
+    def test_use_keeps_previous_account_runtime_cache(
         self, home: Path, runner: CliRunner
     ) -> None:
         from inspire.platform.web.browser_api import core as browser_core
@@ -473,8 +473,8 @@ class TestAccountUseCommand:
         result = runner.invoke(account, ["use", "bob"])
 
         assert result.exit_code == 0, result.output
-        assert browser_core._cached_base_url is None
-        assert browser_core._cached_base_url_key is None
+        assert browser_core._cached_base_url == "https://alice.example"
+        assert browser_core._cached_base_url_key == ("alice", None)
 
     def test_use_preserves_switched_away_account_disk_caches(
         self, home: Path, runner: CliRunner

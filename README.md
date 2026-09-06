@@ -150,7 +150,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 把跑通的环境固化成镜像是 Notebook 自己的生命周期事件：`save-image` 会先报平台估算的快照体积（`--dry-run` 只估不存），保存期间该 Notebook 不可操作，中途要拿回来用 `cancel-save-image`——已经打出「等待推送」之后取消仍然生效。默认是在起点镜像上追加增量层，反复迭代会持续累积层数；`--flatten` 把结果合并成单层，适合固化基底或在多轮迭代后收敛镜像。估算值、最终体积和构建耗时随基底与改动内容变化，以本次命令和镜像状态为准。
 
-显卡不是 `H100` / `H200` 的 Notebook 可使用 OpenSSH / SCP / SSH Config；`H100` / `H200` 受限 Notebook 使用 JupyterTerminal 执行命令，文件流转以 `/inspire/...` 共享路径为边界，并通过支持 SSH 的 Notebook 使用 `notebook scp` 或外部 `rsync` 完成本地上传/下载。连接类命令会跨账号解析本地已缓存的 Notebook Connection，不要求先切 Active Account。
+显卡不是 `H100` / `H200` 的 Notebook 可使用 OpenSSH / SCP / SSH Config；`H100` / `H200` 受限 Notebook 使用 JupyterTerminal 执行命令，文件流转以 `/inspire/...` 共享路径为边界，并通过支持 SSH 的 Notebook 使用 `notebook scp` 或外部 `rsync` 完成本地上传/下载。连接类命令只解析所选账号的 Notebook Connection；传 `--account <name>` 可使用其他账号，无需切换默认账号。
 
 </details>
 
@@ -281,7 +281,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 `inspire account add / list / use / rename / current / remove / check / context / permissions`：每个账号的 `config.toml`、SSH Tunnel Bridges 和登录缓存都在独立目录 `~/.inspire/accounts/<name>/`，活动账号由 `~/.inspire/current` 一行决定。`account check` 核对账号配置和登录，`account context` 列出当前账号能用的全部资源名。
 
-不再有 `[accounts."<user>"]` 合并层、不再有多个环境变量的优先级链；切账号 = 改一个文件。Notebook 连接类命令的 `--account <name>` 使用本地 Account Alias，不是平台登录用户名；`all` 是跨账号扫描 Selector。
+`account use <name>` 设置持久默认账号；所有命令的 `--account <name>` 使用本地 Account Alias，只覆盖本次命令，不改默认值。不传参数就使用默认账号，命令执行中不受其他进程切换默认账号影响。切换时保留各账号的 Session、SSH Connection、资源索引和代理缓存，切回后继续复用。
 
 </details>
 
