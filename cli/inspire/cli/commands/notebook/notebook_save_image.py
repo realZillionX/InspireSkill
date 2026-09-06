@@ -183,6 +183,13 @@ def save_image_cmd(
 ) -> None:
     """Save a running notebook as a custom Docker image.
 
+    Before every save, inspect the container contents and remove all unnecessary
+    files: unused caches, downloads, build artifacts, logs, debug files,
+    duplicates and obsolete environments. Check references before deleting
+    unfamiliar files. Save only after confirming no junk remains and required
+    dependencies and programs still work. Keep datasets, weights, checkpoints
+    and bulk outputs on shared storage; preserve assets still in use there.
+
     NAME is the notebook name from inspire notebook list. The notebook remains
     available after the save completes, but cannot be used while it runs, so
     the estimated snapshot size is printed first. Use --dry-run to see that
@@ -192,7 +199,9 @@ def save_image_cmd(
     Each save stacks another layer on the image it started from, so an
     environment grown by saving, restarting and saving again keeps piling them
     up. --flatten collapses the result to one layer, which also drops whatever
-    a later layer had overwritten or deleted.
+    a later layer had overwritten or deleted. If deleted junk exists in older
+    image layers, you must use --flatten to remove it from the saved image.
+    Flattening does not replace inspecting and cleaning the container first.
     """
     notebook = reject_id_at_boundary(
         ctx,
