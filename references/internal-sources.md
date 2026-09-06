@@ -106,6 +106,6 @@ Apt 不要机械粘贴源行。先确认镜像 codename，再把 `/etc/apt/sourc
 
 ## 5. 固化原则
 
-依赖安装跑通后，保存为镜像。`notebook save-image` 会触发一段中等时长的镜像保存过程；保存过程中不可操作该 Notebook；保存完毕后 Notebook 不会自动停止。
+依赖安装跑通后，先按 [`notebook.md`](notebook.md#6-基底环境与保存镜像) 检查并彻底清理待固化内容中的多余垃圾文件，确认无残留且环境仍可用，再保存为镜像。`notebook save-image` 会触发一段中等时长的镜像保存过程；保存过程中不可操作该 Notebook；保存完毕后 Notebook 不会自动停止。
 
 后续 Notebook / Job / HPC / Ray / Serving 应复用已验证镜像。只有数据、权重和产物继续走共享盘路径。项目基底镜像建立或更换后，按 [`assets.md`](assets.md) 回填 `INSPIRE.md` 资产身份及适用 Project / Workspace。

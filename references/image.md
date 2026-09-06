@@ -15,7 +15,7 @@
 - 状态为 `READY`。
 - 目标 Workspace / Project 有权限读取。
 - 训练、HPC、Ray 或 Serving 所需 Runtime 已在同类环境中验证。
-- 没有账号 Token、私有 Wheel、内部数据或临时调试文件。
+- 保存前已按 [`notebook.md`](notebook.md#6-基底环境与保存镜像) 检查并彻底清理所有多余垃圾文件，没有账号 Token、私有 Wheel、内部数据或临时调试文件。
 
 ## 2. 选择路径
 
