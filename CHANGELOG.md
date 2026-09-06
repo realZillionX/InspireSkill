@@ -1,5 +1,35 @@
 # Changelog
 
+## v7.1.7
+
+### 兼容性变化
+
+- **Notebook 只解析所选账号的资源与连接。** 不传 `--account` 时使用 `account use` 设置的默认账号，不再自动扫描其他账号的连接缓存；原 `--account all` 的跨账号扫描语义移除，参数只接受一个已配置的本地 Account Alias。需要操作其他账号时显式传 `--account <name>`。
+
+- **已配置账号的登录名以账号文件为准。** Shell 或 dotenv 中的 `INSPIRE_USERNAME` 不再覆盖该账号的 username；账号文件未保存密码时仍可用 `INSPIRE_PASSWORD` 补充。平台地址等运行时环境变量仍可覆盖对应设置，登录与 API 请求统一使用同一套配置加载规则。
+
+- **默认 SSH Host 别名包含账号信息。** `notebook ssh-config` 为不同账号的同名 Notebook 生成不同的默认 Host，`ProxyCommand` 固定目标 Account Alias。需要自己的 Host 命名时传 `--host`；已有用户 SSH 配置不会被自动重写。
+
+- **人类可读表格统一由 Rich 排版。** 表格的边框、列间距和截断呈现有所调整；自动化脚本应使用根级 `--json`，JSON 输出继续沿用各命令的既有结构。
+
+### 新增与修复
+
+- **全 CLI 统一支持单次账号覆盖。** `--account <name>` 可放在根命令、命令组或子命令后，离子命令最近的显式选择生效；覆盖 Notebook、Job、HPC、Ray、Serving、Image、Model、Dataset、TensorBoard、Project、Resources，以及账号检查和缓存管理等入口。`account use` 保留为持久默认账号设置，`account current` 读取该默认值，单次覆盖不修改它。
+
+- **并行命令固定各自账号，切换默认账号保留缓存。** 命令执行期间的配置、Session、代理、资源索引、SSH 连接及远端环境变量使用同一账号，不受其他进程执行 `account use` 影响。内部工作线程继承账号上下文，参数解析失败、命令异常和延迟垃圾回收也不会把旧账号带到后续命令。切换默认账号不删除 Session、SSH Connection、资源或代理缓存；切回后可继续复用仍然有效的状态。
+
+- **Notebook 预检、执行与缓存选择保持一致。** 修复 `exec` / `shell` 读取默认账号的 `remote_env` 和重连设置、而实际连接另一个账号的问题。SSH 与 JupyterTerminal 的预检和执行使用同一目标；缓存候选的 `--pick` 不会再次作为 Live 列表序号使用。Remembered Target 按账号、Notebook Name 和 Workspace 区分，并保留既有缓存记录；查看与遗忘只作用于所选账号。
+
+- **GPU 型号缓存隔离账号与平台，并保护并发写入。** 缓存键包含 Account Alias、平台地址及 Compute Group（缺失时使用 Notebook 身份），避免同名计算组影响其他账号的 SSH / JupyterTerminal 判断。并发写入保留所有账号的记录，`cache clear --resource notebook-gpu` 只清理所选账号；缺少账号归属的记录不会被套用到另一个账号。
+
+- **所有表格使用同一个 Rich 渲染入口。** Notebook、Job、HPC、Ray、Serving、资源策略、账号权限和 TensorBoard 等输出统一处理中文显示宽度、列对齐和长内容截断。单元格按纯文本渲染，方括号等用户内容不会被解释为 Rich 标记；增加 `rich>=13.7.0` 运行时依赖，删除被替代的手工表格拼接逻辑。
+
+### 工作流与验证
+
+- **保存镜像前的清理要求进入 Help 与参考文档。** 固化前检查并清理无用缓存、下载包、构建产物、日志、调试文件、重复内容和废弃环境，重新验证必要依赖与程序；仍有消费者的共享盘数据、权重与 Checkpoint 保留。被删除的垃圾若已进入旧镜像层，保存时使用 `--flatten` 清除旧层内容；Flatten 不能替代容器内的检查与清理。
+
+- **补齐多账号回归与跨平台验证。** 覆盖默认账号和单次覆盖、多个进程并行运行时切换默认账号、Session / SSH 缓存保留与账号改名复用、同名 Notebook、环境变量身份隔离、GPU 缓存并发写入和异常退出恢复；发布检查包括全量测试、Ruff、mypy、构建，以及 Python 3.10–3.12 和 Windows CI。真实平台验证覆盖两个账号并行读取，未创建或删除远端工作负载。
+
 ## v7.1.6
 
 ### 破坏性变更
