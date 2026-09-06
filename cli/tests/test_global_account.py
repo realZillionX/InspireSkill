@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import gc
 import json
 import os
 import time
@@ -122,11 +123,20 @@ def test_unknown_account_is_not_a_wildcard(monkeypatch, accounts, args):
     assert storage.default_account() == "alice"
 
 
-def test_failed_parse_does_not_leak_the_command_account(accounts):
-    result = CliRunner().invoke(main, ["--account", "bob", "job", "list"])
+@pytest.mark.parametrize("args", [
+    ["--account", "bob", "job", "list"],
+    ["job", "--account", "bob", "list"],
+    ["job", "list", "--account", "bob"],
+])
+def test_failed_parse_does_not_leak_the_command_account(accounts, args):
+    result = CliRunner().invoke(main, args)
     assert result.exit_code == 2  # --workspace is required.
     assert storage.current_account() == "alice"
     assert storage.default_account() == "alice"
+    storage.set_current_account("bob")
+    del result
+    gc.collect()
+    assert storage.current_account() == "bob"
 
 
 def test_command_exception_restores_the_callers_account(monkeypatch, accounts):

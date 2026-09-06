@@ -19,8 +19,7 @@ import os
 import re
 import shutil
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -33,14 +32,25 @@ _COMMAND_ACCOUNT: ContextVar[tuple[str | None] | None] = ContextVar(
 )
 
 
-@contextmanager
-def account_scope(account: str | None) -> Iterator[None]:
-    """Pin one command's identity without changing the saved default or caches."""
-    token = _COMMAND_ACCOUNT.set((account,))
-    try:
-        yield
-    finally:
-        _COMMAND_ACCOUNT.reset(token)
+class _AccountScope(AbstractContextManager[None]):
+    def __init__(self, account: str | None) -> None:
+        self.account = account
+
+    def __enter__(self) -> None:
+        self.token = _COMMAND_ACCOUNT.set((self.account,))
+
+    def __exit__(self, *_args: object) -> None:
+        _COMMAND_ACCOUNT.reset(self.token)
+
+
+def account_scope(account: str | None) -> AbstractContextManager[None]:
+    """Pin one command's identity without changing the saved default or caches.
+
+    The scope only restores on explicit exit. A Click context abandoned during
+    parsing must not restore an old account later when garbage-collected;
+    the enclosing CLI invocation already restores the caller's account.
+    """
+    return _AccountScope(account)
 
 
 def _atomic_write_text(target: Path, content: str) -> None:
