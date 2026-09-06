@@ -121,6 +121,10 @@ def notebook_ssh(
         )
         if not policy.allow_ssh:
             raise SystemExit(emit_ssh_policy_error(ctx, policy))
+        if policy.cached_target:
+            account = policy.cached_target.account
+            workspace = workspace or policy.cached_target.bridge.workspace_name
+            pick = None
     run_notebook_ssh(
         ctx,
         notebook_id=notebook,

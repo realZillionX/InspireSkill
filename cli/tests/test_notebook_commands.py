@@ -17,6 +17,7 @@ from inspire.cli.commands.notebook import notebook_commands as notebook_cmd_modu
 from inspire.cli.commands.notebook.notebook_presenters import _print_notebook_list
 from inspire.cli.commands.notebook import remote_exec as remote_exec_module
 from inspire.cli.commands.notebook import remote_shell as remote_shell_module
+from inspire.cli.commands.notebook.transport import NotebookTransportPolicy
 from inspire.cli.commands.notebook import notebook_ssh_flow as ssh_flow_module
 from inspire.cli.context import (
     Context,
@@ -2627,7 +2628,7 @@ def test_notebook_exec_cwd_uses_absolute_path(
     monkeypatch.setattr(
         remote_exec_module,
         "preflight_notebook_transport_policy",
-        lambda *args, **kwargs: SimpleNamespace(exec_transport="ssh", notebook_id="nb-test"),
+        lambda *args, **kwargs: NotebookTransportPolicy(notebook="gpu-main", notebook_id="nb-test", gpu_model=""),
     )
 
     def fake_stream(**kwargs: object) -> int:
@@ -2678,7 +2679,7 @@ def test_notebook_exec_verifies_target_cache_before_use(
     monkeypatch.setattr(
         remote_exec_module,
         "preflight_notebook_transport_policy",
-        lambda *args, **kwargs: SimpleNamespace(exec_transport="ssh", notebook_id="nb-test"),
+        lambda *args, **kwargs: NotebookTransportPolicy(notebook="gpu-main", notebook_id="nb-test", gpu_model=""),
     )
     monkeypatch.setattr(
         remote_exec_module,
@@ -2716,7 +2717,7 @@ def test_notebook_shell_cwd_uses_absolute_path(
     monkeypatch.setattr(
         remote_shell_module,
         "preflight_notebook_transport_policy",
-        lambda *args, **kwargs: SimpleNamespace(exec_transport="ssh", notebook_id="nb-test"),
+        lambda *args, **kwargs: NotebookTransportPolicy(notebook="gpu-main", notebook_id="nb-test", gpu_model=""),
     )
 
     def fake_get_ssh_command_args(bridge_name, config, remote_command=None):  # type: ignore[no-untyped-def]
@@ -2766,7 +2767,7 @@ def test_notebook_shell_without_explicit_cwd_preserves_remote_initial_cwd(
     monkeypatch.setattr(
         remote_shell_module,
         "preflight_notebook_transport_policy",
-        lambda *args, **kwargs: SimpleNamespace(exec_transport="ssh", notebook_id="nb-test"),
+        lambda *args, **kwargs: NotebookTransportPolicy(notebook="gpu-main", notebook_id="nb-test", gpu_model=""),
     )
 
     def fake_get_ssh_command_args(bridge_name, config, remote_command=None):  # type: ignore[no-untyped-def]

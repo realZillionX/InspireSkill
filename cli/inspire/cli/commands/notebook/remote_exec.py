@@ -608,8 +608,23 @@ def exec_command(
     )
     command = _normalize_exec_command(command_parts)
 
+    policy = preflight_notebook_transport_policy(
+        ctx,
+        notebook=notebook,
+        workspace=workspace,
+        account=account,
+        pick=pick,
+        ignore_target_cache=ignore_target_cache,
+    )
+
     try:
-        config, _ = Config.from_files_and_env(require_credentials=False)
+        config_account = policy.account or account
+        if config_account and config_account.lower() != "all":
+            config, _ = Config.from_files_and_env(
+                require_credentials=False, account=config_account,
+            )
+        else:
+            config, _ = Config.from_files_and_env(require_credentials=False)
         remote_cwd = _resolve_exec_remote_cwd(cwd=cwd)
     except ConfigError as e:
         _emit_error(
@@ -632,15 +647,6 @@ def exec_command(
             human_lines=[f"Configuration error: {e}"],
         )
         sys.exit(EXIT_CONFIG_ERROR)
-
-    policy = preflight_notebook_transport_policy(
-        ctx,
-        notebook=notebook,
-        workspace=workspace,
-        account=account,
-        pick=pick,
-        ignore_target_cache=ignore_target_cache,
-    )
 
     if policy.exec_transport == "jupyter":
         if stdin_mode or _should_auto_passthrough_stdin():
@@ -668,7 +674,7 @@ def exec_command(
                 timeout_s=timeout,
             )
         )
-    target = resolve_cached_notebook_target(
+    target = policy.cached_target or resolve_cached_notebook_target(
         ctx,
         notebook=notebook,
         workspace=workspace,

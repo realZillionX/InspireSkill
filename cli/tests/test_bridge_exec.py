@@ -423,7 +423,7 @@ def test_exec_forwards_workspace_account_and_pick_to_target_resolution(
     monkeypatch.setattr(
         Config,
         "from_files_and_env",
-        classmethod(lambda cls, require_credentials=True: (config, {})),
+        classmethod(lambda cls, require_credentials=True, account=None: (config, {})),
     )
     monkeypatch.setattr(
         exec_cmd_module,

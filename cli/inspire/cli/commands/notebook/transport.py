@@ -16,6 +16,7 @@ from inspire.platform.web import browser_api as browser_api_module
 
 from .gpu_model import notebook_gpu_model
 from .notebook_lookup import _notebook_compute_group, _resolve_notebook_target
+from .target_resolver import NotebookConnectionTarget, resolve_cached_notebook_target
 
 if TYPE_CHECKING:
     from inspire.platform.web.session import WebSession
@@ -113,6 +114,8 @@ class NotebookTransportPolicy:
     notebook_id: str
     gpu_model: str
     session: WebSession | None = field(default=None, repr=False, compare=False)
+    account: str | None = None
+    cached_target: NotebookConnectionTarget | None = field(default=None, repr=False, compare=False)
 
     @property
     def allow_ssh(self) -> bool:
@@ -164,6 +167,27 @@ def preflight_notebook_transport_policy(
 ) -> NotebookTransportPolicy:
     from inspire.config.workspaces import resolve_workspace_query_scope
 
+    account = str(account or "").strip() or None
+    cached_target = None
+    if not account or account.lower() == "all":
+        cached_target = resolve_cached_notebook_target(
+            ctx,
+            notebook=notebook,
+            workspace=workspace,
+            account=account,
+            pick=pick,
+            ignore_target_cache=ignore_target_cache,
+            allow_prompt=not ctx.json_output,
+        )
+        account = cached_target.account if cached_target else None
+    lookup_notebook = notebook
+    if cached_target:
+        # Pick applies to the cross-account candidates once. The live lookup
+        # must inspect the selected notebook in that account and workspace.
+        lookup_notebook = cached_target.bridge.notebook_name or notebook
+        workspace = workspace or cached_target.bridge.workspace_name
+        pick = None
+
     session = (
         require_web_session(ctx, hint=WEB_AUTH_HINT, account=account)
         if account
@@ -183,7 +207,7 @@ def preflight_notebook_transport_policy(
             ctx,
             session=session,
             base_url=base_url,
-            identifier=notebook,
+            identifier=lookup_notebook,
             json_output=ctx.json_output,
             workspace_ids=workspace_ids,
             pick=pick,
@@ -243,4 +267,6 @@ def preflight_notebook_transport_policy(
             probed_gpu_model=gpu_model,
         ),
         session=session,
+        account=account or getattr(session, "account", None),
+        cached_target=cached_target,
     )

@@ -164,7 +164,7 @@ def bridge_scp(
         )
         return
 
-    target = resolve_cached_notebook_target(
+    target = policy.cached_target or resolve_cached_notebook_target(
         ctx,
         notebook=notebook,
         workspace=workspace,

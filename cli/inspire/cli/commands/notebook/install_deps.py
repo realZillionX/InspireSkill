@@ -405,14 +405,24 @@ def install_deps_cmd(
     bridge_name = notebook
     try:
         if not use_jupyter:
-            tunnel_config = load_tunnel_config(account=account) if account else load_tunnel_config()
-            bridge = _resolve_notebook(
-                notebook,
-                tunnel_config,
-                notebook_id=policy.notebook_id,
-                workspace=workspace,
-                pick=pick,
-            )
+            if policy.cached_target:
+                tunnel_config = policy.cached_target.config
+                bridge = policy.cached_target.bridge
+            else:
+                target_account = policy.account or account
+                if target_account and target_account.lower() == "all":
+                    target_account = None
+                tunnel_config = (
+                    load_tunnel_config(account=target_account)
+                    if target_account else load_tunnel_config()
+                )
+                bridge = _resolve_notebook(
+                    notebook,
+                    tunnel_config,
+                    notebook_id=policy.notebook_id,
+                    workspace=workspace,
+                    pick=pick,
+                )
             bridge_name = bridge.name
     except click.UsageError:
         raise

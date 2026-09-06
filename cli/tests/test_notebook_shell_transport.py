@@ -18,7 +18,7 @@ def test_shell_uses_jupyter_when_policy_blocks_ssh(monkeypatch) -> None:  # noqa
     monkeypatch.setattr(
         Config,
         "from_files_and_env",
-        classmethod(lambda cls, require_credentials=True: (config, {})),
+        classmethod(lambda cls, require_credentials=True, account=None: (config, {})),
     )
     monkeypatch.setattr(
         shell_module,

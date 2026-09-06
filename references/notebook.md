@@ -65,13 +65,15 @@ JupyterTerminal `exec` 的内部控制脚本由 stdin 送入远端 Shell，因�
 
 ### 跨账号 Notebook 连接
 
-Notebook 连接类命令包括 `ssh`、`exec`、`shell`、`scp`、`ssh-config` 和 `ssh-proxy`。它们的 `--account <name>` 参数使用本地 Account Alias，也就是 `~/.inspire/accounts/<name>/` 的目录名，不是平台登录 Username。`all` 是跨账号扫描 Selector。
+Notebook 连接类命令包括 `ssh`、`exec`、`shell`、`scp`、`ssh-config` 和 `ssh-proxy`。它们的 `--account <name>` 参数使用本地 Account Alias，也就是 `~/.inspire/accounts/<name>/` 的目录名，不是平台登录 Username；`install-deps` 也支持该参数。这个参数只影响本次命令，不修改默认账号。CLI 根命令及 Workload 创建、启停、删除、资源查询等命令不提供全局 `--account`。
+
+`--account all` 只扫描本机各账号已有的 Notebook Connection Cache，并从中选择一个目标；它不遍历各账号的线上资源，不批量执行，也不是认证账号。没有匹配缓存时，Live 查询仍使用当前账号；已知所属账号时直接传 `--account <name>`。
 
 不传 `--account` 时，CLI 会先查 Remembered Target Cache；如果没有可用记录，再扫描所有账号下已有的 Cached Connection。唯一匹配会自动使用；多匹配时会列出候选，交互环境会 Prompt 选择并把选择写入 Target Cache。需要同时忽略 Remembered Target 并让 Transport 预检从 Live Notebook 身份开始时传 `--ignore-target-cache`。
 
 已缓存的 Notebook Connection 不要求当前 Active Account 是 Notebook 所属账号。连接不可用时，CLI 会用目标 Account Alias 对应的 Web Session 和账号配置重建；用户不需要先 `inspire account use <name>`。受限 Notebook 不建立 SSH Connection，命令执行走 JupyterTerminal。
 
-受限 Notebook 的 JupyterTerminal 执行同样复用目标 Account Alias 对应的 Web Session 和代理；显式 `--account <name>` 时不会退回当前 Active Account 的登录态。
+连接账号在 Transport 预检前确定，预检和执行使用同一目标。受限 Notebook 的 JupyterTerminal 执行同样复用目标 Account Alias 对应的 Web Session 和代理；显式 `--account <name>` 时不会退回当前 Active Account 的登录态。`exec` / `shell` 的 `remote_env` 和重连设置也读取目标账号配置。
 
 刚创建的支持 SSH 的 Notebook 还没有 Cached Connection，`exec` / `shell` / `scp` 会直接报错退出，不会自己 Bootstrap；先跑一次 `inspire notebook connection refresh <name> --workspace <workspace>`。受限 Notebook 不需要这一步，`exec` / `shell` 直接走 JupyterTerminal。`ssh` / `ssh-config` / `ssh-proxy` 自己会建连接，首次仍需要能解析 Notebook 的上下文：通常传 `--workspace <workspace>`，必要时再传 `--account <alias>` 指定所属账号。`ssh-config` 生成的 OpenSSH `ProxyCommand` 会固化解析出的 Account Alias，后续 VS Code Remote SSH / 原生 OpenSSH 连接也按该账号路径执行。
 
