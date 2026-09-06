@@ -28,9 +28,10 @@ from .target_resolver import (
 from .transport import emit_ssh_policy_error, preflight_notebook_transport_policy
 
 
-def _default_host_alias(notebook: str) -> str:
+def _default_host_alias(notebook: str, account: str | None = None) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", notebook.strip()).strip("-")
-    return f"inspire-{slug or 'notebook'}"
+    prefix = f"inspire-{account}" if account else "inspire"
+    return f"{prefix}-{slug or 'notebook'}"
 
 
 def _resolve_inspire_executable() -> str:
@@ -305,7 +306,7 @@ def ssh_config_cmd(
         sys.exit(EXIT_CONFIG_ERROR)
 
     bridge = target.bridge
-    host = host_alias or _default_host_alias(notebook)
+    host = host_alias or _default_host_alias(notebook, target.account)
     config_text = _format_ssh_config(
         host=host,
         notebook_name=notebook,

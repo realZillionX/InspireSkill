@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from html.parser import HTMLParser
 import json
-import os
 import logging
 import re
 import time
@@ -105,40 +104,17 @@ def _asks_for_verification_code(html: str, page_url: str) -> bool:
 
 
 def _load_runtime_config(account: Optional[str] = None) -> Config:
+    """Use the same account and runtime settings for login and API requests."""
     account_name = str(account or "").strip()
     if account_name:
-        return _load_account_runtime_config(account_name)
-    config, _ = Config.from_files_and_env(require_credentials=False)
+        from inspire.accounts import account_exists
+
+        if not account_exists(account_name):
+            raise ValueError(f"Account not found: {account_name}")
+        config, _ = Config.from_files_and_env(require_credentials=False, account=account_name)
+    else:
+        config, _ = Config.from_files_and_env(require_credentials=False)
     return config
-
-
-def _load_account_runtime_config(account: str) -> Config:
-    """Load account-level auth/runtime fields without changing active account."""
-    from inspire.accounts import account_config_path, account_exists
-    from inspire.config.load_common import _default_config_values
-    from inspire.config.toml import _flatten_toml, _load_toml, _toml_key_to_field
-
-    if not account_exists(account):
-        raise ValueError(f"Account not found: {account}")
-    path = account_config_path(account)
-    if not path.exists():
-        raise ValueError(f"Account config not found: {path}")
-
-    config_dict = _default_config_values()
-    raw = _load_toml(path)
-    raw.pop("accounts", None)
-    raw.pop("context", None)
-    for toml_key, value in _flatten_toml(raw).items():
-        field_name = _toml_key_to_field(toml_key)
-        if field_name and field_name in config_dict:
-            config_dict[field_name] = value
-
-    if not config_dict.get("password"):
-        env_password = os.getenv("INSPIRE_PASSWORD")
-        if env_password:
-            config_dict["password"] = env_password
-
-    return Config(**config_dict)
 
 
 def _session_matches_username(cached: WebSession, username: str) -> bool:

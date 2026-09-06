@@ -8,6 +8,8 @@ All persistent CLI configuration lives in the active account's
 ``~/.inspire/accounts/<name>/config.toml``. The CLI deliberately has no
 repository-local configuration layer. Without an active account, identity
 fields stay empty; credential-requiring callers get an ``account add`` hint.
+The selected account's login name always comes from its file; environment
+overrides apply to runtime settings, not to a configured account's identity.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ def config_from_files_and_env(
     config_dict = _default_config_values()
     sources = _initialize_sources(config_dict)
 
-    _apply_account_layer(
+    account_path = _apply_account_layer(
         config_dict=config_dict,
         sources=sources,
         account=account,
@@ -40,6 +42,7 @@ def config_from_files_and_env(
     env_password = _apply_env_layer(
         config_dict=config_dict,
         sources=sources,
+        allow_env_identity=account_path is None,
     )
     _apply_password_fallback(
         config_dict=config_dict,

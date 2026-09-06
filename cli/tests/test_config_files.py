@@ -113,7 +113,7 @@ def test_account_config_loads_identity_and_workload_behavior(
     assert sources["shm_size"] == SOURCE_ACCOUNT
 
 
-def test_environment_overrides_account_toml(
+def test_environment_overrides_runtime_but_not_account_identity(
     home: Path,
     clean_env: None,
     monkeypatch: pytest.MonkeyPatch,
@@ -129,9 +129,9 @@ def test_environment_overrides_account_toml(
 
     cfg, sources = Config.from_files_and_env()
 
-    assert cfg.username == "env-user"
+    assert cfg.username == "toml-user"
     assert cfg.shm_size == 96
-    assert sources["username"] == SOURCE_ENV
+    assert sources["username"] == SOURCE_ACCOUNT
     assert sources["shm_size"] == SOURCE_ENV
 
 

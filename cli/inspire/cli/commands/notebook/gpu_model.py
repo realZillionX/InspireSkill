@@ -8,9 +8,9 @@ hardware behind it. Ask the machine instead -- ``nvidia-smi`` over
 JupyterTerminal, the one channel every notebook has whatever the policy is.
 
 Opening a remote terminal costs a few seconds and the answer is needed before
-almost every notebook command, so it is remembered on disk, keyed by compute
-group: a group is one pool of identical machines, so the first notebook probed
-in it answers for every notebook that lands there afterwards. Entries expire
+almost every notebook command, so it is remembered on disk, keyed by account,
+platform, and compute group: a group is one pool of identical machines, so its
+first probe answers for every notebook that lands there afterwards. Entries expire
 only to keep the file from growing without bound. A notebook whose group the
 platform did not report falls back to its own id as the key.
 """
@@ -24,6 +24,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from inspire.accounts import current_account
+from inspire.accounts.cache_lock import exclusive_cache_lock
+from inspire.cli.utils.notebook_cli import get_base_url
 from inspire.platform.web import browser_api as browser_api_module
 
 from .notebook_lookup import _normalize_gpu_type_for_display
@@ -81,7 +84,10 @@ def notebook_gpu_model(
     handle = str(notebook_id or "").strip()
     if not handle:
         return None
-    key = str(compute_group or "").strip() or handle
+    account = getattr(session, "account", None) or current_account()
+    base_url = str(getattr(session, "base_url", None) or get_base_url(account=account)).rstrip("/")
+    group = str(compute_group or "").strip()
+    key = json.dumps([account, base_url, "group" if group else "notebook", group or handle])
 
     cached = _cached_gpu_model(key)
     if cached is not None:
@@ -89,7 +95,7 @@ def notebook_gpu_model(
 
     model = _probe_gpu_model(notebook_id=handle, session=session, timeout=timeout)
     if model is not None:
-        _remember_gpu_model(key, model)
+        _remember_gpu_model(key, model, account=account)
     return model
 
 
@@ -142,27 +148,35 @@ def _cached_gpu_model(key: str) -> str | None:
     return model if isinstance(model, str) else None
 
 
-def _remember_gpu_model(key: str, gpu_model: str) -> None:
-    now = time.time()
-    cache = {
-        cached_key: entry
-        for cached_key, entry in _read_cache().items()
-        if isinstance(entry, dict) and _fresh(entry, now=now)
-    }
-    cache[key] = {"gpu_model": gpu_model, "observed_at": now}
+def _write_cache(cache: dict[str, Any]) -> None:
+    temporary = CACHE_FILE.with_suffix(".json.tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(cache, handle, indent=2, sort_keys=True)
+    temporary.replace(CACHE_FILE)
+
+
+def _remember_gpu_model(key: str, gpu_model: str, *, account: str | None) -> None:
     try:
-        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        temporary = CACHE_FILE.with_suffix(".json.tmp")
-        with temporary.open("w", encoding="utf-8") as handle:
-            json.dump(cache, handle, indent=2, sort_keys=True)
-        temporary.replace(CACHE_FILE)
+        with exclusive_cache_lock(CACHE_FILE):
+            now = time.time()
+            cache = {
+                cached_key: entry
+                for cached_key, entry in _read_cache().items()
+                if isinstance(entry, dict) and _fresh(entry, now=now)
+            }
+            cache[key] = {"gpu_model": gpu_model, "observed_at": now, "account": account}
+            _write_cache(cache)
     except OSError:
         logger.debug("Notebook GPU model cache write failed", exc_info=True)
 
 
 def gpu_model_cache_status() -> tuple[int, float]:
     """Return ``(entry count, newest observation)`` for ``inspire cache status``."""
-    entries = [entry for entry in _read_cache().values() if isinstance(entry, dict)]
+    account = current_account()
+    entries = [
+        entry for entry in _read_cache().values()
+        if isinstance(entry, dict) and entry.get("account") == account
+    ]
     observations = [
         float(observed_at)
         for entry in entries
@@ -172,10 +186,21 @@ def gpu_model_cache_status() -> tuple[int, float]:
 
 
 def clear_gpu_model_cache() -> int:
-    """Drop every probed model. Returns how many entries went."""
-    count = len(_read_cache())
+    """Drop only the selected account's probed models."""
+    account = current_account()
     try:
-        CACHE_FILE.unlink(missing_ok=True)
+        with exclusive_cache_lock(CACHE_FILE):
+            cache = _read_cache()
+            kept = {
+                key: entry for key, entry in cache.items()
+                if not isinstance(entry, dict) or entry.get("account") != account
+            }
+            count = len(cache) - len(kept)
+            if count:
+                if kept:
+                    _write_cache(kept)
+                else:
+                    CACHE_FILE.unlink(missing_ok=True)
     except OSError:
         logger.debug("Notebook GPU model cache removal failed", exc_info=True)
         return 0

@@ -204,6 +204,66 @@ def test_internal_worker_thread_keeps_selected_account(accounts):
     assert storage.current_account() == "alice"
 
 
+@pytest.mark.parametrize("position", [0, 1, 2])
+def test_shell_username_cannot_replace_selected_account(monkeypatch, accounts, position):
+    from inspire.platform.web.session import auth
+
+    monkeypatch.setenv("INSPIRE_USERNAME", "unrelated-shell-user")
+    monkeypatch.setattr(auth, "login_with_playwright", lambda *_a, **_k: pytest.fail("reuse session"))
+
+    def inspect_runtime(**_kwargs):
+        assert_account_runtime("bob")
+        assert auth.get_credentials("bob") == auth.get_credentials() == ("bob", "test")
+
+    monkeypatch.setattr(main.commands["job"].commands["list"], "callback", inspect_runtime)
+    args = ["job", "list", "--workspace", "CPU资源空间"]
+    args[position:position] = ["--account", "bob"]
+    result = CliRunner().invoke(main, args)
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert storage.default_account() == "alice"
+
+
+def test_explicit_and_scoped_login_use_identical_runtime_config(monkeypatch, accounts):
+    from inspire.platform.web.session import auth
+
+    monkeypatch.setenv("INSPIRE_USERNAME", "unrelated-shell-user")
+    monkeypatch.setenv("INSPIRE_BASE_URL", "https://runtime.example")
+    with storage.account_scope("bob"):
+        configured, _ = Config.from_files_and_env()
+        assert auth._load_runtime_config("bob") == auth._load_runtime_config() == configured
+        assert configured.username == "bob"
+        assert configured.base_url == "https://runtime.example"
+
+
+def test_same_notebook_names_generate_distinct_ssh_hosts(accounts):
+    hosts = []
+    for account in ("alice", "bob"):
+        result = CliRunner().invoke(main, [
+            "--account", account, "notebook", "ssh-config", "same-name",
+        ])
+        assert result.exit_code == 0, result.output
+        hosts.append(result.output.splitlines()[0])
+        assert f"--account {account}" in result.output
+    assert hosts == ["Host inspire-alice-same-name", "Host inspire-bob-same-name"]
+
+
+def test_renamed_account_reuses_its_session_and_ssh_cache(accounts):
+    originals = {
+        filename: (storage.account_dir("bob") / filename).read_bytes()
+        for filename in ("web_session.json", "bridges.json")
+    }
+    storage.rename_account("bob", "charlie")
+    with storage.account_scope("charlie"):
+        session = web_session.get_web_session()
+        assert session.account == "charlie"
+        assert session.login_username == "bob"
+        config = tunnel.load_tunnel_config()
+        assert config.account == "charlie"
+        assert config.get_bridge("same-name").notebook_id == "notebook-bob"
+    for filename, original in originals.items():
+        assert (storage.account_dir("charlie") / filename).read_bytes() == original
+
+
 def _concurrent_command(index, home, barrier):
     adopt_home(home)
     os.chdir(home)

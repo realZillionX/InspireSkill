@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from inspire.cli.commands.notebook import gpu_model as gpu_model_module
+from inspire.accounts import storage
+from multiprocess_workers import adopt_home, run_workers, worker_context
 
 
 class _Result:
@@ -198,7 +201,8 @@ def test_expired_entries_are_reprobed_and_dropped(monkeypatch: pytest.MonkeyPatc
     assert gpu_model_module.notebook_gpu_model(notebook_id="nb-1", session=None) == "4090"
 
     cached = json.loads(gpu_model_module.CACHE_FILE.read_text(encoding="utf-8"))
-    assert cached["nb-1"]["gpu_model"] == "4090"
+    assert len(cached) == 1
+    assert next(iter(cached.values()))["gpu_model"] == "4090"
     assert "nb-gone" not in cached
 
 
@@ -234,3 +238,63 @@ def test_cache_status_and_clear_report_what_is_stored(
     assert gpu_model_module.clear_gpu_model_cache() == 2
     assert gpu_model_module.gpu_model_cache_status() == (0, 0.0)
     assert gpu_model_module.clear_gpu_model_cache() == 0
+
+
+def test_gpu_cache_is_scoped_by_account_and_platform(monkeypatch):
+    calls = []
+
+    def probe(**kwargs):
+        calls.append((kwargs["session"].account, kwargs["session"].base_url))
+        return "H200" if kwargs["session"].account == "alice" else "4090"
+
+    monkeypatch.setattr(gpu_model_module, "_probe_gpu_model", probe)
+    alice = SimpleNamespace(account="alice", base_url="https://platform.example")
+    bob = SimpleNamespace(account="bob", base_url="https://platform.example")
+    staging = SimpleNamespace(account="bob", base_url="https://staging.example")
+    read = gpu_model_module.notebook_gpu_model
+    assert read(notebook_id="nb-1", compute_group="same-group", session=alice) == "H200"
+    assert read(notebook_id="nb-1", compute_group="same-group", session=bob) == "4090"
+    assert read(notebook_id="nb-1", compute_group="same-group", session=staging) == "4090"
+    assert len(calls) == 3
+    with storage.account_scope("alice"):
+        assert gpu_model_module.gpu_model_cache_status()[0] == 1
+        assert gpu_model_module.clear_gpu_model_cache() == 1
+    with storage.account_scope("bob"):
+        assert gpu_model_module.gpu_model_cache_status()[0] == 2
+    assert read(notebook_id="nb-1", compute_group="same-group", session=bob) == "4090"
+    assert len(calls) == 3
+
+
+def test_unscoped_gpu_cache_does_not_choose_a_named_accounts_transport(monkeypatch):
+    path = gpu_model_module.CACHE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = {"gpu_model": "H200", "observed_at": time.time()}
+    path.write_text(json.dumps({"same-group": legacy}))
+    monkeypatch.setattr(gpu_model_module, "_probe_gpu_model", lambda **_k: "4090")
+    assert gpu_model_module.notebook_gpu_model(
+        notebook_id="nb-1", compute_group="same-group",
+        session=SimpleNamespace(account="bob", base_url="https://platform.example"),
+    ) == "4090"
+    # Existing entries remain until their normal expiry; they are not assigned
+    # to another account merely because that account ran the next command.
+    assert json.loads(path.read_text())["same-group"] == legacy
+
+
+def _write_gpu_model(index, home, barrier):
+    adopt_home(home)
+    gpu_model_module.CACHE_FILE = Path(home) / "notebook-gpu-models.json"
+    barrier.wait(timeout=15)
+    gpu_model_module._remember_gpu_model(f"group-{index}", "H200", account=f"account-{index}")
+
+
+def test_concurrent_accounts_preserve_all_gpu_cache_entries(tmp_path):
+    context = worker_context()
+    count = 8
+    barrier = context.Barrier(count)
+    codes = run_workers(
+        context, _write_gpu_model, count=count,
+        args_for=lambda index: (index, str(tmp_path), barrier),
+    )
+    assert codes == [0] * count
+    entries = json.loads((tmp_path / "notebook-gpu-models.json").read_text())
+    assert set(entries) == {f"group-{index}" for index in range(count)}

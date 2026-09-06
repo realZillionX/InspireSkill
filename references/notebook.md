@@ -36,7 +36,7 @@ Notebook 是交互工作台，不只是“开一个终端”。
 
 ## 3. 连接方式
 
-Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH / Rtunnel；其余机器走 SSH。CLI 自动完成该判断——用 JupyterTerminal 在机器上跑一次 `nvidia-smi` 读型号。结果按 **Compute Group** 缓存在 `~/.inspire/notebook-gpu-models.json`：一个组是一池同型号机器，组里第一个 Notebook 探完，之后落在该组的 Notebook 都直接命中。用 `inspire cache clear --resource notebook-gpu` 单独清这一层。
+Transport 由机器实际的显卡型号决定：显卡是 `H100` 或 `H200` 的是**受限 Notebook**，不使用 SSH / Rtunnel；其余机器走 SSH。CLI 自动完成该判断——用 JupyterTerminal 在机器上跑一次 `nvidia-smi` 读型号。结果按 **Account Alias、平台地址和 Compute Group** 区分，保存在 `~/.inspire/notebook-gpu-models.json`：同一账号、同一平台上，一个组的首个 Notebook 探完，之后落在该组的 Notebook 就可复用。并发写入会保留其他账号的记录；缺少账号归属的记录不用于所选账号的 Transport 判断。`inspire cache clear --resource notebook-gpu` 只清理所选账号的这一层缓存。
 
 机器答不上来（Notebook 未启动、Jupyter 起不来）时命令直接报错退出，不猜 Transport：`ssh` / `exec` / `shell` / `scp` 本来就都要求 Notebook 处于 `RUNNING`。未启动时提示先 `inspire notebook start <name> --workspace <workspace>`。
 
@@ -75,7 +75,7 @@ Remembered Target 按 Account Alias、Notebook Name 和 Workspace 区分。需�
 
 连接账号在 Transport 预检前确定，预检和执行使用同一目标。受限 Notebook 的 JupyterTerminal 执行同样复用目标 Account Alias 对应的 Web Session 和代理；显式 `--account <name>` 时不会退回当前 Active Account 的登录态。`exec` / `shell` 的 `remote_env` 和重连设置也读取目标账号配置。
 
-刚创建的支持 SSH 的 Notebook 还没有 Cached Connection，`exec` / `shell` / `scp` 会直接报错退出，不会自己 Bootstrap；先跑一次 `inspire notebook connection refresh <name> --workspace <workspace>`。受限 Notebook 不需要这一步，`exec` / `shell` 直接走 JupyterTerminal。`ssh` / `ssh-config` / `ssh-proxy` 自己会建连接，首次仍需要能解析 Notebook 的上下文：通常传 `--workspace <workspace>`，必要时再传 `--account <alias>` 指定所属账号。`ssh-config` 生成的 OpenSSH `ProxyCommand` 会固化解析出的 Account Alias，后续 VS Code Remote SSH / 原生 OpenSSH 连接也按该账号路径执行。
+刚创建的支持 SSH 的 Notebook 还没有 Cached Connection，`exec` / `shell` / `scp` 会直接报错退出，不会自己 Bootstrap；先跑一次 `inspire notebook connection refresh <name> --workspace <workspace>`。受限 Notebook 不需要这一步，`exec` / `shell` 直接走 JupyterTerminal。`ssh` / `ssh-config` / `ssh-proxy` 自己会建连接，首次仍需要能解析 Notebook 的上下文：通常传 `--workspace <workspace>`，必要时再传 `--account <alias>` 指定所属账号。`ssh-config` 的默认 Host 别名包含 Account Alias，以区分不同账号的同名 Notebook；可用 `--host` 指定自己的 Host 别名。生成的 `ProxyCommand` 固定目标 Account Alias，后续 VS Code Remote SSH / 原生 OpenSSH 连接也使用该账号。
 
 连接缓存由 `notebook connection list/status/refresh/forget/prune` 管理；Remembered Target 由 `notebook connection target list/forget` 管理。两者都只作用于所选账号。具体参数以对应 Help 为准。
 

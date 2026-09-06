@@ -21,6 +21,7 @@ def _apply_env_layer(
     *,
     config_dict: dict[str, Any],
     sources: dict[str, str],
+    allow_env_identity: bool = True,
 ) -> str | None:
     env_password = os.getenv("INSPIRE_PASSWORD")
 
@@ -34,6 +35,8 @@ def _apply_env_layer(
             continue
 
         field_name = option.field_name
+        if field_name == "username" and not allow_env_identity:
+            continue
         if field_name not in config_dict:
             continue
 
