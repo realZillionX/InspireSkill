@@ -1,62 +1,18 @@
 # Python SDK（实验性）
 
-## CLI compatibility changes in Unreleased
+## 状态与模型名称解析
 
-The shared workload output projections now scrub status text **before** applying
-that workload's own `normalize_status`. This affects JSON and human output from
-`job`, `hpc`, `ray`, `serving`, `notebook`, and `tensorboard` `list` / `status`,
-including Job/HPC batch status and `job list --watch`. The final detail from
-`job wait` and the status field in `serving api` reuse these projections too.
-Mixed case (`Running`, `rUnNiNg`) becomes `RUNNING`, and blank or fully
-scrubbed status becomes `UNKNOWN`.
+CLI 与 SDK 工作负载 `.view` 共用状态投影：先清洗状态文本，再按各工作负载的词表归一化，空值或完全被清洗的值为 `UNKNOWN`。Job 将 `job_running` 映射为 `RUNNING`、`CREATING` / `job_creating` 映射为 `PENDING`、`STOPPED` / `job_stopped` 映射为 `CANCELLED`，不识别的值为 `UNKNOWN`；HPC、Ray、Serving、Notebook、TensorBoard 将清洗后的值转为大写，保留 `STOPPED`。TensorBoard 另去掉大小写不敏感的 `tb_status_` 前缀。操作确认、实例／节点状态和运行历史使用各自字段合同。
 
-| Workload | Previous blank JSON (list / status) | Previous blank human output (list / status) | New blank value |
-| --- | --- | --- | --- |
-| Job | `N/A` / `N/A` | `N/A` or empty / `N/A` | `UNKNOWN` |
-| HPC, Ray | `N/A` / `N/A` | `N/A` / `N/A` | `UNKNOWN` |
-| Serving | empty string / field omitted | `-` / `N/A` | `UNKNOWN` |
-| Notebook | empty string / field omitted | `Unknown` / `N/A` | `UNKNOWN` |
-| TensorBoard | empty string / empty string | empty / field omitted | `UNKNOWN` |
+`serving create --model NAME`（包括 `--dry-run`）读取完整的过滤后模型目录，再按名称与现有消歧规则选择模型。每页请求 100 条，最多 100 页；精确命中后仍继续扫描，避免遗漏跨页同名对象。正常目录含 M 个匹配项时，需要 `max(1, ceil(M / 100))` 次顺序请求与 O(M) 内存。目录未读完即遇到空页、重复或缺失身份，或达到页数上限时，以 `ConfigError`（CLI 退出码 10）在提交前失败；应按错误提示重试、联系平台管理员或缩小查询范围。
 
-Job retains its specific vocabulary: `job_running` → `RUNNING`,
-`CREATING` / `job_creating` → `PENDING`, `STOPPED` / `job_stopped` → `CANCELLED`,
-and unrecognised values → `UNKNOWN`. The other five workloads uppercase
-unrecognised scrubbed values and retain `STOPPED`. They do not acquire Job's
-`JOB_` prefix mapping. TensorBoard strips its own case-insensitive `tb_status_`
-prefix before uppercasing: `tb_status_running` and `running` now both produce
-`RUNNING` in CLI list/status and SDK status models; update lowercase
-comparisons. URLs, paths and raw IDs must not reach public status output;
-normalising before scrubbing can leave unknown sensitive strings intact.
-Operation acknowledgements such as `created` and `stopped`, instance/node
-statuses and run-history records are separate fields, not workload lifecycle
-projections covered by this change.
-
-`serving create --model NAME` (including `--dry-run`) now enumerates all filtered
-model pages before resolving the name. Each request asks for 100 models and
-keeps the keyword, workspace, user and optional project filters. The limit is
-100 requests / 10,000 rows with full pages. A stable catalogue with M matches
-costs `max(1, ceil(M / 100))` requests up to that limit and O(M) memory; latency
-adds sequential network round trips. A first exact match does not end the scan:
-a later exact match must participate in the existing ambiguity / `--pick` rules.
-The wrapper documents that `page_size=-1` is rejected; no larger page size is
-assumed supported without platform evidence.
-
-An empty page before the reported total, repeated/missing model identities, or
-the page limit produces `ConfigError` (CLI exit 10) before submission. Errors
-state the cause and recommend retrying / asking the platform administrator to
-check pagination, or using a more specific model name / a workspace with fewer
-matches when the limit is reached. The old single-page lookup could incorrectly
-report a model absent beyond the first 100 matches. SDK resource pagination
-and typed status models retain their existing contracts. SDK workload `.view`
-mappings that reuse these public projections also receive the normalised
-`status` values (including batch Job `.view`); callers inspecting those mappings
-must update old raw-status comparisons too.
+从 v7.1.8 升级时的状态值、缓存计数与文件权限变化见 [v7.1.9 更新说明](../CHANGELOG.md#v719)。
 
 ## 接入
 
 同一个 `inspire-skill` 包提供两个受支持的实验性入口：`InspireClient` 用于同步脚本和同步 worker；`InspireAsyncClient` 用于 asyncio 应用、Agent runtime 和异步 Web 服务，在调用方事件循环执行原生异步 I/O。两者均可从 `inspire` 或 `inspire.sdk` 导入，使用相同的资源模型、引用、异常和平台能力；异步入口的并发与取消边界见下文。
 
-SDK 与 CLI 复用 browser_api、共享 services 和 `inspire.platform.web.transport.Transport`；安装依赖和 CLI 默认行为不变。源码安装可在 `cli/` 运行 `uv pip install -e .`，应用项目可用 `uv add /path/to/InspireSkill/cli`。
+SDK 与 CLI 复用 browser_api、共享 services 和 `inspire.platform.web.transport.Transport`，由同一个 `inspire-skill` 包安装，包含 `httpx[socks]` 和 `greenlet` 运行时依赖，无需额外 SDK 安装选项。源码安装可在 `cli/` 运行 `uv pip install -e .`，应用项目可用 `uv add /path/to/InspireSkill/cli`。
 
 以下两个完整示例需要已配置的本地账号及可访问的工作区；`login()` 显式建立会话。保存为对应文件后，在 `cli/` 运行 `uv run python sync_example.py my-account "工作区名称"` 或 `uv run python async_example.py my-account "工作区名称"`。
 
@@ -100,7 +56,7 @@ if __name__ == "__main__":
     asyncio.run(main(sys.argv[1], sys.argv[2]))
 ```
 
-SDK 面向能访问平台的本机或控制节点。运行环境需满足网络、账号缓存和文件锁条件；本次文档审阅仅核对代码和离线测试，未验证真实平台当前的会话寿命、分页上限、GPU 容器兼容性或网络共享盘锁语义。下文区分代码实施的限制与平台协议所提供的信息。
+SDK 面向能访问平台的本机或控制节点。运行环境需满足网络、账号缓存和文件锁条件；真实平台的会话寿命、分页上限、GPU 容器兼容性和网络共享盘锁语义需按目标环境核验。下文区分代码实施的限制与平台协议所提供的信息。
 
 ## 架构
 
@@ -710,7 +666,7 @@ PTY／Jupyter 执行等待超时或连接在完成 marker 出现前结束时，�
 
 平台 PTY 接口只给一条终端字节流：stdout／stderr 的合并、退出码需通过命令内 marker 回传、终端可能回显输入，都是该执行路径的限制。SDK 无法从合并后的字节流可靠恢复原始通道，清理回显也只是尽力而为。Notebook 需要分离输出时显式选择已有 SSH 桥，`auto` 的结果需检查 `result.transport`；其他四种工作负载需在远端命令中将两路输出重定向到不同文件，再通过适当文件访问方式读取。
 
-此前的无界内存捕获和反复扫描完整历史输出属于 SDK 实现问题，现已用默认 4 MiB 头尾捕获、固定窗口增量 marker 扫描和摊销线性的缓冲写入修复。`max_output_bytes=None` 仍可显式恢复无限捕获；`capture=False` 配合 `output_to`／回调／异步块流适合长输出。平台 PTY 限制与这些已修复的实现问题应分别理解。
+输出处理使用默认 4 MiB 头尾捕获、固定窗口增量 marker 扫描和摊销线性的缓冲写入。`max_output_bytes=None` 可显式启用无限捕获；`capture=False` 配合 `output_to`／回调／异步块流适合长输出。平台 PTY 限制独立于本地捕获预算。
 
 Jobs、Notebooks、HPC、Ray 和 Servings 的 `exec_stream(...)` 参数与各自 `exec(...)` 相同，提供字符串块异步迭代器；它执行命令一次，不在流结束后再次执行。PTY／Jupyter 的块是原始合并终端流；Notebook SSH 的块按读取顺序交错，字符串块不附带 stdout／stderr 标签，因此要取得分离输出应使用 `await client.notebooks.exec(ref, transport="ssh", command=...)` 的最终结果。`exec_stream` 只交付块，不交付最终 `ExecResult`；需要返回码、completed 或截断统计时使用 `await client.jobs.exec(...)` 等普通形式。异步客户端的 PTY／Jupyter／SSH `exec` 和 `exec_stream` 的 `on_output` 类型均为 `Callable[[str], None | Awaitable[None]] | None`，接受同步函数或 `async def`，都在调用方事件循环线程运行；异步回调逐块按顺序 await 并施加背压，回调异常原样传播。同步 exec 只接受 `Callable[[str], None]`，在调用线程直接执行；这与前文并发章节的合同相同。同步回调应避免耗时操作，异步应用也可直接使用 `exec_stream` 消费块。`output_to`、`capture` 和输出大小限制沿用同步接口，长输出建议使用 `capture=False`。
 

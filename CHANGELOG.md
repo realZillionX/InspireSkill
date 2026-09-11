@@ -1,29 +1,46 @@
 # Changelog
 
-## Unreleased
+## v7.1.9
 
 ### 破坏性变更
 
-- **`inspire cache status` 改为按资源身份去重计数。** `cached_names` 原先累加各 scope 的有效行数，现在按服务器／账号主体／资源种类／资源 ID 去重；同一公共镜像出现在多个来源或三个工作区时只计一次。`workspaces` 原先统计带工作区名称的 scope 行数，现在统计不同工作区 ID，包括尚无本地名称的工作区。JSON 新增每种资源的 `scopes` 数量与顶层 `size_bytes`（索引文件及 SQLite sidecar 的磁盘字节数）；人类输出在 scope 数与工作区数不一致时显示 scope 数（例如镜像按来源缓存），并在末行显示索引大小，缓存为空时仍只输出一句话。此变化同样影响仅使用 CLI 的用户；依赖旧计数含义或精确输出的脚本需要更新。
+- **六类工作负载统一状态输出。** Job、HPC、Ray、Serving、Notebook、TensorBoard 的 `list/status` 先清洗状态文本，再按各自词表归一化；同时覆盖 Job/HPC 批量 status、`job list --watch`、`job wait` 最终详情、`serving api` 和 SDK 工作负载 `.view`。大小写混合的 `Running` 统一为 `RUNNING`，空值及完全被清洗的值统一为 `UNKNOWN`，替代此前的 `N/A`、空串、缺失字段或 `Unknown`。Job 将 `job_running` 映射为 `RUNNING`、`CREATING` / `job_creating` 映射为 `PENDING`、`STOPPED` / `job_stopped` 映射为 `CANCELLED`，不识别的值为 `UNKNOWN`；其他五类将清洗后的状态转为大写，保留 `STOPPED`。TensorBoard 另去掉大小写不敏感的 `tb_status_` 前缀，原先的小写状态改为大写。依赖旧状态值的脚本需同步调整。
 
-- **六类工作负载的状态输出统一先清洗、再按各自词表归一化。** 影响 `job list/status`（含批量 status 与 `list --watch`）、`hpc list/status`（含批量 status）、`ray list/status`、`serving list/status`、`notebook list/status`、`tensorboard list/status` 的 `--json` 与人类输出。`Running` / `rUnNiNg` 现在均为 `RUNNING`；空值统一为 `UNKNOWN`。此前 Job/HPC/Ray JSON 为 `N/A`，Serving/Notebook 列表 JSON 为空串、详情 JSON 省略该字段；人类输出此前 Job/HPC/Ray 通常为 `N/A`（Job 表格也可能为空），Serving 列表为 `-`、详情为 `N/A`，Notebook 列表为 `Unknown`、详情为 `N/A`。Job 使用自身词表：`job_running` → `RUNNING`、`CREATING` / `job_creating` → `PENDING`、`STOPPED` / `job_stopped` → `CANCELLED`，不识别的值 → `UNKNOWN`；其他五类保留自身词表，未识别值清洗后转大写，`STOPPED` 仍为 `STOPPED`。TensorBoard 同时去掉大小写不敏感的 `tb_status_` 前缀，原来的小写 `running`／`stopped`／`creating` 输出改为 `RUNNING`／`STOPPED`／`CREATING`，空值改为 `UNKNOWN`；CLI tags/scalars 和 SDK 的运行状态检查沿用这一规则。URL、路径与原始 ID 在归一化前清洗，清洗后为空也返回 `UNKNOWN`。`job wait` 的最终状态详情、`serving api` 的状态字段也复用该投影。复用这些公共投影的 SDK 工作负载 `.view`（包括批量 Job）也同步改变；依赖旧值的脚本需要更新判断条件。
-- **`serving create --model NAME` 从单页查询改为完整分页名称查询。** 保留名称、工作区与当前用户过滤，每页请求 100 条，最多 100 页；超过首个 100 条的模型现在可以被找到。即使前页精确命中，也继续扫描以保留跨页同名消歧；正常请求数为过滤后目录大小除以 100 向上取整（空目录仍请求一次），最多读取 10,000 行，增加网络往返与内存开销。目录未读完即遇到空页、重复/缺失身份，或达到 100 页上限时，创建前以 `ConfigError`（CLI 退出码 10）失败，而不把不完整结果当作“模型不存在”。错误明确指出分页异常并提示重试/联系平台管理员；达到上限则提示使用更具体的 `--model` 名称或模型更少的工作区。此规则同样适用于 `--dry-run`。
+- **`inspire cache status` 按资源身份去重计数。** `cached_names` 按服务器、账号主体、资源种类与资源 ID 去重，同一资源出现在多个来源或工作区时只计一次；`workspaces` 统计不同工作区 ID，包括尚无本地名称的工作区。JSON 新增每种资源的 `scopes` 和顶层 `size_bytes`（索引文件及 SQLite sidecar 的磁盘字节数）；人类输出仅在 scope 数与工作区数不同时补充 scope 数，并显示索引大小，空缓存仍只输出一句话。依赖旧计数含义或精确文本输出的脚本需更新。
 
-### 新增
+- **账号凭据与本地私有状态采用私有文件权限。** POSIX 文件创建为 `0600`、私有目录为 `0700`，触及时收紧既有权限；Windows 为目录设置可继承的当前用户 ACL，失败时警告，显式密钥导出仍逐文件验证并在失败时报错。账号添加与 SDK 凭据构造使用同一原子写入路径。依赖其他用户共享读取这些文件的流程需调整权限与账号使用方式。
 
-- **新增实验性同步与异步 Python SDK。** `from inspire import InspireClient, InspireAsyncClient` 提供 workspaces、projects、compute_groups、images、datasets、models、resources、account_info、api_keys、jobs、notebooks、hpc、ray、servings、tensorboards 门面，覆盖全部平台侧 CLI 命令组。提供类型化资源引用、分页、批量状态、创建计划、生命周期等待、日志／事件／指标、远程执行与 Notebook 文件传输；账号管理与初始化也可通过 SDK 调用。交互式 Shell、SSH 桥创建、CLI 批处理和终端渲染仍由 CLI 提供。使用合同见 [`references/sdk.md`](references/sdk.md)。
+### Python SDK（实验性）
 
-- **CLI 与 SDK 共用业务服务和传输决策。** 同步与异步客户端复用请求分类、认证与重试规则；异步通过 greenlet 栈切换使用原生 HTTP、Playwright、WebSocket 和 SSH／SCP 子进程 I/O，本地文件操作使用客户端拥有的线程池。普通安装新增 `httpx[socks]` 和显式 `greenlet` 依赖，无需额外 SDK 安装选项。写请求单次分派，发送后不自动重试，结果不确定时抛出专用异常。
+- **新增同步与异步客户端。** `from inspire import InspireClient, InspireAsyncClient` 提供 workspaces、projects、compute_groups、images、datasets、models、resources、account_info、api_keys、jobs、notebooks、hpc、ray、servings、tensorboards 门面，覆盖全部平台侧 CLI 命令组。普通安装即可使用 SDK，新增 `httpx[socks]` 和显式 `greenlet` 运行时依赖，无需额外安装选项。
 
-- **SDK 可复用 CLI 的磁盘资源索引。** `catalog_disk_cache=True` 启用共享目录缓存，保留 CLI 使用的身份列，缺失 payload 的新鲜目录在刷新租约内修复；共享刷新同时清理 tombstone 与孤立 scope。
+- **提供类型化资源与完整工作负载操作。** 支持资源引用、分页与迭代、批量状态、创建计划、生命周期等待、日志、事件、指标、实例，以及镜像和模型写操作。异步客户端使用相同资源模型，并提供可等待的操作句柄；方法签名与返回类型由文档一致性测试核对。交互式 Shell、SSH 桥创建、CLI 批处理和终端渲染仍由 CLI 提供。
 
-### 修复与维护
+- **支持账号管理、凭据构造和显式登录。** `Accounts` 管理本地账号；客户端可复用 CLI 账号或从凭据构造，提供 `login()` 与 `init()`。会话续期优先复用缓存和 SSO Cookie，浏览器回退由 `allow_browser` 显式启用，登录冷却通过类型化异常暴露。
 
-- **Notebook 传输支持系统临时目录包含符号链接。** 对 SDK 自建的暂存目录解析实际路径，避免 macOS 的 `/tmp`、`/var` 等系统别名导致传输失败；用户输入路径和传输内容中的符号链接仍被拒绝。CI 增加 macOS，跨传输测试使用兼容 GNU／BSD 的 Base64 输入方式。
+- **远程执行支持流式消费与有界输出。** Notebook、Job、HPC、Ray、Serving 提供 `exec`，异步客户端另有 `exec_stream`。默认内存捕获上限为 4 MiB，超限保留头尾并返回截断元数据；`output_to` 可保存完整流，`capture=False` 可关闭内存捕获。终端完成标记使用增量扫描，避免反复扫描完整历史输出。
 
-- **账号凭据与本地私有状态统一使用私有权限写入。** POSIX 上文件创建时限制为 `0600`，私有目录为 `0700`，触及时收紧既有权限；Windows 上目录设置可继承的当前用户 ACL，失败警告，显式密钥导出仍逐文件验证并在失败时报错。账号添加与 SDK 凭据构造也使用同一原子写入路径；依赖共享读取这些文件的流程需要调整权限与账号使用方式。
+- **Notebook 支持文件上传与下载。** 同步与异步客户端按 Notebook 传输选择 SSH/SCP 或 Jupyter Contents，返回实际落盘路径；自建暂存目录解析实际路径，兼容 macOS `/tmp`、`/var` 等系统别名，用户输入路径及传输内容中的符号链接仍被拒绝。
 
-- **浏览器登录独立判断验证码要求。** HTTP 表单要求验证码且尚未提交凭据时，允许浏览器的调用会检查 Chromium 的表单；Chromium 也要求验证码时不填写、不提交，并在同步与异步路径正确关闭浏览器。已提交凭据后的失败不进入另一条登录路径。
+- **目录缓存支持进程内复用和可选磁盘共享。** `catalog_disk_cache=True` 复用 CLI 资源索引，保留身份列；缺失 payload 的新鲜目录在刷新租约内修复，共享刷新同时清理 tombstone 与孤立 scope。缓存维护和错误分类覆盖跨进程刷新、资源写入失效与不可恢复的本地文件错误。
+
+### CLI 与平台修复
+
+- **`serving create --model NAME` 完整分页查找模型。** 保留名称、工作区与当前用户过滤，每页请求 100 条，最多 100 页；即使前页精确命中仍继续扫描，保留跨页同名消歧。首个 100 条之后的模型可以被找到；正常请求数为匹配目录大小除以 100 向上取整，空目录请求一次，最多读取 10,000 行。目录未读完即遇到空页、重复或缺失身份，或达到页数上限时，创建前以 `ConfigError`（CLI 退出码 10）失败，并提示重试、联系平台管理员或缩小查询范围；`--dry-run` 使用相同规则。
+
+- **浏览器登录独立判断验证码要求。** HTTP 表单要求验证码且尚未提交凭据时，允许浏览器的调用会独立检查 Chromium 表单；Chromium 同样要求验证码时不填写、不提交，并在同步与异步路径关闭浏览器。已提交凭据后的失败不进入另一条登录路径。
+
+- **Job 日志与登录发现不再静默吞掉关键错误。** SSH 日志探测和轮询中的隧道错误传播到命令边界；跟随日志时连续五次查询 Job 状态失败会警告可能无法自动退出，并正确恢复日志级别。登录期间工作区发现失败会提示工作区名称可能不完整。
+
+- **补齐回退路径的诊断信息。** Notebook 目标解析、SSH / Web 执行、IDE URL、浏览器和隧道回退记录失败原因，资源缓存失败继续使用 Live 事实；清理、连接关闭和可选更新提示的尽力执行边界显式化。
+
+### 架构与维护
+
+- **CLI 与 SDK 共用业务服务和传输决策。** 业务逻辑按领域收敛到 services，删除被替代的转发模块；同步与异步驱动复用请求分类、认证与重试规则，保留各入口的预算语义。写请求单次分派，发送后不自动重试，结果不确定时抛出专用异常。
+
+- **异步客户端使用原生 I/O 并复用自身资源。** 通过 greenlet 栈切换驱动原生 HTTP、Playwright、WebSocket 和 SSH/SCP 子进程 I/O；本地文件、缓存和认证状态操作交给客户端拥有并复用的线程池。数据广场连接由所属 Transport 管理，按账号和会话代次隔离并关闭。
+
+- **补齐 SDK 参考和跨平台回归覆盖。** [SDK 使用参考](references/sdk.md) 包含同步／异步接入、门面、缓存、执行、传输和错误合同说明；覆盖生成的异步包装器、并发与取消、写入分类、CLI 行为保留、凭据权限和传输路径。CI 增加 macOS，并扩展 Windows 测试，跨传输测试采用 GNU/BSD 兼容的 Base64 输入方式。
 
 ## v7.1.8
 
