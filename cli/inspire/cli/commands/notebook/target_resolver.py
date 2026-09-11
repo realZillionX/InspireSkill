@@ -2,28 +2,39 @@
 
 from __future__ import annotations
 
+import logging
 import json
 import os
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import click
 
 from inspire.accounts import account_exists, current_account
 from inspire.accounts.cache_lock import exclusive_cache_lock
-from inspire.bridge import tunnel as tunnel_module
+from inspire.bridge import tunnel as tunnel_module  # noqa: F401
 from inspire.bridge.tunnel import BridgeProfile, TunnelConfig
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.config.workspaces import validate_workspace_operation_name
 
-from .public_output import sanitize_public_text
+from inspire.services.notebook.notebook_output import sanitize_public_text
+
+from inspire.services.execution import notebook_targets
+from inspire.services.execution.notebook_targets import (  # noqa: F401
+    NotebookTargetCandidate as NotebookTargetCandidate,
+    target_cache_path as target_cache_path,
+    split_target_cache_key as _split_target_cache_key,
+    target_available as _target_available,
+)
+
+logger = logging.getLogger(__name__)
 
 CACHE_VERSION = 2
 TARGET_CACHE_FILENAME = "notebook-targets.json"
@@ -46,11 +57,7 @@ def validate_specific_workspace(
         raise click.BadParameter(str(exc)) from exc
 
 
-@dataclass
-class NotebookTargetCandidate:
-    account: str | None
-    config: TunnelConfig
-    bridge: BridgeProfile
+
 
 
 @dataclass
@@ -61,49 +68,18 @@ class NotebookConnectionTarget:
     source: str
 
 
-def target_cache_path() -> Path:
-    return Path.home() / ".inspire" / TARGET_CACHE_FILENAME
 
 
-def notebook_target_cache_key(
-    notebook: str, workspace: str | None, account: str | None = None,
-) -> str:
-    identifier = str(notebook or "").strip()
-    workspace_key = str(workspace or "").strip()
-    return f"{identifier}|workspace={workspace_key}|account={_effective_account(account) or ''}"
+
+def notebook_target_cache_key(notebook: str, workspace: str | None, account: str | None = None) -> str:
+    return notebook_targets.notebook_target_cache_key(notebook, workspace, account, current=current_account)
 
 
-def _split_target_cache_key(key: str) -> tuple[str, str]:
-    key = key.rsplit("|account=", 1)[0]
-    marker = "|workspace="
-    if marker not in key:
-        return key, ""
-    identifier, workspace = key.split(marker, 1)
-    return identifier, workspace
+
 
 
 def _read_target_cache() -> dict[str, Any]:
-    path = target_cache_path()
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {"version": CACHE_VERSION, "targets": {}}
-    if not isinstance(data, dict):
-        return {"version": CACHE_VERSION, "targets": {}}
-    targets = data.get("targets")
-    normalized = {}
-    if isinstance(targets, dict):
-        for key, entry in targets.items():
-            if not isinstance(entry, dict):
-                continue
-            notebook, workspace = _split_target_cache_key(str(key))
-            # Keep existing selections while adding the account to their key.
-            account = str(entry.get("account") or "")
-            normalized[f"{notebook}|workspace={workspace}|account={account}"] = entry
-    data["targets"] = normalized
-    data["version"] = CACHE_VERSION
-    return data
+    return notebook_targets.read_target_cache(path=target_cache_path())
 
 
 def _write_target_cache(data: dict[str, Any]) -> None:
@@ -122,10 +98,7 @@ def _write_target_cache(data: dict[str, Any]) -> None:
 
 
 def _effective_account(explicit: str | None) -> str | None:
-    account = str(explicit or "").strip()
-    if account:
-        return account
-    return current_account()
+    return notebook_targets.effective_account(explicit, current=current_account)
 
 
 def remember_notebook_target(
@@ -298,94 +271,21 @@ def forget_notebook_targets(
 
 
 def _account_scope(account: str | None) -> list[str]:
-    selector = _effective_account(account)
-    if not selector:
-        return []
-    if not account_exists(selector):
-        raise ValueError(f"Account not found: {selector}")
-    return [selector]
+    return notebook_targets.account_scope(account, exists=account_exists, current=current_account)
 
 
-def _matches_workspace(bridge: BridgeProfile, workspace: str | None) -> bool:
-    requested = str(workspace or "").strip()
-    if not requested or requested.lower() == "all":
-        return True
-    return requested == str(bridge.workspace_name or "").strip()
 
 
-def _matches_notebook(bridge: BridgeProfile, notebook: str) -> bool:
-    requested = str(notebook or "").strip()
-    if not requested:
-        return False
-    return requested in {
-        str(bridge.name or "").strip(),
-        str(bridge.notebook_name or "").strip(),
-    }
 
 
-def _candidate_from_cache_entry(
-    *,
-    entry: object,
-    notebook: str,
-    workspace: str | None,
-) -> NotebookTargetCandidate | None:
-    if not isinstance(entry, dict):
-        return None
-    account = str(entry.get("account") or "").strip() or None
-    if account and not account_exists(account):
-        return None
-    bridge_name = str(entry.get("bridge_name") or "").strip()
-    notebook_id = str(entry.get("notebook_id") or "").strip()
-    try:
-        config = (
-            tunnel_module.load_tunnel_config(account=account)
-            if account
-            else tunnel_module.load_tunnel_config()
-        )
-    except Exception:
-        return None
-    try:
-        bridge = config.get_bridge(bridge_name) if bridge_name else None
-        if bridge is None and notebook_id and hasattr(config, "list_bridges"):
-            for candidate in config.list_bridges():
-                if str(candidate.notebook_id or "").strip() == notebook_id:
-                    bridge = candidate
-                    break
-    except Exception:
-        return None
-    if bridge is None:
-        return None
-    if not _matches_notebook(bridge, notebook):
-        return None
-    if not _matches_workspace(bridge, workspace):
-        return None
-    return NotebookTargetCandidate(account=account, config=config, bridge=bridge)
 
 
-def _find_candidates(
-    *,
-    notebook: str,
-    workspace: str | None,
-    account: str | None,
-) -> list[NotebookTargetCandidate]:
-    candidates: list[NotebookTargetCandidate] = []
-    for account_name in _account_scope(account):
-        config = tunnel_module.load_tunnel_config(account=account_name)
-        if not hasattr(config, "list_bridges"):
-            continue
-        for bridge in config.list_bridges():
-            if not _matches_notebook(bridge, notebook):
-                continue
-            if not _matches_workspace(bridge, workspace):
-                continue
-            candidates.append(
-                NotebookTargetCandidate(
-                    account=account_name,
-                    config=config,
-                    bridge=bridge,
-                )
-            )
-    return candidates
+def _candidate_from_cache_entry(*, entry: object, notebook: str, workspace: str | None) -> NotebookTargetCandidate | None:
+    return notebook_targets.candidate_from_cache_entry(entry=entry, notebook=notebook, workspace=workspace, exists=account_exists)
+
+
+def _find_candidates(*, notebook: str, workspace: str | None, account: str | None) -> list[NotebookTargetCandidate]:
+    return notebook_targets.find_candidates(notebook=notebook, workspace=workspace, account=account, exists=account_exists, current=current_account)
 
 
 def _candidate_label(candidate: NotebookTargetCandidate, index: int | None = None) -> str:
@@ -420,6 +320,7 @@ def _can_prompt(ctx: Context) -> bool:
     try:
         return bool(sys.stdin.isatty() and sys.stderr.isatty())
     except Exception:
+        logger.debug("Interactive prompt TTY detection failed; trying next strategy", exc_info=True)
         return False
 
 
@@ -552,17 +453,7 @@ def _handle_pick_out_of_range(
     raise SystemExit(EXIT_CONFIG_ERROR)
 
 
-def _target_available(candidate: NotebookTargetCandidate) -> bool:
-    try:
-        return tunnel_module.is_tunnel_available(
-            bridge_name=candidate.bridge.name,
-            config=candidate.config,
-            retries=0,
-            retry_pause=0.0,
-            progressive=False,
-        )
-    except Exception:
-        return False
+
 
 
 def resolve_cached_notebook_target(

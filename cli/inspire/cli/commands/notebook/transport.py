@@ -11,7 +11,7 @@ from inspire.cli.utils.notebook_cli import (
     get_base_url,
     require_web_session,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.platform.web import browser_api as browser_api_module
 
 from .gpu_model import notebook_gpu_model

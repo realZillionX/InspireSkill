@@ -7,7 +7,7 @@ from typing import Any
 import click
 
 from inspire.cli.context import Context
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 
 
 def emit_success(ctx: Context, *, payload: dict[str, Any], text: str | None = None) -> None:

@@ -619,7 +619,7 @@ def test_usage_mine_uses_the_single_request_source(
 
 def _patch_fair(monkeypatch: pytest.MonkeyPatch, value: object) -> None:
     """Pin the workspace priority contract; an exception means "unreadable"."""
-    from inspire.cli.commands.resources import resources_usage as usage_module
+    from inspire.services.catalog import resource_usage as usage_module
 
     def _answer(_session, _workspace_id):  # noqa: ANN001
         if isinstance(value, Exception):

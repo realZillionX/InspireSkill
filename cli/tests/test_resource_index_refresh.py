@@ -12,12 +12,7 @@ from click.testing import CliRunner
 
 from inspire.accounts import create_account, set_current_account
 from inspire.cli.context import EXIT_API_ERROR, EXIT_VALIDATION_ERROR
-from inspire.cli.utils.resource_index import (
-    DEFAULT_TTL_SECONDS,
-    ResourceIdentity,
-    ResourceIndex,
-    ResourceScope,
-)
+from inspire.services.catalog.resource_index import DEFAULT_TTL_SECONDS, ResourceIdentity, ResourceIndex, ResourceScope
 from inspire.cli.utils.resource_index_refresh import (
     RESOURCE_FETCHERS,
     FetchResult,
@@ -1229,11 +1224,13 @@ def test_cache_status_says_so_when_nothing_at_all_is_cached(
     runner = CliRunner()
     everything = runner.invoke(main, ["cache", "status"])
     assert everything.exit_code == 0
+    # Nothing cached stays one sentence: no size footer under an empty cache.
     assert everything.output == "Resource name cache is empty.\n"
 
     one_kind = runner.invoke(main, ["cache", "status", "--resource", "notebook"])
     assert one_kind.exit_code == 0
-    assert one_kind.output == "notebook: 0 names, empty, never\n"
+    assert "notebook: 0 names, empty, never\n" in one_kind.output
+    assert one_kind.output.splitlines()[-1].startswith("Index size: ")
 
 
 def test_cache_clear_takes_one_kind_at_a_time(tmp_path, monkeypatch) -> None:
@@ -1312,9 +1309,11 @@ def test_cache_status_reports_name_only_refresh_failures(
     monkeypatch.setattr(cache_commands.time, "time", lambda: 101)
 
     assert cache_commands._status_payload(index) == {
+        "size_bytes": index.size_bytes(),
         "items": [
             {
                 "resource": "job",
+                "scopes": 1,
                 "cached_names": 0,
                 "state": "error",
                 "updated": "never",
@@ -1566,7 +1565,7 @@ def test_project_lookup_ignores_the_caller_workspace(tmp_path, monkeypatch) -> N
 
 def test_quota_refresh_warms_one_workload_catalog(tmp_path, monkeypatch) -> None:
     """Quota is an ordinary resource type: `cache refresh --resource` reaches it."""
-    from inspire.cli.utils import quota_cache as quota_cache_module
+    from inspire.services.catalog import quota_cache as quota_cache_module
 
     index = ResourceIndex(tmp_path / "index.sqlite3")
     groups = [
@@ -1662,7 +1661,7 @@ def test_partial_named_refresh_does_not_replace_what_it_could_not_read(
 
 def _patch_quota_platform(monkeypatch, *, rate_limited: set[str]) -> None:  # noqa: ANN001
     """Stub the quota fan-out, rate-limiting the named compute groups."""
-    from inspire.cli.utils import quota_cache as quota_cache_module
+    from inspire.services.catalog import quota_cache as quota_cache_module
     from inspire.platform.web.session import TransientAPIError
 
     monkeypatch.setattr(
@@ -1759,7 +1758,7 @@ def test_a_catalog_the_platform_emptied_is_still_reconciled(
     _patch_quota_platform(monkeypatch, rate_limited=set())
     _refresh_quota(index)
 
-    from inspire.cli.utils import quota_cache as quota_cache_module
+    from inspire.services.catalog import quota_cache as quota_cache_module
 
     monkeypatch.setattr(
         quota_cache_module.browser_api_module,

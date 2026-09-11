@@ -8,6 +8,7 @@ Usage:
     inspire resources availability --workspace <workspace>
 """
 
+import contextlib
 import logging
 import sys
 from pathlib import Path
@@ -147,6 +148,9 @@ def main(
         inspire notebook list --workspace 分布式训练空间
         inspire resources availability --workspace 分布式训练空间
     """
+    from inspire.cli.utils.web_transport import install_web_transport
+
+    install_web_transport()
     ctx.json_output = json_output
     ctx.debug = debug
 
@@ -167,12 +171,11 @@ def main(
     # writes ~/.inspire/update-status.json, which the uninstall is on its way
     # to delete, and a detached child would outlive the venv it runs from.
     if not (len(sys.argv) > 1 and sys.argv[1] in {"update", "uninstall"}):
-        try:
+        # Optional update checks must not prevent the requested command from running.
+        with contextlib.suppress(Exception):
             if not json_output:
                 maybe_notify_update()
             maybe_spawn_check()
-        except Exception:
-            pass
 
 @click.command("_ensure-playwright-runtime", hidden=True)
 @click.option("--silent", is_flag=True, help="Suppress runtime setup output.")
@@ -270,7 +273,8 @@ def cli() -> None:
         # exceptions. The full traceback still lands in the debug log
         # (configured by `--debug`), which is where it belongs.
         logging.getLogger(__name__).exception("Unhandled exception in inspire CLI")
-        from inspire.cli.formatters import human_formatter, json_formatter
+        from inspire.cli.formatters import human_formatter
+        from inspire.services.utils import json_formatter
 
         public_message = json_formatter.sanitize_text(
             str(e) or type(e).__name__,

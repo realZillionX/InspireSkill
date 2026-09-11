@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from inspire.platform.web.flow import Program, workflow, call, blocking_call
+
 from inspire.platform.web.session.proxy import get_rtunnel_proxy_override
 
 from .config import load_tunnel_config
@@ -173,11 +175,12 @@ def exec_rtunnel_proxy(
 # ---------------------------------------------------------------------------
 
 
+@workflow
 def _test_ssh_connection(
     bridge: BridgeProfile,
     config: TunnelConfig,
     timeout: int = 10,
-) -> bool:
+) -> Program[bool]:
     """Test if SSH connection works via ProxyCommand.
 
     Args:
@@ -188,16 +191,15 @@ def _test_ssh_connection(
     Returns:
         True if SSH connection succeeds, False otherwise
     """
-    # Ensure rtunnel binary exists
     try:
-        _ensure_rtunnel_binary(config)
+        yield blocking_call(_ensure_rtunnel_binary, config)
     except TunnelError:
         return False
 
-    proxy_cmd = _get_proxy_command(bridge, config.rtunnel_bin, quiet=True)
+    proxy_cmd = yield blocking_call(_get_proxy_command, bridge, config.rtunnel_bin, quiet=True)
 
     try:
-        result = subprocess.run(
+        result = yield call(subprocess.run,
             [
                 "ssh",
                 "-o",
@@ -230,13 +232,14 @@ def _test_ssh_connection(
         return False
 
 
+@workflow
 def is_tunnel_available(
     bridge_name: Optional[str] = None,
     config: Optional[TunnelConfig] = None,
     retries: int = 3,
     retry_pause: float = 2.0,
     progressive: bool = True,
-) -> bool:
+) -> Program[bool]:
     """Check if SSH via ProxyCommand is available and responsive.
 
     Args:
@@ -250,18 +253,17 @@ def is_tunnel_available(
         True if SSH via ProxyCommand works, False otherwise
     """
     if config is None:
-        config = load_tunnel_config()
+        config = yield blocking_call(load_tunnel_config)
 
     bridge = config.get_bridge(bridge_name)
     if not bridge:
         return False
 
-    # Test SSH connection with retry
     for attempt in range(retries + 1):
-        if _test_ssh_connection(bridge, config):
+        if (yield call(_test_ssh_connection, bridge, config)):
             return True
         if attempt < retries:
             # Progressive: 2s, 3s, 4s for attempts 0, 1, 2
             pause = retry_pause + (attempt * 1.0) if progressive else retry_pause
-            time.sleep(pause)
+            yield call(time.sleep, pause)
     return False

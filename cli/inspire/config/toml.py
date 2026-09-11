@@ -10,10 +10,12 @@ try:
 except ImportError:  # pragma: no cover
     import tomli as tomllib
 
+from inspire.local_files import repair_inspire_path
 from inspire.config.schema import get_option_by_toml
 
 
 def _load_toml(path: Path) -> dict[str, Any]:
+    repair_inspire_path(path)
     with open(path, "rb") as f:
         return tomllib.load(f)
 

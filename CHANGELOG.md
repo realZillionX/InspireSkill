@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### 破坏性变更
+
+- **`inspire cache status` 改为按资源身份去重计数。** `cached_names` 原先累加各 scope 的有效行数，现在按服务器／账号主体／资源种类／资源 ID 去重；同一公共镜像出现在多个来源或三个工作区时只计一次。`workspaces` 原先统计带工作区名称的 scope 行数，现在统计不同工作区 ID，包括尚无本地名称的工作区。JSON 新增每种资源的 `scopes` 数量与顶层 `size_bytes`（索引文件及 SQLite sidecar 的磁盘字节数）；人类输出在 scope 数与工作区数不一致时显示 scope 数（例如镜像按来源缓存），并在末行显示索引大小，缓存为空时仍只输出一句话。此变化同样影响仅使用 CLI 的用户；依赖旧计数含义或精确输出的脚本需要更新。
+
+- **六类工作负载的状态输出统一先清洗、再按各自词表归一化。** 影响 `job list/status`（含批量 status 与 `list --watch`）、`hpc list/status`（含批量 status）、`ray list/status`、`serving list/status`、`notebook list/status`、`tensorboard list/status` 的 `--json` 与人类输出。`Running` / `rUnNiNg` 现在均为 `RUNNING`；空值统一为 `UNKNOWN`。此前 Job/HPC/Ray JSON 为 `N/A`，Serving/Notebook 列表 JSON 为空串、详情 JSON 省略该字段；人类输出此前 Job/HPC/Ray 通常为 `N/A`（Job 表格也可能为空），Serving 列表为 `-`、详情为 `N/A`，Notebook 列表为 `Unknown`、详情为 `N/A`。Job 使用自身词表：`job_running` → `RUNNING`、`CREATING` / `job_creating` → `PENDING`、`STOPPED` / `job_stopped` → `CANCELLED`，不识别的值 → `UNKNOWN`；其他五类保留自身词表，未识别值清洗后转大写，`STOPPED` 仍为 `STOPPED`。TensorBoard 同时去掉大小写不敏感的 `tb_status_` 前缀，原来的小写 `running`／`stopped`／`creating` 输出改为 `RUNNING`／`STOPPED`／`CREATING`，空值改为 `UNKNOWN`；CLI tags/scalars 和 SDK 的运行状态检查沿用这一规则。URL、路径与原始 ID 在归一化前清洗，清洗后为空也返回 `UNKNOWN`。`job wait` 的最终状态详情、`serving api` 的状态字段也复用该投影。复用这些公共投影的 SDK 工作负载 `.view`（包括批量 Job）也同步改变；依赖旧值的脚本需要更新判断条件。
+- **`serving create --model NAME` 从单页查询改为完整分页名称查询。** 保留名称、工作区与当前用户过滤，每页请求 100 条，最多 100 页；超过首个 100 条的模型现在可以被找到。即使前页精确命中，也继续扫描以保留跨页同名消歧；正常请求数为过滤后目录大小除以 100 向上取整（空目录仍请求一次），最多读取 10,000 行，增加网络往返与内存开销。目录未读完即遇到空页、重复/缺失身份，或达到 100 页上限时，创建前以 `ConfigError`（CLI 退出码 10）失败，而不把不完整结果当作“模型不存在”。错误明确指出分页异常并提示重试/联系平台管理员；达到上限则提示使用更具体的 `--model` 名称或模型更少的工作区。此规则同样适用于 `--dry-run`。
+
+### 新增
+
+- **新增实验性同步与异步 Python SDK。** `from inspire import InspireClient, InspireAsyncClient` 提供 workspaces、projects、compute_groups、images、datasets、models、resources、account_info、api_keys、jobs、notebooks、hpc、ray、servings、tensorboards 门面，覆盖全部平台侧 CLI 命令组。提供类型化资源引用、分页、批量状态、创建计划、生命周期等待、日志／事件／指标、远程执行与 Notebook 文件传输；账号管理与初始化也可通过 SDK 调用。交互式 Shell、SSH 桥创建、CLI 批处理和终端渲染仍由 CLI 提供。使用合同见 [`references/sdk.md`](references/sdk.md)。
+
+- **CLI 与 SDK 共用业务服务和传输决策。** 同步与异步客户端复用请求分类、认证与重试规则；异步通过 greenlet 栈切换使用原生 HTTP、Playwright、WebSocket 和 SSH／SCP 子进程 I/O，本地文件操作使用客户端拥有的线程池。普通安装新增 `httpx[socks]` 和显式 `greenlet` 依赖，无需额外 SDK 安装选项。写请求单次分派，发送后不自动重试，结果不确定时抛出专用异常。
+
+- **SDK 可复用 CLI 的磁盘资源索引。** `catalog_disk_cache=True` 启用共享目录缓存，保留 CLI 使用的身份列，缺失 payload 的新鲜目录在刷新租约内修复；共享刷新同时清理 tombstone 与孤立 scope。
+
+### 修复与维护
+
+- **Notebook 传输支持系统临时目录包含符号链接。** 对 SDK 自建的暂存目录解析实际路径，避免 macOS 的 `/tmp`、`/var` 等系统别名导致传输失败；用户输入路径和传输内容中的符号链接仍被拒绝。CI 增加 macOS，跨传输测试使用兼容 GNU／BSD 的 Base64 输入方式。
+
+- **账号凭据与本地私有状态统一使用私有权限写入。** POSIX 上文件创建时限制为 `0600`，私有目录为 `0700`，触及时收紧既有权限；Windows 上目录设置可继承的当前用户 ACL，失败警告，显式密钥导出仍逐文件验证并在失败时报错。账号添加与 SDK 凭据构造也使用同一原子写入路径；依赖共享读取这些文件的流程需要调整权限与账号使用方式。
+
+- **浏览器登录独立判断验证码要求。** HTTP 表单要求验证码且尚未提交凭据时，允许浏览器的调用会检查 Chromium 的表单；Chromium 也要求验证码时不填写、不提交，并在同步与异步路径正确关闭浏览器。已提交凭据后的失败不进入另一条登录路径。
+
 ## v7.1.8
 
 ### 新增

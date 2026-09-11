@@ -60,7 +60,9 @@ def retry_after_seconds(headers: Mapping[str, Any] | None) -> float | None:
     return max(0.0, deadline.timestamp() - time.time())
 
 
-def backoff_delay(attempt: int, error: TransientAPIError) -> float:
+def backoff_delay(
+    attempt: int, error: TransientAPIError, *, jitter: float | None = None
+) -> float:
     """Seconds to wait before attempt ``attempt + 1`` (0-indexed attempts).
 
     The platform's own ``Retry-After`` wins when it asks for a wait this side
@@ -71,7 +73,7 @@ def backoff_delay(attempt: int, error: TransientAPIError) -> float:
     if requested is not None and 0 <= requested <= MAX_BACKOFF_SECONDS:
         return float(requested)
     delay = min(BASE_BACKOFF_SECONDS * (2**attempt), MAX_BACKOFF_SECONDS)
-    return delay * (0.75 + random.random() * 0.5)  # noqa: S311 - jitter, not crypto
+    return delay * (0.75 + (random.random() if jitter is None else jitter) * 0.5)  # noqa: S311 - jitter, not crypto
 
 
 def with_transient_retry(

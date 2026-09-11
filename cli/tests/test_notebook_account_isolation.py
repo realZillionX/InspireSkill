@@ -125,7 +125,7 @@ def test_jupyter_shell_loads_the_target_accounts_environment(
         calls.append(kwargs["env_exports"])
         return 0
 
-    monkeypatch.setattr(remote_shell.browser_api_module, "open_jupyter_terminal_shell", run_shell)
+    monkeypatch.setattr(remote_shell.jupyter_shell, "open_jupyter_terminal_shell", run_shell)
     args = ["notebook", "shell", "dev-box"]
     position = {"root": 0, "group": 1, "leaf": len(args), "default": None}[selector]
     if position is not None:

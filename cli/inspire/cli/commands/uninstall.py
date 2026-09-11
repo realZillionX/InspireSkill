@@ -45,7 +45,7 @@ from inspire.cli.commands.update import (
     _uv_tool_info,
 )
 from inspire.cli.context import Context, EXIT_GENERAL_ERROR, pass_context
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error, require_confirmation
 from inspire.cli.utils.update_notice import PACKAGE_NAME
 

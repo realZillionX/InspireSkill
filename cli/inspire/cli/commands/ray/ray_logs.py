@@ -19,6 +19,11 @@ specific to Ray:
 
 from __future__ import annotations
 
+from inspire.services.ray.ray_logs import (
+    clamped_window as _clamped_window,
+    labelled_logs as _labelled_logs,
+)
+
 from typing import Any, Optional
 
 import click
@@ -30,12 +35,10 @@ from inspire.cli.commands.job.job_logs import (
     _emit_truncation_hint,
     _format_web_log_line,
     _select_web_logs,
-    _web_log_time_range,
     _window_to_minutes,
 )
 from inspire.cli.commands.ray.ray_commands import (
     RayInstanceSelectionError,
-    RayInstanceView,
     _fetch_ray_instances,
     _reject_ray_name_at_boundary,
     _run_readonly_ray_operation,
@@ -51,12 +54,12 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.config import Config, ConfigError
 from inspire.platform.web.browser_api.ray_jobs import (
-    RAY_LOG_MAX_WINDOW_MS,
+    RAY_LOG_MAX_WINDOW_MS as RAY_LOG_MAX_WINDOW_MS,
     get_ray_job_detail,
     list_ray_job_logs,
 )
@@ -64,40 +67,6 @@ from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 _INSTANCE_SCAN_LIMIT = 500
 _NAME_RESOLUTION_LIMIT = 10000
-
-
-def _clamped_window(
-    detail: dict[str, Any],
-    since_minutes: int | None,
-) -> tuple[int, int, bool]:
-    """Pick the query window, then hold it inside the platform's month cap."""
-    start_ms, end_ms = _web_log_time_range(detail, since_minutes)
-    clamped = end_ms - start_ms > RAY_LOG_MAX_WINDOW_MS
-    if clamped:
-        start_ms = end_ms - RAY_LOG_MAX_WINDOW_MS
-    return start_ms, end_ms, clamped
-
-
-def _labelled_logs(
-    logs: list[dict[str, Any]],
-    views: list[RayInstanceView],
-) -> list[dict[str, Any]]:
-    """Swap each record's pod handle for the Agent-visible instance label.
-
-    Relabelling before the budget runs — rather than at print time — keeps the
-    character accounting measuring the string that is actually shown, and keeps
-    the JSON schema identical to `job logs --json`.
-    """
-    labels = {view.handle: view.label for view in views}
-    labels.update({view.handle.rsplit("/", 1)[-1]: view.label for view in views})
-    relabelled: list[dict[str, Any]] = []
-    for item in logs:
-        row = dict(item)
-        pod = str(row.get("pod_name") or "").strip()
-        if pod in labels:
-            row["pod_name"] = labels[pod]
-        relabelled.append(row)
-    return relabelled
 
 
 def _format_ray_logs(logs: list[dict[str, Any]]) -> str:

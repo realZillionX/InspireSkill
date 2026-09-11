@@ -20,7 +20,7 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.config import Config, ConfigError, build_env_exports
 from inspire.bridge.tunnel import (
     BridgeProfile,
@@ -35,7 +35,7 @@ from inspire.cli.utils.errors import emit_error as _emit_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
 from inspire.cli.utils.output import emit_success as emit_output_success
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.remote_paths import explicit_remote_cwd
 from inspire.cli.utils.tunnel_reconnect import (
     NotebookBridgeReconnectState,
@@ -86,11 +86,19 @@ def _should_auto_passthrough_stdin() -> bool:
         if stdin.isatty():
             return False
     except Exception:  # noqa: BLE001
+        logger.debug(
+            "Automatic stdin passthrough TTY detection failed; trying next strategy",
+            exc_info=True,
+        )
         return False
 
     try:
         mode = os.fstat(stdin.fileno()).st_mode
     except Exception:  # noqa: BLE001
+        logger.debug(
+            "Automatic stdin passthrough file mode detection failed; trying next strategy",
+            exc_info=True,
+        )
         return False
 
     import stat as _stat

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import call, perform_sync
+
 import logging
 import subprocess
 from typing import Optional
@@ -85,7 +87,7 @@ def run_scp_transfer(
         recursive,
         timeout,
     )
-    result = subprocess.run(
+    result = perform_sync(call(subprocess.run,
         args,
         capture_output=True,
         text=True,
@@ -93,7 +95,7 @@ def run_scp_transfer(
         errors="replace",
         timeout=timeout,
         env=build_ssh_process_env(),
-    )
+    ))
     logger.debug(
         "run_scp_transfer completed bridge=%s returncode=%s stdout_chars=%s stderr_chars=%s",
         bridge.name,

@@ -209,7 +209,7 @@ def test_reading_a_stopped_board_says_so_instead_of_failing_at_the_transport(
     )
 
     assert result.exit_code != 0
-    assert "is stopped; only a running board serves data" in result.output
+    assert "is STOPPED; only a running board serves data" in result.output
     assert "inspire tensorboard start glm-sft" in result.output
 
 

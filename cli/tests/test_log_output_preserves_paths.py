@@ -15,7 +15,7 @@ from inspire.cli.commands.job.job_logs import (
     _format_web_log_line,
     _public_web_logs,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 
 
 _TRACEBACK = 'File "/opt/conda/lib/python3.11/site.py", line 12, in <module>'

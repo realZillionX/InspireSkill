@@ -17,18 +17,21 @@ filters upstream, but this resolver is used by create paths.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
-
-from inspire.cli.utils.id_resolver import is_full_uuid, is_stale_handle_error
-from inspire.cli.utils.quota_cache import (
+from dataclasses import replace
+from typing import Any, Callable, Iterable, Optional
+from inspire.services.catalog.quotas import (
+    QuotaParseError, QuotaMatchError, QuotaCatalogUnavailable, QuotaSpec,
+    ResolvedQuota, parse_quota, build_resource_spec_price,
+)
+from inspire.cli.utils.id_resolver import is_stale_handle_error
+from inspire.services.catalog.quota_cache import (
     SCHEDULE_TYPE_BY_WORKLOAD,
     CachedPricesLoader,
     group_supports_workload,
     workload_for_schedule_type,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.resource_index import (
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.catalog.resource_index import (
     ResourceIdentity,
     ResourceIndex,
     ResourceScope,
@@ -38,7 +41,21 @@ from inspire.cli.utils.resource_index import (
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.availability import QUOTA_PRIORITY_SPEC_FIELDS
 from inspire.platform.web.session import WebSession, is_transient_api_error
-from inspire.task_priority import is_low_task_priority
+from inspire.services.catalog.workload_quota import (
+    workload_publishes_priority_levels as workload_publishes_priority_levels,
+    allowed_priority_levels_for as allowed_priority_levels_for,
+    describe_priority_levels as describe_priority_levels,
+    priority_level_name as priority_level_name,
+    ensure_priority_allowed as ensure_priority_allowed,
+    match_quota_rows,
+    format_row_catalog as format_row_catalog,
+)
+from inspire.services.catalog.quotas import validate_compute_group_name as validate_compute_group_name
+
+
+
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -47,80 +64,6 @@ SCHEDULE_TYPE_HPC = SCHEDULE_TYPE_BY_WORKLOAD["hpc"]
 SCHEDULE_TYPE_TRAIN = SCHEDULE_TYPE_BY_WORKLOAD["job"]
 SCHEDULE_TYPE_SERVING = SCHEDULE_TYPE_BY_WORKLOAD["serving"]
 SCHEDULE_TYPE_RAY = SCHEDULE_TYPE_BY_WORKLOAD["ray"]
-
-
-class QuotaParseError(ValueError):
-    """Raised when a ``--quota`` argument cannot be parsed."""
-
-
-class QuotaMatchError(ValueError):
-    """Raised on zero or multi-match of a quota triple inside a workspace."""
-
-
-class QuotaCatalogUnavailable(ValueError):
-    """Raised when the quota catalog could not be read at all.
-
-    Deliberately not a :class:`QuotaMatchError`: no match was ruled out here.
-    The platform did not answer, so callers must report an API error rather
-    than tell the user their ``--quota`` does not exist.
-    """
-
-
-@dataclass(frozen=True)
-class QuotaSpec:
-    """A parsed ``--quota`` triple: GPU count, CPU count, memory in GiB."""
-
-    gpu_count: int
-    cpu_count: int
-    memory_gib: int
-
-    def display(self) -> str:
-        return f"{self.gpu_count},{self.cpu_count},{self.memory_gib}"
-
-
-@dataclass(frozen=True)
-class ResolvedQuota:
-    """A matched quota row keyed to its platform handles.
-
-    ``allowed_priority_levels`` carries the workspace's own statement about
-    which task priorities this row may run at, and its three states are all
-    different answers: ``()`` is "the platform declared no restriction",
-    ``("low",)`` is "low priority only", and ``None`` is "the CLI could not
-    read the menu" — never a licence to assume the first.
-    """
-
-    quota_id: str
-    logic_compute_group_id: str
-    compute_group_name: str
-    gpu_count: int
-    cpu_count: int
-    memory_gib: int
-    gpu_type: str
-    raw_price: dict
-    allowed_priority_levels: tuple[str, ...] | None = None
-
-
-def parse_quota(text: str) -> QuotaSpec:
-    if text is None:
-        raise QuotaParseError("--quota is required")
-    parts = [p.strip() for p in text.split(",")]
-    if len(parts) != 3:
-        raise QuotaParseError(
-            f"--quota expects 'gpu,cpu,mem' (all integers; mem in GiB); got {text!r}"
-        )
-    try:
-        gpu = int(parts[0])
-        cpu = int(parts[1])
-        mem = int(parts[2])
-    except ValueError as exc:
-        raise QuotaParseError(
-            f"--quota values must be integers; got {text!r}"
-        ) from exc
-    if gpu < 0 or cpu <= 0 or mem <= 0:
-        raise QuotaParseError(
-            f"--quota requires gpu>=0, cpu>=1, mem>=1; got gpu={gpu} cpu={cpu} mem={mem}"
-        )
-    return QuotaSpec(gpu_count=gpu, cpu_count=cpu, memory_gib=mem)
 
 
 def _extract_gpu_type(price: dict[str, Any]) -> str:
@@ -171,11 +114,6 @@ PRIORITY_LEVELS_UNKNOWN_DISPLAY = "unknown"
 PRIORITY_LEVELS_ANY_DISPLAY = "any"
 
 
-def workload_publishes_priority_levels(workload: str) -> bool:
-    """Whether the platform publishes a per-spec priority menu for *workload*."""
-    return str(workload or "").strip() in QUOTA_PRIORITY_SPEC_FIELDS
-
-
 def load_quota_priority_levels(
     *,
     workspace_id: str,
@@ -207,81 +145,6 @@ def load_quota_priority_levels(
         return None
 
 
-def allowed_priority_levels_for(
-    levels_by_quota_id: Mapping[str, tuple[str, ...]] | None,
-    quota_id: str,
-    *,
-    workload: str,
-) -> tuple[str, ...] | None:
-    """Return one quota row's levels: ``()`` unrestricted, ``None`` unknown."""
-    if not workload_publishes_priority_levels(workload):
-        # This workload has no spec menu anywhere in the platform's scheduling
-        # record, so there is nothing here that could restrict a priority.
-        return ()
-    if levels_by_quota_id is None:
-        return None
-    # A spec that is not in the menu is one the workspace said nothing about,
-    # and silence is not permission: only a row of the menu is evidence.
-    return levels_by_quota_id.get(str(quota_id or "").strip())
-
-
-def describe_priority_levels(levels: Sequence[str] | None) -> str:
-    """Render a quota row's priority menu for a table cell."""
-    if levels is None:
-        return PRIORITY_LEVELS_UNKNOWN_DISPLAY
-    if not levels:
-        return PRIORITY_LEVELS_ANY_DISPLAY
-    return "/".join(levels)
-
-
-def priority_level_name(priority: int) -> str:
-    """Name the level a numeric task priority falls into."""
-    return PRIORITY_LEVEL_LOW if is_low_task_priority(priority) else PRIORITY_LEVEL_HIGH
-
-
-def ensure_priority_allowed(
-    quota: ResolvedQuota,
-    priority: object,
-    *,
-    quota_command: str = "the workload's `quota` command",
-) -> None:
-    """Refuse a create the workspace's own spec menu says it will reject.
-
-    Silence never blocks: an unknown menu (``None``) and an unrestricted one
-    (``()``) both pass, because turning one unanswered request into a refused
-    create would make a platform hiccup indistinguishable from a quota the user
-    may not have.
-    """
-    levels = quota.allowed_priority_levels
-    if not levels:
-        return
-    if isinstance(priority, bool) or not isinstance(priority, int):
-        return
-    if any(level not in KNOWN_PRIORITY_LEVELS for level in levels):
-        # An unrecognised vocabulary is not something to enforce blindly.
-        return
-    if priority_level_name(priority) in levels:
-        return
-    allowed_text = "/".join(level.upper() for level in levels)
-    raise QuotaMatchError(
-        f"Quota {quota.gpu_count},{quota.cpu_count},{quota.memory_gib} in compute group "
-        f"{quota.compute_group_name!r} is published as {allowed_text}-priority only, and "
-        f"--priority {priority} is {priority_level_name(priority).upper()}. The platform "
-        "would reject this create. Either pass --priority 1 (LOW, preemptible in "
-        "fair-scheduling workspaces), or pick a quota row whose Priority column reads "
-        f"'{PRIORITY_LEVELS_ANY_DISPLAY}' -- the restriction is per quota row, so a larger "
-        f"row in the same compute group is often unrestricted. See `{quota_command}`."
-    )
-
-
-def validate_compute_group_name(value: str) -> str:
-    """Reject platform handles while preserving a user-facing group name."""
-    name = str(value or "").strip()
-    if not name:
-        raise QuotaMatchError("--group value cannot be empty")
-    if name.casefold().startswith("lcg-") or is_full_uuid(name):
-        raise QuotaMatchError("--group takes a compute group name.")
-    return name
 
 
 def _default_groups_loader(
@@ -706,53 +569,7 @@ def resolve_quota(
             cached_only=False,
         )
 
-    matches: list[ResolvedQuota] = []
-    for group, price in all_rows:
-        gpu_count = int(price.get("gpu_count") or 0)
-        cpu_count = int(price.get("cpu_count") or 0)
-        memory_gib = _extract_memory_gib(price)
-        if (gpu_count, cpu_count, memory_gib) != (
-            spec.gpu_count,
-            spec.cpu_count,
-            spec.memory_gib,
-        ):
-            continue
-        quota_id = str(price.get("quota_id") or price.get("spec_id") or "").strip()
-        if not quota_id:
-            continue
-        lcg_id = _group_id(group)
-        matches.append(
-            ResolvedQuota(
-                quota_id=quota_id,
-                logic_compute_group_id=lcg_id,
-                compute_group_name=_group_name(group),
-                gpu_count=gpu_count,
-                cpu_count=cpu_count,
-                memory_gib=memory_gib,
-                gpu_type=_extract_gpu_type(price),
-                raw_price=price,
-            )
-        )
-
-    if not matches:
-        raise QuotaMatchError(
-            f"--quota {spec.display()} matches no quota row in the selected workspace."
-            f"\nAvailable:\n{_format_row_catalog(all_rows, group_override=group_override)}"
-        )
-
-    if len(matches) > 1:
-        lines = [
-            f"  {m.compute_group_name}  (gpu_type={m.gpu_type or 'CPU'})"
-            for m in matches
-        ]
-        raise QuotaMatchError(
-            f"--quota {spec.display()} matches multiple quota rows in the selected workspace; "
-            "pass --group <full compute group name> to disambiguate. "
-            "Use a quota query --group <keyword> only to find the exact name:\n"
-            + "\n".join(lines)
-        )
-
-    match = matches[0]
+    match = match_quota_rows(spec, all_rows, group_override=group_override)
     # Only a unique match is worth a request: the ambiguous and empty cases are
     # already an error, and this read is one extra round trip per create.
     workload = workload_for_schedule_type(schedule_config_type)
@@ -772,67 +589,6 @@ def resolve_quota(
             workload=workload,
         ),
     )
-
-
-def _format_row_catalog(
-    rows: list[tuple[dict, dict]],
-    *,
-    group_override: Optional[str] = None,
-) -> str:
-    if not rows:
-        # The row set was already narrowed to `--group` by the time we get
-        # here, so "the workspace has no quotas" would blame the wrong scope
-        # and send the reader looking for a problem that is not there.
-        if group_override:
-            return (
-                f"  (compute group {group_override!r} has no quota rows for this workload)"
-            )
-        return "  (no quota rows in this workspace for this workload)"
-    lines: list[str] = []
-    for group, price in rows:
-        gpu_count = int(price.get("gpu_count") or 0)
-        cpu_count = int(price.get("cpu_count") or 0)
-        memory_gib = _extract_memory_gib(price)
-        gpu_type = _extract_gpu_type(price) or "CPU"
-        group_name = _group_name(group)
-        if not group_name:
-            continue
-        lines.append(
-            f"  {gpu_count},{cpu_count},{memory_gib}  ({gpu_type}, {group_name})"
-        )
-    return "\n".join(lines)
-
-
-def build_resource_spec_price(*, quota: ResolvedQuota) -> dict[str, Any]:
-    """Build the ``resource_spec_price`` dict the notebook create call expects."""
-    price = quota.raw_price if isinstance(quota.raw_price, dict) else {}
-    cpu_info_payload = price.get("cpu_info")
-    cpu_info: dict[str, Any] = cpu_info_payload if isinstance(cpu_info_payload, dict) else {}
-    gpu_info_payload = price.get("gpu_info")
-    gpu_info: dict[str, Any] = gpu_info_payload if isinstance(gpu_info_payload, dict) else {}
-    machine_gpu_type = str(
-        gpu_info.get("gpu_type")
-        or price.get("gpu_type")
-        or ""
-    ).strip()
-    if quota.gpu_count > 0 and not machine_gpu_type:
-        raise QuotaMatchError(
-            "Matched GPU quota is missing machine-readable gpu_info.gpu_type; "
-            "cannot build notebook resource_spec_price safely."
-        )
-
-    payload = {
-        "cpu_type": cpu_info.get("cpu_type", ""),
-        "cpu_count": quota.cpu_count,
-        "gpu_type": machine_gpu_type,
-        "gpu_count": quota.gpu_count,
-        "memory_size_gib": quota.memory_gib,
-        "logic_compute_group_id": quota.logic_compute_group_id,
-        "quota_id": quota.quota_id,
-    }
-    if quota.gpu_count <= 0:
-        payload.pop("gpu_type", None)
-    return payload
 
 
 __all__ = [

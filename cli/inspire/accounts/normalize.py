@@ -38,7 +38,9 @@ def normalize_environment(
     """
     report = NormalizationReport()
 
-    report.playwright_ready = _playwright_chromium_available()
+    report.playwright_ready = (
+        _playwright_chromium_available() if interactive else _playwright_chromium_installed()
+    )
     if not report.playwright_ready and interactive and auto_install_playwright:
         report.playwright_install_attempted = True
         report.playwright_install_succeeded = _install_playwright_chromium()
@@ -82,6 +84,17 @@ def _log_runtime_report(report: NormalizationReport) -> None:
                 "Playwright Chromium not detected; setup command: %s",
                 playwright_install_hint(),
             )
+
+
+def _playwright_chromium_installed() -> bool:
+    """Inspect the executable without launching Chromium in non-interactive setup."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            return Path(playwright.chromium.executable_path).is_file()
+    except Exception:
+        return False
 
 
 def _playwright_chromium_available() -> bool:

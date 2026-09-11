@@ -1,7 +1,10 @@
-"""SSH tunnel utilities (ProxyCommand + rtunnel).
+"""SSH and SCP over rtunnel-backed ProxyCommand connections.
 
-This package contains the tunnel domain logic used by the CLI (tunnel management
-and ssh execution over the rtunnel-backed ProxyCommand).
+Bridge configuration, reachability probes, command builders and local subprocess
+lifecycles belong here. CLI tunnel management and SDK exec/transfers share these
+primitives; they do not imply permission to create a missing bridge. Notebook
+target policy and staged publication belong to inspire.services.execution, and
+interactive terminal UI belongs to inspire.cli.
 """
 
 from __future__ import annotations

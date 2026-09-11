@@ -26,10 +26,10 @@ from inspire.cli.commands.serving.serving_commands import (
     _format_list_rows,
     _serving_resource_label,
 )
-from inspire.cli.commands.serving.public_output import public_serving
+from inspire.services.serving.serving_output import public_serving
 from inspire.cli.context import EXIT_VALIDATION_ERROR
 from inspire.cli.main import main as cli_main
-from inspire.cli.utils.collection_output import DEFAULT_COLLECTION_LIMIT
+from inspire.services.utils.collections import DEFAULT_COLLECTION_LIMIT
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.servings import ServingInfo
 
@@ -1599,7 +1599,7 @@ def test_serving_create_never_doubles_a_tag_already_in_the_image_name() -> None:
     `--dry-run` and the JSON echo reported an image reference that resolves to
     nothing, which is the string someone copies into a script.
     """
-    from inspire.cli.commands.serving.serving_commands import _with_tag
+    from inspire.services.serving.serving_submission import with_tag as _with_tag
 
     assert _with_tag("sandbox-base:u24", "u24") == "sandbox-base:u24"
     # A bare name still gets its tag.
@@ -1648,3 +1648,35 @@ def test_created_serving_remains_successful_when_endpoint_read_fails(monkeypatch
         assert "private backend error" not in result.output
     else:
         assert data["endpoint"] == "https://serving.example.org"
+
+
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_serving_create_model_lookup_paginates_and_reports_incomplete(monkeypatch, incomplete):
+    from inspire.platform.web.browser_api.models import ModelInfo
+
+    original_resolver = serving_commands_module._resolve_model_for_create
+    _patch_serving_create_deps(monkeypatch, allowed_priority_levels=("low",), priority=1)
+    monkeypatch.setattr(serving_commands_module, "_resolve_model_for_create", original_resolver)
+    pages = []
+
+    def listing(**kwargs):
+        pages.append(kwargs)
+        if kwargs["page"] == 1:
+            return [ModelInfo(model_id=f"model-other-{i}", name=f"other-{i}")
+                    for i in range(100)], 101
+        if incomplete:
+            return [], 101
+        return [ModelInfo(model_id="model-target", name="qwen-demo", latest_version="7")], 101
+
+    monkeypatch.setattr(serving_commands_module.browser_api_module, "list_models", listing)
+    result = CliRunner().invoke(cli_main, _serving_create_args())
+    assert [p["page"] for p in pages] == [1, 2]
+    assert all(p["page_size"] == 100 and p["keyword"] == "qwen-demo" for p in pages)
+    if incomplete:
+        assert result.exit_code == 10, result.output
+        assert "empty page before all models were read" in result.output
+        assert "Retry serving create" in result.output
+        assert "platform administrator" in result.output
+    else:
+        assert result.exit_code == 0, result.output
+        assert "Model: qwen-demo v7" in result.output

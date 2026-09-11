@@ -2,12 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from inspire.cli.utils.collection_output import (
-    DEFAULT_COLLECTION_LIMIT,
-    bound_collection,
-    resolve_collection_limit,
-    truncation_notice,
-)
+from inspire.services.utils.collections import DEFAULT_COLLECTION_LIMIT, bound_collection, resolve_collection_limit, truncation_notice
 
 
 def test_resolve_collection_limit_defaults_to_compact_budget() -> None:

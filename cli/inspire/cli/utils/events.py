@@ -19,12 +19,18 @@ from typing import Any, Callable, Optional
 
 import click
 
+from inspire.services.job.job_events import (
+    event_sort_key as event_sort_key,
+    event_type as event_type,
+    matching_events,
+)
+
 from inspire.cli.context import Context, EXIT_API_ERROR
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import BoundedCollection, truncation_notice
+from inspire.services.utils.collections import BoundedCollection, truncation_notice
 from inspire.cli.utils.errors import exit_with_error
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 
 DEFAULT_EVENT_TAIL = 20
 FOLLOW_EVENT_KEY_LIMIT = 2048
@@ -49,70 +55,6 @@ def _fmt_timestamp(raw: Any) -> str:
     return s
 
 
-def event_sort_key(event: dict) -> tuple[int, int, int]:
-    """Order a merged event stream oldest-first.
-
-    Controller-level and per-pod events come from different calls (and, on
-    HPC, one call per instance), so the chronology that makes ``--tail`` mean
-    "most recent" has to be imposed here rather than trusted from the
-    platform's own ordering.
-
-    Timestamps are per-second, so a container's `Pulled` / `Created` /
-    `Started` trio usually shares one — hence the ``id`` tiebreaker, which Ray
-    fills with a monotonic counter. Without it the causal order of a same-second
-    burst flips depending on how the rows were fetched.
-    """
-
-    def _epoch(value: object) -> int:
-        text = str(value or "").strip()
-        return int(text) if text.isdigit() else 0
-
-    return (
-        _epoch(event.get("last_timestamp")),
-        _epoch(event.get("first_timestamp")),
-        _epoch(event.get("id")),
-    )
-
-
-def event_type(event: dict) -> str:
-    """Read the Normal / Warning field under either spelling.
-
-    Node events call it ``event_type``; every workload Action calls it
-    ``type``. The difference has to be absorbed in one place, or `--type
-    Warning` silently empties the node stream instead of filtering it.
-    """
-    return str(event.get("type") or event.get("event_type") or "")
-
-
-def _matching_events(
-    events: list[dict],
-    *,
-    type_filter: Optional[str] = None,
-    reason_filter: Optional[str] = None,
-    keyword_filter: Optional[str] = None,
-) -> list[dict]:
-    """Apply event filters without imposing an output window."""
-    out = events
-    if type_filter:
-        needle = type_filter.lower()
-        out = [e for e in out if event_type(e).lower() == needle]
-    if reason_filter:
-        needle = reason_filter.lower()
-        out = [e for e in out if needle in str(e.get("reason", "")).lower()]
-    if keyword_filter:
-        needle = keyword_filter.lower()
-        out = [
-            e
-            for e in out
-            if needle in event_type(e).lower()
-            or any(
-                needle in str(e.get(key, "")).lower()
-                for key in ("reason", "message", "from", "content")
-            )
-        ]
-    return out
-
-
 def _event_window(
     events: list[dict],
     *,
@@ -121,7 +63,7 @@ def _event_window(
     keyword_filter: Optional[str] = None,
     tail: Optional[int] = None,
 ) -> BoundedCollection[dict]:
-    matching = _matching_events(
+    matching = matching_events(
         events,
         type_filter=type_filter,
         reason_filter=reason_filter,

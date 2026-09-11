@@ -2,8 +2,9 @@
 
 Every workspace declares, per workload, whether the scheduler reclaims work
 that stops using its resources and whether there is a hard cap on how long a
-workload may run. Nothing else in the CLI reads this, so a notebook that
-vanished overnight currently has no explanation the user can look up.
+workload may run. ``inspire resources policy`` and the SDK resources.policy
+facade expose these rules so a reclaimed notebook can be compared with the
+workspace's declared policy; this alone does not establish why it stopped.
 
 **Three requests cover five workloads.** The platform keeps one shared
 scheduling-config record per workspace plus two standalone ones:

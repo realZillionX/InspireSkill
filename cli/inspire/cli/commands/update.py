@@ -54,7 +54,7 @@ from inspire.cli.utils.update_notice import (
     _version_tuple,
 )
 from inspire.cli.context import Context, EXIT_GENERAL_ERROR
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.accounts.normalize import (
     _install_playwright_chromium,
     _playwright_chromium_available,

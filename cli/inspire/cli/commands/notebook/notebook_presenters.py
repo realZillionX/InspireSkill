@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import click
 
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.human_formatter import format_epoch
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from .notebook_lookup import _format_notebook_cpu, _format_notebook_gpu
-from .public_output import public_notebook_list_item
+from inspire.services.notebook.notebook_output import public_notebook_list_item
 
 
 def _nested_name(item: dict, key: str, *fallback_keys: str) -> str:
@@ -159,7 +159,7 @@ def _print_notebook_list(
         return
 
     name_strings = [scrub_raw_ids(item.get("name") or "N/A") for item in items]
-    status_strings = [scrub_raw_ids(item.get("status") or "Unknown") for item in items]
+    status_strings = [public_notebook_list_item(item)["status"] for item in items]
     project_strings = [_format_notebook_project(item) for item in items]
     workspace_strings = [_format_notebook_workspace(item) for item in items]
     gpu_strings = [scrub_raw_ids(_format_notebook_gpu(item)) for item in items]

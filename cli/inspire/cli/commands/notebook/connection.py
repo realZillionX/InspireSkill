@@ -23,8 +23,9 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
-from inspire.cli.utils.collection_output import (
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
@@ -34,12 +35,12 @@ from inspire.cli.utils.errors import (
     require_confirmation,
 )
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.config.workspaces import validate_workspace_operation_name
 
 from .notebook_ssh_flow import run_notebook_ssh
-from .public_output import public_operation, sanitize_public_text
+from inspire.services.notebook.notebook_output import public_operation, sanitize_public_text
 from .target_resolver import forget_notebook_targets, list_notebook_targets
 from .transport import emit_ssh_policy_error, preflight_notebook_transport_policy
 

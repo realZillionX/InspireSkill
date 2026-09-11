@@ -23,9 +23,9 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils import job_submit
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
@@ -39,7 +39,7 @@ from inspire.cli.utils.dataset_mounts import (
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
-from inspire.cli.utils.image_resolver import (
+from inspire.services.catalog.image_resolution import (
     ImageCatalogCache,
     resolve_image_url,
 )
@@ -55,7 +55,7 @@ from inspire.cli.utils.quota_resolver import (
     parse_quota,
     resolve_quota,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
     resolve_workspace_task_priority,
@@ -940,7 +940,7 @@ def _select_notebook_image(
     session: Any,
     live_cache: _BatchLiveCache | None = None,
 ):
-    from inspire.cli.commands.notebook.notebook_create_flow import _find_image_match
+    from inspire.cli.commands.notebook.notebook_create_flow import find_image_match
 
     def _images(source: str | None = None) -> list[Any]:
         key = (workspace_id, str(source or "official"))
@@ -963,7 +963,7 @@ def _select_notebook_image(
         return loaded
 
     images = _images()
-    selected = _find_image_match(images, requested)
+    selected = find_image_match(images, requested)
     if not selected:
         for source in ("SOURCE_PUBLIC", "SOURCE_PRIVATE"):
             try:
@@ -975,7 +975,7 @@ def _select_notebook_image(
             except Exception:
                 continue
             images = images + extra_images
-            selected = _find_image_match(images, requested)
+            selected = find_image_match(images, requested)
             if selected:
                 break
     if not selected:
@@ -991,7 +991,7 @@ def _prepare_notebook_item(
     live_cache: _BatchLiveCache | None = None,
 ) -> dict[str, Any]:
     from inspire.cli.commands.notebook.notebook_create_flow import (
-        _split_auto_stop_after,
+        split_auto_stop_after,
         format_quota_display,
     )
 
@@ -1069,7 +1069,7 @@ def _prepare_notebook_item(
         create_kwargs["dataset_info"] = dataset_info
     auto_stop_after = _optional_int(item, "auto_stop_after", min_value=2)
     if auto_stop_after is not None:
-        stop_hour, stop_minute = _split_auto_stop_after(auto_stop_after)
+        stop_hour, stop_minute = split_auto_stop_after(auto_stop_after)
         create_kwargs["stop_hour"] = stop_hour
         create_kwargs["stop_minute"] = stop_minute
         # The timer only runs when auto-stop is armed, exactly as the create
@@ -1110,14 +1110,14 @@ def _prepare_notebook_item(
 
 def _submit_notebook_plan(plan: dict[str, Any], *, config: Config, session: Any) -> dict[str, Any]:
     from inspire.cli.commands.notebook.notebook_create_flow import (
-        _extract_notebook_id,
+        extract_notebook_id,
         _resolve_created_notebook_id,
     )
     from inspire.cli.utils.notebook_post_start import resolve_notebook_post_start_spec
 
     create_kwargs = dict(plan["create_kwargs"])
     result = browser_api_module.create_notebook(**create_kwargs, session=session)
-    notebook_id = _extract_notebook_id(result)
+    notebook_id = extract_notebook_id(result)
     wait = bool(plan.get("wait"))
     post_start_spec = resolve_notebook_post_start_spec(
         config=config,

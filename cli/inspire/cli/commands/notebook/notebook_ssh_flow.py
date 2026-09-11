@@ -16,7 +16,7 @@ from urllib import request as urllib_request
 import click
 
 from inspire.cli.context import Context, EXIT_API_ERROR, EXIT_CONFIG_ERROR, EXIT_TIMEOUT
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.notebook_cli import (
@@ -26,7 +26,7 @@ from inspire.cli.utils.notebook_cli import (
     require_web_session,
 )
 from inspire.cli.utils.output import emit_success as emit_output_success
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.terminal_io import run_interactive_pty
 from inspire.cli.utils.tunnel_reconnect import (
     NotebookBridgeReconnectState,
@@ -74,6 +74,7 @@ def _describe_proxy_http_status(proxy_url: str, timeout_s: float = 4.0) -> str:
     except urllib_error.HTTPError as error:
         return f"HTTP {error.code}"
     except Exception:
+        logger.debug("Proxy HTTP status probe failed; trying next strategy", exc_info=True)
         return "unreachable"
 
 
@@ -232,6 +233,10 @@ def _should_retry_non_interactive_disconnect(
             progressive=False,
         )
     except Exception:
+        logger.debug(
+            "SSH disconnect retry readiness probe failed; trying next strategy",
+            exc_info=True,
+        )
         return False
 
     return not tunnel_ready

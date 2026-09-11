@@ -21,9 +21,9 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
@@ -33,7 +33,7 @@ from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.platform.web.browser_api.notebooks import list_notebook_runs
 from inspire.platform.web.session import SessionExpiredError
 
-from .public_output import public_runs
+from inspire.services.notebook.notebook_output import public_runs
 
 
 _RUN_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"

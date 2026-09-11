@@ -11,6 +11,8 @@ import time
 
 import pytest
 
+from inspire.platform.web.transport import Transport
+
 from inspire.cli.utils.id_resolver import is_stale_handle_error
 from inspire.platform.web import session as ws
 from inspire.platform.web.browser_api import core as browser_core
@@ -74,7 +76,6 @@ def _install(monkeypatch, http: _HTTP) -> list[float]:  # noqa: ANN001
     """Point ``request_json`` at *http* and record what it would have slept."""
     slept: list[float] = []
     monkeypatch.setattr(ws, "pooled_requests_session", lambda _session, _url: http)
-    monkeypatch.setattr(ws, "_BROWSER_API_FORCE_BROWSER", False)
     monkeypatch.setattr(
         "inspire.platform.web.session.retry.time.sleep",
         slept.append,
@@ -87,29 +88,29 @@ def _install(monkeypatch, http: _HTTP) -> list[float]:  # noqa: ANN001
 # ---------------------------------------------------------------------------
 
 
-def test_rate_limited_response_is_typed_as_transient(monkeypatch) -> None:  # noqa: ANN001
+def test_rate_limited_response_is_typed_as_transient(monkeypatch, transport) -> None:  # noqa: ANN001
     http = _HTTP(_Response(429, headers={"Retry-After": "0"}))
     _install(monkeypatch, http)
 
     with pytest.raises(TransientAPIError) as excinfo:
-        ws.request_json(_session(), "GET", "https://example.test")
+        transport.request("GET", "")
 
     assert excinfo.value.status == 429
     assert is_transient_api_error(excinfo.value)
 
 
-def test_client_error_stays_an_ordinary_api_error(monkeypatch) -> None:  # noqa: ANN001
+def test_client_error_stays_an_ordinary_api_error(monkeypatch, transport) -> None:  # noqa: ANN001
     http = _HTTP(_Response(400))
     _install(monkeypatch, http)
 
     with pytest.raises(ValueError) as excinfo:
-        ws.request_json(_session(), "GET", "https://example.test")
+        transport.request("GET", "")
 
     assert not isinstance(excinfo.value, TransientAPIError)
     assert http.calls == 1  # a bad request is not worth repeating
 
 
-def test_a_burst_of_rate_limiting_is_waited_out(monkeypatch) -> None:  # noqa: ANN001
+def test_a_burst_of_rate_limiting_is_waited_out(monkeypatch, transport) -> None:  # noqa: ANN001
     http = _HTTP(
         _Response(429, headers={"Retry-After": "0"}),
         _Response(429, headers={"Retry-After": "0"}),
@@ -117,19 +118,19 @@ def test_a_burst_of_rate_limiting_is_waited_out(monkeypatch) -> None:  # noqa: A
     )
     slept = _install(monkeypatch, http)
 
-    assert ws.request_json(_session(), "GET", "https://example.test") == {
+    assert transport.request("GET", "") == {
         "data": [1, 2, 3]
     }
     assert http.calls == 3
     assert slept == [0.0, 0.0]
 
 
-def test_sustained_rate_limiting_surfaces_rather_than_looping(monkeypatch) -> None:  # noqa: ANN001
+def test_sustained_rate_limiting_surfaces_rather_than_looping(monkeypatch, transport) -> None:  # noqa: ANN001
     http = _HTTP(_Response(429, headers={"Retry-After": "0"}))
     _install(monkeypatch, http)
 
     with pytest.raises(TransientAPIError):
-        ws.request_json(_session(), "GET", "https://example.test")
+        transport.request("GET", "")
 
     assert http.calls == MAX_ATTEMPTS
 
@@ -356,3 +357,12 @@ def test_availability_refuses_to_report_zero_free_nodes_on_a_rate_limit(
             workspace_id="workspace-one",
             session=_Session(),  # type: ignore[arg-type]
         )
+
+
+@pytest.fixture
+def transport():
+    transport = Transport(None, "https://example.test", username="", allow_browser=True,
+                          cli_compat=True)
+    transport.adopt_session(_session())
+    yield transport
+    transport.close()

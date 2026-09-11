@@ -14,6 +14,11 @@ from typing import Optional
 
 import click
 
+from inspire.services.job.job_events import (
+    list_all_job_instances as _list_all_job_instances,
+)
+from inspire.services.job.job_events import collect_job_events
+
 from inspire.cli.context import (
     Context,
     EXIT_CONFIG_ERROR,
@@ -24,7 +29,7 @@ from inspire.cli.context import (
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.events import DEFAULT_EVENT_TAIL, event_sort_key, run_events_command
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.jobs import (
@@ -43,66 +48,10 @@ from .job_commands import (
 )
 from .job_instances import (
     JobInstanceSelectionError,
-    JobInstanceView,
     job_instance_views,
-    select_job_instance_views,
 )
 
 _JOB_INSTANCE_PAGE_SIZE = 200
-
-
-def _labelled_instance_events(
-    events: list[dict],
-    views: list[JobInstanceView],
-) -> list[dict]:
-    """Name each per-pod row with the instance it belongs to.
-
-    Every pod's events land in one timeline, and the only field that says
-    which pod a row came from is ``object_id`` — the handle, which the shared
-    public projection drops. Attaching the label here is what makes "which
-    worker failed to schedule" answerable from the output rather than from a
-    second query. A pod the instance list does not know keeps no label rather
-    than falling back to its handle.
-    """
-    labels = {view.handle: view.label for view in views}
-    labelled: list[dict] = []
-    for event in events:
-        row = dict(event)
-        label = labels.get(str(row.get("object_id") or "").strip())
-        if label:
-            row["instance"] = label
-        labelled.append(row)
-    return labelled
-
-
-def _list_all_job_instances(job_id: str, *, session) -> list[dict]:  # noqa: ANN001
-    """Page through every instance or fail instead of returning a partial scope."""
-    rows: list[dict] = []
-    seen: set[str] = set()
-    page_num = 1
-    while True:
-        instances, total = browser_api_module.list_job_instances(
-            job_id,
-            limit=_JOB_INSTANCE_PAGE_SIZE,
-            page_num=page_num,
-            session=session,
-        )
-        added = 0
-        for item in instances:
-            name = str(item.get("name") or "").strip()
-            if name and name not in seen:
-                seen.add(name)
-                rows.append(item)
-                added += 1
-        if not instances or added == 0:
-            if len(rows) >= total:
-                return rows
-            raise RuntimeError("Could not retrieve the complete job instance list.")
-        if len(instances) < _JOB_INSTANCE_PAGE_SIZE:
-            if len(rows) >= total:
-                return rows
-            raise RuntimeError("Could not retrieve the complete job instance list.")
-        page_num += 1
 
 
 def _batch_workload_events(
@@ -327,32 +276,18 @@ def events(
 
     def _fetch_web_events() -> list[dict]:
         try:
+
             def _fetch(resolved_id: str, session) -> list[dict]:  # noqa: ANN001
-                if workload_level:
-                    return sorted(
-                        list_job_events(resolved_id, session=session),
-                        key=event_sort_key,
-                    )
-                views = select_job_instance_views(
-                    job_instance_views(
-                        _list_all_job_instances(resolved_id, session=session)
-                    ),
-                    instance_selectors,
+                return collect_job_events(
+                    resolved_id,
+                    session=session,
+                    workload_level=workload_level,
+                    instance=instance_selectors,
+                    list_instances=_list_all_job_instances,
+                    views_factory=job_instance_views,
+                    workload_events=list_job_events,
+                    instance_events=list_job_instance_events,
                 )
-                instance_events = _labelled_instance_events(
-                    list_job_instance_events(
-                        resolved_id,
-                        [view.handle for view in views],
-                        session=session,
-                    ),
-                    views,
-                )
-                if instance_selectors:
-                    return sorted(instance_events, key=event_sort_key)
-                merged = (
-                    list_job_events(resolved_id, session=session) + instance_events
-                )
-                return sorted(merged, key=event_sort_key)
 
             try:
                 return _run_readonly_web_job_operation(

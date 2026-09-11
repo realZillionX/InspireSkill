@@ -12,11 +12,7 @@ from inspire import config as config_module
 from inspire.cli.commands.image import image_commands as image_commands_module
 from inspire.cli.context import Context
 from inspire.cli.main import main as cli_main
-from inspire.cli.utils.resource_index import (
-    ResourceIdentity,
-    ResourceIndex,
-    ResourceScope,
-)
+from inspire.services.catalog.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
 from inspire.config import workspaces as workspaces_module
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web import session as web_session_module

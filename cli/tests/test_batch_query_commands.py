@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 
 import pytest
+
+from conftest import set_fake_home
 from click.testing import CliRunner
 
 from inspire.cli.commands.hpc import hpc_commands
@@ -34,8 +36,11 @@ def _record(name: str, job_id: str, status: str = "job_running") -> dict:
 
 
 @pytest.fixture
-def batch_job_env(monkeypatch: pytest.MonkeyPatch) -> dict:
+def batch_job_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> dict:  # noqa: ANN001
     """Resolve names locally and capture the batched detail request."""
+    # Name resolution reaches account storage, which reads and now tightens
+    # ~/.inspire; without this the suite edits the home of whoever runs it.
+    set_fake_home(monkeypatch, tmp_path)
     ids = {"run-a": "job-a", "run-b": "job-b", "run-c": "job-c"}
     calls: list[list[str]] = []
 

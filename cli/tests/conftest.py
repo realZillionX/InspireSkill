@@ -10,11 +10,34 @@ the name-only contract.
 from __future__ import annotations
 
 import os
+import pathlib
 
 import pytest
 
+from inspire import local_files
+
 # Captured on the first autouse setup, before that fixture replaces it.
 _REAL_SESSION_ACCOUNT_RESOLVER = None
+
+
+@pytest.fixture(autouse=True)
+def _stub_windows_directory_acl(monkeypatch):
+    """Unrelated storage tests must not launch PowerShell for each fake home.
+
+    ACL contract tests opt back in with windows_directory_acl, then supply
+    their own subprocess boundary. Explicit key exports are never stubbed.
+    """
+    original = local_files._restrict_windows_directory
+    monkeypatch.setattr(local_files, "_restrict_windows_directory", lambda path: None)
+    return original
+
+
+@pytest.fixture
+def windows_directory_acl(monkeypatch, _stub_windows_directory_acl):
+    """Exercise real directory memoization and ACL dispatch in focused tests."""
+    monkeypatch.setattr(local_files, "_restrict_windows_directory", _stub_windows_directory_acl)
+    monkeypatch.setattr(local_files, "_windows_directory_attempts", set())
+    monkeypatch.setattr(local_files, "_warned_paths", set())
 
 
 @pytest.fixture(autouse=True)
@@ -59,18 +82,13 @@ def _no_orphan_state_sweep(monkeypatch):  # noqa: ANN001
 
 @pytest.fixture(autouse=True)
 def _isolate_web_session_runtime(monkeypatch):  # noqa: ANN001
-    """Keep web-session fallback state from leaking between tests."""
-    from inspire.platform.web import session as web_session_module
+    """Keep caller/default transports and their connection pools isolated."""
+    from inspire.platform.web import runtime
     from inspire.platform.web.session.browser_client import _close_browser_client
 
-    monkeypatch.setattr(web_session_module, "_BROWSER_API_FORCE_BROWSER", False)
-    # Process-global like the transport flag, and for the same reason: it
-    # remembers a session generation nothing could use, so a test that leaves
-    # one set makes the next test's legitimate rebuild look futile.
-    monkeypatch.setattr(web_session_module, "_unproven_rebuild", None)
+    monkeypatch.setattr(runtime, "_default_transports", {})
     yield
-    web_session_module._BROWSER_API_FORCE_BROWSER = False
-    web_session_module._unproven_rebuild = None
+    runtime.close_default_transports()
     _close_browser_client()
 
 
@@ -169,7 +187,7 @@ def _isolate_resource_index(monkeypatch, tmp_path):  # noqa: ANN001
     Tests that want an index point `ResourceIndex` at their own path, which
     goes nowhere near this.
     """
-    from inspire.cli.utils import resource_index as resource_index_module
+    from inspire.services.catalog import resource_index as resource_index_module
 
     def _scratch_path(account=None):  # noqa: ANN001
         name = str(account or "").strip() or "default"
@@ -236,3 +254,47 @@ def set_fake_home(monkeypatch, home) -> None:  # noqa: ANN001
     drive, tail = os.path.splitdrive(home)
     monkeypatch.setenv("HOMEDRIVE", drive)
     monkeypatch.setenv("HOMEPATH", tail or home)
+
+
+@pytest.fixture(autouse=True)
+def _block_real_web_requests(monkeypatch):
+    """All transport tests must supply their own HTTP/browser boundary."""
+    import requests
+    import playwright.sync_api
+    import playwright.async_api
+    import httpx
+
+    def blocked(*args, **kwargs):
+        pytest.fail("Real HTTP/Playwright is forbidden in the offline test suite")
+
+    monkeypatch.setattr(requests.Session, "send", blocked)
+    monkeypatch.setattr(playwright.sync_api, "sync_playwright", blocked)
+    monkeypatch.setattr(playwright.async_api, "async_playwright", blocked)
+    monkeypatch.setattr(httpx.AsyncClient, "send", blocked)
+
+
+@pytest.fixture(autouse=True)
+def _keep_tests_out_of_the_real_inspire_home():
+    """Fail a test that reads or writes the home of whoever runs pytest.
+
+    `set_fake_home` exists so tests never reach real account state, but nothing
+    enforced it: a fixture that forgot the call only misbehaved when the code it
+    exercised happened to touch storage, and the first symptom was a developer's
+    ~/.inspire quietly changing mode.
+    """
+    real = pathlib.Path(os.path.expanduser("~")).resolve() / ".inspire"
+    original = local_files.restrict_private_path
+
+    def guarded(path, *args, **kwargs):
+        resolved = pathlib.Path(path).resolve()
+        if resolved == real or real in resolved.parents:
+            raise AssertionError(
+                f"This test reached the real {real}; isolate it with set_fake_home."
+            )
+        return original(path, *args, **kwargs)
+
+    local_files.restrict_private_path = guarded
+    try:
+        yield
+    finally:
+        local_files.restrict_private_path = original

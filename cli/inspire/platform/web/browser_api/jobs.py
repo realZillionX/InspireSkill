@@ -28,6 +28,7 @@ from inspire.platform.web.session import (
 
 __all__ = [
     "MAX_JOB_PAGE_SIZE",
+    "JOB_LOG_MAX_WINDOW_MS",
     "JobInfo",
     "TrainScheduleCapabilities",
     "create_training_job",
@@ -50,6 +51,7 @@ __all__ = [
 # rejects 1000 with `InvalidParameter: page or page_size too large`. The
 # transport-wide 5000 cap is therefore not sufficient for this Action.
 MAX_JOB_PAGE_SIZE = 999
+JOB_LOG_MAX_WINDOW_MS = 30 * 86400 * 1000
 
 
 @dataclass

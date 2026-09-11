@@ -597,7 +597,7 @@ Referer：`/jobs/distributedTraining`。
 | `GetAPIKeyPlaintext` | `{api_key_id}` | `value` 为密钥明文，仅显式 `account api-key export/run` 消费；默认输出与 JSON 不含值，只有 `export --stdout` 显式输出明文 |
 | `DeleteAPIKey` | `{api_key_id}` | 成功后列表确认对应句柄消失；`account api-key delete` |
 
-接口错误不转发原始消息，以免服务器回显密钥。列表的 `value` 即使是明文也会被丢弃，不能依赖服务端始终返回掩码；列表结构异常报错，不能降级为空列表。CLI 名称接受 1–256 个字母、数字、下划线、短横线或点；同名对象通过可读候选与 `--pick` 消歧，`key_id` 只在内部解析和请求中使用。账号由既有全局 `--account` 机制选择，不额外传 Workspace 或 Serving ID；这不构成“密钥只对某个 Serving 有权限”的保证。
+接口错误不转发原始消息，以免服务器回显密钥。SDK 的 API-key 创建若已发送但无法确认，保留 `SubmissionUncertainError.operation_id`，以统一的本地消息提示先检查 API keys；服务器原文和异常链仍不外露。其他 API-key 错误及 CLI 原有提示保持不变。列表的 `value` 即使是明文也会被丢弃，不能依赖服务端始终返回掩码；列表结构异常报错，不能降级为空列表。CLI 名称接受 1–256 个字母、数字、下划线、短横线或点；同名对象通过可读候选与 `--pick` 消歧，`key_id` 只在内部解析和请求中使用。账号由既有全局 `--account` 机制选择，不额外传 Workspace 或 Serving ID；这不构成“密钥只对某个 Serving 有权限”的保证。
 
 创建和删除提交成功后分别通过列表确认名称出现、所选句柄消失；确认读取失败时，输出明确的 confirmation pending 状态，不报成提交失败。文件导出先拒绝既有路径，再在目标目录创建空临时文件：POSIX 校验实际权限 `0600`；Windows 通过 PowerShell 设置不继承、仅当前用户 FullControl 的 ACL，读回核验后才写入秘密。PowerShell 参数和脚本仅接收空文件路径，不传密钥；Security 模块从该引擎的 `$PSHOME` 显式加载，避免 PowerShell 7 → Python → Windows PowerShell 5.1 的模块路径继承导致版本冲突。格式化内容写入后 fsync，最后以硬链接原子发布，清理临时文件；既有文件、符号链接或发布期间出现的同名路径不会被覆盖。Windows 缺少 PowerShell 时在获取明文前失败；权限或硬链接不受支持时不降级为公开文件。
 
@@ -1065,3 +1065,5 @@ GET 它答 `301`，Location 是带 token 的网关地址 `https://<gateway>/ws-�
 8. 对应命令 Help、Wrapper 测试和本页表格同步更新。
 
 **未闭合的调查结果不进入本页。**
+
+SDK 异步 HTTP 连接由客户端持有，跨操作复用；独立 `Transport.request_async` 调用仍在 driver 退出时关闭连接。数据广场登录槽由操作视图共享，借用与重置通过共享 workflow 等待，操作结束不关闭所属客户端的会话。SSH 桥接探测子进程和重试暂停使用原生异步 I/O；本地池仍承担 `_ensure_rtunnel_binary` 的检查及必要时的首次下载。

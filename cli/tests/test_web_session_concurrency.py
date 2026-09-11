@@ -6,6 +6,7 @@ from pathlib import Path
 
 from inspire.platform.web import session as web_session_module
 from inspire.platform.web.session import WebSession
+from inspire.platform.web.transport import Transport
 from inspire.platform.web.session import auth as web_session_auth
 from multiprocess_workers import (
     Barrier,
@@ -77,17 +78,19 @@ def _refresh_expired_session(
         refreshed.save(account="default")
         return refreshed
 
-    web_session_module._BROWSER_API_FORCE_BROWSER = True
+    transport = Transport("default", "https://example.test", username="",
+                          allow_browser=True, cli_compat=True)
+    transport.adopt_session(session)
+    transport._force_browser = True
     web_session_module._get_browser_client = _SessionBrowserClient
     web_session_module._close_browser_client = lambda: None
     web_session_module._get_web_session = fake_get_web_session
     web_session_module.pooled_requests_session = lambda _session, _url: _StubHTTP()
 
     barrier.wait()
-    assert web_session_module.request_json(
-        session,
+    assert transport.request(
         "GET",
-        "https://example.test/api/v2/user?Action=GetUserDetail",
+        "/api/v2/user?Action=GetUserDetail",
     ) == {"ok": True}
     # Reauthentication must return the process to the plain HTTP request path
     # rather than leaving it pinned to the browser fallback.
@@ -148,17 +151,19 @@ def _reject_expired_session_refresh(
     # Patched below the guard, not around it: the point of the test is that the
     # guard is what stops the other seven, not the caller.
     web_session_auth._submit_credentials = reject
-    web_session_module._BROWSER_API_FORCE_BROWSER = True
+    transport = Transport("default", "https://example.test", username="",
+                          allow_browser=True, cli_compat=True)
+    transport.adopt_session(session)
+    transport._force_browser = True
     web_session_module._get_browser_client = _SessionBrowserClient
     web_session_module._close_browser_client = lambda: None
     web_session_module.pooled_requests_session = lambda _session, _url: _StubHTTP()
 
     barrier.wait()
     try:
-        web_session_module.request_json(
-            session,
+        transport.request(
             "GET",
-            "https://example.test/api/v2/user?Action=GetUserDetail",
+            "/api/v2/user?Action=GetUserDetail",
         )
     except web_session_module.AuthenticationError:
         return

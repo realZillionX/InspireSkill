@@ -26,7 +26,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "greenlet>=3.1.1,<4.0.0",
     "requests>=2.28.0",
+    "httpx[socks]>=0.28.1",
     "urllib3>=2.7.0",
     "idna>=3.15",
     "click>=8.3.3",
@@ -72,4 +74,8 @@ dev = [
     "ruff>=0.0.280",
     "pre-commit>=3.6.0",
     "mypy>=1.10.0",
+    "pytest-timeout>=2.4.0",
 ]
+
+[tool.setuptools.package-data]
+inspire = ["py.typed"]

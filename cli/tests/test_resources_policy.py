@@ -572,7 +572,7 @@ def test_policy_limit_and_all_conflict_before_any_request(
 def test_policy_workloads_match_the_rest_of_the_cli_vocabulary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from inspire.cli.utils.resource_index import QUOTA_WORKLOADS
+    from inspire.services.catalog.resource_index import QUOTA_WORKLOADS
 
     _install(monkeypatch)
     policies = get_workspace_schedule_policy("ws-gpu", session=object())  # type: ignore[arg-type]

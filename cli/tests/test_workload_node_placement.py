@@ -14,14 +14,15 @@ import json
 import pytest
 
 from inspire.cli.commands.hpc.hpc_commands import _public_hpc_instances
-from inspire.cli.commands.hpc.public_output import format_hpc_status, public_hpc_status
+from inspire.services.hpc.hpc_output import format_hpc_status, public_hpc_status
 from inspire.cli.commands.job.job_commands import _public_job_instances
-from inspire.cli.commands.job.public_output import format_job_status, public_job_status
-from inspire.cli.commands.notebook.public_output import public_notebook
+from inspire.cli.commands.job.public_output import format_job_status
+from inspire.services.job.job_output import public_job_status
+from inspire.services.notebook.notebook_output import public_notebook
 from inspire.cli.commands.ray.ray_commands import _public_ray_instances
-from inspire.cli.commands.serving.public_output import public_serving
+from inspire.services.serving.serving_output import public_serving
 from inspire.cli.commands.serving.serving_commands import _public_serving_instances
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 
 
 @pytest.mark.parametrize(

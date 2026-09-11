@@ -11,15 +11,21 @@ Spec grammar is `<dataset>:<version>`, both being the codes shown by
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Optional, Sequence
+from typing import Callable, Iterable, Optional, Sequence
 
 import click
 
+from inspire.services.catalog.datasets import (
+    DatasetSpecError as DatasetSpecError,
+    dataset_mount_views as dataset_mount_views,
+    parse_dataset_spec as parse_dataset_spec,
+    parse_dataset_specs as parse_dataset_specs,
+    resolve_dataset_info as resolve_dataset_info,
+)
+
 from inspire.platform.web.browser_api.datasets import (
     DatasetMount,
-    DatasetValidation,
     container_mount_path,
-    validate_dataset_mounts,
 )
 
 __all__ = [
@@ -42,92 +48,10 @@ DATASET_OPTION_HELP = (
 )
 
 
-class DatasetSpecError(ValueError):
-    """Raised when a `--dataset` value cannot be parsed or resolved."""
-
-
-def parse_dataset_spec(text: str) -> DatasetMount:
-    """Parse one `<dataset>:<version>` value."""
-    raw = str(text or "").strip()
-    if not raw:
-        raise DatasetSpecError("--dataset requires '<dataset>:<version>'")
-    dataset, separator, version = raw.partition(":")
-    dataset = dataset.strip()
-    version = version.strip()
-    if not separator or not dataset or not version:
-        raise DatasetSpecError(
-            f"--dataset expects '<dataset>:<version>' (for example 'pixabay-81k:v0'); got {raw!r}"
-        )
-    return DatasetMount(dataset=dataset, version=version)
-
-
-def parse_dataset_specs(values: Optional[Iterable[str]]) -> list[DatasetMount]:
-    """Parse repeated `--dataset` values, rejecting duplicates."""
-    mounts: list[DatasetMount] = []
-    seen: set[tuple[str, str]] = set()
-    for value in values or ():
-        mount = parse_dataset_spec(value)
-        key = (mount.dataset, mount.version)
-        if key in seen:
-            raise DatasetSpecError(
-                f"--dataset {mount.dataset}:{mount.version} was given more than once"
-            )
-        seen.add(key)
-        mounts.append(mount)
-    return mounts
-
-
-def _describe_failures(failed: Sequence[DatasetValidation]) -> str:
-    lines = [
-        f"  {v.dataset}:{v.version} — {v.error or 'rejected by the platform'}" for v in failed
-    ]
-    return "The platform rejected these dataset mounts:\n" + "\n".join(lines)
-
-
-def resolve_dataset_info(
-    mounts: Sequence[DatasetMount],
-    *,
-    workspace_id: str,
-    session: Any = None,
-) -> list[dict[str, str]]:
-    """Validate the requested mounts and build the `dataset_info` payload.
-
-    Resolution is not optional: the create Actions take a `path` alongside the
-    two codes, and the platform fills that in through `ValidateDataset` — the
-    same round trip the console makes when 校验数据 is pressed. Validating first
-    also turns a typo into a clear error before a workload is submitted rather
-    than after it fails to start.
-    """
-    if not mounts:
-        return []
-
-    verdicts = validate_dataset_mounts(mounts, workspace_id=workspace_id, session=session)
-    failed = [v for v in verdicts if not v.ok]
-    if failed:
-        raise DatasetSpecError(_describe_failures(failed))
-    return [
-        DatasetMount(dataset=v.dataset, version=v.version).as_payload(v.path) for v in verdicts
-    ]
-
-
 def describe_dataset_mounts(mounts: Sequence[DatasetMount]) -> list[str]:
     """Human lines for dry-run and post-create output."""
-    return [f"{m.dataset}:{m.version} -> {container_mount_path(m.dataset, m.version)}" for m in mounts]
-
-
-def dataset_mount_views(mounts: Sequence[DatasetMount]) -> list[dict[str, str]]:
-    """`--json` projection of the requested mounts.
-
-    Only the two names the caller typed and the container path they land on;
-    the storage path the platform resolved stays inside the request body.
-    """
     return [
-        {
-            "name": m.dataset,
-            "version": m.version,
-            "path": container_mount_path(m.dataset, m.version),
-        }
-        for m in mounts
+        f"{m.dataset}:{m.version} -> {container_mount_path(m.dataset, m.version)}" for m in mounts
     ]
 
 

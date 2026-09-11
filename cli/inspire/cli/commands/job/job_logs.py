@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import sys
 import time
 from collections import deque
@@ -13,9 +12,18 @@ from typing import Any, Optional
 
 import click
 
+from inspire.services.job.job_logs import (
+    web_log_time_range as _web_log_time_range,
+    web_log_sort_key,
+    web_log_identity,
+    fetch_job_logs,
+    select_job_logs as select_job_logs,
+    window_to_minutes as window_to_minutes,
+)
+
 from inspire.bridge.tunnel import (
     TunnelConfig,
-    TunnelNotAvailableError,
+    TunnelError,
     _test_ssh_connection,
     is_tunnel_available,
     load_tunnel_config,
@@ -32,10 +40,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, WebSession, get_web_session
@@ -73,17 +81,6 @@ class _TextLogSelection:
     total: int | None
     limit: int | None
     character_limit: int | None
-
-
-@dataclass(frozen=True)
-class _WebLogSelection:
-    logs: list[dict[str, Any]]
-    truncated: bool
-    shown: int
-    total: int
-    limit: int | None
-    character_limit: int | None
-    shown_chars: int
 
 
 def _line_count(text: str) -> int:
@@ -125,26 +122,6 @@ def _emit_truncation_hint(
     click.echo(f"Logs truncated ({detail}); use --all for complete one-shot output.", err=True)
 
 
-def _window_to_minutes(window: str) -> int:
-    value = (window or "").strip().lower()
-    if len(value) < 2:
-        raise click.BadParameter("use a window like 30m or 2h")
-    unit = value[-1]
-    try:
-        amount = int(value[:-1])
-    except ValueError as exc:
-        raise click.BadParameter("use a window like 30m or 2h") from exc
-    if amount <= 0:
-        raise click.BadParameter("window must be positive")
-    if unit == "m":
-        return amount
-    if unit == "h":
-        return amount * 60
-    if unit == "d":
-        return amount * 24 * 60
-    raise click.BadParameter("window unit must be m, h, or d")
-
-
 def _resolve_latest_log_via_ssh(
     glob_pattern: str, *, bridge_name: Optional[str] = None
 ) -> Optional[str]:
@@ -157,75 +134,21 @@ def _resolve_latest_log_via_ssh(
     construction (``sanitize_job_name_for_filename`` strips them).
 
     Returns the absolute path on hit, ``None`` on no match. Errors during
-    SSH propagate up — the caller is the boundary that decides whether to
-    surface them.
+    tunnel setup or availability propagate up to the command boundary. Other
+    probe failures are logged at debug level and return ``None``.
     """
     cmd = f"ls -1t {glob_pattern} 2>/dev/null | head -n 1"
     try:
         result = run_ssh_command(command=cmd, capture_output=True, bridge_name=bridge_name)
+    except TunnelError:
+        raise
     except Exception:
+        logger.debug("Latest log SSH probe failed", exc_info=True)
         return None
     if result.returncode != 0:
         return None
     out = (result.stdout or "").strip()
     return out or None
-
-
-def _coerce_epoch_ms(value: object) -> int | None:
-    if value in (None, ""):
-        return None
-    try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def _web_log_time_range(job_data: dict, since_minutes: int | None) -> tuple[int, int]:
-    now_ms = int(time.time() * 1000)
-    if since_minutes is not None:
-        return now_ms - since_minutes * 60 * 1000, now_ms
-
-    created_ms = _coerce_epoch_ms(job_data.get("created_at"))
-    finished_ms = _coerce_epoch_ms(job_data.get("finished_at"))
-    if created_ms is None:
-        return now_ms - 24 * 60 * 60 * 1000, now_ms
-
-    start_ms = max(0, created_ms - 10 * 60 * 1000)
-    end_ms = (finished_ms or now_ms) + 10 * 60 * 1000
-    return start_ms, max(end_ms, start_ms + 1)
-
-
-_SUBSECOND_RE = re.compile(r"\.(\d+)")
-
-
-def _web_log_sub_ms(item: dict) -> int:
-    """Return the sub-millisecond part of a record's `time`, in nanoseconds.
-
-    The platform stamps `time` with nanosecond precision but rounds
-    `timestamp_ms` to milliseconds, so a burst of lines written inside the
-    same millisecond ties on `timestamp_ms` and comes back in whatever order
-    the log store felt like. Ordering on the finer field keeps a job's stdout
-    in the order the job actually wrote it — a CSV header before its row.
-    """
-    match = _SUBSECOND_RE.search(str(item.get("time") or ""))
-    if not match:
-        return 0
-    digits = match.group(1)[:9].ljust(9, "0")
-    return int(digits) % 1_000_000
-
-
-def _web_log_sort_key(item: dict) -> tuple[int, int, str]:
-    timestamp_ms = _coerce_epoch_ms(item.get("timestamp_ms")) or 0
-    log_id = str(item.get("log_id") or "")
-    return timestamp_ms, _web_log_sub_ms(item), log_id
-
-
-def _web_log_identity(item: dict) -> tuple[int, str, str, int]:
-    timestamp_ms = _coerce_epoch_ms(item.get("timestamp_ms")) or 0
-    log_id = str(item.get("log_id") or "")
-    pod_name = str(item.get("pod_name") or "").strip()
-    message = str(item.get("message") or item.get("log") or item.get("content") or "")
-    return timestamp_ms, log_id, pod_name, hash(message)
 
 
 def _format_web_log_line(item: dict) -> str:
@@ -351,60 +274,6 @@ def _budget_web_logs(
     return kept, truncated, used
 
 
-def _select_web_logs(
-    logs: list[dict],
-    *,
-    total: int,
-    tail: int | None,
-    head: int | None,
-    record_limit: int,
-    all_output: bool,
-) -> _WebLogSelection:
-    public_logs = _public_web_logs(sorted(logs, key=_web_log_sort_key))
-    normalized_total = max(int(total), len(public_logs))
-
-    if all_output:
-        selected = public_logs
-        limit = None
-        keep_tail = False
-    elif head is not None:
-        selected = public_logs[:head]
-        limit = head
-        keep_tail = False
-    elif tail is not None:
-        selected = public_logs[-tail:]
-        limit = tail
-        keep_tail = True
-    else:
-        selected = public_logs[-record_limit:]
-        limit = record_limit
-        keep_tail = True
-
-    record_truncated = len(selected) < normalized_total
-    if all_output:
-        budgeted = selected
-        character_truncated = False
-        shown_chars = sum(len(_format_web_log_line(item)) for item in budgeted)
-        character_limit = None
-    else:
-        budgeted, character_truncated, shown_chars = _budget_web_logs(
-            selected,
-            character_limit=DEFAULT_LOG_CHARACTER_LIMIT,
-            keep_tail=keep_tail,
-        )
-        character_limit = DEFAULT_LOG_CHARACTER_LIMIT
-
-    return _WebLogSelection(
-        logs=budgeted,
-        truncated=record_truncated or character_truncated,
-        shown=len(budgeted),
-        total=normalized_total,
-        limit=limit,
-        character_limit=character_limit,
-        shown_chars=shown_chars,
-    )
-
-
 def _follow_logs_via_web(
     *,
     job_id: str,
@@ -427,7 +296,7 @@ def _follow_logs_via_web(
     draining = False
 
     def remember(item: dict) -> None:
-        identity = _web_log_identity(item)
+        identity = web_log_identity(item)
         if identity in seen:
             return
         seen.add(identity)
@@ -455,8 +324,8 @@ def _follow_logs_via_web(
                 page_size=max(page_size, tail_lines),
                 session=session,
             )
-            ordered = sorted(logs, key=_web_log_sort_key)
-            unseen = [item for item in ordered if _web_log_identity(item) not in seen]
+            ordered = sorted(logs, key=web_log_sort_key)
+            unseen = [item for item in ordered if web_log_identity(item) not in seen]
 
             if first_fetch:
                 unseen = unseen[-tail_lines:]
@@ -587,8 +456,6 @@ def _follow_logs_via_ssh(
 
     api_logger = logging.getLogger("inspire.inspire_api_control")
     original_level = api_logger.level
-    api_logger.setLevel(logging.CRITICAL)
-
     session = get_web_session()
     final_status = None
     status_check_interval = 5
@@ -614,8 +481,10 @@ def _follow_logs_via_ssh(
                 if "exists" in result.stdout:
                     concrete_log_path = remote_log_path
                     break
+        except TunnelError:
+            raise
         except Exception:
-            pass
+            logger.debug("Log file SSH polling failed; retrying", exc_info=True)
 
         time.sleep(5)
 
@@ -651,6 +520,8 @@ def _follow_logs_via_ssh(
             )
             truncation_announced = True
 
+    api_logger.setLevel(logging.CRITICAL)
+    consecutive_status_failures = 0
     try:
         process = subprocess.Popen(
             ssh_args,
@@ -678,6 +549,7 @@ def _follow_logs_via_ssh(
                 try:
                     job_data = browser_api_module.get_job_detail_v2(job_id, session=session)
                     current_status = job_data.get("status", "UNKNOWN")
+                    consecutive_status_failures = 0
 
                     if current_status in _JOB_TERMINAL_STATUSES:
                         final_status = current_status
@@ -685,7 +557,14 @@ def _follow_logs_via_ssh(
                         stdout.close()
                         break
                 except Exception:
-                    pass
+                    logger.debug("Job status query failed while following logs", exc_info=True)
+                    consecutive_status_failures += 1
+                    if consecutive_status_failures == 5:
+                        logger.warning(
+                            "Job status queries failed 5 consecutive times; log following may "
+                            "not stop automatically when the job finishes. Check job status "
+                            "separately or press Ctrl-C to stop following."
+                        )
 
     except KeyboardInterrupt:
         return final_status
@@ -707,6 +586,7 @@ def _find_connected_tunnel_bridges(
     try:
         config = load_tunnel_config()
     except Exception:
+        logger.debug("Tunnel configuration unavailable for connected bridge probe", exc_info=True)
         return []
 
     excluded = (exclude or "").strip()
@@ -727,6 +607,7 @@ def _find_connected_tunnel_bridges(
                 if future.result():
                     connected.append(name)
             except Exception:
+                logger.debug("Connected tunnel bridge probe failed", exc_info=True)
                 continue
 
     return sorted(connected)
@@ -739,6 +620,7 @@ def _resolve_tunnel_preflight_target(
     try:
         tunnel_config = load_tunnel_config()
     except Exception:
+        logger.debug("Tunnel configuration unavailable for log preflight", exc_info=True)
         return bridge_name, None, bool(bridge_name)
 
     if bridge_name:
@@ -904,7 +786,8 @@ def _run_job_logs_single_job(
                 all_output=all_output,
             )
 
-    except TunnelNotAvailableError:
+    except TunnelError:
+        logger.debug("Job log SSH tunnel failed", exc_info=True)
         _emit_no_tunnel_error(ctx, bridge_name=bridge_name)
     except ConfigError as e:
         _handle_error(ctx, "ConfigError", str(e), EXIT_CONFIG_ERROR)
@@ -987,24 +870,16 @@ def _run_job_logs_web_single_job(
             if follow or not pod_names:
                 return job_id, session, pod_names, start_ms, [], 0
 
-            initial_fetch_size = DEFAULT_PLATFORM_LOG_RECORDS if all_output else fetch_size
-            logs, total = browser_api_module.list_train_job_logs(
+            logs, total = fetch_job_logs(
                 job_id=job_id,
                 pod_names=pod_names,
-                start_timestamp_ms=start_ms,
-                end_timestamp_ms=end_ms,
-                page_size=initial_fetch_size,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                limit=fetch_size,
+                all_output=all_output,
                 session=session,
+                fetch=browser_api_module.list_train_job_logs,
             )
-            if all_output and total > len(logs):
-                logs, total = browser_api_module.list_train_job_logs(
-                    job_id=job_id,
-                    pod_names=pod_names,
-                    start_timestamp_ms=start_ms,
-                    end_timestamp_ms=end_ms,
-                    page_size=total,
-                    session=session,
-                )
             return job_id, session, pod_names, start_ms, logs, total
 
         try:
@@ -1395,3 +1270,21 @@ def logs(
 
 
 __all__ = ["logs"]
+
+
+def _window_to_minutes(window: str) -> int:
+    try:
+        return window_to_minutes(window)
+    except ValueError as error:
+        raise click.BadParameter(str(error)) from error
+
+
+def _select_web_logs(logs, **kwargs):
+    return select_job_logs(
+        logs,
+        **kwargs,
+        project=_public_web_logs,
+        formatter=_format_web_log_line,
+        budget=_budget_web_logs,
+        character_limit=DEFAULT_LOG_CHARACTER_LIMIT,
+    )

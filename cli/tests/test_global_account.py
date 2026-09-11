@@ -16,7 +16,7 @@ from inspire.bridge import tunnel
 from inspire.cli.commands.notebook import target_resolver
 from inspire.cli.context import Context
 from inspire.cli.main import main
-from inspire.cli.utils.resource_index import resource_index_path
+from inspire.services.catalog.resource_index import resource_index_path
 from inspire.config import Config
 from inspire.platform.web import session as web_session
 from inspire.platform.web.browser_api import core

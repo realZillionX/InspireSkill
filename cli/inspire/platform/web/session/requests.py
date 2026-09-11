@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_io
+
 import atexit
+import contextlib
 import threading
 from urllib.parse import urlsplit
 
@@ -32,6 +35,7 @@ def _cookie_jar_from_session(
     return jar
 
 
+@blocking_io
 def _configure(http: requests.Session, session: WebSession, base_url: str) -> requests.Session:
     """Apply this call's cookies, headers, and proxy settings to *http*."""
     # Assigned, not merged: every call starts from the cookies the stored
@@ -77,10 +81,9 @@ def close_pooled_requests_session() -> None:
         stale = list(_pooled_by_thread.values())
         _pooled_by_thread.clear()
     for http in stale:
-        try:
+        # A stale session close failure must not prevent closing the remaining sessions.
+        with contextlib.suppress(Exception):
             http.close()
-        except Exception:  # pragma: no cover - closing must never raise
-            pass
 
 
 atexit.register(close_pooled_requests_session)
@@ -118,3 +121,21 @@ def pooled_requests_session(session: WebSession, base_url: str) -> requests.Sess
             http = requests.Session()
             _pooled_by_thread[thread_id] = http
         return _configure(http, session, base_url)
+
+
+class CachedNetrcAuth(requests.auth.AuthBase):
+    """Resolve netrc once per authority for this transport's lifetime."""
+
+    def __init__(self) -> None:
+        self._values: dict[str, tuple[str, str] | None] = {}
+        self._lock = threading.Lock()
+
+    def __call__(self, request: requests.PreparedRequest) -> requests.PreparedRequest:
+        url = request.url or ""
+        authority = urlsplit(url).netloc
+        with self._lock:
+            if authority not in self._values:
+                self._values[authority] = requests.utils.get_netrc_auth(url)
+            auth = self._values[authority]
+        request.prepare_auth(auth, url)
+        return request

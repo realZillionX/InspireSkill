@@ -2,12 +2,7 @@ from __future__ import annotations
 
 import json
 
-from inspire.cli.formatters.json_formatter import (
-    format_json,
-    format_json_error,
-    sanitize_json_data,
-    sanitize_text,
-)
+from inspire.services.utils.json_formatter import format_json, format_json_error, sanitize_json_data, sanitize_text
 from inspire.cli.utils.output_guard import sanitize_output_message
 
 

@@ -21,6 +21,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from inspire.services.catalog import datasets as dataset_service
 from inspire import config as config_module
 from inspire.cli.commands.hpc import hpc_commands
 from inspire.cli.context import EXIT_VALIDATION_ERROR
@@ -76,7 +77,7 @@ def test_resolve_dataset_info_fills_the_platform_path(monkeypatch: pytest.Monkey
     # `path` is the storage path the platform resolves, not the container path;
     # the create Actions want it pre-filled, exactly as 校验数据 leaves it.
     monkeypatch.setattr(
-        dataset_mounts,
+        dataset_service,
         "validate_dataset_mounts",
         lambda mounts, *, workspace_id, session=None: [
             DatasetValidation(
@@ -98,7 +99,7 @@ def test_resolve_dataset_info_reports_the_platform_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        dataset_mounts,
+        dataset_service,
         "validate_dataset_mounts",
         lambda mounts, *, workspace_id, session=None: [
             DatasetValidation(
@@ -254,7 +255,7 @@ def test_auto_stop_after_splits_into_hours_and_minutes(
 ) -> None:
     from inspire.cli.commands.notebook import notebook_create_flow
 
-    assert notebook_create_flow._split_auto_stop_after(minutes) == expected
+    assert notebook_create_flow.split_auto_stop_after(minutes) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -551,9 +552,7 @@ def _patch_create_runtime(
     monkeypatch.setattr(
         hpc_commands, "select_workspace_id", lambda **_kwargs: _FakeWebSession.workspace_id
     )
-    monkeypatch.setattr(
-        hpc_commands, "resolve_workspace_task_priority", lambda *args, **kwargs: 10
-    )
+    monkeypatch.setattr(hpc_commands, "resolve_workspace_task_priority", lambda *args, **kwargs: 10)
     monkeypatch.setattr(quota_module, "resolve_quota", fake_resolve_quota)
     monkeypatch.setattr(
         job_submit.web_session_module,
@@ -577,7 +576,7 @@ def _patch_create_runtime(
         lambda mounts, *, workspace_id, session=None: verdicts,
     )
     monkeypatch.setattr(
-        dataset_mounts,
+        dataset_service,
         "validate_dataset_mounts",
         lambda mounts, *, workspace_id, session=None: verdicts,
     )
@@ -840,9 +839,7 @@ def test_job_create_refuses_a_priority_the_quota_row_does_not_allow(
     """The platform would reject this; say why here instead of relaying a 400."""
     _patch_job_quota_priority(monkeypatch, tmp_path, allowed_priority_levels=("low",))
 
-    result = CliRunner().invoke(
-        cli_main, _job_create_args("--priority", "4", "--dry-run")
-    )
+    result = CliRunner().invoke(cli_main, _job_create_args("--priority", "4", "--dry-run"))
 
     assert result.exit_code == EXIT_VALIDATION_ERROR
     assert "LOW-priority only" in result.output
@@ -858,9 +855,7 @@ def test_job_create_accepts_the_priority_the_quota_row_publishes(
 ) -> None:
     _patch_job_quota_priority(monkeypatch, tmp_path, allowed_priority_levels=("low",))
 
-    result = CliRunner().invoke(
-        cli_main, _job_create_args("--priority", "1", "--dry-run")
-    )
+    result = CliRunner().invoke(cli_main, _job_create_args("--priority", "1", "--dry-run"))
 
     assert result.exit_code == 0, result.output
     assert "Create plan" in result.output
@@ -875,9 +870,7 @@ def test_job_create_is_not_blocked_by_an_unread_or_empty_priority_menu(
     """One unanswered read must not become an unusable quota."""
     _patch_job_quota_priority(monkeypatch, tmp_path, allowed_priority_levels=levels)
 
-    result = CliRunner().invoke(
-        cli_main, _job_create_args("--priority", "4", "--dry-run")
-    )
+    result = CliRunner().invoke(cli_main, _job_create_args("--priority", "4", "--dry-run"))
 
     assert result.exit_code == 0, result.output
     assert "Create plan" in result.output

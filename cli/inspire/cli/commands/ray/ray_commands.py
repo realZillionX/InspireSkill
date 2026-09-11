@@ -1,12 +1,29 @@
 """Ray (弹性计算) job commands for Inspire CLI."""
 
 from __future__ import annotations
+from inspire.services.ray.ray_submission import created_ray_job_id as _created_ray_job_id
+
+from inspire.services.ray.ray_events import (
+    fetch_recent_ray_events as _fetch_recent_ray_events,
+)
+
+from inspire.services.ray.ray_status import matches_status
+
+
+from inspire.services.ray.ray_instances import (
+    public_ray_instance_text as _public_ray_instance_text,
+    ray_instance_rank as _ray_instance_rank,
+    RayInstanceSelectionError as RayInstanceSelectionError,
+    RayInstanceView as RayInstanceView,
+    ray_instance_views as ray_instance_views,
+    select_ray_instance_views as select_ray_instance_views,
+    fetch_ray_instances as _fetch_ray_instances,
+)
 
 import logging
 import sys
 import time
-from dataclasses import dataclass
-from typing import Any, Optional, Sequence, cast
+from typing import Any, Optional, cast
 
 import click
 
@@ -18,9 +35,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
@@ -32,7 +50,6 @@ from inspire.cli.utils.errors import (
 )
 from inspire.cli.utils.events import (
     DEFAULT_EVENT_TAIL,
-    event_sort_key,
     run_events_command,
 )
 from inspire.cli.utils.id_resolver import (
@@ -48,7 +65,7 @@ from inspire.cli.utils.project_resolver import (
     project_display_name,
     resolve_project_id as resolve_project_id_by_name,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
     resolve_workspace_task_priority,
@@ -61,11 +78,12 @@ from inspire.config.workspaces import (
     workspace_label,
     workspace_name_map,
 )
-from inspire.cli.utils.job_shell import JobShellError, open_job_shell
+from inspire.platform.web.pty_socket import JobShellError
+from inspire.cli.utils.job_shell import open_job_shell
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
-from .public_output import (
+from inspire.services.ray.ray_output import (
     format_ray_status,
     public_ray_list_item,
     public_ray_status,
@@ -83,20 +101,6 @@ def _current_user_id(session) -> str:  # noqa: ANN001
     if not user_id:
         raise ValueError("Cannot determine the current user from the live web session.")
     return user_id
-
-
-def _created_ray_job_id(payload: object) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    for key in ("ray_job_id", "job_id", "id"):
-        value = str(payload.get(key) or "").strip()
-        if value:
-            return value
-    for key in ("ray_job", "job", "data", "result"):
-        value = _created_ray_job_id(payload.get(key))
-        if value:
-            return value
-    return ""
 
 
 def _resolve_ray_name_in_workspace(
@@ -237,29 +241,6 @@ def _format_ray_list_rows(rows: list[dict[str, str]]) -> str:
     return "\n".join(rendered)
 
 
-def _public_ray_instance_text(inst: dict[str, Any], *keys: str) -> str:
-    for key in keys:
-        value = inst.get(key)
-        if value in (None, "") or isinstance(value, (dict, list, tuple, set)):
-            continue
-        text = scrub_raw_ids(value).strip()
-        if text and "<redacted>" not in text:
-            return text
-    return ""
-
-
-def _ray_instance_rank(inst: dict[str, Any], position: int) -> int:
-    for key in ("rank", "instance_rank", "global_rank", "index", "replica_index"):
-        value = inst.get(key)
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            return value
-        if isinstance(value, str):
-            text = value.strip()
-            if text.isdigit():
-                return int(text)
-    return position
-
-
 def _ray_instance_resource(inst: dict[str, Any]) -> str:
     direct = _public_ray_instance_text(inst, "resource")
     if direct:
@@ -362,140 +343,6 @@ def _format_ray_instances(instances: list[dict[str, Any]]) -> str:
     return "\n".join(rendered)
 
 
-class RayInstanceSelectionError(ValueError):
-    """A ``--instance`` selector matched no instance in the Ray cluster."""
-
-
-@dataclass(frozen=True)
-class RayInstanceView:
-    """One Ray pod, split into what the Agent sees and what the API needs.
-
-    ``handle`` is the pod name ``GetJobLog`` scopes on. It is a platform
-    handle — ``scrub_raw_ids`` reduces it to noise — so it never reaches
-    output. ``label`` is the Agent-visible identity and matches the Role /
-    Type (plus Rank, when several pods share one) columns of
-    ``inspire ray instances``.
-    """
-
-    handle: str
-    role: str
-    kind: str
-    label: str
-
-
-def _ray_instance_kind(inst: dict[str, Any]) -> str:
-    """Read head / worker off the row, matching the Type column."""
-    return _public_ray_instance_text(inst, "type", "instance_type")
-
-
-def _ray_instance_role(inst: dict[str, Any]) -> str:
-    """Read the worker-group identity off the row, matching the Role column."""
-    return _public_ray_instance_text(inst, "role", "worker_group_name", "component")
-
-
-def ray_instance_views(
-    instances: Sequence[dict[str, Any]],
-) -> list[RayInstanceView]:
-    """Project raw pod rows onto the addressable (label, handle) pairs.
-
-    Ray's readable identity is two-level: every pod is a ``head`` or a
-    ``worker``, and every worker also belongs to a named worker group. Both
-    are worth selecting on — "what did the head driver print" and "what did
-    the decode group print" are the two questions this view exists to answer —
-    so an identity that appears once becomes its own label and one with
-    replicas takes the Rank suffix ``inspire ray instances`` already prints.
-    """
-    identities = [
-        _ray_instance_role(inst) or _ray_instance_kind(inst) or "instance"
-        for inst in instances
-    ]
-    duplicated = {name for name in identities if identities.count(name) > 1}
-    views: list[RayInstanceView] = []
-    for position, (inst, identity) in enumerate(zip(instances, identities)):
-        # Raw on purpose: this is the pod name `GetJobLog` scopes on, so it
-        # must not go through `scrub_raw_ids` the way the printed fields do.
-        handle = next(
-            (
-                str(inst.get(key) or "").strip()
-                for key in ("name", "instance_name", "pod_name")
-                if str(inst.get(key) or "").strip()
-            ),
-            "",
-        )
-        if not handle:
-            continue
-        rank = _ray_instance_rank(inst, position)
-        label = f"{identity}-{rank}" if identity in duplicated else identity
-        views.append(
-            RayInstanceView(
-                handle=handle,
-                role=_ray_instance_role(inst),
-                kind=_ray_instance_kind(inst),
-                label=label,
-            )
-        )
-    return views
-
-
-def select_ray_instance_views(
-    views: Sequence[RayInstanceView],
-    selectors: Sequence[str],
-) -> list[RayInstanceView]:
-    """Filter pods by the Role / Type / Rank identity ``ray instances`` prints.
-
-    An unmatched selector raises rather than narrowing the scope to nothing:
-    ``ray.GetJobLog`` answers an empty pod list with a clean empty result, so
-    silently dropping every pod would read as "this cluster printed nothing".
-    """
-    if not selectors:
-        return list(views)
-
-    available = sorted(
-        {view.label for view in views}
-        | {view.role for view in views if view.role}
-        | {view.kind for view in views if view.kind}
-    )
-    chosen: list[RayInstanceView] = []
-    for selector in selectors:
-        needle = selector.strip().lower()
-        matched = [
-            view
-            for view in views
-            if needle in (view.label.lower(), view.role.lower(), view.kind.lower())
-        ]
-        if not matched:
-            raise RayInstanceSelectionError(
-                f"No Ray instance matches '{selector}'. "
-                f"Available: {', '.join(available) or '(none)'}."
-            )
-        chosen.extend(view for view in matched if view not in chosen)
-    return chosen
-
-
-def _fetch_ray_instances(
-    ray_job_id: str,
-    *,
-    limit: int,
-    session,
-    show_all: bool,
-) -> tuple[list[dict[str, Any]], int]:
-    """Fetch the bounded instance page, expanding it only for explicit ``--all``."""
-    rows, total = browser_api_module.list_ray_job_instances(
-        ray_job_id,
-        limit=limit,
-        session=session,
-    )
-    if show_all and total > len(rows):
-        expanded_rows, expanded_total = browser_api_module.list_ray_job_instances(
-            ray_job_id,
-            limit=max(total, len(rows), 1),
-            session=session,
-        )
-        rows = expanded_rows
-        total = max(total, expanded_total, len(rows))
-    return rows, total
-
-
 def _ray_matches_list_filters(
     job: Any,
     *,
@@ -504,11 +351,7 @@ def _ray_matches_list_filters(
     workspace_name: str = "",
 ) -> bool:
     """Apply the public Ray list filters to readable job fields."""
-    if (
-        status
-        and str(getattr(job, "status", "") or "").strip().casefold()
-        != status.strip().casefold()
-    ):
+    if not matches_status(str(getattr(job, "status", "") or ""), status):
         return False
     if not keyword:
         return True
@@ -564,7 +407,10 @@ def list_ray(
     limit: Optional[int],
     show_all: bool,
 ) -> None:
-    """List Ray (弹性计算) jobs in one or every visible workspace."""
+    """List Ray (弹性计算) jobs in one or every visible workspace.
+
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
+    """
     try:
         effective_limit = resolve_collection_limit(limit=limit, show_all=show_all)
     except ValueError as e:
@@ -649,7 +495,7 @@ def list_ray(
         for job in page.items:
             row = {
                 "name": scrub_raw_ids(job.name or "N/A"),
-                "status": scrub_raw_ids(job.status or "N/A"),
+                "status": public_ray_list_item(job)["status"],
                 "created_at": scrub_raw_ids(job.created_at or "N/A"),
                 "created_by_name": scrub_raw_ids(job.created_by_name or "N/A"),
                 "project_name": scrub_raw_ids(job.project_name or ""),
@@ -702,6 +548,8 @@ def list_ray(
 @pass_context
 def status_ray(ctx: Context, name: str, workspace: str, pick: Optional[int]) -> None:
     """Show details for a Ray (弹性计算) job.
+
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
 
     NAME is the Ray job name shown in `inspire ray list`. Plain output shows
     the compact public status view; ``--json`` returns the same stable fields
@@ -927,105 +775,16 @@ def _project_label(config: Config, requested: Optional[str]) -> str:
 
 
 def _resolve_image_id(raw: str, *, session, ctx: Context, workspace_id: str) -> str:
-    """Turn a visible image name or Docker image URL into the internal mirror handle.
-
-    Ray's create body takes an internal mirror handle, not the pullable Docker
-    URL. We walk public + private + official image catalogues looking for an
-    exact URL/name match.
-    """
-    raw = (raw or "").strip()
-    if not raw:
-        raise ConfigError("Image is empty.")
-    target = raw.lower()
-    for source in ("private", "public", "official"):
-        try:
-            images = browser_api_module.list_images_by_source(
-                source=source, session=session, workspace_id=workspace_id
-            )
-        except Exception:  # noqa: BLE001
-            if ctx.debug:
-                logger.debug("Ray image lookup via %s failed", source, exc_info=True)
-            continue
-        for img in images:
-            labels = {
-                str(img.url or "").strip(),
-                str(img.name or "").strip(),
-            }
-            if img.name and img.version:
-                labels.add(f"{img.name}:{img.version}")
-            if target in {label.lower() for label in labels if label}:
-                return img.image_id
-    display = scrub_raw_ids(raw)
-    raise ConfigError(
-        f"Image {display!r} not found in public/private/official catalogues. "
-        "Pass a visible image name or Docker URL from `inspire image list`."
-    )
+    from inspire.services.ray.ray_submission import resolve_image_id
+    return resolve_image_id(raw, session=session, workspace_id=workspace_id, debug=ctx.debug, log=logger)
 
 
 def _parse_worker_spec(raw: str) -> dict[str, Any]:
-    """Parse a ``key=value;key=value`` worker spec into a dict.
-
-    Required keys: ``name``, ``image`` (visible image name or URL), ``group`` (compute
-    group name), ``quota`` (``gpu,cpu,mem`` triple), ``min``, ``max``.
-    Optional: ``image-type`` (default SOURCE_PUBLIC), ``shm-size`` (shm_gi).
-
-    Tokens are separated by ``;`` so the ``,`` inside ``quota=4,80,800``
-    doesn't collide with the outer separator.
-    """
-    from inspire.cli.utils.quota_resolver import QuotaParseError, parse_quota
-
-    out: dict[str, Any] = {}
-    for chunk in raw.split(";"):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if "=" not in chunk:
-            raise click.BadParameter(f"worker spec token {chunk!r} has no '='; expected key=value")
-        k, _, v = chunk.partition("=")
-        out[k.strip()] = v.strip()
-
-    missing = {"name", "image", "group", "quota", "min", "max"} - out.keys()
-    if missing:
-        raise click.BadParameter(
-            f"worker spec missing keys: {sorted(missing)}. "
-            "Required: name, image, group, quota, min, max. Optional: image-type, shm-size. "
-            "Format: 'name=...;image=...;group=...;quota=gpu,cpu,mem;min=N;max=N'."
-        )
+    from inspire.services.ray.ray_submission import parse_worker_spec
     try:
-        out["quota_spec"] = parse_quota(out["quota"])
-    except QuotaParseError as e:
-        raise click.BadParameter(f"worker quota: {e}")
-    try:
-        out["min"] = int(out["min"])
-        out["max"] = int(out["max"])
-    except ValueError as e:
-        raise click.BadParameter(f"min/max must be integers: {e}")
-    if out["min"] < 1 or out["max"] < 1:
-        raise click.BadParameter("worker min and max must be >= 1.")
-    if out["max"] < out["min"]:
-        raise click.BadParameter("worker max must be >= min.")
-    if "image_type" in out or "shm" in out:
-        raise click.BadParameter("Use worker keys image-type and shm-size, not image_type or shm.")
-    image_type = str(out.get("image-type") or "SOURCE_PUBLIC").strip()
-    if image_type not in IMAGE_TYPE_CHOICES:
-        raise click.BadParameter(
-            "worker image-type must be one of "
-            + ", ".join(IMAGE_TYPE_CHOICES)
-            + "."
-        )
-    out["image_type"] = image_type
-    out.pop("image-type", None)
-    if "shm-size" in out and out["shm-size"] not in ("", None):
-        try:
-            out["shm_size"] = int(out["shm-size"])
-        except ValueError as e:
-            raise click.BadParameter(f"shm-size must be an integer GiB value: {e}")
-        if out["shm_size"] < 1:
-            raise click.BadParameter("worker shm-size must be >= 1.")
-    else:
-        out.pop("shm_size", None)
-    out.pop("shm-size", None)
-    return out
+        return parse_worker_spec(raw)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
 
 
 @click.command("create")
@@ -1178,54 +937,16 @@ def create_ray(
         )
 
         if dry_run:
+            from inspire.services.ray.ray_submission import ray_plan_payload
             from inspire.cli.utils.quota_resolver import parse_quota
-
             head_spec = parse_quota(cast(str, quota))
-            worker_plans: list[dict[str, Any]] = []
-            for raw_worker in workers:
-                worker = _parse_worker_spec(raw_worker)
-                worker_spec = worker["quota_spec"]
-                worker_plan: dict[str, Any] = {
-                    "name": worker["name"],
-                    "compute_group": worker["group"],
-                    "resource": {
-                        "gpu": worker_spec.gpu_count,
-                        "cpu": worker_spec.cpu_count,
-                        "memory_gib": worker_spec.memory_gib,
-                    },
-                    "image": worker["image"],
-                    "min_replicas": worker["min"],
-                    "max_replicas": worker["max"],
-                }
-                if worker.get("shm_size") is not None:
-                    worker_plan["shared_memory_gib"] = worker["shm_size"]
-                worker_plans.append(worker_plan)
-            plan: dict[str, Any] = {
-                "dry_run": True,
-                "name": body.get("name"),
-                "workspace": workspace_label(
-                    session,
-                    str(body.get("workspace_id") or ""),
-                    workspace,
-                ),
-                "project": _project_label(config, project),
-                "compute_group": group,
-                "resource": {
-                    "gpu": head_spec.gpu_count,
-                    "cpu": head_spec.cpu_count,
-                    "memory_gib": head_spec.memory_gib,
-                },
-                "image": image,
-                "command": body.get("entrypoint"),
-                "priority": body.get("task_priority"),
-                "workers": worker_plans,
-            }
-            if description:
-                plan["description"] = description
-            if shm_size is not None:
-                plan["shared_memory_gib"] = shm_size
-            if public_path_readonly is not None:
-                plan["public_path_readonly"] = bool(public_path_readonly)
+            plan = ray_plan_payload(
+                body=body, workspace=workspace_label(session, str(body.get("workspace_id") or ""), workspace),
+                project=_project_label(config, project), group=cast(str, group),
+                quota=cast(str, quota), image=cast(str, image), workers=workers,
+                description=description, shm_size=shm_size, public_path_readonly=public_path_readonly,
+            )
+            worker_plans = plan["workers"]
             if ctx.json_output:
                 click.echo(json_formatter.format_json(plan))
                 return
@@ -1323,201 +1044,50 @@ def _assemble_create_body(
     workers: tuple[str, ...],
     public_path_readonly: Optional[bool] = None,
 ) -> dict[str, Any]:
-    from inspire.cli.utils.quota_resolver import (
-        QuotaMatchError,
-        QuotaParseError,
-        SCHEDULE_TYPE_RAY,
-        parse_quota,
-        resolve_quota,
-    )
+    from inspire.services.ray.ray_submission import assemble_create_body, validate_create_inputs
+    from inspire.cli.utils.quota_resolver import parse_quota, resolve_quota, SCHEDULE_TYPE_RAY
 
-    if not name:
-        raise click.UsageError("--name is required.")
-    if not command:
-        raise click.UsageError(
-            "--command is required; it is the Ray driver startup command."
+    try:
+        validate_create_inputs(
+            name=name, command=command, image=image, group=group, quota=quota,
+            workspace=workspace, project=project, image_type=image_type, workers=workers,
         )
-    for field_name, value in (
-        ("image", image),
-        ("group", group),
-        ("quota", quota),
-        ("workspace", workspace),
-        ("project", project),
-    ):
-        if not value:
-            raise click.UsageError(f"--{field_name} is required.")
-    image_value = cast(str, image)
-    image_type_value = image_type.strip()
-    if image_type_value not in IMAGE_TYPE_CHOICES:
-        raise click.UsageError(
-            f"--image-type must be one of: {', '.join(IMAGE_TYPE_CHOICES)}"
-        )
-    group_value = cast(str, group)
-    quota_value = cast(str, quota)
-    if not workers:
-        raise click.UsageError(
-            "At least one --worker is required. Format: "
-            "'name=<g>;image=<u>;group=<g>;quota=<gpu,cpu,mem>;min=<n>;max=<n>'"
-        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
 
-    resolved_workspace_id = select_workspace_id(
-        explicit_workspace_name=workspace,
-        session=session,
-    )
-    if resolved_workspace_id is None:
+    workspace_id = select_workspace_id(explicit_workspace_name=workspace, session=session)
+    if workspace_id is None:
         raise ConfigError("--workspace is required.")
-    resolved_project_id = _resolve_project_id(
-        config,
-        project,
-        workspace_id=resolved_workspace_id,
-        session=session,
-        ctx=ctx,
+    project_id = _resolve_project_id(
+        config, project, workspace_id=workspace_id, session=session, ctx=ctx
     )
-
-    def _resolve_ray(triple: str, group_name: str) -> Any:
-        try:
-            spec_triple = parse_quota(triple)
-        except QuotaParseError as exc:
-            raise click.UsageError(str(exc)) from exc
-        try:
-            return resolve_quota(
-                spec=spec_triple,
-                workspace_id=resolved_workspace_id,
-                session=session,
-                schedule_config_type=SCHEDULE_TYPE_RAY,
-                group_override=group_name,
-            )
-        except QuotaMatchError as exc:
-            raise click.UsageError(str(exc)) from exc
-
-    head_resolved = _resolve_ray(quota_value, group_value)
-    head_node: dict[str, Any] = {
-        "mirror_id": _resolve_image_id(
-            image_value, session=session, ctx=ctx, workspace_id=resolved_workspace_id
-        ),
-        "image_type": image_type_value,
-        "logic_compute_group_id": head_resolved.logic_compute_group_id,
-        "quota_id": head_resolved.quota_id,
-    }
-    if shm_size is not None:
-        head_node["shm_gi"] = shm_size
-
-    worker_groups: list[dict[str, Any]] = []
-    for raw in workers:
-        spec = _parse_worker_spec(raw)
-        worker_resolved = _resolve_ray(spec["quota"], spec["group"])
-        group_block: dict[str, Any] = {
-            "group_name": spec["name"],
-            "mirror_id": _resolve_image_id(
-                spec["image"], session=session, ctx=ctx, workspace_id=resolved_workspace_id
+    try:
+        return assemble_create_body(
+            workspace_id=workspace_id, project_id=project_id,
+            resolve_quota=lambda triple, group_name: resolve_quota(
+                spec=parse_quota(triple), workspace_id=workspace_id, session=session,
+                schedule_config_type=SCHEDULE_TYPE_RAY, group_override=group_name,
             ),
-            "image_type": spec["image_type"],
-            "logic_compute_group_id": worker_resolved.logic_compute_group_id,
-            "min_replicas": spec["min"],
-            "max_replicas": spec["max"],
-            "quota_id": worker_resolved.quota_id,
-        }
-        if "shm_size" in spec:
-            group_block["shm_gi"] = spec["shm_size"]
-        worker_groups.append(group_block)
-
-    body: dict[str, Any] = {
-        "name": name,
-        "description": description,
-        "workspace_id": resolved_workspace_id,
-        "project_id": resolved_project_id,
-        "entrypoint": command,
-        "head_node": head_node,
-        "worker_groups": worker_groups,
-    }
-    # Only an explicit flag reaches the wire: the platform owns the default and
-    # sending `false` would change every create that never asked.
-    if public_path_readonly is not None:
-        body["is_publicpath_readonly"] = bool(public_path_readonly)
-    body["task_priority"] = resolve_workspace_task_priority(
-        priority,
-        session=session,
-        workspace_id=resolved_workspace_id,
-        project_id=resolved_project_id,
-    )
-    return body
+            resolve_image=lambda raw: _resolve_image_id(
+                raw, session=session, ctx=ctx, workspace_id=workspace_id
+            ),
+            resolve_priority=lambda requested: resolve_workspace_task_priority(
+                requested, session=session, workspace_id=workspace_id, project_id=project_id
+            ),
+            name=name, command=command, description=description, project=project,
+            workspace=workspace, priority=priority, image=image, image_type=image_type,
+            group=group, quota=quota, shm_size=shm_size, workers=workers,
+            public_path_readonly=public_path_readonly,
+        )
+    except (TaskPriorityError, ConfigError):
+        raise
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
 
 
 _RAY_EVENT_NAME_SCAN_LIMIT = 500
 _RAY_EVENT_PAGE_SIZE = 200
 _RAY_EVENT_MAX_PAGES = 5
-
-
-def _labelled_ray_events(
-    events: list[dict],
-    views: Sequence[RayInstanceView],
-) -> list[dict]:
-    """Name each pod row with the identity `inspire ray instances` prints.
-
-    One call returns controller rows and pod rows in the same list, told apart
-    only by ``object_type`` / ``object_id`` — and ``object_id`` is the pod
-    handle, which never reaches output. Controller rows keep no label: they
-    are about the cluster, not about any one pod.
-    """
-    labels = {view.handle: view.label for view in views}
-    labelled: list[dict] = []
-    for event in events:
-        row = dict(event)
-        label = labels.get(str(row.get("object_id") or "").strip())
-        if label:
-            row["instance"] = label
-        labelled.append(row)
-    return labelled
-
-
-def _fetch_recent_ray_events(
-    ray_job_id: str,
-    *,
-    session,  # noqa: ANN001
-    selectors: Sequence[str] = (),
-    workload_level: bool = False,
-) -> list[dict]:
-    """Fetch a bounded newest-first window and restore chronological output.
-
-    The cluster level is a client-side split, not a second call: one
-    ``ListJobEvents`` already returns both, told apart by ``object_type``.
-    """
-    if workload_level:
-        events = browser_api_module.list_ray_job_events(
-            ray_job_id,
-            page_size=_RAY_EVENT_PAGE_SIZE,
-            max_pages=_RAY_EVENT_MAX_PAGES,
-            sort_ascending=False,
-            session=session,
-        )
-        cluster_rows = [
-            event
-            for event in events
-            if str(event.get("object_type") or "").strip().lower() != "instance"
-        ]
-        return sorted(cluster_rows, key=event_sort_key)
-    instances, _total = browser_api_module.list_ray_job_instances(
-        ray_job_id,
-        limit=_DEFAULT_INSTANCE_SCAN_LIMIT,
-        session=session,
-    )
-    views = ray_instance_views(instances)
-    pod_names = None
-    if selectors:
-        views = select_ray_instance_views(views, selectors)
-        pod_names = [view.handle for view in views]
-    events = browser_api_module.list_ray_job_events(
-        ray_job_id,
-        pod_names=pod_names,
-        page_size=_RAY_EVENT_PAGE_SIZE,
-        max_pages=_RAY_EVENT_MAX_PAGES,
-        sort_ascending=False,
-        session=session,
-    )
-    # Fetched newest-first to bound the window, then restored to chronological
-    # order here rather than by reversing: same-second ties come back in an
-    # order that depends on the filter, and reversing would flip them.
-    return sorted(_labelled_ray_events(events, views), key=event_sort_key)
 
 
 @click.command("events")

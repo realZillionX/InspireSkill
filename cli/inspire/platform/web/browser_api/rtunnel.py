@@ -6,8 +6,15 @@ around the sync flow).
 
 from __future__ import annotations
 
+from inspire.local_files import atomic_write_text
+from inspire.platform.web.jupyter_urls import (  # noqa: F401
+    build_terminal_websocket_url as _build_terminal_websocket_url,
+    extract_jupyter_token as _extract_jupyter_token,
+    jupyter_server_base as _jupyter_server_base,
+)
+
+import contextlib
 import json
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -336,6 +343,7 @@ def _active_account_name() -> str | None:
 
         return current_account()
     except Exception:
+        _log.debug("Active account lookup for rtunnel failed; trying next strategy", exc_info=True)
         return None
 
 
@@ -369,6 +377,10 @@ def get_rtunnel_state_file(
             if account_exists(account):
                 return account_dir(account) / f"{_CACHE_BASENAME}.json"
         except Exception:
+            _log.debug(
+                "Account rtunnel cache path lookup failed; trying next strategy",
+                exc_info=True,
+            )
             pass
 
     root = cache_dir or _default_cache_dir()
@@ -394,17 +406,9 @@ def _load_state_file(path: Path) -> dict[str, Any]:
 
 
 def _save_state_file(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".tmp")
-    tmp_path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+    atomic_write_text(
+        path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n", private=True
     )
-    os.replace(tmp_path, path)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
 
 
 def get_cached_rtunnel_proxy_candidates(
@@ -745,6 +749,7 @@ def _response_body_prefix(response: Any, *, limit: int = 400) -> str:
                 break
         return "".join(chunks)[:limit]
     except Exception:
+        _log.debug("Proxy response body prefix read failed; trying next strategy", exc_info=True)
         return ""
 
 
@@ -787,6 +792,10 @@ def _candidate_urls_from_ide_port_forward(
             timeout=max(10, int(timeout_s)),
         )
     except Exception:
+        _log.debug(
+            "Notebook port forward URL discovery failed; trying next strategy",
+            exc_info=True,
+        )
         return []
     return [proxy_url] if proxy_url else []
 
@@ -831,6 +840,7 @@ def _ssh_probe_rtunnel_proxy_url(
         )
         return result.returncode == 0
     except Exception:
+        _log.debug("SSH readiness probe failed; trying next strategy", exc_info=True)
         return False
 
 
@@ -918,6 +928,7 @@ def probe_existing_rtunnel_proxy_url(
                     continue
                 resp = http.get(url, timeout=(5, 5), stream=True)
             except Exception:
+                _log.debug("Candidate proxy HTTP probe failed; trying next strategy", exc_info=True)
                 continue
             try:
                 body = _response_body_prefix(resp)
@@ -936,10 +947,9 @@ def probe_existing_rtunnel_proxy_url(
                     pass
                 return url
             finally:
-                try:
+                # Response cleanup must not replace the proxy probe result.
+                with contextlib.suppress(Exception):
                     resp.close()
-                except Exception:
-                    pass
         return None
     except (OSError, ValueError, RuntimeError, AttributeError):
         return None
@@ -956,22 +966,6 @@ def probe_existing_rtunnel_proxy_url(
 # ============================================================================
 
 
-def _jupyter_server_base(lab_url: str) -> str:
-    """Derive the Jupyter server base URL from a lab frame URL.
-
-    Only strips ``/lab`` when it is the **final** path segment (the
-    JupyterLab UI route), not when ``/lab/`` appears mid-path as part
-    of the platform's proxy path (e.g. ``/api/v2/notebook/lab/{id}/``).
-    """
-    from urllib.parse import urlsplit, urlunsplit
-
-    parts = urlsplit(lab_url)
-    path = parts.path.rstrip("/")
-    if path.endswith("/lab"):
-        path = path[:-4]
-    if not path.endswith("/"):
-        path = path + "/"
-    return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
 def _build_jupyter_xsrf_headers(context: Any) -> dict[str, str]:
@@ -1048,36 +1042,8 @@ def _delete_terminal_via_api(
         return False
 
 
-def _extract_jupyter_token(lab_url: str) -> str | None:
-    from urllib.parse import parse_qs, urlsplit
-
-    parsed = urlsplit(lab_url)
-    query_token = parse_qs(parsed.query).get("token", [None])[0]
-    if query_token:
-        return query_token
-
-    path_parts = [part for part in parsed.path.split("/") if part]
-    try:
-        jupyter_index = path_parts.index("jupyter")
-        if len(path_parts) > jupyter_index + 2:
-            return path_parts[jupyter_index + 2]
-    except ValueError:
-        return None
-    return None
 
 
-def _build_terminal_websocket_url(lab_url: str, term_name: str) -> str:
-    from urllib.parse import urlencode, urlsplit, urlunsplit
-
-    base = _jupyter_server_base(lab_url)
-    parsed = urlsplit(base)
-    scheme = "wss" if parsed.scheme == "https" else "ws"
-    base_path = parsed.path if parsed.path.endswith("/") else f"{parsed.path}/"
-    ws_path = f"{base_path}terminals/websocket/{term_name}"
-
-    token = _extract_jupyter_token(lab_url)
-    query = urlencode({"token": token}) if token else ""
-    return urlunsplit((scheme, parsed.netloc, ws_path, query, ""))
 
 
 def _send_terminal_command_via_websocket(
@@ -1345,10 +1311,9 @@ def _probe_terminal_command_markers_via_ws(
 
         return markers.get(result)
     finally:
-        try:
+        # Temporary terminal cleanup must not replace the probe result.
+        with contextlib.suppress(Exception):
             _delete_terminal_via_api(context, lab_url=lab_frame.url, term_name=term_name)
-        except Exception:
-            pass
 
 
 def _check_rtunnel_present_via_ws(
@@ -2063,12 +2028,11 @@ def _send_rtunnel_setup_script(
     def _cleanup_browser_terminal() -> None:
         if not browser_term_name:
             return
-        try:
+        # A temporary terminal may already be gone when cleanup runs.
+        with contextlib.suppress(Exception):
             _delete_terminal_via_api(
                 context, lab_url=browser_term_lab_url, term_name=browser_term_name
             )
-        except Exception:
-            pass
 
     try:
         result, browser_term_name = _open_or_create_terminal(context, page, lab_frame)

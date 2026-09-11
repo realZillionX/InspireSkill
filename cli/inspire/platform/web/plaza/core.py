@@ -7,7 +7,7 @@ dataset catalogue can be browsed or searched — qz's own ``/api/v2/dataset``
 route carries a single ``ValidateDataset`` Action and no listing at all (see
 :mod:`inspire.platform.web.browser_api.datasets`).
 
-Signing in needs no browser. The CLI's web session already holds the CAS
+Signing in needs no browser. The caller's platform web session holds the CAS
 ticket-granting cookie, which is enough to mint a service ticket for the plaza:
 
 1. ``GET {CAS}/cas/login?service=<plaza>/`` → 302 whose ``Location`` carries
@@ -21,22 +21,26 @@ ticket-granting cookie, which is enough to mint a service ticket for the plaza:
 Responses are ``{"code": 0, "data": …, "msg": "…"}``. ``code`` is 0 on success
 and non-zero for a declared failure whose reason is in ``msg``; the HTTP status
 stays 200 for those, so success can never be read off the status code alone.
-The one status that does carry meaning is 401 — an unauthenticated call answers
+HTTP status still matters: redirects and 401 require authentication recovery,
+and other HTTP errors are classified before business success. An unauthenticated
+call answers
 ``401 {"code": 7, …, "msg": "未登录或非法访问"}``, which is the signal to run the
 handshake again.
 
-The handshake is two cheap requests, so the signed-in client is cached in
-process only; there is deliberately no on-disk counterpart to
-``web_session.json`` to keep stale and account-crossing state out of the way.
+The handshake is two cheap requests, so the signed-in client is cached only
+in its owning Transport and closed with it. There is deliberately no on-disk
+counterpart to ``web_session.json``, keeping stale and account-crossing state
+out of the way. A rejected plaza cookie is re-minted from CAS first; only a
+second failure escalates to the transport's platform-session refresh ladder.
 """
 
 from __future__ import annotations
 
-import atexit
+from inspire.platform.web.flow import Program, workflow, http_call
+
 import logging
-import threading
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import quote
 
 import requests
@@ -47,15 +51,21 @@ from inspire.platform.web.session import (
     TransientAPIError,
     WebSession,
     build_requests_session,
-    get_web_session,
-    with_transient_retry,
 )
 from inspire.platform.web.session.retry import retry_after_seconds
+
+if TYPE_CHECKING:
+    from inspire.platform.web.transport import Transport
 
 __all__ = [
     "CAS_BASE_URL",
     "PLAZA_BASE_URL",
     "PlazaError",
+    "PlazaClient",
+    "PlazaNotSignedIn",
+    "PlazaRejected",
+    "sign_in",
+    "unwrap",
     "plaza_request",
     "reset_plaza_client",
 ]
@@ -67,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 
 class PlazaError(ValueError):
-    """数据广场 answered, and the answer was a declared failure.
+    """A data plaza call failed, either in transport or in its response.
 
     Subclasses ``ValueError`` so the CLI's existing ``except ValueError``
     boundaries keep mapping a refused request to the same user-facing API
@@ -75,12 +85,16 @@ class PlazaError(ValueError):
     """
 
 
-class _PlazaNotSignedIn(PlazaError):
+class CasTicketExpired(SessionExpiredError):
+    """CAS refused to mint a service ticket; a fresh CASTGC is required."""
+
+
+class PlazaNotSignedIn(PlazaError):
     """The plaza does not recognize the ``datasets-session`` being presented."""
 
 
 @dataclass
-class _PlazaClient:
+class PlazaClient:
     """One signed-in HTTP session against the plaza."""
 
     http: requests.Session
@@ -93,39 +107,20 @@ class _PlazaClient:
             logger.debug("Closing the data plaza session failed.", exc_info=True)
 
 
-_client_lock = threading.Lock()
-_client: Optional[_PlazaClient] = None
-_client_key: Optional[tuple[str, float]] = None
-
-
 def _service_url() -> str:
     """The service the CAS ticket is minted for — the plaza's own index."""
     return f"{PLAZA_BASE_URL}/"
 
 
-def _session_key(session: WebSession) -> tuple[str, float]:
-    """Identify the web session a cached plaza client was derived from.
-
-    Keying on the account *and* the session's creation time means a refreshed
-    or switched-to session never reuses another one's ``datasets-session``.
-    """
-    return (
-        str(getattr(session, "account", "") or ""),
-        float(getattr(session, "created_at", 0.0) or 0.0),
-    )
-
-
 def reset_plaza_client() -> None:
-    """Drop the cached plaza session so the next call signs in again."""
-    global _client, _client_key
+    """Close and clear the active (or process-default) transport's plaza session.
 
-    with _client_lock:
-        stale, _client, _client_key = _client, None, None
-    if stale is not None:
-        stale.close()
+    The next plaza call on that transport performs a fresh CAS handshake.
+    Other transports and their signed-in sessions are unaffected.
+    """
+    from inspire.platform.web.runtime import get_transport
 
-
-atexit.register(reset_plaza_client)
+    get_transport().reset_plaza_client()
 
 
 def _json_body(response: requests.Response) -> dict[str, Any]:
@@ -150,28 +145,33 @@ def _cas_ticket(location: str) -> str:
     return ""
 
 
-def _sign_in(session: WebSession) -> _PlazaClient:
+@workflow
+def sign_in(session: WebSession, transport: Transport, timeout: float = 30) -> Program[PlazaClient]:
     """Trade the web session's CAS cookie for a plaza ``datasets-session``."""
     http = build_requests_session(session, PLAZA_BASE_URL)
     service = _service_url()
     try:
-        ticket_response = http.get(
+        ticket_response = (yield http_call(http.get,
             f"{CAS_BASE_URL}/cas/login?service={quote(service, safe='')}",
             allow_redirects=False,
-            timeout=30,
-        )
+            timeout=min(timeout, transport.remaining()),
+        ))
+        transport.check_deadline()
+        _raise_transient(ticket_response)
         ticket = _cas_ticket(ticket_response.headers.get("Location", ""))
         if not ticket:
             # No ticket means CAS did not recognize the cookie: the platform
             # session behind it is what expired, not the plaza's.
-            raise SessionExpiredError("CAS issued no data plaza ticket for this session.")
+            raise CasTicketExpired("The platform single-sign-on ticket expired; CAS issued no data plaza ticket for this session.")
 
-        login_response = http.post(
+        login_response = (yield http_call(http.post,
             f"{PLAZA_BASE_URL}/api/base/login",
             json={"ticket": ticket, "service": service},
-            timeout=30,
+            timeout=min(timeout, transport.remaining()),
             allow_redirects=False,
-        )
+        ))
+        transport.check_deadline()
+        _raise_transient(login_response)
         if login_response.status_code == 401 or login_response.status_code >= 400:
             raise SessionExpiredError("The data plaza rejected the CAS ticket.")
         payload = _json_body(login_response)
@@ -185,84 +185,55 @@ def _sign_in(session: WebSession) -> _PlazaClient:
         user_id = str((user or {}).get("ID") or "").strip()
         if user_id:
             http.headers["x-user-id"] = user_id
-        return _PlazaClient(http=http, user_id=user_id)
+        return PlazaClient(http=http, user_id=user_id)
     except requests.RequestException as exc:
         http.close()
+        transport.check_deadline()
         raise PlazaError("The data plaza could not be reached.") from exc
     except BaseException:
         http.close()
         raise
 
 
-def _client_for(session: WebSession) -> _PlazaClient:
-    """Return the signed-in client for *session*, signing in when needed."""
-    global _client, _client_key
-
-    key = _session_key(session)
-    with _client_lock:
-        if _client is not None and _client_key == key:
-            return _client
-    signed_in = _sign_in(session)
-    with _client_lock:
-        stale, _client, _client_key = _client, signed_in, key
-    if stale is not None:
-        stale.close()
-    return signed_in
-
-
-def _unwrap(response: requests.Response) -> Any:
-    """Return the response's ``data``, or raise what the plaza actually said.
-
-    Order matters and mirrors the qz v2 discipline: throttling and server
-    faults are judged before the body is read at all, because a rate limiter's
-    answer is an error page rather than the JSON envelope.
-    """
+def _raise_transient(response: requests.Response) -> None:
     if response.status_code in TRANSIENT_HTTP_STATUSES:
         raise TransientAPIError(
             f"Data plaza returned {response.status_code}",
             status=response.status_code,
             retry_after=retry_after_seconds(response.headers),
         )
+
+
+class PlazaRejected(PlazaError):
+    """An HTTP or envelope rejection, retaining its status for write classification."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def unwrap(response: requests.Response) -> Any:
+    """Return the response's ``data``, or raise what the plaza actually said.
+
+    Order matters and mirrors the qz v2 discipline: throttling and server
+    faults are judged before the body is read at all, because a rate limiter's
+    answer is an error page rather than the JSON envelope.
+    """
+    _raise_transient(response)
     if 300 <= response.status_code < 400:
-        raise _PlazaNotSignedIn("The data plaza redirected the request to a login page.")
+        raise PlazaNotSignedIn("The data plaza redirected the request to a login page.")
     if response.status_code == 401:
         payload = _json_body(response)
-        raise _PlazaNotSignedIn(str(payload.get("msg") or "Not signed in to the data plaza."))
+        raise PlazaNotSignedIn(str(payload.get("msg") or "Not signed in to the data plaza."))
     if response.status_code >= 400:
-        raise PlazaError(f"Data plaza returned {response.status_code}.")
+        raise PlazaRejected(
+            f"Data plaza returned {response.status_code}.", status=response.status_code
+        )
 
     payload = _json_body(response)
     if payload.get("code") != 0:
-        raise PlazaError(str(payload.get("msg") or "The data plaza declined the request."))
+        raise PlazaRejected(str(payload.get("msg") or "The data plaza declined the request."))
     return payload.get("data")
-
-
-def _call(
-    client: _PlazaClient,
-    method: str,
-    path: str,
-    *,
-    params: Optional[dict[str, Any]],
-    body: Optional[dict[str, Any]],
-    timeout: int,
-) -> Any:
-    url = f"{PLAZA_BASE_URL}{path}"
-
-    def _once() -> Any:
-        try:
-            response = client.http.request(
-                method.upper(),
-                url,
-                params=params,
-                json=body,
-                timeout=timeout,
-                allow_redirects=False,
-            )
-        except requests.RequestException as exc:
-            raise PlazaError("The data plaza did not answer.") from exc
-        return _unwrap(response)
-
-    return with_transient_retry(_once)
 
 
 def plaza_request(
@@ -277,35 +248,12 @@ def plaza_request(
     """Call one plaza endpoint and return its unwrapped ``data`` payload.
 
     Follows the same 401 discipline the qz browser APIs do. A lapsed
-    ``datasets-session`` is re-minted from the CAS cookie the CLI already holds,
+    ``datasets-session`` is re-minted from the caller's CAS cookie,
     and only when that fails too is the platform session itself refreshed —
     logging in again is expensive, and most expiries are the plaza's alone.
     """
-    active = session if session is not None else get_web_session()
-    last: BaseException | None = None
-    for attempt in range(3):
-        if attempt:
-            # Whatever was cached did not authenticate; never retry with it.
-            reset_plaza_client()
-        if attempt == 2:
-            # The CAS cookie itself is stale, so nothing derived from it will
-            # authenticate either. Rebuild the platform session first.
-            active = get_web_session(
-                force_refresh=True,
-                account=getattr(active, "account", None),
-            )
-        try:
-            return _call(
-                _client_for(active),
-                method,
-                path,
-                params=params,
-                body=body,
-                timeout=timeout,
-            )
-        except (SessionExpiredError, _PlazaNotSignedIn) as exc:
-            logger.debug("Data plaza call was not authenticated (attempt %d).", attempt + 1)
-            last = exc
-    raise SessionExpiredError(
-        "The data plaza rejected the refreshed platform session."
-    ) from last
+    from inspire.platform.web.runtime import get_transport
+
+    return get_transport(session).plaza_request(
+        method, path, params=params, body=body, timeout=timeout
+    )

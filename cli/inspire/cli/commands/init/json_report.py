@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 
 
 def _content_digest(path: Path) -> str:

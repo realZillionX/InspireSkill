@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from inspire.local_files import atomic_write_text
+
+import contextlib
 import json
 import logging
-import os
 import shlex
 import time
 import uuid
@@ -102,13 +104,16 @@ def _resolve_direct_lab_url(
         finally:
             response.close()
     except Exception:
+        _log.debug(
+            "Direct JupyterLab redirect resolution failed; trying next strategy",
+            exc_info=True,
+        )
         return direct_lab_url
     finally:
         if http is not None:
-            try:
+            # HTTP cleanup must not replace the resolved JupyterLab URL.
+            with contextlib.suppress(Exception):
                 http.close()
-            except Exception:
-                pass
     return direct_lab_url
 
 
@@ -150,6 +155,7 @@ def open_notebook_lab(
                 wait_until="commit",
             )
         except Exception:
+            _log.debug("Direct JupyterLab navigation failed; trying next strategy", exc_info=True)
             pass
         return _wait_for_lab_handle(
             page,
@@ -179,6 +185,7 @@ def open_notebook_lab(
             wait_until="domcontentloaded",
         )
     except Exception:
+        _log.debug("Notebook IDE page navigation failed; trying next strategy", exc_info=True)
         pass
 
     if prefer_direct:
@@ -365,6 +372,10 @@ def _active_account_name() -> Optional[str]:
 
         return current_account()
     except Exception:
+        _log.debug(
+            "Active account lookup for IDE URL resolution failed; trying next strategy",
+            exc_info=True,
+        )
         return None
 
 
@@ -376,6 +387,10 @@ def _ide_url_cache_file(account: Optional[str]) -> Path:
             if account_exists(account):
                 return account_dir(account) / f"{_IDE_URL_CACHE_BASENAME}.json"
         except Exception:
+            _log.debug(
+                "Account IDE URL cache path lookup failed; trying next strategy",
+                exc_info=True,
+            )
             pass
     return Path.home() / ".cache" / "inspire-skill" / f"{_IDE_URL_CACHE_BASENAME}.json"
 
@@ -395,14 +410,9 @@ def _load_ide_url_cache(path: Path) -> dict[str, Any]:
 
 def _save_ide_url_cache(path: Path, payload: dict[str, Any]) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+        atomic_write_text(
+            path, json.dumps(payload, indent=2, ensure_ascii=False) + "\n", private=True
+        )
     except OSError:
         return
 
@@ -478,6 +488,7 @@ def _warm_ide_url_candidates(notebook_id: str, account: Optional[str]) -> list[s
             if ide_url:
                 candidates.append(ide_url)
     except Exception:
+        _log.debug("Rtunnel state IDE URL lookup failed; trying next strategy", exc_info=True)
         pass
     try:
         from inspire.bridge.tunnel import load_tunnel_config
@@ -488,6 +499,10 @@ def _warm_ide_url_candidates(notebook_id: str, account: Optional[str]) -> list[s
             if ide_url and notebook_id in ide_url:
                 candidates.append(ide_url)
     except Exception:
+        _log.debug(
+            "Bridge configuration IDE URL lookup failed; trying next strategy",
+            exc_info=True,
+        )
         pass
     return candidates
 
@@ -505,13 +520,16 @@ def _is_ide_url_live(session: WebSession, ide_url: str, *, timeout_s: float = 8.
         resp = http.get(ide_url, timeout=timeout_s, allow_redirects=False)
         return 200 <= resp.status_code < 400
     except Exception:
+        _log.debug(
+            "Cached IDE gateway reachability probe failed; trying next strategy",
+            exc_info=True,
+        )
         return False
     finally:
         if http is not None:
-            try:
+            # HTTP cleanup must not replace the IDE reachability result.
+            with contextlib.suppress(Exception):
                 http.close()
-            except Exception:
-                pass
 
 
 def resolve_notebook_ide_url(
@@ -599,6 +617,7 @@ def _ide_url_from_access_api(notebook_id: str, session: WebSession) -> Optional[
     try:
         payload = _notebook_v2(session, "GetNotebookAccessUrl", {"notebook_id": notebook_id})
     except Exception:
+        _log.debug("Notebook access URL API lookup failed; trying next strategy", exc_info=True)
         return None
     # Either URL normalizes to the same gateway URL: the runtime and token are
     # shared across both IDEs, and `_split_ide_gateway` rewrites the IDE marker.
@@ -761,11 +780,16 @@ def _wait_for_completion_marker(
             if found:
                 return True
         except Exception:
+            _log.debug(
+                "Terminal completion marker probe failed; trying next strategy",
+                exc_info=True,
+            )
             pass
 
         try:
             lab_frame.wait_for_timeout(250)
         except Exception:
+            _log.debug("Browser terminal polling wait failed; trying next strategy", exc_info=True)
             time.sleep(0.25)
 
     return False
@@ -838,6 +862,10 @@ def _run_command_in_notebook_sync(
             try:
                 lab_frame.locator("text=加载中").first.wait_for(state="hidden", timeout=30000)
             except Exception:
+                _log.debug(
+                    "Notebook loading indicator wait failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
 
             if _send_command_via_terminal_ws(

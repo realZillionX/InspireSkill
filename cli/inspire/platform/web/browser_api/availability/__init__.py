@@ -1,4 +1,10 @@
-"""Browser (web-session) APIs for resource availability."""
+"""Platform capacity and node-dimension queries with their response models.
+
+Keep route-specific filters and pagination traps here, including the Actions
+where page_size=-1 does not enumerate everything. Quota selection and catalogue
+caching belong to inspire.services.catalog; CLI presentation belongs to
+inspire.cli. A returned capacity snapshot is not a reservation.
+"""
 
 from __future__ import annotations
 

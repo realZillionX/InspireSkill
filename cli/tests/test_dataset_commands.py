@@ -516,7 +516,7 @@ def test_mounted_dataset_views_tolerates_every_empty_shape() -> None:
 
 
 def test_notebook_status_projection_reports_mounted_datasets() -> None:
-    from inspire.cli.commands.notebook.public_output import public_notebook
+    from inspire.services.notebook.notebook_output import public_notebook
 
     view = public_notebook(
         {
@@ -534,9 +534,9 @@ def test_notebook_status_projection_reports_mounted_datasets() -> None:
 
 
 def test_workload_status_projections_omit_datasets_when_none_are_mounted() -> None:
-    from inspire.cli.commands.hpc.public_output import public_hpc_status
-    from inspire.cli.commands.job.public_output import public_job_status
-    from inspire.cli.commands.notebook.public_output import public_notebook
+    from inspire.services.hpc.hpc_output import public_hpc_status
+    from inspire.services.job.job_output import public_job_status
+    from inspire.services.notebook.notebook_output import public_notebook
 
     assert "datasets" not in public_notebook({"name": "nb", "status": "RUNNING"})
     assert "datasets" not in public_job_status({"name": "j", "status": "RUNNING"})
@@ -544,8 +544,8 @@ def test_workload_status_projections_omit_datasets_when_none_are_mounted() -> No
 
 
 def test_job_and_hpc_status_projections_report_mounted_datasets() -> None:
-    from inspire.cli.commands.hpc.public_output import public_hpc_status
-    from inspire.cli.commands.job.public_output import public_job_status
+    from inspire.services.hpc.hpc_output import public_hpc_status
+    from inspire.services.job.job_output import public_job_status
 
     payload = {
         "dataset_info": [

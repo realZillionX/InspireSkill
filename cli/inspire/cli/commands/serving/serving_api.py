@@ -11,7 +11,7 @@ from inspire.cli.context import (
     Context,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
 from inspire.config import ConfigError
@@ -19,7 +19,7 @@ from inspire.platform.web import browser_api
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
 from . import serving_commands
-from .access import invocation_info
+from inspire.services.serving.serving_access import invocation_info
 
 
 def _affinity(_ctx: click.Context, _param: click.Parameter, value: str | None) -> str | None:

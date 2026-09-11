@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-import re
+from inspire.services.catalog.resource_availability import (
+    ordered_availability,
+    display_name,
+    public_availability_row as _public_availability_row,
+)
+
 from typing import Optional
 
 import click
@@ -15,16 +20,15 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
-from inspire.cli.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
@@ -32,10 +36,6 @@ from inspire.platform.web.session import (
     AuthenticationError,
     SessionExpiredError,
     get_web_session,
-)
-
-_REDACTED_ID_RE = re.compile(
-    r"(?:\b[A-Za-z][A-Za-z0-9_-]*-)?(?:<redacted>|<[^<>]+-id>)"
 )
 
 
@@ -52,98 +52,11 @@ def _resolve_workspace_scope(
     return workspace_id, workspace_names
 
 
-def _ordered_availability(availability: list) -> list:  # noqa: ANN401
-    """Return the same decision order for Human and JSON output.
-
-    GPU and CPU rows render as separate table sections.  Sorting only inside
-    the Human formatter made JSON use platform enumeration order and, more
-    importantly, applied the default output limit before ranking capacity.
-    """
-    gpu_rows = [a for a in availability if getattr(a, "resource_kind", "gpu") == "gpu"]
-    cpu_rows = [a for a in availability if getattr(a, "resource_kind", "gpu") == "cpu"]
-    gpu_rows.sort(
-        # Workload defaults are high priority, so rank by the capacity they can
-        # actually obtain after preemption; use the guarantee balance only as
-        # the tiebreaker.
-        key=lambda item: (item.high_priority_available_gpus, item.available_gpus),
-        reverse=True,
-    )
-    cpu_rows.sort(key=lambda item: item.cpu_available, reverse=True)
-    return [*gpu_rows, *cpu_rows]
-
-
 def _format_metric(value: float | int) -> str:
     numeric = float(value)
     if abs(numeric - round(numeric)) < 1e-6:
         return str(int(round(numeric)))
     return f"{numeric:.1f}"
-
-
-def _public_metric(value: float | int) -> float:
-    """Remove binary floating-point noise without hiding useful precision."""
-    return round(float(value), 4)
-
-
-def _display_name(value: object, *, fallback: str = "-") -> str:
-    text = _REDACTED_ID_RE.sub(" ", scrub_raw_ids(value))
-    return " ".join(text.split()) or fallback
-
-
-def _public_availability_row(availability) -> dict[str, object]:  # noqa: ANN001
-    row: dict[str, object] = {
-        "workspace": _display_name(
-            getattr(availability, "workspace_name", ""),
-            fallback="",
-        ),
-        "compute_group": _display_name(getattr(availability, "group_name", "")),
-        "kind": getattr(availability, "resource_kind", "gpu") or "gpu",
-    }
-    if row["kind"] == "cpu":
-        row.update(
-            {
-                "cpu_total": _public_metric(availability.cpu_total),
-                "cpu_used": _public_metric(availability.cpu_used),
-                "cpu_available": _public_metric(availability.cpu_available),
-                "memory_total_gib": _public_metric(availability.memory_total_gib),
-                "memory_used_gib": _public_metric(availability.memory_used_gib),
-                "memory_available_gib": _public_metric(
-                    availability.memory_available_gib
-                ),
-            }
-        )
-        return row
-
-    row.update(
-        {
-            "gpu_type": _display_name(getattr(availability, "gpu_type", "")),
-            "total_gpus": availability.total_gpus,
-            "used_gpus": availability.used_gpus,
-            "available_gpus": availability.available_gpus,
-            "high_priority_available_gpus": availability.high_priority_available_gpus,
-            "low_priority_gpus": availability.low_priority_gpus,
-            "total_nodes": availability.total_nodes,
-            "ready_nodes": availability.ready_nodes,
-            "free_nodes": availability.free_nodes,
-            "gpus_per_node": availability.gpu_per_node,
-            "full_free_nodes": availability.full_free_nodes,
-            "reclaimable_nodes": availability.reclaimable_nodes,
-            "high_priority_free_nodes": availability.high_priority_free_nodes,
-            "full_free_gpus": availability.full_free_gpus,
-            "high_priority_free_gpus": availability.high_priority_free_gpus,
-            "node_specs": [
-                {
-                    "node_type": spec.node_type,
-                    "gpu_type": spec.gpu_type,
-                    "gpu_count": spec.gpu_count,
-                    "cpu_count": spec.cpu_count,
-                    "memory_gib": spec.memory_gib,
-                    "job_types": list(spec.job_types),
-                }
-                for spec in availability.node_specs
-            ],
-        }
-    )
-    return row
 
 
 def _format_accurate_availability_table(availability, *, include_cpu: bool) -> None:
@@ -155,8 +68,8 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
     if gpu_rows:
         gpu_table_rows = [
             (
-                _display_name(row.group_name),
-                _display_name(row.gpu_type),
+                display_name(row.group_name),
+                display_name(row.gpu_type),
                 row.available_gpus,
                 row.high_priority_available_gpus,
                 row.used_gpus,
@@ -202,7 +115,7 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
     if include_cpu and cpu_rows:
         cpu_table_rows = [
             (
-                _display_name(row.group_name),
+                display_name(row.group_name),
                 _format_metric(row.cpu_available),
                 _format_metric(row.cpu_used),
                 _format_metric(row.cpu_total),
@@ -264,7 +177,7 @@ def _list_accurate_resources(
             availability = [
                 a for a in availability if group_filter in str(a.group_name or "").lower()
             ]
-        availability = _ordered_availability(availability)
+        availability = ordered_availability(availability)
         page = bound_collection(availability, limit=limit)
         availability = page.items
         for entry in availability:

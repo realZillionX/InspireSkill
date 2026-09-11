@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_io
+
 import os
 from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -104,6 +106,7 @@ def _no_proxy_match(url: str) -> str:
     return "matched" if matched else "not_matched"
 
 
+@blocking_io
 def _load_proxy_toml_values(account: str | None = None) -> tuple[str, dict[str, str]]:
     base_url = _normalize_proxy(os.environ.get("INSPIRE_BASE_URL"))
     values: dict[str, str] = {}

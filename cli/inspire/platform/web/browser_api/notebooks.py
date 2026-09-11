@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from inspire.platform.web.flow import call, perform_sync
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -23,22 +24,11 @@ from inspire.platform.web.session import (
 # ---------------------------------------------------------------------------
 
 
-class NotebookFailedError(Exception):
-    """Raised when a notebook reaches a terminal failure state."""
-
-    def __init__(self, notebook_id: str, status: str, detail: dict, events: str = ""):
-        self.notebook_id = notebook_id
-        self.status = status
-        self.detail = detail
-        self.events = events
-        parts = [f"Notebook '{notebook_id}' reached terminal status: {status}"]
-        sub = detail.get("sub_status")
-        if sub:
-            parts.append(f"Sub-status: {sub}")
-        super().__init__(". ".join(parts))
-
-
-_NOTEBOOK_TERMINAL_STATUSES = frozenset({"FAILED", "ERROR", "STOPPED", "DELETED"})
+from inspire.services.notebook.notebook_status import (
+    NotebookFailedError as NotebookFailedError,
+    TERMINAL_STATUSES as _NOTEBOOK_TERMINAL_STATUSES,
+    normalize_status,
+)
 
 
 @dataclass
@@ -637,7 +627,7 @@ def list_notebook_events(
 
     Each raw event carries `content` (free-form message), `created_at`
     (epoch-ms string), `event_id`, `id`, and `notebook_id`. The shared
-    renderer in `cli.utils.events` consumes the synthesized common fields:
+    renderer in `inspire.cli.utils.events` consumes the synthesized common fields:
 
     - ``message`` ← ``content``
     - ``last_timestamp`` ← ``created_at`` (same for ``first_timestamp``)
@@ -1086,7 +1076,7 @@ def wait_for_notebook_running(
 
     while True:
         notebook = get_notebook_detail(notebook_id=notebook_id, session=session)
-        status = (notebook.get("status") or "").upper()
+        status = normalize_status(notebook.get("status") or "")
         notebook_label = str(notebook.get("name") or "").strip() or notebook_label
         if status:
             last_status = status
@@ -1114,7 +1104,7 @@ def wait_for_notebook_running(
                 f"(last status: {last_status or 'unknown'})"
             )
 
-        time.sleep(poll_interval)
+        perform_sync(call(time.sleep, poll_interval))
 
 
 __all__ = [

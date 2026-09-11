@@ -6,6 +6,7 @@ attaches file handlers for all ``inspire.*`` loggers.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import platform
@@ -17,8 +18,8 @@ from pathlib import Path
 from typing import Iterable, Sequence, cast
 
 from inspire import __version__
-from inspire.cli.formatters import json_formatter
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils import json_formatter
+from inspire.services.utils.raw_ids import scrub_raw_ids
 
 DEFAULT_DEBUG_LOG_LIMIT = 20
 DEFAULT_DEBUG_LOG_DIR = Path.home() / ".cache" / "inspire-skill" / "logs"
@@ -126,10 +127,9 @@ def _remove_previous_debug_handlers(logger: logging.Logger) -> None:
     for handler in list(logger.handlers):
         if getattr(handler, _DEBUG_HANDLER_MARKER, False):
             logger.removeHandler(handler)
-            try:
+            # A detached debug handler must not prevent the remaining logging cleanup.
+            with contextlib.suppress(Exception):
                 handler.close()
-            except Exception:
-                pass
 
 
 def _stash_logger_state(logger: logging.Logger) -> None:

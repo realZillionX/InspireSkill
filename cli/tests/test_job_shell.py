@@ -11,6 +11,7 @@ from inspire.cli.commands.hpc import hpc_commands
 from inspire.cli.commands.job import job_commands
 from inspire.cli.main import main as cli_main
 from inspire.cli.utils import job_shell
+from inspire.platform.web import pty_socket
 from inspire.platform.web.browser_api import jobs as jobs_module
 
 
@@ -73,7 +74,7 @@ def test_build_remote_cmd_url_and_headers(monkeypatch) -> None:  # noqa: ANN001
 
 
 def test_select_job_instance_requires_selector_for_multiple_running() -> None:
-    instances = job_shell.normalize_job_instances(
+    instances = pty_socket.normalize_job_instances(
         [
             {"name": "worker-0", "instance_status": "instance_running"},
             {"name": "worker-1", "instance_status": "instance_running"},
@@ -81,7 +82,7 @@ def test_select_job_instance_requires_selector_for_multiple_running() -> None:
         ]
     )
 
-    with pytest.raises(job_shell.JobShellError, match="Multiple running instances"):
+    with pytest.raises(pty_socket.JobShellError, match="Multiple running instances"):
         job_shell.select_job_instance(instances)
 
     assert job_shell.select_job_instance(instances, rank=0).name == "worker-0"
@@ -89,7 +90,7 @@ def test_select_job_instance_requires_selector_for_multiple_running() -> None:
 
 
 def test_select_job_instance_prompts_for_multiple_running(monkeypatch) -> None:  # noqa: ANN001
-    instances = job_shell.normalize_job_instances(
+    instances = pty_socket.normalize_job_instances(
         [
             {"name": "worker-0", "instance_status": "instance_running"},
             {"name": "worker-1", "instance_status": "instance_running"},
@@ -109,7 +110,7 @@ def test_open_job_shell_retries_once_after_401(monkeypatch) -> None:  # noqa: AN
         del kwargs
         calls.append(session)
         if len(calls) == 1:
-            raise job_shell.JobShellAuthError("401")
+            raise pty_socket.JobShellAuthError("401")
         return 0
 
     monkeypatch.setattr(job_shell, "run_remote_shell", fake_run_remote_shell)
@@ -816,7 +817,7 @@ class _FakeSocket:
 def test_websocket_http_response_preserves_extra_frame_bytes() -> None:
     sock = _FakeSocket([b"HTTP/1.1 101 Switching Protocols\r\nHeader: value\r\n\r\n\x82\x05hello"])
 
-    response, extra = job_shell._WebSocketClient._read_http_response(sock)
+    response, extra = pty_socket.WebSocketClient._read_http_response(sock)
 
     assert response == "HTTP/1.1 101 Switching Protocols\r\nHeader: value\r\n\r\n"
     assert extra == b"\x82\x05hello"
@@ -824,7 +825,7 @@ def test_websocket_http_response_preserves_extra_frame_bytes() -> None:
 
 def test_websocket_recv_exact_consumes_buffer_before_socket() -> None:
     sock = _FakeSocket([b"cd"])
-    client = job_shell._WebSocketClient("wss://example.invalid", {})
+    client = pty_socket.WebSocketClient("wss://example.invalid", {})
     client.sock = sock
     client._recv_buffer = b"ab"
 
@@ -873,7 +874,7 @@ def test_remote_shell_refuses_a_workload_it_has_no_measured_route_for(monkeypatc
     """
     monkeypatch.setattr(job_shell, "_get_base_url", lambda: "https://qz.sii.edu.cn")
 
-    with pytest.raises(job_shell.JobShellError, match="notebook"):
+    with pytest.raises(pty_socket.JobShellError, match="notebook"):
         job_shell.build_remote_cmd_ws_url("x", "y", workload="notebook")
 
 
@@ -976,7 +977,7 @@ def test_run_remote_shell_forwards_keystrokes_and_bootstraps_the_size(monkeypatc
     code, ws = _run_shell(monkeypatch, [(0x1, b"prompt$ "), (0x8, b"")], keystrokes=b"ls -l\r")
 
     assert code == 0
-    assert ws.sent[0] == job_shell.SHELL_BOOTSTRAP
+    assert ws.sent[0] == pty_socket.SHELL_BOOTSTRAP
     assert ws.sent[1].startswith("stty columns ")
     assert "ls -l\r" in ws.sent
 
@@ -1009,7 +1010,7 @@ def test_run_remote_shell_stops_on_the_shell_exit_marker(monkeypatch) -> None:  
     monkeypatch.setattr(
         job_shell, "write_stream_output", lambda stream, data: captured.append(data)
     )
-    marker_frame = ("bye\r\n" + job_shell.SHELL_EXIT_MARKER).encode()
+    marker_frame = ("bye\r\n" + pty_socket.SHELL_EXIT_MARKER).encode()
 
     code, _ws = _run_shell(monkeypatch, [(0x1, marker_frame), (0x1, b"never read")])
 
@@ -1027,7 +1028,7 @@ def test_run_remote_shell_exits_on_the_ctrl_bracket_escape(monkeypatch) -> None:
     code, ws = _run_shell(
         monkeypatch,
         [(0x1, b"prompt$ ")],
-        keystrokes=b"partial" + job_shell.CTRL_RIGHT_BRACKET,
+        keystrokes=b"partial" + pty_socket.CTRL_RIGHT_BRACKET,
     )
 
     assert code == 0

@@ -17,13 +17,17 @@ from inspire.platform.web.session.models import TransientAPIError
 # v2 carries throttling and server faults in the envelope, under HTTP 200.
 # An error announced this way is still the platform declining to answer, and
 # must not read as "the answer is empty".
-_TRANSIENT_V2_ERROR_CODES = frozenset(
+_SERVER_V2_ERROR_CODES = frozenset(
     {
         "internalerror",
         "internalfailure",
         "internalservererror",
         "requesttimeout",
         "serviceunavailable",
+    }
+)
+_THROTTLING_V2_ERROR_CODES = frozenset(
+    {
         "slowdown",
         "throttling",
         "throttlingexception",
@@ -31,6 +35,8 @@ _TRANSIENT_V2_ERROR_CODES = frozenset(
         "toomanyrequestsexception",
     }
 )
+
+_TRANSIENT_V2_ERROR_CODES = _SERVER_V2_ERROR_CODES | _THROTTLING_V2_ERROR_CODES
 
 
 def _is_transient_v2_error_code(code: str) -> bool:
@@ -59,7 +65,7 @@ def _v2_result(data: dict[str, Any]) -> dict[str, Any]:
             message = error.get("Message") or "unknown error"
             text = f"API error: {code}: {message}"
             if _is_transient_v2_error_code(code):
-                raise TransientAPIError(text)
+                raise TransientAPIError(text, code=str(code))
             raise ValueError(text)
     elif data.get("code") not in (None, 0):
         raise ValueError(f"API error: {data.get('message')}")

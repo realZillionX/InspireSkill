@@ -2,10 +2,10 @@
 
 The dataset catalogue lives in its own application, off the qz console and
 behind its own session cookie, so it gets its own package rather than another
-module under :mod:`inspire.platform.web.browser_api` — everything there is the
-qz host, one CAS session and the ``/api/v2`` Action envelope. What the
-two share is the platform web session, which is why this sits beside them
-under :mod:`inspire.platform.web`.
+module under :mod:`inspire.platform.web.browser_api`, whose console Actions use
+qz's ``/api/v2`` envelope (and which also has notebook and TensorBoard application
+helpers). The caller's Transport owns both lifecycles; this package defines the
+plaza handshake and envelope, not an independent account or session cache.
 
 Mounting is the other half and belongs to qz:
 :mod:`inspire.platform.web.browser_api.datasets` resolves a

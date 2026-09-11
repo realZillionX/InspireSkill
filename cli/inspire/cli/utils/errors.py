@@ -11,7 +11,8 @@ from collections.abc import Iterable
 import click
 
 from inspire.cli.context import EXIT_GENERAL_ERROR, EXIT_VALIDATION_ERROR, Context
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 
 
 def _emit_debug_report_hint(ctx: Context) -> None:

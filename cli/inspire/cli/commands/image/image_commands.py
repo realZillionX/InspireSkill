@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from inspire.services.catalog.images import (
+    load_image_sources,
+    image_label,
+    image_summary,
+    dedupe_images_by_id,
+    VISIBILITY_PUBLIC,
+    VISIBILITY_PROJECT,
+    VISIBILITY_PRIVATE,
+)
 import contextlib
 import io
-from concurrent.futures import ThreadPoolExecutor
-from contextvars import copy_context
 from typing import Any, Optional
-
 import click
-
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -17,10 +22,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.human_formatter import format_mutation_success
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
@@ -41,10 +46,16 @@ from inspire.cli.utils.notebook_cli import (
     WEB_AUTH_HINT,
     require_web_session,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
+from inspire.services.catalog.image_writes import parse_visibility_value as _parse_visibility_value
+
+
+
+
+
 
 
 _IMAGE_LIST_COMMAND = "inspire image list --workspace <workspace-name>"
@@ -105,7 +116,7 @@ def _resolve_image_name(
 
     def _lister():
         bucket = []
-        images, failed_sources = _load_image_sources(
+        images, failed_sources = load_image_sources(
             source_keys=_ALL_SOURCE_KEYS,
             session=session,
             workspace_id=workspace_id,
@@ -186,53 +197,13 @@ def _resolve_image_name(
 _PUBLIC_SOURCE_CHOICES = ("official", "public", "project", "private", "all")
 _ALL_SOURCE_KEYS = ("official", "public", "project", "private")
 
-_VISIBILITY_PUBLIC = "VISIBILITY_PUBLIC"
-_VISIBILITY_PROJECT = "VISIBILITY_PROJECT"
-_VISIBILITY_PRIVATE = "VISIBILITY_PRIVATE"
 
 _VISIBILITY_BY_NAME = {
-    "public": _VISIBILITY_PUBLIC,
-    "project": _VISIBILITY_PROJECT,
-    "private": _VISIBILITY_PRIVATE,
+    "public": VISIBILITY_PUBLIC,
+    "project": VISIBILITY_PROJECT,
+    "private": VISIBILITY_PRIVATE,
 }
 
-
-def _load_image_sources(
-    *,
-    source_keys: tuple[str, ...],
-    session: Any,
-    workspace_id: str,
-) -> tuple[list[browser_api_module.CustomImageInfo], list[str]]:
-    """Read independent image catalogues concurrently in stable tab order.
-
-    Each source is one complete ``ListImages`` request. Starting the requests
-    together changes neither their wire contracts nor partial-failure
-    semantics; results and failures are still folded in the caller-visible
-    official/public/project/private order.
-    """
-    if not source_keys:
-        return [], []
-
-    def _fetch(source: str) -> list[browser_api_module.CustomImageInfo]:
-        return browser_api_module.list_images_by_source(
-            source=source,
-            session=session,
-            workspace_id=workspace_id,
-        )
-
-    with ThreadPoolExecutor(max_workers=len(source_keys)) as executor:
-        futures = {
-            source: executor.submit(copy_context().run, _fetch, source)
-            for source in source_keys
-        }
-        images: list[browser_api_module.CustomImageInfo] = []
-        failed: list[str] = []
-        for source in source_keys:
-            try:
-                images.extend(futures[source].result())
-            except Exception:
-                failed.append(source)
-    return images, failed
 
 # `CreateImage.add_method`. 2 is the console's 本地推送: it reserves
 # ``<name>:<version>`` and answers with the address to docker-push to. 0 is
@@ -260,10 +231,6 @@ def _platform_reason(error: Exception) -> str:
     return "."
 
 
-def _parse_visibility_value(visibility: Optional[str]) -> Optional[str]:
-    if visibility is None:
-        return None
-    return _VISIBILITY_BY_NAME.get(visibility.lower(), _VISIBILITY_PRIVATE)
 
 
 def _parse_source_value(_ctx: click.Context, _param: click.Parameter, value: str) -> str:
@@ -272,43 +239,6 @@ def _parse_source_value(_ctx: click.Context, _param: click.Parameter, value: str
         return normalized
     allowed = ", ".join(_PUBLIC_SOURCE_CHOICES)
     raise click.BadParameter(f"invalid source '{value}'. Choose one of: {allowed}")
-
-
-def _image_label(img: browser_api_module.CustomImageInfo) -> str:
-    name = str(img.name or "").strip()
-    version = str(img.version or "").strip()
-    if version and ":" not in name:
-        return f"{name}:{version}"
-    return name
-
-
-def _image_visibility(img: browser_api_module.CustomImageInfo) -> str:
-    """Return who can see the image: official / public / private.
-
-    `visibility` is the field ``set-visibility`` writes and the field the
-    ``--source public`` / ``--source private`` filters select on; `source` is
-    only the registry namespace and reads SOURCE_PUBLIC for personal images
-    too, so it cannot answer this. Official images carry no `visibility`, so
-    they are still recognised by `source`.
-    """
-    source = str(img.source or "").strip()
-    if source == "SOURCE_OFFICIAL":
-        return "official"
-    return {
-        _VISIBILITY_PUBLIC: "public",
-        _VISIBILITY_PROJECT: "project",
-        _VISIBILITY_PRIVATE: "private",
-    }.get(str(img.visibility or "").strip(), "")
-
-
-def _image_summary(img: browser_api_module.CustomImageInfo) -> dict[str, str]:
-    """Return the compact, name-only image representation exposed by the CLI."""
-    return {
-        "name": scrub_raw_ids(_image_label(img)),
-        "status": scrub_raw_ids(img.status),
-        "framework": scrub_raw_ids(img.framework),
-        "visibility": _image_visibility(img),
-    }
 
 
 def _format_image_list(images: list[dict[str, str]]) -> str:
@@ -349,22 +279,6 @@ def _format_image_detail(image: dict[str, str]) -> str:
     return "\n".join(
         f"{label}: {image[key]}" for label, key in labels if image.get(key)
     )
-
-
-def _dedupe_images_by_id(
-    images: list[browser_api_module.CustomImageInfo],
-) -> list[browser_api_module.CustomImageInfo]:
-    """Deduplicate internal image records while preserving platform order."""
-    deduped: list[browser_api_module.CustomImageInfo] = []
-    seen_ids: set[str] = set()
-    for image in images:
-        image_id = str(image.image_id or "").strip()
-        if image_id:
-            if image_id in seen_ids:
-                continue
-            seen_ids.add(image_id)
-        deduped.append(image)
-    return deduped
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +347,7 @@ def list_images_cmd(
 
     try:
         if source == "all":
-            images, failed_sources = _load_image_sources(
+            images, failed_sources = load_image_sources(
                 source_keys=_ALL_SOURCE_KEYS,
                 session=session,
                 workspace_id=workspace_id,
@@ -443,7 +357,7 @@ def list_images_cmd(
                 for source_key in failed_sources
             )
 
-            images = _dedupe_images_by_id(images)
+            images = dedupe_images_by_id(images)
 
             if not images and warnings:
                 _handle_error(
@@ -467,7 +381,7 @@ def list_images_cmd(
         )
         return
 
-    results = [_image_summary(image) for image in images]
+    results = [image_summary(image) for image in images]
     if keyword:
         needle = keyword.strip().casefold()
         results = [row for row in results if needle in row["name"].casefold()]
@@ -571,12 +485,12 @@ def image_detail(
         )
         return
 
-    view = _image_summary(image)
+    view = image_summary(image)
     remember_resource_identity(
         session=session,
         resource_type="image",
         resource_id=image.image_id,
-        name=_image_label(image),
+        name=image_label(image),
         workspace_id=workspace_id,
         owner_scope="self",
         status=image.status,

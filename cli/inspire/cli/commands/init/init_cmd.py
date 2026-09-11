@@ -17,7 +17,7 @@ from inspire.accounts import (
     set_current_account,
     validate_name,
 )
-from inspire.cli.commands.account.add import _render_config as _render_account_config
+from inspire.services.account.account_config import render_account_config as _render_account_config
 from inspire.cli.context import Context, EXIT_GENERAL_ERROR, pass_context
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.config import DEFAULT_BASE_URL, Config

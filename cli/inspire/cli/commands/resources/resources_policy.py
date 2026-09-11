@@ -25,16 +25,16 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
-from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.resource_index import QUOTA_WORKLOADS
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.catalog.resource_index import QUOTA_WORKLOADS
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import (
     resolve_workspace_operation_scope,

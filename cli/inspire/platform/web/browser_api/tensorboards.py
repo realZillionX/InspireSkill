@@ -25,7 +25,7 @@ from inspire.platform.web.browser_api.core import (
     _v2_result,
 )
 from inspire.platform.web.session import WebSession, get_web_session
-from inspire.platform.web.session.requests import build_requests_session
+from inspire.platform.web.runtime import get_transport
 
 __all__ = [
     "MAX_AUTO_STOP_MS",
@@ -160,7 +160,7 @@ def list_tensorboards(
     if status:
         status = str(status).strip()
         body["status"] = (
-            status if status.startswith(_STATUS_PREFIX) else f"{_STATUS_PREFIX}{status}"
+            f"{_STATUS_PREFIX}{status.strip().lower().removeprefix(_STATUS_PREFIX)}"
         )
     if keyword:
         body["keyword"] = keyword
@@ -305,14 +305,23 @@ def _tensorboard_get(
     if session is None:
         session = get_web_session()
     base = tensorboard_app_url(url)
-    http = build_requests_session(session, base)
-    response = http.get(urljoin(base, path), params=params or None, timeout=timeout)
-    if response.status_code >= 400:
-        raise ValueError(
-            f"TensorBoard returned {response.status_code} for {path}: "
-            f"{response.text[:200]}"
-        )
-    return response.json()
+    owner = get_transport(session)
+    if owner.cli_compat:
+        from inspire.platform.web.session.requests import build_requests_session
+
+        # The CLI historically follows redirects and reports the original HTTP error.
+        with build_requests_session(session, base) as http:
+            response = http.get(urljoin(base, path), params=params or None, timeout=timeout)
+            if response.status_code >= 400:
+                raise ValueError(
+                    f"TensorBoard returned {response.status_code} for {path}: "
+                    f"{response.text[:200]}"
+                )
+            return response.json()
+    with owner.application_connection(base) as http:
+        response = http.get(urljoin(base, path), params=params or None, timeout=timeout)
+        return response.json()
+
 
 
 def read_tensorboard_runs(url: str, session: Optional[WebSession] = None) -> list[str]:

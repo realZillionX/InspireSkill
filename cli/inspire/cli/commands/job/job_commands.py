@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import sys
@@ -10,6 +11,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
 import click
+
+from inspire.services.job.job_status import RAW_TERMINAL_STATUSES as _JOB_TERMINAL_STATUSES
+from inspire.services.job.job_status import (
+    STATUS_ALIAS_MAP,
+    STATUS_API_ALIAS_MAP,
+    JOB_ACTIVE_API_STATUSES,
+    JOB_ACTIVE_STATUSES,
+)
 
 from inspire.cli.context import (
     Context,
@@ -23,9 +32,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
@@ -43,14 +53,10 @@ from inspire.cli.utils.id_resolver import (
     reject_id_at_boundary,
     run_with_stale_handle_retry,
 )
-from inspire.cli.utils.job_shell import (
-    JobShellError,
-    normalize_job_instances,
-    open_job_shell,
-    select_job_instance,
-)
-from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.resource_index import (
+from inspire.platform.web.pty_socket import JobShellError, normalize_job_instances
+from inspire.cli.utils.job_shell import open_job_shell, select_job_instance
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.catalog.resource_index import (
     ResourceIdentity,
     ResourceIndex,
     ResourceScope,
@@ -62,55 +68,18 @@ from inspire.config.workspaces import resolve_workspace_query_scope, select_work
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
 
-from .public_output import (
-    format_job_status,
-    public_job_list_item,
-    public_job_status,
-)
+from inspire.cli.commands.job.public_output import format_job_status
+from inspire.services.job.job_output import public_job_list_item, public_job_status
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_INSTANCE_SCAN_LIMIT = 500
 
-_STATUS_ALIAS_MAP = {
-    "PENDING": {"PENDING", "job_pending", "job_creating"},
-    "RUNNING": {"RUNNING", "job_running"},
-    "QUEUING": {"QUEUING", "job_queuing"},
-    "SUCCEEDED": {"SUCCEEDED", "job_succeeded"},
-    "FAILED": {"FAILED", "job_failed"},
-    "CANCELLED": {"CANCELLED", "job_cancelled", "job_stopped"},
-}
-_STATUS_API_ALIAS_MAP = {
-    "PENDING": ("job_pending", "job_creating"),
-    "RUNNING": ("job_running",),
-    "QUEUING": ("job_queuing",),
-    "SUCCEEDED": ("job_succeeded",),
-    "FAILED": ("job_failed",),
-    "CANCELLED": ("job_cancelled", "job_stopped"),
-}
-_JOB_ACTIVE_API_STATUSES = ("job_pending", "job_creating", "job_queuing", "job_running")
-_JOB_ACTIVE_STATUSES = {
-    "PENDING",
-    "job_pending",
-    "job_creating",
-    "QUEUING",
-    "job_queuing",
-    "RUNNING",
-    "job_running",
-}
 # A job never leaves any of these on its own, and `job` has no `start`: the
 # only way back to a running job is a new `job create`. Anything that waits on
 # a job must stop at this set, `job_stopped` included -- a job stopped by hand
 # or reclaimed by the workspace idle rule is as final as one that failed.
-_JOB_TERMINAL_STATUSES = {
-    "SUCCEEDED",
-    "job_succeeded",
-    "FAILED",
-    "job_failed",
-    "CANCELLED",
-    "job_cancelled",
-    "job_stopped",
-}
+
 
 
 class WebJobResolutionError(Exception):
@@ -125,7 +94,7 @@ def _expand_status_aliases(statuses: list[str] | tuple[str, ...] | None) -> set[
     expanded: set[str] = set()
     for value in statuses or ():
         key = str(value).upper()
-        expanded.update(_STATUS_ALIAS_MAP.get(key, {str(value)}))
+        expanded.update(STATUS_ALIAS_MAP.get(key, {str(value)}))
     return expanded
 
 
@@ -135,7 +104,7 @@ def _api_statuses_for_filter(status: Optional[str]) -> tuple[str, ...]:
         return ()
     if raw.startswith("job_"):
         return (raw,)
-    return _STATUS_API_ALIAS_MAP.get(raw.upper(), ())
+    return STATUS_API_ALIAS_MAP.get(raw.upper(), ())
 
 
 def _dedupe_job_rows(rows: list[dict]) -> list[dict]:
@@ -177,12 +146,11 @@ def _job_not_found_message(job: str) -> str:
 
 
 def _close_web_client() -> None:
-    try:
+    # Browser cleanup must not replace the job command result.
+    with contextlib.suppress(Exception):
         from inspire.platform.web.session import _close_browser_client
 
         _close_browser_client()
-    except Exception:
-        pass
 
 
 def _resolve_explicit_workspace(workspace: Optional[str], session) -> Optional[str]:  # noqa: ANN001
@@ -629,7 +597,10 @@ def _resolve_web_job_id(
         for workspace_id, scope in cache_scopes.items():
             try:
                 snapshot_tokens[workspace_id] = cache_index.snapshot_token(scope)
-            except Exception:
+            except Exception:  # noqa: BLE001 - Cache is best-effort; live API is authoritative.
+                logger.debug(
+                    "Job cache snapshot unavailable; continuing with live lookup", exc_info=True
+                )
                 continue
 
     if cache_index is not None and cache_scopes and not require_live:
@@ -718,10 +689,11 @@ def _resolve_web_job_id(
                 try:
                     if cache_index.generation() != token[0]:
                         continue
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001 - Cache is best-effort; live API is authoritative.
+                    logger.debug("Job cache generation unavailable after stale refresh", exc_info=True)
                 stale_workspaces.add(workspace_id)
-            except Exception:
+            except Exception:  # noqa: BLE001 - Cache is best-effort; live API is authoritative.
+                logger.debug("Job cache refresh failed; continuing with live results", exc_info=True)
                 continue
 
     if stale_workspaces:
@@ -755,7 +727,8 @@ def _resolve_web_job_id(
                         fresh_only=False,
                     )
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - Cache is best-effort; live API is authoritative.
+                logger.debug("Job cache lookup failed after concurrent refresh", exc_info=True)
                 continue
         exact = _dedupe_job_rows([*exact, *current_rows])
 
@@ -900,7 +873,7 @@ def _format_job_list(rows: list[dict]) -> str:
         {
             **r,
             "name": scrub_raw_ids(r.get("name", "")),
-            "status": scrub_raw_ids(r.get("status", "")),
+            "status": public_job_list_item(r)["status"],
             "resource": scrub_raw_ids(resource_text(r)),
             "created_at": scrub_raw_ids(human_formatter.format_epoch(r.get("created_at"))),
             "workspace_name": scrub_raw_ids(r.get("workspace_name", "")),
@@ -1089,7 +1062,7 @@ def _watch_jobs(
                 page_size=page_size,
                 max_pages=max_pages,
                 limit=limit,
-                api_statuses=_JOB_ACTIVE_API_STATUSES if active and not status else None,
+                api_statuses=JOB_ACTIVE_API_STATUSES if active and not status else None,
             )
             if exclude_statuses:
                 jobs = [j for j in jobs if j.get("status") not in exclude_statuses]
@@ -1178,6 +1151,10 @@ def list_jobs(
 ) -> None:
     """List training jobs from the platform.
 
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
+    Job aliases map job_running to RUNNING, CREATING to PENDING, and STOPPED
+    to CANCELLED; unrecognised values become UNKNOWN.
+
     Requires ``--workspace <name|all>``. Use ``all`` to fan out across every
     visible workspace.
 
@@ -1238,11 +1215,11 @@ def list_jobs(
             page_size=_job_list_page_size(effective_limit),
             max_pages=50,
             limit=effective_limit,
-            api_statuses=_JOB_ACTIVE_API_STATUSES if active and not status else None,
+            api_statuses=JOB_ACTIVE_API_STATUSES if active and not status else None,
         )
 
         if active:
-            rows = [j for j in rows if j.get("status") in _JOB_ACTIVE_STATUSES]
+            rows = [j for j in rows if j.get("status") in JOB_ACTIVE_STATUSES]
 
         page = bound_collection(
             rows,
@@ -1357,6 +1334,10 @@ def status(
     pick: Optional[int],
 ) -> None:
     """Check the status of one or more training jobs.
+
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
+    Job aliases map job_running to RUNNING, CREATING to PENDING, and STOPPED
+    to CANCELLED; unrecognised values become UNKNOWN.
 
     NAME is shown in `inspire job list`. Several names are answered with one
     batched request per 20 jobs instead of one request each, and a name that
@@ -1695,8 +1676,8 @@ def delete(ctx: Context, job: str, workspace: Optional[str], yes: bool, pick: Op
                 )
                 if index is not None and scope is not None:
                     index.mark_deleted(scope, resource_id=job_id, name=job)
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001 - Cache is best-effort; live API is authoritative.
+                logger.debug("Job cache deletion update failed after live deletion", exc_info=True)
 
         if ctx.json_output:
             click.echo(json_formatter.format_json({"name": job, "status": "deleted"}))

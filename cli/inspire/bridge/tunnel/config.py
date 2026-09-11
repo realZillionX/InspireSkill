@@ -12,9 +12,12 @@ Active account is resolved from ``inspire.accounts.current_account()``
 
 from __future__ import annotations
 
+from inspire.local_files import atomic_write_text
+
+from inspire.platform.web.flow import blocking_io
+
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -66,6 +69,7 @@ def _read_json_into_config(path: Path, config: TunnelConfig) -> Optional[str]:
     return default_name or None
 
 
+@blocking_io
 def load_tunnel_config(
     config_dir: Optional[Path] = None,
     account: Optional[str] = None,
@@ -106,13 +110,5 @@ def save_tunnel_config(config: TunnelConfig) -> None:
         "bridges": [p.to_dict() for p in config.bridges.values()],
     }
 
-    # Atomic write (same-dir temp + os.replace) so a crash mid-write never
-    # corrupts the bridges file — losing a few seconds of state beats losing
-    # every bridge the user had configured.
-    tmp = target.with_name(target.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, target)
+    # Proxy URLs can contain authentication tokens.
+    atomic_write_text(target, json.dumps(data, indent=2) + "\n", private=True)

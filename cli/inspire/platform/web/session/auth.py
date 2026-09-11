@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+from inspire.platform.web.flow import blocking_io
+
+import sys
+from contextlib import contextmanager
+from inspire.platform.web.flow import enter_context, exit_context
+
+from inspire.platform.web.flow import Program, workflow, call, http_call, perform_sync
+
+import contextlib
 from html.parser import HTMLParser
 import json
 import logging
@@ -48,6 +57,16 @@ class _CasVerificationRequired(ValueError):
 # Verification is client-specific: requests and Chromium can receive different
 # forms. Never submit a password to a form that still requires a code.
 _VERIFICATION_FIELD_NAMES = frozenset({"authcode", "captcha", "smscode", "vercode", "verifycode"})
+
+
+def _request_timeout(timeout: float) -> float:
+    """Keep HTTP authentication steps inside the caller's operation budget."""
+    from inspire.platform.web.runtime import active_transport
+
+    transport = active_transport.get()
+    if transport is not None and transport.deadline is not None:
+        return min(timeout, transport.remaining())
+    return timeout
 
 
 def _verification_required_message() -> str:
@@ -103,6 +122,7 @@ def _asks_for_verification_code(html: str, page_url: str) -> bool:
     return _references_live_captcha_image(html, page_url)
 
 
+@blocking_io
 def _load_runtime_config(account: Optional[str] = None) -> Config:
     """Use the same account and runtime settings for login and API requests."""
     account_name = str(account or "").strip()
@@ -408,7 +428,7 @@ def _extract_login_failure_hint(html: str, *, limit: int = 180) -> str:
 def _page_content(page: Any) -> str:
     """The page's HTML, or ``""`` when the page is already closed."""
     try:
-        return str(page.content() or "")
+        return str(perform_sync(call(page.content)) or "")
     except Exception:
         return ""
 
@@ -628,7 +648,8 @@ def _extract_cas_rsa_key(text: str) -> tuple[str, str] | None:
     return match.group(1), match.group(2)
 
 
-def _resolve_cas_rsa_key(http: Any, html: str, page_url: str) -> tuple[str, str]:
+@workflow
+def _resolve_cas_rsa_key(http: Any, html: str, page_url: str) -> Program[tuple[str, str]]:
     from urllib.parse import urlparse
 
     key = _extract_cas_rsa_key(html)
@@ -641,7 +662,7 @@ def _resolve_cas_rsa_key(http: Any, html: str, page_url: str) -> tuple[str, str]
         if urlparse(script_url).netloc != page_host:
             continue
         try:
-            response = http.get(script_url, timeout=15)
+            response = (yield http_call(http.get, script_url, timeout=_request_timeout(15)))
             response.raise_for_status()
         except Exception:
             continue
@@ -746,7 +767,8 @@ def _seed_sso_renewal_cookies(http: Any, session: WebSession) -> None:
         http.cookies.set(name, value, **kwargs)
 
 
-def renew_web_session_without_credentials(session: WebSession) -> WebSession | None:
+@workflow
+def renew_web_session_without_credentials(session: WebSession) -> Program[WebSession | None]:
     """Try to renew a refused Qizhi session through existing SSO cookies.
 
     ``None`` means there is no safely reusable SSO state: the auth cookies are
@@ -757,6 +779,7 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
     help.
     """
     if not _has_sso_renewal_state(session):
+        logger.debug("Cached SSO renewal state unavailable; trying next authentication strategy")
         return None
 
     previous_detail = session.user_detail if isinstance(session.user_detail, dict) else {}
@@ -799,11 +822,11 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
     _seed_sso_renewal_cookies(http, session)
 
     try:
-        login_resp = http.get(f"{base_url}/login", timeout=30, allow_redirects=True)
+        login_resp = (yield http_call(http.get, f"{base_url}/login", timeout=_request_timeout(30), allow_redirects=True))
         login_resp.raise_for_status()
         cas_login_url = _decode_keycloak_login_url(login_resp.text, login_resp.url)
         if cas_login_url:
-            login_resp = http.get(cas_login_url, timeout=30, allow_redirects=True)
+            login_resp = (yield http_call(http.get, cas_login_url, timeout=_request_timeout(30), allow_redirects=True))
             login_resp.raise_for_status()
 
         # Reaching the password form is the decisive "SSO is gone" answer.
@@ -818,13 +841,13 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
             return None
 
         api_headers = {"Accept": "application/json", "Referer": f"{base_url}/login"}
-        user_detail_resp = http.post(
+        user_detail_resp = (yield http_call(http.post,
             f"{base_url}{USER_DETAIL_PATH}",
             headers=api_headers,
             json={},
-            timeout=15,
+            timeout=_request_timeout(15),
             allow_redirects=False,
-        )
+        ))
         if user_detail_resp.status_code == 401 or 300 <= user_detail_resp.status_code < 400:
             logger.debug("Cached SSO state is no longer authenticated.")
             return None
@@ -861,13 +884,13 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
         all_workspace_names: dict[str, str] = {}
         all_workspace_fair_scheduling: dict[str, bool] = {}
         try:
-            routes_resp = http.post(
+            routes_resp = (yield http_call(http.post,
                 f"{base_url}{USER_ROUTES_PATH}",
                 headers=api_headers,
                 json=BOOTSTRAP_ROUTES_BODY,
-                timeout=15,
+                timeout=_request_timeout(15),
                 allow_redirects=False,
-            )
+            ))
             if routes_resp.status_code == 200:
                 route_ids, route_names, route_fair_scheduling = (
                     _workspace_routes_from_payload(routes_resp.json())
@@ -881,8 +904,14 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
                     route_fair_scheduling,
                 )
         except Exception:
-            pass
+            logger.warning(
+                "Workspace discovery failed during login; workspace names may be incomplete "
+                "until the session is refreshed. Re-login to retry workspace discovery."
+            )
+            logger.debug("Workspace route discovery failed", exc_info=True)
 
+        # Optional route discovery must not hide an exhausted operation budget.
+        _request_timeout(15)
         storage_cookies = [_cookie_to_storage_entry(cookie) for cookie in http.cookies]
         cookie_dict = {cookie.name: cookie.value for cookie in http.cookies}
         if not cookie_dict.get("inspire-session"):
@@ -917,19 +946,19 @@ def renew_web_session_without_credentials(session: WebSession) -> WebSession | N
         _persist(renewed, account=account)
         return renewed
     finally:
-        try:
+        # HTTP cleanup must not replace the session renewal result.
+        with contextlib.suppress(Exception):
             http.close()
-        except Exception:
-            pass
 
 
+@workflow
 def _login_with_cas_requests(
     username: str,
     password: str,
     *,
     base_url: str,
     account: Optional[str] = None,
-) -> WebSession:
+) -> Program[WebSession]:
     import requests
     import urllib3
 
@@ -960,11 +989,13 @@ def _login_with_cas_requests(
         }
     )
 
-    login_resp = http.get(f"{base_url.rstrip('/')}/login", timeout=30, allow_redirects=True)
+    login_resp = (yield http_call(http.get,
+        f"{base_url.rstrip('/')}/login", timeout=_request_timeout(30), allow_redirects=True
+    ))
     login_resp.raise_for_status()
     cas_login_url = _decode_keycloak_login_url(login_resp.text, login_resp.url)
     if cas_login_url:
-        login_resp = http.get(cas_login_url, timeout=30, allow_redirects=True)
+        login_resp = (yield http_call(http.get, cas_login_url, timeout=_request_timeout(30), allow_redirects=True))
         login_resp.raise_for_status()
 
     action, fields = _extract_login_form(login_resp.text, login_resp.url)
@@ -986,7 +1017,7 @@ def _login_with_cas_requests(
     if verification_field:
         http.close()
         raise _CasVerificationRequired(_verification_required_message())
-    exponent_hex, modulus_hex = _resolve_cas_rsa_key(http, login_resp.text, login_resp.url)
+    exponent_hex, modulus_hex = (yield call(_resolve_cas_rsa_key, http, login_resp.text, login_resp.url))
     fields["username"] = username
     fields["password"] = _cas_page_encrypt_password(password, exponent_hex, modulus_hex)
     fields.setdefault("encrypted", "true")
@@ -999,13 +1030,13 @@ def _login_with_cas_requests(
     # that never arrives. CAS may well have counted the submission, and the
     # browser path would answer by making a second one.
     try:
-        auth_resp = http.post(
+        auth_resp = (yield http_call(http.post,
             action,
             data=fields,
             headers={"Referer": login_resp.url},
-            timeout=30,
+            timeout=_request_timeout(30),
             allow_redirects=True,
-        )
+        ))
     except Exception as exc:
         raise _CasLoginFailure(_login_not_complete_message(proxy_source=proxy_source)) from exc
     if auth_resp.status_code >= 400:
@@ -1021,12 +1052,12 @@ def _login_with_cas_requests(
     api_headers = {"Accept": "application/json", "Referer": f"{base_url.rstrip('/')}/login"}
     user_detail: dict | None = None
     try:
-        user_detail_resp = http.post(
+        user_detail_resp = (yield http_call(http.post,
             f"{base_url.rstrip('/')}{USER_DETAIL_PATH}",
             headers=api_headers,
             json={},
-            timeout=15,
-        )
+            timeout=_request_timeout(15),
+        ))
     except Exception as exc:
         raise _CasLoginFailure(
             _login_not_complete_message(
@@ -1062,6 +1093,10 @@ def _login_with_cas_requests(
     try:
         detail = _v2_result(user_detail_resp.json())
     except Exception:
+        logger.debug(
+            "user detail unavailable; resource cache scope will lack subject_id",
+            exc_info=True,
+        )
         detail = {}
     if detail:
         user_detail = detail
@@ -1070,12 +1105,12 @@ def _login_with_cas_requests(
     all_workspace_names: dict[str, str] = {}
     all_workspace_fair_scheduling: dict[str, bool] = {}
     try:
-        routes_resp = http.post(
+        routes_resp = (yield http_call(http.post,
             f"{base_url.rstrip('/')}{USER_ROUTES_PATH}",
             headers=api_headers,
             json=BOOTSTRAP_ROUTES_BODY,
-            timeout=15,
-        )
+            timeout=_request_timeout(15),
+        ))
         if routes_resp.status_code == 200:
             route_ids, route_names, route_fair_scheduling = _workspace_routes_from_payload(
                 routes_resp.json()
@@ -1089,8 +1124,13 @@ def _login_with_cas_requests(
                 route_fair_scheduling,
             )
     except Exception:
-        pass
+        logger.warning(
+            "Workspace discovery failed during login; workspace names may be incomplete "
+            "until the session is refreshed. Re-login to retry workspace discovery."
+        )
+        logger.debug("Workspace route discovery failed", exc_info=True)
 
+    _request_timeout(15)
     storage_state = {
         "cookies": [_cookie_to_storage_entry(cookie) for cookie in http.cookies],
         "origins": [],
@@ -1113,6 +1153,7 @@ def _login_with_cas_requests(
     return session
 
 
+@blocking_io
 def _persist(session: WebSession, *, account: Optional[str]) -> None:
     """Cache an authenticated session, keeping it usable if the write fails.
 
@@ -1146,6 +1187,30 @@ def get_credentials(account: Optional[str] = None) -> tuple[str, str]:
     return username, password
 
 
+@workflow
+def login_without_browser(
+    username: str,
+    password: str,
+    *,
+    base_url: str,
+    account: Optional[str] = None,
+) -> Program[WebSession]:
+    """Submit credentials through CAS requests only, sharing its persistence and guard."""
+    try:
+        _context = guarded_credential_submission(username, password, account=account)
+        yield call(enter_context, _context)
+        try:
+            return (yield call(_login_with_cas_requests,
+                username, password, base_url=base_url, account=account
+            ))
+        finally:
+            yield call(exit_context, _context, *sys.exc_info())
+    except _CasVerificationRequired as error:
+        # No credentials were submitted: convert outside the guard so this
+        # human challenge does not record a rejected password.
+        raise AuthenticationError(str(error)) from error
+
+
 def login_with_playwright(
     username: str,
     password: str,
@@ -1157,8 +1222,8 @@ def login_with_playwright(
 
     The login flow: qz/login -> CAS (Keycloak broker) -> Keycloak -> qz.
 
-    This is the only function in the CLI that submits credentials, which is why
-    the cross-process guard sits here rather than at the callers: a wrapper that
+    Both login entry points guard credential submission here rather than
+    at the callers: a wrapper that
     bounds its own retries still adds one submission to whatever the wrapper
     below it already spent. See :mod:`.login_guard`.
     """
@@ -1174,16 +1239,31 @@ def login_with_playwright(
             account=account,
         )
 
-    with guarded_credential_submission(username, password, account=account):
-        return _submit_credentials(
-            username,
-            password,
-            base_url=base_url,
-            headless=headless,
-            account=account,
-        )
+    return _login_with_playwright_steps(
+        username, password, base_url=base_url, headless=headless, account=account,
+    )
 
 
+@workflow
+def _login_with_playwright_steps(
+    username: str, password: str, base_url: str = DEFAULT_BASE_URL,
+    headless: bool = True, account: Optional[str] = None,
+) -> Program[WebSession]:
+    _context = guarded_credential_submission(username, password, account=account)
+    yield call(enter_context, _context)
+    try:
+        return (yield call(
+            _submit_credentials, username, password, base_url=base_url,
+            headless=headless, account=account,
+        ))
+    finally:
+        yield call(exit_context, _context, *sys.exc_info())
+
+
+login_with_playwright.__workflow__ = _login_with_playwright_steps.__workflow__  # type: ignore[attr-defined]
+
+
+@workflow
 def _submit_credentials(
     username: str,
     password: str,
@@ -1191,17 +1271,15 @@ def _submit_credentials(
     base_url: str,
     headless: bool,
     account: Optional[str],
-) -> WebSession:
+) -> Program[WebSession]:
     """Authenticate once: CAS over requests, and only then a real browser."""
-    from playwright.sync_api import sync_playwright
-
     try:
-        return _login_with_cas_requests(
+        return (yield call(_login_with_cas_requests,
             username,
             password,
             base_url=base_url,
             account=account,
-        )
+        ))
     except AuthenticationError:
         # The password was submitted. Retrying it in a browser is a second
         # submission, not a fallback.
@@ -1214,6 +1292,15 @@ def _submit_credentials(
     except Exception:
         logger.debug("CAS requests login failed; falling back to Playwright.", exc_info=True)
 
+    return (yield call(
+        _login_with_browser, username, password, base_url=base_url,
+        headless=headless, account=account,
+    ))
+
+
+def _login_with_browser(
+    username: str, password: str, *, base_url: str, headless: bool, account: Optional[str],
+) -> WebSession:
     resolved_proxy, playwright_proxy_source = resolve_playwright_proxy_config(account=account)
     playwright_proxy = cast(Any, resolved_proxy)
     effective_proxy = describe_effective_proxy_config(account=account, base_url=base_url)
@@ -1229,28 +1316,28 @@ def _submit_credentials(
         redact_proxy_url(resolved_proxy.get("server")) if resolved_proxy else "",
         bool(resolved_proxy and resolved_proxy.get("bypass")),
     )
-    with sync_playwright() as p:
+    with _playwright_runtime() as p:
         try:
-            browser = p.chromium.launch(
+            browser = perform_sync(call(p.chromium.launch,
                 **chromium_launch_kwargs(headless=headless, proxy=playwright_proxy)
-            )
+            ))
         except Exception as exc:
             if _is_browser_launch_runtime_error(exc):
                 _raise_browser_launch_runtime_error(exc)
             raise
-        context = browser.new_context(proxy=playwright_proxy, ignore_https_errors=True)
-        page = context.new_page()
+        context = perform_sync(call(browser.new_context, proxy=playwright_proxy, ignore_https_errors=True))
+        page = perform_sync(call(context.new_page))
 
         # Navigate to login page; use domcontentloaded since CAS may have
         # long-polling resources that prevent networkidle from completing.
         try:
-            page.goto(f"{base_url}/login", wait_until="domcontentloaded", timeout=60000)
+            perform_sync(call(page.goto, f"{base_url}/login", wait_until="domcontentloaded", timeout=60000))
         except Exception as exc:
             if _is_browser_closed_error(exc):
                 _raise_browser_closed_error(exc)
             raise
         # Give some time for any redirects to settle
-        page.wait_for_timeout(2000)
+        perform_sync(call(page.wait_for_timeout, 2000))
 
         login_pairs = [
             ("input#username", "input#passwordShow"),
@@ -1260,34 +1347,46 @@ def _submit_credentials(
 
         def _fill_login_form() -> Optional[object]:
             if _asks_for_verification_code(_page_content(page), page.url):
-                browser.close()
+                perform_sync(call(browser.close))
                 raise _CasVerificationRequired(_verification_required_message())
             for user_sel, pass_sel in login_pairs:
                 try:
-                    page.wait_for_selector(user_sel, timeout=5000, state="visible")
-                    page.wait_for_selector(pass_sel, timeout=5000, state="visible")
+                    perform_sync(call(page.wait_for_selector, user_sel, timeout=5000, state="visible"))
+                    perform_sync(call(page.wait_for_selector, pass_sel, timeout=5000, state="visible"))
                     user_locator = page.locator(user_sel).first
                     pass_locator = page.locator(pass_sel).first
-                    user_locator.fill(username)
-                    pass_locator.fill(password)
+                    perform_sync(call(user_locator.fill, username))
+                    perform_sync(call(pass_locator.fill, password))
                     return pass_locator
                 except Exception:
+                    logger.debug(
+                        "Login form selector fill failed; trying next strategy",
+                        exc_info=True,
+                    )
                     continue
             return None
 
         def _submit_login_form(pass_locator) -> None:  # noqa: ANN001
             try:
-                pass_locator.press("Enter", timeout=3000)
+                perform_sync(call(pass_locator.press, "Enter", timeout=3000))
                 return
             except Exception:
+                logger.debug(
+                    "Login form submission via Enter failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
             try:
-                pass_locator.evaluate("el => el.form && el.form.submit()")
+                perform_sync(call(pass_locator.evaluate, "el => el.form && el.form.submit()"))
                 return
             except Exception:
+                logger.debug(
+                    "Login form submission via form.submit() failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
             try:
-                pass_locator.evaluate(
+                perform_sync(call(pass_locator.evaluate,
                     """
                     el => {
                       const btn = el.form?.querySelector('#passbutton,button[type="submit"],input[type="submit"]');
@@ -1295,16 +1394,24 @@ def _submit_credentials(
                       return false;
                     }
                     """
-                )
+                ))
             except Exception:
+                logger.debug(
+                    "Login form submission via button click failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
 
         pass_locator = _fill_login_form()
         if not pass_locator:
             try:
-                page.get_by_text("Account login", exact=True).click(timeout=3000, force=True)
-                page.wait_for_timeout(500)
+                perform_sync(call(page.get_by_text("Account login", exact=True).click, timeout=3000, force=True))
+                perform_sync(call(page.wait_for_timeout, 500))
             except Exception:
+                logger.debug(
+                    "Account login tab selection failed; trying next strategy",
+                    exc_info=True,
+                )
                 pass
             pass_locator = _fill_login_form()
 
@@ -1353,18 +1460,22 @@ def _submit_credentials(
             }
             while time.time() < deadline:
                 try:
-                    resp = context.request.post(
+                    resp = perform_sync(call(context.request.post,
                         f"{base_url}{USER_DETAIL_PATH}",
                         headers=headers,
                         data={},
                         timeout=10000,
-                    )
+                    ))
                     last_status = resp.status
                     if resp.status == 200:
                         return
                 except Exception:
+                    logger.debug(
+                        "Login API authentication probe failed; trying next strategy",
+                        exc_info=True,
+                    )
                     pass
-                page.wait_for_timeout(500)
+                perform_sync(call(page.wait_for_timeout, 500))
             if credentials_submitted:
                 raise _authentication_error(last_status)
             # The form was never found, so nothing was submitted; this is a
@@ -1385,10 +1496,9 @@ def _submit_credentials(
         # start Chromium but crash while rendering the full Qizhi SPA because
         # fontconfig is incomplete; rendering the SPA is unnecessary for CLI
         # session capture.
-        try:
-            page.close()
-        except Exception:
-            pass
+        # Session capture can continue even if the page is already closed.
+        with contextlib.suppress(Exception):
+            perform_sync(call(page.close))
 
         user_detail: dict | None = None
         request_headers = {
@@ -1396,17 +1506,21 @@ def _submit_credentials(
             "Referer": f"{base_url}/login",
         }
         try:
-            user_detail_resp = context.request.post(
+            user_detail_resp = perform_sync(call(context.request.post,
                 f"{base_url}{USER_DETAIL_PATH}",
                 headers=request_headers,
                 data={},
                 timeout=10000,
-            )
+            ))
             if user_detail_resp.status == 200:
-                detail = _v2_result(user_detail_resp.json())
+                detail = _v2_result(perform_sync(call(user_detail_resp.json)))
                 if detail:
                     user_detail = detail
         except Exception:
+            logger.debug(
+                "user detail unavailable; resource cache scope will lack subject_id",
+                exc_info=True,
+            )
             user_detail = None
 
         # Discover all workspace IDs via `user.GetRoutes`. The response contains
@@ -1416,15 +1530,15 @@ def _submit_credentials(
         all_workspace_names: dict[str, str] = {}
         all_workspace_fair_scheduling: dict[str, bool] = {}
         try:
-            routes_resp = context.request.post(
+            routes_resp = perform_sync(call(context.request.post,
                 f"{base_url}{USER_ROUTES_PATH}",
                 headers=request_headers,
                 data=BOOTSTRAP_ROUTES_BODY,
                 timeout=15000,
-            )
+            ))
             if routes_resp.status == 200:
                 route_ids, route_names, route_fair_scheduling = _workspace_routes_from_payload(
-                    routes_resp.json()
+                    perform_sync(call(routes_resp.json))
                 )
                 _merge_workspace_routes(
                     all_workspace_ids,
@@ -1435,18 +1549,22 @@ def _submit_credentials(
                     route_fair_scheduling,
                 )
         except Exception:
-            pass
+            logger.warning(
+                "Workspace discovery failed during login; workspace names may be incomplete "
+                "until the session is refreshed. Re-login to retry workspace discovery."
+            )
+            logger.debug("Workspace route discovery failed", exc_info=True)
 
         workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
 
         # Capture storage state (cookies + localStorage)
-        storage_state = context.storage_state()
+        storage_state = perform_sync(call(context.storage_state))
 
         # Keep a simple cookie name->value mapping for websocket clients.
-        cookies = context.cookies()
+        cookies = perform_sync(call(context.cookies))
         cookie_dict = {c["name"]: c["value"] for c in cookies}
 
-        browser.close()
+        perform_sync(call(browser.close))
 
         session = WebSession(
             storage_state=cast(dict[str, Any], storage_state),
@@ -1469,11 +1587,12 @@ def _submit_credentials(
         return session
 
 
+@workflow
 def get_web_session(
     force_refresh: bool = False,
     require_workspace: bool = False,
     account: Optional[str] = None,
-) -> WebSession:
+) -> Program[WebSession]:
     """Get a valid web session, logging in if necessary.
 
     Args:
@@ -1530,4 +1649,25 @@ def get_web_session(
 
     # Session is missing or has no cookies, perform fresh login
     base_url = _load_runtime_config(account).base_url
-    return login_with_playwright(username, password, base_url=base_url, account=account)
+    from inspire.platform.web.runtime import active_transport
+
+    owner = active_transport.get()
+    if owner is not None and not owner.allow_browser:
+        return (yield call(login_without_browser, username, password, base_url=base_url, account=account))
+    return (yield call(login_with_playwright, username, password, base_url=base_url, account=account))
+
+
+@contextmanager
+def _playwright_runtime():
+    context = perform_sync(call(_playwright_context))
+    runtime = perform_sync(call(enter_context, context))
+    try:
+        yield runtime
+    finally:
+        perform_sync(call(exit_context, context, *sys.exc_info()))
+
+
+def _playwright_context():
+    from playwright.sync_api import sync_playwright
+
+    return sync_playwright()

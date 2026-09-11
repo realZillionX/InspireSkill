@@ -146,7 +146,6 @@ class TunnelConfig:
     def add_bridge(self, profile: BridgeProfile) -> None:
         """Add or update a bridge profile."""
         self.bridges[profile.name] = profile
-        # Set as default if it's the first bridge
         if self.default_bridge is None:
             self.default_bridge = profile.name
 
@@ -155,7 +154,6 @@ class TunnelConfig:
         if name in self.bridges:
             del self.bridges[name]
             if self.default_bridge == name:
-                # Set new default
                 self.default_bridge = next(iter(self.bridges.keys()), None)
             return True
         return False

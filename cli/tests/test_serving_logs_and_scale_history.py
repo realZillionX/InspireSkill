@@ -25,7 +25,7 @@ from inspire.cli.commands.serving.serving_commands import (
 )
 from inspire.cli.context import EXIT_LOG_NOT_FOUND, EXIT_VALIDATION_ERROR
 from inspire.cli.main import main as cli_main
-from inspire.cli.utils.collection_output import DEFAULT_COLLECTION_LIMIT
+from inspire.services.utils.collections import DEFAULT_COLLECTION_LIMIT
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.browser_api.servings import list_serving_scale_history
 
@@ -780,7 +780,7 @@ def test_serving_logs_rejects_raw_handle_before_api(
 
 def test_instance_views_keep_the_namespaced_handle_off_the_label() -> None:
     """`GetServingLog` needs `<project>/<pod>`; output only ever shows the Rank."""
-    from inspire.cli.commands.serving.serving_instances import serving_instance_views
+    from inspire.services.serving.serving_instances import serving_instance_views
 
     views = serving_instance_views(
         [

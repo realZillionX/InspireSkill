@@ -12,6 +12,7 @@ Source of truth: cli/pyproject.toml on `main` (parsed via raw.githubusercontent.
 """
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import os
@@ -27,7 +28,7 @@ from typing import Any
 import click
 
 from inspire import __version__
-from inspire.cli.utils.detached import detached_creationflags
+from inspire.services.utils.processes import detached_creationflags
 
 REPO_SLUG = "realZillionX/InspireSkill"
 PACKAGE_NAME = "inspire-skill"
@@ -187,7 +188,8 @@ def maybe_notify_update() -> None:
         return
     if not _is_newer(latest, __version__):
         return
-    try:
+    # An optional update notice must not fail the requested command.
+    with contextlib.suppress(Exception):
         click.echo(
             click.style(
                 f"⚠ InspireSkill v{latest} available (current v{current}); "
@@ -196,8 +198,6 @@ def maybe_notify_update() -> None:
             ),
             err=True,
         )
-    except Exception:
-        pass
 
 
 def maybe_spawn_check() -> None:
@@ -220,7 +220,8 @@ def maybe_spawn_check() -> None:
     cmd = [sys.executable, "-m", "inspire.cli.main", "update", "--check", "--silent"]
     env = os.environ.copy()
     env[_SKIP_ENV] = "1"
-    try:
+    # Failure to start an optional update check must not fail the command.
+    with contextlib.suppress(Exception):
         devnull = subprocess.DEVNULL
         subprocess.Popen(
             cmd,
@@ -232,5 +233,3 @@ def maybe_spawn_check() -> None:
             close_fds=True,
             creationflags=detached_creationflags(),
         )
-    except Exception:
-        pass

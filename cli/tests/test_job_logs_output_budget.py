@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import io
 import json
+import logging
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
 
+from inspire.bridge.tunnel import BridgeNotFoundError, TunnelError, TunnelNotAvailableError
 from inspire.cli.commands.job import job_logs
 from inspire.cli.main import main as cli_main
 
@@ -416,3 +420,169 @@ def test_platform_follow_bounds_each_poll_update(
     assert len(result.output) < job_logs.DEFAULT_LOG_CHARACTER_LIMIT + 300
     assert "Follow update truncated to the character budget" in result.output
     assert raw_id not in result.output
+
+
+@pytest.mark.parametrize("error_type", [TunnelError, TunnelNotAvailableError, BridgeNotFoundError])
+@pytest.mark.parametrize("remote_log_path", ["/logs/train.log", "/logs/train-*.log"])
+def test_ssh_follow_tunnel_failure_exits_without_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[TunnelError],
+    remote_log_path: str,
+) -> None:
+    _patch_platform_resolution(monkeypatch)
+    _patch_ssh(monkeypatch, stdout="")
+    monkeypatch.setattr(job_logs, "_find_connected_tunnel_bridges", lambda **kwargs: [])
+    calls = []
+
+    def fail_ssh(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        calls.append((args, kwargs))
+        raise error_type("tunnel unavailable")
+
+    monkeypatch.setattr(job_logs, "run_ssh_command", fail_ssh)
+    sleeps = []
+    def unexpected_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        pytest.fail("Tunnel failure must exit before sleeping")
+
+    monkeypatch.setattr(job_logs.time, "sleep", unexpected_sleep)
+    monkeypatch.setattr(job_logs.time, "time", lambda: 100.0)
+    api_logger = logging.getLogger("inspire.inspire_api_control")
+    original_level = api_logger.level
+    args = _ssh_args("--follow")
+    args[args.index("--remote-log-path") + 1] = remote_log_path
+
+    result = CliRunner().invoke(cli_main, args)
+
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, SystemExit)
+    assert "SSH tunnel not available" in result.output
+    assert "Timeout:" not in result.output
+    assert "Traceback" not in result.output
+    assert len(calls) == 1
+    assert sleeps == []
+    assert api_logger.level == original_level
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TunnelError("tunnel failed"),
+        TunnelNotAvailableError("unavailable"),
+        BridgeNotFoundError("bridge missing"),
+        subprocess.TimeoutExpired("ssh", 10),
+        RuntimeError("probe failed"),
+    ],
+)
+def test_latest_log_ssh_probe_preserves_tunnel_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    error: Exception,
+) -> None:
+    def fail_ssh(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise error
+
+    monkeypatch.setattr(job_logs, "run_ssh_command", fail_ssh)
+    caplog.set_level(logging.DEBUG, logger=job_logs.__name__)
+    if isinstance(error, TunnelError):
+        with pytest.raises(type(error)) as excinfo:
+            job_logs._resolve_latest_log_via_ssh("/logs/train-*.log")
+        assert excinfo.value is error
+    else:
+        assert job_logs._resolve_latest_log_via_ssh("/logs/train-*.log") is None
+        assert any(
+            record.message == "Latest log SSH probe failed" and record.exc_info
+            for record in caplog.records
+        )
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_ssh_follow_status_failure_warning_is_bounded_and_resets(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    recover: bool,
+) -> None:
+    from inspire import process_io
+    from inspire.bridge import tunnel
+
+    _patch_ssh(monkeypatch, stdout="exists")
+    monkeypatch.setattr(job_logs, "get_web_session", lambda: _FakeSession())
+    monkeypatch.setattr(tunnel, "get_ssh_command_args", lambda **kwargs: ["ssh"])
+    monkeypatch.setattr(job_logs.time, "sleep", lambda seconds: None)
+    now = [100.0]
+    monkeypatch.setattr(job_logs.time, "time", lambda: now[0])
+    stdout = io.StringIO()
+    process = SimpleNamespace(stdout=stdout, poll=lambda: 0)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    statuses = ["error"] * 7 + (["RUNNING"] if recover else []) + ["error"] * 7 + ["SUCCEEDED"]
+    observed = []
+
+    def lines(*args):  # noqa: ANN002, ANN202
+        for _ in statuses:
+            now[0] += 5
+            yield None
+
+    def status(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        value = statuses[len(observed)]
+        observed.append(value)
+        if value == "error":
+            raise RuntimeError("status unavailable")
+        return {"status": value}
+
+    monkeypatch.setattr(process_io, "iter_process_lines", lines)
+    monkeypatch.setattr(job_logs.browser_api_module, "get_job_detail_v2", status)
+    caplog.set_level(logging.DEBUG, logger=job_logs.__name__)
+    api_logger = logging.getLogger("inspire.inspire_api_control")
+    original_level = api_logger.level
+
+    assert job_logs._follow_logs_via_ssh("job-internal", "/logs/train.log") == "SUCCEEDED"
+
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == (2 if recover else 1)
+    assert all("failed 5 consecutive times" in record.message for record in warnings)
+    failures = [
+        record
+        for record in caplog.records
+        if record.message == "Job status query failed while following logs"
+    ]
+    assert len(failures) == 14
+    assert all(record.exc_info for record in failures)
+    assert observed == statuses
+    assert api_logger.level == original_level
+
+
+@pytest.mark.parametrize("remote_log_path", ["/logs/train.log", "/logs/train-*.log"])
+def test_ssh_follow_retries_transient_probe_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    remote_log_path: str,
+) -> None:
+    monkeypatch.setattr(job_logs, "get_web_session", lambda: _FakeSession())
+    calls = []
+    sleeps = []
+
+    def probe(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired("ssh", 10)
+        raise TunnelNotAvailableError("unavailable")
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        assert len(sleeps) == 1, "Tunnel errors must not trigger further retries"
+
+    monkeypatch.setattr(job_logs, "run_ssh_command", probe)
+    monkeypatch.setattr(job_logs.time, "sleep", sleep)
+    monkeypatch.setattr(job_logs.time, "time", lambda: 100.0)
+    caplog.set_level(logging.DEBUG, logger=job_logs.__name__)
+
+    with pytest.raises(TunnelNotAvailableError):
+        job_logs._follow_logs_via_ssh("job-internal", remote_log_path)
+
+    assert len(calls) == 2
+    assert sleeps == [5]
+    assert any(
+        record.levelno == logging.DEBUG
+        and record.exc_info
+        and isinstance(record.exc_info[1], subprocess.TimeoutExpired)
+        for record in caplog.records
+    )

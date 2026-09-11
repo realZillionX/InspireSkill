@@ -7,9 +7,12 @@ switches session cache in lockstep.
 
 from __future__ import annotations
 
+from inspire.local_files import atomic_write_text
+
+from inspire.platform.web.flow import blocking_io
+
 import json
 import math
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -48,6 +51,7 @@ class AuthenticationError(ValueError):
     """
 
     credential_rejection: Optional[bool] = None
+    retry_at: Optional[float] = None
 
 
 # Statuses that say the platform did not answer, not that the answer is no.
@@ -78,10 +82,12 @@ class TransientAPIError(ValueError):
         *,
         status: int | None = None,
         retry_after: float | None = None,
+        code: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status = status
         self.retry_after = retry_after
+        self.code = code
 
 
 _API_STATUS_RE = re.compile(r"\bAPI returned (\d{3})\b")
@@ -316,6 +322,7 @@ class WebSession:
             cookies=cookies,
         )
 
+    @blocking_io
     def save(self, account: Optional[str] = None) -> None:
         """Save under the explicit, bound, or current account, in that order."""
         resolved_account = _resolve_account_for_storage(
@@ -331,18 +338,10 @@ class WebSession:
             cached = WebSession.load(allow_expired=True, account=resolved_account)
             if cached is not None and cached.created_at > self.created_at:
                 return
-            cache_file.parent.mkdir(parents=True, exist_ok=True)
-            # Restrict permissions: session contains sensitive cookies/tokens.
-            tmp_path = cache_file.with_suffix(".tmp")
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(self.to_dict(), f, ensure_ascii=False)
-            os.replace(tmp_path, cache_file)
-            try:
-                os.chmod(cache_file, 0o600)
-            except OSError:
-                pass
+            atomic_write_text(cache_file, json.dumps(self.to_dict(), ensure_ascii=False), private=True)
 
     @classmethod
+    @blocking_io
     def load(
         cls,
         allow_expired: bool = False,

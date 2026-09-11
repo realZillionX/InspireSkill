@@ -14,11 +14,8 @@ window, because `GetServingLog` has no serving handle to derive one from.
 
 from __future__ import annotations
 
-import time
 from typing import Any, Optional
-
 import click
-
 from inspire.cli.commands.job.job_logs import (
     DEFAULT_LOG_CHARACTER_LIMIT,
     DEFAULT_PLATFORM_LOG_RECORDS,
@@ -37,23 +34,24 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
-from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
-
-from .serving_instances import (
+from inspire.services.serving.serving_instances import (
     ServingInstanceSelectionError,
-    select_serving_instance_views,
-    serving_instance_views,
 )
 from .serving_commands import (
     _resolve_workspace_id,
     _run_readonly_serving_operation,
 )
+
+
+
+
+
 
 # A serving is a long-running service, so there is no finish time to bound the
 # window with the way `job logs` does. One day covers the useful case (what is
@@ -208,46 +206,9 @@ def logs_serving(
     fetch_size = max(record_limit, tail or 0, head or 0)
 
     def _load(serving_id: str, live_session):  # noqa: ANN001
-        instances, _total = browser_api_module.list_serving_instances(
-            serving_id,
-            page=1,
-            page_size=_INSTANCE_FETCH_SIZE,
-            session=live_session,
-        )
-        # The selector speaks the Name column of `inspire serving instances`
-        # (`rank=0`); the pod handle it maps to is namespaced, which is what
-        # `GetServingLog` requires and what no output ever shows.
-        views = select_serving_instance_views(
-            serving_instance_views(instances),
-            instance_names,
-        )
-        pod_names = [view.handle for view in views]
-        if not pod_names:
-            return [], 0, pod_names
-
-        end_ms = int(time.time() * 1000)
-        start_ms = max(0, end_ms - since_minutes * 60 * 1000)
-        initial_size = DEFAULT_PLATFORM_LOG_RECORDS if all_output else fetch_size
-        logs, total = browser_api_module.list_serving_logs(
-            pod_names=pod_names,
-            start_timestamp_ms=start_ms,
-            end_timestamp_ms=end_ms,
-            page_size=initial_size,
-            inference_serving_id=serving_id,
-            session=live_session,
-        )
-        # `total` counts the whole window, so `--all` needs a second pass once
-        # the first response says how much is actually there.
-        if all_output and total > len(logs):
-            logs, total = browser_api_module.list_serving_logs(
-                pod_names=pod_names,
-                start_timestamp_ms=start_ms,
-                end_timestamp_ms=end_ms,
-                page_size=total,
-                inference_serving_id=serving_id,
-                session=live_session,
-            )
-        return logs, total, pod_names
+        from inspire.services.serving.serving_logs import fetch_logs
+        return fetch_logs(serving_id, session=live_session, selectors=instance_names,
+                          since_minutes=since_minutes, fetch_size=fetch_size, all_output=all_output)
 
     try:
         config, _ = Config.from_files_and_env(require_credentials=False)

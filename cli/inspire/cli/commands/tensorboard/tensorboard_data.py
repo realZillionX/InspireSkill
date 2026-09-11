@@ -7,11 +7,10 @@ has to look at and become numbers a command can return.
 """
 
 from __future__ import annotations
+from inspire.services.tensorboard.tensorboard_status import normalize_status
 
-from typing import Any, Optional
-
+from typing import Optional
 import click
-
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -20,21 +19,27 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.cli.utils.metrics_shared import render_sparkline
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
-
 from .tensorboard_commands import (
     reject_tensorboard_id,
     resolve_board,
     workspace_id_for,
 )
+from inspire.services.tensorboard.tensorboard_data import tail as _tail
+from inspire.services.tensorboard.tensorboard_data import collect_series as _collect_series
+
+
+
+
+
 
 # A scalar series is unbounded — a long run logs tens of thousands of points —
 # and the whole series is never the answer to "how is training going".
@@ -56,11 +61,11 @@ def _live_board(
         ctx, session=session, name=name, workspace_id=workspace_id, pick=pick
     )
     board = browser_api_module.get_tensorboard(tb_id, session=session)
-    if board.status != "running":
+    if normalize_status(board.status) != "RUNNING":
         _handle_error(
             ctx,
             "ValidationError",
-            f"TensorBoard {scrub_raw_ids(name)!r} is {scrub_raw_ids(board.status)}; "
+            f"TensorBoard {scrub_raw_ids(name)!r} is {normalize_status(board.status)}; "
             "only a running board serves data.",
             EXIT_VALIDATION_ERROR,
             hint=(
@@ -71,59 +76,10 @@ def _live_board(
     return session, board
 
 
-def _summarize(points: list[tuple[float, int, float]]) -> dict[str, Any]:
-    """Reduce one series to the shape a training-health question actually asks."""
-    by_step = sorted(points, key=lambda point: point[1])
-    values = [value for _, _, value in by_step]
-    first_step, first_value = by_step[0][1], by_step[0][2]
-    last_step, last_value = by_step[-1][1], by_step[-1][2]
-    return {
-        "count": len(by_step),
-        "first_step": first_step,
-        "first_value": first_value,
-        "last_step": last_step,
-        "last_value": last_value,
-        "min": min(values),
-        "max": max(values),
-    }
 
 
-def _tail(points: list[tuple[float, int, float]], budget: int) -> list[list[float]]:
-    by_step = sorted(points, key=lambda point: point[1])
-    return [[step, value] for _, step, value in by_step[-budget:]]
 
 
-def _collect_series(
-    session,  # noqa: ANN001
-    board,  # noqa: ANN001
-    *,
-    run: str,
-    tag: str,
-) -> list[dict[str, Any]]:
-    tags_by_run = browser_api_module.read_tensorboard_scalar_tags(
-        board.url, session=session
-    )
-    collected: list[dict[str, Any]] = []
-    for run_name, tags in sorted(tags_by_run.items()):
-        if run and run_name != run:
-            continue
-        for tag_name in tags:
-            if tag and tag_name != tag:
-                continue
-            points = browser_api_module.read_tensorboard_scalar_series(
-                board.url, run=run_name, tag=tag_name, session=session
-            )
-            if not points:
-                continue
-            collected.append(
-                {
-                    "run": run_name,
-                    "tag": tag_name,
-                    "points": points,
-                    **_summarize(points),
-                }
-            )
-    return collected
 
 
 @click.command("tags")

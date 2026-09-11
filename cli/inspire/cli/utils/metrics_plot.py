@@ -27,7 +27,7 @@ matplotlib.use("Agg")  # no display server needed
 import matplotlib.dates as mdates  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 
-from inspire.cli.utils.raw_ids import scrub_raw_ids  # noqa: E402
+from inspire.services.utils.raw_ids import scrub_raw_ids  # noqa: E402
 from inspire.platform.web.browser_api.metrics import MetricGroup  # noqa: E402
 
 # Metric → human-readable subplot title. English avoids font-fallback glyphs

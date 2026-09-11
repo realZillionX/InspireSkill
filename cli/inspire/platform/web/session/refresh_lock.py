@@ -11,7 +11,7 @@ from .models import get_session_cache_file
 
 
 @contextmanager
-def exclusive_session_refresh(account: str | None) -> Iterator[None]:
+def exclusive_session_refresh(account: str | None, *, timeout: float | None = None) -> Iterator[None]:
     """Serialize login refreshes for one account without locking API requests."""
     cache_file = get_session_cache_file(account)
     if cache_file is None or not cache_file.parent.is_dir():
@@ -19,5 +19,5 @@ def exclusive_session_refresh(account: str | None) -> Iterator[None]:
         return
 
     refresh_target = cache_file.with_name(f"{cache_file.name}.refresh")
-    with exclusive_cache_lock(refresh_target):
+    with exclusive_cache_lock(refresh_target, timeout=timeout):
         yield

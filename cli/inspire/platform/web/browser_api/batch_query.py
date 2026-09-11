@@ -12,7 +12,7 @@ against the singular `GetTaskMetric` over the same window, `disk_io_read` and
 `disk_io_write` come back with zero samples where the singular answers 61,
 both `network_tcp_ip_io_*` types answer `InternalError`, and every group drops
 its `group_name` so the per-pod split is gone. Metrics stay fanned out; see
-`metrics.get_resource_metrics_by_time`.
+`inspire.platform.web.browser_api.metrics.get_resource_metrics_by_time`.
 
 ## The two traps
 

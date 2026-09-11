@@ -8,11 +8,11 @@ from typing import Any
 
 import pytest
 
-from inspire.cli.commands.hpc.public_output import public_hpc_list_item
-from inspire.cli.commands.job.public_output import public_job_list_item
-from inspire.cli.commands.notebook.public_output import public_notebook_list_item
-from inspire.cli.commands.ray.public_output import public_ray_list_item
-from inspire.cli.commands.serving.public_output import public_serving_list_item
+from inspire.services.hpc.hpc_output import public_hpc_list_item
+from inspire.services.job.job_output import public_job_list_item
+from inspire.services.notebook.notebook_output import public_notebook_list_item
+from inspire.services.ray.ray_output import public_ray_list_item
+from inspire.services.serving.serving_output import public_serving_list_item
 
 Projector = Callable[[dict[str, Any]], dict[str, Any]]
 

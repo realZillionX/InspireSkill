@@ -17,7 +17,7 @@ from inspire.cli.utils.id_resolver import (
     resolve_by_name,
     run_with_stale_handle_retry,
 )
-from inspire.cli.utils.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
+from inspire.services.catalog.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
 
 
 # ---------------------------------------------------------------------------

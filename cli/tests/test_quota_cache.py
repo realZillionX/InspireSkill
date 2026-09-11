@@ -4,17 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from inspire.cli.utils import quota_cache as quota_cache_module
-from inspire.cli.utils.quota_cache import (
-    SCHEDULE_TYPE_BY_WORKLOAD,
-    CachedPricesLoader,
-    fetch_quota_catalog,
-    quota_scope_for_session,
-    quota_triple,
-    workload_for_schedule_type,
-)
+from inspire.services.catalog import quota_cache as quota_cache_module
+from inspire.services.catalog.quota_cache import SCHEDULE_TYPE_BY_WORKLOAD, CachedPricesLoader, fetch_quota_catalog, quota_scope_for_session, quota_triple, workload_for_schedule_type
 from inspire.cli.utils.quota_resolver import QuotaMatchError, QuotaSpec, resolve_quota
-from inspire.cli.utils.resource_index import QUOTA_WORKLOADS, ResourceIndex
+from inspire.services.catalog.resource_index import QUOTA_WORKLOADS, ResourceIndex
 from inspire.platform.web.session import TransientAPIError
 
 
@@ -488,7 +481,7 @@ def test_cached_empty_group_does_not_trigger_stale_group_retry(
 
 def test_group_supports_workload_reads_the_json_encoded_job_type_list() -> None:
     """`support_job_type_list` arrives as a JSON string, not an array."""
-    from inspire.cli.utils.quota_cache import group_supports_workload
+    from inspire.services.catalog.quota_cache import group_supports_workload
 
     hpc_only = {
         "name": "HPC-可上网区资源-2",
@@ -502,7 +495,7 @@ def test_group_supports_workload_reads_the_json_encoded_job_type_list() -> None:
 
 
 def test_group_supports_workload_accepts_a_real_list_too() -> None:
-    from inspire.cli.utils.quota_cache import group_supports_workload
+    from inspire.services.catalog.quota_cache import group_supports_workload
 
     group = {"support_job_type_list": ["ray_job"]}
     assert group_supports_workload(group, "ray") is True
@@ -511,14 +504,14 @@ def test_group_supports_workload_accepts_a_real_list_too() -> None:
 
 def test_group_supports_workload_keeps_a_group_that_declares_nothing() -> None:
     """An undeclared group is our ignorance, not the platform's refusal."""
-    from inspire.cli.utils.quota_cache import group_supports_workload
+    from inspire.services.catalog.quota_cache import group_supports_workload
 
     for group in ({}, {"support_job_type_list": ""}, {"support_job_type_list": "not json"}):
         assert group_supports_workload(group, "ray") is True
 
 
 def test_group_supports_workload_matches_either_serving_flavour() -> None:
-    from inspire.cli.utils.quota_cache import group_supports_workload
+    from inspire.services.catalog.quota_cache import group_supports_workload
 
     exclusive = {"support_job_type_list": '["inference_serving_exclusive"]'}
     customize = {"support_job_type_list": '["inference_serving_customize"]'}

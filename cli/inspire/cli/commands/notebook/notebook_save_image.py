@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from inspire.services.notebook.notebooks import resolve_saved_image_id
+
 import click
 
 # Shared with `inspire image set-visibility`, which applies the same mapping.
@@ -30,7 +32,7 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.human_formatter import format_mutation_success
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import (
@@ -43,26 +45,11 @@ from inspire.cli.utils.notebook_cli import (
     get_base_url,
     require_web_session,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
-
-
-_SIZE_UNITS: tuple[tuple[str, int], ...] = (
-    ("TiB", 1024**4),
-    ("GiB", 1024**3),
-    ("MiB", 1024**2),
-    ("KiB", 1024),
-)
-
-
-def _format_size_bytes(value: int) -> str:
-    """Render the platform's snapshot estimate, which is a byte count."""
-    for label, divisor in _SIZE_UNITS:
-        if value >= divisor:
-            return f"{value / divisor:.2f} {label}"
-    return f"{value} B"
+from inspire.cli.utils.sizes import format_size_bytes as _format_size_bytes
 
 
 def _resolve_save_notebook_id(
@@ -327,32 +314,10 @@ def save_image_cmd(
         )
         return
 
-    image_id = result.get("image", {}).get("image_id", "") or result.get("image_id", "")
-
-    if not image_id:
-        try:
-            want_suffix_1 = f"/{name}:{version}"
-            want_name_1 = f"{name}:{version}"
-            matches = []
-            for img in browser_api_module.list_images_by_source(
-                source="private", session=session, workspace_id=workspace_id
-            ):
-                img_name = (img.name or "").strip()
-                img_url = (img.url or "").strip()
-                img_version = (img.version or "").strip()
-                # The API sometimes puts name as "foo" + version "v1", other
-                # times name as "foo:v1"; URL always ends in "/<ns>/foo:v1".
-                if (
-                    (img_name == name and img_version == version)
-                    or img_name == want_name_1
-                    or img_url.endswith(want_suffix_1)
-                ):
-                    matches.append(img)
-            if matches:
-                matches.sort(key=lambda img: img.created_at or "", reverse=True)
-                image_id = matches[0].image_id
-        except Exception:
-            pass
+    image_id = resolve_saved_image_id(
+        result, name=name, version=version, workspace_id=workspace_id,
+        session=session, api=browser_api_module,
+    )
 
     remember_resource_identity(
         session=session,

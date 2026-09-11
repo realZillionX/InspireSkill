@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from inspire.cli.commands.serving.public_output import public_serving_list_item
+from inspire.services.serving.serving_output import public_serving_list_item
 from inspire.platform.web.browser_api import servings as servings_module
 from inspire.platform.web.browser_api.servings import (
     ServingInfo,

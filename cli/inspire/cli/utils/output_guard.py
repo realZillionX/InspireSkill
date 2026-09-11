@@ -13,7 +13,7 @@ from typing import Any
 
 import click
 
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 
 _PARSER_REDACTIONS: tuple[re.Pattern[str], ...] = ()
 

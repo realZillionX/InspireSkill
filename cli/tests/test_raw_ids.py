@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 
 
 def test_scrub_raw_ids_keeps_human_path_segments_with_model_word() -> None:

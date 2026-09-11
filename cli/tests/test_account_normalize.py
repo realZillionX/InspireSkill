@@ -15,6 +15,7 @@ def _stub_playwright_check(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Tests that exercise the missing-playwright branch override this.
     """
+    monkeypatch.setattr(normalize_module, "_playwright_chromium_installed", lambda: True)
     monkeypatch.setattr(
         "inspire.accounts.normalize._playwright_chromium_available",
         lambda: True,
@@ -28,6 +29,7 @@ def test_playwright_missing_no_auto_install(
         "inspire.accounts.normalize._playwright_chromium_available",
         lambda: False,
     )
+    monkeypatch.setattr(normalize_module, "_playwright_chromium_installed", lambda: False)
     install_called: list[bool] = []
     monkeypatch.setattr(
         "inspire.accounts.normalize._install_playwright_chromium",

@@ -36,13 +36,13 @@ from inspire.bridge.tunnel import (
     run_ssh_command_streaming,
 )
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, pass_context
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import WebSession
 
-from .public_output import sanitize_public_text
+from inspire.services.notebook.notebook_output import sanitize_public_text
 from .target_resolver import NOTEBOOK_TARGET_WORKSPACE_HELP, validate_specific_workspace
 from .transport import preflight_notebook_transport_policy
 

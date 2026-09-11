@@ -19,12 +19,7 @@ from inspire.cli.utils.quota_resolver import (
     parse_quota,
     resolve_quota,
 )
-from inspire.cli.utils.resource_index import (
-    ResourceIdentity,
-    ResourceIndex,
-    ResourceScope,
-    scope_for_session,
-)
+from inspire.services.catalog.resource_index import ResourceIdentity, ResourceIndex, ResourceScope, scope_for_session
 from inspire.platform.web.session import WebSession
 
 

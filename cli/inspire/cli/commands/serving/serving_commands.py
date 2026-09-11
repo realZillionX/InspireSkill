@@ -6,9 +6,7 @@ import sys
 import logging
 import re
 from typing import Any, Optional, cast
-
 import click
-
 from inspire.cli.context import (
     Context,
     EXIT_API_ERROR,
@@ -17,9 +15,10 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
@@ -31,20 +30,18 @@ from inspire.cli.utils.errors import (
 )
 from inspire.cli.utils.events import (
     DEFAULT_EVENT_TAIL,
-    event_sort_key,
     run_events_command,
 )
 from inspire.cli.utils.id_resolver import (
     NAME_PICK_HELP,
     forget_resource_identity,
-    looks_like_platform_id,
     reject_id_at_boundary,
     remember_resource_identity,
     resolve_by_name,
     run_with_stale_handle_retry,
 )
 from inspire.cli.utils.project_resolver import resolve_project_id as resolve_project_id_by_name
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import (
     TaskPriorityError,
     resolve_workspace_task_priority,
@@ -58,16 +55,16 @@ from inspire.config.workspaces import (
     workspace_label,
     workspace_name_map,
 )
-from inspire.cli.utils.job_shell import JobShellError, open_job_shell
+from inspire.platform.web.pty_socket import JobShellError
+from inspire.cli.utils.job_shell import open_job_shell
 from inspire.platform.web import browser_api as browser_api_module
 from inspire.platform.web.session import SessionExpiredError, get_web_session
-
-from .serving_instances import (
+from inspire.services.serving.serving_instances import (
     ServingInstanceSelectionError,
     select_serving_instance_views,
     serving_instance_views,
 )
-from .public_output import (
+from inspire.services.serving.serving_output import (
     public_configs,
     public_operation,
     public_serving,
@@ -75,6 +72,23 @@ from .public_output import (
     sanitize_public_data,
     sanitize_public_text,
 )
+from inspire.services.serving.serving_submission import created_serving_id as _created_serving_id
+from inspire.services.serving.serving_submission import resolve_image_for_create as _resolve_image_for_create
+from inspire.services.serving.serving_submission import build_resource_spec_price as _build_resource_spec_price
+from inspire.services.serving.serving_views import serving_resource_label as _serving_resource_label
+from inspire.services.serving.serving_views import _public_serving_instance_text as _public_serving_instance_text
+from inspire.services.serving.serving_views import _serving_instance_rank as _serving_instance_rank
+from inspire.services.serving.serving_views import _serving_instance_resource as _serving_instance_resource
+from inspire.services.serving.serving_views import public_serving_instances as _public_serving_instances
+from inspire.services.serving.serving_views import public_serving_version as _public_serving_version
+from inspire.services.serving.serving_views import _scale_replica_count as _scale_replica_count
+from inspire.services.serving.serving_views import public_scale_history_entry as _public_scale_history_entry
+from inspire.services.serving.serving_events import serving_events as _serving_events
+
+
+
+
+
 
 _CUSTOM_DOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 logger = logging.getLogger(__name__)
@@ -175,31 +189,14 @@ def _run_readonly_serving_operation(
     )
 
 
-def _created_serving_id(payload: object) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    for key in ("inference_serving_id", "serving_id", "id"):
-        value = str(payload.get(key) or "").strip()
-        if value:
-            return value
-    for key in ("inference_serving", "serving", "data", "result"):
-        value = _created_serving_id(payload.get(key))
-        if value:
-            return value
-    return ""
 
 
 def _validate_custom_domain(_ctx: click.Context, _param: click.Parameter, value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    if not _CUSTOM_DOMAIN_RE.fullmatch(text):
-        raise click.BadParameter(
-            "must use lowercase letters, digits, and hyphens, and cannot start or end with a hyphen"
-        )
-    return text
+    from inspire.services.serving.serving_submission import validate_custom_domain
+    try:
+        return validate_custom_domain(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
 
 
 def _resolve_project_id(
@@ -233,56 +230,8 @@ def _resolve_project_id(
     )
 
 
-def _with_tag(name: str, version: str) -> str:
-    """Join an image name and its tag without doubling one that is already there.
-
-    ``ImageInfo.name`` already carries the tag for the images the platform
-    publishes -- `sandbox-base:ubuntu24.04-py3.12-1.0.0` with `version` set to
-    `ubuntu24.04-py3.12-1.0.0` -- so appending it again produced
-    `sandbox-base:ubuntu24.04-py3.12-1.0.0:ubuntu24.04-py3.12-1.0.0`. The
-    create itself was fine (the payload carries `mirror_id`), but `--dry-run`
-    and the JSON echo reported an image reference that resolves to nothing,
-    which is exactly the string someone copies into a script.
-    """
-    if not version or name.endswith(f":{version}"):
-        return name
-    return f"{name}:{version}"
 
 
-def _resolve_image_for_create(raw: str, *, session, workspace_id: str) -> tuple[str, str]:
-    """Resolve a visible image label to the `mirror_id` used by the web UI."""
-    raw = (raw or "").strip()
-    if not raw:
-        raise ConfigError("Image is empty.")
-    if raw.startswith(("image-", "mirror-")):
-        raise ConfigError("--image takes a visible image name or name:tag.")
-    target = raw.lower()
-    for source in ("private", "public", "official"):
-        try:
-            images = browser_api_module.list_images_by_source(
-                source=source, session=session, workspace_id=workspace_id
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.debug("Image lookup failed for source %s: %s", source, e)
-            continue
-        for img in images:
-            labels = {
-                str(img.url or "").strip(),
-                str(img.name or "").strip(),
-            }
-            if img.name and img.version:
-                labels.add(_with_tag(img.name, img.version))
-            if target in {label.lower() for label in labels if label}:
-                image_id = str(img.image_id or "").strip()
-                if image_id:
-                    display = (
-                        _with_tag(img.name, img.version)
-                        if img.name and img.version
-                        else raw
-                    )
-                    return image_id, display
-                break
-    raise ConfigError(f"Unknown image: {raw!r}.")
 
 
 def _resolve_image_id(raw: str, *, session, workspace_id: str) -> str:
@@ -292,107 +241,22 @@ def _resolve_image_id(raw: str, *, session, workspace_id: str) -> str:
     return image_id
 
 
-def _price_value(raw_price: dict[str, Any], nested_key: str, key: str) -> Any:
-    nested = raw_price.get(nested_key)
-    if isinstance(nested, dict) and nested.get(key) not in (None, ""):
-        return nested.get(key)
-    return raw_price.get(key)
 
 
-def _build_resource_spec_price(resolved) -> dict[str, Any]:  # noqa: ANN001
-    """Build the nested Browser API `resource_spec_price` payload."""
-    raw_price = resolved.raw_price if isinstance(resolved.raw_price, dict) else {}
-    payload = {
-        "cpu_type": _price_value(raw_price, "cpu_info", "cpu_type"),
-        "cpu_count": resolved.cpu_count,
-        "gpu_type": _price_value(raw_price, "gpu_info", "gpu_type"),
-        "gpu_count": resolved.gpu_count,
-        "memory_size_gib": resolved.memory_gib,
-        "logic_compute_group_id": resolved.logic_compute_group_id,
-        "quota_id": resolved.quota_id,
-    }
-    return {key: value for key, value in payload.items() if value not in (None, "")}
 
 
-def _resolve_model_for_create(
-    *,
-    name: str,
-    workspace_id: Optional[str],
-    project_id: Optional[str],
-    user_id: str,
-    session,
-    ctx: Context,
-) -> tuple[str, Optional[int], str]:
-    items, _ = browser_api_module.list_models(
-        workspace_id=workspace_id,
-        keyword=name,
-        project_ids=[project_id] if project_id else None,
-        user_id=user_id,
-        page=1,
-        page_size=100,
-        session=session,
+def _resolve_model_for_create(*, name, workspace_id, project_id, user_id, session, ctx):
+    from inspire.services.serving.serving_submission import resolve_model_for_create
+    return resolve_model_for_create(
+        name=name, workspace_id=workspace_id, project_id=project_id,
+        user_id=user_id, session=session,
+        resolve=lambda candidates: resolve_by_name(
+            ctx, name=name, resource_type="model", list_candidates=lambda: candidates,
+            session=session, workspace_id=str(workspace_id or ""), owner_scope="self",
+        ),
     )
-    candidates = [
-        {
-            "name": item.name,
-            "id": item.model_id,
-            "status": item.status,
-            "created_at": item.created_at,
-            "version": item.latest_version,
-        }
-        for item in items
-    ]
-    model_id = resolve_by_name(
-        ctx,
-        name=name,
-        resource_type="model",
-        list_candidates=lambda: candidates,
-        session=session,
-        workspace_id=str(workspace_id or ""),
-        owner_scope="self",
-    )
-    for item in items:
-        if item.model_id == model_id:
-            try:
-                return (
-                    model_id,
-                    int(item.latest_version) if item.latest_version else None,
-                    item.name,
-                )
-            except ValueError:
-                return model_id, None, item.name
-    return model_id, None, name
 
 
-def _serving_resource_label(data: dict[str, Any]) -> str:
-    spec = data.get("resource_spec_price")
-    if not isinstance(spec, dict):
-        return ""
-    gpu_count = spec.get("gpu_count")
-    cpu_count = spec.get("cpu_count")
-    memory = spec.get("memory_size_gib")
-    gpu_info_payload = spec.get("gpu_info")
-    gpu_info: dict[str, Any] = (
-        gpu_info_payload if isinstance(gpu_info_payload, dict) else {}
-    )
-    gpu_type = (
-        gpu_info.get("gpu_type_display")
-        or gpu_info.get("gpu_type")
-        or spec.get("gpu_type_display")
-        or spec.get("gpu_type")
-        or ""
-    )
-    bits = []
-    if cpu_count not in (None, ""):
-        bits.append(f"{cpu_count} CPU")
-    if memory not in (None, ""):
-        bits.append(f"{memory} GiB")
-    if gpu_count not in (None, ""):
-        gpu = f"{gpu_count} GPU"
-        if gpu_type:
-            gpu += f" ({gpu_type})"
-        bits.append(gpu)
-    return ", ".join(bits)
 
 
 def _format_list_rows(rows: list[dict[str, str]], total: int) -> str:
@@ -441,92 +305,12 @@ def _format_list_rows(rows: list[dict[str, str]], total: int) -> str:
     return "\n".join(rendered)
 
 
-def _public_serving_instance_text(
-    item: dict[str, Any],
-    *keys: str,
-) -> str:
-    for key in keys:
-        value = item.get(key)
-        if value in (None, "") or isinstance(value, (dict, list, tuple, set)):
-            continue
-        text = scrub_raw_ids(value).strip()
-        if text and "<redacted>" not in text:
-            return text
-    return ""
 
 
-def _serving_instance_rank(item: dict[str, Any], position: int) -> int:
-    for key in ("rank", "instance_rank", "global_rank", "index", "replica_index"):
-        value = item.get(key)
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            return value
-        if isinstance(value, str):
-            text = value.strip()
-            if text.isdigit():
-                return int(text)
-    return position
 
 
-def _serving_instance_resource(item: dict[str, Any]) -> str:
-    direct = _public_serving_instance_text(item, "resource")
-    if direct:
-        return direct
-
-    spec = item
-    for key in ("resource_spec", "resource_spec_price", "quota"):
-        candidate = item.get(key)
-        if isinstance(candidate, dict):
-            spec = candidate
-            break
-
-    values = (
-        ("CPU", _public_serving_instance_text(spec, "cpu_count", "cpu")),
-        (
-            "GiB",
-            _public_serving_instance_text(
-                spec,
-                "memory_size_gib",
-                "memory_gib",
-                "memory_size",
-                "memory",
-            ),
-        ),
-        ("GPU", _public_serving_instance_text(spec, "gpu_count", "gpu")),
-    )
-    return ", ".join(f"{value} {unit}" for unit, value in values if value)
 
 
-def _public_serving_instances(
-    instances: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    projected: list[dict[str, Any]] = []
-    for position, raw in enumerate(instances):
-        item: dict[str, Any] = {}
-        name = _public_serving_instance_text(
-            raw,
-            "name",
-            "instance_name",
-            "display_name",
-        )
-        if name and not looks_like_platform_id(name):
-            item["name"] = name
-
-        for key, candidates in (
-            ("status", ("status", "instance_status", "phase", "state")),
-            ("role", ("role", "instance_type", "component")),
-            ("type", ("type",)),
-            ("node", ("node", "node_name", "host_name")),
-        ):
-            value = _public_serving_instance_text(raw, *candidates)
-            if value:
-                item[key] = value
-
-        resource = _serving_instance_resource(raw)
-        if resource:
-            item["resource"] = resource
-        item["rank"] = _serving_instance_rank(raw, position)
-        projected.append(item)
-    return projected
 
 
 def _format_serving_instances(instances: list[dict[str, Any]]) -> str:
@@ -570,40 +354,6 @@ def _format_serving_instances(instances: list[dict[str, Any]]) -> str:
     return "\n".join(rendered)
 
 
-def _public_serving_version(item: dict[str, Any]) -> dict[str, Any]:
-    """Project one `ListServingVersions` row onto rollback-relevant fields."""
-    view: dict[str, Any] = {}
-    raw_version = item.get("version")
-    if raw_version not in (None, ""):
-        try:
-            view["version"] = int(str(raw_version))
-        except (TypeError, ValueError):
-            view["version"] = scrub_raw_ids(raw_version)
-    for key, candidates in (
-        ("status", ("status", "phase")),
-        ("model", ("model_name", "model_display_name")),
-        ("command", ("command",)),
-        ("created_at", ("created_at", "updated_at")),
-    ):
-        value = _public_serving_instance_text(item, *candidates)
-        if value:
-            view[key] = value
-    for key, candidates in (
-        ("replicas", ("replicas", "replica_count")),
-        ("port", ("port",)),
-    ):
-        for candidate in candidates:
-            raw = item.get(candidate)
-            if raw not in (None, ""):
-                try:
-                    view[key] = int(str(raw))
-                except (TypeError, ValueError):
-                    pass
-                break
-    resource = _serving_resource_label(item)
-    if resource:
-        view["resource"] = resource
-    return view
 
 
 def _format_serving_versions(versions: list[dict[str, Any]]) -> str:
@@ -638,45 +388,8 @@ def _format_serving_versions(versions: list[dict[str, Any]]) -> str:
     return "\n".join(rendered)
 
 
-def _scale_replica_count(item: dict[str, Any], *keys: str) -> int | None:
-    for key in keys:
-        raw = item.get(key)
-        if raw in (None, "") or isinstance(raw, bool):
-            continue
-        try:
-            return int(str(raw))
-        except (TypeError, ValueError):
-            continue
-    return None
 
 
-def _public_scale_history_entry(item: dict[str, Any]) -> dict[str, Any]:
-    """Project one `ListServingScaleHistory` row onto the replica delta.
-
-    The row's `id` is an internal counter with nothing to look up, so it is
-    dropped; what answers "why did latency move" is when the replica count
-    changed and what it changed from and to.
-    """
-    view: dict[str, Any] = {}
-    before = _scale_replica_count(
-        item, "replicas_before_scale", "replicas_before", "before_replicas"
-    )
-    after = _scale_replica_count(
-        item, "replicas_after_scale", "replicas_after", "after_replicas"
-    )
-    if before is not None:
-        view["replicas_from"] = before
-    if after is not None:
-        view["replicas_to"] = after
-    status = _public_serving_instance_text(item, "status", "state", "phase")
-    if status:
-        view["status"] = status
-    created_at = human_formatter.format_epoch(
-        item.get("created_at") or item.get("updated_at") or ""
-    )
-    if created_at not in ("", "-"):
-        view["created_at"] = scrub_raw_ids(created_at)
-    return view
 
 
 def _format_scale_history(entries: list[dict[str, Any]]) -> str:
@@ -846,6 +559,8 @@ def list_serving(
 ) -> None:
     """List the current user's inference servings.
 
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
+
     \b
     Examples:
         inspire serving list --workspace 分布式训练空间 --project <project>
@@ -1009,6 +724,8 @@ def status_serving(
     pick: Optional[int],
 ) -> None:
     """Show detail for one inference serving by name.
+
+    Status in JSON and human output is scrubbed, then uppercased; blank is UNKNOWN.
 
     Detail includes status, project, model, image, resource, startup command,
     port, replicas, endpoint, and timestamps when the platform returns them.
@@ -1585,54 +1302,6 @@ def rollback_serving(
 _INSTANCE_EVENT_FETCH_SIZE = 200
 
 
-def _serving_events(
-    serving_id: str,
-    *,
-    session,  # noqa: ANN001
-    selectors: tuple[str, ...] = (),
-    workload_level: bool = False,
-) -> list[dict[str, Any]]:
-    """Read deployment events, replica events, or one replica's, in order.
-
-    The two levels are separate calls against the same Action, so the merged
-    chronology is imposed here. Instance rows are labelled with the identity
-    `inspire serving instances` prints, because their `object_id` is the
-    namespaced pod handle and never reaches output.
-    """
-    if workload_level:
-        return sorted(
-            browser_api_module.list_serving_events(serving_id, session=session),
-            key=event_sort_key,
-        )
-
-    instances, _total = browser_api_module.list_serving_instances(
-        serving_id,
-        page_size=_INSTANCE_EVENT_FETCH_SIZE,
-        session=session,
-    )
-    views = select_serving_instance_views(serving_instance_views(instances), selectors)
-    labels = {view.handle: view.label for view in views}
-
-    instance_events: list[dict[str, Any]] = []
-    if views:
-        for event in browser_api_module.list_serving_events(
-            serving_id,
-            pod_names=[view.handle for view in views],
-            session=session,
-        ):
-            row = dict(event)
-            label = labels.get(str(row.get("object_id") or "").strip())
-            if label:
-                row["instance"] = label
-            instance_events.append(row)
-
-    if selectors:
-        return sorted(instance_events, key=event_sort_key)
-    merged = (
-        browser_api_module.list_serving_events(serving_id, session=session)
-        + instance_events
-    )
-    return sorted(merged, key=event_sort_key)
 
 
 @click.command("events")
@@ -2053,7 +1722,8 @@ def configs_serving(
     "model_name",
     required=True,
     metavar="NAME",
-    help="Registered model name",
+    help="Registered model name; scans up to 100 pages of 100 models. "
+    "Incomplete lookup fails before creation; use a more specific name or workspace.",
 )
 @click.option(
     "--model-version",
@@ -2414,7 +2084,7 @@ def create_serving(
                 status=str(result.get("status") or ""),
                 created_at=str(result.get("created_at") or ""),
             )
-        from .access import serving_endpoint
+        from inspire.services.serving.serving_access import serving_endpoint
 
         created = public_operation(name, "created")
         endpoint = serving_endpoint(result)

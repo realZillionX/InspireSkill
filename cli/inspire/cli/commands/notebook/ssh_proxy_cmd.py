@@ -11,7 +11,7 @@ from inspire.bridge.tunnel import exec_rtunnel_proxy, is_tunnel_available, load_
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, EXIT_GENERAL_ERROR, pass_context
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 
 from .bootstrap_lock import notebook_target_is_ready, serialize_notebook_bootstrap
 from .notebook_ssh_flow import run_notebook_ssh

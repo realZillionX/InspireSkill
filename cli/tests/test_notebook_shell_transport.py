@@ -37,7 +37,7 @@ def test_shell_uses_jupyter_when_policy_blocks_ssh(monkeypatch) -> None:  # noqa
     )
     called = {"jupyter": False}
     monkeypatch.setattr(
-        shell_module.browser_api_module,
+        shell_module.jupyter_shell,
         "open_jupyter_terminal_shell",
         lambda **kwargs: (
             called.__setitem__("jupyter", True)

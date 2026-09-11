@@ -77,7 +77,7 @@ def test_resolve_create_inputs_requires_explicit_or_profile_quota() -> None:
         shm_size=64,
     )
     with pytest.raises(ValueError, match="--quota is required"):
-        flow_module._resolve_create_inputs(
+        flow_module.resolve_create_inputs(
             config=config,
             quota=None,
             project="Project One",
@@ -91,7 +91,7 @@ def test_resolve_create_inputs_prefers_cli_arg_over_config() -> None:
         project_order=None,
         shm_size=None,
     )
-    quota, _p, _i, shm = flow_module._resolve_create_inputs(
+    quota, _p, _i, shm = flow_module.resolve_create_inputs(
         config=config,
         quota="1,20,200",
         project="Project One",
@@ -108,7 +108,7 @@ def test_resolve_create_inputs_requires_quota_somewhere() -> None:
         shm_size=None,
     )
     with pytest.raises(ValueError, match="--quota is required"):
-        flow_module._resolve_create_inputs(
+        flow_module.resolve_create_inputs(
             config=config, quota=None, project=None, image=None, shm_size=None
         )
 

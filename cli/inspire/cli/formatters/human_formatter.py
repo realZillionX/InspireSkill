@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.text import format_epoch as format_epoch
 
 
 def format_error(message: str, hint: Optional[str] = None) -> str:
@@ -50,24 +51,6 @@ def _format_timestamp(timestamp_ms: str) -> str:
         return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
     except (ValueError, TypeError):
         return "Unknown"
-
-
-def format_epoch(value: Any) -> str:
-    """Format an epoch in seconds or milliseconds for display."""
-    if value is None or value == "":
-        return "-"
-    try:
-        epoch = int(str(value))
-    except (ValueError, TypeError):
-        return str(value)
-    if epoch <= 0:
-        return "-"
-    if epoch >= 100_000_000_000:
-        epoch //= 1000
-    try:
-        return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
-    except (OverflowError, OSError, ValueError):
-        return "-"
 
 
 def format_job_status(job_data: Dict[str, Any]) -> str:

@@ -13,28 +13,17 @@ from inspire.platform.web.browser_api.core import _set_base_url
 from inspire.platform.web.session import AuthenticationError
 from inspire.platform.web.session.browser_launch import is_playwright_browser_runtime_error
 
-from .toml_helpers import _toml_dumps
-
-
-logger = logging.getLogger(__name__)
+from inspire.services.account.account_config import (
+    toml_dumps as _toml_dumps,
+    sanitize_account_config as _sanitize_account_config,
+    atomic_write_text,
+)
 
 _USERNAME_PLACEHOLDERS = frozenset({"your_username"})
 _BASE_URL_PLACEHOLDER = "https://api.example.com"
-_OBSOLETE_ACCOUNT_TABLES = frozenset(
-    {
-        "compute_groups",
-        "context",
-        "path_aliases",
-        "profiles",
-        "project_catalog",
-        "projects",
-        "paths",
-    }
-)
-_OBSOLETE_ACCOUNT_TABLE_FIELDS: dict[str, frozenset[str]] = {
-    "api": frozenset({"docker_registry"}),
-}
 
+
+logger = logging.getLogger(__name__)
 
 def _progress(verbose: bool, message: str) -> None:
     if verbose:
@@ -290,23 +279,6 @@ def _resolve_discover_runtime(
     return session, prompted_credentials, account_key
 
 
-def _sanitize_account_config(raw_data: dict[str, Any]) -> dict[str, Any]:
-    """Drop retired repository-derived and unused account fields."""
-    cleaned: dict[str, Any] = {}
-    for key, raw_value in raw_data.items():
-        if key in _OBSOLETE_ACCOUNT_TABLES:
-            continue
-        if not isinstance(raw_value, dict):
-            cleaned[key] = raw_value
-            continue
-        table = dict(raw_value)
-        for field in _OBSOLETE_ACCOUNT_TABLE_FIELDS.get(key, frozenset()):
-            table.pop(field, None)
-        if table:
-            cleaned[key] = table
-    return cleaned
-
-
 def _persist_api_base_url(
     *,
     account_data: dict[str, Any],
@@ -395,12 +367,7 @@ def _persist_account_config(
 
     _progress(verbose, "Writing account configuration...")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_toml_dumps(account_data), encoding="utf-8")
-    if prompted_credentials:
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
+    atomic_write_text(path, _toml_dumps(account_data), private=True)
     _ensure_ssh_key(non_interactive=non_interactive)
 
 

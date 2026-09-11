@@ -13,12 +13,13 @@ import click
 
 from inspire.bridge.tunnel import BridgeProfile, load_tunnel_config
 from inspire.cli.context import Context, EXIT_CONFIG_ERROR, pass_context
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP, reject_id_at_boundary
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 
 from .notebook_ssh_flow import run_notebook_ssh
-from .public_output import sanitize_public_text
+from inspire.services.notebook.notebook_output import sanitize_public_text
 from .target_resolver import (
     NOTEBOOK_TARGET_WORKSPACE_HELP,
     NotebookConnectionTarget,

@@ -21,8 +21,8 @@ from inspire.cli.utils.id_resolver import (
     looks_like_platform_id,
     run_with_stale_handle_retry,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
-from inspire.cli.utils.resource_index import (
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.catalog.resource_index import (
     ResourceIdentity,
     ResourceIndex,
     ResourceScope,

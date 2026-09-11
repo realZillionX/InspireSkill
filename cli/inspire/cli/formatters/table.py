@@ -8,7 +8,6 @@ the same width, alignment, truncation, and Unicode handling.
 
 from __future__ import annotations
 
-import unicodedata
 from io import StringIO
 from typing import Iterable, Sequence
 
@@ -17,45 +16,11 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.text import display_width as display_width, clip_display as clip_display
 
 def _cell_text(value: object, *, scrub: bool = True) -> str:
     return scrub_raw_ids(value) if scrub else str(value)
-
-
-def display_width(value: object) -> int:
-    """Return terminal display width, counting CJK wide chars as two columns."""
-    text = str(value)
-    width = 0
-    for ch in text:
-        if unicodedata.combining(ch):
-            continue
-        if unicodedata.category(ch) in {"Cc", "Cf"}:
-            continue
-        width += 2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
-    return width
-
-
-def clip_display(value: object, width: int) -> str:
-    """Clip text to a display width without splitting wide characters."""
-    text = str(value)
-    if width <= 0:
-        return ""
-    if display_width(text) <= width:
-        return text
-
-    suffix = "..." if width >= 4 else "." * width
-    suffix_width = display_width(suffix)
-    limit = max(0, width - suffix_width)
-    out: list[str] = []
-    current = 0
-    for ch in text:
-        ch_width = display_width(ch)
-        if current + ch_width > limit:
-            break
-        out.append(ch)
-        current += ch_width
-    return "".join(out) + suffix
 
 
 def column_width(

@@ -9,16 +9,8 @@ import pytest
 from conftest import set_fake_home
 
 from inspire.accounts import create_account, set_current_account
-from inspire.cli.utils import resource_index as resource_index_module
-from inspire.cli.utils.resource_index import (
-    ResourceIdentity,
-    ResourceIndex,
-    ResourceIndexDatabaseError,
-    ResourceScope,
-    StaleResourceIndexRefresh,
-    resource_index_path,
-    scope_for_session,
-)
+from inspire.services.catalog import resource_index as resource_index_module
+from inspire.services.catalog.resource_index import ResourceIdentity, ResourceIndex, ResourceIndexDatabaseError, ResourceScope, StaleResourceIndexRefresh, resource_index_path, scope_for_session
 
 
 def _scope(

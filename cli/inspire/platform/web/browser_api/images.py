@@ -1,13 +1,14 @@
 """Browser (web-session) image management APIs (list, detail, create, delete).
 
 Saving a notebook as an image is **not** here: all three Actions behind that
-flow live on the ``notebook`` route, so they sit in :mod:`.notebooks` next to
+flow live on the ``notebook`` route, so they sit in :mod:`inspire.platform.web.browser_api.notebooks` next to
 the rest of the notebook lifecycle.
 """
 
 from __future__ import annotations
 
 import time
+from inspire.platform.web.flow import call, perform_sync
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -318,8 +319,8 @@ _IMAGE_FAILED_STATES = {
 def wait_for_image_ready(
     image_id: str,
     session: Optional[WebSession] = None,
-    timeout: int = 600,
-    poll_interval: int = 5,
+    timeout: float = 600,
+    poll_interval: float = 5,
 ) -> CustomImageInfo:
     """Wait for a custom image to reach a terminal success state.
 
@@ -362,7 +363,7 @@ def wait_for_image_ready(
                 f"within {timeout}s (last status: {last_status or 'unknown'})"
             )
 
-        time.sleep(poll_interval)
+        perform_sync(call(time.sleep, poll_interval))
 
 
 __all__ = [

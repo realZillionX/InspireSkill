@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from inspire.cli.utils.resource_index import (
+from inspire.services.catalog.resource_index import (
     ResourceIdentity,
     ResourceIndex,
     StaleResourceIndexRefresh,

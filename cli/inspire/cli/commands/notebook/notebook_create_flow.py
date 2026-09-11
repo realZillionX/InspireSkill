@@ -16,7 +16,8 @@ from inspire.cli.context import (
     EXIT_CONFIG_ERROR,
     EXIT_VALIDATION_ERROR,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.cli.formatters import human_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.dataset_mounts import (
     DatasetSpecError,
     dataset_mount_views,
@@ -44,12 +45,11 @@ from inspire.cli.utils.quota_resolver import (
     QuotaSpec,
     ResolvedQuota,
     SCHEDULE_TYPE_DSW,
-    build_resource_spec_price,
     ensure_priority_allowed,
     parse_quota,
     resolve_quota,
 )
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.cli.utils.task_priority import TaskPriorityError, resolve_task_priority
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id
@@ -62,11 +62,20 @@ from inspire.platform.web.browser_api.workspaces import (
 from inspire.platform.web.session import TransientAPIError, WebSession
 from .notebook_lookup import (
     _list_notebooks_for_workspace,
-    _notebook_id_from_item,
-    _sort_notebook_items,
     _try_get_current_user_ids,
 )
-from .public_output import public_operation
+from inspire.services.notebook.notebook_output import public_operation
+
+from inspire.services.notebook import notebooks as notebook_services
+from inspire.services.notebook.notebooks import (
+    build_notebook_create_kwargs,
+    first_non_empty_str as first_non_empty_str,
+    extract_notebook_id as extract_notebook_id,
+    resolve_create_inputs as resolve_create_inputs,
+    split_auto_stop_after as split_auto_stop_after,
+    format_quota_display as format_quota_display,
+    find_image_match as find_image_match,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,23 +90,6 @@ class NotebookCreateDiagnostics:
     compute_group: str
 
 
-def format_quota_display(quota: ResolvedQuota) -> str:
-    if quota.gpu_count > 0:
-        label = quota.gpu_type or "GPU"
-        return f"{quota.gpu_count}x{label} + {quota.cpu_count}CPU + {quota.memory_gib}GiB"
-    return f"{quota.cpu_count}CPU + {quota.memory_gib}GiB"
-
-
-def _first_non_empty_str(*values: object) -> str:
-    for value in values:
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text:
-            return text
-    return ""
-
-
 def _workspace_label(
     *,
     workspace_id: str,
@@ -109,7 +101,7 @@ def _workspace_label(
 
     session_names = getattr(session, "all_workspace_names", None) or {}
     if isinstance(session_names, dict):
-        name = _first_non_empty_str(session_names.get(workspace_id))
+        name = first_non_empty_str(session_names.get(workspace_id))
         if name:
             return name
 
@@ -150,9 +142,9 @@ def _sanitize_notebook_id(text: str, notebook_id: str) -> str:
 
 
 def _event_message(event: dict) -> str:
-    reason = _first_non_empty_str(event.get("reason"))
-    message = _first_non_empty_str(event.get("message"), event.get("content"))
-    event_type = _first_non_empty_str(event.get("type"))
+    reason = first_non_empty_str(event.get("reason"))
+    message = first_non_empty_str(event.get("message"), event.get("content"))
+    event_type = first_non_empty_str(event.get("type"))
     prefix = f"[{event_type}] " if event_type else ""
     label = f"{reason}: " if reason else ""
     return f"{prefix}{label}{message}".strip()
@@ -177,50 +169,21 @@ def _fetch_event_preview(notebook_id: str, session: WebSession) -> str:
     return "\n".join(lines)
 
 
-def _extract_notebook_id(result: object) -> str:
-    if not isinstance(result, dict):
-        return ""
-
-    for key in ("notebook_id", "id", "uuid"):
-        value = _first_non_empty_str(result.get(key))
-        if value:
-            return value
-
-    for key in ("notebook", "item", "instance"):
-        nested = result.get(key)
-        if isinstance(nested, dict):
-            value = _extract_notebook_id(nested)
-            if value:
-                return value
-    return ""
-
-
-def _resolve_created_notebook_id(
+def resolve_created_notebook_id(
     *,
     name: str,
     workspace_id: str,
     session: WebSession,
 ) -> str:
-    try:
-        user_ids = _try_get_current_user_ids(session, base_url=get_base_url())
-        if not user_ids:
-            return ""
-        items = _list_notebooks_for_workspace(
-            session,
-            workspace_id=workspace_id,
-            user_ids=user_ids,
-            keyword=name,
-            page_size=20,
-        )
-    except Exception:
-        return ""
+    return notebook_services.resolve_created_notebook_id(
+        name=name, workspace_id=workspace_id, session=session,
+        user_ids_loader=lambda: _try_get_current_user_ids(session, base_url=get_base_url()),
+        list_loader=_list_notebooks_for_workspace,
+    )
 
-    matches = [item for item in items if str(item.get("name") or "") == name]
-    for item in _sort_notebook_items(matches):
-        notebook_id = _notebook_id_from_item(item)
-        if notebook_id:
-            return notebook_id
-    return ""
+
+# Preserve the CLI patch point used by creation tests.
+_resolve_created_notebook_id = resolve_created_notebook_id
 
 
 def _reject_taken_notebook_name(
@@ -306,23 +269,10 @@ def resolve_notebook_project(
             return None
 
     try:
-        congested: set[str] | None = None
-        if needs_gpu_quota and workspace_id and session:
-            congested = (
-                browser_api_module.check_scheduling_health(
-                    workspace_id=workspace_id,
-                    project_ids={p.project_id for p in projects},
-                    session=session,
-                )
-                or None
-            )
-
-        selected_project, selection_message = browser_api_module.select_project(
-            projects,
-            project_value,
-            needs_gpu_quota=needs_gpu_quota,
-            project_order=config.project_order or None,
-            congested_projects=congested,
+        selected_project, selection_message = notebook_services.resolve_notebook_project(
+            projects=projects, config=config, project=project_value,
+            needs_gpu_quota=needs_gpu_quota, workspace_id=workspace_id, session=session,
+            api=browser_api_module,
         )
 
         if not json_output:
@@ -346,17 +296,6 @@ def resolve_notebook_project(
     return selected_project
 
 
-def _find_image_match(images: list[Any], image: str) -> Any | None:
-    image_lower = image.lower()
-    for img in images:
-        if (
-            image_lower in img.name.lower()
-            or image_lower in img.url.lower()
-        ):
-            return img
-    return None
-
-
 def resolve_notebook_image(
     ctx: Context,
     *,
@@ -367,7 +306,10 @@ def resolve_notebook_image(
     selected_image = None
 
     if image:
-        selected_image = _find_image_match(images, image)
+        selected_image = (
+            notebook_services.resolve_notebook_image(images, image)
+            if find_image_match(images, image) else None
+        )
         if not selected_image:
             hint = "Available images:\n" + "\n".join(f"  - {img.name}" for img in images[:20])
             _handle_error(
@@ -446,34 +388,19 @@ def create_notebook_and_report(
     project_path_readonly: Optional[bool] = None,
 ) -> str | None:
     try:
-        resource_spec_price = build_resource_spec_price(quota=quota)
         result = browser_api_module.create_notebook(
-            name=name,
-            project_id=selected_project.project_id,
-            project_name=selected_project.name,
-            image_id=selected_image.image_id,
-            image_url=selected_image.url,
-            logic_compute_group_id=quota.logic_compute_group_id,
-            quota_id=quota.quota_id,
-            gpu_count=quota.gpu_count,
-            cpu_count=quota.cpu_count,
-            memory_size=quota.memory_gib,
-            shared_memory_size=shm_size,
-            auto_stop=auto_stop,
-            workspace_id=workspace_id,
+            **build_notebook_create_kwargs(
+                name=name, project_id=selected_project.project_id, project_name=selected_project.name,
+                image_id=selected_image.image_id, image_url=selected_image.url,
+                quota=quota, shm_size=shm_size, auto_stop=auto_stop, workspace_id=workspace_id,
+                task_priority=task_priority, node_id=node_id, dataset_info=dataset_info,
+                enable_notification=enable_notification, stop_hour=stop_hour, stop_minute=stop_minute,
+                public_path_readonly=public_path_readonly, project_path_readonly=project_path_readonly,
+            ),
             session=session,
-            task_priority=task_priority,
-            resource_spec_price=resource_spec_price,
-            node_id=node_id,
-            dataset_info=dataset_info,
-            enable_notification=enable_notification,
-            stop_hour=stop_hour,
-            stop_minute=stop_minute,
-            is_publicpath_readonly=public_path_readonly,
-            is_projectuserspath_readonly=project_path_readonly,
         )
 
-        notebook_id = _extract_notebook_id(result)
+        notebook_id = extract_notebook_id(result)
         if not notebook_id:
             notebook_id = _resolve_created_notebook_id(
                 name=name,
@@ -556,7 +483,7 @@ def maybe_wait_for_running(
     except NotebookFailedError as e:
         detail = e.detail or {}
         reason_parts = [f"terminal status: {e.status}"]
-        sub_status = _first_non_empty_str(detail.get("sub_status"))
+        sub_status = first_non_empty_str(detail.get("sub_status"))
         if sub_status:
             reason_parts.append(f"sub-status: {sub_status}")
         hint_parts = []
@@ -659,27 +586,6 @@ def maybe_run_post_start(
             )
 
 
-def _resolve_create_inputs(
-    *,
-    config: Config,
-    quota: str | None,
-    project: str | None,
-    image: str | None,
-    shm_size: int | None,
-) -> tuple[str, str | None, str | None, int]:
-    if not quota:
-        raise ValueError("--quota is required.")
-    if not project:
-        raise ValueError("--project is required.")
-    if not image:
-        raise ValueError("--image is required.")
-    if shm_size is None:
-        shm_size = config.shm_size if config.shm_size is not None else 32
-    if shm_size < 1:
-        raise ValueError("Shared memory size must be >= 1.")
-    return quota, project, image, shm_size
-
-
 def _fetch_workspace_projects(
     ctx: Context,
     *,
@@ -715,7 +621,7 @@ def _fetch_notebook_images(
         _handle_error(ctx, "APIError", "Could not load notebook images.", EXIT_API_ERROR)
         return None
 
-    if image and not _find_image_match(images, image):
+    if image and not find_image_match(images, image):
         for source in ("SOURCE_PUBLIC", "SOURCE_PRIVATE"):
             try:
                 extra_images = browser_api_module.list_images(
@@ -725,7 +631,7 @@ def _fetch_notebook_images(
                     if ctx.debug and not json_output:
                         click.echo(f"Searching {source.lower().replace('source_', '')} images...")
                     images = images + extra_images
-                    if _find_image_match(images, image):
+                    if find_image_match(images, image):
                         break
             except TransientAPIError:
                 # An unsearched source must not become "no such image": the
@@ -747,18 +653,6 @@ def _fetch_notebook_images(
 
     _handle_error(ctx, "ConfigError", "No images available", EXIT_CONFIG_ERROR)
     return None
-
-
-def _split_auto_stop_after(minutes: Optional[int]) -> tuple[Optional[int], Optional[int]]:
-    """Split a run duration into the hour/minute pair the platform expects.
-
-    The console asks for 运行时长 as two numbers and refuses anything under two
-    minutes; the platform only reads them while `auto_stop` is on.
-    """
-    if minutes is None:
-        return None, None
-    total = int(minutes)
-    return total // 60, total % 60
 
 
 def _resolve_notebook_name(name: Optional[str], *, json_output: bool) -> str:
@@ -870,7 +764,7 @@ def run_notebook_create(
         return
 
     try:
-        quota, project, image, shm_size = _resolve_create_inputs(
+        quota, project, image, shm_size = resolve_create_inputs(
             config=config,
             quota=quota,
             project=project,
@@ -1039,7 +933,7 @@ def run_notebook_create(
         _handle_error(ctx, "APIError", f"Could not check the dataset mounts: {e}", EXIT_API_ERROR)
         return
 
-    stop_hour, stop_minute = _split_auto_stop_after(auto_stop_after)
+    stop_hour, stop_minute = split_auto_stop_after(auto_stop_after)
 
     notebook_id = create_notebook_and_report(
         ctx,
@@ -1086,7 +980,6 @@ def run_notebook_create(
         gpu_count=resolved_quota.gpu_count,
         json_output=json_output,
     )
-
 
 
 __all__ = ["run_notebook_create", "maybe_run_post_start", "format_quota_display"]

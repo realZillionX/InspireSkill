@@ -17,10 +17,11 @@ from inspire.accounts import (
     validate_name,
 )
 from inspire.cli.context import Context, EXIT_VALIDATION_ERROR, pass_context
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error
 from inspire.cli.utils.output import emit_success
 from inspire.config import DEFAULT_BASE_URL
+from inspire.services.account.account_config import render_account_config as _render_config
 
 
 @click.command("add")
@@ -197,38 +198,3 @@ def add(
             redact_paths=True,
         ),
     )
-
-
-def _toml_basic(s: str) -> str:
-    """Escape a string for a TOML basic (double-quoted) string literal."""
-    return s.replace("\\", "\\\\").replace('"', '\\"')
-
-
-def _render_config(*, username: str, password: str, base_url: str, proxy: str) -> str:
-    """Write a minimal account config.toml using the real schema section names.
-
-    Keys must live under [auth]/[api]/[proxy] — the loader resolves
-    ``auth.username`` / ``api.base_url`` etc. via the flattened TOML path,
-    and a bare top-level ``username = "..."`` silently fails to bind.
-    """
-    lines = [
-        "[auth]",
-        f'username = "{_toml_basic(username)}"',
-        f'password = "{_toml_basic(password)}"',
-        "",
-        "[api]",
-        f'base_url = "{_toml_basic(base_url)}"',
-    ]
-    if proxy:
-        escaped = _toml_basic(proxy)
-        lines.extend(
-            [
-                "",
-                "[proxy]",
-                f'requests_http = "{escaped}"',
-                f'requests_https = "{escaped}"',
-                f'playwright = "{escaped}"',
-                f'rtunnel = "{escaped}"',
-            ]
-        )
-    return "\n".join(lines) + "\n"

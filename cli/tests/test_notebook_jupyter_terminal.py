@@ -110,7 +110,10 @@ class _FakeHttp:
     """Stands in for a `requests.Session` primed with the notebook cookies."""
 
     def __init__(self, *, post_status: int = 200, term_name: str = "1") -> None:
-        self.cookies = {"_xsrf": "xsrf-token"}
+        from requests.cookies import RequestsCookieJar
+
+        self.cookies = RequestsCookieJar()
+        self.cookies.set("_xsrf", "xsrf-token", domain="nb.example.com", path="/")
         self._post_status = post_status
         self._term_name = term_name
         self.calls: list[tuple[str, str, dict]] = []
@@ -139,11 +142,21 @@ class _FakeHttp:
 
 
 def _patch_terminal_http(monkeypatch, http, *, jupyter_url):  # noqa: ANN001, ANN202
-    monkeypatch.setattr(jt, "build_requests_session", lambda *_a, **_k: http)
+    from inspire.platform.web.transport import Transport
+    from inspire.platform.web.session import WebSession
+    from inspire.platform.web.session import requests as preparation
+
+    transport = Transport(None, "https://console.test", username="")
+    transport.adopt_session(WebSession(
+        storage_state={"cookies": [{"name": "session", "value": "test"}]},
+        base_url="https://console.test", created_at=1,
+    ))
+    monkeypatch.setattr(preparation, "build_requests_session", lambda *_a, **_k: http)
+    monkeypatch.setattr(jt, "get_transport", lambda *_a: transport)
     monkeypatch.setattr(jt, "_notebook_jupyter_url", lambda *_a, **_k: jupyter_url)
     monkeypatch.setattr(
         jt.rtunnel_module,
-        "_build_terminal_websocket_url",
+        "build_terminal_websocket_url",
         lambda lab_url, term_name: f"wss://nb.example.com/terminals/websocket/{term_name}",
     )
 
@@ -194,13 +207,22 @@ def test_jupyter_terminal_yields_none_when_creation_is_refused(monkeypatch) -> N
     http = _FakeHttp(post_status=403)
     _patch_terminal_http(monkeypatch, http, jupyter_url="https://nb.example.com/jupyter/nb-1/tok/lab")
 
-    with jt._jupyter_terminal(object(), "nb-1") as term:
-        assert term is None
+    from inspire.platform.errors import AuthenticationError
+
+    with pytest.raises(AuthenticationError, match="Application access denied"):
+        with jt._jupyter_terminal(object(), "nb-1"):
+            pytest.fail("Forbidden creation must be classified before opening a websocket")
     # Nothing was created, so nothing is deleted.
     assert "DELETE" not in [verb for verb, _u, _h in http.calls]
 
 
 class _FakeWebSocket:
+    def has_pending_data(self):
+        return False
+
+    def set_read_timeout(self, timeout):
+        pass
+
     """Replays terminal frames, and records what was written back."""
 
     def __init__(self, frames: list[str]) -> None:
@@ -226,9 +248,9 @@ class _FakeWebSocket:
 
 
 def _patch_capture_socket(monkeypatch, ws):  # noqa: ANN001, ANN202
-    import inspire.cli.utils.job_shell as job_shell
+    import inspire.platform.web.pty_socket as job_shell
 
-    monkeypatch.setattr(job_shell, "_WebSocketClient", lambda *_a, **_k: ws)
+    monkeypatch.setattr(job_shell, "WebSocketClient", lambda *_a, **_k: ws)
     monkeypatch.setattr(jt.select, "select", lambda r, _w, _x, _t=None: (r, [], []))
     monkeypatch.setattr(jt, "_jupyter_ws_headers", lambda *_a, **_k: {})
 
@@ -300,7 +322,7 @@ def test_capture_reports_unfinished_when_the_marker_never_arrives(monkeypatch) -
 
 
 def test_capture_logs_websocket_failure(monkeypatch, caplog) -> None:  # noqa: ANN001
-    import inspire.cli.utils.job_shell as job_shell
+    import inspire.platform.web.pty_socket as job_shell
 
     class _BrokenWebSocket:
         def __enter__(self):
@@ -309,7 +331,7 @@ def test_capture_logs_websocket_failure(monkeypatch, caplog) -> None:  # noqa: A
         def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
             return False
 
-    monkeypatch.setattr(job_shell, "_WebSocketClient", lambda *_a, **_k: _BrokenWebSocket())
+    monkeypatch.setattr(job_shell, "WebSocketClient", lambda *_a, **_k: _BrokenWebSocket())
 
     with caplog.at_level("DEBUG", logger=jt.__name__):
         result = jt._capture_terminal_output(
@@ -320,7 +342,7 @@ def test_capture_logs_websocket_failure(monkeypatch, caplog) -> None:  # noqa: A
             marker="__INSPIRE_DONE_abc__",
         )
 
-    assert result is None
+    assert result is not None and not result.completed
     assert "JupyterTerminal WebSocket failed" in caplog.text
     assert "ConnectionRefusedError" in caplog.text
 
@@ -352,14 +374,14 @@ def test_command_capture_runs_without_playwright(monkeypatch) -> None:  # noqa: 
 
     assert result.returncode == 0
     assert seen["ws_url"] == "wss://nb.example.com/terminals/websocket/1"
-    assert seen["timeout_ms"] == 9000
+    assert 0 < seen["timeout_ms"] <= 9000
     assert http.closed is True
 
 
 def test_build_jupyter_terminal_ws_url_uses_existing_rtunnel_helper(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(
         jt.rtunnel_module,
-        "_build_terminal_websocket_url",
+        "build_terminal_websocket_url",
         lambda lab_url, term_name: f"wss://example.test/{term_name}",
     )
 

@@ -1146,7 +1146,7 @@ def test_job_list_web_name_search_scans_all_workspaces(
     assert "job_id" not in row
     assert row == {
         "name": "kchen-slime-code-qwen35-35b-a3b-6node",
-        "status": "job_queuing",
+        "status": "QUEUING",
         "project": "CQ Project",
         "workspace": "Training Workspace",
         "compute_group": "H200-3",

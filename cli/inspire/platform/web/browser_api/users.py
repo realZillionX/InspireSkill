@@ -1,8 +1,8 @@
 """Browser API wrapper for the per-workspace permission matrix.
 
 Backs `inspire account permissions`. The current user's identity comes from
-[`jobs.get_current_user`](jobs.py) and workspace routes from
-[`workspaces.py`](workspaces.py); this module only covers `user.GetPermissions`.
+inspire.platform.web.browser_api.jobs.get_current_user and workspace routes from
+inspire.platform.web.browser_api.workspaces; this module only covers `user.GetPermissions`.
 """
 
 from __future__ import annotations

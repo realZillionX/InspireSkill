@@ -14,9 +14,9 @@ from inspire.cli.commands.account import api_key as key_cli
 from inspire.cli.commands.account import key_export
 from inspire.cli.commands.serving import serving_api as api_cli
 from inspire.cli.commands.serving import serving_commands
-from inspire.cli.commands.serving.access import invocation_info, serving_endpoint
-from inspire.cli.commands.serving.public_output import public_serving, public_serving_list_item
-from inspire.cli.formatters.json_formatter import format_json
+from inspire.services.serving.serving_access import invocation_info, serving_endpoint
+from inspire.services.serving.serving_output import public_serving, public_serving_list_item
+from inspire.services.utils.json_formatter import format_json
 from inspire.cli.main import main
 from inspire.platform.web.browser_api import api_keys
 

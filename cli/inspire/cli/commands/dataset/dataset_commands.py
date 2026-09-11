@@ -14,6 +14,15 @@ the qz side and never appear on any CLI surface.
 
 from __future__ import annotations
 
+from inspire.services.catalog.dataset_catalog import (
+    DESCRIPTION_BUDGET as DESCRIPTION_BUDGET,
+    dataset_row,
+    dataset_detail_view,
+    version_views,
+    application_row,
+    application_detail_view,
+)
+
 import sys
 from typing import Any, Optional
 
@@ -27,9 +36,9 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import json_formatter
-from inspire.cli.formatters.table import clip_display, column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils import json_formatter
+from inspire.cli.formatters.table import column_width, render_table
+from inspire.services.utils.collections import (
     DEFAULT_COLLECTION_LIMIT,
     bound_collection,
     resolve_collection_limit,
@@ -42,12 +51,11 @@ from inspire.cli.utils.dataset_mounts import (
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import reject_id_at_boundary
 from inspire.cli.utils.notebook_cli import WEB_AUTH_HINT, require_web_session
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import plaza as plaza_module
 from inspire.platform.web.browser_api.datasets import (
-    container_mount_path,
     validate_dataset_mounts,
 )
 from inspire.platform.web.session import SessionExpiredError
@@ -56,7 +64,6 @@ LIST_COMMAND = "inspire dataset list"
 
 # Catalogue descriptions are README-sized. The CLI is an Agent surface, so a
 # detail view carries an orientation-sized summary, not the whole document.
-DESCRIPTION_BUDGET = 400
 
 # How many tag names an unknown-tag error is allowed to spend context on.
 _TAG_SUGGESTION_LIMIT = 12
@@ -65,42 +72,6 @@ _TAG_SUGGESTION_LIMIT = 12
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _summarize(text: str, *, budget: int = DESCRIPTION_BUDGET) -> str:
-    """Collapse a markdown description into one clipped, readable line."""
-    collapsed = " ".join(str(text or "").split())
-    return clip_display(scrub_raw_ids(collapsed), budget) if collapsed else ""
-
-
-def _yes_no(value: bool) -> str:
-    return "yes" if value else "no"
-
-
-def _format_size(files_size_mib: int) -> str:
-    """Render a version's size, which the catalogue reports in MiB."""
-    size = float(files_size_mib or 0)
-    if size <= 0:
-        return ""
-    for unit in ("MiB", "GiB", "TiB"):
-        if size < 1024 or unit == "TiB":
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return ""  # pragma: no cover - the loop always returns
-
-
-def _dataset_row(dataset: plaza_module.DatasetSummary) -> dict[str, Any]:
-    """The compact, name-only projection of one catalogue row."""
-    view: dict[str, Any] = {
-        "name": scrub_raw_ids(dataset.code),
-        "project": scrub_raw_ids(dataset.project),
-        "grade": scrub_raw_ids(dataset.grade),
-        "state": scrub_raw_ids(dataset.state),
-        "access": _yes_no(dataset.accessible),
-        "tags": [scrub_raw_ids(tag) for tag in dataset.tags],
-        "updated_at": scrub_raw_ids(dataset.updated_at),
-    }
-    return {key: value for key, value in view.items() if value not in ("", [], None)}
 
 
 def _format_dataset_rows(rows: list[dict[str, Any]]) -> str:
@@ -125,45 +96,6 @@ def _format_dataset_rows(rows: list[dict[str, Any]]) -> str:
         for index, (header, max_width) in enumerate(zip(headers, max_widths))
     ]
     return "\n".join(render_table(headers, values, widths, line_char="─"))
-
-
-def _dataset_detail_view(detail: plaza_module.DatasetDetail) -> dict[str, Any]:
-    view: dict[str, Any] = {
-        "name": scrub_raw_ids(detail.code),
-        "project": scrub_raw_ids(detail.project),
-        "grade": scrub_raw_ids(detail.grade),
-        "state": scrub_raw_ids(detail.state),
-        "access": _yes_no(detail.accessible),
-        "owner": scrub_raw_ids(detail.owner),
-        "maintainer": scrub_raw_ids(detail.maintainer),
-        "tags": [scrub_raw_ids(tag) for tag in detail.tags],
-        "data_type": scrub_raw_ids(detail.data_type),
-        "source_type": scrub_raw_ids(detail.source_type),
-        "license": scrub_raw_ids(detail.license_name),
-        "license_url": scrub_raw_ids(detail.license_url),
-        "updated_at": scrub_raw_ids(detail.updated_at),
-        "description": _summarize(detail.description),
-    }
-    return {key: value for key, value in view.items() if value not in ("", [], None)}
-
-
-def _version_views(detail: plaza_module.DatasetDetail) -> list[dict[str, Any]]:
-    views: list[dict[str, Any]] = []
-    for version in detail.versions:
-        view: dict[str, Any] = {
-            "version": scrub_raw_ids(version.code),
-            "state": scrub_raw_ids(version.state),
-            "size": _format_size(version.files_size_mib),
-            "files": version.files_count or "",
-            "formats": [scrub_raw_ids(fmt) for fmt in version.data_formats],
-            "updated_at": scrub_raw_ids(version.updated_at),
-            "mount": f"--dataset {detail.code}:{version.code}",
-            "path": container_mount_path(detail.code, version.code),
-        }
-        views.append(
-            {key: value for key, value in view.items() if value not in ("", [], None)}
-        )
-    return views
 
 
 def _format_versions(versions: list[dict[str, Any]]) -> str:
@@ -329,7 +261,7 @@ def list_datasets_cmd(
         return
 
     page = bound_collection(
-        [_dataset_row(item) for item in items],
+        [dataset_row(item) for item in items],
         limit=effective_limit,
         total=total,
     )
@@ -381,8 +313,8 @@ def show_dataset_cmd(ctx: Context, name: str) -> None:
         _handle_error(ctx, "APIError", "Could not load the dataset.", EXIT_API_ERROR)
         return
 
-    view = _dataset_detail_view(detail)
-    versions = _version_views(detail)
+    view = dataset_detail_view(detail)
+    versions = version_views(detail)
     if ctx.json_output:
         click.echo(json_formatter.format_json({**view, "versions": versions}))
         return
@@ -520,44 +452,6 @@ def validate_datasets_cmd(
 # ---------------------------------------------------------------------------
 # applications
 # ---------------------------------------------------------------------------
-
-
-def _application_row(
-    application: plaza_module.DatasetApplication,
-    *,
-    incoming: bool,
-) -> dict[str, Any]:
-    """Project one application down to what identifies and qualifies it."""
-    view: dict[str, Any] = {
-        "name": scrub_raw_ids(application.dataset),
-        "state": scrub_raw_ids(application.state),
-        "authority": scrub_raw_ids(application.authority),
-        "applied_at": scrub_raw_ids(application.applied_at),
-    }
-    if incoming:
-        view["applicant"] = scrub_raw_ids(application.applicant)
-        view["project"] = scrub_raw_ids(application.project)
-    else:
-        view["decided_at"] = scrub_raw_ids(application.decided_at)
-        view["approver"] = scrub_raw_ids(application.approver)
-    return {key: value for key, value in view.items() if value not in ("", None)}
-
-
-def _application_detail_view(
-    application: plaza_module.DatasetApplication,
-) -> dict[str, Any]:
-    view = {
-        "name": scrub_raw_ids(application.dataset),
-        "state": scrub_raw_ids(application.state),
-        "authority": scrub_raw_ids(application.authority),
-        "applicant": scrub_raw_ids(application.applicant),
-        "project": scrub_raw_ids(application.project),
-        "reason": _summarize(application.reason),
-        "approver": scrub_raw_ids(application.approver),
-        "applied_at": scrub_raw_ids(application.applied_at),
-        "decided_at": scrub_raw_ids(application.decided_at),
-    }
-    return {key: value for key, value in view.items() if value not in ("", None)}
 
 
 def _format_application_rows(rows: list[dict[str, Any]], *, incoming: bool) -> str:
@@ -712,7 +606,7 @@ def dataset_applications_cmd(
         return
 
     if name is not None:
-        views = [_application_detail_view(item) for item in items]
+        views = [application_detail_view(item) for item in items]
         if ctx.json_output:
             click.echo(
                 json_formatter.format_json(
@@ -724,7 +618,7 @@ def dataset_applications_cmd(
         return
 
     page = bound_collection(
-        [_application_row(item, incoming=to_approve) for item in items],
+        [application_row(item, incoming=to_approve) for item in items],
         limit=effective_limit,
         total=total,
     )

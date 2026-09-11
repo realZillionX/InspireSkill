@@ -41,6 +41,12 @@ class DatasetMount:
     dataset: str
     version: str
 
+    @classmethod
+    def parse(cls, text: str) -> DatasetMount:
+        from inspire.services.catalog.datasets import parse_dataset_spec
+
+        return parse_dataset_spec(text)
+
     def as_payload(self, path: str = "") -> dict[str, str]:
         return {"dataset_id": self.dataset, "version_id": self.version, "path": path}
 

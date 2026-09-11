@@ -5,11 +5,15 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import shutil
-import subprocess
+import shutil as shutil
+import subprocess as subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# Preserve the CLI helper names for existing callers and test seams.
+from inspire import local_files
+from inspire.local_files import _WINDOWS_ACL_SCRIPT as _WINDOWS_ACL_SCRIPT
 
 
 def render_key(value: str, output_format: str, env_name: str) -> str:
@@ -32,63 +36,17 @@ def render_key(value: str, output_format: str, env_name: str) -> str:
     raise ValueError("Unknown key export format.")
 
 
-# Only the empty temporary file's path enters PowerShell. No credential is
-# passed in argv, the script, environment variables, stdout or stderr.
-_WINDOWS_ACL_SCRIPT = r"""
-$ErrorActionPreference = 'Stop'
-# Python may inherit PS7's module path when launching Windows PowerShell.
-# Load the security cmdlets from this engine's own installation explicitly.
-Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1"
-$path = $env:INSPIRE_KEY_EXPORT_PATH
-$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = New-Object System.Security.AccessControl.FileSecurity
-$acl.SetOwner($sid)
-$acl.SetAccessRuleProtection($true, $false)
-$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')
-$acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $path -AclObject $acl
-$actual = Get-Acl -LiteralPath $path
-$rules = @($actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-if (!$actual.AreAccessRulesProtected -or $rules.Count -ne 1 -or
-    $rules[0].IdentityReference.Value -ne $sid.Value -or
-    $rules[0].AccessControlType -ne 'Allow' -or
-    $rules[0].FileSystemRights -ne 'FullControl') {
-    throw 'Private file ACL verification failed'
-}
-"""
-
-
 def windows_acl_tool() -> str:
-    tool = shutil.which("powershell.exe") or shutil.which("pwsh.exe")
-    if not tool:
+    try:
+        return local_files.windows_acl_tool()
+    except ValueError:
         raise ValueError(
             "Private file export requires PowerShell on Windows. Alternatively use --stdout or api-key run."
-        )
-    return tool
+        ) from None
 
 
 def restrict_windows_file(path: str) -> None:
-    env = os.environ.copy()
-    env["INSPIRE_KEY_EXPORT_PATH"] = os.path.abspath(path)
-    try:
-        result = subprocess.run(
-            [
-                windows_acl_tool(),
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                _WINDOWS_ACL_SCRIPT,
-            ],
-            env=env,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        raise ValueError("Could not establish private Windows file permissions.") from None
-    if result.returncode:
-        raise ValueError("Could not verify private Windows file permissions.")
+    local_files.restrict_windows_file(path, tool=windows_acl_tool())
 
 
 def export_private_key(content: str, output: Path) -> None:

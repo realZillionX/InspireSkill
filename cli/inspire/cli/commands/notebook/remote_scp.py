@@ -22,10 +22,10 @@ from inspire.bridge.tunnel import (
     load_tunnel_config,
 )
 from inspire.bridge.tunnel.scp import run_scp_transfer
-from inspire.cli.formatters import json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 
 from .target_resolver import (
     NOTEBOOK_TARGET_WORKSPACE_HELP,

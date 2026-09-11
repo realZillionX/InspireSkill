@@ -17,6 +17,11 @@ this command group already splits observation: `events`, `instances` and
 
 from __future__ import annotations
 
+from inspire.services.ray.ray_scaling import (
+    event_time as _event_time,
+    public_ray_scaling_events as _public_ray_scaling_events,
+)
+
 from typing import Any, Optional
 
 import click
@@ -33,16 +38,16 @@ from inspire.cli.context import (
     EXIT_VALIDATION_ERROR,
     pass_context,
 )
-from inspire.cli.formatters import human_formatter, json_formatter
+from inspire.services.utils import json_formatter
 from inspire.cli.formatters.table import column_width, render_table
-from inspire.cli.utils.collection_output import (
+from inspire.services.utils.collections import (
     bound_collection,
     resolve_collection_limit,
     truncation_notice,
 )
 from inspire.cli.utils.errors import exit_with_error as _handle_error
 from inspire.cli.utils.id_resolver import NAME_PICK_HELP
-from inspire.cli.utils.raw_ids import scrub_raw_ids
+from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import Config, ConfigError
 from inspire.platform.web.browser_api.ray_jobs import list_ray_job_scaling_histories
 from inspire.platform.web.session import SessionExpiredError, get_web_session
@@ -53,67 +58,6 @@ _NAME_RESOLUTION_LIMIT = 10000
 # is what the console does and is what makes that ordering safe: a bounded page
 # of an unordered result set cannot be assumed to hold the most recent changes.
 _SCALING_FETCH_ALL = -1
-
-
-def _int_or_none(value: Any) -> Optional[int]:
-    if value is None or value == "":
-        return None
-    try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return None
-
-
-def _event_time(item: dict[str, Any]) -> int:
-    for key in ("event_time", "created_at", "timestamp_ms"):
-        value = _int_or_none(item.get(key))
-        if value is not None:
-            return value
-    return 0
-
-
-def _text(item: dict[str, Any], *keys: str) -> str:
-    for key in keys:
-        value = item.get(key)
-        if value in (None, "") or isinstance(value, (dict, list, tuple, set)):
-            continue
-        text = scrub_raw_ids(value).strip()
-        if text and "<redacted>" not in text:
-            return text
-    return ""
-
-
-def _public_ray_scaling_events(
-    items: list[dict[str, Any]],
-    *,
-    group: str = "",
-) -> list[dict[str, Any]]:
-    """Project scaling rows onto a stable allowlist.
-
-    The wire row is ``event_time`` / ``event_type`` / ``replicas_before`` /
-    ``replicas_after``. ``event_type`` is one of ``initialized``, ``scale_up``
-    and ``scale_down``; it is passed through rather than translated so the JSON
-    stays greppable across locales.
-    """
-    projected: list[dict[str, Any]] = []
-    for item in items:
-        row: dict[str, Any] = {
-            "time": human_formatter.format_epoch(_event_time(item)),
-            "event": _text(item, "event_type", "type") or "unknown",
-        }
-        group_name = _text(item, "worker_group_name", "group_name") or scrub_raw_ids(
-            group
-        ).strip()
-        if group_name:
-            row["group"] = group_name
-        before = _int_or_none(item.get("replicas_before"))
-        after = _int_or_none(item.get("replicas_after"))
-        if before is not None:
-            row["replicas_before"] = before
-        if after is not None:
-            row["replicas_after"] = after
-        projected.append(row)
-    return projected
 
 
 def _format_ray_scaling(events: list[dict[str, Any]]) -> str:

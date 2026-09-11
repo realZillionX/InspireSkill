@@ -9,7 +9,7 @@ import pytest
 from conftest import set_fake_home
 
 from inspire.accounts import create_account, set_current_account
-from inspire.cli.utils.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
+from inspire.services.catalog.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
 from inspire.config import Config, ConfigError
 from inspire.config.workspaces import select_workspace_id, workspace_required_hint
 
