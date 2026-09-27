@@ -32,7 +32,7 @@ Qoder Work 的 skill 目录是 `~/.qoderwork/skills/inspire/`。
 
 Kimi Code 的 skill 目录是 `$KIMI_CODE_HOME/skills/inspire/`，未设置 `KIMI_CODE_HOME` 时默认 `~/.kimi-code/skills/inspire/`。
 
-Kimi Desktop 的 skill 目录是 `~/Library/Application Support/kimi-desktop/daimon-share/daimon/skills/inspire/`。
+Kimi Work 的 skill 目录是 `~/Library/Application Support/kimi-desktop/daimon-share/daimon/skills/inspire/`。
 
 安装后只查这些：
 

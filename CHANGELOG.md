@@ -875,7 +875,7 @@
 ### 新增
 
 - GPU Job 支持平台原生状态通知，可通过 CLI、账号配置或 Batch item 配置开关。
-- 支持 Qoder Work 和 Kimi Desktop Harness。
+- 支持 Qoder Work 和 Kimi Work Harness。
 
 ### 变更
 

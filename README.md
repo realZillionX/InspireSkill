@@ -10,7 +10,7 @@
 
 在本项目开始筹办之初，对于所有 SII 的学生，[启智平台](https://qz.sii.edu.cn)是科研实验链路里最慢的那一环：每次申请资源、新建 Notebook、新建训练任务、同步代码都要反复点点点，SSH 等更进一步的功能更是遥遥无期。
 
-本着过渡到大 Agent 时代、将一切重复性机械工作交给 Agent 的初衷，我们创办了 InspireSkill 项目，旨在将启智平台 GUI 打平为 CLI，并建立了 CLI + Skill 的一体化系统，让 InspireSkill 成为所有 Agent 开箱即用的工具、让你的 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Desktop 成为进行科研工作的唯一入口。
+本着过渡到大 Agent 时代、将一切重复性机械工作交给 Agent 的初衷，我们创办了 InspireSkill 项目，旨在将启智平台 GUI 打平为 CLI，并建立了 CLI + Skill 的一体化系统，让 InspireSkill 成为所有 Agent 开箱即用的工具、让你的 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Work 成为进行科研工作的唯一入口。
 
 建立和维护本项目的过程并非易事，InspireSkill 也并非只是将[启智平台](https://qz.sii.edu.cn)的网页 API 打平重构为 CLI 的简单工作，在维护本项目的过程中，设计高于平台语义的高层功能、寻找启智平台中细枝末节的 API 并将其优雅融入 CLI 系统中、尤其是维护一个易于 Agent 阅读且包含平台所有特性的文档系统都给我们带来了不小于 CLI 本身的麻烦。
 
@@ -18,7 +18,7 @@
 
 # 对初次使用者的简单介绍
 
-InspireSkill 将算力平台的一切入口交给 AI Agent。当 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Desktop 识别到本项目所提供的 `SKILL.md`，它会：
+InspireSkill 将算力平台的一切入口交给 AI Agent。当 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Work 识别到本项目所提供的 `SKILL.md`，它会：
 
 - 直接调用 `inspire` 命令查实时资源、开 Notebook、提 HPC 任务、拉日志
 - 全程只用 Name：参数、帮助、错误、人类输出和 JSON 输出都使用资源 Name、Account Alias 和可读状态，不需要 Agent 记忆或搬运平台内部 ID
@@ -34,7 +34,7 @@ InspireSkill 将算力平台的一切入口交给 AI Agent。当 Claude Code / C
 | --- | --- | --- |
 | Agent 生命周期 | 绑死在某一个 Notebook 实例；实例回收 / 崩溃，对话与状态一起没 | 跑在本机 Harness 里，与任何一个 Inspire 实例解耦 |
 | 调度范围 | 只能操作它所在那一个实例的文件系统与运行时 | 一个 Agent 横跨多 Workspace / Notebook / HPC Job / Image，全平台统一编排 |
-| 入口 | 必须打开 `qz.sii.edu.cn` 网页 | 大家本来就在用的 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Desktop |
+| 入口 | 必须打开 `qz.sii.edu.cn` 网页 | 大家本来就在用的 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Work |
 | Harness / 模型选择 | 锁定 OpenCode + 它支持的模型 | 任选本机已装的 10 家 Harness，模型可随意配置 |
 | 上下文来源 | 只有实例里能看到的东西；本地代码仓库不在场 | 本机完整 Repo + Git 状态 + 编辑器 + 其他 MCP 工具（Figma / Preview / Playwright / …）一起可用 |
 | 计算占用 | Agent 进程吃 Inspire 实例的 CPU / RAM 配额；API Key 必须放在实例里 | Agent 进程跑本机；Inspire 实例的 CPU / RAM 全给训练 / HPC；API Key 只留本地 |
@@ -54,7 +54,7 @@ InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命�
 | --- | --- | --- | --- |
 | 安装与更新 | 源码渠道为主 | Clone 仓库、`pip install -e .`、手动 `mcp add` | `curl \| bash` 一键安装 CLI、`SKILL.md` 和 `references/`，`inspire update` 同步更新 |
 | Agent 文档系统 | 无统一 Skill 文档 | `qzcli-mcp` 的薄 Skill，主要说明工具调用顺序 | `SKILL.md` 是平台操作模型入口，按场景路由到完整 `references/` |
-| Harness 落位 | 无 | MCP 可接入 MCP-Capable Harness，但需要用户自己注册 | 安装器自动写入 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Desktop 的约定目录 |
+| Harness 落位 | 无 | MCP 可接入 MCP-Capable Harness，但需要用户自己注册 | 安装器自动写入 Claude Code / Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Work 的约定目录 |
 | Notebook 连接 | 依赖用户预配本地组件或容器公网 | Jupyter Terminal API Exec | SSH / Shell / Exec / SCP / OpenSSH Config / Proxy URL / Connection Cache / 跨账号重建 |
 | Workload 覆盖 | 少量训练 / HPC 能力 | 资源、GPU Job、HPC Submit、Logs、Dashboard、Jupyter Exec | Notebook / GPU Job / CPU HPC / Ray / Serving / TensorBoard / Model / Image / Dataset / Project / Resources 全覆盖 |
 | 观测闭环 | 有限 | Job Logs、Watch、Usage / Dashboard | Events / Logs / Metrics / Instances / Lifecycle / Status 分层诊断 |
@@ -302,7 +302,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 | [Qoder CLI](https://docs.qoder.com/en/cli/Skills) | `~/.qoder/skills/inspire/` | 用户级 Skills 层，跨项目可用 |
 | [Qoder Work](https://qoder.com/product/qoderwork) | `~/.qoderwork/skills/inspire/` | 用户级 Skills 层，跨项目可用 |
 | [Kimi Code](https://github.com/MoonshotAI/kimi-code) | `$KIMI_CODE_HOME/skills/inspire/`（默认 `~/.kimi-code/skills/inspire/`） | 用户级 Skills 层，跨项目可用 |
-| [Kimi Desktop](https://www.kimi.com/) | `~/Library/Application Support/kimi-desktop/daimon-share/daimon/skills/inspire/` | macOS 桌面端共享 Skills 目录 |
+| [Kimi Work](https://www.kimi.com/) | `~/Library/Application Support/kimi-desktop/daimon-share/daimon/skills/inspire/` | macOS 桌面端共享 Skills 目录 |
 
 ---
 
@@ -312,7 +312,7 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 `INSPIRE.md` 不是所有仓库必备的文件。只有仓库在启智上维护需要跨 Agent / 会话复用的稳定路径、永久基础设施或 Image / Model / Dataset / Checkpoint 等持久资产时才创建；每项资产可分别属于不同 Project / Workspace。边界见 [`references/assets.md`](references/assets.md)。
 
-需要定制 Harness 级入口时，直接编辑 `~/.claude/skills/inspire/SKILL.md` 和同目录 `references/`（Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Desktop 同理）。`inspire update` 默认会覆盖 `SKILL.md` 和 `references/`；维护本地改动后用 `inspire update --cli-only` 只升级 CLI 与运行时。
+需要定制 Harness 级入口时，直接编辑 `~/.claude/skills/inspire/SKILL.md` 和同目录 `references/`（Codex / Antigravity / Cursor / OpenClaw / OpenCode / Qoder CLI / Qoder Work / Kimi Code / Kimi Work 同理）。`inspire update` 默认会覆盖 `SKILL.md` 和 `references/`；维护本地改动后用 `inspire update --cli-only` 只升级 CLI 与运行时。
 
 ---
 

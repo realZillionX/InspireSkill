@@ -80,7 +80,7 @@ def _kimi_code_home() -> Path:
 
 
 def _kimi_desktop_root() -> Path:
-    """Resolve Kimi Desktop's macOS daemon data root."""
+    """Resolve Kimi Work's macOS daemon data root."""
     return (
         Path.home()
         / "Library"

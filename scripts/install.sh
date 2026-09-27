@@ -248,7 +248,7 @@ detect_harnesses() {
 if [[ -z "$HARNESSES" ]]; then
   HARNESSES="$(detect_harnesses)"
   [[ -n "$HARNESSES" ]] \
-    || die "no agent harness detected (checked \$HOME/.claude, .codex, .gemini, .cursor, .openclaw, \$OPENCODE_CONFIG_DIR or \$HOME/.config/opencode, .qoder, .qoderwork, \$KIMI_CODE_HOME or \$HOME/.kimi-code, and Kimi Desktop's Application Support directory). Pass --harness explicitly."
+    || die "no agent harness detected (checked \$HOME/.claude, .codex, .gemini, .cursor, .openclaw, \$OPENCODE_CONFIG_DIR or \$HOME/.config/opencode, .qoder, .qoderwork, \$KIMI_CODE_HOME or \$HOME/.kimi-code, and Kimi Work's Application Support directory). Pass --harness explicitly."
   log "auto-detected harnesses: $(bold "$HARNESSES")"
 fi
 
