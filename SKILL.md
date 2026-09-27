@@ -1,6 +1,6 @@
 ---
 name: inspire
-description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire CLI: install/update/uninstall, accounts, local SII proxy setup, INSPIRE.md asset upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, TensorBoard, Image, Model Registry, observation, cleanup, and Inspire CLI Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
+description: "Use for Inspire/启智平台 (qz.sii.edu.cn) through the inspire CLI: INSPIRE.md asset upkeep, workspace/project/resource/path selection, Notebook, GPU Job, HPC, Ray, Serving, TensorBoard, Image, Model Registry, observation, cleanup, and Inspire CLI Browser API maintenance. Use CLI Help for syntax and load only the focused reference."
 ---
 
 # Inspire Skill
@@ -62,9 +62,6 @@ CLI 不读写仓库级 `./.inspire/`，不把仓库绑定到某个 Project，也
 
 | 用户问题或判断点 | 先加载 |
 | --- | --- |
-| 安装、更新、卸载、账号、多账号切换、账号初始化 | [`references/setup/install-and-config.md`](references/setup/install-and-config.md) |
-| 本机是 Windows（PowerShell、`install.ps1`、系统 OpenSSH、私钥 ACL） | [`references/setup/windows-native.md`](references/setup/windows-native.md) |
-| 本机 Clash Verge 的 `*.sii.edu.cn`、`SII Proxy` / `DIRECT` 分流 | [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md) |
 | `INSPIRE.md`、稳定资产身份与生命周期 | [`references/assets.md`](references/assets.md) |
 | Workspace、Compute Group、Quota、实时资源和优先级 | [`references/resources.md`](references/resources.md) |
 | 项目归属、负责人、预算与平台优先级（`inspire project`，全局对象、不按 Workspace 划分） | [`references/assets.md`](references/assets.md) |

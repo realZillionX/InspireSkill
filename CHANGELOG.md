@@ -226,7 +226,7 @@
 
   测试侧改为同时隔离 `HOME` 与 `USERPROFILE`，避免 Windows 上的 `ntpath.expanduser` 绕过临时目录；测试文件读写也显式使用 UTF-8，覆盖中文 Workspace 名。
 
-  **Windows 11 / PowerShell 5.1 / cp936 实机验证通过**：系统 OpenSSH 下 ProxyCommand、ssh/exec/scp roundtrip、cp936 重定向、installer 检测和后台进程清理均可用。`watch_terminal_resize` 只在 TTY 主线程修改 signal 状态，避免 Worker 线程触发 `ValueError`；Windows 安装说明拆到 `references/setup/windows-native.md` 并在 `SKILL.md` 单独路由。
+  **Windows 11 / PowerShell 5.1 / cp936 实机验证通过**：系统 OpenSSH 下 ProxyCommand、ssh/exec/scp roundtrip、cp936 重定向、installer 检测和后台进程清理均可用。`watch_terminal_resize` 只在 TTY 主线程修改 signal 状态，避免 Worker 线程触发 `ValueError`；当前 Windows 安装说明见 README。
 
   `scripts/install.ps1` 装的是 PyPI 上的包（`uv tool` / `pipx`），不是 editable checkout——`inspire update` 靠 `sys.prefix` 里有没有 `uv/tools` 或 `pipx/venvs` 判断能否自更新，editable 装法会静默让用户失去自更新能力；skill 文件交给 CLI 自己铺（新增内部命令 `_refresh-skills`），不在 PowerShell 里复制一份 harness 列表。
 
@@ -290,11 +290,11 @@
 
   写操作验收通过人为失效缓存 Session 后创建最小临时 Notebook，并以并发读写进程确认跨进程刷新锁只允许一次凭据提交；临时资源在验收后清理。
 
-- **登录失败时平台给的原话，一直被 InspireSkill 自己丢掉了。** 参考竞品 [qzcli_tool](https://github.com/tianyilt/qzcli_tool) 的登录处理时挖出来的，它 v0.4.4 修过同一类问题的另一半。CAS 把失败原因写进 `<div class="form-error">`，而 `_extract_login_failure_hint()` 只认**可见**容器——抓真实页面看，三个登录 tab 面板在服务端**全是** `style="display: none"`，由 JS 在运行时决定显示哪个，于是「这个容器可见吗」是收到的 HTML 根本回答不了的问题，答错的代价就是平台原话全丢，用户只剩一句「检查密码是否正确」。今天误判成密码问题，根因就是这个。
+- **登录失败时平台给的原话，一直被 InspireSkill 自己丢掉了。** CAS 把失败原因写进 `<div class="form-error">`，而 `_extract_login_failure_hint()` 只认**可见**容器——抓真实页面看，三个登录 tab 面板在服务端**全是** `style="display: none"`，由 JS 在运行时决定显示哪个，于是「这个容器可见吗」是收到的 HTML 根本回答不了的问题，答错的代价就是平台原话全丢，用户只剩一句「检查密码是否正确」。今天误判成密码问题，根因就是这个。
 
-  改成先读 CAS 真正的错误槽：失败时它往 `form-error` 里插一个 `<span name="error_fm1">` 承载文案（`error_fm1` 是密码表单，`error_fm2` 是短信 tab、`error_fm4` 是扫码 tab），干净页面里这个 span 根本不存在。这个锚点按表单区分、不依赖运行时可见性，也不会碰竞品踩过的那个坑——**「验证码」三个字在登录页上永远有 5 处**（全是旁边短信 tab 的固定文案），拿它判失败会把任何一次退回登录页都翻译成「需要验证码」。原来那条可见容器规则保留作兜底。实测：干净页读到空串，真实失败页读到 `必须录入用户名。 必须录入密码。`。
+  改成先读 CAS 真正的错误槽：失败时它往 `form-error` 里插一个 `<span name="error_fm1">` 承载文案（`error_fm1` 是密码表单，`error_fm2` 是短信 tab、`error_fm4` 是扫码 tab），干净页面里这个 span 根本不存在。这个锚点按表单区分、不依赖运行时可见性；**「验证码」三个字在登录页上永远有 5 处**（全是旁边短信 tab 的固定文案），拿它判失败会把任何一次退回登录页都翻译成「需要验证码」。原来那条可见容器规则保留作兜底。实测：干净页读到空串，真实失败页读到 `必须录入用户名。 必须录入密码。`。
 
-- **凭据错和临时被挡，用的是同一套冷却，而它们需要相反的处理。** 同样来自 qzcli 的实战教训——他们 2026-08-12 用一个被锁的账号换来的：对所有失败一律 60 秒冷却，于是密码一旦失效就每分钟自动送一次错密码，攒够次数 CAS 把账号锁死。InspireSkill 这边是 30 分钟封顶，一个密码错的定时任务照样每天送 48 次，而 **CAS 是按失败次数延长锁定的**。
+- **凭据错和临时被挡，用的是同一套冷却，而它们需要相反的处理。** 对所有失败一律采用短冷却，会让失效密码被定时任务反复提交，攒够次数后 CAS 就把账号锁死。InspireSkill 这边是 30 分钟封顶，一个密码错的定时任务照样每天送 48 次，而 **CAS 是按失败次数延长锁定的**。
 
   现在按平台原话分类（上一条修好之后才拿得到）：平台点名说凭据本身有问题（`账号或密码错误`、`账号被锁定`）就**不再按定时器恢复**，改成 6 小时的长扣留；限流、验证码这类「临时被挡」仍走 60s → 5min → 15min → 30min，因为它们自己会好。两种情况下改凭据都立刻放行——指纹变了就是变了。
 

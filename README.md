@@ -22,101 +22,68 @@ InspireSkill 将算力平台的一切入口交给 AI Agent。当 Codex / Claude 
 
 - 直接调用 `inspire` 命令查实时资源、开 Notebook、提 HPC 任务、拉日志
 - 全程只用 Name：参数、帮助、错误、人类输出和 JSON 输出都使用资源 Name、Account Alias 和可读状态，不需要 Agent 记忆或搬运平台内部 ID
-- 提供可选的 Clash Verge Mixed Port 分流模板，让公网与启智内网共存一套本地代理配置，取代多人共用断连的 aTrust；CLI 本身不绑定固定端口，任何能同时覆盖公网与 `*.sii.edu.cn` 的代理方案都行
+- 提供可选的 Clash Verge Mixed Port 分流方案，让公网与启智内网共存一套本地代理配置，取代多人共用断连的 aTrust；CLI 本身不绑定固定端口，任何能同时覆盖公网与 `*.sii.edu.cn` 的代理方案都行
 - 把平台网页上的常用操作都变成可复现、可串联、可自动化的命令链
 - 从 `SKILL.md` 按需加载对应使用手册，理解调度语义、资源申请原则和验收点，不需要用户在对话里反复向 Agent 解释平台语义
 
 ## 为什么不直接使用 QWorks？
 
-启智推出的 [QWorks](https://qworks.tech/solutions/sii) 已经取代旧版 InspireCode：它是下载到本机的独立 Harness，不再是把 Agent 放进某个远端实例。但选择权的问题仍在。QWorks 要求用户进入它自己的 Harness；若已经在使用 Codex、Claude Code、Cursor 等客户端及其订阅套餐，就无法直接把这些套餐带进 QWorks，接入其它模型仍需走 API。InspireSkill 把启智能力送进你已经选好的 Agent，而不是要求你为启智再换一个 Agent。
+启智推出的 [QWorks](https://qworks.tech/solutions/sii) 是下载到本机的独立 Harness，但它把用户限定在自己的 Agent 入口。已经在使用 Codex、Claude Code、Cursor 等客户端及其订阅套餐的人，无法直接把这些套餐带进 QWorks；接入其它模型仍需走 API。InspireSkill 把启智能力送进你已经选好的 Agent，无需为启智再迁移一次工作台。
 
 | 维度 | QWorks | InspireSkill |
 | --- | --- | --- |
 | Agent 入口 | QWorks 自带的单一 Harness | 安装到 Codex / Claude Code / Cursor / OpenCode 等受支持的 Harness，也可直接使用 CLI |
 | 模型与套餐 | 其它 AI 客户端的订阅套餐不能直接复用，外部模型按 API 接入 | 继续使用原 Harness 已有的模型配置和套餐；InspireSkill 不接管模型计费 |
 | 启智操作 | 在 QWorks 内连接启智模型、工作界面与远程计算环境 | 在本地用命令覆盖资源发现、Notebook、GPU Job、HPC、Ray、Serving、TensorBoard 和资产管理 |
-| 工作流 | 围绕 QWorks 会话与界面 | 本地 Repo、Git、其他工具与启智命令处于同一工作流；可脚本化，也可用 JSON 输出接入自动化 |
+| 工作流 | 围绕 QWorks 会话与界面 | 本地 Repo、Git、其他工具与启智命令处于同一工作流；命令可脚本化，JSON 输出可接入自动化 |
 
-**你已经有顺手的 Agent，就不必为了使用启智再迁移一次工作台。**
+**你已经有顺手的 Agent，就不必为了使用启智再换一个。**
 
 ---
 
-## 为什么选择 InspireSkill，而不是只装一个启智 CLI？
+## CLI + Skill：让 Agent 真正掌控启智
 
-社区的 [qzcli_tool](https://github.com/tianyilt/qzcli_tool) 已覆盖资源查询、GPU / HPC 提交、日志、Jupyter Exec、MCP，以及节点事件和排队诊断。InspireSkill 交付的是 CLI、Skill 和平台操作手册组成的一体化系统：Agent 不只会调用某条命令，还能自己选资源、提交任务、诊断故障、核验产物并收尾。
+InspireSkill 交付的不只是几条命令，而是 CLI、Skill 和平台操作手册组成的一体化系统。`SKILL.md` 告诉 Agent 如何判断调度条件、选择适合的工作负载，`references/` 在需要时展开平台语义；`inspire` 则把资源发现、提交、观察、验收和清理接成一条可执行的链路。
 
-| 维度 | qzcli_tool | InspireSkill |
-| --- | --- | --- |
-| Agent 接入 | 提供 `qzcli-mcp`，由用户注册到支持 MCP 的客户端 | 安装器把 `SKILL.md` 与按需加载的 `references/` 放到支持的 Harness 目录，CLI 同时可独立使用 |
-| 工作负载 | 以资源查询、GPU / HPC 任务管理和开发机执行为主要命令面 | Notebook / GPU Job / CPU HPC / Ray / Serving / TensorBoard 使用同一套创建、观察和清理流程 |
-| Notebook 与文件 | Jupyter Terminal Exec | 按实例能力使用 SSH 或 JupyterTerminal，并提供 Shell、Exec、SCP、OpenSSH Config 与连接管理 |
-| 观测 | Logs、Events、节点与排队诊断、Dashboard | 按工作负载读取 Events / Logs / Metrics / Instances / Status；TensorBoard 曲线可直接作为数据读取 |
-| 长期上下文 | CLI 文档与 `qzcli-mcp` Skill | `SKILL.md` 说明平台操作模型，`references/` 按场景展开；可选 `INSPIRE.md` 记录跨会话的持久资产 |
+Notebook、GPU Job、CPU HPC、Ray、Serving 和 TensorBoard 共享清晰的命令语义。联网 Notebook 的 SSH 与文件传输、受限 Notebook 的 JupyterTerminal、训练任务的事件与指标、TensorBoard 曲线读取、Image / Model / Dataset 资产操作，都由同一个 Agent 入口调度。
 
-一句话：**InspireSkill 把启智平台变成你现有 Agent 的完整工具箱，让一次科研任务从选资源到验收结果都能在同一个入口里完成。**
+**让 Agent 不只替你点按钮，而是独立完成一次科研任务的全流程。**
 
 ---
 
 # 快速上手
 
-> 平台支持：macOS、Linux、Windows；CI 覆盖三者。Windows 走系统自带的 OpenSSH，不需要 WSL；`rsync` 是可选外部工具，Windows 上用 `inspire notebook scp` 传文件。
+支持 macOS、Linux 和 Windows；CI 覆盖三个平台。命令组与参数以 `inspire --help` 和各子命令的 `--help` 为准。
 
 ## 安装
 
 ### macOS / Linux
 
-前置：`bash` / `curl` / `tar` / Python 3.10+ / 已装 `uv`（推荐）或 `pipx` 任一。
+需要 `bash`、`curl`、`tar`、Python 3.10+，以及 `uv`（推荐）或 `pipx`。尚未安装 `uv` 时先运行第一行：
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 curl -fsSL https://raw.githubusercontent.com/realZillionX/InspireSkill/main/scripts/install.sh | bash
 ```
 
+安装器从 PyPI 安装 CLI，并把 Skill 放入检测到的 Harness。可用 `bash -s -- --harness codex,claude` 指定目标；`--no-cli` 只装 Skill，`--no-schedule` 跳过 macOS 每日版本检查。
+
 ### Windows
 
-前置：Python 3.10+ / `uv`（推荐）或 `pipx` 任一 / OpenSSH 客户端。
+需要 Python 3.10+、`uv`（推荐）或 `pipx`，以及系统 OpenSSH 客户端；不需要 WSL。在仓库根目录运行 `install.ps1`：
 
 ```powershell
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0
-```
-
-在仓库根目录运行安装脚本（`-SkipPlaywright` 可跳过 Chromium 下载，代价是浏览器登录不可用）：
-
-```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\scripts\install.ps1
 ```
 
-Windows 上有两处和 POSIX 不一样，都会咬人：
+脚本自动检测 Harness；`-SkipPlaywright` 跳过浏览器运行时（浏览器登录不可用），`-SkipSkill` 只装 CLI，`-Version <x.y.z>` 安装指定版本。安装后运行 `inspire --version`、`inspire --help` 确认入口可用。
 
-- **`ssh-config` 别用 `>>` 追加。** Windows PowerShell 5.1 的 `>>` 写的是 UTF-16LE，OpenSSH 读不了。用 `inspire notebook ssh-config <notebook> | Out-File -Encoding utf8 -Append $env:USERPROFILE\.ssh\config`（PowerShell 7+ 默认已是 UTF-8，`>>` 可用）。
-- **确认用的是哪个 `ssh.exe`。** `Get-Command ssh -All`：系统自带的 `C:\Windows\System32\OpenSSH\ssh.exe` 和 Git for Windows 附带的那个对 ProxyCommand 的处理方式不同。两个都能用，但混用时报错信息会互相矛盾。
+## 账号与初始化
 
-安装、可选参数和安装后检查见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。
-
-## 更新
-
-```bash
-inspire update                # CLI 包 + SKILL.md / references/ 一起升到最新
-inspire update --check        # 只检查，不动
-inspire update --cli-only     # 仅升 CLI 包与运行时
-inspire update --skill-only   # 仅刷 SKILL.md / references/
-```
-
-升级旧版本和 Installer 检测说明见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。
-
-## 卸载
-
-```bash
-inspire uninstall                # skill 目录 + 更新检查 agent + CLI 包
-inspire uninstall --purge        # 连 ~/.inspire 的账号配置一起删
-inspire uninstall --purge-runtime # 连共享的 Playwright 浏览器缓存一起删
-```
-
-执行前会打印完整清单并要求确认。账号配置和浏览器缓存默认保留；用户维护的 `INSPIRE.md` 不属于卸载目标。旧版留下的仓库级 `./.inspire/` 由 `inspire update` 的旧状态清扫处理。CLI 已经跑不起来时，用安装脚本的 `--uninstall` 兜底。
-
-## 完整初始化（安装后必跑）
+账号配置与当前仓库无关，`<name>` 是本地 Alias。`account add` 会询问平台登录名、密码、地址及代理；登录名是平台接受的手机号、学号或邮箱，配置保存在 `~/.inspire/accounts/<name>/config.toml`。未在账号文件中保存密码时，可用 `INSPIRE_PASSWORD` 补充。
 
 ```bash
 inspire account add <name>
@@ -125,9 +92,27 @@ inspire init
 inspire resources availability --workspace 分布式训练空间 --include-cpu
 ```
 
-`inspire init` 只校验并规范化当前账号；不读写仓库级配置。Project、Workspace、Group、Quota、Image 和远端路径在每次命令中显式给出。Notebook 远端命令省略 `--cwd` 时不注入 `cd`。
+`inspire init` 校验并规范化账号配置，不绑定仓库、Project 或资源。创建工作负载时显式选择 Workspace、Project、计算组、Quota、镜像和远端路径。需要从校园网外访问平台时，先按下文[代理配置](#代理配置)配置连接。
 
-安装、更新和多账号操作见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)；`INSPIRE.md` 持久资产合同见 [`references/assets.md`](references/assets.md)；Clash Verge 的 SII Proxy / DIRECT 分流模板见 [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)。
+多账号可用 `inspire account use <name>` 设置默认账号、`inspire account current` 查看默认值、`inspire account rename <old> <new>` 修改本地 Alias。所有命令可用 `--account <name>` 临时选择账号，例如 `inspire --account <name> notebook list --workspace CPU资源空间`；这不会改变默认账号，切换也不会清除各账号的 Session、SSH 连接和资源缓存。
+
+## 更新与卸载
+
+```bash
+inspire update                  # 升级 CLI 并刷新 Skill
+inspire update --check          # 只检查
+inspire update --cli-only       # 仅升级 CLI 与浏览器运行时
+inspire update --skill-only     # 仅刷新 Skill 与 references/
+inspire uninstall               # 卸载 CLI 与安装器管理的 Skill
+```
+
+`update` 自动识别 `uv tool` / `pipx`，并在遇到旧版遗留的本地状态时先列清单、再询问是否清理。卸载前也会列出目标并确认；账号配置和共享的 Playwright 浏览器缓存默认保留，分别用 `inspire uninstall --purge` 和 `inspire uninstall --purge-runtime` 删除，用户维护的 `INSPIRE.md` 不受影响。CLI 无法运行时，可用安装脚本的 `--uninstall` 兜底。
+
+## Windows 原生注意事项
+
+- `Get-Command ssh -All` 确认实际使用的 `ssh.exe`；系统 OpenSSH 与 Git for Windows 的 ProxyCommand 处理方式不同。
+- PowerShell 5.1 的 `>>` 会写出 OpenSSH 无法读取的 UTF-16LE。追加 SSH 配置时用 `inspire notebook ssh-config <notebook> | Out-File -Encoding utf8 -Append $env:USERPROFILE\.ssh\config`；PowerShell 7+ 可直接用 `>>`。
+- Windows OpenSSH 会拒绝权限过宽的私钥；遇到 `UNPROTECTED PRIVATE KEY FILE` 时收紧 `%USERPROFILE%\.ssh` 的 ACL。`rsync` 不是必需项，文件传输可用 `inspire notebook scp`。
 
 ---
 
@@ -321,7 +306,9 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 
 # 代理配置
 
-不常驻 SII 的科研人员通常需要让本机代理转发 `*.sii.edu.cn` 流量；能直连 SII 校园网的人可以走 `DIRECT`。Clash Verge Mixed Port 的 SII Proxy / DIRECT 分流模板和验证步骤见 [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)；账号级 proxy、Shell proxy 与 `NO_PROXY` 诊断见 [`references/setup/install-and-config.md`](references/setup/install-and-config.md)。CLI 本身不绑定固定端口。
+校园网外访问 `*.sii.edu.cn` 时，可在 Clash Verge 建一个 `SII Proxy` 选择组，放入组织提供的代理节点和 `DIRECT`，并把规则 `DOMAIN-SUFFIX,sii.edu.cn,SII Proxy` 放在通用规则之前；能直连校园网时选择 `DIRECT`。其他网站继续走原有规则。CLI 不绑定固定端口，把账号 proxy 配为本机实际的 Mixed Port，例如 `http://127.0.0.1:<mixed-port>`。
+
+账号 proxy 优先于通用 Shell 代理；未设置账号 proxy 时，`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 及小写变量仍可能影响连接，需要直连时可用 `NO_PROXY=.sii.edu.cn` 绕过通用代理。用 `inspire account check --details` 查看实际代理来源、路由及 `NO_PROXY` 匹配结果。
 
 > 凭据（Host / User / Password）**从实验室或组织管理员获取**，不要提交到任何公开仓库或聊天记录。
 
@@ -342,8 +329,6 @@ inspire resources availability --workspace 分布式训练空间 --include-cpu
 # 文档索引
 
 - [`SKILL.md`](SKILL.md)：日常使用入口，包含平台不变量、资产合同边界、最短执行闭环和按需加载索引。
-- [`references/setup/install-and-config.md`](references/setup/install-and-config.md)：安装、更新、账号配置、账号初始化和多账号操作。
-- [`references/setup/sii-proxy.md`](references/setup/sii-proxy.md)：Clash Verge 的 SII Proxy / DIRECT 分流模板和验证步骤。
 - [`references/assets.md`](references/assets.md)：`INSPIRE.md` 持久资产合同和生命周期。
 - [`references/resources.md`](references/resources.md)：Workspace、Compute Group、规格三元组和实时资源。
 - [`references/paths.md`](references/paths.md)：共享盘作用域、存储池、挂载隔离和远端绝对路径。
