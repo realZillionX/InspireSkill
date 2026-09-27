@@ -1,5 +1,17 @@
 # Changelog
 
+## v7.1.10
+
+### Harness 与安装
+
+- **新增 ZCode Skill 安装目标。** macOS / Linux 安装器和 `inspire update` 均可自动检测 `~/.zcode`，并把 Skill 安装到 `~/.zcode/skills/inspire`；安装器也接受 `--harness zcode`。Windows 安装器沿用 CLI 的 Harness 检测与 Skill 刷新。
+- **Kimi Desktop 安装目标更名为 Kimi Work。** 安装器的显式参数和 CLI 内部 Harness 名称改为 `kimi-work`；磁盘路径仍是 `~/Library/Application Support/kimi-desktop/daimon-share/daimon/skills/inspire`，已有 Skill 位置不变。显式使用 `--harness kimi-desktop` 的脚本需改为 `--harness kimi-work`。各入口统一按 Codex、Claude Code、Cursor、OpenCode、ZCode、Kimi Code、Kimi Work、Qoder、Qoder Work、Antigravity、OpenClaw 的顺序展示。
+
+### SDK 与文档
+
+- **Python SDK 作为正式可用入口介绍。** 同步和异步客户端的接口延续 v7.1.9，本版移除实验性标注，在项目首页、包说明和 SDK 参考中明确其安装方式、适用场景与文档入口；本次没有改变 SDK API。
+- **重整首次使用指引。** README 集中说明安装、账号初始化、Windows 原生环境、校园网外代理、更新与卸载，并补充 InspireSkill 与 QWorks、qzcli 的定位比较。原有的三个 setup 参考页已删除，Skill 导航改为指向 README 中的现行指引。
+
 ## v7.1.9
 
 ### 破坏性变更
@@ -10,7 +22,7 @@
 
 - **账号凭据与本地私有状态采用私有文件权限。** POSIX 文件创建为 `0600`、私有目录为 `0700`，触及时收紧既有权限；Windows 为目录设置可继承的当前用户 ACL，失败时警告，显式密钥导出仍逐文件验证并在失败时报错。账号添加与 SDK 凭据构造使用同一原子写入路径。依赖其他用户共享读取这些文件的流程需调整权限与账号使用方式。
 
-### Python SDK
+### Python SDK（实验性）
 
 - **新增同步与异步客户端。** `from inspire import InspireClient, InspireAsyncClient` 提供 workspaces、projects、compute_groups、images、datasets、models、resources、account_info、api_keys、jobs、notebooks、hpc、ray、servings、tensorboards 门面，覆盖全部平台侧 CLI 命令组。普通安装即可使用 SDK，新增 `httpx[socks]` 和显式 `greenlet` 运行时依赖，无需额外安装选项。
 

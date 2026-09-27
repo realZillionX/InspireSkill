@@ -62,6 +62,7 @@ CLI 不读写仓库级 `./.inspire/`，不把仓库绑定到某个 Project，也
 
 | 用户问题或判断点 | 先加载 |
 | --- | --- |
+| 安装、更新、卸载、账号初始化、Windows 原生环境或本机代理设置 | [README 快速上手](https://github.com/realZillionX/InspireSkill#快速上手)；命令参数以 CLI Help 为准 |
 | `INSPIRE.md`、稳定资产身份与生命周期 | [`references/assets.md`](references/assets.md) |
 | Workspace、Compute Group、Quota、实时资源和优先级 | [`references/resources.md`](references/resources.md) |
 | 项目归属、负责人、预算与平台优先级（`inspire project`，全局对象、不按 Workspace 划分） | [`references/assets.md`](references/assets.md) |
