@@ -25,7 +25,7 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
     home.mkdir()
     bin_dir.mkdir()
     kimi_home = home / "custom-kimi-code"
-    kimi_desktop_root = (
+    kimi_work_root = (
         home
         / "Library"
         / "Application Support"
@@ -39,7 +39,7 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
     (home / ".cursor").mkdir()
     (home / ".qoderwork").mkdir()
     (home / ".kimi-code").mkdir()
-    kimi_desktop_root.mkdir(parents=True)
+    kimi_work_root.mkdir(parents=True)
     (bin_dir / "uv").write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
@@ -87,7 +87,7 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
             "bash",
             str(installer),
             "--harness",
-            "codex,antigravity,cursor,qoder,qoder-work,kimi-code,kimi-desktop",
+            "codex,claude,cursor,opencode,zcode,kimi-code,kimi-work,qoder,qoder-work,antigravity,openclaw",
             "--no-schedule",
         ],
         cwd=installer.parent.parent,
@@ -111,12 +111,18 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
         'default_prompt: "Use $inspire to plan and execute this Inspire platform task safely."'
         in codex_metadata
     )
-    assert (home / ".gemini" / "config" / "skills" / "inspire" / "SKILL.md").exists()
+    assert (home / ".claude" / "skills" / "inspire" / "SKILL.md").exists()
     assert (home / ".cursor" / "skills" / "inspire" / "SKILL.md").exists()
+    assert (
+        home / ".config" / "opencode" / "skills" / "inspire" / "SKILL.md"
+    ).exists()
+    assert (home / ".zcode" / "skills" / "inspire" / "SKILL.md").exists()
+    assert (kimi_home / "skills" / "inspire" / "SKILL.md").exists()
+    assert (kimi_work_root / "skills" / "inspire" / "SKILL.md").exists()
     assert (home / ".qoder" / "skills" / "inspire" / "SKILL.md").exists()
     assert (home / ".qoderwork" / "skills" / "inspire" / "SKILL.md").exists()
-    assert (kimi_home / "skills" / "inspire" / "SKILL.md").exists()
-    assert (kimi_desktop_root / "skills" / "inspire" / "SKILL.md").exists()
+    assert (home / ".gemini" / "config" / "skills" / "inspire" / "SKILL.md").exists()
+    assert (home / ".openclaw" / "skills" / "inspire" / "SKILL.md").exists()
     assert not (home / ".kimi-code" / "skills" / "inspire" / "SKILL.md").exists()
 
 
@@ -128,7 +134,8 @@ def test_installer_advertises_supported_harnesses() -> None:
     assert "cursor" in text
     assert "qoder-work" in text
     assert "kimi-code" in text
-    assert "kimi-desktop" in text
+    assert "kimi-work" in text
+    assert "zcode" in text
 
 
 def test_powershell_installer_uses_the_published_package_not_an_editable_checkout() -> None:

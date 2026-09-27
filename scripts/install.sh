@@ -15,8 +15,8 @@
 #   curl -fsSL .../install.sh | bash -s -- --uninstall
 #
 # Flags:
-#   --harness claude[,codex,antigravity,cursor,openclaw,opencode,qoder,qoder-work,
-#                    kimi-code,kimi-desktop]
+#   --harness codex[,claude,cursor,opencode,zcode,kimi-code,kimi-work,
+#                qoder,qoder-work,antigravity,openclaw]
 #                                     explicit harness list (default: auto-detect)
 #   --no-cli                          skip installing the Python package (skill-only)
 #   --no-schedule                     skip the macOS launchd update-check agent
@@ -36,7 +36,7 @@ PACKAGE="inspire-skill"
 DEFAULT_REF="main"
 LAUNCH_LABEL="sh.inspire-skill.update-check"
 LAUNCH_LOG="$HOME/Library/Logs/inspire-skill-update-check.log"
-ALL_HARNESSES="claude,codex,antigravity,cursor,openclaw,opencode,qoder,qoder-work,kimi-code,kimi-desktop"
+ALL_HARNESSES="codex,claude,cursor,opencode,zcode,kimi-code,kimi-work,qoder,qoder-work,antigravity,openclaw"
 
 HARNESSES=""
 INSTALL_CLI=1
@@ -47,7 +47,7 @@ PURGE=0
 PURGE_RUNTIME=0
 ASSUME_YES=0
 KIMI_CODE_HOME_DIR="${KIMI_CODE_HOME:-$HOME/.kimi-code}"
-KIMI_DESKTOP_ROOT="$HOME/Library/Application Support/kimi-desktop/daimon-share/daimon"
+KIMI_WORK_ROOT="$HOME/Library/Application Support/kimi-desktop/daimon-share/daimon"
 
 color()  { local c="$1"; shift; printf '\033[%sm%s\033[0m' "$c" "$*"; }
 bold()   { color "1"  "$@"; }
@@ -88,16 +88,17 @@ known_harness() {
 
 skill_target() {
   case "$1" in
-    claude)       echo "$HOME/.claude/skills/inspire" ;;
     codex)        echo "$HOME/.codex/skills/inspire" ;;
-    antigravity)  echo "$HOME/.gemini/config/skills/inspire" ;;
+    claude)       echo "$HOME/.claude/skills/inspire" ;;
     cursor)       echo "$HOME/.cursor/skills/inspire" ;;
-    openclaw)     echo "$HOME/.openclaw/skills/inspire" ;;
     opencode)     echo "${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}/skills/inspire" ;;
+    zcode)        echo "$HOME/.zcode/skills/inspire" ;;
+    kimi-code)    echo "$KIMI_CODE_HOME_DIR/skills/inspire" ;;
+    kimi-work)    echo "$KIMI_WORK_ROOT/skills/inspire" ;;
     qoder)        echo "$HOME/.qoder/skills/inspire" ;;
     qoder-work)   echo "$HOME/.qoderwork/skills/inspire" ;;
-    kimi-code)    echo "$KIMI_CODE_HOME_DIR/skills/inspire" ;;
-    kimi-desktop) echo "$KIMI_DESKTOP_ROOT/skills/inspire" ;;
+    antigravity)  echo "$HOME/.gemini/config/skills/inspire" ;;
+    openclaw)     echo "$HOME/.openclaw/skills/inspire" ;;
   esac
 }
 
@@ -232,23 +233,24 @@ fi
 # ---- harness detection -----------------------------------------------------
 detect_harnesses() {
   local found=()
-  [[ -d "$HOME/.claude"                                      ]] && found+=("claude")
   [[ -d "$HOME/.codex"                                       ]] && found+=("codex")
-  [[ -d "$HOME/.gemini"                                      ]] && found+=("antigravity")
+  [[ -d "$HOME/.claude"                                      ]] && found+=("claude")
   [[ -d "$HOME/.cursor"                                      ]] && found+=("cursor")
-  [[ -d "$HOME/.openclaw"                                    ]] && found+=("openclaw")
   [[ -d "${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}"     ]] && found+=("opencode")
+  [[ -d "$HOME/.zcode"                                       ]] && found+=("zcode")
+  [[ -d "$KIMI_CODE_HOME_DIR"                                ]] && found+=("kimi-code")
+  [[ -d "$KIMI_WORK_ROOT"                                    ]] && found+=("kimi-work")
   [[ -d "$HOME/.qoder"                                       ]] && found+=("qoder")
   [[ -d "$HOME/.qoderwork"                                   ]] && found+=("qoder-work")
-  [[ -d "$KIMI_CODE_HOME_DIR"                                ]] && found+=("kimi-code")
-  [[ -d "$KIMI_DESKTOP_ROOT"                                 ]] && found+=("kimi-desktop")
+  [[ -d "$HOME/.gemini"                                      ]] && found+=("antigravity")
+  [[ -d "$HOME/.openclaw"                                    ]] && found+=("openclaw")
   (IFS=,; echo "${found[*]:-}")
 }
 
 if [[ -z "$HARNESSES" ]]; then
   HARNESSES="$(detect_harnesses)"
   [[ -n "$HARNESSES" ]] \
-    || die "no agent harness detected (checked \$HOME/.claude, .codex, .gemini, .cursor, .openclaw, \$OPENCODE_CONFIG_DIR or \$HOME/.config/opencode, .qoder, .qoderwork, \$KIMI_CODE_HOME or \$HOME/.kimi-code, and Kimi Work's Application Support directory). Pass --harness explicitly."
+    || die "no agent harness detected (checked \$HOME/.codex, .claude, .cursor, \$OPENCODE_CONFIG_DIR or \$HOME/.config/opencode, .zcode, \$KIMI_CODE_HOME or \$HOME/.kimi-code, Kimi Work's Application Support directory, .qoder, .qoderwork, .gemini, .openclaw). Pass --harness explicitly."
   log "auto-detected harnesses: $(bold "$HARNESSES")"
 fi
 

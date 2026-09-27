@@ -26,7 +26,7 @@ from inspire.cli.commands.update import (
     _ensure_global_playwright_runtime,
     _ensure_playwright_runtime,
     _kimi_code_home,
-    _kimi_desktop_root,
+    _kimi_work_root,
     _release_entries_between,
     _is_local_requirement,
     _parse_uv_tool_list,
@@ -76,32 +76,34 @@ def test_detect_harnesses_includes_all_supported_desktop_and_cli_harnesses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     roots = {
+        "codex": tmp_path / ".codex",
         "claude": tmp_path / ".claude",
-        "antigravity": tmp_path / ".gemini",
         "cursor": tmp_path / ".cursor",
+        "opencode": tmp_path / ".config" / "opencode",
+        "zcode": tmp_path / ".zcode",
+        "kimi-code": tmp_path / ".kimi-code",
+        "kimi-work": tmp_path / "Library" / "Application Support" / "kimi-desktop",
         "qoder": tmp_path / ".qoder",
         "qoder-work": tmp_path / ".qoderwork",
-        "kimi-code": tmp_path / ".kimi-code",
-        "kimi-desktop": tmp_path / "Library" / "Application Support" / "kimi-desktop",
-        "opencode": tmp_path / ".config" / "opencode",
+        "antigravity": tmp_path / ".gemini",
+        "openclaw": tmp_path / ".openclaw",
     }
-    roots["claude"].mkdir()
-    roots["antigravity"].mkdir()
-    roots["cursor"].mkdir()
-    roots["qoder"].mkdir()
-    roots["qoder-work"].mkdir()
-    roots["kimi-code"].mkdir()
-    roots["kimi-desktop"].mkdir(parents=True)
+    for root in roots.values():
+        root.mkdir(parents=True)
     monkeypatch.setattr(update_module, "HARNESS_ROOTS", roots)
 
     assert update_module._detect_harnesses() == [
+        "codex",
         "claude",
-        "antigravity",
         "cursor",
+        "opencode",
+        "zcode",
+        "kimi-code",
+        "kimi-work",
         "qoder",
         "qoder-work",
-        "kimi-code",
-        "kimi-desktop",
+        "antigravity",
+        "openclaw",
     ]
 
 
@@ -125,13 +127,19 @@ def test_kimi_code_skill_dir_uses_kimi_code_global_skills_path() -> None:
     )
 
 
+def test_zcode_skill_dir_uses_zcode_global_skills_path() -> None:
+    assert update_module.HARNESS_SKILL_DIRS["zcode"] == (
+        Path.home() / ".zcode" / "skills" / "inspire"
+    )
+
+
 def test_qoder_work_skill_dir_uses_qoder_work_global_skills_path() -> None:
     assert update_module.HARNESS_SKILL_DIRS["qoder-work"] == (
         Path.home() / ".qoderwork" / "skills" / "inspire"
     )
 
 
-def test_kimi_desktop_skill_dir_uses_daemon_shared_skills_path() -> None:
+def test_kimi_work_skill_dir_uses_daemon_shared_skills_path() -> None:
     expected_root = (
         Path.home()
         / "Library"
@@ -140,9 +148,9 @@ def test_kimi_desktop_skill_dir_uses_daemon_shared_skills_path() -> None:
         / "daimon-share"
         / "daimon"
     )
-    assert _kimi_desktop_root() == expected_root
-    assert update_module.HARNESS_ROOTS["kimi-desktop"] == expected_root
-    assert update_module.HARNESS_SKILL_DIRS["kimi-desktop"] == (
+    assert _kimi_work_root() == expected_root
+    assert update_module.HARNESS_ROOTS["kimi-work"] == expected_root
+    assert update_module.HARNESS_SKILL_DIRS["kimi-work"] == (
         expected_root / "skills" / "inspire"
     )
 

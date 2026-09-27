@@ -79,8 +79,9 @@ def _kimi_code_home() -> Path:
     return Path.home() / ".kimi-code"
 
 
-def _kimi_desktop_root() -> Path:
+def _kimi_work_root() -> Path:
     """Resolve Kimi Work's macOS daemon data root."""
+    # The Kimi Work app still stores its daemon data under `kimi-desktop`.
     return (
         Path.home()
         / "Library"
@@ -92,28 +93,30 @@ def _kimi_desktop_root() -> Path:
 
 
 HARNESS_SKILL_DIRS = {
-    "claude": Path.home() / ".claude" / "skills" / "inspire",
     "codex": Path.home() / ".codex" / "skills" / "inspire",
-    "antigravity": Path.home() / ".gemini" / "config" / "skills" / "inspire",
+    "claude": Path.home() / ".claude" / "skills" / "inspire",
     "cursor": Path.home() / ".cursor" / "skills" / "inspire",
-    "openclaw": Path.home() / ".openclaw" / "skills" / "inspire",
     "opencode": _opencode_config_dir() / "skills" / "inspire",
+    "zcode": Path.home() / ".zcode" / "skills" / "inspire",
+    "kimi-code": _kimi_code_home() / "skills" / "inspire",
+    "kimi-work": _kimi_work_root() / "skills" / "inspire",
     "qoder": Path.home() / ".qoder" / "skills" / "inspire",
     "qoder-work": Path.home() / ".qoderwork" / "skills" / "inspire",
-    "kimi-code": _kimi_code_home() / "skills" / "inspire",
-    "kimi-desktop": _kimi_desktop_root() / "skills" / "inspire",
+    "antigravity": Path.home() / ".gemini" / "config" / "skills" / "inspire",
+    "openclaw": Path.home() / ".openclaw" / "skills" / "inspire",
 }
 HARNESS_ROOTS = {
-    "claude": Path.home() / ".claude",
     "codex": Path.home() / ".codex",
-    "antigravity": Path.home() / ".gemini",
+    "claude": Path.home() / ".claude",
     "cursor": Path.home() / ".cursor",
-    "openclaw": Path.home() / ".openclaw",
     "opencode": _opencode_config_dir(),
+    "zcode": Path.home() / ".zcode",
+    "kimi-code": _kimi_code_home(),
+    "kimi-work": _kimi_work_root(),
     "qoder": Path.home() / ".qoder",
     "qoder-work": Path.home() / ".qoderwork",
-    "kimi-code": _kimi_code_home(),
-    "kimi-desktop": _kimi_desktop_root(),
+    "antigravity": Path.home() / ".gemini",
+    "openclaw": Path.home() / ".openclaw",
 }
 
 PYPI_MIRROR_INDEX_URLS = (
