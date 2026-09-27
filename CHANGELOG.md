@@ -10,7 +10,7 @@
 
 - **账号凭据与本地私有状态采用私有文件权限。** POSIX 文件创建为 `0600`、私有目录为 `0700`，触及时收紧既有权限；Windows 为目录设置可继承的当前用户 ACL，失败时警告，显式密钥导出仍逐文件验证并在失败时报错。账号添加与 SDK 凭据构造使用同一原子写入路径。依赖其他用户共享读取这些文件的流程需调整权限与账号使用方式。
 
-### Python SDK（实验性）
+### Python SDK
 
 - **新增同步与异步客户端。** `from inspire import InspireClient, InspireAsyncClient` 提供 workspaces、projects、compute_groups、images、datasets、models、resources、account_info、api_keys、jobs、notebooks、hpc、ray、servings、tensorboards 门面，覆盖全部平台侧 CLI 命令组。普通安装即可使用 SDK，新增 `httpx[socks]` 和显式 `greenlet` 运行时依赖，无需额外安装选项。
 

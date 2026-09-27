@@ -4,8 +4,7 @@ Client-bound facades and handles belong here; reusable business decisions belong
 to inspire.services and wire protocols to inspire.platform. References carry
 identity, not credentials or proof of current resource state. The async client
 shares business logic and suspends at native I/O boundaries; it is not a pool of
-synchronous clients. This remains experimental, with unchanged CLI installation
-requirements.
+synchronous clients. Both clients share the CLI package and installation.
 """
 
 from inspire.services.execution.notebook_transfer import TransferResult

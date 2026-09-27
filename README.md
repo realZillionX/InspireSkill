@@ -18,13 +18,15 @@
 
 # 对初次使用者的简单介绍
 
-InspireSkill 将算力平台的一切入口交给 AI Agent。当 Codex / Claude Code / Cursor / OpenCode / ZCode / Kimi Code / Kimi Work / Qoder / Qoder Work / Antigravity / OpenClaw 识别到本项目所提供的 `SKILL.md`，它会：
+InspireSkill 是启智平台的本地 Agent 驾驶舱。你继续在熟悉的 Codex、Claude Code、Cursor 等 Harness 中写代码、看 Git 状态、调用其他工具；启智算力由 Agent 通过同一套入口调度。它由三部分组成：
 
-- 直接调用 `inspire` 命令查实时资源、开 Notebook、提 HPC 任务、拉日志
-- 全程只用 Name：参数、帮助、错误、人类输出和 JSON 输出都使用资源 Name、Account Alias 和可读状态，不需要 Agent 记忆或搬运平台内部 ID
-- 提供可选的 Clash Verge Mixed Port 分流方案，让公网与启智内网共存一套本地代理配置，取代多人共用断连的 aTrust；CLI 本身不绑定固定端口，任何能同时覆盖公网与 `*.sii.edu.cn` 的代理方案都行
-- 把平台网页上的常用操作都变成可复现、可串联、可自动化的命令链
-- 从 `SKILL.md` 按需加载对应使用手册，理解调度语义、资源申请原则和验收点，不需要用户在对话里反复向 Agent 解释平台语义
+- **`inspire` CLI** 把资源查询、Notebook 连接、GPU Job / HPC / Ray 提交、Serving 部署、TensorBoard 曲线读取、资产管理和清理变成可串联的命令。资源用可读 Name 和 Account Alias 寻址；需要脚本消费时使用 JSON 输出。
+- **`SKILL.md` 与 `references/`** 告诉 Agent 何时选哪类工作负载、怎样从实时目录选调度条件、怎样观察任务并核验产物。安装器把它们放到受支持的 Harness 目录，用户不必在每次对话里重讲平台语义。
+- **Python SDK** 与 CLI 使用同一个安装包，提供同步和异步客户端，让研究脚本、服务和 Agent runtime 直接调用启智能力。
+
+给 Agent 一个目标，它就能先查当前可用的 Workspace、Quota 和镜像，准备共享盘上的代码与数据，提交合适的任务，再沿 Events、Logs、Metrics 和 Instances 追踪到结果，最后清理不再需要的资源。整个流程留在你的本地代码仓库和现有 Agent 中；命令可复现，稳定资产可按需记入 `INSPIRE.md`。
+
+**从选资源到验收结果，InspireSkill 让 Agent 真正掌控启智。**
 
 ## 为什么不直接使用 QWorks？
 
@@ -38,16 +40,6 @@ InspireSkill 将算力平台的一切入口交给 AI Agent。当 Codex / Claude 
 | 工作流 | 围绕 QWorks 会话与界面 | 本地 Repo、Git、其他工具与启智命令处于同一工作流；命令可脚本化，JSON 输出可接入自动化 |
 
 **你已经有顺手的 Agent，就不必为了使用启智再换一个。**
-
----
-
-## CLI + Skill：让 Agent 真正掌控启智
-
-InspireSkill 交付的不只是几条命令，而是 CLI、Skill 和平台操作手册组成的一体化系统。`SKILL.md` 告诉 Agent 如何判断调度条件、选择适合的工作负载，`references/` 在需要时展开平台语义；`inspire` 则把资源发现、提交、观察、验收和清理接成一条可执行的链路。
-
-Notebook、GPU Job、CPU HPC、Ray、Serving 和 TensorBoard 共享清晰的命令语义。联网 Notebook 的 SSH 与文件传输、受限 Notebook 的 JupyterTerminal、训练任务的事件与指标、TensorBoard 曲线读取、Image / Model / Dataset 资产操作，都由同一个 Agent 入口调度。
-
-**让 Agent 不只替你点按钮，而是独立完成一次科研任务的全流程。**
 
 ---
 
@@ -264,6 +256,23 @@ inspire uninstall               # 卸载 CLI 与安装器管理的 Skill
 
 ---
 
+# Python SDK：让启智能力进入你的程序
+
+InspireSkill 还提供稳定可用的 Python SDK，随 `inspire-skill` 一起安装。`InspireClient` 面向同步脚本，`InspireAsyncClient` 面向 asyncio 应用；两者与 CLI 共用账号、平台服务和资源模型，覆盖 Workspace、Project、Image、Dataset、Model、Notebook、GPU Job、HPC、Ray、Serving 和 TensorBoard。你可以把启智操作直接写进研究程序或服务，而不必解析终端输出。
+
+```python
+from inspire import InspireClient
+
+with InspireClient(account="research") as client:
+    client.login()
+    for job in client.jobs.list("分布式训练空间", limit=10).items:
+        print(job.name, job.status)
+```
+
+异步客户端使用 `async with` 和 `await`，支持并发查询、事件与日志迭代以及远程执行流；`Accounts` 提供独立的本地账号管理入口。完整的接口、资源引用和调用示例见 [Python SDK 文档](references/sdk.md)。
+
+---
+
 # 支持的 Agent Harness
 
 不同 Harness 的后台唤醒、Skills 实现和 MCP 能力会有差异；InspireSkill 的安装器负责把同一套 `SKILL.md` / `references/` 放到各自约定目录，用户继续使用自己习惯的 Agent 入口。
@@ -308,6 +317,8 @@ inspire uninstall               # 卸载 CLI 与安装器管理的 Skill
 
 校园网外访问 `*.sii.edu.cn` 时，可在 Clash Verge 建一个 `SII Proxy` 选择组，放入组织提供的代理节点和 `DIRECT`，并把规则 `DOMAIN-SUFFIX,sii.edu.cn,SII Proxy` 放在通用规则之前；能直连校园网时选择 `DIRECT`。其他网站继续走原有规则。CLI 不绑定固定端口，把账号 proxy 配为本机实际的 Mixed Port，例如 `http://127.0.0.1:<mixed-port>`。
 
+如果使用启智官方提供的 aTrust VPN，可以参考 [Docker-aTrust](https://github.com/realZillionX/Docker-aTrust) 将 aTrust 运行在 Docker 中，取得宿主机上的 SOCKS5 / HTTP 代理端口，再将该端口接入上述分流方案。
+
 账号 proxy 优先于通用 Shell 代理；未设置账号 proxy 时，`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 及小写变量仍可能影响连接，需要直连时可用 `NO_PROXY=.sii.edu.cn` 绕过通用代理。用 `inspire account check --details` 查看实际代理来源、路由及 `NO_PROXY` 匹配结果。
 
 > 凭据（Host / User / Password）**从实验室或组织管理员获取**，不要提交到任何公开仓库或聊天记录。
@@ -339,6 +350,7 @@ inspire uninstall               # 卸载 CLI 与安装器管理的 Skill
 - [`references/workflows.md`](references/workflows.md)：CPU 准备、数据处理、分布式训练三阶段项目流程。
 - [`references/image.md`](references/image.md)：镜像职责、保存 / 注册边界、可见性和清理原则。
 - [`references/model.md`](references/model.md)：Model Registry 与 Serving 的职责边界、注册限制和版本判断。
+- [`references/sdk.md`](references/sdk.md)：Python SDK 的同步、异步客户端与资源接口。
 - [`references/dev/browser-api.md`](references/dev/browser-api.md)：CLI 维护参考，唯一一份接口文档——请求契约与信封、认证与 Session、分页与 scoping、当前 CLI 使用的 Action 参数与响应表、创建面字段合同、数据广场（`aip.sii.edu.cn`）与变更验收。
 - [`CONTRIBUTING.md`](CONTRIBUTING.md)：开发、测试和贡献约定。
 - [`cli/`](cli/)：CLI 源码；入口 `cli/inspire/cli/main.py`。
@@ -357,9 +369,3 @@ inspire uninstall               # 卸载 CLI 与安装器管理的 Skill
 - [EmbodiedForge/Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) 提供了 CLI 的初步框架。
 
 <p align="center"><sub>Made for researchers who'd rather think than click.</sub></p>
-
-### Python SDK（实验性）
-
-实验性 Python SDK 提供两个入口：同步脚本使用 `from inspire import InspireClient`，asyncio 应用使用 `from inspire import InspireAsyncClient`。两者复用同一包的账号、共享服务与统一 Transport，提供 `workspaces`、`projects`、`compute_groups`、`images`、`datasets`、`models`、`resources`、`account_info`、`api_keys`、`jobs`、`notebooks`、`hpc`、`ray`、`servings`、`tensorboards`。交互配置、SSH 建桥工具和终端渲染仍由 CLI 提供；参见 [Python SDK 指南](references/sdk.md)。
-
-两种客户端均支持凭据构造、默认无浏览器的登录与非交互初始化，另有同步的 `Accounts` 本地账号管理。同步用 `with`、`login()`／`init()`；异步用 `async with`、`await login()`／`await init()`。异步客户端用专用线程池运行底层同步栈，`concurrency=1` 默认串行，可按同时请求与长期流的数量增加成员；普通方法 await，迭代和 follow 用 async for，五个 exec 门面另有 `exec_stream`。Exec 默认捕获最多 4 MiB，支持写文件、回调及关闭捕获；详见 [SDK 文档](references/sdk.md)。
