@@ -1,73 +1,40 @@
 <p align="center"> <img src="https://raw.githubusercontent.com/realZillionX/InspireSkill/main/assets/hero.svg" width="100%" alt="Inspire Skill: the Agent-Native cockpit for the Inspire compute platform"/> </p>
 
-<p align="center"> <b>让 AI Agent 直接在本地 CLI 里完成启智平台的全部操作。</b><br/> </p>
+<p align="center"> <b>让你已有的 Agent 在本地管理启智算力与科研任务。</b><br/> </p>
 
 <p align="center"> <a href="https://github.com/realZillionX/InspireSkill/tree/main/cli"><img src="https://img.shields.io/badge/CLI-bundled-3366FF?style=for-the-badge" alt="CLI bundled"/></a> <img src="https://img.shields.io/badge/Harness-Codex%20/%20Claude%20Code%20/%20Cursor%20/%20OpenCode%20/%20ZCode%20/%20Kimi%20Code%20/%20Kimi%20Work%20/%20Qoder%20/%20Qoder%20Work%20/%20Antigravity%20/%20OpenClaw-5566FF?style=for-the-badge" alt="Harnesses"/> <img src="https://img.shields.io/badge/status-actively%20maintained-22CCEE?style=for-the-badge" alt="Actively maintained"/> <img src="https://img.shields.io/badge/license-MIT-0f172a?style=for-the-badge" alt="License MIT"/> </p>
 
 ---
 
-# 本项目建立的意义
+# InspireSkill 是什么
 
-在本项目开始筹办之初，对于所有 SII 的学生，[启智平台](https://qz.sii.edu.cn)是科研实验链路里最慢的那一环：每次申请资源、新建 Notebook、新建训练任务、同步代码都要反复点点点，SSH 等更进一步的功能更是遥遥无期。
+InspireSkill 为[启智平台](https://qz.sii.edu.cn)提供本地 `inspire` CLI 和配套 Agent Skill。你可以在熟悉的终端或 Agent 中查询资源、提交计算任务、连接 Notebook、读取日志与指标，并在完成后清理资源。安装器把同一份 `SKILL.md` 和按需阅读的 `references/` 放到支持的 Agent Harness 中；命令也可以独立使用。
 
-本着过渡到大 Agent 时代、将一切重复性机械工作交给 Agent 的初衷，我们创办了 InspireSkill 项目，旨在将启智平台 GUI 打平为 CLI，并建立了 CLI + Skill 的一体化系统，让 InspireSkill 成为所有 Agent 开箱即用的工具、让你的 Codex / Claude Code / Cursor / OpenCode / ZCode / Kimi Code / Kimi Work / Qoder / Qoder Work / Antigravity / OpenClaw 成为进行科研工作的唯一入口。
+这里的核心是把科研工作流接起来：先从平台实时目录选择 Workspace、Project、计算组、Quota 和镜像，再准备共享盘上的代码与数据，提交 Notebook / Job / HPC / Ray / Serving，最后按事件、日志、实例和指标定位问题、核验产物。资源通过可读名称选择；创建条件显式传入，仓库不会暗中绑定某个启智项目。需要跨会话复用的稳定资产可以记在可选的 `INSPIRE.md` 中。
 
-建立和维护本项目的过程并非易事，InspireSkill 也并非只是将[启智平台](https://qz.sii.edu.cn)的网页 API 打平重构为 CLI 的简单工作，在维护本项目的过程中，设计高于平台语义的高层功能、寻找启智平台中细枝末节的 API 并将其优雅融入 CLI 系统中、尤其是维护一个易于 Agent 阅读且包含平台所有特性的文档系统都给我们带来了不小于 CLI 本身的麻烦。
+```text
+本地代码与 Agent → inspire CLI + Skill → 启智资源与任务 → 观察、验收、清理
+```
 
-在长时间的开发与维护中，以 [@realZillionX](https://github.com/realZillionX) 和 [@JingYiJun](https://github.com/JingYiJun) 为首的开发团队始终秉持着注重细节与优雅的开发者精神，最终构建出一个令人满意的项目。时至今日，我们可以自豪地说：**InspireSkill 所包含的功能，只有你想不到，没有我们做不到**。它们包括但不限于：对 HDD / SSD / QB-ILM 等项目路径的优雅维护、翻转镜像的可见范围、将平台内部源入口交给 Agent（从而使在不可上网区配置镜像成为可能）、联网 Notebook 的 SSH 板块、受限 Notebook 的 JupyterTerminal 执行路径、空闲 8 卡整节点总量的查询、低优任务占用总量的查询、将 Notebook / 训练任务的资源视图 / 事件 / 聚合日志交给 Agent。
+## 与 QWorks、qzcli_tool 的关系
 
-# 对初次使用者的简单介绍
+这三个项目都能减少在启智网页里重复操作，但入口和使用范围不同。按自己的工作方式选择即可；下面描述的是当前公开的产品形态，具体能力以各项目的最新文档为准。
 
-InspireSkill 将算力平台的一切入口交给 AI Agent。当 Codex / Claude Code / Cursor / OpenCode / ZCode / Kimi Code / Kimi Work / Qoder / Qoder Work / Antigravity / OpenClaw 识别到本项目所提供的 `SKILL.md`，它会：
-
-- 直接调用 `inspire` 命令查实时资源、开 Notebook、提 HPC 任务、拉日志
-- 全程只用 Name：参数、帮助、错误、人类输出和 JSON 输出都使用资源 Name、Account Alias 和可读状态，不需要 Agent 记忆或搬运平台内部 ID
-- 提供可选的 Clash Verge Mixed Port 分流模板，让公网与启智内网共存一套本地代理配置，取代多人共用断连的 aTrust；CLI 本身不绑定固定端口，任何能同时覆盖公网与 `*.sii.edu.cn` 的代理方案都行
-- 把平台网页上的常用操作都变成可复现、可串联、可自动化的命令链
-- 从 `SKILL.md` 按需加载对应使用手册，理解调度语义、资源申请原则和验收点，不需要用户在对话里反复向 Agent 解释平台语义
-
-## 为什么比 InspireCode / 在实例里装 Agent 更好？
-
-启智官方的 InspireCode 是把 OpenCode 直接部署到某个 Inspire 实例里，要用就得打开 `qz.sii.edu.cn`、进那个实例、在它的终端里跟 OpenCode 对话。凡是“把 Agent 装在服务器上”的方案都是这个路数。InspireSkill 走相反路径：Agent 留在本机，Inspire 降格为被调用的工具。
-
-| 维度 | InspireCode（Agent 装在 Inspire 实例里） | InspireSkill（Agent 装在本机） |
+| 入口 | 适合的工作方式 | 当前提供的启智能力 |
 | --- | --- | --- |
-| Agent 生命周期 | 绑死在某一个 Notebook 实例；实例回收 / 崩溃，对话与状态一起没 | 跑在本机 Harness 里，与任何一个 Inspire 实例解耦 |
-| 调度范围 | 只能操作它所在那一个实例的文件系统与运行时 | 一个 Agent 横跨多 Workspace / Notebook / HPC Job / Image，全平台统一编排 |
-| 入口 | 必须打开 `qz.sii.edu.cn` 网页 | 大家本来就在用的 Codex / Claude Code / Cursor / OpenCode / ZCode / Kimi Code / Kimi Work / Qoder / Qoder Work / Antigravity / OpenClaw |
-| Harness / 模型选择 | 锁定 OpenCode + 它支持的模型 | 任选本机已装的 11 家 Harness，模型可随意配置 |
-| 上下文来源 | 只有实例里能看到的东西；本地代码仓库不在场 | 本机完整 Repo + Git 状态 + 编辑器 + 其他 MCP 工具（Figma / Preview / Playwright / …）一起可用 |
-| 计算占用 | Agent 进程吃 Inspire 实例的 CPU / RAM 配额；API Key 必须放在实例里 | Agent 进程跑本机；Inspire 实例的 CPU / RAM 全给训练 / HPC；API Key 只留本地 |
-| 自动化 / 可复现 | 对话历史锁在浏览器页面里 | 命令流可保存 / 回放；可读格式给 Agent 决策，结构化输出留给脚本消费 |
+| [QWorks 连接启智](https://qworks.tech/solutions/sii) | [下载客户端](https://qworks.tech/solutions/sii/download)，在其 AI 工作站中完成会话和研究任务 | 使用有权访问的启智推理模型、打开启智工作界面、连接运行中的 Notebook，并查看远程终端、变量和文件 |
+| [qzcli_tool](https://github.com/tianyilt/qzcli_tool) | 用 `qzcli` 命令或自行注册 `qzcli-mcp` 管理任务 | 资源与空闲节点查询、GPU / HPC 提交、日志、开发机 Jupyter Exec、GPU 占用看板、节点事件与排队诊断等 |
+| **InspireSkill** | 在自己已有的 Agent Harness 或终端中编排完整工作流 | CLI + Skill 覆盖 Notebook、GPU Job、HPC、Ray、Serving、TensorBoard，以及 Image、Model、Dataset、Project 和资源查询 |
 
-一句话：InspireCode 把 Agent 搬进 Inspire，InspireSkill 把 Inspire 变成 Agent 的一把工具。
+QWorks 已是本地客户端，不能再用旧版 InspireCode「Agent 装在远端实例里」的描述来比较。它把模型、工作界面和远程 Notebook 集成在一个产品中。若希望继续使用自己已有的 Codex、Claude Code 等 Harness，或沿用这些客户端的订阅套餐，QWorks 当前的单一 Harness 和模型 API 接入方式会形成限制；InspireSkill 直接安装到受支持的 Harness 中，模型和套餐由该 Harness 自己决定。QWorks 的启智托管模型仍按启智账号权限使用，不能与第三方客户端套餐混为一谈。
 
----
-
-## 为什么比社区里其它启智 CLI 更值得用？
-
-启智社区还有两条独立维护的 CLI：[EmbodiedForge/Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) 和 [tianyilt/qzcli_tool](https://github.com/tianyilt/qzcli_tool)。它们都解决了部分网页操作自动化问题，尤其 qzcli_tool 已经覆盖资源查询、GPU Job 提交、HPC Submit、Logs、Dashboard 和 Jupyter Exec，也提供 `qzcli-mcp` 给 MCP-Capable Harness 使用。
-
-InspireSkill 的定位更往前走了一层：它不是把若干 API 包成命令，而是把启智平台整理成一套 Agent 能长期使用的操作模型。安装、命令面、`SKILL.md`、`references/`、可选的 `INSPIRE.md` 资产合同、观测和清理闭环都在同一套设计里；调度条件和远端路径每次显式传入，不在仓库中维护隐式状态。
-
-| 维度 | [Inspire-cli](https://github.com/EmbodiedForge/Inspire-cli) | [qzcli_tool](https://github.com/tianyilt/qzcli_tool) | InspireSkill |
-| --- | --- | --- | --- |
-| 安装与更新 | 源码渠道为主 | Clone 仓库、`pip install -e .`、手动 `mcp add` | `curl \| bash` 一键安装 CLI、`SKILL.md` 和 `references/`，`inspire update` 同步更新 |
-| Agent 文档系统 | 无统一 Skill 文档 | `qzcli-mcp` 的薄 Skill，主要说明工具调用顺序 | `SKILL.md` 是平台操作模型入口，按场景路由到完整 `references/` |
-| Harness 落位 | 无 | MCP 可接入 MCP-Capable Harness，但需要用户自己注册 | 安装器自动写入 Codex / Claude Code / Cursor / OpenCode / ZCode / Kimi Code / Kimi Work / Qoder / Qoder Work / Antigravity / OpenClaw 的约定目录 |
-| Notebook 连接 | 依赖用户预配本地组件或容器公网 | Jupyter Terminal API Exec | SSH / Shell / Exec / SCP / OpenSSH Config / Proxy URL / Connection Cache / 跨账号重建 |
-| Workload 覆盖 | 少量训练 / HPC 能力 | 资源、GPU Job、HPC Submit、Logs、Dashboard、Jupyter Exec | Notebook / GPU Job / CPU HPC / Ray / Serving / TensorBoard / Model / Image / Dataset / Project / Resources 全覆盖 |
-| 观测闭环 | 有限 | Job Logs、Watch、Usage / Dashboard | Events / Logs / Metrics / Instances / Lifecycle / Status 分层诊断 |
-| 资源与路径语义 | 主要是配置和命令参数 | 资源缓存、Workspace / Compute Group / Spec 解析 | 调度条件按 Live 目录每次显式传入，远端文件用绝对路径，`INSPIRE.md` 只记持久资产合同 |
-| 多账号与项目层 | `[accounts."<user>"]` 合并层 | 以单套 `~/.qzcli/` 配置为中心 | 一账号一目录；没有仓库级配置或 Project 绑定 |
-
-一句话：这两条 CLI 各做了一段路；InspireSkill 把整个平台的操作面、文档面和观测面端到端铺平，让 Agent 不只是“能调用命令”，而是能理解应该怎么用启智平台。
+`qzcli_tool` 也在持续更新，已有 MCP、Jupyter Exec、节点健康与排队事件等能力，并改进了[规格归属诊断与认证保护](https://github.com/tianyilt/qzcli_tool/blob/master/CHANGELOG.md)。InspireSkill 的侧重点是跨资源类型的同一套命令语义、随 CLI 安装的场景手册，以及从创建到观测、清理的完整闭环。两者可以按任务需要并用。
 
 ---
 
 # 快速上手
 
-> 平台支持：macOS、Linux、Windows 都是一等公民，CI 覆盖 Linux 与 Windows。Windows 走系统自带的 OpenSSH，不需要 WSL；`rsync` 是可选外部工具，Windows 上用 `inspire notebook scp` 传文件。
+> 平台支持：macOS、Linux、Windows；CI 覆盖三者。Windows 走系统自带的 OpenSSH，不需要 WSL；`rsync` 是可选外部工具，Windows 上用 `inspire notebook scp` 传文件。
 
 ## 安装
 
