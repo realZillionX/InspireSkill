@@ -39,6 +39,7 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
     (home / ".cursor").mkdir()
     (home / ".qoderwork").mkdir()
     (home / ".kimi-code").mkdir()
+    (home / ".pi").mkdir()
     kimi_work_root.mkdir(parents=True)
     (bin_dir / "uv").write_text(
         "#!/usr/bin/env bash\n"
@@ -87,7 +88,7 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
             "bash",
             str(installer),
             "--harness",
-            "codex,claude,cursor,opencode,zcode,kimi-code,kimi-work,qoder,qoder-work,antigravity,openclaw",
+            "codex,claude,cursor,opencode,zcode,kimi-code,kimi-work,qoder,qoder-work,antigravity,openclaw,pi",
             "--no-schedule",
         ],
         cwd=installer.parent.parent,
@@ -123,6 +124,7 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
     assert (home / ".qoderwork" / "skills" / "inspire" / "SKILL.md").exists()
     assert (home / ".gemini" / "config" / "skills" / "inspire" / "SKILL.md").exists()
     assert (home / ".openclaw" / "skills" / "inspire" / "SKILL.md").exists()
+    assert (home / ".pi" / "agent" / "skills" / "inspire" / "SKILL.md").exists()
     assert not (home / ".kimi-code" / "skills" / "inspire" / "SKILL.md").exists()
 
 
@@ -136,6 +138,7 @@ def test_installer_advertises_supported_harnesses() -> None:
     assert "kimi-code" in text
     assert "kimi-work" in text
     assert "zcode" in text
+    assert "pi" in text
 
 
 def test_powershell_installer_uses_the_published_package_not_an_editable_checkout() -> None:

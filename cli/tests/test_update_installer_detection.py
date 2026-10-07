@@ -87,6 +87,7 @@ def test_detect_harnesses_includes_all_supported_desktop_and_cli_harnesses(
         "qoder-work": tmp_path / ".qoderwork",
         "antigravity": tmp_path / ".gemini",
         "openclaw": tmp_path / ".openclaw",
+        "pi": tmp_path / ".pi",
     }
     for root in roots.values():
         root.mkdir(parents=True)
@@ -104,6 +105,7 @@ def test_detect_harnesses_includes_all_supported_desktop_and_cli_harnesses(
         "qoder-work",
         "antigravity",
         "openclaw",
+        "pi",
     ]
 
 

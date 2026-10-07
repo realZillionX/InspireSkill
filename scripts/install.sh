@@ -16,7 +16,7 @@
 #
 # Flags:
 #   --harness codex[,claude,cursor,opencode,zcode,kimi-code,kimi-work,
-#                qoder,qoder-work,antigravity,openclaw]
+#                qoder,qoder-work,antigravity,openclaw,pi]
 #                                     explicit harness list (default: auto-detect)
 #   --no-cli                          skip installing the Python package (skill-only)
 #   --no-schedule                     skip the macOS launchd update-check agent
@@ -36,7 +36,7 @@ PACKAGE="inspire-skill"
 DEFAULT_REF="main"
 LAUNCH_LABEL="sh.inspire-skill.update-check"
 LAUNCH_LOG="$HOME/Library/Logs/inspire-skill-update-check.log"
-ALL_HARNESSES="codex,claude,cursor,opencode,zcode,kimi-code,kimi-work,qoder,qoder-work,antigravity,openclaw"
+ALL_HARNESSES="codex,claude,cursor,opencode,zcode,kimi-code,kimi-work,qoder,qoder-work,antigravity,openclaw,pi"
 
 HARNESSES=""
 INSTALL_CLI=1
@@ -99,6 +99,7 @@ skill_target() {
     qoder-work)   echo "$HOME/.qoderwork/skills/inspire" ;;
     antigravity)  echo "$HOME/.gemini/config/skills/inspire" ;;
     openclaw)     echo "$HOME/.openclaw/skills/inspire" ;;
+    pi)           echo "$HOME/.pi/agent/skills/inspire" ;;
   esac
 }
 
@@ -244,13 +245,14 @@ detect_harnesses() {
   [[ -d "$HOME/.qoderwork"                                   ]] && found+=("qoder-work")
   [[ -d "$HOME/.gemini"                                      ]] && found+=("antigravity")
   [[ -d "$HOME/.openclaw"                                    ]] && found+=("openclaw")
+  [[ -d "$HOME/.pi"                                          ]] && found+=("pi")
   (IFS=,; echo "${found[*]:-}")
 }
 
 if [[ -z "$HARNESSES" ]]; then
   HARNESSES="$(detect_harnesses)"
   [[ -n "$HARNESSES" ]] \
-    || die "no agent harness detected (checked \$HOME/.codex, .claude, .cursor, \$OPENCODE_CONFIG_DIR or \$HOME/.config/opencode, .zcode, \$KIMI_CODE_HOME or \$HOME/.kimi-code, Kimi Work's Application Support directory, .qoder, .qoderwork, .gemini, .openclaw). Pass --harness explicitly."
+    || die "no agent harness detected (checked \$HOME/.codex, .claude, .cursor, \$OPENCODE_CONFIG_DIR or \$HOME/.config/opencode, .zcode, \$KIMI_CODE_HOME or \$HOME/.kimi-code, Kimi Work's Application Support directory, .qoder, .qoderwork, .gemini, .openclaw, .pi). Pass --harness explicitly."
   log "auto-detected harnesses: $(bold "$HARNESSES")"
 fi
 

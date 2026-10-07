@@ -104,6 +104,7 @@ HARNESS_SKILL_DIRS = {
     "qoder-work": Path.home() / ".qoderwork" / "skills" / "inspire",
     "antigravity": Path.home() / ".gemini" / "config" / "skills" / "inspire",
     "openclaw": Path.home() / ".openclaw" / "skills" / "inspire",
+    "pi": Path.home() / ".pi" / "agent" / "skills" / "inspire",
 }
 HARNESS_ROOTS = {
     "codex": Path.home() / ".codex",
@@ -117,6 +118,7 @@ HARNESS_ROOTS = {
     "qoder-work": Path.home() / ".qoderwork",
     "antigravity": Path.home() / ".gemini",
     "openclaw": Path.home() / ".openclaw",
+    "pi": Path.home() / ".pi",
 }
 
 PYPI_MIRROR_INDEX_URLS = (
