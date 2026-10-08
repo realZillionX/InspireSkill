@@ -1,5 +1,16 @@
 # Changelog
 
+## v7.1.11
+
+### Harness 与安装
+
+- **新增 Pi Skill 安装目标。** macOS / Linux 安装器支持 `--harness pi` 和自动检测，默认安装到 `~/.pi/agent/skills/inspire/`；Windows 安装器、`inspire update` 和 `inspire uninstall` 共用 CLI 的 Pi 目录配置。
+- **遵循 Pi 的自定义用户目录。** 设置 `PI_CODING_AGENT_DIR` 时，安装、自动检测、更新和卸载使用该目录下的 `skills/inspire/`，支持含空格的路径和 `~/` 展开；跨工具共享的 `~/.agents/skills/` 保留给用户管理。
+
+### 维护
+
+- **稳定 Windows 上的 SDK 并发回归测试。** 在 SSH 探针仍等待时验证 HTTP 准备可完成，探针由测试主动释放；保留死锁超时，移除对 0.5 秒内完成 HTTP 准备的性能要求。
+
 ## v7.1.10
 
 ### Harness 与安装
