@@ -290,7 +290,7 @@ with InspireClient(account="research") as client:
 | [Qoder Work](https://qoder.com/product/qoderwork) | `~/.qoderwork/skills/inspire/` | 用户级 Skills 层，跨项目可用 |
 | [Antigravity](https://antigravity.google/docs/skills) | `~/.gemini/config/skills/inspire/` | 用户级 Global Skills 层，跨项目可用 |
 | [OpenClaw](https://github.com/openclaw/openclaw) | `~/.openclaw/skills/inspire/` | 全局 Managed Skills 层；Workspace 层（`~/.openclaw/workspace/skills/`）可覆盖 |
-| [Pi](https://github.com/earendil-works/pi) | `~/.pi/agent/skills/inspire/` | 用户级 Skills 层，跨项目可用 |
+| [Pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md) | `~/.pi/agent/skills/inspire/` | 用户级 Skills 层，跨项目可用；设置 `PI_CODING_AGENT_DIR` 时使用该目录下的 `skills/inspire/` |
 
 ---
 

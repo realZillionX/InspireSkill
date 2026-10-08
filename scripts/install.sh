@@ -48,6 +48,11 @@ PURGE_RUNTIME=0
 ASSUME_YES=0
 KIMI_CODE_HOME_DIR="${KIMI_CODE_HOME:-$HOME/.kimi-code}"
 KIMI_WORK_ROOT="$HOME/Library/Application Support/kimi-desktop/daimon-share/daimon"
+PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+case "$PI_AGENT_DIR" in
+  "~")   PI_AGENT_DIR="$HOME" ;;
+  "~/"*) PI_AGENT_DIR="$HOME/${PI_AGENT_DIR#\~/}" ;;
+esac
 
 color()  { local c="$1"; shift; printf '\033[%sm%s\033[0m' "$c" "$*"; }
 bold()   { color "1"  "$@"; }
@@ -99,7 +104,7 @@ skill_target() {
     qoder-work)   echo "$HOME/.qoderwork/skills/inspire" ;;
     antigravity)  echo "$HOME/.gemini/config/skills/inspire" ;;
     openclaw)     echo "$HOME/.openclaw/skills/inspire" ;;
-    pi)           echo "$HOME/.pi/agent/skills/inspire" ;;
+    pi)           echo "$PI_AGENT_DIR/skills/inspire" ;;
   esac
 }
 
@@ -245,14 +250,14 @@ detect_harnesses() {
   [[ -d "$HOME/.qoderwork"                                   ]] && found+=("qoder-work")
   [[ -d "$HOME/.gemini"                                      ]] && found+=("antigravity")
   [[ -d "$HOME/.openclaw"                                    ]] && found+=("openclaw")
-  [[ -d "$HOME/.pi"                                          ]] && found+=("pi")
+  [[ -d "$PI_AGENT_DIR"                                      ]] && found+=("pi")
   (IFS=,; echo "${found[*]:-}")
 }
 
 if [[ -z "$HARNESSES" ]]; then
   HARNESSES="$(detect_harnesses)"
   [[ -n "$HARNESSES" ]] \
-    || die "no agent harness detected (checked \$HOME/.codex, .claude, .cursor, \$OPENCODE_CONFIG_DIR or \$HOME/.config/opencode, .zcode, \$KIMI_CODE_HOME or \$HOME/.kimi-code, Kimi Work's Application Support directory, .qoder, .qoderwork, .gemini, .openclaw, .pi). Pass --harness explicitly."
+    || die "no agent harness detected (checked \$HOME/.codex, .claude, .cursor, \$OPENCODE_CONFIG_DIR or \$HOME/.config/opencode, .zcode, \$KIMI_CODE_HOME or \$HOME/.kimi-code, Kimi Work's Application Support directory, .qoder, .qoderwork, .gemini, .openclaw, \$PI_CODING_AGENT_DIR or \$HOME/.pi/agent). Pass --harness explicitly."
   log "auto-detected harnesses: $(bold "$HARNESSES")"
 fi
 

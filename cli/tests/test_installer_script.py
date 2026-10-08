@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import os
 import sys
 from pathlib import Path
 import subprocess
+import tarfile
 
 import pytest
 
@@ -39,7 +41,7 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
     (home / ".cursor").mkdir()
     (home / ".qoderwork").mkdir()
     (home / ".kimi-code").mkdir()
-    (home / ".pi").mkdir()
+    (home / ".pi" / "agent").mkdir(parents=True)
     kimi_work_root.mkdir(parents=True)
     (bin_dir / "uv").write_text(
         "#!/usr/bin/env bash\n"
@@ -126,6 +128,67 @@ def test_installer_first_uv_install_without_inspire_on_path(tmp_path: Path) -> N
     assert (home / ".openclaw" / "skills" / "inspire" / "SKILL.md").exists()
     assert (home / ".pi" / "agent" / "skills" / "inspire" / "SKILL.md").exists()
     assert not (home / ".kimi-code" / "skills" / "inspire" / "SKILL.md").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="drives the bash installer end to end")
+@pytest.mark.parametrize("explicit", [True, False], ids=["explicit", "auto-detect"])
+@pytest.mark.parametrize("directory", ["default", "absolute", "tilde"])
+def test_pi_installer_and_uninstall_use_the_agent_directory(
+    tmp_path: Path, explicit: bool, directory: str,
+) -> None:
+    home = tmp_path / "home"
+    agent_dir = home / (".pi/agent" if directory == "default" else "custom pi agent")
+    if not explicit:
+        agent_dir.mkdir(parents=True)
+    shared_skill = home / ".agents" / "skills" / "inspire" / "SKILL.md"
+    shared_skill.parent.mkdir(parents=True)
+    shared_skill.write_text("shared skill\n", encoding="utf-8")
+
+    bundle = tmp_path / "skill.tar.gz"
+    with tarfile.open(bundle, "w:gz") as archive:
+        for name, content in {
+            "InspireSkill-main/SKILL.md": b"pi skill\n",
+            "InspireSkill-main/references/setup.md": b"pi reference\n",
+        }.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text('#!/usr/bin/env bash\ncat "$PI_TEST_BUNDLE"\n', encoding="utf-8")
+    curl.chmod(0o755)
+    env = {
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "PI_TEST_BUNDLE": str(bundle),
+        "INSPIRE_SKIP_UPDATE_CHECK": "1",
+    }
+    if directory == "absolute":
+        env["PI_CODING_AGENT_DIR"] = str(agent_dir)
+    elif directory == "tilde":
+        env["PI_CODING_AGENT_DIR"] = "~/custom pi agent"
+    harness_args = ["--harness", "pi"] if explicit else []
+    installer = SCRIPTS / "install.sh"
+    result = subprocess.run(
+        ["bash", str(installer), "--no-cli", "--no-schedule", *harness_args],
+        env=env, text=True, capture_output=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    target = agent_dir / "skills" / "inspire"
+    assert (target / "SKILL.md").read_bytes() == b"pi skill\n"
+    assert (target / "references" / "setup.md").read_bytes() == b"pi reference\n"
+    if directory != "default":
+        assert not (home / ".pi").exists()
+
+    result = subprocess.run(
+        ["bash", str(installer), "--uninstall", "--yes"],
+        env=env, text=True, capture_output=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not target.exists()
+    assert agent_dir.is_dir()
+    assert shared_skill.read_text(encoding="utf-8") == "shared skill\n"
 
 
 def test_installer_advertises_supported_harnesses() -> None:
