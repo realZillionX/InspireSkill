@@ -36,7 +36,7 @@ def test_bridge_waits_leave_http_preparation_available(client, tracked, monkeypa
 
     def blocking_process(*args, **kwargs):
         enter()
-        assert release.wait(5)
+        release.wait()
         return subprocess.CompletedProcess(args[0], 0, "ok", "")
 
     async def native_process(*args, **kwargs):
@@ -76,11 +76,14 @@ def test_bridge_waits_leave_http_preparation_available(client, tracked, monkeypa
                       for _ in range(LOCAL_IO_WORKERS)]
             try:
                 # asyncio.timeout is 3.11+; this package supports 3.10.
-                deadline = time.monotonic() + 2
+                deadline = time.monotonic() + 10
                 while started < LOCAL_IO_WORKERS:
                     assert time.monotonic() < deadline, "the probes never occupied the pool"
                     await asyncio.sleep(0.001)
-                await asyncio.wait_for(c.workspaces.list(), 0.5)
+                # Keep probes blocked until HTTP finishes. This checks pool
+                # availability without a subsecond performance requirement;
+                # cold request preparation can be slower on Windows runners.
+                await asyncio.wait_for(c.workspaces.list(), 10)
                 assert all(not task.done() for task in probes)
             finally:
                 release.set()

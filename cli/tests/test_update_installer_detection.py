@@ -87,6 +87,7 @@ def test_detect_harnesses_includes_all_supported_desktop_and_cli_harnesses(
         "qoder-work": tmp_path / ".qoderwork",
         "antigravity": tmp_path / ".gemini",
         "openclaw": tmp_path / ".openclaw",
+        "pi": tmp_path / ".pi" / "agent",
     }
     for root in roots.values():
         root.mkdir(parents=True)
@@ -104,6 +105,7 @@ def test_detect_harnesses_includes_all_supported_desktop_and_cli_harnesses(
         "qoder-work",
         "antigravity",
         "openclaw",
+        "pi",
     ]
 
 
@@ -592,6 +594,65 @@ def _skill_tarball(entries: dict[str, bytes]) -> bytes:
             member.size = len(content)
             archive.addfile(member, io.BytesIO(content))
     return payload.getvalue()
+
+
+@pytest.mark.parametrize("directory", ["default", "absolute", "tilde"])
+def test_pi_skill_refresh_and_uninstall_use_the_agent_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory: str,
+) -> None:
+    home = tmp_path / "home"
+    agent_dir = home / (".pi/agent" if directory == "default" else "custom pi agent")
+    target = agent_dir / "skills" / "inspire"
+    target.mkdir(parents=True)
+    (target / "stale.md").write_text("old reference\n", encoding="utf-8")
+    shared_skill = home / ".agents" / "skills" / "inspire" / "SKILL.md"
+    shared_skill.parent.mkdir(parents=True)
+    shared_skill.write_text("shared skill\n", encoding="utf-8")
+    uninstall_module = importlib.import_module("inspire.cli.commands.uninstall")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "home", classmethod(lambda _cls: home))
+            patch.setenv("HOME", str(home))
+            patch.setenv("USERPROFILE", str(home))
+            for key in ("OPENCODE_CONFIG_DIR", "KIMI_CODE_HOME", "PI_CODING_AGENT_DIR"):
+                patch.delenv(key, raising=False)
+            if directory == "absolute":
+                patch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
+            elif directory == "tilde":
+                patch.setenv("PI_CODING_AGENT_DIR", "~/custom pi agent")
+            importlib.reload(update_module)
+            assert update_module.HARNESS_ROOTS["pi"] == agent_dir
+            assert update_module.HARNESS_SKILL_DIRS["pi"] == target
+            assert update_module._detect_harnesses() == ["pi"]
+            patch.setattr(
+                update_module, "_download_tarball",
+                lambda: _skill_tarball({
+                    "InspireSkill-main/SKILL.md": b"new pi skill\n",
+                    "InspireSkill-main/references/setup.md": b"new reference\n",
+                }),
+            )
+            assert update_module._refresh_skill_files(silent=True) is True
+            assert update_module._installed_skill_harnesses() == ["pi"]
+            assert (target / "SKILL.md").read_bytes() == b"new pi skill\n"
+            assert (target / "references" / "setup.md").read_bytes() == b"new reference\n"
+            assert not (target / "stale.md").exists()
+
+            patch.setattr(uninstall_module, "HARNESS_SKILL_DIRS", update_module.HARNESS_SKILL_DIRS)
+            patch.setattr(uninstall_module, "inspire_home", lambda: home / ".inspire")
+            patch.setattr(uninstall_module, "_package_uninstall_command", lambda: None)
+            patch.setattr(uninstall_module, "_unload_launch_agent", lambda: None)
+            patch.setenv("PLAYWRIGHT_BROWSERS_PATH", "0")
+            result = CliRunner().invoke(cli_main, ["uninstall", "--yes"])
+            assert result.exit_code == 0, result.output
+            assert "pi skill" in result.output
+            assert not target.exists()
+            assert agent_dir.is_dir()
+            assert shared_skill.read_text(encoding="utf-8") == "shared skill\n"
+            if directory != "default":
+                assert not (home / ".pi").exists()
+    finally:
+        importlib.reload(update_module)
 
 
 def test_extract_assets_copies_only_the_single_wrapped_tree(tmp_path: Path) -> None:

@@ -92,6 +92,14 @@ def _kimi_work_root() -> Path:
     )
 
 
+def _pi_agent_dir() -> Path:
+    """Resolve Pi's agent dir: $PI_CODING_AGENT_DIR or ~/.pi/agent."""
+    override = os.environ.get("PI_CODING_AGENT_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".pi" / "agent"
+
+
 HARNESS_SKILL_DIRS = {
     "codex": Path.home() / ".codex" / "skills" / "inspire",
     "claude": Path.home() / ".claude" / "skills" / "inspire",
@@ -104,6 +112,7 @@ HARNESS_SKILL_DIRS = {
     "qoder-work": Path.home() / ".qoderwork" / "skills" / "inspire",
     "antigravity": Path.home() / ".gemini" / "config" / "skills" / "inspire",
     "openclaw": Path.home() / ".openclaw" / "skills" / "inspire",
+    "pi": _pi_agent_dir() / "skills" / "inspire",
 }
 HARNESS_ROOTS = {
     "codex": Path.home() / ".codex",
@@ -117,6 +126,7 @@ HARNESS_ROOTS = {
     "qoder-work": Path.home() / ".qoderwork",
     "antigravity": Path.home() / ".gemini",
     "openclaw": Path.home() / ".openclaw",
+    "pi": _pi_agent_dir(),
 }
 
 PYPI_MIRROR_INDEX_URLS = (
