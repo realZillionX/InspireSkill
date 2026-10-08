@@ -613,6 +613,8 @@ def test_pi_skill_refresh_and_uninstall_use_the_agent_directory(
     try:
         with monkeypatch.context() as patch:
             patch.setattr(Path, "home", classmethod(lambda _cls: home))
+            patch.setenv("HOME", str(home))
+            patch.setenv("USERPROFILE", str(home))
             for key in ("OPENCODE_CONFIG_DIR", "KIMI_CODE_HOME", "PI_CODING_AGENT_DIR"):
                 patch.delenv(key, raising=False)
             if directory == "absolute":
