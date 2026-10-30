@@ -659,6 +659,21 @@ def test_resolve_web_job_id_allows_job_prefixed_human_name(monkeypatch) -> None:
     assert captured["name"] == job_name
 
 
+def test_resolve_web_job_id_not_found_hint_uses_keyword(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(job_commands, "_list_web_jobs", lambda **_kwargs: ([], []))
+
+    with pytest.raises(job_commands.WebJobResolutionError) as caught:
+        job_commands._resolve_web_job_id(
+            job="missing-job",
+            workspace=None,
+            all_workspaces=True,
+            max_pages=1,
+        )
+
+    assert "inspire job list --workspace all --keyword missing-job" in str(caught.value)
+    assert "--name" not in str(caught.value)
+
+
 def test_resolve_web_job_id_clear_during_live_lookup_does_not_repopulate_cache(
     monkeypatch,
     tmp_path,

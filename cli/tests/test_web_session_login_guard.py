@@ -40,13 +40,15 @@ def test_second_submission_of_rejected_credentials_never_reaches_cas() -> None:
         _attempt(now=100.0)
 
     submitted = False
-    with pytest.raises(AuthenticationError, match="Automatic login is paused"):
+    with pytest.raises(AuthenticationError, match="Automatic login is paused") as caught:
         with login_guard.guarded_credential_submission(
             "alice", "secret", account="alice", now=101.0
         ):
             submitted = True
 
     assert submitted is False
+    assert "inspire init" in str(caught.value)
+    assert "account set" not in str(caught.value)
 
 
 def test_corrected_credentials_are_accepted_immediately() -> None:

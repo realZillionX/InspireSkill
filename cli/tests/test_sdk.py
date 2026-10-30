@@ -587,7 +587,7 @@ def test_refresh_cooldown_has_structured_deadline(client, monkeypatch):
     deadline = time.time() + 60
 
     def fail(*args, **kw):
-        error = PlatformAuthError("Account alpha blocked; update credentials with inspire account set --password.")
+        error = PlatformAuthError("Account alpha blocked; update credentials with inspire init.")
         error.retry_at = deadline
         raise error
 
@@ -602,7 +602,7 @@ def test_refresh_cooldown_has_structured_deadline(client, monkeypatch):
     with pytest.raises(AuthenticationCooldownError) as caught:
         client._transport._refresh()
     assert caught.value.retry_at == deadline
-    assert str(caught.value) == "Account alpha blocked; update credentials with inspire account set --password."
+    assert str(caught.value) == "Account alpha blocked; update credentials with inspire init."
 
 
 @pytest.mark.parametrize("status", [401, 302, 429, 500, 503])

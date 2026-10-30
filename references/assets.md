@@ -4,7 +4,7 @@ Use this guide when maintaining `INSPIRE.md` to share stable remote assets acros
 
 ## No Repository Binding
 
-The CLI stores account configuration under `~/.inspire/` and never reads or writes a repo-local `./.inspire/` directory. A single repository can run across multiple Projects, Workspaces, and storage pools: every workload command takes explicit `workspace`, `project`, `group`, `quota`, and `image` flags, and every file operation uses explicit remote paths.
+The CLI stores account configuration under `~/.inspire/`. Current operational workflows do not read or write repo-local `./.inspire/` configuration, although `inspire update` may detect and clean up retired repo-local directories. A single repository can run across multiple Projects, Workspaces, and storage pools: every workload command takes explicit `workspace`, `project`, `group`, `quota`, and `image` flags, and every file operation uses explicit remote paths.
 
 `INSPIRE.md` is an optional, human-readable asset inventory — the CLI does not parse it. Only create `INSPIRE.md` when a repository actually maintains long-lived remote paths, base images, models, or datasets on the platform.
 

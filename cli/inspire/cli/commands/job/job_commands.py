@@ -768,7 +768,7 @@ def _resolve_web_job_id(
             f"Candidates: {candidate_names}"
         )
     hint_workspace = scrub_raw_ids(workspace or "all")
-    hint = f"inspire job list --workspace {hint_workspace} --name {scrub_raw_ids(job)}"
+    hint = f"inspire job list --workspace {hint_workspace} --keyword {scrub_raw_ids(job)}"
     raise WebJobResolutionError(
         f"No web job matching {scrub_raw_ids(job)!r} found. "
         f"Try `{hint}`."

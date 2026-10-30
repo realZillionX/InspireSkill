@@ -32,7 +32,7 @@ Always query live platform state before submitting workloads:
 3. Query `inspire resources availability --workspace <name>` to check both guaranteed quota balances and physical 8-GPU full-node capacity.
 4. Use `--group <keyword>` (case-insensitive substring match) to narrow resource queries to relevant Compute Groups, then copy the **full** Compute Group name into `--group` when creating a workload.
 
-**Single-workspace scope:** All `resources` subcommands, `<workload> quota`, and `serving configs` require a single `--workspace` and do not accept `all`, because quotas, capacity, reclaim rules, and usage are defined per Workspace. Only cross-workspace discovery commands (`<workload> list` and `account permissions`) accept `--workspace all`.
+**Single-workspace scope:** `resources availability`, `resources policy`, `resources usage`, `<workload> quota`, and `serving configs` require a single `--workspace` and do not accept `all`, because quotas, capacity, reclaim rules, and usage are defined per Workspace. `resources node-events` takes node names and has no `--workspace` option. Only cross-workspace discovery commands (`<workload> list` and `account permissions`) accept `--workspace all`.
 
 ### `resources availability`: Quota Balance vs. Full Nodes
 

@@ -30,7 +30,7 @@ Before submitting any workload:
 - **Working directory:** The CLI does not prepend `cd` to your launch command. Explicitly `cd /inspire/...` in `--command` if your script expects a specific directory.
 - **Shared memory (`--shm-size <GiB>`):** Configures per-instance `/dev/shm` (IPC memory for PyTorch DataLoader workers and NCCL) and cannot exceed the `mem` in `--quota gpu,cpu,mem`.
 - **Environment variables:** Passed via repeatable `-e KEY=VALUE` flags and injected by the platform (the CLI echoes only variable names, never values).
-- **Container retention:** Containers are released immediately upon completion by default. Set `--keep-after-success-hours` or `--keep-after-failure-hours` at creation time to hold the container in a retained state after exit so you can inspect it with `job shell`.
+- **Container retention:** Containers are released immediately upon completion by default. Set `--keep-after-success HOURS` or `--keep-after-failure HOURS` at creation time to hold the container in a retained state after exit so you can inspect it with `job shell`. These options apply to Jobs; HPC uses `--keep-after-finish HOURS`.
 - **Notifications & fault tolerance:** Status notifications (`--enable-notification`, sent to the user's bound Feishu account) and automatic fault-tolerance retries are off by default. Account-level defaults for `shm`, notifications, and fault tolerance can be set under `[job]` in the account `config.toml` or via environment variables; scheduling parameters (`workspace`, `project`, `group`, `quota`, `image`) must always be passed explicitly.
 - **Node placement:** Use repeatable `--exclude-node <name>` to avoid bad hosts, or `--specified-node <name>` to pin a job to specific nodes in the Compute Group (cannot overlap). `--specified-node` checks the Workspace's live `train_enable_specified_nodes` capability before submitting.
 - **Idle reclamation & priority:** Workspaces reclaim running Jobs whose GPU utilization stays below policy thresholds (`inspire resources policy --workspace <name>`). Check row-level priority restrictions in `job quota` (`Priority` column: `low` requires `--priority 1`; see [`resources.md`](resources.md#4-quotas-priorities--budgets)).
@@ -38,7 +38,7 @@ Before submitting any workload:
 ## 4. CPU HPC (`inspire hpc`)
 
 HPC has a two-layer resource model:
-1. **Node layer (`--quota`, `--nodes`):** Hardware allocated per node (CPUs, memory) and number of nodes in the dedicated Slurm cluster.
+1. **Node layer (`--quota`, `--instance-count`):** Hardware allocated per node (CPUs, memory) and number of nodes in the dedicated Slurm cluster.
 2. **Slurm layer (`--number-of-tasks`, `--cpus-per-task`, `--memory-per-cpu`):** How Slurm subdivides those nodes into tasks.
 
 ### Pre-Flight Validation & Resource Boundaries
@@ -51,7 +51,7 @@ HPC has a two-layer resource model:
 - **Memory is specified per CPU (`--memory-per-cpu`):** Never use the web console's "memory per node" field — its script generator still emits an empty `#SBATCH --mem-per-cpu=` line, causing every job to fail.
 - **Respect cgroup limits, not host `nproc` / `free`:** Inside the container, `nproc` and `free` may report the physical host (e.g., 64 cores), while actual limits are enforced by the Pod cgroup (`cpu.max` and `memory.max` equal to `--quota`). Always size worker pools and buffers from `SLURM_CPUS_PER_TASK` and the `--quota` memory rather than auto-detecting host cores, and leave headroom for `slurmd` and the Python interpreter to avoid sudden cgroup OOM `SIGKILL`s.
 - **Always launch work with `srun`:** The entrypoint (`-c`) is the Slurm script body (do not include `#!/bin/bash` or `#SBATCH` headers). If you omit `srun`, `sbatch` runs your command only on the first node, leaves all other nodes idle, and still reports `SUCCEEDED` with `Steps: 0/0`. Check `Steps` in `hpc status` (`1/1` vs `0/0`) to confirm Slurm steps actually ran.
-- **Image & retention:** The selected image must include a working Slurm runtime (the platform image catalog does not filter for Slurm support). After finishing, HPC jobs briefly enter `SUCCEEDED_RETAINING` or `FAILED_RETAINING`; wait ~1 minute for the job to reach a terminal state before running `hpc delete` (`hpc stop` does not clear the retaining state).
+- **Image & retention:** The selected image must include a working Slurm runtime (the platform image catalog does not filter for Slurm support). With default retention, HPC jobs briefly enter `SUCCEEDED_RETAINING` or `FAILED_RETAINING` after finishing; wait ~1 minute for the job to reach a terminal state before running `hpc delete` (`hpc stop` does not clear the retaining state). Set `--keep-after-finish HOURS` at creation time to retain the containers longer for inspection.
 
 ## 5. Ray (`inspire ray`)
 
@@ -111,7 +111,7 @@ Remove-Variable key
 
 To submit a sweep of `job`, `hpc`, `notebook`, `ray`, or `serving` workloads that vary by name, command, or arguments, use `<workload> batch <file.json|file.toml>` instead of shell loops:
 - Top-level `defaults` and `matrix` expand variants, while every expanded item must explicitly include `workspace`, `project`, `group`, `quota`, `image`, and workload-required fields (`profile` / `profiles` keys are rejected).
-- Batch items accept the full set of `create` options (datasets, `env` as a list or key-value table, retention hours, fault tolerance, runtime limits, notifications, read-only mounts).
+- Batch items accept the fields listed by each `<workload> batch --help`; supported fields vary by workload and can differ from `<workload> create`.
 - Always run `<workload> batch <file> --dry-run` first to validate the expanded items and dataset mounts before creating anything.
 - Within a single `job`, `hpc`, or `notebook` batch invocation, live quota priority menus, project catalogs, image catalogs, and successful `(workspace, dataset, version)` validations are fetched once per Workspace and reused across items in that run.
 
@@ -132,7 +132,7 @@ To submit a sweep of `job`, `hpc`, `notebook`, `ray`, or `serving` workloads tha
 
 - **Batch status & events:** `job status`, `hpc status`, and `job events` accept multiple workload names in a single command (fetched in chunks of 20). Unresolved names (typos, deleted jobs, or ambiguous names) are listed under `Unresolved:` with a non-zero exit code without aborting the resolved items.
 - **Cross-workspace search:** When you do not know which Workspace a Job is in, run `inspire job list --workspace all` (queries up to 8 Workspaces concurrently in round-robin pages).
-- **Waiting for completion:** Only wait on workloads in non-terminal states (`PENDING`, `QUEUING`, `RUNNING`). Stopped Jobs (`CANCELLED`) and HPC jobs cannot be restarted (`start` only exists on Notebook, Ray, and Serving). `job wait` and `job logs --follow` exit automatically when the Job reaches a terminal state; `events --follow` and `job list --watch` stream indefinitely until interrupted — do not use them as completion barriers.
+- **Waiting for completion:** Only wait on workloads in non-terminal states (`PENDING`, `QUEUING`, `RUNNING`). Stopped Jobs (`CANCELLED`) and HPC jobs cannot be restarted; `start` exists on Notebook, Ray, Serving, and TensorBoard. `job wait` and `job logs --follow` exit automatically when the Job reaches a terminal state; `events --follow` and `job list --watch` stream indefinitely until interrupted — do not use them as completion barriers.
 
 ## 9. TensorBoard (`inspire tensorboard`)
 
@@ -141,8 +141,8 @@ TensorBoard is a standalone platform resource (`inspire tensorboard create|list|
 - **`--job <name>` is optional metadata:** Associates the board with a training Job in the UI but does not infer `--summary-path`.
 - **Auto-stop:** Defaults to 24 hours (up to `--auto-stop-hours 72`). Stopped boards can be restarted with `tensorboard start` without re-entering paths. Deleting a board requires `tensorboard stop` first and never deletes event files on shared storage.
 - **Reading curves without a browser (`tags` & `scalars`):**
-  - `inspire tensorboard tags <name>` lists all runs and scalar tag names. (An empty tag list means either no event files exist yet or `--summary-path` is wrong.)
-  - `inspire tensorboard scalars <name>` returns start/end values, step ranges, and min/max values for each curve (sorted by `step`, not file order), plus the last `N` `(step, value)` points when `--points N` is passed.
+  - `inspire tensorboard tags <name> --workspace <workspace>` lists all runs and scalar tag names. (An empty tag list means either no event files exist yet or `--summary-path` is wrong.)
+  - `inspire tensorboard scalars <name> --workspace <workspace>` returns start/end values, step ranges, and min/max values for each curve (sorted by `step`, not file order), plus the last `N` `(step, value)` points when `--points N` is passed.
 
 ## 10. Common Failure Patterns
 
@@ -156,4 +156,4 @@ TensorBoard is a standalone platform resource (`inspire tensorboard create|list|
 | HPC `SUCCEEDED` with `Steps: 0/0` | Entrypoint omitted `srun`, so commands only ran on the first node → add explicit `srun` |
 | HPC stuck `RUNNING` with `Steps: -/N` | Slurm task CPU/memory request exceeds allocated nodes → `hpc stop` and resubmit with matching quota |
 | HPC log cuts off mid-run with no error | Hit Pod cgroup memory ceiling (`--quota` memory) or spawned too many workers from host `nproc` → size workers from `SLURM_CPUS_PER_TASK` |
-| Background wait command never returns | Target workload was already in a terminal state or using `events --follow` / `list --watch` → check `status` first and use `job wait` |
+| Background command never returns | Using `events --follow` / `list --watch`, which stream until interrupted → check `status` first and use `job wait` for Job completion |

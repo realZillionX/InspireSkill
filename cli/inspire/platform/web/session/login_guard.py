@@ -295,8 +295,8 @@ def _blocked_message(block: _LoginBlock, *, now: float) -> str:
     return (
         f"{opening}\n"
         "Corrected credentials are accepted immediately: run `inspire account check "
-        "--details` to see which account and base URL are active, and `inspire account "
-        "set --password` (or `inspire init`) to update them."
+        "--details` to see which account and base URL are active, and `inspire init` "
+        "to update them."
     )
 
 

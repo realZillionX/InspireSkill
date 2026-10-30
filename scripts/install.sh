@@ -465,9 +465,9 @@ cat <<EOF
   1) Configure accounts & proxy:
         inspire account add <name>
   2) Verify auth and resource visibility:
-        inspire config show --compact
+        inspire account check
         inspire init
-        inspire resources availability --workspace all --include-cpu
+        inspire resources availability --workspace <name> --include-cpu
   3) Check / apply upgrades anytime:
         inspire update --check     # report only
         inspire update             # CLI + SKILL in one shot

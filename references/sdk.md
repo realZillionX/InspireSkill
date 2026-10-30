@@ -320,7 +320,7 @@ Both clients expose 15 resource facades with 155 sync methods and 168 async meth
 | `jobs.stop(ref, *, workspace=None)` | `None` | `job stop` |
 | `jobs.wait(ref, *, workspace=None, timeout=3600, poll_interval=10, raise_on_failure=False)` | `Job` | `job wait` |
 
-Like `HPCJob`, `RayJob`, and `Serving`, `Job` exposes `.view` (the sanitized public projection matching `inspire job status --json`, also returned by `.to_dict()`) and `.raw` (the full platform payload). `instances()` on `jobs`, `hpc`, `ray`, and `servings` returns frozen `Instance` objects where `.label` is the human-readable instance label and `.handle` is the opaque namespaced pod identifier (hidden from `repr()`); both `exec(instance=...)` and `logs(instance=...)` accept either `.label` or `.handle`.
+Like `HPCJob`, `RayJob`, and `Serving`, `Job` exposes `.view` (the sanitized public projection matching `inspire --json job status`, also returned by `.to_dict()`) and `.raw` (the full platform payload). `instances()` on `jobs`, `hpc`, `ray`, and `servings` returns frozen `Instance` objects where `.label` is the human-readable instance label and `.handle` is the opaque namespaced pod identifier (hidden from `repr()`); both `exec(instance=...)` and `logs(instance=...)` accept either `.label` or `.handle`.
 
 ### notebooks
 
@@ -340,7 +340,7 @@ Like `HPCJob`, `RayJob`, and `Serving`, `Job` exposes `.view` (the sanitized pub
 | `notebooks.lifecycle(ref, *, limit=None, workspace=None)` | `tuple[NotebookRun, ...]` | `notebook lifecycle` |
 | `notebooks.list(workspace, *, status=None, keyword=None, limit=20, cursor=None)` | `Page[Notebook]` | `notebook list` |
 | `notebooks.metrics(ref, *, metric='core', window='1h', start=None, end=None, interval=None, group=None, workspace=None)` | `tuple[MetricGroup, ...]` | `notebook metrics` |
-| `notebooks.plan(spec)` | `NotebookPlan` | `notebook create --dry-run` |
+| `notebooks.plan(spec)` | `NotebookPlan` | SDK-only for single-create planning; use `notebook batch <file> --dry-run` for batch plans |
 | `notebooks.quotas(workspace, *, group=None, include_empty=False, limit=20, cursor=None)` | `Page[QuotaOption]` | `notebook quota` |
 | `notebooks.realtime_metrics(ref, *, workspace=None)` | `tuple[NotebookResourceSnapshot, ...]` | `notebook metrics --now` |
 | `notebooks.save_image(ref, *, name, version=None, description=None, visibility=None, flatten=False, workspace=None)` | `ImageSaveHandle` | `notebook save-image` |

@@ -42,7 +42,7 @@
         powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
     The Windows OpenSSH Client is required for `notebook ssh`, `notebook exec`,
-    `notebook scp` and `job logs --transport ssh`:
+    `notebook scp` and `job logs --source ssh`:
         Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0
 #>
 [CmdletBinding()]
@@ -163,9 +163,9 @@ Write-Host ''
 Write-Host '  1) Configure accounts & proxy:'
 Write-Host '        inspire account add <name>'
 Write-Host '  2) Verify auth and resource visibility:'
-Write-Host '        inspire config show --compact'
+Write-Host '        inspire account check'
 Write-Host '        inspire init'
-Write-Host '        inspire resources availability --workspace all --include-cpu'
+Write-Host '        inspire resources availability --workspace <name> --include-cpu'
 Write-Host '  3) Check / apply upgrades anytime:'
 Write-Host '        inspire update --check     # report only'
 Write-Host '        inspire update             # CLI + SKILL in one shot'

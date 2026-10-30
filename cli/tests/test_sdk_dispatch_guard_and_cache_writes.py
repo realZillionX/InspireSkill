@@ -272,7 +272,7 @@ def test_logs_single_instance_is_one_pod(client, monkeypatch):
 
 
 def test_cooldown_keeps_actionable_login_guard_message(client, refused, monkeypatch):
-    message = "Account alpha blocked until 12:00; run inspire account set --password."
+    message = "Account alpha blocked until 12:00; run inspire init."
     blocked = auth.AuthenticationError(message)
     blocked.retry_at = time.time() + 300
 

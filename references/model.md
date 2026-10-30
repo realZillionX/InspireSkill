@@ -23,7 +23,7 @@ Typical flow: stage model weights on project shared storage → register the dir
 
 | Goal | Command | What to Check |
 | --- | --- | --- |
-| List models in a Workspace | `model list` | Filter by name, project, tags, and version status |
+| List models in a Workspace | `model list` | Filter by Project (`--project`) or name keyword (`--keyword`) |
 | Check if a model is ready to deploy | `model status` / `model versions` | Storage path, version state, vLLM compatibility, and active consumers |
 | Find minimum hardware spec for a version | `model deploy-config` | Minimum node count, GPUs, CPUs, and memory required to load the weights |
 | Register a shared-storage directory | `model register` | Target Workspace, Project, and shared-storage path |

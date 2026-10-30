@@ -12,6 +12,16 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parents[1].parent / "scripts"
 
 
+@pytest.mark.parametrize("installer_name", ["install.sh", "install.ps1"])
+def test_installer_post_install_guidance_uses_current_commands(installer_name: str) -> None:
+    text = (SCRIPTS / installer_name).read_text(encoding="utf-8")
+
+    assert "inspire account check" in text
+    assert "inspire config show" not in text
+    assert "inspire resources availability --workspace <name> --include-cpu" in text
+    assert "inspire resources availability --workspace all" not in text
+
+
 def test_installer_uses_installed_inspire_for_browser_runtime_setup() -> None:
     installer = Path(__file__).resolve().parents[1].parent / "scripts" / "install.sh"
     text = installer.read_text(encoding="utf-8")
@@ -248,3 +258,5 @@ def test_powershell_installer_documents_the_openssh_prerequisite() -> None:
     text = (SCRIPTS / "install.ps1").read_text(encoding="utf-8")
 
     assert "OpenSSH.Client" in text
+    assert "job logs --source ssh" in text
+    assert "job logs --transport ssh" not in text

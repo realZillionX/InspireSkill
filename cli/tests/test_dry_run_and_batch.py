@@ -1064,6 +1064,8 @@ def test_batch_rejects_platform_ids_in_name_fields(
 
     assert result.exit_code != 0
     assert "project name" in result.output
+    assert "inspire project list" in result.output
+    assert "inspire project list --workspace" not in result.output
     assert raw_project_id not in result.output
     assert api.training_calls == []
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shlex
 from types import SimpleNamespace
 from typing import Any
 
@@ -15,6 +16,7 @@ import pytest
 from click.testing import CliRunner
 
 from inspire import config as config_module
+from inspire.cli.commands.image.image_commands import delete_image_cmd
 from inspire.cli.commands.notebook import notebook_create_flow as flow_module
 from inspire.cli.commands.notebook import notebook_lookup as notebook_lookup_module
 from inspire.cli.context import Context, EXIT_VALIDATION_ERROR
@@ -64,10 +66,12 @@ def _patch_config_and_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("workspace", ["Test Workspace", "Researcher's Workspace;$HOME"])
 def test_cancel_save_reports_the_cancelled_save(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, workspace: str
 ) -> None:
     _patch_config_and_session(monkeypatch, tmp_path)
+    monkeypatch.setattr(FakeWebSession, "all_workspace_names", {"ws-test-workspace": workspace})
     captured: dict[str, Any] = {}
 
     def fake_cancel(notebook_id, session=None):  # noqa: ANN001
@@ -78,7 +82,7 @@ def test_cancel_save_reports_the_cancelled_save(
 
     result = CliRunner().invoke(
         cli_main,
-        ["notebook", "cancel-save-image", "demo-notebook", "--workspace", "Test Workspace"],
+        ["notebook", "cancel-save-image", "demo-notebook", "--workspace", workspace],
     )
 
     assert result.exit_code == 0
@@ -87,6 +91,10 @@ def test_cancel_save_reports_the_cancelled_save(
     # The half-built image survives the cancel; the user has to be told.
     assert "FAILED" in result.output
     assert "notebook-abc" not in result.output
+    command = result.output[result.output.index("inspire image delete "):].strip()
+    args = shlex.split(command)
+    with delete_image_cmd.make_context("delete", args[3:]) as parsed:
+        assert parsed.params["workspace"] == workspace
 
 
 def test_cancel_save_json_distinguishes_nothing_to_cancel(

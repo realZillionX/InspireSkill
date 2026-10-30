@@ -347,14 +347,14 @@ Referer: `/jobs/distributedTraining` (`/cluster/nodeList` for `cluster.ListNodeE
 
 ### 8.7 `user` — Account & API Keys
 
-| Action | Request Keys | Response (`Result`) | CLI Consumer |
+| Action | Request Keys | Response (`Result`) | Consumer |
 | --- | --- | --- | --- |
 | `GetUserDetail` | `{}` | `{id, name, name_en, email, avatar_url, global_role, created_at, extra_info{}}` | Current-user filtering, `account check`, login bootstrap |
 | `GetPermissions` † | `{WorkspaceId}` | `{permissions[]}` | `account permissions` |
 | `GetRoutes` † | `{WorkspaceId}` | `{routes[{name, routes[{path, name, is_fair_workspace}]}]}` | Workspace enumeration (`WorkspaceId: "default"` during bootstrap) and `is_fair_workspace` detection |
 | `GetMyAPIList` | `{}` | `{items[{key_id, name, created_at, value}]}` (`value` stripped by wrapper) | `account api-key list` |
 | `GenerateAPIKey` | `{key_name}` | Verified by re-reading `GetMyAPIList` | `account api-key create` |
-| `GetAPIKeyPlaintext` | `{api_key_id}` | `{value}` (consumed only by explicit `export` / `run`) | `account api-key export`, `account api-key run` |
+| `GetAPIKeyPlaintext` | `{api_key_id}` | `{value}` | `account api-key export`, `account api-key run`, SDK `api_keys.plaintext` |
 | `DeleteAPIKey` | `{api_key_id}` | Verified by re-reading `GetMyAPIList` | `account api-key delete` |
 
 ---

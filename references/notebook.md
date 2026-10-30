@@ -103,7 +103,7 @@ inspire notebook proxy-url <name> --workspace <workspace> --port 7860
 
 ## 6. Base Environments and Saving Images
 
-To turn a running Notebook into a reusable image for Jobs, HPC, Ray, Serving, or future Notebooks, use `inspire notebook save-image <notebook-name> --workspace <notebook-workspace>`.
+To turn a running Notebook into a reusable image for Jobs, HPC, Ray, Serving, or future Notebooks, use `inspire notebook save-image <notebook-name> --workspace <notebook-workspace> --name <image-name>`.
 
 ### Pre-Save Cleanup Checklist
 

@@ -111,7 +111,7 @@ inspire uninstall               # 卸载 CLI 与已安装的 Skill 文档
 <details>
 <summary><b>📝 Notebook</b> —— 交互式开发、远程执行、文件传输与镜像固化</summary>
 
-支持命令：`create / batch / list / status / start / stop / delete / ssh / ssh-config / ssh-proxy / connection / exec / shell / scp / install-deps / proxy-url / path / quota / profile / metrics / events / lifecycle / save-image / cancel-save-image`。
+支持命令：`create / batch / list / status / start / stop / delete / ssh / ssh-config / ssh-proxy / connection / exec / shell / scp / install-deps / proxy-url / quota / metrics / events / lifecycle / save-image / cancel-save-image`。
 
 - **远程连接与文件传输**：非 `H100` / `H200` 节点的 Notebook 支持完整的 OpenSSH、`scp` 与 `ssh-config`（可直接接入 VS Code Remote SSH）；`H100` / `H200` 受限节点会自动切换为基于 `JupyterTerminal` 的 `exec` 和 `shell`，文件上传下载可通过同项目下支持 SSH 的 CPU Notebook 经 `/inspire/...` 共享盘中转。
 - **HTTP 服务代理**：容器内启动的 Web 服务（如 Gradio、FastAPI、推理服务）可通过 `notebook proxy-url <name> --port <port>` 获取外部访问地址。
@@ -122,7 +122,7 @@ inspire uninstall               # 卸载 CLI 与已安装的 Skill 文档
 <details>
 <summary><b>🏃 GPU 后台任务（Job）</b> —— 单卡、多卡与多节点分布式训练 / 批量推理</summary>
 
-支持命令：`inspire job create / batch / list / status / command / wait / stop / delete / events / instances / shell / logs / metrics / quota / profile`。
+支持命令：`inspire job create / batch / list / status / command / wait / stop / delete / events / instances / shell / logs / metrics / quota`。
 
 - 覆盖单卡后台任务、单机多卡与多机分布式训练（多节点任务按每节点 8 卡满节点规格提交）。批量实验可使用 `job batch <file>` 提交，支持 `--dry-run` 预览完整生效配置。
 - 支持 `--exclude-node` 排除故障节点、`--specified-node` 绑定指定节点（需目标 Workspace 开启对应能力）、`--enable-notification` 开启飞书状态通知，以及设置成功/失败后的容器保留时长以便事后用 `job shell` 进入容器排查。
@@ -133,10 +133,10 @@ inspire uninstall               # 卸载 CLI 与已安装的 Skill 文档
 <details>
 <summary><b>🚀 CPU 批处理（HPC）</b> —— 自动构建 Slurm 脚本并在提交前校验两层资源规格</summary>
 
-支持命令：`inspire hpc create / batch / list / status / stop / delete / events / instances / shell / logs / metrics / quota / profile`。
+支持命令：`inspire hpc create / batch / list / status / stop / delete / events / instances / shell / logs / metrics / quota`。
 
 - `hpc create -c <slurm-body>` 只需传入 Slurm 执行正文（使用显式 `srun` 启动程序），CLI 会自动封装 `#SBATCH` 头部参数。
-- **双层规格预检**：HPC 同时包含节点物理规格（`--quota gpu,cpu,mem` 与 `--nodes`）和 Slurm 任务划分（`--number-of-tasks`、`--cpus-per-task`、`--memory-per-cpu`）。平台后端与网页端均不校验两层是否匹配，配置越界会导致任务静默失败或 Slurm step 永久排队；CLI 会在提交前自动拦截冲突组合，并在省略单任务参数时按节点配额自动推导安全值。
+- **双层规格预检**：HPC 同时包含节点物理规格（`--quota gpu,cpu,mem` 与 `--instance-count`）和 Slurm 任务划分（`--number-of-tasks`、`--cpus-per-task`、`--memory-per-cpu`）。平台后端与网页端均不校验两层是否匹配，配置越界会导致任务静默失败或 Slurm step 永久排队；CLI 会在提交前自动拦截冲突组合，并在省略单任务参数时按节点配额自动推导安全值。
 - **执行确认**：`hpc status` 中的 `Steps` 字段（如 `1/1` vs `0/0`）直观反映 `srun` 步骤是否真正执行，避免把漏写 `srun` 的空跑任务误判为成功。
 
 </details>
@@ -144,7 +144,7 @@ inspire uninstall               # 卸载 CLI 与已安装的 Skill 文档
 <details>
 <summary><b>🧬 弹性计算（Ray）</b> —— Head + 可伸缩 Worker Group 集群管理</summary>
 
-支持命令：`inspire ray create / batch / list / status / start / stop / delete / events / instances / shell / logs / metrics / scaling / quota / profile`。
+支持命令：`inspire ray create / batch / list / status / start / stop / delete / events / instances / shell / logs / metrics / scaling / quota`。
 
 - 支持配置单个 Head 节点与多个可弹性伸缩的 Worker Group（指定 `min` / `max` 副本数）。
 - 停止后的 Ray 任务保留完整集群配置，可通过 `ray start` 直接拉起，并由 CLI 轮询确认状态真正离开 `STOPPED`。
@@ -155,7 +155,7 @@ inspire uninstall               # 卸载 CLI 与已安装的 Skill 文档
 <details>
 <summary><b>🛰 模型在线部署（Serving）</b> —— 服务部署、扩缩容、版本回滚与 API Key 管理</summary>
 
-支持命令：`inspire serving create / batch / list / status / api / start / stop / delete / scale / scale-history / versions / rollback / configs / events / instances / shell / logs / metrics / api-metrics / quota / profile`。
+支持命令：`inspire serving create / batch / list / status / api / start / stop / delete / scale / scale-history / versions / rollback / configs / events / instances / shell / logs / metrics / api-metrics / quota`。
 
 - **全生命周期管理**：配合 `model deploy-config` 确认模型权重的最小硬件规格后，通过 `serving create` 创建在线推理服务；支持 `serving scale` 调整副本数、`serving versions` 与 `serving rollback` 管理历史部署版本、`serving scale-history` 查看副本扩缩容时间线。
 - **双维度监控**：`serving metrics` 查看容器 GPU / CPU / 内存占用，`serving api-metrics` 查看请求 QPS、成功率、延迟与 Token 吞吐。
@@ -168,7 +168,7 @@ inspire uninstall               # 卸载 CLI 与已安装的 Skill 文档
 
 支持命令：`inspire tensorboard create / list / status / start / stop / delete / tags / scalars`。
 
-- TensorBoard 在平台中是独立的一等资源（固定 1 CPU / 2 GiB 规格，无需选择配额或镜像），只需指定 `--summary-path` 指向共享盘上的日志目录即可创建。
+- TensorBoard 在平台中是独立的一等资源（固定 1 CPU / 2 GiB 规格，无需选择配额或镜像）。创建时需指定 `--name`、`--workspace`、`--project`、`--group`，以及指向共享盘日志目录的 `--summary-path`。
 - **`tags` 与 `scalars` 直读曲线**：无需打开浏览器，`tensorboard tags` 即可列出所有 run 与指标名称，`tensorboard scalars` 直接返回各条曲线的起止值、最大最小值、step 范围以及最近 `N` 个采样点（`--points N`），让 Agent 能够直接读取并判断 loss 收敛与评测指标走势。
 
 </details>
