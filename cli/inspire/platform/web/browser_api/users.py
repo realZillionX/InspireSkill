@@ -1,7 +1,7 @@
 """Browser API wrapper for the per-workspace permission matrix.
 
 Backs `inspire account permissions`. The current user's identity comes from
-inspire.platform.web.browser_api.jobs.get_current_user and workspace routes from
+inspire.platform.web.browser_api.jobs.get_current_user and workspace discovery from
 inspire.platform.web.browser_api.workspaces; this module only covers `user.GetPermissions`.
 """
 

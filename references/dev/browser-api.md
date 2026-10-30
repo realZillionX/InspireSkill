@@ -107,10 +107,13 @@ The same `workspace_id` is placed in four different locations depending on the A
 
 | Placement | Actions |
 | --- | --- |
+| Unscoped, empty body | `user.ListAccessibleWorkspaces` |
 | Top-level `workspace_id` | `ListJobs` (`train`/`hpc`/`ray`), `notebook.ListNotebooks`, `inference_serving.ListServings`, `model-hub.ListModels`, `workspace.GetWorkspaceQuota`, `workspace.GetWorkspaceComputeResource`, `workspace.GetLogicComputeGroupResource`, `workspace.Get*NodeSpecs`, `dataset.ValidateDataset` |
 | Nested `filter.workspace_id` | `workspace.ListNodeDimension` / `ListTaskDimension` / `ListUserDimension`, `workspace.ListLogicComputeGroups`, `project.ListProjects`, `file.*` |
 | Top-level `workspace_id` + nested `filter_by` | `notebook.ListNotebooks`, `ray.ListJobs`, `inference_serving.ListServings`, `model-hub.ListModels` (filters go inside `filter_by`, while `workspace_id` stays at top level) |
-| PascalCase `WorkspaceId` | `user.GetPermissions`, `user.GetRoutes`, `notebook.GetScheduleConfig` |
+| PascalCase `WorkspaceId` | `user.GetPermissions`, `notebook.GetScheduleConfig` |
+
+Workspace discovery uses `user.ListAccessibleWorkspaces` with `{}` and reads `Result.items`, including `workspace_id`, `name`, and `is_fair_workspace`. It requires no current workspace. The console uses `GetRoutes` separately for navigation; its route groups do not establish the accessible-workspace catalog. Login and runtime share the parser in [`session/workspaces.py`](../../cli/inspire/platform/web/session/workspaces.py). Missing or malformed `items` raises an error so cache refresh cannot interpret a changed response shape as a complete empty catalog; `items: []` is a valid empty result.
 
 ### `cluster.*` vs. `workspace.*`
 
@@ -351,7 +354,7 @@ Referer: `/jobs/distributedTraining` (`/cluster/nodeList` for `cluster.ListNodeE
 | --- | --- | --- | --- |
 | `GetUserDetail` | `{}` | `{id, name, name_en, email, avatar_url, global_role, created_at, extra_info{}}` | Current-user filtering, `account check`, login bootstrap |
 | `GetPermissions` † | `{WorkspaceId}` | `{permissions[]}` | `account permissions` |
-| `GetRoutes` † | `{WorkspaceId}` | `{routes[{name, routes[{path, name, is_fair_workspace}]}]}` | Workspace enumeration (`WorkspaceId: "default"` during bootstrap) and `is_fair_workspace` detection |
+| `ListAccessibleWorkspaces` | `{}` | `{items[{workspace_id, name, workspace_type, is_fair_workspace, is_task_priority}]}` | Workspace enumeration, login bootstrap, and `is_fair_workspace` detection |
 | `GetMyAPIList` | `{}` | `{items[{key_id, name, created_at, value}]}` (`value` stripped by wrapper) | `account api-key list` |
 | `GenerateAPIKey` | `{key_name}` | Verified by re-reading `GetMyAPIList` | `account api-key create` |
 | `GetAPIKeyPlaintext` | `{api_key_id}` | `{value}` (consumed only by explicit `export` / `run`) | `account api-key export`, `account api-key run` |

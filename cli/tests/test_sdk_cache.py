@@ -69,8 +69,8 @@ def catalog(client, monkeypatch):
         sources.append(source)
         return images if source == "private" else []
 
-    monkeypatch.setattr(workspaces, "try_enumerate_workspaces", counted("GetRoutes", routes))
-    # In production GetRoutes populates this session capability, so no second Action is needed.
+    monkeypatch.setattr(workspaces, "try_enumerate_workspaces", counted("ListAccessibleWorkspaces", routes))
+    # In production ListAccessibleWorkspaces populates this session capability, so no second Action is needed.
     monkeypatch.setattr(workspaces, "is_fair_scheduling_workspace", lambda *a: False)
     monkeypatch.setattr(api, "list_projects", counted("ListProjects", projects))
     monkeypatch.setattr(api, "list_all_projects", counted("ListProjects", projects))
@@ -116,7 +116,7 @@ def catalog(client, monkeypatch):
 
 COLD_JOB = Counter(
     {
-        "GetRoutes": 1,
+        "ListAccessibleWorkspaces": 1,
         "ListProjects": 1,
         "ListLogicComputeGroups": 1,
         "ListImages": 4,
@@ -208,7 +208,7 @@ def test_reference_and_url_skip_image_catalogs(client, catalog, selector):
     )
     client.jobs.plan(replace(catalog.spec, image=image))
     assert catalog.calls["ListImages"] == 0
-    assert catalog.calls["GetRoutes"] == 1
+    assert catalog.calls["ListAccessibleWorkspaces"] == 1
     assert catalog.calls["GetImageById"] == (selector == "ref")
 
 
@@ -220,10 +220,10 @@ def test_cached_ambiguity_and_not_found_keep_semantics(client, catalog):
             client.images.get("Image:v1", workspace="Workspace")
         candidates.append([row.ref.key for row in error.value.candidates])
     assert candidates == [["i", "other"], ["i", "other"]]
-    assert catalog.calls == {"GetRoutes": 1, "ListImages": 4}
+    assert catalog.calls == {"ListAccessibleWorkspaces": 1, "ListImages": 4}
     with pytest.raises(ResourceNotFoundError):
         client.images.get("Missing:v1", workspace="Workspace")
-    assert catalog.calls == {"GetRoutes": 1, "ListImages": 4}
+    assert catalog.calls == {"ListAccessibleWorkspaces": 1, "ListImages": 4}
 
 
 def test_cache_is_per_client(client, catalog):
@@ -328,7 +328,7 @@ def test_notebook_plan_uses_catalog_cache(client, catalog):
     )
     first = client.notebooks.plan(spec)
     assert catalog.calls == {
-        "GetRoutes": 1,
+        "ListAccessibleWorkspaces": 1,
         "ListProjects": 1,
         "ListLogicComputeGroups": 1,
         "ListImages": 1,
@@ -351,7 +351,7 @@ def test_current_user_cached_but_not_notebook_pages_or_details(client, catalog, 
         client.notebooks.get(ref)
         client.account_info.current()
     assert catalog.calls == {
-        "GetRoutes": 1,
+        "ListAccessibleWorkspaces": 1,
         "GetCurrentUser": 1,
         "ListNotebooks": 2,
         "GetNotebook": 2,
@@ -364,7 +364,7 @@ def test_job_pages_are_not_cached(client, catalog, monkeypatch):
     monkeypatch.setattr(jobs, "list_jobs", catalog.counted("ListJobs", ([], 0)))
     for _ in range(2):
         client.jobs.list("Workspace")
-    assert catalog.calls == {"GetRoutes": 1, "ListJobs": 2}
+    assert catalog.calls == {"ListAccessibleWorkspaces": 1, "ListJobs": 2}
 
 
 def test_session_renewal_keeps_catalog_snapshots(client, catalog):
@@ -434,7 +434,7 @@ def test_compute_job_plans_share_catalogs(client, catalog, kind):
     facade = getattr(client, kind)
     first = facade.plan(spec)
     assert catalog.calls == {
-        "GetRoutes": 1,
+        "ListAccessibleWorkspaces": 1,
         "ListProjects": 1,
         "ListLogicComputeGroups": 1,
         "GetLogicComputeGroupResourceSpecPrices": 1,
@@ -447,7 +447,7 @@ def test_compute_job_plans_share_catalogs(client, catalog, kind):
 
 def test_image_get_warm_cache_has_no_requests(client, catalog):
     client.images.get("Image:v1", workspace="Workspace")
-    assert catalog.calls == {"GetRoutes": 1, "ListImages": 4}
+    assert catalog.calls == {"ListAccessibleWorkspaces": 1, "ListImages": 4}
     catalog.calls.clear()
     client.images.get("Image:v1", workspace="Workspace")
     assert catalog.calls == {}

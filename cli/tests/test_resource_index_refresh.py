@@ -886,6 +886,40 @@ def test_workspace_failure_preserves_last_successful_snapshot(
     ] == ["workspace-old"]
 
 
+@pytest.mark.parametrize("payload, removes_workspace", [
+    ({"Result": {"items": []}}, True),
+    ({"Result": {"routes": [{"name": "jobs"}]}}, False),
+    ({"Result": {"items": None}}, False),
+    ({"Result": {"items": [{"name": "Incomplete"}]}}, False),
+    ({"ResponseMetadata": {"Error": {"Code": "AccessForbidden"}}}, False),
+])
+def test_workspace_discovery_controls_cache_pruning(
+    tmp_path, monkeypatch, payload, removes_workspace,
+):
+    from inspire.platform.web.browser_api import workspaces
+
+    workspace_id = "ws-11111111-1111-1111-1111-111111111111"
+    session = WebSession(
+        storage_state={}, created_at=1, base_url="https://inspire.example",
+        user_detail={"id": "user-one"},
+    )
+    index = ResourceIndex(tmp_path / "index.sqlite3")
+    workspace_scope = _scope("workspace")
+    job_scope = _scope("job", workspace_id)
+    index.reconcile(workspace_scope, [ResourceIdentity(resource_id=workspace_id, name="Training")])
+    index.reconcile(job_scope, [ResourceIdentity(resource_id="job-one", name="Experiment")])
+    monkeypatch.setattr(workspaces, "_get_base_url", lambda: session.base_url)
+    monkeypatch.setattr(workspaces, "_request_json", lambda *a, **kw: payload)
+
+    summary = refresh_resource_index(
+        session=session, index=index, resource_types=("workspace",), force=True,
+    )
+
+    assert summary.error_count == (0 if removes_workspace else 1)
+    assert bool(index.lookup(workspace_scope, "Training", fresh_only=False)) is not removes_workspace
+    assert bool(index.lookup(job_scope, "Experiment", fresh_only=False)) is not removes_workspace
+
+
 def test_workspace_failure_is_preserved_for_workspace_bound_refresh(tmp_path) -> None:
     index = ResourceIndex(tmp_path / "index.sqlite3")
 

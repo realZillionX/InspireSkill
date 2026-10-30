@@ -261,7 +261,7 @@ class Service:
             if ws.ref.key in flags:
                 return flags[ws.ref.key]
             # The browser API also keeps flags on the session, without a TTL.
-            # Only reuse GetRoutes data from this operation; otherwise refresh it.
+            # Only reuse ListAccessibleWorkspaces data from this operation; otherwise refresh it.
             session = self.session
             session_flags = getattr(session, "all_workspace_fair_scheduling", None)
             if session_flags is not None:
@@ -397,7 +397,7 @@ class Service:
 
 
 class Workspaces(Service):
-    def _routes(self) -> list[dict[str, Any]]:
+    def _entries(self) -> list[dict[str, Any]]:
         from inspire.platform.web.browser_api.workspaces import try_enumerate_workspaces
 
         rows = self._catalog(
@@ -416,7 +416,7 @@ class Workspaces(Service):
         return rows
 
     def _all(self):
-        rows = self._routes()
+        rows = self._entries()
         return [
             Resource(x["name"], self._make_ref(WorkspaceRef, x["name"], x["id"], x["id"]))
             for x in rows

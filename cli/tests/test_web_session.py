@@ -28,6 +28,10 @@ CAS_RSA_MODULUS = (
     "9153bdb7c8c2e968df97a5e7e01cc410f92c4c2c2fba529b3ee988ebc1fca99ff"
     "5119e036d732c368acf8beba01aa2fdafa45b21e4de4928d0d403"
 )
+WORKSPACE_ID = "ws-11111111-1111-1111-1111-111111111111"
+WORKSPACE_ITEMS = [
+    {"workspace_id": WORKSPACE_ID, "name": "Training", "is_fair_workspace": True}
+]
 
 
 class DummyResponse:
@@ -168,92 +172,6 @@ def test_browser_launch_runtime_error_detection() -> None:
         )
     )
     assert not ws_auth._is_browser_launch_runtime_error(RuntimeError("Timeout 60000ms exceeded"))
-
-
-def test_workspace_routes_from_payload_extracts_workspace_list() -> None:
-    payload = {
-        "data": {
-            "routes": [
-                {"name": "operations", "routes": [{"path": "not-a-workspace"}]},
-                {
-                    "name": "userWorkspaceList",
-                    "routes": [
-                        {"name": "CPU资源空间", "path": "ws-11111111-1111-1111-1111-111111111111"},
-                        {"name": "invalid", "path": "default"},
-                        {
-                            "name": "分布式训练空间",
-                            "path": "ws-22222222-2222-2222-2222-222222222222",
-                            "is_fair_workspace": True,
-                        },
-                    ],
-                },
-            ]
-        }
-    }
-
-    ids, names, fair_scheduling = ws_auth._workspace_routes_from_payload(payload)
-
-    assert ids == [
-        "ws-11111111-1111-1111-1111-111111111111",
-        "ws-22222222-2222-2222-2222-222222222222",
-    ]
-    assert names == {
-        "ws-11111111-1111-1111-1111-111111111111": "CPU资源空间",
-        "ws-22222222-2222-2222-2222-222222222222": "分布式训练空间",
-    }
-    assert fair_scheduling == {
-        "ws-11111111-1111-1111-1111-111111111111": False,
-        "ws-22222222-2222-2222-2222-222222222222": True,
-    }
-
-
-def test_workspace_routes_from_payload_reads_the_v2_envelope() -> None:
-    """Login discovery is `user.GetRoutes`, so the routes arrive under `Result`."""
-    payload = {
-        "ResponseMetadata": {"Action": "GetRoutes"},
-        "Result": {
-            "routes": [
-                {
-                    "name": "userWorkspaceList",
-                    "routes": [
-                        {
-                            "name": "CPU资源空间",
-                            "path": "ws-11111111-1111-1111-1111-111111111111",
-                            "is_fair_workspace": True,
-                        }
-                    ],
-                }
-            ]
-        },
-    }
-
-    ids, names, fair_scheduling = ws_auth._workspace_routes_from_payload(payload)
-
-    assert ids == ["ws-11111111-1111-1111-1111-111111111111"]
-    assert names == {"ws-11111111-1111-1111-1111-111111111111": "CPU资源空间"}
-    assert fair_scheduling == {"ws-11111111-1111-1111-1111-111111111111": True}
-
-
-def test_workspace_routes_from_payload_raises_on_a_v2_error_envelope() -> None:
-    """A refused request must not read as "this account has no workspaces"."""
-    payload = {
-        "ResponseMetadata": {
-            "Error": {"Code": "InvalidParameter", "Message": "WorkspaceId is required"}
-        }
-    }
-
-    with pytest.raises(ValueError, match="WorkspaceId is required"):
-        ws_auth._workspace_routes_from_payload(payload)
-
-
-def test_bootstrap_calls_are_v2_actions() -> None:
-    """The two requests that run before a session exists have no v1 form left."""
-    assert ws_auth.USER_DETAIL_PATH == "/api/v2/user?Action=GetUserDetail"
-    assert ws_auth.USER_ROUTES_PATH == "/api/v2/user?Action=GetRoutes"
-    # The literal `default` is the placeholder for "no workspace known yet"; the
-    # gateway accepts it and answers the same rows a real id does. An empty
-    # string or a missing key is rejected with `WorkspaceId is required`.
-    assert ws_auth.BOOTSTRAP_ROUTES_BODY == {"WorkspaceId": "default"}
 
 
 def test_web_session_round_trip_preserves_workspace_capabilities() -> None:
@@ -560,16 +478,14 @@ def test_explicit_cas_failure_is_not_hidden_by_playwright_fallback(
 
 
 class _FakePlaywrightLogin:
-    """The browser path with no browser: a page that never authenticates.
+    """Browser I/O for failed authentication or successful catalog discovery."""
 
-    *form_found* is the only knob that matters. With it, the password was typed
-    and submitted before the wait timed out; without it, the form was never
-    there and nothing left the machine — and those two have to end differently.
-    """
-
-    def __init__(self, *, form_found: bool, page_html: str = "") -> None:
+    def __init__(
+        self, *, form_found: bool, page_html: str = "", workspace_payload: dict | None = None,
+    ) -> None:
         self.form_found = form_found
         self.page_html = page_html
+        self.workspace_payload = workspace_payload
         self.fills = 0
         self.submissions = 0
         self.closed = False
@@ -615,11 +531,29 @@ class _FakePlaywrightLogin:
             def close(self) -> None:
                 pass
 
+        class Request:
+            def post(self, url, **kwargs):
+                from types import SimpleNamespace
+
+                assert kwargs["data"] == {}
+                if url.endswith("Action=GetUserDetail"):
+                    payload = {"Result": {"id": "user-one"}}
+                else:
+                    assert url.endswith("Action=ListAccessibleWorkspaces")
+                    payload = outer.workspace_payload
+                return SimpleNamespace(status=200, json=lambda: payload)
+
         class Context:
-            request = object()
+            request = Request()
 
             def new_page(self) -> Page:
                 return Page()
+
+            def cookies(self):
+                return [{"name": "inspire-session", "value": "authenticated"}]
+
+            def storage_state(self):
+                return {"cookies": self.cookies(), "origins": []}
 
         class Browser:
             def new_context(self, **_kwargs) -> Context:
@@ -653,7 +587,8 @@ class _FakePlaywrightLogin:
             reads["n"] += 1
             return reads["n"] * 1000.0
 
-        monkeypatch.setattr(ws_auth.time, "time", _clock)
+        if outer.workspace_payload is None:
+            monkeypatch.setattr(ws_auth.time, "time", _clock)
         monkeypatch.setattr(
             ws_auth, "resolve_playwright_proxy_config", lambda **_kwargs: ({}, "none")
         )
@@ -663,6 +598,31 @@ class _FakePlaywrightLogin:
             lambda **_kwargs: {"playwright": {"route": "direct"}},
         )
         monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: PlaywrightContext())
+
+
+@pytest.mark.parametrize(
+    "payload, expected_ids",
+    [
+        ({"Result": {"items": WORKSPACE_ITEMS}}, [WORKSPACE_ID]),
+        ({"Result": {"items": []}}, []),
+        ({"Result": {"routes": []}}, None),
+    ],
+)
+def test_browser_login_discovers_workspaces(monkeypatch, payload, expected_ids):
+    browser = _FakePlaywrightLogin(form_found=True, workspace_payload=payload)
+    browser.install(monkeypatch)
+
+    session = ws_auth._login_with_browser(
+        "user", "password", base_url="https://example.test", headless=True, account=None,
+    )
+
+    assert browser.submissions == 1
+    assert session.user_detail == {"id": "user-one"}
+    assert session.all_workspace_ids == expected_ids
+    assert session.workspace_id == (WORKSPACE_ID if expected_ids else ws.DEFAULT_WORKSPACE_ID)
+    if expected_ids:
+        assert session.all_workspace_names == {WORKSPACE_ID: "Training"}
+        assert session.all_workspace_fair_scheduling == {WORKSPACE_ID: True}
 
 
 def test_playwright_failure_after_submission_is_an_authentication_error(
@@ -750,8 +710,10 @@ class _RenewalHTTP(requests.Session):
         user_response: _RenewalResponse,
         *,
         issue_platform_cookie: bool = True,
+        workspace_response: _RenewalResponse | None = None,
     ) -> None:
         super().__init__()
+        self.workspace_response = workspace_response or _RenewalResponse({"Result": {"items": []}})
         self.user_response = user_response
         self.issue_platform_cookie = issue_platform_cookie
         self.posts: list[str] = []
@@ -774,7 +736,9 @@ class _RenewalHTTP(requests.Session):
         assert kwargs["allow_redirects"] is False
         if url.endswith("Action=GetUserDetail"):
             return self.user_response
-        return _RenewalResponse({"Result": {"routes": []}})
+        assert url.endswith("Action=ListAccessibleWorkspaces")
+        assert kwargs["json"] == {}
+        return self.workspace_response
 
 
 def _expired_session_for_renewal(*, user_id: str | None = "user-one") -> WebSession:
@@ -840,8 +804,51 @@ def test_expired_qizhi_session_renews_through_sso_without_credentials(
     assert "CASTGC" in http.seeded_cookie_names
     assert http.posts == [
         "https://qz.sii.edu.cn/api/v2/user?Action=GetUserDetail",
-        "https://qz.sii.edu.cn/api/v2/user?Action=GetRoutes",
+        "https://qz.sii.edu.cn/api/v2/user?Action=ListAccessibleWorkspaces",
     ]
+
+
+@pytest.mark.parametrize(
+    "workspace_response, expected_ids",
+    [
+        (_RenewalResponse({"Result": {"items": WORKSPACE_ITEMS}}), [WORKSPACE_ID]),
+        (_RenewalResponse({"Result": {"items": []}}), []),
+        (_RenewalResponse({"Result": {"routes": []}}), ["ws-old"]),
+        (_RenewalResponse(status_code=403), ["ws-old"]),
+    ],
+)
+def test_sso_renewal_replaces_only_successful_workspace_catalogs(
+    monkeypatch, tmp_path, workspace_response, expected_ids,
+):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    expired = _expired_session_for_renewal()
+    expired.all_workspace_ids = ["ws-old"]
+    expired.all_workspace_names = {"ws-old": "Old"}
+    expired.all_workspace_fair_scheduling = {"ws-old": False}
+    http = _RenewalHTTP(
+        _RenewalResponse({"Result": {"id": "user-one"}}),
+        workspace_response=workspace_response,
+    )
+    monkeypatch.setattr(requests, "Session", lambda: http)
+    monkeypatch.setattr(ws_proxy, "resolve_requests_proxy_config", lambda account=None: ({}, "none"))
+
+    renewed = ws_auth.renew_web_session_without_credentials(expired)
+
+    assert renewed is not None
+    assert renewed.all_workspace_ids == expected_ids
+    assert renewed.workspace_id == (expected_ids[0] if expected_ids else ws.DEFAULT_WORKSPACE_ID)
+    if expected_ids == [WORKSPACE_ID]:
+        assert renewed.all_workspace_names == {WORKSPACE_ID: "Training"}
+        assert renewed.all_workspace_fair_scheduling == {WORKSPACE_ID: True}
+    elif not expected_ids:
+        assert renewed.all_workspace_names == {}
+        assert renewed.all_workspace_fair_scheduling == {}
+    else:
+        assert renewed.all_workspace_names == expired.all_workspace_names
+        assert renewed.all_workspace_fair_scheduling == expired.all_workspace_fair_scheduling
+    persisted = WebSession.load(account="alice")
+    assert persisted is not None
+    assert persisted.to_dict() == renewed.to_dict()
 
 
 @pytest.mark.parametrize(
@@ -1460,7 +1467,7 @@ def test_a_lost_response_after_submission_is_an_authentication_failure(
     assert http.submissions == 1
 
 
-@pytest.mark.parametrize("failure", ["cache", "routes", "user_detail"])
+@pytest.mark.parametrize("failure", ["none", "cache", "workspaces", "user_detail"])
 def test_optional_failure_does_not_discard_an_accepted_login(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -1496,12 +1503,13 @@ def test_optional_failure_does_not_discard_an_accepted_login(
         def get(self, url, **_kwargs):  # noqa: ANN001
             return Response(200)
 
-        def post(self, url, **_kwargs):  # noqa: ANN001
+        def post(self, url, **kwargs):  # noqa: ANN001
             post_urls.append(url)
-            if url.endswith("Action=GetRoutes"):
-                if failure == "routes":
-                    raise requests.ConnectionError("routes unavailable")
-                return Response(200)
+            if url.endswith("Action=ListAccessibleWorkspaces"):
+                assert kwargs["json"] == {}
+                if failure == "workspaces":
+                    raise requests.ConnectionError("workspace discovery unavailable")
+                return Response(200, {"Result": {"items": WORKSPACE_ITEMS}})
             return Response(200, {"Result": {"id": "user-one"}})
 
     monkeypatch.setattr(requests, "Session", lambda: HTTP())
@@ -1525,20 +1533,22 @@ def test_optional_failure_does_not_discard_an_accepted_login(
     )
 
     assert session.login_username == "user"
-    assert len(post_urls) == 3  # One credential submission, user detail, and routes.
+    assert len(post_urls) == 3  # One credential submission, user detail, and workspaces.
+    if failure != "workspaces":
+        assert session.all_workspace_ids == [WORKSPACE_ID]
+        assert session.all_workspace_names == {WORKSPACE_ID: "Training"}
+        assert session.all_workspace_fair_scheduling == {WORKSPACE_ID: True}
     assert sum("/cas/login" in url for url in post_urls) == 1
     if failure == "cache":
         assert any("session cache could not be written" in r.message for r in caplog.records)
-    elif failure == "routes":
+    elif failure == "workspaces":
         assert session.user_detail == {"id": "user-one"}
         warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
         assert len(warnings) == 1
-        assert "Workspace discovery failed during login" in warnings[0].message
-        assert "workspace names may be incomplete" in warnings[0].message
-        assert "Re-login" in warnings[0].message
+        assert session.all_workspace_ids is None
         assert warnings[0].exc_info is None
         assert any(
-            record.message == "Workspace route discovery failed" and record.exc_info
+            record.levelno == logging.DEBUG and record.exc_info
             for record in caplog.records
         )
     elif failure == "user_detail":

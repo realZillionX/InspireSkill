@@ -25,6 +25,7 @@ from inspire.config import DEFAULT_BASE_URL, Config
 from .envelope import _v2_result
 from .login_guard import guarded_credential_submission
 from .models import AuthenticationError, DEFAULT_WORKSPACE_ID, WebSession
+from .workspaces import ACCESSIBLE_WORKSPACES_PATH, parse_workspace_catalog
 from .browser_launch import (
     chromium_launch_kwargs,
     is_playwright_browser_runtime_error,
@@ -497,64 +498,7 @@ def _login_not_complete_message(
     return "\n".join(lines)
 
 
-_WORKSPACE_ID_PATTERN = re.compile(
-    r"^ws-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
-
-
-# The two Actions a session needs before it has a session. Both are ordinary
-# `/api/v2` Actions that ask for nothing but the CAS cookie -- which is exactly
-# what the login flow is holding at this point -- so "we are still bootstrapping"
-# was never a reason to keep a v1 path alive.
-#
-# `GetRoutes` takes the literal `default` for the same reason the v1 path spelled
-# it that way: this is the request that *discovers* the workspaces, so there is
-# no real id to send yet. The gateway accepts it and answers the full
-# `userWorkspaceList`; a real workspace id answers byte-for-byte the same.
 USER_DETAIL_PATH = "/api/v2/user?Action=GetUserDetail"
-USER_ROUTES_PATH = "/api/v2/user?Action=GetRoutes"
-BOOTSTRAP_ROUTES_BODY = {"WorkspaceId": "default"}
-
-
-def _workspace_routes_from_payload(
-    payload: dict[str, Any],
-) -> tuple[list[str], dict[str, str], dict[str, bool]]:
-    workspace_ids: list[str] = []
-    workspace_names: dict[str, str] = {}
-    fair_scheduling: dict[str, bool] = {}
-    for route_group in (_v2_result(payload) or {}).get("routes") or []:
-        if not isinstance(route_group, dict):
-            continue
-        if route_group.get("name") != "userWorkspaceList":
-            continue
-        for entry in route_group.get("routes") or []:
-            if not isinstance(entry, dict):
-                continue
-            ws_id = str(entry.get("path") or "").strip()
-            ws_name = str(entry.get("name") or "").strip()
-            if ws_id and _WORKSPACE_ID_PATTERN.match(ws_id) and ws_id != DEFAULT_WORKSPACE_ID:
-                if ws_id not in workspace_names:
-                    workspace_ids.append(ws_id)
-                    workspace_names[ws_id] = ws_name
-                fair_scheduling[ws_id] = entry.get("is_fair_workspace") is True
-    return workspace_ids, workspace_names, fair_scheduling
-
-
-def _merge_workspace_routes(
-    current_ids: list[str],
-    current_names: dict[str, str],
-    current_fair_scheduling: dict[str, bool],
-    new_ids: list[str],
-    new_names: dict[str, str],
-    new_fair_scheduling: dict[str, bool],
-) -> None:
-    for ws_id in new_ids:
-        if ws_id not in current_names:
-            current_ids.append(ws_id)
-        if new_names.get(ws_id):
-            current_names[ws_id] = new_names[ws_id]
-        if ws_id in new_fair_scheduling:
-            current_fair_scheduling[ws_id] = new_fair_scheduling[ws_id]
 
 
 def _cas_rsa_chunk_size(modulus_hex: str) -> int:
@@ -880,37 +824,32 @@ def renew_web_session_without_credentials(session: WebSession) -> Program[WebSes
                 "were submitted and the cached account session was not replaced."
             )
 
-        all_workspace_ids: list[str] = []
-        all_workspace_names: dict[str, str] = {}
-        all_workspace_fair_scheduling: dict[str, bool] = {}
+        workspace_id = session.workspace_id or DEFAULT_WORKSPACE_ID
+        all_workspace_ids = session.all_workspace_ids
+        all_workspace_names = session.all_workspace_names
+        all_workspace_fair_scheduling = session.all_workspace_fair_scheduling
         try:
-            routes_resp = (yield http_call(http.post,
-                f"{base_url}{USER_ROUTES_PATH}",
+            workspaces_resp = (yield http_call(http.post,
+                f"{base_url}{ACCESSIBLE_WORKSPACES_PATH}",
                 headers=api_headers,
-                json=BOOTSTRAP_ROUTES_BODY,
+                json={},
                 timeout=_request_timeout(15),
                 allow_redirects=False,
             ))
-            if routes_resp.status_code == 200:
-                route_ids, route_names, route_fair_scheduling = (
-                    _workspace_routes_from_payload(routes_resp.json())
-                )
-                _merge_workspace_routes(
-                    all_workspace_ids,
-                    all_workspace_names,
-                    all_workspace_fair_scheduling,
-                    route_ids,
-                    route_names,
-                    route_fair_scheduling,
-                )
+            if workspaces_resp.status_code != 200:
+                raise ValueError(f"Workspace discovery returned HTTP {workspaces_resp.status_code}.")
+            all_workspace_ids, all_workspace_names, all_workspace_fair_scheduling = (
+                parse_workspace_catalog(workspaces_resp.json())
+            )
+            workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
         except Exception:
             logger.warning(
-                "Workspace discovery failed during login; workspace names may be incomplete "
-                "until the session is refreshed. Re-login to retry workspace discovery."
+                "Workspace discovery failed during login; "
+                "retry with `inspire account context`."
             )
-            logger.debug("Workspace route discovery failed", exc_info=True)
+            logger.debug("Workspace discovery failed", exc_info=True)
 
-        # Optional route discovery must not hide an exhausted operation budget.
+        # Optional workspace discovery must not hide an exhausted operation budget.
         _request_timeout(15)
         storage_cookies = [_cookie_to_storage_entry(cookie) for cookie in http.cookies]
         cookie_dict = {cookie.name: cookie.value for cookie in http.cookies}
@@ -927,19 +866,13 @@ def renew_web_session_without_credentials(session: WebSession) -> Program[WebSes
         renewed = WebSession(
             storage_state=storage_state,
             cookies=cookie_dict,
-            workspace_id=(
-                all_workspace_ids[0]
-                if all_workspace_ids
-                else session.workspace_id or DEFAULT_WORKSPACE_ID
-            ),
+            workspace_id=workspace_id,
             login_username=username or session.login_username,
             base_url=base_url,
             user_detail=detail,
-            all_workspace_ids=all_workspace_ids or session.all_workspace_ids,
-            all_workspace_names=all_workspace_names or session.all_workspace_names,
-            all_workspace_fair_scheduling=(
-                all_workspace_fair_scheduling or session.all_workspace_fair_scheduling
-            ),
+            all_workspace_ids=all_workspace_ids,
+            all_workspace_names=all_workspace_names,
+            all_workspace_fair_scheduling=all_workspace_fair_scheduling,
             account=account,
             created_at=time.time(),
         )
@@ -1101,34 +1034,27 @@ def _login_with_cas_requests(
     if detail:
         user_detail = detail
 
-    all_workspace_ids: list[str] = []
-    all_workspace_names: dict[str, str] = {}
-    all_workspace_fair_scheduling: dict[str, bool] = {}
+    all_workspace_ids: list[str] | None = None
+    all_workspace_names: dict[str, str] | None = None
+    all_workspace_fair_scheduling: dict[str, bool] | None = None
     try:
-        routes_resp = (yield http_call(http.post,
-            f"{base_url.rstrip('/')}{USER_ROUTES_PATH}",
+        workspaces_resp = (yield http_call(http.post,
+            f"{base_url.rstrip('/')}{ACCESSIBLE_WORKSPACES_PATH}",
             headers=api_headers,
-            json=BOOTSTRAP_ROUTES_BODY,
+            json={},
             timeout=_request_timeout(15),
         ))
-        if routes_resp.status_code == 200:
-            route_ids, route_names, route_fair_scheduling = _workspace_routes_from_payload(
-                routes_resp.json()
-            )
-            _merge_workspace_routes(
-                all_workspace_ids,
-                all_workspace_names,
-                all_workspace_fair_scheduling,
-                route_ids,
-                route_names,
-                route_fair_scheduling,
-            )
+        if workspaces_resp.status_code != 200:
+            raise ValueError(f"Workspace discovery returned HTTP {workspaces_resp.status_code}.")
+        all_workspace_ids, all_workspace_names, all_workspace_fair_scheduling = (
+            parse_workspace_catalog(workspaces_resp.json())
+        )
     except Exception:
         logger.warning(
-            "Workspace discovery failed during login; workspace names may be incomplete "
-            "until the session is refreshed. Re-login to retry workspace discovery."
+            "Workspace discovery failed during login; "
+            "retry with `inspire account context`."
         )
-        logger.debug("Workspace route discovery failed", exc_info=True)
+        logger.debug("Workspace discovery failed", exc_info=True)
 
     _request_timeout(15)
     storage_state = {
@@ -1144,9 +1070,9 @@ def _login_with_cas_requests(
         login_username=username,
         base_url=base_url,
         user_detail=user_detail,
-        all_workspace_ids=all_workspace_ids or None,
-        all_workspace_names=all_workspace_names or None,
-        all_workspace_fair_scheduling=all_workspace_fair_scheduling or None,
+        all_workspace_ids=all_workspace_ids,
+        all_workspace_names=all_workspace_names,
+        all_workspace_fair_scheduling=all_workspace_fair_scheduling,
         created_at=time.time(),
     )
     _persist(session, account=account)
@@ -1523,37 +1449,27 @@ def _login_with_browser(
             )
             user_detail = None
 
-        # Discover all workspace IDs via `user.GetRoutes`. The response contains
-        # a "userWorkspaceList" route with all workspaces the user can access,
-        # each with name (display name) and path (ws-... ID).
-        all_workspace_ids: list[str] = []
-        all_workspace_names: dict[str, str] = {}
-        all_workspace_fair_scheduling: dict[str, bool] = {}
+        all_workspace_ids: list[str] | None = None
+        all_workspace_names: dict[str, str] | None = None
+        all_workspace_fair_scheduling: dict[str, bool] | None = None
         try:
-            routes_resp = perform_sync(call(context.request.post,
-                f"{base_url}{USER_ROUTES_PATH}",
+            workspaces_resp = perform_sync(call(context.request.post,
+                f"{base_url}{ACCESSIBLE_WORKSPACES_PATH}",
                 headers=request_headers,
-                data=BOOTSTRAP_ROUTES_BODY,
+                data={},
                 timeout=15000,
             ))
-            if routes_resp.status == 200:
-                route_ids, route_names, route_fair_scheduling = _workspace_routes_from_payload(
-                    perform_sync(call(routes_resp.json))
-                )
-                _merge_workspace_routes(
-                    all_workspace_ids,
-                    all_workspace_names,
-                    all_workspace_fair_scheduling,
-                    route_ids,
-                    route_names,
-                    route_fair_scheduling,
-                )
+            if workspaces_resp.status != 200:
+                raise ValueError(f"Workspace discovery returned HTTP {workspaces_resp.status}.")
+            all_workspace_ids, all_workspace_names, all_workspace_fair_scheduling = (
+                parse_workspace_catalog(perform_sync(call(workspaces_resp.json)))
+            )
         except Exception:
             logger.warning(
-                "Workspace discovery failed during login; workspace names may be incomplete "
-                "until the session is refreshed. Re-login to retry workspace discovery."
+                "Workspace discovery failed during login; "
+                "retry with `inspire account context`."
             )
-            logger.debug("Workspace route discovery failed", exc_info=True)
+            logger.debug("Workspace discovery failed", exc_info=True)
 
         workspace_id = all_workspace_ids[0] if all_workspace_ids else DEFAULT_WORKSPACE_ID
 
@@ -1573,9 +1489,9 @@ def _login_with_browser(
             login_username=username,
             base_url=base_url,
             user_detail=user_detail,
-            all_workspace_ids=all_workspace_ids or None,
-            all_workspace_names=all_workspace_names or None,
-            all_workspace_fair_scheduling=all_workspace_fair_scheduling or None,
+            all_workspace_ids=all_workspace_ids,
+            all_workspace_names=all_workspace_names,
+            all_workspace_fair_scheduling=all_workspace_fair_scheduling,
             account=account,
             created_at=time.time(),
         )
