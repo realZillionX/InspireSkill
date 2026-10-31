@@ -764,6 +764,29 @@ class Images(Service):
             data.get("address") or result.get("address") or "",
         )
 
+    @operation
+    @image_mutation
+    def sync(
+        self,
+        ref: str | ImageRef | ImageSelector,
+        *,
+        workspace: str | WorkspaceRef | None = None,
+    ) -> None:
+        """Import a completed Docker push; then use wait_ready to confirm readiness."""
+        from inspire.platform.web import browser_api
+        from inspire.services.catalog.image_writes import image_name_version
+
+        resolved = self._write_ref(ref, workspace)
+        row = browser_api.get_image_detail(image_id=resolved.key, session=self.session)
+        name, version = image_name_version(row)
+        with self.client._transport.single_send():
+            browser_api.sync_image(
+                name=name,
+                version=version,
+                workspace_id=resolved.workspace_id,
+                session=self.session,
+            )
+
     def wait_ready(
         self,
         ref: str | ImageRef | ImageSelector | ImageSaveHandle,

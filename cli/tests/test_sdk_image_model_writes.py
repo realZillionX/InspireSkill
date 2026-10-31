@@ -3,6 +3,7 @@
 from __future__ import annotations
 import pytest
 import requests
+
 from test_sdk import client as client
 from inspire import ImageRef, ModelRef, Resource, WorkspaceRef, ProjectRef
 from inspire import SubmissionUncertainError, MutationUncertainError, ValidationError
@@ -90,7 +91,7 @@ def test_single_dispatch(client, catalog, monkeypatch, kind, action, outcome):
             invoke()
     assert len(calls) == 1
     if kind == "images" and action == "register":
-        assert calls[0][1]["add_method"] == 2
+        assert calls[0][1]["add_method"] == "DIRECT_PUSH"
         assert calls[0][1]["visibility"] == "VISIBILITY_PROJECT"
         assert calls[0][1]["registry_hint"] == {"workspace_id": "ws-test"}
     if kind == "models" and action == "register":
@@ -140,3 +141,38 @@ def test_missing_registration_id_uncertain(client, catalog, monkeypatch, kind):
             client.images.register("image", workspace="Workspace")
         else:
             client.models.register("model", source_path="/inspire/models", workspace="Workspace", project="Project")
+
+
+@pytest.mark.parametrize("outcome", ["ok", "timeout", "platform"])
+def test_image_sync_is_single_send_with_canonical_name_and_workspace(client, monkeypatch, outcome):
+    ref = ImageRef("example:v2", client.account, client.base_url, "image-test", "ws-test")
+    monkeypatch.setattr(api, "get_image_detail", lambda **kw: CustomImageInfo(
+        "image-test", "", "example:v2", "", "v2", "SOURCE_PRIVATE", "PENDING_SYNC", "", ""
+    ))
+    calls = []
+    def once(method, path, body, *a, **kw):
+        calls.append((path, body))
+        assert client._transport._write is not None
+        client._transport._write["sent"] = True
+        if outcome == "timeout":
+            raise requests.ReadTimeout("response lost")
+        if outcome == "platform":
+            return {"ResponseMetadata": {"Error": {"Code": "InvalidParameter", "Message": "not pushed"}}}
+        return {"Result": {}}
+    monkeypatch.setattr(client._transport, "_once", once)
+    if outcome == "ok":
+        assert client.images.sync(ref) is None
+    else:
+        with pytest.raises(MutationUncertainError if outcome == "timeout" else ValidationError):
+            client.images.sync(ref)
+    assert len(calls) == 1
+    assert "Action=SyncImage" in calls[0][0]
+    assert calls[0][1] == {"workspaceId": "ws-test", "imageName": "example", "imageVersion": "v2"}
+
+
+def test_image_sync_rejects_foreign_ref_before_network(client, monkeypatch):
+    ref = ImageRef("example:v1", "other-account", client.base_url, "image-test", "ws-test")
+    monkeypatch.setattr(api, "get_image_detail", lambda **kw: pytest.fail("foreign reference read"))
+    monkeypatch.setattr(api, "sync_image", lambda **kw: pytest.fail("foreign reference mutation"))
+    with pytest.raises(ValidationError):
+        client.images.sync(ref)

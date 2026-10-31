@@ -197,7 +197,7 @@ inspire uninstall               # 卸载 CLI 与已安装的 Skill 文档
 <details>
 <summary><b>🗂 镜像、模型注册表、官方数据集与项目管理</b></summary>
 
-- **镜像管理（`inspire image`）**：`image list / detail / register / set-visibility / delete`，支持 `--keyword` 模糊搜索、`--source all` 并发检索四个可见性目录（`official` / `public` / `project` / `private`）、注册外部 Docker 镜像以及调整自定义镜像可见范围。
+- **镜像管理（`inspire image`）**：`image list / detail / register / sync / set-visibility / delete`，支持 `--keyword` 模糊搜索、`--source all` 并发检索四个可见性目录（`official` / `public` / `project` / `private`）、注册外部 Docker 镜像、push 后同步镜像以及调整自定义镜像可见范围。
 - **模型注册表（`inspire model`）**：`model list / register / status / versions / deploy-config / delete`，支持将共享盘模型目录注册到平台、查询实时 vLLM 兼容性与最小部署硬件规格（`deploy-config`），并在删除模型前自动检查是否仍有推理服务占用。
 - **数据广场官方数据集（`inspire dataset`）**：`dataset list / show / tags / validate / applications` 直接通过 CAS SSO 握手检索数据广场（`aip.sii.edu.cn`）目录、版本、权限与申请进度，并在创建 Notebook、Job、HPC 时通过 `--dataset <数据集名>:<版本名>` 只读挂载至 `/inspire/dataset/<数据集名>/<版本名>`。
 - **项目与预算（`inspire project`）**：`project list / detail / owners` 查看全局项目列表、个人可用点券额度（`My Budget`）与项目总余额（`Project Budget`）、各项支出明细以及项目负责人列表。

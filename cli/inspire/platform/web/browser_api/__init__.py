@@ -140,6 +140,7 @@ _EXPORTS = {
     "run_command_capture_in_notebook": (".jupyter_terminal", "run_command_capture_in_notebook"),
     "CustomImageInfo": (".images", "CustomImageInfo"),
     "create_image": (".images", "create_image"),
+    "sync_image": (".images", "sync_image"),
     "delete_image": (".images", "delete_image"),
     "get_image_detail": (".images", "get_image_detail"),
     "list_images_by_source": (".images", "list_images_by_source"),
@@ -286,6 +287,7 @@ __all__ = [
     "select_project",
     "CustomImageInfo",
     "create_image",
+    "sync_image",
     "delete_image",
     "get_image_detail",
     "list_images_by_source",
@@ -528,6 +530,7 @@ if TYPE_CHECKING:
     from .images import (
         CustomImageInfo,
         create_image,
+        sync_image,
         delete_image,
         get_image_detail,
         list_images_by_source,

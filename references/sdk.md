@@ -183,7 +183,7 @@ for series in client.tensorboards.scalars(board_ref, points=10).series:
 
 ## 6. Facade Method Reference
 
-Both clients expose 15 resource facades with 155 sync methods and 168 async methods (the 13 additional async methods are 5 exec_stream, 7 bind_ref, and 1 bind_image_ref), plus 2 methods on cache, for 157/170 total facade methods.
+Both clients expose 15 resource facades with 156 sync methods and 169 async methods (the 13 additional async methods are 5 exec_stream, 7 bind_ref, and 1 bind_image_ref), plus 2 methods on cache, for 158/171 total facade methods.
 
 | Facade | Sync Methods | Async Methods |
 | --- | ---: | ---: |
@@ -191,7 +191,7 @@ Both clients expose 15 resource facades with 155 sync methods and 168 async meth
 | `workspaces` | 2 | 2 |
 | `projects` | 4 | 4 |
 | `compute_groups` | 2 | 2 |
-| `images` | 7 | 8 |
+| `images` | 8 | 9 |
 | `jobs` | 19 | 21 |
 | `hpc` | 17 | 19 |
 | `ray` | 19 | 21 |
@@ -243,7 +243,10 @@ Both clients expose 15 resource facades with 155 sync methods and 168 async meth
 | `images.list(workspace, *, source=None, keyword=None, limit=20, cursor=None)` | `Page[Image]` | `image list` |
 | `images.register(name, *, workspace, version=None, description=None, visibility=None, operation_id=None)` | `ImageRegisterHandle` | `image register` |
 | `images.set_visibility(ref, *, visibility, workspace=None)` | `None` | `image set-visibility` |
-| `images.wait_ready(ref, *, timeout=600, poll_interval=5, workspace=None)` | `CustomImageInfo` | `image register --wait` |
+| `images.sync(ref, *, workspace=None)` | `None` | `image sync` |
+| `images.wait_ready(ref, *, timeout=600, poll_interval=5, workspace=None)` | `CustomImageInfo` | `image sync --wait` (after sync) |
+
+For external images, call `images.register`, push the image to the returned registry address, then call `images.sync(handle.ref)` and `images.wait_ready(handle.ref)`. Registration reserves a `PENDING_SYNC` slot; neither registration nor Docker push implies catalog readiness. The async client provides the same sequence with awaited methods.
 
 ### datasets
 

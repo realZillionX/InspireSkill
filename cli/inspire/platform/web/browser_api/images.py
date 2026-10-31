@@ -205,14 +205,14 @@ def create_image(
     workspace_id: Optional[str] = None,
     description: str = "",
     visibility: str = "VISIBILITY_PRIVATE",
-    add_method: int = 0,
+    add_method: str = "DIRECT_PUSH",
     session: Optional[WebSession] = None,
 ) -> dict[str, Any]:
     """Register a custom Docker image.
 
-    The platform supports two add methods:
-      - 0: LOCAL_PUSH (user pushes via ``docker push``)
-      - 2: IMAGE_ADDRESS (register an existing image address)
+    ``DIRECT_PUSH`` reserves a slot. After pushing to the returned address,
+    call :func:`sync_image` to import the registry manifest into the catalog.
+    Numeric method 2 selects ``IMAGE_ADDRESS``, not direct push.
 
     Args:
         name: Image name (lowercase, digits, dashes, dots, underscores).
@@ -220,7 +220,7 @@ def create_image(
         workspace_id: Workspace ID (determines registry).
         description: Optional description.
         visibility: ``"VISIBILITY_PRIVATE"`` or ``"VISIBILITY_PUBLIC"``.
-        add_method: 0 for local push, 2 for image address.
+        add_method: ``DIRECT_PUSH`` for an image pushed with Docker.
         session: Existing web session.
 
     Returns:
@@ -240,6 +240,27 @@ def create_image(
     }
 
     return _image_v2(session, "CreateImage", body)
+
+
+def sync_image(
+    name: str,
+    version: str,
+    workspace_id: Optional[str] = None,
+    session: Optional[WebSession] = None,
+) -> dict[str, Any]:
+    """Synchronize a pushed image into the workspace's registry catalog.
+
+    Unlike CreateImage, SyncImage uses camelCase request keys. A successful
+    request starts synchronization; callers must still check image readiness.
+    """
+    session, workspace_id = _get_session_and_workspace_id(
+        workspace_id=workspace_id, session=session
+    )
+    return _image_v2(session, "SyncImage", {
+        "workspaceId": workspace_id,
+        "imageName": name,
+        "imageVersion": version,
+    })
 
 
 def update_image(

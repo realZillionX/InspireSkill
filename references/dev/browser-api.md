@@ -378,9 +378,12 @@ Referer: `/jobs/interactiveModeling`.
 | --- | --- | --- | --- |
 | `ListImages` | `{page: 0, page_size: -1, filter:{…}}` | `{images[], total}` | `image list`, image resolution, `cache refresh` |
 | `GetImageById` | `{ImageId}` | `image_id`, `name`, `address`, `framework`, `version`, `source`, `visibility`, `status`, `description`, `created_at` | `image detail`, readiness polling |
-| `CreateImage` † | `{name, version, registry_hint:{workspace_id}, visibility, add_method, description}` | `{image{image_id, …}}` | `image register` (`add_method: 0` for `docker push`) |
+| `CreateImage` † | `{name, version, registry_hint:{workspace_id}, visibility, add_method, description}` | `{image{image_id, …}}` | `image register` (`add_method: "DIRECT_PUSH"`) |
+| `SyncImage` † | `{workspaceId, imageName, imageVersion}` | — | `image sync` after `docker push` |
 | `UpdateImage` † | `{id, visibility?, description?}` | — | `image set-visibility` (requires bare `id`, not `image_id`) |
 | `DeleteImage` | `{image_id}` | — | `image delete` |
+
+Direct push was verified against the console request contract and a controlled register → push → sync → readiness round trip. The initial state is `PENDING_SYNC`; synchronization transitions the uploaded image to `SUCCESS`. Numeric `add_method: 2` selects `IMAGE_ADDRESS` and is not equivalent to `DIRECT_PUSH`. SyncImage uses camelCase keys even though CreateImage uses snake_case. Registry content and catalog synchronization are separate steps.
 
 ---
 
