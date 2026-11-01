@@ -69,6 +69,7 @@ Always use CLI `--help` for command syntax. Load only the reference needed for t
 | Account initialization, updates, uninstall, or local proxy checks | `inspire init --help`, `inspire account --help`, `inspire update --help`, `inspire uninstall --help` |
 | `INSPIRE.md` conventions, project metadata (`inspire project`), and asset lifecycle | [`references/assets.md`](references/assets.md) |
 | Workspaces, compute groups, quotas, live availability, usage attribution, and priority rules | [`references/resources.md`](references/resources.md) |
+| Cross-session task ledger, zone-selection discipline, and shared-quota etiquette for repeated agent operation | [`references/agent-ops.md`](references/agent-ops.md) |
 | Shared storage scopes, storage tiers, mount isolation, and remote paths | [`references/paths.md`](references/paths.md) |
 | Dataset Hub search, official dataset mounting (`--dataset`), versions, and access requests | [`references/dataset.md`](references/dataset.md) |
 | Outbound internet staging, internal package mirrors, dependency setup, and image baking | [`references/internal-sources.md`](references/internal-sources.md) |
