@@ -122,6 +122,7 @@ Individual quota rows can restrict which priorities they accept, shown in the `P
   - **`My Budget`** (`my_remaining_budget`): remaining points available to **your account** in that project (the limit that gates your next submission). Falls back to `Project Budget` when per-member quotas are not configured.
   - **`Project Budget`** (`project_remaining_budget`): remaining points shared across the entire project.
 - **`inspire project detail <name>`** breaks down spending (`on training`, `on inference`, `on storage`, `on private workspace`).
+- **Project GPU running quota is a shared pool, separate from points.** The GPU-count cap the scheduler enforces (`Parent&sub project total quota insufficient` in `events`) counts usage from the parent project plus all child projects plus every member — not just your own tasks. A wave can pass the points check and still be rejected on GPU quota. Before a large or multi-node submission, check live headroom with `resources usage --project <name>` and read the exact `used`/`quota` numbers from the rejection message to resize.
 
 ## 5. Scheduling & Node Diagnostics
 
