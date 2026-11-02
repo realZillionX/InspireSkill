@@ -122,6 +122,7 @@ Individual quota rows can restrict which priorities they accept, shown in the `P
   - **`My Budget`** (`my_remaining_budget`): remaining points available to **your account** in that project (the limit that gates your next submission). Falls back to `Project Budget` when per-member quotas are not configured.
   - **`Project Budget`** (`project_remaining_budget`): remaining points shared across the entire project.
 - **`inspire project detail <name>`** breaks down spending (`on training`, `on inference`, `on storage`, `on private workspace`).
+- **Project GPU running quota is separate from points.** The scheduler's `Parent&sub project total quota insufficient` event applies to the parent Project, all child Projects, and every member. Inspect their consumption with `resources usage --workspace <name> --details --all`; filtering to one Project does not include its children automatically. Usage reports consumption, not the configured GPU cap. Use the event's `used` and `quota` values to calculate the shared headroom and resize a rejected wave.
 
 ## 5. Scheduling & Node Diagnostics
 

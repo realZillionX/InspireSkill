@@ -115,6 +115,13 @@ To submit a sweep of `job`, `hpc`, `notebook`, `ray`, or `serving` workloads tha
 - Always run `<workload> batch <file> --dry-run` first to validate the expanded items and dataset mounts before creating anything.
 - Within a single `job`, `hpc`, or `notebook` batch invocation, live quota priority menus, project catalogs, image catalogs, and successful `(workspace, dataset, version)` validations are fetched once per Workspace and reused across items in that run.
 
+### Submission Waves & Shared Quotas
+
+- Prefer `<workload> batch` for a parameter sweep so submissions reuse the catalogs described above. Check the batch exit code and per-item results before retrying; some items may already have been accepted.
+- Validate one representative submission through scheduling and startup before scaling out. For scripted cleanup, `job stop` takes no confirmation flag; `job delete --yes` skips its confirmation prompt. Check each command's exit code.
+- Size waves against the shared project GPU quota as well as physical capacity. Inspect usage across the parent Project, child Projects, and all members with `resources usage --workspace <name> --details --all`. A `Parent&sub project total quota insufficient` event reports the shared `used` and `quota` values; reduce the wave to fit the remaining headroom before retrying.
+- **Job names are not unique.** Generate names with a run-specific suffix, and check `job list --workspace <name> --keyword <prefix> --all` for accepted jobs before retrying a wave. When a name is ambiguous, inspect the candidates and pass `--pick N` to `stop`, `delete`, or `status`.
+
 ## 8. Observation & Debugging Loop
 
 | Command | Primary Question Answered |
