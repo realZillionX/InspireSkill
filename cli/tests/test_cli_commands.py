@@ -268,50 +268,6 @@ def test_global_debug_flag_runs_subcommand(monkeypatch: pytest.MonkeyPatch, tmp_
     assert result.exit_code == 0
 
 
-def test_job_help_smoke(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Smoke test to ensure `inspire job --help` works (no import/syntax errors)."""
-    patch_config_and_auth(monkeypatch, tmp_path)
-    runner = CliRunner()
-
-    result = runner.invoke(cli_main, ["job", "--help"])
-    assert result.exit_code == 0
-    assert "Manage GPU batch jobs and distributed-training workloads" in result.output
-
-
-@pytest.mark.parametrize(
-    ("command", "metavar"),
-    [
-        ("create", "NAME"),
-        ("quota", "NAME"),
-        ("status", "NAME"),
-        ("logs", "NAME"),
-        ("events", "NAME"),
-        ("instances", "NAME"),
-        ("list", "NAME|all"),
-        ("shell", "NAME"),
-        ("stop", "NAME"),
-        ("delete", "NAME"),
-        ("wait", "NAME"),
-        ("command", "NAME"),
-        ("metrics", "NAME"),
-    ],
-)
-def test_job_workspace_help_uses_name_metavars(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    command: str,
-    metavar: str,
-) -> None:
-    patch_config_and_auth(monkeypatch, tmp_path)
-    runner = CliRunner()
-
-    result = runner.invoke(cli_main, ["job", command, "--help"])
-
-    assert result.exit_code == 0
-    assert f"--workspace {metavar}" in result.output
-    assert "--workspace TEXT" not in result.output
-
-
 # ---------------------------------------------------------------------------
 # Job command group
 # ---------------------------------------------------------------------------
@@ -1226,7 +1182,7 @@ def test_job_list_defaults_to_compact_limit_and_all_fetches_all_pages(
             return ([_job(index) for index in range(101, 1, -1)], 101)
         if page_num == 2:
             return ([_job(1)], 101)
-        raise AssertionError(f"unexpected page: {page_num}")
+        return ([], 101)
 
     monkeypatch.setattr(browser_api_module, "list_jobs", fake_list_jobs)
 
@@ -1258,7 +1214,7 @@ def test_job_list_defaults_to_compact_limit_and_all_fetches_all_pages(
     assert "shown" not in payload["data"]
     assert "total" not in payload["data"]
     assert "truncated" not in payload["data"]
-    assert [call["page_num"] for call in calls] == [1, 2]
+    assert [call["page_num"] for call in calls] == [1, 2, 3]
     assert all(call["page_size"] == 100 for call in calls)
 
 

@@ -260,7 +260,9 @@ def list_jobs(
     )
 
     payload = _v2_result(data)
-    jobs_data = payload.get("jobs", [])
+    jobs_data = payload.get("jobs")
+    if not isinstance(jobs_data, list):
+        raise RuntimeError("Invalid job list response: expected a jobs list.")
     # `train.ListJobs` answers with an int today, but `hpc` and `ray` both
     # answer the same field as a string. Passing it through raw makes the
     # refresh loop's `len(records) >= total` a TypeError the day this Action

@@ -139,6 +139,7 @@ To submit a sweep of `job`, `hpc`, `notebook`, `ray`, or `serving` workloads tha
 
 - **Batch status & events:** `job status`, `hpc status`, and `job events` accept multiple workload names in a single command (fetched in chunks of 20). Unresolved names (typos, deleted jobs, or ambiguous names) are listed under `Unresolved:` with a non-zero exit code without aborting the resolved items.
 - **Cross-workspace search:** When you do not know which Workspace a Job is in, run `inspire job list --workspace all` (queries up to 8 Workspaces concurrently in round-robin pages).
+- **Complete Job scans:** `job list --all` uses the same pagination for JSON and tables and continues until an empty page, without a fixed page ceiling. Reported totals are not a completion boundary. A failed or malformed page, or repeated pages with no new records, fails the command instead of returning a successful partial list. Lists reflect live data across requests; they are not atomic snapshots of concurrent submissions or deletions.
 - **Waiting for completion:** Only wait on workloads in non-terminal states (`PENDING`, `QUEUING`, `RUNNING`). Stopped Jobs (`CANCELLED`) and HPC jobs cannot be restarted; `start` exists on Notebook, Ray, Serving, and TensorBoard. `job wait` and `job logs --follow` exit automatically when the Job reaches a terminal state; `events --follow` and `job list --watch` stream indefinitely until interrupted — do not use them as completion barriers.
 
 ## 9. TensorBoard (`inspire tensorboard`)

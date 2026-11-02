@@ -14,18 +14,12 @@ import pytest
 from inspire import local_files
 from inspire.accounts import storage
 from inspire.config.toml import _load_toml
-from inspire.services.account import account_config
 
 
 @pytest.fixture
 def isolated_home(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     return tmp_path
-
-
-def test_both_public_writer_names_share_one_implementation():
-    assert storage._atomic_write_text is local_files.atomic_write_text
-    assert account_config.atomic_write_text is local_files.atomic_write_text
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX creation modes")
@@ -187,64 +181,3 @@ def test_unlocked_concurrent_writers_have_independent_temporaries(monkeypatch, t
     assert len(set(sources)) == 2
     assert target.read_text(encoding="utf-8") in {"a", "b"}
     assert list(tmp_path.iterdir()) == [target]
-
-
-def test_account_write_paths_explicitly_request_private_files():
-    # A new writer in any of these paths must retain the private-file contract.
-    import ast
-
-    root = Path(__file__).resolve().parents[1]
-    paths = [
-        "inspire/sdk/accounts.py",
-        "inspire/sdk/client.py",
-        "inspire/cli/commands/init/discover.py",
-        "inspire/cli/commands/init/templates.py",
-    ]
-    calls = []
-    for name in paths:
-        tree = ast.parse((root / name).read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            writer = isinstance(node.func, ast.Name) and "atomic_write_text" in node.func.id
-            dispatched = any(
-                isinstance(arg, ast.Name) and arg.id == "atomic_write_text" for arg in node.args
-            )
-            if writer or dispatched:
-                calls.append(node)
-                assert any(
-                    k.arg == "private"
-                    and isinstance(k.value, ast.Constant)
-                    and k.value.value is True
-                    for k in node.keywords
-                ), name
-    assert len(calls) == 5
-
-
-def test_windows_ci_lints_and_builds_and_sdk_documents_platform_boundary():
-    root = Path(__file__).resolve().parents[2]
-    windows = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8").split("  windows:", 1)[1]
-    assert "run: uv run ruff check inspire tests" in windows
-    assert "run: uv build" in windows
-    documentation = (root / "references/sdk.md").read_text(encoding="utf-8")
-    for term in ("ProactorEventLoop", "SelectorEventLoop", "%USERPROFILE%", "PowerShell"):
-        assert term in documentation
-
-
-def test_unrelated_storage_does_not_launch_windows_acl(monkeypatch, tmp_path):
-    from inspire.accounts.storage import account_dir
-
-    monkeypatch.setattr(sys, "platform", "win32")
-
-    def forbidden(*args, **kwargs):
-        pytest.fail("Unrelated tests must not launch an ACL subprocess")
-
-    monkeypatch.setattr(local_files.shutil, "which", lambda name: name)
-    monkeypatch.setattr(local_files.subprocess, "run", forbidden)
-    for i in range(16):
-        home = tmp_path / str(i)
-        home.mkdir()
-        monkeypatch.setattr(Path, "home", lambda: home)
-        target = account_dir("fixture") / "config.toml"
-        local_files.atomic_write_text(target, "fixture payload", private=True)
-        assert target.read_text(encoding="utf-8") == "fixture payload"

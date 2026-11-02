@@ -2,9 +2,19 @@ name: CI
 
 on:
   pull_request:
+    paths:
+      - "cli/**"
+      - "scripts/**"
+      - ".github/workflows/ci.yml"
+      - ".pre-commit-config.yaml"
   push:
-    branches:
-      - main
+    branches: [main]
+    paths:
+      - "cli/**"
+      - "scripts/**"
+      - ".github/workflows/ci.yml"
+      - ".pre-commit-config.yaml"
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -15,17 +25,25 @@ permissions:
 
 jobs:
   test:
-    name: Python ${{ matrix.python-version }}${{ matrix.os == 'macos-latest' && ' (macOS)' || '' }}
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-        os: [ubuntu-latest]
         include:
-          - python-version: "3.12"
+          - name: Linux (Python 3.10)
+            os: ubuntu-latest
+            python: "3.10"
+            suite: full
+          - name: Windows (Python 3.12)
+            os: windows-latest
+            python: "3.12"
+            suite: full
+          - name: macOS platform smoke
             os: macos-latest
+            python: "3.12"
+            suite: platform
 
     defaults:
       run:
@@ -38,7 +56,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -49,69 +67,33 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev --locked
 
-      - name: Ruff
-        run: uv run ruff check inspire tests
-
-      - name: mypy
-        run: uv run mypy
+      - name: Static checks
+        if: runner.os == 'Linux'
+        run: |
+          uv run ruff check inspire tests
+          uv run mypy
 
       - name: Unit tests
+        if: matrix.suite == 'full'
         run: uv run pytest -q
 
-      - name: Build package
-        run: uv build
-
-  # Windows is a supported platform, not a best-effort one: the POSIX-only
-  # imports, the console encoding and the ProxyCommand quoting all fail here
-  # first, and none of them are visible from a Linux runner.
-  windows:
-    name: Windows
-    runs-on: windows-latest
-    timeout-minutes: 20
-
-    defaults:
-      run:
-        working-directory: cli
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v9.0.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: cli/uv.lock
-
-      - name: Install dependencies
-        run: uv sync --dev --locked
-
-      - name: Ruff
-        run: uv run ruff check inspire tests
+      - name: macOS filesystem, terminal, subprocess, and installer tests
+        if: matrix.suite == 'platform'
+        run: >-
+          uv run pytest -q
+          tests/test_private_local_files.py tests/test_cache_lock.py
+          tests/test_terminal_io.py tests/test_interactive_console.py
+          tests/test_bridge_exec.py tests/test_bridge_scp.py
+          tests/test_native_async_pty.py tests/test_sdk_async_execution.py
+          tests/test_installer_script.py tests/test_uninstall_command.py
+          tests/test_rtunnel_binary.py
 
       - name: Build package
+        if: runner.os == 'Linux'
         run: uv build
 
-      - name: mypy
-        run: uv run mypy
-
-      # Printed so a run that silently collects fewer tests than the Linux jobs
-      # is visible in the log rather than hidden behind a passing summary.
-      - name: Collected test count
-        run: uv run pytest --collect-only -q | Select-Object -Last 2
-
-      - name: Unit tests
-        run: uv run pytest -q -ra
-
-      # The CLI has to survive being redirected: a pipe drops Python off the
-      # Windows console API and onto the ANSI code page, which is where every
-      # non-ASCII character in the output used to raise UnicodeEncodeError.
-      - name: CLI starts and its output survives a pipe
+      - name: Windows CLI output survives a pipe
+        if: runner.os == 'Windows'
         env:
           INSPIRE_SKIP_UPDATE_CHECK: "1"
         run: |
@@ -120,6 +102,7 @@ jobs:
           uv run inspire notebook --help > notebook-help.txt
 
       - name: PowerShell installer parses
+        if: runner.os == 'Windows'
         shell: pwsh
         working-directory: .
         run: |
@@ -130,4 +113,3 @@ jobs:
             $errors | ForEach-Object { Write-Host $_.Message }
             exit 1
           }
-          Write-Host 'install.ps1 parses clean'

@@ -156,28 +156,6 @@ def test_repository_inspire_directory_is_never_read(
     assert cfg.username == "alice"
 
 
-def test_legacy_account_catalogs_and_profiles_are_ignored(
-    home: Path,
-    clean_env: None,
-) -> None:
-    _write_account(
-        home,
-        "alice",
-        '[auth]\nusername = "alice"\npassword = "pw"\n'
-        '[context]\nproject = "Old"\n'
-        '[path_aliases]\nme = "/inspire/old"\n'
-        '[profiles.job.old]\nworkspace = "Old"\n'
-        '[projects]\nshort = "Old"\n',
-    )
-
-    cfg, _ = Config.from_files_and_env()
-
-    assert cfg.username == "alice"
-    assert not hasattr(cfg, "path_aliases")
-    assert not hasattr(cfg, "profiles")
-    assert not hasattr(cfg, "context_project")
-
-
 def test_missing_active_account_fails_when_credentials_are_required(
     home: Path,
     clean_env: None,

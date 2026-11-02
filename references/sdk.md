@@ -183,32 +183,7 @@ for series in client.tensorboards.scalars(board_ref, points=10).series:
 
 ## 6. Facade Method Reference
 
-Both clients expose 15 resource facades with 156 sync methods and 169 async methods (the 13 additional async methods are 5 exec_stream, 7 bind_ref, and 1 bind_image_ref), plus 2 methods on cache, for 158/171 total facade methods.
-
-| Facade | Sync Methods | Async Methods |
-| --- | ---: | ---: |
-| `cache` | 2 | 2 |
-| `workspaces` | 2 | 2 |
-| `projects` | 4 | 4 |
-| `compute_groups` | 2 | 2 |
-| `images` | 8 | 9 |
-| `jobs` | 19 | 21 |
-| `hpc` | 17 | 19 |
-| `ray` | 19 | 21 |
-| `servings` | 25 | 27 |
-| `tensorboards` | 11 | 12 |
-| `notebooks` | 23 | 26 |
-| `account_info` | 4 | 4 |
-| `api_keys` | 5 | 5 |
-| `datasets` | 5 | 5 |
-| `models` | 8 | 8 |
-| `resources` | 4 | 4 |
-
-**Calling convention across all facades:**
-- Call `client.<facade>.<method>(...)` on `InspireClient`, or `await client.<facade>.<method>(...)` on `InspireAsyncClient` with identical parameters, defaults, and return models.
-- Arguments after `*` are keyword-only.
-- **Streaming iterator exception:** `iter`, `follow_events`, and `follow_logs` return a synchronous `Iterator` on `InspireClient` and an `AsyncIterator` on `InspireAsyncClient` (`async for item in client.<facade>.follow_events(...)` directly, without an initial `await`).
-- **Async-only methods:** `jobs`, `notebooks`, `hpc`, `ray`, and `servings` additionally provide `exec_stream(...) -> AsyncIterator[str]` (same parameters as `exec`, yielding decoded output chunks via `async for`). `images`, `jobs`, `hpc`, `ray`, `servings`, `tensorboards`, and `notebooks` provide `await client.<facade>.bind_ref(ref)`, and `notebooks` also provides `await client.notebooks.bind_image_ref(image_ref, notebook=None)`.
+The synchronous and asynchronous clients share the resource facades below. Async operations are awaited; streaming methods use async iteration.
 
 ### workspaces
 

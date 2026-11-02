@@ -1,16 +1,5 @@
-from click.testing import CliRunner
 
 from inspire.cli.formatters.human_formatter import format_job_status
-from inspire.cli.main import main as cli_main
-
-
-def test_root_help_keeps_json_as_script_interface() -> None:
-    runner = CliRunner()
-    result = runner.invoke(cli_main, ["--help"])
-
-    assert result.exit_code == 0
-    assert "Manage Inspire resources by name." in result.output
-    assert "--json prints structured script output." in result.output
 
 
 def test_job_status_formatter_shows_platform_priority_fields() -> None:

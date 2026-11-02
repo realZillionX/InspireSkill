@@ -242,10 +242,6 @@ def test_workspace_required_hint_points_to_live_context() -> None:
     assert "inspire account context" in msg
 
 
-def test_config_model_has_no_workspace_map() -> None:
-    assert not hasattr(Config(username="", password=""), "workspaces")
-
-
 @pytest.mark.parametrize("scope", ["all", "special"])
 def test_workspace_scope_recovers_empty_session_catalog(monkeypatch, scope):
     session = WebSession(

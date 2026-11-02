@@ -107,21 +107,17 @@ def _api_statuses_for_filter(status: Optional[str]) -> tuple[str, ...]:
     return STATUS_API_ALIAS_MAP.get(raw.upper(), ())
 
 
+def _job_row_key(row: dict) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("job_id") or ""),
+        str(row.get("workspace_name") or ""),
+        str(row.get("name") or ""),
+        str(row.get("created_at") or ""),
+    )
+
+
 def _dedupe_job_rows(rows: list[dict]) -> list[dict]:
-    deduped: list[dict] = []
-    seen: set[tuple[str, str, str, str]] = set()
-    for row in rows:
-        key = (
-            str(row.get("job_id") or ""),
-            str(row.get("workspace_name") or ""),
-            str(row.get("name") or ""),
-            str(row.get("created_at") or ""),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(row)
-    return deduped
+    return list({_job_row_key(row): row for row in rows}.values())
 
 
 def _looks_like_workspace_id(value: str) -> bool:
@@ -421,7 +417,7 @@ def _scan_web_jobs_round_robin(
     name: Optional[str],
     page_num: int,
     page_size: int,
-    max_pages: int,
+    max_pages: int | None,
     limit: Optional[int],
 ) -> tuple[list[dict], list[dict]]:
     """Scan all candidate workspaces one page at a time."""
@@ -436,6 +432,7 @@ def _scan_web_jobs_round_robin(
             "total": 0,
             "matched": 0,
             "done": False,
+            "seen": set(),
         }
         for workspace_id in workspace_ids
     ]
@@ -466,9 +463,16 @@ def _scan_web_jobs_round_robin(
                 state, items, total = future.result()
                 current_page = int(state["next_page"])
                 state["pages"] += 1
-                state["total"] = total
+                state["total"] = max(state["total"], total)
+                new_items = 0
 
                 for job in items:
+                    row = _job_info_to_row(job, workspace_name=state["workspace_name"])
+                    key = _job_row_key(row)
+                    if key in state["seen"]:
+                        continue
+                    state["seen"].add(key)
+                    new_items += 1
                     if allowed_statuses and job.status not in allowed_statuses:
                         continue
                     if not _job_matches_name(job, name):
@@ -476,7 +480,7 @@ def _scan_web_jobs_round_robin(
                     if limit_value is not None and int(state["matched"]) >= limit_value:
                         state["done"] = True
                         break
-                    rows.append(_job_info_to_row(job, workspace_name=state["workspace_name"]))
+                    rows.append(row)
                     state["matched"] = int(state["matched"]) + 1
 
                 if limit_value is not None and int(state["matched"]) >= limit_value:
@@ -485,10 +489,14 @@ def _scan_web_jobs_round_robin(
                 if not items:
                     state["done"] = True
                     continue
-                if total is not None and current_page * page_size >= int(total):
+                # Exhaustive scans use the empty page as their boundary: totals
+                # can be absent or change between requests during submissions.
+                if max_pages is None and not new_items:
+                    raise RuntimeError("Job listing made no pagination progress; retry the query.")
+                if max_pages is not None and current_page * page_size >= total:
                     state["done"] = True
                     continue
-                if int(state["pages"]) >= max_pages:
+                if max_pages is not None and int(state["pages"]) >= max_pages:
                     state["done"] = True
                     continue
                 state["next_page"] = current_page + 1
@@ -918,115 +926,39 @@ def _list_web_jobs(
     name: Optional[str],
     page_num: int,
     page_size: int,
-    max_pages: int,
+    max_pages: int | None,
     limit: Optional[int],
     api_statuses: tuple[str, ...] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     try:
         session = get_web_session()
         creator_id = _current_user_id(session)
-
         allowed_statuses = _expand_status_aliases([status]) if status else None
-        mapped_api_statuses = tuple(api_statuses or ()) or _api_statuses_for_filter(status)
-        query_statuses: tuple[str | None, ...] = mapped_api_statuses or (None,)
+        query_statuses = tuple(api_statuses or ()) or _api_statuses_for_filter(status) or (None,)
+        workspace_ids = _list_workspace_ids(session, workspace=workspace)
         rows: list[dict] = []
         scanned: list[dict] = []
-        limit_value = _job_list_limit_value(limit)
-        workspace_ids = _list_workspace_ids(
-            session,
-            workspace=workspace,
-        )
-
-        if (workspace or "").strip().lower() == "all":
-            for query_status in query_statuses:
-                status_rows, status_scanned = _scan_web_jobs_round_robin(
-                    session=session,
-                    workspace_ids=workspace_ids,
-                    creator_id=creator_id,
-                    api_status=query_status,
-                    allowed_statuses=allowed_statuses,
-                    name=name,
-                    page_num=page_num,
-                    page_size=page_size,
-                    max_pages=max_pages,
-                    limit=limit,
-                )
-                rows.extend(status_rows)
-                scanned.extend(status_scanned)
-            rows = _dedupe_job_rows(rows)
-            workspace_rank = {
-                workspace_id: index
-                for index, workspace_id in enumerate(workspace_ids)
-            }
-            rows.sort(
-                key=lambda row: workspace_rank.get(
-                    str(row.get("workspace_id") or ""),
-                    len(workspace_rank),
-                )
+        for query_status in query_statuses:
+            status_rows, status_scanned = _scan_web_jobs_round_robin(
+                session=session,
+                workspace_ids=workspace_ids,
+                creator_id=creator_id,
+                api_status=query_status,
+                allowed_statuses=allowed_statuses,
+                name=name,
+                page_num=page_num,
+                page_size=page_size,
+                max_pages=max_pages,
+                limit=limit,
             )
-            rows.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-            return _limit_job_rows_per_workspace(rows, limit), scanned
-
-        for workspace_id in workspace_ids:
-            pages_read_total = 0
-            total_seen = 0
-            workspace_label = _workspace_name(session, workspace_id) if workspace_id else ""
-
-            for query_status in query_statuses:
-                current_page = max(1, page_num)
-                pages_read = 0
-                status_total = 0
-                status_matched = 0
-
-                while True:
-                    if limit_value is not None and status_matched >= limit_value:
-                        break
-                    items, total = browser_api_module.list_jobs(
-                        workspace_id=workspace_id or None,
-                        created_by=creator_id,
-                        status=query_status,
-                        keyword=name,
-                        page_num=current_page,
-                        page_size=page_size,
-                        session=session,
-                    )
-                    pages_read += 1
-                    pages_read_total += 1
-                    status_total = max(status_total, int(total or 0))
-
-                    for job in items:
-                        if allowed_statuses and job.status not in allowed_statuses:
-                            continue
-                        if not _job_matches_name(job, name):
-                            continue
-                        if limit_value is not None and status_matched >= limit_value:
-                            break
-                        rows.append(_job_info_to_row(job, workspace_name=workspace_label))
-                        status_matched += 1
-
-                    if limit_value is not None and status_matched >= limit_value:
-                        break
-                    if not items:
-                        break
-                    if total is not None and current_page * page_size >= int(total):
-                        break
-                    if pages_read >= max_pages:
-                        break
-                    current_page += 1
-
-                total_seen += status_total
-
-            scanned.append(
-                {
-                    "workspace_id": workspace_id,
-                    "workspace_name": workspace_label,
-                    "total": total_seen,
-                    "pages": pages_read_total,
-                }
-            )
-
+            rows.extend(status_rows)
+            scanned.extend(status_scanned)
         rows = _dedupe_job_rows(rows)
-        rows.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        workspace_rank = {workspace_id: index for index, workspace_id in enumerate(workspace_ids)}
+        rows.sort(key=lambda row: workspace_rank.get(
+            str(row.get("workspace_id") or ""), len(workspace_rank),
+        ))
+        rows.sort(key=lambda row: row.get("created_at", ""), reverse=True)
         return _limit_job_rows_per_workspace(rows, limit), scanned
     finally:
         _close_web_client()
@@ -1213,7 +1145,7 @@ def list_jobs(
             name=keyword,
             page_num=1,
             page_size=_job_list_page_size(effective_limit),
-            max_pages=50,
+            max_pages=None if show_all else 50,
             limit=effective_limit,
             api_statuses=JOB_ACTIVE_API_STATUSES if active and not status else None,
         )
@@ -1224,7 +1156,7 @@ def list_jobs(
         page = bound_collection(
             rows,
             limit=effective_limit,
-            total=sum(int(item.get("total") or 0) for item in scanned),
+            total=len(rows) if show_all else sum(int(item.get("total") or 0) for item in scanned),
         )
         if ctx.json_output:
             click.echo(

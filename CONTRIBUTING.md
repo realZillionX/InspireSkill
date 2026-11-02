@@ -65,7 +65,11 @@ uv run mypy
 uv build
 ```
 
-For documentation-only changes, also run `git diff --check` and any tests that validate documentation consistency (`uv run pytest tests/test_sdk_surface_consistency.py tests/test_private_local_files.py`).
+CI runs the full unit suite on Linux/Python 3.10 and Windows/Python 3.12. macOS runs the filesystem, terminal, subprocess, and installer tests. Ruff, mypy, and the platform-independent package build run once on Linux. The Windows job also exercises redirected CLI output and parses the PowerShell installer.
+
+Code, tests, installers, and CI configuration trigger this workflow. For documentation-only changes, run `git diff --check` and verify changed command examples against CLI `--help`.
+
+Keep regression tests focused on observable behavior: requests, responses, output, errors, file permissions, and process lifecycle. Help smoke coverage walks the command tree; avoid repeating exact prose, option ordering, method counts, or assertions that a deleted implementation stays absent.
 
 ## Pull Requests & Releases
 

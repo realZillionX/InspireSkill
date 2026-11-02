@@ -1,54 +1,14 @@
 """Cross-facade contracts and documentation checked against actual classes."""
 from __future__ import annotations
 
-import asyncio
 from dataclasses import FrozenInstanceError
 import inspect
-from pathlib import Path
-import re
 from typing import get_type_hints
 
 import pytest
-from inspire import InspireAsyncClient, Instance, ValidationError
+from inspire import Instance, ValidationError
 from inspire.sdk.instances import sdk_instances
 from test_sdk import client as client
-
-
-def public_methods(value):
-    return {name for name, method in inspect.getmembers(type(value), inspect.isroutine)
-            if not name.startswith("_")}
-
-
-def method_inventory(sync_client, async_client):
-    return {name: (public_methods(value), public_methods(getattr(async_client, name)))
-            for name, value in vars(sync_client).items()
-            if not name.startswith("_")
-            and not isinstance(value, (str, int, float, bool, type(None)))
-            and public_methods(value)}
-
-
-def test_documented_method_counts(client):
-    async_client = InspireAsyncClient("alpha")
-    try:
-        inventory = method_inventory(client, async_client)
-        document = (Path(__file__).parents[2] / "references/sdk.md").read_text(encoding="utf-8")
-        section = document.split("## 6. Facade Method Reference", 1)[1].split("### workspaces", 1)[0]
-        documented = {name: (int(sync), int(asynchronous)) for name, sync, asynchronous in
-                      re.findall(r"\| `([^`]+)` \| (\d+) \| (\d+) \|", section)}
-        counts = {name: (len(sync), len(asynchronous))
-                  for name, (sync, asynchronous) in inventory.items()}
-        assert documented == counts
-        resource_sync = sum(pair[0] for name, pair in counts.items() if name != "cache")
-        resource_async = sum(pair[1] for name, pair in counts.items() if name != "cache")
-        assert f"{len(counts) - 1} resource facades" in section
-        assert f"{resource_sync} sync methods and {resource_async} async methods" in section
-        assert f"for {resource_sync + counts['cache'][0]}/{resource_async + counts['cache'][1]} total facade methods" in section
-        extras = [method for sync, asynchronous in inventory.values() for method in asynchronous - sync]
-        assert f"the {len(extras)} additional async methods are" in section
-        for method in set(extras):
-            assert f"{extras.count(method)} {method}" in section
-    finally:
-        asyncio.run(async_client.close())
 
 
 @pytest.mark.parametrize("facade", ["jobs", "hpc", "ray", "servings"])
