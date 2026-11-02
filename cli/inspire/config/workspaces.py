@@ -41,6 +41,8 @@ def _enumerated_workspace_names(session: Any) -> dict[str, str]:
 
         items = try_enumerate_workspaces(session)
     except Exception:
+        if not _session_workspace_names(session):
+            raise
         return {}
 
     out: dict[str, str] = {}
@@ -96,6 +98,10 @@ def resolve_workspace_query_scope(
         raise ConfigError("--workspace requires a workspace name or 'all'.")
     if raw.lower() == "all":
         workspace_ids = _visible_workspace_ids(session)
+        if not workspace_ids:
+            from inspire.platform.web.browser_api.workspaces import try_enumerate_workspaces
+
+            workspace_ids = [item["id"] for item in try_enumerate_workspaces(session)]
         if not workspace_ids:
             raise ConfigError("No visible workspaces found in the live web session.")
         return workspace_ids, True

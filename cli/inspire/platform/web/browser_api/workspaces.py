@@ -27,7 +27,7 @@ def _accessible_workspace_entries(
     *,
     base_url: str | None,
 ) -> dict[str, dict[str, Any]]:
-    resolved_base_url = (base_url or "").strip() or _get_base_url()
+    resolved_base_url = (base_url or session.base_url or "").strip().rstrip("/") or _get_base_url()
     workspace_ids, names, fair_scheduling = parse_workspace_catalog(
         _request_json(
             session,
@@ -48,7 +48,9 @@ def _accessible_workspace_entries(
     }
 
 
-def _cache_fair_scheduling(session: WebSession, results: dict[str, dict[str, Any]]) -> None:
+def _cache_workspace_catalog(session: WebSession, results: dict[str, dict[str, Any]]) -> None:
+    session.all_workspace_ids = list(results)
+    session.all_workspace_names = {ws_id: item["name"] for ws_id, item in results.items()}
     session.all_workspace_fair_scheduling = {
         ws_id: item["is_fair_workspace"] for ws_id, item in results.items()
     }
@@ -78,7 +80,7 @@ def try_enumerate_workspaces(
             "Could not enumerate accessible workspaces."
         ) from exc
 
-    _cache_fair_scheduling(session, results)
+    _cache_workspace_catalog(session, results)
     return list(results.values())
 
 
@@ -100,7 +102,7 @@ def is_fair_scheduling_workspace(session: WebSession, workspace_id: str) -> bool
         raise WorkspaceCapabilityError(
             "Could not resolve the selected workspace's scheduling policy."
         ) from exc
-    _cache_fair_scheduling(session, results)
+    _cache_workspace_catalog(session, results)
     if workspace_id not in results:
         raise WorkspaceCapabilityError(
             "Could not resolve the selected workspace's scheduling policy."
@@ -108,7 +110,6 @@ def is_fair_scheduling_workspace(session: WebSession, workspace_id: str) -> bool
     return bool(results[workspace_id]["is_fair_workspace"])
 
 
-# `-1` is how the platform spells "no ceiling" in every quota field.
 __all__ = [
     "WorkspaceCapabilityError",
     "WorkspaceEnumerationError",

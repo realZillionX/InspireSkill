@@ -11,7 +11,13 @@ from conftest import set_fake_home
 from inspire.accounts import create_account, set_current_account
 from inspire.services.catalog.resource_index import ResourceIdentity, ResourceIndex, ResourceScope
 from inspire.config import Config, ConfigError
-from inspire.config.workspaces import select_workspace_id, workspace_required_hint
+from inspire.config.workspaces import (
+    resolve_workspace_query_scope,
+    select_workspace_id,
+    workspace_required_hint,
+)
+from inspire.platform.web.browser_api import workspaces as workspace_api
+from inspire.platform.web.session.models import DEFAULT_WORKSPACE_ID, WebSession
 
 WS_SPECIAL = "ws-22222222-2222-2222-2222-222222222222"
 WS_RECREATED = "ws-33333333-3333-3333-3333-333333333333"
@@ -238,3 +244,68 @@ def test_workspace_required_hint_points_to_live_context() -> None:
 
 def test_config_model_has_no_workspace_map() -> None:
     assert not hasattr(Config(username="", password=""), "workspaces")
+
+
+@pytest.mark.parametrize("scope", ["all", "special"])
+def test_workspace_scope_recovers_empty_session_catalog(monkeypatch, scope):
+    session = WebSession(
+        storage_state={}, created_at=1, workspace_id=DEFAULT_WORKSPACE_ID,
+        base_url="https://account.example", all_workspace_ids=[], all_workspace_names={},
+    )
+    calls = []
+
+    def request(supplied_session, method, path, **kwargs):
+        assert supplied_session is session
+        assert kwargs["referer"] == "https://account.example/jobs/spacesOverview"
+        calls.append((method, path, kwargs["body"]))
+        return {"Result": {"items": [{
+            "workspace_id": WS_SPECIAL, "name": "special", "is_fair_workspace": True,
+        }]}}
+
+    monkeypatch.setattr(workspace_api, "_request_json", request)
+    assert resolve_workspace_query_scope(workspace=scope, session=session) == (
+        [WS_SPECIAL], scope == "all",
+    )
+    assert calls == [("POST", "/api/v2/user?Action=ListAccessibleWorkspaces", {})]
+    assert session.all_workspace_ids == [WS_SPECIAL]
+    assert session.all_workspace_names == {WS_SPECIAL: "special"}
+    assert session.all_workspace_fair_scheduling == {WS_SPECIAL: True}
+    # Recovery also repairs subsequent fanout queries in the same session.
+    assert resolve_workspace_query_scope(workspace="all", session=session) == ([WS_SPECIAL], True)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("scope", ["all", "special"])
+def test_empty_session_discovery_failure_preserves_index(monkeypatch, tmp_path, scope):
+    index = ResourceIndex(tmp_path / "resource-index.sqlite3")
+    resource_scope = ResourceScope(
+        base_url="https://account.example", subject_id="user-one", resource_type="workspace",
+    )
+    index.upsert(resource_scope, [ResourceIdentity(WS_SPECIAL, "special")], ttl_seconds=0)
+    monkeypatch.setattr(ResourceIndex, "for_account", classmethod(lambda cls, account=None: index))
+    session = WebSession(
+        storage_state={}, created_at=1, workspace_id=DEFAULT_WORKSPACE_ID,
+        base_url="https://account.example", user_detail={"id": "user-one"},
+        all_workspace_ids=[], all_workspace_names={},
+    )
+    monkeypatch.setattr(workspace_api, "_request_json", lambda *a, **kw: {"Result": {"routes": []}})
+
+    with pytest.raises(workspace_api.WorkspaceEnumerationError):
+        resolve_workspace_query_scope(workspace=scope, session=session)
+
+    assert session.all_workspace_ids == []
+    assert session.all_workspace_names == {}
+    assert [row.resource_id for row in index.list_identities(resource_scope, fresh_only=False)] == [
+        WS_SPECIAL,
+    ]
+
+
+def test_all_workspaces_reports_successful_empty_catalog(monkeypatch):
+    session = WebSession(storage_state={}, created_at=1, workspace_id=DEFAULT_WORKSPACE_ID)
+    monkeypatch.setattr(workspace_api, "_request_json", lambda *a, **kw: {"Result": {"items": []}})
+
+    with pytest.raises(ConfigError, match="No visible workspaces"):
+        resolve_workspace_query_scope(workspace="all", session=session)
+
+    assert session.all_workspace_ids == []
+    assert session.all_workspace_names == {}
