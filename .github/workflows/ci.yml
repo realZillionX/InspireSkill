@@ -5,6 +5,7 @@ on:
     paths:
       - "cli/**"
       - "scripts/**"
+      - "examples/agent_ops/**"
       - ".github/workflows/ci.yml"
       - ".pre-commit-config.yaml"
   push:
@@ -12,6 +13,7 @@ on:
     paths:
       - "cli/**"
       - "scripts/**"
+      - "examples/agent_ops/**"
       - ".github/workflows/ci.yml"
       - ".pre-commit-config.yaml"
   workflow_dispatch:
@@ -70,7 +72,7 @@ jobs:
       - name: Static checks
         if: runner.os == 'Linux'
         run: |
-          uv run ruff check inspire tests
+          uv run ruff check inspire tests ../examples/agent_ops
           uv run mypy
 
       - name: Unit tests
@@ -87,6 +89,7 @@ jobs:
           tests/test_native_async_pty.py tests/test_sdk_async_execution.py
           tests/test_installer_script.py tests/test_uninstall_command.py
           tests/test_rtunnel_binary.py
+          tests/test_agent_ops_job_ops.py tests/test_agent_ops_pick_zone.py
 
       - name: Build package
         if: runner.os == 'Linux'

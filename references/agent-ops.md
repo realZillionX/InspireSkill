@@ -21,3 +21,5 @@ Use this guide when operating workloads across sessions or sharing a Project wit
 - Use `resources usage --workspace <name> --details --all` to inspect the relevant Projects and users. This reports consumption, not the scheduler's configured project GPU cap. When a scheduler event reports `used` and `quota`, use that limit to resize the wave; do not infer headroom from idle GPUs or remaining points.
 - Submit useful work with a defined completion condition. Release temporary allocations promptly after their consumer finishes; idle quota-holding jobs consume the same pool as collaborators' work.
 - Follow the batch validation, pacing, and duplicate-name guidance in [`compute-workloads.md`](compute-workloads.md).
+
+Optional source-checkout examples for group ranking and local command-event recording are in [`examples/agent_ops`](../examples/agent_ops/README.md). They supplement this guide; they are not required submission steps or installed CLI commands.
