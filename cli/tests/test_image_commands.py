@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import pytest
+
 from click.testing import CliRunner
 
 from inspire import config as config_module
@@ -342,9 +343,10 @@ def test_image_register_help_keeps_push_workflow_requirements() -> None:
     result = CliRunner().invoke(cli_main, ["image", "register", "--help"])
 
     assert result.exit_code == 0, result.output
-    # There is one flow the CLI can drive: reserve a slot, then you push.
+    # A slot requires both a push and an explicit catalog synchronization.
     assert "docker-push" in result.output
-    assert "stays FAILED until that push" in result.output
+    assert "PENDING_SYNC" in result.output
+    assert "image sync" in result.output
     # The file-upload route needs an upload this CLI does not implement, so it
     # is described as web-only rather than offered as a mode that always errors.
     assert "--method" not in result.output
@@ -360,6 +362,7 @@ _SCOPED_IMAGE_COMMANDS = (
     ["image", "list"],
     ["image", "detail", "some-image:v1"],
     ["image", "register", "-n", "some-image", "-v", "v1"],
+    ["image", "sync", "some-image:v1"],
     ["image", "set-visibility", "some-image:v1", "--visibility", "public"],
     ["image", "delete", "some-image:v1", "--yes"],
 )
@@ -368,6 +371,7 @@ _IMAGE_APIS = (
     "list_images_by_source",
     "get_image_detail",
     "create_image",
+    "sync_image",
     "update_image",
     "delete_image",
 )
@@ -1267,7 +1271,7 @@ def test_image_register_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     assert "img-new-001" not in result.output
     assert captured["name"] == "my-img"
     assert captured["version"] == "v1.0"
-    assert captured["add_method"] == 2
+    assert captured["add_method"] == "DIRECT_PUSH"
 
 
 def test_image_register_human_push(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1294,7 +1298,9 @@ def test_image_register_human_push(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert "docker tag" in result.output
     assert "docker push" in result.output
     assert "registry.example/my-img:v0.1" in result.output
-    assert "stays FAILED until that push completes" in result.output
+    assert "image sync test:v0.1" in result.output
+    assert "--wait" in result.output
+    assert "PENDING_SYNC" in result.output
 
 
 def test_image_register_json_push_keeps_registry(
@@ -1811,3 +1817,75 @@ def test_format_image_detail():
     assert "Test image" not in result
     assert "Created" not in result
     assert "2026-01-15" not in result
+
+
+@pytest.mark.parametrize("wait", [False, True])
+def test_image_sync_resolves_live_catalog_and_optionally_waits(monkeypatch, tmp_path, wait):
+    _patch_config_and_session(monkeypatch, tmp_path)
+    row = CustomImageInfo(
+        "image-test", "registry.example/example:v3", "example:v3", "", "v3",
+        "SOURCE_PRIVATE", "PENDING_SYNC", "", ""
+    )
+    resolutions = []
+    def resolve(*a, **kw):
+        resolutions.append(kw)
+        return row.image_id
+    monkeypatch.setattr(image_commands_module, "_resolve_image_name", resolve)
+    monkeypatch.setattr(browser_api_module, "get_image_detail", lambda **kw: row)
+    calls = []
+    monkeypatch.setattr(browser_api_module, "sync_image", lambda **kw: calls.append(("sync", kw)))
+    monkeypatch.setattr(browser_api_module, "wait_for_image_ready",
+                        lambda **kw: calls.append(("wait", kw)) or row)
+    result = CliRunner().invoke(
+        cli_main, ["--json", "image", "sync", "example:v3", *_OTHER_WS, "--timeout", "12"]
+        + (["--wait"] if wait else [])
+    )
+    assert result.exit_code == 0, result.output
+    assert resolutions[0]["require_live"] is True
+    assert calls[0][1]["workspace_id"] == "ws-other-workspace"
+    assert calls[0][1]["name"] == "example" and calls[0][1]["version"] == "v3"
+    assert [x[0] for x in calls] == (["sync", "wait"] if wait else ["sync"])
+    if wait:
+        assert calls[1][1]["image_id"] == row.image_id
+        assert calls[1][1]["timeout"] == 12
+    payload = _json_data(result.output)
+    assert payload == {"name": "example:v3", "status": "ready" if wait else "sync-requested"}
+    _assert_compact_public_payload(payload)
+    assert row.image_id not in result.output
+
+
+@pytest.mark.parametrize("failure", ["sync", "wait"])
+def test_image_sync_failure_does_not_report_ready_or_leak_request(monkeypatch, tmp_path, failure):
+    _patch_config_and_session(monkeypatch, tmp_path)
+    _patch_image_name_resolver(monkeypatch, {"example:v1": "img-secret-123"})
+    row = CustomImageInfo("img-secret-123", "", "example", "", "v1", "", "PENDING_SYNC", "", "")
+    monkeypatch.setattr(browser_api_module, "get_image_detail", lambda **kw: row)
+    def fail(**kw):
+        raise RuntimeError("request payload /Users/alice/private.log img-secret-123")
+    monkeypatch.setattr(browser_api_module, "sync_image", fail if failure == "sync" else lambda **kw: {})
+    monkeypatch.setattr(browser_api_module, "wait_for_image_ready", fail)
+    result = CliRunner().invoke(cli_main, [
+        "--json", "image", "sync", "example:v1", *_WS, "--wait"
+    ])
+    assert result.exit_code != 0
+    _assert_safe_failure(result.output, "Could not synchronize image.")
+
+
+def test_direct_push_browser_wire_contract(monkeypatch):
+    from inspire.platform.web.browser_api import images as image_api
+    session = FakeWebSession()
+    monkeypatch.setattr(image_api, "_get_session_and_workspace_id",
+                        lambda workspace_id, session: (session, workspace_id))
+    calls = []
+    monkeypatch.setattr(image_api, "_image_v2",
+                        lambda session, action, body: calls.append((action, body)) or {})
+    image_api.create_image("example", "v1", workspace_id="ws-other-workspace", session=session)
+    image_api.sync_image("example", "v1", workspace_id="ws-other-workspace", session=session)
+    assert calls == [
+        ("CreateImage", {"name": "example", "version": "v1",
+                         "registry_hint": {"workspace_id": "ws-other-workspace"},
+                         "visibility": "VISIBILITY_PRIVATE", "add_method": "DIRECT_PUSH",
+                         "description": ""}),
+        ("SyncImage", {"workspaceId": "ws-other-workspace", "imageName": "example",
+                       "imageVersion": "v1"}),
+    ]

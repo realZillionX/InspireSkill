@@ -13,6 +13,8 @@ from inspire.services.catalog.images import (
 )
 import contextlib
 import io
+import shlex
+from inspire.accounts import current_account
 from typing import Any, Optional
 import click
 from inspire.cli.context import (
@@ -50,7 +52,11 @@ from inspire.services.utils.raw_ids import scrub_raw_ids
 from inspire.config import ConfigError
 from inspire.config.workspaces import resolve_workspace_operation_scope
 from inspire.platform.web import browser_api as browser_api_module
-from inspire.services.catalog.image_writes import parse_visibility_value as _parse_visibility_value
+from inspire.services.catalog.image_writes import (
+    IMAGE_ADD_METHOD_LOCAL_PUSH,
+    image_name_version,
+    parse_visibility_value as _parse_visibility_value,
+)
 
 
 
@@ -204,12 +210,6 @@ _VISIBILITY_BY_NAME = {
     "private": VISIBILITY_PRIVATE,
 }
 
-
-# `CreateImage.add_method`. 2 is the console's 本地推送: it reserves
-# ``<name>:<version>`` and answers with the address to docker-push to. 0 is
-# 文件上传 and answers ``InvalidParameter: no image uploaded`` unless a file
-# upload preceded it, which this CLI does not implement.
-IMAGE_ADD_METHOD_LOCAL_PUSH = 2
 
 # Short, safe platform reasons worth repeating to the user. The exception text
 # also carries the request payload, so only the recognised tail is echoed.
@@ -542,8 +542,8 @@ def image_detail(
     "--wait/--no-wait",
     default=False,
     help=(
-        "Wait for the pushed image to reach READY. Only useful once the "
-        "docker push below has finished; an unpushed slot never gets there."
+        "Wait while another process pushes and runs image sync. Usually use "
+        "image sync --wait after docker push instead."
     ),
 )
 @pass_context
@@ -560,8 +560,8 @@ def register_image_cmd(
 
     This is the platform's 本地推送 flow: it reserves ``<name>:<version>`` and
     answers with the address to push to, which this command prints along with
-    the docker commands. The image stays FAILED until that push lands — the
-    slot is a reservation, not an image.
+    the docker commands. The slot starts in PENDING_SYNC. After pushing, run
+    ``inspire image sync <name>:<version> --workspace <workspace> --wait``.
 
     The platform's other route, 文件上传 (upload an image tar), needs a file
     upload this CLI does not implement; use the web console for that. To turn a
@@ -614,6 +614,21 @@ def register_image_cmd(
         owner_scope="self",
     )
 
+    if not ctx.json_output:
+        click.echo(format_mutation_success("Image", "slot reserved", image_label))
+        if registry_url:
+            safe_registry_url = scrub_raw_ids(registry_url)
+            click.echo(f"docker login {shlex.quote(safe_registry_url.split('/', 1)[0])}")
+            click.echo(f"docker tag <local-image> {shlex.quote(safe_registry_url)}")
+            click.echo(f"docker push {shlex.quote(safe_registry_url)}")
+        sync_command = ["inspire"]
+        account = current_account()
+        if account:
+            sync_command.extend(["--account", account])
+        sync_command.extend(["image", "sync", image_label, "--workspace", workspace, "--wait"])
+        click.echo(shlex.join(sync_command))
+        click.echo("After docker push, synchronize the PENDING_SYNC slot to make it usable.")
+
     ready = False
     if wait and image_id:
         try:
@@ -638,21 +653,63 @@ def register_image_cmd(
         click.echo(json_formatter.format_json(payload))
         return
 
-    click.echo(
-        format_mutation_success(
-            "Image",
-            "ready" if ready else "slot reserved",
-            image_label,
-        )
+    if ready:
+        click.echo(format_mutation_success("Image", "ready", image_label))
+
+
+@click.command("sync")
+@click.argument("name", metavar="NAME")
+@click.option("--workspace", required=True, metavar="NAME", help=_WORKSPACE_HELP)
+@click.option("--pick", type=click.IntRange(min=1), default=None, help=NAME_PICK_HELP)
+@click.option("--wait/--no-wait", default=False, help="Wait for synchronization to finish.")
+@click.option("--timeout", type=click.IntRange(min=1), default=600, show_default=True,
+              help="Maximum seconds to wait when --wait is set.")
+@pass_context
+def sync_image_cmd(
+    ctx: Context,
+    name: str,
+    workspace: str,
+    pick: Optional[int],
+    wait: bool,
+    timeout: int,
+) -> None:
+    """Synchronize a registered image after its docker push has completed.
+
+    NAME is the registered name:version. This performs the console's sync
+    action; it does not push image layers or change image visibility.
+    """
+    name = reject_id_at_boundary(
+        ctx, name, resource_type="image", list_command=_IMAGE_LIST_COMMAND
     )
-    if registry_url:
-        safe_registry_url = scrub_raw_ids(registry_url)
-        # Without these three lines the slot is unusable, so they are the
-        # point of the command rather than a footnote.
-        click.echo(f"docker login {safe_registry_url.split('/', 1)[0]}")
-        click.echo(f"docker tag <local-image> {safe_registry_url}")
-        click.echo(f"docker push {safe_registry_url}")
-        click.echo("The image stays FAILED until that push completes.")
+    session = require_web_session(ctx, hint=WEB_AUTH_HINT)
+    workspace_id = _resolve_registry_scope(ctx, workspace=workspace, session=session)
+    if workspace_id is None:
+        return
+    image_id = _resolve_image_name(
+        ctx, name, pick=pick, session=session, workspace_id=workspace_id, require_live=True
+    )
+    try:
+        row = browser_api_module.get_image_detail(image_id=image_id, session=session)
+        image_name, version = image_name_version(row)
+        browser_api_module.sync_image(
+            name=image_name, version=version, workspace_id=workspace_id, session=session
+        )
+        if wait:
+            browser_api_module.wait_for_image_ready(
+                image_id=image_id, session=session, timeout=timeout
+            )
+    except Exception:
+        _handle_error(ctx, "APIError", "Could not synchronize image.", EXIT_API_ERROR)
+        return
+    label = scrub_raw_ids(image_label(row))
+    if ctx.json_output:
+        click.echo(json_formatter.format_json({
+            "name": label, "status": "ready" if wait else "sync-requested"
+        }))
+    else:
+        click.echo(format_mutation_success(
+            "Image", "ready" if wait else "sync requested", label
+        ))
 
 
 # ---------------------------------------------------------------------------

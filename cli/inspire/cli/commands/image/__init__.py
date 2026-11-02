@@ -4,6 +4,7 @@ Usage:
     inspire image list --workspace <name> [--source official|public|private|all]
     inspire image detail <name> --workspace <name>
     inspire image register -n "name" --workspace <name> -v v1.0
+    inspire image sync <name>:<version> --workspace <name> --wait
     inspire image set-visibility <name> --workspace <name> --visibility public|private
     inspire image delete <name> --workspace <name>
 """
@@ -17,6 +18,7 @@ from .image_commands import (
     image_detail,
     list_images_cmd,
     register_image_cmd,
+    sync_image_cmd,
     set_image_visibility_cmd,
 )
 
@@ -26,7 +28,8 @@ def image():
     """Manage Docker images for notebook, job, HPC, Ray, and serving.
 
     Use `image list/detail` to choose a ready image, `image register` for
-    images built outside the platform, `set-visibility` to share or privatize
+    images built outside the platform, `image sync` after docker push,
+    `set-visibility` to share or privatize
     a custom image, and `delete` only after confirming no active workload
     depends on that image. This group manages images that already exist;
     producing one from a prepared environment is a notebook lifecycle
@@ -49,6 +52,7 @@ def image():
         inspire image detail <name> --workspace 分布式训练空间
         inspire image set-visibility <name> --workspace 分布式训练空间 --visibility public
         inspire image register -n my-img --workspace 分布式训练空间 -v v1.0
+        inspire image sync my-img:v1.0 --workspace 分布式训练空间 --wait
     """
     pass
 
@@ -56,5 +60,6 @@ def image():
 image.add_command(list_images_cmd)
 image.add_command(image_detail)
 image.add_command(register_image_cmd)
+image.add_command(sync_image_cmd)
 image.add_command(set_image_visibility_cmd)
 image.add_command(delete_image_cmd)

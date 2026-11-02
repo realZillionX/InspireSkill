@@ -212,6 +212,17 @@ class AsyncImages(AsyncFacade):
             visibility=visibility,
             workspace=workspace)
 
+    async def sync(
+        self,
+        ref: str | _m0.ImageRef | _m0.ImageSelector,
+        *,
+        workspace: str | _m0.WorkspaceRef | None = None,
+    ) -> None:
+        'Import a completed Docker push; then use wait_ready to confirm readiness.'
+        return await self._client._call('images', 'sync',
+            ref=ref,
+            workspace=workspace)
+
     async def wait_ready(
         self,
         ref: str | _m0.ImageRef | _m0.ImageSelector | _m0.ImageSaveHandle,
