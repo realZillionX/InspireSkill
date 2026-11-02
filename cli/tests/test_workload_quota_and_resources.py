@@ -882,3 +882,32 @@ def test_availability_uses_workspace_actions_for_groups_and_nodes(
     assert any(path.endswith("Action=ListNodeDimension") for path in calls)
     # Nothing should touch /api/v1 in this path any more.
     assert not any("/api/v1" in path for path in calls)
+
+
+def test_mixed_node_capacity_agrees_in_cli_json_and_table(monkeypatch, tmp_path):
+    from inspire.cli.commands.resources import resources_list as list_module
+    from inspire.platform.web.browser_api.availability.models import GPUAvailability
+
+    _patch_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(list_module, "get_web_session", lambda: _Session())
+    # One idle and one reclaimable 8-GPU node, plus idle 4- and 16-GPU nodes.
+    inventory = GPUAvailability(
+        group_id="lcg-mixed", group_name="Mixed", gpu_type="Test",
+        total_gpus=36, used_gpus=8, available_gpus=28, low_priority_gpus=8,
+        total_nodes=4, ready_nodes=4, free_nodes=3, gpu_per_node=16,
+        full_free_nodes=1, reclaimable_nodes=1,
+    )
+    monkeypatch.setattr(list_module.browser_api_module, "get_resource_inventory",
+                        lambda **kwargs: [inventory])
+    args = ["resources", "availability", "--workspace", "分布式训练空间"]
+    structured = CliRunner().invoke(cli_main, ["--json", *args])
+    human = CliRunner().invoke(cli_main, args)
+    assert structured.exit_code == human.exit_code == 0
+    row = _json_data(structured.output)["items"][0]
+    assert row["free_nodes"] == 3
+    assert row["gpus_per_node"] == 16
+    assert row["full_free_nodes"] == 1
+    assert row["full_free_gpus"] == 8
+    assert row["high_priority_free_gpus"] == 16
+    line = next(line for line in human.output.splitlines() if line.startswith("Mixed"))
+    assert line.split()[-3:] == ["1", "2", "4/4"]

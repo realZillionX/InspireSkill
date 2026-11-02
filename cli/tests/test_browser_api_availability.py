@@ -390,8 +390,9 @@ def test_free_node_counts_parse_live_task_containers_and_reclaim_low_only_nodes(
     assert counts[0].high_priority_free_nodes == 2
 
 
+@pytest.mark.parametrize("extra_gpu_count", [0, 4, 16])
 def test_resource_inventory_enriches_quota_rows_with_node_capacity(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, extra_gpu_count: int,
 ) -> None:
     from inspire.platform.web.browser_api.availability.models import (
         GPUAvailability,
@@ -411,6 +412,12 @@ def test_resource_inventory_enriches_quota_rows_with_node_capacity(
             gpu={"total": 8, "used": 8},
         ),
     ]
+    if extra_gpu_count:
+        nodes.append(_node(
+            "other-shape", tasks_associated={"count": 0, "tasks": []},
+            gpu={"total": extra_gpu_count, "used": 0},
+        ))
+    summary = api._compute_node_summary(nodes)
     row = GPUAvailability(
         group_id="lcg-1",
         group_name="H200",
@@ -419,9 +426,7 @@ def test_resource_inventory_enriches_quota_rows_with_node_capacity(
         used_gpus=8,
         available_gpus=8,
         low_priority_gpus=8,
-        total_nodes=2,
-        ready_nodes=2,
-        gpu_per_node=8,
+        **summary,
         workspace_id="ws-1",
         node_dimensions=tuple(nodes),
     )
@@ -463,6 +468,8 @@ def test_resource_inventory_enriches_quota_rows_with_node_capacity(
     inventory = api.get_resource_inventory("ws-1", session=object())  # type: ignore[arg-type]
 
     assert inventory == [row]
+    assert row.free_nodes == (2 if extra_gpu_count else 1)
+    assert row.gpu_per_node == max(8, extra_gpu_count)
     assert row.full_free_nodes == 1
     assert row.reclaimable_nodes == 1
     assert row.high_priority_free_nodes == 2

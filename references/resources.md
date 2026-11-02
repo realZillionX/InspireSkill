@@ -40,9 +40,10 @@ Always query live platform state before submitting workloads:
 | --- | --- |
 | `Available` | Remaining guaranteed GPU quota allocated to this Workspace in the Compute Group (`gpu_total - gpu_used`). Can be **negative** when fair-share scheduling allows low-priority jobs to borrow beyond guaranteed quota. |
 | `High Pri GPU` (`Available + low_priority_gpus`) | GPUs available to high-priority workloads after preempting low-priority tasks (`low_priority_gpus` in `--json`). Can also be negative if guaranteed quota is heavily overdrawn. |
-| `Free Nodes` | Physical 8-GPU nodes that are completely idle right now (`READY`, zero tasks, zero used GPUs, uncordoned, not in maintenance or fault pools). |
-| `High Pri Nodes` | Physical 8-GPU nodes that are either completely idle (`Free Nodes`) or occupied exclusively by preemptible low-priority tasks. |
-| `Idle GPUs` | Strictly `Free Nodes × 8` (physical idle full-node GPUs, independent of Workspace quota balance). |
+| `Free Nodes` (`full_free_nodes` in JSON) | Physical 8-GPU nodes that are completely idle right now (`READY`, zero tasks, zero used GPUs, uncordoned, not in maintenance or fault pools). |
+| `High Pri Nodes` (`high_priority_free_nodes` in JSON) | Idle 8-GPU nodes plus 8-GPU nodes occupied exclusively by preemptible low-priority tasks (`full_free_nodes + reclaimable_nodes`). |
+| `full_free_gpus` / `high_priority_free_gpus` (JSON) | The corresponding 8-GPU node count multiplied by 8, independent of Workspace quota balance. |
+| `free_nodes` / `gpus_per_node` (JSON) | Idle GPU nodes of any size / largest reported GPU count per node in the group. These do not measure 8-GPU node capacity in mixed groups. |
 
 Multi-node GPU Jobs can only be submitted in full 8-GPU node units (`--nodes n` where each instance uses an 8-GPU quota). Check `Free Nodes` and `High Pri Nodes` before submitting multi-node jobs.
 

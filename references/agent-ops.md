@@ -11,8 +11,8 @@ Use this guide when operating workloads across sessions or sharing a Project wit
 
 ## Compute Group Selection
 
-- Compare eligible Compute Groups using one fresh `resources availability` snapshot. Match the GPU model, per-instance quota, and accepted priorities using `<workload> quota`; use live policy data rather than inferring eligibility from a group's name.
-- For partial-node workloads, inspect the guaranteed balance and the capacity available at the requested priority. For full-node workloads, compare the requested node count with `Free Nodes` or `High Pri Nodes` as appropriate. **`High Pri Nodes` already includes `Free Nodes`; do not add them.** See [`resources.md`](resources.md#resources-availability-quota-balance-vs-full-nodes).
+- Compare eligible Compute Groups using one fresh `resources availability --workspace <name> --all` snapshot. Match the GPU model, per-instance quota, and accepted priorities using `<workload> quota --workspace <name> --all`; use live policy data rather than inferring eligibility from a group's name.
+- For partial-node workloads, inspect the guaranteed balance and the capacity available at the requested priority. For full-node workloads, compare the requested node count with `Free Nodes` or `High Pri Nodes` as appropriate. In JSON, use `full_free_nodes` for idle 8-GPU nodes and `high_priority_free_nodes` when low-priority occupants can be preempted. **The latter already includes the former; do not add them.** General `free_nodes` counts other node sizes too, and `gpus_per_node` is the group's maximum size. See [`resources.md`](resources.md#resources-availability-quota-balance-vs-full-nodes).
 - Availability is a scheduling snapshot, not a reservation. If a workload remains unschedulable, inspect its events and refresh capacity before changing its specification or Compute Group. Stop the superseded workload and confirm its terminal state before submitting a replacement.
 
 ## Shared Quota & Submission Waves

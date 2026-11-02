@@ -74,7 +74,7 @@ def _format_accurate_availability_table(availability, *, include_cpu: bool) -> N
                 row.high_priority_available_gpus,
                 row.used_gpus,
                 row.total_gpus,
-                row.free_nodes,
+                row.full_free_nodes,
                 row.high_priority_free_nodes,
                 f"{row.ready_nodes}/{row.total_nodes}",
             )
@@ -283,8 +283,8 @@ def availability_resources(
     Requires one --workspace <name> and shows real-time GPU usage. `Available`
     is the workspace's guarantee balance and can be negative when usage is
     over guarantee; `High Pri GPU` adds GPUs held by preemptible tasks and can
-    still be negative. `Free Nodes` and `High Pri Nodes` are physical whole-
-    node signals.
+    still be negative. `Free Nodes` and `High Pri Nodes` count physical 8-GPU
+    nodes, excluding other node sizes in mixed groups.
     Availability is defined per workspace, so `all` is rejected here.
     Use --include-cpu to include CPU-only compute groups and CPU/memory totals.
 

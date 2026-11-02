@@ -48,13 +48,13 @@ class GPUAvailability:
 
     @property
     def full_free_gpus(self) -> int:
-        """Physical GPUs on nodes that are idle now."""
-        return int(self.full_free_nodes) * int(self.gpu_per_node)
+        """Physical GPUs on idle 8-GPU nodes counted by the inventory."""
+        return int(self.full_free_nodes) * 8
 
     @property
     def high_priority_free_gpus(self) -> int:
-        """Physical GPUs on nodes usable by a high-priority job."""
-        return int(self.high_priority_free_nodes) * int(self.gpu_per_node)
+        """Physical GPUs on 8-GPU nodes usable after low-priority preemption."""
+        return int(self.high_priority_free_nodes) * 8
 
 
 @dataclass
