@@ -444,6 +444,8 @@ class TestProxyCommand:
             "HTTP_PROXY",
             "HTTPS_PROXY",
             "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
         ):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("INSPIRE_BASE_URL", "https://qz.sii.edu.cn")
