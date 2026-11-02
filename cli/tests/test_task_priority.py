@@ -15,8 +15,6 @@ from inspire.task_priority import (
 
 FAIR_WORKSPACE_ID = "ws-11111111-1111-1111-1111-111111111111"
 STANDARD_WORKSPACE_ID = "ws-22222222-2222-2222-2222-222222222222"
-MISSING_FLAG_WORKSPACE_ID = "ws-33333333-3333-3333-3333-333333333333"
-NON_BOOL_WORKSPACE_ID = "ws-44444444-4444-4444-4444-444444444444"
 
 
 def _session(**kwargs: object) -> WebSession:
@@ -131,71 +129,33 @@ def test_standard_workspace_ignores_malformed_project_limit(project_limit: objec
     )
 
 
-def test_workspace_capability_requires_an_exact_true_boolean(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = 0
+def test_workspace_capabilities_feed_priority_policy(monkeypatch):
+    calls = []
 
-    def _request_json(*_args: object, **_kwargs: object) -> dict[str, object]:
-        nonlocal calls
-        calls += 1
-        return {
-            "data": {
-                "routes": [
-                    {
-                        "name": "userWorkspaceList",
-                        "routes": [
-                            {
-                                "path": FAIR_WORKSPACE_ID,
-                                "name": "Fair",
-                                "is_fair_workspace": True,
-                            },
-                            {
-                                "path": STANDARD_WORKSPACE_ID,
-                                "name": "Standard",
-                                "is_fair_workspace": False,
-                            },
-                            {
-                                "path": MISSING_FLAG_WORKSPACE_ID,
-                                "name": "Missing flag",
-                            },
-                            {
-                                "path": NON_BOOL_WORKSPACE_ID,
-                                "name": "Non-bool flag",
-                                "is_fair_workspace": 1,
-                            },
-                        ],
-                    }
-                ]
-            }
-        }
+    def request(*args, **kwargs):
+        calls.append((args[2], kwargs["body"]))
+        return {"Result": {"items": [
+            {"workspace_id": FAIR_WORKSPACE_ID, "name": "Fair", "is_fair_workspace": True},
+            {"workspace_id": STANDARD_WORKSPACE_ID, "name": "Standard", "is_fair_workspace": False},
+        ]}}
 
-    monkeypatch.setattr(workspaces, "_request_json", _request_json)
+    monkeypatch.setattr(workspaces, "_request_json", request)
     session = _session()
 
-    result = workspaces.try_enumerate_workspaces(
-        session,
-        base_url="https://example.invalid",
-    )
-
-    capabilities = {item["id"]: item["is_fair_workspace"] for item in result}
-    assert capabilities == {
-        FAIR_WORKSPACE_ID: True,
-        STANDARD_WORKSPACE_ID: False,
-        MISSING_FLAG_WORKSPACE_ID: False,
-        NON_BOOL_WORKSPACE_ID: False,
-    }
-    assert session.all_workspace_fair_scheduling == capabilities
-    assert workspaces.is_fair_scheduling_workspace(session, FAIR_WORKSPACE_ID) is True
-    assert workspaces.is_fair_scheduling_workspace(session, STANDARD_WORKSPACE_ID) is False
-    assert calls == 1
+    assert resolve_task_priority(
+        None, fair_scheduling=workspaces.is_fair_scheduling_workspace(session, FAIR_WORKSPACE_ID),
+    ) == 4
+    assert resolve_task_priority(
+        None, fair_scheduling=workspaces.is_fair_scheduling_workspace(session, STANDARD_WORKSPACE_ID),
+    ) == 10
+    assert calls == [("/api/v2/user?Action=ListAccessibleWorkspaces", {})]
 
 
 def test_workspace_capability_failure_is_not_treated_as_standard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _fail(*_args: object, **_kwargs: object) -> dict[str, object]:
-        raise RuntimeError("route lookup failed")
+        raise RuntimeError("workspace lookup failed")
 
     monkeypatch.setattr(workspaces, "_request_json", _fail)
 
@@ -206,7 +166,7 @@ def test_workspace_capability_failure_is_not_treated_as_standard(
         )
 
 
-def test_workspace_capability_cache_avoids_route_lookup(
+def test_workspace_capability_cache_avoids_catalog_lookup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _unexpected(*_args: object, **_kwargs: object) -> dict[str, object]:

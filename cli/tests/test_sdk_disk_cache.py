@@ -190,7 +190,7 @@ def test_expiry_across_processes_and_cleanup(tmp_path, monkeypatch):
     with sqlite3.connect(disk.path.parent / "resource-index.sqlite3") as connection:
         connection.execute("UPDATE resource_scope SET last_full_refresh_at = last_full_refresh_at - 120")
         connection.execute("UPDATE resource_identity SET observed_at = observed_at - 120, expires_at = expires_at - 120")
-    assert worker(tmp_path, ["images"])[0]["calls"] == {"GetRoutes": 1, "ListImages": 4}
+    assert worker(tmp_path, ["images"])[0]["calls"] == {"ListAccessibleWorkspaces": 1, "ListImages": 4}
     # Reading metadata performs the remainder's expiry pruning.
     disk.read(KEY)
     assert len(json.loads(disk.path.read_text(encoding="utf-8"))["entries"]) == 0
@@ -326,7 +326,7 @@ def test_invalid_row_is_a_miss(tmp_path, monkeypatch):
     worker(tmp_path, ["images"])
     with sqlite3.connect(disk.path.parent / "resource-index.sqlite3") as connection:
         connection.execute("UPDATE resource_identity SET payload = ? WHERE resource_type = 'workspace'", ('["dict", []]',))
-    assert worker(tmp_path, ["images"])[0]["calls"] == {"GetRoutes": 1}
+    assert worker(tmp_path, ["images"])[0]["calls"] == {"ListAccessibleWorkspaces": 1}
 
 
 def test_unavailable_disk_does_not_serve_unchecked_memory(tmp_path, monkeypatch):
