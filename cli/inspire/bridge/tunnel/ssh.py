@@ -109,6 +109,21 @@ def build_ssh_process_env() -> dict[str, str]:
     return env
 
 
+def ssh_identity_args(bridge: BridgeProfile) -> list[str]:
+    """Return ``-i``/``IdentitiesOnly`` args for the bridge's cached private key.
+
+    The cached key may use a non-default filename that neither the agent nor
+    OpenSSH's default key lookup would offer. With no cached key, or one that
+    no longer exists locally, return nothing so the default lookup still applies.
+    """
+    if not bridge.identity_file:
+        return []
+    path = Path(bridge.identity_file).expanduser()
+    if not path.is_file():
+        return []
+    return ["-i", str(path), "-o", "IdentitiesOnly=yes"]
+
+
 def exec_rtunnel_proxy(
     bridge: BridgeProfile,
     config: TunnelConfig,
@@ -214,6 +229,7 @@ def _test_ssh_connection(
                 f"ProxyCommand={proxy_cmd}",
                 "-o",
                 "LogLevel=ERROR",
+                *ssh_identity_args(bridge),
                 "-p",
                 str(bridge.ssh_port),
                 f"{bridge.ssh_user}@localhost",

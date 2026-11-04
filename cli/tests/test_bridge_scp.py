@@ -63,6 +63,29 @@ def test_build_scp_base_args_recursive() -> None:
     assert "-r" in args
 
 
+def test_build_scp_base_args_uses_cached_identity_file(tmp_path) -> None:
+    key = tmp_path / "custom_inspire_key"
+    key.write_text("not a real key")
+    bridge = BridgeProfile(
+        name="test", proxy_url="https://proxy.example.com", identity_file=str(key)
+    )
+    args = _build_scp_base_args(bridge=bridge, proxy_cmd="cmd")
+
+    start = args.index("-i")
+    assert args[start : start + 4] == ["-i", str(key), "-o", "IdentitiesOnly=yes"]
+
+
+def test_build_scp_base_args_without_identity_file_keeps_default_lookup(tmp_path) -> None:
+    for identity_file in (None, str(tmp_path / "gone")):
+        bridge = BridgeProfile(
+            name="test", proxy_url="https://proxy.example.com", identity_file=identity_file
+        )
+        args = _build_scp_base_args(bridge=bridge, proxy_cmd="cmd")
+
+        assert "-i" not in args
+        assert "IdentitiesOnly=yes" not in args
+
+
 def test_build_scp_base_args_no_user_host() -> None:
     """Base args should NOT include user@host -- that's part of the remote specifier."""
     bridge = BridgeProfile(name="test", proxy_url="https://proxy.example.com")

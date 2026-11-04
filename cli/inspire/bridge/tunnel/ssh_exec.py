@@ -20,7 +20,7 @@ from .models import (
     TunnelNotAvailableError,
 )
 from .rtunnel import _ensure_rtunnel_binary
-from .ssh import _get_proxy_command, build_ssh_process_env
+from .ssh import _get_proxy_command, build_ssh_process_env, ssh_identity_args
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,7 @@ def _build_ssh_base_args(
         f"ProxyCommand={proxy_cmd}",
         "-o",
         "LogLevel=ERROR",
+        *ssh_identity_args(bridge),
         "-p",
         str(bridge.ssh_port),
         f"{bridge.ssh_user}@localhost",

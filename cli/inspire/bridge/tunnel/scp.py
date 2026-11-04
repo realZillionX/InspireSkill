@@ -9,7 +9,7 @@ import subprocess
 from typing import Optional
 
 from .models import BridgeProfile
-from .ssh import build_ssh_process_env
+from .ssh import build_ssh_process_env, ssh_identity_args
 from .ssh_exec import _resolve_bridge_and_proxy
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ def _build_scp_base_args(
         "LogLevel=ERROR",
         "-o",
         "BatchMode=yes",
+        *ssh_identity_args(bridge),
         "-P",
         str(bridge.ssh_port),
     ]
