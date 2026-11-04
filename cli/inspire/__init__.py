@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING
 
 
-__version__ = "7.1.15"
+__version__ = "7.1.16"
 
 
 def __getattr__(name: str):
