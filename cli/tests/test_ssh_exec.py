@@ -46,6 +46,71 @@ def test_tunnel_availability_probe_detaches_stdin(
     assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
 
 
+def _probe_argv(
+    monkeypatch: pytest.MonkeyPatch,
+    bridge: BridgeProfile,
+) -> list[str]:
+    import inspire.bridge.tunnel.ssh as ssh_module
+
+    captured: dict[str, Any] = {}
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(ssh_module, "_ensure_rtunnel_binary", lambda config: config.rtunnel_bin)
+    monkeypatch.setattr(ssh_module, "_get_proxy_command", lambda *args, **kwargs: "proxy-cmd")
+    monkeypatch.setattr(ssh_module.subprocess, "run", fake_run)
+
+    assert ssh_module._test_ssh_connection(bridge, TunnelConfig())
+    return captured["cmd"]
+
+
+def test_cached_identity_file_reaches_probe_and_exec(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    from inspire.bridge.tunnel.ssh_exec import _build_ssh_base_args
+
+    key = tmp_path / "custom_inspire_key"
+    key.write_text("not a real key")
+    bridge = BridgeProfile(
+        name="default",
+        proxy_url="https://proxy.example.com",
+        identity_file=str(key),
+    )
+    expected = ["-i", str(key), "-o", "IdentitiesOnly=yes"]
+
+    for argv in (
+        _probe_argv(monkeypatch, bridge),
+        _build_ssh_base_args(bridge=bridge, proxy_cmd="proxy-cmd"),
+        _build_ssh_base_args(bridge=bridge, proxy_cmd="proxy-cmd", batch_mode=False),
+    ):
+        start = argv.index("-i")
+        assert argv[start : start + 4] == expected
+        assert argv.index("-i") < argv.index(f"{bridge.ssh_user}@localhost")
+
+
+def test_missing_identity_file_keeps_default_key_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    from inspire.bridge.tunnel.ssh_exec import _build_ssh_base_args
+
+    for identity_file in (None, str(tmp_path / "gone")):
+        bridge = BridgeProfile(
+            name="default",
+            proxy_url="https://proxy.example.com",
+            identity_file=identity_file,
+        )
+        for argv in (
+            _probe_argv(monkeypatch, bridge),
+            _build_ssh_base_args(bridge=bridge, proxy_cmd="proxy-cmd"),
+        ):
+            assert "-i" not in argv
+            assert "IdentitiesOnly=yes" not in argv
+
+
 def test_run_ssh_command_forces_c_locale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
